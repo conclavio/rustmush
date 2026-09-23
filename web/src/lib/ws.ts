@@ -63,6 +63,9 @@ export type ConnStatus =
 /** The server's application close code for auth/session failures. */
 export const CLOSE_BAD_SESSION = 4401;
 
+/** Temporary network token cool-off. Keep credentials and retry after a minute. */
+export const CLOSE_TOKEN_COOLOFF = 4429;
+
 /** Subprotocol prefix carrying the auth token (mush-net-web/src/ws.rs). */
 export const SUBPROTO_PREFIX = "rustmush.v1.";
 
@@ -128,6 +131,8 @@ export interface WsClientOptions {
    * returns to login.
    */
   onSessionExpired?: () => void;
+  /** A network token cool-off; the client retains its token and waits a minute. */
+  onTokenCooloff?: () => void;
   /** Connection lifecycle notifications (drive a status indicator). */
   onStatus?: (status: ConnStatus) => void;
   /**
@@ -326,6 +331,11 @@ export class WsClient {
         this.#opts.onSessionExpired?.();
         return;
       }
+      if (ev.code === CLOSE_TOKEN_COOLOFF) {
+        this.#opts.onTokenCooloff?.();
+        this.#scheduleReconnect(60_000);
+        return;
+      }
       this.#scheduleReconnect();
     };
   }
@@ -387,9 +397,9 @@ export class WsClient {
     }
   }
 
-  #scheduleReconnect(): void {
+  #scheduleReconnect(minDelay = 0): void {
     this.#setStatus("reconnecting");
-    const delay = backoffDelay(this.#attempt, this.#backoff, this.#random);
+    const delay = Math.max(minDelay, backoffDelay(this.#attempt, this.#backoff, this.#random));
     this.#attempt += 1;
     this.#reconnectTimer = setTimeout(() => {
       this.#reconnectTimer = null;

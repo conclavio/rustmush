@@ -51,8 +51,6 @@ fn throwaway_config(dir: &Path) -> PathBuf {
         "listen = \"127.0.0.1:0\"".to_string(),
         "[web]".to_string(),
         "listen = \"127.0.0.1:0\"".to_string(),
-        "[rulesets]".to_string(),
-        "enabled = []".to_string(),
     ]
     .join("\n");
     std::fs::write(&path, text).expect("write config");

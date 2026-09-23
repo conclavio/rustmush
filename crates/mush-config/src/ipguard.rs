@@ -139,6 +139,8 @@ struct IpEntry {
     failures: Vec<Instant>,
     /// Active tempban, if any.
     banned_until: Option<Instant>,
+    /// Start of the ban; an older store lift must not pardon newer failures.
+    banned_at: Option<Instant>,
     /// Instants of recent refused bearer tokens (pruned to the token
     /// window). Kept apart from `failures` so a stale browser tab can never
     /// contribute to a tempban.
@@ -171,6 +173,9 @@ pub struct IpGuard {
     /// Persisted-siteban mirror: ip → expiry (unix seconds; `None` =
     /// permanent). Loaded from the store at boot, updated on `@siteban`.
     sitebans: DashMap<IpAddr, Option<i64>>,
+    /// Lift identifiers retained until their store TTL expires. Never evicted
+    /// early: that would permit a refresh to apply an old pardon twice.
+    tempban_lifts: std::sync::Mutex<std::collections::HashMap<String, i64>>,
 }
 
 impl IpGuard {
@@ -187,6 +192,7 @@ impl IpGuard {
             cfg,
             map: DashMap::new(),
             sitebans: DashMap::new(),
+            tempban_lifts: std::sync::Mutex::default(),
         }
     }
 
@@ -334,6 +340,7 @@ impl IpGuard {
         if e.failures.len() >= self.cfg.max_failures as usize {
             e.failures.clear();
             e.banned_until = Some(now + self.cfg.ban);
+            e.banned_at = Some(now);
             tracing::warn!(%ip, %net, ban_s = self.cfg.ban.as_secs(), "auth failures exceeded; tempban");
             true
         } else {
@@ -344,6 +351,70 @@ impl IpGuard {
     /// [`IpGuard::record_failure_at`] with `Instant::now()`.
     pub fn record_failure(&self, ip: IpAddr) -> bool {
         self.record_failure_at(ip, Instant::now())
+    }
+
+    /// Apply a short-lived staff pardon once in this guard. It clears only
+    /// password failures and a tempban predating the request, across the same
+    /// configured network as failure accounting. Sitebans, token cool-offs and
+    /// connection counts are untouched. Returns whether an active ban was lifted.
+    /// At most 4,096 unexpired request IDs are retained; a full cache fails closed.
+    pub fn apply_tempban_lift(
+        &self,
+        ip: IpAddr,
+        id: &str,
+        issued_unix_ms: i64,
+        expires_unix: i64,
+    ) -> bool {
+        let now = Instant::now();
+        let unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+        self.apply_tempban_lift_at(ip, id, issued_unix_ms, expires_unix, now, unix_ms)
+    }
+
+    fn apply_tempban_lift_at(
+        &self,
+        ip: IpAddr,
+        id: &str,
+        issued_unix_ms: i64,
+        expires_unix: i64,
+        now: Instant,
+        unix_ms: i64,
+    ) -> bool {
+        let unix_s = unix_ms / 1_000;
+        if expires_unix <= unix_s
+            || expires_unix > unix_s.saturating_add(300)
+            || issued_unix_ms > unix_ms
+            || id.is_empty()
+            || id.len() > 64
+        {
+            return false;
+        }
+        let Ok(mut seen) = self.tempban_lifts.lock() else {
+            tracing::error!("tempban lift cache poisoned; refusing pardon");
+            return false;
+        };
+        seen.retain(|_, expires| *expires > unix_s);
+        if seen.contains_key(id) || seen.len() >= 4_096 {
+            return false;
+        }
+        seen.insert(id.to_owned(), expires_unix);
+        // Both wall stamps are truncated to milliseconds. Exclude the entire
+        // ambiguous millisecond rather than pardon a failure just after issue.
+        let elapsed = Duration::from_millis(unix_ms.saturating_sub(issued_unix_ms) as u64)
+            .saturating_add(Duration::from_millis(1));
+        let Some(cutoff) = now.checked_sub(elapsed) else {
+            return false;
+        };
+        let Some(mut entry) = self.map.get_mut(&self.key(ip)) else {
+            return false;
+        };
+        entry.failures.retain(|failure| *failure > cutoff);
+        if entry.banned_at.is_some_and(|at| at <= cutoff) {
+            entry.banned_at = None;
+            return entry.banned_until.take().is_some_and(|until| until > now);
+        }
+        false
     }
 
     /// Count a new connection from `ip`. Returns `false` (and does not
@@ -470,6 +541,93 @@ mod tests {
         assert!(!g.is_blocked_at(ip(1), banned_at + Duration::from_secs(901)));
         // Other IPs unaffected.
         assert!(!g.is_blocked_at(ip(2), t0));
+    }
+
+    #[test]
+    fn lift_is_once_per_guard_and_preserves_new_failures_and_other_admission_state() {
+        let g = IpGuard::with_config(IpGuardConfig {
+            max_conns: 1,
+            ..IpGuardConfig::default()
+        });
+        let t0 = Instant::now();
+        for _ in 0..5 {
+            g.record_failure_at(ip6(1, 7), t0);
+        }
+        for _ in 0..30 {
+            g.record_token_failure_at(ip6(1, 8), t0);
+        }
+        assert!(g.conn_opened(ip6(1, 9)));
+        g.set_siteban(ip6(1, 10), None);
+        assert!(g.apply_tempban_lift_at(
+            ip6(1, 99),
+            "first",
+            101_000,
+            400,
+            t0 + Duration::from_secs(2),
+            102_000
+        ));
+        assert!(!g.is_blocked_at(ip6(1, 7), t0 + Duration::from_secs(2)));
+        assert!(
+            g.is_blocked_at(ip6(1, 10), t0 + Duration::from_secs(2)),
+            "siteban remains"
+        );
+        assert!(g.is_token_throttled_at(ip6(1, 8), t0 + Duration::from_secs(2)));
+        assert!(!g.conn_opened(ip6(1, 11)), "connection cap remains");
+        for _ in 0..5 {
+            g.record_failure_at(ip6(1, 7), t0 + Duration::from_secs(3));
+        }
+        assert!(!g.apply_tempban_lift_at(
+            ip6(1, 99),
+            "first",
+            101_000,
+            400,
+            t0 + Duration::from_secs(4),
+            104_000
+        ));
+        assert!(
+            g.is_blocked_at(ip6(1, 7), t0 + Duration::from_secs(4)),
+            "refresh never repeats a pardon"
+        );
+        // Even a never-seen request cannot clear a ban started after its issue time.
+        assert!(!g.apply_tempban_lift_at(
+            ip6(1, 99),
+            "delayed",
+            102_000,
+            400,
+            t0 + Duration::from_secs(4),
+            104_000
+        ));
+        assert!(g.is_blocked_at(ip6(1, 7), t0 + Duration::from_secs(4)));
+    }
+
+    #[test]
+    fn lift_clears_only_failures_before_issue_and_refuses_expired_commands() {
+        let g = IpGuard::new();
+        let t0 = Instant::now();
+        for _ in 0..4 {
+            g.record_failure_at(ip(1), t0);
+        }
+        assert!(!g.apply_tempban_lift_at(
+            ip(1),
+            "clear-window",
+            101_000,
+            400,
+            t0 + Duration::from_secs(2),
+            102_000
+        ));
+        for _ in 0..4 {
+            assert!(!g.record_failure_at(ip(1), t0 + Duration::from_secs(3)));
+        }
+        assert!(g.record_failure_at(ip(1), t0 + Duration::from_secs(3)));
+        assert!(!g.apply_tempban_lift_at(
+            ip(1),
+            "expired",
+            105_000,
+            106,
+            t0 + Duration::from_secs(10),
+            110_000
+        ));
+        assert!(g.is_blocked_at(ip(1), t0 + Duration::from_secs(10)));
     }
 
     #[test]

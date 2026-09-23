@@ -6,7 +6,7 @@
 //! ## Division of labor (mirrors [`crate::ssh_bridge`])
 //!
 //! - The **transport** (`mush-net-web`) owns axum, the WS upgrade, JSON
-//!   framing (it serializes the [`Envelope`]s it receives on the conn's
+//!   framing (it serializes the [`mush_proto::Envelope`]s it receives on the conn's
 //!   channel), the `hello` frame (features + panels from its `WebConfig` —
 //!   `mushd` fills those from [`WebBridge::panels`] at boot), the
 //!   `resumed { replayed }` frame it derives from [`WebHooks::resume`]'s

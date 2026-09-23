@@ -609,12 +609,9 @@ async fn boot_saying(tag: &str, mutate: impl FnOnce(&mut Config)) -> (String, Fi
 /// **The boot says which way the layer went, and whether the centre is ready**
 /// (16b cut F.4).
 ///
-/// `[tacsim]` is `deny_unknown_fields`, but a section HEADER is not a key:
-/// `Config` ignores an unknown section, so `[tac_sim]` parses clean, boots the
-/// layer off, and used to say nothing at all — and the first symptom was `SIM
-/// START` refusing to a player, hours later. Both lines and the readiness line
-/// after them are the operator's only signal, and none of them is reachable from
-/// any other observable, so this reads the log.
+/// Near-miss headers are refused by Config::load. A missing or disabled section
+/// warns, and an enabled centre reports both readiness and any configured slot
+/// ceiling clamped to its available pods.
 #[tokio::test]
 async fn the_boot_says_whether_the_simulator_is_there() {
     let (said, fx) = boot_saying("tacsim-log-on", enable_tacsim).await;
@@ -634,13 +631,33 @@ async fn the_boot_says_whether_the_simulator_is_there() {
         !said.contains("NOT ready"),
         "a whole centre must not warn: {said}"
     );
+    assert_eq!(
+        said.matches("simulator slots clamped").count(),
+        1,
+        "the default ceiling exceeds the four pods and must warn once: {said}"
+    );
+    assert!(said.contains("configured_slots_per_side=12"), "{said}");
+    assert!(said.contains("available_pods_per_side=4"), "{said}");
     drop(fx);
 
-    // The shipped default, and the mistyped-header case it stands in for.
+    let (said, fx) = boot_saying("tacsim-log-no-clamp", |cfg| {
+        enable_tacsim(cfg);
+        cfg.tacsim.match_.max_slots_per_side = 4;
+    })
+    .await;
+    assert!(!said.contains("simulator slots clamped"), "{said}");
+    drop(fx);
+
+    // A deliberately disabled layer remains supported and warns.
     let (said, fx) = boot_saying("tacsim-log-off", |cfg| cfg.tacsim.enabled = false).await;
     assert!(
         said.contains("tacsim disabled ([tacsim].enabled is false or the section is missing)"),
         "the negative is the line an operator greps for: {said}"
+    );
+    assert!(
+        said.lines()
+            .any(|line| line.contains("WARN") && line.contains("tacsim disabled")),
+        "the disabled layer must warn: {said}"
     );
     assert!(
         !said.contains("simulator centre ready") && !said.contains("simulator centre NOT ready"),

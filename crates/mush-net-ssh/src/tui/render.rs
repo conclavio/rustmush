@@ -124,7 +124,7 @@ pub struct RenderCtx<'a> {
     /// The channel the backlog pane shows.
     pub selected_channel: Option<&'a str>,
     /// **The pane's inner rect, `(width, height)`** (16b cut Q.4), where the
-    /// caller knows it: [`super::app::TuiApp::draw_pane`] passes the rect it is
+    /// caller knows it: `super::app::TuiApp::draw_pane` passes the rect it is
     /// about to paint into, and the input paths (scrolling, the highlighted
     /// row) pass `None` because they ask what the rows ARE, not how many fit.
     ///
@@ -2266,7 +2266,7 @@ fn designator_of(contact: &Value) -> String {
 ///    frame's own `cell`, grid width, grid height)` — centred on the platform
 ///    and clamped to the arena, the SAME rule `VIEW` uses and differing only in
 ///    size. It answers `(x0, y0, w, h)`. The grid's size is the pane's, less
-///    [`MAP_CHROME_ROWS`]; with no pane it is [`COCKPIT_MAP_FALLBACK`]. The
+///    `MAP_CHROME_ROWS`; with no pane it is [`COCKPIT_MAP_FALLBACK`]. The
 ///    committed fixtures are composed at thirty-nine by twenty cells (16b cut
 ///    B.4), the window `VIEW` sends.
 /// 2. The terrain is `window_rows(map rows, map width, map height, x0, y0, w,
@@ -2276,7 +2276,7 @@ fn designator_of(contact: &Value) -> String {
 ///    cell less the window origin, and a later marker overwrites an earlier one
 ///    on the same cell. A contact whose `cell` is null or outside the window is
 ///    not drawn (it is still in the contacts pane).
-/// 4. A contact's glyph is [`contact_glyph`]'s: `?` unknown, `+` friendly, `x`
+/// 4. A contact's glyph is `contact_glyph`'s: `?` unknown, `+` friendly, `x`
 ///    hostile.
 /// 5. The rows print NORTH-UP: `y` from `h - 1` down to `0`.
 ///
@@ -2297,7 +2297,7 @@ fn designator_of(contact: &Value) -> String {
 /// two or fewer are `h` grid rows and nothing else, because a map pane that
 /// cannot hold the ground AND its words keeps the ground. Every grid row is
 /// exactly the window's width in glyphs and the legend is cut to it
-/// ([`fit_legend`]), so no row of the pane ever wraps and the pane is exactly
+/// (`fit_legend`), so no row of the pane ever wraps and the pane is exactly
 /// its height. With no pane (the input paths) the fallback window keeps both
 /// chrome rows.
 #[must_use]

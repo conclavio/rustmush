@@ -19,7 +19,7 @@
 //!   [`FlavorGenOutcome`], carried back into the world as a typed
 //!   [`WorldCommand::ModuleAsyncDone`](mush_core::engine::WorldCommand::ModuleAsyncDone).
 //!   Every call is metered/audited/gated through
-//!   [`LlmService`](mush_llm::LlmService) on the cheap
+//!   [`LlmService`] on the cheap
 //!   [`LlmFeature::Ambience`](mush_llm::LlmFeature) route.
 //!
 //! When generation is unavailable or disabled, the hand-written lines carry the

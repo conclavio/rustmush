@@ -13,7 +13,7 @@
 //! **Why a mirror.** `FactProvider::resolve` receives `&World`, while typed
 //! state lives on the `Engine`, so a fact provider on this tree cannot read a
 //! typed family at all. Cut 3 mirrors the marker family into
-//! [`IndustryStore`](crate::store::IndustryStore) at boot and on the coarse
+//! [`IndustryStore`] at boot and on the coarse
 //! sweep, exactly as cut 2 does, with the same direction guarantee: the mirror
 //! is **behind** the authoritative truth by at most one sweep and never ahead,
 //! and a mirror that could not see the whole family — because the walk tripped

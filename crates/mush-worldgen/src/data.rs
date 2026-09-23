@@ -271,7 +271,7 @@ pub struct WorldgenState {
     /// The `@gen/building` interior-walk cap (config knob, default
     /// [`MAX_BUILDING_ROOMS`](crate::commands::MAX_BUILDING_ROOMS)). Held here
     /// so the batch command reads it from state; not persisted (it is a boot
-    /// config value, re-applied on every boot from [`WorldgenConfig`]).
+    /// config value, re-applied on every boot from [`crate::WorldgenConfig`]).
     pub batch_max_rooms: usize,
     /// The building agent's proposals (S3), keyed by id, mirrored by the
     /// persisted `proposal:{id}` documents.

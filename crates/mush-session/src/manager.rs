@@ -291,7 +291,7 @@ const NARRATIVE_RING_INVARIANT: &str = "Narrative must reach the resume ring onl
 /// honours it with no per-feed table anywhere. A `Panel` **keyframe** whose
 /// `data.schema.retain` is this string is a **whole-state keyframe** — the newest
 /// one is the whole truth and the ones before it are not history — so
-/// [`SessionManager::deliver_to_session`] keeps only the newest: it lives in a
+/// `SessionManager::deliver_to_session` keeps only the newest: it lives in a
 /// per-feed slot beside the ring, so the ring holds no marked keyframe at all
 /// and a frame costs no scan (16b cut B.5, `T-31`). Only a
 /// [`PanelFrameKind::Keyframe`] qualifies (`T-61`): a `Delta` carrying the

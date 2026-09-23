@@ -169,6 +169,50 @@ pub async fn import_accounts_json(
 // Validation + hashing
 // ---------------------------------------------------------------------------
 
+/// Create the first account and link it to the world's existing God `#1`.
+/// The empty-store guard and complete account document are one atomic store
+/// operation, so two bootstrap processes cannot each acquire the superuser.
+/// The caller must hold the world's lifetime lock and confirm God exists.
+///
+/// # Errors
+///
+/// Invalid credentials, hashing/storage failures, or any existing account.
+pub async fn bootstrap_staff_account(
+    store: &dyn ObjectStore,
+    name: &str,
+    god_name: &str,
+    password: String,
+) -> Result<(), String> {
+    validate_account_name(name).map_err(|e| e.to_string())?;
+    validate_password(&password).map_err(|e| e.to_string())?;
+    let hash = run_blocking(move || hash_password(&password))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    let created = unix_now_s();
+    let id = mush_core::AccountId::mint(name, created).map_err(|e| e.to_string())?;
+    store
+        .create_first_account(AccountRec {
+            id: Some(id),
+            name: name.to_owned(),
+            argon2_hash: hash,
+            created,
+            characters: vec![CharacterRef {
+                id: mush_core::GOD,
+                name: god_name.to_owned(),
+            }],
+            ssh_keys: Vec::new(),
+            discord: None,
+        })
+        .await
+        .map_err(|e| match e {
+            StoreError::AccountExists => {
+                "staff bootstrap refused: an account already exists".to_owned()
+            }
+            _ => format!("staff bootstrap storage failed: {e}"),
+        })
+}
+
 /// `spawn_blocking` with the join failure folded into [`CreateErr`].
 ///
 /// # Errors
@@ -322,6 +366,52 @@ mod tests {
                 "{reserved:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn bootstrap_links_god_with_a_real_password_and_refuses_a_second_account() {
+        let store = InMemoryStore::new();
+        bootstrap_staff_account(&store, "Keeper", "God", "  secret pass  ".into())
+            .await
+            .unwrap();
+        let keeper = store.get_account("keeper").await.unwrap().unwrap();
+        assert!(keeper.id.is_some());
+        assert!(keeper.argon2_hash.starts_with("$argon2id$"));
+        assert!(verify_hash(&keeper.argon2_hash, "  secret pass  "));
+        assert_eq!(
+            keeper.characters,
+            vec![CharacterRef {
+                id: mush_core::GOD,
+                name: "God".into()
+            }]
+        );
+        let refused = bootstrap_staff_account(&store, "Another", "God", "different".into())
+            .await
+            .unwrap_err();
+        assert!(refused.contains("already exists"));
+        assert!(store.get_account("another").await.unwrap().is_none());
+        assert!(verify_hash(
+            &store
+                .get_account("keeper")
+                .await
+                .unwrap()
+                .unwrap()
+                .argon2_hash,
+            "  secret pass  "
+        ));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_rejects_bad_credentials_without_reserving_any_account() {
+        let store = InMemoryStore::new();
+        for (name, password) in [("god", "valid"), ("okname", "bad"), ("ab", "valid")] {
+            assert!(
+                bootstrap_staff_account(&store, name, "God", password.into())
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(store.list_accounts().await.unwrap().is_empty());
     }
 
     #[test]

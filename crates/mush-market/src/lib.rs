@@ -35,7 +35,7 @@
 //! volume come from **settled journal transactions** re-checked against the economy's
 //! own `ContractState::Settled`; depth is bucketed into [`DEPTH_BUCKETS`] levels and
 //! never published per seller; and the whole per-viewer surface is the listing list,
-//! through the existence-hiding renderer. [`crate::projection`]'s module header
+//! through the existence-hiding renderer. `crate::projection`'s module header
 //! states the five parts in full.
 //!
 //! ## What this crate does **not** do

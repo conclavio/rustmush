@@ -1,18 +1,13 @@
 //! `tacsim` — **TacSim's packs, its seed latch and the corridor fixture**
-//! (E7 cut 1; [`docs/design/10b-e7-implementation-plan.md`] §3.1).
+//! (E7 cut 1; `docs/design/10b-e7-implementation-plan.md` §3.1).
 //!
-//! # It is a layer, not a `[rulesets]` id
+//! # The pilot sheet and the simulation layer
 //!
-//! Doc 10 §20: *TacSim supplies physical and civil context, not ruleset metaphysics …
-//! a ruleset decides what those facts mean to its characters.* So this crate is a
-//! plain [`GameModule`] with **no `SheetSchema`** — `mush_ruleset::Ruleset` requires
-//! one and cut 1 has none — enabled by `[tacsim].enabled` **independently of**
-//! `[rulesets].enabled`, which stays exactly one of `wod` | `shadowrun` with
-//! `ruleset_modules` unchanged. The server composes it **after** the character
-//! ruleset so it can read that ruleset's facts and the ruleset can read TacSim's
-//! environmental facts through the generic seam; the order position is pinned by
-//! `mush_server::modules`' boot-order test. The crate keeps doc 10's name because its
-//! packs carry rules.
+//! This crate owns the one game's pilot sheet and its simulation layer. The
+//! host composes the sheet unconditionally through [`composition::sheet_modules`],
+//! then the [`GameModule`] switched by `[tacsim].enabled`. The layer can read the
+//! sheet's facts and the sheet can read the simulation's environmental facts
+//! through the generic seam; the boot-order test pins that order.
 //!
 //! # What cut 1 is, and what it deliberately is not
 //!

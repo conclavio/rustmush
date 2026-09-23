@@ -12,7 +12,7 @@
 //! is *enforced* rather than promised is that nothing under this directory can
 //! reach the store, a task, a session or the world at all: no persistence crate,
 //! no async runtime, no output sink, no batch, no world handle. Cut T's
-//! `arena_task` is the thin wrapper that owns an [`state::Arena`], the bounded
+//! `arena_task` is the thin wrapper that owns an [`crate::arena::state::Arena`], the bounded
 //! inbox, the bounded egress, a timer driven by `next_due_ms`, a watchdog and
 //! the unwind boundary; everything below is a pure function of state and inputs.
 //! `crates/mush-contract-tests/tests/arena_library.rs` scans every file here for
@@ -26,24 +26,24 @@
 //! quantised, and nothing in cut A needs it. That is what lets the cross-tempo
 //! property test (A7) assert byte-identical per-substep state hashes across the
 //! 5,000 / 1,000 / 500 ms tempos, and it is why the substep hash
-//! ([`hash::state_hash`]) is a stable function of the state rather than of the
+//! ([`crate::arena::hash::state_hash`]) is a stable function of the state rather than of the
 //! machine.
 //!
 //! # The two halves of cut A
 //!
 //! **A.1** was the data, the time, the inputs, the randomness, the hashing and
-//! the ledger: [`state`], [`clock`], [`intents`], [`rng`], [`hash`], [`ledger`],
+//! the ledger: [`crate::arena::state`], [`crate::arena::clock`], [`crate::arena::intents`], [`crate::arena::rng`], [`crate::arena::hash`], [`crate::arena::ledger`],
 //! their unit tests, and the two gates doc 16 §8 names. Its public surface is a
 //! contract.
 //!
-//! **A.2 (this commit)** adds [`index`] (the uniform grid of cell buckets,
-//! rebuilt every substep, and the one Euclidean range function), [`motion`]
+//! **A.2 (this commit)** adds [`crate::arena::index`] (the uniform grid of cell buckets,
+//! rebuilt every substep, and the one Euclidean range function), [`crate::arena::motion`]
 //! (doc 16 §3.4 per substep over `move_cost`, with a fixed-point sine table so
-//! that a stored position is an integer a replay reproduces) and [`step`] (the
+//! that a stored position is an integer a replay reproduces) and [`crate::arena::step`] (the
 //! five pulse phases of doc 16 §3.1, in order, each reading what the previous
 //! committed) on exactly A.1's surface, plus three additions to it that the
-//! pulse needs and A.1 could not have used: [`state::Arena::index`],
-//! [`state::Arena::last_frames`] and [`state::Arena::substep_hashes`].
+//! pulse needs and A.1 could not have used: [`crate::arena::state::Arena::index`],
+//! [`crate::arena::state::Arena::last_frames`] and [`crate::arena::state::Arena::substep_hashes`].
 //!
 //! The tests that pin the claim are `crates/tacsim/tests/arena.rs`: one scripted
 //! control and intent log replayed at 5,000, 1,000 and 500 ms produces one
@@ -52,16 +52,16 @@
 //!
 //! # Cut S.1: the sensor pass and the shadow contact store
 //!
-//! [`perception`] is doc 16 §3.6's five steps as a [`state::DueKind::SensorPass`]
+//! [`crate::arena::perception`] is doc 16 §3.6's five steps as a [`crate::arena::state::DueKind::SensorPass`]
 //! per unit every `sensors.pass_ms`, staggered by unit id, plus the
-//! [`state::DueKind::Share`] the comms mesh fans out on. It fills the store A.1
-//! declared ([`state::ShadowContacts`]), the three ledger kinds A.1 reserved
-//! ([`ledger::EventKind::Detected`], [`ledger::EventKind::Classified`],
-//! [`ledger::EventKind::Lost`]), the `contact_within_alert_range` signal A.1's
-//! clock left `false`, and [`step::Frame::contacts`], which cut S.2 renders.
+//! [`crate::arena::state::DueKind::Share`] the comms mesh fans out on. It fills the store A.1
+//! declared ([`crate::arena::state::ShadowContacts`]), the three ledger kinds A.1 reserved
+//! ([`crate::arena::ledger::EventKind::Detected`], [`crate::arena::ledger::EventKind::Classified`],
+//! [`crate::arena::ledger::EventKind::Lost`]), the `contact_within_alert_range` signal A.1's
+//! clock left `false`, and [`crate::arena::step::Frame::contacts`], which cut S.2 renders.
 //!
 //! Its one dependency outside this tree is `mush_atlas::trace_cells` — the atlas's
-//! own line walk over a plain cell grid, which [`state::ArenaTerrain`] implements
+//! own line walk over a plain cell grid, which [`crate::arena::state::ArenaTerrain`] implements
 //! (`mush_atlas::CellGrid`). That is a *trace* type and carries no window, no
 //! record and no store, so the no-I/O gate still holds; the alternative,
 //! `mush_atlas::SurfaceComposite`, would have brought a surface reference, a room
@@ -69,36 +69,36 @@
 //!
 //! # Cut W.1: weapons and the shot
 //!
-//! [`weapons`] is doc 16 §3.5's first half: the two live cells a weapon has on a
+//! [`crate::arena::weapons`] is doc 16 §3.5's first half: the two live cells a weapon has on a
 //! unit (`ready_at_ms` and `ammo`, both laid down complete at check-out), the bodies
-//! of the two discrete actions phase 4 used to drop ([`Arena::resolve_lock`] and
-//! [`Arena::resolve_fire`]), the [`weapons::Shot`] an accepted shot puts in
-//! flight, and the [`state::DueKind::Impact`] and [`state::DueKind::WeaponReady`]
+//! of the two discrete actions phase 4 used to drop ([`crate::arena::Arena::resolve_lock`] and
+//! [`crate::arena::Arena::resolve_fire`]), the [`crate::arena::weapons::Shot`] an accepted shot puts in
+//! flight, and the [`crate::arena::state::DueKind::Impact`] and [`crate::arena::state::DueKind::WeaponReady`]
 //! events it schedules. It fills four more of the ledger kinds A.1 reserved
-//! ([`ledger::EventKind::Locked`], [`ledger::EventKind::Fired`],
-//! [`ledger::EventKind::Impact`], [`ledger::EventKind::Miss`]), the two `Engaged`
-//! tempo signals A.1's clock left `false`, and [`step::Frame::lock`] and
-//! [`step::Frame::weapons`], which `WEAPONSTATUS` renders.
+//! ([`crate::arena::ledger::EventKind::Locked`], [`crate::arena::ledger::EventKind::Fired`],
+//! [`crate::arena::ledger::EventKind::Impact`], [`crate::arena::ledger::EventKind::Miss`]), the two `Engaged`
+//! tempo signals A.1's clock left `false`, and [`crate::arena::step::Frame::lock`] and
+//! [`crate::arena::step::Frame::weapons`], which `WEAPONSTATUS` renders.
 //!
 //! # Cut W.2: the resolution, the damage, and the end of a match
 //!
-//! [`resolution`] is doc 16 §3.5's five steps — the silhouette the target presents
+//! [`crate::arena::resolution`] is doc 16 §3.5's five steps — the silhouette the target presents
 //! toward the shooter, the error cone the four weighted terms widen, the curve that
 //! turns their ratio into a per-mille probability, the draw that compares against
-//! it, and the number the cockpit shows before any of it. [`damage`] is what a round
+//! it, and the number the cockpit shows before any of it. [`crate::arena::damage`] is what a round
 //! does when it arrives: the four re-validations and their named reasons, the facet
 //! draw, the armour and the overflow, the consequences, the wreck, and doc 16
 //! §3.8's team elimination.
 //!
 //! Between them they fill the last of the ledger kinds A.1 reserved
-//! ([`ledger::EventKind::Hit`], [`ledger::EventKind::SectionDestroyed`],
-//! [`ledger::EventKind::UnitDisabled`], [`ledger::EventKind::UnitDestroyed`]), the
+//! ([`crate::arena::ledger::EventKind::Hit`], [`crate::arena::ledger::EventKind::SectionDestroyed`],
+//! [`crate::arena::ledger::EventKind::UnitDisabled`], [`crate::arena::ledger::EventKind::UnitDestroyed`]), the
 //! three draw labels doc 16 §3.5 pinned and nothing had yet read (`hit`, `facet`,
 //! `burst`), and the per-unit half of doc 16 §3.1's seventh seam message
-//! ([`damage::UnitReturn`]) that cut T.3 left empty.
+//! ([`crate::arena::damage::UnitReturn`]) that cut T.3 left empty.
 //!
 //! **Where a match ends.** Doc 16 §3.8's team elimination is settled inside the
-//! **substep** the last unit of a side went out of action in ([`step`]'s own note
+//! **substep** the last unit of a side went out of action in ([`crate::arena::step`]'s own note
 //! says why): a wreck is applied at a due event's own arena timestamp, so the moment
 //! a side was eliminated is a fact of arena time, and a `match_ended` stamped at the
 //! pulse boundary instead would carry a different timestamp at every cadence — which
@@ -116,35 +116,35 @@
 //!
 //! # Cut N.1: the reflex controller and the paths
 //!
-//! [`reflex`] is doc 16 §6's deterministic state machine — `Startup → Patrol →
+//! [`crate::arena::reflex`] is doc 16 §6's deterministic state machine — `Startup → Patrol →
 //! Approach → Engage → Withdraw → Disabled`, with `blocked`, `lost`, `no line`
-//! and `unreachable` as edges — and [`path`] is the bounded A\* over the arena's
+//! and `unreachable` as edges — and [`crate::arena::path`] is the bounded A\* over the arena's
 //! own terrain copy that `Patrol`, `Approach` and `Withdraw` route on. The
-//! machine gives its orders through [`intents::apply_intent`], the same door a
+//! machine gives its orders through [`crate::arena::intents::apply_intent`], the same door a
 //! pilot's verbs come through, so it can do nothing a player could not.
 //!
 //! It fills the `controller` attribute A.1 had no reader for
-//! ([`state::Controller`]), the two tempo signals W.1 left `false`
-//! ([`clock::TempoSignals::ai_approaching`] and
-//! [`clock::TempoSignals::hostile_in_weapons_range`]), and the waypoint graph and
-//! key spots C.2 authored and nothing read ([`state::ArenaDefinition::waypoints`],
-//! [`state::ArenaDefinition::key_spots`]).
+//! ([`crate::arena::state::Controller`]), the two tempo signals W.1 left `false`
+//! ([`crate::arena::clock::TempoSignals::ai_approaching`] and
+//! [`crate::arena::clock::TempoSignals::hostile_in_weapons_range`]), and the waypoint graph and
+//! key spots C.2 authored and nothing read ([`crate::arena::state::ArenaDefinition::waypoints`],
+//! [`crate::arena::state::ArenaDefinition::key_spots`]).
 //!
-//! **Its tick is a [`state::DueKind::ReflexTick`] and not pulse phase 4**, which
+//! **Its tick is a [`crate::arena::state::DueKind::ReflexTick`] and not pulse phase 4**, which
 //! is a deviation from 16b §8's cut N row with a reason the same row gives:
-//! [`reflex`]'s module head has it in full.
+//! [`crate::arena::reflex`]'s module head has it in full.
 //!
 //! # Cut X.6: elevation, and the one slope rule
 //!
-//! [`slope`] is doc 16 §9 item 6's second half. The heightfield itself was
+//! [`crate::arena::slope`] is doc 16 §9 item 6's second half. The heightfield itself was
 //! already here — `crate::definitions::arena::from_pack` copies `elev_cm`
-//! verbatim, [`motion`] carries it onto the pose at a crossing, and doc 16
+//! verbatim, [`crate::arena::motion`] carries it onto the pose at a crossing, and doc 16
 //! §3.2's line of sight has honoured it since cut S.1 — so what this cut adds is
 //! the *edge*: the slope between two cells surcharges what it costs to cross
 //! them, and a slope past the locomotion's limit is not an edge at all.
 //!
-//! One module, because the rule has to be one rule: [`motion`] drives over an
-//! edge and [`path`] plans over it, and a route that promised an edge the tank
+//! One module, because the rule has to be one rule: [`crate::arena::motion`] drives over an
+//! edge and [`crate::arena::path`] plans over it, and a route that promised an edge the tank
 //! is then refused at is a tank driving at a bluff until the match ends. The
 //! flat case is the identity (`cost × 100 / 100`), so every level window in this
 //! crate runs exactly the arithmetic it ran before.
@@ -153,12 +153,12 @@
 //! StepKind, LocomotionTable}` — arithmetic and a table, no window, no record and
 //! no store, so the no-I/O gate holds for the reason cut S.1's `trace_cells` does.
 //! `LocomotionTable::shipped()` is an `include_str!` parsed once behind a
-//! `OnceLock`, and [`slope::SlopeLimit::read`] runs once per unit at check-out,
+//! `OnceLock`, and [`crate::arena::slope::SlopeLimit::read`] runs once per unit at check-out,
 //! so no pulse ever reads it. `from_pack` already prices every cell off the same
 //! table, which is what makes the cell's cost and the edge's surcharge one
 //! answer rather than two.
 //!
-//! **Two deliberate divergences**, both argued in [`slope`]'s own head: the
+//! **Two deliberate divergences**, both argued in [`crate::arena::slope`]'s own head: the
 //! limit is symmetric where the atlas's is uphill-only (an uphill-only limit
 //! makes a bluff a one-way door), and `physics::move_cost`'s climb branch is not
 //! applied (it models a kerb inside one cell, and the arena's cells are 10 m).

@@ -914,11 +914,11 @@ impl TuiApp {
     /// seated frame is owed when no frame has arrived to ask it.
     ///
     /// The arena pushes a frame only when one CHANGES (`Frame::same_as`), and
-    /// [`Self::follow_the_cockpit`] asks only when a frame arrives — so a
+    /// `Self::follow_the_cockpit` asks only when a frame arrives — so a
     /// pilot sitting still with no contacts whose map answer was dropped used
     /// to keep `Waiting for the arena map...` for the whole match. The pump
     /// calls this on its four-second tick: while the held frame is seated, the
-    /// ground of its match is not held and [`Self::map_ask_due`] says the
+    /// ground of its match is not held and `Self::map_ask_due` says the
     /// latch has aged, it arms the latch and answers the one ask; otherwise
     /// nothing. The latch is what bounds the rate — the same one the frame
     /// path arms — so the two paths together never ask more than once per

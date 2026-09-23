@@ -34,7 +34,7 @@
 //!
 //! ## Panics
 //!
-//! [`init`] also installs a process-wide [`std::panic`] hook. The default
+//! [`init`] also installs a process-wide [`std::panic::set_hook`] hook. The default
 //! hook writes to stderr only, so a panic on an `.await` path — exactly the
 //! shape `catch_unwind` structurally cannot reach, and that a supervisor sees
 //! only as an opaque `JoinError` — never reached the log file at all. The hook
@@ -74,6 +74,7 @@
 //! a panic message.
 
 use std::backtrace::Backtrace;
+use std::io::IsTerminal;
 use std::path::Path;
 
 use tracing::{Event, Subscriber};
@@ -224,6 +225,7 @@ pub fn init(log: &LogCfg, data_dir: &Path, role: &str) -> LogGuards {
     let mut layers: Vec<Box<dyn Layer<Registry> + Send + Sync>> = Vec::new();
     layers.push(match format {
         LogFormat::Pretty => fmt::layer()
+            .with_ansi(std::io::stdout().is_terminal())
             .event_format(WithRole {
                 inner: fmt::format::Format::default(),
                 role: role.clone(),

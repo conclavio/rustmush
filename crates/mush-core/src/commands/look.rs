@@ -113,7 +113,7 @@ fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
 }
 
-/// Show one object to a looker: rooms render as a full [`RoomView`];
+/// Show one object to a looker: rooms render as a full [`mush_proto::RoomView`];
 /// everything else shows its desc plus (for non-`OPAQUE` **things**)
 /// contents. An actor's carry is private — `look <player>` never lists
 /// another character's inventory unless the looker controls them

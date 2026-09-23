@@ -5,34 +5,34 @@
 //! wizard, specialties, priorities. This module is what the 2350 game keeps of
 //! that shape — **one** schema, **one** mechanic, **one** approval queue — built
 //! on exactly the platform half [`mush_ruleset`] already provides:
-//! [`SheetSchema`](mush_ruleset::SheetSchema), [`SheetDoc`],
-//! [`SheetStore`], the [`ChargenFlow`] budget accountant and
+//! [`SheetSchema`](mush_ruleset::SheetSchema), [`mush_ruleset::SheetDoc`],
+//! [`mush_ruleset::SheetStore`], the [`mush_ruleset::chargen::ChargenFlow`] budget accountant and
 //! [`register_sheet_commands`](mush_ruleset::register_sheet_commands).
 //!
 //! | File | What it is |
 //! |---|---|
-//! | [`schema`] | the three sections and eight fields, and nothing else |
-//! | [`chargen`] | three stages over one 6-point pool, `+chargen` and `+stat` |
-//! | [`roll`] | `+roll <expr>` over [`mush_dice`]'s expression evaluator |
-//! | [`agent`] | the single NPC ability, `check`, and the grounding profile |
-//! | [`onboarding`] | the `chargen_required` gate, ported from the WoD crate |
+//! | [`crate::sheet::schema`] | the three sections and eight fields, and nothing else |
+//! | [`crate::sheet::chargen`] | three stages over one 6-point pool, `+chargen` and `+stat` |
+//! | [`crate::sheet::roll`] | `+roll <expr>` over [`mush_dice`]'s expression evaluator |
+//! | [`crate::sheet::agent`] | the single NPC ability, `check`, and the grounding profile |
+//! | [`crate::sheet::onboarding`] | the `chargen_required` gate, ported from the WoD crate |
 //!
 //! # The two names, and why they differ
 //!
-//! The sheet's **ruleset id** is [`schema::RULESET`] — `"tacsim"` — because that
-//! is what names the storage and the wire: [`SheetStore::attr_name`] is
+//! The sheet's **ruleset id** is [`crate::sheet::schema::RULESET`] — `"tacsim"` — because that
+//! is what names the storage and the wire: [`mush_ruleset::SheetStore::attr_name`] is
 //! `sheet:<schema.ruleset>` and `register_sheet_commands` reserves the panel
 //! feed `<schema.ruleset>.sheet`. Neither reads the module's name.
 //!
-//! The sheet **module** is [`NS`] — `"pilot"` — because a
-//! [`GameModule`]'s name *is* its persistence namespace and no two modules in one
+//! The sheet **module** is [`crate::sheet::NS`] — `"pilot"` — because a
+//! [`mush_core::GameModule`]'s name *is* its persistence namespace and no two modules in one
 //! composition may share one, and `"tacsim"` is taken: [`crate::TacsimRuleset`],
 //! the E7 packs-and-seed layer, is named after [`crate::NS`]. So the sheet takes
 //! a second name, and `"pilot"` rather than `"tacsim_sheet"` because that name is
-//! also the job-queue prefix ([`chargen::CHARGEN_QUEUE`]) and the payload-handler
-//! prefix ([`chargen::CHARGEN_HANDLER`]) — `pilot-chargen` and `pilot.chargen`
+//! also the job-queue prefix ([`crate::sheet::chargen::CHARGEN_QUEUE`]) and the payload-handler
+//! prefix ([`crate::sheet::chargen::CHARGEN_HANDLER`]) — `pilot-chargen` and `pilot.chargen`
 //! read like every other namespace in the composition, and `tacsim_sheet-chargen`
-//! does not. [`Ruleset::id`] defaults to the module name and is read only by the
+//! does not. [`mush_ruleset::Ruleset::id`] defaults to the module name and is read only by the
 //! default `migrate_sheet` refusal, so nothing pairs the two strings.
 //!
 //! # No vitals, no second authority
@@ -40,7 +40,7 @@
 //! [`register_vitals`](mush_ruleset::register_vitals) is not called and no field
 //! declares a [`VitalRole`](mush_proto::VitalRole): doc 16 §3.3 makes M32's
 //! `TacticalUnit` cells the only damage authority, and a health track here would
-//! be a second one for the same hit. See [`schema`] for the rest of the
+//! be a second one for the same hit. See [`crate::sheet::schema`] for the rest of the
 //! deliberate absences.
 
 pub mod agent;

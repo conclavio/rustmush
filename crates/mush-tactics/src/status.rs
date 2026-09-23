@@ -16,9 +16,9 @@
 //!
 //! | source | read from | why not the obvious thing |
 //! |---|---|---|
-//! | the unit | [`UnitStore`](crate::UnitStore) | the typed family migration is E7k's (§3.8 As built) |
+//! | the unit | [`UnitStore`] | the typed family migration is E7k's (§3.8 As built) |
 //! | placement | `Obj.location` | `Obj.location` **is** the maintained projection of placement (design D1); reading it needs no `mush-sim` edge, and cut 6's `in_transit_room`/`recovery_room` projections answer through it too |
-//! | contact | [`ContactLedgerState`](mush_core::ContactLedgerState) | the leak-safe projection cut 7 publishes; the family itself is owner-fenced and a *viewer* is not the owner |
+//! | contact | [`ContactLedgerState`] | the leak-safe projection cut 7 publishes; the family itself is owner-fenced and a *viewer* is not the owner |
 //! | authorized station | `World::channel_grant` | K5a's grant, checked for the exact viewer |
 //!
 //! ## What a viewer may not learn

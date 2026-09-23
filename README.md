@@ -15,24 +15,29 @@ A modern MUSH server in Rust — the TinyMUX/TinyMUSH/RhostMUSH tradition, rebui
   sheets who act only through a validated tool allowlist and roll real dice.
 - **No softcode** — the classic command surface (`@dig`, `@desc`, `look`, `say`, `pose`,
   channels, `@mail`) is native Rust; user scripting is sandboxed [Rhai](https://rhai.rs).
-- **Ruleset modules** — two full game systems on one plugin API: Classic World of Darkness
-  20th Anniversary (oWoD20 — the Storyteller System, Vampire/Mage/Werewolf templates) and
-  **Shadowrun 5th Edition** (SR5 — the d6 hit pool, Limits, Edge, priority chargen), proving
-  the API scales across very different dice engines; TacSim (btmux-style) seams reserved
-  and CI-tested from day one. Config selects which **one** ruleset loads. Built-ins: comsys,
-  @mail, weather, jobs.
+- **TacSim** — one game, set in 2350, with pilot character sheets, a playable tank
+  simulator, human and AI teams, and cockpit views shared by SSH and the web client.
+  The platform supplies reusable systems; the `tacsim` crate composes the game.
+  Built-ins include channels, mail, weather, jobs, and building tools.
 - **Redis 8 persistence** — RedisJSON object documents with write-through per-command
-  transactions; RediSearch indexes power `@find`/`@search`; crash recovery is just a restart.
+  transactions and durable action journals, with recovery before serving players.
 
 ## Status
 
-Pre-alpha; scaffold + design phase. See [docs/PLAN.md](docs/PLAN.md) for the master plan and
-milestones, and [docs/design/](docs/design/) for subsystem design docs.
+Pre-alpha with a playable combat simulator. Two pilots can select teams, board,
+start their tanks, drive, detect, lock and fire, settle the match, and play again;
+a solo pilot can play against the AI fill when configured. The in-process and
+split gateway story tests exercise this loop.
+
+Start with [the combat design](docs/design/16-combat-arena.md), its
+[implementation record](docs/design/16b-combat-implementation-plan.md), and the
+[current backlog](docs/design/16c-simulator-backlog.md). [The original master
+plan](docs/PLAN.md) is historical.
 
 ## Development
 
-Requirements: Rust (stable), Node 20+ (web client), and Redis 8+ for integration tests and
-runtime from M2 on. Production target is Ubuntu LTS with Redis 8 local (AOF `everysec`
+Requirements: the Rust version pinned in `rust-toolchain.toml`, Node 22 (web client),
+and Redis 8+ for persistent runtime and live-backend integration tests. Production target is Ubuntu LTS with Redis 8 local (AOF `everysec`
 minimum; `always` for zero-loss) — see [docs/ops.md](docs/ops.md) for backups, restore,
 migrations, and shutdown/crash semantics.
 
@@ -47,25 +52,28 @@ Getting a dev Redis, in order of preference:
   `ssh -N -L 6379:127.0.0.1:6379 you@your-vps`.
 
 ```bash
-cargo test --workspace
+cargo test --workspace --exclude mush-bot
 ```
 
-Everything runs against the in-memory store by default; the Redis-backed integration tests
+Run `cargo test -p mush-bot` separately: its JSON feature set must not unify into
+the engine tests. Everything runs against the in-memory store by default; the Redis-backed integration tests
 (store behavior suite, boot round trip, the kill-9 durability test) run only when `REDIS_URL`
-is set, and skip with a note otherwise:
+is set, and skip with a note otherwise. The store behavior suite is also ignored
+by default: run `cargo test -p mush-store --test redis_suite -- --ignored` explicitly
+against that disposable store.
 
 ```bash
-REDIS_URL=redis://127.0.0.1:6379 cargo test --workspace          # bash
+REDIS_URL=redis://127.0.0.1:6379 cargo test --workspace --exclude mush-bot          # bash
 ```
 
 ```powershell
-$env:REDIS_URL = "redis://127.0.0.1:6379"; cargo test --workspace  # PowerShell
+$env:REDIS_URL = "redis://127.0.0.1:6379"; cargo test --workspace --exclude mush-bot  # PowerShell
 ```
 
 Point `REDIS_URL` at a **disposable** instance: the gated tests wipe their key namespaces
 (they use logical dbs 1–15 plus the default db).
 
-The web SPA builds with `npm install && npm run build` in `web/` (vitest: `npm test`).
+The web SPA builds with `npm ci && npm run build` in `web/` (vitest: `npm test`).
 Debug server builds serve `web/dist` straight from disk (rebuild the SPA, refresh the
 browser — no cargo rebuild); **release builds embed it into the binary and fail to compile
 until the SPA has been built**, so a shipped `mushd` can never silently 404 its own client.
@@ -89,7 +97,7 @@ compared through the game interface.
 Copy [mushd.toml.example](mushd.toml.example) to `mushd.toml`, adjust, and run `mushd`
 (`mushd --repl` gives an offline in-memory REPL). In-game `help` is two-layered: per-command
 usage comes from the command table, and prose topics (getting started, building, locks,
-channels, mail, jobs, admin, scripting, weather, worldgen, wod, shadowrun, chargen, rules-of-conduct) are markdown files
+channels, mail, jobs, admin, scripting, weather, worldgen, simulator, chargen, rules-of-conduct) are markdown files
 loaded at boot from `[server].help_dir` (default `./docs/help` — edit or add `*.md` files there and
 restart to change them; `help <topic>` serves them, with exact command names taking
 precedence).
@@ -106,42 +114,14 @@ HALTED on repeated overrun — `help scripting`), and staff drive **zone weather
 `@weather` family over `OUTDOORS`/`SHELTERED` rooms (`help weather`). See
 [docs/ops.md](docs/ops.md) for the operator view of all three.
 
-**Rulesets** are selected in `[rulesets].enabled` (default `["wod"]`). A server runs **one**
-ruleset — `wod` *or* `shadowrun` — since both register the same core surface (`+roll`/`+sheet`/
-`+chargen`); enabling two is a clear boot error (per-character cross-system dispatch is a future
-concern). The **oWoD20** ruleset
-brings the Storyteller System to the game: point-buy character generation (`+chargen` →
-staff approval job), the classic dotted sheet (`+sheet`, staff `@sheet/set`), the d10 dice
-pool (`+roll strength+brawl vs 6`, with `/spec` `/wp` `/priv` `/nowound` and inline `vs`/`ext`/
-`job`/`contested`), the Bruised→Incapacitated health track with wound penalties (`+harm`/
-`+heal`/`+health`), and XP spends applied atomically on approval (`+xp/spend`). Character
-sheets are stored as object attributes, so they persist and reload with the world — no
-separate save path. In-game: `help wod`.
+The game is composed by `mush_server::boot::game_modules`. `[tacsim].enabled` controls the
+TacSim layer; there is no ruleset selector. Pilot sheets use `+chargen`, `+stat`
+and `+sheet`, with staff approval through the `pilot-chargen` queue. See
+[character generation](docs/help/chargen.md) and [the simulator guide](docs/help/simulator.md).
+The shipped instance template enables TacSim and seeds the simulator through
+versioned content packs. A first-boot pack failure stops startup with its cause.
 
-It ships seven **templates** — Mortal plus the **Vampire** (V20), **Mage** (M20), **Werewolf**
-(W20), and **Changeling** (C20) splats, and the two mortal-plus templates **Ghoul** (a mortal
-bound to a vampire) and **Kinfolk** (a Garou's mortal kin). Every template is always
-selectable (there is no per-splat allow-list): a player picks one during chargen with
-`+chargen/template`, and each character is exactly one template whose sheet carries only that
-splat's sections and per-template schema (a vampire's Disciplines / Blood Pool, a mage's
-Spheres / Arete, a Garou's Rage / Gnosis / Gifts, a changeling's Arts / Realms / Glamour).
-Splat commands (`+disc`/`+blood`, `+cast`/`+sphere`, `+shift`/`+rage`, `+cantrip`/`+glamour`,
-…) are always registered but self-gate on the actor's template and refuse everyone else; a
-Ghoul shares the vampire `+disc`/`+blood` surface and a Kinfolk the werewolf `+gnosis`/`+gift`.
-
-The **Shadowrun 5th Edition** ruleset (`enabled = ["shadowrun"]`, M10b) is the second system on
-the same `mush-ruleset` + `mush-dice` plugin API — the deliberate proof it scales past oWoD's
-d10 Storyteller pool. Its dice are a **d6 hit pool** (each 5/6 is a hit; more than half 1s
-**glitch**, zero hits then is a **critical glitch**) with SR5's two signatures: a **Limit** caps
-counted hits, and **Edge** can push past it (add Edge dice, waive the Limit, Rule of Six). A
-runner has a flat sheet (eight attributes + Edge/Essence/Magic/Resonance, active-skill /
-skill-group / knowledge maps, two Condition Monitors), built with the classic **priority**
-chargen (`+chargen/priority`, A–E across Metatype/Attributes/Magic/Skills/Resources → a
-`shadowrun-chargen` approval job). Play is `+roll agility+pistols` (auto Limit + wound modifier,
-`/edge` to push), `+damage`/`+heal`/`+condition` (Stun→Physical overflow), `+cast`/`+thread`
-(spells/complex forms — sheet-tracked, pool-rolled, with **Drain**/**Fading**), `+init`, and
-**Karma** advancement (`+karma/spend` → approval). The sheet is the same schema-generic object
-attribute, so it renders on the web Sheet panel with **no** web change. In-game: `help shadowrun`.
+For deployment, reset and first-staff bootstrap, use [the deployment guide](deploy/README.md).
 
 **LLM worldbuilding** (M7) is configured in `[llm]` and is **off by default**
 (`enabled = false`) — a keyless clone boots and `@gen` just answers "LLM features are
@@ -166,9 +146,7 @@ any prompt text; `help llm`). See [docs/ops.md](docs/ops.md) for the full operat
 
 **LLM NPC agents** (M8) turn a first-class `ObjKind::Npc` into an LLM-driven character. Staff
 `@agent/create <name>` one, `@agent/set <npc>/persona=…` (plus goals, knowledge, tier,
-fallback lines), and `@agent/sheet <npc>=<template>` gives it a real WoD sheet so it can roll
-its own dice (`wod_roll` — the engine rolls on the shared seeded RNG, so an NPC can never fake
-a result). When a **connected** player shares its room and speaks, the agent takes a turn off
+fallback lines). NPC actions use the game's registered abilities and sheet grounding. When a **connected** player shares its room and speaks, the agent takes a turn off
 the world loop (rapid chatter coalesced, one call in flight, tier cooldowns) and acts through a
 small **typed action allowlist** — say / pose / move / look / remember / use_ability /
 do_nothing. That allowlist, re-validated in the world task, is the security boundary, *not* the
@@ -179,17 +157,11 @@ line. Tiers route to cheap models by default (`npc_dialogue_{major,minor,extra}`
 `npc_summarize` in `[llm.routes]`); reserve `anthropic/claude-opus-5` for a promoted hero NPC.
 In-game reference: `help npc`.
 
-**Onboarding** (M9) wires new-player creation through to approved play. Chargen has a guided
-terminal **wizard** (`+chargen/wizard`) layered over the classic `+chargen`/`+stat` commands —
-same sheet, same point budget, step-by-step with a live budget and `~q` to save-and-resume
-(`help chargen`). An optional gate, `[onboarding].chargen_required` (**off by default**, so a
-fresh character plays immediately as before), holds a not-yet-approved character to a small
-command set (chargen / look / say / help; channel speech and movement are gated), places it in a
-`start_room_unapproved` chargen area, and drops it into the wizard on connect over **both** SSH
-and the web client. Submitting files a `wod-chargen` approval job; when a storyteller
-`+job/approve`s it the gate lifts and the
-character is moved to the live `start_room` with full access. See `[onboarding]` in
-[mushd.toml.example](mushd.toml.example).
+**Onboarding** can require approved pilot chargen before play. With
+`[onboarding].chargen_required` enabled, a new character starts in the configured
+chargen room with a restricted command set. `+chargen/submit` files a
+`pilot-chargen` approval job; approval moves the character to the live start room.
+See [chargen](docs/help/chargen.md) and `[onboarding]` in the example config.
 
 **Observability** (M9). `GET /healthz` returns a small liveness JSON (`ok`, `uptime_s`,
 `version`, `connections`, `loop_lag_ms`, `world_loop_unixtime`, `store_ok`) and `GET /metrics`

@@ -63,7 +63,7 @@ pub struct SheetDoc {
     /// The schema version `data` conforms to.
     pub schema_version: u32,
     /// The sheet data (a JSON object keyed by field id), validated against
-    /// the [`SheetSchema`](crate::schema::SheetSchema) on write.
+    /// the [`SheetSchema`] on write.
     pub data: serde_json::Value,
     /// Chargen approval state.
     pub approved: ApprovalState,

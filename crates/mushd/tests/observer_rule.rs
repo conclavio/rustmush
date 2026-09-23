@@ -45,6 +45,8 @@
 
 mod support;
 
+use support::wait_until;
+
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -84,9 +86,6 @@ const COMMIT_PENDING: &str = "please retry in a moment";
 const CONTROL_UNKNOWN: &str = "control state unknown";
 /// How many times a line is re-sent on a transient before the test gives up.
 const RETRY_BUDGET: usize = 40;
-/// How many times a poll waits for the physics: 120 × 250 ms is half a minute,
-/// which is four times what the two tanks need to close 70 cells.
-const DRIVE_BUDGET: usize = 120;
 
 /// The two pilots and the bystander, created before the world task spawns so
 /// their ids are stable.
@@ -164,7 +163,54 @@ fn tacsim_config(designate: bool) -> tacsim::TacsimConfig {
     cfg.match_.startup_ms = 300;
     cfg.match_.board_timeout_ms = 120_000;
     cfg.sensors.designate_on_detection = designate;
+    cfg.packs = observer_packs(OBSERVER_CLASSIFY_MS);
     cfg
+}
+
+/// Keep the provisional phase long enough for its SSH/web assertions. This is
+/// an explicitly authored test sensor and unit, selected only by the two tests
+/// that inspect the transition; shipped definitions remain unchanged.
+const OBSERVER_CLASSIFY_MS: u32 = 15_000;
+
+fn observer_packs(classify_after_ms: u32) -> Vec<tacsim::config::PackSource> {
+    use tacsim::definitions::content;
+
+    fn signed(mut document: Value, name: &str) -> tacsim::config::PackSource {
+        document["manifest"]["digest"] = Value::String("0".repeat(64));
+        let text = serde_json::to_string(&document).expect("test pack JSON");
+        let digest = mush_content::parse_pack(&text)
+            .expect("test pack shape")
+            .computed_digest()
+            .expect("test pack digest")
+            .to_hex();
+        document["manifest"]["digest"] = Value::String(digest);
+        tacsim::config::PackSource {
+            name: name.to_owned(),
+            bytes: serde_json::to_string(&document).expect("signed test pack JSON"),
+        }
+    }
+
+    let mut sensor: Value = serde_json::from_str(content::VISUAL_MK1_JSON).unwrap();
+    sensor["manifest"]["id"] = Value::String("tacsim.pack.observer_slow".to_owned());
+    let mut entry = sensor["entries"]
+        .as_object_mut()
+        .unwrap()
+        .remove("tacsim.sensor.visual_mk1")
+        .unwrap();
+    entry["def"]["classify_after_ms"] = Value::from(classify_after_ms);
+    entry["def"]["note"] = Value::String("Test-controlled provisional-contact window.".to_owned());
+    sensor["entries"]["tacsim.sensor.observer_slow"] = entry;
+
+    let unit_source = content::LINE_TANK_JSON
+        .replace("tacsim.pack.line_tank", "tacsim.pack.observer_tank")
+        .replace("tacsim.unit.line_tank", "tacsim.unit.observer_tank")
+        .replace("tacsim.pack.visual_mk1", "tacsim.pack.observer_slow")
+        .replace("tacsim.sensor.visual_mk1", "tacsim.sensor.observer_slow");
+    let unit: Value = serde_json::from_str(&unit_source).unwrap();
+    let mut sources = content::fielded_sources();
+    sources.push(signed(sensor, "observer_slow.json"));
+    sources.push(signed(unit, "observer_tank.json"));
+    sources
 }
 
 /// The production module list, in production order, with the starter area on.
@@ -176,7 +222,7 @@ fn module_list(
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
-    mods.extend(modules::ruleset_modules(onboarding, &Default::default()));
+    mods.extend(modules::sheet_modules(onboarding, &Default::default()));
     mods.push(modules::tacsim_module(tacsim_config(designate)));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
@@ -744,8 +790,16 @@ async fn close_the_gap(god: &mut Term, red: u32, blue: u32, domain: u64) {
 
 /// Claim, start, walk and board: the state the match runs from.
 async fn take_off(ada: &mut Term, bo: &mut Term) {
+    take_off_with_sensor(ada, bo, false).await;
+}
+
+async fn take_off_with_sensor(ada: &mut Term, bo: &mut Term, controlled_delay: bool) {
     say(ada, "SIM TEAM red", "takes red slot 1").await;
     say(bo, "SIM TEAM blue", "takes blue slot 1").await;
+    if controlled_delay {
+        say(ada, "SIM UNIT observer_tank", "will field observer_tank").await;
+        say(bo, "SIM UNIT observer_tank", "will field observer_tank").await;
+    }
     say(ada, "SIM START", "is boarding").await;
     say(ada, "red", "Red Room").await;
     say(bo, "blue", "Blue Room").await;
@@ -757,26 +811,24 @@ async fn take_off(ada: &mut Term, bo: &mut Term) {
 /// Bring a tank's power up and point it at the other one.
 async fn drive(term: &mut Term, heading: u32) {
     say(term, "STARTUP", "Startup sequence").await;
-    for _ in 0..RETRY_BUDGET {
+    wait_until(STEP_TIMEOUT, "the tank to accept its heading", async || {
         let mark = term.mark();
         term.send_line(&format!("HEADING {heading}")).await;
-        if term
-            .expect_one_of_after(
-                mark,
-                &[
-                    &format!("Steering to {heading}"),
-                    "Power not online",
-                    // 16b cut F.1: the same refusal while the startup is running.
-                    "Power is still coming up",
-                ],
-            )
-            .await
+        term.expect_one_of_after(
+            mark,
+            &[
+                &format!("Steering to {heading}"),
+                "Power not online",
+                // 16b cut F.1: the same refusal while the startup is running.
+                "Power is still coming up",
+                COMMIT_PENDING,
+                CONTROL_UNKNOWN,
+            ],
+        )
+        .await
             == 0
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    })
+    .await;
     say(term, "SPEED 54", "Making 54 kph").await;
 }
 
@@ -838,7 +890,7 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // The match. Two tanks, seventy cells apart, under custody.
     // -----------------------------------------------------------------
     close_the_gap(&mut god, red, blue, domain).await;
-    take_off(&mut ada, &mut bo).await;
+    take_off_with_sensor(&mut ada, &mut bo, true).await;
 
     // The placement took, which is what makes "before detection" true.
     let seen = ask(&mut ada, "STATUS", "m east").await;
@@ -889,14 +941,14 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // The first connection, fenced by a parser refusal of its own: a room the
     // attach had sent it would be queued before that `Huh?`. The refusal is a
     // command's answer and so reaches both connections; the room did not.
-    for _ in 0..RETRY_BUDGET {
+    // The fence must land (a deadline, not a budget that can run out quietly):
+    // without its `Huh?` the absence check below would prove nothing.
+    wait_until(STEP_TIMEOUT, "the first connection's fence", async || {
         let mark = cy.mark();
         cy.send_line(SENTINEL).await;
-        if cy.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+        cy.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0
+    })
+    .await;
     let first = strip_ansi(&cy.seen[first_mark..]);
     assert!(
         !first.contains(MUSTER),
@@ -1039,7 +1091,7 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // while she is driving and without her asking — so there is no round trip
     // between the detection and this read, and the name in it is the name the
     // return was given when it was found. A `CONTACTS` poll would be a race
-    // against `classify_after_ms`, three seconds, and losing it would silently
+    // against `classify_after_ms`, explicitly sized by this fixture, and losing it would
     // move this window past the rename: the provisional phase would go unproved
     // rather than fail.
     ada.expect_after(detect_mark, "New contact ").await;
@@ -1224,7 +1276,7 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
 
     // **16b cut Q.1: the rename, and what survives it.**
     //
-    // Three seconds of holding the return is enough to tell it apart. The row
+    // The test-configured observation window tells the return apart. The row
     // then reads the target's public callsign, the rename is one line quoting
     // what the pilot has been calling it, the new spelling is accepted
     // case-folded, and the **provisional number the lock was taken under still
@@ -1233,18 +1285,15 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // `identified` notice arrives on its own and a window that merely contains
     // the word `blue` may still carry the `X<n>` row printed before it.
     let mut classified = String::new();
-    for _ in 0..RETRY_BUDGET {
-        let seen = ask(&mut ada, "CONTACTS", "(rel ").await;
-        if seen.contains("blue") {
-            classified = seen;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    assert!(
-        !classified.is_empty(),
-        "the return was never told apart in {RETRY_BUDGET} polls"
-    );
+    wait_until(
+        STEP_TIMEOUT,
+        "the controlled sensor to classify its contact",
+        async || {
+            classified = ask(&mut ada, "CONTACTS", "(rel ").await;
+            classified.contains("blue")
+        },
+    )
+    .await;
     let renamed = designator_of(&classified)
         .unwrap_or_else(|| panic!("a contact designator in:\n{classified}"));
     assert_ne!(
@@ -1309,22 +1358,28 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // said exactly when the one held contact is NOT drawn. The whole answer is
     // read (`ask_whole`), so the absence check below runs on all of it.
     let mut window = String::new();
-    for _ in 0..DRIVE_BUDGET {
-        let seen = ask_whole(&mut ada, "VIEW").await;
-        let drawn = seen
-            .lines()
-            .filter(|line| line.contains("legend:"))
-            .any(|line| {
-                ["x hostile", "? contact", "+ friendly"]
-                    .iter()
-                    .any(|entry| line.contains(entry))
-            });
-        if drawn && !seen.contains("beyond this window") {
-            window = seen;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    wait_until(
+        STEP_TIMEOUT,
+        "the window to draw a marker for the contact it holds",
+        async || {
+            let seen = ask_whole(&mut ada, "VIEW").await;
+            let drawn = seen
+                .lines()
+                .filter(|line| line.contains("legend:"))
+                .any(|line| {
+                    ["x hostile", "? contact", "+ friendly"]
+                        .iter()
+                        .any(|entry| line.contains(entry))
+                });
+            if drawn && !seen.contains("beyond this window") {
+                window = seen;
+                true
+            } else {
+                false
+            }
+        },
+    )
+    .await;
     assert!(
         !window.is_empty(),
         "the window never drew a marker for the contact it holds"
@@ -1344,7 +1399,7 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
 /// `[tacsim.sensors].designate_on_detection`).
 ///
 /// The key is shipped as `false` into the rendered instance template and into
-/// `deploy/dev2`, so an operator can turn it on with a server-child restart and no
+/// the instance template, so an operator can turn it on with a server-child restart and no
 /// build — and what it turns on is a *relaxation of the observer rule on four
 /// player-facing surfaces at once*. `tacsim/tests/perception.rs` proves what the
 /// arena does with it; this is the composition a pilot would actually be sitting
@@ -1367,7 +1422,7 @@ async fn the_switch_names_a_contact_at_the_first_pass_over_the_real_composition(
 
     let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
     close_the_gap(&mut god, red, blue, domain).await;
-    take_off(&mut ada, &mut bo).await;
+    take_off_with_sensor(&mut ada, &mut bo, true).await;
 
     // Before anything is held, the refusal is what it always was: the switch
     // relaxes what a *held* contact is called and nothing else.
@@ -1383,19 +1438,31 @@ async fn the_switch_names_a_contact_at_the_first_pass_over_the_real_composition(
     drive(&mut bo, 270).await;
     let mut held = String::new();
     let mut first_end = detect_mark;
-    for _ in 0..DRIVE_BUDGET {
-        let mark = ada.mark();
-        ada.send_line("CONTACTS").await;
-        if ada.expect_one_of_after(mark, &["(rel ", NO_CONTACTS]).await == 0 {
-            held = strip_ansi(&ada.seen[mark..]);
-            first_end = ada.seen.len();
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    wait_until(
+        STEP_TIMEOUT,
+        "the designated contact to arrive",
+        async || {
+            let mark = ada.mark();
+            ada.send_line("CONTACTS").await;
+            if ada
+                .expect_one_of_after(
+                    mark,
+                    &["(rel ", NO_CONTACTS, COMMIT_PENDING, CONTROL_UNKNOWN],
+                )
+                .await
+                == 0
+            {
+                held = strip_ansi(&ada.seen[mark..]);
+                first_end = ada.seen.len();
+                return true;
+            }
+            false
+        },
+    )
+    .await;
     assert!(
         !held.is_empty(),
-        "the two tanks never detected each other in {DRIVE_BUDGET} polls"
+        "the two tanks never detected each other within the observation deadline"
     );
 
     // **The first row already carries the slot designator.** The blue tank is in
@@ -1437,15 +1504,16 @@ async fn the_switch_names_a_contact_at_the_first_pass_over_the_real_composition(
     // off the **next** frame, so a bare `RANGE` sent in the same breath as the
     // `LOCK` is honestly answered `No lock…`: a wait, not a failure (16b cut K.2's
     // mirror).
-    for _ in 0..DRIVE_BUDGET {
-        if ask_whole(&mut ada, "WEAPONSTATUS")
-            .await
-            .contains("Locked on")
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    wait_until(
+        STEP_TIMEOUT,
+        "the cockpit to publish the lock",
+        async || {
+            ask_whole(&mut ada, "WEAPONSTATUS")
+                .await
+                .contains("Locked on")
+        },
+    )
+    .await;
     let ranged = ask(&mut ada, "RANGE", "Range to").await;
     assert!(
         ranged.contains(&format!("Range to {named}: ")),
@@ -1461,18 +1529,15 @@ async fn the_switch_names_a_contact_at_the_first_pass_over_the_real_composition(
     // the row's class word turns into the side — but the pilot is told nothing
     // about it, because the name it has been calling the contact does not change.
     let mut classified = String::new();
-    for _ in 0..RETRY_BUDGET {
-        let seen = ask(&mut ada, "CONTACTS", "(rel ").await;
-        if seen.contains("blue") {
-            classified = seen;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    assert!(
-        !classified.is_empty(),
-        "the return was never told apart in {RETRY_BUDGET} polls"
-    );
+    wait_until(
+        STEP_TIMEOUT,
+        "the controlled sensor to classify its contact",
+        async || {
+            classified = ask(&mut ada, "CONTACTS", "(rel ").await;
+            classified.contains("blue")
+        },
+    )
+    .await;
     assert_eq!(
         designator_of(&classified).as_deref(),
         Some("BA"),
@@ -1861,40 +1926,39 @@ async fn close_to_muzzle_range(god: &mut Term, red: u32, blue: u32, domain: u64)
 /// Bring one tank's power up without moving it.
 async fn power_up(term: &mut Term) {
     say(term, "STARTUP", "Startup sequence").await;
-    for _ in 0..RETRY_BUDGET {
-        let seen = ask(term, "STATUS", "power").await;
-        if seen.contains("power online") {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("the tank never came online");
+    wait_until(STEP_TIMEOUT, "the tank to come online", async || {
+        ask(term, "STATUS", "power").await.contains("power online")
+    })
+    .await;
 }
-
 /// Wait until `CONTACTS` holds something, and answer the row's short designator
 /// (16b cut Q.1).
 async fn first_contact(term: &mut Term) -> String {
-    for _ in 0..DRIVE_BUDGET {
-        let mark = term.mark();
-        term.send_line("CONTACTS").await;
-        if term
-            .expect_one_of_after(
-                mark,
-                // 16b cut Q.1: the relative bearing, which only a row carries —
-                // the acquisition notice quotes an absolute bearing of its own.
-                &["(rel ", NO_CONTACTS, COMMIT_PENDING, CONTROL_UNKNOWN],
-            )
-            .await
-            == 0
-        {
-            let seen = strip_ansi(&term.seen[mark..]);
-            if let Some(named) = designator_of(&seen) {
-                return named;
+    let mut contact = None;
+    wait_until(
+        STEP_TIMEOUT,
+        "the sensor to publish a contact",
+        async || {
+            let mark = term.mark();
+            term.send_line("CONTACTS").await;
+            if term
+                .expect_one_of_after(
+                    mark,
+                    // 16b cut Q.1: the relative bearing, which only a row carries —
+                    // the acquisition notice quotes an absolute bearing of its own.
+                    &["(rel ", NO_CONTACTS, COMMIT_PENDING, CONTROL_UNKNOWN],
+                )
+                .await
+                == 0
+            {
+                let seen = strip_ansi(&term.seen[mark..]);
+                contact = designator_of(&seen);
             }
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    panic!("nothing was ever detected")
+            contact.is_some()
+        },
+    )
+    .await;
+    contact.expect("waited for a contact")
 }
 
 /// **The short designator in a `CONTACTS` listing** (16b cut Q.1): the first word
@@ -2020,16 +2084,16 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
     // The arena records the lock in its own phase 4 and the cockpit reads it back
     // off the **next** frame, so `FIRE` before that is refused for the lock — a
     // wait, not a failure (16b cut K.2's mirror).
-    for _ in 0..DRIVE_BUDGET {
-        if ask_whole(&mut ada, "WEAPONSTATUS")
-            .await
-            .contains("Locked on")
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    // One round at a time, paced by the cockpit's own count: `FIRE` pre-checks
+    wait_until(
+        STEP_TIMEOUT,
+        "the cockpit to publish the lock",
+        async || {
+            ask_whole(&mut ada, "WEAPONSTATUS")
+                .await
+                .contains("Locked on")
+        },
+    )
+    .await; // One round at a time, paced by the cockpit's own count: `FIRE` pre-checks
     // against the **last frame**, so a second one sent before the frame carrying
     // the first shot's cycle arrives is accepted here and dropped by the arena.
     // Waiting for the round to disappear from the table is what makes each pass of
@@ -2059,14 +2123,15 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
         }
         let want = format!("{} of 40 round(s)", 40 - round);
         spent = String::new();
-        for _ in 0..DRIVE_BUDGET {
-            let seen = ask_whole(&mut ada, "WEAPONSTATUS").await;
-            if seen.contains(&want) {
-                spent = seen;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
+        wait_until(
+            STEP_TIMEOUT,
+            "the fired round to leave the magazine",
+            async || {
+                spent = ask_whole(&mut ada, "WEAPONSTATUS").await;
+                spent.contains(&want)
+            },
+        )
+        .await;
         assert!(
             !spent.is_empty(),
             "round {round} never left the barrel:
@@ -2288,14 +2353,15 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
     // fixture the test does not control. Every claim below is therefore
     // unconditional.
     let mut scanned = String::new();
-    for _ in 0..DRIVE_BUDGET {
-        let said = ask(&mut ada, "SCAN", &shot_at).await;
-        if said.contains("turret") {
-            scanned = said;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    wait_until(
+        STEP_TIMEOUT,
+        "the scan's complete condition bands",
+        async || {
+            scanned = ask(&mut ada, "SCAN", &shot_at).await;
+            scanned.contains("turret")
+        },
+    )
+    .await;
     assert!(
         scanned.contains("Scan of "),
         "SCAN of the lock never read the target: {scanned}"
@@ -2369,14 +2435,15 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
     say(&mut ada, "SIM ABORT", "aborts match").await;
     ada.expect("Its units are checked in.").await;
     let mut marked = String::new();
-    for _ in 0..DRIVE_BUDGET {
-        let seen = ask_whole(&mut god, &format!("@unit/show #{blue}")).await;
-        if damaged_facet(&seen) {
-            marked = seen;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    wait_until(
+        STEP_TIMEOUT,
+        "the checked-in tank's damage to persist",
+        async || {
+            marked = ask_whole(&mut god, &format!("@unit/show #{blue}")).await;
+            damaged_facet(&marked)
+        },
+    )
+    .await;
     assert!(
         !marked.is_empty(),
         "the checked-in tank carries no mark of the two rounds that hit it:\n{}",

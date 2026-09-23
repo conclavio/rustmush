@@ -22,8 +22,8 @@
 //! `Selection` and `Boarding` are slots: cut K fills them with `SIM TEAM`, `SIM
 //! START` and `BOARD`. What this cut builds is the machine itself and the one
 //! transition that has to be right before any of that exists — **`Boarding →
-//! Running`, the check-out**, as a function ([`start`]) cut K calls — and the
-//! three ends, [`finish`], which is check-in.
+//! Running`, the check-out**, as a function ([`crate::match_::start`]) cut K calls — and the
+//! three ends, [`crate::match_::finish`], which is check-in.
 //!
 //! Staff drive both ends today through `@arena/start` and `@arena/abort`, so the
 //! custody transition is exercised, reviewed and tested without waiting for the
@@ -155,7 +155,7 @@ impl MatchBook {
     /// **Owe the centre its pod sweep, at the first tick of this boot** (16b cut
     /// F.1).
     ///
-    /// The work is [`cockpit::eject_all`], and it starts from the centre's eight
+    /// The work is `cockpit::eject_all`, and it starts from the centre's eight
     /// **pods** — which are resolved through the **content latch**
     /// (`mush_atlas::travel::latched_object`). The latch is the content module's
     /// own state, and the content module is composed *after* this one, so at
@@ -1151,7 +1151,7 @@ fn same_pose(
 
 /// Release the cockpit seats of a unit the boot pass restored (16b T5).
 ///
-/// The same seam [`release_seat`] uses; a separate name because the boot caller
+/// The same seam `release_seat` uses; a separate name because the boot caller
 /// is a different story and deserves to read as one.
 pub fn release_seats_after_restart(ctx: &mut Ctx<'_>, unit: ObjId) {
     release_seat(ctx, unit);

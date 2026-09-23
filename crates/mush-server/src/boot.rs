@@ -261,15 +261,13 @@ pub async fn stop_ledger_archive(job: Option<JoinHandle<()>>) {
 /// 1. the built-ins ([`modules::server_modules_with`]) first, with org before
 ///    economy and sim before economy — see that function;
 /// 2. the M7 worldgen module after the built-ins;
-/// 3. the M8 NPC agent module, grounded by the enabled ruleset's sheet through
-///    the generic grounding adapter (dialogue-only when no ruleset is enabled);
-/// 4. the config-selected [`modules::ruleset_modules`] next, so their approval
+/// 3. the NPC agent module, grounded by the pilot sheet through the generic
+///    grounding adapter;
+/// 4. the unconditional [`modules::sheet_modules`] next, so their approval
 ///    payload handlers see a loaded jobs module;
-/// 5. the TacSim layer **last** (doc 10 §20, 10b §3.1). It is not a
-///    `[rulesets]` id — `[tacsim].enabled` switches it, independently of which
-///    single character ruleset is loaded — and it composes last so its boot can
-///    read that ruleset's facts while the ruleset reads TacSim's environmental
-///    facts through the generic seam.
+/// 5. the TacSim layer, switched by `[tacsim].enabled`, after the sheet so its
+///    boot can read the pilot facts through the generic seam;
+/// 6. the content module last, so its first-boot packs see every applier.
 ///
 /// `[tacsim]` is read FIRST, before the list is built, for two reasons. E7 cut 1:
 /// an unreadable, oversized or digest-mismatched pack must fail the boot naming
@@ -283,9 +281,8 @@ pub async fn stop_ledger_archive(job: Option<JoinHandle<()>>) {
 ///
 /// # Errors
 ///
-/// A rejected `[tacsim]`, `[economy]` or ruleset-economy stanza, an unknown or
-/// duplicated `[rulesets].enabled` id, or a TacSim pack file that will not
-/// verify — each naming what it refused.
+/// A rejected `[tacsim]`, `[economy]` or `[atlas]` stanza, or a pack file that
+/// will not verify — each naming what it refused.
 pub fn game_modules(
     config: &Config,
     llm: &Arc<LlmService>,
@@ -297,7 +294,7 @@ pub fn game_modules(
     // fails the boot naming the file, and the typed config reaches the atlas inside
     // the built-ins.
     let atlas = config_ext::atlas_config(&config.atlas, &config.worldgen)?;
-    let onboarding = config_ext::onboarding_ruleset(&config.onboarding);
+    let onboarding = config_ext::onboarding_config(&config.onboarding);
     // 16b cut R-b: `[tacsim.economy]`, validated here (a bad instrument id is a hard
     // boot error). It decides the housing and market title issuers.
     let game = config_ext::tacsim_economy_config(&config.tacsim)?;
@@ -324,16 +321,12 @@ pub fn game_modules(
         &config.npc,
     ));
     // 16b cut R-b: the one game's character sheet and its rules interface.
-    mods.extend(modules::ruleset_modules(&onboarding, &game));
-    // E7 cut 1: the TacSim layer, **after** the character ruleset. Its config was
+    mods.extend(modules::sheet_modules(&onboarding, &game));
+    // The TacSim layer, after the pilot sheet. Its config was
     // read above, before the module list, for `[tacsim.recovery]`'s sake.
     let tacsim_enabled = tacsim.enabled;
-    // **16b cut F.4**: say it either way, and say what it means for the
-    // simulator. `[tacsim]` is `deny_unknown_fields`, but the section HEADER is
-    // not a key: `Config` ignores an unknown section, so `[tac_sim]` parses
-    // clean, boots the layer off and used to say nothing at all — and the first
-    // symptom was `SIM START` refusing hours later. The negative line is the
-    // one an operator greps for.
+    // Say which way the layer went. Config::load catches near-miss headers;
+    // a missing or deliberately disabled block still needs an operator warning.
     if tacsim_enabled {
         tracing::info!(
             packs = tacsim.packs.len(),
@@ -341,7 +334,7 @@ pub fn game_modules(
             "tacsim enabled: the simulator's arena and its stock tanks apply at boot"
         );
     } else {
-        tracing::info!(
+        tracing::warn!(
             "tacsim disabled ([tacsim].enabled is false or the section is missing): no arena and \
              no stock tanks are applied, so the simulator centre cannot start a match"
         );
@@ -555,6 +548,15 @@ pub async fn build_engine(
                 roster_tanks = tanks,
                 "simulator centre ready: the arena is applied and its tanks are standing"
             );
+            let configured = config.tacsim.match_.max_slots_per_side;
+            let available = u32::from(tacsim::match_::PODS_PER_SIDE);
+            if configured > available {
+                tracing::warn!(
+                    configured_slots_per_side = configured,
+                    available_pods_per_side = available,
+                    "simulator slots clamped to the centre's available pods"
+                );
+            }
         } else if rooms {
             tracing::warn!(
                 "simulator centre NOT ready: its rooms and pods are here but the arena's roster \

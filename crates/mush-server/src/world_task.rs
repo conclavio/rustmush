@@ -3,7 +3,7 @@
 //!
 //! One tokio task owns the [`Engine`] (and therefore the `World`) outright —
 //! zero locks on game state. Everything else sends [`WorldMsg`] over an mpsc
-//! and receives output through the [`SessionManager`].
+//! and receives output through the `mush_session::SessionManager`.
 //!
 //! Each loop iteration:
 //!
@@ -71,7 +71,7 @@
 //! connections, so a wrong `unreachable!` here costs the game rather than the
 //! turn. Every such site is therefore converted to the posture the rest of the
 //! file already takes for an integrity breach: log at `error!`, then either
-//! [`apply_integrity_freeze`] (loud, non-auto-lifting, staff-visible) or the
+//! `apply_integrity_freeze` (loud, non-auto-lifting, staff-visible) or the
 //! local fail-closed answer (refuse the message, refuse the flush, suppress
 //! the effect). `#![deny(clippy::unreachable)]` below keeps it that way for
 //! this module; it cannot be a crate-level deny while `lib.rs`, `persist.rs`
@@ -103,7 +103,7 @@
 //! Three mechanisms hold the line, and none of them is a code review:
 //!
 //! 1. **Posture.** An integrity breach is logged at `error!` and answered with
-//!    [`apply_integrity_freeze`] or the local fail-closed refusal — never with
+//!    `apply_integrity_freeze` or the local fail-closed refusal — never with
 //!    a macro that ends the process. `#![deny(clippy::unreachable)]` below
 //!    keeps the strongest of those macros out of this module by compilation.
 //! 2. **A boundary** (WS01-S4). The task runs inside a catch, so a panic that
@@ -1129,6 +1129,7 @@ fn classify_staff_op(kind: &StaffOpKind) -> IngressClass {
         StaffOpKind::Shutdown => IngressClass::Shutdown,
         StaffOpKind::SetBan { .. }
         | StaffOpKind::ClearBan { .. }
+        | StaffOpKind::LiftTempban { .. }
         | StaffOpKind::Dump
         | StaffOpKind::Boot { .. }
         | StaffOpKind::NewPassword { .. }
@@ -1798,12 +1799,12 @@ pub struct ServerDeps {
     /// The queue `register_server_commands` handlers push into.
     pub staff: Arc<StaffQueue>,
     /// The M7 LLM service handle. Present in the real server (built from
-    /// `[llm]` config); [`spawn_effects`] uses it to run a module's deferred
+    /// `[llm]` config); `EffectDispatcher` uses it to run a module's deferred
     /// [`Effect::ModuleAsync`] (worldgen `@gen`) off the world loop and
     /// re-enter as [`WorldCommand::ModuleAsyncDone`]. `None` for the compat
-    /// [`spawn`] and lightweight tests that boot no LLM-driven module — such
+    /// [`ServerDeps::in_memory`] and lightweight tests that boot no LLM-driven module — such
     /// an effect is then logged and dropped, never a panic. The M8 NPC module
-    /// shares this same handle (its off-loop turn is driven from [`spawn_effects`]);
+    /// shares this same handle (its off-loop turn is driven from `EffectDispatcher`);
     /// its on-loop ability execution goes through the module's grounding adapter,
     /// not this struct.
     pub llm: Option<Arc<LlmService>>,
@@ -1825,7 +1826,7 @@ pub struct ServerDeps {
 }
 
 impl ServerDeps {
-    /// Throwaway deps for tests and the compat [`spawn`]: fresh in-memory
+    /// Throwaway deps for tests and the compat [`ServerDeps::in_memory`]: fresh in-memory
     /// store, fresh guard, fresh (never-populated) staff queue, no LLM, a
     /// throwaway metrics registry, and an explicit in-memory quarantine spool.
     #[must_use]
@@ -1904,7 +1905,7 @@ fn guard<T>(site: &'static str, call: impl FnOnce() -> T) -> Result<T, WorldFaul
     })
 }
 
-/// Handles from [`spawn_persist`]: the sender everything talks through and
+/// Handles from [`spawn_persist_with_gateway`]: the sender everything talks through and
 /// the join handles the shutdown sequence awaits **in order** (world first,
 /// then the writer — dropping the world task's job sender is what lets the
 /// writer drain and exit).
@@ -3174,7 +3175,7 @@ fn command_offer_submission(
 /// H2a (D-H-6): turn one queued decision capture into the owner's
 /// capture-action submission. The kernel builds the complete plan (offers,
 /// witnesses, signed prompt, admission, deadline); the plan is armed in the
-/// owner's registered sink; a synthesized [`AuthoritativeSubmit`] for the
+/// owner's registered sink; a synthesized [`mush_core::AuthoritativeSubmit`] for the
 /// owner's capture action is queued in the same one-per-backend slot every
 /// command submit uses, and `CommandSubmitDriver::drive_one` carries it
 /// through `resolve_and_stage_offer` on this same iteration. Every refusal
@@ -8016,13 +8017,13 @@ async fn run_staff_ops(
                     send_sys(gateway, actor, "@siteban failed: staff executor gone.");
                 }
             }
-            StaffOpKind::ClearBan { ref ip } => {
-                tracing::info!(%actor, %ip, "@siteban/clear requested");
+            StaffOpKind::ClearBan { ref ip } | StaffOpKind::LiftTempban { ref ip, .. } => {
+                tracing::info!(%actor, %ip, operation = ?op.kind, "@siteban pardon requested");
                 if staff_ops.send(op).await.is_err() {
                     send_sys(
                         gateway,
                         actor,
-                        "@siteban/clear failed: staff executor gone.",
+                        "@siteban pardon failed: staff executor gone.",
                     );
                 }
             }
@@ -8633,6 +8634,24 @@ async fn staff_ops_loop(
                 by,
                 password,
             } => run_newpassword(&*store, &gateway, &world, target, &name, &by, &password.0).await,
+            StaffOpKind::LiftTempban { ip, issued_unix_ms } => {
+                let lift = mush_store::TempbanLift::new(ip, issued_unix_ms);
+                match store.put_tempban_lift(lift.clone()).await {
+                    Ok(()) => {
+                        guard.apply_tempban_lift(
+                            ip,
+                            &lift.id,
+                            lift.issued_unix_ms,
+                            lift.expires_unix,
+                        );
+                        format!(
+                            "@siteban/lift: password-tempban pardon published for {ip}'s network. Sitebans remain in force. {}",
+                            siteban_latency_note()
+                        )
+                    }
+                    Err(e) => format!("@siteban/lift failed: {e}"),
+                }
+            }
             StaffOpKind::ListBans => match store.get_bans().await {
                 Ok(bans) if bans.is_empty() => "No active sitebans.".to_string(),
                 Ok(mut bans) => {
@@ -14749,6 +14768,13 @@ mod tests {
                 IngressClass::StaffMutation,
             ),
             (StaffOpKind::ClearBan { ip }, IngressClass::StaffMutation),
+            (
+                StaffOpKind::LiftTempban {
+                    ip,
+                    issued_unix_ms: 1_000,
+                },
+                IngressClass::StaffMutation,
+            ),
             (StaffOpKind::ListBans, IngressClass::StaffStatus),
             (StaffOpKind::Dump, IngressClass::StaffMutation),
             (StaffOpKind::Shutdown, IngressClass::Shutdown),

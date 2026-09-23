@@ -131,7 +131,7 @@ pub enum WorldCommand {
     /// [`AsyncCompletion`](crate::module::AsyncCompletion) handler. `payload`
     /// is module-owned JSON, carried as a `String` so the enum stays `Eq`.
     ModuleAsyncDone {
-        /// The owning module (its [`GameModule::name`](crate::GameModule::name)).
+        /// The owning module (its [`GameModule::name`]).
         module: SmolStr,
         /// The triggering actor (the handler runs with this as `ctx.actor`).
         actor: ObjId,
@@ -186,7 +186,7 @@ pub enum Effect {
     /// `payload`; it is module-owned JSON carried as a `String` so the enum
     /// stays `Eq`.
     ModuleAsync {
-        /// The owning module (its [`GameModule::name`](crate::GameModule::name)).
+        /// The owning module (its [`GameModule::name`]).
         module: SmolStr,
         /// The triggering actor, echoed into the completion.
         actor: ObjId,
@@ -285,7 +285,7 @@ pub enum Deferred {
     /// five steps the `WorldMsg::AuthoritativeAction` arm takes. A handler can
     /// therefore neither construct an opaque `ActionOfferId` nor bypass
     /// projection, and **a second submission in one command is a refusal**
-    /// ([`Engine::drain_deferred`] stages nothing at all in that case — and,
+    /// (`Engine::drain_deferred` stages nothing at all in that case — and,
     /// since E7c2 fold C4, voids nothing of any *other* actor's, and nothing
     /// that actor queued in an earlier step).
     AuthoritativeSubmit(Box<AuthoritativeSubmit>),
@@ -499,7 +499,7 @@ pub enum Inbound {
         active: bool,
     },
     /// A client's answer to a server-initiated
-    /// [`OutputEvent::Request`](mush_proto::OutputEvent::Request) (interface
+    /// [`OutputEvent::Request`] (interface
     /// plan I10, D-I-21), correlated by `id`. The engine looks up the pending
     /// request, verifies the responder is its subject, cancels the deadline,
     /// and routes the choice to the opening module's
@@ -3263,7 +3263,7 @@ impl Engine {
         self.conn_up_inner(conn, actor, caps_structured, from_linkdead, true, out);
     }
 
-    /// The shared body of [`conn_up`](Self::conn_up) and
+    /// The shared body of `conn_up` and
     /// [`reattach`](Self::reattach): rebuild ALL per-connection bookkeeping —
     /// the `conns` map, the live-connection count, `connected`/`session_start`,
     /// and the input-context prompt re-sync. When `announce` is set (the normal
@@ -3379,7 +3379,7 @@ impl Engine {
     /// Silent re-attach of a held connection after a server restart (M16c).
     ///
     /// Rebuilds the connection's world-side bookkeeping EXACTLY like
-    /// [`conn_up`](Self::conn_up) — the `conns` map, the live-connection count,
+    /// `conn_up` — the `conns` map, the live-connection count,
     /// `connected`/`session_start`, the input-context prompt re-sync — but
     /// WITHOUT the room "has connected/reconnected" announce, the connect hook,
     /// or the [`WorldEvent::Connected`]: a mass re-attach of every held session
@@ -4129,7 +4129,7 @@ impl Engine {
     }
 }
 
-/// Queue an unattributed narrative line "<Name><suffix>" to the actor's
+/// Queue an unattributed narrative line `"<Name><suffix>"` to the actor's
 /// room, excluding the actor (connect/disconnect/linkdead announcements).
 ///
 /// The line reveals `actor`, so it carries them as the M11 perception subject

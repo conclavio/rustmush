@@ -9,7 +9,7 @@
 //!   the gateway process does — so it never polices and the session-walk /
 //!   count methods are empty.
 //! - the in-process sink (in `mushd`, the all-in-one): routes each pair onto the
-//!   shared [`SessionManager`](mush_session::SessionManager) with `Arc` fan-out
+//!   shared `mush_session::SessionManager` with `Arc` fan-out
 //!   (zero-copy), self-polices slow clients back into the world loop, and
 //!   answers the session walks / counts against the real manager.
 //!
@@ -62,7 +62,7 @@ pub trait GatewaySink: Send + Sync {
     fn discord_control(&self, _char: u64, _op: DiscordControlOp) {}
 
     /// Whether this sink writes to the boundary socket (forked server) rather
-    /// than a local [`SessionManager`](mush_session::SessionManager). The world
+    /// than a local `mush_session::SessionManager`. The world
     /// loop's session-control paths branch on this.
     fn is_socket(&self) -> bool;
 
@@ -107,9 +107,9 @@ pub trait GatewaySink: Send + Sync {
 /// there is NEVER a per-message drop: on a `Full` channel the whole boundary is
 /// torn down instead (the M16c supervisor re-attach re-renders every session,
 /// healing the loss). The world loop is the producer and must never `.await`
-/// the boundary (D4), so [`send`](SocketSink::send) uses `try_send` and the
+/// the boundary (D4), so `send` uses `try_send` and the
 /// teardown decision + the socket drop live entirely in the writer task, which
-/// waits on [`teardown`](SocketSink::teardown).
+/// waits on `teardown`.
 ///
 /// [`Config::ipc_to_gw_cap`]: mush_config::config::Config::ipc_to_gw_cap
 #[derive(Clone)]

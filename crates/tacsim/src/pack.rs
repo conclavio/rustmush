@@ -915,7 +915,7 @@ pub struct RulesPackWire {
     pub manifest: PackManifestWire,
     /// The entries, keyed by their pack-local id.
     ///
-    /// Decoded through [`deserialize_unique_entries`], so a **repeated** id is an
+    /// Decoded through `deserialize_unique_entries`, so a **repeated** id is an
     /// error rather than last-write-wins (independent verify P6).
     #[serde(
         deserialize_with = "deserialize_unique_entries",
@@ -1030,7 +1030,7 @@ impl RulesPack {
     /// [`PackError::WrongKindEntry`] for **a location or a route in a rules pack, and
     /// a commodity or recipe in a seed pack**, [`PackError::UnknownRouteEndpoint`] for
     /// a route naming a place the pack does not declare, and whatever
-    /// [`PackEntry::check`] refuses.
+    /// `PackEntry::check` refuses.
     ///
     /// The rule reads that way round because a route's endpoints must be places its
     /// **own** pack declares (deviation (d)) and a rules pack may declare no place: a

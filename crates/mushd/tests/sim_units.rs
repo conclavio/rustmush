@@ -45,6 +45,8 @@
 
 mod support;
 
+use support::{STEP_TIMEOUT, wait_until};
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -152,7 +154,7 @@ fn module_list(
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
-    mods.extend(modules::ruleset_modules(onboarding, &Default::default()));
+    mods.extend(modules::sheet_modules(onboarding, &Default::default()));
     mods.push(modules::tacsim_module(tacsim_config()));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
@@ -334,16 +336,18 @@ async fn ask_whole(term: &mut Term, line: &str) -> String {
 
 /// A read repeated until its answer carries `needle`.
 async fn poll_whole(term: &mut Term, line: &str, needle: &str) -> String {
-    for _ in 0..RETRY_BUDGET {
-        let seen = ask_whole(term, line).await;
-        if seen.contains(needle) {
-            return seen;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    panic!("`{line}` never said `{needle}`")
+    let mut seen = String::new();
+    wait_until(
+        STEP_TIMEOUT,
+        &format!("`{line}` to say `{needle}`"),
+        async || {
+            seen = ask_whole(term, line).await;
+            seen.contains(needle)
+        },
+    )
+    .await;
+    seen
 }
-
 /// One object's dbref, out of an `@find` listing.
 fn dbref_of(listing: &str, name: &str) -> u32 {
     listing
@@ -423,27 +427,41 @@ async fn open_the_centre(god: &mut Term) {
 /// Bring power up, waiting for the arena to say it is online.
 async fn power_up(term: &mut Term) {
     say(term, "STARTUP", "Startup sequence").await;
-    poll_whole(term, "STATUS", "power online").await;
+    wait_until(STEP_TIMEOUT, "the tank to come online", async || {
+        ask(term, "STATUS", "power").await.contains("power online")
+    })
+    .await;
 }
-
 /// Wait until `CONTACTS` has something in it, and answer its designator.
 async fn wait_for_contact(term: &mut Term) -> String {
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line("CONTACTS").await;
-        if term
-            .expect_one_of_after(mark, &["bearing", "No contacts."])
-            .await
-            == 0
-            && let Some(id) = designator_of(&strip_ansi(&term.seen[mark..]))
-        {
-            return id;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    panic!("nothing was ever detected");
+    let mut contact = None;
+    wait_until(
+        STEP_TIMEOUT,
+        "the sensor to acquire a contact",
+        async || {
+            let mark = term.mark();
+            term.send_line("CONTACTS").await;
+            if term
+                .expect_one_of_after(
+                    mark,
+                    &["(rel ", "No contacts.", COMMIT_PENDING, CONTROL_UNKNOWN],
+                )
+                .await
+                == 0
+            {
+                let seen = strip_ansi(&term.seen[mark..]);
+                // Keep the classified callsign: a provisional X-number may be
+                // renamed during subsequent status/weapon assertions.
+                if seen.contains("blue") || seen.contains("red") {
+                    contact = designator_of(&seen).filter(|id| !id.starts_with('X'));
+                }
+            }
+            contact.is_some()
+        },
+    )
+    .await;
+    contact.expect("waited for a contact")
 }
-
 /// Every ledger line one match wrote, parsed.
 async fn ledger_events(store: &Arc<dyn ObjectStore>, match_id: u64) -> Vec<Value> {
     let log = format!("match.{match_id}");
@@ -770,13 +788,15 @@ async fn two_pilots_field_two_different_machines_and_the_pods_are_pods_again() {
 
     // ---- the ledger, and the observer rule over every byte -------------------
     let mut events = Vec::new();
-    for _ in 0..10 {
-        events = ledger_events(&server.store, 1).await;
-        if count(&events, "hit") > 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+    wait_until(
+        STEP_TIMEOUT,
+        "the unit match's hit to persist",
+        async || {
+            events = ledger_events(&server.store, 1).await;
+            count(&events, "hit") > 0
+        },
+    )
+    .await;
     assert!(
         count(&events, "hit") > 0,
         "the match ledger recorded no hit: {:?}",

@@ -263,6 +263,14 @@ redis_gated!(next_id_persistence, store, {
 redis_gated!(account_reserve_race, store, {
     suite::account_reserve_race(&store).await;
 });
+
+redis_gated!(first_account_reserve_race, store, {
+    suite::first_account_reserve_race(&store).await;
+});
+
+redis_gated!(ordinary_account_blocks_bootstrap, store, {
+    suite::ordinary_account_blocks_bootstrap(&store).await;
+});
 redis_gated!(account_lifecycle, store, {
     suite::account_lifecycle(&store).await;
 });
@@ -283,6 +291,9 @@ redis_gated!(account_id_backfill_is_idempotent, store, {
 });
 redis_gated!(ban_expiry, store, {
     suite::ban_expiry(&store).await;
+});
+redis_gated!(tempban_lifts, store, {
+    suite::tempban_lifts(&store).await;
 });
 redis_gated!(token_lifecycle, store, {
     suite::token_lifecycle(&store).await;

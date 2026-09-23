@@ -3,17 +3,9 @@
 # This is the whole surface, not the interesting half. Every section the server
 # reads is written here with a real value, because a section left out is not
 # "unset": it is silently the compiled-in default, and an operator who never saw
-# the key cannot know which default they are running. The one box that still
-# predates this template (deploy/dev2) omits TEN sections —
-# [log], [store.archive], [offers], [resolution], [discord], [economy],
-# [weather], [worldgen], [onboarding], [npc] —
-# and so quietly runs: no log files, no ledger archive tier, key directories
-# nobody provisioned, and characters starting in Limbo. New instances do not
-# inherit that. They render this. ([wod] and [shadowrun] were on that list until
-# 16b cut R deleted both rulesets; [tacsim] until 16b cut F.4 wrote it on both
-# dev boxes, which is what turns their simulator on. deploy/dev1 was the other
-# box on that list until 16b cut F.5 deleted its hand-written config and gave it
-# a deploy/dev1/instance.env instead.)
+# the key cannot know which default they are running. Every instance renders
+# this template from its own instance.env; a second test instance uses the same
+# deployment lane with separate ports, data directories and service names.
 #
 # RENDERING. The template is parameterised by an `instance.env` file of plain
 # `KEY=value` lines; rendering substitutes every `__KEY__` token with that key's
@@ -198,6 +190,9 @@ seed_paths = []
 corridor = ""
 active_domain_limit = 8
 ground_pulse_ms = 2000
+# Ground-driver cell size in centimetres, read at boot. Must be one of the
+# atlas's registered sizes: 100, 200, 500 or 1000. Match the authored ground.
+ground_cell_cm = 1000
 space_pulse_ms = 6000
 
 # Campaign rate/catch-up POLICY. Parsed and inert until later E7 cuts, and it
@@ -208,6 +203,12 @@ catch_up_journeys = ""
 catch_up_production = ""
 catch_up_fronts = ""
 catch_up_domains = ""
+
+# Body phases are authored at this campaign epoch (IC Unix seconds). A rate of
+# zero freezes the sky; nonzero rates are permille of real motion per IC second.
+[tacsim.time.ephemeris]
+epoch = 0
+rate = 0
 
 # The recovery provider (a player who has lost everything getting a hull back).
 # Off on a fresh instance: it grants against a FUNDED pool account that does not
@@ -292,6 +293,8 @@ hunt_after_ms = 90000
 startup_ms = 10000
 board_timeout_ms = 120000
 max_duration_ms = 3600000
+# Configured ceiling (1..12); the current centre has four pods per side and
+# clamps this to four. Boot logs the clamp beside simulator-centre readiness.
 max_slots_per_side = 12
 # 16b cut N.1, sized by Q.7: ON here, because one player alone on a dev box has
 # nobody to fight. Each side fields the larger side's claimed slots (never fewer
@@ -365,6 +368,9 @@ tile_max_cells = 65536
 nearest_room_cells = 8
 window_margin_m = 10
 window_max_cells = 65536
+# World-side path-search expansion budget. Arena AI has its own raised budget
+# in [tacsim.arena.reflex].path_max_cells above.
+path_max_cells = 4096
 pack_paths = []
 # S2: travel on the world clock -- the per-checkpoint dwell floor and the per-mode
 # real cap, both in REAL seconds.

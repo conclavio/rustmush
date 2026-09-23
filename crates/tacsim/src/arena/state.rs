@@ -727,7 +727,7 @@ pub const DEFAULT_SENSOR_HEIGHT_CM: u32 = 150;
 /// **The rounds one weapon's own `ammo` cell carries** (16b cut F.1), or `None`
 /// when the unit declares no such cell.
 ///
-/// The mirror of [`crate::arena::damage::Arena::returned_units`]'s fold: that
+/// The mirror of [`crate::arena::Arena::returned_units`]'s fold: that
 /// writes the arena's live count back into `component/<weapon>/ammo` at check-in,
 /// and this reads it at check-out, so a match opens on the magazine the last one
 /// left. Negative values cannot occur (a cell is bounded) and are floored at zero
@@ -1221,7 +1221,7 @@ pub struct UnitState {
     pub eccm: Option<Eccm>,
     /// **What this platform's last sensor pass ran under** (16b cut D.4, `B-22`;
     /// 16c §5 Q17), or `None` for a receiver that is clean — or off. See
-    /// [`Receiver`] for the three `None`s and the two declared limits.
+    /// [`crate::arena::perception::Receiver`] for the three `None`s and the two declared limits.
     ///
     /// Written by [`Arena::sensor_pass`] alone, at the pass's own arena
     /// timestamp, from the fold `Arena::detections` already made. It is read by
@@ -1260,12 +1260,12 @@ pub struct UnitState {
     /// **16b cut Q.2 made "exactly one thing" true of the assignment too.** There
     /// were two production writers — the impact in `crate::arena::damage` and the
     /// heat plan in `crate::arena::heat` — and a cache beside a field with two
-    /// writers is a cache that rots. [`Arena::set_unit`] is the only assignment of
+    /// writers is a cache that rots. `Arena::set_unit` is the only assignment of
     /// this field in non-test code, and it is what keeps
     /// [`UnitState::condition`] true of it.
     pub unit: TacticalUnit,
     /// **What a gunner would read off this tank**, cached (16b cut Q.2; doc 16
-    /// §3.6), recomputed by [`Arena::set_unit`] on every write of
+    /// §3.6), recomputed by `Arena::set_unit` on every write of
     /// [`UnitState::unit`] and by [`Arena::new`] at check-out.
     ///
     /// A cache and not authoritative state: it is a pure function of `unit` and of
@@ -1564,7 +1564,7 @@ pub struct SeenPose {
     pub heading_mdeg: u32,
     /// How fast it was making along that heading, centimetres a second, negative
     /// in reverse — the input to the advertised error cone's crossing term
-    /// (`crate::arena::resolution::Arena::resolve_seen`).
+    /// (`crate::arena::Arena::resolve_seen`).
     pub speed_cms: i32,
 }
 
@@ -1702,7 +1702,7 @@ pub struct ShadowContact {
     /// **A share never carries it.** [`Arena::share_pass`] builds a mesh copy
     /// from [`ShadowContact::own_seen`], and a kill this platform watched is not
     /// a *sighting*: it is one fact a gunner read through his own sight, exactly
-    /// as the destroyed band [`Arena::observe_section_lost`] writes is. A mesh
+    /// as the destroyed band `Arena::observe_section_lost` writes is. A mesh
     /// arrival therefore opens `false` and a teammate keeps its track until the
     /// track expires, which is doc 16 §1's observer rule applied to the
     /// machines.
@@ -2398,7 +2398,7 @@ pub enum EndReason {
     /// for an abort; a ledger-full timeout journals none) and no `void` event,
     /// while the result says void.
     Void,
-    /// The bounded egress backed up past twice `ledger.max_unflushed_chunks`.
+    /// The bounded egress backed up past `ledger.max_unflushed_chunks`.
     LedgerOverflow,
 }
 
@@ -2554,7 +2554,7 @@ pub struct Arena {
     /// **The shots of this substep that found a section already destroyed** (16b
     /// cut D.2, `B-15`), by shot sequence.
     ///
-    /// Filled by [`crate::arena::damage::Arena::apply_hit`] at the one branch
+    /// Filled by `Arena::apply_hit` at the one branch
     /// where the plan has no ops — a round that arrived on a section already at
     /// zero armour and zero internals — and drained by the `hit` arm of the
     /// staging scan in the **same substep**, which is what tells the three
@@ -2645,7 +2645,7 @@ pub struct Arena {
     /// and never restarts.
     pub next_shot_seq: u64,
     /// **The hash pulse phase 4's events are recorded against** (16b cut W.1), set
-    /// by [`crate::arena::step::Arena::step`] for the length of the phase and `None`
+    /// by [`crate::arena::Arena::step`] for the length of the phase and `None`
     /// everywhere else.
     ///
     /// Doc 16 §4 asks every ledger line to carry the substep state hash, and
@@ -2682,7 +2682,7 @@ pub struct Arena {
     ///
     /// Staged as the pass journals its `detected`, `classified` and `lost` events —
     /// so a pilot's lines and the black box can never say different things — and
-    /// cleared wholesale by [`crate::arena::step::Arena::frames`] at the end of the
+    /// cleared wholesale by `Arena::frames` at the end of the
     /// pulse, which bounds it at one pulse's transitions.
     pub pending_notices: BTreeMap<ObjId, Vec<FrameNotice>>,
     /// **Losses whose notice is being held** (16b cut S.2), `(platform, contact)`
@@ -2739,7 +2739,7 @@ pub struct Arena {
     /// X.4; doc 16 §9 item 4) — and **zero for every match in which nothing carries
     /// a pod**, which is every match the game ships.
     ///
-    /// It is the one radius [`crate::arena::perception::Arena::jamming_at`] queries
+    /// It is the one radius [`crate::arena::Arena::jamming_at`] queries
     /// the spatial index at, and the zero is what lets that function return before
     /// touching the index at all: the ECM term costs a stock match one integer
     /// comparison per sensor pass and nothing else.
@@ -2772,7 +2772,7 @@ pub struct Arena {
     pub squad_watch: crate::arena::command::SquadWatchTable,
     /// Squads whose standing order ran out since the last signal was taken (16b
     /// cut N.2) — the `order_expired` trigger, drained by
-    /// [`Arena::take_deliberation_signals`]. A view, for the same reason.
+    /// `Arena::take_deliberation_signals`. A view, for the same reason.
     pub squads_expired: crate::arena::command::ExpiredSquads,
 }
 
@@ -3232,7 +3232,7 @@ impl Arena {
 
     /// **Take one pilot off the frame roster** (16b cut F.1; doc 16 §3.6).
     ///
-    /// The roster is what [`Arena::frames`] walks, so a pilot dropped from it is
+    /// The roster is what `Arena::frames` walks, so a pilot dropped from it is
     /// built no further frame and told no further notice. Keyed on the **pair**:
     /// a pilot who left `unit` is not a co-pilot still sitting in it, and a tank
     /// with two seats loses only the seat that went.

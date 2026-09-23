@@ -48,7 +48,7 @@ pub fn worldgen_config(cfg: &WorldgenCfg) -> mush_worldgen::WorldgenConfig {
 /// values mirror the crate's, so a server with no economy configuration gets exactly
 /// the crate defaults.
 ///
-/// `[economy.cadences]` is validated here on `[rulesets].enabled`'s rule — a
+/// `[economy.cadences]` is validated here because a
 /// silently-ignored typo is worse than not starting: every `clock` word must be one
 /// the economy can declare, every `catch_up` must be in the economy's band, and the
 /// whole list must pass [`mush_economy::EconomyConfig::check_declared_cadences`]
@@ -63,13 +63,10 @@ pub fn economy_config(cfg: &EconomyCfg) -> Result<mush_economy::EconomyConfig, S
     economy_config_with(cfg, &[])
 }
 
-/// [`economy_config`] with the **host-contributed** declared cadences a selected
-/// ruleset needs (SP1, D-LBK-7; the E6a addendum).
+/// [`economy_config`] with host-contributed declared cadences.
 ///
-/// A ruleset's campaign clock is not the operator's to remember: when
-/// `[rulesets].enabled` names `shadowrun`, `sr.month` must exist as a declared
-/// cadence or no lifestyle obligation can be created at all. So the host contributes
-/// the stanza — **unless the operator declared one of that name themselves**, in
+/// A campaign clock required by game policy is not the operator's to remember.
+/// The host contributes the stanza unless the operator declared that name, in
 /// which case theirs stands untouched, exactly as `declared::adopt` leaves a live
 /// clock alone. Nothing here rewrites a running clock; it only ensures the
 /// declaration exists so the economy registers a provider for it at composition and
@@ -159,7 +156,7 @@ pub fn economy_config_with(
 /// The ruleset-facing onboarding config: resolve the room ids and fold the
 /// `start_room_unapproved` sentinel back to `start_room`.
 #[must_use]
-pub fn onboarding_ruleset(cfg: &OnboardingCfg) -> mush_core::OnboardingConfig {
+pub fn onboarding_config(cfg: &OnboardingCfg) -> mush_core::OnboardingConfig {
     mush_core::OnboardingConfig {
         chargen_required: cfg.chargen_required,
         start_room: cfg.start_room_id(),
@@ -168,7 +165,7 @@ pub fn onboarding_ruleset(cfg: &OnboardingCfg) -> mush_core::OnboardingConfig {
 }
 
 /// `[tacsim.economy]` → the one game's economy wiring (16b cut R-b). The instrument
-/// id is validated here, on `[rulesets].enabled`'s old rule: a silently-ignored typo
+/// id is validated here: a silently-ignored typo
 /// is worse than not starting.
 ///
 /// # Errors
@@ -1402,11 +1399,7 @@ mod tests {
             .and_then(std::path::Path::parent)
             .map(std::path::Path::to_path_buf)
             .expect("the repository root");
-        for relative in [
-            "mushd.toml.example",
-            "deploy/instance/mushd.toml.tmpl",
-            "deploy/dev2/mushd.toml",
-        ] {
+        for relative in ["mushd.toml.example", "deploy/instance/mushd.toml.tmpl"] {
             let path = root.join(relative);
             let text =
                 std::fs::read_to_string(&path).unwrap_or_else(|why| panic!("{relative}: {why}"));

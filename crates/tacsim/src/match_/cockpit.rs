@@ -35,7 +35,7 @@
 //!
 //! Doc 16 §3.3 says *stations are on the tank*, and §3.7 says the pod *is where
 //! the body sits*. Those two sentences are the whole design, and they fix the
-//! order [`board`] does its work in:
+//! order [`crate::match_::cockpit::board`] does its work in:
 //!
 //! 1. **the station** — one `cockpit` billet on the **tank**, carrying `helm`,
 //!    `sensors` and `fire`, whose console `space` is the **pod**. So the grants
@@ -50,13 +50,16 @@
 //!    satisfy it.
 //! 3. **the seat** — `mush_sim::request_seat_activation(Activate)`, which is the
 //!    one path in the tree that writes a billet, narrows its channel set, claims
-//!    the account's single foreground focus and asks K6 for the control lease. The
-//!    cockpit opens no second path and mints no grant of its own.
+//!    the account's single foreground focus. K6 currently leases only single-channel
+//!    stations: this three-channel cockpit has no control lease. Focus, billet
+//!    grants and arena epochs enforce its current single-station control. A lease
+//!    per channel is deferred to the multi-station cut (16c T-54).
+//!    The cockpit opens no second path and mints no grant of its own.
 //! 4. **the centre** — [`crate::match_::slot_seated`], cut K.1's trigger input.
 //!    When this seat was the last one the match was waiting for, the check-out
 //!    fires inside this same command.
 //!
-//! [`exit`] undoes 3, 2 and (during `Boarding`) 4, in that order, and sends
+//! [`crate::match_::cockpit::exit`] undoes 3, 2 and (during `Boarding`) 4, in that order, and sends
 //! `Control { Released }` **first** — before the seat itself is released — so
 //! that a pilot who types `FIRE` and `EXIT` in one burst has the epoch raised
 //! under the queued shot and the arena purges it (doc 16 §3.1).
@@ -84,8 +87,8 @@
 //!
 //! ## One frame, two shapes
 //!
-//! [`status_frame`] is what a pulse sends: the numbers, the contacts (16b cut S.2),
-//! the notices it owes and the weapons table. [`view_frame`] is that same frame
+//! [`crate::match_::cockpit::status_frame`] is what a pulse sends: the numbers, the contacts (16b cut S.2),
+//! the notices it owes and the weapons table. [`crate::match_::cockpit::view_frame`] is that same frame
 //! **plus** the
 //! arena window in the grid shape `mush_ansi::panel` already renders, which is
 //! what makes `VIEW` a text map on a line client and a map panel on the web with
@@ -95,11 +98,11 @@
 //!
 //! ## And a third, which is not a cockpit frame at all
 //!
-//! **16b cut Q.3** added [`map_frame`]: the whole arena's terrain on its own feed
+//! **16b cut Q.3** added [`crate::match_::cockpit::map_frame`]: the whole arena's terrain on its own feed
 //! ([`crate::arena_bridge::MAP_FEED`]), carrying no unit of any kind. It is only
 //! ever the answer to a **query**, never pushed, so a line client is never sent
 //! it and a panel client asks for it once per match. A panel client that holds a
-//! map and a cockpit frame composes them itself; [`view_window`] is the same
+//! map and a cockpit frame composes them itself; [`crate::match_::cockpit::view_window`] is the same
 //! composition done server-side for `VIEW`, and the fixtures under
 //! `web/src/lib/fixtures/cockpit/` are the one set all three renderers are held
 //! to (doc 16 §5).
@@ -308,7 +311,7 @@ pub const DESTROYED: &str = "Your tank is destroyed and takes no orders. EXIT le
 /// **The line `HEADING` and `SPEED` refuse with once motion is gone** (16b cut
 /// D.2, `B-03`).
 ///
-/// Byte for byte the sentence [`refusal_line`] says for
+/// Byte for byte the sentence `refusal_line` says for
 /// [`crate::arena::intents::Refusal::MotionDisabled`], and the pin test below
 /// holds the two together, for the reason [`POWER_NOT_ONLINE`] is pinned to the
 /// arena's word.
@@ -447,7 +450,7 @@ pub enum CockpitError {
     /// half answered: the cockpit's pre-check against the last frame, or the
     /// arena's own a pulse later. Both compose it through [`order_refused`], so
     /// the early answer and the late one are one string — which is exactly the
-    /// contract cut F.2 wrote [`refusal_line`] for, read once more now that the
+    /// contract cut F.2 wrote `refusal_line` for, read once more now that the
     /// weapon is in the sentence.
     #[error("{0}")]
     Refused(String),
@@ -1474,7 +1477,7 @@ pub fn frame_lock(frame: &Frame) -> Option<ContactId> {
 /// lock, so the caller says nothing rather than saying there is nothing.
 ///
 /// The percentage is the row of **the weapon a bare `FIRE` would fire**
-/// ([`fired_by_default`]), rounded to whole per cent: it is the same number the
+/// (`fired_by_default`), rounded to whole per cent: it is the same number the
 /// draw will be compared against, resolved by the arena through doc 16 §3.5's five
 /// steps with the trace and the cover in it, and never a second estimate computed
 /// here.
@@ -1489,7 +1492,7 @@ pub fn frame_lock(frame: &Frame) -> Option<ContactId> {
 /// where the platform last saw the target, and how it was facing and moving then
 /// — through `crate::arena::resolution::Arena::lock_aim`, which resolves the
 /// range and the cover, and
-/// `crate::arena::resolution::Arena::resolve_seen`, which reads the face and the
+/// `crate::arena::Arena::resolve_seen`, which reads the face and the
 /// crossing speed off the same sighting. So this sentence, every `WEAPONSTATUS`
 /// row's percentage and the contact row's own band are three readings of one plot
 /// and cannot be three numbers. The shot itself is resolved against where the
@@ -1552,7 +1555,7 @@ fn fired_by_default(
 /// boarded and whose arena has not spoken yet.
 ///
 /// **An empty answer is an answer** (16b cut D.1): a frame that lists no weapon
-/// means the platform carries none, and [`carried`] does not go looking for an
+/// means the platform carries none, and `carried` does not go looking for an
 /// older one.
 #[must_use]
 pub fn frame_weapons(frame: &Frame) -> Vec<WeaponRow> {
@@ -2420,8 +2423,8 @@ const SCAN_INDENT: &str = "  ";
 ///   the price is.
 /// * **a reading** — the header with the **look's** own age, then one
 ///   `section band` pair per section, comma-separated and wrapped at
-///   [`DAMAGE_COLUMNS`].
-/// * **unheld** — never reaches this function: [`named_row`] answers the one
+///   `DAMAGE_COLUMNS`.
+/// * **unheld** — never reaches this function: `named_row` answers the one
 ///   byte-identical [`NO_SUCH_CONTACT`] first.
 ///
 /// **Never a number other than the age.** The bands are what a sight is worth
@@ -2806,7 +2809,7 @@ const DAMAGE_COLUMNS: usize = 76;
 /// internals per section as current over max*).
 ///
 /// Two lines per section — the section with its condition and its internals, then
-/// its facets' armour, wrapped at [`DAMAGE_COLUMNS`] — and one for a section that
+/// its facets' armour, wrapped at `DAMAGE_COLUMNS` — and one for a section that
 /// declares no facets. Empty for a platform the arena has told the world nothing
 /// about, so a fixture with no structure prints the two lines it always did.
 #[must_use]
@@ -2993,7 +2996,7 @@ pub const RETAIN_LATEST: &str = "latest";
 /// its own `p_permille` and `percent`.
 ///
 /// **16b cut F.3** added `range_m` to each contact: the coarse range
-/// [`CONTACTS`](contacts) prints, metres rounded to [`CONTACT_RANGE_STEP_M`]. It
+/// `CONTACTS` prints, metres rounded to [`CONTACT_RANGE_STEP_M`]. It
 /// also changed what every one of a contact's numbers is *of* — `bearing_deg`,
 /// `range_m`, `band` and `cell` are read off the **plot** the arena recorded at
 /// the sighting that last refreshed the contact, and `age_ms`/`age_s` are the age
@@ -4246,7 +4249,7 @@ fn cockpit_help(verb: &str) -> String {
 
 /// Register the cockpit on the **tacsim** module: fourteen verbs and one gate.
 ///
-/// The state the verbs read is [`ArenaRegistry`]'s and [`MatchBook`]'s, both
+/// The state the verbs read is [`ArenaRegistry`]'s and [`crate::match_::MatchBook`]'s, both
 /// registered by [`crate::arena_bridge::register`], so nothing here declares a
 /// slot.
 ///

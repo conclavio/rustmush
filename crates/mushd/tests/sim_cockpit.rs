@@ -29,6 +29,8 @@
 
 mod support;
 
+use support::{STEP_TIMEOUT, wait_until};
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -87,6 +89,7 @@ struct Server {
     addr: SocketAddr,
     dir: PathBuf,
     store: Arc<dyn ObjectStore>,
+    sessions: Arc<SessionManager>,
     _listener: SshListener,
     _handles: PersistHandles,
 }
@@ -121,7 +124,7 @@ fn module_list(
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
-    mods.extend(modules::ruleset_modules(onboarding, &Default::default()));
+    mods.extend(modules::sheet_modules(onboarding, &Default::default()));
     mods.push(modules::tacsim_module(tacsim_config()));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
@@ -238,6 +241,7 @@ async fn boot(tag: &str, grace: Duration) -> Server {
         addr,
         dir,
         store,
+        sessions,
         _listener: listener,
         _handles: handles,
     }
@@ -431,10 +435,22 @@ async fn a_pilot_who_types_fire_then_exit_in_one_burst_fires_nothing() {
     );
 
     // And the arena's own record says no shot was ever resolved.
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    // Let a pulse process the purged order before aborting, so an early abort
+    // cannot conceal a failure to revoke it.
+    support::wait_arena_seconds(&mut god, 1).await;
     say(&mut ada, "SIM ABORT", "aborts match").await;
-    tokio::time::sleep(Duration::from_millis(800)).await;
-    let ledger = ledger_text(&server.store, 1).await;
+    let mut ledger = String::new();
+    wait_until(
+        STEP_TIMEOUT,
+        "the purged shot's completed ledger",
+        async || {
+            ledger = ledger_text(&server.store, 1).await;
+            // SIM ABORT closes the journal with `aborted`, not `match_ended`.
+            ledger.contains("\"kind\":\"aborted\"")
+                || ledger.contains("\\\"kind\\\":\\\"aborted\\\"")
+        },
+    )
+    .await;
     assert!(
         !ledger.contains("\\\"fired\\\"") && !ledger.contains("\"fired\""),
         "the match ledger records no shot: {ledger}"
@@ -461,18 +477,27 @@ async fn a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reco
     take_off(&mut ada, &mut bo).await;
     say(&mut ada, "STARTUP", "Startup sequence").await;
     // Power comes online behind the startup; the orders are taken once it is.
-    for _ in 0..RETRY_BUDGET {
-        let mark = ada.mark();
-        ada.send_line("HEADING 90").await;
-        if ada
-            .expect_one_of_after(mark, &["Steering to 90", POWER_NOT_ONLINE, POWER_STARTING])
+    wait_until(
+        STEP_TIMEOUT,
+        "power to accept the heading order",
+        async || {
+            let mark = ada.mark();
+            ada.send_line("HEADING 90").await;
+            ada.expect_one_of_after(
+                mark,
+                &[
+                    "Steering to 90",
+                    POWER_NOT_ONLINE,
+                    POWER_STARTING,
+                    COMMIT_PENDING,
+                    CONTROL_UNKNOWN,
+                ],
+            )
             .await
-            == 0
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+                == 0
+        },
+    )
+    .await;
     say(&mut ada, "SPEED 20", "Making 20 kph").await;
     // The tank accelerates at a metre a second squared, so it takes a moment to
     // be **making way** rather than merely ordered to. The drop waits for that,
@@ -480,19 +505,27 @@ async fn a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reco
     // purges — doc 16 §3.8 keeps the orders a tank is *carrying out*, and that
     // is the claim under test.
     let mut rolling = 0;
-    for _ in 0..RETRY_BUDGET {
+    wait_until(STEP_TIMEOUT, "the tank to make way", async || {
         rolling = kph_of(&ask(&mut ada, "STATUS", "kph").await);
-        if rolling > 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+        rolling > 0
+    })
+    .await;
     assert!(rolling > 0, "the tank is making way before the line drops");
 
     // The line drops: no QUIT, just a socket that stops being there.
     drop(ada);
     drop(ada_handle);
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    wait_until(
+        STEP_TIMEOUT,
+        "Ada's session to become linkdead",
+        async || {
+            server
+                .sessions
+                .session_of_char(mush_session::CharKey(u64::from(ADA.0)))
+                .is_some_and(|session| server.sessions.is_linkdead(session))
+        },
+    )
+    .await;
 
     // Inside the grace, the seat is reclaimed — the arena says so — and the tank
     // is still rolling on the heading it was given.
@@ -516,15 +549,21 @@ async fn past_the_grace_the_seat_is_released_and_the_pilot_cannot_reclaim_it() {
     let server = boot("sim-cockpit-grace", Duration::from_secs(2)).await;
     let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     open_the_centre(&mut god, "Simulator Lobby").await;
+    let red = dbref_of(
+        &ask(&mut god, "@find Red Tank 1", "END OF LIST").await,
+        "Red Tank 1",
+    );
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
     let (ada_handle, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
     take_off(&mut ada, &mut bo).await;
 
+    wait_until(STEP_TIMEOUT, "the cockpit billet to persist", async || {
+        support::holds_a_cockpit(&server.store, red).await
+    })
+    .await;
     drop(ada);
     drop(ada_handle);
-    // The grace is two seconds and the reaper sleeps exactly that; four is the
-    // whole of the margin.
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    support::wait_arena_pilot_left(&mut god, "RA", "Ada").await;
 
     // The seat went with the session: the pilot comes back to a cockpit that is
     // not theirs any more — no reclaim line, and the verbs mean nothing — and

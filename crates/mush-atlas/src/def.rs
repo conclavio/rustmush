@@ -782,7 +782,7 @@ pub struct HeightfieldDef {
     /// only payload: base64 over `[cols u16][rows u16]` and then `[count
     /// u16][class u8]` per run, all little-endian, the southern row first.
     ///
-    /// Code `0` ([`TerrainClass::Void`](crate::terrain::TerrainClass::Void)) is
+    /// Code `0` ([`TerrainClass::Void`]) is
     /// the **not authored** cell: the region's background recipe keeps that one,
     /// so a field that paints a road over open ground is two or three runs a
     /// row and a field that authors nothing is one run. `None` — no `classes`

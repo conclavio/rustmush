@@ -16,14 +16,14 @@
 //!
 //! Four pieces, in that order:
 //!
-//! 1. **[`order`]** — the [`Order`] type a squad is steered by. Plain data,
+//! 1. **[`crate::deliberation::order`]** — the [`crate::deliberation::Order`] type a squad is steered by. Plain data,
 //!    imported *into* the arena, carried as an [`crate::arena::intents::Intent`]
 //!    and obeyed until its time to live runs out in arena milliseconds.
-//! 2. **[`squad`]** — the grouping the order is written for: a side's reflex units
+//! 2. **[`crate::deliberation::squad`]** — the grouping the order is written for: a side's reflex units
 //!    in pod pairs, each with the lowest-id unit as its commander.
-//! 3. **[`request`]** — one structured call whose forced tool's arguments are an
+//! 3. **[`crate::deliberation::request`]** — one structured call whose forced tool's arguments are an
 //!    order.
-//! 4. **[`cost`]** — the table the owner's cost run prints, read off `mush-llm`'s
+//! 4. **[`crate::deliberation::cost`]** — the table the owner's cost run prints, read off `mush-llm`'s
 //!    own budget and audit records.
 //!
 //! # What runs where, and why nothing waits

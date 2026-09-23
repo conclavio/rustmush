@@ -176,8 +176,10 @@ impl AuditSink {
     /// Record one row (and emit a scrubbed `tracing` event — never the prompt
     /// text, never a key).
     pub fn record(&self, rec: AuditRecord) {
-        tracing::info!(
-            target: "mush_llm::audit",
+        macro_rules! audit_event {
+            ($level:expr) => {
+        tracing::event!(
+            target: "mush_llm::audit", $level,
             feature = %rec.feature,
             provider = %rec.provider,
             model = %rec.model,
@@ -191,6 +193,14 @@ impl AuditSink {
             prompt_sha256 = %rec.prompt_sha256,
             "llm call"
         );
+            };
+        }
+        if rec.outcome == Outcome::Disabled {
+            audit_event!(tracing::Level::DEBUG);
+        } else {
+            audit_event!(tracing::Level::INFO);
+        }
+
         // Fold into the cumulative aggregate before the ring eviction can lose
         // the row (the aggregate keeps monotonic counters for `/metrics`).
         {

@@ -11,10 +11,7 @@
 //!    implements. [`owod20::Owod20Pool`] is the Classic World of Darkness 20th
 //!    Anniversary (V20/M20/W20) Storyteller-System d10 pool: an ST difficulty,
 //!    1s subtract successes, botch = zero successes with a 1 showing, specialty
-//!    doubles 10s, Willpower adds one automatic success. [`sr5::Sr5Pool`] is the
-//!    Shadowrun 5th Edition d6 hit pool — a genuinely different mechanic: 5s and
-//!    6s are hits, more-than-half 1s glitch, a per-test Limit caps hits, and Edge
-//!    can push the limit (waive it + explode 6s via the Rule of Six).
+//!    doubles 10s, Willpower adds one automatic success.
 //!
 //! Rulesets pull the pieces they need. Ordinary tests may inject any `rand`
 //! source; authoritative actions use [`with_resolution_stream`] to bridge the

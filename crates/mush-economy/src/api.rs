@@ -1946,7 +1946,7 @@ pub fn set_system_obligation(
 /// 3. **Both accounts are `Active` and share one instrument** — no implicit
 ///    exchange, no charging a closed wallet.
 /// 4. **The actor holds debit authority on the debit account**, asked through the
-///    very [`WorldAuth::authorize`] path every post uses: the player for a debt they
+///    very `WorldAuth::authorize` path every post uses: the player for a debt they
 ///    take on themselves, an org officer with `economy.account.post` (and the
 ///    amount inside their grant) for a compartment's, staff for anyone's — the
 ///    approver at chargen, for instance. Nobody creates a standing charge on a wallet
@@ -2397,7 +2397,7 @@ pub(crate) fn put_cadence(ctx: &mut Ctx<'_>, c: crate::clock::CadenceClock) {
 /// state write can never make a doc disagree with the journal at a sequence it
 /// claims.
 ///
-/// [`EconomySnapshot::put_contract`] re-derives the custody locks from the record's
+/// [`crate::snapshot::EconomySnapshot::put_contract`] re-derives the custody locks from the record's
 /// `DepositInto` conditions as it installs it, so the lock lifts on exactly the
 /// state change that is being written and never a moment earlier.
 pub(crate) fn put_contract(ctx: &mut Ctx<'_>, c: crate::contract::EconomicContract) {
@@ -2642,7 +2642,7 @@ pub(crate) fn contract_principal() -> PrincipalId {
 /// verify fold, C2; decision E2(a)).
 ///
 /// `HoldPurpose::Escrow` was the first of these and is handled by its own clause in
-/// [`WorldAuth::authorize_hold`], because a contract's escrow has a contract to name.
+/// `WorldAuth::authorize_hold`, because a contract's escrow has a contract to name.
 /// A campaign bond has none — §4.0g (iv) chose `Reservation` for exactly that reason
 /// — and the cost was not seen: `authorize_hold` locked only `Escrow`, so the bond's
 /// *placer* released it and its *beneficiary* captured it through the economy's own

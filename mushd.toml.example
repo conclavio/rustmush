@@ -174,6 +174,7 @@ corridor = ""                      # which seed pack "@tacsim/seed" applies by d
 # Parsed and INERT until later E7 cuts; listed here so the block is written once.
 active_domain_limit = 8            # cut 6's MAX_ACTIVE_DOMAINS
 ground_pulse_ms = 2000             # cut 8's ground pulse period
+ground_cell_cm = 1000              # boot-read ground-driver cell size, cm; one of 100, 200, 500, 1000
 space_pulse_ms = 6000              # cut 8's space pulse period
 
 [tacsim.time]                      # the campaign's rate and catch-up POLICY
@@ -185,6 +186,10 @@ catch_up_journeys = ""             # cut 6
 catch_up_production = ""           # cut 4
 catch_up_fronts = ""               # cut 9
 catch_up_domains = ""              # cut 8
+
+[tacsim.time.ephemeris]            # boot-read body phases and sky motion
+epoch = 0                         # campaign epoch in IC Unix seconds for the authored body phases
+rate = 0                          # permille of real sky motion per IC second; 0 freezes the sky
 
 [tacsim.recovery]                  # (E7r1 R4) the recovery provider: a lost-everything loaner
 # Off by default; @recovery still registers and answers "not enabled on this
@@ -292,7 +297,7 @@ hunt_after_ms = 90000
 startup_ms = 10000                 # ms STARTUP takes to carry a unit's power from starting to online; until then motion and fire refuse
 board_timeout_ms = 120000          # ms Boarding waits for every claimed slot to be seated before unseated slots are dropped (an empty side aborts)
 max_duration_ms = 3600000          # one hour: the longest a match runs before it ends as a timeout
-max_slots_per_side = 12            # pilot slots one side may claim (doc 16's 12 v 12); the floor is one
+max_slots_per_side = 12            # ceiling 1..12; current centre clamps to its four pods a side and logs it at boot
 # (16b cut N.1, sized by Q.7) whether SIM START tops each side up to a size with
 # the tanks of the pods nobody claimed, under the reflex controller. With it ON
 # one pilot alone in the centre can start a match: each side fields the larger
@@ -369,6 +374,7 @@ nearest_room_cells = 8             # (S4) how far, in cells, a pose may stand of
 # next registered cell size (100 -> 200 -> 500 -> 1000 cm) rather than refusing.
 window_margin_m = 10
 window_max_cells = 65536
+path_max_cells = 4096              # world-side path expansion budget; arena AI uses [tacsim.arena.reflex].path_max_cells
 # Content packs, read HOST-SIDE at boot exactly like [tacsim].pack_paths: each
 # entry is a .json pack file or a directory searched for *.json in sorted order,
 # and one that cannot be read, does not parse, or whose declared digest is not

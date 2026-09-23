@@ -9,6 +9,7 @@ import type { ClientCaps, Envelope, OutputEvent } from "./proto";
 import {
   backoffDelay,
   CLOSE_BAD_SESSION,
+  CLOSE_TOKEN_COOLOFF,
   DEFAULT_BACKOFF,
   WsClient,
   type WebSocketLike,
@@ -386,6 +387,23 @@ describe("WsClient", () => {
     expect(client.status).toBe("closed");
     vi.advanceTimersByTime(120_000);
     expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
+  it("close 4429 explains cool-off, keeps its token and waits a minute", () => {
+    const expired = vi.fn();
+    const cooloff = vi.fn();
+    const client = makeClient({ onSessionExpired: expired, onTokenCooloff: cooloff });
+    client.connect("still-valid", "1");
+    lastSocket().open();
+    lastSocket().serverClose(CLOSE_TOKEN_COOLOFF);
+    expect(cooloff).toHaveBeenCalledTimes(1);
+    expect(expired).not.toHaveBeenCalled();
+    expect(client.status).toBe("reconnecting");
+    vi.advanceTimersByTime(59_999);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(lastSocket().protocols).toEqual(["rustmush.v1.still-valid"]);
   });
 
   it("req() assigns increasing correlation ids and frames the query", () => {

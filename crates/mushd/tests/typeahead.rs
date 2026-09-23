@@ -79,7 +79,7 @@ fn module_list(
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
-    mods.extend(modules::ruleset_modules(onboarding, &Default::default()));
+    mods.extend(modules::sheet_modules(onboarding, &Default::default()));
     mods.push(modules::tacsim_module(tacsim::TacsimConfig {
         enabled: true,
         ..tacsim::TacsimConfig::default()

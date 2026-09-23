@@ -2,7 +2,7 @@
 //!
 //! A **carrier root** (a ship, a dropship, a hauler) follows a [`RouteDef`]'s
 //! ordered legs on the world's **IC** clock, and **everything hosted on it moves
-//! with it**: anchored interiors ([`SpaceAnchor::MovingObject`]), their
+//! with it**: anchored interiors ([`crate::SpaceAnchor::MovingObject`]), their
 //! occupants, attached mounts and craft, cargo and crewed stations. There is
 //! **no second placement topology** and no per-aboard record (C16A): the subtree
 //! is the pre-existing [`SpatialState::subtree`] and the only thing a journey
@@ -32,7 +32,7 @@
 //! - the **leg cursor is the idempotency key**. Re-running the pass over the
 //!   same documents — which is exactly what a reboot does — is a no-op past the
 //!   point already applied. That *is* B3's crash-gap healing: there is no
-//!   separate "boot reconcile" pass, only [`advance_due`] running at boot.
+//!   separate "boot reconcile" pass, only `advance_due` running at boot.
 //!
 //! ## What is bounded
 //!

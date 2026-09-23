@@ -1,7 +1,7 @@
 //! NPC **world / semantic knowledge** (M10d) — what an NPC knows by virtue of
 //! *who and where it is*, independent of any conversation. This is the second
 //! kind of NPC knowledge, distinct from the episodic
-//! [`memory`](crate::memory) stack (what it remembers experiencing):
+//! [`memory`] stack (what it remembers experiencing):
 //!
 //! - a bartender knows the local streets; an occult bookseller knows about
 //!   vampires — facts that hold whether or not the NPC has ever met you.

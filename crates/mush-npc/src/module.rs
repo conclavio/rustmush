@@ -582,11 +582,11 @@ fn on_presence(ctx: &mut Ctx<'_>, who: ObjId, connected: bool) {
 /// movement/speech observers — there is deliberately **NO `can_perceive`
 /// re-gate** here: re-rolling would double-count perception and could diverge
 /// from what the director actually delivered to each witness. We file only for
-/// the NPCs in the carried set. [`file_intel`] treats [`IntelKind::PowerUse`] as
+/// the NPCs in the carried set. `file_intel` treats [`IntelKind::PowerUse`] as
 /// inherently notable (filed regardless of the watch list, like a pierced
 /// concealment), so a witnessed power always reaches the informant's principal.
 /// `room` is carried for completeness; the room *name* an intel record stores is
-/// read from the informant's own location inside [`file_intel`].
+/// read from the informant's own location inside `file_intel`.
 /// H2b: the bounds of one scene-turn context, sized so a full room stays far
 /// under the kernel's `MAX_DECISION_CONTEXT_BYTES` (64 KiB): 32 names of 64
 /// bytes twice over, an 8 KiB description and a 4 KiB persona is under 16 KiB
@@ -732,7 +732,7 @@ const INTEL_DETAIL_CAP: usize = 80;
 /// The willingness gate (P2): a principal must be set, the NPC must be `loyal`
 /// and `enabled`, and the subject must be neither the informant nor the
 /// principal. Reportability: the subject is on the NPC's `watch` list, OR it is
-/// under active concealment ([`is_concealed`] — a notable pierce, always filed
+/// under active concealment ([`mush_core::module::is_concealed`] — a notable pierce, always filed
 /// regardless of the watch list). With an empty watch list and a non-concealed
 /// subject, nothing is filed (the log stays signal-rich).
 fn file_intel(ctx: &mut Ctx<'_>, npc: ObjId, subject: ObjId, kind: IntelKind, detail: &str) {
@@ -2640,7 +2640,7 @@ fn build_dialogue_snapshot(
 /// Resolve `npc`'s world knowledge for a turn: per-NPC [`LoreEntry`]s
 /// ([`KNOWLEDGE_ATTR`]) unioned with the entries of every shared pool it tags,
 /// then filtered to the **shareable** (Public + Guarded) entries. A
-/// [`Secrecy::Secret`](crate::knowledge::Secrecy::Secret) fact is dropped here
+/// [`Secrecy::Secret`] fact is dropped here
 /// so it never enters the [`TurnSnapshot`].
 fn resolve_shareable_knowledge(ctx: &Ctx<'_>, npc: ObjId) -> Vec<crate::knowledge::LoreEntry> {
     let knowledge = read_knowledge(ctx.w, npc);
@@ -3045,7 +3045,7 @@ fn store_knowledge(
 }
 
 /// Persist a shared lore pool as the module doc keyed by [`pool_key`], AND
-/// mirror it into the in-RAM [`LorePools`] so the resolved view matches the
+/// mirror it into the in-RAM [`crate::knowledge::LorePools`] so the resolved view matches the
 /// write (the pattern `remember`/`persist_memory` follows for durable memory).
 /// Wired by the `@lore` staff commands.
 fn persist_pool(ctx: &mut Ctx<'_>, pool: &LorePool) -> Result<(), CmdError> {
@@ -3069,7 +3069,7 @@ fn persist_pool(ctx: &mut Ctx<'_>, pool: &LorePool) -> Result<(), CmdError> {
 }
 
 /// Delete a shared lore pool: remove the persisted doc AND drop it from the
-/// in-RAM [`LorePools`]. Returns whether a pool was present in RAM. Wired by
+/// in-RAM [`crate::knowledge::LorePools`]. Returns whether a pool was present in RAM. Wired by
 /// `@lore <tag>=clear`.
 fn delete_pool(ctx: &mut Ctx<'_>, tag: &str) -> bool {
     let removed = ctx

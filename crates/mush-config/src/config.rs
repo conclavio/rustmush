@@ -1,7 +1,8 @@
 //! `mushd.toml` configuration.
 //!
-//! Reads only the keys each milestone needs; any unknown section/key is
-//! tolerated and ignored. Keys used now:
+//! Unknown sections/keys remain extensible, except that loading a file refuses
+//! an unknown top-level section within two edits of a known section name.
+//! This catches headers such as `[tac_sim]` before they disable a layer. Keys used now:
 //!
 //! | key | default | meaning |
 //! |---|---|---|
@@ -118,10 +119,10 @@
 //! | `[atlas].pack_paths` | `[]` | S1: content pack files or directories, read **host-side** at boot like `[tacsim].pack_paths`; they go on the `@atlas/pack` shelf and nothing is applied by being listed |
 //! | `[atlas].dwell_floor_s` | `30` | S2: real seconds a traveler stays at every checkpoint at least, so a stake-out can act |
 //! | `[atlas].real_cap_s.<mode>` | `180` for `foot`, `car`, `transit`, `bus` | S2: real seconds a whole passage may take at most, per travel mode; a mode absent is uncapped |
-//! | `[llm]` | `enabled = false` | M7 LLM layer (providers, routes, budgets); into [`mush_llm::LlmConfig`] |
+//! | `[llm]` | `enabled = false` | M7 LLM layer (providers, routes, budgets); into `mush_llm::LlmConfig` |
 //!
 //! The `[web]` table deserializes straight into
-//! [`mush_net_web::WebConfig`] (every knob it documents — TLS material,
+//! `mush_net_web::WebConfig` (every knob it documents — TLS material,
 //! rate limits, WS tuning — is available here). Its `features`/`panels`
 //! fields are **overwritten at boot** from the module registry, so config
 //! files should leave them unset.
@@ -161,6 +162,16 @@ pub enum ConfigError {
         path: PathBuf,
         /// Underlying error (boxed: `toml::de::Error` is large).
         source: Box<toml::de::Error>,
+    },
+    /// An unknown top-level section looks like a mistyped known section.
+    #[error("cannot load {path}: unknown section [{section}]; did you mean [{suggestion}]?")]
+    MistypedSection {
+        /// The config path.
+        path: PathBuf,
+        /// The unknown section.
+        section: String,
+        /// The nearest known section.
+        suggestion: &'static str,
     },
     /// `[ssh].listen` is not a valid socket address.
     #[error("invalid [ssh].listen address {addr:?}: {source}")]
@@ -1658,7 +1669,8 @@ fn same_host(ipc: SocketAddr, redis_host: &str) -> bool {
     }
 }
 
-/// The whole configuration (unknown sections/keys ignored).
+/// The whole configuration. [`Config::load`] also checks top-level header typos;
+/// unrelated unknown sections and each block's existing key policy are preserved.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -1699,7 +1711,7 @@ pub struct Config {
     /// verify fold, M1). Off-config defaults match the crate.
     pub economy: EconomyCfg,
     /// `[onboarding]` — the `chargen_required` gate + start rooms (M9). Off by
-    /// default; consumed by the game sheet via [`OnboardingCfg::to_ruleset`].
+    /// default; mapped to the game sheet's onboarding policy by the host.
     pub onboarding: OnboardingCfg,
     /// `[tacsim]` — the TacSim layer's own knobs (E7 cut 1, 10b §7). `enabled` is
     /// `false` off-config, so an unconfigured server keeps its pre-E7 behaviour. Since 16b
@@ -1749,9 +1761,55 @@ impl Default for Config {
     }
 }
 
+// Keep alongside Config's top-level fields. We deliberately do not reject every
+// unknown table: deployments may carry unrelated extension configuration.
+const CONFIG_SECTIONS: &[&str] = &[
+    "server",
+    "log",
+    "store",
+    "offers",
+    "resolution",
+    "ssh",
+    "web",
+    "discord",
+    "game",
+    "weather",
+    "worldgen",
+    "economy",
+    "onboarding",
+    "tacsim",
+    "npc",
+    "atlas",
+    "llm",
+    "ipc",
+];
+
+/// Levenshtein distance, only when it is at most two. The working row is bounded
+/// by the known name's length, even if the input contains a very long header.
+fn section_edit_distance(section: &str, known: &str) -> Option<usize> {
+    let known: Vec<char> = known.chars().collect();
+    if section.chars().count().abs_diff(known.len()) > 2 {
+        return None;
+    }
+    let mut row: Vec<usize> = (0..=known.len()).collect();
+    for (i, actual) in section.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, expected) in known.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (above + 1)
+                .min(row[j] + 1)
+                .min(diagonal + usize::from(actual != *expected));
+            diagonal = above;
+        }
+    }
+    let edits = row[known.len()];
+    (edits <= 2).then_some(edits)
+}
+
 impl Config {
     /// Load from `path`. A missing file returns the defaults; a present but
-    /// malformed file is an error.
+    /// malformed file or a likely mistyped top-level section is an error.
     pub fn load(path: &Path) -> Result<Config, ConfigError> {
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
@@ -1766,6 +1824,34 @@ impl Config {
                 });
             }
         };
+        let sections: toml::Table = toml::from_str(&text).map_err(|source| ConfigError::Parse {
+            path: path.to_path_buf(),
+            source: Box::new(source),
+        })?;
+        for (section, value) in &sections {
+            let is_section = value.is_table()
+                || value
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(toml::Value::is_table));
+            if !is_section || CONFIG_SECTIONS.contains(&section.as_str()) {
+                continue;
+            }
+            if let Some(suggestion) = CONFIG_SECTIONS
+                .iter()
+                .copied()
+                .filter_map(|known| {
+                    section_edit_distance(section, known).map(|edits| (edits, known))
+                })
+                .min()
+                .map(|(_, known)| known)
+            {
+                return Err(ConfigError::MistypedSection {
+                    path: path.to_path_buf(),
+                    section: section.clone(),
+                    suggestion,
+                });
+            }
+        }
         toml::from_str(&text).map_err(|source| ConfigError::Parse {
             path: path.to_path_buf(),
             source: Box::new(source),
@@ -1926,6 +2012,56 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loading_refuses_near_miss_headers_but_preserves_extensions() {
+        let dir = std::env::temp_dir().join(format!("mush-section-typos-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        for header in ["tac_sim", "tascim", "tacsi", "tacximx", "tascim.arena"] {
+            std::fs::write(&path, format!("[{header}]\nenabled = true\n")).unwrap();
+            let err = Config::load(&path).expect_err(header);
+            assert!(
+                matches!(
+                    &err,
+                    ConfigError::MistypedSection {
+                        suggestion: "tacsim",
+                        ..
+                    }
+                ),
+                "{header}: {err}"
+            );
+            assert!(err.to_string().contains(&path.display().to_string()));
+            assert!(err.to_string().contains(header.split('.').next().unwrap()));
+        }
+        for known in CONFIG_SECTIONS {
+            // An empty section either loads or is refused by its own required
+            // fields; it must never be mistaken for an unknown header.
+            std::fs::write(&path, format!("[{known}]\n")).unwrap();
+            assert!(!matches!(
+                Config::load(&path),
+                Err(ConfigError::MistypedSection { .. })
+            ));
+        }
+        std::fs::write(&path, "[[tascim]]\nenabled = true\n").unwrap();
+        assert!(matches!(
+            Config::load(&path),
+            Err(ConfigError::MistypedSection { .. })
+        ));
+        std::fs::write(
+            &path,
+            "release_label = 'test'\n[external_extension]\nvalue = true\n\
+             [web.custom_panel]\nvalue = 1\n[server]\nextra = true\n[tacsim]\nenabled = true\n",
+        )
+        .unwrap();
+        assert!(Config::load(&path).unwrap().tacsim.enabled);
+        std::fs::write(&path, "[tacsim]\nenabeld = true\n").unwrap();
+        assert!(matches!(
+            Config::load(&path),
+            Err(ConfigError::Parse { .. })
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// H2a: `[npc]` is a whole-default section, and a misspelt key is a boot
     /// error like every other typed section.

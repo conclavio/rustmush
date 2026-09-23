@@ -54,7 +54,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, client_async};
 
 use mushd::accounts::{Accounts, hash_password};
 use mushd::ipguard::{IpGuard, IpGuardConfig};
@@ -65,7 +65,7 @@ use mushd::staff::{StaffQueue, register_server_commands};
 use mushd::web_bridge::WebBridge;
 use mushd::world_task::{self, PersistHandles, ServerDeps};
 
-use support::{STEP_TIMEOUT, Term, play_client, scratch_dir};
+use support::{STEP_TIMEOUT, Term, play_client, scratch_dir, wait_until};
 
 const GM_PASSWORD: &str = "gm-load-secret";
 const BANNER: &str = "Welcome to the load MUSH!";
@@ -309,6 +309,7 @@ async fn flood_throttles_abuser_not_paced_client() {
 struct Rig {
     ssh: SocketAddr,
     web: SocketAddr,
+    sessions: Arc<SessionManager>,
     dir: PathBuf,
     _ssh_listener: SshListener,
     _web_task: tokio::task::JoinHandle<()>,
@@ -333,7 +334,12 @@ impl Rig {
 /// (small values = a stalled client overflows cheaply); flood limits are set
 /// generous here so the throughput test is not fighting the rate limiter (which
 /// `flood_throttles_abuser_not_paced_client` covers).
-async fn boot_load(tag: &str, send_queue: usize, send_timeout_ms: u64) -> Rig {
+async fn boot_load(
+    tag: &str,
+    send_queue: usize,
+    send_timeout_ms: u64,
+    web_send_buffer: Option<u32>,
+) -> Rig {
     let dir = scratch_dir(tag);
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     store
@@ -411,7 +417,7 @@ async fn boot_load(tag: &str, send_queue: usize, send_timeout_ms: u64) -> Rig {
 
     let web_bridge: Arc<dyn mush_net_web::WebHooks> = Arc::new(WebBridge::new(
         accounts,
-        sessions,
+        Arc::clone(&sessions),
         handles.handle.clone(),
         guard,
         store,
@@ -424,11 +430,16 @@ async fn boot_load(tag: &str, send_queue: usize, send_timeout_ms: u64) -> Rig {
         auth_burst: 0,
         send_queue,
         send_timeout_ms,
+        // A missed keepalive must not masquerade as backpressure detachment.
+        max_missed_pongs: u32::MAX,
         ..WebConfig::default()
     };
-    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    if let Some(bytes) = web_send_buffer {
+        socket.set_send_buffer_size(bytes).unwrap();
+    }
+    socket.bind((Ipv4Addr::LOCALHOST, 0).into()).unwrap();
+    let listener = socket.listen(1024).unwrap();
     let web = listener.local_addr().unwrap();
     let app = mush_net_web::router(web_bridge, web_config);
     let web_task = tokio::spawn(async move {
@@ -443,6 +454,7 @@ async fn boot_load(tag: &str, send_queue: usize, send_timeout_ms: u64) -> Rig {
     Rig {
         ssh,
         web,
+        sessions,
         dir,
         _ssh_listener: ssh_listener,
         _web_task: web_task,
@@ -593,7 +605,7 @@ async fn ssh_load_liveness_and_throughput() {
     let n_clients = if heavy { 32 } else { 6 };
     let iters = if heavy { 24 } else { 8 };
 
-    let rig = boot_load("ssh-load", 256, 10_000).await;
+    let rig = boot_load("ssh-load", 256, 10_000, None).await;
 
     // Boss digs a Limbo <-> Loop pair so every client's move loop has exits,
     // then disconnects: a connection sitting in the busy room without reading
@@ -693,7 +705,12 @@ async fn register(rig: &Rig, account: &str, password: &str, char_name: &str) -> 
     )
 }
 
-async fn connect_ws(rig: &Rig, token: &str, char_key: u64) -> Result<Ws, WsError> {
+async fn connect_ws(
+    rig: &Rig,
+    token: &str,
+    char_key: u64,
+    recv_buffer: Option<u32>,
+) -> Result<Ws, WsError> {
     let mut req = format!("ws://{}/ws?char={char_key}", rig.web)
         .into_client_request()
         .unwrap();
@@ -701,7 +718,14 @@ async fn connect_ws(rig: &Rig, token: &str, char_key: u64) -> Result<Ws, WsError
         "sec-websocket-protocol",
         HeaderValue::from_str(&format!("rustmush.v1.{token}")).unwrap(),
     );
-    connect_async(req).await.map(|(ws, _resp)| ws)
+    let socket = tokio::net::TcpSocket::new_v4()?;
+    if let Some(bytes) = recv_buffer {
+        socket.set_recv_buffer_size(bytes)?;
+    }
+    let stream = socket.connect(rig.web).await?;
+    client_async(req, MaybeTlsStream::Plain(stream))
+        .await
+        .map(|(ws, _resp)| ws)
 }
 
 async fn recv_env(ws: &mut Ws) -> Envelope {
@@ -746,22 +770,27 @@ async fn send_ws_line(ws: &mut Ws, line: &str) {
 async fn slow_ws_client_is_detached_without_affecting_others() {
     // Small per-connection queue AND a short send-timeout: once a stalled
     // client's OS/TCP buffers fill, the very next server-side send blocks past
-    // this timeout and the pump closes it as SLOW. Large say bodies fill those
-    // buffers in a handful of frames, so the trip is fast and reliable.
-    let rig = boot_load("slow-ws", 16, 200).await;
+    // this timeout and the pump closes it as SLOW. Bound both socket buffers:
+    // Linux's autotuned loopback buffers can otherwise hold the entire flood.
+    let rig = boot_load("slow-ws", 16, 200, Some(4096)).await;
 
     let (good_tok, good_key) = register(&rig, "GoodWeb", "pw-good-123", "GoodWeb").await;
     let (slow_tok, slow_key) = register(&rig, "SlowWeb", "pw-slow-123", "SlowWeb").await;
 
     // Good client: connect and drain (it stays healthy throughout).
-    let mut good = connect_ws(&rig, &good_tok, good_key)
+    let mut good = connect_ws(&rig, &good_tok, good_key, None)
         .await
         .expect("good ws");
     // Slow client: connect, then STOP reading (only the initial hello is read).
-    let mut slow = connect_ws(&rig, &slow_tok, slow_key)
+    let mut slow = connect_ws(&rig, &slow_tok, slow_key, Some(4096))
         .await
         .expect("slow ws");
     let _ = recv_env(&mut slow).await; // the hello, seq 0 — then never read again.
+    let slow_session = rig
+        .sessions
+        .session_of_char(CharKey(slow_key))
+        .expect("slow client attached before the flood");
+    assert_eq!(rig.sessions.conns_of_session(slow_session).len(), 1);
 
     // The good client floods the shared room (Limbo) with big says. Each fans
     // out to the slow client too; ~6 KB/frame overruns the socket buffers and
@@ -779,13 +808,15 @@ async fn slow_ws_client_is_detached_without_affecting_others() {
     send_ws_line(&mut good, "say still-here").await;
     expect_env(&mut good, "still-here").await;
 
-    // Give the server's send-timeout a moment to fire and close the slow client
-    // before we start reading it (reading would otherwise un-stall it).
-    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-
-    // The slow client must have been detached: draining its backlog we reach a
-    // Close frame / end-of-stream / reset within the timeout (never a hang).
+    // Observe server-side detachment BEFORE draining, which would otherwise
+    // un-stall the peer. Then require the real socket to close too. One deadline
+    // covers both observations; a delayed scheduler cannot turn a fixed sleep
+    // into a false claim that the write timeout has already fired.
     let closed = tokio::time::timeout(STEP_TIMEOUT, async {
+        wait_until(STEP_TIMEOUT, "slow web client detachment", async || {
+            rig.sessions.conns_of_session(slow_session).is_empty()
+        })
+        .await;
         loop {
             match slow.next().await {
                 Some(Ok(Message::Close(_))) | None => return true,

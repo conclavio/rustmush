@@ -78,7 +78,7 @@ const NO_SUCH: &str = "No such contract.";
 /// a member of the declared **audience**, or anyone at all when the surface says
 /// `Public`.
 ///
-/// Party and audience membership both ask [`api::WorldAuth::acts_for`] rather than
+/// Party and audience membership both ask `api::WorldAuth::acts_for` rather than
 /// identity, for the reason E4b1's fold gave for holds (A2): a contract with an
 /// organization as a party would otherwise be invisible to every person in it,
 /// including the ones who will have to accept and fund it.
@@ -3211,7 +3211,7 @@ fn amended_draft(
 /// programmatic `amend_contract` seam (E6a step 1, A′).
 ///
 /// The order is the plan-first rule applied to a **non-terminal** transition: the
-/// partial refund ([`refund_plan_except`]) posts under the contract's own key at its
+/// partial refund ([`crate::contract::refund_plan_except`]) posts under the contract's own key at its
 /// generation, and the amended `Draft` record **rides that post's own batch** as a
 /// companion (`post_with_companions`, B2's mechanism), so the released escrow and the
 /// record that no longer lists it are one durable write. A key that resolves
@@ -4685,7 +4685,7 @@ pub enum LeaseEnd {
 /// staff attestation, and a module could call neither.
 ///
 /// It is the ordinary cancellation, through the ordinary machinery, and nothing
-/// else: [`unwind`] writes `pending`, posts the refund plan under
+/// else: `unwind` writes `pending`, posts the refund plan under
 /// `contract/{id}/refund/{generation}` under a [`ContractAuth`] built for
 /// [`crate::ContractPurpose::Unwind`] — which for a lease releases the `Lease`
 /// encumbrance from the premises (a lease escrows nothing, so there is no hold to
@@ -4938,7 +4938,7 @@ fn consideration_for(
 ///
 /// It is the whole `@contract/draft` → builders → `@contract/offer` sequence with
 /// the same gates, and none of the intermediate states: nothing is allocated and
-/// nothing is written until the surface has passed [`check_offer`] — the structural
+/// nothing is written until the surface has passed `check_offer` — the structural
 /// half, the world half, the per-party cap and the re-stamp rule — so a refused
 /// offer leaves **no draft behind** (M17) and costs no id. The issuer is the actor
 /// or, through `scope`, an organization the actor holds `contract.draft` on
@@ -5095,7 +5095,7 @@ pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractI
 
 /// **Accept a contract** on behalf of the actor, under their own authority (E6a
 /// step 1) — `@contract/accept` without the command: the actor must be a party (or
-/// act for one, the [`acting_party`] routes), and the escrow is placed exactly as the
+/// act for one, the `acting_party` routes), and the escrow is placed exactly as the
 /// command places it, in one `post_with_companions`. `NeedsApproval` surfaces as
 /// [`AcceptOutcome::NeedsApproval`] with **no acceptance recorded** (D-E4-11).
 ///
@@ -5133,10 +5133,10 @@ pub fn accept_contract(ctx: &mut Ctx<'_>, id: ContractId) -> Result<AcceptOutcom
 ///
 /// Everything about it is bounded:
 ///
-/// - `party` must carry [`PartyCap::Accept`] in the **wiring-frozen** table
+/// - `party` must carry [`crate::contract::PartyCap::Accept`] in the **wiring-frozen** table
 ///   (`EconomyModule::with_party_caps`) — never a grant, never a document;
 /// - `party` must already be a party to `c`; this creates no party and no term;
-/// - the acceptance runs the same [`accept_core`] the command runs, so the roster
+/// - the acceptance runs the same `accept_core` the command runs, so the roster
 ///   still locks, the consent hash is still checked, and the escrow is still placed;
 /// - the escrow plan's actor is `party` itself, so the hold posts under **that
 ///   principal's own debit authority** and refuses on `InsufficientAvailable`. A
@@ -5147,7 +5147,7 @@ pub fn accept_contract(ctx: &mut Ctx<'_>, id: ContractId) -> Result<AcceptOutcom
 ///
 /// [`ContractError::NoStanding`] when the economy is frozen to the caller, the
 /// contract is unviewable, `party` is not a party, or the wiring never named it;
-/// otherwise everything [`accept_core`] refuses.
+/// otherwise everything `accept_core` refuses.
 pub fn accept_contract_as(
     ctx: &mut Ctx<'_>,
     id: ContractId,
@@ -5186,7 +5186,7 @@ pub fn accept_contract_as(
 /// It is bounded exactly as [`accept_contract_as`] is, by the same wiring-frozen
 /// table and two facts about the contract:
 ///
-/// 1. `from`'s owner holds [`PartyCap::Accept`] — a composition-named vendor
+/// 1. `from`'s owner holds [`crate::contract::PartyCap::Accept`] — a composition-named vendor
 ///    organization, never something a command, a document or a grant can add to;
 /// 2. that owner is a **party to `contract`**, so a vendor can only ever deliver
 ///    against a deal it actually made;
@@ -5283,9 +5283,9 @@ pub fn deliver_settled(
 ///
 /// Everything is refused **before anything posts** (E6a step 1 verify fold, R1):
 /// [`ContractError::NoStanding`] (no such contract, unviewable, or not the issuer),
-/// everything [`amend_core`] refuses, [`ContractError::SystemParty`],
+/// everything `amend_core` refuses, [`ContractError::SystemParty`],
 /// [`ContractError::TooLarge`] for the party cap, [`ContractError::Infeasible`] for a
-/// duplicate party, and — when `reoffer` is set — every refusal [`check_offer`]
+/// duplicate party, and — when `reoffer` is set — every refusal `check_offer`
 /// gives. An `Err` therefore means **nothing changed at all**.
 ///
 /// A re-offer that is refused *after* the amendment lands is not an error: it comes

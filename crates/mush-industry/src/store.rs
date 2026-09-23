@@ -1027,7 +1027,7 @@ impl WorldObserver for WorkOrderIndex {
 /// **WS02-S5b** — whether one `Draft`'s pinned recipe still is the one its pack
 /// publishes, and if not, which way it moved.
 ///
-/// The comparison is on the decoded [`PinnedRecipe`] values, not on their JSON:
+/// The comparison is on the decoded [`crate::PinnedRecipe`] values, not on their JSON:
 /// both sides are structs the authority and the record each hold, so a
 /// re-ordered or re-spaced blob is not even a representable difference here, and
 /// a moved unit count always is.

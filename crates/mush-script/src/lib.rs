@@ -11,7 +11,7 @@
 //!
 //! Rhai runs **synchronously inside the world task**, fully budget-bounded,
 //! so a script sees a consistent world and its effects order like any
-//! command. See [`runtime`] for the sandbox, the budgets, and the safe
+//! command. See `runtime` for the sandbox, the budgets, and the safe
 //! (no-`unsafe`) session bridge.
 //!
 //! ## How it hangs off the module API

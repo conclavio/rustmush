@@ -5,9 +5,9 @@
 //! render it with the renderer they already have and no unit vocabulary.
 //!
 //! **It is `+contacts`, cell for cell.** Every row is built by
-//! [`contact_cells`](crate::commands::contact_cells) — the same function
+//! [`contact_cells`] — the same function
 //! [`render_contact`](crate::commands::render_contact) formats — over the same
-//! roster [`viewable_holders_of`](crate::commands::viewable_holders_of)
+//! roster `viewable_holders_of`
 //! answers, so the table and the text can never disagree for one viewer at one
 //! instant (§4 rule 4), and cut 7's leak arguments (a false contact renders
 //! exactly as a real one; one observer's picture is invisible to another; no

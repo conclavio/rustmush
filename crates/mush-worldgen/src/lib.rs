@@ -48,9 +48,9 @@
 //!
 //! 1. **Brief pass** — one [`LlmFeature::WorldgenBrief`](mush_llm::LlmFeature)
 //!    call walks the building's room graph (BFS from the entrance, bounded
-//!    [`MAX_BUILDING_ROOMS`](commands::MAX_BUILDING_ROOMS); interior = same
+//!    [`MAX_BUILDING_ROOMS`]; interior = same
 //!    zone as the entrance, or — for an unzoned entrance — within
-//!    [`MAX_UNZONED_HOPS`](commands::MAX_UNZONED_HOPS)) and emits a
+//!    `MAX_UNZONED_HOPS`) and emits a
 //!    [`BuildingBriefPayload`]: a shared palette + a one-line concept per
 //!    room. The brief is a reviewable [`BuildingBrief`] draft — cheap to steer
 //!    before N room calls.

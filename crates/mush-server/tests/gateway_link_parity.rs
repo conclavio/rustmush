@@ -253,6 +253,16 @@ impl ObjectStore for HoldingStore {
         self.inner.clear_ban(ip)
     }
 
+    fn put_tempban_lift(
+        &self,
+        lift: mush_store::TempbanLift,
+    ) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.put_tempban_lift(lift)
+    }
+    fn get_tempban_lifts(&self) -> BoxFuture<'_, Result<Vec<mush_store::TempbanLift>, StoreError>> {
+        self.inner.get_tempban_lifts()
+    }
+
     fn token_put(&self, hash: String, rec: TokenRecord) -> BoxFuture<'_, Result<(), StoreError>> {
         self.inner.token_put(hash, rec)
     }

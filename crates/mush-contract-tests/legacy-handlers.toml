@@ -602,8 +602,9 @@ note = "baseline pinned at b0e3b52 (server staff commands)"
 
 [[handler]]
 name = "@siteban"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (server staff commands)"
+category = "legacy-post-image"
+family = "operator.admission"
+note = "Cut L adds /lift: wizard-only, ack-gated operational admission record tempban-lift:{ip}, strict typed decoding, five-minute TTL and once-per-guard consumption; permanent ban set/clear/list stay on the existing store route. This bounded operator workflow affects transport admission, never world reservations, leases or prepared mechanical legality; a future operator.admission service owns migration."
 
 [[handler]]
 name = "@slowtest"

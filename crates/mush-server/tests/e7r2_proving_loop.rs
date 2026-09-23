@@ -28,7 +28,7 @@
 
 use mush_core::{Audience, GOD, ObjId, ObjKind, Powers, Role};
 use mush_proto::OutputEvent;
-use mush_server::modules::{ruleset_modules, server_modules_with, tacsim_module};
+use mush_server::modules::{server_modules_with, sheet_modules, tacsim_module};
 use mush_testkit::{TestWorld, text_of};
 
 // ---- the rig: the PRODUCTION composition, with the whole corridor -----------
@@ -47,7 +47,7 @@ fn boot() -> TestWorld {
         &game,
         mush_campaign::RecoveryConfig::default(),
     );
-    modules.extend(ruleset_modules(&onboarding, &game));
+    modules.extend(sheet_modules(&onboarding, &game));
     // E7r2 P5: the whole Mars–Phobos–Ceres corridor, as `tacsim.corridor@2`.
     modules.push(tacsim_module(tacsim::fixture::config_v2()));
     TestWorld::with_modules(modules)

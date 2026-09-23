@@ -1528,7 +1528,7 @@ pub const MAX_REPUBLISH_PER_SWEEP: usize = 8;
 /// settlement recovered at boot was *never* chronicled. And the replay guard read
 /// canon's RAM tail, which rolls.
 ///
-/// The cure is [`EconomicContract::canon_published`]: a **durable** marker the bridge
+/// The cure is [`crate::contract::EconomicContract::canon_published`]: a **durable** marker the bridge
 /// writes only after a commit succeeded. Anything settled, public, older than a sweep
 /// period and still unmarked is announced again — the bridge de-dupes on the marker,
 /// so a line that did land is never doubled, and one that did not is retried until it

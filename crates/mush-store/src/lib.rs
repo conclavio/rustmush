@@ -43,6 +43,7 @@ pub use redis::RedisStore;
 pub use store::{
     AuthoritativeStore, BootSkip, ChunkFloors, ModuleDocs, NO_SKIP, ObjectStore, below_floor,
 };
+pub use types::TempbanLift;
 pub use types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
     AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,

@@ -5,17 +5,17 @@
 //! `sensor`, `resolution`, `arena` — decoded strictly (`deny_unknown_fields`,
 //! integers only: centimetres, millidegrees, milliseconds, cm/s, per-mille),
 //! bounded on load, and registered at composition through the C1 registry as
-//! [`DefinitionDescriptor`]s with exact [`DefinitionRef`]s.
+//! [`mush_core::DefinitionDescriptor`]s with exact [`mush_core::DefinitionRef`]s.
 //!
 //! # Three things happen in one place, on purpose
 //!
-//! [`Catalog::build`] decodes the entries, checks every reference among them,
+//! [`crate::definitions::Catalog::build`] decodes the entries, checks every reference among them,
 //! and mints every definition reference. It is one function because the three
 //! have to agree: the `mush_tactics::UnitCatalog` the composition root hands
 //! `TacticsModule` and the descriptors the module hands `Registrar::definition`
 //! must carry **the same** `DefinitionRef` values, and the only way to be sure
 //! of that without a second lane is for one function to produce both. The refs
-//! come out of a scratch [`DefinitionRegistryBuilder`] stamped with the module's
+//! come out of a scratch [`mush_core::DefinitionRegistryBuilder`] stamped with the module's
 //! own owner id, and a definition's digest is a pure function of
 //! `(owner, kind, id, version, payload, references)`, so the scratch registry's
 //! answer *is* the real registry's answer.
@@ -28,7 +28,7 @@
 //! what makes "a changed definition is a new version" true by the pack ledger's
 //! own rule rather than by a second version field nobody would bump: a pack
 //! re-signed in place under one version already refuses the boot
-//! ([`crate::boot_reconcile`]).
+//! (`crate::boot_reconcile`).
 //!
 //! Across the loaded packs an id of these six kinds is **unique**. Two packs
 //! that declare one are refused naming both, rather than one silently shadowing
@@ -490,7 +490,7 @@ impl Catalog {
     ///
     /// An operator pack that carries a `(id, version)` the shipped content
     /// already declares is **skipped** when it is byte for byte that same file
-    /// and **refused** when it is not; see [`Catalog::build_from`] for why.
+    /// and **refused** when it is not; see `Catalog::build_from` for why.
     ///
     /// # Errors
     ///

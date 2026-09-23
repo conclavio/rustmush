@@ -121,7 +121,7 @@ const MAX_SHOTS: usize = 30;
 const OVER: &str = "is over (red)";
 /// The parser's refusal, which is the sentinel's answer.
 const HUH: &str = "Huh?";
-/// The one line the eleven cockpit selectors refuse with once the check-in has
+/// The one line the twelve cockpit selectors refuse with once the check-in has
 /// opened the hatches.
 const OUTSIDE_COCKPIT: &str = "You are not at the station of a deployed unit.";
 

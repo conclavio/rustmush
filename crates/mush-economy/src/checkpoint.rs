@@ -23,7 +23,7 @@
 //! ## The write-time drift check (§5.3)
 //!
 //! The live store carries the fold as a **journal-authority shadow**
-//! ([`crate::module::EconomyStore::fold`]), maintained per post by the one
+//! (`crate::module::EconomyStore::fold`), maintained per post by the one
 //! function boot replays with. Before a checkpoint is written, every account,
 //! title and reservation projection is compared with the shadow; a mismatch
 //! writes nothing, says so at `error`, and **freezes the economy** — the same
@@ -60,7 +60,7 @@ use crate::snapshot::EconomySnapshot;
 
 /// The document format this code writes and accepts.
 pub const CHECKPOINT_FORMAT: u32 = 3;
-/// Domain separation for [`state_hash`].
+/// Domain separation for `state_hash`.
 pub const CHECKPOINT_HASH_DOMAIN: &str = "rustmush.economy.checkpoint.v1";
 /// The most rows one immutable part carries (~3 MB of JSON).
 pub const MAX_PART_ROWS: usize = 25_000;
@@ -172,7 +172,7 @@ pub struct CheckpointHead {
     /// Doc 13 (W-D3): the key filter's part — every key ever posted, as of
     /// `covered_seq`.
     pub bloom: PartRef,
-    /// [`state_hash`] over the body and the parts, the bloom part last.
+    /// `state_hash` over the body and the parts, the bloom part last.
     pub state_hash: String,
     /// The mutable body.
     pub body: CheckpointBody,

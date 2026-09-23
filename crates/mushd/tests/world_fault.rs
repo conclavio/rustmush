@@ -113,9 +113,6 @@ fn write_config(dir: &Path) -> (PathBuf, SocketAddr) {
              [web]\n\
              listen = \"127.0.0.1:{web_port}\"\n\
              \n\
-             [rulesets]\n\
-             enabled = []\n\
-             \n\
              [log]\n\
              level = \"info\"\n\
              file = true\n",

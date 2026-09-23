@@ -35,6 +35,8 @@
 
 mod support;
 
+use support::{wait_arena_seconds, wait_until};
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -127,7 +129,7 @@ fn module_list(
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
-    mods.extend(modules::ruleset_modules(onboarding, &Default::default()));
+    mods.extend(modules::sheet_modules(onboarding, &Default::default()));
     mods.push(modules::tacsim_module(tacsim_config()));
     // 16b cut C.2: the content module last, with `[game].starter_area` off and
     // the game's own boot packs on — the arena's ground has to be in this
@@ -358,18 +360,6 @@ fn pose_heading(placement: &Value) -> u64 {
         .unwrap_or_else(|| panic!("a direct placement carries a heading: {placement}"))
 }
 
-/// Poll until `check` answers, or fail.
-async fn until(bound: Duration, label: &str, mut check: impl AsyncFnMut() -> bool) {
-    let deadline = tokio::time::Instant::now() + bound;
-    while tokio::time::Instant::now() < deadline {
-        if check().await {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("{label} did not happen within {bound:?}");
-}
-
 // ---------------------------------------------------------------------------
 // The lens
 // ---------------------------------------------------------------------------
@@ -400,7 +390,7 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
         "is running on",
     )
     .await;
-    until(Duration::from_secs(10), "the markers to land", async || {
+    wait_until(Duration::from_secs(10), "the markers to land", async || {
         record(&server.store, RED)
             .await
             .is_some_and(|document| document.get("deployed").is_some())
@@ -438,7 +428,9 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
         "Ordered",
     )
     .await;
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    // The staff shortcut has no pilot frame; one reported arena second covers
+    // this fixture's 300 ms startup before accepting motion orders.
+    wait_arena_seconds(&mut term, 1).await;
     say(
         &mut term,
         &format!("@arena/intent #{}=heading 90", RED.0),
@@ -451,16 +443,16 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
         "Ordered",
     )
     .await;
-    // Ten seconds of arena time. The order is above the tank's ceiling on
+    // Ten observed seconds of arena time. The order is above the tank's ceiling on
     // purpose — the arena caps it at `max_speed_cms` — so what is being timed is
     // doc 16 §3.4's acceleration and nothing else: 100 cm/s² for ten seconds is
     // 1,000 cm/s and fifty metres, which is five cells, and the assertion below
     // asks for three.
-    tokio::time::sleep(Duration::from_millis(10_000)).await;
+    wait_arena_seconds(&mut term, 10).await;
 
     // --- check-in --------------------------------------------------------
     say(&mut term, "@arena/abort", "is stopping").await;
-    until(
+    wait_until(
         Duration::from_secs(20),
         "the check-in to land",
         async || {
@@ -546,7 +538,7 @@ async fn an_injected_panic_voids_the_match_and_the_world_keeps_serving() {
         "is running on",
     )
     .await;
-    until(Duration::from_secs(10), "the markers to land", async || {
+    wait_until(Duration::from_secs(10), "the markers to land", async || {
         record(&server.store, RED)
             .await
             .is_some_and(|document| document.get("deployed").is_some())
@@ -557,7 +549,7 @@ async fn an_injected_panic_voids_the_match_and_the_world_keeps_serving() {
 
     // The match is voided and its units are checked back in — restored from
     // their check-out snapshots, with no arena-derived cell committed.
-    until(Duration::from_secs(20), "the void check-in", async || {
+    wait_until(Duration::from_secs(20), "the void check-in", async || {
         record(&server.store, RED)
             .await
             .is_some_and(|document| document.get("deployed").is_none())
@@ -607,7 +599,7 @@ async fn a_restart_mid_match_restores_the_units_and_records_an_aborted_restart()
         "is running on",
     )
     .await;
-    until(Duration::from_secs(10), "the markers to land", async || {
+    wait_until(Duration::from_secs(10), "the markers to land", async || {
         record(&first.store, RED)
             .await
             .is_some_and(|document| document.get("deployed").is_some())
@@ -626,7 +618,7 @@ async fn a_restart_mid_match_restores_the_units_and_records_an_aborted_restart()
     let (_handle2, mut term2) = staff_session(second.addr).await;
 
     // (1) The marker is gone and the snapshot is back.
-    until(
+    wait_until(
         Duration::from_secs(20),
         "the boot reconciliation",
         async || {

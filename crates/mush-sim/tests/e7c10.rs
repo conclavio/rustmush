@@ -388,7 +388,7 @@ fn production_sources() -> Vec<(String, String)> {
         .expect("crates/")
         .to_path_buf();
     let mut out = Vec::new();
-    let mut stack = vec![root];
+    let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -401,8 +401,21 @@ fn production_sources() -> Vec<(String, String)> {
                 }
                 stack.push(path);
             } else if path.extension().is_some_and(|e| e == "rs") {
+                // Match `<crate>/src` relative to crates/, not a possible
+                // `src` directory in the checkout's own absolute path.
+                let relative = path.strip_prefix(&root).expect("within crates/");
+                if relative
+                    .components()
+                    .nth(1)
+                    .is_none_or(|part| part.as_os_str() != "src")
+                {
+                    continue;
+                }
                 let text = std::fs::read_to_string(&path).unwrap_or_default();
-                out.push((path.to_string_lossy().replace('\\', "/"), text));
+                out.push((
+                    format!("crates/{}", relative.to_string_lossy().replace('\\', "/")),
+                    text,
+                ));
             }
         }
     }
@@ -418,9 +431,6 @@ fn e7c10_p1_desired_links_is_still_the_only_production_channelgrant_writer() {
     let writers: Vec<String> = production_sources()
         .into_iter()
         .filter(|(path, text)| {
-            if !path.contains("/src/") {
-                return false;
-            }
             if path.ends_with("mush-core/src/world.rs") {
                 // The type's own store: `World::publish_command_subject` is the
                 // sink every projection writes THROUGH, not a projection.
@@ -469,7 +479,7 @@ fn e7c10_p2_the_c12_consumer_census_is_now_eight() {
     ];
     let mut files: Vec<String> = Vec::new();
     for (path, text) in production_sources() {
-        if !path.contains("/src/") || path.contains("mush-contract-tests/src/") {
+        if path.contains("mush-contract-tests/src/") {
             continue;
         }
         let boundary = test_module_start(&text);

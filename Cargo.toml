@@ -216,6 +216,12 @@ mush-server = { path = "crates/mush-server" }
 [workspace.lints.rust]
 unsafe_code = "deny"
 
+# Cut L: documentation links are part of the workspace's navigation contract.
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
+invalid_html_tags = "deny"
+
 # WS01-S12: the panic-shaped restriction lints (`unwrap_used`, `expect_used`,
 # `indexing_slicing`, `panic`, `unreachable`, `panic_in_result_fn`) are NOT here
 # and must not be added here. `.github/workflows/ci.yml` runs `cargo clippy

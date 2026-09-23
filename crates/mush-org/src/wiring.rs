@@ -6,7 +6,7 @@
 //! `provider`/`predicate`/`arguments` triple. At authorization time the E1b world
 //! seam ([`crate::authorize_in_world`]) builds a [`WorldPredicates`] over the
 //! frozen provider table and hands it to the pure engine as a
-//! [`PredicateEval`](crate::PredicateEval). Each provider gets `&World` so it can
+//! [`PredicateEval`]. Each provider gets `&World` so it can
 //! read its own module state; it returns only a boolean (never the underlying
 //! value — the disclosure rule), and `None` when it cannot resolve, which the
 //! engine treats fail-closed (suppresses an Allow, satisfies a Deny).

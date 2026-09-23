@@ -21,7 +21,7 @@ import { GameApp, type ComposerHandle } from "./game.svelte";
 import type { Envelope, OutputEvent, Query, ViewEnvelope } from "./proto";
 import { MAP_ASK_MS } from "./stores/cockpit.svelte";
 import { UNIT_RESYNC_MS } from "./stores/unit.svelte";
-import type { WebSocketLike } from "./ws";
+import { CLOSE_TOKEN_COOLOFF, type WebSocketLike } from "./ws";
 
 /** The feeds the fixture manifest advertises. */
 const UNIT_FEED = "tactics.unit";
@@ -1639,6 +1639,25 @@ describe("the cockpit feeds", () => {
     ws.deliver(sys(4, "BA."));
     expect(app.cockpit.notices.at(-1)).toBe("Locking BA.");
     expect(lineTexts(app)).toContain("Locking BA.");
+  });
+
+  it("a seated pilot is told of the token cool-off, and of a dropped order, on the ring", () => {
+    // The 4429 close (cut L) waits a whole minute before reconnecting; its
+    // client-local line reaches the cockpit ring as well as the scrollback,
+    // because on screen 0 the ring is the only reply surface (16b cut B.1).
+    // So does the line a typed order gets while the socket is down.
+    const { app, ws } = boot(ARENA_PANELS);
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(app.cockpit.seated).toBe(true);
+
+    ws.drop(CLOSE_TOKEN_COOLOFF);
+    const cooloff = "Too many reconnects from this network; retrying in one minute.";
+    expect(app.cockpit.notices.at(-1)).toBe(cooloff);
+    expect(lineTexts(app)).toContain(cooloff);
+
+    app.submit("lock BA");
+    expect(app.cockpit.notices.at(-1)).toBe("Not connected — command dropped.");
+    expect(lineTexts(app)).toContain("Not connected — command dropped.");
   });
 
   it("a notice is rung once: the bridge's copy of its sentence is not a reply", () => {

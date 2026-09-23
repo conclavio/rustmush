@@ -128,7 +128,7 @@ the server half is down is answered 1012, not "session ended".
 ### Building the SPA elsewhere
 
 `deploy.sh` refuses to start or reload anything when `web/dist/index.html` is
-missing, or older than the newest file under `web/src` — `web/dist` is
+missing, or its `web/dist/.commit` differs from the source commit — `web/dist` is
 git-ignored, so `git archive` never ships it and a stale bundle would otherwise
 embed in silence. It does **not** run npm itself, so if the box has no Node 22,
 build the bundle on the dev box and ship it:
@@ -138,10 +138,12 @@ npm --prefix web ci && npm --prefix web run build
 tar -c -C web dist | ssh -i $KEY $VPS 'tar -x -C /opt/rustmush/dev1/build/web'
 ```
 
-The refusal names the command either way; the check is on the mtimes of the
-shipped files, so a bundle built elsewhere and untarred after the source
-satisfies it.
-
+`npm run build` stamps the full source commit in `web/dist/.commit` after Vite
+succeeds. `git archive` expands the tracked `.source-commit` marker, so builds on
+the VPS work without `.git`; local checkouts use `git rev-parse HEAD`. The deploy
+compares these identities before changing a service or config. A rollback with a
+newer old bundle, or a change outside `web/src`, is refused just like a missing
+bundle. Archive the source and build the SPA from the same commit.
 ## Operate
 
 ```bash
@@ -161,22 +163,13 @@ systemctl disable --now dev1mush-gateway
 systemctl enable --now dev1mush          # re-run deploy/dev1/deploy.sh if the unit is gone
 ```
 
-## Adapting for another instance (e.g. a dev2-split)
+## Adapting for another instance
 
-Copy this dir, then in the copies:
-
-- rename the unit `dev2mush-gateway.service`, repoint `WorkingDirectory` /
-  `EnvironmentFile` / `ExecStart` / `ReadWritePaths` at `/opt/rustmush/dev2`,
-  and its `Requires`/`After` at `redis-dev2mush.service`;
-- give it its **own** `RuntimeDirectory` (e.g. `rustmush-dev2`) in the unit, so
-  the two instances' IPC sockets do not share a dir;
-- in `deploy.sh` set `ROOT=/opt/rustmush/dev2`, `DEV1=$SELF/../dev2`, the
-  redis port (6791), and the unit names;
-- give the instance its **own** `IPC_SOCKET` **unix socket path** in its
-  `instance.env`, inside that RuntimeDirectory (dev1 uses
-  `/run/rustmush/dev1.sock`; a dev2-split would use e.g.
-  `/run/rustmush-dev2/dev2.sock`) so two split instances on one box do not
-  collide on the boundary socket. The unix socket keeps the unauthenticated
-  boundary reachable only by the service user (see `../../docs/ops.md`).
-  A dev2-split needs `deploy/dev2` to have an `instance.env` at all, which it
-  does not yet — converting it is the first step, not an afterthought.
+The unused dev2 lane has been removed. Provision a new instance from
+[`../instance/instance.env.example`](../instance/instance.env.example) and the
+shared template. Copy the dev1 service shape, then give the new instance its own
+`ROOT`, Redis service and port, SSH/HTTPS ports, TLS paths, environment file,
+`RuntimeDirectory`, and Unix `IPC_SOCKET` inside that directory. Render and run
+both halves' `--check-config` before starting it. See the
+[provisioning and reset guide](../README.md) for the commands, including
+`reset-instance.sh --staff <account>` for a clean testing world with a staff login.

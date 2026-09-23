@@ -29,7 +29,7 @@
 //! (a structured error naming the accounts), never "first wins"; a `link` for a
 //! character another account already holds is refused for the same reason. A
 //! poisoned lock stops the map *learning* — both writers refuse and say so once
-//! — while reads go on answering from the table it kept ([`AccountMap::read`]
+//! — while reads go on answering from the table it kept (`AccountMap::read`
 //! says why).
 
 use std::collections::BTreeMap;

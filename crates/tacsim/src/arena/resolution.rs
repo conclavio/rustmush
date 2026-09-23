@@ -698,7 +698,7 @@ impl Arena {
     ///
     /// **16b cut F.3 moved it onto the contact's plot.** The range and the cover
     /// are taken from where the platform last *saw* the target, exactly as
-    /// [`crate::arena::step::Arena::frame_contacts`] takes a contact's range and
+    /// [`crate::arena::Arena::frame_contacts`] takes a contact's range and
     /// cell, so the band a weapon reports, the percentage `LOCK` and
     /// `WEAPONSTATUS` both quote, and the band the contact row prints are one
     /// reading of one plot and cannot disagree.

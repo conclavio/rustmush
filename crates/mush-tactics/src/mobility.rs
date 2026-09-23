@@ -92,7 +92,7 @@ macro_rules! mobility_id {
         pub struct $name(SmolStr);
 
         impl $name {
-            /// Validate and canonicalize (see [`canon`]).
+            /// Validate and canonicalize (see `canon`).
             ///
             /// # Errors
             /// [`MobilityError::EmptyId`] / [`MobilityError::IdTooLong`] /

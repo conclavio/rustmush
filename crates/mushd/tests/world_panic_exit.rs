@@ -42,6 +42,9 @@ fn the_half_child() {
     let data_dir = PathBuf::from(std::env::var(DIR_ENV).expect("the parent sets the data dir"));
 
     let log = LogCfg {
+        // This fixture asserts INFO records; an operator's RUST_LOG must not
+        // silently filter its sentinel out of both real log files.
+        level: "info".into(),
         file: true,
         ..LogCfg::default()
     };

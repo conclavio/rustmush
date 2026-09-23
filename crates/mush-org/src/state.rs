@@ -1,4 +1,4 @@
-//! [`OrgState`] — the in-RAM authoritative snapshot the [`authorize`](crate::authorize)
+//! [`OrgState`] — the in-RAM authoritative snapshot the [`authorize()`](crate::authorize())
 //! engine reads and the [`OrgMutationPlan`](crate::OrgMutationPlan) writes.
 //!
 //! It keeps the primary record maps plus the derived reverse indexes the hot

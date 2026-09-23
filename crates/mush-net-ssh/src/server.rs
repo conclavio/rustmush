@@ -303,6 +303,7 @@ impl russh::server::Server for Ingress {
             pty_seen: false,
             shell_started: false,
             connected: Arc::new(AtomicBool::new(false)),
+            preauth_watchdog: None,
             counted,
             flood: FloodBucket::new(PREAUTH_FLOOD_RATE, PREAUTH_FLOOD_BURST, Instant::now()),
         }
@@ -436,6 +437,8 @@ struct ConnHandler {
     /// mid-connect still gets its cleanup — the binary treats a
     /// `disconnected` for a never-attached conn as a no-op.
     connected: Arc<AtomicBool>,
+    /// Owned by the transport so a closed connection cannot later log a timeout.
+    preauth_watchdog: Option<tokio::task::JoinHandle<()>>,
     /// Whether this connection claimed a per-IP slot at accept time
     /// (`SshHooks::connection_opened`); released exactly once in `Drop`.
     /// `false` means over-cap: refused at the first auth message.
@@ -445,6 +448,9 @@ struct ConnHandler {
 
 impl Drop for ConnHandler {
     fn drop(&mut self) {
+        if let Some(watchdog) = self.preauth_watchdog.take() {
+            watchdog.abort();
+        }
         // Release the per-IP slot symmetrically with new_client — every
         // path (auth refused, welcome squatter, mid-connect teardown, clean
         // quit) comes through here exactly once.
@@ -1142,6 +1148,9 @@ impl ConnHandler {
             .await
         {
             Ok(()) => {
+                if let Some(watchdog) = self.preauth_watchdog.take() {
+                    watchdog.abort();
+                }
                 tracing::info!(
                     conn = self.conn_id,
                     account,
@@ -1403,7 +1412,7 @@ impl Handler for ConnHandler {
         let connected = Arc::clone(&self.connected);
         let channel_id = channel.id();
         let conn_id = self.conn_id;
-        tokio::spawn(async move {
+        self.preauth_watchdog = Some(tokio::spawn(async move {
             tokio::time::sleep(PREAUTH_TIMEOUT).await;
             if !connected.load(Ordering::SeqCst) {
                 tracing::info!(conn = conn_id, "pre-auth timeout; dropping connection");
@@ -1415,7 +1424,7 @@ impl Handler for ConnHandler {
                     .disconnect(Disconnect::ByApplication, "login timeout".into(), "".into())
                     .await;
             }
-        });
+        }));
         Ok(())
     }
 

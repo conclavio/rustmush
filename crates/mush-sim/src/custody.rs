@@ -13,8 +13,8 @@
 //!
 //! - **Sim owns the object's motion, so sim answers `claims`.** `claims` is the
 //!   simulation's OWN movement veto — [`SpatialState::is_sim_bound`] (placed,
-//!   quarantined, a domain/space/mount/station host) **or** mid-journey
-//!   ([`route::traveling_reason`]) — not half of it. That is what makes the
+//!   quarantined, a domain/space/mount/station host). Since S2, the atlas owns
+//!   the movement veto for its travelers. The simulation predicate makes the
 //!   economy's `ContainerProvider` refuse to route a hull into a footlocker.
 //! - **`None` means "sim is not wired", never "no".** [`SpatialState`] is
 //!   installed at *registration*, so the slot exists from the moment

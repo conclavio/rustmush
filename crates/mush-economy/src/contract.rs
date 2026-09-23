@@ -1095,7 +1095,7 @@ struct CanonicalConsent<'a> {
 
 /// The **grandfathered** consent domain: E4a's contract consent surface.
 ///
-/// It is the one domain whose canonical struct ([`CanonicalConsent`]) predates
+/// It is the one domain whose canonical struct (`CanonicalConsent`) predates
 /// domain separation and therefore carries **no `domain` field**. Its bytes are
 /// pinned golden (`e7c9_b1_consent_hash_bytes_are_byte_identical_to_e4a`) because
 /// [`EconomicContract::consent_intact`] re-derives every live contract's hash at
@@ -2685,7 +2685,7 @@ pub fn deposit_returns<'a>(
 /// The lowest-id `Active` vault `owner` owns whose backing is a single world
 /// object — deterministic, so the plan and the authority pick the same one.
 ///
-/// Public because [`crate::contract_live`]'s returnability check must ask exactly
+/// Public because `crate::contract_live`'s returnability check must ask exactly
 /// this question rather than a second, drifting one.
 pub fn owner_home(snapshot: &EconomySnapshot, owner: &PrincipalId) -> Option<(VaultId, ObjId)> {
     // E6b verify fold (D11): bounded on vaults **visited**. It is asked once per

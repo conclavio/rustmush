@@ -53,6 +53,8 @@
 
 mod support;
 
+use support::{STEP_TIMEOUT, wait_until};
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -147,7 +149,7 @@ fn module_list(
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
-    mods.extend(modules::ruleset_modules(onboarding, &Default::default()));
+    mods.extend(modules::sheet_modules(onboarding, &Default::default()));
     mods.push(modules::tacsim_module(tacsim_config(ai_fill)));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
@@ -367,16 +369,11 @@ async fn take_off_sized(ada: &mut Term, bo: &mut Term, ai: Option<u8>) {
 /// Bring power up, waiting for the arena to say it is online.
 async fn power_up(term: &mut Term) {
     say(term, "STARTUP", "Startup sequence").await;
-    for _ in 0..RETRY_BUDGET {
-        let seen = ask(term, "STATUS", "power").await;
-        if seen.contains("power online") {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("the tank never came online");
+    wait_until(STEP_TIMEOUT, "the tank to come online", async || {
+        ask(term, "STATUS", "power").await.contains("power online")
+    })
+    .await;
 }
-
 /// Every ledger line one match wrote, parsed.
 async fn ledger_events(store: &Arc<dyn ObjectStore>, match_id: u64) -> Vec<Value> {
     let log = format!("match.{match_id}");
@@ -491,14 +488,22 @@ async fn past_the_grace_the_reflex_controller_drives_the_tank_home() {
     power_up(&mut ada).await;
     // Ada gives no speed order at all: the tank is online, pointed west, and
     // standing still. Whatever moves it after this is not a pilot.
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    // Record stationary samples before releasing the seat.
+    support::wait_arena_seconds(&mut god, 1).await;
+    wait_until(
+        STEP_TIMEOUT,
+        "Ada's cockpit billet to persist",
+        async || support::holds_a_cockpit(&server.store, red).await,
+    )
+    .await;
 
     // The line goes, for good.
     drop(ada);
     drop(ada_handle);
-    // The grace is two seconds and the reaper sleeps exactly that; four is the
-    // margin, and six more is the controller's ground.
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    support::wait_arena_pilot_left(&mut god, "RA", "Ada").await;
+    // The controller's movement is recorded in the final ledger. Give it six
+    // seconds on its own clock, independent of the session-reaper schedule.
+    support::wait_arena_seconds(&mut god, 6).await;
     // The match ran on without her, and only then is the black box readable.
     let seen = ask(&mut god, "@arena/status", "match 1").await;
     assert!(
@@ -506,9 +511,16 @@ async fn past_the_grace_the_reflex_controller_drives_the_tank_home() {
         "the match runs on without her: {seen}"
     );
     say(&mut bo, "SIM ABORT", "aborts match").await;
-    tokio::time::sleep(Duration::from_millis(1_000)).await;
-
-    let events = ledger_events(&server.store, 1).await;
+    let mut events = Vec::new();
+    wait_until(
+        STEP_TIMEOUT,
+        "the aborted match's ledger tail",
+        async || {
+            events = ledger_events(&server.store, 1).await;
+            count(&events, "aborted") == 1
+        },
+    )
+    .await;
     let track = x_track(&events, red);
     assert!(
         track.len() >= 4,
@@ -552,7 +564,7 @@ async fn with_ai_fill_on_sim_ai_four_fields_all_eight_pods() {
     // The six pods nobody claimed went over with the two that were claimed, and
     // the check-out made them the controller's because they arrived with no seated
     // pilot. Nobody typed `STARTUP` for them.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    support::wait_arena_seconds(&mut god, 3).await;
     // And the board says so, in the one line the slots cannot.
     let seen = ask(&mut ada, "SIM STATUS", "machines take the unclaimed pods").await;
     assert!(seen.contains("running"), "{seen}");
@@ -561,8 +573,12 @@ async fn with_ai_fill_on_sim_ai_four_fields_all_eight_pods() {
         "the board says what the fill is: {seen}"
     );
     say(&mut ada, "SIM ABORT", "aborts match").await;
-    tokio::time::sleep(Duration::from_millis(1_000)).await;
-    let events = ledger_events(&server.store, 1).await;
+    let mut events = Vec::new();
+    wait_until(STEP_TIMEOUT, "the filled match's ledger tail", async || {
+        events = ledger_events(&server.store, 1).await;
+        count(&events, "aborted") == 1
+    })
+    .await;
     assert_eq!(
         units_in_summary(&events),
         8,
@@ -610,15 +626,19 @@ async fn with_ai_fill_on_the_default_size_is_the_larger_side() {
     say(&mut bo, "BOARD", "climb into").await;
     ada.expect("Good hunting").await;
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    support::wait_arena_seconds(&mut god, 3).await;
     let seen = ask(&mut ada, "SIM STATUS", "machines take the unclaimed pods").await;
     assert!(
         seen.contains("AI fill: each side fields 2; machines take the unclaimed pods."),
         "two on red is a two a side: {seen}"
     );
     say(&mut ada, "SIM ABORT", "aborts match").await;
-    tokio::time::sleep(Duration::from_millis(1_000)).await;
-    let events = ledger_events(&server.store, 1).await;
+    let mut events = Vec::new();
+    wait_until(STEP_TIMEOUT, "the sized match's ledger tail", async || {
+        events = ledger_events(&server.store, 1).await;
+        count(&events, "aborted") == 1
+    })
+    .await;
     assert_eq!(
         units_in_summary(&events),
         4,

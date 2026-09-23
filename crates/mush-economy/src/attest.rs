@@ -1,6 +1,6 @@
 //! The canon **attestation observer** (E4c, 08c §6.1 item 2).
 //!
-//! The economy subscribes to core's [`WorldEventKind::CanonRecorded`] — never to
+//! The economy subscribes to core's [`mush_core::WorldEventKind::CanonRecorded`] — never to
 //! `mush-canon`, which it does not depend on and must not — and, in the same step
 //! (hence the same `WriteBatch` as canon's own append), records an
 //! [`Attestation`] on every live contract condition the record actually answers,

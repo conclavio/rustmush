@@ -474,14 +474,14 @@ mod tests {
     /// S6 (doc 14 §4.6): the game's sheet composes its rules interface beside it,
     /// carrying the chargen stages.
     ///
-    /// 16b cut R-b: there is no ruleset SELECTION left to prove — `ruleset_modules`
+    /// 16b cut R-b: there is no ruleset SELECTION left to prove — `sheet_modules`
     /// is infallible and always answers the pilot sheet — so what this pins is the
     /// PAIRING and its order. The interface snapshots the ruleset's stages at
     /// composition, so it has to come second, and it has to carry the stages the
     /// sheet's own chargen declares rather than an empty list.
     #[test]
     fn a_ruleset_brings_its_rules_interface() {
-        let mods = ruleset_modules(
+        let mods = sheet_modules(
             &mush_core::OnboardingConfig::default(),
             &tacsim::GameEconomyConfig::default(),
         );
@@ -1382,7 +1382,7 @@ mod tests {
     // `.github/workflows/ci.yml`'s K8 kernel-contract job runs
     // `k8_5_production_compositions_publish_command_compatibility` by name, and
     // that test used to hand-assemble the roster it certified:
-    // `server_modules_with` + `ruleset_modules` + one
+    // `server_modules_with` + `sheet_modules` + one
     // `tacsim_module(tacsim::fixture::config())`. So the one job whose
     // name promises production fidelity asserted over a list nobody boots — no
     // worldgen, no NPC agent, `RecoveryConfig::default()` where a server passes
@@ -1479,7 +1479,7 @@ mod tests {
             &game,
             mush_campaign::RecoveryConfig::default(),
         );
-        modules.extend(ruleset_modules(&onboarding, &game));
+        modules.extend(sheet_modules(&onboarding, &game));
         modules.push(tacsim_module(tacsim::fixture::config()));
         modules
     }
@@ -2055,7 +2055,7 @@ mod tests {
             &game,
             mush_campaign::RecoveryConfig::default(),
         );
-        mods.extend(ruleset_modules(&onboarding, &game));
+        mods.extend(sheet_modules(&onboarding, &game));
         let tw = TestWorld::with_modules(mods);
         let clock = mush_core::ClockRef::Registered {
             owner: mush_core::OwnerId::new("economy").expect("owner"),
@@ -2279,7 +2279,7 @@ mod tests {
         );
         let mut mods = server_modules();
         mods.push(worldgen_module(Arc::clone(&llm)));
-        mods.extend(ruleset_modules(
+        mods.extend(sheet_modules(
             &mush_core::OnboardingConfig::default(),
             &tacsim::GameEconomyConfig::default(),
         ));
@@ -2367,7 +2367,7 @@ mod tests {
         use mush_npc::AgentGrounding;
         use mush_testkit::TestWorld;
         let mut mods = server_modules(); // carries the jobs module the sheet needs
-        mods.extend(ruleset_modules(
+        mods.extend(sheet_modules(
             &mush_core::OnboardingConfig::default(),
             &tacsim::GameEconomyConfig::default(),
         ));
@@ -2433,7 +2433,7 @@ mod tests {
         // sees a loaded jobs module).
         use mush_testkit::TestWorld;
         let mut mods = server_modules();
-        mods.extend(ruleset_modules(
+        mods.extend(sheet_modules(
             &mush_core::OnboardingConfig::default(),
             &tacsim::GameEconomyConfig::default(),
         ));

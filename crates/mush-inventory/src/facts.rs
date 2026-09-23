@@ -13,7 +13,7 @@
 //! **Why a mirror.** `FactProvider::resolve` receives `&World`, while typed state
 //! lives on the `Engine`, so a provider on this tree cannot read a typed family
 //! at all. Cut 2 therefore mirrors the marker family into
-//! [`InventoryStore`](crate::store::InventoryStore) at boot and on the coarse
+//! [`InventoryStore`] at boot and on the coarse
 //! sweep tick. The mirror is **behind** the authoritative truth by at most one
 //! sweep and never ahead, which is the direction that matters: this file's own
 //! contract is *unknown is unsatisfied, everywhere*, so a settlement waits rather

@@ -280,6 +280,9 @@ export class GameApp {
           this.#stopMapHeal();
         }
       },
+      onTokenCooloff: () => {
+        this.#localNotice("Too many reconnects from this network; retrying in one minute.");
+      },
       onFullRehydrate: () => {
         // Resume gap outgrew the ring: the server fell back to a fresh
         // attach; fresh Room output follows and the hello-pass re-requested
@@ -1397,8 +1400,20 @@ export class GameApp {
       this.scrollback.pushText("ev-echo", `> ${line}`);
     }
     if (!this.client.sendLine(line)) {
-      this.scrollback.pushText("ev-sys ev-local", "Not connected — command dropped.");
+      this.#localNotice("Not connected — command dropped.");
     }
+  }
+
+  /**
+   * A client-local line about the connection itself: the scrollback's, and
+   * while seated the cockpit's notices ring's too. On screen 0 the ring is the
+   * only reply surface (16b cut B.1) — the scrollback is not mounted there — so
+   * a pilot whose socket is cooling off, or whose typed order was dropped, is
+   * told so where they are looking. `pushReply` does nothing unless seated.
+   */
+  #localNotice(text: string): void {
+    this.scrollback.pushText("ev-sys ev-local", text);
+    this.cockpit.pushReply(text);
   }
 
   #localCommand(cmd: string): void {

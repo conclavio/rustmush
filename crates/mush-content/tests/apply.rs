@@ -161,6 +161,46 @@ impl Harness {
 const TWO: &str = r#"{"thing.a":{"kind":"thing","def":{"name":"A"}},"thing.b":{"kind":"thing","def":{"name":"B"}}}"#;
 
 #[test]
+fn an_unowned_first_boot_pack_fails_at_boot_with_its_identity_and_cause() {
+    let pack = load_pack(&signed("lot", 1, TWO)).expect("loads");
+    let module = mush_content::ContentModule::new().with_boot_packs(vec![pack]);
+    let (world, registry) = boot_world();
+    let mut engine = mush_core::Engine::with_modules(world, registry, vec![Box::new(module)])
+        .expect("content registers");
+    let error = engine
+        .modules_loaded(
+            Default::default(),
+            &mut Outbox::new(),
+            &mut mush_core::Effects::new(),
+        )
+        .expect_err("a missing boot pack must not become a later missing room");
+    let message = error.to_string();
+    assert!(
+        message.contains("first-boot pack lot@1 refused"),
+        "{message}"
+    );
+    assert!(
+        message.contains("thing"),
+        "the unowned kind is named: {message}"
+    );
+}
+
+#[test]
+#[should_panic(expected = "first-boot pack lot@1 stopped")]
+fn a_first_boot_entry_anomaly_also_fails_the_test_world_immediately() {
+    let mut appliers = Appliers::new();
+    appliers.register("test", Arc::new(Things)).expect("owner");
+    let pack = load_pack(&signed(
+        "lot", 1,
+        r#"{"thing.a":{"kind":"thing","def":{"name":"A"}},"thing.b":{"kind":"thing","def":{"refuse":true}}}"#,
+    )).expect("loads");
+    let module = mush_content::ContentModule::new()
+        .with_appliers(appliers)
+        .with_boot_packs(vec![pack]);
+    let _ = mush_testkit::TestWorld::with_modules(vec![Box::new(module)]);
+}
+
+#[test]
 fn an_unchanged_pack_applied_twice_creates_nothing_and_plans_nothing() {
     let mut h = Harness::new();
     let pack = load_pack(&signed("lot", 1, TWO)).expect("loads");
