@@ -1,7 +1,7 @@
 //! [`SessionManager`]: character → connections fan-out, envelope stamping +
 //! resume ring buffers, attach/detach, linkdead, WHO, flood control.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,7 +9,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
-use mush_proto::{ClientCaps, Envelope, OutputEvent, ProjectedCommitToken};
+use mush_proto::{
+    ClientCaps, Envelope, OutputEvent, PanelFrameKind, ProjectedCommitToken, SmolStr,
+};
 
 use crate::conn::{ConnId, ConnectionHandle};
 use crate::flood::{FloodBucket, FloodVerdict};
@@ -242,13 +244,24 @@ struct SessEntry {
     /// recorded — they must not replay to other/future connections; the
     /// resulting seq gaps are harmless (replay filters `seq > last_seq`).
     ///
-    /// **16b cut Q.3**: a `Panel` whose payload carries the [`RETAIN_LATEST`]
-    /// marker also drops its own feed's earlier marked entries as it is
-    /// recorded, which leaves the same harmless kind of gap.
+    /// **16b cut B.5** (`T-31`): a `Panel` keyframe whose payload carries the
+    /// [`RETAIN_LATEST`] marker is never recorded here at all — it goes to
+    /// `latest` below — so the ring holds no cockpit frame and the narrative
+    /// backlog, which reads the ring alone, never sees one.
     ring: VecDeque<(u64, Arc<Envelope>)>,
     /// Highest seq evicted from the ring (0 = nothing evicted yet) — the
     /// [`ReplayError::TooOld`] boundary.
     evicted_seq: u64,
+    /// **The per-feed latest slot** (16b cut B.5, `T-31`, `T-61`): for each feed
+    /// whose keyframes carry the [`RETAIN_LATEST`] marker, the newest one
+    /// stamped for this session and its seq. A new keyframe of the feed
+    /// replaces the slot's entry — one map write, no scan — and
+    /// [`SessionManager::replay_since`] merges the slot with the ring by seq.
+    /// Bounded by the number of marked feeds that reach a session through
+    /// delivery — one today, `arena.cockpit` (`arena.map` carries the marker
+    /// but is only ever a conn-scoped query reply, never recorded) — never by
+    /// traffic.
+    latest: HashMap<SmolStr, (u64, Arc<Envelope>)>,
     /// Structured presentation awaiting exact client acknowledgement,
     /// oldest first. Durable action status remains the long-horizon recovery
     /// source if this bounded cache rolls over.
@@ -271,15 +284,19 @@ const NARRATIVE_RING_INVARIANT: &str = "Narrative must reach the resume ring onl
      never a session/broadcast writer (interface plan I12 leak invariant)";
 
 /// **The `schema.retain` value that makes a panel keyframe supersede its own
-/// predecessors in the resume ring** (16b cut Q.3).
+/// predecessors for resume** (16b cut Q.3; the slot is 16b cut B.5's).
 ///
 /// The `schema.shape` idiom, applied to retention rather than to rendering: a
 /// producer declares a property of its payload in the payload, and the transport
-/// honours it with no per-feed table anywhere. A `Panel` whose
+/// honours it with no per-feed table anywhere. A `Panel` **keyframe** whose
 /// `data.schema.retain` is this string is a **whole-state keyframe** — the newest
 /// one is the whole truth and the ones before it are not history — so
-/// [`SessionManager::deliver_to_session`] drops every earlier ring entry of the
-/// same feed that also carries the marker before recording it.
+/// [`SessionManager::deliver_to_session`] keeps only the newest: it lives in a
+/// per-feed slot beside the ring, so the ring holds no marked keyframe at all
+/// and a frame costs no scan (16b cut B.5, `T-31`). Only a
+/// [`PanelFrameKind::Keyframe`] qualifies (`T-61`): a `Delta` carrying the
+/// marker is recorded in the ring like any other event, because a delta is
+/// history on top of its keyframe and must never evict the base it applies to.
 ///
 /// Why it exists: the arena's cockpit feed sends a keyframe per pilot per pulse,
 /// which at `Engaged` tempo is two a second. A 512-entry ring holds about four
@@ -287,24 +304,29 @@ const NARRATIVE_RING_INVARIANT: &str = "Narrative must reach the resume ring onl
 /// every channel line a pilot might resume into is evicted by a map they are
 /// looking at anyway.
 ///
-/// What it does **not** touch: `evicted_seq`. Coalescing removes an *interior*
-/// entry, and [`SessionManager::replay_since`] gates only on `evicted_seq` and
-/// `last_seq`, so a resume across a coalesce cannot answer
-/// [`ReplayError::TooOld`] because of one. The sequence gap it leaves is the
-/// harmless kind [`SessionManager::send_to_conn`] already documents. A frame
-/// without the marker — and a frame of a *different* feed — is never touched, and
-/// a gateway that has never heard of the marker simply records everything as
-/// before.
+/// What it does **not** touch: `evicted_seq`. A slot entry never enters the
+/// ring, so it can neither evict nor be evicted, and
+/// [`SessionManager::replay_since`] gates only on `evicted_seq` and `last_seq`;
+/// a resume across a slot replacement cannot answer [`ReplayError::TooOld`]
+/// because of one. The sequence gap a replaced keyframe leaves is the harmless
+/// kind [`SessionManager::send_to_conn`] already documents. A frame without the
+/// marker — and a frame of a *different* feed — is never touched, and a gateway
+/// that has never heard of the marker simply records everything as before.
 pub const RETAIN_LATEST: &str = "latest";
 
-/// The feed of a `Panel` event whose payload asks to be retained latest-only,
-/// or `None` for anything else (16b cut Q.3; see [`RETAIN_LATEST`]).
-fn retained_latest_feed(event: &OutputEvent) -> Option<&str> {
-    let OutputEvent::Panel { feed, data, .. } = event else {
+/// The feed of a `Panel` **keyframe** whose payload asks to be retained
+/// latest-only, or `None` for anything else — a `Delta` included, marker or
+/// not (16b cut Q.3; the kind test is 16b cut B.5's, `T-61`; see
+/// [`RETAIN_LATEST`]).
+fn retained_latest_feed(event: &OutputEvent) -> Option<&SmolStr> {
+    let OutputEvent::Panel { feed, kind, data } = event else {
         return None;
     };
+    if *kind != PanelFrameKind::Keyframe {
+        return None;
+    }
     let retain = data.get("schema")?.get("retain")?.as_str()?;
-    (retain == RETAIN_LATEST).then(|| feed.as_str())
+    (retain == RETAIN_LATEST).then_some(feed)
 }
 
 /// The session registry. Fully `Send + Sync`; every method is non-blocking
@@ -516,6 +538,7 @@ impl SessionManager {
                 last_seq: 0,
                 ring: VecDeque::new(),
                 evicted_seq: 0,
+                latest: HashMap::new(),
                 unacked_receipts: VecDeque::new(),
             },
         );
@@ -652,7 +675,8 @@ impl SessionManager {
     // Every session-scoped send funnels through `deliver_to_session`, the
     // single stamping path: it allocates the session's next seq, stamps an
     // Envelope (seq + ts from the injected clock + a clone of the event),
-    // records it in the resume ring, and fans out — the plain
+    // records it in the resume ring (a `RETAIN_LATEST` keyframe in its feed's
+    // latest slot instead, 16b cut B.5), and fans out — the plain
     // Arc<OutputEvent> to ANSI connections, the Arc<Envelope> to structured
     // ones. One semantic event, two renders (treaty ruling 1); the ring is
     // recorded for every session, live connections or not, so output during
@@ -709,19 +733,22 @@ impl SessionManager {
             };
             s.last_seq += 1;
             let seq = s.last_seq;
+            // The per-session `Envelope` clone stays — it is the residual half
+            // of `T-31`: the stamp is per session, so the event is cloned into
+            // each session's own envelope.
             let env = Arc::new(Envelope::new(seq, (self.clock)(), (**ev).clone()));
-            // 16b cut Q.3: a whole-state keyframe supersedes its own feed's
-            // earlier ones (see `RETAIN_LATEST`). One pass over a bounded ring,
-            // and only for an event that asked for it; `evicted_seq` is left
-            // exactly where it was.
+            // 16b cut B.5 (`T-31`, `T-61`): a whole-state keyframe replaces its
+            // own feed's slot entry (see `RETAIN_LATEST`) — one map write, no
+            // ring scan — and is NOT recorded in the ring; `evicted_seq` is left
+            // exactly where it was. Everything else is recorded as before.
             if let Some(feed) = retained_latest_feed(ev) {
-                s.ring
-                    .retain(|(_, held)| retained_latest_feed(&held.event) != Some(feed));
-            }
-            s.ring.push_back((seq, Arc::clone(&env)));
-            while s.ring.len() > self.config.resume_ring {
-                if let Some((evicted, _)) = s.ring.pop_front() {
-                    s.evicted_seq = evicted;
+                s.latest.insert(feed.clone(), (seq, Arc::clone(&env)));
+            } else {
+                s.ring.push_back((seq, Arc::clone(&env)));
+                while s.ring.len() > self.config.resume_ring {
+                    if let Some((evicted, _)) = s.ring.pop_front() {
+                        s.evicted_seq = evicted;
+                    }
                 }
             }
             (env, s.conns.clone())
@@ -994,10 +1021,18 @@ impl SessionManager {
     // ---- resume replay --------------------------------------------------
 
     /// The stamped envelopes a reconnecting structured client is missing:
-    /// every **ring-recorded** envelope with `seq > last_seq`, oldest
-    /// first. `Err(TooOld)` when the gap exceeds the ring (an event after
-    /// `last_seq` was already evicted) — the client must re-hydrate. A
-    /// `last_seq` exactly at the newest stamp replays nothing.
+    /// every **ring-recorded** envelope with `seq > last_seq`, merged with
+    /// every per-feed latest-slot keyframe with `seq > last_seq` (16b cut B.5,
+    /// see [`RETAIN_LATEST`]), oldest first by seq. `Err(TooOld)` when the gap
+    /// exceeds the ring (an event after `last_seq` was already evicted) — the
+    /// client must re-hydrate. A `last_seq` exactly at the newest stamp
+    /// replays nothing.
+    ///
+    /// The `evicted_seq`/`last_seq` gate is the ring's alone and is unchanged:
+    /// a slot entry is never evicted, however far the ring rolls past its seq,
+    /// because it is its feed's whole truth rather than history — so it stays in
+    /// the slot, and (the gate refusing any `last_seq` below `evicted_seq`) it
+    /// is replayed exactly when it is newer than `last_seq`.
     ///
     /// Also `Err(TooOld)` when `last_seq` is **higher** than anything this
     /// session ever stamped (HIGH finding): per-session seqs restart at 0,
@@ -1022,15 +1057,22 @@ impl SessionManager {
         if last_seq < s.evicted_seq || last_seq > s.last_seq {
             return Err(ReplayError::TooOld);
         }
-        Ok(s.ring
+        let mut missed: Vec<(u64, Arc<Envelope>)> = s
+            .ring
             .iter()
+            .chain(s.latest.values())
             .filter(|(seq, _)| *seq > last_seq)
-            .map(|(_, env)| Arc::clone(env))
-            .collect())
+            .map(|(seq, env)| (*seq, Arc::clone(env)))
+            .collect();
+        // Seqs are unique per session (one stamping counter), so this order is
+        // total and the slot's map order never reaches the client.
+        missed.sort_unstable_by_key(|(seq, _)| *seq);
+        Ok(missed.into_iter().map(|(_, env)| env).collect())
     }
 
-    /// A bounded, newest-first slice of this session's own resume ring,
-    /// filtered by `keep` (interface plan I12 — the narrative backlog reuses
+    /// A bounded, newest-first slice of this session's own resume ring — the
+    /// ring alone: a per-feed latest-slot keyframe is never backlog (16b cut
+    /// B.5) — filtered by `keep` (interface plan I12 — the narrative backlog reuses
     /// the per-viewer, already-gated resume ring: every ring envelope arrived
     /// as a `SendTarget::Char` the world had already run through
     /// exclude/@ignore/perceive, so no re-gating is needed). Read-only: never
@@ -1354,5 +1396,31 @@ mod tests {
             FloodVerdict::Ok,
             "and the bucket keeps refilling, so the connection is not stuck"
         );
+    }
+
+    /// **16b cut B.5 (`T-61`)**: only a keyframe is ever retained latest-only.
+    /// A `Delta` that carries the marker is history on top of its keyframe, so
+    /// it answers `None` and is recorded in the ring like any other event —
+    /// it can never evict the base it applies to.
+    #[test]
+    fn a_delta_with_the_retain_marker_is_not_retained_latest() {
+        let payload = serde_json::json!({
+            "schema": { "id": "arena.cockpit", "version": 1, "retain": RETAIN_LATEST },
+        });
+        let keyframe = OutputEvent::Panel {
+            feed: "arena.cockpit".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: payload.clone(),
+        };
+        let delta = OutputEvent::Panel {
+            feed: "arena.cockpit".into(),
+            kind: PanelFrameKind::Delta,
+            data: payload,
+        };
+        assert_eq!(
+            retained_latest_feed(&keyframe).map(SmolStr::as_str),
+            Some("arena.cockpit")
+        );
+        assert_eq!(retained_latest_feed(&delta), None);
     }
 }

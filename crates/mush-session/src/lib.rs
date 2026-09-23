@@ -54,6 +54,15 @@
 //! sends ([`SessionManager::send_to_conn`]) consume seqs but are never
 //! recorded — a prompt for one connection must not replay to another.
 //!
+//! A panel **keyframe** whose payload carries the [`RETAIN_LATEST`] marker is
+//! the one exception to "recorded in the ring": it is its feed's whole truth, so
+//! it is kept in a per-feed latest slot beside the ring (the newest only, one
+//! map write, no scan), the ring holds no such frame, and `replay_since` merges
+//! the slot with the ring by seq (16b cut B.5). A query reply is conn-scoped and
+//! never recorded, so `arena.map`'s `retain` marker can never fire — the map is
+//! only ever the answer to a query; the clients' timer heal (16b cut B.2) is
+//! what resumes a map after a reconnect.
+//!
 //! Authoritative `resolution.outcome` presentation has a second, bounded
 //! retention rule. A structured connection acknowledges the exact projected
 //! commit token after applying it; until then the session re-emits that receipt

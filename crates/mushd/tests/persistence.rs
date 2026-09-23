@@ -1668,6 +1668,13 @@ async fn account_creation_confirmation_waits_for_store_ack() {
 /// typed account creation. While the write is held, gameplay/world reads get a
 /// typed Busy refusal (never tentative RAM and never a false negative), and
 /// neither the success line nor a later barrier may overtake it.
+///
+/// **16b cut B.5**: the `who` query and the `name_free` read now wait in the
+/// world's defer queue first and are refused only when the held write outlives
+/// its 250 ms bound — with exactly today's refusals (the query's typed reply
+/// wraps the `CommitPending` sentence, the read answers `Busy`), because only a
+/// typed line hears the new timed-out sentence. The one-second bound on the
+/// read covers that wait.
 #[tokio::test(flavor = "multi_thread")]
 async fn ordinary_success_and_barrier_wait_for_exact_store_ack() {
     let flaky = Arc::new(FlakyStore::new());
@@ -1793,12 +1800,14 @@ async fn store_failure_enters_read_only_and_recovery_exits() {
     // The exact failed write remains in writer custody and keeps the world in
     // CommitPending until it can retry. Every ordinary command is refused
     // against that tentative RAM image, including otherwise read-only lines.
+    // 16b cut B.5: each waits in the defer queue first, and the failing write
+    // outlives the 250 ms bound, so each is refused in the timed-out words.
     god_cmd(&world, "@create another-orb").await;
-    expect_text(&mut god_rx, "committing another action").await;
+    expect_text(&mut god_rx, "busy too long for that line").await;
     god_cmd(&world, "look").await;
-    expect_text(&mut god_rx, "committing another action").await;
+    expect_text(&mut god_rx, "busy too long for that line").await;
     god_cmd(&world, "say still here").await;
-    expect_text(&mut god_rx, "committing another action").await;
+    expect_text(&mut god_rx, "busy too long for that line").await;
 
     // Store comes back: the writer's retry succeeds (backoff <= 5s), the
     // world announces recovery, and mutations flow again — including the
@@ -1914,12 +1923,14 @@ async fn read_only_refuses_exit_aliases_and_creation() {
     god_cmd(&world, "@create tripwire").await;
     expect_text(&mut god_rx, "store write failure").await;
 
-    // "l" resolves to the exit, not to `look` — refused as CommitPending.
+    // "l" resolves to the exit, not to `look` — refused behind the pending
+    // commit. 16b cut B.5: it waits in the defer queue first and the failing
+    // write outlives the 250 ms bound, so it is refused in the timed-out words.
     god_cmd(&world, "l").await;
-    expect_text(&mut god_rx, "committing another action").await;
+    expect_text(&mut god_rx, "busy too long for that line").await;
     // Plain `look` is also refused: it may not observe tentative RAM.
     god_cmd(&world, "look").await;
-    expect_text(&mut god_rx, "committing another action").await;
+    expect_text(&mut god_rx, "busy too long for that line").await;
 
     // Typed creation gets the equivalent retryable Busy result.
     let err = world.create_player("Nope", None).await.unwrap_err();

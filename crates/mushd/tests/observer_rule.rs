@@ -1752,6 +1752,74 @@ fn the_retain_marker_the_arena_sends_is_the_one_the_session_ring_reads() {
         "one survivor per feed, and the two lines untouched around them"
     );
     assert_eq!(ring.len(), 4, "the two lines are still in the ring");
+
+    // **16b cut B.5 (`T-31`)**: the survivors live in the per-feed latest slot,
+    // not the ring. The ring (read alone through the backlog, which never sees
+    // the slot) holds the two lines and not one frame.
+    let ring_alone = manager
+        .backlog_matching(sess, None, 1_000, |_| true)
+        .expect("the ring is readable");
+    assert_eq!(
+        ring_alone.lines.len(),
+        2,
+        "the ring holds the two lines and no marked keyframe"
+    );
+    assert!(
+        ring_alone
+            .lines
+            .iter()
+            .all(|envelope| !matches!(envelope.event, OutputEvent::Panel { .. })),
+        "no cockpit or map frame is a ring entry"
+    );
+
+    // And a REAL seated `arena.cockpit` frame — the committed fixture
+    // `status_frame` blessed, the one all three clients are pinned against —
+    // replaces the cleared one in the slot and is the one cockpit frame a
+    // client resuming from before it is replayed.
+    let seated: Value = serde_json::from_str(include_str!(
+        "../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+    ))
+    .expect("the committed cockpit fixture parses");
+    assert_eq!(
+        seated.pointer("/schema/retain").and_then(Value::as_str),
+        Some(mush_session::RETAIN_LATEST),
+        "the fixture carries the marker the slot reads"
+    );
+    let before = manager.last_seq(sess).expect("the session");
+    manager.send_event_to_char(CharKey(1), panel(COCKPIT_FEED, seated.clone()));
+    let replayed = manager
+        .replay_since(sess, before)
+        .expect("a slot replacement is never TooOld");
+    assert_eq!(replayed.len(), 1, "the seated frame alone");
+    assert!(
+        matches!(
+            &replayed[0].event,
+            OutputEvent::Panel { feed, data, .. } if feed.as_str() == COCKPIT_FEED && *data == seated
+        ),
+        "the replayed frame is the seated one, byte for byte"
+    );
+    let from_zero = manager.replay_since(sess, 0).expect("never TooOld");
+    let cockpit_frames: Vec<&Value> = from_zero
+        .iter()
+        .filter_map(|envelope| match &envelope.event {
+            OutputEvent::Panel { feed, data, .. } if feed.as_str() == COCKPIT_FEED => Some(data),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        cockpit_frames,
+        vec![&seated],
+        "from zero, the seated frame is the only cockpit frame — the cleared ones are gone"
+    );
+    assert_eq!(
+        manager
+            .backlog_matching(sess, None, 1_000, |_| true)
+            .expect("the ring is readable")
+            .lines
+            .len(),
+        2,
+        "and it never entered the ring"
+    );
 }
 
 /// The cells the two slot-1 tanks are re-posed to for the shooting case: **four

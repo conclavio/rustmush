@@ -29,6 +29,10 @@ const CLIMATE: &str = "temperate-coastal";
 /// when a player's line lands, so the journey resends the line instead of
 /// treating the bounce as a wrong answer — which is what the signal asks for.
 const WORLD_BUSY: &str = "The world is committing another action; please retry in a moment.";
+/// 16b cut B.5: the same signal for a line that waited its 250 ms in the
+/// world's defer queue while the commit still pended; resent on the same terms.
+const WORLD_BUSY_TIMED_OUT: &str =
+    "The world was busy too long for that line; please retry in a moment.";
 
 /// Send `line` and wait for `needle`, resending after a short pause each time
 /// the world answers with the busy signal instead. Returns the mark taken
@@ -37,7 +41,11 @@ async fn send_until(term: &mut Term, line: &str, needle: &str) -> usize {
     for _ in 0..64 {
         let mark = term.mark();
         term.send_line(line).await;
-        if term.expect_one_of_after(mark, &[needle, WORLD_BUSY]).await == 0 {
+        if term
+            .expect_one_of_after(mark, &[needle, WORLD_BUSY, WORLD_BUSY_TIMED_OUT])
+            .await
+            == 0
+        {
             return mark;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

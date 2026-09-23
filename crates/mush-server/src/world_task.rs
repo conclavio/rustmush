@@ -222,6 +222,33 @@ const INBOUND_CAPACITY: usize = 1024;
 /// unbounded side queue during a prolonged store outage.
 const MAX_PENDING_BARRIERS: usize = 256;
 
+/// **How many typed lines one connection may have waiting behind a commit**
+/// (16b cut B.5, `B-13`; owner default Q7).
+///
+/// A line that meets another action's commit waits in the [`DeferQueue`] rather
+/// than being refused at once. Four is a burst a player actually types or pastes
+/// (four web lines in one send lost three before this); a fifth from the same
+/// connection is refused with [`RefusalReason::CommitPending`] exactly as every
+/// line was before. Counts [`Inbound::Cmd`] only: a query or a world read counts
+/// against [`COMMAND_DEFER_CAP`] alone.
+const COMMAND_DEFER_DEPTH: usize = 4;
+
+/// **Every entry the [`DeferQueue`] may hold at once**, lines, queries, world
+/// reads and barriers together (16b cut B.5). The bound that keeps the queue
+/// from being the unbounded side channel doc 09 forbids: 64 fixed-shape entries
+/// behind one commit, never more.
+const COMMAND_DEFER_CAP: usize = 64;
+
+/// **How long a deferred entry may wait from its arrival**, milliseconds (16b
+/// cut B.5; Q7). A line still queued this long after it arrived, while a commit
+/// is still pending, is refused in a player's words
+/// ([`RefusalReason::CommitTimedOut`]); a line the resolved commit can serve is
+/// served, however long that took.
+const COMMAND_DEFER_MS: u64 = 250;
+
+/// [`COMMAND_DEFER_MS`] as the `Duration` the queue measures with.
+const COMMAND_DEFER: Duration = Duration::from_millis(COMMAND_DEFER_MS);
+
 /// Latest full gateway reannounce snapshot retained while one exact receipt is
 /// pending. A reannounce is replaceable state, not an ordered event stream, so
 /// newer snapshots coalesce over older ones. This matches the independently
@@ -944,6 +971,11 @@ enum IngressClass {
 enum RefusalReason {
     NotReady,
     CommitPending,
+    /// **A deferred entry outlived [`COMMAND_DEFER_MS`] behind a commit that is
+    /// still pending** (16b cut B.5, `B-13`). Only a typed line hears its own
+    /// sentence; every other message is refused exactly as
+    /// [`Self::CommitPending`] refuses it (see [`refuse_world_msg`]).
+    CommitTimedOut,
     StoreUnavailable,
     IntegrityFrozen,
 }
@@ -954,6 +986,11 @@ impl RefusalReason {
             Self::NotReady => "The world is still starting; please try again shortly.",
             Self::CommitPending => {
                 "The world is committing another action; please retry in a moment."
+            }
+            // Ends in the phrase every test rig's commit-pending retry needle
+            // matches, so a rig that retries the old refusal retries this one.
+            Self::CommitTimedOut => {
+                "The world was busy too long for that line; please retry in a moment."
             }
             Self::StoreUnavailable => {
                 "The database is currently unavailable; commands that change the world are paused."
@@ -1026,8 +1063,12 @@ fn classify_world_msg(msg: &WorldMsg) -> IngressClass {
 /// Work whose producer has already transferred semantic/lifecycle custody and
 /// therefore cannot be answered Busy or dropped merely because another exact
 /// receipt is pending. One such item may be held locally to preserve FIFO.
-/// Ordinary commands and typed service mutations are refused immediately so
-/// they cannot head-of-line block later operational traffic.
+///
+/// Nothing else takes that slot. A typed line, a query and the reply-carrying
+/// world reads wait in the bounded [`DeferQueue`] instead
+/// ([`waits_in_defer_queue`], 16b cut B.5), which never stops `rx` being polled
+/// while the commit is in flight, so they cannot head-of-line block later
+/// operational traffic; typed service mutations are still refused immediately.
 fn must_defer_behind_commit(msg: &WorldMsg) -> bool {
     matches!(
         msg,
@@ -1038,6 +1079,35 @@ fn must_defer_behind_commit(msg: &WorldMsg) -> bool {
                 | Inbound::Apply(_)
         )
     )
+}
+
+/// **What waits in the [`DeferQueue`] when it meets a commit** (16b cut B.5,
+/// `B-13`): a typed line, a query, and the five world reads that carry a reply
+/// channel. Each is retryable input that has transferred no custody, so a
+/// bounded wait costs nothing and saves the player a retry loop they do not
+/// have; each is refused as before once the bound is reached or passed.
+///
+/// Deliberately NOT here: [`Inbound::Composing`] (best-effort, dropped as
+/// before); `CreatePlayer`, `AuthoritativeAction`, `RelaySpeak`,
+/// `DiscordInteraction`, `RecheckPrivilege`, [`Inbound::Respond`], dumps and
+/// staff operations, whose refusals are typed and whose callers retry by design;
+/// and the four lifecycle messages [`must_defer_behind_commit`] holds.
+fn waits_in_defer_queue(msg: &WorldMsg) -> bool {
+    matches!(
+        msg,
+        WorldMsg::Inbound(Inbound::Cmd { .. } | Inbound::Query { .. })
+            | WorldMsg::NameFree { .. }
+            | WorldMsg::UnlinkPlayer { .. }
+            | WorldMsg::InInputContext { .. }
+            | WorldMsg::ConnectionReady { .. }
+            | WorldMsg::LegalActions { .. }
+    )
+}
+
+/// Whether a message is a typed line: the one kind `command_processed` counts,
+/// and the one kind [`COMMAND_DEFER_DEPTH`] bounds per connection.
+const fn is_typed_line(msg: &WorldMsg) -> bool {
+    matches!(msg, WorldMsg::Inbound(Inbound::Cmd { .. }))
 }
 
 fn classify_writer_signal(signal: &WriterSignal) -> IngressClass {
@@ -1691,8 +1761,15 @@ impl WorldHandle {
 
     /// Typed round-trip barrier: resolves once everything sent through this
     /// handle before the call has been processed and its output delivered.
-    /// Bounded pending-custody overload stays retryable [`WorldReadError::Busy`]
-    /// while an aborted receipt, explicit refusal, or vanished task is
+    /// A line or a read still waiting in the world's defer queue behind a
+    /// commit (16b cut B.5) counts as NOT yet processed: a barrier that arrives
+    /// behind queued entries waits behind them and completes after the last is
+    /// served or refused, and behind the receipt of any commit one of them
+    /// starts.
+    /// Bounded pending-custody overload — the retained-waiter cap, or a defer
+    /// queue already holding its 64 entries — stays retryable
+    /// [`WorldReadError::Busy`], never an early `Ok`, while an aborted receipt,
+    /// explicit refusal, or vanished task is
     /// [`WorldReadError::Unavailable`].
     pub async fn barrier_result(&self) -> Result<(), WorldReadError> {
         let (reply, rx) = oneshot::channel();
@@ -2336,6 +2413,16 @@ enum Wake {
     /// mechanism (the same `WorldCommand::ModuleAsyncDone` worldgen and the NPC
     /// layer come back on) rather than a second one.
     ArenaEgress(Box<tacsim::arena_task::ArenaOut>),
+    /// 16b cut B.5 (`B-13`): no commit is pending and the defer queue is not
+    /// empty; the next entry is taken off its front. A queued message becomes a
+    /// [`Wake::Msg`] before the dispatch; this variant survives only when the
+    /// queue turned out empty.
+    Deferred,
+    /// 16b cut B.5: the queued barrier the drain just took off the front.
+    DeferredBarrier(oneshot::Sender<Result<(), WorldReadError>>),
+    /// 16b cut B.5: the oldest queued message has waited
+    /// [`COMMAND_DEFER_MS`] while a commit still pends.
+    DeferExpiry,
     Shutdown,
     ShutdownDeadline,
     Closed,
@@ -3725,16 +3812,216 @@ impl PendingCommit {
     }
 }
 
-fn publish_pending_custody(metrics: &Metrics, pending: Option<&PendingCommit>) {
+/// Publish the custody gauges. `queued_barriers` is the barrier waiters held in
+/// the [`DeferQueue`] behind deferred lines (16b cut B.5): they wait on the same
+/// commit a retained barrier waits on, one step further back, so the gauge
+/// counts both and charges both the same fixed bytes.
+fn publish_pending_custody(
+    metrics: &Metrics,
+    pending: Option<&PendingCommit>,
+    queued_barriers: usize,
+) {
     let custody = pending.map_or_else(PendingCustody::default, PendingCommit::custody);
     let as_u64 = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
     metrics.set_commit_pending_custody(
-        as_u64(custody.barriers),
+        as_u64(custody.barriers.saturating_add(queued_barriers)),
         as_u64(custody.reattach_records),
-        as_u64(custody.operational_bytes),
+        as_u64(
+            custody
+                .operational_bytes
+                .saturating_add(queued_barriers.saturating_mul(PENDING_BARRIER_CHARGE_BYTES)),
+        ),
         as_u64(custody.sends),
         as_u64(custody.effects),
     );
+}
+
+/// Answer a barrier that has nothing queued ahead of it: behind the pending
+/// commit's exact receipt when there is one (processing is not delivery), at
+/// once otherwise. A retained waiter past [`MAX_PENDING_BARRIERS`] is refused
+/// `Busy` by [`PendingCommit::retain_barrier`].
+fn settle_barrier(
+    reply: oneshot::Sender<Result<(), WorldReadError>>,
+    pending: Option<&mut PendingCommit>,
+    metrics: &Metrics,
+) {
+    if let Some(pending) = pending {
+        // Processing is not delivery: keep the barrier behind the prior exact
+        // receipt and held output.
+        if !pending.retain_barrier(reply) {
+            metrics.commit_pending_barrier_refused();
+            tracing::warn!(
+                cap = MAX_PENDING_BARRIERS,
+                "commit-pending barrier waiter cap reached; refusing waiter"
+            );
+        }
+    } else {
+        let _ = reply.send(Ok(()));
+    }
+}
+
+/// The [`DeferQueue`]'s clock: tokio's, the one its timer arm sleeps on. In
+/// production it reads the same as `std::time::Instant`; under a paused test
+/// runtime the stamp, the deadline and the expiry all move with the virtual
+/// clock together, so an elapsed deadline always finds its entry aged (a
+/// `std` stamp against a virtual sleep re-armed an elapsed deadline and spun
+/// until real time caught up).
+type DeferInstant = tokio::time::Instant;
+
+/// **One entry of the [`DeferQueue`]**: what waits, and since when (16b cut
+/// B.5). `since` is the instant the entry first joined the queue, and it
+/// survives a return to the front ([`DeferQueue::push_front_kept`]), so the
+/// [`COMMAND_DEFER_MS`] bound is always measured from the player's keystroke.
+struct Deferred {
+    since: DeferInstant,
+    entry: DeferEntry,
+}
+
+/// What a [`Deferred`] holds.
+enum DeferEntry {
+    /// A typed line, a query or a reply-carrying world read
+    /// ([`waits_in_defer_queue`]), refused `CommitPending` on arrival.
+    Msg(WorldMsg),
+    /// A [`WorldMsg::Barrier`] that arrived behind queued entries. It is
+    /// bookkeeping, so it never expires; it completes when it reaches the front
+    /// with no commit pending, which is when everything sent before it has been
+    /// served (or refused).
+    Barrier(oneshot::Sender<Result<(), WorldReadError>>),
+}
+
+/// **The bounded defer queue** (16b cut B.5, `B-13`; doc 09 "single-flight").
+///
+/// While one exact commit is in flight the world cannot serve a line or a read
+/// (RAM holds the tentative post-image), and it used to refuse every one at
+/// once — four web lines sent in one burst lost three, and every test rig in the
+/// tree carried a retry loop a player does not have. This holds them instead:
+/// at most [`COMMAND_DEFER_DEPTH`] typed lines a connection and
+/// [`COMMAND_DEFER_CAP`] entries in all, each for at most [`COMMAND_DEFER_MS`]
+/// from its arrival. The loop drains it front to back once no commit is pending,
+/// one entry a turn and before anything new is taken, so a connection's lines
+/// stay in the order it typed them.
+///
+/// Pure: no clock of its own (every call takes `now`), no I/O, no world.
+#[derive(Default)]
+struct DeferQueue {
+    entries: VecDeque<Deferred>,
+}
+
+impl DeferQueue {
+    /// Queue a message refused `CommitPending`, or hand it back when its
+    /// connection already has [`COMMAND_DEFER_DEPTH`] typed lines waiting (a
+    /// typed line only) or the queue holds [`COMMAND_DEFER_CAP`] entries.
+    fn push_msg(&mut self, msg: WorldMsg, now: DeferInstant) -> Result<(), WorldMsg> {
+        if self.entries.len() >= COMMAND_DEFER_CAP {
+            return Err(msg);
+        }
+        if let WorldMsg::Inbound(Inbound::Cmd { conn, .. }) = &msg {
+            let depth = self
+                .entries
+                .iter()
+                .filter(|held| {
+                    matches!(
+                        &held.entry,
+                        DeferEntry::Msg(WorldMsg::Inbound(Inbound::Cmd { conn: queued, .. }))
+                            if queued == conn
+                    )
+                })
+                .count();
+            if depth >= COMMAND_DEFER_DEPTH {
+                return Err(msg);
+            }
+        }
+        self.entries.push_back(Deferred {
+            since: now,
+            entry: DeferEntry::Msg(msg),
+        });
+        Ok(())
+    }
+
+    /// Queue a barrier behind every entry already waiting, or hand its reply
+    /// back when the queue holds [`COMMAND_DEFER_CAP`] entries. It is never
+    /// answered `Ok` here: the queue is only non-empty behind a pending commit
+    /// (the loop polls `rx` with a non-empty queue only then), so a barrier
+    /// answered at the cap would overtake both the queued entries and that
+    /// commit's receipt. The caller refuses a handed-back reply with the
+    /// retryable [`WorldReadError::Busy`] — the same overload answer
+    /// [`PendingCommit::retain_barrier`] gives past [`MAX_PENDING_BARRIERS`].
+    fn push_barrier(
+        &mut self,
+        reply: oneshot::Sender<Result<(), WorldReadError>>,
+        now: DeferInstant,
+    ) -> Result<(), oneshot::Sender<Result<(), WorldReadError>>> {
+        if self.entries.len() >= COMMAND_DEFER_CAP {
+            return Err(reply);
+        }
+        self.entries.push_back(Deferred {
+            since: now,
+            entry: DeferEntry::Barrier(reply),
+        });
+        Ok(())
+    }
+
+    /// Put a just-popped entry back at the FRONT with its original `since`: a
+    /// drained line that met a commit again (an earlier drained line started
+    /// one) keeps its place and its deadline.
+    fn push_front_kept(&mut self, deferred: Deferred) {
+        self.entries.push_front(deferred);
+    }
+
+    /// Take every message that has waited [`COMMAND_DEFER_MS`] or longer, front
+    /// to back. A barrier never expires and keeps its place among the rest.
+    fn expire(&mut self, now: DeferInstant) -> Vec<WorldMsg> {
+        let mut expired = Vec::new();
+        let mut kept = VecDeque::with_capacity(self.entries.len());
+        for held in self.entries.drain(..) {
+            match held.entry {
+                DeferEntry::Msg(msg)
+                    if now.saturating_duration_since(held.since) >= COMMAND_DEFER =>
+                {
+                    expired.push(msg);
+                }
+                entry => kept.push_back(Deferred {
+                    since: held.since,
+                    entry,
+                }),
+            }
+        }
+        self.entries = kept;
+        expired
+    }
+
+    /// When the next message ages out: the earliest `since + COMMAND_DEFER_MS`
+    /// among the queued messages, or `None` when only barriers (or nothing)
+    /// wait.
+    fn oldest_deadline(&self) -> Option<DeferInstant> {
+        self.entries
+            .iter()
+            .filter(|held| matches!(held.entry, DeferEntry::Msg(_)))
+            .map(|held| held.since.checked_add(COMMAND_DEFER).unwrap_or(held.since))
+            .min()
+    }
+
+    fn pop_front(&mut self) -> Option<Deferred> {
+        self.entries.pop_front()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Everything, front to back, leaving the queue empty (shutdown and the
+    /// loop's exit).
+    fn drain_all(&mut self) -> Vec<Deferred> {
+        self.entries.drain(..).collect()
+    }
+
+    /// How many barrier waiters are queued (the custody gauge).
+    fn barriers(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|held| matches!(held.entry, DeferEntry::Barrier(_)))
+            .count()
+    }
 }
 
 #[allow(clippy::too_many_lines)] // the world loop is one cohesive state machine
@@ -3836,8 +4123,10 @@ async fn run(
     // At most one authoritative mutation batch may be in flight. Its
     // commit-bound presentation/effects are held here. Receipt/order/status
     // traffic and writer recovery remain live, but gameplay/world reads are
-    // refused with a typed Busy response: RAM already contains the tentative
-    // post-image, so it is not an authoritative query snapshot yet.
+    // not served: RAM already contains the tentative post-image, so it is not
+    // an authoritative query snapshot yet. They wait in the bounded defer
+    // queue (16b cut B.5) and are refused with a typed Busy response only when
+    // it is full or they outlive its 250 ms bound.
     let mut pending_commit: Option<PendingCommit> = None;
     // Loss witnesses already accounted for by the supervision check at the head
     // of the loop. Boot may hydrate a store that has none, so this starts where
@@ -3847,11 +4136,23 @@ async fn run(
     // already dequeued while another exact receipt is outstanding, retain that
     // ONE message locally and stop polling `rx`. This preserves FIFO without
     // inventing a second unbounded input queue; the bounded channel supplies
-    // backpressure until the commit resolves. Ordinary Cmd/CreatePlayer/Dump
-    // work is refused immediately and never occupies this slot. Operational
-    // traffic behind a retained Apply/lifecycle message is still head-of-line
-    // blocked: the separately bounded semantic/lifecycle lane remains K2 work.
+    // backpressure until the commit resolves. Nothing else occupies this slot:
+    // CreatePlayer/Dump and typed service work is refused immediately, and a
+    // typed line, a query or a reply-carrying world read waits in `defer`
+    // below. Operational traffic behind a retained Apply/lifecycle message is
+    // still head-of-line blocked: the separately bounded semantic/lifecycle
+    // lane remains K2 work.
     let mut deferred_world_msg: Option<WorldMsg> = None;
+    // **16b cut B.5 (`B-13`)**: the bounded defer queue. A line that meets a
+    // commit waits here — at most four a connection, 64 in all, 250 ms from its
+    // arrival — instead of being refused at once, and `rx` stays polled while
+    // the commit is in flight, so nothing queued here blocks the receipt,
+    // lifecycle or bookkeeping traffic behind it. Once the commit resolves the
+    // queue drains, one entry a turn, BEFORE the lifecycle slot above and
+    // before anything new is taken from `rx`: every queued entry arrived before
+    // whatever fills that slot (`rx` stops once it is full), and a connection's
+    // lines stay in the order it typed them.
+    let mut defer = DeferQueue::default();
     // Store-backed staff operations drained beside a local operation remain
     // ordered behind any commit that local operation starts.
     let mut deferred_staff_ops: Vec<StaffOp> = Vec::new();
@@ -3989,7 +4290,20 @@ async fn run(
             && retained.is_empty()
             && !engine.has_legacy_persistence_work()
             && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
-        let ready_deferred = if pending_commit.is_none() {
+        // 16b cut B.5 (`B-13`): the defer queue's two arms. The timer refuses
+        // an entry that has waited its 250 ms while the commit still pends —
+        // ONLY here, never on the turn that could serve it, so a line the
+        // resolved commit can serve is served. The drain is ready work (the
+        // `command_submit_armed` idiom): going through the select keeps the
+        // signals, the shutdown watch and every other ready arm polled between
+        // drained entries.
+        let defer_deadline = defer.oldest_deadline();
+        let defer_timer_armed = pending_commit.is_some() && defer_deadline.is_some();
+        let defer_ready = pending_commit.is_none() && !defer.is_empty();
+        // The lifecycle slot is taken only once the queue is empty: every
+        // queued entry arrived before it (a `ConnDown` from `QUIT` runs after
+        // the lines the player typed before it).
+        let ready_deferred = if pending_commit.is_none() && defer.is_empty() {
             deferred_world_msg.take()
         } else {
             None
@@ -3998,9 +4312,22 @@ async fn run(
             Wake::Msg(msg)
         } else {
             tokio::select! {
-            m = rx.recv(), if inbound_open && deferred_world_msg.is_none() => {
+            // While a commit is in flight `rx` stays polled, so reads,
+            // lifecycle traffic and bookkeeping are never head-of-line blocked
+            // behind the queue; once it resolves the queue drains before
+            // anything new is taken.
+            m = rx.recv(), if inbound_open
+                && deferred_world_msg.is_none()
+                && (defer.is_empty() || pending_commit.is_some()) => {
                 m.map_or(Wake::Closed, Wake::Msg)
             },
+            () = async {
+                match defer_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            }, if defer_timer_armed => Wake::DeferExpiry,
+            () = std::future::ready(()), if defer_ready => Wake::Deferred,
             // Writer control facts ride their own bounded/coalescing mailbox
             // (see `WriterSignal`). `None` means the writer is gone and every
             // final latched fact was drained; disable this arm (avoiding a
@@ -4071,6 +4398,28 @@ async fn run(
             } => Wake::ShutdownDeadline,
             }
         };
+        // 16b cut B.5: a drained line is handled EXACTLY as a fresh one —
+        // admission and all — so it becomes a `Wake::Msg`, remembering when it
+        // first queued in case it meets a commit again and must go back to the
+        // front with its deadline. A drained barrier has its own arm.
+        let mut drained_since: Option<DeferInstant> = None;
+        let wake = match wake {
+            Wake::Deferred => match defer.pop_front() {
+                Some(Deferred {
+                    since,
+                    entry: DeferEntry::Msg(msg),
+                }) => {
+                    drained_since = Some(since);
+                    Wake::Msg(msg)
+                }
+                Some(Deferred {
+                    entry: DeferEntry::Barrier(reply),
+                    ..
+                }) => Wake::DeferredBarrier(reply),
+                None => Wake::Deferred,
+            },
+            wake => wake,
+        };
         let iteration_start = Instant::now();
         let now_unix = unix_now_s();
         // CommitPending freezes guard-producing truth; boot/recovery and an
@@ -4096,16 +4445,39 @@ async fn run(
         let mut failure_actor: Option<ObjId> = None;
         let outcome = match wake {
             Wake::Msg(msg) => {
-                if matches!(&msg, WorldMsg::Inbound(Inbound::Cmd { .. })) {
-                    metrics.command_processed();
-                }
+                // 16b cut B.5: `command_processed` counts a typed line where it
+                // is admitted or finally refused, never where it is deferred,
+                // so a line that waits is counted once.
                 match admit_world_msg(admission_mode, &engine.world, &msg) {
                     Admission::Refuse(reason) => {
                         if reason == RefusalReason::CommitPending && must_defer_behind_commit(&msg)
                         {
                             debug_assert!(deferred_world_msg.is_none());
                             deferred_world_msg = Some(msg);
+                        } else if reason == RefusalReason::CommitPending
+                            && waits_in_defer_queue(&msg)
+                        {
+                            match drained_since {
+                                // A drained entry that met a commit again goes
+                                // back to the front, deadline and all.
+                                Some(since) => defer.push_front_kept(Deferred {
+                                    since,
+                                    entry: DeferEntry::Msg(msg),
+                                }),
+                                None => match defer.push_msg(msg, DeferInstant::now()) {
+                                    Ok(()) => metrics.command_deferred(),
+                                    Err(msg) => {
+                                        if is_typed_line(&msg) {
+                                            metrics.command_processed();
+                                        }
+                                        refuse_world_msg(msg, reason, &gateway);
+                                    }
+                                },
+                            }
                         } else {
+                            if is_typed_line(&msg) {
+                                metrics.command_processed();
+                            }
                             refuse_world_msg(msg, reason, &gateway);
                         }
                         StepOutcome::Continue
@@ -4118,12 +4490,16 @@ async fn run(
                         tracing::error!(
                             "unresolved store-read-only admission reached the world loop; refusing"
                         );
+                        if is_typed_line(&msg) {
+                            metrics.command_processed();
+                        }
                         refuse_world_msg(msg, RefusalReason::StoreUnavailable, &gateway);
                         StepOutcome::Continue
                     }
                     Admission::Allow => match msg {
                         WorldMsg::Inbound(msg) => {
                             if let Inbound::Cmd { actor, .. } = &msg {
+                                metrics.command_processed();
                                 flood_sync = Some(*actor);
                                 failure_actor = Some(*actor);
                             }
@@ -4413,23 +4789,51 @@ async fn run(
                             StepOutcome::Continue
                         }
                         WorldMsg::Barrier { reply } => {
-                            if let Some(pending) = pending_commit.as_mut() {
-                                // Processing is not delivery: keep the barrier
-                                // behind the prior exact receipt and held output.
-                                if !pending.retain_barrier(reply) {
+                            if !defer.is_empty() {
+                                // 16b cut B.5: lines queued ahead of it have
+                                // not been processed yet, so the barrier waits
+                                // behind them and completes after them. A full
+                                // queue refuses it `Busy` (retryable), never
+                                // `Ok` ahead of the queued lines and the
+                                // pending receipt.
+                                if let Err(reply) = defer.push_barrier(reply, DeferInstant::now()) {
+                                    let _ = reply.send(Err(WorldReadError::Busy));
                                     metrics.commit_pending_barrier_refused();
                                     tracing::warn!(
-                                        cap = MAX_PENDING_BARRIERS,
-                                        "commit-pending barrier waiter cap reached; refusing waiter"
+                                        cap = COMMAND_DEFER_CAP,
+                                        "defer queue full; refusing barrier waiter"
                                     );
                                 }
                             } else {
-                                let _ = reply.send(Ok(()));
+                                settle_barrier(reply, pending_commit.as_mut(), &metrics);
                             }
                             StepOutcome::Continue
                         }
                     },
                 }
+            }
+            // 16b cut B.5: a queued barrier reached the front. Everything queued
+            // before it has been served or refused, so it is answered as a fresh
+            // barrier with an empty queue would be — never queued again behind
+            // entries that arrived after it.
+            Wake::DeferredBarrier(reply) => {
+                settle_barrier(reply, pending_commit.as_mut(), &metrics);
+                StepOutcome::Continue
+            }
+            // 16b cut B.5: the drain arm fired over an empty queue. Nothing to do.
+            Wake::Deferred => StepOutcome::Continue,
+            // 16b cut B.5: the 250 ms bound, while the commit still pends. A
+            // typed line is refused in a player's words; everything else hears
+            // exactly the `CommitPending` refusal it always did.
+            Wake::DeferExpiry => {
+                for msg in defer.expire(DeferInstant::now()) {
+                    if is_typed_line(&msg) {
+                        metrics.command_processed();
+                    }
+                    refuse_world_msg(msg, RefusalReason::CommitTimedOut, &gateway);
+                    metrics.command_defer_timed_out();
+                }
+                StepOutcome::Continue
             }
             Wake::Signal(signal) => {
                 debug_assert_eq!(
@@ -5304,6 +5708,24 @@ async fn run(
             }
             Wake::Shutdown => {
                 shutdown_requested = true;
+                // 16b cut B.5: nothing queued is served past a shutdown. Every
+                // queued message hears the refusal it would have heard before
+                // the queue existed, and every queued barrier is answered the
+                // way a retained one is: behind the pending commit's receipt
+                // (or the shutdown grace), at once when none is pending.
+                for deferred in defer.drain_all() {
+                    match deferred.entry {
+                        DeferEntry::Msg(msg) => {
+                            if is_typed_line(&msg) {
+                                metrics.command_processed();
+                            }
+                            refuse_world_msg(msg, RefusalReason::CommitPending, &gateway);
+                        }
+                        DeferEntry::Barrier(reply) => {
+                            settle_barrier(reply, pending_commit.as_mut(), &metrics);
+                        }
+                    }
+                }
                 if pending_commit.is_some() {
                     // Supersede the one already-dequeued ordinary message and
                     // stop polling the bounded queue. The shutdown request did
@@ -5357,7 +5779,7 @@ async fn run(
                     health.mode.store_read_only(),
                     health.mode.integrity_frozen(),
                 );
-                publish_pending_custody(&metrics, None);
+                publish_pending_custody(&metrics, None, 0);
                 tracing::error!(
                     "world task stopped after bounded shutdown grace; exact retained seals were preserved before exit"
                 );
@@ -5808,7 +6230,7 @@ async fn run(
             health.mode.store_read_only(),
             health.mode.integrity_frozen(),
         );
-        publish_pending_custody(&metrics, pending_commit.as_ref());
+        publish_pending_custody(&metrics, pending_commit.as_ref(), defer.barriers());
         // Publish the world-owned gauges (throttled). Done at the end of the
         // iteration so it reflects the just-applied state, and cheaply skipped
         // when the last sample is under a second old.
@@ -5991,6 +6413,24 @@ async fn run(
             }
         }
     }
+    // 16b cut B.5: whatever still waits in the defer queue when the loop ends
+    // (the shutdown grace ran out, the inbound channel closed behind a pending
+    // commit, a fault) is answered rather than dropped: a message hears the
+    // retryable `CommitPending` refusal, a barrier `Unavailable`, which is what
+    // a vanished world task means to its caller.
+    for deferred in defer.drain_all() {
+        match deferred.entry {
+            DeferEntry::Msg(msg) => {
+                if is_typed_line(&msg) {
+                    metrics.command_processed();
+                }
+                refuse_world_msg(msg, RefusalReason::CommitPending, &gateway);
+            }
+            DeferEntry::Barrier(reply) => {
+                let _ = reply.send(Err(WorldReadError::Unavailable));
+            }
+        }
+    }
     // Dropping `writer` here closes the job queue; the writer task drains
     // whatever is still pending and exits (awaited by the shutdown
     // sequence via `PersistHandles::writer_join`).
@@ -6012,6 +6452,15 @@ async fn run(
 /// with typed replies receive a conservative answer instead of hanging; work
 /// without a reply is dropped with a bounded diagnostic.
 fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
+    // 16b cut B.5: only a typed line hears `CommitTimedOut`'s own sentence.
+    // Everything else the defer queue times out — a query (a hydration request,
+    // not a typed line) and every reply-carrying read — is refused exactly as
+    // `CommitPending` refuses it, because its callers already speak `Busy`.
+    let reason = if reason == RefusalReason::CommitTimedOut && !is_typed_line(&msg) {
+        RefusalReason::CommitPending
+    } else {
+        reason
+    };
     match msg {
         WorldMsg::Inbound(Inbound::Cmd { actor, .. })
         | WorldMsg::Inbound(Inbound::ConnUp { actor, .. }) => {
@@ -16109,8 +16558,362 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn refused_command_does_not_block_pending_reattach_or_barrier() {
+    // ---- 16b cut B.5 (`B-13`): the defer queue --------------------------------
+    //
+    // A line that meets another action's commit used to be refused at once. It
+    // now waits in a bounded queue (four a connection, 64 in all, 250 ms from its
+    // arrival) and is served when the receipt lands, or refused in a player's
+    // words if the commit outlives the bound. The pure queue is tested first;
+    // then the loop, on the held-receipt rig: the store writer is a test channel,
+    // so a commit stays pending exactly as long as the test holds its receipt.
+
+    fn defer_line(conn: u64, line: &str) -> WorldMsg {
+        WorldMsg::Inbound(Inbound::Cmd {
+            conn,
+            actor: GOD,
+            line: line.to_owned(),
+        })
+    }
+
+    fn defer_read() -> WorldMsg {
+        WorldMsg::NameFree {
+            name: "probe".to_owned(),
+            reply: oneshot::channel().0,
+        }
+    }
+
+    /// The typed line a queue entry holds, if it is one.
+    fn deferred_line(deferred: &super::Deferred) -> Option<&str> {
+        match &deferred.entry {
+            DeferEntry::Msg(WorldMsg::Inbound(Inbound::Cmd { line, .. })) => Some(line.as_str()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn the_defer_queue_bounds_typed_lines_per_connection() {
+        let now = DeferInstant::now();
+        let mut queue = DeferQueue::default();
+        for n in 0..COMMAND_DEFER_DEPTH {
+            assert!(
+                queue
+                    .push_msg(defer_line(1, &format!("line {n}")), now)
+                    .is_ok(),
+                "line {n} of connection 1 waits"
+            );
+        }
+        let refused = queue
+            .push_msg(defer_line(1, "one too many"), now)
+            .expect_err("a fifth typed line from one connection is handed back");
+        assert!(matches!(
+            refused,
+            WorldMsg::Inbound(Inbound::Cmd { ref line, .. }) if line == "one too many"
+        ));
+        // Another connection's first line is its own.
+        assert!(queue.push_msg(defer_line(2, "another player"), now).is_ok());
+        // A read or a query counts against the cap only, never a connection.
+        assert!(queue.push_msg(defer_read(), now).is_ok());
+        assert!(
+            queue
+                .push_msg(
+                    WorldMsg::Inbound(Inbound::Query {
+                        conn: 1,
+                        actor: GOD,
+                        id: 7,
+                        name: "who".into(),
+                        args: serde_json::json!({}),
+                    }),
+                    now,
+                )
+                .is_ok(),
+            "a query from a connection with four lines waiting still waits"
+        );
+        assert_eq!(queue.entries.len(), COMMAND_DEFER_DEPTH + 3);
+    }
+
+    #[test]
+    fn the_defer_queue_is_capped_and_a_barrier_at_the_cap_is_handed_back() {
+        let now = DeferInstant::now();
+        let mut queue = DeferQueue::default();
+        for _ in 0..COMMAND_DEFER_CAP {
+            assert!(queue.push_msg(defer_read(), now).is_ok());
+        }
+        assert!(
+            queue.push_msg(defer_read(), now).is_err(),
+            "the 65th entry is handed back"
+        );
+        assert!(
+            queue.push_msg(defer_line(9, "look"), now).is_err(),
+            "and so is a connection's first line once the cap is reached"
+        );
+        // A barrier at the cap is handed back unanswered (the loop refuses it
+        // `Busy`): answering it `Ok` would overtake the 64 entries ahead of it
+        // and the commit they wait on.
+        let (reply, mut answered) = oneshot::channel();
+        let handed_back = queue
+            .push_barrier(reply, now)
+            .expect_err("a barrier at the cap is handed back");
+        assert!(
+            matches!(
+                answered.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ),
+            "the queue never answers a barrier itself"
+        );
+        drop(handed_back);
+        assert_eq!(queue.entries.len(), COMMAND_DEFER_CAP);
+        assert_eq!(queue.barriers(), 0);
+        // One place free and the barrier waits like any other entry.
+        assert!(queue.pop_front().is_some());
+        let (reply, _answered) = oneshot::channel();
+        assert!(queue.push_barrier(reply, now).is_ok());
+        assert_eq!(queue.barriers(), 1);
+    }
+
+    #[test]
+    fn the_defer_queue_expires_only_the_aged_in_arrival_order_and_never_a_barrier() {
+        let start = DeferInstant::now();
+        let later = start + Duration::from_millis(100);
+        let mut queue = DeferQueue::default();
+        assert_eq!(
+            queue.oldest_deadline(),
+            None,
+            "an empty queue has no deadline"
+        );
+        let (early_barrier, mut early_barrier_rx) = oneshot::channel();
+        assert!(queue.push_barrier(early_barrier, start).is_ok());
+        assert_eq!(
+            queue.oldest_deadline(),
+            None,
+            "a barrier alone never arms the timer"
+        );
+        assert!(queue.push_msg(defer_line(1, "first"), start).is_ok());
+        assert!(queue.push_msg(defer_line(2, "second"), start).is_ok());
+        let (late_barrier, _late_barrier_rx) = oneshot::channel();
+        assert!(queue.push_barrier(late_barrier, later).is_ok());
+        assert!(queue.push_msg(defer_line(1, "third"), later).is_ok());
+        assert_eq!(
+            queue.oldest_deadline(),
+            Some(start + COMMAND_DEFER),
+            "the earliest message's arrival plus the bound"
+        );
+
+        // A millisecond short of the bound nothing goes.
+        assert!(
+            queue
+                .expire(start + COMMAND_DEFER - Duration::from_millis(1))
+                .is_empty()
+        );
+        // At the bound the two early lines go, front to back; the late one and
+        // both barriers stay, in their places.
+        let expired = queue.expire(start + COMMAND_DEFER);
+        let lines: Vec<&str> = expired
+            .iter()
+            .filter_map(|msg| match msg {
+                WorldMsg::Inbound(Inbound::Cmd { line, .. }) => Some(line.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines, ["first", "second"]);
+        assert_eq!(queue.entries.len(), 3);
+        assert!(matches!(queue.entries[0].entry, DeferEntry::Barrier(_)));
+        assert!(matches!(queue.entries[1].entry, DeferEntry::Barrier(_)));
+        assert_eq!(deferred_line(&queue.entries[2]), Some("third"));
+        assert_eq!(queue.barriers(), 2);
+        assert_eq!(queue.oldest_deadline(), Some(later + COMMAND_DEFER));
+        // Long after, the last line goes and the barriers still stay.
+        assert_eq!(queue.expire(later + Duration::from_secs(60)).len(), 1);
+        assert_eq!(queue.barriers(), 2);
+        assert_eq!(queue.oldest_deadline(), None);
+        assert!(
+            matches!(
+                early_barrier_rx.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ),
+            "an expiry never answers a barrier"
+        );
+    }
+
+    #[test]
+    fn the_defer_queue_pops_in_arrival_order_and_a_kept_entry_keeps_its_place() {
+        let start = DeferInstant::now();
+        let mut queue = DeferQueue::default();
+        for (n, line) in ["a", "b", "c"].into_iter().enumerate() {
+            assert!(
+                queue
+                    .push_msg(
+                        defer_line(1, line),
+                        start + Duration::from_millis(u64::try_from(n).expect("small")),
+                    )
+                    .is_ok()
+            );
+        }
+        let first = queue.pop_front().expect("a");
+        assert_eq!(deferred_line(&first), Some("a"));
+        assert_eq!(first.since, start);
+        // A drained line that met a commit again goes back to the FRONT with
+        // its first deadline, not to the back with a new one.
+        queue.push_front_kept(first);
+        assert_eq!(queue.oldest_deadline(), Some(start + COMMAND_DEFER));
+        let order: Vec<String> = queue
+            .drain_all()
+            .iter()
+            .filter_map(|deferred| deferred_line(deferred).map(str::to_owned))
+            .collect();
+        assert_eq!(order, ["a", "b", "c"]);
+        assert!(queue.is_empty());
+        assert!(queue.pop_front().is_none());
+    }
+
+    #[test]
+    fn what_waits_in_the_defer_queue_is_retryable_input_that_holds_no_custody() {
+        let (reply, _) = oneshot::channel();
+        for msg in [
+            defer_line(1, "look"),
+            WorldMsg::Inbound(Inbound::Query {
+                conn: 1,
+                actor: GOD,
+                id: 1,
+                name: "who".into(),
+                args: serde_json::json!({}),
+            }),
+            defer_read(),
+            WorldMsg::UnlinkPlayer {
+                character: GOD,
+                reply: oneshot::channel().0,
+            },
+            WorldMsg::InInputContext {
+                actor: GOD,
+                reply: oneshot::channel().0,
+            },
+            WorldMsg::ConnectionReady {
+                conn: 1,
+                actor: GOD,
+                reply: oneshot::channel().0,
+            },
+            WorldMsg::LegalActions {
+                conn: 1,
+                actor: GOD,
+                subject: PerceivedRef::SelfActor,
+                reply: oneshot::channel().0,
+            },
+        ] {
+            assert!(waits_in_defer_queue(&msg));
+            assert!(!must_defer_behind_commit(&msg));
+        }
+        for msg in [
+            WorldMsg::Inbound(Inbound::Composing {
+                conn: 1,
+                actor: GOD,
+                active: true,
+            }),
+            WorldMsg::CreatePlayer {
+                name: "Nope".into(),
+                account: None,
+                reply: oneshot::channel().0,
+            },
+            WorldMsg::Inbound(Inbound::Control(ControlMsg::Dump)),
+            WorldMsg::Barrier { reply },
+        ] {
+            assert!(!waits_in_defer_queue(&msg));
+        }
+        assert_eq!(
+            RefusalReason::CommitTimedOut.text(),
+            "The world was busy too long for that line; please retry in a moment."
+        );
+        assert!(
+            RefusalReason::CommitTimedOut
+                .text()
+                .ends_with("please retry in a moment."),
+            "the phrase every rig's commit-pending retry needle matches"
+        );
+    }
+
+    /// A timed-out entry that is not a typed line hears exactly what
+    /// `CommitPending` gives it: a read's typed `Busy`, a query its `Reply`
+    /// wrapping the `CommitPending` sentence. Only a line gets the new words.
+    #[test]
+    fn a_timed_out_read_or_query_is_refused_as_commit_pending() {
+        let recorder = Arc::new(RecordingGateway::default());
+        let gateway: Gateway = recorder.clone();
+
+        let (reply, mut legal) = oneshot::channel();
+        refuse_world_msg(
+            WorldMsg::LegalActions {
+                conn: 1,
+                actor: GOD,
+                subject: PerceivedRef::SelfActor,
+                reply,
+            },
+            RefusalReason::CommitTimedOut,
+            &gateway,
+        );
+        assert_eq!(legal.try_recv(), Ok(Err(LegalActionReadError::Busy)));
+
+        let (reply, mut ready) = oneshot::channel();
+        refuse_world_msg(
+            WorldMsg::ConnectionReady {
+                conn: 1,
+                actor: GOD,
+                reply,
+            },
+            RefusalReason::CommitTimedOut,
+            &gateway,
+        );
+        assert_eq!(ready.try_recv(), Ok(Err(WorldReadError::Busy)));
+
+        refuse_world_msg(
+            WorldMsg::Inbound(Inbound::Query {
+                conn: 1,
+                actor: GOD,
+                id: 9,
+                name: "who".into(),
+                args: serde_json::json!({}),
+            }),
+            RefusalReason::CommitTimedOut,
+            &gateway,
+        );
+        assert_eq!(
+            recorder.reply_text(9).as_deref(),
+            Some(RefusalReason::CommitPending.text())
+        );
+
+        refuse_world_msg(
+            defer_line(1, "look"),
+            RefusalReason::CommitTimedOut,
+            &gateway,
+        );
+        let lines: Vec<String> = recorder
+            .sends
+            .lock()
+            .expect("recording gateway poisoned")
+            .iter()
+            .filter_map(|(_, event)| match event.as_ref() {
+                OutputEvent::Sys(text) => Some(text.to_plain_text()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines, [RefusalReason::CommitTimedOut.text()]);
+    }
+
+    /// The world task on a store writer the test answers by hand.
+    struct HeldReceiptRig {
+        handle: WorldHandle,
+        writer_rx: persist::StoreWriterTestReceiver,
+        metrics: Arc<Metrics>,
+        recorder: Arc<RecordingGateway>,
+        world_join: tokio::task::JoinHandle<WorldOutcome>,
+    }
+
+    type HeldReceipt = oneshot::Sender<Result<u64, String>>;
+
+    ///
+    /// A freshly booted minimal world is dirty (Limbo and God were never
+    /// written), and whichever wake runs first flushes that as a write of its
+    /// own. The rig settles it before handing over — two barriers, answering
+    /// every write meanwhile — so the test's first command is the first commit
+    /// and meets no predecessor.
+    async fn held_receipt_rig() -> HeldReceiptRig {
         let engine = boot_engine();
         let (tx, rx) = mpsc::channel(INBOUND_CAPACITY);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -16122,7 +16925,7 @@ mod tests {
         let (staff_tx, _staff_rx) = mpsc::channel(STAFF_OPS_CAPACITY);
         let (_signal_tx, signal_rx) = writer_signal_channel();
         let metrics = Arc::new(Metrics::new());
-        let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::clone(&metrics));
+        let (writer, writer_rx) = persist::test_store_writer_channel(Arc::clone(&metrics));
         let mut deps = ServerDeps::in_memory();
         deps.metrics = Arc::clone(&metrics);
         let recorder = Arc::new(RecordingGateway::default());
@@ -16148,27 +16951,731 @@ mod tests {
             // table and the egress arm stays disarmed.
             None,
         ));
+        let mut rig = HeldReceiptRig {
+            handle,
+            writer_rx,
+            metrics,
+            recorder,
+            world_join,
+        };
+        rig.settle().await;
+        rig.settle().await;
+        rig
+    }
 
+    impl HeldReceiptRig {
+        /// Run a barrier to completion, answering every write meanwhile, so
+        /// nothing the world had to flush is left pending for the proof.
+        async fn settle(&mut self) {
+            let barrier = tokio::spawn({
+                let handle = self.handle.clone();
+                async move { handle.barrier().await }
+            });
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !barrier.is_finished() {
+                    if let Ok(StoreJob::Write {
+                        batch,
+                        notify: Some(receipt),
+                    }) = self.writer_rx.try_recv()
+                    {
+                        let _ = receipt.send(Ok(batch.serial));
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the pending write settles");
+            assert!(
+                barrier.await.expect("barrier task"),
+                "the pending write lands"
+            );
+        }
+
+        /// Attach `conn` as God, settled, so reads that ask about the
+        /// connection have one to find.
+        async fn attach(&mut self, conn: u64) {
+            assert!(
+                self.handle
+                    .inbound(Inbound::ConnUp {
+                        conn,
+                        actor: GOD,
+                        caps_structured: true,
+                        from_linkdead: false,
+                    })
+                    .await
+            );
+            self.settle().await;
+        }
+
+        /// The guard a served-path proof takes before it sends the receipt:
+        /// the 250 ms bound is wall-clock, so a starved runner can age a queued
+        /// entry out before the test answers, and that must name itself rather
+        /// than read as a queue defect.
+        fn nothing_timed_out_yet(&self) {
+            assert_eq!(
+                self.metrics.snapshot().command_defer_timed_out_total,
+                0,
+                "the runner was too slow: a queued entry outlived its 250 ms \
+                 bound before the receipt was sent, so this proof cannot run"
+            );
+        }
+        /// Type one line as God on `conn`.
+        async fn line(&self, conn: u64, line: &str) {
+            assert!(
+                self.handle
+                    .inbound(Inbound::Cmd {
+                        conn,
+                        actor: GOD,
+                        line: line.to_owned(),
+                    })
+                    .await
+            );
+        }
+
+        /// The next exact-receipt write, left unanswered.
+        async fn next_write(&mut self) -> (u64, HeldReceipt) {
+            match tokio::time::timeout(Duration::from_secs(2), self.writer_rx.recv())
+                .await
+                .expect("a dirty step must enqueue a write")
+                .expect("writer channel open")
+            {
+                StoreJob::Write {
+                    batch,
+                    notify: Some(receipt),
+                } => (batch.serial, receipt),
+                _ => panic!("expected an exact-receipt write"),
+            }
+        }
+
+        /// Every line of text the gateway was handed, in order.
+        fn heard(&self) -> Vec<String> {
+            self.recorder
+                .sends
+                .lock()
+                .expect("recording gateway poisoned")
+                .iter()
+                .filter_map(|(_, event)| match event.as_ref() {
+                    OutputEvent::Sys(text) | OutputEvent::Narrative { text, .. } => {
+                        Some(text.to_plain_text())
+                    }
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn heard_any(&self, needle: &str) -> bool {
+            self.heard().iter().any(|line| line.contains(needle))
+        }
+
+        /// Wait (bounded) until `done` holds, answering every exact-receipt
+        /// write the world makes meanwhile, so a line that turns out to commit
+        /// cannot wedge the proof.
+        async fn serve_until(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !done(self) {
+                    if let Ok(StoreJob::Write {
+                        batch,
+                        notify: Some(receipt),
+                    }) = self.writer_rx.try_recv()
+                    {
+                        let _ = receipt.send(Ok(batch.serial));
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {what}; heard {:?}", self.heard()));
+        }
+
+        async fn shut_down(self) {
+            assert!(
+                self.handle
+                    .inbound(Inbound::Control(ControlMsg::Shutdown))
+                    .await
+            );
+            tokio::time::timeout(Duration::from_secs(2), self.world_join)
+                .await
+                .expect("world shutdown timed out")
+                .expect("world task panicked");
+        }
+    }
+
+    /// **16b cut B.5 (`B-13`), the served case.** Four lines typed behind a
+    /// held commit wait; a fifth from the same connection is refused at once
+    /// in the old words; the receipt lands and the four are answered, in the
+    /// order they were typed, each counted once.
+    #[tokio::test]
+    async fn a_line_behind_a_commit_is_served_when_the_receipt_lands() {
+        let mut rig = held_receipt_rig().await;
+        rig.line(1, "@create receipt-anchor").await;
+        let (serial, receipt) = rig.next_write().await;
+
+        for n in 1..=4 {
+            rig.line(1, &format!("think typed-{n}")).await;
+        }
+        rig.line(1, "think one-too-many").await;
+        rig.serve_until("the fifth line's refusal", |rig| {
+            rig.heard_any("committing another action")
+        })
+        .await;
+        rig.nothing_timed_out_yet();
+        receipt
+            .send(Ok(serial))
+            .expect("world still owns the exact receipt");
+
+        rig.serve_until("the four queued lines", |rig| {
+            (1..=4).all(|n| rig.heard_any(&format!("typed-{n}")))
+        })
+        .await;
+        let heard = rig.heard();
+        let at = |needle: &str| {
+            heard
+                .iter()
+                .position(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} not heard: {heard:?}"))
+        };
         assert!(
-            handle
-                .inbound(Inbound::Cmd {
+            at("Created: receipt-anchor") < at("typed-1")
+                && at("typed-1") < at("typed-2")
+                && at("typed-2") < at("typed-3")
+                && at("typed-3") < at("typed-4"),
+            "the anchor's answer, then the four lines in the order typed: {heard:?}"
+        );
+        assert!(
+            !rig.heard_any("one-too-many"),
+            "the refused fifth line never ran"
+        );
+        assert!(
+            !rig.heard_any("busy too long"),
+            "nothing outlived the bound: {heard:?}"
+        );
+        let snapshot = rig.metrics.snapshot();
+        assert_eq!(snapshot.command_deferred_total, 4);
+        assert_eq!(snapshot.command_defer_timed_out_total, 0);
+        assert_eq!(
+            snapshot.commands_total, 6,
+            "the anchor, the four served lines and the refused fifth, once each"
+        );
+        rig.shut_down().await;
+    }
+
+    /// **16b cut B.5, the timed-out case.** A line queued behind a commit that
+    /// outlives the 250 ms bound is refused in a player's words while the
+    /// commit still pends, and never runs.
+    #[tokio::test]
+    async fn a_line_behind_a_commit_that_outlives_the_bound_is_refused_in_a_players_words() {
+        let mut rig = held_receipt_rig().await;
+        rig.line(1, "@create receipt-anchor").await;
+        let (serial, receipt) = rig.next_write().await;
+
+        let sent = Instant::now();
+        rig.line(1, "think too-late").await;
+        rig.serve_until("the timed-out refusal", |rig| {
+            rig.heard_any(RefusalReason::CommitTimedOut.text())
+        })
+        .await;
+        assert!(
+            sent.elapsed() >= COMMAND_DEFER,
+            "the line waited its whole bound before it was refused"
+        );
+        assert!(
+            !rig.heard_any("committing another action"),
+            "a line that waited is refused in the new words, not the old"
+        );
+        let snapshot = rig.metrics.snapshot();
+        assert_eq!(snapshot.command_deferred_total, 1);
+        assert_eq!(snapshot.command_defer_timed_out_total, 1);
+        assert_eq!(snapshot.commands_total, 2, "the anchor and the refusal");
+
+        // The receipt lands after the refusal, and the refused line stays
+        // refused.
+        receipt
+            .send(Ok(serial))
+            .expect("world still owns the exact receipt");
+        assert!(rig.handle.barrier().await);
+        assert!(!rig.heard_any("too-late"), "the timed-out line never ran");
+        rig.shut_down().await;
+    }
+
+    /// **16b cut B.5, the barrier rule.** A barrier that arrives behind a queued
+    /// line waits for that line — and for the commit the line itself starts —
+    /// so `barrier_result`'s "everything sent before has been processed" stays
+    /// true.
+    #[tokio::test]
+    async fn a_barrier_behind_queued_lines_waits_for_them() {
+        let mut rig = held_receipt_rig().await;
+        rig.line(1, "@create receipt-anchor").await;
+        let (first_serial, first_receipt) = rig.next_write().await;
+
+        rig.line(2, "@create queued-orb").await;
+        let barrier = tokio::spawn({
+            let handle = rig.handle.clone();
+            async move { handle.barrier().await }
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let snapshot = rig.metrics.snapshot();
+                if snapshot.command_deferred_total == 1 && snapshot.commit_pending_barriers == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the line and the barrier behind it both wait");
+        rig.nothing_timed_out_yet();
+        first_receipt
+            .send(Ok(first_serial))
+            .expect("world still owns the first receipt");
+
+        // The drained line is served and starts a commit of its own; the
+        // barrier behind it is not finished after the FIRST receipt.
+        let (second_serial, second_receipt) = rig.next_write().await;
+        tokio::task::yield_now().await;
+        assert!(
+            !barrier.is_finished(),
+            "the barrier finished before the queued line's own commit landed"
+        );
+        second_receipt
+            .send(Ok(second_serial))
+            .expect("world still owns the second receipt");
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), barrier)
+                .await
+                .expect("the barrier completes after the second receipt")
+                .expect("barrier task"),
+            "the barrier resolves Ok"
+        );
+        // `name_free` probes the PLAYER index, which an `@create`d thing never
+        // joins, so the object's own creation line is the witness that the
+        // queued line ran — released only after its exact receipt.
+        assert!(
+            rig.heard_any("Created: queued-orb"),
+            "the queued line ran and its object exists: {:?}",
+            rig.heard()
+        );
+        assert_eq!(rig.metrics.snapshot().commit_pending_barriers, 0);
+        rig.shut_down().await;
+    }
+
+    /// Wait (bounded) until the world has taken everything sent so far off its
+    /// inbound channel — a lifecycle message parked in its slot included.
+    async fn inbound_taken(handle: &WorldHandle) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while handle.tx.capacity() < handle.tx.max_capacity() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the world takes its inbound");
+    }
+
+    /// Wait (bounded) until `done` holds, WITHOUT answering any write: the
+    /// held receipt stays held.
+    async fn wait_until(what: &str, done: impl Fn() -> bool) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !done() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+    }
+
+    /// **16b cut B.5, the reads.** The motivating loss of cut AA's sweep was a
+    /// world READ (`ConnectionReady`) that met another action's commit. The
+    /// reads and a query behind a held receipt wait, and once it lands each is
+    /// ANSWERED — not refused `Busy` — from the committed world.
+    #[tokio::test]
+    async fn a_read_and_a_query_behind_a_commit_are_answered_when_the_receipt_lands() {
+        let mut rig = held_receipt_rig().await;
+        rig.attach(1).await;
+        rig.line(1, "@create receipt-anchor").await;
+        let (serial, receipt) = rig.next_write().await;
+
+        let name_free = tokio::spawn({
+            let handle = rig.handle.clone();
+            async move { handle.name_free("God").await }
+        });
+        let ready = tokio::spawn({
+            let handle = rig.handle.clone();
+            async move { handle.connection_ready(1, GOD).await }
+        });
+        let legal = tokio::spawn({
+            let handle = rig.handle.clone();
+            async move { handle.legal_actions(1, GOD, PerceivedRef::SelfActor).await }
+        });
+        assert!(
+            rig.handle
+                .inbound(Inbound::Query {
                     conn: 1,
                     actor: GOD,
-                    line: "@create receipt-anchor".to_string(),
+                    id: 7,
+                    name: "who".into(),
+                    args: serde_json::json!({}),
                 })
                 .await
         );
-        let (serial, receipt) = match tokio::time::timeout(Duration::from_secs(2), writer_rx.recv())
-            .await
-            .expect("dirty command must enqueue a write")
-            .expect("writer channel open")
-        {
-            StoreJob::Write {
-                batch,
-                notify: Some(receipt),
-            } => (batch.serial, receipt),
-            _ => panic!("expected an exact-receipt write"),
+        let metrics = Arc::clone(&rig.metrics);
+        wait_until("the three reads and the query to wait", || {
+            metrics.snapshot().command_deferred_total == 4
+        })
+        .await;
+        assert!(
+            !name_free.is_finished() && !ready.is_finished() && !legal.is_finished(),
+            "a read behind a held receipt waits; it is not refused at once"
+        );
+        assert_eq!(rig.recorder.reply_text(7), None, "the query waits too");
+        rig.nothing_timed_out_yet();
+        receipt
+            .send(Ok(serial))
+            .expect("world still owns the exact receipt");
+
+        async fn answer<T>(join: tokio::task::JoinHandle<T>) -> T {
+            tokio::time::timeout(Duration::from_secs(2), join)
+                .await
+                .expect("the read is answered after the receipt")
+                .expect("read task")
+        }
+        assert_eq!(answer(name_free).await, Ok(false), "God's name is taken");
+        assert_eq!(
+            answer(ready).await,
+            Ok(true),
+            "the attached connection is ready"
+        );
+        // This rig composes no action provider, so the projection's own answer
+        // is a typed failure of its own (`Unavailable` from the projector);
+        // what matters is that the world ran the projection after the receipt
+        // rather than refusing the read as busy.
+        let legal = answer(legal).await;
+        assert!(
+            !matches!(legal, Err(LegalActionReadError::Busy)),
+            "the legal-action read was answered, not refused: {legal:?}"
+        );
+        rig.serve_until("the query's reply", |rig| {
+            rig.recorder.reply_text(7).is_some()
+        })
+        .await;
+        let reply = rig.recorder.reply_text(7).unwrap_or_default();
+        assert!(
+            !reply.contains("committing another action") && !reply.contains("busy too long"),
+            "the query was answered, not refused: {reply}"
+        );
+        let snapshot = rig.metrics.snapshot();
+        assert_eq!(snapshot.command_deferred_total, 4);
+        assert_eq!(snapshot.command_defer_timed_out_total, 0);
+        rig.shut_down().await;
+    }
+
+    /// **16b cut B.5, queue before lifecycle.** A line typed before a `QUIT`
+    /// runs before the `ConnDown` it is followed by, though that `ConnDown`
+    /// reached the world while the line waited: the lifecycle slot is taken
+    /// only once the queue is empty.
+    #[tokio::test]
+    async fn a_line_typed_before_a_disconnect_runs_before_it() {
+        let mut rig = held_receipt_rig().await;
+        rig.attach(1).await;
+        rig.line(2, "@create receipt-anchor").await;
+        let (serial, receipt) = rig.next_write().await;
+
+        rig.line(1, "who").await;
+        assert!(
+            rig.handle
+                .inbound(Inbound::ConnDown {
+                    conn: 1,
+                    actor: GOD,
+                    reason: DisconnectKind::Quit,
+                })
+                .await
+        );
+        // The `ConnDown` is parked in the lifecycle slot before the receipt
+        // lands, so the order below is the loop's, not the channel's.
+        inbound_taken(&rig.handle).await;
+        assert_eq!(rig.metrics.snapshot().command_deferred_total, 1);
+        rig.nothing_timed_out_yet();
+        receipt
+            .send(Ok(serial))
+            .expect("world still owns the exact receipt");
+
+        let who = |rig: &HeldReceiptRig| {
+            rig.recorder
+                .sends
+                .lock()
+                .expect("recording gateway poisoned")
+                .iter()
+                .find_map(|(_, event)| match event.as_ref() {
+                    OutputEvent::Who(entries) => Some(
+                        entries
+                            .iter()
+                            .map(|entry| entry.name.to_string())
+                            .collect::<Vec<_>>(),
+                    ),
+                    _ => None,
+                })
         };
+        rig.serve_until("the WHO typed before the quit", |rig| who(rig).is_some())
+            .await;
+        // Run before the `ConnDown`, the WHO still finds God connected; run
+        // after it (the lifecycle slot overtaking the queue) it lists nobody.
+        assert_eq!(
+            who(&rig).as_deref(),
+            Some(&["God".to_owned()][..]),
+            "the line typed before the quit ran before it"
+        );
+        assert_eq!(
+            rig.handle.connection_ready(1, GOD).await,
+            Ok(false),
+            "and the disconnect ran after it"
+        );
+        assert!(
+            !rig.heard_any("committing another action") && !rig.heard_any("busy too long"),
+            "{:?}",
+            rig.heard()
+        );
+        rig.shut_down().await;
+    }
+
+    /// **16b cut B.5, the shutdown arm.** A shutdown behind a held receipt
+    /// refuses every queued line in the words it always used and keeps every
+    /// queued barrier behind the receipt, as a retained barrier is kept; the
+    /// world ends once the receipt lands.
+    #[tokio::test]
+    async fn a_shutdown_refuses_the_queued_lines_and_keeps_the_queued_barriers_behind_the_receipt()
+    {
+        let mut rig = held_receipt_rig().await;
+        rig.line(1, "@create receipt-anchor").await;
+        let (serial, receipt) = rig.next_write().await;
+
+        rig.line(1, "think drained-at-shutdown").await;
+        let barrier = tokio::spawn({
+            let handle = rig.handle.clone();
+            async move { handle.barrier_result().await }
+        });
+        let metrics = Arc::clone(&rig.metrics);
+        wait_until("the line and the barrier behind it to wait", || {
+            let snapshot = metrics.snapshot();
+            snapshot.command_deferred_total == 1 && snapshot.commit_pending_barriers == 1
+        })
+        .await;
+        rig.nothing_timed_out_yet();
+
+        // The shutdown watch, not the inbound channel.
+        assert!(
+            rig.handle
+                .inbound(Inbound::Control(ControlMsg::Shutdown))
+                .await
+        );
+        let recorder = Arc::clone(&rig.recorder);
+        wait_until("the queued line's refusal", || {
+            recorder
+                .sends
+                .lock()
+                .expect("recording gateway poisoned")
+                .iter()
+                .any(|(_, event)| {
+                    matches!(event.as_ref(), OutputEvent::Sys(text)
+                        if text.to_plain_text().contains("committing another action"))
+                })
+        })
+        .await;
+        assert!(
+            !barrier.is_finished(),
+            "a queued barrier is kept behind the receipt, not answered at shutdown"
+        );
+        assert_eq!(
+            rig.metrics.snapshot().commands_total,
+            2,
+            "the anchor and the refused line, once each"
+        );
+
+        let HeldReceiptRig {
+            mut writer_rx,
+            world_join,
+            recorder,
+            ..
+        } = rig;
+        receipt
+            .send(Ok(serial))
+            .expect("world still owns the exact receipt");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), barrier)
+                .await
+                .expect("the barrier completes with the receipt")
+                .expect("barrier task"),
+            Ok(()),
+            "a barrier kept behind the receipt completes with it"
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !world_join.is_finished() {
+                if let Ok(StoreJob::Write {
+                    batch,
+                    notify: Some(receipt),
+                }) = writer_rx.try_recv()
+                {
+                    let _ = receipt.send(Ok(batch.serial));
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the world ends after the receipt");
+        world_join.await.expect("world task panicked");
+        assert!(
+            !recorder
+                .sends
+                .lock()
+                .expect("recording gateway poisoned")
+                .iter()
+                .any(|(_, event)| matches!(event.as_ref(), OutputEvent::Sys(text) | OutputEvent::Narrative { text, .. }
+                    if text.to_plain_text().contains("drained-at-shutdown"))),
+            "a line refused at shutdown never ran"
+        );
+    }
+
+    /// **16b cut B.5, the loop's exit.** When the world's inbound closes behind
+    /// a held receipt it ends once the receipt lands, and whatever still waits
+    /// in the queue is answered rather than dropped: a line hears the
+    /// retryable `CommitPending` refusal, a barrier `Unavailable`.
+    #[tokio::test]
+    async fn what_still_waits_when_the_loop_ends_is_answered_not_dropped() {
+        let mut rig = held_receipt_rig().await;
+        rig.line(1, "@create receipt-anchor").await;
+        let (serial, receipt) = rig.next_write().await;
+
+        rig.line(1, "think at-exit").await;
+        let (reply, mut barrier) = oneshot::channel();
+        rig.handle
+            .tx
+            .send(WorldMsg::Barrier { reply })
+            .await
+            .expect("world open");
+        let metrics = Arc::clone(&rig.metrics);
+        wait_until("the line and the barrier behind it to wait", || {
+            let snapshot = metrics.snapshot();
+            snapshot.command_deferred_total == 1 && snapshot.commit_pending_barriers == 1
+        })
+        .await;
+        rig.nothing_timed_out_yet();
+
+        // Every sender goes: the world sees its inbound close with a commit
+        // pending and waits for the receipt before it ends.
+        let HeldReceiptRig {
+            handle,
+            mut writer_rx,
+            world_join,
+            recorder,
+            ..
+        } = rig;
+        drop(handle);
+        receipt
+            .send(Ok(serial))
+            .expect("world still owns the exact receipt");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !world_join.is_finished() {
+                if let Ok(StoreJob::Write {
+                    batch,
+                    notify: Some(receipt),
+                }) = writer_rx.try_recv()
+                {
+                    let _ = receipt.send(Ok(batch.serial));
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the world ends after the receipt");
+        world_join.await.expect("world task panicked");
+        assert_eq!(
+            barrier.try_recv(),
+            Ok(Err(WorldReadError::Unavailable)),
+            "a queued barrier hears that the world is gone"
+        );
+        let heard: Vec<String> = recorder
+            .sends
+            .lock()
+            .expect("recording gateway poisoned")
+            .iter()
+            .filter_map(|(_, event)| match event.as_ref() {
+                OutputEvent::Sys(text) | OutputEvent::Narrative { text, .. } => {
+                    Some(text.to_plain_text())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            heard
+                .iter()
+                .any(|line| line.contains("committing another action")),
+            "the queued line is refused, not dropped: {heard:?}"
+        );
+        assert!(
+            !heard.iter().any(|line| line.contains("at-exit")),
+            "{heard:?}"
+        );
+    }
+
+    /// **16b cut B.5, the barrier at the cap.** The queue is only ever
+    /// non-empty behind a pending commit, so a barrier that meets a full queue
+    /// is refused `Busy` — the retryable overload answer — never answered `Ok`
+    /// ahead of the 64 entries and the receipt they wait on.
+    #[tokio::test]
+    async fn a_barrier_that_meets_a_full_defer_queue_is_refused_busy() {
+        let mut rig = held_receipt_rig().await;
+        rig.line(1, "@create receipt-anchor").await;
+        let (serial, receipt) = rig.next_write().await;
+
+        let reads: Vec<_> = (0..COMMAND_DEFER_CAP)
+            .map(|n| {
+                let handle = rig.handle.clone();
+                tokio::spawn(async move { handle.name_free(&format!("free-{n}")).await })
+            })
+            .collect();
+        let metrics = Arc::clone(&rig.metrics);
+        let cap = u64::try_from(COMMAND_DEFER_CAP).expect("small");
+        wait_until("the queue to fill", || {
+            metrics.snapshot().command_deferred_total == cap
+        })
+        .await;
+        let refused = tokio::time::timeout(Duration::from_secs(2), rig.handle.barrier_result())
+            .await
+            .expect("a barrier at the cap is answered at once");
+        rig.nothing_timed_out_yet();
+        assert_eq!(refused, Err(WorldReadError::Busy));
+        assert_eq!(
+            rig.metrics.snapshot().commit_pending_barrier_refused_total,
+            1
+        );
+
+        receipt
+            .send(Ok(serial))
+            .expect("world still owns the exact receipt");
+        for read in reads {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), read)
+                    .await
+                    .expect("each queued read is answered")
+                    .expect("read task"),
+                Ok(true)
+            );
+        }
+        rig.shut_down().await;
+    }
+
+    /// The pending-receipt custody guarantees of K0 hold with the defer queue in
+    /// place (16b cut B.5 retitled and rewrote this: until then a command behind
+    /// a held receipt was refused at once). A command typed behind the receipt
+    /// waits in the queue; a thousand full reattach rosters behind it still
+    /// coalesce into one pending snapshot, so the queue never head-of-line
+    /// blocks operational traffic; the barrier sent after the command waits
+    /// behind it; and once the receipt lands the command is SERVED — its own
+    /// write reaches the writer — and the barrier completes only after that
+    /// second receipt.
+    #[tokio::test]
+    async fn a_deferred_command_keeps_pending_reattach_live_and_holds_the_barrier_behind_it() {
+        let mut rig = held_receipt_rig().await;
+        rig.line(1, "@create receipt-anchor").await;
+        let (serial, receipt) = rig.next_write().await;
+        let metrics = Arc::clone(&rig.metrics);
         let (baseline_sends, baseline_effects) =
             tokio::time::timeout(Duration::from_secs(2), async {
                 loop {
@@ -16185,31 +17692,34 @@ mod tests {
             .await
             .expect("world must publish initial exact-receipt custody");
 
-        // This command is retryable input, not accepted semantic custody. It
-        // must receive Busy immediately and leave the FIFO available for the
-        // operational messages behind it.
-        assert!(
-            handle
-                .inbound(Inbound::Cmd {
-                    conn: 2,
-                    actor: GOD,
-                    line: "@create must-not-exist".to_string(),
-                })
-                .await
-        );
-        for conn in 10_000..11_000_u64 {
-            assert!(
-                handle
-                    .reattach(vec![ReAttachRec {
-                        conn,
-                        actor: GOD,
-                        caps_structured: false,
-                    }])
-                    .await
-            );
+        // A thousand full reattach rosters coalesce into one pending snapshot.
+        // All but the last go BEFORE the command, so the command's 250 ms bound
+        // (wall clock) covers only one reattach, the barrier and the poll —
+        // never a thousand loop turns on a starved runner.
+        let reattach = |conn: u64| {
+            let handle = rig.handle.clone();
+            async move {
+                assert!(
+                    handle
+                        .reattach(vec![ReAttachRec {
+                            conn,
+                            actor: GOD,
+                            caps_structured: false,
+                        }])
+                        .await
+                );
+            }
+        };
+        for conn in 10_000..10_999_u64 {
+            reattach(conn).await;
         }
+        // Retryable input, not accepted semantic custody: it waits in the
+        // bounded queue and leaves the FIFO available for the operational
+        // messages behind it — the last reattach and the barrier.
+        rig.line(2, "@create must-not-exist").await;
+        reattach(10_999).await;
         let barrier = tokio::spawn({
-            let handle = handle.clone();
+            let handle = rig.handle.clone();
             async move { handle.barrier().await }
         });
 
@@ -16226,45 +17736,52 @@ mod tests {
             }
         })
         .await
-        .expect("operational traffic must remain live behind a refused command");
+        .expect("operational traffic must remain live behind a deferred command");
         assert!(
             !barrier.is_finished(),
             "barrier must still wait for the receipt"
         );
         assert_eq!(metrics.snapshot().commit_pending_sends, baseline_sends);
         assert_eq!(metrics.snapshot().commit_pending_effects, baseline_effects);
+        assert_eq!(metrics.snapshot().command_deferred_total, 1);
+        rig.nothing_timed_out_yet();
 
         receipt
             .send(Ok(serial))
             .expect("world still owns the exact receipt");
+        // The deferred command is served: its own write reaches the writer,
+        // and the barrier sent after it waits for that write's receipt too.
+        let (second_serial, second_receipt) = rig.next_write().await;
+        tokio::task::yield_now().await;
+        assert!(
+            !barrier.is_finished(),
+            "the barrier overtook the deferred command's own commit"
+        );
+        second_receipt
+            .send(Ok(second_serial))
+            .expect("world still owns the second receipt");
         assert!(
             tokio::time::timeout(Duration::from_secs(2), barrier)
                 .await
-                .expect("barrier must complete after receipt")
+                .expect("barrier must complete after the second receipt")
                 .expect("barrier task")
         );
-        assert_eq!(handle.name_free("must-not-exist").await, Ok(true));
+        // The command ran and its object exists (`name_free` probes the player
+        // index, which an `@create`d thing never joins, so the creation line —
+        // released only after the second receipt — is the witness).
         assert!(
-            recorder
-                .sends
-                .lock()
-                .expect("recording gateway poisoned")
-                .iter()
-                .any(|(_, event)| matches!(
-                    event.as_ref(),
-                    OutputEvent::Sys(text)
-                        if text.to_plain_text().contains("committing another action")
-                )),
-            "the refused command must receive a retryable Busy response"
+            rig.heard_any("Created: must-not-exist"),
+            "the deferred command was served: {:?}",
+            rig.heard()
+        );
+        assert!(
+            !rig.heard_any("committing another action") && !rig.heard_any("busy too long"),
+            "the deferred command was served, never refused: {:?}",
+            rig.heard()
         );
         assert_eq!(metrics.snapshot().commit_pending_barriers, 0);
         assert_eq!(metrics.snapshot().commit_pending_reattach_records, 0);
-
-        assert!(handle.inbound(Inbound::Control(ControlMsg::Shutdown)).await);
-        tokio::time::timeout(Duration::from_secs(2), world_join)
-            .await
-            .expect("world shutdown timed out")
-            .expect("world task panicked");
+        rig.shut_down().await;
     }
 
     #[tokio::test]

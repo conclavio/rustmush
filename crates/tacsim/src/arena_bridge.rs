@@ -99,6 +99,14 @@ pub const FRAME_FEED: &str = "arena.cockpit";
 /// Registered as a feed — rather than only as a query name — because that is
 /// what puts `arena.map` in the client manifest and what makes a
 /// `PanelSubscribe` route to the handler at all.
+///
+/// **Its `schema.retain` marker can never fire** (16b cut B.5, `T-62`): a query
+/// reply is conn-scoped and never recorded for resume — neither in the session
+/// ring nor in the per-feed latest slot the marker selects — so nothing of this
+/// feed is ever replayed. The clients' timer heal (16b cut B.2: the web's
+/// `MAP_ASK_MS` interval and the TUI pump's tick, under the same two-second
+/// latch) is what resumes a map after a reconnect. The marker stays because the
+/// payload builders share one schema shape and it costs nothing.
 pub const MAP_FEED: &str = "arena.map";
 
 /// The notice category every arena notice carries — every arena line but the
@@ -1306,8 +1314,9 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>, 
         // its roster at the start of its next pulse — so a batch staged before
         // the release is drained after it. Without this the mirror would be
         // written again and a live cockpit pushed over the cleared one, which
-        // (the marker being what it is) would be the only frame left in that
-        // session's ring.
+        // (the marker being what it is) would replace the cleared frame in that
+        // session's per-feed latest slot — the one cockpit frame a resume
+        // replays (16b cut B.5) — and resurrect a seat that no longer exists.
         let seated = ctx
             .w
             .module_state::<ArenaRegistry>()
@@ -1415,11 +1424,12 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>, 
 /// pulse frames take. It prints nothing on a line client — the payload declares
 /// no shape — so the ordinary end-of-match and `EXIT` lines a pilot reads are
 /// exactly what they were; a panel clears; and because the payload carries the
-/// same `schema.retain` marker every frame before it did, it is the last
-/// cockpit frame in that session's resume ring UNTIL the pilot is seated again,
-/// when the next match's first frame supersedes it — which is why a panel
-/// resets its own ring on a change of match and never relies on this frame
-/// arriving (16b cut B.2).
+/// same `schema.retain` marker every frame before it did, it replaces the live
+/// frame in that session's per-feed latest slot — the one `arena.cockpit` frame
+/// a resume replays, kept beside the ring rather than in it (16b cut B.5) —
+/// UNTIL the pilot is seated again, when the next match's first frame replaces
+/// it in turn. That is why a panel resets its own notices ring on a change of
+/// match and never relies on this frame arriving (16b cut B.2).
 ///
 /// Sent exactly once per pilot, from the two places a pilot stops being one:
 /// [`send_control`], when a `Released` actually unbinds somebody, and

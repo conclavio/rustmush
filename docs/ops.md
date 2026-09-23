@@ -190,7 +190,7 @@ states are:
 | `Booting` | integrity stores, definitions, and world state are not ready | bounded status/query, transport-only reattachment, writer recovery, and shutdown | all boot gates pass |
 | `Recovering` | exact durable state is being reconciled | the same restricted set as `Booting` | recovery reaches a verified terminal state |
 | `Writable` | normal play | all ordinary ingress | a commit, outage, or integrity incident changes the mode |
-| `CommitPending` | one authoritative commit is waiting for its exact acknowledgement | ordering barriers, status, transport-only reattachment, recovery, and shutdown; gameplay/world reads and retryable mutations receive typed `Busy` (see the FIFO caveat below) | exact commit acknowledgement, abort, or integrity freeze |
+| `CommitPending` | one authoritative commit is waiting for its exact acknowledgement | ordering barriers, status, transport-only reattachment, recovery, and shutdown; typed lines, queries and world reads wait up to 250 ms in the bounded defer queue and are refused (`Busy`, or the "busy too long" line) only past it; retryable mutations receive typed `Busy` at once (see the FIFO caveat below) | exact commit acknowledgement, abort, or integrity freeze |
 | `StoreReadOnly` | the store has a transient availability failure | safe queries/status plus a conservative line-command subset | the same write succeeds and the ordered writer reports recovery |
 | `IntegrityFrozen` | durable truth is missing, rejected deterministically, or ambiguous | observation, status, transport-only reattachment, recovery, and shutdown only | explicit, verified recovery; never store health alone |
 
@@ -207,12 +207,30 @@ available.
 
 `CommitPending` is stricter about reads than the other hard modes in the current
 single-flight implementation. The engine has already installed the tentative
-post-image in RAM but does not yet have the exact durable receipt, so structured
-panel queries, `NameFree`, and input-context probes are refused as `Busy` rather
-than observing that image or fabricating a negative answer. Ordinary command,
-new-player, and dump requests are also refused immediately, so they cannot
-head-of-line block transport/status traffic. Ordering barriers are admitted and
-resolve only after the receipt.
+post-image in RAM but does not yet have the exact durable receipt, so nothing
+may observe that image or fabricate a negative answer from it. Instead of being
+refused at once, a typed line, a structured panel query, and the world reads
+(`NameFree`, `UnlinkPlayer`, input-context and connection-ready probes, legal
+actions) wait in a bounded **defer queue** (16b cut B.5): at most four typed
+lines per connection and 64 entries in all, each for at most 250 ms from its
+arrival. When the receipt lands the queue drains in arrival order before
+anything new is taken, so a player who types ahead is answered in the order
+they typed. An entry still waiting after 250 ms is refused: a typed line with
+`The world was busy too long for that line; please retry in a moment.`, a query
+or a read with the same retryable `Busy` it always received. A line that meets
+a full queue (or a fifth line from one connection) is refused at once with
+`The world is committing another action; please retry in a moment.`. New-player,
+dump, authoritative-action and staff requests are still refused immediately.
+The loop keeps receiving while the commit is in flight, so the queue never
+head-of-line blocks transport/status traffic. Ordering barriers are admitted
+and resolve only after the receipt, and a barrier that arrives behind queued
+entries resolves only after they have been served or refused; a barrier that
+meets a full queue is refused `Busy` (retryable). Two counters show the queue at
+work: `mush_command_deferred_total` (entries that waited) and
+`mush_command_defer_timed_out_total` (entries refused after the 250 ms bound).
+A steadily rising timed-out count means commits are outliving the bound: look
+at store latency (`mush_store_write_queue_depth`,
+`mush_store_last_ack_unixtime`) first.
 
 The current FIFO has one explicit liveness caveat: an async `Apply` or
 `ConnUp`/`ConnDown`/`SessionGone` has already transferred must-retain semantic or
@@ -997,6 +1015,7 @@ IPC ReAnnounce protocol violations, NPC active/thinking, and LLM
 calls/tokens/cost by feature and provider. It never carries per-player data,
 prompts, tokens, or API keys. Metric families are `mush_*` (e.g.
 `mush_connections{transport="ssh"}`, `mush_commands_total`,
+`mush_command_deferred_total`, `mush_command_defer_timed_out_total`,
 `mush_objects{kind="room"}`, `mush_store_read_only`,
 `mush_commit_pending_custody_items{kind="barrier"}`).
 

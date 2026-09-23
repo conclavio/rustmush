@@ -125,6 +125,12 @@ pub struct Metrics {
     sessions_current: AtomicI64,
     connections_current: AtomicI64,
     commands_total: AtomicU64,
+    /// **16b cut B.5 (`B-13`)**: messages the world task queued behind a
+    /// commit instead of refusing them at once.
+    command_deferred_total: AtomicU64,
+    /// **16b cut B.5**: queued messages refused because they outlived the
+    /// defer bound while the commit was still pending.
+    command_defer_timed_out_total: AtomicU64,
     /// Panics caught at the world task's dispatch boundary. Any value
     /// above zero means the single writer was thrown out of its own state
     /// machine and the world is frozen; it is an alert, not a trend.
@@ -312,8 +318,26 @@ impl Metrics {
     }
 
     /// Count one processed command (world task, per `Inbound::Cmd`).
+    ///
+    /// **16b cut B.5**: counted where a line is admitted or finally refused,
+    /// never where it is deferred behind a commit, so a line that waited is
+    /// counted once.
     pub fn command_processed(&self) {
         self.commands_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count one message the world task queued behind a pending commit instead
+    /// of refusing it (16b cut B.5, `B-13`: a typed line, a query or a
+    /// reply-carrying world read).
+    pub fn command_deferred(&self) {
+        self.command_deferred_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count one queued message refused because it outlived the defer bound
+    /// (250 ms) while the commit it waited on was still pending (16b cut B.5).
+    pub fn command_defer_timed_out(&self) {
+        self.command_defer_timed_out_total
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Count one panic caught at the world task's dispatch boundary.
@@ -730,6 +754,10 @@ impl Metrics {
             sessions_current: self.sessions_current.load(Ordering::Relaxed),
             connections_current: self.connections_current.load(Ordering::Relaxed),
             commands_total: self.commands_total.load(Ordering::Relaxed),
+            command_deferred_total: self.command_deferred_total.load(Ordering::Relaxed),
+            command_defer_timed_out_total: self
+                .command_defer_timed_out_total
+                .load(Ordering::Relaxed),
             world_panics_total: self.world_panics_total.load(Ordering::Relaxed),
             supervision_abandoned: self.supervision_abandoned.load(Ordering::Relaxed),
             loop_lag_last_ms: self.loop_lag_last_ms.load(Ordering::Relaxed),
@@ -918,6 +946,10 @@ pub struct MetricsSnapshot {
     pub connections_current: i64,
     /// Commands processed since boot.
     pub commands_total: u64,
+    /// Messages queued behind a pending commit since boot (16b cut B.5).
+    pub command_deferred_total: u64,
+    /// Queued messages refused on the defer bound since boot (16b cut B.5).
+    pub command_defer_timed_out_total: u64,
     /// Panics caught at the world task's dispatch boundary since boot.
     pub world_panics_total: u64,
     /// Whether the gateway supervisor has given up on the server half — see
@@ -1159,6 +1191,20 @@ impl MetricsSnapshot {
             "counter",
             "Commands processed by the world task since boot.",
             &[(&[], self.commands_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_command_deferred_total",
+            "counter",
+            "Lines, queries and world reads queued behind a pending commit since boot.",
+            &[(&[], self.command_deferred_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_command_defer_timed_out_total",
+            "counter",
+            "Queued lines, queries and world reads refused on the 250 ms defer bound since boot.",
+            &[(&[], self.command_defer_timed_out_total as f64)],
         );
         metric(
             &mut o,
@@ -1975,6 +2021,27 @@ mod tests {
             m.command_processed();
         }
         assert_eq!(m.snapshot().commands_total, 5);
+    }
+
+    /// 16b cut B.5: the two defer-queue counters sit beside `commands_total`,
+    /// in the snapshot and on the Prometheus page, and move independently.
+    #[test]
+    fn defer_counters_are_snapshotted_and_exported() {
+        let m = Metrics::new();
+        for _ in 0..4 {
+            m.command_deferred();
+        }
+        m.command_defer_timed_out();
+        m.command_processed();
+        let s = m.snapshot();
+        assert_eq!(s.command_deferred_total, 4);
+        assert_eq!(s.command_defer_timed_out_total, 1);
+        assert_eq!(s.commands_total, 1);
+        let text = s.to_prometheus(60);
+        assert!(text.contains("# TYPE mush_command_deferred_total counter"));
+        assert!(text.contains("mush_command_deferred_total 4"));
+        assert!(text.contains("# TYPE mush_command_defer_timed_out_total counter"));
+        assert!(text.contains("mush_command_defer_timed_out_total 1"));
     }
 
     #[test]

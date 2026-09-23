@@ -539,15 +539,19 @@ fn backlog_matching_reports_evicted_once_the_ring_rolls() {
     assert!(bl.evicted, "the ring rolled, so older history may be gone");
 }
 
-// ---- 16b cut Q.3: `schema.retain == "latest"` coalescing --------------------
+// ---- 16b cut Q.3 / B.5: `schema.retain == "latest"` and the latest slot ------
 //
 // The arena's cockpit feed sends a whole-state keyframe per pilot per pulse —
 // two a second at `Engaged` tempo — and a 512-entry ring holds about four
-// minutes of that and nothing else. A payload that declares
-// `schema.retain == "latest"` says "the newest of me is the whole truth", and
-// the ring drops that feed's earlier marked entries as it records the new one.
-// Everything else in the ring is untouched, and `evicted_seq` never moves, so
-// `replay_since` cannot answer `TooOld` because of a coalesce.
+// minutes of that and nothing else. A keyframe whose payload declares
+// `schema.retain == "latest"` says "the newest of me is the whole truth". Cut
+// Q.3 dropped that feed's earlier marked entries from the ring as it recorded
+// the new one (a scan of the ring per frame); **16b cut B.5** (`T-31`, `T-61`)
+// moved the property to a per-feed latest slot beside the ring: the keyframe
+// replaces its feed's slot entry and never enters the ring, `replay_since`
+// merges the slot with the ring by seq, and only a `Keyframe` qualifies. The
+// ring's other entries are untouched, and `evicted_seq` never moves, so
+// `replay_since` cannot answer `TooOld` because of a frame.
 
 /// The marker, spelled out. `mush_session::RETAIN_LATEST` is the thing under
 /// test, and a suite that builds its payloads from it would stay green if its
@@ -601,10 +605,30 @@ fn retained_grid(feed: &str, n: u64) -> OutputEvent {
     }
 }
 
-/// Every ring envelope of `sess`, oldest first — `replay_since(0)` is exactly
-/// that, and it is also the read a reconnecting client makes.
+/// Everything a client that has seen nothing is replayed, oldest first — the
+/// ring and the latest slot merged by seq, which is the read a reconnecting
+/// client makes.
 fn ring_of(mgr: &SessionManager, sess: SessId) -> Vec<Arc<Envelope>> {
     mgr.replay_since(sess, 0).expect("the ring is readable")
+}
+
+/// The RING alone, oldest first: `backlog_matching` reads the ring and never
+/// the latest slot (16b cut B.5), so keeping everything shows exactly what the
+/// ring holds.
+fn ring_only(mgr: &SessionManager, sess: SessId) -> Vec<Arc<Envelope>> {
+    let mut page = mgr
+        .backlog_matching(sess, None, 100_000, |_| true)
+        .expect("the ring is readable")
+        .lines;
+    page.reverse();
+    page
+}
+
+/// Whether any envelope is a panel of `feed`.
+fn holds_panel(envelopes: &[Arc<Envelope>], feed: &str) -> bool {
+    envelopes
+        .iter()
+        .any(|e| matches!(&e.event, OutputEvent::Panel { feed: held, .. } if held.as_str() == feed))
 }
 
 /// One ring entry's `n`, for a panel.
@@ -616,7 +640,7 @@ fn panel_n(event: &OutputEvent) -> Option<u64> {
 }
 
 #[test]
-fn a_thousand_retained_frames_leave_one_ring_entry_and_disturb_nothing_else() {
+fn a_thousand_retained_frames_leave_one_slot_entry_and_disturb_nothing_else() {
     assert_eq!(
         mush_session::RETAIN_LATEST,
         LATEST,
@@ -650,6 +674,19 @@ fn a_thousand_retained_frames_leave_one_ring_entry_and_disturb_nothing_else() {
     assert_eq!(events[4], sys("after"), "and the line after it is after it");
     // The survivor is the LAST frame, not the first.
     assert_eq!(panel_n(&events[3]), Some(999));
+    // **16b cut B.5**: and it lives in the latest slot — the ring itself holds
+    // the four lines and not one frame.
+    let ring = ring_only(&mgr, sess);
+    assert_eq!(
+        ring.iter().map(|e| e.event.clone()).collect::<Vec<_>>(),
+        vec![
+            sys("before 1"),
+            sys("before 2"),
+            sys("before 3"),
+            sys("after")
+        ],
+        "the ring holds no marked keyframe"
+    );
     // Nothing was evicted: the ring never came near its bound, and a client
     // resuming from anywhere is answered rather than told to re-hydrate.
     assert_eq!(mgr.replay_since(sess, 0).expect("from zero").len(), 5);
@@ -661,7 +698,7 @@ fn a_thousand_retained_frames_leave_one_ring_entry_and_disturb_nothing_else() {
         mgr.replay_since(sess, 1_004).expect("caught up").is_empty(),
         "every one of the 1,004 sends still consumed a seq"
     );
-    // And the connection was sent all 1,004: coalescing is a RING rule and
+    // And the connection was sent all 1,004: the slot is a RESUME rule and
     // never a delivery rule.
     let mut delivered = 0;
     while rx.try_recv().is_ok() {
@@ -681,14 +718,25 @@ fn a_panel_without_the_marker_is_never_coalesced() {
     }
     assert_eq!(ring_of(&mgr, sess).len(), 5, "an unmarked panel is history");
 
-    // A marked frame of the same feed arrives: it coalesces only with its own
-    // kind, and the five unmarked ones stay exactly where they were.
+    // A marked frame of the same feed arrives: it replaces only its own kind in
+    // the slot, and the five unmarked ones stay exactly where they were.
     mgr.send_event_to_char(CharKey(2), retained("arena.cockpit", 100));
     mgr.send_event_to_char(CharKey(2), retained("arena.cockpit", 101));
     let ring = ring_of(&mgr, sess);
     assert_eq!(ring.len(), 6);
     let ns: Vec<u64> = ring.iter().filter_map(|e| panel_n(&e.event)).collect();
     assert_eq!(ns, [0, 1, 2, 3, 4, 101]);
+    // 16b cut B.5: the five unmarked frames are ring entries; the marked one is
+    // not.
+    let ns: Vec<u64> = ring_only(&mgr, sess)
+        .iter()
+        .filter_map(|e| panel_n(&e.event))
+        .collect();
+    assert_eq!(
+        ns,
+        [0, 1, 2, 3, 4],
+        "only the unmarked frames are in the ring"
+    );
 }
 
 #[test]
@@ -712,6 +760,10 @@ fn a_typed_view_coalesces_with_the_pulse_frames_of_its_own_feed() {
         data.get("schema").and_then(|s| s.get("shape")),
         Some(&serde_json::json!("grid")),
         "and the survivor is the last one sent, whatever its shape"
+    );
+    assert!(
+        ring_only(&mgr, sess).is_empty(),
+        "16b cut B.5: the survivor is the slot's, and the ring is empty"
     );
 }
 
@@ -738,6 +790,10 @@ fn two_retained_feeds_coalesce_independently() {
         rows,
         vec![("arena.cockpit".to_owned(), 3), ("arena.map".to_owned(), 3)],
         "and each survivor is its own feed's newest, in send order"
+    );
+    assert!(
+        ring_only(&mgr, sess).is_empty(),
+        "16b cut B.5: one slot entry per feed, and nothing in the ring"
     );
 }
 
@@ -786,7 +842,141 @@ fn coalescing_never_moves_the_too_old_boundary_and_leaves_the_backlog_alone() {
     assert_eq!(
         replayed.iter().map(|e| e.seq).collect::<Vec<u64>>(),
         [1, 2, 3, 4, 54],
-        "the gap the coalesce left is the harmless kind a conn-scoped send leaves"
+        "the gap the slot left is the harmless kind a conn-scoped send leaves"
+    );
+    // 16b cut B.5: fifty frames and an eight-deep ring — and the ring holds the
+    // four lines alone, because not one frame ever entered it.
+    assert_eq!(
+        ring_only(&mgr, sess)
+            .iter()
+            .map(|e| e.seq)
+            .collect::<Vec<u64>>(),
+        [1, 2, 3, 4]
+    );
+}
+
+/// A `Delta` of a retained feed (16b cut B.5 `T-61`): the marker rides the
+/// payload, the kind says it is history.
+fn retained_delta(feed: &str, n: u64) -> OutputEvent {
+    OutputEvent::Panel {
+        feed: feed.into(),
+        kind: mush_proto::PanelFrameKind::Delta,
+        data: serde_json::json!({
+            "schema": { "id": feed, "version": 1, "retain": LATEST },
+            "n": n,
+        }),
+    }
+}
+
+/// **16b cut B.5 (`T-31`, `T-61`): the latest slot, end to end.** Replay after
+/// any `last_seq` is the ring's entries and the slot's newest keyframe of each
+/// marked feed, merged by seq; the ring holds no marked keyframe; a `Delta` of
+/// the same feed, marker and all, sits in the ring and replays; `evicted_seq`
+/// never moves because of a keyframe; and a resume across a slot replacement
+/// is never `TooOld`.
+#[test]
+fn the_latest_slot_replays_each_feeds_newest_keyframe_merged_by_seq() {
+    let mgr = manager_with_ticking_clock(SessionConfig {
+        resume_ring: 4,
+        ..SessionConfig::default()
+    });
+    let (web, _rx) = web_conn(1, 256);
+    let (sess, _) = mgr.attach(web, CharKey(6), "f".into());
+
+    mgr.send_event_to_char(CharKey(6), sys("one")); // seq 1
+    mgr.send_event_to_char(CharKey(6), retained("arena.cockpit", 10)); // seq 2
+    mgr.send_event_to_char(CharKey(6), retained("arena.map", 20)); // seq 3
+    mgr.send_event_to_char(CharKey(6), retained_delta("arena.cockpit", 11)); // seq 4
+    mgr.send_event_to_char(CharKey(6), retained("arena.cockpit", 12)); // seq 5
+    mgr.send_event_to_char(CharKey(6), sys("two")); // seq 6
+
+    // The ring: the two lines and the delta, never a marked keyframe.
+    let ring = ring_only(&mgr, sess);
+    assert_eq!(
+        ring.iter().map(|e| e.seq).collect::<Vec<u64>>(),
+        [1, 4, 6],
+        "the lines and the delta are ring entries"
+    );
+    assert_eq!(panel_n(&ring[1].event), Some(11), "the delta is history");
+
+    // From zero: everything, in seq order, the cockpit slot holding its newest.
+    let from_zero = mgr.replay_since(sess, 0).expect("never TooOld");
+    assert_eq!(
+        from_zero.iter().map(|e| e.seq).collect::<Vec<u64>>(),
+        [1, 3, 4, 5, 6],
+        "the map's keyframe, the delta, the cockpit's newest keyframe, merged by seq"
+    );
+    assert_eq!(panel_n(&from_zero[1].event), Some(20));
+    assert_eq!(panel_n(&from_zero[3].event), Some(12));
+
+    // After the map's keyframe: the map is not replayed again; the cockpit's
+    // replacement is — a resume across a slot replacement, never `TooOld`.
+    let after_map = mgr.replay_since(sess, 3).expect("never TooOld");
+    assert_eq!(
+        after_map.iter().map(|e| e.seq).collect::<Vec<u64>>(),
+        [4, 5, 6]
+    );
+    // A client that saw seq 2 (the replaced keyframe) resumes too.
+    assert_eq!(
+        mgr.replay_since(sess, 2)
+            .expect("the replaced keyframe's seq is a harmless gap")
+            .iter()
+            .map(|e| e.seq)
+            .collect::<Vec<u64>>(),
+        [3, 4, 5, 6]
+    );
+    // Caught up: nothing.
+    assert!(mgr.replay_since(sess, 6).expect("caught up").is_empty());
+
+    // A hundred more keyframes of both feeds into a four-deep ring: nothing is
+    // evicted, so `evicted_seq` never moved and every `last_seq` is answered.
+    for n in 0..100 {
+        mgr.send_event_to_char(CharKey(6), retained("arena.cockpit", 100 + n));
+        mgr.send_event_to_char(CharKey(6), retained("arena.map", 200 + n));
+    }
+    for last_seq in [0, 1, 2, 5, 6, 100, 205] {
+        let replayed = mgr
+            .replay_since(sess, last_seq)
+            .unwrap_or_else(|e| panic!("resume from {last_seq} answered {e:?}"));
+        let seqs: Vec<u64> = replayed.iter().map(|e| e.seq).collect();
+        assert!(
+            seqs.windows(2).all(|pair| pair[0] < pair[1]),
+            "merged by seq from {last_seq}: {seqs:?}"
+        );
+    }
+    let latest = mgr.replay_since(sess, 6).expect("never TooOld");
+    assert_eq!(
+        latest
+            .iter()
+            .map(|e| (e.seq, panel_n(&e.event)))
+            .collect::<Vec<_>>(),
+        vec![(205, Some(199)), (206, Some(299))],
+        "one keyframe per feed after seq 6, each its feed's newest"
+    );
+    assert!(!holds_panel(&ring_only(&mgr, sess), "arena.map"));
+    let backlog = mgr
+        .backlog_matching(sess, None, 10, |_| true)
+        .expect("session");
+    assert!(!backlog.evicted, "a keyframe never evicts a ring entry");
+
+    // Now the ring does roll (five lines into four places): `evicted_seq`
+    // moves for the LINES alone. The slot's keyframes are never evicted — each
+    // stays its feed's whole truth however far the ring rolls past its seq —
+    // and since the unchanged gate refuses any `last_seq` below `evicted_seq`,
+    // one is replayed exactly when it is newer than the client.
+    for i in 0..5 {
+        mgr.send_event_to_char(CharKey(6), sys(&format!("roll {i}")));
+    }
+    assert_eq!(
+        mgr.replay_since(sess, 6),
+        Err(ReplayError::TooOld),
+        "the ring rolled past seq 6's successors, so seq 6 must re-hydrate"
+    );
+    let after_roll = mgr.replay_since(sess, 207).expect("inside the ring");
+    assert_eq!(
+        after_roll.iter().map(|e| e.seq).collect::<Vec<u64>>(),
+        [208, 209, 210, 211],
+        "the keyframes (seq 205, 206) are older than the client, so not replayed"
     );
 }
 

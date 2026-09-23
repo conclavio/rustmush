@@ -71,6 +71,11 @@ const GM_PASSWORD: &str = "gm-load-secret";
 const BANNER: &str = "Welcome to the load MUSH!";
 const COMMIT_PENDING_BUSY: &str =
     "The world is committing another action; please retry in a moment.";
+/// 16b cut B.5: a line that waited its 250 ms in the world's defer queue while
+/// the commit still pended is refused in these words instead; it is retried on
+/// exactly the same terms.
+const COMMIT_TIMED_OUT_BUSY: &str =
+    "The world was busy too long for that line; please retry in a moment.";
 const GATEWAY_QUEUE_BUSY: &str = "The server is busy; try again.";
 const MAX_BUSY_ATTEMPTS: usize = 4_096;
 const BUSY_RETRY_DELAY: Duration = Duration::from_millis(2);
@@ -457,7 +462,12 @@ async fn send_with_busy_retry(term: &mut Term, line: &str, acknowledgement: &str
             deadline,
             term.expect_one_of_after(
                 mark,
-                &[acknowledgement, COMMIT_PENDING_BUSY, GATEWAY_QUEUE_BUSY],
+                &[
+                    acknowledgement,
+                    COMMIT_PENDING_BUSY,
+                    COMMIT_TIMED_OUT_BUSY,
+                    GATEWAY_QUEUE_BUSY,
+                ],
             ),
         )
         .await

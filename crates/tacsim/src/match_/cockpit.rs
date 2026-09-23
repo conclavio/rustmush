@@ -2947,15 +2947,18 @@ pub const MAP_VERSION: u32 = 1;
 pub const MAP_SHAPE: &str = "terrain";
 
 /// **The `schema.retain` marker that makes a keyframe replace its own
-/// predecessors in a session's resume ring** (16b cut Q.3; the rule is
-/// implemented in `mush_session::SessionManager`, which cannot see this crate —
-/// the string is the contract).
+/// predecessors for a session's resume** (16b cut Q.3; the rule is implemented
+/// in `mush_session::SessionManager`, which cannot see this crate — the string
+/// is the contract). Since 16b cut B.5 a marked keyframe lives in a per-feed
+/// latest slot beside the resume ring rather than in it.
 ///
-/// Both arena feeds carry it, and so does [`view_frame`]'s replacement schema.
-/// Two keyframes a second of `Engaged` play would otherwise evict everything
-/// else from a 512-entry ring in about four minutes; every frame either feed
-/// sends is the whole state, so the older ones are not history and nothing is
-/// lost by dropping them.
+/// Both arena feeds carry it, and so does [`view_frame`]'s replacement schema
+/// (`arena.map`'s never fires: it is only ever a conn-scoped query reply, which
+/// is never recorded — see [`crate::arena_bridge::MAP_FEED`]). Two keyframes a
+/// second of `Engaged` play would otherwise evict everything else from a
+/// 512-entry ring in about four minutes; every frame either feed sends is the
+/// whole state, so the older ones are not history and nothing is lost by
+/// dropping them.
 pub const RETAIN_LATEST: &str = "latest";
 
 /// **The cockpit keyframe** (doc 16 §5): where the tank is, how fast, which way,
@@ -3217,8 +3220,10 @@ pub fn status_frame_held(
             .map(|held| range_m_rounded(held.range_cm, lock_range_step_m(held.age_ms)))
     });
     serde_json::json!({
-        // 16b cut Q.3: `retain` tells the session ring that this keyframe
-        // supersedes the ones before it on this feed (see [`RETAIN_LATEST`]).
+        // 16b cut Q.3: `retain` tells the session layer that this keyframe
+        // supersedes the ones before it on this feed — it replaces the feed's
+        // entry in the session's latest slot (16b cut B.5; see
+        // [`RETAIN_LATEST`]).
         "schema": { "id": FRAME_SCHEMA, "version": FRAME_VERSION, "retain": RETAIN_LATEST },
         "match": match_id.0,
         "unit": frame.unit.0,
@@ -3401,11 +3406,13 @@ pub fn map_unseated() -> serde_json::Value {
 /// The bridge sends it once through the ordinary output path when a pilot is
 /// unbound (`EXIT`, a released seat, the match ending, a void). It prints
 /// nothing on a line client, because it declares no shape; a panel clears; and —
-/// because it carries [`RETAIN_LATEST`] like every frame before it — it is the
-/// last cockpit frame in that session's resume ring UNTIL the pilot is seated
-/// again, when the next match's first frame supersedes it — which is why a
-/// panel resets its own ring on a change of match and never relies on this
-/// frame arriving (16b cut B.2).
+/// because it carries [`RETAIN_LATEST`] like every frame before it — it
+/// replaces the live frame in that session's per-feed latest slot, the one
+/// `arena.cockpit` frame a resume replays, kept beside the ring rather than in
+/// it (16b cut B.5), UNTIL the pilot is seated again, when the next match's
+/// first frame replaces it in turn — which is why a panel resets its own
+/// notices ring on a change of match and never relies on this frame arriving
+/// (16b cut B.2).
 #[must_use]
 pub fn cockpit_cleared() -> serde_json::Value {
     serde_json::json!({
