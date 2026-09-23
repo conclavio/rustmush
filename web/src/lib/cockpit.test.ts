@@ -3,8 +3,10 @@
 //
 // The load-bearing assertion here is `the parity golden`: this client's
 // composition of `fixtures/cockpit/arena_map.json` + `cockpit_frame.json` at
-// exactly 78 by 20 equals `view_grid.txt` byte for byte — the same file the
-// TUI's `tui_golden.rs` and `mush-ansi`'s `golden.rs` are held to. Three
+// exactly 39 by 20 cells equals `view_grid.txt` byte for byte — the same file the
+// TUI's `tui_golden.rs` and `mush-ansi`'s `golden.rs` are held to (16b cut B.4:
+// the file is one glyph per cell; the line client prints each cell twice, and
+// `golden.rs` halves its printed rows to compare). Three
 // renderers each pinned to a golden of its own would be regression; one file
 // all three must reproduce is parity.
 //
@@ -298,9 +300,9 @@ describe("composeWindow", () => {
   // **The parity assertion** (doc 16 §5). If this ever fails, the first
   // differing cell is a defect in one of the three compositors (or in the
   // fixture), not a golden to re-bless.
-  it("composes the committed grid at exactly 78 by 20", () => {
-    const win = composeWindow(theMap(), theFrame(), 78, 20);
-    expect(win).toMatchObject({ x0: 0, y0: 0, w: 78, h: 20 });
+  it("composes the committed grid at exactly 39 by 20 cells", () => {
+    const win = composeWindow(theMap(), theFrame(), 39, 20);
+    expect(win).toMatchObject({ x0: 0, y0: 0, w: 39, h: 20 });
     const expected = fixture("view_grid.txt").replace(/\r\n/g, "\n").replace(/\n$/, "");
     const got = win.grid.join("\n");
     if (got !== expected) {

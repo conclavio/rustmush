@@ -249,6 +249,59 @@ impl QueryHandler for CommandsQuery {
     }
 }
 
+/// The `"room"` query handler (16b cut B.4, `B-14`): **the attach look**.
+///
+/// A connection that attaches to a character already in the world used to be
+/// shown the room by a real `look` dispatched AS the actor — and a command's
+/// output goes to the actor, so every other connection attached to that
+/// character printed the whole room again. A query's answer is a `Reply` the
+/// engine sends to the ONE connection that asked, so the gateway's attach now
+/// asks this instead and only the new connection sees the room.
+///
+/// It answers the actor's OWN location and no other room (it takes no
+/// argument), through [`room_view`](crate::output::room_view) with the live
+/// typed-state lens — the same perception hooks a typed `look` renders
+/// through, so an attach names nothing a `look` would not. The `LookRendered`
+/// hook lines a typed `look` appends are deliberately NOT on this view (a
+/// recorded decision of cut B.4: their one implementor is a travel journal
+/// line, and a typed `look` still carries them).
+///
+/// The room view lives behind the registry's perception hooks, which only the
+/// engine's query dispatch attaches to the read context; the plain `query`
+/// path (no registry) refuses politely, as [`CommandsQuery`] does.
+struct RoomQuery;
+
+impl QueryHandler for RoomQuery {
+    fn query(
+        &self,
+        _w: &World,
+        _actor: ObjId,
+        _params: &serde_json::Value,
+    ) -> Result<OutputEvent, RichText> {
+        Err(RichText::tag(
+            "error",
+            "The room view is only available through the live engine.",
+        ))
+    }
+
+    fn query_with_context(
+        &self,
+        context: &HookReadContext<'_>,
+        actor: ObjId,
+        params: &serde_json::Value,
+    ) -> Result<OutputEvent, RichText> {
+        let Some(reg) = context.registry() else {
+            return self.query(context.world(), actor, params);
+        };
+        let w = context.world();
+        w.get(actor)
+            .and_then(|o| o.location)
+            .and_then(|location| crate::output::room_view(reg, w, actor, location, context.lens()))
+            .map(OutputEvent::Room)
+            .ok_or_else(|| RichText::tag("error", "You are nowhere."))
+    }
+}
+
 /// `time` / `@time`: the IC ("in-character") date and time, the season, and
 /// the time-of-day — all derived from the core game clock (its IC:OOC ratio
 /// and calendar phase come from `mushd.toml [game]`). Public info; the OOC
@@ -349,9 +402,17 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
     // Core query handlers register under the reserved module identity
     // "core". This runs before any game module registers, so a collision is
     // a programming error, not a runtime condition.
-    Registrar::new(reg, "core")
-        .query_handler("who", Arc::new(WhoQuery))
-        .expect("core query handler registration must not collide");
+    //
+    // 16b cut B.4 (`B-14`): `room`, the attach look answered to one
+    // connection, registers beside `who` through the same one call.
+    let core_queries: [(&str, Arc<dyn QueryHandler>); 2] =
+        [("who", Arc::new(WhoQuery)), ("room", Arc::new(RoomQuery))];
+    let mut queries = Registrar::new(reg, "core");
+    for (name, handler) in core_queries {
+        queries
+            .query_handler(name, handler)
+            .expect("core query handler registration must not collide");
+    }
     // The command table: a core panel feed (so it is in the `hello` manifest
     // and subscribable by name) answered by the same-named query handler.
     let mut core = Registrar::new(reg, "core");

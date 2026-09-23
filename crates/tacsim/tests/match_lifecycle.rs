@@ -531,7 +531,10 @@ async fn only_a_sides_first_pilot_or_staff_may_start_it() {
 
     // Pilot2 claimed blue second, so it leads nothing.
     let said = rig.say(2, "sim start");
-    assert!(said.contains("first pilot or staff"), "{said}");
+    assert!(
+        said.contains("Only a side's lead or staff can start the match."),
+        "{said}"
+    );
     assert_eq!(rig.state(), MatchState::Selection);
 
     // The blue lead leaves; the next blue claimant inherits the lead, so a side
@@ -1353,7 +1356,7 @@ async fn q7_sim_ai_refuses_by_the_sentence_for_each_reason() {
     // machines that they could not start a match.
     let said = rig.say(1, "sim ai 3");
     assert!(
-        said.contains("Only a side's first pilot or staff can set the AI fill."),
+        said.contains("Only a side's lead or staff can set the AI fill."),
         "{said}"
     );
     // Out of range, both ends: the centre has four pods a side.
@@ -2330,7 +2333,7 @@ async fn d1_the_two_bare_reads_answer_anybody_in_the_centre() {
     // But setting is still the lead's, with its own sentence.
     let said = rig.say(1, "sim ai 3");
     assert!(
-        said.contains("Only a side's first pilot or staff can set the AI fill."),
+        said.contains("Only a side's lead or staff can set the AI fill."),
         "{said}"
     );
 
@@ -2962,7 +2965,7 @@ fn damaged_return(
     )
 }
 
-/// **A side's first pilot concedes, and the other side wins** (16b cut D.3,
+/// **A side's lead concedes, and the other side wins** (16b cut D.3,
 /// `B-33`).
 ///
 /// The announcement, the board's new line, the state and the outcome — and that
@@ -3087,7 +3090,7 @@ async fn d3_concede_is_the_leads_alone_and_only_while_a_match_runs() {
     // A pilot who holds a slot but does not lead their side.
     let said = rig.say(1, "sim concede");
     assert!(
-        said.contains("Only a side's first pilot can concede for it."),
+        said.contains("Only a side's lead can concede for it."),
         "{said}"
     );
     assert_eq!(rig.state(), MatchState::Running, "and nothing moved");
@@ -3691,4 +3694,117 @@ async fn d3_the_not_started_yet_line_is_boardings_alone() {
         said.contains(tacsim::match_::OUTSIDE_COCKPIT),
         "a terminal centre answered the boarding line to a billet-holder: {said}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut B.4 — the lead who leaves the tank (cut AA's residual)
+// ---------------------------------------------------------------------------
+
+/// **A lead who leaves the tank mid-match hands the side on** (16b cut B.4).
+///
+/// Before this cut `slot_left` set `left` and kept the lead, so no succession
+/// ran: the side's next pilot, still fighting, read `Only a side's lead can
+/// concede for it.` and the lead standing in the team room still held the
+/// right. The release goes through [`Rig::release`] — `send_control`'s
+/// `Released`, the seam `EXIT`, a `QUIT` and the linkdead grace all reach.
+///
+/// Red has three pilots, and the one claimed second leaves first: the heir
+/// search must skip that earlier claimant, who has left, and not only the
+/// outgoing lead — or the pilot standing in the team room would inherit the
+/// right to concede for the side still fighting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b4_slot_left_promotes_the_next_pilot_in_the_tank() {
+    let mut rig = Rig::boot(4);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    rig.say(2, "sim team red");
+    rig.say(3, "sim team blue");
+    rig.say(0, "sim start");
+    assert!(!rig.seat(0));
+    assert!(!rig.seat(1));
+    assert!(!rig.seat(2));
+    assert!(rig.seat(3));
+    assert_eq!(rig.state(), MatchState::Running);
+    assert!(rig.centre().leads_side(Team::Red, account(0)));
+
+    // The second claimant leaves first: a non-lead leaving moves nothing.
+    rig.release(1);
+    assert!(
+        rig.centre().leads_side(Team::Red, account(0)),
+        "a non-lead leaving moves nothing"
+    );
+
+    rig.release(0);
+    let centre = rig.centre();
+    assert!(
+        centre
+            .slot_of_pilot(rig.pilot(0))
+            .is_some_and(|slot| slot.left),
+        "the lead's slot is marked left and stays on the board"
+    );
+    assert!(
+        centre.leads_side(Team::Red, account(2)),
+        "red's next pilot still in a tank leads it: {:?}",
+        centre.leads
+    );
+    assert!(
+        !centre.leads_side(Team::Red, account(1)),
+        "the earlier claimant who left is skipped"
+    );
+    assert!(
+        !centre.leads_side(Team::Red, account(0)),
+        "the lead who left leads nothing"
+    );
+    assert!(centre.leads_side(Team::Blue, account(3)), "blue untouched");
+
+    // The pilots who left are refused in the lead's words; the heir concedes.
+    for n in [0, 1] {
+        let said = rig.say(n, "sim concede");
+        assert!(
+            said.contains("Only a side's lead can concede for it."),
+            "pilot {n}: {said}"
+        );
+    }
+    assert_eq!(rig.state(), MatchState::Running, "and nothing moved");
+    let said = rig.say(2, "sim concede");
+    assert!(said.contains("concedes for the red side"), "{said}");
+}
+
+/// **A side whose pilots have all left has no lead** (16b cut B.4): nobody in
+/// a tank can speak for it, so there is no entry at all — the same answer as a
+/// side whose last slot went on a `SIM LEAVE`. The other side keeps its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b4_a_side_whose_pilots_all_left_has_no_lead() {
+    let mut rig = Rig::boot(3);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    rig.say(2, "sim team blue");
+    rig.say(0, "sim start");
+    assert!(!rig.seat(0));
+    assert!(!rig.seat(1));
+    assert!(rig.seat(2));
+    assert_eq!(rig.state(), MatchState::Running);
+
+    rig.release(1);
+    assert!(
+        rig.centre().leads_side(Team::Red, account(0)),
+        "a non-lead leaving moves nothing"
+    );
+    rig.release(0);
+    let centre = rig.centre();
+    assert!(
+        !centre.leads.iter().any(|(side, _)| *side == Team::Red),
+        "red has no lead once every red pilot has left: {:?}",
+        centre.leads
+    );
+    assert!(centre.leads_side(Team::Blue, account(2)));
+    assert_eq!(centre.slots.len(), 3, "every slot stays on the board");
+    for n in [0, 1] {
+        let said = rig.say(n, "sim concede");
+        assert!(
+            said.contains("Only a side's lead can concede for it."),
+            "pilot {n}: {said}"
+        );
+    }
+    assert_eq!(rig.state(), MatchState::Running);
 }

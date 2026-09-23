@@ -476,7 +476,8 @@ on the pilot, clamped to the arena, the pilot's `@` down first and the contacts
 in frame order after it, last write wins. The committed fixtures under
 `src/lib/fixtures/cockpit/` are read by all three, and `cockpit.test.ts`'s
 parity case pins this client's composition of `arena_map.json` +
-`cockpit_frame.json` at exactly 78 by 20 against `view_grid.txt`, byte for byte
+`cockpit_frame.json` at exactly 39 by 20 cells against `view_grid.txt` (one
+glyph per cell; a line client prints each cell twice, 16b cut B.4), byte for byte
 — the same file `mush-net-ssh/tests/tui_golden.rs` is held to. Three renderers
 each pinned to a golden of its own would be regression; one file all three must
 reproduce is parity. `web_view_model.txt` beside it is this client's own

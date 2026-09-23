@@ -2176,7 +2176,7 @@ async fn view_follows_its_panel_with_the_line_about_what_the_window_could_not_fi
 // cell inside the window; one plots outside it; one carries a reading and one
 // does not. `view_grid.txt` — pinned in `mush-ansi/tests/golden.rs` — is what a
 // line client draws of it, and it is what 16b cut Q.4's and Q.5's compositions of
-// `arena_map.json` + `cockpit_frame.json` at exactly 78 by 20 must equal byte for
+// `arena_map.json` + `cockpit_frame.json` at exactly 39 by 20 must equal byte for
 // byte. That equality, and not three separate goldens, is what makes the three
 // renderers one renderer.
 //
@@ -2217,7 +2217,7 @@ mod fixture {
     /// The pilot's own unit.
     const UNIT: ObjId = ObjId(101);
 
-    /// The pilot's cell, near the south-west corner: 78 by 20 around it clamps
+    /// The pilot's cell, near the south-west corner: 39 by 20 around it clamps
     /// to the arena's own west edge AND its own south edge.
     const YOU: (u16, u16) = (6, 4);
 
@@ -4459,5 +4459,405 @@ fn b1_the_victims_section_and_the_old_name_are_published() {
                 "{word}.{empty}"
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut B.4 — the range memory (`T-60`) and the scan width (`B-26`)
+// ---------------------------------------------------------------------------
+
+/// The fixture scene's contact whose designator reads `named`.
+fn b4_contact_id(
+    frame: &tacsim::arena::step::Frame,
+    named: &str,
+) -> tacsim::arena::state::ContactId {
+    frame
+        .contacts
+        .iter()
+        .find(|held| held.designator.to_string() == named)
+        .map(|held| held.id)
+        .unwrap_or_else(|| panic!("the fixture scene holds {named}"))
+}
+
+/// **16b cut B.4** (`T-60`): the memory the bridge stores on its mirror is one
+/// row per contact on the frame, each at the figure its row publishes — held
+/// against the previous map — and a contact gone from the frame is gone from
+/// the map, so a re-acquired id starts afresh.
+#[test]
+fn b4_settle_ranges_holds_each_row_and_drops_a_vanished_one() {
+    let mut frame = fixture::frame();
+    let friend = b4_contact_id(&frame, "RB");
+    let hostile = b4_contact_id(&frame, "BA");
+    // RB's plot sits at 431 m, past the plain 425 m edge.
+    if let Some(held) = frame.contacts.iter_mut().find(|held| held.id == friend) {
+        held.range_cm = 43_100;
+    }
+    // No memory: every row rounds plainly.
+    let first = cockpit::settle_ranges(&frame, &BTreeMap::new());
+    assert_eq!(first.len(), frame.contacts.len(), "one entry per row");
+    assert_eq!(first.get(&friend), Some(&450));
+    // A memory of 400 holds RB at 400; BA's 430 m against a 400 held holds too.
+    let held = BTreeMap::from([(friend, 400_u64), (hostile, 400_u64)]);
+    let second = cockpit::settle_ranges(&frame, &held);
+    assert_eq!(second.get(&friend), Some(&400), "held across the edge");
+    assert_eq!(second.get(&hostile), Some(&400));
+    // And the rows the frame's panel payload publishes are those figures.
+    let payload = cockpit::status_frame_held(fixture::MATCH, &frame, &second);
+    let published = |named: &str| {
+        payload
+            .get("contacts")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|rows| {
+                rows.iter().find(|row| {
+                    row.get("designator").and_then(serde_json::Value::as_str) == Some(named)
+                })
+            })
+            .and_then(|row| row.get("range_m"))
+            .and_then(serde_json::Value::as_u64)
+    };
+    assert_eq!(published("RB"), Some(400));
+    assert_eq!(
+        cockpit::status_frame(fixture::MATCH, &frame)
+            .get("contacts")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|rows| {
+                rows.iter().find(|row| {
+                    row.get("designator").and_then(serde_json::Value::as_str) == Some("RB")
+                })
+            })
+            .and_then(|row| row.get("range_m"))
+            .and_then(serde_json::Value::as_u64),
+        Some(450),
+        "the memoryless form is the old rounding, which the fixtures keep"
+    );
+    // A contact that vanishes from the frame is dropped from the memory.
+    frame.contacts.retain(|held| held.id != friend);
+    let third = cockpit::settle_ranges(&frame, &second);
+    assert!(!third.contains_key(&friend), "a vanished row is forgotten");
+    assert_eq!(third.len(), frame.contacts.len());
+}
+
+/// **16b cut B.4** (`T-60`): `RANGE` on an unlocked row prints the figure the
+/// row carries — the held one — and does not recompute it from the plot, so
+/// `RANGE`, `CONTACTS` and both panels read one distance; the lock alone is
+/// recomputed at its own age-derived step.
+#[test]
+fn b4_range_prints_an_unlocked_rows_held_figure_and_recomputes_only_the_lock() {
+    let mut frame = fixture::frame();
+    let friend = b4_contact_id(&frame, "RB");
+    let hostile = b4_contact_id(&frame, "BA");
+    if let Some(held) = frame.contacts.iter_mut().find(|held| held.id == friend) {
+        held.range_cm = 43_100;
+    }
+    let memory = BTreeMap::from([(friend, 400_u64), (hostile, 400_u64)]);
+    let rows = cockpit::frame_contacts_held(&frame, &memory);
+    let row = |named: &str| {
+        rows.iter()
+            .find(|row| row.designator.to_string() == named)
+            .cloned()
+            .unwrap_or_else(|| panic!("{named}'s row"))
+    };
+    // RB is not the lock: a plot at 431 m with 400 held prints 400 m, which is
+    // what `CONTACTS` prints about the same row.
+    let rb = row("RB");
+    assert_eq!(rb.range_m, 400);
+    assert_eq!(
+        cockpit::range_line(&frame, &rb, 1_000),
+        "Range to RB: 400 m."
+    );
+    assert!(rb.render().contains("400 m"), "{}", rb.render());
+    // BA is the lock: its row holds 400 on the scope, but `RANGE` recomputes
+    // from the plot at the lock's own step — 430 m on a 1.2 s plot is 440 at
+    // 20 m — the frame's `lock_range_m`, and no memory.
+    let ba = row("BA");
+    assert_eq!(ba.range_m, 400);
+    let line = cockpit::range_line(&frame, &ba, 1_000);
+    assert!(line.starts_with("Range to BA: 440 m"), "{line}");
+    assert_eq!(
+        cockpit::status_frame_held(fixture::MATCH, &frame, &memory)
+            .get("lock_range_m")
+            .and_then(serde_json::Value::as_u64),
+        Some(440)
+    );
+}
+
+/// **16b cut B.4** (`B-26`): a wrapped `SCAN` run never passes 76 columns, the
+/// comma it takes on a wrap included. The two cells here fill a run to exactly
+/// 76 before a third arrives — which the old `+ 2` test let stand, and then
+/// pushed the wrap's comma onto for 77 — so the run must wrap one cell earlier.
+#[test]
+fn b4_a_scan_run_that_would_reach_77_wraps_at_76_or_less() {
+    use smol_str::SmolStr;
+    let mut frame = fixture::frame();
+    // `ggyrd`: two 30-character names reading `green` make cells of 36 each,
+    // and `  ` + 36 + `, ` + 36 is 76 exactly.
+    let long = |n: u8| SmolStr::new(format!("{:a<29}{n}", ""));
+    frame.scan_tables = vec![vec![
+        long(1),
+        long(2),
+        SmolStr::new_static("left_track"),
+        SmolStr::new_static("right_track"),
+        SmolStr::new_static("turret"),
+    ]];
+    assert_eq!(long(1).len(), 30);
+    let rows = cockpit::frame_contacts(&frame);
+    let ba = rows
+        .iter()
+        .find(|row| row.designator.to_string() == "BA")
+        .cloned()
+        .expect("BA's row");
+    let lines = cockpit::scan_lines(&frame, &ba);
+    for run in lines.iter().skip(1) {
+        assert!(
+            run.len() <= 76,
+            "a wrapped run ran past 76 columns: {} ({run:?})",
+            run.len()
+        );
+        assert!(run.starts_with("  "), "{run:?}");
+    }
+    assert_eq!(
+        lines.get(1).map(String::as_str),
+        Some(format!("  {} green,", long(1)).as_str()),
+        "the second cell no longer fits beside the first once the comma is counted"
+    );
+    // Every section is named once.
+    let joined = lines.join(" ");
+    for name in ["left_track", "right_track", "turret"] {
+        assert_eq!(joined.matches(name).count(), 1, "{joined}");
+    }
+}
+
+/// The arena-cockpit panel payloads in `events`.
+fn b4_cockpit_panels(events: &[(Audience, OutputEvent)]) -> Vec<serde_json::Value> {
+    events
+        .iter()
+        .filter_map(|(_, event)| match event {
+            OutputEvent::Panel { feed, data, .. }
+                if feed.as_str() == tacsim::arena_bridge::FRAME_FEED =>
+            {
+                Some(data.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// **16b cut B.4** (`B-23`): `VIEW` with a frame held but no ground to draw it
+/// on says so in one sentence and pushes nothing — it used to push the bare
+/// status frame, which declares no shape and a line client prints as a blank.
+///
+/// The frame here is the arena's own, stood off the terrain and handed back
+/// through the real egress seam, which is one of the two ways
+/// `view_frame_held` answers a bare frame (the other is no arena in the
+/// registry; both reach the one inline shape test). The no-frame sentence and
+/// the drawn window either side of it are pinned too, so the test fails if the
+/// shape test is dropped (a blank panel again) or inverted (a dark sentence on
+/// a window that could be drawn).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b4_view_says_the_window_is_dark_when_there_is_no_ground_under_it() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+
+    // No frame yet: the sentence that always was, and nothing pushed.
+    let events = rig.events(0, "view");
+    assert_eq!(
+        rig.tw.seen_by(&events, pilot),
+        vec!["The window is dark: the panel has told you nothing yet.".to_owned()]
+    );
+    assert!(b4_cockpit_panels(&events).is_empty(), "{events:?}");
+
+    // A frame on the ground: the window is drawn, and the dark sentence is not
+    // said.
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let frame = rig.held_frame(0);
+    let events = rig.events(0, "view");
+    let panels = b4_cockpit_panels(&events);
+    assert_eq!(panels.len(), 1, "{events:?}");
+    assert_eq!(
+        panels
+            .first()
+            .and_then(|payload| payload.pointer("/schema/shape")),
+        Some(&serde_json::json!("grid"))
+    );
+    assert!(
+        !rig.tw
+            .seen_by(&events, pilot)
+            .iter()
+            .any(|said| said.contains("window is dark")),
+        "{events:?}"
+    );
+
+    // The same frame stood off the terrain: one sentence, no panel of any shape.
+    let mut off = frame;
+    off.pose.x_cm = -1;
+    rig.push_frame(0, off);
+    let events = rig.events(0, "view");
+    assert_eq!(
+        rig.tw.seen_by(&events, pilot),
+        vec!["The window is dark: there is no ground under the panel to draw.".to_owned()]
+    );
+    assert!(
+        b4_cockpit_panels(&events).is_empty(),
+        "nothing is pushed when nothing can be drawn: {events:?}"
+    );
+}
+
+/// **16b cut B.4** (`T-60`), through the bridge: two successive frames handed to
+/// `on_frames` over the real egress seam. The second plot crosses the plain
+/// 425 m edge by six metres, and the panel the pulse publishes, `CONTACTS` and
+/// `RANGE` off the mirror all keep the held 400 m; a plot past the hysteresis
+/// band moves all three to 450 together.
+///
+/// It is what the pure `settle_ranges` tests cannot see: that `on_frames` reads
+/// the previous mirror's memory, stores the settled map on the new one, and
+/// publishes with it, and that the read verbs render the mirror's memory rather
+/// than rounding afresh.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b4_the_bridge_holds_a_range_across_the_edge_from_pulse_to_pulse() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let base = rig.held_frame(0);
+    let scene = fixture::frame();
+    let friend = b4_contact_id(&scene, "RB");
+    let mut frame = base;
+    frame.contacts = scene.contacts.clone();
+    frame.lock = scene.lock;
+
+    let published_rb = |rig: &Rig| {
+        rig.panels(tacsim::arena_bridge::FRAME_FEED)
+            .last()
+            .and_then(|(_, payload)| {
+                payload
+                    .get("contacts")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|rows| {
+                        rows.iter().find(|row| {
+                            row.get("designator").and_then(serde_json::Value::as_str) == Some("RB")
+                        })
+                    })
+                    .and_then(|row| row.get("range_m"))
+                    .and_then(serde_json::Value::as_u64)
+            })
+    };
+    let contacts_rb = |said: &str| {
+        said.lines()
+            .find(|line| line.contains("RB"))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let at = |mut frame: tacsim::arena::step::Frame, range_cm: u64| {
+        if let Some(held) = frame.contacts.iter_mut().find(|held| held.id == friend) {
+            held.range_cm = range_cm;
+        }
+        frame
+    };
+
+    // 424 m: 400 on every surface.
+    rig.push_frame(0, at(frame.clone(), 42_400));
+    assert_eq!(published_rb(&rig), Some(400));
+    // 431 m, past the plain 425 m edge but inside the band: still 400, where
+    // the memoryless rounding says 450.
+    rig.push_frame(0, at(frame.clone(), 43_100));
+    assert_eq!(
+        published_rb(&rig),
+        Some(400),
+        "the pulse's panel holds the figure it last published"
+    );
+    let said = rig.say(0, "contacts");
+    assert!(contacts_rb(&said).contains("400 m"), "{said}");
+    let said = rig.say(0, "range rb");
+    assert!(said.contains("Range to RB: 400 m."), "{said}");
+    // 432 m is past the six-metre band: 450 on every surface together.
+    rig.push_frame(0, at(frame.clone(), 43_200));
+    assert_eq!(published_rb(&rig), Some(450));
+    let said = rig.say(0, "contacts");
+    assert!(contacts_rb(&said).contains("450 m"), "{said}");
+    let said = rig.say(0, "range rb");
+    assert!(said.contains("Range to RB: 450 m."), "{said}");
+    // And held there on the way back down to 419 m, which rounds plainly to 400.
+    rig.push_frame(0, at(frame, 41_900));
+    assert_eq!(published_rb(&rig), Some(450));
+}
+
+/// **16b cut B.4** (`B-38`, the ejection half): the two ejections show the
+/// pilot the room they are put out into, after the hatch line that explains
+/// it — `SIM LEAVE` by a pilot seated during `Boarding` (`eject_pilot`) and the
+/// centre-wide sweep (`eject_all`, here run by the end of an aborted match;
+/// the staff reset runs the same sweep).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b4_an_ejected_pilot_is_shown_the_room_after_the_hatch_line() {
+    let hatch_then_room = |events: &[(Audience, OutputEvent)], pilot: ObjId, room: ObjId| {
+        let hatch = events.iter().position(|(audience, event)| {
+            *audience == Audience::Actor(pilot)
+                && matches!(event, OutputEvent::Sys(text)
+                    if text.to_plain_text().starts_with("The hatch of "))
+        });
+        let view = events.iter().position(|(audience, event)| {
+            *audience == Audience::Actor(pilot)
+                && matches!(event, OutputEvent::Room(view) if view.id == room.to_string())
+        });
+        match (hatch, view) {
+            (Some(hatch), Some(view)) => hatch < view,
+            _ => false,
+        }
+    };
+    let room_of = |rig: &Rig, pod: ObjId| {
+        rig.tw
+            .world()
+            .get(pod)
+            .and_then(|object| object.location)
+            .expect("the pod stands in the team room")
+    };
+
+    // `SIM LEAVE` from inside the pod, while the centre is `Boarding` (the one
+    // state that verb and a seat meet in).
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.say(0, "board");
+    let pod = rig.pod(0).expect("a locked pod");
+    assert_eq!(rig.location(0), Some(pod), "aboard");
+    let room = room_of(&rig, pod);
+    let events = rig.events(0, "sim leave");
+    assert_eq!(rig.location(0), Some(room), "the hatch opened");
+    assert!(
+        hatch_then_room(&events, rig.pilot(0), room),
+        "the team room after the hatch line: {events:?}"
+    );
+
+    // The sweep, for both pilots of a match that ends.
+    rig.staff("@arena/reset");
+    assert_eq!(rig.state(), MatchState::Idle);
+    rig.walk_to(0, match_::LOBBY_ENTRY);
+    rig.walk_to(1, match_::LOBBY_ENTRY);
+    rig.fly().await;
+    let rooms = [
+        room_of(&rig, rig.pod(0).expect("a locked pod")),
+        room_of(&rig, rig.pod(1).expect("a locked pod")),
+    ];
+    // A running match ends through the arena (the check-in lands a pulse
+    // later), so the sweep's events are read off the rig's whole record from
+    // the mark on.
+    let mark = rig.log.len();
+    rig.say(0, "sim abort");
+    for _ in 0..400 {
+        if rig.state() == MatchState::Aborted {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+    }
+    assert_eq!(rig.state(), MatchState::Aborted, "the check-in lands");
+    let events = rig.log.split_off(mark);
+    for (n, room) in rooms.into_iter().enumerate() {
+        assert_eq!(rig.location(n), Some(room), "pilot {n}'s hatch opened");
+        assert!(
+            hatch_then_room(&events, rig.pilot(n), room),
+            "pilot {n}'s team room after the hatch line: {events:?}"
+        );
     }
 }

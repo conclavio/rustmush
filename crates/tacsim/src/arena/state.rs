@@ -2329,7 +2329,7 @@ pub enum StopReason {
     /// The match is void: nothing it derived may be committed.
     Void,
     /// **A side gave up** (16b cut D.3, `B-33`): `SIM CONCEDE`, by that side's
-    /// first pilot.
+    /// lead.
     ///
     /// It carries the side that **conceded**, not the side that won, because that
     /// is the fact the world has: the arena turns it into
@@ -2370,7 +2370,7 @@ pub enum EndReason {
     /// other.
     Spent,
     /// **A side conceded** (16b cut D.3, `B-33`): `SIM CONCEDE`, by that side's
-    /// first pilot, and the other side wins.
+    /// lead, and the other side wins.
     ///
     /// It is an end and not an abort: the match was fought, so its cells are
     /// committed and the tanks stand as evidence exactly as after an elimination

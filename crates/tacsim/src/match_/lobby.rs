@@ -121,8 +121,10 @@ pub struct Centre {
     /// The claimed slots, in claim order.
     pub slots: Vec<Slot>,
     /// The lead of each side — its first claimant, or once that account has
-    /// left or been dropped, the side's first remaining claimant
-    /// ([`Centre::resettle_leads`]) — who may `SIM START` and `SIM CONCEDE`.
+    /// given the slot up (`SIM LEAVE`), been dropped at boarding, or left its
+    /// tank once the match is running (16b cut B.4), the side's first remaining
+    /// claimant still in a tank ([`Centre::resettle_leads`]) — who may
+    /// `SIM START` and `SIM CONCEDE`.
     pub leads: Vec<(Team, AccountId)>,
     /// When `Boarding` gives up on the unseated, in world milliseconds.
     pub board_deadline_ms: Option<i64>,
@@ -223,26 +225,32 @@ impl Centre {
     /// cut the deadline dropped a lead and kept its entry, and the side could not
     /// `SIM CONCEDE` for the rest of the match.
     ///
+    /// **16b cut B.4** (cut AA's residual): a slot whose pilot has **left** the
+    /// tank mid-match ([`Slot::left`]) neither keeps the lead nor inherits it —
+    /// the slot stays on the board for the result record, but its pilot is in
+    /// the team room and cannot speak for a side still fighting. A side whose
+    /// every slot has left has no entry. [`slot_left`] calls this the moment it
+    /// marks a slot, so the side's next claimant still in a tank leads at once.
+    ///
     /// The vector is rebuilt in [`Team::ALL`] order. Nothing reads the order:
     /// every reader asks `any`.
     pub fn resettle_leads(&mut self) {
         let mut leads: Vec<(Team, AccountId)> = Vec::with_capacity(Team::ALL.len());
         for team in Team::ALL {
-            let kept = self
-                .leads
-                .iter()
-                .find(|(side, lead)| {
-                    *side == team
-                        && self
-                            .slots
-                            .iter()
-                            .any(|slot| slot.team == team && slot.account == *lead)
-                })
-                .map(|(_, lead)| *lead);
+            let kept =
+                self.leads
+                    .iter()
+                    .find(|(side, lead)| {
+                        *side == team
+                            && self.slots.iter().any(|slot| {
+                                slot.team == team && slot.account == *lead && !slot.left
+                            })
+                    })
+                    .map(|(_, lead)| *lead);
             let lead = kept.or_else(|| {
                 self.slots
                     .iter()
-                    .find(|slot| slot.team == team)
+                    .find(|slot| slot.team == team && !slot.left)
                     .map(|slot| slot.account)
             });
             if let Some(lead) = lead {
@@ -379,7 +387,7 @@ pub enum SimError {
         state: &'static str,
     },
     /// Only a team lead or staff may start.
-    #[error("Only a side's first pilot or staff can start the match.")]
+    #[error("Only a side's lead or staff can start the match.")]
     NotLead,
     /// **`SIM AI <n>` from somebody who leads no side** (16b cut D.1).
     ///
@@ -387,16 +395,16 @@ pub enum SimError {
     /// answered it too, so a player who asked the fill to be three was told they
     /// could not start the match. The bare read is now served to anybody in the
     /// centre and only the *set* is gated, so this is the sentence for the set.
-    #[error("Only a side's first pilot or staff can set the AI fill.")]
+    #[error("Only a side's lead or staff can set the AI fill.")]
     NotLeadForAi,
-    /// **`SIM CONCEDE` from somebody who is not their side's first pilot** (16b
+    /// **`SIM CONCEDE` from somebody who is not their side's lead** (16b
     /// cut D.3, `B-33`).
     ///
     /// Conceding ends the match for everybody on that side, so it is the lead's
     /// alone — the same right that starts it. Staff get no special case here:
     /// `@arena/abort` is theirs, and an operator ending somebody's match as a
     /// *loss for one side* would be the console choosing who won.
-    #[error("Only a side's first pilot can concede for it.")]
+    #[error("Only a side's lead can concede for it.")]
     NotLeadToConcede,
     /// **`SIM ABORT` in `Selection` by anyone but staff** (16b cut D.3, `T-60`).
     ///
@@ -1593,6 +1601,11 @@ pub(crate) fn slot_left(ctx: &mut Ctx<'_>, pilot: ObjId) -> bool {
     let moved = match centre.slots.iter_mut().find(|slot| slot.pilot == pilot) {
         Some(slot) if !slot.left => {
             slot.left = true;
+            // **16b cut B.4** (cut AA's residual): a lead who leaves the tank
+            // mid-match hands the side on at once — before this, `left` was
+            // set and the lead kept, so no succession ran and the teammates
+            // still fighting read `Only a side's lead can concede for it.`
+            centre.resettle_leads();
             true
         }
         _ => false,
@@ -1907,7 +1920,7 @@ pub fn board_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
 /// [`SimError::AiOff`] on a server with `[tacsim.match].ai_fill` off (both the
 /// read and the set), and then, for the set alone,
 /// [`SimError::WrongState`] outside `Selection`, [`SimError::NotLeadForAi`] for
-/// anyone but a side's first pilot or staff, [`SimError::AiRange`] outside
+/// anyone but a side's lead or staff, [`SimError::AiRange`] outside
 /// `1..=slots_per_side`, and [`SimError::AiBelowSide`] under what a side has
 /// already claimed.
 pub fn ai(ctx: &mut Ctx<'_>, size: Option<u8>) -> Result<(), SimError> {
@@ -2883,6 +2896,62 @@ mod tests {
             "an empty side has no entry"
         );
         assert!(centre.leads_side(Team::Red, b));
+        assert_eq!(centre.leads.len(), 1);
+    }
+
+    /// **16b cut B.4** (cut AA's residual): a slot whose pilot has left the tank
+    /// mid-match is still on the board but neither keeps the lead nor inherits
+    /// it. Keep (the lead is in its tank), promote past a left slot to the next
+    /// claimant still in one, and an all-left side has no entry.
+    #[test]
+    fn resettle_leads_skips_a_slot_that_has_left_its_tank() {
+        let (a, b, c, d) = (account(1), account(2), account(3), account(4));
+        let mut centre = Centre::default();
+        // Claim order is the board's order: `a`, then `c`, then `b` — so `c`
+        // stands between the lead and `b`, and an heir search that skipped only
+        // the outgoing lead would land on `c`.
+        centre.slots.push(slot(Team::Red, 1, 1));
+        centre.slots.push(slot(Team::Red, 2, 3));
+        centre.slots.push(slot(Team::Red, 3, 2));
+        centre.slots.push(slot(Team::Blue, 1, 4));
+        centre.leads = vec![(Team::Red, a), (Team::Blue, d)];
+
+        // Keep: a non-lead leaving moves nothing.
+        if let Some(held) = centre.slots.iter_mut().find(|held| held.account == c) {
+            held.left = true;
+        }
+        centre.resettle_leads();
+        assert!(centre.leads_side(Team::Red, a), "red keeps its lead");
+        assert!(centre.leads_side(Team::Blue, d));
+
+        // Promote past a left slot: the lead leaves; the next claimant in claim
+        // order is `c`, who has left and is still on the board, so it is skipped
+        // and `b` — the first claimant still in a tank — inherits.
+        if let Some(held) = centre.slots.iter_mut().find(|held| held.account == a) {
+            held.left = true;
+        }
+        centre.resettle_leads();
+        assert!(centre.leads_side(Team::Red, b), "red's heir is in a tank");
+        assert!(
+            !centre.leads_side(Team::Red, a),
+            "the lead who left does not lead"
+        );
+        assert!(
+            !centre.leads_side(Team::Red, c),
+            "nor does the earlier claimant who left"
+        );
+        assert_eq!(centre.slots.len(), 4, "the slots stay on the board");
+
+        // All left: the side has no lead at all.
+        if let Some(held) = centre.slots.iter_mut().find(|held| held.account == b) {
+            held.left = true;
+        }
+        centre.resettle_leads();
+        assert!(
+            !centre.leads.iter().any(|(side, _)| *side == Team::Red),
+            "a side whose every slot has left has no entry"
+        );
+        assert!(centre.leads_side(Team::Blue, d), "blue is untouched");
         assert_eq!(centre.leads.len(), 1);
     }
 }

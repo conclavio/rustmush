@@ -845,8 +845,9 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
 
     /// Attach an already-authenticated, already-authorized connection
     /// handle to a character and bring it into the game: session attach,
-    /// world `ConnUp` (announces connect/reconnect), `SessionInfo`, and an
-    /// initial `look`. The caller has verified the character belongs to
+    /// world `ConnUp` (announces connect/reconnect), `SessionInfo`, and the
+    /// attach look (the core `room` query, answered to this one connection).
+    /// The caller has verified the character belongs to
     /// the account and built the handle with the right
     /// [`Sink`](mush_session::Sink) for its wire.
     pub async fn enter_game(
@@ -881,8 +882,9 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             } => (others + 1, from_linkdead),
         };
 
-        // World side: connection up (announces connect/reconnect), then an
-        // initial look so the player sees where they are.
+        // World side: connection up (announces connect/reconnect), then the
+        // attach look (the `room` query below) so the player sees where they
+        // are.
         if !self
             .link
             .to_server(ToServer::Inbound(WireInbound::ConnUp {
@@ -902,7 +904,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         // any gameplay/world-read question: hard-mode correctly refuses those
         // reads while the hook's commit is still pending, and treating that
         // refusal as "not in an input context" would either skip the initial
-        // room view or feed `look` into a live input context.
+        // room view or show it over a live input context's prompt.
         if !self.delivery_barrier(conn_id, "connect readiness").await {
             self.compensate_announced_attach(conn_id, actor, from_linkdead)
                 .await;
@@ -936,16 +938,23 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 connections: u8::try_from(connections).unwrap_or(u8::MAX),
             },
         );
-        // The initial look shows the player their room — UNLESS the `ConnUp`
-        // above dropped them into an input context (the chargen wizard's
-        // connect-time drop; or a mail compose that survived a linkdead drop,
-        // on reconnect). Dispatching "look" then would feed it to the context
-        // as body/input text (the wizard reads it as a bogus template name),
-        // so skip it and let the context's own prompt stand.
-        // Fail closed on Busy/unavailable/unexpected responses. Sending an
-        // automatic `look` is safe only after an exact negative answer; if the
-        // actor is actually composing mail or in chargen, guessing false would
-        // feed `look` into that input context as user data.
+        // **The attach look** (16b cut B.4, `B-14`): the player is shown their
+        // room by the core `room` QUERY, not by a `look` command. A command runs
+        // as the actor and its output goes to the actor — to EVERY connection
+        // attached to the character — so a second connection's attach printed
+        // the whole room on the first one too. A query's answer is a
+        // `Reply { id: 0, event: Room }` the world sends to this one connection
+        // (`SendTarget::Conn`, by the query path's own construction); `id` 0 is
+        // the server-initiated reply nobody correlates, and it is registered
+        // nowhere. The `LookRendered` hook lines a typed `look` appends are not
+        // on this view; a typed `look` is unchanged.
+        //
+        // The guard stands as it stood for the old `look`: skip the view when
+        // the `ConnUp` above dropped the actor into an input context (the
+        // chargen wizard's connect-time drop; or a mail compose that survived a
+        // linkdead drop, on reconnect), and let the context's own prompt stand.
+        // Fail closed on Busy/unavailable/unexpected responses: the view is
+        // sent only after an exact negative answer.
         if matches!(
             self.link
                 .request(ServiceReq::InInputContext { actor })
@@ -953,10 +962,12 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             Some(ServiceResp::InInputContext(false))
         ) {
             self.link
-                .to_server(ToServer::Inbound(WireInbound::Cmd {
+                .to_server(ToServer::Inbound(WireInbound::Query {
                     conn: conn_id.0,
                     actor,
-                    line: "look".to_string(),
+                    id: 0,
+                    name: SmolStr::new_static("room"),
+                    args: serde_json::json!({}),
                 }))
                 .await;
         }

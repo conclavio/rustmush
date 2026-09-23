@@ -663,8 +663,13 @@ async fn d3_the_match_a_lone_pilot_walks_out_of_ends_itself() {
     ada.expect("Good hunting").await;
 
     // She climbs out mid-match, and is told it is final.
+    let exit_mark = ada.mark();
     say(&mut ada, "EXIT", "You climb out of").await;
     ada.expect("you cannot take it back").await;
+    // **16b cut B.4** (`B-38`): and is then shown the team room she is standing
+    // in (its `#id` is hers to read). The window the observer sweep below reads
+    // starts after that view, so it holds what the unattended END sent.
+    ada.expect_after(exit_mark, "Exits").await;
 
     // Nobody is left in it, so the centre closes it by itself — the announcement
     // reaches the team room she is standing in, like every other centre line.

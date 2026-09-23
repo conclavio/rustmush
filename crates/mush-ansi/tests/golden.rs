@@ -1097,11 +1097,13 @@ fn the_printed_option_numbers_are_the_ones_respond_decodes() {
 // of doc 16 §5's parity claim: what the `grid`-shaped cockpit frame prints, and
 // that the other two print nothing at all.
 //
-// `view_grid.txt` is the twenty map rows of that print, north-up. It is what 16b
-// cut Q.4's (TUI) and Q.5's (web) compositions of `arena_map.json` +
-// `cockpit_frame.json` at exactly 78 by 20 must equal byte for byte — that
-// equality, and not three separate goldens, is what makes the three renderers
-// one renderer.
+// `view_grid.txt` is the twenty map rows of that print, north-up, ONE GLYPH PER
+// CELL: since 16b cut B.4 the window is 39 by 20 cells and the line client
+// prints each cell two columns wide, so the file holds the printed rows halved
+// (every glyph pair collapsed to one). It is what 16b cut Q.4's (TUI) and Q.5's
+// (web) compositions of `arena_map.json` + `cockpit_frame.json` at exactly 39 by
+// 20 cells must equal byte for byte — that equality, and not three separate
+// goldens, is what makes the three renderers one renderer.
 //
 // Re-bless with `TACSIM_BLESS=1 cargo test -p mush-ansi --test golden`.
 
@@ -1119,12 +1121,21 @@ fn fixture_panel(feed: &str, text: &str) -> OutputEvent {
     }
 }
 
-/// The 78-by-20 print of the committed `view_frame.json`, with the map rows
-/// pinned as `view_grid.txt`.
+/// The 78-by-20 print of the committed `view_frame.json` — 39 by 20 cells, each
+/// printed two columns wide (16b cut B.4) — with the map rows pinned PER CELL as
+/// `view_grid.txt`.
+///
+/// **The parity rule** (16b cut B.4, `B-24`): `view_grid.txt` stays one glyph per
+/// CELL, 20 rows of 39, because that is what the TUI's, the web's and tacsim's
+/// own compositions draw and compare against it. This test is the one place the
+/// doubling is seen: every printed row is 78 columns, every glyph pair in it is
+/// one glyph twice, and the rows HALVED (each pair collapsed to one glyph) are
+/// what is compared with — and blessed as — `view_grid.txt`.
 #[test]
 fn the_cockpit_window_fixture_prints_the_committed_grid() {
     // Width 80 less the two-column margin is 78; height 24 less the four lines
-    // of chrome is 20 — the terminal `VIEW_COLUMNS` by `VIEW_ROWS` was sized for.
+    // of chrome is 20 — the terminal `VIEW_COLUMNS` (39 cells, two columns
+    // each) by `VIEW_ROWS` was sized for.
     let view = fixture_panel(
         "arena.cockpit",
         include_str!("../../../web/src/lib/fixtures/cockpit/view_frame.json"),
@@ -1142,11 +1153,12 @@ fn the_cockpit_window_fixture_prints_the_committed_grid() {
     );
     assert_eq!(
         lines.last().copied(),
-        // The extent is the WINDOW's own: `view_frame`'s `width`/`height` are
-        // the 78 by 20 it carved out of the 96 by 64 ground, and the origin says
-        // where in the arena it was carved from.
-        Some("x 0..77  y 0..19  of 78x20  you at (6, 4)"),
-        "the footer names the window and where the platform is: {page}"
+        // 16b cut B.4 (the `T-60` footer slip): the extent is the ARENA's, in
+        // arena cells — the window's corner (`origin_cell`) plus the viewport,
+        // the arena's size (`extent`), the platform's own arena cell, and what
+        // a cell is. It used to count the window's own cells.
+        Some("x 0..38  y 0..19  of 96x64  you at (6, 4)  (10 m a cell, north up)"),
+        "the footer names the window in arena cells and where the platform is: {page}"
     );
     // The map itself: the twenty rows immediately above the footer, north-up.
     // Found from the footer rather than by counting from the top, because the
@@ -1155,19 +1167,35 @@ fn the_cockpit_window_fixture_prints_the_committed_grid() {
         .iter()
         .rposition(|line| line.starts_with("x 0.."))
         .expect("a footer");
-    let grid: String = lines
+    let printed: Vec<&str> = lines
         .iter()
         .skip(footer.saturating_sub(20))
         .take(20)
-        .map(|line| format!("{line}\n"))
+        .copied()
         .collect();
-    assert_eq!(grid.lines().count(), 20, "twenty rows: {page}");
+    assert_eq!(printed.len(), 20, "twenty rows: {page}");
+    // Every printed row is 78 columns and every glyph pair is one glyph twice;
+    // the per-cell row is each pair collapsed to one glyph.
+    let mut grid = String::new();
+    for row in &printed {
+        let glyphs: Vec<char> = row.chars().collect();
+        assert_eq!(glyphs.len(), 78, "seventy-eight columns: {row:?}");
+        for pair in glyphs.chunks(2) {
+            assert_eq!(
+                pair.first(),
+                pair.get(1),
+                "each cell is one glyph printed twice: {row:?}"
+            );
+            grid.extend(pair.first());
+        }
+        grid.push('\n');
+    }
     for row in grid.lines() {
-        assert_eq!(row.chars().count(), 78, "seventy-eight columns: {row:?}");
+        assert_eq!(row.chars().count(), 39, "thirty-nine cells: {row:?}");
     }
     // The pilot's own marker, the hostile and the unknown on the building are
-    // all where the fixture put them — read off the printed page, because that
-    // is the thing the TUI and the web have to match.
+    // all where the fixture put them — read off the PER-CELL rows (the printed
+    // page halved), because that is the thing the TUI and the web have to match.
     let row_from_south = |y: usize| {
         grid.lines()
             .nth(19_usize.saturating_sub(y))

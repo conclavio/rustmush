@@ -460,8 +460,9 @@ pub struct AuthoritativeActionRequest {
 /// In particular, [`WorldMode::CommitPending`] has already installed the
 /// tentative in-RAM post-image but has not received its exact durable receipt.
 /// Returning `false` from `NameFree` in that window would lie that a name is
-/// taken; returning an input-context default could feed an automatic `look`
-/// into a live editor. Callers must keep these outcomes distinct from a real
+/// taken; returning an input-context default could show the attach look (the
+/// `room` query, 16b cut B.4) over a live editor. Callers must keep these
+/// outcomes distinct from a real
 /// negative answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum WorldReadError {

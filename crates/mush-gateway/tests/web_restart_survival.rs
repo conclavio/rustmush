@@ -384,7 +384,12 @@ async fn web_connection_survives_server_restart_with_world_intact() {
     let si = expect_env(&mut ws, "Connected as God").await;
     assert!(matches!(si.event, OutputEvent::SessionInfo { .. }));
     let room = expect_env(&mut ws, "Limbo(#0)").await;
-    assert!(matches!(room.event, OutputEvent::Room(_)));
+    // 16b cut B.4 (`B-14`): the attach look is the core `room` query's answer,
+    // `Reply { id: 0, event: Room }`, sent to this one connection.
+    assert!(matches!(
+        &room.event,
+        OutputEvent::Reply { id: 0, event } if matches!(**event, OutputEvent::Room(_))
+    ));
 
     // --- A mutating command that must survive the restart: dig a room with a
     //     two-way exit (God controls Limbo, so exits open). ---

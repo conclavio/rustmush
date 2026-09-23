@@ -499,11 +499,7 @@ export class GameApp {
       }
     });
     c.on("room", (env) => {
-      this.roomView = env.d;
-      // The room's one-letter exits become nav keys on the scene screen
-      // (D-I-19), rebuilt on every Room event.
-      this.screens.exits = exitKeys(env.d);
-      this.scrollback.push("ev-room", roomLines(env.d), env.ts);
+      this.#applyRoom(env.d, env.ts);
     });
     c.on("composing", (env) => {
       this.presence.applyComposing(env.d.actor.name, env.d.active, Date.now());
@@ -704,6 +700,16 @@ export class GameApp {
     return false;
   }
 
+  /** A room view, bare or as a `reply` (16b cut B.4, `B-14`): the room band,
+   *  the exit keys and the scrollback, one way for both. */
+  #applyRoom(view: RoomView, ts: number): void {
+    this.roomView = view;
+    // The room's one-letter exits become nav keys on the scene screen
+    // (D-I-19), rebuilt on every Room event.
+    this.screens.exits = exitKeys(view);
+    this.scrollback.push("ev-room", roomLines(view), ts);
+  }
+
   #routeReply(event: OutputEvent, pending: PendingReq | null, ts: number): void {
     if (pending?.kind === "sheet") {
       // ANY reply to a sheet Req releases the I13 resync storm guard before
@@ -720,6 +726,13 @@ export class GameApp {
     switch (event.t) {
       case "who":
         this.who.replace(event.d, Date.now());
+        return;
+      case "room":
+        // 16b cut B.4 (`B-14`): the attach look is the core `room` query,
+        // answered `reply { id: 0, event: room }` to this one connection so a
+        // second tab's attach no longer prints the room on the first. It is
+        // applied exactly as a bare `room` is.
+        this.#applyRoom(event.d, ts);
         return;
       case "panel":
         this.#routePanel(event.d, pending);

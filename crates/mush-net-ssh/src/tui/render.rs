@@ -2141,9 +2141,15 @@ pub const NOT_IN_A_COCKPIT: &str = "Not in a cockpit.";
 /// arrived (16b cut Q.3: nothing ever pushes that feed).
 pub const WAITING_FOR_THE_MAP: &str = "Waiting for the arena map...";
 
-/// The window the map pane carves when nothing told it how big its pane is —
-/// the same seventy-eight by twenty `VIEW` sends, which is what a line client
-/// prints and what the committed fixtures are composed at.
+/// The window the map pane carves when nothing told it how big its pane is:
+/// seventy-eight by twenty cells, one glyph a cell — the width of the columns a
+/// line client prints.
+///
+/// It is NOT the size `VIEW` sends, nor the size the committed fixtures are
+/// composed at: since 16b cut B.4 `VIEW` sends thirty-nine by twenty cells,
+/// which a line client prints two columns a cell, and the parity compositions
+/// (`tests/tui_golden.rs`' `(39, 22)` pane among them) run at thirty-nine by
+/// twenty against `view_grid.txt`, one glyph per cell.
 ///
 /// It is a fallback and not a guess about the terminal: the map pane is not
 /// `selectable` and never scrolls (it renders exactly its area), so the only
@@ -2260,8 +2266,9 @@ fn designator_of(contact: &Value) -> String {
 ///    frame's own `cell`, grid width, grid height)` — centred on the platform
 ///    and clamped to the arena, the SAME rule `VIEW` uses and differing only in
 ///    size. It answers `(x0, y0, w, h)`. The grid's size is the pane's, less
-///    [`MAP_CHROME_ROWS`]; with no pane it is [`COCKPIT_MAP_FALLBACK`], the
-///    seventy-eight by twenty the committed fixtures are composed at.
+///    [`MAP_CHROME_ROWS`]; with no pane it is [`COCKPIT_MAP_FALLBACK`]. The
+///    committed fixtures are composed at thirty-nine by twenty cells (16b cut
+///    B.4), the window `VIEW` sends.
 /// 2. The terrain is `window_rows(map rows, map width, map height, x0, y0, w,
 ///    h)`: row `0` is the window's SOUTH row, each exactly `w` glyphs.
 /// 3. The markers go down in the order 16b cut Q.3 fixed — the pilot's own `@`

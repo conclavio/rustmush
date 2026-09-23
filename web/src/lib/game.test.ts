@@ -1886,3 +1886,43 @@ describe("a refused session token", () => {
     expect(lastSocket().protocols).toEqual(["rustmush.v1.tok"]);
   });
 });
+
+describe("the attach look (16b cut B.4, B-14)", () => {
+  /** A room with one lettered exit, so the exit keys have something to say. */
+  function room(name: string): OutputEvent {
+    return {
+      t: "room",
+      d: {
+        name,
+        id: "#2",
+        desc: [{ text: "A plain room." }],
+        contents: [],
+        exits: [{ name: "north", aliases: ["n"] }],
+      },
+    } as OutputEvent;
+  }
+
+  /** What one app shows of a room: the band, the exit keys, the scrollback. */
+  function shown(app: GameApp): { name: string | null; keys: [string, string][]; lines: string[] } {
+    return {
+      name: app.roomView?.name ?? null,
+      keys: [...app.screens.exits.entries()],
+      lines: lineTexts(app),
+    };
+  }
+
+  it("applies a room that arrives as the answer to the `room` query exactly as a bare one", () => {
+    // The gateway's attach asks the core `room` query with the uncorrelated
+    // id 0, so the room arrives as `reply { id: 0, event: room }` to this one
+    // connection. Nothing is pending under id 0 (request ids start at 1).
+    const bare = boot();
+    bare.ws.deliver(env(10, room("Hall")));
+    const replied = boot();
+    replied.ws.deliver(reply(10, 0, room("Hall")));
+
+    expect(shown(replied.app)).toEqual(shown(bare.app));
+    expect(replied.app.roomView?.name).toBe("Hall");
+    expect(replied.app.screens.exits.get("n")).toBe("north");
+    expect(lineTexts(replied.app).some((line) => line.includes("Hall"))).toBe(true);
+  });
+});

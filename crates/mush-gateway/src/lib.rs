@@ -4273,7 +4273,8 @@ mod tests {
 
     /// Connect publication is fenced behind both the exact post-ConnUp
     /// barrier and an engine-side association check. SessionInfo and the
-    /// initial world read/`look` may not overtake either proof.
+    /// initial world read/the attach `room` query may not overtake either
+    /// proof.
     #[tokio::test]
     async fn enter_game_waits_for_durable_and_engine_connection_readiness() {
         use crate::bridge_common::GameBridge;
@@ -4353,16 +4354,21 @@ mod tests {
             Some(OutputEvent::SessionInfo { .. })
         ));
         answer_request(&pending, context_id, ServiceResp::InInputContext(false));
+        // 16b cut B.4 (`B-14`): the attach look is the core `room` QUERY with
+        // the uncorrelated id 0, answered to this one connection — no longer a
+        // `look` command, whose output reached every connection of the actor.
         assert!(matches!(
             wire_rx.recv().await,
             Some(ToServer::Input(GatewayRequest {
-                input: GatewayInput::Cmd {
+                input: GatewayInput::Query {
                     conn: 77,
                     actor: ObjId(7),
-                    ref line,
+                    id: 0,
+                    ref name,
+                    ref args,
                 },
                 ..
-            })) if line == "look"
+            })) if name == "room" && *args == serde_json::json!({})
         ));
         assert!(entered.await.expect("enter task panicked").is_ok());
     }

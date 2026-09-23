@@ -6,7 +6,10 @@
 // without a browser: the canvas draws from `composeWindow`'s output and the
 // screen prints `cockpitView`'s strings, and nothing in the component decides
 // either. That is what makes the parity golden (`fixtures/cockpit/view_grid.txt`)
-// an assertion about the web client and not about a test helper.
+// an assertion about the web client and not about a test helper. The golden is
+// `VIEW`'s window, 39 by 20 cells, the line client printing each cell twice
+// (16b cut B.4); the file holds one glyph per cell, which is what this client
+// composes.
 //
 // **The observer rule** (doc 16 §1, §5) is enforced by the SHAPE of the types
 // below rather than by care at each print site: `CockpitFrame` carries no
@@ -552,7 +555,7 @@ export function contactKind(contact: CockpitContact): MarkerKind {
  *
  * Every glyph is the payload's own. There is no second table anywhere on this
  * path, which is why composing the committed `arena_map.json` and
- * `cockpit_frame.json` at exactly 78 by 20 has to equal `view_grid.txt` byte
+ * `cockpit_frame.json` at exactly 39 by 20 has to equal `view_grid.txt` byte
  * for byte — the parity assertion doc 16 §5 asks for.
  */
 export function composeWindow(

@@ -1978,6 +1978,24 @@ mod tests {
             .collect()
     }
 
+    /// The `(conn, actor)` of every attach look `enter_game` asked for: the
+    /// core `room` query at `id` 0 (16b cut B.4, `B-14`).
+    fn room_queries(link: &AutoLink) -> Vec<(u64, ObjId)> {
+        link.sent()
+            .into_iter()
+            .filter_map(|m| match m {
+                ToServer::Inbound(WireInbound::Query {
+                    conn,
+                    actor,
+                    id: 0,
+                    name,
+                    ..
+                }) if name == "room" => Some((conn, actor)),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn quits(link: &AutoLink) -> Vec<ObjId> {
         link.sent()
             .into_iter()
@@ -2185,10 +2203,45 @@ mod tests {
         assert_eq!(quits(&r.link), vec![ALT], "the first follow quit cleanly");
         assert!(r.sessions.session_of_char(char_key(ALT)).is_none());
         assert_eq!(b.following(USER), Some((NICKY, "Nicky".to_string())));
-        // A DM line runs as the character; the enter_game `look` came first.
+        // Each attach asked the core `room` query for its own connection (the
+        // attach look, 16b cut B.4) rather than typing a `look` as the actor.
+        let ups = conn_ups(&r.link);
+        let looks = room_queries(&r.link);
+        assert_eq!(
+            looks,
+            ups.iter()
+                .map(|(conn, actor, ..)| (*conn, *actor))
+                .collect::<Vec<_>>(),
+            "one room query per attach, to that connection"
+        );
+        assert!(
+            !cmds(&r.link).iter().any(|(_, line)| line == "look"),
+            "the attach typed no `look`"
+        );
+        // A DM line runs as the character.
         assert_eq!(b.dm_line(USER, "say hi").await, LineOutcome::Accepted);
         let lines = cmds(&r.link);
         assert_eq!(lines.last(), Some(&(NICKY, "say hi".to_string())));
+        // The query's answer, a `Reply { id: 0, Room }`, reaches the DM as the
+        // room card a bare room makes.
+        r.sessions.send_to_char(
+            char_key(NICKY),
+            Arc::new(OutputEvent::Reply {
+                id: 0,
+                event: Box::new(OutputEvent::Room(mush_proto::RoomView {
+                    name: "Limbo".into(),
+                    id: "#0".into(),
+                    desc: RichText::plain("A grey nowhere."),
+                    contents: vec![],
+                    exits: vec![mush_proto::ExitRef {
+                        name: "east".into(),
+                        aliases: vec![],
+                    }],
+                    zone: None,
+                    ambient: Default::default(),
+                })),
+            }),
+        );
         // What the session delivers to the character reaches the DM, rendered.
         r.sessions.send_to_char(
             char_key(NICKY),
@@ -2203,6 +2256,12 @@ mod tests {
         assert!(
             sends.iter().any(|s| s.contains("Following **Nicky**")),
             "{sends:?}"
+        );
+        assert!(
+            sends
+                .iter()
+                .any(|s| s.contains("**Limbo**") && s.contains("Exits: east")),
+            "the attach look reaches the DM: {sends:?}"
         );
         assert!(
             sends

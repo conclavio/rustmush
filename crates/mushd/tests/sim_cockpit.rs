@@ -705,3 +705,65 @@ async fn board_takes_the_bus_outside_the_centre_and_sim_reads_the_board_inside_i
     say(&mut bo, "blue", "Blue Room").await;
     say(&mut bo, "BOARD", "climb into").await;
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut B.4 — a pilot sees where they land (`B-38`)
+// ---------------------------------------------------------------------------
+
+/// The raw byte offset just past the first `needle` after `mark`, so a later
+/// `expect_after` can ask what arrived AFTER that sentence.
+fn past(term: &Term, mark: usize, needle: &str) -> usize {
+    term.seen[mark..]
+        .find(needle)
+        .map(|at| mark + at + needle.len())
+        .unwrap_or_else(|| panic!("{needle:?} after the mark in: {:?}", &term.seen[mark..]))
+}
+
+/// **`BOARD` shows the pod and `EXIT` the team room, each after the sentence
+/// that explains the move** (16b cut B.4, `B-38`).
+///
+/// Before this cut both moved the pilot with no room view at all — a line
+/// client that climbed out was standing in a room it had not been shown. The
+/// room is shown by the callers, AFTER their own sentence, never inside the
+/// move: `You climb into …` and then the pod; `You climb out of …` and then the
+/// team room.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn b4_board_and_exit_show_the_room_after_the_sentence() {
+    let server = boot("sim-cockpit-b4-rooms", Duration::from_secs(120)).await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god, "Simulator Lobby").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut bo, "blue", "Blue Room").await;
+
+    // BOARD: the sentence, then the pod's own name again as the room view's
+    // head — the interior `look` would show from inside it.
+    let mark = ada.mark();
+    say(&mut ada, "BOARD", "climb into").await;
+    ada.expect_after(mark, "EXIT to get out").await;
+    let said = strip_ansi(&ada.seen[mark..]);
+    let pod = said
+        .split_once("You climb into ")
+        .and_then(|(_, rest)| rest.split_once(". The panel wakes"))
+        .map(|(pod, _)| pod.to_owned())
+        .unwrap_or_else(|| panic!("the boarding sentence names the pod: {said}"));
+    let after_sentence = past(&ada, mark, "for the rest of it.");
+    ada.expect_after(after_sentence, &pod).await;
+
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+
+    // EXIT: the sentence, then the team room's view.
+    let mark = ada.mark();
+    say(&mut ada, "EXIT", "climb out").await;
+    ada.expect_after(mark, "cannot take it back.").await;
+    let after_sentence = past(&ada, mark, "cannot take it back.");
+    ada.expect_after(after_sentence, "Red Room").await;
+    // The team room is shown whole, its exits and all.
+    ada.expect_after(after_sentence, "Exits").await;
+}

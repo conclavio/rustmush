@@ -588,7 +588,7 @@ fn the_vitals_strip_paints_the_character_first_and_counts_what_it_cut() {
 // renderers each pinned to a golden of its own is regression and not parity —
 // so the load-bearing assertion here is not the frame goldens below but
 // `the_cockpit_map_composes_the_committed_grid`: this client's composition of
-// `arena_map.json` + `cockpit_frame.json` at exactly 78 by 20 equals the twenty
+// `arena_map.json` + `cockpit_frame.json` at exactly 39 by 20 equals the twenty
 // rows `mush_ansi` prints of the server-side window, byte for byte.
 
 /// The per-pulse cockpit keyframe, feed `arena.cockpit`.
@@ -655,7 +655,8 @@ fn cockpit_app() -> TuiApp {
 }
 
 /// **The parity test** (doc 16 §5): the TUI's composition of the two committed
-/// payloads at exactly 78 by 20 IS the grid a line client prints.
+/// payloads at exactly 39 by 20 IS the grid a line client prints, one glyph a
+/// cell (the line client prints each twice; `view_grid.txt` is per cell).
 ///
 /// If this ever fails, the first differing cell is a defect in one of the three
 /// compositors (or in the fixture), not a golden to re-bless.
@@ -663,9 +664,11 @@ fn cockpit_app() -> TuiApp {
 fn the_cockpit_map_composes_the_committed_grid() {
     let store = store_with_the_ground();
     let theme = AnsiTheme::default();
-    // 78 by 22 is the PANE; the renderer keeps two rows for its heading and
-    // its marker legend, so the window it carves is the fixtures' 78 by 20.
-    let ctx = map_ctx(&theme, &store, (78, 22));
+    // 39 by 22 is the PANE; the renderer keeps two rows for its heading and
+    // its marker legend, so the window it carves is the fixtures' 39 by 20
+    // (16b cut B.4: `VIEW` is 39 cells across; the TUI's pane draws one glyph a
+    // cell, and only the line client doubles).
+    let ctx = map_ctx(&theme, &store, (39, 22));
     let rows = render_cockpit_map_rows(&fixture(COCKPIT_FRAME), &ctx);
     // The heading line, then exactly twenty grid rows, then the marker legend.
     assert_eq!(rows.rows.len(), 22, "one head, twenty rows, one legend");

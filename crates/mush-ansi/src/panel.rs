@@ -174,11 +174,39 @@ pub fn legend_line(data: &Value) -> String {
     format!("legend: {}", parts.join("  "))
 }
 
+/// **How many printed columns each cell of `data` is drawn as** (16b cut B.4,
+/// `B-24`): the frame's `cell_columns`, clamped to `1..=4`, and `1` when it is
+/// absent — which is every frame but the arena window. A terminal cell is about
+/// twice as tall as it is wide, so the arena window asks for two and its ground
+/// prints square.
+fn cell_columns(data: &Value) -> usize {
+    match num(data, "cell_columns") {
+        0 => 1,
+        n => n.clamp(1, 4),
+    }
+}
+
 /// The lines a grid frame prints: a title, the legend, then the viewport's rows
-/// north-up (at most `columns` by `rows_max` cells; line mode passes
-/// [`GRID_MAX_COLUMNS`] by [`GRID_MAX_ROWS`], a scrolling pane the whole grid),
-/// and a footer naming the viewport's extent. A delta prints its `note` alone,
-/// or nothing.
+/// north-up (at most `columns` PRINTED columns by `rows_max` rows; line mode
+/// passes [`GRID_MAX_COLUMNS`] by [`GRID_MAX_ROWS`], a scrolling pane the whole
+/// grid), and a footer naming the viewport's extent. A delta prints its `note`
+/// alone, or nothing.
+///
+/// **16b cut B.4** (`B-24`, and `T-60`'s footer slip) made two keys count:
+///
+/// * `cell_columns` (a whole number, `1` when absent, clamped to `1..=4`): every glyph of every grid row is printed
+///   that many times, and the viewport is `columns / cell_columns` cells wide so
+///   the printed rows stay inside the `columns` budget;
+/// * `origin_cell` (`[x, y]`, the frame's corner in a larger grid) with `extent`
+///   (`[W, H]`, that grid's size; the frame's own `width`/`height` when absent):
+///   the footer names that larger grid's cells —
+///   `x a..b  y c..d  of WxH  you at (x, y)  (N m a cell, north up)` — rather
+///   than the frame's own. The arena window carries both; a frame without
+///   `origin_cell` (the atlas map) prints exactly the footer it always did.
+///
+/// The legend line is unchanged, and the grid rows stay one glyph per cell in
+/// [`expand_rows`] and [`window_rows`]: the doubling is this printer's alone, so
+/// a compositor that draws one glyph per cell composes the same rows.
 #[must_use]
 pub fn grid_lines(
     data: &Value,
@@ -201,8 +229,9 @@ pub fn grid_lines(
     }
     let columns = columns.clamp(8, 512);
     let rows_max = rows_max.clamp(3, 512);
+    let per_cell = cell_columns(data);
     let you = data.get("you").and_then(cell_pair);
-    let (x0, y0, w, h) = viewport(width, height, you, columns, rows_max);
+    let (x0, y0, w, h) = viewport(width, height, you, columns / per_cell, rows_max);
     let grid = expand_rows(data);
     let mut lines = Vec::with_capacity(h + 3);
     let title = text(data, "title");
@@ -233,16 +262,44 @@ pub fn grid_lines(
     for y in (y0..y0 + h).rev() {
         let row: String = grid
             .get(y)
-            .map(|r| r.iter().skip(x0).take(w).collect())
+            .map(|r| {
+                r.iter()
+                    .skip(x0)
+                    .take(w)
+                    .flat_map(|glyph| std::iter::repeat_n(*glyph, per_cell))
+                    .collect()
+            })
             .unwrap_or_default();
         lines.push(row);
     }
-    lines.push(format!(
-        "x {x0}..{}  y {y0}..{}  of {width}x{height}{}",
-        x0 + w - 1,
-        y0 + h - 1,
-        you.map_or(String::new(), |(x, y)| format!("  you at ({x}, {y})"))
-    ));
+    match data.get("origin_cell").and_then(cell_pair) {
+        // 16b cut B.4: the window of a larger grid names that grid's cells.
+        Some((ox, oy)) => {
+            let (whole_w, whole_h) = data
+                .get("extent")
+                .and_then(cell_pair)
+                .unwrap_or((width, height));
+            lines.push(format!(
+                "x {}..{}  y {}..{}  of {whole_w}x{whole_h}{}  ({} m a cell, north up)",
+                ox + x0,
+                ox + x0 + w - 1,
+                oy + y0,
+                oy + y0 + h - 1,
+                you.map_or(String::new(), |(x, y)| format!(
+                    "  you at ({}, {})",
+                    ox + x,
+                    oy + y
+                )),
+                cell_cm / 100
+            ));
+        }
+        None => lines.push(format!(
+            "x {x0}..{}  y {y0}..{}  of {width}x{height}{}",
+            x0 + w - 1,
+            y0 + h - 1,
+            you.map_or(String::new(), |(x, y)| format!("  you at ({x}, {y})"))
+        )),
+    }
     lines
 }
 
@@ -322,6 +379,106 @@ mod tests {
                 .is_some_and(|l| l.starts_with("x 111..188  y 70..89")),
             "{:?}",
             lines.last()
+        );
+    }
+
+    /// **16b cut B.4** (`B-24`, the `T-60` footer slip): a window that asks for
+    /// two columns a cell prints each glyph twice — 39 cells are 78 printed
+    /// columns, so the viewport is half the column budget in cells — and a window
+    /// that names its corner in a larger grid (`origin_cell`, `extent`) gets a
+    /// footer in that grid's cells. The atlas frame, which carries neither key,
+    /// prints byte for byte what it did (the first test above is that pin).
+    #[test]
+    fn a_grid_with_two_columns_a_cell_prints_each_glyph_twice_and_an_arena_footer() {
+        let rows: Vec<Value> = (0..20)
+            .map(|y| {
+                let glyph = if y % 2 == 0 { "." } else { "^" };
+                json!([[glyph, 20], ["#", 19]])
+            })
+            .collect();
+        let window = json!({
+            "schema": { "id": "arena.cockpit", "version": 1, "shape": "grid" },
+            "title": "Arena window", "surface": "proving_ground",
+            "cell_cm": 1000, "width": 39, "height": 20,
+            "rows": rows,
+            "legend": [[".", "open"], ["#", "wall"], ["@", "you"]],
+            "units": [{ "id": "#9", "cell": [19, 10], "glyph": "@", "you": true }],
+            "you": [19, 10],
+            "cell_columns": 2,
+            "origin_cell": [100, 50],
+            "extent": [256, 192],
+        });
+        let lines = grid_lines(
+            &window,
+            PanelFrameKind::Keyframe,
+            GRID_MAX_COLUMNS,
+            GRID_MAX_ROWS,
+        );
+        assert_eq!(lines.len(), 2 + 20 + 1);
+        let grid: Vec<&String> = lines.iter().skip(2).take(20).collect();
+        for row in &grid {
+            assert_eq!(row.chars().count(), 78, "39 cells, two columns each");
+            let glyphs: Vec<char> = row.chars().collect();
+            assert!(
+                glyphs.chunks(2).all(|pair| pair.first() == pair.get(1)),
+                "every glyph printed twice: {row}"
+            );
+        }
+        // North up: the top printed row is y 19 (odd, `^`), the bottom y 0.
+        assert!(grid.first().is_some_and(|row| row.starts_with("^^^^")));
+        assert!(grid.last().is_some_and(|row| row.starts_with("....")));
+        // The `@` at cell 19 is printed at columns 38 and 39 of row y 10.
+        assert_eq!(
+            grid.get(9).and_then(|row| row.get(38..40)),
+            Some("@@"),
+            "{:?}",
+            grid.get(9)
+        );
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("x 100..138  y 50..69  of 256x192  you at (119, 60)  (10 m a cell, north up)")
+        );
+
+        // A narrower terminal: 40 printed columns is 20 cells, still doubled.
+        let narrow = grid_lines(&window, PanelFrameKind::Keyframe, 40, GRID_MAX_ROWS);
+        assert!(
+            narrow
+                .iter()
+                .skip(2)
+                .take(20)
+                .all(|row| row.chars().count() == 40)
+        );
+
+        // Without `extent` the footer falls back to the frame's own size.
+        let mut no_extent = window.clone();
+        if let Some(object) = no_extent.as_object_mut() {
+            object.remove("extent");
+        }
+        assert!(
+            grid_lines(&no_extent, PanelFrameKind::Keyframe, 78, 20)
+                .last()
+                .is_some_and(|l| l.contains("  of 39x20  ")),
+        );
+
+        // And the same frame without the three keys is today's frame: one
+        // column a cell and the window's own footer.
+        let mut plain = window;
+        if let Some(object) = plain.as_object_mut() {
+            object.remove("cell_columns");
+            object.remove("origin_cell");
+            object.remove("extent");
+        }
+        let lines = grid_lines(&plain, PanelFrameKind::Keyframe, 78, 20);
+        assert!(
+            lines
+                .iter()
+                .skip(2)
+                .take(20)
+                .all(|row| row.chars().count() == 39)
+        );
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("x 0..38  y 0..19  of 39x20  you at (19, 10)")
         );
     }
 

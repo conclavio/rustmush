@@ -639,6 +639,33 @@ async fn pushed_cockpit(ws: &mut Ws) -> Value {
     panic!("the arena never pushed a cockpit frame")
 }
 
+/// The next `arena.cockpit` keyframe this socket is pushed in the **grid** shape
+/// — the one `VIEW` sends — answering the keepalive along the way (16b cut
+/// B.4).
+async fn pushed_view(ws: &mut Ws) -> Value {
+    for _ in 0..600 {
+        let env = recv_env(ws).await;
+        match &env.event {
+            OutputEvent::Panel { feed, data, .. }
+                if feed.as_str() == COCKPIT_FEED
+                    && data.pointer("/schema/shape").and_then(Value::as_str) == Some("grid") =>
+            {
+                return data.clone();
+            }
+            OutputEvent::Ping { nonce } => {
+                let pong = ClientCommand::Pong { nonce: *nonce };
+                ws.send(Message::Text(
+                    serde_json::to_string(&pong).expect("a pong encodes").into(),
+                ))
+                .await
+                .expect("the socket takes a pong");
+            }
+            _ => {}
+        }
+    }
+    panic!("`VIEW` never reached the panel client")
+}
+
 /// Open a web session for an existing account and drain its entry stream.
 async fn web_session(server: &Server, account: &str, password: &str, character: &str) -> Ws {
     let login = post_json(
@@ -842,6 +869,40 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         "and the six tanks nobody deployed are still there, which is what makes          the two that are gone a fact about custody:
 {seen}"
     );
+
+    // **16b cut B.4** (`B-14`): the attach look is the core `room` query, and it
+    // is held to what `look` is held to. The bystander attaches a SECOND
+    // connection: it is shown her own room through the same perception hooks —
+    // the muster, the undeployed tanks, and nothing about the two in custody —
+    // and her first connection is shown nothing of it.
+    let first_mark = cy.mark();
+    let (_c2, mut cy_again) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+    cy_again.expect(MUSTER).await;
+    cy_again.expect("Red Tank 2").await;
+    let attached = strip_ansi(&cy_again.seen);
+    names_nothing(
+        &attached,
+        red,
+        blue,
+        "the bystander's second connection's attach",
+    );
+    // The first connection, fenced by a parser refusal of its own: a room the
+    // attach had sent it would be queued before that `Huh?`. The refusal is a
+    // command's answer and so reaches both connections; the room did not.
+    for _ in 0..RETRY_BUDGET {
+        let mark = cy.mark();
+        cy.send_line(SENTINEL).await;
+        if cy.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let first = strip_ansi(&cy.seen[first_mark..]);
+    assert!(
+        !first.contains(MUSTER),
+        "the second connection's attach printed the room on the first:\n{first}"
+    );
+    drop(cy_again);
 
     let seen = ask(&mut god, &format!("@unit/show #{red}"), NOT_A_UNIT).await;
     assert!(seen.contains(NOT_A_UNIT), "{seen}");
@@ -1240,12 +1301,25 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         "a bearing absolute and off the platform's own nose: {tail}"
     );
     // And the map draws a marker for it without naming anything — once the contact
-    // is inside the window, which is narrower (78 cells) than the sensor reaches
+    // is inside the window, which is narrower (39 cells, 16b cut B.4) than the sensor reaches
     // (60 cells each way), so the two go on closing until it is.
+    // A marker is drawn when the window's `legend:` line names a contact glyph
+    // (the legend lists only the markers the window drew) and nothing plots
+    // beyond it; "contact" alone would match the beyond-window line, which is
+    // said exactly when the one held contact is NOT drawn. The whole answer is
+    // read (`ask_whole`), so the absence check below runs on all of it.
     let mut window = String::new();
     for _ in 0..DRIVE_BUDGET {
-        let seen = ask(&mut ada, "VIEW", "Arena window").await;
-        if seen.contains("contact") || seen.contains("hostile") || seen.contains("friendly") {
+        let seen = ask_whole(&mut ada, "VIEW").await;
+        let drawn = seen
+            .lines()
+            .filter(|line| line.contains("legend:"))
+            .any(|line| {
+                ["x hostile", "? contact", "+ friendly"]
+                    .iter()
+                    .any(|entry| line.contains(entry))
+            });
+        if drawn && !seen.contains("beyond this window") {
             window = seen;
             break;
         }
@@ -1516,6 +1590,61 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
     // assertions above are the whole rule on these two surfaces: a frame names
     // its own unit by the bare number it carries in `unit`, and never by a dbref
     // or a name.
+
+    // (e) **16b cut B.4** (`B-24`, the `T-60` footer slip): `VIEW`'s raw payload,
+    // as her panel client receives it, gained three keys — and every one is a
+    // fact she already holds. `origin_cell` is the window's corner, read off her
+    // OWN pose (corner plus `you` is her own cell on the pushed frame); `extent`
+    // is the arena's size, which is lobby knowledge (doc 16 §3.2: the proving
+    // ground is surveyed ground) and exactly the map she has just pulled;
+    // `cell_columns` is how a line client prints a cell. None of them is about
+    // the tank she has not found.
+    let printed = ask(&mut ada, "VIEW", "Arena window").await;
+    assert!(
+        printed.contains("m a cell, north up"),
+        "the line client's footer is in arena cells: {printed}"
+    );
+    names_nothing(&printed, red, blue, "the pilot's printed `VIEW`");
+    let view = pushed_view(&mut ada_web).await;
+    assert_eq!(view.get("cell_columns"), Some(&json!(2)), "{view}");
+    let pair = |value: &Value, key: &str| -> Option<(u64, u64)> {
+        let cell = value.get(key)?.as_array()?;
+        Some((cell.first()?.as_u64()?, cell.get(1)?.as_u64()?))
+    };
+    let (ox, oy) = pair(&view, "origin_cell").expect("the window's corner");
+    let (yx, yy) = pair(&view, "you").expect("her own marker");
+    assert_eq!(
+        Some((ox + yx, oy + yy)),
+        pair(&cockpit, "cell"),
+        "the corner plus her marker is her own cell and nothing else: {view}"
+    );
+    assert_eq!(
+        pair(&view, "extent"),
+        Some((
+            map.get("width").and_then(Value::as_u64).unwrap_or(0),
+            map.get("height").and_then(Value::as_u64).unwrap_or(0),
+        )),
+        "the extent is the ground she was already given: {view}"
+    );
+    let units = view
+        .get("units")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(units.len(), 1, "her own marker and no other: {view}");
+    let whole = view.to_string();
+    no_sixteen_digit_word(&whole, "the raw `VIEW` payload");
+    for leak in [
+        BLUE_TANK.to_string(),
+        format!("#{blue}"),
+        "Bo".to_string(),
+        "\"BA\"".to_string(),
+    ] {
+        assert!(
+            !whole.contains(&leak),
+            "the raw `VIEW` payload leaked {leak:?}:\n{whole}"
+        );
+    }
 
     // (d) A mortal bystander and a staffer ask the same two questions and are
     // told the one thing that is theirs: they are not flying. Nothing about the

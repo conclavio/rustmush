@@ -4,12 +4,12 @@
 //! ```text
 //! SIM TEAM red | blue     claim one slot on a side
 //! SIM LEAVE               give it up
-//! SIM START               lock the pods and open boarding (a side's first pilot, or staff)
+//! SIM START               lock the pods and open boarding (a side's lead, or staff)
 //! SIM ABORT               call the match off (any participant, or staff)
 //! SIM STATUS              the centre, as it stands
 //! SIM AI [n]              how many units a side fields when the machines fill in
 //! SIM UNIT [<type>]       which unit type your own slot fields
-//! SIM CONCEDE             give the match up for your side (its first pilot, while it runs)
+//! SIM CONCEDE             give the match up for your side (its lead, while it runs)
 //! ```
 //!
 //! # Why one verb and not five
@@ -93,7 +93,7 @@ pub enum Selector {
     /// **`SIM UNIT [<type>]`** (16b cut Q.8): which unit type the caller's own
     /// slot fields.
     Unit,
-    /// **`SIM CONCEDE`** (16b cut D.3, `B-33`): a side's first pilot gives the
+    /// **`SIM CONCEDE`** (16b cut D.3, `B-33`): a side's lead gives the
     /// running match up, and the other side wins it.
     Concede,
 }
@@ -336,17 +336,17 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    four a side.\n\
                    SIM LEAVE           give your slot up; the last one to leave closes the \
                    match.\n\
-                   SIM START           lock the pods and open boarding. A side's first pilot, \
-                   or staff, with at least one pilot a side.\n\
+                   SIM START           lock the pods and open boarding. A side's lead, or \
+                   staff, with at least one pilot a side.\n\
                    SIM ABORT           call the match off (any pilot in it, or staff). A \
                    running match stops at the arena's next pulse; before one is running there \
                    is nothing to abort, and SIM LEAVE is how a claimant gets out.\n\
-                   SIM CONCEDE         give the running match up for your side. Its first \
-                   pilot only: the other side wins it, and the result record says so.\n\
+                   SIM CONCEDE         give the running match up for your side. Its lead \
+                   only: the other side wins it, and the result record says so.\n\
                    SIM STATUS          the centre: its state, its sides, its slots and its \
                    pods. Also the bare SIM.\n\
                    SIM AI [n]          how many units a side fields when the server fills the \
-                   unclaimed pods with machines. A side's first pilot or staff, before the \
+                   unclaimed pods with machines. A side's lead or staff, before the \
                    match starts; bare, it reads the number.\n\
                    SIM UNIT [type]     which unit type your own slot fields. Bare, it lists \
                    what this server can field and what you are flying; with a type, your pod's \

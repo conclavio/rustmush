@@ -496,7 +496,12 @@ async fn ssh_and_web_user_in_the_same_room() {
     assert!(matches!(si.event, OutputEvent::SessionInfo { .. }));
     assert!(si.seq >= 1);
     let room = expect_env(&mut ws, "Limbo(#0)").await;
-    assert!(matches!(room.event, OutputEvent::Room(_)));
+    // 16b cut B.4 (`B-14`): the attach look is the core `room` query's answer,
+    // `Reply { id: 0, event: Room }`, sent to this one connection.
+    assert!(matches!(
+        &room.event,
+        OutputEvent::Reply { id: 0, event } if matches!(**event, OutputEvent::Room(_))
+    ));
     assert!(room.seq > si.seq);
     god.expect("Nick has connected.").await;
 
@@ -748,7 +753,12 @@ async fn ws_resume_too_old_falls_back_to_rehydrate() {
         resumed.event
     );
     let room = expect_env(&mut ws, "Limbo(#0)").await;
-    assert!(matches!(room.event, OutputEvent::Room(_)));
+    // 16b cut B.4 (`B-14`): the attach look is the core `room` query's answer,
+    // `Reply { id: 0, event: Room }`, sent to this one connection.
+    assert!(matches!(
+        &room.event,
+        OutputEvent::Reply { id: 0, event } if matches!(**event, OutputEvent::Room(_))
+    ));
     assert!(
         room.seq > last_seq + 12,
         "the fresh render is stamped after the flood ({} vs {last_seq}+12)",

@@ -547,6 +547,17 @@ impl<'a> HookReadContext<'a> {
         self.typed_state.is_available()
     }
 
+    /// The typed-state lens this context reads through (16b cut B.4,
+    /// `B-14`), for a core query that renders through the same perception
+    /// hooks a command would — the `room` query's
+    /// [`room_view`](crate::output::room_view). Crate-private: a module hook
+    /// reads typed state through [`Self::action_state`], stamped with its own
+    /// owner, and never holds the raw lens.
+    #[must_use]
+    pub(crate) const fn lens(&self) -> crate::action_state::TypedStateLens<'a> {
+        self.typed_state.lens()
+    }
+
     pub fn action_state<K, V>(
         &self,
         handle: &crate::action_state::StateFamilyHandle<K, V>,

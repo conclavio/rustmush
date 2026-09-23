@@ -70,7 +70,7 @@ use tokio::task::JoinHandle;
 use crate::arena::clock::Tempo;
 use crate::arena::intents::{Control, ControlState, Intent, IntentKind};
 use crate::arena::ledger::LedgerEvent;
-use crate::arena::state::{Channel, MatchEnd, Power, StopReason};
+use crate::arena::state::{Channel, ContactId, MatchEnd, Power, StopReason};
 use crate::arena::step::Frame;
 use crate::arena_task::{ArenaHandle, ArenaMsg, ArenaOut, MatchId};
 use crate::store::{NS, push_op};
@@ -457,6 +457,14 @@ pub struct CockpitFrame {
     pub match_id: MatchId,
     /// The arena's own frame.
     pub frame: Frame,
+    /// **The range each contact row was published at on this frame**, metres
+    /// (16b cut B.4, `T-60`): the memory the next frame's rows are held against
+    /// ([`crate::match_::cockpit::held_range_m`]), so a plot near a 50 m edge
+    /// does not flip every pulse. Written by [`on_frames`] through
+    /// [`crate::match_::cockpit::settle_ranges`]; every read verb renders the
+    /// frame through the `_held` forms with it, so a re-pushed frame carries the
+    /// figures the pilot was sent. A fact about what the pilot has been told.
+    pub ranges: BTreeMap<ContactId, u64>,
 }
 
 /// **The world's registry of running matches** — the tacsim module's own state
@@ -1308,10 +1316,24 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>, 
         if !seated {
             continue;
         }
+        // **16b cut B.4** (`T-60`): each row's range held against the figure
+        // the same row was published at on this pilot's previous frame of this
+        // match (none on the first, or across matches — contact ids are the
+        // match's own), and the settled figures kept for the next.
+        let ranges = {
+            let empty = BTreeMap::new();
+            let previous = ctx
+                .w
+                .module_state::<ArenaRegistry>()
+                .and_then(|registry| registry.last_frame(pilot))
+                .filter(|held| held.match_id == match_id)
+                .map_or(&empty, |held| &held.ranges);
+            crate::match_::cockpit::settle_ranges(&frame, previous)
+        };
         // 16b cut K.2: the world's copy first, so a cockpit verb typed in the
         // same batch reads the frame the pilot was just sent, and then the frame
         // itself — doc 16 §5's keyframe, which cut K.2 filled out.
-        let payload = crate::match_::cockpit::status_frame(match_id, &frame);
+        let payload = crate::match_::cockpit::status_frame_held(match_id, &frame, &ranges);
         // 16b cut S.2: the notices this frame owes (doc 16 §3.6: *notices fire once
         // per transition*), as ordinary output lines on the pilot's own channel.
         // Rendered through `cockpit::notice_line`, which is also what the frame's
@@ -1347,6 +1369,7 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>, 
                 CockpitFrame {
                     match_id,
                     frame: remembered,
+                    ranges,
                 },
             );
         }
@@ -1948,7 +1971,8 @@ impl mush_core::QueryHandler for CockpitQuery {
             .filter(|registry| registry.seat_of_pilot(actor).is_some())
             .and_then(|registry| registry.last_frame(actor))
             .map_or_else(crate::match_::cockpit::cockpit_cleared, |held| {
-                crate::match_::cockpit::status_frame(held.match_id, &held.frame)
+                // 16b cut B.4 (`T-60`): the ranges the pilot was last sent.
+                crate::match_::cockpit::status_frame_held(held.match_id, &held.frame, &held.ranges)
             });
         Ok(mush_proto::OutputEvent::Panel {
             feed: SmolStr::new_static(FRAME_FEED),

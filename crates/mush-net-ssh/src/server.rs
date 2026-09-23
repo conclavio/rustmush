@@ -1678,11 +1678,22 @@ fn render_line_event(sh: &mut Shared, ev: &OutputEvent, theme: &AnsiTheme, bytes
             }
         }
         _ => {
+            // 16b cut B.4 (`B-67`): render into a scratch buffer FIRST. An
+            // event that renders to nothing on a line client (a cockpit
+            // keyframe with no grid shape, the cleared frame, any other
+            // panel) must leave the pilot's half-typed line alone — before
+            // this, every such frame erased and redrew the input line, twice
+            // a second at `Engaged`.
+            let mut rendered = Vec::new();
+            mush_ansi::render(ev, &sh.caps, theme, &mut rendered);
+            if rendered.is_empty() {
+                return;
+            }
             let interrupted = sh.editor.has_visible_line();
             if interrupted {
                 bytes.extend_from_slice(b"\r\x1b[K");
             }
-            mush_ansi::render(ev, &sh.caps, theme, bytes);
+            bytes.extend_from_slice(&rendered);
             if interrupted {
                 sh.editor.redraw(bytes);
             }
@@ -2075,5 +2086,87 @@ mod tests {
             || last.next(),
             &mut queries
         ));
+    }
+
+    /// A connection's shared state as a fresh line-mode session holds it.
+    fn line_mode_shared() -> Shared {
+        Shared {
+            editor: LineEditor::new(),
+            caps: caps::detect_caps(None, None, None, None, 0, 0),
+            term: None,
+            colorterm: None,
+            lang: None,
+            lc_all: None,
+            width: 0,
+            height: 0,
+            mode: Mode::InGame,
+            tui: None,
+            manifest: TuiManifest::default(),
+            repaint: Arc::new(Notify::new()),
+            history: HistoryCursor::default(),
+        }
+    }
+
+    /// **16b cut B.4** (`B-67`): an event that renders to nothing on a line
+    /// client leaves the pilot's half-typed line alone — no erase, no redraw,
+    /// zero bytes — while a line that does render still erases the input line,
+    /// prints, and redraws it exactly as before.
+    ///
+    /// The two nothing-events are the cockpit's own: the cleared frame a panel
+    /// is sent when its pilot climbs out, and a per-pulse keyframe, which
+    /// declares no shape (a shaped `grid` frame is `VIEW`'s alone).
+    #[test]
+    fn an_event_that_renders_nothing_leaves_the_input_line_alone() {
+        let theme = AnsiTheme::default();
+        let mut sh = line_mode_shared();
+        sh.editor.set_prompt("> ");
+        let mut typed = Vec::new();
+        let _ = sh.editor.feed(b"fire", &mut typed);
+        assert!(sh.editor.has_visible_line(), "a visible editor line");
+        assert_eq!(sh.editor.line(), "fire");
+
+        let cleared = OutputEvent::Panel {
+            feed: "arena.cockpit".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": { "id": "arena.cockpit", "version": 1, "retain": "latest" },
+                "seated": false,
+            }),
+        };
+        let pulse = OutputEvent::Panel {
+            feed: "arena.cockpit".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": { "id": "arena.cockpit", "version": 1, "retain": "latest" },
+                "match": 7, "callsign": "RA", "power": "online", "contacts": [],
+                "notices": [], "weapons": [], "sections": [],
+            }),
+        };
+        for (what, ev) in [("the cleared frame", &cleared), ("a pulse frame", &pulse)] {
+            let mut bytes = Vec::new();
+            render_line_event(&mut sh, ev, &theme, &mut bytes);
+            assert!(
+                bytes.is_empty(),
+                "{what} wrote {:?} around the pilot's input line",
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+        assert_eq!(sh.editor.line(), "fire", "the draft is untouched");
+
+        // A line that renders still interrupts: erase, the line, the redraw.
+        let mut bytes = Vec::new();
+        render_line_event(
+            &mut sh,
+            &OutputEvent::Sys(RichText::plain("Locking BA.")),
+            &theme,
+            &mut bytes,
+        );
+        let written = String::from_utf8_lossy(&bytes).into_owned();
+        assert!(written.starts_with("\r\x1b[K"), "erased first: {written:?}");
+        assert!(written.contains("Locking BA."), "{written:?}");
+        assert!(
+            written.ends_with("> fire"),
+            "and the prompt and the draft redrawn: {written:?}"
+        );
     }
 }

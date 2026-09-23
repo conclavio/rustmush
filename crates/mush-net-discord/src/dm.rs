@@ -527,6 +527,15 @@ pub fn render(event: &OutputEvent, state: &FollowState) -> Rendered {
             "Disconnected: {}",
             escape_md(&reason.to_plain_text())
         )),
+        // **The attach look** (16b cut B.4, `B-14`): `enter_game` shows the
+        // follow its room through the core `room` QUERY, whose answer is a
+        // `Reply { id: 0, event: Room }` to this one connection. A follow
+        // issues no queries of its own, so only the room is unwrapped (and
+        // rendered by the `Room` arm above, quiet mode and all); any other
+        // reply stays off the allow-list.
+        OutputEvent::Reply { event, .. } if matches!(**event, OutputEvent::Room(_)) => {
+            render(event, state)
+        }
         _ => Rendered::Drop,
     }
 }
@@ -1179,6 +1188,46 @@ mod tests {
         assert!(text.starts_with("**Tap Room**"));
         assert!(text.contains("…"), "long descriptions are cut");
         assert!(text.contains("Here: Nick") && text.contains("Exits: out"));
+    }
+
+    /// 16b cut B.4 (`B-14`): the attach look arrives as the `room` query's
+    /// `Reply { id: 0, event: Room }`; a follow's DM shows it exactly as a
+    /// bare room, quiet mode drops it as it drops a bare one, and no other
+    /// reply joins the allow-list.
+    #[test]
+    fn a_room_that_answers_the_room_query_renders_as_a_bare_room() {
+        let room = OutputEvent::Room(RoomView {
+            name: "Limbo".into(),
+            id: "#0".into(),
+            desc: RichText::plain("A grey nowhere."),
+            contents: vec![ObjRef::new("#7", "Nick")],
+            exits: vec![mush_proto::ExitRef {
+                name: "east".into(),
+                aliases: vec![],
+            }],
+            zone: None,
+            ambient: Default::default(),
+        });
+        let reply = OutputEvent::Reply {
+            id: 0,
+            event: Box::new(room.clone()),
+        };
+        let loud = FollowState::new(false, "#1");
+        let bare = render(&room, &loud);
+        assert!(
+            matches!(&bare, Rendered::Line(s) if s.starts_with("**Limbo**") && s.contains("Exits: east")),
+            "{bare:?}"
+        );
+        assert_eq!(render(&reply, &loud), bare);
+        let quiet = FollowState::new(true, "#1");
+        assert_eq!(render(&room, &quiet), Rendered::Drop);
+        assert_eq!(render(&reply, &quiet), Rendered::Drop);
+        // Any other reply is not a follow's to show.
+        let other = OutputEvent::Reply {
+            id: 0,
+            event: Box::new(OutputEvent::Sys(RichText::tag("error", "No."))),
+        };
+        assert_eq!(render(&other, &loud), Rendered::Drop);
     }
 
     #[test]

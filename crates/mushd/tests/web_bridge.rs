@@ -335,7 +335,12 @@ async fn register_then_connect_streams_stamped_envelopes() {
     let si = expect_env(&mut rx, "Connected as Nick (nick)").await;
     let room = expect_env(&mut rx, "Limbo(#0)").await;
     assert!(matches!(si.event, OutputEvent::SessionInfo { .. }));
-    assert!(matches!(room.event, OutputEvent::Room(_)));
+    // 16b cut B.4 (`B-14`): the attach look is the core `room` query's answer,
+    // `Reply { id: 0, event: Room }`, sent to this one connection.
+    assert!(matches!(
+        &room.event,
+        OutputEvent::Reply { id: 0, event } if matches!(**event, OutputEvent::Room(_))
+    ));
     assert!(si.seq >= 1);
     assert!(room.seq > si.seq, "seqs are monotonic per session");
     assert!(si.ts > 0);

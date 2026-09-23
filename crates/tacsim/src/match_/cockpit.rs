@@ -104,7 +104,7 @@
 //! `web/src/lib/fixtures/cockpit/` are the one set all three renderers are held
 //! to (doc 16 §5).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use mush_core::module::{ModError, Registrar};
@@ -187,14 +187,26 @@ pub const STATION_PRIORITY: u16 = 2;
 /// there may be exactly one rule for which weapon that is).
 pub use crate::arena::weapons::DEFAULT_WEAPON;
 
-/// How many cells of the arena window one `VIEW` carries, across and up. The
-/// widest and tallest a line client prints (`mush_ansi::panel`'s own bounds), so
-/// the frame is the map and the renderer only has to clip it to a narrow
-/// terminal.
-pub const VIEW_COLUMNS: u16 = 78;
+/// How many cells of the arena window one `VIEW` carries, across.
+///
+/// **16b cut B.4** (`B-24`): half the seventy-eight columns a line client prints
+/// (`mush_ansi::panel::GRID_MAX_COLUMNS`), because each cell is drawn two columns
+/// wide so the ground is square — a terminal cell is about twice as tall as it is
+/// wide, and at one column a cell the window drew the ground four times wider than
+/// tall. The window says so itself (`cell_columns: 2`, [`view_window`]). It is a
+/// close-in view: `CONTACTS` and the beyond-window line
+/// ([`beyond_window_line`]) cover the rest of the sight.
+pub const VIEW_COLUMNS: u16 = 39;
 
-/// As [`VIEW_COLUMNS`], up the window.
+/// As [`VIEW_COLUMNS`], up the window: the twenty rows a line client prints
+/// (`mush_ansi::panel::GRID_MAX_ROWS`), one row a cell.
 pub const VIEW_ROWS: u16 = 20;
+
+/// **How many printed columns a line client draws each window cell as** (16b cut
+/// B.4, `B-24`): the `cell_columns` key [`view_window`] writes and the grid
+/// renderer reads. Only the line client doubles; the TUI's map pane and the web
+/// canvas draw one cell per cell.
+pub const VIEW_CELL_COLUMNS: u16 = 2;
 
 /// The glyph the pilot's own platform draws with.
 pub const YOU_GLYPH: &str = "@";
@@ -615,8 +627,24 @@ fn require_power(w: &World, pilot: ObjId) -> Result<(), CockpitError> {
 /// sighting, which is how a pilot tells a live track from a dying one. It also
 /// adds the range in metres ([`ContactRow::range_m`]), because a band alone told
 /// a pilot nothing at all.
+///
+/// **16b cut B.4** (`T-60`): this is [`frame_contacts_held`] with no memory — every
+/// row rounded afresh. The fixtures and every pure reading of a lone frame use it;
+/// the world's read verbs and the bridge pass the mirror's held ranges.
 #[must_use]
 pub fn frame_contacts(frame: &Frame) -> Vec<ContactRow> {
+    frame_contacts_held(frame, &BTreeMap::new())
+}
+
+/// **The contacts the platform holds, each range held against the last figure the
+/// pilot was told** (16b cut B.4, `T-60`).
+///
+/// [`frame_contacts`]' rows, with each row's `range_m` rounded through
+/// [`held_range_m`] against `ranges` — the figure the same row carried on the
+/// previous frame the pilot was sent ([`settle_ranges`], stored on the bridge's
+/// mirror as [`CockpitFrame::ranges`]). A row the map does not name rounds plainly.
+#[must_use]
+pub fn frame_contacts_held(frame: &Frame, ranges: &BTreeMap<ContactId, u64>) -> Vec<ContactRow> {
     // 16b cut F.3: the bands of the weapon a bare `FIRE` would fire — the weapon
     // the band word is advice about. Resolved once for the list.
     let bands: &[u32] = fired_by_default(&frame.weapons).map_or(&[], |weapon| &weapon.bands_cm);
@@ -635,7 +663,13 @@ pub fn frame_contacts(frame: &Frame) -> Vec<ContactRow> {
             // 16b cut D.1: thirds of the lesser of the sight and the weapon's
             // reach. 16b cut E.1: and the only band word there is.
             band: SmolStr::new(contact_band(held.range_cm, bands, frame.sight_cm)),
-            range_m: range_m_rounded(held.range_cm, CONTACT_RANGE_STEP_M),
+            // 16b cut B.4 (`T-60`): held against the last figure the pilot was
+            // told, so a plot sitting near a 50 m edge does not flip every pulse.
+            range_m: held_range_m(
+                held.range_cm,
+                CONTACT_RANGE_STEP_M,
+                ranges.get(&held.id).copied(),
+            ),
             age_ms: held.age_ms,
             cell: held.cell,
             friendly: held.class.team() == Some(frame.team),
@@ -738,6 +772,61 @@ pub fn range_m_rounded(range_cm: u64, step_m: u64) -> u64 {
         .saturating_div(step)
         .saturating_mul(step)
         .max(step)
+}
+
+/// **A scope row's range, held against the figure the pilot was last told** (16b
+/// cut B.4, `T-60`), metres.
+///
+/// [`range_m_rounded`] alone is pure, so a plot sitting at 425 m — a tank holding
+/// station, or two tanks circling — read `450 m` and `400 m` on alternate pulses,
+/// and every panel row and every `CONTACTS` flickered with it. With `held` the
+/// figure the same row was last published at, the row keeps that figure while the
+/// plot stays within five eighths of a step of it — **six metres of hysteresis each
+/// side of the edge at the 50 m step** (an edge at 425 m is crossed at 431.25 m
+/// going out and at 418.75 m coming back) — and rounds afresh once it leaves. A
+/// row with no memory (`None`) rounds plainly, so the first figure a pilot reads
+/// about a new contact is [`range_m_rounded`]'s.
+///
+/// Integers only, as every stored figure is: the tolerance is
+/// `step_m × 100 × 5 / 8` centimetres.
+#[must_use]
+pub fn held_range_m(range_cm: u64, step_m: u64, held: Option<u64>) -> u64 {
+    if let Some(m) = held {
+        let tolerance_cm = step_m.saturating_mul(100).saturating_mul(5) / 8;
+        if range_cm.abs_diff(m.saturating_mul(100)) <= tolerance_cm {
+            return m;
+        }
+    }
+    range_m_rounded(range_cm, step_m)
+}
+
+/// **The range memory the next frame is held against** (16b cut B.4, `T-60`):
+/// every contact on `frame`, mapped to the figure its row publishes now
+/// ([`held_range_m`] against `previous`). A contact that is gone from the frame
+/// is gone from the map, so a re-acquired id starts afresh.
+///
+/// The bridge calls it once per frame per pilot and stores the answer on the
+/// mirror ([`CockpitFrame::ranges`]); it is a fact about what the pilot has been
+/// told, never about where anything is.
+#[must_use]
+pub fn settle_ranges(
+    frame: &Frame,
+    previous: &BTreeMap<ContactId, u64>,
+) -> BTreeMap<ContactId, u64> {
+    frame
+        .contacts
+        .iter()
+        .map(|held| {
+            (
+                held.id,
+                held_range_m(
+                    held.range_cm,
+                    CONTACT_RANGE_STEP_M,
+                    previous.get(&held.id).copied(),
+                ),
+            )
+        })
+        .collect()
 }
 
 /// **What this platform's own scope holds** (16b cut D.1; doc 16 §5, §1).
@@ -1620,6 +1709,11 @@ pub fn board(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
         display_name(ctx.w, pod)
     );
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, pilot_line);
+    // **16b cut B.4** (`B-38`): the pod's interior, after the sentence that put
+    // the pilot there — `room_view` takes any object, so this is what `look`
+    // from inside the pod shows. The failed-seat rollback above shows nothing
+    // beyond its error.
+    ctx.show_room(actor, pod);
     if let Some(room) = room {
         tell_room(ctx, room, Vec::new(), room_line);
     }
@@ -1712,6 +1806,10 @@ pub fn exit(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
             display_name(ctx.w, pod)
         );
         tell_room(ctx, room, vec![actor], text);
+        // **16b cut B.4** (`B-38`): and where they are standing, AFTER the
+        // sentence that explains the move — never inside `put_out`, or the
+        // room would land before "You climb out".
+        ctx.show_room(actor, room);
     }
 
     // (4) The centre, while it is still boarding.
@@ -1958,6 +2056,9 @@ pub(crate) fn eject_all(ctx: &mut Ctx<'_>) -> EjectReport {
             put_out(ctx, body, room);
             let line = format!("The hatch of {} swings open.", display_name(ctx.w, pod));
             ctx.out.sys_to_actor(body, NOTICE_CATEGORY, line);
+            // 16b cut B.4 (`B-38`): the room they are standing in, after the
+            // hatch line that explains it.
+            ctx.show_room(body, room);
             report.bodies.push(body);
         }
     }
@@ -1982,6 +2083,8 @@ pub(crate) fn eject_pilot(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
     put_out(ctx, actor, room);
     let line = format!("The hatch of {} swings open.", display_name(ctx.w, pod));
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    // 16b cut B.4 (`B-38`): as `eject_all`, after the hatch line.
+    ctx.show_room(actor, room);
     report.bodies.push(actor);
     report
 }
@@ -2167,7 +2270,7 @@ fn lock(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> 
         ));
     }
     let held = last_frame(ctx.w, actor)
-        .map(|held| frame_contacts(&held.frame))
+        .map(|held| frame_contacts_held(&held.frame, &held.ranges))
         .unwrap_or_default();
     // **16b cut Q.1**: the word is a designator, not sixteen digits, and the
     // resolution is against the platform's own rows — so an id that names
@@ -2224,21 +2327,30 @@ fn range(ctx: &mut Ctx<'_>, rest: &str) -> Result<(), CockpitError> {
 /// the platform is tracking that one return continuously — but no finer than the
 /// plot in front of the pilot can carry (16b cut D.4, `T-20`). The age is the row's
 /// own, which is the `1 s` `CONTACTS` already prints.
+///
+/// **16b cut B.4** (`T-60`): an unlocked row prints `row.range_m` — the figure the
+/// row already carries, which is the HELD figure ([`frame_contacts_held`]) — and
+/// does not recompute it. Recomputing from the plot here re-opened the 50 m edge
+/// the row's memory closes, so `RANGE` could read `450 m` while `CONTACTS` and
+/// both panels held `400 m`; printing the row's own figure is what makes "three
+/// surfaces cannot give three distances" true again. Only the lock is recomputed
+/// from the plot, at [`lock_range_step_m`] of its age: its finer step is the
+/// frame's `lock_range_m`, the same call of the same function, and keeps no memory
+/// (16b cut D.4's ruling).
 #[must_use]
 pub fn range_line(frame: &Frame, row: &ContactRow, pass_ms: i64) -> String {
     let locked = frame_lock(frame) == Some(row.id);
-    let step = if locked {
-        lock_range_step_m(row.age_ms)
+    let metres = if locked {
+        frame
+            .contacts
+            .iter()
+            .find(|contact| contact.id == row.id)
+            .map_or(row.range_m, |contact| {
+                range_m_rounded(contact.range_cm, lock_range_step_m(row.age_ms))
+            })
     } else {
-        CONTACT_RANGE_STEP_M
+        row.range_m
     };
-    let metres = frame
-        .contacts
-        .iter()
-        .find(|contact| contact.id == row.id)
-        .map_or(row.range_m, |contact| {
-            range_m_rounded(contact.range_cm, step)
-        });
     format!(
         "Range to {}: {metres} m{}.",
         row.designator,
@@ -2352,8 +2464,13 @@ pub fn scan_lines(frame: &Frame, row: &ContactRow) -> Vec<String> {
         };
         let cell = format!("{section} {}", band.as_str());
         // The comma stays on the line it follows, so a wrapped run reads as one
-        // sentence rather than as two lists.
-        if !run.is_empty() && run.len() + 2 + cell.len() > DAMAGE_COLUMNS {
+        // sentence rather than as two lists. **16b cut B.4** (`B-26`): the test
+        // counts all three characters the cell can cost — the `, ` it is joined
+        // with AND the `,` the run takes if it wraps here instead — so no run,
+        // comma included, ever passes [`DAMAGE_COLUMNS`] (it was `+ 2`, and a
+        // run could print at 77). `section_lines` needs no such margin: it
+        // joins with two spaces and pushes no comma on a wrap.
+        if !run.is_empty() && run.len() + 3 + cell.len() > DAMAGE_COLUMNS {
             run.push(',');
             lines.push(run.clone());
             run.clear();
@@ -2389,12 +2506,13 @@ fn named_row<'a>(
     // one byte-identical `No such contact.` whether the scope is empty or
     // missing, because a pilot who could tell those two apart could tell a name
     // that exists from one that does not.
-    let frame = match held {
-        Some(held) => &held.frame,
+    let (frame, ranges) = match held {
+        Some(held) => (&held.frame, &held.ranges),
         None if named.is_empty() => return Err(CockpitError::NoLockOrName),
         None => return Err(CockpitError::NoSuchContact),
     };
-    let rows = frame_contacts(frame);
+    // 16b cut B.4 (`T-60`): the rows the pilot was told, ranges held.
+    let rows = frame_contacts_held(frame, ranges);
     let id = if named.is_empty() {
         frame_lock(frame).ok_or(CockpitError::NoLockOrName)?
     } else {
@@ -2506,9 +2624,11 @@ fn fire(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> 
 fn contacts(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
     let actor = ctx.actor;
     let held = last_frame(ctx.w, actor);
+    // 16b cut B.4 (`T-60`): the ranges held against the mirror's memory, the
+    // figures the panels were sent.
     let rows = held
         .as_ref()
-        .map(|held| frame_contacts(&held.frame))
+        .map(|held| frame_contacts_held(&held.frame, &held.ranges))
         .unwrap_or_default();
     let mut lines: Vec<String> = Vec::new();
     if rows.is_empty() {
@@ -2701,6 +2821,9 @@ pub fn section_lines(sections: &[crate::arena::step::FrameSection]) -> Vec<Strin
         let mut run = String::new();
         for facet in &section.facets {
             let cell = format!("{} {}/{}", facet.id, facet.armor, facet.armor_max);
+            // Two spaces join a cell and a wrap pushes no comma, so `+ 2` is
+            // the whole cost here (16b cut B.4 widened `scan_lines`' own test,
+            // which does push one, and left this alone).
             if !run.is_empty() && run.len() + cell.len() + 2 > DAMAGE_COLUMNS {
                 lines.push(run.clone());
                 run.clear();
@@ -2736,7 +2859,26 @@ fn view(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
         );
         return Ok(());
     };
-    let payload = view_frame(ctx, held.match_id, &held.frame);
+    let payload = view_frame_held(ctx, held.match_id, &held.frame, &held.ranges);
+    // **16b cut B.4** (`B-23`): a frame is held but the window cannot be drawn —
+    // the registry holds no arena for the match, or the pose is off the terrain
+    // — so `view_frame` answered the bare status frame, which declares no shape
+    // and a line client prints as nothing: `VIEW` used to answer with a blank.
+    // The test is inline, on the key `view_window` writes; it is what
+    // `mush_ansi::panel::is_grid` reads on the other side, and this crate takes
+    // no dependency on a renderer crate to ask it.
+    if payload
+        .pointer("/schema/shape")
+        .and_then(serde_json::Value::as_str)
+        != Some("grid")
+    {
+        ctx.out.sys_to_actor(
+            actor,
+            NOTICE_CATEGORY,
+            "The window is dark: there is no ground under the panel to draw.",
+        );
+        return Ok(());
+    }
     let beyond = beyond_window_line(&held.frame, &payload);
     ctx.out.push(
         mush_core::Audience::Actor(actor),
@@ -2766,7 +2908,8 @@ fn say_and_frame(ctx: &mut Ctx<'_>, held: Option<&CockpitFrame>, lines: Vec<Stri
     let Some(held) = held else {
         return;
     };
-    let payload = status_frame(held.match_id, &held.frame);
+    // 16b cut B.4 (`T-60`): the frame with the ranges the pilot was told.
+    let payload = status_frame_held(held.match_id, &held.frame, &held.ranges);
     ctx.out.push(
         mush_core::Audience::Actor(actor),
         OutputEvent::Panel {
@@ -2894,9 +3037,26 @@ pub const RETAIN_LATEST: &str = "latest";
 /// ([`own_scope`]). Each contact's `band` is [`contact_band`]'s word: thirds of
 /// the lesser of `sight_m` and the fired weapon's reach. `tempo` is unchanged and
 /// stays the arena's global word.
+///
+/// **16b cut B.4** (`T-60`): this is [`status_frame_held`] with no range memory,
+/// for the fixtures and every pure reading of a lone frame.
 #[must_use]
 pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
-    let rows = frame_contacts(frame);
+    status_frame_held(match_id, frame, &BTreeMap::new())
+}
+
+/// **The cockpit keyframe with each contact's `range_m` held** (16b cut B.4,
+/// `T-60`) against `ranges` — [`status_frame`]'s payload, its rows built by
+/// [`frame_contacts_held`]. What the bridge sends every pulse and what every read
+/// verb re-pushes off the mirror, so the panel rows, `CONTACTS` and `RANGE` read
+/// one figure. `lock_range_m` keeps its own step and no memory.
+#[must_use]
+pub fn status_frame_held(
+    match_id: MatchId,
+    frame: &Frame,
+    ranges: &BTreeMap<ContactId, u64>,
+) -> serde_json::Value {
+    let rows = frame_contacts_held(frame, ranges);
     let contacts: Vec<serde_json::Value> = rows
         .iter()
         .map(|row| {
@@ -3266,7 +3426,20 @@ pub fn cockpit_cleared() -> serde_json::Value {
 /// the match is being fought over, and what the pilot's own tank is called.
 #[must_use]
 pub fn view_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_json::Value {
-    let payload = status_frame(match_id, frame);
+    view_frame_held(ctx, match_id, frame, &BTreeMap::new())
+}
+
+/// [`view_frame`] with each contact's range held against `ranges` (16b cut B.4,
+/// `T-60`) — what `VIEW` pushes off the mirror, so its payload's rows agree with
+/// the frame the pilot was last sent.
+#[must_use]
+pub fn view_frame_held(
+    ctx: &Ctx<'_>,
+    match_id: MatchId,
+    frame: &Frame,
+    ranges: &BTreeMap<ContactId, u64>,
+) -> serde_json::Value {
+    let payload = status_frame_held(match_id, frame, ranges);
     let Some(ground) = ctx
         .w
         .module_state::<ArenaRegistry>()
@@ -3304,7 +3477,8 @@ pub fn view_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_json
 /// the window's own keys are added beside the cockpit's.
 ///
 /// The window is [`VIEW_COLUMNS`] by [`VIEW_ROWS`] cells around the platform,
-/// clamped to the arena: the most a line client prints, so the renderer only has
+/// clamped to the arena: the most a line client prints at
+/// [`VIEW_CELL_COLUMNS`] columns a cell (16b cut B.4), so the renderer only has
 /// to clip it to a narrow terminal and never has to ask for more. A pose off the
 /// window answers the payload untouched.
 ///
@@ -3388,6 +3562,23 @@ pub fn view_window(
         object.insert("legend".to_owned(), serde_json::Value::Array(legend));
         object.insert("units".to_owned(), serde_json::Value::Array(units));
         object.insert("you".to_owned(), serde_json::json!(you));
+        // **16b cut B.4** (`B-24`, the `T-60` footer slip): three keys for the
+        // grid renderer. `cell_columns` — a line client prints each cell this
+        // many columns wide, so the ground is square; `origin_cell` and
+        // `extent` — the window's corner and the arena's size in arena cells,
+        // so the footer names arena cells and not window cells. The size is
+        // lobby knowledge (doc 16 §3.2: the proving ground is surveyed ground)
+        // and the corner is read off the pilot's own pose; neither is a fact
+        // about any other unit.
+        object.insert(
+            "cell_columns".to_owned(),
+            serde_json::json!(VIEW_CELL_COLUMNS),
+        );
+        object.insert("origin_cell".to_owned(), serde_json::json!([x0, y0]));
+        object.insert(
+            "extent".to_owned(),
+            serde_json::json!([terrain.width(), terrain.height()]),
+        );
     }
     payload
 }
@@ -3397,7 +3588,8 @@ pub fn view_window(
 ///
 /// A sensor reaches sixty cells every way and the line client's window is
 /// [`VIEW_COLUMNS`] by [`VIEW_ROWS`], because a terminal is eighty by
-/// twenty-four. A contact whose plot falls outside that window — or off the
+/// twenty-four and each cell is printed two columns wide (16b cut B.4: a
+/// close-in window, so this line is what covers the rest of the sight). A contact whose plot falls outside that window — or off the
 /// arena entirely, which is a plot with no cell — is on `CONTACTS` and not on
 /// the map, and the pilot is told so rather than left to conclude the scope is
 /// empty. `None` when every held contact is drawn.
@@ -4410,6 +4602,31 @@ mod tests {
         assert_eq!(range_m_rounded(500, LOCK_RANGE_STEP_M), 10);
         // A step of zero is read as one rather than dividing by it.
         assert_eq!(range_m_rounded(43_400, 0), 434);
+    }
+
+    /// **16b cut B.4** (`T-60`): a scope row's range holds against the figure
+    /// the pilot was last told while the plot stays within five eighths of a
+    /// step of it — six metres of hysteresis each side of a 50 m edge — and
+    /// rounds afresh once it leaves; with no memory it rounds plainly.
+    #[test]
+    fn a_held_range_keeps_its_figure_across_a_fifty_metre_edge() {
+        let step = CONTACT_RANGE_STEP_M;
+        // 424 m, no memory: 400, as `range_m_rounded` says.
+        assert_eq!(held_range_m(42_400, step, None), 400);
+        assert_eq!(held_range_m(43_100, step, None), 450, "plain rounding");
+        // 431 m with 400 held: inside 431.25, so it holds.
+        assert_eq!(held_range_m(43_100, step, Some(400)), 400);
+        // Exactly at the tolerance holds; one centimetre past it does not.
+        assert_eq!(held_range_m(43_125, step, Some(400)), 400);
+        assert_eq!(held_range_m(43_126, step, Some(400)), 450);
+        // 432 m: past it, so it rounds afresh to 450.
+        assert_eq!(held_range_m(43_200, step, Some(400)), 450);
+        // Coming back: 418 m from 450 is past the tolerance, and rounds to 400;
+        // 419 m still holds 450.
+        assert_eq!(held_range_m(41_800, step, Some(450)), 400);
+        assert_eq!(held_range_m(41_900, step, Some(450)), 450);
+        // A held figure far from the plot is simply replaced.
+        assert_eq!(held_range_m(12_000, step, Some(450)), 100);
     }
 
     /// **16b cut Q.1**: `FIRE`'s line is untouched, and the read verbs have their

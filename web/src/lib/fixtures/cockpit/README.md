@@ -10,8 +10,8 @@ not parity — so there is exactly one set here, and no copies to drift. Rust
 |---|---|---|
 | `cockpit_frame.json` | the per-pulse cockpit keyframe, feed `arena.cockpit` | `tacsim::match_::cockpit::status_frame` |
 | `arena_map.json` | the whole arena's terrain, feed `arena.map`, pulled and never pushed | `tacsim::match_::cockpit::map_frame` |
-| `view_frame.json` | the 78×20 window `VIEW` sends, the two composed server-side | `tacsim::match_::cockpit::view_window` |
-| `view_grid.txt` | the twenty map rows a line client prints of it, north-up | `mush_ansi::panel::grid_lines` |
+| `view_frame.json` | the 39×20-cell window `VIEW` sends, the two composed server-side, with `cell_columns: 2`, `origin_cell` and `extent` (16b cut B.4) | `tacsim::match_::cockpit::view_window` |
+| `view_grid.txt` | the twenty map rows a line client prints of it, north-up, ONE glyph per cell (39 by 20; the line client prints each cell twice) | `mush_ansi::panel::grid_lines` |
 | `web_view_model.txt` | every line the web's cockpit screen prints for that frame (16b cut Q.5) | `web/src/lib/cockpit.ts`'s `cockpitViewLines` |
 | `notice_lines.json` | the notices ring's wording: an array of `{ "notice": <one notice object as the wire sends it>, "line": "<the ring line>" }` (16b cut B.1) | **hand-written**; no bless variable |
 
@@ -50,14 +50,23 @@ COCKPIT_BLESS=1 npx vitest run src/lib/cockpit.test.ts
 ## What a renderer is held to
 
 `view_grid.txt` is the target. A composition of `arena_map.json` +
-`cockpit_frame.json` at **exactly 78 by 20** must equal it byte for byte. That
-equality, and not three separate goldens, is what makes the three renderers one
-renderer.
+`cockpit_frame.json` at **exactly 39 by 20 cells** must equal it byte for byte.
+That equality, and not three separate goldens, is what makes the three renderers
+one renderer.
+
+**39 by 20 cells, the line client printing each cell twice** (16b cut B.4): a
+terminal cell is about twice as tall as it is wide, so `VIEW`'s window carries
+`cell_columns: 2` and the line client draws its ground square at 78 printed
+columns. The file stays **one glyph per cell**, because the TUI's pane and the
+web's canvas draw one cell per cell; `mush-ansi/tests/golden.rs` checks that
+every printed row is each glyph of the file's row twice, and blesses the file
+from the printed rows halved. The footer the line client prints names **arena**
+cells (`origin_cell` and `extent`), not the window's own.
 
 The composition rules, which `view_window` follows and every other compositor
 must:
 
-- the window is 78×20 cells centred on the platform's `cell` and **clamped** to
+- the window is 39×20 cells centred on the platform's `cell` and **clamped** to
   the arena, so a platform near a corner draws at its own cell;
 - row `0` of `rows` is the **south** edge; a terminal prints them north-up;
 - markers go down in order — the pilot's own `@` **first**, then the contacts in

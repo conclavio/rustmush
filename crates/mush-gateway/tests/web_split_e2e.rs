@@ -276,7 +276,12 @@ async fn web_client_serves_through_split_gateway() {
     let si = expect_env(&mut ws, "Connected as Nick (nick)").await;
     assert!(matches!(si.event, OutputEvent::SessionInfo { .. }));
     let room = expect_env(&mut ws, "Limbo(#0)").await;
-    assert!(matches!(room.event, OutputEvent::Room(_)));
+    // 16b cut B.4 (`B-14`): the attach look is the core `room` query's answer,
+    // `Reply { id: 0, event: Room }`, sent to this one connection.
+    assert!(matches!(
+        &room.event,
+        OutputEvent::Reply { id: 0, event } if matches!(**event, OutputEvent::Room(_))
+    ));
 
     // Play: a say typed on the WS round-trips through the world loop on the
     // SERVER process and echoes back to this same WS connection.

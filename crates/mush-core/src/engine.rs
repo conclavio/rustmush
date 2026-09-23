@@ -6726,6 +6726,75 @@ mod tests {
         assert_eq!(data["truncated"], serde_json::json!(false));
     }
 
+    /// **16b cut B.4** (`B-14`): the core `room` query — the gateway's attach
+    /// look — answers the actor's own room as `Reply { id, event: Room }` to
+    /// the ONE connection that asked, never to the actor's other connections;
+    /// an actor with no location reads `You are nowhere.`
+    #[test]
+    fn room_query_answers_the_actors_own_room_to_one_connection() {
+        let (mut engine, nick) = setup();
+        for conn in [2, 3] {
+            let (mut out, mut fx) = (Outbox::new(), Effects::new());
+            engine.step(
+                Inbound::ConnUp {
+                    conn,
+                    actor: nick,
+                    caps_structured: true,
+                    from_linkdead: false,
+                },
+                &mut out,
+                &mut fx,
+            );
+        }
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Query {
+                conn: 3,
+                actor: nick,
+                id: 0,
+                name: SmolStr::new("room"),
+                args: serde_json::json!({}),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert_eq!(out.len(), 1, "{:?}", out.events());
+        let (aud, ev) = &out.events()[0];
+        assert_eq!(aud, &Audience::Conn(3), "the asking connection alone");
+        let OutputEvent::Reply { id: 0, event } = ev else {
+            panic!("expected Reply id 0, got {ev:?}");
+        };
+        let OutputEvent::Room(view) = event.as_ref() else {
+            panic!("expected a Room, got {event:?}");
+        };
+        let limbo = engine.world.get(LIMBO).map(|o| o.name.clone());
+        assert_eq!(Some(view.name.clone()), limbo, "the actor's own room");
+
+        // Nowhere: the polite refusal, still to the one connection.
+        engine.world.get_mut(nick).expect("Nick exists").location = None;
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Query {
+                conn: 3,
+                actor: nick,
+                id: 0,
+                name: SmolStr::new("room"),
+                args: serde_json::json!({}),
+            },
+            &mut out,
+            &mut fx,
+        );
+        let (aud, ev) = &out.events()[0];
+        assert_eq!(aud, &Audience::Conn(3));
+        let OutputEvent::Reply { event, .. } = ev else {
+            panic!("expected Reply, got {ev:?}");
+        };
+        assert!(
+            matches!(event.as_ref(), OutputEvent::Sys(t) if t.to_plain_text() == "You are nowhere."),
+            "{event:?}"
+        );
+    }
+
     /// The core `"who"` handler is registered by `register_core_commands`
     /// and answers with the same listing the WHO command produces. Queries
     /// never stamp `last_input` (panel refreshes must not reset idle).

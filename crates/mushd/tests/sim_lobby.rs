@@ -348,8 +348,13 @@ async fn two_pilots_walk_selection_and_boarding_twice_and_a_slot_belongs_to_an_a
         assert!(status.contains("Ada"), "run {run}: {status}");
         assert!(status.contains("Bo"), "run {run}: {status}");
 
-        // A pilot who is not a side's first cannot start it.
-        say(&mut cy, "SIM START", "first pilot or staff").await;
+        // A pilot who does not lead a side cannot start it.
+        say(
+            &mut cy,
+            "SIM START",
+            "Only a side's lead or staff can start the match.",
+        )
+        .await;
 
         // **16b cut Q.7**: this server fields no machines, so the sixth selector
         // says so and the board says nothing at all about a fill.
@@ -542,7 +547,7 @@ async fn d1_the_bare_reads_and_the_claim_line_on_a_server_that_fields_machines()
     say(
         &mut bo,
         "SIM AI 3",
-        "Only a side's first pilot or staff can set the AI fill.",
+        "Only a side's lead or staff can set the AI fill.",
     )
     .await;
 
@@ -644,7 +649,7 @@ async fn d1_the_boards_arena_clock_moves_while_nobody_drives() {
 // (5) 16b cut D.3 — the lifecycle's ends, over the real front door
 // ---------------------------------------------------------------------------
 
-/// **`B-33`: a side's first pilot concedes, over SSH** (16b cut D.3).
+/// **`B-33`: a side's lead concedes, over SSH** (16b cut D.3).
 ///
 /// Doc 16 §3.8's elimination is *a wreck, or disabled with no weapons*, so a
 /// side that is beaten but not dead has nothing to do but drive about until
@@ -694,7 +699,7 @@ async fn d3_a_lead_concedes_and_the_board_names_the_winner() {
     say(
         &mut cy,
         "SIM CONCEDE",
-        "Only a side's first pilot can concede for it.",
+        "Only a side's lead can concede for it.",
     )
     .await;
     // Red's first may, and the whole centre is told.
@@ -766,6 +771,71 @@ async fn aa2_a_lead_dropped_at_the_deadline_leaves_a_lead_who_can_concede() {
     )
     .await;
     // Red's next claimant leads red now, and her concede is a result.
+    say(&mut cy, "SIM CONCEDE", "concedes for the red side").await;
+    bo.expect("Match 1 goes to blue when the arena answers.")
+        .await;
+    bo.expect("Its units are checked in.").await;
+
+    let status = one_line(&ask(&mut bo, "SIM STATUS", "blue:").await);
+    assert!(
+        status.contains("ended (match 1) — blue wins: red conceded"),
+        "{status}"
+    );
+}
+
+/// **A lead who `EXIT`s mid-match hands the side on** (16b cut B.4, cut AA's
+/// residual), over SSH, through the real `BOARD` and the real `EXIT`.
+///
+/// Before this cut `slot_left` marked Ada's slot `left` and kept her as red's
+/// lead, so no succession ran: Cy, still in her tank, read the lead refusal and
+/// red could not concede. Now the leave resettles the leads — Ada, standing in
+/// the team room, is refused in the lead's own words, and Cy's concede is the
+/// result it always was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn b4_a_lead_who_exits_mid_match_hands_the_side_on() {
+    let server = boot("sim-lobby-b4-exit").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+
+    // Into the team rooms BEFORE the match starts, for the reason
+    // `d3_a_lead_concedes_and_the_board_names_the_winner` gives.
+    let listing = ask(&mut god, "@find Red Room", "END OF LIST").await;
+    let red_room = dbref_of(&listing, "Red Room");
+    let listing = ask(&mut god, "@find Blue Room", "END OF LIST").await;
+    let blue_room = dbref_of(&listing, "Blue Room");
+    for (pilot, room) in [(ADA, red_room), (CY, red_room), (BO, blue_room)] {
+        say(
+            &mut god,
+            &format!("@teleport #{}=#{room}", pilot.0),
+            "Teleported",
+        )
+        .await;
+    }
+
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut cy, "SIM TEAM red", "takes red slot 2").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    say(&mut cy, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+
+    // Red's lead leaves her tank for good.
+    say(&mut ada, "EXIT", "You climb out of").await;
+    // She is in the team room, in the centre, holding a slot that has left: she
+    // leads nothing now, and is told so in the lead's words.
+    say(
+        &mut ada,
+        "SIM CONCEDE",
+        "Only a side's lead can concede for it.",
+    )
+    .await;
+    // Cy, red's next claimant still in a tank, leads red and may concede.
     say(&mut cy, "SIM CONCEDE", "concedes for the red side").await;
     bo.expect("Match 1 goes to blue when the arena answers.")
         .await;

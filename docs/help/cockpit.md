@@ -179,7 +179,10 @@ nose-on spends its thickest plate and a tank caught broadside or from behind
 spends its thinnest. Turn into the shot.
 
 `VIEW` draws the same picture as a map: terrain glyphs, `@` for you, `?` for a
-contact nothing has classified, `+` for your side and `x` for the other.
+contact nothing has classified, `+` for your side and `x` for the other. It is
+a close-in window, 39 cells across and 20 up, each cell printed two columns
+wide so the ground is square; a line under it says how many contacts plot
+beyond it, and `CONTACTS` lists them.
 
 Contacts arrive and leave on their own: `New contact X2: bearing 087°,
 effective.`, `Contact X2 identified: BA, blue.`, `Contact BA lost.`
@@ -257,7 +260,7 @@ afterwards:
   Your tank is destroyed. The match runs on without you: wait it out, EXIT to
   the team room, or SIM ABORT to call it off.
 
-If your side is beaten but not dead, its first pilot can end it honestly with
+If your side is beaten but not dead, its lead can end it honestly with
 `SIM CONCEDE`: the other side wins and the record says so. See `help simulator`.
 
 After that `STATUS` carries `DESTROYED` beside the speed, and every order is

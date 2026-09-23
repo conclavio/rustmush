@@ -20,24 +20,25 @@ the same thing this topic does, in fewer words.
 ## Claiming a slot
 
   SIM TEAM red|blue   claim one pilot slot on a side. One slot per account,
-                      four a side. Whoever claims a side first leads it, and
-                      if they give the slot up or are dropped at boarding,
-                      the next who claimed.
+                      four a side. Whoever claims a side first leads it; if
+                      they give the slot up, are dropped at boarding, or leave
+                      their tank once the match is running, the next who
+                      claimed leads.
   SIM LEAVE           give your slot up; the last one to leave closes the match.
-  SIM START           lock the pods and open boarding. A side's first pilot, or
-                      staff, with at least one pilot a side.
+  SIM START           lock the pods and open boarding. A side's lead, or staff,
+                      with at least one pilot a side.
   SIM ABORT           call the match off (any pilot in it, or staff). Before a
                       match is running there is nothing to abort: use SIM LEAVE.
-  SIM CONCEDE         give the running match up for your side. Its first pilot
-                      only; the other side wins and the result says so.
+  SIM CONCEDE         give the running match up for your side. Its lead only;
+                      the other side wins and the result says so.
   SIM STATUS          the centre: its state, its sides, its slots and its pods.
                       While a match runs you read your own side in full and
                       every other side by slot, callsign and pilot alone.
                       The bare word SIM is the same thing.
   SIM AI [n]          how many units a side fields when the machines fill in.
-                      A side's first pilot or staff sets it, during selection;
-                      the bare word reads the number for anybody in the centre,
-                      in any state.
+                      A side's lead or staff sets it, during selection; the
+                      bare word reads the number for anybody in the centre, in
+                      any state.
   SIM UNIT [type]     which unit type your own slot fields. The bare word lists
                       what this server can field, for anybody in the centre, and
                       adds what you are flying if you hold a slot.
@@ -162,7 +163,7 @@ While it runs, the cockpit is the whole of it: `help cockpit`.
 
 It ends when one side has nothing left that can fight, when **neither** side has
 a round left to fire (a draw: `ended — draw: both sides are out of ammunition`),
-when a side's first pilot types `SIM CONCEDE` (`ended — blue wins: red
+when a side's lead types `SIM CONCEDE` (`ended — blue wins: red
 conceded`), when the match's time runs out, or when somebody aborts it. Running
 dry on your own does not lose you the match — the other side has to be dry too.
 
