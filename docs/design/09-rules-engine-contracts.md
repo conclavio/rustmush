@@ -528,8 +528,15 @@ the receipt resolves. Serving pure queries from that pre-state remains a future 
 Pipelined MVCC is explicitly deferred until measurements show the single-flight rule is inadequate.
 
 `CommitPending` never means “append every later message to an unbounded queue.” In the current K0
-compatibility path, retryable `Cmd`, query, `CreatePlayer`, and dump requests receive an immediate
-typed/bounded refusal and do not occupy the one deferred FIFO slot. Barriers are capped at 256
+compatibility path, `CreatePlayer` and dump requests receive an immediate typed/bounded refusal and
+do not occupy the one deferred FIFO slot. Since 16b cut B.5 a retryable `Cmd`, a query and the
+reply-carrying world reads (`NameFree`, `UnlinkPlayer`, `InInputContext`, `ConnectionReady`,
+`LegalActions`) wait in a bounded defer queue instead (four typed lines a connection, 64 entries in
+all, 250 ms from arrival), drained one entry a turn after the exact receipt and before the deferred
+slot and new input; a typed line still waiting at the bound is refused in a player's words
+(`CommitTimedOut`), everything else with the same typed refusal as before. A barrier that arrives
+behind queued entries waits behind them, and one that meets a full queue is refused `Busy`, never
+answered ahead of the receipt. Barriers are capped at 256
 waiters. Gateway `ReAnnounce` is a full replaceable roster: while a receipt is pending, the world
 retains only the latest snapshot, capped at the gateway's 256 lifecycle obligations and stored as a
 tight fixed-record slice. Together those operational items have an explicit 81,920-byte logical
@@ -561,7 +568,11 @@ This does **not** yet make every operational lane independently live. An `Apply`
 dropped as retryable input. The world retains one such dequeued item and stops polling the bounded
 main FIFO, so a barrier or reannounce physically behind it remains head-of-line blocked until the
 current receipt resolves. Memory remains bounded by the single deferred item plus the 1,024-entry
-inbound channel, whose awaited send provides backpressure, but liveness is conditional. K2 must
+inbound channel, whose awaited send provides backpressure, but liveness is conditional. Since 16b
+cut B.5 the retryable lanes (a `Cmd`, a query, the reply-carrying reads) are held in the world task's
+bounded defer queue (64 entries, 250 ms) rather than refused at once, with a barrier that arrives
+behind queued entries ordered behind them; the deferred slot and the main FIFO's ordering are
+unchanged by it. K2 must
 route semantic completions and lifecycle obligations through separately count/byte-bounded lanes
 with explicit saturation/backpressure and sequence-aware barrier ordering; merely scanning around
 the main FIFO would break its ordering contract.
