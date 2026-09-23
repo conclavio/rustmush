@@ -589,7 +589,7 @@ enum NonJsonModuleKey {
     Gone,
 }
 
-/// Classify a module key after `JSON.GET` has already reported wrong type.
+/// Classify a module key after a JSON read returned no document or wrong type.
 /// Only a positively identified stream may be omitted from the JSON listing;
 /// every other live Redis type is authoritative corruption.
 fn classify_non_json_module_key(
@@ -668,9 +668,9 @@ async fn json_doc_text(client: &Client, key: &str) -> Result<Option<String>, Sto
 const MGET_PAGE: usize = 256;
 
 /// [`json_doc_text`] for a page of keys in one round trip: `JSON.MGET keys… $`,
-/// each answer the root document's text or `None` for a key that is gone.
-/// A non-JSON key in the page is the wrong-type error the caller resolves
-/// per key.
+/// each answer the root document's text or `None` for a key that is gone or
+/// holds a non-JSON type. The caller must classify absent answers per key:
+/// RedisJSON's `JSON.MGET` deliberately returns null for wrong-type keys.
 async fn json_docs_text(
     client: &Client,
     keys: &[String],
@@ -714,20 +714,20 @@ async fn json_doc_text_classified(
     // skipping it; otherwise corrupt authoritative state could silently
     // disappear during boot.
     match json_doc_text(client, full_key).await {
-        Ok(text) => Ok(text),
-        Err(StoreError::Redis(e)) if is_wrong_type_err(&e) => {
-            let redis_type: String = client.r#type(full_key).await?;
-            match classify_non_json_module_key(full_key, &redis_type)? {
-                NonJsonModuleKey::Stream => {
-                    tracing::debug!(key = full_key, "skipping module stream key");
-                    Ok(None)
-                }
-                // The key may legitimately expire or be deleted between
-                // SCAN/JSON.GET/TYPE. There is no state left to hydrate.
-                NonJsonModuleKey::Gone => Ok(None),
-            }
+        Ok(Some(text)) => return Ok(Some(text)),
+        Ok(None) => {}
+        Err(StoreError::Redis(e)) if is_wrong_type_err(&e) => {}
+        Err(e) => return Err(e),
+    }
+    let redis_type: String = client.r#type(full_key).await?;
+    match classify_non_json_module_key(full_key, &redis_type)? {
+        NonJsonModuleKey::Stream => {
+            tracing::debug!(key = full_key, "skipping module stream key");
+            Ok(None)
         }
-        Err(e) => Err(e),
+        // The key may legitimately expire or be deleted between
+        // SCAN/JSON.GET/TYPE. There is no state left to hydrate.
+        NonJsonModuleKey::Gone => Ok(None),
     }
 }
 
@@ -3514,12 +3514,20 @@ impl ObjectStore for RedisStore {
             let mut out = ModuleDocs::default();
             // J4: the fetch is pipelined — one JSON.MGET per page of keys
             // instead of one JSON.GET per key (the fetch cost of every
-            // module's boot). A page that trips on a non-JSON key (a stream,
-            // or a type-clobbered key) falls back to the per-key path, which
-            // classifies each key positively before skipping it.
+            // module's boot). A null answer may be a stream, a gone key, or a
+            // type-clobbered document; classify it per key before skipping it.
+            // Servers that report wrong type for the whole page use the same
+            // per-key path for every answer.
             for page in keys.chunks(MGET_PAGE) {
                 let texts = match json_docs_text(&self.client, page).await {
-                    Ok(texts) => texts,
+                    Ok(mut texts) => {
+                        for (full_key, text) in page.iter().zip(&mut texts) {
+                            if text.is_none() {
+                                *text = json_doc_text_classified(&self.client, full_key).await?;
+                            }
+                        }
+                        texts
+                    }
                     Err(StoreError::Redis(e)) if is_wrong_type_err(&e) => {
                         let mut texts = Vec::with_capacity(page.len());
                         for full_key in page {
@@ -3530,7 +3538,7 @@ impl ObjectStore for RedisStore {
                     Err(e) => return Err(e),
                 };
                 for (full_key, text) in page.iter().zip(texts) {
-                    let Some(text) = text else { continue }; // gone between SCAN and GET
+                    let Some(text) = text else { continue }; // proven stream or gone key
                     let Some(key) = full_key.strip_prefix(&prefix) else {
                         continue; // unreachable under the SCAN pattern
                     };
