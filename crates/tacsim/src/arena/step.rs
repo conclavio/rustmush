@@ -64,8 +64,8 @@ use crate::arena::perception::{
 };
 use crate::arena::reflex::ReflexCounters;
 use crate::arena::state::{
-    Arena, Classification, ContactId, DueKind, EndReason, MatchEnd, Power, SPENT_NOTICE_MS,
-    StopReason, Team,
+    ActionHash, Arena, Classification, ContactId, DueKind, EndReason, MatchEnd, Power,
+    SPENT_NOTICE_MS, StopReason, Team,
 };
 use crate::arena::weapons::FrameWeapon;
 
@@ -127,7 +127,15 @@ pub struct Frame {
     /// — the *condition* — rather than from `blocked`, the flag for the substep
     /// just integrated: a tank ordered forward against a river bank covers no
     /// whole centimetre on some substeps and read `0 kph` with no `HELD` on those.
-    pub blocked: bool,
+    ///
+    /// **16b cut M.3** (16c `T-04`) renamed the Rust field from `blocked`, which
+    /// named the flag it no longer read, to the condition it does read:
+    /// `unit.held.is_some()`. Only the presence goes out — the held cell and its
+    /// cause stay in the arena, the cause having already reached the pilot as the
+    /// `Held:` sentence of the stop. The **wire key** `status_frame` writes is
+    /// still `"blocked"`, because both panels read that key and renaming it is a
+    /// client cut's (`crate::match_::cockpit::status_frame`).
+    pub held: bool,
     /// **The tank is a wreck** (16b cut D.2, `B-03`; doc 16 §3.3 "A wreck": *no
     /// longer the subject of any order*).
     ///
@@ -335,7 +343,7 @@ impl Frame {
             && self.pose.heading_mdeg == other.pose.heading_mdeg
             && self.speed_cms == other.speed_cms
             && self.power == other.power
-            && self.blocked == other.blocked
+            && self.held == other.held
             // **16b cut D.2**: both decide what the cockpit refuses locally, and
             // both are one-way flips that happen at most once in a match — so
             // comparing them costs no frame anybody would not already have been
@@ -632,7 +640,13 @@ impl Arena {
         // A match that ended inside phase 3 resolves nothing here: a shot accepted
         // after `match_ended` would be a line in the black box about a match that was
         // already over (16b cut W.2).
-        self.action_hash = Some(state_hash(self));
+        //
+        // **16b cut M.3** (16c `T-23`): the slot is `Pending`, not a hash — the
+        // first resolver that journals takes it (`Arena::event_hash`), so a pulse
+        // with nothing queued, or an ended match, takes no `state_hash` here at
+        // all. It used to be taken unconditionally, every pulse, before the
+        // `ended` guard.
+        self.action_hash = ActionHash::Pending;
         // **16b cut M.2** (16c `T-02`; doc 16 §11's D-16-2 as amended): a pilot's
         // discrete action resolves at the end of the pulse that accepted it, so
         // its arena millisecond is this one — which in production is a wall-clock
@@ -693,7 +707,7 @@ impl Arena {
                 }
             }
         }
-        self.action_hash = None;
+        self.action_hash = ActionHash::Outside;
 
         // ---- the phase-4 drain (16b cut M.2, 16c `B-51`) ----
         //
@@ -908,17 +922,18 @@ impl Arena {
         let mut notices: Vec<Notice> = Vec::new();
         // **16b cut F.2**: the stops this substep's motion produced, in unit-id
         // order, collected inside the borrow of `self.units` and staged after it.
-        // A pilot's blocked notice cannot be staged from the journal scan below
-        // the way every other one is, because its hysteresis reads the *pre-stop*
-        // `held` condition and only this loop has it; it is produced at the same
-        // point in the same order as the ledger's own `blocked` line, which is
-        // what the scan would have given.
+        // A pilot's blocked notice is staged here and not from the journal scan
+        // below the way every other one is; since 16b cut M.3 it fires on exactly
+        // the edge the ledger's own `blocked` line does (`MotionOutcome::held_edge`),
+        // at the same point in the same order, which is what the scan would have
+        // given.
         let mut stops: Vec<(ObjId, crate::arena::motion::BlockedCause)> = Vec::new();
         // **16b cut Q.7**: the same stops again, with the cell, for the reflex
-        // controller's own memory. They are collected here and applied below —
-        // after arena time has advanced, so the timestamp a controller remembers
-        // is the one the `blocked` ledger line carries, and before the due-event
-        // loop, so the `ReflexTick` of this very substep already knows.
+        // controller's own memory — the same edge once more (16b cut M.3). They
+        // are collected here and applied below — after arena time has advanced,
+        // so the timestamp a controller remembers is the one the `blocked` ledger
+        // line carries, and before the due-event loop, so the `ReflexTick` of
+        // this very substep already knows.
         let mut learned: Vec<(ObjId, (u16, u16), crate::arena::motion::BlockedCause)> = Vec::new();
 
         // **16b cut E.3** (16c `B-44`), before motion: a machine steering at a
@@ -933,9 +948,11 @@ impl Arena {
         // the phase-4 drain (`Arena::step`), which exists to pop what phase 4
         // scheduled at `now_ms` and nothing else. No time passes in it, so there
         // is no motion to integrate, and `integrate` at `dt 0` is not a pure
-        // no-op: it clears the per-substep `blocked` flag, which would make the
-        // next real substep's re-collision with the same bank a second `blocked`
-        // line for one stop.
+        // no-op: it clears the per-substep `blocked` flag. (Until 16b cut M.3 that
+        // flag's rising edge was the `blocked` line, so a drain would have made
+        // the next real substep's re-collision with the same bank a second line;
+        // the line now fires on `held`'s edge, which only a refusal raises, and
+        // the guard stands because there is still nothing to move.)
         if dt_ms > 0 {
             self.hold_routeless(reflex);
         }
@@ -958,8 +975,6 @@ impl Arena {
                     continue;
                 };
                 let id = unit.id;
-                let was_blocked = unit.blocked;
-                let was_held = unit.held;
                 let from = terrain.cell_of(&unit.pose);
                 let outcome = integrate(unit, dt_ms, terrain, index, end_ms, occupied_stop_ms);
                 if outcome.moved
@@ -972,29 +987,35 @@ impl Arena {
                     // cell in one substep.
                     index.move_unit(id, from, to);
                 }
-                // One notice per **stop**, not one per substep a standing order
-                // holds the unit against the obstacle: the rising edge of
-                // `blocked` is the event, and `blocked` itself is the condition.
-                if let Some((x, y)) = outcome.blocked_at
-                    && !was_blocked
+                // **One edge for three readers** (16b cut M.3; 16c `T-04`,
+                // `B-27`, §5's Q22): the ledger's `blocked` line, the pilot's
+                // one notice and the controller's remembered stop all fire on
+                // `UnitState::held`'s new edge — a stop at a cell or for a cause
+                // the unit was not already held against — and on nothing else.
+                // A tank that re-collides with the same bank every substep is
+                // one stop however the pulse is cut; a bank and then an occupied
+                // cell met inside the same cell after a turn are two. The
+                // per-substep `blocked` flag journals nothing any more: its
+                // rising edge was a function of the partition. `blocked_at` and
+                // `blocked_by` are written together by `stop_at_boundary`, so the
+                // cell and the cause are both in hand at the edge.
+                if outcome.held_edge
+                    && let (Some((x, y)), Some(cause)) = (outcome.blocked_at, outcome.blocked_by)
                 {
-                    notices.push((0, EventKind::Blocked { unit: id, x, y }, None));
-                    // 16b cut Q.7: the controller learns from the **event** and
-                    // not from the per-substep flag, which is cleared before the
-                    // next tick could read it. `blocked_at` and `blocked_by` are
-                    // written together by `stop_at_boundary`, so the cause is in
-                    // hand at exactly the edge the line is journalled on.
-                    if let Some(cause) = outcome.blocked_by {
-                        learned.push((id, (x, y), cause));
-                    }
-                }
-                // The pilot's one line per stop, off the rising edge of the
-                // `held` **condition** — which is the stricter of the two, and
-                // the one doc 16 §3.4 step 4 means: a tank that re-collides with
-                // the same bank every substep is one stop and says so once.
-                if let Some(cause) = outcome.blocked_by
-                    && !was_held
-                {
+                    notices.push((
+                        0,
+                        EventKind::Blocked {
+                            unit: id,
+                            x,
+                            y,
+                            cause,
+                        },
+                        Vec::new(),
+                    ));
+                    // 16b cut Q.7: the controller learns from the edge and not
+                    // from the per-substep flag, which is cleared before the next
+                    // tick could read it.
+                    learned.push((id, (x, y), cause));
                     stops.push((id, cause));
                 }
             }
@@ -1097,7 +1118,7 @@ impl Arena {
                         && state.power == Power::Starting
                     {
                         state.power = Power::Online;
-                        notices.push((event.t_ms, EventKind::PowerOnline { unit }, None));
+                        notices.push((event.t_ms, EventKind::PowerOnline { unit }, Vec::new()));
                     }
                 }
                 // Doc 16 §4: every unit, every `ledger.summary_ms` of arena time,
@@ -1114,7 +1135,7 @@ impl Arena {
                             EventKind::PositionSummary {
                                 units: self.position_summary(),
                             },
-                            None,
+                            Vec::new(),
                         ));
                     }
                     let cadence = i64::from(self.ledger.summary_ms().max(1));
@@ -1208,8 +1229,10 @@ impl Arena {
                 // floor rules out for shipped content.)
                 DueKind::ReflexTick { unit, tick_seq } => {
                     if self.ended.is_none() {
-                        if self.action_hash.is_none() {
-                            self.action_hash = Some(state_hash(self));
+                        // 16b cut M.3 (`T-23`): opened, not taken — the first
+                        // line a tick of this substep journals takes it.
+                        if self.action_hash == ActionHash::Outside {
+                            self.action_hash = ActionHash::Pending;
                         }
                         if self.reflex_tick(unit, event.t_ms, reflex) {
                             let cadence = i64::from(self.arena_cfg.reflex.decide_ms.max(1));
@@ -1228,7 +1251,7 @@ impl Arena {
         // The lazy hash is scratch for this substep's due events exactly as phase
         // 4's is scratch for that phase; it never leaves the substep it was taken
         // in.
-        self.action_hash = None;
+        self.action_hash = ActionHash::Outside;
 
         // **16b cut W.2** (doc 16 §3.8): team elimination is settled **here**, at the
         // substep the last unit of a side went out of action in, and not at the end of
@@ -1249,7 +1272,7 @@ impl Arena {
             notices.push((
                 self.now_ms,
                 EventKind::MatchEnded { reason: end.reason },
-                None,
+                Vec::new(),
             ));
         }
         // **16b cut M.2** (16c `T-01`): the duration bound, at the deadline's own
@@ -1261,7 +1284,7 @@ impl Arena {
             && let Some(t_ms) = deadline_hit
         {
             let reason = EndReason::Timeout;
-            notices.push((t_ms, EventKind::MatchEnded { reason }, None));
+            notices.push((t_ms, EventKind::MatchEnded { reason }, Vec::new()));
             self.ended = Some(MatchEnd { reason, t_ms });
         }
 
@@ -1308,7 +1331,7 @@ impl Arena {
         // Everything to settle before the next entry, ordered by millisecond and,
         // on one millisecond, a due event's settle before a closing window's.
         let mut due_now: Vec<(i64, u8, ObjId, ContactId)> = Vec::new();
-        for (index, (t_ms, kind, draw)) in notices.into_iter().enumerate() {
+        for (index, (t_ms, kind, draws)) in notices.into_iter().enumerate() {
             while let Some((_, viewer, contact, at)) =
                 settles.next_if(|(before, ..)| *before <= index)
             {
@@ -1329,7 +1352,7 @@ impl Arena {
             if let Some(window) = self.stage_pilot_notice(t_ms, &kind, &mut in_flight) {
                 closing.push(window);
             }
-            refused |= !self.journal_drawn(t_ms, kind, draw, hash);
+            refused |= !self.journal_drawn(t_ms, kind, draws, hash);
         }
         due_now.extend(
             settles
@@ -1454,19 +1477,20 @@ impl Arena {
     /// match; it is never an error the caller has to handle mid-substep, because a
     /// black box out of tape is not a reason to lose the pulse in progress.
     fn journal(&mut self, t_ms: i64, kind: EventKind, hash: u64) -> bool {
-        self.ledger.append(t_ms, kind, None, hash).is_ok()
+        self.ledger.append(t_ms, kind, Vec::new(), hash).is_ok()
     }
 
-    /// The same, with the draw doc 16 §4 asks an event to carry *where one
-    /// occurred* — cut S.1's `classified` is the first event that has one.
+    /// The same, with the draws doc 16 §4 asks an event to carry *where they
+    /// occurred* — cut S.1's `classified` was the first event that had one, and
+    /// 16b cut M.3's `hit` is the first with two (16c `T-07`).
     fn journal_drawn(
         &mut self,
         t_ms: i64,
         kind: EventKind,
-        draw: Option<(String, u64)>,
+        draws: Vec<(String, u64)>,
         hash: u64,
     ) -> bool {
-        self.ledger.append(t_ms, kind, draw, hash).is_ok()
+        self.ledger.append(t_ms, kind, draws, hash).is_ok()
     }
 
     /// One frame per pilot whose view changed, in pilot-id order (doc 16 §3.1's
@@ -1505,7 +1529,7 @@ impl Arena {
                     speed_cms: unit.speed_cms,
                     power: unit.power,
                     // 16b cut F.2: the condition, not the substep's flag.
-                    blocked: unit.held,
+                    held: unit.held.is_some(),
                     // 16b cut D.2: the pilot's own two limits, so the cockpit can
                     // refuse an order to a dead tank at once and say why.
                     wreck: unit.limits.wreck,
@@ -2875,10 +2899,10 @@ mod tests {
             .collect();
         assert_eq!(classified.len(), 2, "{:?}", log);
         for event in classified {
-            let (label, _) = event
-                .draw
-                .clone()
-                .unwrap_or_else(|| panic!("a classification carries its draw: {event:?}"));
+            // 16b cut M.3: a list, and a sensor classification makes one draw.
+            let [(label, _)] = event.draws.as_slice() else {
+                panic!("a classification carries its one draw: {event:?}");
+            };
             assert!(label.starts_with("classify:"), "{label}");
         }
     }
@@ -3249,6 +3273,7 @@ mod tests {
             target: ObjId(9),
             section: SmolStr::new(section),
             facet: SmolStr::new("front"),
+            armor_section: SmolStr::new(section),
             rounds: 1,
             damage: 0,
             armor_left: 0,
@@ -4246,6 +4271,101 @@ mod tests {
         assert!(
             gone.is_empty(),
             "a row that is gone was announced: {gone:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut M.3 — the lazy phase-4 hash (16c `T-23`)
+    // -----------------------------------------------------------------------
+
+    /// **16b cut M.3** (16c `T-23`): a pulse with nothing queued and no reflex
+    /// unit takes no hash in phase 4 — counted, because the slot reads `Outside`
+    /// after any pulse whatever phase 4 did inside it: the pulse takes exactly
+    /// one `state_hash` per substep (the substep's record) and phase 5's one,
+    /// and an eager phase 4 would be one more. Outside a run `event_hash` is a
+    /// fresh `state_hash` that stores nothing. A phase that resolves two
+    /// actions takes **one** hash between them — one more than the quiet pulse,
+    /// not two — and both lines carry it (the W.1 property, restated), taken at
+    /// its first line.
+    #[test]
+    fn m3_phase_four_takes_its_hash_at_its_first_line_and_a_quiet_pulse_takes_none() {
+        const B: ObjId = ObjId(9);
+        let mut arena = m2_pair(600_000);
+        let mut journal = Log::default();
+        journal.absorb(&arena.step(0, &[], &[]));
+        for wall in [1_000, 2_000, 3_000] {
+            journal.absorb(&arena.step(wall, &[], &[]));
+        }
+        assert!(
+            arena
+                .units
+                .iter()
+                .all(|unit| unit.controller == crate::arena::state::Controller::Pilot),
+            "no machine: nothing but phase 4 could open the slot"
+        );
+        let taken = || crate::arena::hash::STATE_HASHES_TAKEN.with(std::cell::Cell::get);
+        // A quiet pulse, counted: the substeps' records and phase 5's, and none
+        // for phase 4.
+        let before = taken();
+        let quiet = arena.step(4_000, &[], &[]);
+        let quiet_taken = taken() - before;
+        journal.absorb(&quiet);
+        assert!(quiet.substeps > 0, "the quiet pulse ran its substeps");
+        assert_eq!(
+            quiet_taken,
+            u64::from(quiet.substeps) + 1,
+            "one hash per substep and phase 5's; phase 4 took none"
+        );
+        assert_eq!(arena.action_hash, ActionHash::Outside);
+        let before = taken();
+        assert_eq!(arena.event_hash(), state_hash(&arena));
+        assert_eq!(taken() - before, 2, "outside a run, a fresh hash each time");
+        assert_eq!(
+            arena.action_hash,
+            ActionHash::Outside,
+            "a hash taken outside a run is not stored"
+        );
+        // Two discrete actions in one pulse: A's `STARTUP` and its `LOCK`.
+        let contact = crate::arena::rng::draw_contact_id(arena.seed, A, B);
+        let order = |kind: IntentKind, seq: u64, arena: &Arena| {
+            let channel = kind.channel_required();
+            Intent {
+                unit: A,
+                channel,
+                epoch: arena.epochs.current(A, channel),
+                kind,
+                seq,
+            }
+        };
+        let intents = vec![
+            order(IntentKind::Startup, 1, &arena),
+            order(IntentKind::Lock { contact }, 2, &arena),
+        ];
+        let before = taken();
+        let busy = arena.step(5_000, &[], &intents);
+        let busy_taken = taken() - before;
+        journal.absorb(&busy);
+        assert_eq!(
+            busy_taken,
+            u64::from(busy.substeps) + 2,
+            "the two actions shared one phase-4 hash"
+        );
+        assert_eq!(
+            arena.action_hash,
+            ActionHash::Outside,
+            "closed after the phase"
+        );
+        let log = journal.events(&mut arena);
+        let phase_four: Vec<&LedgerEvent> = log
+            .iter()
+            .filter(|event| matches!(event.kind.as_str(), "startup" | "locked"))
+            .collect();
+        assert_eq!(phase_four.len(), 2, "both actions resolved: {phase_four:?}");
+        assert!(
+            phase_four
+                .iter()
+                .all(|event| event.hash == phase_four[0].hash && event.t_ms == 5_000),
+            "one phase, one moment, one hash: {phase_four:?}"
         );
     }
 }

@@ -1407,6 +1407,64 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         digest, logged,
         "the result's digest is SHA-256 over the log's own lines, in chunk order"
     );
+    // **16b cut M.3** (16c `T-07`, and `T-12`'s proof on the reachable path):
+    // the result carries the seed the arena drew with, and the record is enough
+    // to re-derive a draw. The label is read back off the line itself — a
+    // `classified` line carries no pass sequence of its own, so its draw's label
+    // string is the one place it is written — and the value must be the seed's.
+    let seed = result
+        .get("seed")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| panic!("the result carries the seed: {result}"));
+    let rederive = |line: &Value, kind: &str| {
+        let draws = line
+            .get("draws")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("a `{kind}` line with its draws: {line}"));
+        let (text, value) = draws
+            .iter()
+            .filter_map(|entry| Some((entry.get(0)?.as_str()?.to_owned(), entry.get(1)?.as_u64()?)))
+            .find(|(text, _)| text.starts_with(kind))
+            .unwrap_or_else(|| panic!("a `{kind}:` draw on {line}"));
+        let label = tacsim::arena::rng::DrawLabel::decode(&text)
+            .unwrap_or_else(|| panic!("the label decodes: {text}"));
+        assert_eq!(label.encode(), text);
+        assert_eq!(
+            tacsim::arena::rng::draw(seed, &label),
+            value,
+            "the result's seed re-derives `{text}` off the line: the record's seed is not \
+             the one the arena drew with"
+        );
+    };
+    let classified = events
+        .iter()
+        .find(|event| {
+            event.get("kind").and_then(Value::as_str) == Some("classified")
+                && event
+                    .get("draws")
+                    .and_then(Value::as_array)
+                    .is_some_and(|draws| !draws.is_empty())
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "a classification by a platform's own sight: {:?}",
+                kinds(&events)
+            )
+        });
+    rederive(classified, "classify");
+    // And the section a round found: the `hit` line's second draw.
+    let hit = events
+        .iter()
+        .find(|event| event.get("kind").and_then(Value::as_str) == Some("hit"))
+        .unwrap_or_else(|| panic!("a hit line: {:?}", kinds(&events)));
+    rederive(hit, "facet");
+    assert_eq!(
+        hit.get("draws")
+            .and_then(Value::as_array)
+            .map(|draws| draws.len()),
+        Some(2),
+        "a hit carries its shot draw and its facet draw: {hit}"
+    );
     let rows = result
         .get("units")
         .and_then(Value::as_array)

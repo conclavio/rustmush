@@ -572,7 +572,9 @@ pub fn drain_pending(arena: &mut Arena, unit: ObjId) -> Vec<Intent> {
 /// the world looked like when it happened. **16b cut W.1** routed it through
 /// [`Arena::event_hash`], so every action phase 4 resolves shares the one hash the
 /// phase took — which is that convention read once more, and O(1) hashes a pulse
-/// instead of one per action.
+/// instead of one per action. (16b cut M.3, `T-23`: taken at the phase's first
+/// journalled line, still before that line's own write, and not at all by a
+/// phase that journals nothing.)
 ///
 /// # Errors
 ///
@@ -598,7 +600,7 @@ pub fn resolve_startup(arena: &mut Arena, unit: ObjId, at_ms: i64) -> Result<(),
     arena.due.schedule(at, DueKind::StartupComplete { unit });
     let _ = arena
         .ledger
-        .append(at_ms, EventKind::Startup { unit }, None, hash);
+        .append(at_ms, EventKind::Startup { unit }, Vec::new(), hash);
     Ok(())
 }
 

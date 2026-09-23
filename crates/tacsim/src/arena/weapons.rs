@@ -634,9 +634,10 @@ impl Arena {
         if held == Some(contact) {
             return Ok(());
         }
-        // The hash phase 4 took once, before any of its actions was resolved
-        // ([`Arena::event_hash`]): an event says what the world looked like when it
+        // The one hash phase 4 shares ([`Arena::event_hash`]), taken before this
+        // line's own write: an event says what the world looked like when it
         // happened, and everything this phase resolves happened at one moment.
+        // 16b cut M.3 (`T-23`): taken lazily, at the first line the phase journals.
         let hash = self.event_hash();
         if let Some(state) = self.unit_mut(unit) {
             state.lock = Some(contact);
@@ -648,7 +649,7 @@ impl Arena {
                 contact,
                 target,
             },
-            None,
+            Vec::new(),
             hash,
         );
         Ok(())
@@ -833,7 +834,7 @@ impl Arena {
                 range_cm: range,
                 rounds,
             },
-            None,
+            Vec::new(),
             hash,
         );
         Ok(seq)

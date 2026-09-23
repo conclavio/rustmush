@@ -870,7 +870,7 @@ fn a_classification_carries_the_pinned_draw_label_and_its_value() {
     };
     assert_eq!(
         drawn,
-        Some((label.encode(), draw(arena.seed, &label))),
+        vec![(label.encode(), draw(arena.seed, &label))],
         "the draw is not the pinned label's"
     );
     assert_eq!(label.encode(), "classify:4:9:4");
@@ -907,10 +907,11 @@ fn a_classification_carries_the_pinned_draw_label_and_its_value() {
         .collect();
     assert_eq!(classified.len(), 2, "both sides classified: {log:?}");
     for event in classified {
-        let (label, value) = event
-            .draw
-            .clone()
-            .unwrap_or_else(|| panic!("a classification carries its draw"));
+        // 16b cut M.3: a list, and a sensor classification makes one draw.
+        let [(label, value)] = event.draws.as_slice() else {
+            panic!("a classification carries its one draw: {event:?}");
+        };
+        let (label, value) = (label.clone(), *value);
         assert!(label.starts_with("classify:"), "{label}");
         let fields: Vec<&str> = label.split(':').collect();
         assert_eq!(fields.len(), 4, "{label}");
@@ -2477,7 +2478,7 @@ fn designator_arena() -> Arena {
 /// fields as JSON, the draw where one was made, and the substep hash. The `seq`
 /// is dropped because it is the one field a different number of pulses could
 /// legitimately renumber.
-type Line = (i64, String, Option<(String, u64)>, u64);
+type Line = (i64, String, Vec<(String, u64)>, u64);
 
 /// What one replay of the script produced.
 #[derive(Debug, PartialEq, Eq)]
@@ -2630,7 +2631,7 @@ fn replayed(mut arena: Arena, script: &[Beat], cadence_ms: i64, until_ms: i64) -
                 (
                     event.t_ms,
                     serde_json::to_string(&event.kind).unwrap_or_default(),
-                    event.draw.clone(),
+                    event.draws.clone(),
                     event.hash,
                 )
             })

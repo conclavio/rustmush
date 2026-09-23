@@ -22,9 +22,13 @@
 //!   of doc 16 §3.4 step 4's three refusals it was and never the cell's occupant;
 //! - **(g3)** and the condition it is read off survives a substep in which the
 //!   tank, still ordered forward, covered no whole centimetre — the pulse
-//!   remainder that every pulse in production ends on — while the substep flag
-//!   the ledger's own edge reads is off, and the pilot's frame carries the
-//!   condition.
+//!   remainder that every pulse in production ends on — while the per-substep
+//!   `blocked` flag is off, and the pilot's frame carries the
+//!   condition;
+//! - **(g4)** 16b cut M.3: one stop against a bank is one `blocked` line with its
+//!   cause and one `Held:` line however the pulse is cut and however the tank
+//!   turns against it, a second obstacle in the same cell is a second stop, and
+//!   reversing off the bank clears the condition inside the cell.
 //!
 //! # Why the tempo is pinned, and pinned to `Quiet`
 //!
@@ -55,6 +59,7 @@ use smol_str::SmolStr;
 use tacsim::arena::clock::Tempo;
 use tacsim::arena::intents::{Control, ControlState, Intent, IntentKind};
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
+use tacsim::arena::motion::BlockedCause;
 use tacsim::arena::rng::{DrawLabel, draw};
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, CustodyOut, CustodyUnit, EndReason, EntryZone,
@@ -310,11 +315,11 @@ impl Beat {
 /// fields as JSON, the draw where one was made, and the substep hash. The `seq` is
 /// dropped because it is the one field a different number of pulses could
 /// legitimately renumber.
-type Line = (i64, String, Option<(String, u64)>, u64);
+type Line = (i64, String, Vec<(String, u64)>, u64);
 
 /// The same line with the hash column struck out — what two runs at two different
 /// tempos can be compared on, the hash folding the tempo byte by design.
-type Bare = (i64, String, Option<(String, u64)>);
+type Bare = (i64, String, Vec<(String, u64)>);
 
 /// One unit as a replay left it: `(unit, x_cm, y_cm, z_cm, heading_mdeg, speed_cms,
 /// blocked, linkdead)`.
@@ -339,6 +344,10 @@ struct Replay {
     /// How many pulses the replay ran, and how many substeps in total.
     pulses: u32,
     substeps: u32,
+    /// **16b cut M.3**: every notice line the mover's pilot was sent, in order —
+    /// what the three cadences must also agree on now that the `blocked` line and
+    /// the pilot's `Held:` fire on one edge.
+    told: Vec<String>,
 }
 
 impl Replay {
@@ -372,6 +381,7 @@ fn replay(
     let mut next = 0_usize;
     let mut pulses = 0_u32;
     let mut substeps = 0_u32;
+    let mut told: Vec<String> = Vec::new();
     loop {
         arena.clock.pin_tempo_for_tests(pin(arena.now_ms));
         let mut controls: Vec<Control> = Vec::new();
@@ -393,6 +403,7 @@ fn replay(
         hashes.extend(arena.substep_hashes.iter().copied());
         pulses += 1;
         substeps += out.substeps;
+        told.extend(heard(&out.frames, MOVER_PILOT));
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
         }
@@ -423,6 +434,7 @@ fn replay(
             .collect(),
         pulses,
         substeps,
+        told,
     }
 }
 
@@ -442,7 +454,7 @@ fn lines(bytes: &[u8]) -> Vec<Line> {
             (
                 event.t_ms,
                 serde_json::to_string(&event.kind).unwrap_or_default(),
-                event.draw,
+                event.draws,
                 event.hash,
             )
         })
@@ -463,6 +475,18 @@ fn lines(bytes: &[u8]) -> Vec<Line> {
 /// under way: doc 16 §3.1's honest and dangerous answer is that the tank keeps its
 /// continuous orders, so a linkdead tank drives on and hits the band by itself,
 /// at the same arena time at every cadence.
+///
+/// **16b cut M.3** added the 50,000 ms beat (16c `T-04`, `B-27`): the linkdead
+/// tank is hard against the band by then, and a heading order 30° off square to
+/// it — north of east, so the standing `SPEED 1000` keeps pushing it at the bank
+/// and the refusals creep it along the bank while it turns — is the shape of the
+/// live smoke's stop that was said twice. A heading is a continuous order, which a
+/// linkdead seat still gives. The band stays one `blocked` line and one `Held:`
+/// line at every cadence. (North and not south: the tank met the band thirteen
+/// centimetres into its row, and a creep south would cross into the row below
+/// and be refused a *different* cell, which is a second stop by the rule and not
+/// what this script is for; `m3_a_tank_turning_against_a_bank_…` drives the
+/// southward creep in the middle of a cell.)
 fn script() -> Vec<Beat> {
     vec![
         Beat::at(0, Vec::new(), vec![intent(MOVER, IntentKind::Startup, 1)]),
@@ -492,6 +516,11 @@ fn script() -> Vec<Beat> {
                 pilot: None,
             }],
             Vec::new(),
+        ),
+        Beat::at(
+            50_000,
+            Vec::new(),
+            vec![intent(MOVER, IntentKind::Heading { mdeg: 60_000 }, 6)],
         ),
     ]
 }
@@ -543,21 +572,49 @@ fn one_scripted_log_at_three_cadences_is_one_event_list_and_one_hash_sequence() 
         "the log did not start the tank up: {:?}",
         first.kinds()
     );
-    // **16b cut E.3 changed this count from two to four, at all three cadences
-    // alike.** The band is still one stop: impassable ground refuses at once and
-    // the flag stays up for as long as the order holds the tank against it. The
-    // parked tank is now three, because a traffic refusal is a *hold* that keeps
-    // the mover's way and matures into the stop two seconds later — and then the
-    // standing `SPEED 1000` re-accelerates it into a second hold, and a third.
-    // One `blocked` line per two-second cycle is bounded and deliberate (16c
-    // `T-04` owns the cause on the event); what matters here is that the three
-    // are at the same arena milliseconds in every replay.
+    // **16b cut M.3 changed this count from four to two, at all three cadences
+    // alike** (16c `T-04`; cut E.3 had made it four). The parked tank is one stop
+    // again: a traffic refusal is a *hold* that keeps the mover's way and matures
+    // into the stop two seconds later, and the standing `SPEED 1000` then
+    // re-accelerates it into a second hold and a third — but each of those
+    // matures into a stop at the same cell for the same cause, which is no new
+    // edge of `held` and journals nothing. The band is one stop, and stays one
+    // through the 50,000 ms turn against it. Each line names its cause.
     assert_eq!(
-        first.count("blocked"),
-        4,
-        "the log did not stop four times — three cycles against the parked tank, \
-         once at the band: {:?}",
+        first.count("\"blocked\""),
+        2,
+        "the log did not stop twice — once at the parked tank, once at the band: {:?}",
         first.kinds()
+    );
+    let causes: Vec<&str> = first
+        .events
+        .iter()
+        .filter(|(_, kind, _, _)| kind.contains("\"blocked\""))
+        .map(|(_, kind, _, _)| {
+            if kind.contains("\"cause\":\"occupied\"") {
+                "occupied"
+            } else if kind.contains("\"cause\":\"impassable\"") {
+                "impassable"
+            } else {
+                kind.as_str()
+            }
+        })
+        .collect();
+    assert_eq!(causes, vec!["occupied", "impassable"]);
+    // And the pilot heard the two stops and nothing more about them.
+    let held: Vec<&String> = first
+        .told
+        .iter()
+        .filter(|line| line.starts_with("Held:"))
+        .collect();
+    assert_eq!(
+        held,
+        vec![
+            "Held: something is in the way.",
+            "Held: the ground ahead will not take the tank."
+        ],
+        "{:?}",
+        first.told
     );
     assert_eq!(first.count("position_summary"), 12);
     assert_eq!(first.count("match_started"), 1);
@@ -572,7 +629,9 @@ fn one_scripted_log_at_three_cadences_is_one_event_list_and_one_hash_sequence() 
         .expect("the mover");
     assert_eq!(mover.1, 19_999, "the mover is not at the band's boundary");
     assert_eq!(mover.5, 0, "the mover is not stopped");
-    assert_eq!(mover.4, 90_000, "the mover is not facing east");
+    // 16b cut M.3: turned 30° off the band by the 50,000 ms beat, and still
+    // pushed at it.
+    assert_eq!(mover.4, 60_000, "the mover did not turn against the band");
     let parked = first
         .finals
         .iter()
@@ -604,6 +663,12 @@ fn one_scripted_log_at_three_cadences_is_one_event_list_and_one_hash_sequence() 
             run.substeps, first.substeps,
             "a different number of substeps ran at {cadence} ms"
         );
+        // 16b cut M.3: and one notice list — the `Held:` lines come off the same
+        // edge the `blocked` lines do.
+        assert_eq!(
+            run.told, first.told,
+            "the pilot was told something different at {cadence} ms"
+        );
         // And the cadence really did differ: the pulse counts are the proof that
         // the three runs were not the same run.
         assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
@@ -621,7 +686,8 @@ const MOVER_PILOT: ObjId = ObjId(1_000);
 /// naming the pilot who left (16b cut F.1).
 fn released_script() -> Vec<Beat> {
     let mut beats = script();
-    if let Some(beat) = beats.last_mut() {
+    // 16b cut M.3: by its arena time, since the script no longer ends on it.
+    if let Some(beat) = beats.iter_mut().find(|beat| beat.t_ms == 40_000) {
         beat.controls = vec![Control {
             unit: MOVER,
             channel: Channel::Helm,
@@ -1173,6 +1239,7 @@ fn the_window_edge_stops_a_unit_with_one_notice() {
                 unit: MOVER,
                 x: 30,
                 y: 63,
+                cause: BlockedCause::Edge,
             })
             .unwrap_or_default()
         )
@@ -1193,7 +1260,7 @@ fn the_window_edge_stops_a_unit_with_one_notice() {
     let last: BTreeMap<ObjId, bool> = arena
         .last_frames
         .iter()
-        .map(|(pilot, frame)| (*pilot, frame.blocked))
+        .map(|(pilot, frame)| (*pilot, frame.held))
         .collect();
     assert_eq!(last.get(&ObjId(1_000)), Some(&true));
 }
@@ -1255,7 +1322,7 @@ fn a_stop_tells_the_pilot_once_and_names_what_stopped_it() {
         "one line per stop, and it names the edge: {told:?}"
     );
     assert!(
-        arena.unit(MOVER).is_some_and(|unit| unit.held),
+        arena.unit(MOVER).is_some_and(|unit| unit.held.is_some()),
         "and the condition stands while the order does"
     );
 
@@ -1316,10 +1383,10 @@ type Reading = (i64, i32, bool, Option<(u16, u16)>, Vec<String>);
 /// * **nothing is said for two seconds** — no notice at all while the hold runs,
 ///   and then exactly one `Held: something is in the way.`, which is the same
 ///   sentence HEAD said, later and never sooner;
-/// * **the frame during the hold** carries the speed the tank had, `blocked`
+/// * **the frame during the hold** carries the speed the tank had, `held`
 ///   false, a pose that does not leave its own cell, and nothing that names or
 ///   places the obstacle;
-/// * **the frame after the stop** carries `0` and `blocked`, which is what
+/// * **the frame after the stop** carries `0` and `held`, which is what
 ///   `STATUS` prints `HELD` off — so the condition follows the stop and not the
 ///   hold;
 /// * **one `blocked` ledger line** for the whole episode, because the pilot's
@@ -1358,13 +1425,7 @@ fn another_unit_holds_a_tank_for_two_seconds_and_then_stops_it_with_one_line() {
             }
             let lines = tacsim::match_::cockpit::notice_lines(frame);
             said |= lines.iter().any(|line| line.starts_with("Held:"));
-            readings.push((
-                arena.now_ms,
-                frame.speed_cms,
-                frame.blocked,
-                frame.cell,
-                lines,
-            ));
+            readings.push((arena.now_ms, frame.speed_cms, frame.held, frame.cell, lines));
         }
         wall += 500;
         // The pilot has been told; the rest of the episode is what they do next.
@@ -1476,8 +1537,10 @@ fn a_tank_still_pushing_against_an_obstacle_still_reads_held() {
     // the top of every substep and only set again by a substep that reached the
     // boundary, so a tank ordered forward from rest against a bank read `0 kph`
     // with no `HELD` on the substeps it covered no whole centimetre in. The
-    // condition the frame carries is now `held`, which a stop sets and only
-    // movement (or the order coming off) clears.
+    // condition the frame carries is now `held`, which a stop sets and which
+    // clears only on a crossing into another cell, an in-cell move strictly away
+    // from what held it, or the order coming off (16b cut M.3's rule,
+    // `tacsim::arena::motion::integrate`).
     let mut arena = arena_of(
         vec![tank(MOVER, Team::Red, centre(BAND_X - 1, 30))],
         &MatchConfig::default(),
@@ -1509,10 +1572,10 @@ fn a_tank_still_pushing_against_an_obstacle_still_reads_held() {
         let Some(unit) = arena.unit(MOVER) else {
             continue;
         };
-        stopped |= unit.held;
+        stopped |= unit.held.is_some();
         if stopped {
             assert!(
-                unit.held,
+                unit.held.is_some(),
                 "the condition did not survive a substep that covered no ground"
             );
             // The two facts the cut claims are different, on the pulses where they
@@ -1524,7 +1587,7 @@ fn a_tank_still_pushing_against_an_obstacle_still_reads_held() {
             // `STATUS` prints `, HELD` off (16b cut F.2's half of brief item 1).
             for (_, frame) in &out.frames {
                 assert!(
-                    frame.blocked,
+                    frame.held,
                     "the frame says the tank is free while it stands against the bank"
                 );
                 frames_held += 1;
@@ -1545,10 +1608,263 @@ fn a_tank_still_pushing_against_an_obstacle_still_reads_held() {
     }
     wall += 1_030;
     let out = arena.step(wall, &[], &[]);
-    assert!(arena.unit(MOVER).is_some_and(|unit| !unit.held));
+    assert!(arena.unit(MOVER).is_some_and(|unit| unit.held.is_none()));
     for (_, frame) in &out.frames {
-        assert!(!frame.blocked, "and the frame says so too");
+        assert!(!frame.held, "and the frame says so too");
     }
+}
+
+// ---------------------------------------------------------------------------
+// (g4) one stop against a bank is one edge (16b cut M.3; 16c `T-04`, `B-27`)
+// ---------------------------------------------------------------------------
+
+/// What one bank run left: the ledger's `blocked` lines, every `Held:` line the
+/// pilot was told, the arena, and every frame the run produced.
+struct BankRun {
+    blocked: Vec<Line>,
+    told: Vec<String>,
+    arena: Arena,
+    frames: Vec<(ObjId, Frame)>,
+}
+
+/// **Drive `MOVER` east into the band at [`BAND_X`] and, once it is stopped
+/// there, give it `then` while its speed order stands** (16b cut M.3), with
+/// `others` on the field beside it.
+///
+/// Pulses of `pulse_ms` at `Quiet`. `pulse_ms` is the whole of the defect
+/// `B-27` was: at 1,000 ms against a 250 ms substep every pulse cuts into four
+/// whole substeps, and a pulse of 1,030 ms ends on a 30 ms tail — which every
+/// production pulse has, since arena time is elapsed wall time. In a tail the
+/// tank has rebuilt six centimetres a second from its stop and travels a fraction
+/// of a centimetre, and `motion`'s travel is a Euclidean division: a fraction
+/// **east** is no whole centimetre, but a fraction **south** is minus one. So a
+/// tank pushed at the bank on a heading with a southward component moves one
+/// whole centimetre along the bank inside its own cell, which cleared the old
+/// `held` (any substep that "moved") and made the next refusal of the same bank a
+/// new stop, told again: the smoke's `Held: the ground ahead will not take the
+/// tank.` twice one second apart.
+fn bank_run(
+    pulse_ms: i64,
+    others: Vec<CustodyUnit>,
+    then: IntentKind,
+    before: u32,
+    after: u32,
+) -> BankRun {
+    let mut units = vec![tank(MOVER, Team::Red, centre(BAND_X - 1, 30))];
+    units.extend(others);
+    let mut arena = arena_of(units, &MatchConfig::default());
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    if let Some(unit) = arena.unit_mut(MOVER) {
+        unit.power = Power::Online;
+        unit.pose.heading_mdeg = 90_000;
+        unit.desired_heading_mdeg = 90_000;
+        unit.speed_cms = 1_000;
+        unit.desired_speed_cms = 1_000;
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut frames: Vec<(ObjId, Frame)> = Vec::new();
+    let mut wall = 0_i64;
+    let out = arena.step(wall, &[], &[]);
+    absorb(&out, &mut bytes);
+    frames.extend(out.frames);
+    // Up to the stop: the tank starts half a cell short of the band at full
+    // speed, so it is there inside the first pulse; two make sure.
+    for _ in 0..2 {
+        wall += pulse_ms;
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        frames.extend(out.frames);
+    }
+    assert_eq!(
+        arena.unit(MOVER).map(|unit| unit.pose.x_cm),
+        Some(i64::from(BAND_X) * i64::from(CELL_CM) - 1),
+        "the tank never reached the band"
+    );
+    // The order, in the next pulse, and then `before + after` pulses of it.
+    for pulse in 0..=before + after {
+        wall += pulse_ms;
+        let intents = if pulse == 0 {
+            vec![intent(MOVER, then.clone(), 10)]
+        } else {
+            Vec::new()
+        };
+        let out = arena.step(wall, &[], &intents);
+        absorb(&out, &mut bytes);
+        frames.extend(out.frames);
+    }
+    arena.ledger.flush();
+    for chunk in arena.ledger.take_chunks() {
+        bytes.extend_from_slice(&chunk.bytes);
+    }
+    let blocked = lines(&bytes)
+        .into_iter()
+        .filter(|(_, kind, _, _)| kind.contains("\"blocked\""))
+        .collect();
+    let told = heard(&frames, MOVER_PILOT)
+        .into_iter()
+        .filter(|line| line.starts_with("Held:"))
+        .collect();
+    BankRun {
+        blocked,
+        told,
+        arena,
+        frames,
+    }
+}
+
+/// The `blocked` line for `MOVER` at `(x, y)` for `cause`, as the ledger writes it.
+fn blocked_line(x: u16, y: u16, cause: BlockedCause) -> String {
+    serde_json::to_string(&EventKind::Blocked {
+        unit: MOVER,
+        x,
+        y,
+        cause,
+    })
+    .unwrap_or_default()
+}
+
+/// **16b cut M.3 (16c `B-27`, `T-04`, §5's Q22): a tank that turns 30° off
+/// square to the bank while its speed order still pushes it there is one stop —
+/// one `blocked` line, with its cause, and one `Held:` line — however long it
+/// pushes.**
+///
+/// The failing test first, and it failed at HEAD (`c7cab0a9`): over the two
+/// pulses after the order the 1,030 ms driver journalled five `blocked` lines and
+/// told the pilot three times, and over thirteen pulses sixteen lines and fourteen
+/// notices — one per pulse tail, each a one-centimetre slide south along the bank
+/// (see [`bank_run`]). At 1,000 ms pulses the same run was one and one, which is
+/// why every earlier test of the rule passed. The rule the brief first wrote
+/// (clear on an in-cell move whose dot product with the pose-to-held-centre
+/// vector is negative) measured three lines over two pulses and fourteen over
+/// thirteen on this driver, because a slide past the held cell's centre line
+/// reads as "away"; the rule as built measures against the direction from the
+/// unit's cell to the held one (`motion::integrate`'s head).
+#[test]
+fn m3_a_tank_turning_against_a_bank_is_one_stop_one_line_and_one_notice() {
+    // Two pulses of it.
+    let run = bank_run(
+        1_030,
+        Vec::new(),
+        IntentKind::Heading { mdeg: 120_000 },
+        2,
+        0,
+    );
+    assert_eq!(
+        run.blocked
+            .iter()
+            .map(|(_, kind, _, _)| kind.clone())
+            .collect::<Vec<String>>(),
+        vec![blocked_line(BAND_X, 30, BlockedCause::Impassable)],
+        "one stop, one `blocked` line, and it names the cause"
+    );
+    assert_eq!(
+        run.told,
+        vec!["Held: the ground ahead will not take the tank.".to_owned()],
+        "one stop, one line to the pilot"
+    );
+    // And eleven more: still one, still in the cell it stopped in.
+    let run = bank_run(
+        1_030,
+        Vec::new(),
+        IntentKind::Heading { mdeg: 120_000 },
+        2,
+        11,
+    );
+    assert_eq!(run.blocked.len(), 1, "{:?}", run.blocked);
+    assert_eq!(run.told.len(), 1, "{:?}", run.told);
+    let unit = run.arena.unit(MOVER).expect("the mover");
+    assert_eq!(
+        run.arena.definition.terrain.cell_of(&unit.pose),
+        Some((BAND_X - 1, 30)),
+        "the tank left the cell it stopped in, so the run measured nothing"
+    );
+    assert_eq!(
+        unit.pose.x_cm, 19_999,
+        "and it is still hard against the bank"
+    );
+    assert_eq!(unit.pose.heading_mdeg, 120_000, "and it did turn");
+    assert!(
+        unit.pose.y_cm < 30_500,
+        "and it did slide south along the bank, which is the case: {}",
+        unit.pose.y_cm
+    );
+}
+
+/// **16b cut M.3 (16c `T-04`; the plan's review M-03): a second, different
+/// obstacle met inside the same cell is a second stop.** A bank stop, then a
+/// `HEADING` north toward a tank parked in the neighbouring cell: two `blocked`
+/// lines with two causes, and two `Held:` lines.
+#[test]
+fn m3_a_bank_then_a_parked_tank_in_the_same_cell_is_two_stops() {
+    let run = bank_run(
+        1_000,
+        vec![tank(PARKED, Team::Blue, centre(BAND_X - 1, 31))],
+        IntentKind::Heading { mdeg: 0 },
+        2,
+        8,
+    );
+    assert_eq!(
+        run.blocked
+            .iter()
+            .map(|(_, kind, _, _)| kind.clone())
+            .collect::<Vec<String>>(),
+        vec![
+            blocked_line(BAND_X, 30, BlockedCause::Impassable),
+            blocked_line(BAND_X - 1, 31, BlockedCause::Occupied),
+        ],
+        "a bank, then something in the way: {:?}",
+        run.blocked
+    );
+    assert_eq!(
+        run.told,
+        vec![
+            "Held: the ground ahead will not take the tank.".to_owned(),
+            "Held: something is in the way.".to_owned(),
+        ]
+    );
+    // Both inside the one cell the tank never left.
+    let unit = run.arena.unit(MOVER).expect("the mover");
+    assert_eq!(
+        run.arena.definition.terrain.cell_of(&unit.pose),
+        Some((BAND_X - 1, 30))
+    );
+}
+
+/// **16b cut M.3 (the plan's review M-03c): reversing off the bank drops `HELD`
+/// inside the cell.** The travel points strictly away from the held cell, so the
+/// condition clears on the first substep that covers a centimetre — the pilot's
+/// frame says so while the tank is still in the cell it stopped in, rather than
+/// ten metres later.
+#[test]
+fn m3_reversing_off_the_bank_clears_held_before_the_tank_leaves_its_cell() {
+    let run = bank_run(1_000, Vec::new(), IntentKind::Speed { cms: -400 }, 1, 0);
+    let unit = run.arena.unit(MOVER).expect("the mover");
+    assert!(
+        unit.pose.x_cm < 19_999,
+        "the tank did not reverse: {}",
+        unit.pose.x_cm
+    );
+    assert_eq!(unit.held, None);
+    let last = run
+        .frames
+        .iter()
+        .rev()
+        .find(|(pilot, _)| *pilot == MOVER_PILOT)
+        .map(|(_, frame)| (frame.held, frame.cell))
+        .expect("the pilot was sent a frame");
+    assert_eq!(
+        last,
+        (false, Some((BAND_X - 1, 30))),
+        "not held, and still in the cell it stopped in"
+    );
+    // And it was held before the order: a frame said so.
+    assert!(
+        run.frames
+            .iter()
+            .any(|(pilot, frame)| *pilot == MOVER_PILOT && frame.held),
+        "the stop was never read as held"
+    );
+    assert_eq!(run.blocked.len(), 1, "one stop");
 }
 
 // ---------------------------------------------------------------------------
@@ -1713,17 +2029,18 @@ fn one_scripted_approach_at_three_cadences_is_one_detect_classify_lose_sequence(
         first.kinds()
     );
     // And every classification carries the pinned draw label.
-    let drawn: Vec<&Option<(String, u64)>> = first
+    let drawn: Vec<&Vec<(String, u64)>> = first
         .events
         .iter()
         .filter(|(_, kind, _, _)| kind.contains("classified"))
-        .map(|(_, _, draw, _)| draw)
+        .map(|(_, _, draws, _)| draws)
         .collect();
     assert_eq!(drawn.len(), 2);
-    for draw in drawn {
-        let (label, _) = draw
-            .clone()
-            .unwrap_or_else(|| panic!("a classification carries its draw"));
+    for draws in drawn {
+        // 16b cut M.3: a list, and a sensor classification makes exactly one.
+        let [(label, _)] = draws.as_slice() else {
+            panic!("a classification carries its one draw: {draws:?}");
+        };
         assert!(label.starts_with("classify:"), "{label}");
     }
 

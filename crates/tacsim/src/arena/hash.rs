@@ -36,6 +36,17 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
     hash
 }
 
+#[cfg(test)]
+thread_local! {
+    /// **How many times this thread has taken [`state_hash`]** (the M.3
+    /// review's witness for 16c `T-23`), in test builds only: the lazy phase-4
+    /// slot (`Arena::action_hash`) is closed again before a pulse returns, so
+    /// whether phase 4 took a hash for nothing is visible only as a count. No
+    /// outcome reads it, and it does not exist outside `cfg(test)`.
+    pub(crate) static STATE_HASHES_TAKEN: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// **The state hash** of an arena, as the ledger records it.
 ///
 /// FNV-1a 64 over these bytes, in this order, every multi-byte integer
@@ -52,27 +63,39 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///    7. the power byte (`0` off, `1` starting, `2` online);
 ///    8. the four limit bytes: `slow_pct`; `no_turn_toward` (`0` none, `1` left,
 ///       `2` right); `motion_disabled` (`0`/`1`); `wreck` (`0`/`1`);
-///    9. **the lock** (16b cut W.1): the contact id as `u64`, or `0` for none, which
-///       is a value [`crate::arena::rng::draw_contact_id`] never mints;
-///    10. **the weapon cells** (16b cut W.1), in the two `BTreeMap`s' own key order:
+///    9. **what it is held against** (16b cut M.3, 16c `T-04`):
+///       [`crate::arena::state::UnitState::held`] as a presence byte, then the
+///       held cell's `x` and `y` as `u16` and the cause as one byte
+///       ([`crate::arena::motion::BlockedCause::code`]: `0` impassable, `1`
+///       occupied, `2` edge, `3` too steep) — `[0]` alone for none;
+///    10. **the lock** (16b cut W.1): the contact id as `u64`, or `0` for none, which
+///        is a value [`crate::arena::rng::draw_contact_id`] never mints;
+///    11. **the weapon cells** (16b cut W.1), in the two `BTreeMap`s' own key order:
 ///        the count of `ready_at_ms` rows as `u64`, then per row the weapon id's
 ///        bytes and its `i64`; then the same for `ammo` with its `u32`. The id's
 ///        bytes go in because a row is a `(weapon, value)` pair and folding only the
 ///        values would make two weapons that swapped cycles one state;
-///    11. **the controller byte** (16b cut N.1): `0` pilot, `1` reflex;
-///    12. **`grade_pct`** (16b cut X.6), `u16` — the uphill slope of the edge the
+///    12. **the controller byte** (16b cut N.1): `0` pilot, `1` reflex;
+///    13. **`grade_pct`** (16b cut X.6), `u16` — the uphill slope of the edge the
 ///        unit entered its cell by;
-///    13. **the traffic hold** (16b cut E.3): a presence byte, then the held
+///    14. **the traffic hold** (16b cut E.3): a presence byte, then the held
 ///        cell's two `u16` and the `i64` arena millisecond it opened at;
-///    14. **the four motion carries** (16b cut Q.6), in field order: `carry.turn`
+///    15. **the four motion carries** (16b cut Q.6), in field order: `carry.turn`
 ///        as `u32`, `carry.speed` as `u32`, `carry.east` as `i64` and
 ///        `carry.north` as `i64`;
-///    15. **the platform's own receiver** (16b cut D.4): a presence byte, then
-///        `budget`, `budget_max` and `reach_permille` as `u16`;
-///    16. **the seat-order rate** (16b cut M.1, `T-82`): `orders_window_s` as
+///    16. **the platform's own receiver** (16b cut D.4): a presence byte, then
+///        `budget` and `budget_max` as **one byte each** (the fold writes
+///        `[1, budget, budget_max]` in one call), then `reach_permille` as `u16`
+///        (16b cut M.3 corrected this line, which typed all three `u16`; 16c
+///        `T-80`);
+///    17. **the seat-order rate** (16b cut M.1, `T-82`): `orders_window_s` as
 ///        `i64`, then `orders_in_window` as `u32`. Persistent state that decides a
 ///        refusal notice is hashed: a replay whose pilot's order landed in a
-///        different arena second would refuse a different later one.
+///        different arena second would refuse a different later one;
+///    18. **heat** (16b cut M.3, 16c `T-06`): a presence byte — `1` when
+///        [`crate::arena::state::UnitState::heat_now`] answers — then that heat
+///        as `u32` and [`crate::arena::state::HeatState::carry_milli`] as `u32`;
+///        `[0]` alone for a unit that carries no heat, which is every stock tank.
 /// 2. **The spent-section window** (16b cut D.2), in the map's own key order: the
 ///    count of entries as `u64`, then per entry the platform told's `u32`, the
 ///    target's `u32`, the section id's bytes and the arena millisecond as `i64`.
@@ -98,10 +121,23 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///    being a presence byte, the look's `i64` stamp, the packed bands as `u32` and
 ///    the packed section count as `u8` (16b cut Q.2); then **whether this hold was
 ///    opened under a provisional number** as one byte (16b cut D.4).
-/// 5. **The designator book** (16b cut Q.1), in its own two `BTreeMap`s' order:
-///    the count of `next` rows as `u64`, then per row the viewer's `u32` and the
-///    number as `u16`; then the count of issued numbers as `u64`, then per issued
-///    number the viewer's `u32`, the target's `u32` and the number as `u16`.
+/// 5. **The designator book** (16b cut Q.1; a digest since 16b cut M.3, 16c
+///    `T-27`): the book's running digest
+///    ([`crate::arena::state::DesignatorBook::digest`]) as `u64`, then the count
+///    of issued numbers as `u64`. Until M.3 this walked both of the book's maps
+///    row by row in every substep hash — a monotonic table, so the walk only ever
+///    grew. The digest is an FNV-1a 64 fold of every *mint* in the order it was
+///    made (the viewer's `u32`, the target's `u32`, the number's `u16`), so it
+///    is a function of the whole sequence of mints: two books that minted the
+///    same numbers for the same pairs in the same order agree, and (short of a
+///    64-bit collision) any two that did not disagree. That tells apart
+///    everything the walk could — the book is append-only, a re-assignment of a
+///    held pair mints nothing, and the `next` counters are themselves a function
+///    of the mints — and one thing more, the interleaving of two viewers' mints,
+///    which is itself a function of arena time (the passes that mint run in
+///    `(t_ms, seq)` order), so no replay the walk called equal is told apart
+///    here by anything but the order the arena made its numbers in. The count
+///    beside it is a cheap second witness.
 /// 6. **The held losses** (16b cut M.2), in the map's own key order: the count of
 ///    entries as `u64`, then per entry the viewer's `u32`, the contact id's `u64`
 ///    and the deadline as `i64`. The designator in the value is not folded.
@@ -127,6 +163,8 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 /// world *became*, not what it was told. The opaque `TacticalUnit` is not folded
 /// in either; its truth is M32's and its every change is journalled there, so
 /// hashing it would make this function a second, weaker copy of that journal.
+/// (One cell of it is, since 16b cut M.3: the `heat` cell, item 1.18, because it
+/// gates a refusal and moves every substep — see cut M.3's extensions below.)
 ///
 /// **Why the machines are in it** (16b cut N.1). The controller writes no ledger
 /// event of its own — what leaves it is the orders a pilot's verbs would have
@@ -293,8 +331,49 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 /// *k + 1*, exactly as `spent_said`'s writes are. The designator in the value is
 /// not folded: it is a name derived from the book and the callsign, both of
 /// which are already in here.
+///
+/// **Cut M.3's extensions** (16c `T-04`, `T-06`), under cut D.4's one rule.
+///
+/// [`crate::arena::state::UnitState::held`] decides, since that cut, the
+/// ledger's `blocked` line, the pilot's `Held:` notice and a machine's avoid
+/// list — all three fire on its new edge — and it moves with no line of its own
+/// when it clears (a reverse off the bank, a crossing into another cell, the
+/// order coming off). A replay that cleared it a substep earlier would journal
+/// a second stop where the original said nothing, so the cell and the cause
+/// both go in: a different cell or a different cause is a different condition,
+/// and a new edge. The per-substep `blocked` flag beside it stays out — it
+/// journals nothing now, and it is what *this* substep did rather than state a
+/// later one reads.
+///
+/// **Heat** gates firing (a platform at its ceiling refuses `FIRE`) and moves on
+/// every substep with no ledger line at all — the dissipation is a rate over
+/// arena time, carried in thousandths ([`crate::arena::heat`]'s head) — which is
+/// cut Q.6's argument for the motion carries, word for word: a replay that shed
+/// its heat a substep sooner would compare equal until the difference refused a
+/// shot. The cell's value and the carry both go in, because the carry is the
+/// cell's fractional part.
+///
+/// **What the staging scan writes after the record** (16c `T-09`, written down
+/// by 16b cut M.3). The record below is taken before the substep's staging scan,
+/// and the scan writes hashed state of its own — among it: `spent_said` and
+/// `known_dead` (their paragraphs above); a gunner's observed band — when a
+/// classified target's section is destroyed by the gunner's own round, the
+/// scan's `section_destroyed` arm writes that section's band `destroyed` into the
+/// reading the gunner's platform holds
+/// ([`crate::arena::state::ShadowContact::seen_condition`], through
+/// `Arena::observe_section_lost`); the lock a `lost` contact clears (the `lost`
+/// arm sets the viewer's `lock` — per-unit item 10 — to none); and
+/// `held_losses` (item 6), with the `LossSettles` due event the `lost` arm
+/// schedules beside an entry, which the due count (item 9) folds — the M.2
+/// paragraph above. Every one of them is first folded at *k + 1*, and each is
+/// rate-independent for the reason `spent_said` is: the scan runs at the same
+/// point of every substep at every cadence, off the journal entries of that
+/// substep. The list is not a checklist: a write added to the scan is folded a
+/// substep late by construction, whether or not it is named here.
 #[must_use]
 pub fn state_hash(arena: &Arena) -> u64 {
+    #[cfg(test)]
+    STATE_HASHES_TAKEN.with(|taken| taken.set(taken.get().saturating_add(1)));
     let mut hash = FNV_OFFSET_BASIS;
     for unit in &arena.units {
         hash = fnv1a64_update(hash, &unit.id.0.to_le_bytes());
@@ -317,6 +396,17 @@ pub fn state_hash(arena: &Arena) -> u64 {
                 u8::from(unit.limits.wreck),
             ],
         );
+        // **16b cut M.3** (`T-04`): what it is held against — its own item after
+        // the four limit bytes, which stay four.
+        match unit.held {
+            Some(held) => {
+                hash = fnv1a64_update(hash, &[1_u8]);
+                hash = fnv1a64_update(hash, &held.x.to_le_bytes());
+                hash = fnv1a64_update(hash, &held.y.to_le_bytes());
+                hash = fnv1a64_update(hash, &[held.cause.code()]);
+            }
+            None => hash = fnv1a64_update(hash, &[0_u8]),
+        }
         // 16b cut W.1: the lock and the two weapon cells.
         hash = fnv1a64_update(
             hash,
@@ -365,6 +455,17 @@ pub fn state_hash(arena: &Arena) -> u64 {
         // persist between pulses and decide a `queue_full` refusal.
         hash = fnv1a64_update(hash, &unit.orders_window_s.to_le_bytes());
         hash = fnv1a64_update(hash, &unit.orders_in_window.to_le_bytes());
+        // **16b cut M.3** (`T-06`): heat, which gates firing and moves every
+        // substep with no line — the cell's value and the carry that is its
+        // fractional part, under one presence byte.
+        match (unit.heat_now(), unit.heat.as_ref()) {
+            (Some(now), Some(heat)) => {
+                hash = fnv1a64_update(hash, &[1_u8]);
+                hash = fnv1a64_update(hash, &now.to_le_bytes());
+                hash = fnv1a64_update(hash, &heat.carry_milli.to_le_bytes());
+            }
+            _ => hash = fnv1a64_update(hash, &[0_u8]),
+        }
     }
     // **16b cut D.2**: the spent-section window, in the map's own key order.
     hash = fnv1a64_update(hash, &(arena.spent_said.len() as u64).to_le_bytes());
@@ -484,21 +585,11 @@ pub fn state_hash(arena: &Arena) -> u64 {
         // so the fold is the only thing that tells two replays apart.
         hash = fnv1a64_update(hash, &[u8::from(held.numbered), u8::from(held.known_dead)]);
     }
-    // **16b cut Q.1**: the provisional numbers, in the book's own map order.
-    hash = fnv1a64_update(
-        hash,
-        &(arena.designators.counters_len() as u64).to_le_bytes(),
-    );
-    for (viewer, next) in arena.designators.counters() {
-        hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
-        hash = fnv1a64_update(hash, &next.to_le_bytes());
-    }
+    // **16b cut Q.1**: the provisional numbers — since **16b cut M.3** (`T-27`)
+    // as the book's running digest of every mint and the issued count, in place
+    // of a walk of both maps that grew with the match (this function's head).
+    hash = fnv1a64_update(hash, &arena.designators.digest().to_le_bytes());
     hash = fnv1a64_update(hash, &(arena.designators.issued_len() as u64).to_le_bytes());
-    for (viewer, target, n) in arena.designators.issued() {
-        hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
-        hash = fnv1a64_update(hash, &target.0.to_le_bytes());
-        hash = fnv1a64_update(hash, &n.to_le_bytes());
-    }
     // **16b cut M.2** (16c `T-83`): the held losses, in the map's own key order —
     // the deadline decides whether a later substep says `lost`. The designator
     // beside it is not folded: it is read off the book and the callsign, both
@@ -664,7 +755,7 @@ mod tests {
         let _ = journalled.ledger.append(
             0,
             crate::arena::ledger::EventKind::Startup { unit: ObjId(4) },
-            None,
+            Vec::new(),
             0,
         );
         assert_ne!(state_hash(&journalled), base);
@@ -996,6 +1087,122 @@ mod tests {
             unit.fatal_sections = 0b101;
         }
         assert_eq!(state_hash(&fitted), base, "the fatal mask was folded");
+    }
+
+    /// **16b cut M.3's extension** (16c `T-04`): what a unit is held against
+    /// moves the hash — its presence, and each of the cell and the cause on its
+    /// own, because a different cell or a different cause is a new edge — and
+    /// letting it go is the state before. The per-substep flag beside it does not.
+    #[test]
+    fn m3_the_hash_folds_what_a_unit_is_held_against_cell_and_cause() {
+        use crate::arena::motion::{BlockedCause, Held};
+
+        let base = state_hash(&two_tanks());
+        let held = |x: u16, y: u16, cause: BlockedCause| {
+            let mut probe = two_tanks();
+            if let Some(unit) = probe.unit_mut(ObjId(9)) {
+                unit.held = Some(Held { x, y, cause });
+            }
+            state_hash(&probe)
+        };
+        let first = held(4, 3, BlockedCause::Impassable);
+        assert_ne!(first, base, "a held unit went unhashed");
+        assert_ne!(held(3, 3, BlockedCause::Impassable), first, "the column");
+        assert_ne!(held(4, 4, BlockedCause::Impassable), first, "the row");
+        for cause in [
+            BlockedCause::Occupied,
+            BlockedCause::Edge,
+            BlockedCause::TooSteep,
+        ] {
+            assert_ne!(
+                held(4, 3, cause),
+                first,
+                "a different cause at the same cell went unhashed: {cause:?}"
+            );
+        }
+        // The flag is not the condition, and is not folded.
+        let mut flagged = two_tanks();
+        if let Some(unit) = flagged.unit_mut(ObjId(9)) {
+            unit.blocked = true;
+        }
+        assert_eq!(
+            state_hash(&flagged),
+            base,
+            "the per-substep flag was folded"
+        );
+        // Letting go is the state it was in before.
+        let mut released = two_tanks();
+        if let Some(unit) = released.unit_mut(ObjId(9)) {
+            unit.held = Some(Held {
+                x: 4,
+                y: 3,
+                cause: BlockedCause::Impassable,
+            });
+            unit.held = None;
+        }
+        assert_eq!(state_hash(&released), base);
+    }
+
+    /// **16b cut M.3's extension** (16c `T-06`), the carry probe's shape: heat
+    /// gates firing and moves every substep with no line, so the heat cell and
+    /// its carry each move the hash on their own.
+    #[test]
+    fn m3_the_hash_folds_the_heat_cell_and_the_heat_carry() {
+        use crate::arena::test_support::laser_tank;
+
+        let hot = || {
+            arena_of(vec![
+                tank(ObjId(4), Team::Red, pose(1_500, 1_500)),
+                laser_tank(ObjId(9), Team::Blue, pose(6_500, 6_500)),
+            ])
+        };
+        let base = state_hash(&hot());
+        assert_eq!(state_hash(&hot()), base, "the fixture is stable");
+        // The heat cell, through the one writer the arena uses for it: one
+        // second's rise — a shot's worth — as `raise_heat` would apply it.
+        let mut raised = hot();
+        let addr = raised
+            .unit(ObjId(9))
+            .and_then(|unit| unit.heat.as_ref())
+            .and_then(|heat| heat.addr(crate::definitions::unit::HEAT_CELL))
+            .unwrap_or_else(|| panic!("the laser tank carries a heat cell"));
+        let plan = mush_tactics::UnitMutationPlan::new(
+            vec![mush_tactics::UnitMutationOp::SetCell { addr, value: 7 }],
+            None,
+            None,
+        )
+        .unwrap_or_else(|_| panic!("a one-op plan"));
+        let post = raised
+            .unit(ObjId(9))
+            .map(|unit| mush_tactics::apply(&unit.unit, &plan, 0))
+            .and_then(Result::ok)
+            .map(|(post, _)| post)
+            .unwrap_or_else(|| panic!("the plan applies"));
+        raised.set_unit(ObjId(9), post, false);
+        assert_eq!(
+            raised.unit(ObjId(9)).and_then(|unit| unit.heat_now()),
+            Some(7)
+        );
+        assert_ne!(state_hash(&raised), base, "the heat cell went unhashed");
+        // The carry alone: the fraction of a heat unit the last substep did not
+        // shed.
+        let mut carried = hot();
+        if let Some(heat) = carried
+            .unit_mut(ObjId(9))
+            .and_then(|unit| unit.heat.as_mut())
+        {
+            heat.carry_milli = 1;
+        }
+        assert_ne!(state_hash(&carried), base, "the heat carry went unhashed");
+        assert_ne!(state_hash(&carried), state_hash(&raised));
+        // And back to cold with nothing carried is the same state again.
+        if let Some(heat) = carried
+            .unit_mut(ObjId(9))
+            .and_then(|unit| unit.heat.as_mut())
+        {
+            heat.carry_milli = 0;
+        }
+        assert_eq!(state_hash(&carried), base);
     }
 
     /// **16b cut M.1's extension** (`T-82`): the seat-order rate's window and

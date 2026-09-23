@@ -61,11 +61,13 @@
 //!
 //! **X.6's five-against-one `blocked` count was read as the same defect and is
 //! not one** (16b cut Q.6 measured it): the carries removed every truncation in
-//! motion and that count did not move — 250 ms still prints one and 150 ms still
-//! prints five. Its cause is the *two flags* cut F.2 split deliberately, the
-//! per-substep `blocked` flag against the `held` condition, and this module's
-//! `one_obstacle_is_one_stop_at_every_partition` test measures it rather than
-//! asserting it away.
+//! motion and that count did not move — 250 ms still printed one and 150 ms still
+//! printed five. Its cause was the *two flags* cut F.2 split deliberately: the
+//! ledger's line fired on the per-substep `blocked` flag and the pilot's notice
+//! on the `held` condition. **16b cut M.3 (16c `T-04`) put both on one edge** —
+//! [`integrate`]'s `held` rule, which now knows the refused cell and its cause —
+//! and this module's `one_obstacle_is_one_stop_at_every_partition` test, which
+//! measured the count, now asserts it: one line at every partition.
 //!
 //! So each rate keeps what it did not spend, on
 //! [`crate::arena::state::MotionCarry`], exactly the way [`crate::arena::heat`]
@@ -93,6 +95,7 @@
 
 use mush_atlas::physics::StepKind;
 use mush_sim::data::Pose;
+use serde::{Deserialize, Serialize};
 
 use crate::arena::index::SpatialIndex;
 use crate::arena::slope;
@@ -210,7 +213,14 @@ fn quadrant_sin_fx(mdeg: u32) -> i64 {
 /// words are the whole of what leaves the arena. The fourth costs the rule
 /// nothing: a slope is the ground's own fact, map knowledge a pilot could read
 /// off the terrain himself, and it tells nobody about another unit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// **16b cut M.3** (16c `T-04`) put the cause on the ledger's `blocked` line,
+/// where it serialises as the same word [`BlockedCause::as_str`] gives — the
+/// `snake_case` derive below yields exactly those four, and a unit test holds
+/// the two to each other. The ledger is the black box and may name anything; the
+/// word is the same one the pilot's notice array already carried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BlockedCause {
     /// The ground ahead is impassable for this mode (doc 16 §3.4 step 4).
     ///
@@ -246,6 +256,47 @@ impl BlockedCause {
             BlockedCause::TooSteep => "too_steep",
         }
     }
+
+    /// **The cause as one byte** (16b cut M.3), for
+    /// [`crate::arena::hash::state_hash`]'s fold of [`UnitState::held`]: `0`
+    /// impassable, `1` occupied, `2` edge, `3` too steep.
+    #[must_use]
+    pub const fn code(&self) -> u8 {
+        match self {
+            BlockedCause::Impassable => 0,
+            BlockedCause::Occupied => 1,
+            BlockedCause::Edge => 2,
+            BlockedCause::TooSteep => 3,
+        }
+    }
+}
+
+/// **What a unit is standing against** (16b cut M.3; 16c `T-04`, `B-27`, §5's
+/// Q22): the cell it was refused and why — [`UnitState::held`]'s value.
+///
+/// The cell is [`MotionOutcome::blocked_at`]'s — the refused cell, or for the
+/// window's edge the on-window cell nearest to the refused point: the cell the
+/// unit is standing in for a push straight off the window, and possibly its
+/// neighbour along the edge for a slanted push that also crossed a row or a
+/// column — and the cause is
+/// [`MotionOutcome::blocked_by`]'s; `stop_at_boundary` writes the two together,
+/// so a stop always has both. All integers, like everything the arena stores.
+///
+/// It knows **what** held the unit because "held clears only on leaving the
+/// cell" would get three cases wrong: a second, different obstacle met inside
+/// the same cell (a bank, then a wreck after a turn) would be silent; a tank
+/// reversing freely off the bank would keep `HELD` lit until it left the cell;
+/// and a machine still pushing at a wreck could not be told apart from one that
+/// had turned away, which is what its remembered stop is refreshed off
+/// (`Arena::reflex_tick`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Held {
+    /// The refused cell's column.
+    pub x: u16,
+    /// The refused cell's row.
+    pub y: u16,
+    /// Why it was refused.
+    pub cause: BlockedCause,
 }
 
 /// What one substep of [`integrate`] did to one unit.
@@ -263,6 +314,13 @@ pub struct MotionOutcome {
     pub blocked_at: Option<(u16, u16)>,
     /// **Why** it was stopped (16b cut F.2), `None` when it was not.
     pub blocked_by: Option<BlockedCause>,
+    /// **This stop is a new edge of [`UnitState::held`]** (16b cut M.3; 16c
+    /// `T-04`): the refusal named a cell or a cause the unit was not already held
+    /// against. It is the one condition the ledger's `blocked` line, the pilot's
+    /// `Blocked` notice and the reflex controller's remembered stop all fire on
+    /// (`Arena::substep`); a re-refusal of the same cell for the same cause is
+    /// `false` and says nothing to any of them. Only [`integrate`] sets it.
+    pub held_edge: bool,
 }
 
 /// **One substep of motion for one unit** (doc 16 §3.4, exactly).
@@ -276,19 +334,48 @@ pub struct MotionOutcome {
 /// substep-start snapshot.
 ///
 /// `unit.blocked` is **set here and cleared here**: it is the per-substep flag
-/// the caller turns into the one ledger notice per stop, and the edge the reflex
-/// controller re-plans off.
+/// for *this substep*, read by tests and the harness, and since 16b cut M.3 it
+/// journals nothing — its rising edge was a function of how the pulse was cut.
 ///
-/// **16b cut F.2 added [`UnitState::held`] beside it**, and the two are not the
-/// same fact. `blocked` is what *this substep* did; `held` is the condition a
-/// pilot's `STATUS` reads, and it survives a substep in which the tank covered no
-/// whole centimetre and so never reached the boundary to be refused at again. The
-/// smoke of 2026-09-18 found the difference: a tank ordered forward against a
-/// river bank read `0 kph` with no `HELD` on exactly those substeps. `held` is
-/// deliberately **output only** — nothing in the arena reads it, it is not folded
-/// into [`crate::arena::hash::state_hash`], and the reflex controller learns from
-/// the `blocked` **event** (16b cut Q.7's `Arena::note_blocked`) rather than from
-/// either flag, so no outcome moves with it.
+/// **The `held` rule** (16b cut F.2's condition; given its cell and cause and
+/// written here, in one place, by 16b cut M.3 — 16c `T-04`, `B-27`, §5's Q22).
+/// [`UnitState::held`] is `None` or the [`Held`] cell the unit was refused and
+/// why:
+///
+/// - **Set.** A refused crossing sets it to the refused cell and cause
+///   ([`MotionOutcome::blocked_at`] and [`MotionOutcome::blocked_by`], which
+///   `stop_at_boundary` writes together). It is a **new edge** —
+///   [`MotionOutcome::held_edge`] — when `held` was `None`, named a different
+///   cause, or named a cell that is not the same obstacle: for another unit a
+///   different cell, and for ground, a slope or the window's edge — which run on
+///   across cells — a cell not adjacent to the held one (`same_stop` has the
+///   measured reason: a slanted push names the diagonal or the orthogonal
+///   neighbour depending on how the pulse was cut). A re-refusal of the same
+///   obstacle is silent; the condition follows the cell it last named.
+/// - **Clear**, three ways: the unit **enters another cell** on an accepted
+///   crossing; it is **parked** (`desired_speed_cms == 0`, the E.3 clause); or
+///   an accepted move inside its own cell points **strictly away** from the held
+///   cell — the travel `(dx, dy)` in centimetres against the direction from the
+///   unit's cell to the held one, in whole cells, has a negative dot product.
+///   A slide along the bank is exactly zero and leaves it, a creep toward it
+///   is positive and leaves it (and straight into it is a refusal, not a move),
+///   and a reverse off it clears it
+///   inside the cell. For the window's edge, whose refused point has no cell, the
+///   direction is the window's outward normal on the axes the pose stands on
+///   the window's boundary in (`moved_away` has the argument for both choices,
+///   which is measured).
+/// - **Otherwise it is left as it was**: a substep that covered no whole
+///   centimetre — the case the 2026-09-18 smoke found, a tank against a river
+///   bank reading `0 kph` with no `HELD` — and a traffic hold (below).
+///
+/// The new edge is the **one** condition three readers fire on (`Arena::substep`):
+/// the ledger's `blocked` line (which carries the cause), the pilot's `Blocked`
+/// notice, and the reflex controller's `Arena::note_blocked`. So one stop is one
+/// line, one sentence and one lesson however the pulse is cut, and a second,
+/// different obstacle met in the same cell — a bank, then a wreck after a turn —
+/// is a second of each. `held` is folded into [`crate::arena::hash::state_hash`]:
+/// it decides all three, and a replay that cleared it a substep earlier would
+/// journal a stop the original did not.
 ///
 /// **16b cut E.3's two parameters.** `end_ms` is the arena millisecond this
 /// substep **ends** at — `now_ms + dt_ms` at the one production call site — and
@@ -298,8 +385,9 @@ pub struct MotionOutcome {
 /// tank stops (doc 16 §3.1, D-16-2). `occupied_stop_ms == 0` is the rule as it
 /// stood before the cut: every occupancy refusal is a stop at once.
 ///
-/// A hold settles [`UnitState::held`] to neither value: it is not a stop and it
-/// covered no ground, so the condition stays exactly as it was — which is what
+/// A hold leaves [`UnitState::held`] as it was: it is not a stop and it covered
+/// no ground, so the condition stays exactly as it was (unless the order has come
+/// off, when the parked clause clears it as it would any substep) — which is what
 /// keeps a tank pushing at a wreck telling its pilot one line and not one every
 /// two seconds.
 pub fn integrate(
@@ -310,19 +398,144 @@ pub fn integrate(
     end_ms: i64,
     occupied_stop_ms: u32,
 ) -> MotionOutcome {
-    let outcome = advance(unit, dt_ms, terrain, index, end_ms, occupied_stop_ms);
-    // **The `held` condition** (16b cut F.2), settled once, at the one exit: a
-    // stop sets it, a substep that covered ground clears it, and a tank that is
-    // no longer being ordered anywhere is not being held against anything. A
-    // substep that did neither — no whole centimetre travelled, so no boundary to
-    // be refused at — leaves it exactly as it was, which is the case the smoke
-    // found.
-    if outcome.blocked_by.is_some() {
-        unit.held = true;
-    } else if outcome.moved || unit.desired_speed_cms == 0 {
-        unit.held = false;
+    let before = (unit.pose.x_cm, unit.pose.y_cm);
+    let here = terrain.cell_of(&unit.pose);
+    let mut outcome = advance(unit, dt_ms, terrain, index, end_ms, occupied_stop_ms);
+    // **The `held` rule** (16b cut M.3), settled once, at the one exit — see
+    // this function's head for the whole of it.
+    if let (Some((x, y)), Some(cause)) = (outcome.blocked_at, outcome.blocked_by) {
+        // Set: the refused cell and why. A re-refusal of the same obstacle —
+        // the same cell, or for ground and the window's edge a neighbouring cell
+        // of the same cause (`same_stop`) — is no edge; the condition follows
+        // the cell the latest refusal named.
+        let refused = Held { x, y, cause };
+        outcome.held_edge = !unit.held.is_some_and(|held| same_stop(held, refused));
+        unit.held = Some(refused);
+    } else if unit.desired_speed_cms == 0 {
+        // Clear: parked. A tank no longer being ordered anywhere is not being
+        // held against anything (the E.3 clause).
+        unit.held = None;
+    } else if outcome.moved
+        && let Some(held) = unit.held
+    {
+        let after = terrain.cell_of(&unit.pose);
+        let travel = (
+            unit.pose.x_cm.saturating_sub(before.0),
+            unit.pose.y_cm.saturating_sub(before.1),
+        );
+        // Clear: into another cell on an accepted crossing, or strictly away
+        // from the held cell inside this one.
+        if after != here || moved_away(held, here, before, travel, terrain) {
+            unit.held = None;
+        }
     }
     outcome
+}
+
+/// **Whether a refusal is the obstacle the unit is already held against**
+/// (16b cut M.3; the M.3 review's F1 and R1) — the negation of
+/// [`MotionOutcome::held_edge`].
+///
+/// The cause must match. Then:
+///
+/// - **Another unit** ([`BlockedCause::Occupied`]) is one cell, so only that cell
+///   is the same stop: a second hull beside the first is a second obstacle, and
+///   the machine's avoid list has to learn it.
+/// - **Ground, a slope and the window's edge** run on across cells, so a refusal
+///   of the held cell **or any cell adjacent to it** is the same stop. The
+///   refused cell of a slanted push depends on how the pulse was cut: a stop
+///   clamps both axes into the unit's cell, so a push into a west bank at 300°
+///   slides the tank to its cell's corner, where a full substep's travel names
+///   the diagonal neighbour and a pulse tail's — which floors to `-1` on the
+///   axis into the bank and `0` on the other — names the orthogonal one. Keyed
+///   on the exact cell, that alternation was two `blocked` lines, two notices
+///   and two lessons every pulse for as long as the order stood; keyed on the
+///   feature it is one (61.8 s of that push at the bank journalled 101 lines).
+///   Every cell a unit can be refused from its own cell is one of that cell's
+///   eight neighbours, and two of them are adjacent exactly when they share a
+///   side or a corner of it: a turn that pushes the same bank round an L's
+///   corner is the same stop, and a turn onto ground across the cell is a new
+///   one. The condition follows the latest cell, so a clear is measured
+///   against the obstacle the unit last pushed at.
+fn same_stop(held: Held, refused: Held) -> bool {
+    if held.cause != refused.cause {
+        return false;
+    }
+    match refused.cause {
+        BlockedCause::Occupied => held.x == refused.x && held.y == refused.y,
+        BlockedCause::Impassable | BlockedCause::Edge | BlockedCause::TooSteep => {
+            held.x.abs_diff(refused.x) <= 1 && held.y.abs_diff(refused.y) <= 1
+        }
+    }
+}
+
+/// **Whether an accepted move inside the unit's own cell pointed strictly away
+/// from what holds it** (16b cut M.3): the travel's dot product with the
+/// direction *from the cell it stands in to the held cell*, in whole cells, is
+/// negative.
+///
+/// The direction is cell to cell and not pose to the held cell's centre, and
+/// that is measured rather than taste. A stop clamps the pose to the boundary
+/// and a pulse's tail moves the tank a centimetre *along* the bank (a fraction
+/// of a centimetre south is minus one under the Euclidean division that
+/// carries the travel), so the pose soon sits past the held cell's centre line:
+/// against the pose, that slide reads as "away", clears the condition, and the
+/// next refusal of the same bank is a new edge — thirteen pulses of the B-27
+/// driver journalled fourteen lines and told the pilot fourteen times. Against
+/// the cell-to-cell direction a slide along the bank is exactly zero and leaves
+/// the condition, a creep toward it is positive and leaves it, and a reverse off
+/// it is negative and clears it.
+///
+/// **The window's edge has no refused cell** — [`MotionOutcome::blocked_at`]
+/// names the on-window cell nearest the refused point, which is the unit's own
+/// cell for a push straight off the window and can be its neighbour along the
+/// edge for a slanted one — so its direction is the window's outward normal
+/// **on the axes the pose stands on the window's boundary in**: `-1` on an axis
+/// whose pose is at its first centimetre, `+1` at its last, `0` otherwise. A
+/// stop clamps the axis that left the window to exactly that centimetre, and
+/// nothing but a move inward (which is away) takes it off it, so the normal is
+/// the axis that refused and not every edge the cell touches. Taken from the
+/// cell's row and column instead, the normal in a corner cell was the diagonal:
+/// a tank pushed east in the north-east corner cell at 120° slid a centimetre
+/// south in every pulse tail, that read as away, and every pulse was a new
+/// stop (the M.3 review's R1).
+fn moved_away(
+    held: Held,
+    here: Option<(u16, u16)>,
+    before: (i64, i64),
+    travel: (i64, i64),
+    terrain: &ArenaTerrain,
+) -> bool {
+    let Some((cx, cy)) = here else {
+        return false;
+    };
+    let (nx, ny) = if held.cause == BlockedCause::Edge {
+        let side = i64::from(terrain.cell_cm());
+        let outward = |at: i64, cells: u16| -> i64 {
+            let last = i64::from(cells).saturating_mul(side).saturating_sub(1);
+            if at <= 0 {
+                -1
+            } else if at >= last {
+                1
+            } else {
+                0
+            }
+        };
+        (
+            outward(before.0, terrain.width()),
+            outward(before.1, terrain.height()),
+        )
+    } else {
+        (
+            i64::from(held.x) - i64::from(cx),
+            i64::from(held.y) - i64::from(cy),
+        )
+    };
+    travel
+        .0
+        .saturating_mul(nx)
+        .saturating_add(travel.1.saturating_mul(ny))
+        < 0
 }
 
 /// Doc 16 §3.4's four steps, in order — everything [`integrate`] does except
@@ -400,6 +613,7 @@ fn advance(
             moved: false,
             blocked_at: Some((0, 0)),
             blocked_by: Some(BlockedCause::Edge),
+            held_edge: false,
         };
     };
     // The move is made **in place** and undone by clamping on a refusal, rather
@@ -420,6 +634,7 @@ fn advance(
                 moved: true,
                 blocked_at: None,
                 blocked_by: None,
+                held_edge: false,
             }
         }
         Some(to) => {
@@ -451,6 +666,7 @@ fn advance(
                         moved: true,
                         blocked_at: None,
                         blocked_by: None,
+                        held_edge: false,
                     }
                 }
                 // **16b cut E.3**: another unit in the way is *held against* for
@@ -822,6 +1038,7 @@ fn stop_at_boundary(
         moved: false,
         blocked_at: Some(refused),
         blocked_by: Some(cause),
+        held_edge: false,
     }
 }
 
@@ -846,7 +1063,8 @@ fn stop_at_boundary(
 ///
 /// **What a pilot's frame reads during a hold, decided** (16b cut E.3).
 /// `Frame::speed_cms` reads [`UnitState::speed_cms`], which a hold keeps, and
-/// `Frame::blocked` reads [`UnitState::held`], which a hold does not set: so for
+/// `Frame::held` (16b cut M.3's name for the field) reads [`UnitState::held`],
+/// which a hold does not set: so for
 /// up to `occupied_stop_ms` the pilot carries the speed they had, a pose that is
 /// not advancing, and no `HELD`. That is deliberate and it is not a new channel.
 /// The pilot of a tank stopped dead by another unit is sent `Held: something is
@@ -885,6 +1103,7 @@ fn hold_at_boundary(
         moved: false,
         blocked_at: None,
         blocked_by: None,
+        held_edge: false,
     }
 }
 
@@ -1000,9 +1219,9 @@ mod tests {
     /// machinery, so a ragged pulse produces the ragged tail a live one does.
     ///
     /// Answers how many **stops** the drive produced, counted the way
-    /// [`crate::arena::step`] journals its `blocked` line: on the rising edge of
-    /// `UnitState::blocked`, once per stop rather than once per substep a standing
-    /// order holds the unit against the obstacle.
+    /// [`crate::arena::step`] journals its `blocked` line: on the new edge of
+    /// `UnitState::held` (16b cut M.3), once per stop rather than once per
+    /// substep a standing order holds the unit against the obstacle.
     fn drive(
         arena: &mut Arena,
         id: ObjId,
@@ -1021,6 +1240,13 @@ mod tests {
     }
 
     /// [`drive`] under a named `[tacsim.arena].occupied_stop_ms`.
+    ///
+    /// **16b cut M.3** (16c `T-04`): the first count is now what
+    /// `crate::arena::step` journals — [`MotionOutcome::held_edge`], the one
+    /// edge the `blocked` line, the pilot's notice and the machine's lesson share
+    /// — and the second is an independent witness, the rising edge of `held`'s
+    /// presence, which is what the pilot's notice fired on before the cut. For a
+    /// single obstacle the two must agree.
     fn drive_under(
         arena: &mut Arena,
         id: ObjId,
@@ -1032,20 +1258,18 @@ mod tests {
         let mut spent = 0_u32;
         let mut journalled = 0_usize;
         let mut told = 0_usize;
-        let mut was_blocked = false;
         let mut was_held = false;
         while spent < total_ms {
             let pulse = pulse_ms.min(total_ms - spent);
             for dt in crate::arena::clock::substeps(pulse, substep_max_ms) {
                 let outcome = step_under(arena, id, dt, occupied_stop_ms);
-                if outcome.blocked_at.is_some() && !was_blocked {
+                if outcome.held_edge {
                     journalled += 1;
                 }
                 if outcome.blocked_by.is_some() && !was_held {
                     told += 1;
                 }
-                was_blocked = arena.unit(id).is_some_and(|unit| unit.blocked);
-                was_held = arena.unit(id).is_some_and(|unit| unit.held);
+                was_held = arena.unit(id).is_some_and(|unit| unit.held.is_some());
                 spent = spent.saturating_add(dt);
             }
         }
@@ -1454,7 +1678,14 @@ mod tests {
         assert_eq!(arena.unit(A).map(|u| u.pose.x_cm), Some(3_999));
         assert_eq!(arena.unit(A).map(|u| u.speed_cms), Some(0));
         assert_eq!(arena.unit(A).map(|u| u.blocked), Some(true));
-        assert_eq!(arena.unit(A).map(|u| u.held), Some(true));
+        assert_eq!(
+            arena.unit(A).and_then(|u| u.held),
+            Some(Held {
+                x: 4,
+                y: 3,
+                cause: BlockedCause::Occupied
+            })
+        );
         assert_eq!(
             arena.unit(A).and_then(|u| u.occupied_hold),
             None,
@@ -1727,16 +1958,15 @@ mod tests {
     /// condition (16b cut F.2) and that condition survives a substep in which
     /// nothing moved.
     ///
-    /// **The ledger's `blocked` line does not**, and the carries do not fix it.
-    /// It fires on the rising edge of the per-substep `blocked` **flag**, which
+    /// **The ledger's `blocked` line did not, until 16b cut M.3** (16c `T-04`).
+    /// It fired on the rising edge of the per-substep `blocked` **flag**, which
     /// `advance` clears at the top of every substep and a substep that covers no
     /// whole centimetre never sets again — so on a short tail substep a held tank
-    /// re-accelerates from the zero a stop left it at, travels under a centimetre,
-    /// and makes the next refusal a second rising edge. That is the two-flag split
-    /// F.2 recorded deliberately, not the truncation this cut removed: the carry a
-    /// refused substep would need in order to cross the centimetre is exactly the
-    /// one a refusal must **not** bank. The counts are therefore printed, the way
-    /// X.6 printed its own.
+    /// re-accelerated from the zero a stop left it at, travelled under a
+    /// centimetre, and made the next refusal a second rising edge: `[1, 6, 278,
+    /// 1]` lines over the four partitions, which this test printed rather than
+    /// asserted. Cut M.3 moved the line onto `held`'s new edge, so it is now
+    /// asserted: **one line at every partition**, equal to the pilot's one line.
     #[test]
     fn one_obstacle_is_one_stop_at_every_partition() {
         let mut counts: Vec<(usize, usize)> = Vec::new();
@@ -1760,7 +1990,7 @@ mod tests {
             poses.push(
                 arena
                     .unit(A)
-                    .map_or((0, false), |unit| (unit.pose.x_cm, unit.held)),
+                    .map_or((0, false), |unit| (unit.pose.x_cm, unit.held.is_some())),
             );
         }
         assert!(
@@ -1771,15 +2001,287 @@ mod tests {
             counts.iter().all(|count| count.1 == 1),
             "the pilot is told once at every partition: {counts:?}"
         );
-        // And the one that is not, reported rather than asserted equal.
-        println!(
-            "q6_partition_blocked_ledger_lines: {:?}",
-            counts.iter().map(|count| count.0).collect::<Vec<usize>>()
-        );
+        // 16b cut M.3: and the black box says it once too, at every partition.
         assert!(
-            counts.iter().all(|count| count.0 >= 1),
-            "no stop was journalled at all: {counts:?}"
+            counts.iter().all(|count| count.0 == 1),
+            "one `blocked` line at every partition: {counts:?}"
         );
+    }
+
+    /// An 8 by 8 window with an impassable band down column 4, and `A` in cell
+    /// `(3, 3)`'s centre facing east — the band fixture of the partition test.
+    fn m3_band(units: Vec<crate::arena::state::CustodyUnit>) -> Arena {
+        let mut cells = vec![ground(); 64];
+        for y in 0..8_u16 {
+            if let Some(cell) = cells.get_mut(usize::from(y) * 8 + 4) {
+                cell.move_cost = 0;
+            }
+        }
+        let mut arena = running(units);
+        arena.definition.terrain = ArenaTerrain::new(8, 8, 1_000, cells).expect("the band window");
+        arena
+    }
+
+    /// Point `A` at `heading_mdeg` from a standstill under a speed order.
+    fn m3_order(arena: &mut Arena, heading_mdeg: u32, desired_speed_cms: i32) {
+        if let Some(unit) = arena.unit_mut(A) {
+            unit.pose.heading_mdeg = heading_mdeg;
+            unit.desired_heading_mdeg = heading_mdeg;
+            unit.speed_cms = 0;
+            unit.carry = crate::arena::state::MotionCarry::default();
+            unit.desired_speed_cms = desired_speed_cms;
+        }
+    }
+
+    /// Step `A` until a substep reports `until`, answering that outcome.
+    fn m3_until(arena: &mut Arena, until: fn(&MotionOutcome) -> bool) -> MotionOutcome {
+        for _ in 0..40 {
+            let outcome = step_under(arena, A, 250, 0);
+            if until(&outcome) {
+                return outcome;
+            }
+        }
+        panic!("forty substeps and the awaited outcome never came");
+    }
+
+    fn m3_held(arena: &Arena) -> Option<Held> {
+        arena.unit(A).and_then(|unit| unit.held)
+    }
+
+    /// **16b cut M.3's `held` rule, one clause at a time** (16c `T-04`, `B-27`,
+    /// §5's Q22).
+    ///
+    /// **Set**: a refusal sets the refused cell and cause, and it is a new edge;
+    /// a re-refusal of the same cell for the same cause is not. **Clear** three
+    /// ways: an accepted move inside the cell strictly away from the held one
+    /// (reversing off the bank); the speed order coming off; and entering another
+    /// cell. A move **along** the bank leaves it. A second, different obstacle
+    /// met in the same cell is a new edge. And the window's edge, which names the
+    /// unit's own cell, is measured against the window's outward normal.
+    #[test]
+    fn m3_the_held_rule_sets_on_a_new_cell_or_cause_and_clears_three_ways() {
+        let band = Held {
+            x: 4,
+            y: 3,
+            cause: BlockedCause::Impassable,
+        };
+        // A parked tank north of A's cell, for the second obstacle.
+        let mut arena = m3_band(vec![
+            tank(A, Team::Red, pose(3_500, 3_500)),
+            tank(B, Team::Blue, pose(3_500, 4_500)),
+        ]);
+        m3_order(&mut arena, 90_000, 1_000);
+        let stop = m3_until(&mut arena, |out| out.blocked_by.is_some());
+        assert!(stop.held_edge, "the first stop is an edge");
+        assert_eq!(m3_held(&arena), Some(band));
+        // Pushing on: every substep is refused the same cell for the same cause.
+        for _ in 0..8 {
+            let again = step_under(&mut arena, A, 250, 0);
+            assert!(!again.held_edge, "a re-refusal is no edge: {again:?}");
+            assert_eq!(m3_held(&arena), Some(band));
+        }
+        // Along the bank (due north, inside the cell): the travel's dot product
+        // with (1, 0) is zero, and the condition stands.
+        m3_order(&mut arena, 0, 1_000);
+        let along = m3_until(&mut arena, |out| out.moved);
+        assert!(!along.held_edge);
+        assert_eq!(
+            m3_held(&arena),
+            Some(band),
+            "a slide along the bank clears nothing"
+        );
+        // Reversing off it: strictly away, and cleared inside the cell.
+        m3_order(&mut arena, 90_000, -400);
+        m3_until(&mut arena, |out| out.moved);
+        assert_eq!(m3_held(&arena), None, "a reverse off the bank clears it");
+        assert_eq!(
+            arena.definition.terrain.cell_of(&arena.units[0].pose),
+            Some((3, 3)),
+            "and the unit is still in its cell"
+        );
+        // Back at it: a new edge, because the condition was clear.
+        m3_order(&mut arena, 90_000, 1_000);
+        let back = m3_until(&mut arena, |out| out.blocked_by.is_some());
+        assert!(back.held_edge);
+        // A second obstacle in the same cell: north into the parked tank, which
+        // is a different cell and a different cause — a new edge.
+        m3_order(&mut arena, 0, 1_000);
+        let other = m3_until(&mut arena, |out| out.blocked_by.is_some());
+        assert!(other.held_edge, "a different obstacle is a new stop");
+        assert_eq!(
+            m3_held(&arena),
+            Some(Held {
+                x: 3,
+                y: 4,
+                cause: BlockedCause::Occupied
+            })
+        );
+        // The order coming off clears it without a centimetre of travel.
+        if let Some(unit) = arena.unit_mut(A) {
+            unit.desired_speed_cms = 0;
+        }
+        let parked = step_under(&mut arena, A, 250, 0);
+        assert!(!parked.moved);
+        assert_eq!(m3_held(&arena), None, "parked is not held");
+
+        // Entering another cell: stopped at the band, then driven south until it
+        // crosses into row 2.
+        let mut arena = m3_band(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+        m3_order(&mut arena, 90_000, 1_000);
+        m3_until(&mut arena, |out| out.blocked_by.is_some());
+        assert_eq!(m3_held(&arena), Some(band));
+        m3_order(&mut arena, 180_000, 1_000);
+        let mut crossed = false;
+        for _ in 0..40 {
+            step_under(&mut arena, A, 250, 0);
+            let row = arena
+                .unit(A)
+                .and_then(|unit| arena.definition.terrain.cell_of(&unit.pose))
+                .map(|(_, y)| y);
+            if row == Some(2) {
+                crossed = true;
+                break;
+            }
+            // Still in row 3, sliding south along the band: held.
+            assert_eq!(m3_held(&arena), Some(band));
+        }
+        assert!(crossed, "the tank never left its row");
+        assert_eq!(
+            m3_held(&arena),
+            None,
+            "a crossing into another cell clears it"
+        );
+
+        // The window's edge: north out of the top row, then a slide east along
+        // the edge (held), then a reverse south off it (cleared).
+        let mut arena = m3_band(vec![tank(A, Team::Red, pose(1_500, 7_500))]);
+        m3_order(&mut arena, 0, 1_000);
+        let edge = m3_until(&mut arena, |out| out.blocked_by.is_some());
+        assert!(edge.held_edge);
+        let at_edge = Held {
+            x: 1,
+            y: 7,
+            cause: BlockedCause::Edge,
+        };
+        assert_eq!(m3_held(&arena), Some(at_edge));
+        m3_order(&mut arena, 90_000, 1_000);
+        m3_until(&mut arena, |out| out.moved);
+        assert_eq!(m3_held(&arena), Some(at_edge), "a slide along the edge");
+        m3_order(&mut arena, 0, -400);
+        m3_until(&mut arena, |out| out.moved);
+        assert_eq!(m3_held(&arena), None, "a reverse off the edge");
+    }
+
+    /// A window of `ground()` with the columns in `impassable` refused, and `A`
+    /// at `at` ordered at `heading_mdeg` and 1,000 cm/s from a standstill.
+    fn m3_slanted(impassable: &[u16], at: (i64, i64), heading_mdeg: u32) -> Arena {
+        let mut cells = vec![ground(); 64];
+        for &x in impassable {
+            for y in 0..8_u16 {
+                if let Some(cell) = cells.get_mut(usize::from(y) * 8 + usize::from(x)) {
+                    cell.move_cost = 0;
+                }
+            }
+        }
+        let mut arena = running(vec![tank(A, Team::Red, pose(at.0, at.1))]);
+        arena.definition.terrain = ArenaTerrain::new(8, 8, 1_000, cells).expect("the window");
+        m3_order(&mut arena, heading_mdeg, 1_000);
+        arena
+    }
+
+    /// One case of the slanted-push test: its name, the impassable columns, the
+    /// start, the heading, how long it is driven and the cell it must end in.
+    type SlantedCase = (
+        &'static str,
+        &'static [u16],
+        (i64, i64),
+        u32,
+        u32,
+        (u16, u16),
+    );
+
+    /// **A slanted push is one stop for as long as it lasts, at a bank, at the
+    /// window's edge and in a corner cell** (16b cut M.3; the M.3 review's F1 and
+    /// R1). Pulses of 1,030 ms — the production shape, four 250 ms substeps and a
+    /// 30 ms tail — for a minute, long enough for the clamp to slide the tank to
+    /// its cell's corner (twenty pulses in the corner cell).
+    ///
+    /// - A **west bank** at 300°: at the corner a full substep names the diagonal
+    ///   neighbour and a tail the orthogonal one. Keyed on the exact cell that was
+    ///   two lines a pulse (`same_stop`).
+    /// - The **west window edge** at 300°: `nearest_on_window` varies the same
+    ///   way.
+    /// - The **north-east corner cell**, pushed east at 120°: every tail slides a
+    ///   centimetre south. Against a normal taken from the corner cell's row and
+    ///   column — the diagonal — that read as away and every pulse was a new stop
+    ///   (`moved_away`).
+    ///
+    /// In each the tank ends in the cell it started in, still held, told once.
+    #[test]
+    fn m3_a_slanted_push_is_one_stop_at_a_bank_an_edge_and_a_corner_cell() {
+        // The corner case runs twenty pulses, not sixty: at 120° the tank slides
+        // south about thirty centimetres a pulse, and leaving the row would be a
+        // legitimate second stop.
+        let cases: [SlantedCase; 3] = [
+            ("west bank", &[2], (3_500, 3_500), 300_000, 61_800, (3, 3)),
+            ("west edge", &[], (500, 3_500), 300_000, 61_800, (0, 3)),
+            (
+                "north-east corner",
+                &[],
+                (7_950, 7_990),
+                120_000,
+                20_600,
+                (7, 7),
+            ),
+        ];
+        for (name, impassable, at, heading_mdeg, total_ms, cell) in cases {
+            let mut arena = m3_slanted(impassable, at, heading_mdeg);
+            let counts = drive_under(&mut arena, A, total_ms, 1_030, 250, 0);
+            let unit = arena.unit(A).expect("the tank");
+            assert_eq!(
+                arena.definition.terrain.cell_of(&unit.pose),
+                Some(cell),
+                "{name}: the tank stays in its cell: {:?}",
+                unit.pose
+            );
+            assert!(unit.held.is_some(), "{name}: still held");
+            assert_eq!(counts, (1, 1), "{name}: one line and one notice");
+        }
+        // The bank's tank really did reach the corner, where the alternation
+        // lives: the clamp holds it at the bank's centimetre and the top of its
+        // row.
+        let mut arena = m3_slanted(&[2], (3_500, 3_500), 300_000);
+        drive_under(&mut arena, A, 61_800, 1_030, 250, 0);
+        let unit = arena.unit(A).expect("the tank");
+        assert_eq!((unit.pose.x_cm, unit.pose.y_cm), (3_000, 3_999));
+    }
+
+    /// **16b cut M.3**: a traffic hold (16b cut E.3) is neither a stop nor a
+    /// move, so it leaves `held` exactly as it was — whatever it was — and it is
+    /// no edge.
+    #[test]
+    fn m3_a_traffic_hold_leaves_held_as_it_was_and_is_no_edge() {
+        let before = Held {
+            x: 6,
+            y: 6,
+            cause: BlockedCause::Impassable,
+        };
+        for held in [None, Some(before)] {
+            let mut arena = nose_to_tail();
+            if let Some(unit) = arena.unit_mut(A) {
+                unit.held = held;
+            }
+            let outcome = step_one(&mut arena, A, 250);
+            assert!(
+                arena
+                    .unit(A)
+                    .is_some_and(|unit| unit.occupied_hold.is_some()),
+                "the fixture's first substep is a hold"
+            );
+            assert!(!outcome.held_edge);
+            assert_eq!(outcome.blocked_at, None, "a hold journals nothing");
+            assert_eq!(arena.unit(A).and_then(|unit| unit.held), held);
+        }
     }
 
     /// **The substep bound leaves a centimetre for the carry, and a unit driven
@@ -2101,7 +2603,7 @@ mod tests {
             None,
             "an accepted crossing clears the hold"
         );
-        assert_eq!(arena.unit(A).map(|unit| unit.held), Some(false));
+        assert_eq!(arena.unit(A).and_then(|unit| unit.held), None);
     }
 
     /// **A hold against a parked unit matures into doc 16 §3.4 step 4's stop
@@ -2137,7 +2639,14 @@ mod tests {
         assert_eq!(arena.unit(A).map(|unit| unit.speed_cms), Some(0));
         assert_eq!(arena.unit(A).map(|unit| unit.pose.x_cm), Some(3_999));
         assert_eq!(arena.unit(A).map(|unit| unit.blocked), Some(true));
-        assert_eq!(arena.unit(A).map(|unit| unit.held), Some(true));
+        assert_eq!(
+            arena.unit(A).and_then(|unit| unit.held),
+            Some(Held {
+                x: 4,
+                y: 3,
+                cause: BlockedCause::Occupied
+            })
+        );
         assert_eq!(
             arena.unit(A).and_then(|unit| unit.occupied_hold),
             None,

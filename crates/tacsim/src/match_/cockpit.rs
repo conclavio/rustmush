@@ -2688,7 +2688,7 @@ fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
                     frame.power.as_str(),
                     cms_to_kph(frame.speed_cms),
                     frame.pose.heading_mdeg / 1_000,
-                    if frame.blocked { ", HELD" } else { "" },
+                    if frame.held { ", HELD" } else { "" },
                     // 16b cut D.2 (`B-03`): beside `HELD`, and the one mark a
                     // pilot who has stopped being told anything needs.
                     if frame.wreck { ", DESTROYED" } else { "" }
@@ -3242,7 +3242,10 @@ pub fn status_frame_held(
         "speed_cms": frame.speed_cms,
         "speed_kph": cms_to_kph(frame.speed_cms),
         "power": frame.power.as_str(),
-        "blocked": frame.blocked,
+        // **16b cut M.3** (16c `T-04`): the Rust field is `Frame::held` now, and
+        // this wire key is deliberately still `"blocked"` — `web/src/lib/cockpit.ts`
+        // and the TUI renderer both read it, and renaming it is a client cut's.
+        "blocked": frame.held,
         // **16b cut D.2** (`B-03`): the pilot's own two limits. A pilot's tank is
         // outside the observer rule entirely, and these are what a panel greys
         // the order controls on.

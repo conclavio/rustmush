@@ -1405,7 +1405,7 @@ fn x2_a_hit_on_the_front_finds_the_torso_and_the_arms() {
     let (_catalog, mut arena) = march();
     let mut struck: Vec<SmolStr> = Vec::new();
     for shot_seq in 0..400_u64 {
-        let section = arena
+        let (section, _) = arena
             .choose_section(RED, "front", shot_seq)
             .expect("the front band strikes something");
         if !struck.contains(&section) {
@@ -3565,7 +3565,7 @@ fn blocked_cells(
     events
         .iter()
         .filter_map(|event| match &event.kind {
-            tacsim::arena::ledger::EventKind::Blocked { unit: at, x, y } if *at == unit => {
+            tacsim::arena::ledger::EventKind::Blocked { unit: at, x, y, .. } if *at == unit => {
                 Some((*x, *y))
             }
             _ => None,
@@ -4853,7 +4853,7 @@ struct ReliefBeat {
 
 /// One ledger line, normalised: arena timestamp, kind and fields as JSON, the
 /// draw where one was made, and the substep hash.
-type ReliefLine = (i64, String, Option<(String, u64)>, u64);
+type ReliefLine = (i64, String, Vec<(String, u64)>, u64);
 
 /// One unit as a replay left it, **including the two numbers X.6 added**:
 /// `(unit, x_cm, y_cm, z_cm, grade_pct, heading_mdeg, speed_cms, blocked)`.
@@ -4957,7 +4957,7 @@ fn relief_replay(
                 (
                     event.t_ms,
                     serde_json::to_string(&event.kind).unwrap_or_default(),
-                    event.draw,
+                    event.draws,
                     event.hash,
                 )
             })
@@ -5172,25 +5172,22 @@ fn x6_one_scripted_climb_at_three_cadences_is_one_event_list_and_one_hash_sequen
 ///
 /// What is **not** asserted identical, deliberately: the transient — a shorter
 /// substep quantises the acceleration finer, so the pose at a given arena
-/// millisecond differs by centimetres — and the *count* of `blocked` events. At
-/// 150 ms a 5,000 ms pulse is thirty-three substeps of 150 and one of 50, and on
-/// that 50 ms piece a held tank gains 5 cm/s, travels no whole centimetre, and
-/// `integrate` returns having cleared `blocked` — so the next refusal is a second
-/// rising edge.
+/// millisecond differs by centimetres.
 ///
-/// **16b cut Q.6 measured that and it is not the truncation it was read as.**
-/// The carries removed every truncation in motion and this count did not move:
-/// 250 ms still prints one and 150 ms still prints five. The cause is the *two
-/// flags* cut F.2 split deliberately — the ledger's `blocked` line fires on the
-/// rising edge of `UnitState::blocked`, which is what **this substep** did and
-/// which a substep covering no whole centimetre cannot set, while the pilot's
-/// own line fires on the rising edge of the `held` **condition**, which survives
-/// such a substep and is therefore said exactly once at every partition
-/// (`arena::motion`'s `one_obstacle_is_one_stop_at_every_partition`). The carry
-/// that would close the gap is the one a refusal must not bank. Closing it means
-/// moving the ledger line onto `held`, and `held` is not folded into
-/// `state_hash`, so that is a change to what the hash covers and not a change to
-/// motion.
+/// **The *count* of `blocked` lines is asserted, since 16b cut M.3** (16c
+/// `T-04`). At 150 ms a 5,000 ms pulse is thirty-three substeps of 150 and one
+/// of 50, and on that 50 ms piece a held tank gains 5 cm/s and travels no whole
+/// centimetre. Until M.3 the ledger's line fired on the rising edge of the
+/// per-substep `UnitState::blocked` flag, which such a substep cannot set, so
+/// the next refusal was a second rising edge: 250 ms printed one and 150 ms
+/// printed five (16b cut Q.6 measured it, and it was not the truncation it had
+/// been read as — the carries did not move it). The pilot's line, on the `held`
+/// **condition**, was said once at every partition. M.3 moved the ledger line
+/// onto `held`'s new edge — the cell and the cause the unit is held against,
+/// folded into `state_hash` — so the line, the notice and the machine's lesson
+/// share one edge, and the cliff is **one** `blocked` line at either substep
+/// length (`arena::motion`'s `one_obstacle_is_one_stop_at_every_partition` is
+/// the same property over four partitions).
 #[test]
 fn x6_the_climb_does_not_depend_on_the_substep_length() {
     const MOVER: mush_core::ObjId = mush_core::ObjId(4);
@@ -5241,15 +5238,13 @@ fn x6_the_climb_does_not_depend_on_the_substep_length() {
         Some(23),
         "the mover is refused at the cliff either way"
     );
-    // And the one thing that does move, reported rather than asserted equal.
-    println!(
-        "harness_x6_substep_blocked: 250ms={:?} 150ms={:?}",
-        blocked_counts.first(),
-        blocked_counts.get(1)
-    );
-    assert!(
-        blocked_counts.first().copied().unwrap_or(0) >= 1
-            && blocked_counts.get(1).copied().unwrap_or(0) >= 1
+    // 16b cut M.3 (16c `T-04`): one stop at the cliff is one line at either
+    // substep length — this was printed, `1` against `5`, until the line moved
+    // onto `held`'s edge.
+    assert_eq!(
+        blocked_counts,
+        vec![1, 1],
+        "one `blocked` line at the cliff at 250 ms and at 150 ms"
     );
 }
 
@@ -5307,7 +5302,7 @@ fn x6_a_refused_route_is_bounded_work() {
         counters.path_queries
     );
     let speed = arena.unit(RED).map(|unit| unit.speed_cms).unwrap_or(0);
-    let held = arena.unit(RED).map(|unit| unit.held).unwrap_or(false);
+    let held = arena.unit(RED).is_some_and(|unit| unit.held.is_some());
     assert!(
         speed == 0 || held,
         "the tank ended neither at rest nor held: {speed} cm/s"
@@ -5845,7 +5840,7 @@ fn q6_replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Relief
                 (
                     event.t_ms,
                     serde_json::to_string(&event.kind).unwrap_or_default(),
-                    event.draw,
+                    event.draws,
                     event.hash,
                 )
             })

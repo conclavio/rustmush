@@ -1573,10 +1573,13 @@ fn occurrences(bytes: &[u8], needle: &str) -> u64 {
 
 /// **The cell every `blocked` line in a chunk names** (16b cut E.3).
 ///
-/// The event carries the refused cell and no cause — the cause on the event is
-/// cut M's (16c `T-04`) — so the only way to say whether a stop was traffic or
-/// ground is to ask the window about the cell it names. The chunk is JSONL and
-/// the line's shape is fixed by `EventKind::Blocked`, so this reads the two
+/// Written when the event carried the refused cell and no cause, so the only way
+/// to say whether a stop was traffic or ground was to ask the window about the
+/// cell it names. **Since 16b cut M.3 the line carries its cause** (16c `T-04`,
+/// `EventKind::Blocked::cause`); the split by the named cell is kept because it
+/// answers *where* — interior, the window's ring, or ground nothing may enter —
+/// and it is the split earlier cuts' runs were read against. The chunk is JSONL
+/// and the line's shape is fixed by `EventKind::Blocked`, so this reads the two
 /// integers out of it rather than deserialising a whole event per stop.
 fn blocked_cells_of(bytes: &[u8]) -> Vec<(u16, u16)> {
     let text = String::from_utf8_lossy(bytes);
@@ -1880,8 +1883,8 @@ fn tacsim_harness_arena_step() {
         bytes: u64,
         blocked: u64,
         /// **16b cut E.3**: every refused cell, so the stops can be split by
-        /// where they happened — the only question the window can answer about an
-        /// event that carries no cause.
+        /// where they happened (the event carries its cause too since 16b cut
+        /// M.3; this split is the *where*).
         blocked_at: Vec<(u16, u16)>,
         locked: u64,
         fired: u64,
@@ -2039,7 +2042,14 @@ fn tacsim_harness_arena_step() {
         .iter()
         .filter(|unit| unit.speed_cms != 0)
         .count();
-    let held = arena.units.iter().filter(|unit| unit.blocked).count();
+    // **16b cut M.3**: the units standing against something at the end — the
+    // `held` condition the frame's `HELD` reads — and not the per-substep
+    // `blocked` flag, which says only that the last substep was refused.
+    let held = arena
+        .units
+        .iter()
+        .filter(|unit| unit.held.is_some())
+        .count();
     // 16b cut W.1: the rounds figure, over the whole field.
     //
     // **16b cut W.2 made it a statement about the survivors and not a conservation
@@ -2181,10 +2191,11 @@ fn tacsim_harness_arena_step() {
         "harness_arena_substeps: per_pulse_min={substeps_min} per_pulse_max={substeps_max} substep_ms={substep} divides_periods={substep_divides_periods}"
     );
     // **16b cut E.3**: the stops split by what refused them, so that "`blocked`
-    // fell" is evidence and not an observation. The `blocked` event carries the
-    // refused cell and no cause — the cause on the event is cut M's (16c `T-04`)
-    // — so the window is all there is to ask, and each bucket is named for what
-    // the window can actually answer:
+    // fell" is evidence and not an observation. Written when the `blocked`
+    // event carried the refused cell and no cause, so the window was all there
+    // was to ask; since 16b cut M.3 (16c `T-04`) the line names its cause as
+    // well, and this split stays the *where* — each bucket named for what the
+    // window can actually answer:
     //
     // - **`impassable`**: the named cell is off the window or is a cell nothing
     //   tracked may enter. Only `BlockedCause::Impassable` can name one, so this

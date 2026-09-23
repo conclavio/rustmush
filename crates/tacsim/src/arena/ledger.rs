@@ -67,6 +67,14 @@ pub const CHUNK_BYTES: usize = 16 * 1024;
 /// could schedule a sensor pass and none before W.1 could accept a shot, so no
 /// ledger anywhere holds a field-less `{"kind":"fired"}` line for the new shape to
 /// fail to read.
+///
+/// **16b cut M.3 is the exception, and says so**: `blocked` gained `cause` (16c
+/// `T-04`), `hit` gained `armor_section` (`T-13`), and every line's `draw` key
+/// became `draws` (`T-07`). The kind words did not move. The project is
+/// pre-launch, so this is a new shape and not a migration: the only readers are
+/// this crate's own — the bridge reads each chunk's last `position_summary` and
+/// its last `t_ms` as it arrives, with the shape it was built with — and the
+/// tests.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventKind {
@@ -105,7 +113,15 @@ pub enum EventKind {
         units: Vec<(ObjId, i64, i64, i32, u32)>,
     },
     /// A unit was stopped at a cell boundary (doc 16 §3.4 step 4): one notice per
-    /// stop, naming the cell it could not enter.
+    /// stop, naming the cell it could not enter and why.
+    ///
+    /// **16b cut M.3** (16c `T-04`, §5's Q22): journalled on the new edge of
+    /// [`crate::arena::state::UnitState::held`] — a stop at a cell or for a
+    /// cause the unit was not already held against — and nothing else, so one
+    /// stop is one line however the pulse is cut and however long a standing
+    /// order pushes the unit at the obstacle. Until this cut it fired on a
+    /// per-substep flag's rising edge, whose count was a function of the
+    /// partition and was unbounded against a bank.
     Blocked {
         /// The unit.
         unit: ObjId,
@@ -113,6 +129,12 @@ pub enum EventKind {
         x: u16,
         /// The refused row.
         y: u16,
+        /// **Why** (16b cut M.3): the
+        /// [`crate::arena::motion::BlockedCause::as_str`] word — `impassable`,
+        /// `too_steep`, `occupied` or `edge`. It is what the reflex controller's
+        /// avoid list is fed off (an `occupied` stop), and what the pilot's own
+        /// sentence already said.
+        cause: crate::arena::motion::BlockedCause,
     },
     /// **A viewer began holding a contact** (16b cut S.1; doc 16 §3.6 step 4).
     ///
@@ -132,7 +154,7 @@ pub enum EventKind {
     /// **A viewer told a contact apart** (16b cut S.1; doc 16 §3.6 step 4, W5).
     ///
     /// Carries the `classify:<observer>:<target>:<pass_seq>` draw and its value in
-    /// [`LedgerEvent::draw`] when the classification was the viewer's own pass; a
+    /// [`LedgerEvent::draws`] when the classification was the viewer's own pass; a
     /// classification that arrived over the comms mesh (step 5) carries none,
     /// because no draw was made for it — the sharer's pass already recorded one.
     Classified {
@@ -224,7 +246,10 @@ pub enum EventKind {
     /// [`mush_tactics::UnitMutationPlan`] did: which section the `facet:<shot_seq>`
     /// draw chose, which facet's armour the round passed, how much damage arrived,
     /// what is left of both cells afterwards, and the consequences that fired. The
-    /// draw itself rides [`LedgerEvent::draw`], as doc 16 §4 asks.
+    /// draws ride [`LedgerEvent::draws`], as doc 16 §4 asks — **both of them**
+    /// since 16b cut M.3 (16c `T-07`): the shot's own `hit:<seq>` or
+    /// `burst:<seq>` first, then the `facet:<seq>` that chose the section, so the
+    /// section a round found can be re-derived from the seed and the line.
     ///
     /// `armor_left` and `internals_left` are **after** the plan, so a reader of the
     /// black box never has to know a unit's authored maxima to see a tank coming
@@ -241,12 +266,19 @@ pub enum EventKind {
         /// The facet whose `armor` cell the round passed — the struck-through
         /// section's, for a section with no armour of its own (doc 16 §3.3).
         facet: SmolStr,
+        /// **The section whose `facet` armour the round passed** (16b cut M.3,
+        /// 16c `T-13`): the struck-through section's for a section with no armour
+        /// of its own (the engine, through `hull`), else `section` itself. Until
+        /// this cut a struck-through hit named the chosen section beside another
+        /// section's facet, and `armor_left` could not be read without the
+        /// content.
+        armor_section: SmolStr,
         /// How many rounds of the shot landed: `1` for a single round, the
         /// binomial sample for a burst.
         rounds: u32,
         /// The damage they carried together.
         damage: u32,
-        /// The armour left in that facet afterwards.
+        /// The armour left in that facet — `armor_section`'s — afterwards.
         armor_left: u32,
         /// The internals left in that section afterwards.
         internals_left: u32,
@@ -396,11 +428,11 @@ impl EventKind {
 }
 
 /// One ledger line (doc 16 §4: `{seq, t_ms, kind, ...}` *with the substep state
-/// hash*, *carrying the draw label and value where a draw occurred*).
+/// hash*, *carrying the draw labels and values where draws occurred*).
 ///
 /// The kind is **flattened**, so the wire form is the flat object doc 16 names —
 /// `{"seq":1,"t_ms":0,"kind":"match_started","hash":123}` — rather than a nested
-/// one. `draw` is omitted entirely when no draw was made, which is most events.
+/// one. `draws` is omitted entirely when no draw was made, which is most events.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LedgerEvent {
     /// The event's sequence number within the match, from `1`.
@@ -410,10 +442,24 @@ pub struct LedgerEvent {
     /// What happened.
     #[serde(flatten)]
     pub kind: EventKind,
-    /// The draw's encoded label and its value, where a draw was made
-    /// ([`crate::arena::rng::DrawLabel::encode`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub draw: Option<(String, u64)>,
+    /// **Every draw the event made**, in the order it made them: each draw's
+    /// encoded label ([`crate::arena::rng::DrawLabel::encode`]) and its value.
+    ///
+    /// A list since 16b cut M.3 (16c `T-07`), because a `hit` makes two — the
+    /// shot's `hit:<seq>` or `burst:<seq>`, then the `facet:<seq>` that chose the
+    /// section — and the second never reached the black box while this was one
+    /// `Option`. So does a `miss` whose reason is `refused` when it is written
+    /// after the section was chosen (the plan could not be built or applied): the
+    /// facet draw was made, so the line carries the shot's draw and then
+    /// `facet:<seq>`, exactly as a `hit` does. A `miss` for dispersion carries
+    /// one — its shot draw, including a round that arrived at a band with no
+    /// facet table, where no facet was drawn — and so does a sensor `classified`,
+    /// its `classify:` draw. Everything else carries none. With the seed on
+    /// the result document (`crate::match_::record::write_result`), a reader can
+    /// re-derive each value with [`crate::arena::rng::draw`], decoding the label
+    /// with [`crate::arena::rng::DrawLabel::decode`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub draws: Vec<(String, u64)>,
     /// The substep state hash this event was recorded against
     /// ([`crate::arena::hash::state_hash`]).
     pub hash: u64,
@@ -541,7 +587,7 @@ impl Ledger {
         &mut self,
         t_ms: i64,
         kind: EventKind,
-        draw: Option<(String, u64)>,
+        draws: Vec<(String, u64)>,
         hash: u64,
     ) -> Result<u64, LedgerFull> {
         let seq = self.seq.saturating_add(1);
@@ -549,7 +595,7 @@ impl Ledger {
             seq,
             t_ms,
             kind,
-            draw,
+            draws,
             hash,
         };
         let mut line = serde_json::to_vec(&event).unwrap_or_else(|_| {
@@ -747,7 +793,7 @@ mod tests {
     fn a_line_is_the_flat_object_doc_16_names() {
         let mut log = ledger(1 << 20, 256);
         assert_eq!(log.seq(), 0);
-        assert_eq!(log.append(0, EventKind::MatchStarted, None, 7), Ok(1));
+        assert_eq!(log.append(0, EventKind::MatchStarted, Vec::new(), 7), Ok(1));
         assert_eq!(log.seq(), 1);
         log.flush();
         let chunks = log.take_chunks();
@@ -763,7 +809,87 @@ mod tests {
         // And it reads back as the same event.
         let read: LedgerEvent = serde_json::from_str(text.trim_end()).expect("one line, one event");
         assert_eq!(read.kind, EventKind::MatchStarted);
-        assert_eq!((read.seq, read.t_ms, read.hash, read.draw), (1, 0, 7, None));
+        assert_eq!(
+            (read.seq, read.t_ms, read.hash, read.draws),
+            (1, 0, 7, Vec::new())
+        );
+    }
+
+    /// **16b cut M.3** (16c `T-07`, `T-04`): `draws` is a list that keeps its
+    /// order through the wire, and a line that drew nothing carries no `draws`
+    /// key at all; the `blocked` line's cause is the pilot's own word.
+    #[test]
+    fn m3_draws_round_trip_in_order_and_an_undrawn_line_has_no_key() {
+        let mut log = ledger(1 << 20, 256);
+        let hit = EventKind::Hit {
+            shot_seq: 3,
+            unit: ObjId(4),
+            target: ObjId(9),
+            section: SmolStr::new_static("engine"),
+            facet: SmolStr::new_static("rear"),
+            armor_section: SmolStr::new_static("hull"),
+            rounds: 1,
+            damage: 120,
+            armor_left: 0,
+            internals_left: 40,
+            consequences: Vec::new(),
+            cause: SmolStr::new_static("shot:3"),
+        };
+        let draws = vec![("hit:3".to_owned(), 17), ("facet:3".to_owned(), 99)];
+        let _ = log.append(10, hit.clone(), draws.clone(), 5);
+        let blocked = EventKind::Blocked {
+            unit: ObjId(4),
+            x: 20,
+            y: 30,
+            cause: crate::arena::motion::BlockedCause::Impassable,
+        };
+        let _ = log.append(20, blocked.clone(), Vec::new(), 6);
+        log.flush();
+        let text = String::from_utf8(
+            log.take_chunks()
+                .into_iter()
+                .flat_map(|chunk| chunk.bytes)
+                .collect(),
+        )
+        .expect("utf-8");
+        let lines: Vec<&str> = text.lines().collect();
+        let [drawn, undrawn] = lines.as_slice() else {
+            panic!("two lines: {lines:?}");
+        };
+        assert!(
+            drawn.contains("\"draws\":[[\"hit:3\",17],[\"facet:3\",99]]"),
+            "{drawn}"
+        );
+        assert!(drawn.contains("\"armor_section\":\"hull\""), "{drawn}");
+        let read: LedgerEvent = serde_json::from_str(drawn).expect("a line");
+        assert_eq!(read.draws, draws);
+        assert_eq!(read.kind, hit);
+        assert!(!undrawn.contains("draws"), "{undrawn}");
+        assert!(undrawn.contains("\"cause\":\"impassable\""), "{undrawn}");
+        let read: LedgerEvent = serde_json::from_str(undrawn).expect("a line");
+        assert!(read.draws.is_empty());
+        assert_eq!(read.kind, blocked);
+    }
+
+    /// **16b cut M.3**: the `blocked` line's cause serialises as exactly the word
+    /// `BlockedCause::as_str` gives — the one vocabulary, two readers.
+    #[test]
+    fn m3_the_blocked_cause_on_the_line_is_the_as_str_word() {
+        use crate::arena::motion::BlockedCause;
+        for cause in [
+            BlockedCause::Impassable,
+            BlockedCause::Occupied,
+            BlockedCause::Edge,
+            BlockedCause::TooSteep,
+        ] {
+            assert_eq!(
+                serde_json::to_value(cause).expect("a cause serialises"),
+                serde_json::json!(cause.as_str())
+            );
+            let back: BlockedCause =
+                serde_json::from_value(serde_json::json!(cause.as_str())).expect("and reads back");
+            assert_eq!(back, cause);
+        }
     }
 
     #[test]
@@ -780,6 +906,7 @@ mod tests {
                 unit: ObjId(4),
                 x: 3,
                 y: 7,
+                cause: crate::arena::motion::BlockedCause::TooSteep,
             },
             EventKind::Detected {
                 viewer: ObjId(4),
@@ -826,6 +953,7 @@ mod tests {
                 target: ObjId(9),
                 section: SmolStr::new_static("turret"),
                 facet: SmolStr::new_static("front"),
+                armor_section: SmolStr::new_static("turret"),
                 rounds: 1,
                 damage: 120,
                 armor_left: 230,
@@ -865,7 +993,7 @@ mod tests {
                 .append(
                     i64::try_from(n).unwrap_or(0),
                     kind.clone(),
-                    Some((format!("hit:{n}"), 42)),
+                    vec![(format!("hit:{n}"), 42), (format!("facet:{n}"), 43)],
                     0,
                 )
                 .expect("room for every kind");
@@ -886,7 +1014,11 @@ mod tests {
             let read: LedgerEvent = serde_json::from_str(line).expect("a line reads back");
             assert_eq!(&read.kind, kind);
             assert!(line.contains(&format!("\"kind\":\"{}\"", kind.as_str())));
-            assert!(read.draw.is_some(), "the draw survives the round trip");
+            assert_eq!(
+                read.draws.len(),
+                2,
+                "both draws survive the round trip, in order"
+            );
         }
     }
 
@@ -895,7 +1027,7 @@ mod tests {
         let mut log = ledger(1 << 24, 4_096);
         // Enough summaries to fill several chunks.
         for n in 0..400_u32 {
-            log.append(i64::from(n), summary(12), None, u64::from(n))
+            log.append(i64::from(n), summary(12), Vec::new(), u64::from(n))
                 .expect("room");
         }
         assert!(log.last_closed_seq() > 1, "more than one chunk closed");
@@ -961,7 +1093,7 @@ mod tests {
         // (2), the warning, but not past the bound itself.
         let mut n = 0_i64;
         while log.last_closed_seq() < 2 {
-            log.append(n, summary(12), None, 0).expect("room");
+            log.append(n, summary(12), Vec::new(), 0).expect("room");
             n += 1;
         }
         assert_eq!(log.unflushed_chunks(), 2);
@@ -972,7 +1104,7 @@ mod tests {
         assert!(!log.overflowed(), "two is not past two");
         // Past the bound: doc 16 §3.1 voids the match here.
         while log.last_closed_seq() < 5 {
-            log.append(n, summary(12), None, 0).expect("room");
+            log.append(n, summary(12), Vec::new(), 0).expect("room");
             n += 1;
         }
         assert_eq!(log.unflushed_chunks(), 5);
@@ -1003,7 +1135,7 @@ mod tests {
             if !log.summaries_enabled() && summaries_off_at.is_none() {
                 summaries_off_at = Some(log.bytes_total());
             }
-            match log.append(n, EventKind::MatchStarted, None, 0) {
+            match log.append(n, EventKind::MatchStarted, Vec::new(), 0) {
                 Ok(_) => {}
                 Err(full) => {
                     refusals += 1;
@@ -1043,18 +1175,18 @@ mod tests {
     #[test]
     fn the_digest_is_stable_over_a_fixed_event_sequence() {
         let script = |log: &mut Ledger| {
-            let _ = log.append(0, EventKind::MatchStarted, None, 1);
+            let _ = log.append(0, EventKind::MatchStarted, Vec::new(), 1);
             let _ = log.append(
                 100,
                 EventKind::Tempo {
                     from: Tempo::Quiet,
                     to: Tempo::Alert,
                 },
-                None,
+                Vec::new(),
                 2,
             );
-            let _ = log.append(200, EventKind::Startup { unit: ObjId(4) }, None, 3);
-            let _ = log.append(5_000, summary(3), None, 4);
+            let _ = log.append(200, EventKind::Startup { unit: ObjId(4) }, Vec::new(), 3);
+            let _ = log.append(5_000, summary(3), Vec::new(), 4);
             let _ = log.append(
                 6_000,
                 EventKind::Hit {
@@ -1063,6 +1195,7 @@ mod tests {
                     target: ObjId(9),
                     section: SmolStr::new_static("hull"),
                     facet: SmolStr::new_static("front"),
+                    armor_section: SmolStr::new_static("hull"),
                     rounds: 1,
                     damage: 120,
                     armor_left: 280,
@@ -1070,7 +1203,7 @@ mod tests {
                     consequences: Vec::new(),
                     cause: SmolStr::new_static("shot:1"),
                 },
-                Some(("hit:1".to_string(), 12_072_725_193_963_834_385)),
+                vec![("hit:1".to_string(), 12_072_725_193_963_834_385)],
                 5,
             );
             let _ = log.append(
@@ -1078,7 +1211,7 @@ mod tests {
                 EventKind::MatchEnded {
                     reason: EndReason::Abort,
                 },
-                None,
+                Vec::new(),
                 6,
             );
         };
@@ -1092,7 +1225,7 @@ mod tests {
         // and it does not depend on where the chunk boundaries fell.
         let mut altered = ledger(1 << 20, 256);
         script(&mut altered);
-        let _ = altered.append(8_000, EventKind::Void, None, 7);
+        let _ = altered.append(8_000, EventKind::Void, Vec::new(), 7);
         assert_ne!(first.digest(), altered.digest());
         // Draining and acknowledging changes nothing about the digest.
         let before = first.digest();
@@ -1115,7 +1248,7 @@ mod tests {
     #[test]
     fn flush_closes_the_open_chunk_and_take_chunks_alone_does_not() {
         let mut log = ledger(1 << 20, 256);
-        let _ = log.append(0, EventKind::MatchStarted, None, 0);
+        let _ = log.append(0, EventKind::MatchStarted, Vec::new(), 0);
         assert!(log.take_chunks().is_empty(), "the open chunk stays open");
         assert_eq!(log.last_closed_seq(), 0);
         log.flush();
@@ -1134,7 +1267,7 @@ mod tests {
         let mut log = ledger(1 << 20, 256);
         let empty = log.shipped_digest();
         assert_eq!(empty, log.digest(), "nothing appended, nothing shipped");
-        let _ = log.append(0, EventKind::MatchStarted, None, 0);
+        let _ = log.append(0, EventKind::MatchStarted, Vec::new(), 0);
         // An open chunk: appended and never handed out.
         assert_ne!(log.shipped_digest(), log.digest());
         assert_eq!(log.shipped_digest(), empty);
@@ -1146,9 +1279,9 @@ mod tests {
         assert_eq!(log.shipped_digest(), log.digest());
         // A closed chunk taken while a later one is still open: they differ, and
         // the shipped one is SHA-256 of the taken bytes alone.
-        let _ = log.append(1_000, EventKind::Void, None, 1);
+        let _ = log.append(1_000, EventKind::Void, Vec::new(), 1);
         log.flush();
-        let _ = log.append(2_000, EventKind::Void, None, 2);
+        let _ = log.append(2_000, EventKind::Void, Vec::new(), 2);
         let second = log.take_chunks();
         assert_eq!(second.len(), 1);
         assert_ne!(log.shipped_digest(), log.digest());

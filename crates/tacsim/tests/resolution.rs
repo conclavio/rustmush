@@ -1498,7 +1498,14 @@ fn a_target_that_turns_in_flight_re_resolves_against_the_same_draw() {
         ),
         other => panic!("not a hit: {other:?}"),
     }
-    assert_eq!(hit.draw.map(|(label, _)| label), Some("hit:1".to_owned()));
+    // 16b cut M.3 (16c `T-07`): the shot's own draw, then the facet's.
+    assert_eq!(
+        hit.draws
+            .iter()
+            .map(|(label, _)| label.as_str())
+            .collect::<Vec<&str>>(),
+        vec!["hit:1", "facet:1"]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1521,7 +1528,7 @@ fn the_facet_draw_lands_inside_the_bands_authored_weights() {
         // *same* question. The multiplier keeps consecutive trials from sharing low
         // bits, and both are pinned, so this test is the same 600 draws every run.
         arena.seed = trial.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        let section = arena
+        let (section, _) = arena
             .choose_section(BLUE, "left", 1)
             .unwrap_or_else(|| panic!("the left band has sections"));
         *tally.entry(section.to_string()).or_default() += 1;
@@ -1903,7 +1910,7 @@ struct Beat {
 /// One ledger line, normalised for comparison: the timestamp, the kind as JSON,
 /// the draw and the substep hash. The `seq` is dropped, as `arena.rs`'s own driver
 /// drops it.
-type Line = (i64, String, Option<(String, u64)>, u64);
+type Line = (i64, String, Vec<(String, u64)>, u64);
 
 /// What one replay produced.
 struct Replay {
@@ -1982,7 +1989,7 @@ fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) ->
                 (
                     event.t_ms,
                     serde_json::to_string(&event.kind).unwrap_or_default(),
-                    event.draw.clone(),
+                    event.draws.clone(),
                     event.hash,
                 )
             })
@@ -2244,9 +2251,10 @@ fn one_drive_into_a_bank_and_two_refused_orders_are_one_list_at_three_cadences()
     // is told. The duel's own cross-tempo run covers the notices that come off the
     // journal scan; this one covers the other two — a stop, which is staged in the
     // motion loop because its hysteresis needs the pre-stop condition, and a
-    // refusal, which is staged in phase 4. `unit.held` is deliberately not in the
-    // state hash, so the hash sequence cannot catch a divergence in either and
-    // this is the only thing that can.
+    // refusal, which is staged in phase 4. Since 16b cut M.3 (16c `T-04`)
+    // `unit.held` is folded into the state hash, so the hash sequence also
+    // catches a divergence in the stop; a refusal writes no hashed state at all,
+    // so for it this list is still the only thing that can.
     let mut runs: Vec<(i64, Replay)> = Vec::new();
     for cadence in [5_000_i64, 1_000, 500] {
         let mut arena = held_and_refused_arena();
@@ -4167,7 +4175,7 @@ fn scanned(cadence_ms: i64, until_ms: i64) -> Scanned {
                 (
                     event.t_ms,
                     serde_json::to_string(&event.kind).unwrap_or_default(),
-                    event.draw.clone(),
+                    event.draws.clone(),
                     event.hash,
                 )
             })

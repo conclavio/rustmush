@@ -643,7 +643,7 @@ fn an_accepted_shot_sets_the_cycle_spends_the_burst_and_schedules_one_impact() {
             rounds: 1,
         }
     );
-    assert!(entry.draw.is_none(), "cut W.1 draws nothing");
+    assert!(entry.draws.is_empty(), "cut W.1 draws nothing");
 
     // The impact arrives, leaves the table, and journals cut W.1's placeholder.
     let _ = run(&mut arena, 500, fired_at + 1_000, &mut bytes);
@@ -1080,7 +1080,7 @@ struct Beat {
 /// fields as JSON, the draw where one was made, and the substep hash. The `seq` is
 /// dropped because it is the one field a different number of pulses could
 /// legitimately renumber — `arena.rs`'s own driver does the same.
-type Line = (i64, String, Option<(String, u64)>, u64);
+type Line = (i64, String, Vec<(String, u64)>, u64);
 
 /// What one replay produced: the ledger (normalised), the per-substep hashes, the
 /// rounds fired and left, and how many pulses it took.
@@ -1181,7 +1181,7 @@ fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) ->
                 (
                     event.t_ms,
                     serde_json::to_string(&event.kind).unwrap_or_default(),
-                    event.draw.clone(),
+                    event.draws.clone(),
                     event.hash,
                 )
             })

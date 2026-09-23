@@ -380,8 +380,25 @@ pub fn result_key(match_id: MatchId) -> SmolStr {
 ///
 /// One document, well under the 256 KiB record ceiling: the teams and their
 /// pilots, the outcome with its reason, one row per unit, the ledger's log id and
-/// digest, the arena definition's digest, and the start and end times. It is
-/// written through the module's own namespace on the ordinary module-op lane.
+/// digest, **the match seed** (16b cut M.3), the arena definition's digest, and
+/// the start and end times. It is written through the module's own namespace on
+/// the ordinary module-op lane.
+///
+/// **The seed** (16b cut M.3, 16c `T-07`) is `"seed"` at the document's top
+/// level: [`MatchRecord::seed`], the value the arena drew every draw of the match
+/// with. With it and the ledger — whose lines carry each draw's label and value
+/// (`LedgerEvent::draws`) — a reader can re-derive every draw, so which section
+/// a round found and whether a pass told a target apart are checkable from the
+/// record alone, beside the digest that proves the log is the one the arena
+/// wrote. A match whose record is gone by the time the result is written writes
+/// `0`, the value [`write_restart_abort`] writes too.
+///
+/// **The seed is staff-only.** It re-derives every draw of the match and,
+/// through `crate::arena::rng::draw_contact_id`, every contact's object id, so it
+/// must never be rendered to a player. Today no verb reads this document back:
+/// nothing under `crate::match_` reads `tacsim:match:<id>`, and `verbs::fault`
+/// reads [`MatchRecord::seed`] under the fault-injection feature only. 16c `N2`'s
+/// report and history verbs, when they are built, must redact it.
 pub fn write_result(
     ctx: &mut Ctx<'_>,
     match_id: MatchId,
@@ -395,7 +412,39 @@ pub fn write_result(
         .module_state::<super::MatchBook>()
         .and_then(|book| book.get(match_id))
         .cloned();
-    let (teams, arena, arena_digest, started_ms, log_id) = match &record {
+    let ended_ms = ctx.w.now().saturating_mul(1_000);
+    let value = result_document(
+        record.as_ref(),
+        match_id,
+        outcome,
+        end,
+        ledger_digest,
+        units,
+        ended_ms,
+    );
+    crate::store::push_op(
+        ctx.out,
+        mush_core::ModuleWrite::JsonSet {
+            key: result_key(match_id),
+            value,
+        },
+    );
+}
+
+/// **The result document [`write_result`] writes** (16b cut M.3 split it out of
+/// the write, so the document's shape — the seed on it above all — is testable
+/// without a world). `record` is the match's own record when the book still
+/// holds it; `ended_ms` is the world's clock in milliseconds.
+fn result_document(
+    record: Option<&MatchRecord>,
+    match_id: MatchId,
+    outcome: MatchOutcome,
+    end: MatchEnd,
+    ledger_digest: &str,
+    units: &[UnitResult],
+    ended_ms: i64,
+) -> serde_json::Value {
+    let (teams, arena, arena_digest, started_ms, log_id, seed) = match record {
         Some(record) => (
             record
                 .teams
@@ -419,6 +468,7 @@ pub fn write_result(
             record.arena_definition_digest.clone(),
             record.started_ms,
             record.ledger_log_id.clone(),
+            record.seed,
         ),
         None => (
             Vec::new(),
@@ -426,9 +476,10 @@ pub fn write_result(
             String::new(),
             0,
             crate::arena_bridge::match_log_id(match_id),
+            0,
         ),
     };
-    let value = serde_json::json!({
+    serde_json::json!({
         "record": "tacsim.match",
         "record_version": 1,
         "match": match_id.0,
@@ -439,10 +490,26 @@ pub fn write_result(
         "teams": teams,
         "units": units,
         "ledger": { "log": log_id, "digest": ledger_digest },
+        // 16b cut M.3 (16c `T-07`): staff-only — see `write_result`.
+        "seed": seed,
         "started_ms": started_ms,
-        "ended_ms": ctx.w.now().saturating_mul(1_000),
+        "ended_ms": ended_ms,
         "arena_ms": end.t_ms,
-    });
+    })
+}
+
+/// **The `aborted(restart)` result** (16b T5, doc 16 §3.1 "Boot reconciliation").
+///
+/// A match whose units were still checked out at boot has no arena, no ledger
+/// digest and no end timestamp — the process that held all three is gone. What it
+/// does have is an id, a set of units the recovery pass restored, and a reason,
+/// and that is exactly what this writes.
+///
+/// **16b cut M.3**: its `"seed"` is `0`. There was no arena to have drawn
+/// anything — the record the seed lived on went with the process — and the key
+/// is present so the result document has one shape whichever way it was written.
+pub fn write_restart_abort(ctx: &mut Ctx<'_>, match_id: MatchId, units: &[ObjId]) {
+    let value = restart_abort_document(match_id, units, ctx.w.now().saturating_mul(1_000));
     crate::store::push_op(
         ctx.out,
         mush_core::ModuleWrite::JsonSet {
@@ -452,15 +519,11 @@ pub fn write_result(
     );
 }
 
-/// **The `aborted(restart)` result** (16b T5, doc 16 §3.1 "Boot reconciliation").
-///
-/// A match whose units were still checked out at boot has no arena, no ledger
-/// digest and no end timestamp — the process that held all three is gone. What it
-/// does have is an id, a set of units the recovery pass restored, and a reason,
-/// and that is exactly what this writes.
-pub fn write_restart_abort(ctx: &mut Ctx<'_>, match_id: MatchId, units: &[ObjId]) {
+/// The document [`write_restart_abort`] writes (split out by 16b cut M.3, as
+/// `result_document` is).
+fn restart_abort_document(match_id: MatchId, units: &[ObjId], ended_ms: i64) -> serde_json::Value {
     let rows: Vec<UnitResult> = units.iter().copied().map(UnitResult::intact).collect();
-    let value = serde_json::json!({
+    serde_json::json!({
         "record": "tacsim.match",
         "record_version": 1,
         "match": match_id.0,
@@ -474,17 +537,12 @@ pub fn write_restart_abort(ctx: &mut Ctx<'_>, match_id: MatchId, units: &[ObjId]
             "log": crate::arena_bridge::match_log_id(match_id),
             "digest": "",
         },
+        // 16b cut M.3: no arena drew anything.
+        "seed": 0,
         "started_ms": 0,
-        "ended_ms": ctx.w.now().saturating_mul(1_000),
+        "ended_ms": ended_ms,
         "arena_ms": 0,
-    });
-    crate::store::push_op(
-        ctx.out,
-        mush_core::ModuleWrite::JsonSet {
-            key: result_key(match_id),
-            value,
-        },
-    );
+    })
 }
 
 /// The word the result's `reason` field carries.
@@ -524,6 +582,62 @@ mod tests {
         assert_eq!(match_id_of_key(super::super::SEQ_KEY), None);
         assert_eq!(match_id_of_key("tacsim:match:"), None);
         assert_eq!(match_id_of_key("tacsim:pack:a@1"), None);
+    }
+
+    /// **16b cut M.3** (16c `T-07`): the result document carries the record's
+    /// seed at its top level, and the restart-written one carries `0`.
+    #[test]
+    fn m3_the_result_carries_the_seed_and_the_restart_result_carries_zero() {
+        let record = MatchRecord {
+            id: MatchId(7),
+            state: MatchState::Running,
+            arena: SmolStr::new("tacsim.arena.test"),
+            arena_definition_digest: "ab".to_owned(),
+            teams: Vec::new(),
+            started_ms: 1_000,
+            ended: None,
+            ledger_log_id: "match.7".to_owned(),
+            ledger_digest: String::new(),
+            seed: 2_350_235_023_502_350,
+            last_pose: std::collections::BTreeMap::new(),
+            squads: Vec::new(),
+        };
+        let end = MatchEnd {
+            reason: EndReason::Timeout,
+            t_ms: 90_000,
+        };
+        let written = result_document(
+            Some(&record),
+            MatchId(7),
+            MatchOutcome::Timeout,
+            end,
+            "cd",
+            &[],
+            5_000,
+        );
+        assert_eq!(
+            written["seed"],
+            serde_json::json!(2_350_235_023_502_350_u64)
+        );
+        assert_eq!(written["ledger"]["digest"], serde_json::json!("cd"));
+        // The seed is a top-level key and nowhere else: it is not folded into
+        // the ledger object a reader might hand on.
+        assert!(written["ledger"].get("seed").is_none());
+        // A record the book no longer holds has nothing to say.
+        let orphan = result_document(
+            None,
+            MatchId(7),
+            MatchOutcome::Timeout,
+            end,
+            "cd",
+            &[],
+            5_000,
+        );
+        assert_eq!(orphan["seed"], serde_json::json!(0));
+        // The restart result: no arena drew anything.
+        let restart = restart_abort_document(MatchId(7), &[ObjId(4)], 5_000);
+        assert_eq!(restart["seed"], serde_json::json!(0));
+        assert_eq!(restart["reason"], serde_json::json!("restart"));
     }
 
     #[test]

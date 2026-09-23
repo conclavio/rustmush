@@ -117,6 +117,56 @@ impl DrawLabel {
             }
         }
     }
+
+    /// **The exact inverse of [`DrawLabel::encode`]** (16b cut M.3; 16c `T-07`,
+    /// `T-12`): the label a ledger line's `draws` entry names, back as the value
+    /// [`draw`] is keyed on, so a reader holding the match seed can re-derive the
+    /// draw — which section a round found, whether a pass told a target apart.
+    ///
+    /// Split on `:`, the kind word first, every field decimal. Anything else is
+    /// `None`: an unknown kind, a wrong field count, a field that is not decimal
+    /// digits or does not fit its type — and any spelling `encode` would not
+    /// have written (a leading `+` or zero), because the check is that encoding
+    /// the answer gives the text back, byte for byte. So `decode(s) == Some(l)`
+    /// exactly when `l.encode() == s`.
+    ///
+    /// It is the one place a pass sequence can be read back from the record:
+    /// `EventKind::Classified` carries the viewer, the contact, the target and the
+    /// side, and the `pass_seq` its draw was keyed on is written only in the
+    /// label string beside it.
+    #[must_use]
+    pub fn decode(text: &str) -> Option<DrawLabel> {
+        let mut fields = text.split(':');
+        let kind = fields.next()?;
+        let rest: Vec<&str> = fields.collect();
+        let seq = |at: usize| -> Option<u64> { decimal(rest.get(at)?) };
+        let id = |at: usize| -> Option<ObjId> { u32::try_from(seq(at)?).ok().map(ObjId) };
+        let label = match (kind, rest.len()) {
+            ("hit", 1) => DrawLabel::Hit { shot_seq: seq(0)? },
+            ("facet", 1) => DrawLabel::Facet { shot_seq: seq(0)? },
+            ("burst", 1) => DrawLabel::Burst { shot_seq: seq(0)? },
+            ("classify", 3) => DrawLabel::Classify {
+                observer: id(0)?,
+                target: id(1)?,
+                pass_seq: seq(2)?,
+            },
+            ("contact", 2) => DrawLabel::Contact {
+                viewer: id(0)?,
+                target: id(1)?,
+            },
+            _ => return None,
+        };
+        (label.encode() == text).then_some(label)
+    }
+}
+
+/// One decimal field of an encoded label: ASCII digits only, parsed as `u64`.
+/// The canonical-spelling check is [`DrawLabel::decode`]'s round trip.
+fn decimal(field: &str) -> Option<u64> {
+    if field.is_empty() || !field.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    field.parse().ok()
 }
 
 /// **The pinned label kinds**, as a module-level constant for callers that do not
@@ -237,6 +287,57 @@ mod tests {
             .encode(),
             "contact:4:9"
         );
+    }
+
+    /// **16b cut M.3** (16c `T-07`): `decode` is the exact inverse of `encode` —
+    /// one label of every kind comes back as itself, with a field at its type's
+    /// ceiling as well as a small one — and anything `encode` would not have
+    /// written is `None`.
+    #[test]
+    fn m3_decode_is_the_exact_inverse_of_encode() {
+        let ceiling = [
+            DrawLabel::Hit { shot_seq: u64::MAX },
+            DrawLabel::Facet { shot_seq: 0 },
+            DrawLabel::Burst { shot_seq: 12 },
+            DrawLabel::Classify {
+                observer: ObjId(u32::MAX),
+                target: ObjId(9),
+                pass_seq: u64::MAX,
+            },
+            DrawLabel::Contact {
+                viewer: ObjId(0),
+                target: ObjId(u32::MAX),
+            },
+        ];
+        for label in one_of_each().into_iter().chain(ceiling) {
+            assert_eq!(
+                DrawLabel::decode(&label.encode()),
+                Some(label),
+                "{label:?} did not round-trip"
+            );
+        }
+        for foreign in [
+            "",
+            "hit",
+            "hit:",
+            "hit:x",
+            "hit:1:2",
+            "hit:+1",
+            "hit:01",
+            "hit:-1",
+            "hit: 1",
+            "Hit:1",
+            "dice:1",
+            "facet:18446744073709551616",
+            "classify:4:9",
+            "classify:4:9:3:1",
+            "classify:4294967296:9:3",
+            "contact:4",
+            "contact:4:9:1",
+            "contact:#4:9",
+        ] {
+            assert_eq!(DrawLabel::decode(foreign), None, "{foreign:?} decoded");
+        }
     }
 
     #[test]

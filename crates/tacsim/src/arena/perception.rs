@@ -608,9 +608,12 @@ impl PerceptionCounters {
     }
 }
 
-/// One journalled perception event: its arena timestamp, what happened, and the
-/// draw where one was made.
-pub type Notice = (i64, EventKind, Option<(String, u64)>);
+/// One journalled event of a substep: its arena timestamp, what happened, and
+/// every draw it made, in the order it made them — empty for most events, one
+/// for a sensor classification or a dispersion miss, two for a hit and for a
+/// `refused` miss written after the facet draw (16b cut M.3, 16c `T-07`:
+/// [`crate::arena::ledger::LedgerEvent::draws`] has the whole list).
+pub type Notice = (i64, EventKind, Vec<(String, u64)>);
 
 /// A candidate that passed every test of the pass.
 struct Detection {
@@ -817,7 +820,7 @@ impl Arena {
                         unit: observer,
                         degraded: next_receiver.is_some(),
                     },
-                    None,
+                    Vec::new(),
                 ));
             }
         }
@@ -898,7 +901,7 @@ impl Arena {
                                 target,
                                 team,
                             },
-                            Some((label.encode(), value)),
+                            vec![(label.encode(), value)],
                         ));
                         counters.classified = counters.classified.saturating_add(1);
                     }
@@ -958,7 +961,7 @@ impl Arena {
                             contact: id,
                             target,
                         },
-                        None,
+                        Vec::new(),
                     ));
                     counters.detected = counters.detected.saturating_add(1);
                 }
@@ -988,7 +991,7 @@ impl Arena {
                     contact: id,
                     target: lost.target,
                 },
-                None,
+                Vec::new(),
             ));
             counters.lost = counters.lost.saturating_add(1);
         }
@@ -1411,7 +1414,7 @@ impl Arena {
                                 // No draw: the classification was the sharer's,
                                 // and its label is already in the ledger against
                                 // that pass.
-                                None,
+                                Vec::new(),
                             ));
                             counters.classified = counters.classified.saturating_add(1);
                         }
@@ -1462,7 +1465,7 @@ impl Arena {
                                 contact: id,
                                 target,
                             },
-                            None,
+                            Vec::new(),
                         ));
                         journal.push((
                             t_ms,
@@ -1472,7 +1475,7 @@ impl Arena {
                                 target,
                                 team,
                             },
-                            None,
+                            Vec::new(),
                         ));
                         counters.detected = counters.detected.saturating_add(1);
                         counters.classified = counters.classified.saturating_add(1);

@@ -204,7 +204,7 @@ pub use intents::{
     apply_intent, drain_pending, resolve_startup,
 };
 pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, LedgerFull};
-pub use motion::{MotionOutcome, cos_fx, integrate, sin_fx};
+pub use motion::{Held, MotionOutcome, cos_fx, integrate, sin_fx};
 pub use path::{PathFailure, PathResult, PathScratch, min_move_cost, path_with};
 pub use perception::{
     FULL_SIGNATURE_PERMILLE, FrameCondition, FrameContact, Named, PerceptionCounters,

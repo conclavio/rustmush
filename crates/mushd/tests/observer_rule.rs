@@ -3151,7 +3151,7 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         pose: mush_sim::data::Pose::at(6_500, 4_500, 0, posture),
         speed_cms: 0,
         power: tacsim::arena::state::Power::Online,
-        blocked: false,
+        held: false,
         wreck: false,
         immobile: false,
         tempo: tacsim::arena::clock::Tempo::Quiet,
@@ -3367,7 +3367,8 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
 ///
 /// * **during the hold there is no line at all.** A hold is by construction the
 ///   substep that reports no cause, and `crate::arena::step` stages the pilot's
-///   blocked notice off `MotionOutcome::blocked_by` — so a pilot held by a unit
+///   blocked notice off `MotionOutcome::held_edge`, which only a stop with a
+///   cause can set (16b cut M.3) — so a pilot held by a unit
 ///   they have not detected is sent nothing for up to
 ///   `[tacsim.arena].occupied_stop_ms`, which is later than HEAD told them and
 ///   never sooner. `tacsim`'s own

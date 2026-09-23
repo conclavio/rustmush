@@ -819,10 +819,13 @@ pub struct HeatState {
     /// `per_s × ms / 1000` **however the interval is chopped**, which is the
     /// property the cross-tempo test asserts of everything else in the model.
     ///
-    /// It is arena-side scratch and not state: it is reset with the heat it
-    /// belongs to, never leaves the match, and is not folded into the state hash —
-    /// for the same reason the opaque `TacticalUnit` is not
-    /// ([`crate::arena::hash::state_hash`]).
+    /// It is arena-side: it is reset with the heat it belongs to and never leaves
+    /// the match. **It is folded into [`crate::arena::hash::state_hash`]** since
+    /// 16b cut M.3 (16c `T-06`), beside the heat cell whose fractional part it is:
+    /// heat gates firing and moves every substep with no ledger line, which is
+    /// cut Q.6's argument for the motion carries. (Until then this sentence said
+    /// it was not folded, for the opaque `TacticalUnit`'s reason — which was never
+    /// this number's: the carry is not in the unit, so no journal held it.)
     pub carry_milli: u32,
 }
 
@@ -1295,37 +1298,44 @@ pub struct UnitState {
     /// platform loses clears it (`crate::arena::step`'s `lost` arm).
     pub lock: Option<ContactId>,
     /// Set by motion when this unit was stopped at a cell boundary during the
-    /// substep just integrated, and cleared at the start of the next (doc 16
-    /// §3.4 step 4: *one `blocked` notice per stop*).
+    /// substep just integrated, and cleared at the start of the next.
+    ///
+    /// **A per-substep flag and nothing more** since 16b cut M.3 (16c `T-04`):
+    /// it journals nothing. The ledger's `blocked` line used to fire on its
+    /// rising edge, which made the line count a function of how a pulse was cut
+    /// (a tail substep that covered no whole centimetre lowered it, and the next
+    /// re-collision with the same bank was a second line); the line, the pilot's
+    /// notice and the reflex controller's lesson now all fire on
+    /// [`UnitState::held`]'s edge. Tests and the harness still read the flag.
     pub blocked: bool,
-    /// **It is standing against something** (16b cut F.2), which is the condition
-    /// `STATUS` prints `HELD` for and the edge the pilot's one notice per stop
-    /// fires on.
+    /// **What it is standing against** (16b cut F.2; given its cell and cause by
+    /// 16b cut M.3, 16c `T-04`, `B-27`, §5's Q22): `None` when nothing, else the
+    /// refused cell and why ([`crate::arena::motion::Held`]). It is the condition
+    /// `STATUS` prints `HELD` for, and its **new edge** — a stop naming a cell or
+    /// a cause it was not already set to — is the one condition the ledger's
+    /// `blocked` line, the pilot's notice and the reflex controller's remembered
+    /// stop fire on.
     ///
     /// Not [`UnitState::blocked`], which is what the *substep just integrated*
     /// did: a tank ordered forward against a river bank covers no whole
     /// centimetre on some substeps, never reaches the boundary to be refused at,
     /// and so read `0 kph` with no `HELD` — the defect the 2026-09-18 smoke found.
-    /// This is set by a stop, cleared by a substep that covered ground or by the
-    /// order being taken off ([`crate::arena::motion::integrate`]), and left alone
-    /// in between.
+    /// **One writer**, [`crate::arena::motion::integrate`], whose head states
+    /// the rule: set by a refusal; cleared by entering another cell, by the speed
+    /// order coming off, or by an accepted move inside the cell that points
+    /// strictly away from the held one; left alone otherwise.
     ///
-    /// **Output only.** Nothing in the arena decides anything by it — the ledger's
-    /// `blocked` event is the *flag* beside it rising, and the reflex controller
-    /// learns from that **event** (16b cut Q.7's
-    /// [`Arena::note_blocked`](crate::arena::state::Arena), not from either flag)
-    /// — and it is deliberately **not** folded into
-    /// [`crate::arena::hash::state_hash`], for the reason `last_frames` is not: it
-    /// is a fact about what a pilot is being shown. (This sentence named
-    /// `held_losses` until 16b cut M.2 made that table's expiry a due event and
-    /// folded it.)
+    /// **It is folded into [`crate::arena::hash::state_hash`]** (16b cut M.3).
+    /// Until then it was output only and unhashed, and the flag beside it decided
+    /// the ledger line; now it decides a line, a notice and a machine's avoid
+    /// list, so a replay that set it a substep earlier must not compare equal.
     ///
     /// **16b cut E.3**: a *hold* against another unit
     /// ([`UnitState::occupied_hold`]) is neither a stop nor a substep that moved,
     /// so it leaves this exactly as it was — a tank already held against a wreck
     /// stays held through the two seconds before the next stop matures, and the
     /// pilot therefore still hears one line and not one per cycle.
-    pub held: bool,
+    pub held: Option<crate::arena::motion::Held>,
     /// The seat has gone linkdead (doc 07 §1.2): the tank keeps its continuous
     /// orders and accepts no discrete action.
     pub linkdead: bool,
@@ -2001,12 +2011,34 @@ impl ShadowContacts {
 /// mesh `detected` and a sensor `detected` are the same ledger line. It is not
 /// journalled: the ledger names units by object id, which is the canon's
 /// vocabulary, and a replay in a pilot's own vocabulary is not this cut's.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// **16b cut M.3** (16c `T-27`) gave it a running [`DesignatorBook::digest`],
+/// which is what the hash folds now in place of walking both maps every
+/// substep.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DesignatorBook {
     /// The next number each viewer will issue, from `1`.
     next: BTreeMap<ObjId, u16>,
     /// `(viewer, target)` to the number that viewer gave that target.
     of: BTreeMap<(ObjId, ObjId), u16>,
+    /// **FNV-1a 64 over every mint, in the order it was made** (16b cut M.3):
+    /// seeded at [`crate::arena::hash::FNV_OFFSET_BASIS`] and folded by
+    /// [`DesignatorBook::assign`] with the viewer's `u32`, the target's `u32` and
+    /// the number's `u16`, little-endian, only when it mints.
+    digest: u64,
+}
+
+/// Hand-written rather than derived (16b cut M.3): an empty book's digest is
+/// FNV-1a's offset basis, not zero, so that a book is the fold of its mints from
+/// the same start [`crate::arena::hash::state_hash`] uses.
+impl Default for DesignatorBook {
+    fn default() -> DesignatorBook {
+        DesignatorBook {
+            next: BTreeMap::new(),
+            of: BTreeMap::new(),
+            digest: crate::arena::hash::FNV_OFFSET_BASIS,
+        }
+    }
 }
 
 impl DesignatorBook {
@@ -2016,6 +2048,11 @@ impl DesignatorBook {
     /// Saturating at [`u16::MAX`], which a match cannot reach: a viewer would have
     /// to detect 65,535 distinct targets, and the arena's own unit cap is far
     /// under that.
+    ///
+    /// **16b cut M.3**: a mint folds into [`DesignatorBook::digest`]; a pair the
+    /// book already holds returns before it — `crate::arena::perception` asks
+    /// again on every re-opened hold — and folds nothing, so the digest moves once
+    /// per number issued and never per question.
     pub fn assign(&mut self, viewer: ObjId, target: ObjId) -> u16 {
         if let Some(held) = self.of.get(&(viewer, target)) {
             return *held;
@@ -2024,7 +2061,18 @@ impl DesignatorBook {
         let issued = *next;
         *next = next.saturating_add(1);
         self.of.insert((viewer, target), issued);
+        let digest = crate::arena::hash::fnv1a64_update(self.digest, &viewer.0.to_le_bytes());
+        let digest = crate::arena::hash::fnv1a64_update(digest, &target.0.to_le_bytes());
+        self.digest = crate::arena::hash::fnv1a64_update(digest, &issued.to_le_bytes());
         issued
+    }
+
+    /// **The running digest of every number this book has minted, in order**
+    /// (16b cut M.3, 16c `T-27`) — what [`crate::arena::hash::state_hash`] folds
+    /// for the book.
+    #[must_use]
+    pub const fn digest(&self) -> u64 {
+        self.digest
     }
 
     /// The number `viewer` holds `target` under, if it holds one.
@@ -2033,29 +2081,31 @@ impl DesignatorBook {
         self.of.get(&(viewer, target)).copied()
     }
 
-    /// The `next` table, viewer ascending — [`crate::arena::hash::state_hash`]'s
-    /// walk.
+    /// The `next` table, viewer ascending. [`crate::arena::hash::state_hash`]
+    /// walked it until 16b cut M.3 folded [`DesignatorBook::digest`] instead; it
+    /// stays for readers.
     pub fn counters(&self) -> impl Iterator<Item = (ObjId, u16)> {
         self.next.iter().map(|(viewer, next)| (*viewer, *next))
     }
 
-    /// How many viewers have issued a number — the hash's length prefix, read off
-    /// the map rather than by counting the iterator, because the hash runs once a
-    /// substep.
+    /// How many viewers have issued a number, read off the map rather than by
+    /// counting the iterator.
     #[must_use]
     pub fn counters_len(&self) -> usize {
         self.next.len()
     }
 
-    /// How many numbers have been issued in all, likewise.
+    /// How many numbers have been issued in all — folded by
+    /// [`crate::arena::hash::state_hash`] beside the digest, read off the map
+    /// because the hash runs once a substep.
     #[must_use]
     pub fn issued_len(&self) -> usize {
         self.of.len()
     }
 
     /// Every issued number as `(viewer, target, n)`, viewer then target
-    /// ascending — the `BTreeMap`'s own order, which is why the hash folds it
-    /// without a sort.
+    /// ascending — the `BTreeMap`'s own order. The hash walked it until 16b cut
+    /// M.3; it stays for readers.
     pub fn issued(&self) -> impl Iterator<Item = (ObjId, ObjId, u16)> {
         self.of
             .iter()
@@ -2560,11 +2610,36 @@ pub enum ArenaError {
 // The arena
 // ---------------------------------------------------------------------------
 
+/// **Where the one hash a run of discrete actions shares stands** (16b cut
+/// M.3, 16c `T-23`): [`Arena::action_hash`]'s three states.
+///
+/// A lazy slot, filled by the first [`Arena::event_hash`] that needs it and
+/// never before, so a phase or a substep with no discrete action to journal
+/// takes no hash at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ActionHash {
+    /// Not inside phase 4 or a substep's reflex ticks: every
+    /// [`Arena::event_hash`] takes a fresh [`crate::arena::hash::state_hash`] and
+    /// stores nothing. What a direct resolver call in a test sees.
+    #[default]
+    Outside,
+    /// Inside, and nothing has journalled yet: the first
+    /// [`Arena::event_hash`] takes the hash, stores it as
+    /// [`ActionHash::Taken`], and answers it. Set by phase 4 before its loop and
+    /// by a substep's first `ReflexTick`.
+    Pending,
+    /// Inside, and taken: every later line of the run carries this one hash.
+    /// Phase 4 and the substep's end set [`ActionHash::Outside`] again.
+    Taken(u64),
+}
+
 /// **One match** (doc 16 §4 "Arena state").
 ///
 /// Every field is public because cut A.2's `motion`, `index` and `step` are
 /// siblings in this module tree and the discipline that matters is the one the
 /// contract test enforces — no I/O — not field privacy inside the library.
+/// (One exception since 16b cut M.3: `action_hash`, crate-visible with its
+/// type, because nothing outside the arena may set a hash the ledger records.)
 ///
 /// The two configuration blocks are **cloned in**, so `step` needs no
 /// configuration argument and cannot be handed a different tempo table halfway
@@ -2700,9 +2775,8 @@ pub struct Arena {
     /// and `burst:` draw labels (doc 16 §3.5), so it never repeats within a match
     /// and never restarts.
     pub next_shot_seq: u64,
-    /// **The hash pulse phase 4's events are recorded against** (16b cut W.1), set
-    /// by [`crate::arena::Arena::step`] for the length of the phase and `None`
-    /// everywhere else.
+    /// **The hash pulse phase 4's events are recorded against** (16b cut W.1), and
+    /// a substep's reflex ticks' — [`ActionHash`] says when it is taken.
     ///
     /// Doc 16 §4 asks every ledger line to carry the substep state hash, and
     /// [`crate::arena::step`]'s substep already takes **one** hash for all of its
@@ -2717,14 +2791,20 @@ pub struct Arena {
     /// hash is a walk of every unit and every contact: a pulse in which 150 units
     /// lock and fire measured 9.5 ms against 4.2 ms with this slot, all of it the
     /// hash (16b cut W.1's harness run). A caller outside the pulse —
-    /// [`Arena::event_hash`]'s `None` arm — takes a fresh hash, so a direct
-    /// `resolve_fire` in a test is unchanged.
+    /// [`Arena::event_hash`] under [`ActionHash::Outside`] — takes a fresh hash,
+    /// so a direct `resolve_fire` in a test is unchanged.
+    ///
+    /// **16b cut M.3** (16c `T-23`) made it lazy inside phase 4 as well: the phase
+    /// used to take a whole `state_hash` every pulse, before its `ended` guard and
+    /// with nothing queued, and a pulse with no discrete action and no reflex
+    /// tick now takes none.
     ///
     /// It is a **view** and is deliberately not folded into the state hash: it is
     /// scratch for one phase, and folding it would make the hash a function of
     /// where in the pulse it was taken. (`held_losses` was named beside it until
-    /// 16b cut M.2 folded that table.)
-    pub action_hash: Option<u64>,
+    /// 16b cut M.2 folded that table.) Crate-visible since 16b cut M.3, with its
+    /// type: nothing outside the arena reads or writes it.
+    pub(crate) action_hash: ActionHash,
     /// A `Stop` the world sent, honoured by phase 1 of the next step.
     pub stop: Option<StopReason>,
     /// Arena time: milliseconds since match start.
@@ -3046,7 +3126,7 @@ impl Arena {
                 condition,
                 lock: None,
                 blocked: false,
-                held: false,
+                held: None,
                 linkdead: false,
                 // **16b cut F.1**: doc 16 §3.8's *disabled — no weapons and no
                 // motion* is a fact about the unit, so a unit that arrives that
@@ -3217,7 +3297,7 @@ impl Arena {
             pending: BTreeMap::new(),
             shots: BTreeMap::new(),
             next_shot_seq: 0,
-            action_hash: None,
+            action_hash: ActionHash::Outside,
             stop: None,
             now_ms: 0,
             last_frames: FrameSlots::new(),
@@ -3255,7 +3335,7 @@ impl Arena {
         // `ledger.overflowed()` on its own terms.
         let _ = arena
             .ledger
-            .append(0, EventKind::MatchStarted, None, opening);
+            .append(0, EventKind::MatchStarted, Vec::new(), opening);
         Ok(arena)
     }
 
@@ -3294,19 +3374,61 @@ impl Arena {
     ///
     /// A unit this arena does not hold is a no-op: the caller has already
     /// resolved it, and `apply` produced a unit for an id that has left the match
-    /// only if the match let go of it inside the same substep.
-    pub(crate) fn set_unit(&mut self, id: ObjId, post: TacticalUnit) {
+    /// only if the match let go of it inside the same substep. **16b cut M.3**
+    /// (16c `T-28`): it returns before computing anything, where it used to
+    /// compute the whole band cache for a unit it then threw away.
+    ///
+    /// **`touched_bands`** (16b cut M.3, 16c `T-28`): whether the plan that made
+    /// `post` wrote anything the bands are a function of — a section or facet
+    /// cell, or a section's condition — which `plan_touches_bands` decides from
+    /// the plan at each call site. `false` leaves [`UnitState::condition`] exactly
+    /// as it was: a heat plan writes one section cell that is not armour, and
+    /// recomputing every band on every substep's cooling for every hot unit was
+    /// the cost this flag removes. It is the caller's claim and not a guess:
+    /// `Condition::of` reads the `armor` and `internals` cells and the section
+    /// conditions and nothing else, and the heat cell is neither.
+    pub(crate) fn set_unit(&mut self, id: ObjId, post: TacticalUnit, touched_bands: bool) {
         // Read the floors before the borrow, and read them `.min(1000)` the way
         // every consumer of these keys does (their validation is Q.7's).
-        let condition = crate::arena::condition::Condition::of(
-            &post,
-            self.sensors_cfg.condition_green_permille.min(1_000),
-            self.sensors_cfg.condition_yellow_permille.min(1_000),
-        );
-        if let Some(state) = self.unit_mut(id) {
-            state.unit = post;
-            state.condition = condition;
+        let green = self.sensors_cfg.condition_green_permille.min(1_000);
+        let yellow = self.sensors_cfg.condition_yellow_permille.min(1_000);
+        let Some(state) = self.unit_mut(id) else {
+            return;
+        };
+        if touched_bands {
+            state.condition = crate::arena::condition::Condition::of(&post, green, yellow);
         }
+        state.unit = post;
+    }
+
+    /// **Whether `plan` writes anything the band cache is a function of** (16b
+    /// cut M.3, 16c `T-28`) — [`Arena::set_unit`]'s `touched_bands`, decided the
+    /// same way at both of its call sites.
+    ///
+    /// `Condition::of` reads three things per section and nothing else: the
+    /// section's `internals` cell, every facet's `armor` cell, and the section's
+    /// condition. So a plan touches the bands when it sets or adjusts a
+    /// **facet** cell, sets or adjusts a **section** cell named `internals`, or
+    /// sets a section's condition. A section cell of any other name — the `heat`
+    /// cell, which is the only other section cell the arena writes — does not,
+    /// and neither does anything at unit or component level. The impact's plan
+    /// always answers `true` (a hit spends armour or internals or it has no ops
+    /// and is never applied); the heat plan always answers `false`.
+    pub(crate) fn plan_touches_bands(plan: &mush_tactics::UnitMutationPlan) -> bool {
+        use mush_tactics::{CellAddr, UnitMutationOp};
+        plan.ops().iter().any(|op| match op {
+            UnitMutationOp::SetCell { addr, .. } | UnitMutationOp::AdjustCell { addr, .. } => {
+                match addr {
+                    CellAddr::Facet { .. } => true,
+                    CellAddr::Section { cell, .. } => {
+                        cell.as_str() == crate::definitions::unit::INTERNALS_CELL
+                    }
+                    CellAddr::Unit { .. } | CellAddr::Component { .. } => false,
+                }
+            }
+            UnitMutationOp::SetSectionCondition { .. } => true,
+            _ => false,
+        })
     }
 
     /// **Take one pilot off the frame roster** (16b cut F.1; doc 16 §3.6).
@@ -3335,17 +3457,33 @@ impl Arena {
     }
 
     /// **The hash one discrete action's ledger line carries** (16b cut W.1):
-    /// [`Arena::action_hash`] while the pulse is inside phase 4, and a fresh
-    /// [`crate::arena::hash::state_hash`] outside it.
+    /// the one `Arena::action_hash` holds while the pulse is inside phase 4 or
+    /// a substep's reflex ticks, and a fresh [`crate::arena::hash::state_hash`]
+    /// outside them.
     ///
     /// Every resolver of a discrete action goes through this rather than hashing for
     /// itself, so the phase's lines share one hash exactly as a substep's do, and a
     /// caller outside the pulse still gets an honest one.
-    #[must_use]
-    pub fn event_hash(&self) -> u64 {
+    ///
+    /// **16b cut M.3** (16c `T-23`): `&mut self`, because it is where the lazy
+    /// slot is filled — `ActionHash::Taken` answers the stored hash,
+    /// `ActionHash::Pending` takes the hash now, stores it and answers it, and
+    /// `ActionHash::Outside` takes a fresh one and stores nothing. The hash of a
+    /// run is therefore the state at its **first** journalled line — every
+    /// resolver asks before it writes, so it is the state before that line's own
+    /// action, after any refused ones before it (which write nothing hashed) and,
+    /// in a reflex tick, after the machine's own decision — and every later line
+    /// of the run shares it: one moment, one hash, the rule the substep follows,
+    /// and a function of the actions resolved and not of the cadence.
+    pub fn event_hash(&mut self) -> u64 {
         match self.action_hash {
-            Some(hash) => hash,
-            None => crate::arena::hash::state_hash(self),
+            ActionHash::Taken(hash) => hash,
+            ActionHash::Pending => {
+                let hash = crate::arena::hash::state_hash(self);
+                self.action_hash = ActionHash::Taken(hash);
+                hash
+            }
+            ActionHash::Outside => crate::arena::hash::state_hash(self),
         }
     }
 
@@ -4065,5 +4203,147 @@ mod tests {
                 (ObjId(9), 2_500, 2_600, 0, 0)
             ]
         );
+    }
+
+    /// **16b cut M.3** (16c `T-27`): the book's digest starts at FNV-1a's offset
+    /// basis, moves on a mint, stands still on a re-assignment of a pair the book
+    /// already holds, and is a function of the mints in order.
+    #[test]
+    fn m3_the_book_digest_moves_on_a_mint_only_and_follows_the_order() {
+        let mut book = DesignatorBook::default();
+        assert_eq!(book.digest(), crate::arena::hash::FNV_OFFSET_BASIS);
+        assert_eq!(book.assign(ObjId(4), ObjId(9)), 1);
+        let minted = book.digest();
+        assert_ne!(
+            minted,
+            crate::arena::hash::FNV_OFFSET_BASIS,
+            "a mint moves it"
+        );
+        // A held pair: the same number, and nothing folded.
+        assert_eq!(book.assign(ObjId(4), ObjId(9)), 1);
+        assert_eq!(book.digest(), minted, "a re-assignment moved the digest");
+        // Two books with the same mints in the same order agree.
+        let book_of = |mints: &[(u32, u32)]| {
+            let mut book = DesignatorBook::default();
+            for (viewer, target) in mints {
+                let _ = book.assign(ObjId(*viewer), ObjId(*target));
+            }
+            book
+        };
+        let one = book_of(&[(4, 9), (4, 10), (5, 9)]);
+        let two = book_of(&[(4, 9), (4, 10), (5, 9)]);
+        assert_eq!(one.digest(), two.digest());
+        assert_eq!(one, two);
+        // A different order disagrees — within one viewer, where the numbers
+        // themselves differ, and across two viewers, where the final table is
+        // the same and only the order of the mints tells them apart.
+        let swapped = book_of(&[(4, 10), (4, 9), (5, 9)]);
+        assert_ne!(swapped.digest(), one.digest());
+        let interleaved = book_of(&[(5, 9), (4, 9), (4, 10)]);
+        assert_eq!(
+            interleaved.issued().collect::<Vec<_>>(),
+            one.issued().collect::<Vec<_>>(),
+            "the same numbers for the same pairs"
+        );
+        assert_ne!(interleaved.digest(), one.digest());
+    }
+
+    /// **16b cut M.3** (16c `T-28`): an impact's plan recomputes the band cache,
+    /// a unit the arena does not hold is a no-op before anything is computed,
+    /// and `plan_touches_bands` reads the ops the way `Condition::of` reads the
+    /// unit.
+    #[test]
+    fn m3_set_unit_recomputes_the_bands_only_when_told_and_ignores_a_stranger() {
+        use crate::arena::condition::{Condition, ConditionBand};
+        use mush_tactics::{
+            CellAddr, CellId, FacetId, SectionId, UnitMutationOp, UnitMutationPlan,
+        };
+
+        let mut arena = arena_of(vec![crate::arena::test_support::line_tank(
+            ObjId(9),
+            Team::Blue,
+            pose(1_500, 1_500),
+        )]);
+        let honest = arena.unit(ObjId(9)).map(|unit| unit.condition);
+        // A band cache no intact tank has, so a recompute is visible.
+        let marked = Condition::default().with_band(0, ConditionBand::Destroyed);
+        if let Some(unit) = arena.unit_mut(ObjId(9)) {
+            unit.condition = marked;
+        }
+        let same = arena
+            .unit(ObjId(9))
+            .map(|unit| unit.unit.clone())
+            .unwrap_or_else(|| panic!("the tank"));
+        // Told nothing was touched: left exactly as it was.
+        arena.set_unit(ObjId(9), same.clone(), false);
+        assert_eq!(
+            arena.unit(ObjId(9)).map(|unit| unit.condition),
+            Some(marked)
+        );
+        // Told the bands were touched: recomputed from the unit.
+        arena.set_unit(ObjId(9), same.clone(), true);
+        assert_eq!(arena.unit(ObjId(9)).map(|unit| unit.condition), honest);
+        // A stranger: nothing moves.
+        let before = crate::arena::hash::state_hash(&arena);
+        arena.set_unit(ObjId(77), same, true);
+        assert_eq!(crate::arena::hash::state_hash(&arena), before);
+        assert_eq!(arena.units.len(), 1);
+
+        let plan = |op: UnitMutationOp| {
+            UnitMutationPlan::new(vec![op], None, None).unwrap_or_else(|_| panic!("a plan"))
+        };
+        let section = |cell: &str| CellAddr::Section {
+            section: SectionId::new("hull").expect("a section"),
+            cell: CellId::new(cell).expect("a cell"),
+        };
+        let armour = CellAddr::Facet {
+            section: SectionId::new("hull").expect("a section"),
+            facet: FacetId::new("front").expect("a facet"),
+            cell: CellId::new("armor").expect("a cell"),
+        };
+        for (op, touches) in [
+            (
+                UnitMutationOp::SetCell {
+                    addr: armour.clone(),
+                    value: 1,
+                },
+                true,
+            ),
+            (
+                UnitMutationOp::AdjustCell {
+                    addr: armour,
+                    delta: -1,
+                },
+                true,
+            ),
+            (
+                UnitMutationOp::SetCell {
+                    addr: section("internals"),
+                    value: 1,
+                },
+                true,
+            ),
+            (
+                UnitMutationOp::SetSectionCondition {
+                    section: SectionId::new("hull").expect("a section"),
+                    condition: mush_tactics::ConditionId::new("destroyed").expect("a condition"),
+                },
+                true,
+            ),
+            // The heat cell is a section cell the bands never read.
+            (
+                UnitMutationOp::SetCell {
+                    addr: section(crate::definitions::unit::HEAT_CELL),
+                    value: 1,
+                },
+                false,
+            ),
+        ] {
+            assert_eq!(
+                Arena::plan_touches_bands(&plan(op.clone())),
+                touches,
+                "{op:?}"
+            );
+        }
     }
 }

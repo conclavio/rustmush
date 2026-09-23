@@ -308,6 +308,11 @@ struct Struck {
     section: SmolStr,
     /// The facet whose armour the round passed.
     facet: SmolStr,
+    /// **Whose armour that facet is** (16b cut M.3, 16c `T-13`): the
+    /// struck-through section's for a section with no armour of its own, else
+    /// `section` itself — `plan_hit`'s own `struck_through` match, carried out to
+    /// the `hit` line so the facet is never read against the wrong section.
+    armor_section: SmolStr,
     /// The damage the round or the burst carried.
     damage: u32,
     /// The armour left in that facet.
@@ -352,7 +357,7 @@ impl Arena {
                 unit: shot.shooter,
                 target: shot.target,
             },
-            None,
+            Vec::new(),
         ));
         let miss = |reason: &str, journal: &mut Vec<Notice>| {
             journal.push((
@@ -361,7 +366,7 @@ impl Arena {
                     shot_seq,
                     reason: SmolStr::new(reason),
                 },
-                None,
+                Vec::new(),
             ));
         };
         // (1) The target exists, and is not already a wreck.
@@ -432,11 +437,11 @@ impl Arena {
                     shot_seq,
                     reason: SmolStr::new_static(DISPERSION),
                 },
-                Some(drawn),
+                vec![drawn],
             ));
             return;
         }
-        self.apply_hit(&shot, &taken, landed, t_ms, Some(drawn), journal);
+        self.apply_hit(&shot, &taken, landed, t_ms, drawn, journal);
     }
 
     /// **The one trace a shot takes**, answering what stood in the line and what
@@ -546,17 +551,25 @@ impl Arena {
 
     /// **One hit** (doc 16 §3.5 "Damage"): the facet draw, the armour, the
     /// overflow, the consequence, and one plan for all of it.
+    ///
+    /// `drawn` is the shot's own `hit:<seq>` or `burst:<seq>` draw. **16b cut
+    /// M.3** (16c `T-07`): every line this writes after the section is chosen
+    /// carries both draws the round made, in the order it made them — the shot's,
+    /// then `facet:<seq>` — and the one miss written before it (no facet table
+    /// for the band) carries the shot's alone, because the facet draw was never
+    /// taken.
     fn apply_hit(
         &mut self,
         shot: &crate::arena::weapons::Shot,
         taken: &Resolution,
         landed: u32,
         t_ms: i64,
-        drawn: Option<(String, u64)>,
+        drawn: (String, u64),
         journal: &mut Vec<Notice>,
     ) {
         let damage = shot.damage.saturating_mul(landed);
-        let Some(section) = self.choose_section(shot.target, &taken.band, shot.seq) else {
+        let Some((section, facet_value)) = self.choose_section(shot.target, &taken.band, shot.seq)
+        else {
             // A target whose content authored no facet table for this band has
             // nothing for the round to strike. It is not a validation failure and
             // not a dispersion: the round arrived and found no structure, which is
@@ -567,10 +580,17 @@ impl Arena {
                     shot_seq: shot.seq,
                     reason: SmolStr::new_static(DISPERSION),
                 },
-                drawn,
+                vec![drawn],
             ));
             return;
         };
+        let drawn = vec![
+            drawn,
+            (
+                DrawLabel::Facet { shot_seq: shot.seq }.encode(),
+                facet_value,
+            ),
+        ];
         let Some(struck) = self.plan_hit(shot.target, &section, &taken.band, damage) else {
             journal.push((
                 t_ms,
@@ -623,7 +643,8 @@ impl Arena {
             };
             // **16b cut Q.2**: through the one writer, so the band cache the
             // gunner's `SCAN` reads moves with the round that changed it.
-            self.set_unit(shot.target, post);
+            let touched = Arena::plan_touches_bands(&plan);
+            self.set_unit(shot.target, post, touched);
             // **16b cut Q.6**: and the shooter's count is inside the guard with
             // it. The result record's `hits` (doc 16 §4) is what a pilot reads
             // his own gunnery off, and a round that reached a section already at
@@ -651,6 +672,7 @@ impl Arena {
                 target: shot.target,
                 section: struck.section.clone(),
                 facet: struck.facet.clone(),
+                armor_section: struck.armor_section.clone(),
                 rounds: landed,
                 damage: struck.damage,
                 armor_left: struck.armor_left,
@@ -688,7 +710,7 @@ impl Arena {
                         .map(|consequence| SmolStr::new_static(consequence.label()))
                         .collect(),
                 },
-                None,
+                Vec::new(),
             ));
             for consequence in &struck.consequences {
                 self.apply_consequence(shot.target, consequence, t_ms, Some(shot.shooter), journal);
@@ -703,24 +725,35 @@ impl Arena {
     /// The draw is taken modulo the weights' sum and the table is walked in
     /// authored order, so the choice is a function of the shot's sequence and the
     /// content's own order and nothing else. A band with no sections, or whose
-    /// weights are all zero, answers `None`.
+    /// weights are all zero, answers `None` — and takes no draw.
+    ///
+    /// **16b cut M.3** (16c `T-07`): it answers the section **and the draw's
+    /// value**, the whole `u64` before the modulus, so the `hit` line can carry
+    /// `facet:<shot_seq>` beside the shot's own draw and a reader holding the
+    /// seed can re-derive which section a round found.
     #[must_use]
-    pub fn choose_section(&self, target: ObjId, band: &str, shot_seq: u64) -> Option<SmolStr> {
+    pub fn choose_section(
+        &self,
+        target: ObjId,
+        band: &str,
+        shot_seq: u64,
+    ) -> Option<(SmolStr, u64)> {
         let profile = &self.unit(target)?.profile;
         let rows = &profile.band(band)?.sections;
         let total: u64 = rows.iter().map(|(_, weight)| u64::from(*weight)).sum();
         if total == 0 {
             return None;
         }
-        let mut pick = draw(self.seed, &DrawLabel::Facet { shot_seq }) % total;
+        let value = draw(self.seed, &DrawLabel::Facet { shot_seq });
+        let mut pick = value % total;
         for (section, weight) in rows {
             let weight = u64::from(*weight);
             if pick < weight {
-                return Some(section.clone());
+                return Some((section.clone(), value));
             }
             pick = pick.saturating_sub(weight);
         }
-        rows.last().map(|(section, _)| section.clone())
+        rows.last().map(|(section, _)| (section.clone(), value))
     }
 
     /// **Build the ops of one hit**, and say what they will leave behind.
@@ -813,6 +846,7 @@ impl Arena {
             Struck {
                 section: SmolStr::new(section),
                 facet: armor_facet,
+                armor_section,
                 damage: u32::try_from(damage).unwrap_or(u32::MAX),
                 armor_left: u32::try_from(armor_left.max(0)).unwrap_or(0),
                 internals_left: u32::try_from(internals_left.max(0)).unwrap_or(0),
@@ -1084,7 +1118,11 @@ impl Arena {
             self.reflex
                 .adopt(target, crate::arena::reflex::ReflexState::Disabled);
         }
-        journal.push((t_ms, EventKind::UnitDestroyed { unit: target, by }, None));
+        journal.push((
+            t_ms,
+            EventKind::UnitDestroyed { unit: target, by },
+            Vec::new(),
+        ));
     }
 
     /// **A unit with no weapons and no motion is disabled** (doc 16 §3.8; doc 10
@@ -1106,7 +1144,7 @@ impl Arena {
         if let Some(state) = self.unit_mut(target) {
             state.disabled = true;
         }
-        journal.push((t_ms, EventKind::UnitDisabled { unit: target }, None));
+        journal.push((t_ms, EventKind::UnitDisabled { unit: target }, Vec::new()));
     }
 
     /// **Whether a unit is out of the fight** (doc 16 §3.8's *a wreck or disabled
@@ -1341,13 +1379,15 @@ mod tests {
     fn the_facet_draw_lands_on_a_section_the_band_declares() {
         let arena = duel();
         for seq in 1..40_u64 {
-            let section = arena
+            let (section, value) = arena
                 .choose_section(BLUE, "front", seq)
                 .unwrap_or_else(|| panic!("the front band has sections"));
             assert!(
                 ["hull", "turret"].contains(&section.as_str()),
                 "the front band sends rounds to hull and turret, not {section}"
             );
+            // 16b cut M.3: and the value it answers is the draw itself, whole.
+            assert_eq!(value, draw(arena.seed, &DrawLabel::Facet { shot_seq: seq }));
         }
         assert_eq!(arena.choose_section(BLUE, "nowhere", 1), None);
     }
@@ -1388,15 +1428,68 @@ mod tests {
             },
             1,
             10,
-            None,
+            arena.shot_draw(1, 1),
             &mut journal,
         );
-        assert!(
-            journal
-                .iter()
-                .any(|(_, kind, _)| matches!(kind, EventKind::Hit { .. })),
-            "the hit is journalled: {journal:?}"
+        let draws = journal
+            .iter()
+            .find(|(_, kind, _)| matches!(kind, EventKind::Hit { .. }))
+            .map(|(_, _, draws)| draws.clone())
+            .unwrap_or_else(|| panic!("the hit is journalled: {journal:?}"));
+        // **16b cut M.3** (16c `T-07`): both draws the round made, in the order
+        // it made them — the shot's own, then the facet's.
+        let labels: Vec<&str> = draws.iter().map(|(label, _)| label.as_str()).collect();
+        assert_eq!(labels, vec!["hit:1", "facet:1"]);
+        assert_eq!(
+            draws.get(1).map(|(_, value)| *value),
+            Some(draw(arena.seed, &DrawLabel::Facet { shot_seq: 1 }))
         );
+    }
+
+    /// **16b cut M.3** (16c `T-07`): a burst's `hit` line carries `burst:<seq>`
+    /// and then `facet:<seq>` — the same two-draw shape, keyed on the burst.
+    #[test]
+    fn m3_a_burst_hit_carries_the_burst_draw_then_the_facet_draw() {
+        let mut arena = duel();
+        let mut journal: Vec<Notice> = Vec::new();
+        let shot = crate::arena::weapons::Shot {
+            seq: 5,
+            shooter: RED,
+            weapon: SmolStr::new("cannon"),
+            contact: crate::arena::state::ContactId(1),
+            target: BLUE,
+            rounds: 3,
+            fired_at_ms: 0,
+            impact_at_ms: 0,
+            range_cm: 1_000,
+            aim_x_cm: 1_500,
+            aim_y_cm: 2_500,
+            aim_cell: Some((1, 2)),
+            damage: 10,
+            resolution: Resolution::blind("front", 3_000, Cover::None),
+        };
+        let drawn = arena.shot_draw(5, 3);
+        assert_eq!(
+            drawn.0, "burst:5",
+            "a burst's shot draw is keyed on the burst"
+        );
+        arena.apply_hit(
+            &shot,
+            &Resolution {
+                p_permille: 1_000,
+                ..Resolution::blind("front", 3_000, Cover::None)
+            },
+            2,
+            10,
+            drawn,
+            &mut journal,
+        );
+        let labels: Vec<String> = journal
+            .iter()
+            .find(|(_, kind, _)| matches!(kind, EventKind::Hit { .. }))
+            .map(|(_, _, draws)| draws.iter().map(|(label, _)| label.clone()).collect())
+            .unwrap_or_else(|| panic!("the hit is journalled: {journal:?}"));
+        assert_eq!(labels, vec!["burst:5".to_owned(), "facet:5".to_owned()]);
     }
 
     #[test]
@@ -1434,6 +1527,18 @@ mod tests {
         assert_eq!(
             struck.facet, "rear",
             "the hull's rear, not the engine's own"
+        );
+        // **16b cut M.3** (16c `T-13`): and the line names whose armour that
+        // facet is — the hull's, which the engine is struck through — so the
+        // `rear` beside `engine` is never read as the engine's own.
+        assert_eq!(struck.armor_section, "hull");
+        // A section with armour of its own names itself.
+        let (turret, _) = arena
+            .plan_hit(BLUE, "turret", "front", 10)
+            .unwrap_or_else(|| panic!("a turret hit plans"));
+        assert_eq!(
+            (turret.section.as_str(), turret.armor_section.as_str()),
+            ("turret", "turret")
         );
         assert_eq!(struck.internals_left, 0);
         assert_eq!(struck.consequences, vec![Consequence::DisableMotion]);

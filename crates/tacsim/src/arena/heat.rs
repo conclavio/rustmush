@@ -238,8 +238,14 @@ fn apply_heat(
     // non-test code, so the band cache cannot go stale behind a heat cycle. A
     // heat cell is not armour and moves no band; going through the one writer
     // anyway is what makes "one writer" a property and not a habit.
+    //
+    // **16b cut M.3** (16c `T-28`): and the writer is told so. The plan's own
+    // ops decide it (`Arena::plan_touches_bands`: a section cell named `heat`
+    // is not one the bands read), so the cache is left as it was rather than
+    // recomputed on every substep's cooling of every hot unit.
     if let Some(Ok((post, _))) = applied {
-        arena.set_unit(unit, post);
+        let touched = Arena::plan_touches_bands(&plan);
+        arena.set_unit(unit, post, touched);
     }
 }
 
@@ -314,6 +320,35 @@ mod tests {
         arena.dissipate_heat(250, 0);
         assert_eq!(arena.unit(RED).and_then(UnitState::heat_now), Some(0));
         assert_eq!(carry(&arena), Some(0));
+    }
+
+    /// **16b cut M.3** (16c `T-28`): a heat plan — the rise and the fall — goes
+    /// through the one writer and leaves the band cache byte-identical, because
+    /// the heat cell is not a cell the bands read and the writer is told so.
+    #[test]
+    fn m3_a_heat_plan_leaves_the_band_cache_as_it_was() {
+        use crate::arena::condition::{Condition, ConditionBand};
+
+        let mut arena = arena_of(vec![laser_tank(RED, Team::Red, pose(1_500, 1_500))]);
+        // A cache no intact tank has, so a recompute would be visible.
+        let marked = Condition::default().with_band(0, ConditionBand::Destroyed);
+        if let Some(state) = arena.unit_mut(RED) {
+            state.condition = marked;
+        }
+        set_heat(&mut arena, RED, 30);
+        arena.dissipate_heat(1_000, 0);
+        assert!(
+            arena
+                .unit(RED)
+                .and_then(UnitState::heat_now)
+                .is_some_and(|heat| heat < 30),
+            "the fall ran"
+        );
+        assert_eq!(
+            arena.unit(RED).map(|state| state.condition),
+            Some(marked),
+            "a heat plan recomputed the bands"
+        );
     }
 
     /// Put `value` in the unit's heat cell, through M32 as everything else does.

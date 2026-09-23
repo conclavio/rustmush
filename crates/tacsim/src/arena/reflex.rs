@@ -67,9 +67,11 @@
 //! the planner reads readiness against the same clock.)
 //!
 //! The one thing phase 4 keeps is the hash discipline: a substep that runs reflex
-//! work takes **one** [`crate::arena::hash::state_hash`] before its due-event loop
-//! and every action inside it carries that one hash, the same way phase 4 takes
-//! one for the whole phase ([`crate::arena::state::Arena::action_hash`]).
+//! work takes **one** [`crate::arena::hash::state_hash`] and every action inside
+//! it carries that one hash, the same way phase 4 takes one for the whole phase
+//! (`Arena::action_hash`). Since 16b cut M.3 (16c `T-23`) both take it lazily, at
+//! the first line a tick or the phase journals, so a substep whose ticks order
+//! nothing takes none.
 //!
 //! # No draw
 //!
@@ -143,7 +145,47 @@ pub const REFLEX_AVOID_MAX: usize = 8;
 /// seconds is long enough to get round an obstacle and short enough that a wreck
 /// that has been salvaged, or a tank that has driven off, stops being a hole in
 /// the map.
+///
+/// **A cell a machine is still held against does not age** (16b cut M.3):
+/// `Arena::refresh_held_avoid` re-stamps it at every tick while
+/// [`crate::arena::state::UnitState::held`] names it, so the thirty seconds run
+/// from the last tick the unit was still pushing at it.
 pub const REFLEX_AVOID_TTL_MS: i64 = 30_000;
+
+/// **Remember `cell` on a machine's avoid list at `t_ms`** (16b cut Q.7, its
+/// eviction 16b cut E.3's, shared since 16b cut M.3 by the stop's own edge and
+/// the tick's held refresh): a listed cell has its stamp refreshed in place, and
+/// a new one takes a slot, evicting the least recently stopped at when the list
+/// is full.
+fn remember_avoid(row: &mut ReflexUnit, cell: (u16, u16), t_ms: i64) {
+    match row.avoid.iter_mut().find(|(at, _)| *at == cell) {
+        // A listed cell refreshes its stamp rather than taking a second slot: a
+        // tank held against one wreck for ten seconds must not push the other
+        // seven cells it learned out of the list.
+        Some(entry) => entry.1 = t_ms,
+        None => {
+            // **16b cut E.3 (16c `B-43`)**: the list evicts the **least recently
+            // stopped at**, not the one that happens to sit at index zero.
+            // Insertion order and recency are not the same order — a refresh
+            // moves an entry's stamp in place — so the old rule dropped exactly
+            // the cell the unit kept being stopped at, which is the one cell it
+            // must not forget. Ties go to the lowest index, so the choice is a
+            // function of the list and not of its scan.
+            if row.avoid.len() >= REFLEX_AVOID_MAX {
+                let oldest = row
+                    .avoid
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(index, (_, at_ms))| (*at_ms, *index))
+                    .map(|(index, _)| index);
+                if let Some(index) = oldest {
+                    row.avoid.remove(index);
+                }
+            }
+            row.avoid.push((cell, t_ms));
+        }
+    }
+}
 
 /// **How far short of `engage_cm` an `Approach` aims its stand-off cell**, in
 /// cells (16b cut E.1).
@@ -287,9 +329,11 @@ pub struct ReflexUnit {
     /// path search, which treats every listed cell as impassable. At most
     /// [`REFLEX_AVOID_MAX`] entries, the **least recently stopped at** dropped
     /// (16b cut E.3, `B-43`: evicting by insertion order dropped the cell the
-    /// unit kept being stopped at, because a repeat refreshes a stamp in place);
-    /// a repeat of a listed cell refreshes its stamp; an entry older than
-    /// [`REFLEX_AVOID_TTL_MS`] is dropped at the top of a tick.
+    /// unit kept being stopped at, because a refresh moves a stamp in place);
+    /// a new stop at a listed cell refreshes its stamp, and so does every tick
+    /// while the unit is still held against that cell (16b cut M.3: the `blocked`
+    /// line fires once per edge now, so re-collisions no longer refresh it); an
+    /// entry older than [`REFLEX_AVOID_TTL_MS`] is dropped at the top of a tick.
     ///
     /// It is **not** occupancy and it cannot be used as one: the unit knows it
     /// was refused a cell, and never what refused it. The occupant may be a
@@ -789,6 +833,10 @@ impl Arena {
             return false;
         }
         counters.ticks = counters.ticks.saturating_add(1);
+        // **16b cut M.3** (16c `T-04`, B-43's guarantee under the one-edge rule):
+        // before the decision's `REFLEX_AVOID_TTL_MS` sweep, a machine still held
+        // on an occupied cell refreshes that cell's stamp to this tick.
+        self.refresh_held_avoid(unit, t_ms);
         // The memory comes out for the length of the decision so that the deciding
         // half can hold `&self` and `&mut memory` at once; it goes back before a
         // single order is applied, so nothing downstream sees an arena without one.
@@ -815,7 +863,7 @@ impl Arena {
                     squad: SmolStr::new(squad.to_string()),
                     objective: SmolStr::new(objective),
                 },
-                None,
+                Vec::new(),
                 hash,
             );
             self.note_order_expired(squad);
@@ -965,6 +1013,13 @@ impl Arena {
     /// with the cell and the cause in hand; this is called from there, and it is
     /// the only way the controller learns of a stop now.
     ///
+    /// **16b cut M.3** (16c `T-04`): "once per stop" is now exact — the line and
+    /// this call fire on [`crate::arena::state::UnitState::held`]'s new edge and
+    /// nothing else, so a unit re-colliding with one wreck substep after substep
+    /// calls this once. The stamp refresh the repeats used to give a listed cell
+    /// is the tick's now (`Arena::refresh_held_avoid`), for as long as the unit is
+    /// still held there.
+    ///
     /// A stop of any cause throws the route away, as the flag did. A stop with
     /// [`BlockedCause::Occupied`] does two things more: it remembers the cell (see
     /// [`ReflexUnit::avoid`]) and it clears `searched_ms`, so the next tick
@@ -987,32 +1042,39 @@ impl Arena {
             return;
         }
         row.searched_ms = None;
-        match row.avoid.iter_mut().find(|(at, _)| *at == cell) {
-            // A repeat refreshes the stamp rather than taking a second slot: a
-            // tank held against one wreck for ten seconds must not push the other
-            // seven cells it learned out of the list.
-            Some(entry) => entry.1 = t_ms,
-            None => {
-                // **16b cut E.3 (16c `B-43`)**: the list evicts the **least
-                // recently stopped at**, not the one that happens to sit at index
-                // zero. Insertion order and recency are not the same order — a
-                // repeat refreshes an entry's stamp in place — so the old rule
-                // dropped exactly the cell the unit kept being stopped at, which
-                // is the one cell it must not forget. Ties go to the lowest index,
-                // so the choice is a function of the list and not of its scan.
-                if row.avoid.len() >= REFLEX_AVOID_MAX {
-                    let oldest = row
-                        .avoid
-                        .iter()
-                        .enumerate()
-                        .min_by_key(|(index, (_, at_ms))| (*at_ms, *index))
-                        .map(|(index, _)| index);
-                    if let Some(index) = oldest {
-                        row.avoid.remove(index);
-                    }
-                }
-                row.avoid.push((cell, t_ms));
-            }
+        remember_avoid(row, cell, t_ms);
+    }
+
+    /// **A machine still held on an occupied cell keeps it on its avoid list**
+    /// (16b cut M.3; 16c `T-04` with `B-43`'s guarantee), run at the top of
+    /// [`Arena::reflex_tick`], before the decision's
+    /// [`REFLEX_AVOID_TTL_MS`] sweep.
+    ///
+    /// Until the one-edge rule, every re-collision with the wreck was a `blocked`
+    /// line and a [`Arena::note_blocked`] that refreshed the cell's stamp, so a
+    /// machine pinned against it never aged it out. The line now fires once per
+    /// edge, and a machine cornered against a wreck for longer than the TTL would
+    /// forget the one cell it is still pushing at — so the tick refreshes it off
+    /// the condition instead: a `Reflex`-controlled unit whose
+    /// [`crate::arena::state::UnitState::held`] names an
+    /// [`BlockedCause::Occupied`] cell has that cell's entry stamped `t_ms`, or
+    /// inserted under the same least-recently-stopped eviction a new stop uses.
+    /// Rate-independent: the tick is a due event at its own arena millisecond, and
+    /// `held` is hashed. Nothing else about the stop is re-applied — the route and
+    /// `searched_ms` were the edge's to clear, once.
+    fn refresh_held_avoid(&mut self, unit: ObjId, t_ms: i64) {
+        let Some(held) = self
+            .unit(unit)
+            .filter(|state| state.controller == Controller::Reflex)
+            .and_then(|state| state.held)
+        else {
+            return;
+        };
+        if held.cause != BlockedCause::Occupied {
+            return;
+        }
+        if let Some(row) = self.reflex.units.get_mut(&unit) {
+            remember_avoid(row, (held.x, held.y), t_ms);
         }
     }
 
@@ -1119,7 +1181,10 @@ impl Arena {
         // **16b cut Q.7**: remembered stops age out, at the top of the tick and
         // in arena time. They are deliberately NOT cleared on a goal change —
         // `Approach` moves its goal every tick, and clearing there would empty the
-        // list in exactly the case it exists for.
+        // list in exactly the case it exists for. **16b cut M.3**: a cell the
+        // unit is still held against was re-stamped to this tick just before
+        // (`Arena::refresh_held_avoid`), so it survives this sweep however long
+        // the unit has been pinned there.
         row.avoid
             .retain(|(_, at_ms)| t_ms.saturating_sub(*at_ms) < REFLEX_AVOID_TTL_MS);
 

@@ -1619,7 +1619,7 @@ fn blocked_at(events: &[LedgerEvent], unit: ObjId, cell: (u16, u16)) -> usize {
         .filter(|event| {
             matches!(
                 event.kind,
-                tacsim::arena::ledger::EventKind::Blocked { unit: on, x, y }
+                tacsim::arena::ledger::EventKind::Blocked { unit: on, x, y, .. }
                     if on == unit && (x, y) == cell
             )
         })
@@ -1964,6 +1964,79 @@ fn a_remembered_stop_ages_out_and_the_cell_is_planned_through_again() {
         tacsim::arena::REFLEX_AVOID_TTL_MS,
         avoided(&arena, RED)
     );
+}
+
+/// **16b cut M.3** (16c `T-04`; B-43's guarantee under the one-edge rule): a
+/// machine still held against a wreck longer than `REFLEX_AVOID_TTL_MS` still
+/// lists the wreck's cell at its next tick, and one that is no longer held
+/// against it lets it age out as before.
+///
+/// The `blocked` line and `Arena::note_blocked` fire once per edge now, so the
+/// per-repeat stamp refresh a pinned machine used to get from every re-collision
+/// is gone; the tick refreshes the stamp off `UnitState::held` instead, before its
+/// TTL sweep. The two halves differ in nothing but `held`, set by hand to the
+/// value motion leaves a unit pinned against an occupied cell with, and the tick
+/// is driven at its own arena millisecond — thirty-one seconds after the stop.
+#[test]
+fn m3_a_machine_held_against_a_wreck_past_the_ttl_still_avoids_its_cell() {
+    use tacsim::arena::motion::{BlockedCause, Held};
+
+    let wreck_cell = (5_u16, 8_u16);
+    for still_held in [true, false] {
+        let mut arena = arena_of(
+            vec![
+                tank(RED, Team::Red, centre(6, 8), Vec::new(), Controller::Reflex),
+                tank(
+                    BLUE,
+                    Team::Blue,
+                    centre(wreck_cell.0, wreck_cell.1),
+                    Vec::new(),
+                    Controller::Pilot,
+                ),
+            ],
+            &[],
+            &arena_cfg(reflex_cfg()),
+            &[BLUE],
+        );
+        wreck_it(&mut arena, BLUE);
+        let stopped_at = arena.now_ms;
+        arena.note_blocked(RED, wreck_cell, BlockedCause::Occupied, stopped_at);
+        assert_eq!(
+            avoided(&arena, RED),
+            vec![wreck_cell],
+            "the stop's own edge"
+        );
+        if let Some(unit) = arena.unit_mut(RED) {
+            unit.held = still_held.then_some(Held {
+                x: wreck_cell.0,
+                y: wreck_cell.1,
+                cause: BlockedCause::Occupied,
+            });
+        }
+        let tick_at = stopped_at + tacsim::arena::reflex::REFLEX_AVOID_TTL_MS + 1_000;
+        let mut counters = tacsim::arena::ReflexCounters::default();
+        assert!(
+            arena.reflex_tick(RED, tick_at, &mut counters),
+            "still the controller's"
+        );
+        let stamps: Vec<((u16, u16), i64)> = arena
+            .reflex
+            .unit(RED)
+            .map(|row| row.avoid.clone())
+            .unwrap_or_default();
+        if still_held {
+            assert_eq!(
+                stamps,
+                vec![(wreck_cell, tick_at)],
+                "a machine still pushing at the wreck forgot it"
+            );
+        } else {
+            assert!(
+                stamps.is_empty(),
+                "a machine no longer held against the wreck kept it past the TTL: {stamps:?}"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -5223,7 +5296,7 @@ fn a_wreck_in_the_ford_is_held_against_for_two_seconds_and_then_learned() {
         .filter(|event| {
             matches!(
                 event.kind,
-                tacsim::arena::ledger::EventKind::Blocked { unit, x, y }
+                tacsim::arena::ledger::EventKind::Blocked { unit, x, y, .. }
                     if unit == RED && (x, y) == (4, 8)
             )
         })

@@ -2327,7 +2327,7 @@ mod fixture {
             },
             speed_cms: 1_200,
             power: Power::Online,
-            blocked: false,
+            held: false,
             // 16b cut D.2: the pilot's own two limits.
             wreck: false,
             immobile: false,
