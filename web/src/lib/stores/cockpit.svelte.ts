@@ -15,13 +15,19 @@
 //   keeps coming back wrong would otherwise buy a fresh ask on every pulse,
 //   which is the storm the latch exists to stop. A map that arrives BEFORE any
 //   frame (the hello pass's wildcard ask) is held, and judged by
-//   `holdsTheGround` when the first frame names the match.
+//   `holdsTheGround` when the first frame names the match. `GameApp` asks on
+//   every frame AND on a `MAP_ASK_MS` timer (16b cut B.2), because the arena
+//   pushes a frame only when one changes: a pilot sitting still would
+//   otherwise wait for the first thing to move.
 // * **The notices ring is also the reply surface** (16b cut B.1): while seated,
 //   every `Sys` line lands in it through `pushReply`, because a pilot kept on
 //   screen 0 has no scrollback in front of them — every one but the bridge's
 //   copy of a frame's own notice, which the ring composes from the frame.
 // * **The screen opens itself once per match id.** A pilot who then switches
 //   away is left alone; the next pulse does not drag them back.
+// * **The ring starts each match clean** (16b cut B.2): the frame that names a
+//   new match empties it before its own notices land, and a full rehydrate
+//   empties it through `clearForRehydrate`, which keeps the spent switch.
 // * **A cleared frame** (`seated: false`, the last one a pilot gets) drops
 //   everything and re-arms both, so the next match starts clean.
 //
@@ -99,13 +105,23 @@ export class CockpitStore {
       // touched here — a wrong answer is the case it guards.
       this.map = null;
     }
+    // The change of match is decided BEFORE a notice lands (16b cut B.2,
+    // `B-80`): a new match starts an empty ring, so the last twelve lines of
+    // match 7 never sit above match 8's first ones. The cleared frame that
+    // ends a seat is NOT relied on for this — a resumed tab may never be sent
+    // it (`cockpit_cleared`'s doc) — so the frame that names a new match is
+    // what resets. The map latches are left alone; `needsMap` already treats
+    // an ask armed for another match as spent.
+    const open = this.#switchedFor !== frame.match;
+    this.#switchedFor = frame.match;
+    if (open) {
+      this.notices = [];
+    }
     if (frame.notices.length > 0) {
       // Per-pulse frames carry only that pulse's notices, and the mirror a read
       // verb re-emits is stored with them cleared, so nothing is rung twice.
       this.notices = [...this.notices, ...noticeLines(frame.notices)].slice(-COCKPIT_NOTICES);
     }
-    const open = this.#switchedFor !== frame.match;
-    this.#switchedFor = frame.match;
     return open;
   }
 
@@ -192,6 +208,32 @@ export class CockpitStore {
     this.#askedAt = now;
     this.#askedFor = id;
     return true;
+  }
+
+  /**
+   * **A full rehydrate** (16b cut B.2, `B-80`): the resume gap outgrew the
+   * ring, so nothing held here can be trusted to be the world's — drop the
+   * frame, the ground and the ring, and let the hello pass's re-asks refill
+   * them. Two things are KEPT, and that is the difference from `clear()`:
+   *
+   * * **The spent switch** (`#switchedFor`). A rehydrate re-answers the same
+   *   match's frame, and the screen opens the moment a switch is owed (16b cut
+   *   B.1), so forgetting it would drag a pilot who had walked off to the scene
+   *   back onto the cockpit on every Wi-Fi blip. A new match still opens it.
+   * * **The hello pass's map ask**, as the wildcard it is. On the wire the
+   *   hello — and with it `#hydrate`'s `noteMapAsked` — arrives BEFORE the
+   *   `resumed { replayed: false }` that runs this (`mush-net-web`'s pump sends
+   *   the two in that order), so clearing the latch here would make the first
+   *   frame pull the whole terrain a second time on the socket that has just
+   *   reopened. Its time stands; the match it was stamped with — the old
+   *   frame's, still held when the hello landed — is forgotten, because the
+   *   server answers the ask with whatever match this pilot is seated in now.
+   */
+  clearForRehydrate(): void {
+    this.frame = null;
+    this.map = null;
+    this.notices = [];
+    this.#askedFor = null;
   }
 
   clear(): void {

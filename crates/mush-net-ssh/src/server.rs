@@ -1799,12 +1799,34 @@ fn spawn_output_pump(
             // WHO refresh: submit a read-only query while a TUI is active
             // (design M15 D5 — never types the WHO command, never stamps
             // idle). No bytes here; the reply repaints via the event path.
+            //
+            // 16b cut B.2 (`B-59`): the same tick is the cockpit's timer heal.
+            // The arena pushes a frame only when one changes, so a pilot
+            // sitting still whose `arena.map` answer was dropped would wait for
+            // the first thing to move; `heal_queries` answers at most one map
+            // ask, under the latch the frame path arms. Collected under the
+            // lock, submitted after it drops, exactly as the WHO query is.
             if let Wake::Tick = wake {
-                let is_tui = matches!(shared.lock().expect("conn state poisoned").mode, Mode::Tui);
-                if is_tui {
+                let heal = {
+                    let mut sh = shared.lock().expect("conn state poisoned");
+                    if matches!(sh.mode, Mode::Tui) {
+                        Some(
+                            sh.tui
+                                .as_mut()
+                                .map(|t| t.heal_queries())
+                                .unwrap_or_default(),
+                        )
+                    } else {
+                        None
+                    }
+                };
+                if let Some(heal) = heal {
                     hooks
                         .query(conn_id, "who".to_owned(), serde_json::json!({}))
                         .await;
+                    for (name, args) in heal {
+                        hooks.query(conn_id, name, args).await;
+                    }
                 }
                 continue;
             }

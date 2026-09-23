@@ -94,9 +94,13 @@ const MAX_OPEN_REQUESTS_PER_SUBJECT: usize = 32;
 /// holding a frame of match M with no map of M is exactly the condition that
 /// asks — and it asks again on the same terms, so a dropped or throttled
 /// answer heals on the next pulse instead of leaving a dark map for the
-/// session. Two seconds because a frame arrives twice a second at the quiet
-/// tempo and up to ten times a second at the engaged one: without the latch a
-/// slow link would be asked for the whole ground ten times a second.
+/// session. Two seconds because a frame arrives at most once every five seconds
+/// at the quiet tempo, once a second at alert and twice a second at engaged
+/// (`[tacsim.arena.tempo]`), and only when it changed; without the latch a slow
+/// link would be asked for the whole ground twice a second while a fight is on.
+/// The timer heal (16b cut B.2) asks on the pump's four-second tick under the
+/// same latch, so a stationary pilot whose answer was dropped is not waiting
+/// for the first thing to move.
 pub const MAP_HEAL_LATCH_S: i64 = 2;
 
 /// Nav or input (D-I-17).
@@ -551,7 +555,10 @@ impl TuiApp {
         &self.prompt
     }
 
-    fn now(&self) -> i64 {
+    /// The app's clock, Unix seconds (a fixed one in tests and goldens).
+    /// `pub(super)` so [`super::TuiSession::heal_queries`] asks on the same
+    /// clock the frame path's latch was armed on.
+    pub(super) fn now(&self) -> i64 {
         (self.clock)()
     }
 
@@ -832,15 +839,7 @@ impl TuiApp {
             queries.extend(self.open_the_cockpit_screen());
         }
         if !holds_the_ground {
-            // A new match asks on this very frame rather than waiting out a
-            // latch armed for the old one; otherwise the latch AGES, so an
-            // answer that never came (a throttled query is dropped in silence
-            // by the bridge) costs one stale window, not the session.
-            let fresh_match = self.map_asked_for != Some(match_id);
-            let due = fresh_match
-                || self
-                    .map_asked_at
-                    .is_none_or(|at| !(0..MAP_HEAL_LATCH_S).contains(&now.saturating_sub(at)));
+            let due = self.map_ask_due(match_id, now);
             // The screen that just opened asks for the terrain itself. That
             // ask IS this one: arm the latch on it rather than sending a second.
             let already = queries.iter().any(|(n, _)| n == ARENA_MAP_FEED);
@@ -856,6 +855,63 @@ impl TuiApp {
             }
         }
         queries
+    }
+
+    /// **Whether an `arena.map` ask for `match_id` is due at `now`** (16b cut
+    /// Q.4; factored out in cut B.2 so the frame and the timer ask on one
+    /// rule). A new match asks at once rather than waiting out a latch armed
+    /// for the old one; otherwise the latch AGES, so an answer that never came
+    /// (a throttled query is dropped in silence by the bridge) costs one stale
+    /// window, not the session. It reads the latch and arms nothing: the
+    /// caller that sends the ask arms it.
+    fn map_ask_due(&self, match_id: i64, now: i64) -> bool {
+        self.map_asked_for != Some(match_id)
+            || self
+                .map_asked_at
+                .is_none_or(|at| !(0..MAP_HEAL_LATCH_S).contains(&now.saturating_sub(at)))
+    }
+
+    /// **The timer heal** (16b cut B.2, `B-59`): the `arena.map` ask a held
+    /// seated frame is owed when no frame has arrived to ask it.
+    ///
+    /// The arena pushes a frame only when one CHANGES (`Frame::same_as`), and
+    /// [`Self::follow_the_cockpit`] asks only when a frame arrives — so a
+    /// pilot sitting still with no contacts whose map answer was dropped used
+    /// to keep `Waiting for the arena map...` for the whole match. The pump
+    /// calls this on its four-second tick: while the held frame is seated, the
+    /// ground of its match is not held and [`Self::map_ask_due`] says the
+    /// latch has aged, it arms the latch and answers the one ask; otherwise
+    /// nothing. The latch is what bounds the rate — the same one the frame
+    /// path arms — so the two paths together never ask more than once per
+    /// [`MAP_HEAL_LATCH_S`], and a held map is never asked for (the ground
+    /// does not move, and a map costs up to 256 KiB and a flood token).
+    #[must_use]
+    pub fn heal_queries(&mut self, now: i64) -> Vec<(String, Value)> {
+        let Some(match_id) = self.cockpit_match() else {
+            return Vec::new();
+        };
+        if self.holds_the_ground(match_id) || !self.map_ask_due(match_id, now) {
+            return Vec::new();
+        }
+        self.map_asked_at = Some(now);
+        self.map_asked_for = Some(match_id);
+        vec![(
+            ARENA_MAP_FEED.to_string(),
+            Value::Object(serde_json::Map::new()),
+        )]
+    }
+
+    /// Arm the map latch when `queries` carries an `arena.map` ask for the held
+    /// seated frame's match (16b cut B.2): an ask the screen's own hydration
+    /// sent — the `p` key, a switch onto screen 0, a hello — is an ask like
+    /// any other, and the frame path and the timer must count it.
+    fn note_map_ask(&mut self, queries: &[(String, Value)], now: i64) {
+        if let Some(match_id) = self.cockpit_match()
+            && queries.iter().any(|(n, _)| n == ARENA_MAP_FEED)
+        {
+            self.map_asked_at = Some(now);
+            self.map_asked_for = Some(match_id);
+        }
     }
 
     /// **Whether the store holds the terrain of `match_id`** (16b cut Q.4).
@@ -970,6 +1026,26 @@ impl TuiApp {
                     COCKPIT_FEED if *kind == PanelFrameKind::Keyframe => {
                         let asks = self.follow_the_cockpit(data, now);
                         queries.extend(asks);
+                    }
+                    // **16b cut B.2**: the world answered a map ask `seated:
+                    // false` while this client still holds a seated frame. The
+                    // seat is gone and nothing said so — a world restarted
+                    // behind the gateway keeps the session but sends no hello
+                    // and no cleared frame, and its match died with it — so the
+                    // held frame would feed the timer heal an `arena.map` ask
+                    // on every tick for the rest of the session. Ask for the
+                    // cockpit once: the cleared answer ends the seat, and the
+                    // heal with it. The map is pulled, never pushed, so this
+                    // asks at most once per map ask, which the latch bounds.
+                    ARENA_MAP_FEED
+                        if *kind == PanelFrameKind::Keyframe
+                            && data.get("seated").and_then(Value::as_bool) == Some(false)
+                            && self.cockpit_match().is_some() =>
+                    {
+                        queries.push((
+                            COCKPIT_FEED.to_string(),
+                            Value::Object(serde_json::Map::new()),
+                        ));
                     }
                     _ => {}
                 }
@@ -1100,7 +1176,27 @@ impl TuiApp {
                 // frame from before the restart until the player presses `r`.
                 // The replacement keyframe replaces the held frame and the
                 // object-change rule takes care of the ring.
-                queries.extend(self.screen_queries());
+                let screen = self.screen_queries();
+                self.note_map_ask(&screen, now);
+                queries.extend(screen);
+                // **16b cut B.2**: the cockpit is asked again from EVERY screen,
+                // not only from screen 0 (whose `on_enter` above already names
+                // it), where the server publishes it — the test `entry_queries`
+                // makes, and the web's hello pass does on every hello. A pilot
+                // who is no longer seated is answered the cleared frame, which
+                // ends the seat. This is the PARITY seam with the web, and it
+                // runs only when a hello actually arrives: production SSH is
+                // never handed one (`entry_queries`), and a session that rides
+                // a world restart behind the gateway gets no new hello on
+                // either client (the gateway's late `ToGateway::Hello` only
+                // refreshes its own manifest cache). What ends a dead seat
+                // there is the unseated answer to the timer heal's map ask —
+                // the `ARENA_MAP_FEED` arm of `Panel` above re-asks the cockpit.
+                let cockpit_published =
+                    self.manifest.panels.is_empty() || manifest_has(&self.manifest, COCKPIT_FEED);
+                if cockpit_published && self.active != COCKPIT_SCREEN {
+                    queries.push((COCKPIT_FEED.to_string(), empty()));
+                }
             }
             OutputEvent::SessionInfo { character, .. } => {
                 self.manifest.character = Some(sanitize(&character.name));
@@ -1496,7 +1592,18 @@ impl TuiApp {
 
     fn local_action(&mut self, action: LocalAction, r: &mut InputResult) {
         match action {
-            LocalAction::Refresh => r.queries.extend(self.screen_queries()),
+            LocalAction::Refresh => {
+                // On the cockpit screen this is `p`, pull (16b cut B.2): its
+                // `on_enter` already carries both arena feeds and already drops
+                // the map ask when the ground is held, so the cockpit is asked
+                // again always and the map only when it has gone dark — and a
+                // map ask that did go out arms the latch, so the next frame and
+                // the timer count it rather than asking a second time.
+                let queries = self.screen_queries();
+                let now = self.now();
+                self.note_map_ask(&queries, now);
+                r.queries.extend(queries);
+            }
             LocalAction::Backlog => {
                 if let Some(channel) = self.selected_channel() {
                     r.queries.push((
@@ -1808,7 +1915,15 @@ impl TuiApp {
             self.active = id;
             self.focus = 0;
             self.help = false;
-            r.queries.extend(self.screen_queries());
+            // Entering the cockpit while its ground is dark asks for the map
+            // through the screen's own `on_enter` (16b cut B.2): that ask arms
+            // the latch like any other, or the pump's next tick — the latch
+            // long aged on a pilot who sat on screen 1 — would pull the whole
+            // terrain a second time while the first answer is still on the wire.
+            let queries = self.screen_queries();
+            let now = self.now();
+            self.note_map_ask(&queries, now);
+            r.queries.extend(queries);
         }
     }
 
@@ -5361,6 +5476,236 @@ mod tests {
         ));
         app.apply_event(&cockpit_cleared());
         assert!(app.panels().get(ARENA_MAP_FEED).is_none());
+    }
+
+    /// 16b cut B.2 (`B-59`): **the timer heal**. The arena pushes a frame only
+    /// when one changes, so a pilot sitting still whose map answer was dropped
+    /// has no frame to ask on; the pump's tick calls `heal_queries`, which asks
+    /// under the same latch the frame path arms — once it has aged, once only,
+    /// never for ground that is held and never once the seat is gone.
+    #[test]
+    fn the_heal_timer_asks_for_a_lost_map_without_a_frame() {
+        let asks = |queries: &[(String, Value)]| -> usize {
+            queries.iter().filter(|(n, _)| n == ARENA_MAP_FEED).count()
+        };
+        // A bystander holds no seated frame: the timer never asks.
+        let mut bystander = arena_app();
+        assert!(bystander.heal_queries(1_000_000).is_empty());
+
+        let mut app = arena_app();
+        let armed = app.now();
+        // The first frame of match 7 asks (its screen's `on_enter`) and arms
+        // the latch at `armed`; the answer lands, and is then lost.
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        app.apply_event(&arena_keyframe(
+            ARENA_MAP_FEED,
+            arena_json(ARENA_MAP_FIXTURE),
+        ));
+        app.panels.forget(ARENA_MAP_FEED);
+        assert!(
+            app.heal_queries(armed + MAP_HEAL_LATCH_S - 1).is_empty(),
+            "inside the latch the frame path armed"
+        );
+        let q = app.heal_queries(armed + MAP_HEAL_LATCH_S + 1);
+        assert_eq!(asks(&q), 1, "no frame came, the timer asks: {q:?}");
+        assert_eq!(q.len(), 1, "and asks for nothing else: {q:?}");
+        assert!(
+            app.heal_queries(armed + MAP_HEAL_LATCH_S + 1).is_empty(),
+            "the ask armed the latch: at once again, nothing"
+        );
+        // The ground arrives: held ground is never asked for, however late.
+        app.apply_event(&arena_keyframe(
+            ARENA_MAP_FEED,
+            arena_json(ARENA_MAP_FIXTURE),
+        ));
+        assert!(app.heal_queries(armed + 100 * MAP_HEAL_LATCH_S).is_empty());
+        // The cleared frame ends the seat, and the timer with it.
+        app.panels.forget(ARENA_MAP_FEED);
+        app.apply_event(&cockpit_cleared());
+        assert!(app.heal_queries(armed + 1000 * MAP_HEAL_LATCH_S).is_empty());
+    }
+
+    /// The clock [`the_pull_key_re_asks_the_cockpit_and_a_missing_map`]
+    /// drives: its own cell, because [`HEAL_CLOCK`] belongs to one test.
+    static PULL_CLOCK: AtomicI64 = AtomicI64::new(0);
+
+    fn pull_clock() -> i64 {
+        PULL_CLOCK.load(Ordering::Relaxed)
+    }
+
+    /// 16b cut B.2 (`B-59`): `p`, pull, on the cockpit screen asks for the
+    /// cockpit again always and for the map only when the ground is not held,
+    /// sends nothing, and re-arms the latch on the map ask it made.
+    #[test]
+    fn the_pull_key_re_asks_the_cockpit_and_a_missing_map() {
+        let names = |queries: &[(String, Value)]| -> Vec<String> {
+            queries.iter().map(|(n, _)| n.clone()).collect()
+        };
+        PULL_CLOCK.store(100, Ordering::Relaxed);
+        let mut app = TuiApp::new(caps());
+        app.set_clock(pull_clock);
+        app.set_manifest(arena_manifest());
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+
+        // The answer never came; past the latch the pilot pulls.
+        let at = 100 + MAP_HEAL_LATCH_S + 5;
+        PULL_CLOCK.store(at, Ordering::Relaxed);
+        let r = app.feed_input(b"p");
+        assert!(r.submit.is_empty(), "a bare key sends nothing: {r:?}");
+        let asked = names(&r.queries);
+        assert!(asked.contains(&COCKPIT_FEED.to_string()), "{asked:?}");
+        assert!(asked.contains(&ARENA_MAP_FEED.to_string()), "{asked:?}");
+        // The pull's map ask armed the latch: the timer does not double it, and
+        // asks again only once that latch has aged in turn.
+        assert!(app.heal_queries(at).is_empty(), "re-armed by the pull");
+        assert!(app.heal_queries(at + MAP_HEAL_LATCH_S - 1).is_empty());
+        assert_eq!(app.heal_queries(at + MAP_HEAL_LATCH_S).len(), 1);
+
+        // With the ground held the pull asks for the frame alone.
+        app.apply_event(&arena_keyframe(
+            ARENA_MAP_FEED,
+            arena_json(ARENA_MAP_FIXTURE),
+        ));
+        let r = app.feed_input(b"p");
+        assert_eq!(names(&r.queries), vec![COCKPIT_FEED.to_string()]);
+    }
+
+    /// 16b cut B.2: a hello asks for the cockpit again even from screen 1, as
+    /// the web's hello pass does — so a pilot who is no longer seated is
+    /// answered the cleared frame, which ends the seat and the timer with it.
+    /// This is the parity seam and it runs only where a hello arrives: a live
+    /// session riding a world restart is handed none, and that case is
+    /// [`a_dead_seat_is_ended_by_the_unseated_map_answer`].
+    #[test]
+    fn a_restarted_world_is_asked_for_the_cockpit_off_screen_zero() {
+        let hello = |panels: Vec<String>| OutputEvent::Hello {
+            proto: 1,
+            server: "rustmush test".into(),
+            features: vec![],
+            panels,
+        };
+        let cockpit_asks = |queries: &[(String, Value)]| -> usize {
+            queries.iter().filter(|(n, _)| n == COCKPIT_FEED).count()
+        };
+        let mut app = arena_app();
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        app.feed_input(b"1");
+        assert_eq!(app.active_screen(), ScreenId(1));
+        let q = app.apply_event(&hello(arena_manifest().panels));
+        assert_eq!(cockpit_asks(&q), 1, "asked off screen 0: {q:?}");
+        // The answer is the cleared frame: the seat ends, and nothing is owed.
+        app.apply_event(&cockpit_cleared());
+        assert!(app.heal_queries(app.now() + 1000).is_empty());
+
+        // On screen 0 the screen's own `on_enter` already asks: once, not twice.
+        let mut on_zero = arena_app();
+        on_zero.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        assert_eq!(on_zero.active_screen(), COCKPIT_SCREEN);
+        let q = on_zero.apply_event(&hello(arena_manifest().panels));
+        assert_eq!(cockpit_asks(&q), 1, "{q:?}");
+        // A world that no longer publishes the feed is never asked for it.
+        let mut gone = arena_app();
+        gone.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        gone.feed_input(b"1");
+        let q = gone.apply_event(&hello(vec!["mail".into()]));
+        assert_eq!(cockpit_asks(&q), 0, "{q:?}");
+    }
+
+    /// 16b cut B.2: a live session that rides a world restart is handed no
+    /// hello and no cleared frame, and its match died with the world — so the
+    /// held seated frame would feed the timer heal a map ask on every tick for
+    /// the rest of the session. The world's `seated: false` answer to that ask
+    /// is the proof the seat is gone: it asks for the cockpit once, and the
+    /// cleared answer ends the seat and the heal with it.
+    #[test]
+    fn a_dead_seat_is_ended_by_the_unseated_map_answer() {
+        let unseated_map = || {
+            arena_keyframe(
+                ARENA_MAP_FEED,
+                serde_json::json!({
+                    "schema": { "id": ARENA_MAP_FEED, "version": 1, "retain": "latest" },
+                    "seated": false
+                }),
+            )
+        };
+        let mut app = arena_app();
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        app.feed_input(b"1");
+        // The timer's ask, answered by a world with no arena for this pilot:
+        // one cockpit ask and nothing else — asked through the query seam
+        // exactly as the pump submits every other answer's re-ask.
+        let answer = OutputEvent::Reply {
+            id: 0,
+            event: Box::new(unseated_map()),
+        };
+        let q = app.apply_event(&answer);
+        assert_eq!(
+            q,
+            vec![(
+                COCKPIT_FEED.to_string(),
+                Value::Object(serde_json::Map::new())
+            )]
+        );
+        // The cleared answer ends the seat; the heal owes nothing any more, and
+        // a late unseated map asks for nothing either.
+        app.apply_event(&cockpit_cleared());
+        assert!(app.heal_queries(app.now() + 1000).is_empty());
+        assert!(app.apply_event(&unseated_map()).is_empty());
+
+        // A bystander's hello-pass answer is `seated: false` too: no frame is
+        // held, so it asks for nothing.
+        let mut bystander = arena_app();
+        assert!(bystander.apply_event(&unseated_map()).is_empty());
+        // Nor does the seated pilot's own ground.
+        let mut seated = arena_app();
+        seated.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        let q = seated.apply_event(&arena_keyframe(
+            ARENA_MAP_FEED,
+            arena_json(ARENA_MAP_FIXTURE),
+        ));
+        assert!(q.is_empty(), "{q:?}");
+    }
+
+    /// The clock [`switching_onto_the_cockpit_arms_the_latch_on_its_map_ask`]
+    /// drives: its own cell, as [`PULL_CLOCK`] is.
+    static SWITCH_CLOCK: AtomicI64 = AtomicI64::new(0);
+
+    fn switch_clock() -> i64 {
+        SWITCH_CLOCK.load(Ordering::Relaxed)
+    }
+
+    /// 16b cut B.2: pressing `0` while the ground is dark asks for the map
+    /// through the screen's `on_enter`, and that ask arms the latch — or the
+    /// pump's next tick, finding the latch long aged on a pilot who sat on
+    /// screen 1, would pull the whole terrain a second time at once.
+    #[test]
+    fn switching_onto_the_cockpit_arms_the_latch_on_its_map_ask() {
+        SWITCH_CLOCK.store(100, Ordering::Relaxed);
+        let mut app = TuiApp::new(caps());
+        app.set_clock(switch_clock);
+        app.set_manifest(arena_manifest());
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        app.feed_input(b"1");
+        assert_eq!(app.active_screen(), ScreenId(1));
+
+        // Long after the frame's ask, the answer never came; back to screen 0.
+        let at = 100 + 10 * MAP_HEAL_LATCH_S;
+        SWITCH_CLOCK.store(at, Ordering::Relaxed);
+        let r = app.feed_input(b"0");
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+        assert_eq!(
+            r.queries
+                .iter()
+                .filter(|(n, _)| n == ARENA_MAP_FEED)
+                .count(),
+            1,
+            "{:?}",
+            r.queries
+        );
+        assert!(app.heal_queries(at).is_empty(), "armed by the switch");
+        assert!(app.heal_queries(at + MAP_HEAL_LATCH_S - 1).is_empty());
+        assert_eq!(app.heal_queries(at + MAP_HEAL_LATCH_S).len(), 1);
     }
 
     /// 16b cut Q.4: the contacts pane is the one selectable pane on the screen

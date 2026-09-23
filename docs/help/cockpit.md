@@ -290,6 +290,7 @@ the browser the notices list also carries the answer to anything you type while
 you are in the tank. Nothing on the screen is
 sent until you press Enter: the seven reading verbs are the only ones a bare key
 runs, and `STARTUP`, `HEADING`, `SPEED`, `LOCK` and `FIRE` are always typed.
+`p` pulls the panel again, and the map too if it has gone dark.
 
 See also: `help simulator`, `help tui`, `help chargen` (gunnery is the rating
 the shot reads).

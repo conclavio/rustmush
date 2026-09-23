@@ -1392,9 +1392,11 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>, 
 /// pulse frames take. It prints nothing on a line client — the payload declares
 /// no shape — so the ordinary end-of-match and `EXIT` lines a pilot reads are
 /// exactly what they were; a panel clears; and because the payload carries the
-/// same `schema.retain` marker every frame before it did, it is the **only**
-/// cockpit frame left in that session's resume ring, so a client that
-/// reconnects after the match does not resume into a dead tank.
+/// same `schema.retain` marker every frame before it did, it is the last
+/// cockpit frame in that session's resume ring UNTIL the pilot is seated again,
+/// when the next match's first frame supersedes it — which is why a panel
+/// resets its own ring on a change of match and never relies on this frame
+/// arriving (16b cut B.2).
 ///
 /// Sent exactly once per pilot, from the two places a pilot stops being one:
 /// [`send_control`], when a `Released` actually unbinds somebody, and

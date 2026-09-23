@@ -31,7 +31,9 @@
     labelPlan,
     NOT_IN_A_COCKPIT,
     scanText,
+    terrainCacheKey,
     WAITING_FOR_THE_MAP,
+    type ArenaMap,
     type ComposedWindow,
     type Marker,
   } from "$lib/cockpit";
@@ -67,6 +69,21 @@
     win === null ? 0 : Math.max(2, Math.min(12, Math.floor(CANVAS_MAX / Math.max(win.w, win.h, 1)))),
   );
 
+  // **The terrain cache** (16b cut B.2, `T-33`). The ground is painted once
+  // per WINDOW into an offscreen canvas and every frame copies it with one
+  // `drawImage` before the markers go on top; before this, every keyframe —
+  // up to two a second while a fight is on — repainted every cell, 6,144
+  // `fillRect`s for the fixture's ground and 65,536 at 256 cells of a full
+  // arena. The cache is keyed on the window (`terrainCacheKey`: its corner,
+  // its size and the cell size in pixels) and on the map OBJECT, compared by
+  // identity — a new map is new ground — and NEVER on the frame: a contact
+  // that moves, a notice, a new heading repaint the markers and nothing else.
+  // Plain `let`s, not `$state`: the effect writes them, and must not re-run
+  // because it did.
+  let terrainCanvas: HTMLCanvasElement | null = null;
+  let terrainKey = "";
+  let terrainGround: ArenaMap | null = null;
+
   function zoom(delta: number): void {
     const at = COCKPIT_ZOOM_CELLS.indexOf(cells);
     const next = COCKPIT_ZOOM_CELLS[Math.min(COCKPIT_ZOOM_CELLS.length - 1, Math.max(0, at + delta))];
@@ -85,7 +102,8 @@
     const w = win;
     const c = canvas;
     const f = frame;
-    if (!w || !c || !f) return;
+    const g = ground;
+    if (!w || !c || !f || !g) return;
     const px = cellPx;
     c.width = w.w * px;
     c.height = w.h * px;
@@ -93,16 +111,30 @@
     if (!ctx) return;
     ctx.clearRect(0, 0, c.width, c.height);
     // The ground first, from the marker-free rows: a contact standing on a
-    // wall must not repaint the wall as whatever its own glyph means.
-    for (let row = 0; row < w.h; row += 1) {
-      const line = w.terrain[row] ?? "";
-      for (let col = 0; col < w.w; col += 1) {
-        const colour = TERRAIN_COLOURS[line.charAt(col)] ?? "transparent";
-        if (colour === "transparent") continue;
-        ctx.fillStyle = colour;
-        ctx.fillRect(col * px, row * px, px, px);
+    // wall must not repaint the wall as whatever its own glyph means. Painted
+    // into the cache only when the window or the map changed (see above).
+    const key = terrainCacheKey(w, px);
+    if (terrainCanvas === null || key !== terrainKey || g !== terrainGround) {
+      const off = terrainCanvas ?? document.createElement("canvas");
+      off.width = c.width;
+      off.height = c.height;
+      const tctx = off.getContext("2d");
+      if (!tctx) return;
+      tctx.clearRect(0, 0, off.width, off.height);
+      for (let row = 0; row < w.h; row += 1) {
+        const line = w.terrain[row] ?? "";
+        for (let col = 0; col < w.w; col += 1) {
+          const colour = TERRAIN_COLOURS[line.charAt(col)] ?? "transparent";
+          if (colour === "transparent") continue;
+          tctx.fillStyle = colour;
+          tctx.fillRect(col * px, row * px, px, px);
+        }
       }
+      terrainCanvas = off;
+      terrainKey = key;
+      terrainGround = g;
     }
+    ctx.drawImage(terrainCanvas, 0, 0);
     // Which labels are painted (16b cut B.1, `B-09`): a hostile and the lock at
     // every zoom, the rest from 6 px, an overlapping label skipped in frame
     // order and the lock's never — decided once, by the pure `labelPlan`.

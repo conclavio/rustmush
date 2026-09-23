@@ -1637,3 +1637,103 @@ async fn a_connection_that_never_asks_for_history_sees_none_of_it() {
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;
 }
+
+// ---- 16b cut B.2: the cockpit's timer heal rides the pump's tick ----------
+
+/// The committed cockpit fixture every renderer reads: a seated frame of
+/// match 7.
+const COCKPIT_FRAME: &str =
+    include_str!("../../../web/src/lib/fixtures/cockpit/cockpit_frame.json");
+
+/// `B-59` over a real session: a TUI pilot holds a seated frame whose
+/// `arena.map` answer never comes (the mock answers neither arena feed, as
+/// the bridge drops a throttled query in silence), and no frame follows it —
+/// the arena pushes one only when it changes. The pump's four-second WHO tick
+/// is the only thing left to ask, so the map ask the TUI's heal owes must
+/// reach the world through the query seam on that tick, right after `who`.
+/// Up to two ticks of wall time: the frame's own ask arms the latch, and a
+/// tick inside it asks nothing.
+#[tokio::test]
+async fn the_pump_tick_re_asks_a_lost_arena_map() {
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("heal", &hooks).await;
+    term.send_line("@tui").await;
+    // The WHO rail entry from the entry query reply: the TUI is up (a bare
+    // "WHO" could still match line-mode text).
+    term.expect("Alice").await;
+    let conn = hooks
+        .connected_chars
+        .lock()
+        .unwrap()
+        .last()
+        .expect("connected")
+        .0;
+    let tx = hooks.tx_of(conn).expect("the session's output queue");
+    let frame: serde_json::Value = serde_json::from_str(COCKPIT_FRAME).expect("fixture JSON");
+    tx.send(Arc::new(OutputEvent::Panel {
+        feed: SmolStr::new_static("arena.cockpit"),
+        kind: PanelFrameKind::Keyframe,
+        data: frame,
+    }))
+    .await
+    .expect("queue open");
+
+    let names = || -> Vec<String> {
+        hooks
+            .queries
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(c, _, _)| *c == conn)
+            .map(|(_, n, _)| n.clone())
+            .collect()
+    };
+    let map_asks = |names: &[String]| names.iter().filter(|n| *n == "arena.map").count();
+    // The frame's own ask, answered by nothing.
+    let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+    while map_asks(&names()) < 1 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the frame asked for no map: {:?}",
+            names()
+        );
+        // Keep reading the terminal while waiting, so the repaints never
+        // back up the channel window.
+        let _ = tokio::time::timeout(Duration::from_millis(25), term.channel.wait()).await;
+    }
+    // Then the heal's, on a tick — two ticks and the latch, with room to spare.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while map_asks(&names()) < 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the tick never healed the map: {:?}",
+            names()
+        );
+        let _ = tokio::time::timeout(Duration::from_millis(50), term.channel.wait()).await;
+    }
+    let seen = names();
+    let heal = seen
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| *n == "arena.map")
+        .nth(1)
+        .map(|(at, _)| at)
+        .expect("a second map ask");
+    assert_eq!(
+        seen.get(heal.wrapping_sub(1)).map(String::as_str),
+        Some("who"),
+        "the heal rides the WHO tick, right after `who`: {seen:?}"
+    );
+
+    // The test's clone of the queue would keep the pump alive past QUIT.
+    drop(tx);
+    // Back to the scene (the frame opened screen 0), where Enter opens the box.
+    term.send_bytes(b"1").await;
+    term.send_bytes(b"\r").await;
+    term.send_line("@notui").await;
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}

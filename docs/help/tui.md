@@ -193,7 +193,8 @@ reads the scene back, and is not taken as the line you were composing.
              `v` `c` `t` `w` `r` `b` `n` run VIEW, CONTACTS, STATUS,
              WEAPONSTATUS, RANGE, BEARING and SCAN; `k` `f` `h` `m` open the
              box with `lock `, `fire `, `heading ` and `speed ` ready, and
-             none of those is sent until you press Enter. On the contacts
+             none of those is sent until you press Enter. `p` pulls the
+             panel again, and the map too if it has gone dark. On the contacts
              pane, Enter opens the box with `lock <contact>` ready and `s`
              with `scan <contact>`; neither goes in until you press Enter
              on it. The tab appears the first time a match sends you a

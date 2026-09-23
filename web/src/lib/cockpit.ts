@@ -958,6 +958,18 @@ export function contactText(row: CockpitContactRow): string {
   return `${row.designator.padEnd(4)}${row.detail}`;
 }
 
+/**
+ * **The key the canvas's terrain cache is held under** (16b cut B.2, `T-33`):
+ * the window's corner and size and the cell size in pixels — everything the
+ * painted ground depends on but the map itself, which the component compares
+ * by identity beside it. Never the frame: the ground does not move when a
+ * contact does, so a pulse that leaves the window where it was repaints the
+ * markers alone.
+ */
+export function terrainCacheKey(win: ComposedWindow, px: number): string {
+  return `${win.x0},${win.y0},${win.w},${win.h},${px}`;
+}
+
 /** The marker legend: every contact marker that landed, in frame order. */
 export function markerLegend(win: ComposedWindow | null): string {
   return win === null

@@ -34,12 +34,12 @@ import {
   roomLines,
 } from "./render";
 import { isOwnRoll } from "./roll";
-import { ARENA_MAP_FEED, COCKPIT_FEED, isNoticeSentence } from "./cockpit";
+import { ARENA_MAP_FEED, COCKPIT_FEED, decodeArenaMap, isNoticeSentence } from "./cockpit";
 import { exitKeys, type NavIntent } from "./keys";
 import { paletteEntries, type PaletteEntry } from "./palette";
 import { storageDel, storageGet, storageGetJson, storageSet, storageSetJson } from "./storage";
 import { ChannelsStore } from "./stores/channels.svelte";
-import { CockpitStore } from "./stores/cockpit.svelte";
+import { CockpitStore, MAP_ASK_MS } from "./stores/cockpit.svelte";
 import { CommandsStore } from "./stores/commands.svelte";
 import { LegalActionsStore } from "./stores/actions.svelte";
 import { GenericViewStore, isViewFeed } from "./stores/genericview.svelte";
@@ -258,6 +258,10 @@ export class GameApp {
   /** The in-flight unit request was armed by the coalescer, not by `r` — so
    * a refusal answering it earns ONE bounded retry. */
   #unitResyncFromDelta = false;
+  /** The cockpit's map heal (16b cut B.2, `B-59`); see `#armMapHeal`. Armed
+   * only while seated without the ground, and cleared on every reset seam and
+   * on a closed client. */
+  #mapHealTimer: ReturnType<typeof setInterval> | null = null;
   #nextToast = 1;
   #seenActionCommits = new Set<string>();
   #actionCommitOrder: string[] = [];
@@ -270,6 +274,11 @@ export class GameApp {
       caps: () => this.#caps(),
       onStatus: (s) => {
         this.session.status = s;
+        if (s === "closed") {
+          // A clean close never reconnects on its own: nothing will answer
+          // the heal's asks, so it stops with the socket (16b cut B.2).
+          this.#stopMapHeal();
+        }
       },
       onFullRehydrate: () => {
         // Resume gap outgrew the ring: the server fell back to a fresh
@@ -294,6 +303,15 @@ export class GameApp {
         // any armed resync, and let the hello pass re-subscribe (I8).
         this.#clearUnitResync();
         this.unit.clear();
+        // The cockpit too (16b cut B.2, `B-80`): a frame, a ground and a ring
+        // from before the gap are not the world's any more, and a tab that
+        // resumed into another match would otherwise show the last lines of
+        // the one before. The hello pass has already re-asked both arena feeds;
+        // `clearForRehydrate` keeps the spent screen switch and that pass's map
+        // ask, so a blip neither drags the pilot back nor pulls the ground
+        // twice. Unseated now, so the heal stops until the answer re-seats it.
+        this.cockpit.clearForRehydrate();
+        this.#armMapHeal();
         // The server's request registry is RAM-only (I10, D-I-22), so a full
         // re-attach means any pending request is gone server-side and its id
         // may be reminted for something else — drop it so a stale answer is
@@ -440,6 +458,7 @@ export class GameApp {
     this.commands.clear();
     this.vitals.clear();
     this.cockpit.clear();
+    this.#armMapHeal(); // unseated: stops the heal (16b cut B.2)
     this.genericViews.clear();
     this.requests.clear();
     this.notifications.clear();
@@ -854,7 +873,20 @@ export class GameApp {
     } else if (d.feed === ARENA_MAP_FEED) {
       // The terrain under it: pulled, never pushed, one per match.
       if (d.kind === "keyframe") {
+        if (this.cockpit.seated && decodeArenaMap(d.data)?.seated === false) {
+          // The world answered a map ask `seated: false` while a seated frame
+          // is held (16b cut B.2): the seat is gone and nothing said so. A
+          // socket that rides a world restart gets no hello and no cleared
+          // frame, and its match died with the world, so the held frame would
+          // feed the heal an ask every `MAP_ASK_MS` for the rest of the
+          // session. Ask for the cockpit once: the cleared answer ends the
+          // seat and the heal with it. The map is pulled, never pushed, so
+          // this asks at most once per map ask, which the latch bounds.
+          this.#req({ kind: "cockpit" }, { t: "panel_subscribe", d: { feed: COCKPIT_FEED } });
+        }
         this.cockpit.applyMap(d.data);
+        // The ground that lands stops the heal; one that is dropped does not.
+        this.#armMapHeal();
       }
     } else if (d.feed === MAP_FEED) {
       // The tactical map (S4): a keyframe replaces the whole grid; a delta
@@ -908,6 +940,48 @@ export class GameApp {
         { kind: "arena.map" },
         { t: "panel_subscribe", d: { feed: ARENA_MAP_FEED } },
       );
+    }
+    this.#armMapHeal();
+  }
+
+  /**
+   * **The map heal on a timer** (16b cut B.2, `B-59`): while this viewer is
+   * seated without the ground of its match, an interval of `MAP_ASK_MS` asks
+   * again through `needsMap`; otherwise no interval runs. Called wherever the
+   * answer to "seated, and the ground not held?" can change — every cockpit
+   * frame, every map keyframe, every reset seam — and idempotent, so one
+   * interval runs at most.
+   *
+   * It exists because `#followTheCockpit` asks only when a frame arrives, and
+   * the arena pushes a frame only when one changes (`Frame::same_as`): a pilot
+   * sitting still with no contacts whose map answer was dropped kept `Waiting
+   * for the arena map...` for the whole match.
+   *
+   * The LATCH bounds the rate, not an in-flight guard. There is deliberately
+   * no check of `#pending` for an open `arena.map` ask: `#pending` is cleared
+   * only on a reset or a new socket, never on a timeout, and the bridge drops
+   * a throttled query in silence, so one dropped ask would hold the heal shut
+   * for the rest of the session — the very case it is here to heal.
+   */
+  #armMapHeal(): void {
+    if (this.cockpit.seated && !this.cockpit.holdsTheGround) {
+      if (this.#mapHealTimer === null) {
+        this.#mapHealTimer = setInterval(() => {
+          if (this.cockpit.needsMap(Date.now())) {
+            this.#req({ kind: "arena.map" }, { t: "panel_subscribe", d: { feed: ARENA_MAP_FEED } });
+          }
+        }, MAP_ASK_MS);
+      }
+      return;
+    }
+    this.#stopMapHeal();
+  }
+
+  /** Disarm the map heal (a reset seam, a closed client, the ground held). */
+  #stopMapHeal(): void {
+    if (this.#mapHealTimer !== null) {
+      clearInterval(this.#mapHealTimer);
+      this.#mapHealTimer = null;
     }
   }
 
@@ -1154,6 +1228,18 @@ export class GameApp {
           return;
         }
         switch (this.screens.active) {
+          case "cockpit":
+            // `p`, pull (16b cut B.2, `B-59`): the frame again always, and
+            // the ground only when it has gone dark — a held map is the right
+            // map (the ground does not move), and it costs up to 256 KiB and a
+            // flood token. The ask arms the latch, so the next frame and the
+            // heal count it rather than asking a second time.
+            this.#req({ kind: "cockpit" }, { t: "panel_subscribe", d: { feed: COCKPIT_FEED } });
+            if (!this.cockpit.holdsTheGround) {
+              this.#req({ kind: "arena.map" }, { t: "panel_subscribe", d: { feed: ARENA_MAP_FEED } });
+              this.cockpit.noteMapAsked(Date.now());
+            }
+            return;
           case "mail":
             this.#req({ kind: "mail.list" }, { t: "mail_list", d: { folder: this.mail.folder } });
             return;

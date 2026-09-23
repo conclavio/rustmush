@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cockpitView, cockpitViewLines, composeWindow, NOTICE_SENTENCE_TAG } from "./cockpit";
 import { GameApp, type ComposerHandle } from "./game.svelte";
 import type { Envelope, OutputEvent, Query, ViewEnvelope } from "./proto";
+import { MAP_ASK_MS } from "./stores/cockpit.svelte";
 import { UNIT_RESYNC_MS } from "./stores/unit.svelte";
 import type { WebSocketLike } from "./ws";
 
@@ -1298,6 +1299,222 @@ describe("the cockpit feeds", () => {
     expect(asks()).toBe(1);
   });
 
+  it("heals a lost map on a timer, with no frame to ask on (B-59)", () => {
+    // The arena pushes a frame only when one changes, so a pilot sitting still
+    // whose map answer was dropped has no frame to ask on. The heal asks on a
+    // `MAP_ASK_MS` interval through the same latch the frames use, and stops
+    // the moment the ground lands.
+    const at = (ms: number) => vi.setSystemTime(new Date(ms));
+    at(100_000);
+    const { app, ws } = boot(ARENA_PANELS);
+    const mapReqs = (): ReqFrame[] => ws.reqs().filter((r) => feedOf(r) === ARENA_MAP_FEED);
+    const asks = (): number => mapReqs().length;
+    const idle = vi.getTimerCount();
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(asks()).toBe(1); // the hello pass's, which the frame counts as its own
+    expect(vi.getTimerCount()).toBe(idle + 1); // seated, dark: the heal runs
+    // No frame arrives again. The hello's ask ages out and the timer asks.
+    vi.advanceTimersByTime(MAP_ASK_MS); // 102_000
+    expect(asks()).toBe(2);
+
+    // Each tick asks through the LATCH, not on the interval's say-so: a pull
+    // at 103_000 arms it, so the tick at 104_000 — 1 s after the pull — asks
+    // nothing, and the next one, the latch aged, does.
+    vi.advanceTimersByTime(1_000);
+    expect(app.runBinding("p")).toBe(true);
+    expect(asks()).toBe(3);
+    vi.advanceTimersByTime(1_000); // 104_000
+    expect(asks()).toBe(3);
+    vi.advanceTimersByTime(MAP_ASK_MS); // 106_000
+    expect(asks()).toBe(4);
+
+    // A wrong answer — another match's map, a late reply — is dropped and
+    // keeps the heal running: the next tick asks again.
+    const wrong = { ...arenaMap(), match: 6 };
+    ws.deliver(reply(4, mapReqs()[3]!.id, panelEvent(ARENA_MAP_FEED, "keyframe", wrong)));
+    expect(app.cockpit.map).toBeNull();
+    expect(vi.getTimerCount()).toBe(idle + 1);
+    vi.advanceTimersByTime(MAP_ASK_MS); // 108_000
+    expect(asks()).toBe(5);
+
+    // The ground lands: the interval is cleared, and nothing more is asked.
+    ws.deliver(panel(5, ARENA_MAP_FEED, "keyframe", arenaMap()));
+    expect(vi.getTimerCount()).toBe(idle);
+    vi.advanceTimersByTime(5 * MAP_ASK_MS);
+    expect(asks()).toBe(5);
+  });
+
+  it("stops the heal on a cleared frame while dark, on a closed client and on a reset (B-59)", () => {
+    vi.stubGlobal(
+      "localStorage",
+      memoryStorage({
+        "rustmush.token": "tok",
+        "rustmush.chars": JSON.stringify([{ key: 7, name: "Atlas" }]),
+      }),
+    );
+    const cleared = {
+      schema: { id: "arena.cockpit", version: 1, retain: "latest" },
+      seated: false,
+    };
+    const { app, ws } = boot(ARENA_PANELS);
+    const asks = (s: FakeSocket): number => s.reqs().filter((r) => feedOf(r) === ARENA_MAP_FEED).length;
+    const idle = vi.getTimerCount();
+
+    // The seat goes while the ground is still dark: the interval goes with it.
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(vi.getTimerCount()).toBe(idle + 1);
+    ws.deliver(panel(4, COCKPIT_FEED, "keyframe", cleared));
+    expect(vi.getTimerCount()).toBe(idle);
+    const after = asks(ws);
+    vi.advanceTimersByTime(5 * MAP_ASK_MS);
+    expect(asks(ws)).toBe(after);
+
+    // Seated and dark again, then the client is closed: nothing will answer.
+    ws.deliver(panel(5, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(vi.getTimerCount()).toBe(idle + 1);
+    app.client.close();
+    expect(app.session.status).toBe("closed");
+    expect(vi.getTimerCount()).toBe(idle);
+
+    // Seated and dark on a fresh session, then a character switch resets it.
+    app.enterGame(7);
+    const next = openHello(ARENA_PANELS);
+    next.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(vi.getTimerCount()).toBe(idle + 1);
+    app.enterGame(7);
+    expect(app.cockpit.seated).toBe(false);
+    expect(vi.getTimerCount()).toBe(idle);
+    const quiet = asks(next);
+    vi.advanceTimersByTime(5 * MAP_ASK_MS);
+    expect(asks(next)).toBe(quiet);
+  });
+
+  it("a `seated: false` map answer to a held seat asks for the cockpit once (world restart)", () => {
+    // A socket that rides a world restart behind the gateway is handed no
+    // hello and no cleared frame (`web_restart_survival.rs`), and the match
+    // died with the world. The heal's map ask is answered `seated: false`:
+    // that answer asks for the cockpit, whose cleared answer ends the seat
+    // and the heal — instead of an ask every `MAP_ASK_MS` for the session.
+    const at = (ms: number) => vi.setSystemTime(new Date(ms));
+    at(100_000);
+    const { app, ws } = boot(ARENA_PANELS);
+    const idle = vi.getTimerCount();
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    const cockpitAsks = (): ReqFrame[] => ws.reqs().filter((r) => feedOf(r) === COCKPIT_FEED);
+    const before = cockpitAsks().length;
+    vi.advanceTimersByTime(MAP_ASK_MS);
+    const ask = ws.reqs().filter((r) => feedOf(r) === ARENA_MAP_FEED).at(-1)!;
+    const unseated = { schema: { id: "arena.map", version: 1, retain: "latest" }, seated: false };
+    ws.deliver(reply(4, ask.id, panelEvent(ARENA_MAP_FEED, "keyframe", unseated)));
+    expect(cockpitAsks()).toHaveLength(before + 1);
+    ws.deliver(
+      reply(
+        5,
+        cockpitAsks().at(-1)!.id,
+        panelEvent(COCKPIT_FEED, "keyframe", {
+          schema: { id: "arena.cockpit", version: 1, retain: "latest" },
+          seated: false,
+        }),
+      ),
+    );
+    expect(app.cockpit.seated).toBe(false);
+    expect(vi.getTimerCount()).toBe(idle);
+    // A bystander's own unseated answer — no seat held — asks for nothing.
+    ws.deliver(panel(6, ARENA_MAP_FEED, "keyframe", unseated));
+    expect(cockpitAsks()).toHaveLength(before + 1);
+  });
+
+  it("`p` pulls the cockpit again, and the map only while it is dark", () => {
+    const at = (ms: number) => vi.setSystemTime(new Date(ms));
+    at(100_000);
+    const { app, ws } = boot(ARENA_PANELS);
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(app.screens.active).toBe("cockpit");
+    const before = ws.reqs().length;
+    const since = (): (string | null)[] => ws.reqs().slice(before).map(feedOf);
+
+    at(105_000);
+    expect(app.runBinding("p")).toBe(true);
+    expect(since()).toEqual([COCKPIT_FEED, ARENA_MAP_FEED]);
+    // The pull's ask armed the latch: the next frame does not double it.
+    ws.deliver(panel(4, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(since()).toEqual([COCKPIT_FEED, ARENA_MAP_FEED]);
+
+    // With the ground held it asks for the frame alone.
+    ws.deliver(panel(5, ARENA_MAP_FEED, "keyframe", arenaMap()));
+    app.runBinding("p");
+    expect(since()).toEqual([COCKPIT_FEED, ARENA_MAP_FEED, COCKPIT_FEED]);
+  });
+
+  it("a full rehydrate mid-match empties the cockpit and does not drag the pilot back (T-42)", () => {
+    const at = (ms: number) => vi.setSystemTime(new Date(ms));
+    at(100_000);
+    const { app, ws } = boot(ARENA_PANELS);
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    ws.deliver(panel(4, ARENA_MAP_FEED, "keyframe", arenaMap()));
+    expect(app.cockpit.holdsTheGround).toBe(true);
+    expect(app.cockpit.notices).toHaveLength(2);
+    app.screens.switchTo("scene", app.gate);
+
+    // The gap outgrows the ring: a new socket, its hello, then the full
+    // rehydrate — in that order on the wire (`mush-net-web`'s pump).
+    ws.drop();
+    vi.advanceTimersByTime(500); // the first backoff window, `random: () => 1`
+    const next = openHello(ARENA_PANELS);
+    next.deliver(env(0, { t: "resumed", d: { replayed: false } }));
+    expect(app.cockpit.seated).toBe(false);
+    expect(app.cockpit.map).toBeNull();
+    expect(app.cockpit.notices).toEqual([]);
+    const asked = (feed: string): ReqFrame[] => next.reqs().filter((r) => feedOf(r) === feed);
+    // The hello pass re-asked both feeds, once each.
+    expect(asked(COCKPIT_FEED)).toHaveLength(1);
+    expect(asked(ARENA_MAP_FEED)).toHaveLength(1);
+
+    // The answer re-seats the pilot in the SAME match: the switch for match 7
+    // was already spent, so the pilot stays on the scene screen…
+    next.deliver(reply(5, asked(COCKPIT_FEED)[0]!.id, panelEvent(COCKPIT_FEED, "keyframe", cockpitFrame())));
+    expect(app.cockpit.seated).toBe(true);
+    expect(app.cockpit.matchId).toBe(7);
+    expect(app.screens.active).toBe("scene");
+    // …and the ground is not pulled twice: the hello's ask stands for it.
+    expect(asked(ARENA_MAP_FEED)).toHaveLength(1);
+
+    // The map answer lands; a frame past `MAP_ASK_MS` asks nothing more.
+    next.deliver(reply(6, asked(ARENA_MAP_FEED)[0]!.id, panelEvent(ARENA_MAP_FEED, "keyframe", arenaMap())));
+    expect(app.cockpit.holdsTheGround).toBe(true);
+    vi.advanceTimersByTime(MAP_ASK_MS);
+    next.deliver(panel(7, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(asked(ARENA_MAP_FEED)).toHaveLength(1);
+    expect(app.screens.active).toBe("scene");
+  });
+
+  it("a tab resumed into the next match shows only that match's notices (B-80, T-42)", () => {
+    const { app, ws } = boot(ARENA_PANELS);
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    const match7 = [...app.cockpit.notices];
+    expect(match7).toEqual(["X4 new contact", "BA section destroyed: turret"]);
+    app.screens.switchTo("scene", app.gate);
+
+    // A short drop: the gap replays from the ring, and the ring holds match
+    // 8's keyframe with NO cleared frame before it (a newer frame of the feed
+    // supersedes the cleared one — `cockpit_cleared`'s doc).
+    ws.drop();
+    vi.advanceTimersByTime(500);
+    const next = openHello(ARENA_PANELS);
+    next.deliver(env(0, { t: "resumed", d: { replayed: true } }));
+    next.deliver(panel(9, COCKPIT_FEED, "keyframe", { ...cockpitFrame(), match: 8 }));
+
+    expect(app.cockpit.matchId).toBe(8);
+    // Match 8's two lines, and none of match 7's above them.
+    expect(app.cockpit.notices).toEqual(["X4 new contact", "BA section destroyed: turret"]);
+    // A new match opens the screen, once.
+    expect(app.screens.active).toBe("cockpit");
+    app.screens.switchTo("scene", app.gate);
+    next.deliver(panel(10, COCKPIT_FEED, "keyframe", { ...cockpitFrame(), match: 8, notices: [] }));
+    expect(app.screens.active).toBe("scene");
+    expect(app.cockpit.notices).toHaveLength(2);
+  });
+
   it("the screen opens at once and the draft survives", () => {
     // The only server-driven screen switch in this client. Since 16b cut B.1
     // the box is the shell's (`Game.svelte`), so switching between screens
@@ -1472,8 +1689,9 @@ describe("the cockpit feeds", () => {
 
   it("the shell mounts the one command box, and the screens' own markup follows 16b cut B.1", () => {
     // Probes in the whitelist's style, for the Svelte halves the pure tests
-    // cannot reach (`environment: "node"` mounts nothing; B.2 brings a jsdom
-    // mount). Each one fails on the code before cut B.1.
+    // cannot reach (this file runs in node and mounts nothing; the one jsdom
+    // mount is `components/CockpitScreen.test.ts`, 16b cut B.2). Each one
+    // fails on the code before cut B.1.
     const read = (name: string): string =>
       readFileSync(resolve(process.cwd(), `src/components/${name}`), "utf8");
 
@@ -1507,10 +1725,11 @@ describe("the cockpit feeds", () => {
   });
 
   it("CockpitScreen.svelte touches nothing on the app but the cockpit", () => {
-    // The component-level half of the rule, as a probe: `environment: "node"`
-    // has no DOM to mount into, and the strings it would render are pinned
-    // above through the same pure functions it calls. What a probe adds is
-    // that it calls nothing else.
+    // The component-level half of the rule, as a probe: this file has no DOM
+    // to mount into, the strings the screen renders are pinned above through
+    // the same pure functions it calls, and `components/CockpitScreen.test.ts`
+    // mounts it on an app that IS this whitelist (16b cut B.2). What a probe
+    // adds is that it calls nothing else.
     //
     // It is a WHITELIST and not a list of forbidden names on purpose: a
     // blocklist passes for every member it forgets, and `GameApp` grows. The

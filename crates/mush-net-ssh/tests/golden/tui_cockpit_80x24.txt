@@ -21,4 +21,4 @@ The Hall #2 · Downtown · rain · IC 21:15 · North  East  quai
 ┌input ‹nav› Enter to type─────────────────────────────────────────────────────┐
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
-k lock · f fire · h heading · m speed · v view · c contacts · t status · w weapo
+k lock · f fire · h heading · m speed · p pull · v view · c contacts · t status

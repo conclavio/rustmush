@@ -197,6 +197,11 @@ export const BUILTIN_SCREENS: readonly ScreenDef[] = [
       { key: "f", label: "fire", action: { kind: "prefill", line: "fire " } },
       { key: "h", label: "heading", action: { kind: "prefill", line: "heading " } },
       { key: "m", label: "speed", action: { kind: "prefill", line: "speed " } },
+      // `p`, pull (16b cut B.2, `B-59`): the frame asked for again, and the
+      // map too when it has gone dark (`GameApp.localAction`'s cockpit arm).
+      // Not `g`, which is the pane-jump key (`JUMP_KEYS`); right after `m`,
+      // where the TUI puts it too.
+      { key: "p", label: "pull", action: { kind: "local", action: "refresh" } },
       { key: "s", label: "scan a contact", action: { kind: "prefill", line: "scan " } },
       { key: "v", label: "view", action: { kind: "run", cmd: "view" } },
       { key: "c", label: "contacts", action: { kind: "run", cmd: "contacts" } },

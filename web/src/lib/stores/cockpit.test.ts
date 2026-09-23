@@ -51,9 +51,83 @@ describe("CockpitStore", () => {
     expect(s.holdsTheGround).toBe(true);
     expect(s.map?.width).toBe(96);
     // A new match opens the screen again, and drops the old ground with it.
+    expect(s.notices).toHaveLength(4); // match 7's two lines, rung twice
     expect(s.applyFrame({ ...FRAME(), match: 8 })).toBe(true);
     expect(s.map).toBeNull();
     expect(s.holdsTheGround).toBe(false);
+    // …and its ring starts clean (16b cut B.2, `B-80`): match 8's two lines,
+    // none of match 7's above them.
+    expect(s.notices).toEqual(["X4 new contact", "BA section destroyed: turret"]);
+  });
+
+  it("empties the ring on a change of match, before the new frame's lines (B-80)", () => {
+    // A resumed tab can be handed match 8's frame with no cleared frame
+    // between (the ring keeps only the latest of the feed), so the frame that
+    // names a new match is what resets — never the cleared one.
+    const s = new CockpitStore();
+    s.applyFrame(FRAME());
+    s.pushReply("Locking BA.");
+    expect(s.notices).toHaveLength(3);
+    s.applyFrame({
+      ...FRAME(),
+      match: 8,
+      notices: [{ kind: "hit", contact: null, designator: "RB", section: null, text: "x" }],
+    });
+    expect(s.notices).toEqual(["RB hit"]);
+    // A same-match frame still appends.
+    s.applyFrame({
+      ...FRAME(),
+      match: 8,
+      notices: [{ kind: "hit", contact: null, designator: "X3", section: null, text: "x" }],
+    });
+    expect(s.notices).toEqual(["RB hit", "X3 hit"]);
+    // The map latches are untouched by the reset: an ask armed for match 7 is
+    // spent for match 8 anyway, so match 8 asks at once.
+    expect(s.needsMap(0)).toBe(true);
+  });
+
+  it("a full rehydrate clears the seat but keeps the switch spent (clearForRehydrate)", () => {
+    const s = new CockpitStore();
+    s.noteMapAsked(1000); // the hello pass's ask
+    expect(s.applyFrame(FRAME())).toBe(true);
+    s.applyMap(MAP());
+    // The hello pass of the NEW socket asks again, then the rehydrate runs.
+    s.noteMapAsked(5000);
+    s.clearForRehydrate();
+    expect(s.seated).toBe(false);
+    expect(s.map).toBeNull();
+    expect(s.notices).toEqual([]);
+    // The same match's frame re-seats WITHOUT reopening the screen: the pilot
+    // who walked off to the scene is not dragged back by a Wi-Fi blip…
+    expect(s.applyFrame(FRAME())).toBe(false);
+    expect(s.notices).toEqual(["X4 new contact", "BA section destroyed: turret"]);
+    // …and the hello pass's ask still covers it (a wildcard: it is not pulled
+    // twice on the socket that just reopened), until the latch ages.
+    expect(s.needsMap(5000 + MAP_ASK_MS - 1)).toBe(false);
+    expect(s.needsMap(5000 + MAP_ASK_MS)).toBe(true);
+    // A NEW match still opens it, and the wildcard covered that one too.
+    const t = new CockpitStore();
+    t.applyFrame(FRAME());
+    t.noteMapAsked(5000);
+    t.clearForRehydrate();
+    expect(t.applyFrame({ ...FRAME(), match: 8 })).toBe(true);
+    expect(t.needsMap(5000 + MAP_ASK_MS - 1)).toBe(false);
+  });
+
+  it("drops another match's map arriving after a timer's ask, still without re-arming (B-61 with B-59)", () => {
+    // The heal's timer asks through `needsMap` exactly as a frame does, so a
+    // late answer for another match is dropped the same way and buys nothing.
+    const s = new CockpitStore();
+    s.applyFrame(FRAME()); // match 7
+    expect(s.needsMap(10_000)).toBe(true); // the timer's tick
+    s.applyMap({ ...MAP(), match: 6 });
+    expect(s.map).toBeNull();
+    expect(s.holdsTheGround).toBe(false);
+    expect(s.needsMap(10_000 + MAP_ASK_MS - 1)).toBe(false);
+    expect(s.needsMap(10_000 + MAP_ASK_MS)).toBe(true);
+    s.applyMap(MAP());
+    expect(s.holdsTheGround).toBe(true);
+    expect(s.needsMap(1_000_000)).toBe(false);
   });
 
   it("rings a notice from kind + designator, never from its text", () => {

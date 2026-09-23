@@ -943,11 +943,23 @@ pub fn builtin_screens() -> Vec<Screen> {
                     action: KeyAction::Prefill("heading "),
                 },
                 // `m` for the help's own words — "make way at that speed" —
-                // because `s` is the scan-a-row key below and `p` reads as page.
+                // because `s` is the scan-a-row key below and `p` is pull.
                 KeyBinding {
                     key: 'm',
                     label: "speed",
                     action: KeyAction::Prefill("speed "),
+                },
+                // **16b cut B.2** (`B-59`): `p`, pull — the panel asked for
+                // again, and the map too when it has gone dark (the arm is
+                // `screen_queries`, which drops a held map's ask). Not `g`,
+                // which is the pane-jump key every screen inherits
+                // (`JUMP_KEYS`). Placed right after `m` so the legend clipped
+                // at 80 and at 120 columns still shows it. It reads and
+                // changes nothing, so it is a `Local` action and not a `Run`.
+                KeyBinding {
+                    key: 'p',
+                    label: "pull",
+                    action: KeyAction::Local(LocalAction::Refresh),
                 },
                 KeyBinding {
                     key: 'v',
@@ -1314,9 +1326,26 @@ mod tests {
                     "{line:?}"
                 ),
                 KeyAction::PrefillRow(line) => assert_eq!(line, "scan "),
-                KeyAction::Local(_) => panic!("the cockpit declares no local action"),
+                // 16b cut B.2: the one local action is `p`, pull, which only
+                // asks the server again for what the screen reads.
+                KeyAction::Local(action) => assert!(
+                    binding.key == 'p' && action == LocalAction::Refresh,
+                    "the cockpit's one local action is `p` pull: {:?} {action:?}",
+                    binding.key
+                ),
             }
         }
+        // …and `p` sits right after `m`, so the clipped legend shows it.
+        let order: Vec<char> = cockpit.keys.iter().map(|b| b.key).collect();
+        let m = order
+            .iter()
+            .position(|k| *k == 'm')
+            .expect("an `m` speed key");
+        assert_eq!(order.get(m + 1), Some(&'p'), "{order:?}");
+        assert!(
+            !JUMP_KEYS.contains(&'p') && !GLOBAL_KEYS.contains(&'p'),
+            "`p` is on neither reserved list"
+        );
     }
 
     /// The id range moved with the tenth screen: `0` is a digit now and `10`

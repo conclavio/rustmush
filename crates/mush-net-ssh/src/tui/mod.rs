@@ -74,6 +74,17 @@ impl TuiSession {
         self.app.apply_event(event)
     }
 
+    /// The timer heal's queries (16b cut B.2, `B-59`): at most one
+    /// `arena.map` ask, while a seated frame is held without its ground and the
+    /// latch has aged — see [`TuiApp::heal_queries`]. The output pump calls
+    /// this on its four-second tick; the clock is the app's own, so the timer
+    /// and the frame path read one latch on one clock.
+    #[must_use]
+    pub fn heal_queries(&mut self) -> Vec<(String, serde_json::Value)> {
+        let now = self.app.now();
+        self.app.heal_queries(now)
+    }
+
     /// Feed a burst of raw input bytes; see [`InputResult`].
     pub fn feed_input(&mut self, bytes: &[u8]) -> InputResult {
         self.app.feed_input(bytes)

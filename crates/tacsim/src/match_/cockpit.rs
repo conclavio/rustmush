@@ -3242,8 +3242,10 @@ pub fn map_unseated() -> serde_json::Value {
 /// unbound (`EXIT`, a released seat, the match ending, a void). It prints
 /// nothing on a line client, because it declares no shape; a panel clears; and —
 /// because it carries [`RETAIN_LATEST`] like every frame before it — it is the
-/// one frame left in the session's resume ring, so a client that reconnects
-/// after the match does not resurrect a dead cockpit.
+/// last cockpit frame in that session's resume ring UNTIL the pilot is seated
+/// again, when the next match's first frame supersedes it — which is why a
+/// panel resets its own ring on a change of match and never relies on this
+/// frame arriving (16b cut B.2).
 #[must_use]
 pub fn cockpit_cleared() -> serde_json::Value {
     serde_json::json!({

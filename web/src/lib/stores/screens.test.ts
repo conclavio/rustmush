@@ -147,6 +147,22 @@ describe("ScreensStore", () => {
     }
   });
 
+  it("the cockpit's `p` pulls, right after `m`, and the table still validates (16b cut B.2)", () => {
+    // `g` would have been refused: it is the pane-jump key both clients take
+    // before any binding. `p` is on neither reserved list, and it sits right
+    // after `m speed` so a clipped legend still shows it — the TUI's order too.
+    const keys = BUILTIN_SCREENS.find((d) => d.id === "cockpit")?.keys ?? [];
+    const at = keys.findIndex((b) => b.key === "m");
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(keys[at + 1]).toEqual({
+      key: "p",
+      label: "pull",
+      action: { kind: "local", action: "refresh" },
+    });
+    expect(keys.filter((b) => b.action.kind === "local").map((b) => b.key)).toEqual(["p"]);
+    expect(validateScreens(BUILTIN_SCREENS)).toBeNull();
+  });
+
   it("exits are keys on the scene screen only", () => {
     const s = new ScreensStore();
     s.exits = new Map([["n", "North"]]);
