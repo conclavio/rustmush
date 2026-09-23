@@ -58,7 +58,9 @@ while [ "$#" -gt 0 ]; do
 		shift 2
 		;;
 	--staff)
-		[ "$#" -ge 2 ] && [ -z "$staff" ] || usage
+		if [ "$#" -lt 2 ] || [ -n "$staff" ]; then
+			usage
+		fi
 		staff="$2"
 		[ -n "$staff" ] || usage
 		shift 2
