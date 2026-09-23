@@ -101,8 +101,24 @@ pub const FRAME_FEED: &str = "arena.cockpit";
 /// `PanelSubscribe` route to the handler at all.
 pub const MAP_FEED: &str = "arena.map";
 
-/// The notice category every arena notice carries.
+/// The notice category every arena notice carries — every arena line but the
+/// per-pulse notice sentences, which carry [`NOTICE_SENTENCE_TAG`].
 pub const NOTICE_CATEGORY: &str = "arena";
+
+/// **The tag on the `Sys` copy of a frame's own notice** (16b cut B.1): the
+/// sentence [`crate::match_::cockpit::notice_lines`] renders for each notice the
+/// bridge is about to push in that frame's `notices` array.
+///
+/// A panel's notices ring composes those notices from the frame's fields, and
+/// since cut B.1 it also rings the pilot's `Sys` replies while seated (on the
+/// web's screen 0 it is the only reply surface). Without a tag of its own the
+/// sentence would be rung as a reply AND composed from the frame — every notice
+/// twice, which is exactly what cut F.2's one owner per sentence forbids. The
+/// replies (`Locking BA.`, a usage line) keep [`NOTICE_CATEGORY`]; a ring leaves
+/// out a line carrying this tag, and the scrollback prints it as before (no
+/// renderer styles either tag). A span tag is on the wire already
+/// (`mush_proto::text::Span::tag`), so this is no protocol change.
+pub const NOTICE_SENTENCE_TAG: &str = "arena-notice";
 
 /// The payload the arena-egress re-entry carries. It is a token and not the
 /// messages: the messages are moved through [`ArenaTasks::take_staged`].
@@ -1334,8 +1350,11 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>, 
                 },
             );
         }
+        // 16b cut B.1: tagged as the frame's own notices, so a panel ring that
+        // takes the pilot's replies can leave these out — it composes them from
+        // the frame that follows (see `NOTICE_SENTENCE_TAG`).
         for line in lines {
-            ctx.out.sys_to_actor(pilot, NOTICE_CATEGORY, line);
+            ctx.out.sys_to_actor(pilot, NOTICE_SENTENCE_TAG, line);
         }
         feed.keyframe_to(ctx, Audience::Actor(pilot), payload);
         sent = sent.saturating_add(1);

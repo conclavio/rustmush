@@ -105,8 +105,8 @@ src/
 ├── components/
 │   ├── Login.svelte          # /api/auth login+register card (friendly errors)
 │   ├── CharSelect.svelte     # character grid from the login payload
-│   ├── Game.svelte           # the shell (I4): tab strip of numbered screens, WHO rail toggle, legend chips, key help
-│   ├── SceneScreen.svelte    # screen 1: room band + scrollback + vitals strip + composer + palette
+│   ├── Game.svelte           # the shell (I4): tab strip of numbered screens, WHO rail toggle, the composer + palette under every screen but channels (16b cut B.1), legend chips, key help
+│   ├── SceneScreen.svelte    # screen 1: room band + scrollback + vitals strip
 │   ├── RoomBand.svelte       # RoomView + ambient: zone, weather, IC clock, scene pill, exits with nav keys, presence pills
 │   ├── VitalsStrip.svelte    # every `.vitals` frame as gauges (dominant first)
 │   ├── Composer.svelte       # the box: Say/Pose/Emit/OOC sticky mode, preview, history, completion, composing signal
@@ -204,10 +204,16 @@ space on send. With the palette open, `Enter` inserts the highlighted row,
 prints `/help` instead) and `Esc` closes it keeping the text. The whole
 table is `$lib/keys.ts`'s `navIntent`, pinned by vitest without a DOM; what
 each intent then DOES is `GameApp.act`, driven in `game.test.ts` against a
-fake `ComposerHandle`.
+fake `ComposerHandle`. The composer and its palette are the shell's
+(`Game.svelte`, 16b cut B.1), under every screen but the channel screen, which
+has its own box addressed to the channel; from there alone `focusComposer`
+switches to the scene screen, so a tray action or `Enter` still reaches a box.
 
 The composer's Say / Pose / Emit / OOC control is client-side (D-I-8): an
 explicit trigger or a channel alias verb always wins (`$lib/composer.ts`).
+A prefill — a binding, a click, a palette pick, a tray action — always drops it
+back to a plain command (`modeAfterPrefill`, 16b cut B.1): the box outlives a
+screen switch, and Say set in a room must not turn `lock BA` into speech.
 Every keystroke feeds the **composing signal** (`$lib/composing.ts`): the
 client sends `composing { active: true }` on the first keystroke of a draft
 and `false` on send or after 5 s of silence; the gateway rate-limits starts
@@ -341,8 +347,8 @@ the pilot has no unit before anything came back; then the no-subject line.
 Even under that line the journal and before/after panes render whenever
 the ring holds rows — the only actor who can produce an after-action
 report is a staffer, who often holds no station, and each row names its
-own object. A prefill (`d`, or a contacts row) switches to the scene
-screen, where the composer lives.
+own object. A prefill (`d`, or a contacts row) puts the line in the shell's
+composer under this screen, ready to send (16b cut B.1).
 
 **Contract** (`$lib/stores/unit.svelte.ts`'s `parseUnitView` /
 `journalRows`; a payload convention, not a proto type — I8 adds no wire):
@@ -439,9 +445,11 @@ that id — a pilot who switches away is not dragged back by the next pulse).
 pushed per arena pulse; `arena.map` is the whole arena's terrain, **pulled and
 never pushed**, so it is not in the session's resume ring either. `CockpitStore`
 owns the self-heal: a frame of match M with no held map of M asks for one, at
-most once every `MAP_ASK_MS` (2 s), until it has it; a map of another match and
-the unseated answer are dropped rather than drawn, and dropping one does not
-re-arm the latch. The hello pass's own `arena.map` query counts as the first
+most once every `MAP_ASK_MS` (2 s), until it has it; while a frame is held, a
+map of another match and the unseated answer are dropped rather than drawn
+(`applyMap`, 16b cut B.1), and dropping one does not re-arm the latch. A map
+that arrives before any frame is held, and judged by `holdsTheGround` when the
+first frame names the match. The hello pass's own `arena.map` query counts as the first
 ask (`noteMapAsked`) — it is armed before any frame has named a match, and the
 server answers it with the ground of whichever match this pilot is seated in —
 so a re-attaching pilot is not sent the whole arena's terrain twice on a socket
@@ -451,11 +459,10 @@ frame arriving bare, inside a reply, or replayed out of the ring goes the same
 way.
 
 The once-per-match switch to screen 0 is the **only** server-driven screen
-switch in this client, and it waits out a half-typed line: this client has one
-composer, the scene screen mounts it, and unmounting takes the draft, the
-sticky Say/Pose mode and the history buffer with it. While
-`screens.inputFocused` the switch is owed rather than spent, and the next pulse
-takes it.
+switch in this client, and it is taken on the frame that owes it, even
+mid-sentence (16b cut B.1): the composer is the shell's (`Game.svelte`), so a
+switch between screens that carry it never unmounts it, and the draft, the
+sticky Say/Pose mode, the history buffer and the focus all survive.
 
 **One composition, three renderers.** `$lib/cockpit.ts`'s `composeWindow(map,
 frame, cols, rows)` is the rule the TUI's `render_cockpit_map_rows` and the
@@ -474,8 +481,14 @@ addition: the whole of the screen's text for that frame (re-bless with
 **The observer rule is in the type.** `CockpitFrame` keeps no contact `id`, no
 `lock` digits, no `unit` object number and no notice `text`: a renderer cannot
 leak a field its decoder never kept. The notices ring is composed from `kind` +
-`designator` + `section`, because the arena already sent each sentence to the
-scrollback as a `Sys` line and one sentence has one owner. The screen looks
+`designator` + `was` + `section` and the refusal's parts, because the arena
+already sent each sentence to the scrollback as a `Sys` line and one sentence
+has one owner. While seated the ring also takes the pilot's own `Sys` replies
+(`CockpitStore.pushReply`, 16b cut B.1: on screen 0 it is the only reply
+surface) — every one but the bridge's copy of a frame's own notice, which is
+tagged `arena-notice` (`NOTICE_SENTENCE_TAG`) and composed from the frame
+instead, so no notice is rung twice. The status block prints the degraded
+`receiver` row and the tank's own `DESTROYED` / `IMMOBILE`. The screen looks
 nothing up in another store — `game.test.ts` seeds a decoy name and object
 number into who/presence/unit and asserts neither reaches the rendered text,
 and a probe pins that `CockpitScreen.svelte` reads only `app.cockpit`.
@@ -484,12 +497,12 @@ and a probe pins that `CockpitScreen.svelte` reads only `app.cockpit`.
 `status`, `weaponstatus`, `range`, `bearing`, `scan`) are on `RUN_ALLOWLIST`
 and run; the five ordering verbs (`startup`, `heading`, `speed`, `lock`, `fire`)
 are not on it and only ever prefill — including the contact table's click and
-its `scan` button. A prefill goes through `focusComposer`, which switches to the
-scene screen, because that is where the one composer is: the pilot types Enter
-there and `0` back. That is the web's uniform behaviour (the unit screen's
-`@unit/damage ` does the same) and it is where the TUI, which keeps the pilot on
-screen 0, diverges — a screen-local input row is the open question, pinned as it
-stands by `game.test.ts`'s "a prefill takes the pilot to the box".
+its `scan` button. A prefill goes through `focusComposer`, which puts the line
+in the shell's composer and leaves the pilot on screen 0 (16b cut B.1, Q5), as
+the TUI does; a prefill always drops the sticky mode back to a plain command
+(`modeAfterPrefill`). The channel screen has its own box and no shell box, so
+from there alone a prefill switches to the scene screen. Pinned by
+`game.test.ts`'s "a prefill leaves the pilot on the cockpit".
 
 ## WsClient (`src/lib/ws.ts`)
 

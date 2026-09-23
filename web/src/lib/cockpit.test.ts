@@ -25,6 +25,8 @@ import {
   damageText,
   decodeArenaMap,
   decodeCockpitFrame,
+  labelledAt,
+  labelPlan,
   noticeLine,
   noticeLines,
   scanChips,
@@ -34,6 +36,7 @@ import {
   type ArenaMap,
   type CockpitFrame,
   type CockpitNotice,
+  type Marker,
 } from "./cockpit";
 
 const DIR = "src/lib/fixtures/cockpit";
@@ -255,6 +258,7 @@ describe("the decoders", () => {
     expect(frame?.notices[0]).toEqual({
       kind: "hit",
       designator: "X9",
+      was: null,
       section: "turret",
       cause: null,
       refusal: null,
@@ -270,6 +274,7 @@ describe("the decoders", () => {
     expect(frame?.notices[1]).toEqual({
       kind: "refused",
       designator: null,
+      was: null,
       section: null,
       cause: null,
       refusal: "overheated_and_then_some",
@@ -383,6 +388,7 @@ describe("composeWindow", () => {
 function notice(partial: Partial<CockpitNotice> & { kind: string }): string {
   return noticeLine({
     designator: null,
+    was: null,
     section: null,
     cause: null,
     refusal: null,
@@ -556,9 +562,13 @@ describe("the view model", () => {
     expect(notice({ kind: "hit", designator: "BA", section: "turret", spent: true })).toBe(
       "BA hit: turret (already destroyed)",
     );
-    // The shape the server actually sends: `FrameNotice::section()` answers
-    // `None` for `StruckSpent` exactly as it does for `Struck` — the victim's own
-    // section is not the gunner's key — so the panel never names it.
+    // 16b cut B.1 (`T-86`): `FrameNotice::section()` answers the victim's own
+    // section on `struck_spent` (and `struck`, `section_lost`) now, so the
+    // panel names it through the common clause; a notice with none still
+    // reads the bare words.
+    expect(notice({ kind: "struck_spent", section: "left_track", spent: true })).toBe(
+      "hit on a dead section: left_track",
+    );
     expect(notice({ kind: "struck_spent" })).toBe("hit on a dead section");
     // 16b cut D.2 (`B-03`): the pilot's own tank, naming nothing else.
     expect(notice({ kind: "destroyed" })).toBe("your tank is destroyed");
@@ -578,5 +588,145 @@ describe("the view model", () => {
       writeFileSync(path, text, "utf8");
     }
     expect(text).toBe(readFileSync(path, "utf8").replace(/\r\n/g, "\n"));
+  });
+});
+
+// **16b cut B.1**: the web composer's cut, the pure half — the forced labels
+// (`B-09`), the unknown band (`T-58`), the two panel rows and the ring's new
+// shapes (`T-86`), and the parity fixture both rings are held to.
+describe("16b cut B.1", () => {
+  it("decodes `was` on a notice and the frame's `receiver`", () => {
+    const raw = json("cockpit_frame.json") as Record<string, unknown>;
+    // The committed scene: a clean receiver, and no notice quoting an old name.
+    const frame = theFrame();
+    expect(frame.receiver).toBeNull();
+    expect(frame.notices.map((n) => n.was)).toEqual([null, null]);
+    const jammed = decodeCockpitFrame({
+      ...raw,
+      receiver: { budget: 15, budget_max: 40, reach_percent: 60 },
+      notices: [{ kind: "unidentified", designator: "X2", was: "BA\u0007LONGERNAME" }],
+    });
+    expect(jammed?.receiver).toEqual({ budget: 15, budget_max: 40, reach_percent: 60 });
+    // Cleaned and cut to a designator's eight, like `designator`.
+    expect(jammed?.notices[0]?.was).toBe("BALONGER");
+    // A server that predates the key sends neither.
+    const older = { ...raw };
+    delete older.receiver;
+    expect(decodeCockpitFrame(older)?.receiver).toBeNull();
+    expect(decodeCockpitFrame({ ...raw, receiver: "degraded" })?.receiver).toBeNull();
+  });
+
+  it("prints the receiver row after heat, and the tank's own limit on the speed line", () => {
+    const frame = theFrame();
+    const receiver = { budget: 15, budget_max: 40, reach_percent: 60 };
+    expect(statusLines({ ...frame, receiver })).toEqual([
+      "Callsign RA",
+      "power online",
+      "43 kph  heading 045°",
+      "heat 40/100",
+      "receiver 15/40  60%",
+      "scope hostile",
+      "Lock BA  440 m  62%",
+    ]);
+    // 19 characters: never wraps the TUI's 22-column pane.
+    expect("receiver 15/40  60%").toHaveLength(19);
+    expect(statusLines({ ...frame, wreck: true, immobile: true })[2]).toBe(
+      "43 kph  heading 045°  DESTROYED",
+    );
+    expect(statusLines({ ...frame, immobile: true })[2]).toBe("43 kph  heading 045°  IMMOBILE");
+    // The committed frame prints neither.
+    for (const line of statusLines(frame)) {
+      expect(line).not.toMatch(/receiver|DESTROYED|IMMOBILE/);
+    }
+  });
+
+  it("leaves an unknown band letter uncoloured", () => {
+    const frame = theFrame();
+    const contact = { ...frame.contacts[0]!, condition: { table: 0, bands: "gz", age_ms: 0 } };
+    expect(scanChips(contact, frame.scan_tables).map((c) => c.band)).toEqual([
+      "green",
+      "unknown",
+    ]);
+  });
+
+  it("labels a hostile and the lock at every zoom, the rest from 6 px", () => {
+    expect(labelledAt("hostile", "BA", null, 2)).toBe(true);
+    expect(labelledAt("unknown", "X3", null, 4)).toBe(false);
+    expect(labelledAt("unknown", "X3", null, 6)).toBe(true);
+    expect(labelledAt("unknown", "X3", "X3", 2)).toBe(true); // the lock
+    expect(labelledAt("friendly", "RB", null, 5)).toBe(false);
+    expect(labelledAt("you", "RA", null, 5)).toBe(false);
+    expect(labelledAt("you", "RA", null, 8)).toBe(true);
+  });
+
+  it("skips an overlapping label in frame order, and never the lock's", () => {
+    const m = (x: number, designator: string, kind: Marker["kind"] = "hostile"): Marker => ({
+      x,
+      y: 10,
+      glyph: "x",
+      kind,
+      designator,
+    });
+    const two = [m(40, "BA"), m(42, "BB")];
+    // Two cells apart at 2 px the second name would sit on the first.
+    expect(labelPlan(two, null, 2)).toEqual([true, false]);
+    // The lock is placed first, so it is the other one that gives way.
+    expect(labelPlan(two, "BB", 2)).toEqual([false, true]);
+    // At 8 px they are sixteen pixels apart and both fit.
+    expect(labelPlan(two, null, 8)).toEqual([true, true]);
+    // At 6 px the font is still 8 px (`max(8, px)`), so three glyphs are 14.4 px
+    // wide and the twelve pixels to the next marker do not hold them: measured
+    // at `px * 0.6` the two would both be painted, one over the other.
+    const three = [m(40, "X10"), m(42, "X11")];
+    expect(labelPlan(three, null, 6)).toEqual([true, false]);
+    expect(labelPlan(three, null, 8)).toEqual([true, true]);
+    // An unknown under 6 px is not labelled at all, and costs no room.
+    expect(labelPlan([m(40, "X3", "unknown"), m(42, "BB")], null, 2)).toEqual([false, true]);
+    // The committed scene at the default 128-cell view (the whole 96-cell
+    // ground at 5 px): the hostile lock is labelled, the pilot's own marker,
+    // the friendly and the two unknowns are not.
+    const frame = theFrame();
+    const win = composeWindow(theMap(), frame, 128, 128);
+    const flags = labelPlan(win.markers, frame.lock_designator, 5);
+    expect(win.markers.filter((_, i) => flags[i]).map((mk) => mk.designator)).toEqual(["BA"]);
+  });
+
+  it("words every notice in `notice_lines.json` as the file says", () => {
+    const pairs = json("notice_lines.json") as { notice: unknown; line: string }[];
+    expect(pairs.length).toBeGreaterThanOrEqual(12);
+    const kinds = new Set<string>();
+    for (const { notice: raw, line } of pairs) {
+      // Through the REAL decoder: the notice rides a frame, as on the wire.
+      const frame = decodeCockpitFrame({
+        ...(json("cockpit_frame.json") as Record<string, unknown>),
+        notices: [raw],
+      });
+      const decoded = frame?.notices[0];
+      expect(decoded, JSON.stringify(raw)).toBeDefined();
+      expect(noticeLine(decoded!), JSON.stringify(raw)).toBe(line);
+      kinds.add(decoded!.kind);
+    }
+    // Every kind on the committed frame is covered, and so is every case the
+    // file exists for.
+    for (const kind of theFrame().notices.map((n) => n.kind)) {
+      expect(kinds).toContain(kind);
+    }
+    for (const kind of [
+      "refused",
+      "blocked",
+      "unidentified",
+      "classified",
+      "hit",
+      "locked",
+      "struck",
+      "struck_spent",
+      "section_lost",
+      "constructor",
+    ]) {
+      expect(kinds).toContain(kind);
+    }
+    // An own-side tank told apart keeps its mark on the name it reads now, so
+    // it never reads as a hostile's identification.
+    expect(pairs.map((p) => p.line)).toContain("X3 identified: RB (FRIENDLY)");
   });
 });

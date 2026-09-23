@@ -1503,6 +1503,15 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
             assert!(!whole.contains(leak), "{what} leaked {leak:?}:\n{whole}");
         }
     }
+    // 16b cut B.1 (`T-86`): an old name on a notice is a name the pilot was
+    // sent, and she has been sent none yet. This frame is taken before anything
+    // is detected and carries no notices, so here the call is a GUARD on the
+    // socket's surface and not the proof: any `was` at all would fail it. The
+    // proof runs on frames `Arena::step` staged through a real rename and
+    // regression — `tacsim/tests/perception.rs`'s
+    // `b1_the_published_old_name_is_a_name_the_pilot_was_sent` — and on the
+    // regression's published frame further down this file.
+    every_was_is_a_held_designator(&cockpit, &[], "the cockpit frame");
     // `names_nothing` also refuses `#{red}` and `Red Tank 1`, so the two
     // assertions above are the whole rule on these two surfaces: a frame names
     // its own unit by the bare number it carries in `unit`, and never by a dbref
@@ -2572,14 +2581,130 @@ fn the_victims_own_lines_name_nothing_but_the_victims_own_tank() {
         assert_eq!(notice.cause(), None, "{notice:?}");
         assert_eq!(notice.order(), None, "{notice:?}");
     }
-    // The victim's own section is deliberately NOT on the gunner's `section`
-    // key: that key's readers are panels highlighting a section a gunner just
-    // took off a TARGET, and they must not be handed the victim's own.
-    assert_eq!(spent.section(), None);
+    // **16b cut B.1** (`T-86`) replaced cut D.2's "the victim's own section is
+    // deliberately NOT on the gunner's `section` key" with the stronger pin:
+    // on the victim's three kinds the section IS published, and it is one of
+    // the pilot's OWN frame's `sections[].id` and never a contact's — the
+    // notice names no contact at all. No reader highlights by the key alone;
+    // `kind` says whose section it is. Pinned over the published JSON below —
+    // a unit pin on `status_frame`'s copying; the same property over frames
+    // `Arena::step` staged for a real victim is in `tacsim/tests/resolution.rs`'s
+    // `a_section_is_destroyed_once_however_many_rounds_find_it_afterwards`.
+    assert_eq!(
+        spent.section().map(smol_str::SmolStr::as_str),
+        Some("left_track")
+    );
+    assert_eq!(spent.was(), None);
+    victims_sections_are_their_own();
     assert_eq!(spent.kind(), NoticeKind::StruckSpent);
     assert_eq!(NoticeKind::StruckSpent.as_str(), "struck_spent");
     assert_eq!(NoticeKind::OwnDestroyed.as_str(), "destroyed");
     assert_eq!(NoticeKind::OwnDisabled.as_str(), "disabled");
+}
+
+/// **The victim's `section`, on the wire, is the victim's own** (16b cut B.1,
+/// `T-86`): on `struck`, `struck_spent` and `section_lost` the published
+/// `section` is one of the pilot's OWN frame's `sections[].id`, and the notice
+/// carries no `contact`, no `designator` and no `was` — so it is never a
+/// contact's section, and nothing in it names the shooter.
+fn victims_sections_are_their_own() {
+    use tacsim::arena::perception::FrameNotice;
+    use tacsim::arena::state::ContactId;
+    use tacsim::arena::step::{FrameFacet, FrameSection};
+    use tacsim::match_::cockpit;
+
+    let word = smol_str::SmolStr::new;
+    let mut frame = d4_stub_frame(ContactId(0x0123_4567_89ab_cdef));
+    frame.sections = vec![
+        FrameSection {
+            id: word("hull"),
+            condition: word("intact"),
+            internals: Some((60, 60)),
+            facets: vec![FrameFacet {
+                id: word("front"),
+                armor: 55,
+                armor_max: 80,
+            }],
+        },
+        FrameSection {
+            id: word("left_track"),
+            condition: word("destroyed"),
+            internals: Some((0, 24)),
+            facets: Vec::new(),
+        },
+    ];
+    frame.notices = vec![
+        FrameNotice::Struck {
+            section: word("hull"),
+            armor_section: word("hull"),
+            facet: word("front"),
+            armor_left: 55,
+            armor_max: 80,
+            internals_left: 60,
+            internals_max: 60,
+        },
+        FrameNotice::StruckSpent {
+            section: word("left_track"),
+        },
+        FrameNotice::SectionLost {
+            section: word("left_track"),
+            consequences: Vec::new(),
+        },
+    ];
+    let payload = cockpit::status_frame(tacsim::arena_task::MatchId(1), &frame);
+    let own: Vec<Value> = payload["sections"]
+        .as_array()
+        .map(|sections| sections.iter().map(|s| s["id"].clone()).collect())
+        .unwrap_or_default();
+    let notices = payload["notices"].as_array().cloned().unwrap_or_default();
+    assert_eq!(notices.len(), 3, "{payload}");
+    for notice in &notices {
+        let kind = notice["kind"].as_str().unwrap_or_default();
+        assert!(
+            ["struck", "struck_spent", "section_lost"].contains(&kind),
+            "{notice}"
+        );
+        assert!(
+            own.contains(&notice["section"]),
+            "{kind}'s section is not one of the pilot's own {own:?}: {notice}"
+        );
+        for empty in ["contact", "designator", "was"] {
+            assert_eq!(notice[empty], Value::Null, "{kind}.{empty}: {notice}");
+        }
+        no_sixteen_digit_word(&notice.to_string(), "a victim's own notice object");
+    }
+}
+
+/// **Every `was` a raw cockpit frame carries is a name the pilot was sent**
+/// (16b cut B.1, `T-86`): a designator — `X<n>` or a two-letter slot name —
+/// that the pilot's own frames hold or held (`held`), and never sixteen digits
+/// or an object number. `null` passes: most notices quote no old name.
+fn every_was_is_a_held_designator(payload: &Value, held: &[&str], what: &str) {
+    let notices = payload["notices"].as_array().cloned().unwrap_or_default();
+    for notice in &notices {
+        let was = &notice["was"];
+        if was.is_null() {
+            continue;
+        }
+        let name = was
+            .as_str()
+            .unwrap_or_else(|| panic!("{what}: `was` is a string: {notice}"));
+        let provisional = name
+            .strip_prefix('X')
+            .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+        let slot = name.len() == 2 && name.chars().all(|c| c.is_ascii_uppercase());
+        assert!(
+            provisional || slot,
+            "{what}: `was` is not a designator: {notice}"
+        );
+        assert!(
+            held.contains(&name),
+            "{what}: `was` {name} is a name the pilot was never sent ({held:?}): {notice}"
+        );
+        // The key itself, not the whole object: `contact` is the row key a
+        // panel matches on and is sixteen digits by design (16b cut Q.1).
+        no_sixteen_digit_word(name, what);
+    }
 }
 
 /// **16b cut D.3's two new announcements name sides and people, and nothing
@@ -2844,6 +2969,51 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
             "the regression line leaked {leak:?}:\n{line}"
         );
     }
+
+    // **16b cut B.1** (`T-86`): the raw frame carries the old name as a field
+    // now, so the same rule is asked of the JSON a panel decodes. The frame the
+    // line arrives on holds the row as `X2`; the frame before it held it as `BA`
+    // — the only two names this notice may quote, and both designators.
+    let earlier = tacsim::arena::perception::FrameContact {
+        id,
+        designator: Designator::Slot {
+            team: Team::Blue,
+            slot: 1,
+        },
+        alias: Some(2),
+        class: Classification::Classified { team: Team::Blue },
+        bearing_mdeg: 45_000,
+        range_cm: 45_000,
+        age_ms: 0,
+        cell: Some((36, 14)),
+        condition: None,
+    };
+    let now = tacsim::arena::perception::FrameContact {
+        designator: Designator::Provisional(2),
+        alias: None,
+        class: Classification::Unknown,
+        ..earlier
+    };
+    let mut before = d4_stub_frame(id);
+    before.contacts = vec![earlier];
+    let mut after = d4_stub_frame(id);
+    after.contacts = vec![now];
+    after.notices = vec![regressed.clone()];
+    let held: Vec<String> = [&before, &after]
+        .iter()
+        .flat_map(|frame| cockpit::frame_contacts(frame))
+        .map(|row| row.designator.to_string())
+        .collect();
+    let held: Vec<&str> = held.iter().map(String::as_str).collect();
+    assert_eq!(held, ["BA", "X2"]);
+    let published = cockpit::status_frame(tacsim::arena_task::MatchId(1), &after);
+    let notice = published["notices"][0].clone();
+    assert_eq!(notice["kind"], json!("unidentified"), "{published}");
+    assert_eq!(notice["designator"], json!("X2"), "{published}");
+    assert_eq!(notice["was"], json!("BA"), "{published}");
+    every_was_is_a_held_designator(&published, &held, "the regression's frame");
+    // The sentence the web ring composes from those two fields says the same
+    // two names and nothing else (`noticeLine`: `BA unidentified again: X2`).
 
     // **And the old name is not an alias.** `LOCK BA` after the line is the one
     // byte-identical refusal, and `LOCK X2` — the name the row reads now —

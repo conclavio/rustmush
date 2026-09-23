@@ -146,6 +146,7 @@
       "section": null,
       "spent": false,
       "text": "New contact X4: bearing 030°, far.",
+      "was": null,
       "weapon": null
     },
     {
@@ -160,6 +161,7 @@
       "section": "turret",
       "spent": false,
       "text": "BA's turret is destroyed.",
+      "was": null,
       "weapon": null
     }
   ],

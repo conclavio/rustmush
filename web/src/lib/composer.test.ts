@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { collapseNewlines, composeLine, nextMode, previewLine } from "./composer";
+import { collapseNewlines, composeLine, modeAfterPrefill, nextMode, previewLine } from "./composer";
 import { narrativeLine } from "./render";
 
 const aliases = ["pub", "st"];
@@ -36,6 +36,26 @@ describe("composeLine", () => {
     expect(nextMode("none")).toBe("say");
     expect(nextMode("say")).toBe("pose");
     expect(nextMode("ooc")).toBe("none");
+  });
+
+  it("a prefill is a command, whatever the sticky mode (16b cut B.1)", () => {
+    // The shell's box outlives a screen switch, so Say set in the muster room
+    // is still set on the cockpit: without the reset a contact click would send
+    // `say lock BA` to the room and take no lock.
+    for (const mode of ["say", "pose", "emit", "ooc"] as const) {
+      const after = modeAfterPrefill(mode, "lock BA");
+      expect(after).toBe("none");
+      expect(composeLine(after, "lock BA", aliases)).toBe("lock BA");
+      expect(modeAfterPrefill(mode, "@mail/send ")).toBe("none");
+      expect(modeAfterPrefill(mode, "/")).toBe("none");
+      // A bare focus (the Enter key) keeps the mode, and so does a speech
+      // trigger, which wins over it anyway.
+      expect(modeAfterPrefill(mode, undefined)).toBe(mode);
+      for (const trigger of ['"', ":", ";", "\\"]) {
+        expect(modeAfterPrefill(mode, trigger)).toBe(mode);
+      }
+    }
+    expect(modeAfterPrefill("none", "lock BA")).toBe("none");
   });
 });
 

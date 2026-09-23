@@ -14,7 +14,12 @@
 // A renderer cannot leak a field its decoder never kept, and a notice's own
 // sentence already reaches the scrollback as a `Sys` line (16b cut F.2's
 // one-owner-per-sentence contract), so the ring here is composed from `kind` +
-// `designator` + `section` and never from the server's prose.
+// `designator` + `was` + `section` and the refusal's parts, and never from the
+// notice's own prose. (The store appends the pilot's `Sys` replies to the same
+// ring while seated — 16b cut B.1 — because on screen 0 it is the only reply
+// surface; those lines are already plain text and are not composed here. The
+// bridge's `Sys` copy of a notice wears `NOTICE_SENTENCE_TAG` and is never
+// rung, so the one-owner rule holds on the ring too.)
 //
 // The payload is a `serde_json::Value` on the server — outside ts-rs — so these
 // types are hand-written, and every decoder is tolerant of a missing key and of
@@ -28,8 +33,26 @@ export const COCKPIT_FEED = "arena.cockpit";
 /** The whole arena's terrain, pulled and never pushed (`MAP_FEED`). */
 export const ARENA_MAP_FEED = "arena.map";
 
+/** The span tag on the `Sys` copy of a frame's own notice sentence
+ * (`tacsim::arena_bridge::NOTICE_SENTENCE_TAG`, 16b cut B.1). The pilot's
+ * replies carry the arena's category, `arena`, instead. */
+export const NOTICE_SENTENCE_TAG = "arena-notice";
+
+/**
+ * Whether a `Sys` line is the bridge's copy of a notice the next frame carries
+ * (16b cut B.1). The notices ring composes that notice from the frame's fields
+ * (`noticeLine`), so ringing the sentence as a reply too would say every notice
+ * twice — cut F.2's one owner per sentence. Only the tag decides, never the
+ * words: the first span carries it, as `isRollNarration` reads `roll`.
+ */
+export function isNoticeSentence(text: readonly { tag?: string | null }[]): boolean {
+  return text[0]?.tag === NOTICE_SENTENCE_TAG;
+}
+
 /** The default square viewport of the web's map, in arena cells: a sensor's
- * sixty reach every way from the middle and still leaves margin. */
+ * sixty reach every way from the middle and still leaves margin. 64 would hide
+ * the 330–600 m band the sensor's sight covers; a hostile is told apart by its
+ * label, not by the zoom (16b cut B.1, `B-09`: see `labelledAt`). */
 export const COCKPIT_VIEW_CELLS = 128;
 
 /** The viewport sizes the zoom control steps through, in arena cells. */
@@ -45,8 +68,10 @@ export const NOT_IN_A_COCKPIT = "Not in a cockpit.";
 /** The map pane while the pulled terrain has not arrived. */
 export const WAITING_FOR_THE_MAP = "Waiting for the arena map...";
 
-/** A scan band letter, as `Condition::letters` spells it (16b cut Q.2). */
-export type ScanBand = "green" | "yellow" | "red" | "destroyed";
+/** A scan band letter, as `Condition::letters` spells it (16b cut Q.2), and
+ * `unknown` for a letter this build predates (16b cut B.1, `T-58`): it is
+ * uncoloured rather than painted green, which would say "whole". */
+export type ScanBand = "green" | "yellow" | "red" | "destroyed" | "unknown";
 
 /** What a marker is, which is the whole of what the canvas colours it by. */
 export type MarkerKind = "you" | "unknown" | "friendly" | "hostile";
@@ -91,6 +116,12 @@ export interface CockpitNotice {
   /** The wire word (`NoticeKind::as_str`). */
   kind: string;
   designator: string | null;
+  /** The old name an `identified` or `unidentified again` line quotes, or
+   * `null` (16b cut B.1, `T-86`). A designator this platform issued or read. */
+  was: string | null;
+  /** The section the notice is about — the target's on the gunner's kinds,
+   * the pilot's own on the victim's (16b cut B.1 widened it); `kind` says
+   * whose. */
   section: string | null;
   /** Why motion stopped (`BlockedCause::as_str`), or `null`. 16b cut D.2. */
   cause: string | null;
@@ -142,6 +173,16 @@ export interface CockpitHeat {
   overheated: boolean;
 }
 
+/** The platform's own receiver while it is degraded (16b cut D.4's `receiver`
+ * key, decoded by 16b cut B.1): the attenuation budget its last pass ran with,
+ * that budget unjammed, and what is left of the reach as a whole per cent.
+ * Three integers about the pilot's own machine and nothing about the source. */
+export interface CockpitReceiver {
+  budget: number;
+  budget_max: number;
+  reach_percent: number;
+}
+
 /**
  * One `arena.cockpit` keyframe, decoded.
  *
@@ -166,6 +207,9 @@ export interface CockpitFrame {
   speed_kph: number;
   heading_deg: number;
   heat: CockpitHeat | null;
+  /** The receiver, or `null` on a clean one (and from a server that does not
+   * send the key). The row's presence is what says "degraded". */
+  receiver: CockpitReceiver | null;
   /** The arena's one global cadence word. The status block does NOT print it
    * (16b cut D.2), and no shipped client reads it today; it stays decoded
    * because `T-59` is closed for the printed word alone. */
@@ -318,6 +362,8 @@ function decodeNotice(raw: unknown): CockpitNotice | null {
   return {
     kind: clean(raw.kind, "?"),
     designator: optStr(raw.designator, 8),
+    // 16b cut B.1 (`T-86`): cut to what a designator can be, like `designator`.
+    was: optStr(raw.was, 8),
     section: optStr(raw.section, 24),
     cause: optStr(raw.cause, 24),
     refusal: optStr(raw.refusal, 24),
@@ -368,6 +414,16 @@ function decodeHeat(raw: unknown): CockpitHeat | null {
     : null;
 }
 
+function decodeReceiver(raw: unknown): CockpitReceiver | null {
+  return isObj(raw)
+    ? {
+        budget: int(raw.budget, 0),
+        budget_max: int(raw.budget_max, 0),
+        reach_percent: int(raw.reach_percent, 0),
+      }
+    : null;
+}
+
 function decodeTables(raw: unknown): string[][] {
   return (Array.isArray(raw) ? raw : []).map((table) =>
     (Array.isArray(table) ? table : []).map((word) => clean(word, "?", 24)),
@@ -400,6 +456,7 @@ export function decodeCockpitFrame(data: unknown): CockpitFrame | null {
     speed_kph: int(data.speed_kph, 0),
     heading_deg: int(data.heading_deg, 0),
     heat: decodeHeat(data.heat),
+    receiver: decodeReceiver(data.receiver),
     tempo: clean(data.tempo, "?"),
     scope: clean(data.scope, "?"),
     lock_designator: optStr(data.lock_designator, 8),
@@ -590,51 +647,58 @@ function deg3(n: number): string {
 
 /** The words one notice kind is said in. A kind this build predates falls back
  * to its own wire word with the underscores opened out, which can name nothing
- * the payload did not already carry. */
-const NOTICE_WORDS: Readonly<Record<string, string>> = {
-  acquired: "new contact",
-  classified: "identified",
-  lost: "contact lost",
-  lock_lost: "lock broken",
-  locked: "locked",
-  hit: "hit",
-  miss: "miss",
-  kill: "destroyed",
-  struck: "hit taken",
-  struck_spent: "hit on a dead section",
-  section_lost: "section gone",
-  target_section_lost: "section destroyed",
-  refused: "refused",
-  blocked: "held",
-  power_online: "power online",
-  destroyed: "your tank is destroyed",
-  disabled: "your tank is out of the fight",
-};
+ * the payload did not already carry.
+ *
+ * A `Map` and not an object (16b cut B.1, `T-86`): a plain object answers an
+ * inherited key, so a kind named `constructor` printed a function's source. The
+ * same holds for the two tables below. */
+const NOTICE_WORDS: ReadonlyMap<string, string> = new Map([
+  ["acquired", "new contact"],
+  ["classified", "identified"],
+  // 16b cut B.1 (`T-86`): with `was` on the wire the line reads
+  // `BA unidentified again: X2`, the sentence's own two names.
+  ["unidentified", "unidentified again"],
+  ["lost", "contact lost"],
+  ["lock_lost", "lock broken"],
+  ["locked", "locked"],
+  ["hit", "hit"],
+  ["miss", "miss"],
+  ["kill", "destroyed"],
+  ["struck", "hit taken"],
+  ["struck_spent", "hit on a dead section"],
+  ["section_lost", "section gone"],
+  ["target_section_lost", "section destroyed"],
+  ["refused", "refused"],
+  ["blocked", "held"],
+  ["power_online", "power online"],
+  ["destroyed", "your tank is destroyed"],
+  ["disabled", "your tank is out of the fight"],
+]);
 
 /** Why an order was refused, in the pilot's words (`Refusal::as_str`). A word
  * this build predates prints with its underscores opened out, which can name
  * nothing the payload did not already carry. */
-const REFUSAL_WORDS: Readonly<Record<string, string>> = {
-  power_not_online: "power is not online",
-  queue_full: "too many orders at once",
-  wreck: "the tank is destroyed",
-  motion_disabled: "the tank cannot move",
-  no_contact: "no such contact",
-  no_lock: "no lock",
-  cycling: "still cycling",
-  empty: "empty",
-  overheated: "overheated",
-  no_weapon: "no such weapon",
-  epoch: "the seat changed hands",
-};
+const REFUSAL_WORDS: ReadonlyMap<string, string> = new Map([
+  ["power_not_online", "power is not online"],
+  ["queue_full", "too many orders at once"],
+  ["wreck", "the tank is destroyed"],
+  ["motion_disabled", "the tank cannot move"],
+  ["no_contact", "no such contact"],
+  ["no_lock", "no lock"],
+  ["cycling", "still cycling"],
+  ["empty", "empty"],
+  ["overheated", "overheated"],
+  ["no_weapon", "no such weapon"],
+  ["epoch", "the seat changed hands"],
+]);
 
 /** Why motion stopped, in the pilot's words (`BlockedCause::as_str`). */
-const CAUSE_WORDS: Readonly<Record<string, string>> = {
-  impassable: "the ground will not take the tank",
-  occupied: "something is in the way",
-  edge: "the arena's edge",
-  too_steep: "too steep: drive round",
-};
+const CAUSE_WORDS: ReadonlyMap<string, string> = new Map([
+  ["impassable", "the ground will not take the tank"],
+  ["occupied", "something is in the way"],
+  ["edge", "the arena's edge"],
+  ["too_steep", "too steep: drive round"],
+]);
 
 /** A wire word with its underscores opened out — the fallback for a kind, a
  * refusal or a cause this build predates. */
@@ -660,13 +724,24 @@ function detailWords(detail: CockpitNoticeDetail | null): string {
  * One line of the notices ring, composed from the notice's own FIELDS and NEVER
  * from its `text` (16b cut F.2: one sentence, one owner — the arena already sent
  * that sentence to the scrollback as a `Sys` line, and a panel that printed it
- * too would say everything twice).
+ * too would say everything twice). That is also why the ring's reply half
+ * (16b cut B.1, `CockpitStore.pushReply`) skips the `Sys` line tagged
+ * `NOTICE_SENTENCE_TAG`: it is this notice's sentence, not an answer.
  *
  * **16b cut D.2** (`B-07`) is what made that rule survivable. A refused order
  * and a blocked tank carried their whole sentence in `text` and nothing else, so
  * this ring printed `refused` and `held` — no order, no weapon, no reason — and
  * a pilot watching the panel could not tell a cold tank from a cycling gun. The
  * parts are on the wire now, so the line is composed here.
+ *
+ * **16b cut B.1** (`T-86`): an `identified` or `unidentified again` line that
+ * carries its old name reads `X2 identified: BA` / `BA unidentified again: X2`
+ * — the old name first, the name the row reads now after the colon, which is
+ * the order the pilot met them in; a block with no cause reads `held` alone
+ * rather than guessing `occupied`'s words; and the victim's `struck`,
+ * `struck_spent` and `section_lost` gain `: section` through the common clause
+ * now that the wire carries their section. `fixtures/cockpit/notice_lines.json`
+ * pins every shape, and 16b cut B.3 holds the TUI's ring to the same file.
  */
 export function noticeLine(notice: CockpitNotice): string {
   if (notice.kind === "refused") {
@@ -675,18 +750,26 @@ export function noticeLine(notice: CockpitNotice): string {
     const why =
       notice.refusal === null
         ? "refused"
-        : (REFUSAL_WORDS[notice.refusal] ?? opened(notice.refusal));
+        : (REFUSAL_WORDS.get(notice.refusal) ?? opened(notice.refusal));
     return `${order}${weapon} refused: ${why}${detailWords(notice.detail)}`;
   }
   if (notice.kind === "blocked") {
-    const why =
-      notice.cause === null ? "something is in the way" : (CAUSE_WORDS[notice.cause] ?? opened(notice.cause));
-    return `held: ${why}`;
+    return notice.cause === null
+      ? "held"
+      : `held: ${CAUSE_WORDS.get(notice.cause) ?? opened(notice.cause)}`;
   }
-  const words = NOTICE_WORDS[notice.kind] ?? opened(notice.kind);
+  const words = NOTICE_WORDS.get(notice.kind) ?? opened(notice.kind);
   // 16b cut D.2 (`B-18`): friendly fire is said and never gated, on the panel
   // exactly as in the scrollback.
   const named = notice.designator === null ? null : `${notice.designator}${notice.friendly ? " (FRIENDLY)" : ""}`;
+  if (
+    (notice.kind === "classified" || notice.kind === "unidentified") &&
+    notice.was !== null
+  ) {
+    // The mark goes with the name the row reads now (`X3 identified: RB
+    // (FRIENDLY)`): an own-side tank told apart must not read as a hostile's.
+    return named === null ? `${notice.was} ${words}` : `${notice.was} ${words}: ${named}`;
+  }
   const head = named === null ? words : `${named} ${words}`;
   const line = notice.section === null ? head : `${head}: ${notice.section}`;
   // 16b cut D.2 (`B-15`): the round found a section that was already gone.
@@ -730,7 +813,8 @@ export interface CockpitView {
    * contact marker landed. Excludes the pilot and INCLUDES a marker a later one
    * overwrote, exactly as the TUI's legend does. */
   legend: string;
-  /** The status block: callsign, power, speed/heading, heat, scope, lock. */
+  /** The status block: callsign, power, speed/heading (and the tank's own
+   * limit), heat, the degraded receiver, scope, lock. */
   status: string[];
   damage: CockpitDamageRow[];
   /** One line a weapon, or the single `(no weapon)` line. */
@@ -740,12 +824,15 @@ export interface CockpitView {
   notices: string[];
 }
 
-const BAND_OF: Readonly<Record<string, ScanBand>> = {
-  g: "green",
-  y: "yellow",
-  r: "red",
-  d: "destroyed",
-};
+/** A band letter's band. A `Map`, read with `.get`, so a letter this build
+ * predates — or an inherited key — is `unknown` and never green (16b cut B.1,
+ * `T-58`). */
+const BAND_OF: ReadonlyMap<string, ScanBand> = new Map([
+  ["g", "green"],
+  ["y", "yellow"],
+  ["r", "red"],
+  ["d", "destroyed"],
+]);
 
 /** One contact's scan chips, or `[]` when this platform holds no reading of it.
  * The section words come out of `scan_tables[condition.table]` (16b cut Q.2) —
@@ -762,7 +849,7 @@ export function scanChips(contact: CockpitContact, tables: readonly string[][]):
   const chips: ScanChip[] = [];
   for (let i = 0; i < table.length && i < condition.bands.length; i += 1) {
     const letter = condition.bands.charAt(i);
-    chips.push({ word: table[i] ?? "?", letter, band: BAND_OF[letter] ?? "green" });
+    chips.push({ word: table[i] ?? "?", letter, band: BAND_OF.get(letter) ?? "unknown" });
   }
   return chips;
 }
@@ -775,15 +862,26 @@ export function scanText(chips: readonly ScanChip[]): string {
 
 /** The status block (the TUI's status pane, line for line). */
 export function statusLines(frame: CockpitFrame): string[] {
+  // 16b cut B.1 (`T-86`): the pilot's own two limits (16b cut D.2) on the speed
+  // line — a wreck says only DESTROYED, because it is immobile as well.
+  const limit = frame.wreck ? "  DESTROYED" : frame.immobile ? "  IMMOBILE" : "";
   const lines = [
     `Callsign ${frame.callsign}`,
     `power ${frame.power}${frame.blocked ? "  HELD" : ""}`,
-    `${frame.speed_kph} kph  heading ${deg3(frame.heading_deg)}°`,
+    `${frame.speed_kph} kph  heading ${deg3(frame.heading_deg)}°${limit}`,
   ];
   if (frame.heat !== null) {
     lines.push(
       `heat ${frame.heat.heat}/${frame.heat.max}${frame.heat.overheated ? "  OVERHEATED" : ""}`,
     );
+  }
+  // 16b cut B.1 (`T-86`): the degraded receiver, after the heat row. The row's
+  // presence is what says "degraded" (the frame carries `null` on a clean
+  // one); `receiver 15/40  60%` is 19 characters, so it never wraps the TUI's
+  // 22-column pane, whose row is the same words in the same place.
+  if (frame.receiver !== null) {
+    const r = frame.receiver;
+    lines.push(`receiver ${r.budget}/${r.budget_max}  ${r.reach_percent}%`);
   }
   // 16b cut D.2 (16c `T-59`, the panel half): this platform's own scope, not the
   // arena's one global tempo word — a pilot with an empty scope read `engaged`
@@ -868,6 +966,75 @@ export function markerLegend(win: ComposedWindow | null): string {
         .filter((m) => m.kind !== "you")
         .map((m) => `${m.glyph} ${m.designator}`)
         .join("  ");
+}
+
+/** The cell size, in canvas pixels, from which every marker is labelled — and
+ * below which only a hostile and the lock are (16b cut B.1). */
+const LABEL_ALL_PX = 6;
+
+/**
+ * **Whether a marker's designator is drawn beside it at this cell size** (16b
+ * cut B.1, `B-09`).
+ *
+ * A hostile and the lock are labelled at EVERY zoom: at the default 128-cell
+ * view of a full arena a cell is 4 px, and two unlabelled hostiles there were
+ * two identical red dots — the pilot could not tell which one to lock. Your own
+ * marker, a friendly and an unknown keep the old gate (`px >= 6`); they are not
+ * what a pilot aims at, and labelling them too would bury the ones that are.
+ */
+export function labelledAt(
+  kind: MarkerKind,
+  designator: string,
+  lock: string | null,
+  px: number,
+): boolean {
+  return kind === "hostile" || designator === lock || px >= LABEL_ALL_PX;
+}
+
+/**
+ * **One flag per marker, in frame order: is its label painted?** (16b cut B.1,
+ * `B-09`). The canvas reads this once per frame and decides nothing itself.
+ *
+ * A marker `labelledAt` this size is labelled unless its text box overlaps a
+ * box already placed — so a knot of hostiles at 2 px reads as the first one's
+ * name rather than as an unreadable smear — except that the LOCK's label is
+ * always placed, and placed first, so it is never the one skipped. The box is
+ * the text's own: it starts `px * 1.3` right of the cell's west edge (the paint
+ * anchor, `cx + px * 0.8`), runs `designator.length` glyphs of six tenths of the
+ * font the paint uses — 5 px under 6 px, where the font is a fixed 8 px, and
+ * `max(8, px) * 0.6` from 6 px, so a 6 or 7 px cell, whose font is still 8 px,
+ * is not measured narrower than it is painted — and is 8 px tall about the
+ * row's middle. Boxes that only touch do not overlap.
+ */
+export function labelPlan(markers: readonly Marker[], lock: string | null, px: number): boolean[] {
+  const glyph = px < LABEL_ALL_PX ? 5 : Math.max(8, px) * 0.6;
+  const box = (m: Marker): [number, number, number, number] => {
+    const x0 = m.x * px + px * 1.3;
+    const yMid = m.y * px + px / 2;
+    return [x0, yMid - 4, x0 + m.designator.length * glyph, yMid + 4];
+  };
+  const placed: [number, number, number, number][] = [];
+  const overlaps = (b: [number, number, number, number]): boolean =>
+    placed.some(([x0, y0, x1, y1]) => b[0] < x1 && x0 < b[2] && b[1] < y1 && y0 < b[3]);
+  const flags = markers.map(() => false);
+  // The lock's first, and unconditionally.
+  markers.forEach((m, i) => {
+    if (lock !== null && m.kind !== "you" && m.designator === lock) {
+      flags[i] = true;
+      placed.push(box(m));
+    }
+  });
+  markers.forEach((m, i) => {
+    if (flags[i] || !labelledAt(m.kind, m.designator, lock, px)) {
+      return;
+    }
+    const b = box(m);
+    if (!overlaps(b)) {
+      flags[i] = true;
+      placed.push(b);
+    }
+  });
+  return flags;
 }
 
 /** The whole of what the screen prints for one frame. `win` is the composed

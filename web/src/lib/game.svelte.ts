@@ -34,7 +34,7 @@ import {
   roomLines,
 } from "./render";
 import { isOwnRoll } from "./roll";
-import { ARENA_MAP_FEED, COCKPIT_FEED } from "./cockpit";
+import { ARENA_MAP_FEED, COCKPIT_FEED, isNoticeSentence } from "./cockpit";
 import { exitKeys, type NavIntent } from "./keys";
 import { paletteEntries, type PaletteEntry } from "./palette";
 import { storageDel, storageGet, storageGetJson, storageSet, storageSetJson } from "./storage";
@@ -114,7 +114,7 @@ const HELP_LINES = [
   "  Ctrl+K the palette. Everything else is sent to the game as typed.",
 ];
 
-/** What the composer offers the shell (registered by the scene screen). */
+/** What the composer offers the shell (registered by `Game.svelte`). */
 export interface ComposerHandle {
   /** Focus the box, optionally replacing its text. */
   focus(prefill?: string): void;
@@ -234,7 +234,8 @@ export class GameApp {
   /** The palette's current rows and highlight. */
   paletteEntries = $state<PaletteEntry[]>([]);
   paletteSelected = $state(0);
-  /** The composer, while the scene screen is mounted. */
+  /** The shell's composer; `null` on the channel screen, which has its own
+   * box (16b cut B.1), and before the shell mounts. */
   composer: ComposerHandle | null = null;
   /** Login screen notice (e.g. "session expired"). */
   loginNotice = $state<string | null>(null);
@@ -260,9 +261,6 @@ export class GameApp {
   #nextToast = 1;
   #seenActionCommits = new Set<string>();
   #actionCommitOrder: string[] = [];
-  /** A match's once-per-match cockpit switch, owed but not yet taken (16b cut
-   * Q.5); see `#followTheCockpit` for why it can wait a pulse. */
-  #cockpitSwitchDue = false;
 
   constructor(opts: GameAppOptions = {}) {
     this.client = new WsClient({
@@ -442,7 +440,6 @@ export class GameApp {
     this.commands.clear();
     this.vitals.clear();
     this.cockpit.clear();
-    this.#cockpitSwitchDue = false;
     this.genericViews.clear();
     this.requests.clear();
     this.notifications.clear();
@@ -512,6 +509,15 @@ export class GameApp {
     });
     c.on("sys", (env) => {
       this.scrollback.push("ev-sys ev-demoted", [renderRich(env.d)], env.ts);
+      // …and, while seated, the cockpit's notices ring too (16b cut B.1): a
+      // pilot kept on screen 0 reads `Locking BA.` or a usage line there,
+      // where the scrollback is not mounted. Every `Sys` line but one kind —
+      // see `CockpitStore.pushReply`: the bridge's copy of a notice the next
+      // frame carries is left out, because the ring composes that notice from
+      // the frame itself, and ringing both would say it twice (16b cut F.2).
+      if (!isNoticeSentence(env.d)) {
+        this.cockpit.pushReply(plainText(env.d));
+      }
     });
     c.on("channel", (env) => this.#onChannel(env));
     c.on("who", (env) => {
@@ -886,29 +892,15 @@ export class GameApp {
    * the ask goes out after it, so a pilot sees the cockpit while the ground is
    * still on the wire and `Waiting for the arena map...` in its place.
    *
-   * The one thing the switch WAITS for is a half-typed line. This client has a
-   * single composer and the scene screen mounts it, so switching away unmounts
-   * it and takes the draft, the sticky Say/Pose mode (D-I-8) and the history
-   * buffer with it — all three live in `Composer.svelte`'s component state and
-   * none of them is written anywhere. This is the only server-driven screen
-   * switch in the client, so it is also the only one that could do that to
-   * someone mid-sentence. The switch is owed rather than spent: a pilot who is
-   * typing keeps the box, and the next pulse — a second later at most — opens
-   * the cockpit for them.
+   * The switch is taken on the very frame that owes it, even while the pilot
+   * is typing (16b cut B.1, Q5). The command box is the shell's (`Game.svelte`)
+   * and a switch between screens that carry it never unmounts it, so the
+   * draft, the sticky Say/Pose mode (D-I-8), the history buffer and the focus
+   * (D-I-17) all survive it: nothing is taken out from under a half-written
+   * line, and there is nothing left to wait for.
    */
   #followTheCockpit(data: unknown): void {
     if (this.cockpit.applyFrame(data)) {
-      this.#cockpitSwitchDue = true;
-    }
-    if (!this.cockpit.seated) {
-      // The cleared frame: the seat is gone and an unspent switch goes with it.
-      this.#cockpitSwitchDue = false;
-    } else if (this.#cockpitSwitchDue && !(this.screens.inputFocused && this.composer !== null)) {
-      // Only an actually mounted, actually focused box holds the switch up:
-      // `inputFocused` is written by the composer's own focus/blur handlers, so
-      // without the second clause a flag left set by a box that went away would
-      // keep the cockpit shut for the whole match.
-      this.#cockpitSwitchDue = false;
       this.screens.switchTo("cockpit", this.gate);
     }
     if (this.cockpit.needsMap(Date.now())) {
@@ -1057,6 +1049,12 @@ export class GameApp {
       case "palette":
         if (this.screens.paletteOpen) {
           this.screens.paletteOpen = false;
+        } else if (this.composer === null && this.screens.active !== "channels") {
+          // No shell box is mounted at all (the shell has not mounted yet):
+          // an open flag would only surface later, behind a box that never
+          // had focus. The channel screen is not this case — `focusComposer`
+          // takes the palette to the scene screen from there (16b cut B.1).
+          return false;
         } else {
           const text = this.composer?.text() ?? "";
           this.focusComposer(text.length === 0 ? "/" : undefined);
@@ -1081,10 +1079,23 @@ export class GameApp {
     }
   }
 
-  /** Focus the composer (switching to the scene screen when needed),
-   * optionally replacing its text with `prefill`. */
+  /**
+   * Focus the composer, optionally replacing its text with `prefill`. The box
+   * lives in the shell under the active screen (16b cut B.1), so this does not
+   * switch screens: a prefill leaves the player where they are with the line
+   * ready.
+   *
+   * The one exception is the channel screen, which has its own box, addressed
+   * to the channel, and no shell box (`app.composer` is `null` there). A game
+   * command must not land in the channel's box, and a control that silently
+   * does nothing is worse than a switch — a tray action's `Reply`, the `Enter
+   * type` chip, `"` `:` `;`, the palette — so from that screen alone this
+   * switches to the scene screen, as every prefill did before cut B.1. The
+   * box is mounted by the time the microtask runs: the switch's render is
+   * queued ahead of it.
+   */
   focusComposer(prefill?: string): void {
-    if (this.screens.active !== "scene") {
+    if (this.composer === null && this.screens.active === "channels") {
       this.screens.switchTo("scene", this.gate);
     }
     queueMicrotask(() => this.composer?.focus(prefill));

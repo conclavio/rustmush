@@ -1,28 +1,18 @@
 <script lang="ts">
   // The scene screen (interface plan I4): the room band, the scrollback,
-  // the vitals strip (or the textual prompt while no frame exists), and
-  // the composer with the palette above it. The composer registers itself
-  // with the app so the shell's keys can focus and prefill it.
+  // and the vitals strip (or the textual prompt while no frame exists). The
+  // composer and its palette are the shell's, under every screen but the
+  // channel screen (16b cut B.1; `Game.svelte`), so this column ends at the
+  // vitals strip or the prompt line.
   import type { GameApp } from "$lib/game.svelte";
   import { plainText } from "$lib/render";
 
-  import CommandPalette from "./CommandPalette.svelte";
-  import Composer from "./Composer.svelte";
   import RoomBand from "./RoomBand.svelte";
   import MapCanvas from "./MapCanvas.svelte";
   import Scrollback from "./Scrollback.svelte";
   import VitalsStrip from "./VitalsStrip.svelte";
 
   let { app, onCmd }: { app: GameApp; onCmd: (cmd: string) => void } = $props();
-
-  let composer: Composer | undefined = $state();
-
-  $effect(() => {
-    app.composer = composer ?? null;
-    return () => {
-      app.composer = null;
-    };
-  });
 
   const promptText = $derived(
     app.session.prompt?.text ? plainText(app.session.prompt.text) : "",
@@ -40,10 +30,6 @@
   {:else if promptText}
     <div class="prompt">{promptText}</div>
   {/if}
-  <div class="composer-wrap">
-    <CommandPalette {app} />
-    <Composer bind:this={composer} {app} />
-  </div>
 </div>
 
 <style>
@@ -61,9 +47,5 @@
     color: var(--accent);
     border-top: 1px solid var(--border);
     background: var(--bg-panel);
-  }
-
-  .composer-wrap {
-    position: relative;
   }
 </style>

@@ -1,5 +1,7 @@
 <script lang="ts">
-  // The composer (interface plan I4): the one text box of the scene screen.
+  // The composer (interface plan I4): the shell's one text box, mounted by
+  // `Game.svelte` under every screen but the channel screen (16b cut B.1),
+  // so its draft, sticky mode and history survive a screen switch.
   // Focus is input mode (D-I-17): while it has focus the shell only takes
   // Alt+key and ^K; Enter sends and keeps focus, Enter on an empty box and
   // Esc blur it (Esc keeps the draft), Shift+Enter is a newline collapsed
@@ -8,7 +10,13 @@
   // segmented control is the client-side sticky mode (D-I-8) with a
   // "renders as" preview; an explicit trigger or a channel alias verb
   // always wins. Every keystroke feeds the composing signal.
-  import { COMPOSE_MODES, composeLine, previewLine, type ComposeMode } from "$lib/composer";
+  import {
+    COMPOSE_MODES,
+    composeLine,
+    modeAfterPrefill,
+    previewLine,
+    type ComposeMode,
+  } from "$lib/composer";
   import { ComposingSignal } from "$lib/composing";
   import type { GameApp } from "$lib/game.svelte";
   import { HistoryBuffer } from "$lib/history";
@@ -34,6 +42,8 @@
     if (prefill !== undefined) {
       value = prefill;
     }
+    // A prefill is a command, whatever mode the box was left in (16b cut B.1).
+    mode = modeAfterPrefill(mode, prefill);
     box?.focus();
     // Put the caret at the end of a prefill.
     queueMicrotask(() => {

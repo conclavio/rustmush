@@ -1,0 +1,326 @@
+[
+  {
+    "notice": {
+      "cause": null,
+      "contact": "4444444444444444",
+      "designator": "X4",
+      "detail": null,
+      "friendly": false,
+      "kind": "acquired",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "spent": false,
+      "text": "New contact X4: bearing 030°, far.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "X4 new contact"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": "1111111111111111",
+      "designator": "BA",
+      "detail": null,
+      "friendly": false,
+      "kind": "target_section_lost",
+      "order": null,
+      "refusal": null,
+      "section": "turret",
+      "spent": false,
+      "text": "BA's turret is destroyed.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "BA section destroyed: turret"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": { "secs": 3 },
+      "friendly": false,
+      "kind": "refused",
+      "order": "fire",
+      "refusal": "cycling",
+      "section": null,
+      "spent": false,
+      "text": "FIRE cannon refused. Still cycling: 3 s to go.",
+      "was": null,
+      "weapon": "cannon"
+    },
+    "line": "FIRE cannon refused: still cycling, 3 s"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": { "heat": 60, "max": 60 },
+      "friendly": false,
+      "kind": "refused",
+      "order": "fire",
+      "refusal": "overheated",
+      "section": null,
+      "spent": false,
+      "text": "FIRE laser refused. Overheated: 60 of 60. Let it cool.",
+      "was": null,
+      "weapon": "laser"
+    },
+    "line": "FIRE laser refused: overheated, 60 of 60"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": null,
+      "friendly": false,
+      "kind": "refused",
+      "order": "heading",
+      "refusal": "power_not_online",
+      "section": null,
+      "spent": false,
+      "text": "HEADING refused. Power is not online.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "HEADING refused: power is not online"
+  },
+  {
+    "notice": {
+      "cause": "too_steep",
+      "contact": null,
+      "designator": null,
+      "detail": null,
+      "friendly": false,
+      "kind": "blocked",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "spent": false,
+      "text": "Held: the slope ahead is too steep for the tank.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "held: too steep: drive round"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": null,
+      "friendly": false,
+      "kind": "blocked",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "spent": false,
+      "text": "Held.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "held"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": "1111111111111111",
+      "designator": "X2",
+      "detail": null,
+      "friendly": false,
+      "kind": "unidentified",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "spent": false,
+      "text": "BA is unidentified again: X2.",
+      "was": "BA",
+      "weapon": null
+    },
+    "line": "BA unidentified again: X2"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": "1111111111111111",
+      "designator": "BA",
+      "detail": null,
+      "friendly": false,
+      "kind": "classified",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "spent": false,
+      "text": "Contact X2 identified: BA, blue.",
+      "was": "X2",
+      "weapon": null
+    },
+    "line": "X2 identified: BA"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": "2222222222222222",
+      "designator": "RB",
+      "detail": null,
+      "friendly": true,
+      "kind": "classified",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "spent": false,
+      "text": "Contact X3 identified: RB, red.",
+      "was": "X3",
+      "weapon": null
+    },
+    "line": "X3 identified: RB (FRIENDLY)"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": "1111111111111111",
+      "designator": "BA",
+      "detail": null,
+      "friendly": false,
+      "kind": "hit",
+      "order": null,
+      "refusal": null,
+      "section": "left_track",
+      "spent": true,
+      "text": "Hit on BA: left_track, already destroyed.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "BA hit: left_track (already destroyed)"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": "1111111111111111",
+      "designator": "BA",
+      "detail": null,
+      "friendly": false,
+      "kind": "hit",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "spent": false,
+      "text": "Hit on BA.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "BA hit"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": "2222222222222222",
+      "designator": "RB",
+      "detail": null,
+      "friendly": true,
+      "kind": "locked",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "spent": false,
+      "text": "Locked on RB (FRIENDLY), 62% to hit.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "RB (FRIENDLY) locked"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": null,
+      "friendly": false,
+      "kind": "struck",
+      "order": null,
+      "refusal": null,
+      "section": "hull",
+      "spent": false,
+      "text": "Hit on the hull's front facet: 55 of 80 armour left.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "hit taken: hull"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": null,
+      "friendly": false,
+      "kind": "struck_spent",
+      "order": null,
+      "refusal": null,
+      "section": "left_track",
+      "spent": true,
+      "text": "Hit on the left_track, which is already destroyed.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "hit on a dead section: left_track"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": null,
+      "friendly": false,
+      "kind": "section_lost",
+      "order": null,
+      "refusal": null,
+      "section": "right_track",
+      "spent": false,
+      "text": "The right_track is destroyed.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "section gone: right_track"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": null,
+      "friendly": false,
+      "kind": "receiver_degraded",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "spent": false,
+      "text": "Receiver degraded: something is jamming the sight.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "receiver degraded"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": null,
+      "friendly": false,
+      "kind": "constructor",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "spent": false,
+      "text": "A kind this build predates.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "constructor"
+  }
+]

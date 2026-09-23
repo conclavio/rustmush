@@ -3619,6 +3619,91 @@ fn a_classified_contact_that_flickers_back_to_a_number_says_so_once() {
     );
 }
 
+/// **16b cut B.1** (`T-86`): the old name the wire publishes is one the pilot was
+/// sent — read off frames `Arena::step` staged, not frames a test wrote.
+///
+/// The same flicker as above, every frame published through
+/// [`cockpit::status_frame`] the way the bridge publishes it. Each notice's `was`
+/// must be a designator one of the pilot's EARLIER frames held as a row, and the
+/// notice's `designator` the one the row reads on this frame; and the only
+/// notices that carry a `was` at all are the renames the flicker makes: the red
+/// teammate told apart (`X1` → `RB`, marked friendly — the case 16b cut B.1's
+/// `(FRIENDLY)` fix in the web ring is for), `MARK`'s two classifications
+/// (`X2` → `BA`) and the regression between them (`BA` → `X2`).
+#[test]
+fn b1_the_published_old_name_is_a_name_the_pilot_was_sent() {
+    let mut arena = arena_of(flicker_units(), &[]);
+    let _ = arena.step(0, &[] as &[Control], &[]);
+    let mut tape: Vec<u8> = Vec::new();
+    // Every designator an earlier frame showed this pilot as a row.
+    let mut sent: Vec<String> = Vec::new();
+    let mut quoted: Vec<(String, String, String, bool)> = Vec::new();
+    for n in 1..=12 {
+        let now = arena.now_ms;
+        if (3_500..6_500).contains(&now) {
+            place(&mut arena, MARK, away(), 0);
+        } else if now >= 6_500 {
+            place(&mut arena, MARK, centre(15, 10), 0);
+        }
+        let Some(frame) = pulse(&mut arena, PULSE_MS * n, &mut tape) else {
+            continue;
+        };
+        let rows: Vec<String> = cockpit::frame_contacts(&frame)
+            .iter()
+            .map(|row| row.designator.to_string())
+            .collect();
+        let payload = cockpit::status_frame(tacsim::arena_task::MatchId(1), &frame);
+        for notice in payload["notices"].as_array().into_iter().flatten() {
+            let Some(was) = notice["was"].as_str() else {
+                assert!(
+                    notice["was"].is_null(),
+                    "`was` is a string or null: {notice}"
+                );
+                continue;
+            };
+            let kind = notice["kind"].as_str().unwrap_or_default();
+            let designator = notice["designator"].as_str().unwrap_or_default();
+            assert!(
+                sent.iter().any(|name| name == was),
+                "at {now} ms `{kind}` quotes {was}, which no earlier frame held ({sent:?}): \
+                 {notice}"
+            );
+            assert!(
+                rows.iter().any(|name| name == designator),
+                "at {now} ms `{kind}` names {designator}, which this frame's rows do not \
+                 read ({rows:?}): {notice}"
+            );
+            assert_ne!(was, designator, "a rename to the same name: {notice}");
+            // A designator is a few letters and digits; the row key is sixteen.
+            assert!(
+                was.len() < 16 && was.chars().all(|c| c.is_ascii_alphanumeric()),
+                "`was` is not a designator: {notice}"
+            );
+            quoted.push((
+                kind.to_owned(),
+                was.to_owned(),
+                designator.to_owned(),
+                notice["friendly"] == serde_json::Value::Bool(true),
+            ));
+        }
+        sent.extend(rows);
+    }
+    let quoted: Vec<(&str, &str, &str, bool)> = quoted
+        .iter()
+        .map(|(kind, was, now, friendly)| (kind.as_str(), was.as_str(), now.as_str(), *friendly))
+        .collect();
+    assert_eq!(
+        quoted,
+        [
+            ("classified", "X1", "RB", true),
+            ("classified", "X2", "BA", false),
+            ("unidentified", "BA", "X2", false),
+            ("classified", "X2", "BA", false),
+        ],
+        "the flicker's renames, each quoting the name the pilot had"
+    );
+}
+
 #[test]
 fn a_flicker_that_keeps_its_name_is_silent_however_the_name_was_earned() {
     // (1) A contact that was never told apart: it reads `X2` before the loss and

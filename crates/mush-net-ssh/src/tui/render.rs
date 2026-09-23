@@ -2378,8 +2378,18 @@ pub fn render_cockpit_status_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows
         "power {}{held}",
         clean(data.get("power").and_then(Value::as_str).unwrap_or("?"))
     )))));
+    // **16b cut B.1** (`T-86`): the pilot's own two limits (16b cut D.2's
+    // `wreck` and `immobile`) on the speed line, the web's words in the web's
+    // place — a wreck says only `DESTROYED`, because it is immobile as well.
+    let limit = if data.get("wreck").and_then(Value::as_bool) == Some(true) {
+        "  DESTROYED"
+    } else if data.get("immobile").and_then(Value::as_bool) == Some(true) {
+        "  IMMOBILE"
+    } else {
+        ""
+    };
     rows.push(PaneRow::plain(Line::from(Span::raw(format!(
-        "{} kph  heading {:03}{}",
+        "{} kph  heading {:03}{}{limit}",
         data.get("speed_kph").and_then(Value::as_i64).unwrap_or(0),
         cell_num(data, "heading_deg"),
         degree(ctx.utf8)
@@ -2396,6 +2406,21 @@ pub fn render_cockpit_status_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows
             "heat {}/{}{over}",
             heat.get("heat").and_then(Value::as_i64).unwrap_or(0),
             heat.get("max").and_then(Value::as_i64).unwrap_or(0),
+        )))));
+    }
+    // **16b cut B.1** (`T-86`): the platform's own receiver (16b cut D.4's
+    // `receiver` key), only while it is degraded — the frame leaves the key null
+    // on a clean receiver, so the row's presence is what says "degraded". Budget
+    // over the unjammed budget, then what is left of the reach:
+    // `receiver 15/40  60%`, 19 characters, so it never wraps a 22-column pane.
+    // Three integers about the pilot's own machine and nothing about the source.
+    if let Some(receiver) = data.get("receiver").filter(|r| r.is_object()) {
+        let num = |key: &str| receiver.get(key).and_then(Value::as_i64).unwrap_or(0);
+        rows.push(PaneRow::plain(Line::from(Span::raw(format!(
+            "receiver {}/{}  {}%",
+            num("budget"),
+            num("budget_max"),
+            num("reach_percent"),
         )))));
     }
     // **16b cut D.2** (16c `T-59`, the panel half): this platform's own scope and
@@ -4576,6 +4601,82 @@ mod tests {
         for row in &rows {
             for id in ["1111111111111111", "2222222222222222"] {
                 assert!(!row.contains(id), "the contacts pane leaked {id}: {row:?}");
+            }
+        }
+    }
+
+    /// **16b cut B.1** (`T-86`): the status pane prints the degraded receiver
+    /// after the heat row and the pilot's own limit on the speed row, in the
+    /// web's words and the web's places — and the committed fixture frame
+    /// (`receiver: null`, neither flag set) prints neither, so the cockpit
+    /// goldens do not move.
+    #[test]
+    fn the_status_pane_prints_the_receiver_and_the_tanks_own_limit() {
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane: None,
+        };
+        let status = |frame: &Value| -> Vec<String> {
+            render_cockpit_status_rows(frame, &ctx)
+                .rows
+                .iter()
+                .map(PaneRow::text)
+                .collect()
+        };
+        let mut frame = cockpit(serde_json::json!([5, 5]), serde_json::json!([]));
+        frame["heat"] = serde_json::json!({ "heat": 40, "max": 100, "overheated": false });
+        frame["receiver"] =
+            serde_json::json!({ "budget": 15, "budget_max": 40, "reach_percent": 60 });
+        let rows = status(&frame);
+        assert_eq!(
+            rows,
+            vec![
+                "Callsign RA".to_string(),
+                "power online".to_string(),
+                "20 kph  heading 090\u{b0}".to_string(),
+                "heat 40/100".to_string(),
+                "receiver 15/40  60%".to_string(),
+                "scope hostile".to_string(),
+                "No lock".to_string(),
+            ]
+        );
+        assert!(
+            rows.iter().all(|row| row.chars().count() <= 22),
+            "a row wraps a 22-column pane: {rows:?}"
+        );
+
+        // A wreck says DESTROYED (and not IMMOBILE, though it is that too); an
+        // immobile tank says IMMOBILE.
+        let mut wreck = frame.clone();
+        wreck["wreck"] = serde_json::json!(true);
+        wreck["immobile"] = serde_json::json!(true);
+        assert_eq!(
+            status(&wreck).get(2).map(String::as_str),
+            Some("20 kph  heading 090\u{b0}  DESTROYED")
+        );
+        let mut stuck = frame.clone();
+        stuck["immobile"] = serde_json::json!(true);
+        assert_eq!(
+            status(&stuck).get(2).map(String::as_str),
+            Some("20 kph  heading 090\u{b0}  IMMOBILE")
+        );
+
+        // The committed fixture frame: neither row.
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+        ))
+        .unwrap_or(Value::Null);
+        let rows = status(&fixture);
+        assert!(!rows.is_empty(), "the fixture frame is seated");
+        for row in &rows {
+            for word in ["receiver", "DESTROYED", "IMMOBILE"] {
+                assert!(!row.contains(word), "the fixture printed {word}: {rows:?}");
             }
         }
     }

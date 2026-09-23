@@ -16,7 +16,7 @@ import { resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { cockpitView, cockpitViewLines, composeWindow } from "./cockpit";
+import { cockpitView, cockpitViewLines, composeWindow, NOTICE_SENTENCE_TAG } from "./cockpit";
 import { GameApp, type ComposerHandle } from "./game.svelte";
 import type { Envelope, OutputEvent, Query, ViewEnvelope } from "./proto";
 import { UNIT_RESYNC_MS } from "./stores/unit.svelte";
@@ -760,7 +760,7 @@ describe("the narrative backlog floor", () => {
 // with no test at all — `composer` is a public, fake-able handle, so this
 // needs no DOM.
 describe("GameApp.act", () => {
-  /** The composer the scene screen registers, recorded rather than rendered. */
+  /** The composer the shell registers, recorded rather than rendered. */
   class FakeComposer implements ComposerHandle {
     /** Every `focus` argument, in order (`undefined` = keep the draft). */
     focuses: (string | undefined)[] = [];
@@ -788,8 +788,8 @@ describe("GameApp.act", () => {
     }
   }
 
-  /** `focusComposer` defers to a microtask so the screen switch renders the
-   * box before it is focused; `queueMicrotask` is not faked by
+  /** `focusComposer` defers to a microtask so a render in flight settles
+   * before the box is focused; `queueMicrotask` is not faked by
    * `vi.useFakeTimers()`, so one awaited tick is enough. */
   const tick = (): Promise<void> => Promise.resolve();
 
@@ -816,17 +816,62 @@ describe("GameApp.act", () => {
     expect(c.text()).toBe('"');
   });
 
-  it("a screen's prefill binding comes back to the scene screen with the line", async () => {
+  it("from the channel screen, which has no shell box, a prefill goes to the scene screen", async () => {
+    // 16b cut B.1: the channel screen keeps its own box (addressed to the
+    // channel) and the shell's is not mounted there. A tray action's `Reply`,
+    // the `Enter type` chip and `"` `:` `;` must still reach a box, so from
+    // this one screen `focusComposer` switches — and the line is never put in
+    // the channel's box.
+    const { app, c } = withComposer(["comsys"]);
+    expect(app.screens.switchTo("channels", app.gate)).toBe(true);
+    app.composer = null; // what `Game.svelte`'s effect writes on this screen
+
+    app.focusComposer("page Bob=");
+    expect(app.screens.active).toBe("scene");
+    app.composer = c; // …and what it writes once the switch has rendered
+    await tick();
+    expect(c.focuses).toEqual(["page Bob="]);
+
+    // Enter and the palette key take the same road, and are consumed.
+    expect(app.screens.switchTo("channels", app.gate)).toBe(true);
+    app.composer = null;
+    expect(app.act({ kind: "compose", prefill: "" })).toBe(true);
+    expect(app.screens.active).toBe("scene");
+    app.composer = c;
+    await tick();
+    expect(c.focuses).toEqual(["page Bob=", undefined]);
+
+    expect(app.screens.switchTo("channels", app.gate)).toBe(true);
+    app.composer = null;
+    expect(app.act({ kind: "palette" })).toBe(true);
+    expect(app.screens.active).toBe("scene");
+    app.composer = c;
+    await tick();
+    await tick();
+    expect(c.focuses).toEqual(["page Bob=", undefined, "/"]);
+    expect(app.screens.paletteOpen).toBe(true);
+  });
+
+  it("a screen's prefill binding stays on that screen with the line", async () => {
     const { app, c } = withComposer([SHEET_FEED, "mail"]);
     expect(app.screens.switchTo("mail", app.gate)).toBe(true);
 
     expect(app.act({ kind: "binding", key: "s" })).toBe(true);
     await tick();
 
-    // The box lives on the scene screen, so a prefill from screen 3 lands
-    // there — with the line ready, unsent (D-I-18).
-    expect(app.screens.active).toBe("scene");
+    // 16b cut B.1 (Q5): the box is the shell's, under every screen but the
+    // channel screen, so a prefill from screen 3 stays on screen 3 — with the
+    // line ready, unsent (D-I-18). Until B.1 it switched to the scene screen,
+    // where the one box used to be mounted.
+    expect(app.screens.active).toBe("mail");
     expect(c.focuses).toEqual(["@mail/send "]);
+    // Where no shell box is mounted at all (the shell has not mounted yet),
+    // the palette key is not consumed and opens nothing that would surface
+    // later behind a box that never had focus.
+    app.composer = null;
+    expect(app.act({ kind: "palette" })).toBe(false);
+    expect(app.screens.paletteOpen).toBe(false);
+    app.composer = c;
     // An unbound key on this screen is not the shell's.
     expect(app.act({ kind: "binding", key: "z" })).toBe(false);
   });
@@ -1253,49 +1298,105 @@ describe("the cockpit feeds", () => {
     expect(asks()).toBe(1);
   });
 
-  it("waits out a half-typed line before it opens the screen", () => {
-    // The only server-driven screen switch in this client. The web has ONE
-    // composer and the scene screen mounts it, so switching away unmounts it
-    // and takes the draft, the sticky mode and the history buffer with it —
-    // none of which is written anywhere. The switch is owed, not spent.
+  it("the screen opens at once and the draft survives", () => {
+    // The only server-driven screen switch in this client. Since 16b cut B.1
+    // the box is the shell's (`Game.svelte`), so switching between screens
+    // that carry it never unmounts it: the draft, the sticky mode, the history
+    // buffer and the focus all survive, and the switch has nothing to wait for.
     const { app, ws } = boot(ARENA_PANELS);
-    // A box that is mounted AND has focus: both, because `inputFocused` is
-    // written by the composer's own handlers and a flag left set by a box that
-    // went away must not keep the cockpit shut for a whole match.
+    let blurs = 0;
     app.composer = {
       focus: () => {},
-      blur: () => {},
+      blur: () => {
+        blurs += 1;
+      },
       cycleMode: () => {},
       text: () => "pose x",
       setText: () => {},
     };
     app.screens.inputFocused = true;
     ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
-    expect(app.cockpit.seated).toBe(true); // the panel is live either way
-    expect(app.screens.active).toBe("scene");
-    // …and the very next pulse, once the box is let go, takes it.
-    app.screens.inputFocused = false;
-    ws.deliver(panel(4, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(app.cockpit.seated).toBe(true);
+    // On this very frame, mid-sentence.
     expect(app.screens.active).toBe("cockpit");
+    // …and the half-typed line is untouched: still focused, never blurred.
+    expect(app.screens.inputFocused).toBe(true);
+    expect(app.composer.text()).toBe("pose x");
+    expect(blurs).toBe(0);
     // Still once per match: a pilot who walks away is not dragged back.
     app.screens.switchTo("scene", app.gate);
-    ws.deliver(panel(5, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    ws.deliver(panel(4, COCKPIT_FEED, "keyframe", cockpitFrame()));
     expect(app.screens.active).toBe("scene");
   });
 
-  it("a prefill takes the pilot to the box, which lives on the scene screen", () => {
-    // What `CockpitScreen`'s contact click and its five prefill keys do, pinned
-    // where it can be read: `focusComposer` switches to the scene screen
-    // because that is where this client's one composer is mounted. It is the
-    // web's uniform behaviour (the unit screen's `@unit/damage ` does the
-    // same) and the documented one (`docs/help/cockpit.md`); a screen-local
-    // input row is the open question, and this is the assertion it would
-    // change.
+  it("a prefill leaves the pilot on the cockpit", async () => {
+    // What `CockpitScreen`'s contact click and its five prefill keys do: the
+    // box sits under the cockpit screen too (16b cut B.1, Q5), so the order is
+    // put in it where the pilot is looking — the line ready, unsent.
     const { app, ws } = boot(ARENA_PANELS);
+    const focuses: (string | undefined)[] = [];
+    app.composer = {
+      focus: (prefill?: string) => {
+        focuses.push(prefill);
+      },
+      blur: () => {},
+      cycleMode: () => {},
+      text: () => "",
+      setText: () => {},
+    };
     ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
     expect(app.screens.active).toBe("cockpit");
     app.focusComposer("lock BA");
-    expect(app.screens.active).toBe("scene");
+    await Promise.resolve();
+    expect(app.screens.active).toBe("cockpit");
+    expect(focuses).toEqual(["lock BA"]);
+  });
+
+  it("a reply lands in the cockpit ring while seated", () => {
+    // 16b cut B.1: with the pilot kept on screen 0 the scrollback is not in
+    // front of them, so every `Sys` line that arrives while seated is ALSO
+    // appended to the notices ring, as plain text (Q20: two screens may word
+    // one event). Before any frame, it is the scrollback's alone.
+    const { app, ws } = boot(ARENA_PANELS);
+    const sys = (seq: number, text: string): Envelope =>
+      env(seq, { t: "sys", d: [{ text: "Locking " }, { text }] } as OutputEvent);
+
+    ws.deliver(sys(2, "RB."));
+    expect(lineTexts(app)).toContain("Locking RB.");
+    expect(app.cockpit.notices).toEqual([]);
+
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    ws.deliver(sys(4, "BA."));
+    expect(app.cockpit.notices.at(-1)).toBe("Locking BA.");
+    expect(lineTexts(app)).toContain("Locking BA.");
+  });
+
+  it("a notice is rung once: the bridge's copy of its sentence is not a reply", () => {
+    // What the bridge really sends each pulse (`arena_bridge.rs`, `on_frames`):
+    // every notice's sentence as a `Sys` line tagged `arena-notice`, THEN the
+    // keyframe carrying the same notices. The ring composes the notice from the
+    // frame; ringing the sentence too would say it twice (16b cut F.2).
+    const { app, ws } = boot(ARENA_PANELS);
+    const tagged = (seq: number, text: string, tag: string): Envelope =>
+      env(seq, { t: "sys", d: [{ text, tag }] } as OutputEvent);
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    const before = app.cockpit.notices.length;
+
+    ws.deliver(tagged(4, "New contact X4: bearing 030°, far.", NOTICE_SENTENCE_TAG));
+    ws.deliver(tagged(5, "BA's turret is destroyed.", NOTICE_SENTENCE_TAG));
+    ws.deliver(panel(6, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    ws.deliver(tagged(7, "Locking BA.", "arena"));
+
+    // The frame's two notices, composed, once each; the reply after them.
+    expect(app.cockpit.notices.slice(before)).toEqual([
+      "X4 new contact",
+      "BA section destroyed: turret",
+      "Locking BA.",
+    ]);
+    expect(app.cockpit.notices).not.toContain("BA's turret is destroyed.");
+    // The scrollback still owns every sentence, the notices' own included.
+    expect(lineTexts(app)).toContain("BA's turret is destroyed.");
+    expect(lineTexts(app)).toContain("Locking BA.");
   });
 
   it("a cleared frame empties the panel; a Sys refusal stays out of scrollback", () => {
@@ -1341,6 +1442,16 @@ describe("the cockpit feeds", () => {
     );
     ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
     ws.deliver(panel(4, ARENA_MAP_FEED, "keyframe", arenaMap()));
+    // And the next pulse exactly as the bridge sends it to a seated pilot: the
+    // notices' own sentences as `Sys` lines first (16b cut B.1: tagged, so the
+    // reply ring leaves them out), then the frame that carries the notices.
+    for (const [seq, text] of [
+      [5, "New contact X4: bearing 030°, far."],
+      [6, "BA's turret is destroyed."],
+    ] as const) {
+      ws.deliver(env(seq, { t: "sys", d: [{ text, tag: NOTICE_SENTENCE_TAG }] } as OutputEvent));
+    }
+    ws.deliver(panel(7, COCKPIT_FEED, "keyframe", cockpitFrame()));
 
     const frame = app.cockpit.frame!;
     const win = composeWindow(app.cockpit.map!, frame, 78, 20);
@@ -1357,6 +1468,42 @@ describe("the cockpit feeds", () => {
     // And none of the arena's own sentences, which the scrollback already owns.
     expect(text).not.toContain("New contact X4: bearing 030");
     expect(text).not.toContain("BA's turret is destroyed.");
+  });
+
+  it("the shell mounts the one command box, and the screens' own markup follows 16b cut B.1", () => {
+    // Probes in the whitelist's style, for the Svelte halves the pure tests
+    // cannot reach (`environment: "node"` mounts nothing; B.2 brings a jsdom
+    // mount). Each one fails on the code before cut B.1.
+    const read = (name: string): string =>
+      readFileSync(resolve(process.cwd(), `src/components/${name}`), "utf8");
+
+    // `B-08`: the box and its palette are the shell's, under `.screen` and
+    // before the legend, on every screen but the channel screen.
+    const game = read("Game.svelte");
+    expect(game).toMatch(
+      /\{#if active\.id !== "channels"\}\s*<div class="composer-wrap">\s*<CommandPalette \{app\} \/>\s*<Composer bind:this=\{composer\} \{app\} \/>/,
+    );
+    const box = game.indexOf("<Composer bind:this={composer}");
+    expect(game.indexOf('<div class="screen">')).toBeLessThan(box);
+    expect(game.indexOf('<footer class="legend"')).toBeGreaterThan(box);
+    expect(game).toContain("app.composer = composer ?? null;");
+    // …and the scene screen no longer mounts or registers one.
+    const scene = read("SceneScreen.svelte");
+    for (const gone of ["import Composer", "import CommandPalette", "<Composer", "app.composer"]) {
+      expect(scene, `SceneScreen still has ${gone}`).not.toContain(gone);
+    }
+
+    // `B-60`: only the glyphs moved — `zoom in` shows `+` and still runs
+    // `zoom(-1)` (fewer cells), `zoom out` shows `−` and runs `zoom(1)`.
+    const cockpit = read("CockpitScreen.svelte");
+    expect(cockpit).toMatch(/aria-label="zoom in" onclick=\{\(\) => zoom\(-1\)\}>\+<\/button>/);
+    expect(cockpit).toMatch(/aria-label="zoom out" onclick=\{\(\) => zoom\(1\)\}>−<\/button>/);
+
+    // `B-09`: the paint loop labels what `labelPlan` says, once per frame, and
+    // no longer gates every label on the cell size.
+    expect(cockpit).toContain("labelPlan(w.markers, f.lock_designator, px)");
+    expect(cockpit).toContain("if (labels[i] === true)");
+    expect(cockpit).not.toContain("if (px >= 6)");
   });
 
   it("CockpitScreen.svelte touches nothing on the app but the cockpit", () => {

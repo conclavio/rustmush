@@ -5,7 +5,9 @@
   // chips, which are the whole story on a phone where focus is the only
   // mode. Keys are decided by `$lib/keys` from one window listener: bare
   // keys act while nothing has focus; inside the composer only Alt+key and
-  // Ctrl/⌘+K are the shell's.
+  // Ctrl/⌘+K are the shell's. The composer and its palette are the shell's
+  // too (16b cut B.1, Q5): they sit under every screen but the channel
+  // screen, so a prefill never has to leave the screen it was typed on.
   import type { GameApp } from "$lib/game.svelte";
   import { isInteractiveControl, isTextField, navIntent } from "$lib/keys";
   import { storageGet, storageSet } from "$lib/storage";
@@ -15,6 +17,8 @@
   import ChannelTabs from "./ChannelTabs.svelte";
   import ChannelView from "./ChannelView.svelte";
   import CockpitScreen from "./CockpitScreen.svelte";
+  import CommandPalette from "./CommandPalette.svelte";
+  import Composer from "./Composer.svelte";
   import GenericViewScreen from "./GenericViewScreen.svelte";
   import NotificationTray from "./NotificationTray.svelte";
   import RequestModal from "./RequestModal.svelte";
@@ -28,6 +32,21 @@
   import WorldgenPanel from "./WorldgenPanel.svelte";
 
   let { app }: { app: GameApp } = $props();
+
+  // The one command box registers itself with the app so the shell's keys
+  // can focus and prefill it (16b cut B.1, moved here from the scene
+  // screen). On the channel screen it is not mounted, `bind:this` yields
+  // `undefined` and the app holds `null`: the channel's own box keeps the
+  // focus it took, and a prefill or `Enter` from that screen alone switches
+  // to the scene screen, where this box is (`GameApp.focusComposer`).
+  let composer: Composer | undefined = $state();
+
+  $effect(() => {
+    app.composer = composer ?? null;
+    return () => {
+      app.composer = null;
+    };
+  });
 
   let whoOpen = $state(storageGet("rustmush.rail.who") !== "0");
 
@@ -196,6 +215,19 @@
           <p class="muted pad">{active.label}: this screen has no view yet.</p>
         {/if}
       </div>
+
+      <!-- The shell's command box (16b cut B.1, Q5): under every screen, so
+           the draft, the sticky mode and the history survive a screen switch
+           and a prefill leaves the pilot where they are. NOT on the channel
+           screen: `ChannelView` mounts its own box, addressed to the channel;
+           a second `command input` there would give two boxes one accessible
+           name and make Enter send a channel line as a game command. -->
+      {#if active.id !== "channels"}
+        <div class="composer-wrap">
+          <CommandPalette {app} />
+          <Composer bind:this={composer} {app} />
+        </div>
+      {/if}
 
       <footer class="legend" aria-label="keys">
         {#if app.screens.inputFocused}
@@ -481,6 +513,12 @@
       grid-template-columns: minmax(0, 1fr);
       grid-template-rows: auto minmax(0, 1fr);
     }
+  }
+
+  /* The palette opens above the box, positioned against this wrap. */
+  .composer-wrap {
+    position: relative;
+    flex: none;
   }
 
   .legend {

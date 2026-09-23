@@ -272,9 +272,8 @@ itself as the arena sends it — press `0` in `@tui` (`help tui`), or click the
 `0 cockpit` tab in the browser. In `@tui` the tab appears the first time a match
 sends you a frame and stays for the rest of that session; in the browser it is
 there whenever the server runs the simulator. Either way the screen opens itself
-on that first frame, and after that it is yours to leave and come back to; in
-the browser it waits while you are typing, so a half-written line is never taken
-out from under you. Out of a cockpit it reads `Not in a cockpit.`
+on that first frame, and after that it is yours to leave and come back to. Out
+of a cockpit it reads `Not in a cockpit.`
 
 It shows what the panel tells you and nothing else: the arena's ground drawn
 around your own tank, with your contacts on it — `x` hostile, `+` friendly, `?`
@@ -284,8 +283,11 @@ weapons with their cycle, rounds and chance; and your contacts with their
 bearing, band, range, plot age and the sections of any you have had a close look
 at. In the browser the map has a zoom and draws a ring around your lock, and
 clicking a contact's designator — or its `scan` button — puts `lock BA` or
-`scan BA` in the box ready to send; the browser's box lives on the scene screen,
-so a prefill takes you there and `0` brings you back. Nothing on the screen is
+`scan BA` in the box ready to send; the browser's box sits under every screen but
+the channel screen, which has its own, so a prefill leaves you on the cockpit with
+the line ready to send, as a command even if the box was set to Say or Pose. In
+the browser the notices list also carries the answer to anything you type while
+you are in the tank. Nothing on the screen is
 sent until you press Enter: the seven reading verbs are the only ones a bare key
 runs, and `STARTUP`, `HEADING`, `SPEED`, `LOCK` and `FIRE` are always typed.
 

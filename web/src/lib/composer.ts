@@ -38,6 +38,21 @@ export function explicitKind(text: string): NarrativeKind | null {
   }
 }
 
+/**
+ * The sticky mode once the shell has put `prefill` in the box (16b cut B.1).
+ *
+ * A prefill — a screen binding's `@mail/send `, a contact click's `lock BA`, a
+ * palette pick, a tray action — is always a command (D-I-18), so it drops the
+ * sticky mode back to `none`: left as it was, a pilot who had set Say in the
+ * muster room would send `say lock BA`. The box is the shell's since cut B.1
+ * and outlives a screen switch, so the mode set on the scene screen is still
+ * set on the cockpit. A bare focus (`undefined`, the Enter key) keeps the mode,
+ * and so does a speech trigger (`"`, `:`, `;`, `\`), which wins over it anyway.
+ */
+export function modeAfterPrefill(mode: ComposeMode, prefill: string | undefined): ComposeMode {
+  return prefill === undefined || explicitKind(prefill) !== null ? mode : "none";
+}
+
 /** Whether the line's first word is one of the member's channel aliases. */
 export function startsWithAlias(text: string, aliases: readonly string[]): boolean {
   const first = text.trim().split(/\s+/)[0] ?? "";

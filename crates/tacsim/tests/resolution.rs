@@ -2638,6 +2638,8 @@ fn a_section_is_destroyed_once_however_many_rounds_find_it_afterwards() {
     }
     let mut heard: Vec<String> = Vec::new();
     let mut shooter: Vec<String> = Vec::new();
+    // The frames the victim was sent, for the wire half below (16b cut B.1).
+    let mut victim: Vec<tacsim::arena::step::Frame> = Vec::new();
     let mut wall_ms = wall;
     let mut fired = 0_u32;
     while fired < 8 {
@@ -2663,6 +2665,7 @@ fn a_section_is_destroyed_once_however_many_rounds_find_it_afterwards() {
         let out = pulse(&mut arena, wall_ms, &intents, &mut bytes);
         heard.extend(told(&out, BLUE_PILOT));
         shooter.extend(told(&out, RED_PILOT));
+        victim.extend(seen_by(&out, BLUE_PILOT));
         if let Some(held) = arena.contacts.get_mut(RED, contact) {
             held.last_seen_ms = arena.now_ms;
         }
@@ -2672,6 +2675,7 @@ fn a_section_is_destroyed_once_however_many_rounds_find_it_afterwards() {
         let out = pulse(&mut arena, wall_ms, &[], &mut bytes);
         heard.extend(told(&out, BLUE_PILOT));
         shooter.extend(told(&out, RED_PILOT));
+        victim.extend(seen_by(&out, BLUE_PILOT));
     }
     let log = events(&mut arena, &mut bytes);
     let hits = count(&log, "hit");
@@ -2747,6 +2751,42 @@ fn a_section_is_destroyed_once_however_many_rounds_find_it_afterwards() {
             .any(|line| line.contains("destroyed") && !line.contains("turret")),
         "{shooter:?}"
     );
+    // **16b cut B.1** (`T-86`): the same run on the wire, off the frames
+    // `Arena::step` staged for the victim. On `struck`, `struck_spent` and
+    // `section_lost` the published `section` is one of that same frame's own
+    // `sections[].id`, and the notice names no contact, no designator and no old
+    // name — so it is never a contact's section and nothing in it is the
+    // shooter's.
+    let mut published: BTreeMap<String, usize> = BTreeMap::new();
+    for frame in &victim {
+        let payload = tacsim::match_::cockpit::status_frame(tacsim::arena_task::MatchId(1), frame);
+        let own: Vec<&serde_json::Value> = payload["sections"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|section| &section["id"])
+            .collect();
+        for notice in payload["notices"].as_array().into_iter().flatten() {
+            let kind = notice["kind"].as_str().unwrap_or_default();
+            if !["struck", "struck_spent", "section_lost"].contains(&kind) {
+                continue;
+            }
+            assert!(
+                notice["section"].is_string() && own.contains(&&notice["section"]),
+                "{kind}'s section is not one of the victim's own {own:?}: {notice}"
+            );
+            for empty in ["contact", "designator", "was"] {
+                assert!(notice[empty].is_null(), "{kind}.{empty}: {notice}");
+            }
+            *published.entry(kind.to_owned()).or_default() += 1;
+        }
+    }
+    assert!(
+        published.get("struck").is_some_and(|n| *n >= 2),
+        "the rounds that found armour: {published:?}"
+    );
+    assert_eq!(published.get("struck_spent"), Some(&3), "{published:?}");
+    assert_eq!(published.get("section_lost"), Some(&1), "{published:?}");
 }
 
 #[test]
@@ -4493,10 +4533,23 @@ fn the_wire_frame_carries_the_new_notice_with_its_designator_and_its_section() {
         "the row key a panel matches against: {notice}"
     );
 
+    // **16b cut B.1** (`T-86`): the old-name key is on every notice, and `null`
+    // on all three shapes this run sends the gunner — the lost section, the
+    // hits and the rest — because none of them quotes an old name (only an
+    // `identified` or an `unidentified again` line does).
+    for notice in &notices {
+        assert_eq!(
+            notice.get("was"),
+            Some(&serde_json::Value::Null),
+            "a notice that quotes no old name published one: {notice}"
+        );
+    }
+
     // The gunner's hit lines carry the same key, under the same gate; every
-    // other kind carries `null` there, the victim's own two included, because
-    // what a round did inside this tank is the status block's and not a
-    // notice's.
+    // other kind the gunner is sent carries `null` there. (16b cut B.1 widened
+    // the key to the victim's own `struck`, `struck_spent` and `section_lost`,
+    // where it is the victim's OWN section; this run reads the shooter's frames
+    // only, so none of those is here.)
     let hits: Vec<&serde_json::Value> = notices
         .iter()
         .filter(|notice| notice.get("kind").and_then(serde_json::Value::as_str) == Some("hit"))

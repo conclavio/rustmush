@@ -2865,6 +2865,11 @@ pub const RETAIN_LATEST: &str = "latest";
 /// about, `null` on every other kind — so the new `target_section_lost` notice
 /// carries its section as a field and not only inside `text`.
 ///
+/// **16b cut B.1** (`T-86`) widened each notice's `section` to the victim's own
+/// `struck`, `struck_spent` and `section_lost` (this platform's section, `kind`
+/// says whose) and added `was`, the old designator on an `identified` or
+/// `unidentified again` line and `null` on every other.
+///
 /// **16b cut F.2** also added `sections` — doc 16 §5's status block, one entry per
 /// section as `{ id, condition, internals, internals_max, facets[{ id, armor,
 /// armor_max }] }` — and `heat` as `{ heat, max, overheated }` or `null`, which
@@ -2877,7 +2882,11 @@ pub const RETAIN_LATEST: &str = "latest";
 /// notice twice. The array is the shape a panel should *draw* from — kinds, ids,
 /// and the text as a fallback — and a renderer that owns the scrollback should not
 /// print the text again. A frame read back out of the world's mirror carries no
-/// notices at all, because the mirror is stored with them cleared.
+/// notices at all, because the mirror is stored with them cleared. **16b cut
+/// B.1**: the bridge's `Sys` copy of each notice is tagged
+/// [`crate::arena_bridge::NOTICE_SENTENCE_TAG`], so a panel ring that also takes
+/// the pilot's replies (tagged [`crate::arena_bridge::NOTICE_CATEGORY`]) can tell
+/// the sentence it composes from this array from an answer it has to ring.
 ///
 /// **16b cut D.1** added two top-level keys: `sight_m`, the platform's own
 /// nominal sensor reach in metres (`0` for a platform with no sensor), and
@@ -2942,11 +2951,20 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
                 "kind": notice.kind().as_str(),
                 "contact": notice.contact().map(|id| id.to_string()),
                 "designator": notice.designator().map(|named| named.to_string()),
-                // 16b cut Q.2: the section of the *target* a gunner's line is
-                // about, so a panel that wants to flash it does not have to
-                // regex it back out of `text`. `null` on every other notice,
-                // the victim's own two included — what a round did inside this
-                // tank is `sections` above, with its facet and its cost.
+                // **16b cut B.1** (`T-86`): the old name on an `identified` or
+                // an `unidentified again` line — the provisional number a
+                // contact was told apart from, or the name a flicker cost it —
+                // so a panel can say which name the pilot had. `null` on every
+                // other notice. A designator this platform issued or read,
+                // never an object number.
+                "was": notice.was().map(|designator| designator.to_string()),
+                // 16b cut Q.2, widened by **16b cut B.1** (`T-86`): the section
+                // this notice is about — the target's on the gunner's `hit` and
+                // `target_section_lost`, this platform's own on the victim's
+                // `struck`, `struck_spent` and `section_lost` — so a panel never
+                // regexes it back out of `text`; `kind` says whose it is. The
+                // section word only: the facet, the numbers and the cost of a
+                // lost section stay in `sections` above and in the sentence.
                 "section": notice.section().map(SmolStr::as_str),
                 // **16b cut D.2** (`B-07`): the sentence's own parts. Until this
                 // cut the whole of a refusal and the whole of a block lived in

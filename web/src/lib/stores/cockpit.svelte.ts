@@ -8,11 +8,18 @@
 // * **The map is pulled, never pushed** (16b cut Q.3). Nothing publishes
 //   `arena.map`, so it is never in the session's resume ring either: a client
 //   that holds a cockpit frame of match M and no map of M asks for one, at most
-//   once every `MAP_ASK_MS`, until it has it. A map of another match — or the
-//   unseated answer — is DROPPED rather than drawn, because stale ground under
-//   live markers is worse than none, and dropping it does NOT re-arm the latch:
-//   an answer that keeps coming back wrong would otherwise buy a fresh ask on
-//   every pulse, which is the storm the latch exists to stop.
+//   once every `MAP_ASK_MS`, until it has it. While a frame is held, a map of
+//   another match — or the unseated answer — is DROPPED on arrival rather than
+//   drawn (`applyMap`, 16b cut B.1), because stale ground under live markers is
+//   worse than none, and dropping it does NOT re-arm the latch: an answer that
+//   keeps coming back wrong would otherwise buy a fresh ask on every pulse,
+//   which is the storm the latch exists to stop. A map that arrives BEFORE any
+//   frame (the hello pass's wildcard ask) is held, and judged by
+//   `holdsTheGround` when the first frame names the match.
+// * **The notices ring is also the reply surface** (16b cut B.1): while seated,
+//   every `Sys` line lands in it through `pushReply`, because a pilot kept on
+//   screen 0 has no scrollback in front of them — every one but the bridge's
+//   copy of a frame's own notice, which the ring composes from the frame.
 // * **The screen opens itself once per match id.** A pilot who then switches
 //   away is left alone; the next pulse does not drag them back.
 // * **A cleared frame** (`seated: false`, the last one a pilot gets) drops
@@ -39,7 +46,8 @@ export class CockpitStore {
   frame = $state<CockpitFrame | null>(null);
   /** The terrain of `frame`'s match, or `null` while it has not arrived. */
   map = $state<ArenaMap | null>(null);
-  /** The composed notice lines, oldest first, at most `COCKPIT_NOTICES`. */
+  /** The composed notice lines — the frames' notices and, while seated, the
+   * pilot's own replies — oldest first, at most `COCKPIT_NOTICES`. */
   notices = $state<string[]>([]);
 
   /** When the last `arena.map` ask went out, and which match it was for. */
@@ -101,14 +109,45 @@ export class CockpitStore {
     return open;
   }
 
-  /** Apply one `arena.map` keyframe. A map of another match, and the unseated
-   * answer, are held as nothing: `holdsTheGround` is the only reader. */
+  /**
+   * Apply one `arena.map` keyframe.
+   *
+   * While a frame is held, a map of ANOTHER match is dropped and the held one
+   * kept (16b cut B.1, `B-61`): a late answer to an ask made for the previous
+   * match must never replace the ground under this one. A map that arrives
+   * before any frame — the hello pass's wildcard ask, see `noteMapAsked` — is
+   * held, and `holdsTheGround` judges it when the first frame names the match.
+   * The unseated answer, and a map with no size, are held as nothing.
+   */
   applyMap(data: unknown): void {
     const map = decodeArenaMap(data);
     if (map === null) {
       return;
     }
+    if (this.matchId !== null && map.match !== this.matchId) {
+      return;
+    }
     this.map = map.seated && map.width > 0 && map.height > 0 ? map : null;
+  }
+
+  /**
+   * Append one reply line — the plain text of a `Sys` line — to the notices
+   * ring, while seated; nothing when not (16b cut B.1).
+   *
+   * On screen 0 this ring is the only reply surface: the scrollback is mounted
+   * by the scene screen alone, and a pilot who typed `lock BA` on the cockpit
+   * expects `Locking BA.` there. Every `Sys` line goes, not a chosen subset of
+   * replies, and the scrollback keeps its own copy of the sentence for screen 1
+   * — Q20 lets two screens word one event. Same ring, same `COCKPIT_NOTICES`
+   * cap. The one line the caller leaves out is the bridge's copy of a frame's
+   * own notice (`isNoticeSentence`): the ring composes that notice from the
+   * frame, and taking the sentence too would ring every notice twice.
+   */
+  pushReply(text: string): void {
+    if (!this.seated) {
+      return;
+    }
+    this.notices = [...this.notices, text].slice(-COCKPIT_NOTICES);
   }
 
   /**

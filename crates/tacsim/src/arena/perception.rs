@@ -2257,16 +2257,38 @@ impl FrameNotice {
         }
     }
 
-    /// **The section of the TARGET this notice names** (16b cut Q.2), where it
-    /// names one at all.
+    /// **What the contact this notice names used to be called** (16b cut B.1,
+    /// `T-86`), where the sentence quotes an old name.
     ///
-    /// Exactly the two gunner's words: [`FrameNotice::Hit`]'s section, which is
-    /// `Some` only under the held-and-classified gate, and
-    /// [`FrameNotice::TargetSectionLost`]'s. It is **not** the victim's own
-    /// [`FrameNotice::Struck`] or [`FrameNotice::SectionLost`]: those are the
-    /// crew reading their own gauges and carry a facet and a consequence list
-    /// that this key's readers — a panel highlighting the section a gunner just
-    /// took off a target — must not be handed.
+    /// The `was` of [`FrameNotice::Contact`], which the staging sites set only
+    /// on [`NoticeKind::Classified`] (`X2 identified: BA`) and
+    /// [`NoticeKind::Unidentified`] (`BA unidentified again: X2`); `None` on
+    /// every other variant. Until this accessor the old name lived only in the
+    /// sentence, so the web ring printed a regression as `X2 unidentified` and
+    /// could not say which name the pilot had lost. The old name is a
+    /// designator this platform itself issued or read, never an object number.
+    #[must_use]
+    pub const fn was(&self) -> Option<Designator> {
+        match self {
+            FrameNotice::Contact { was, .. } => *was,
+            _ => None,
+        }
+    }
+
+    /// **The section this notice is about** (16b cut Q.2, widened by 16b cut
+    /// B.1, `T-86`) — the target's on the gunner's kinds, this platform's own on
+    /// the victim's — so a panel never regexes a section out of `text`; `kind`
+    /// says whose it is.
+    ///
+    /// The gunner's two: [`FrameNotice::Hit`]'s section, which is `Some` only
+    /// under the held-and-classified gate, and
+    /// [`FrameNotice::TargetSectionLost`]'s. The victim's three:
+    /// [`FrameNotice::Struck`]'s, [`FrameNotice::StruckSpent`]'s and
+    /// [`FrameNotice::SectionLost`]'s — the pilot's own tank, which is outside
+    /// the observer rule (doc 16 §3.6). Only the section word: a `Struck`'s
+    /// facet and numbers and a `SectionLost`'s consequence list stay in the
+    /// sentence. No reader highlights by this key alone; a panel that marks the
+    /// section a gunner just took off a target reads `kind` first.
     ///
     /// A renderer therefore never has to parse a sentence to know which section a
     /// line is about, which is the one-owner-per-sentence rule this module's head
@@ -2275,17 +2297,14 @@ impl FrameNotice {
     pub fn section(&self) -> Option<&SmolStr> {
         match self {
             FrameNotice::Hit { section, .. } => section.as_ref(),
-            FrameNotice::TargetSectionLost { section, .. } => Some(section),
+            FrameNotice::TargetSectionLost { section, .. }
+            | FrameNotice::Struck { section, .. }
+            | FrameNotice::StruckSpent { section }
+            | FrameNotice::SectionLost { section, .. } => Some(section),
             FrameNotice::Contact { .. }
             | FrameNotice::Locked { .. }
             | FrameNotice::Miss { .. }
             | FrameNotice::Kill { .. }
-            | FrameNotice::Struck { .. }
-            // 16b cut D.2: the victim's own spent-section line is the victim's,
-            // exactly as `Struck` is — a panel highlighting the section a GUNNER
-            // took off a target must not be handed it.
-            | FrameNotice::StruckSpent { .. }
-            | FrameNotice::SectionLost { .. }
             | FrameNotice::Refused { .. }
             | FrameNotice::Blocked { .. }
             | FrameNotice::PowerOnline

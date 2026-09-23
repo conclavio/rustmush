@@ -160,6 +160,52 @@ describe("CockpitStore", () => {
     expect(s.notices).toHaveLength(2);
   });
 
+  it("keeps a late map of another match off the held one (B-61)", () => {
+    // 16b cut B.1: while a frame of match 7 is held, a late answer to an ask
+    // made for match 8 must never replace the ground under 7.
+    const s = new CockpitStore();
+    s.applyFrame(FRAME()); // match 7
+    s.applyMap(MAP());
+    expect(s.holdsTheGround).toBe(true);
+    s.applyMap({ ...MAP(), match: 8, width: 12, height: 12 });
+    expect(s.map?.match).toBe(7);
+    expect(s.map?.width).toBe(96);
+    expect(s.holdsTheGround).toBe(true);
+    // A map of the held match is kept (a re-sent one replaces it).
+    s.applyMap({ ...MAP(), surface: "again" });
+    expect(s.map?.surface).toBe("again");
+    // With no frame held, any map is kept — the hello pass's wildcard — and
+    // `holdsTheGround` judges it when the first frame names the match.
+    const fresh = new CockpitStore();
+    fresh.applyMap({ ...MAP(), match: 8 });
+    expect(fresh.map?.match).toBe(8);
+    fresh.applyFrame(FRAME()); // match 7: not this ground
+    expect(fresh.holdsTheGround).toBe(false);
+    const right = new CockpitStore();
+    right.applyMap(MAP());
+    right.applyFrame(FRAME());
+    expect(right.holdsTheGround).toBe(true);
+  });
+
+  it("rings a reply while seated and nothing when not, under the one cap", () => {
+    const s = new CockpitStore();
+    s.pushReply("Locking BA.");
+    expect(s.notices).toEqual([]); // not seated: the scrollback's alone
+    s.applyFrame(FRAME());
+    s.pushReply("Locking BA.");
+    expect(s.notices).toEqual(["X4 new contact", "BA section destroyed: turret", "Locking BA."]);
+    for (let i = 0; i < 60; i += 1) {
+      s.pushReply(`reply ${i}`);
+    }
+    expect(s.notices).toHaveLength(COCKPIT_NOTICES);
+    expect(s.notices.at(-1)).toBe("reply 59");
+    expect(s.notices[0]).toBe("reply 10");
+    // The cleared frame empties it, and a reply after it rings nothing.
+    s.applyFrame(CLEARED);
+    s.pushReply("No such contact.");
+    expect(s.notices).toEqual([]);
+  });
+
   it("ignores a payload that is not a frame at all", () => {
     const s = new CockpitStore();
     expect(s.applyFrame("nope")).toBe(false);

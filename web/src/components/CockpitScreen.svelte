@@ -12,7 +12,10 @@
   // joined a contact to a name it happened to know would break it without the
   // server ever sending a wrong byte. `$lib/cockpit`'s decoder does not even
   // keep the fields that could leak: no contact `id`, no `lock` digits, no
-  // `unit` object number, no notice `text`.
+  // `unit` object number, no notice `text`. (The notices pane also shows the
+  // pilot's own `Sys` replies while seated — 16b cut B.1 — which are lines
+  // the server sent this pilot, never a lookup; the notice sentences' own
+  // copies are kept out of it.)
   //
   // Every string printed here comes out of `cockpitView`, and the canvas draws
   // from `composeWindow` — both pure, both pinned by vitest against the
@@ -25,6 +28,7 @@
     composeWindow,
     contactText,
     damageText,
+    labelPlan,
     NOT_IN_A_COCKPIT,
     scanText,
     WAITING_FOR_THE_MAP,
@@ -99,9 +103,16 @@
         ctx.fillRect(col * px, row * px, px, px);
       }
     }
+    // Which labels are painted (16b cut B.1, `B-09`): a hostile and the lock at
+    // every zoom, the rest from 6 px, an overlapping label skipped in frame
+    // order and the lock's never — decided once, by the pure `labelPlan`.
+    const labels = labelPlan(w.markers, f.lock_designator, px);
+    // Under 6 px a label is a fixed 8 px font with a one-pixel halo in the
+    // canvas's own background, so it reads over terrain and over other dots.
+    const halo = px < 6 ? getComputedStyle(c).backgroundColor || "#000" : null;
     // Then the markers, in the order they were composed, so a later one covers
     // an earlier one here exactly as it does in the glyph rows.
-    for (const marker of w.markers) {
+    for (const [i, marker] of w.markers.entries()) {
       const cx = marker.x * px + px / 2;
       // `marker.y` counts from the SOUTH; the canvas paints north-up.
       const cy = (w.h - 1 - marker.y) * px + px / 2;
@@ -129,10 +140,17 @@
           ctx.stroke();
         }
       }
-      if (px >= 6) {
+      if (labels[i] === true) {
         ctx.fillStyle = colour;
-        ctx.font = `${Math.max(8, px)}px ui-monospace, monospace`;
         ctx.textBaseline = "middle";
+        if (halo !== null) {
+          ctx.font = "8px ui-monospace, monospace";
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = halo;
+          ctx.strokeText(marker.designator, cx + px * 0.8, cy);
+        } else {
+          ctx.font = `${Math.max(8, px)}px ui-monospace, monospace`;
+        }
         ctx.fillText(marker.designator, cx + px * 0.8, cy);
       }
     }
@@ -148,8 +166,11 @@
         <strong>{view.heading}</strong>
         <span class="grow"></span>
         <span class="dim">{cells} cells</span>
-        <button type="button" class="zoom" aria-label="zoom in" onclick={() => zoom(-1)}>−</button>
-        <button type="button" class="zoom" aria-label="zoom out" onclick={() => zoom(1)}>+</button>
+        <!-- 16b cut B.1 (`B-60`): only the glyphs moved. The labels and the
+             handlers were always true — fewer cells IS zooming in — but the
+             button that zooms in wore a minus sign. -->
+        <button type="button" class="zoom" aria-label="zoom in" onclick={() => zoom(-1)}>+</button>
+        <button type="button" class="zoom" aria-label="zoom out" onclick={() => zoom(1)}>−</button>
       </header>
       {#if win === null}
         <p class="muted">{WAITING_FOR_THE_MAP}</p>

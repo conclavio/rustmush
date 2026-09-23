@@ -1435,6 +1435,42 @@ async fn a_lock_taken_on_a_provisional_number_still_answers_to_both_names() {
         told.iter().any(|line| line.starts_with("Locked on BA,")),
         "a repeated LOCK did not answer with the lock it already held: {told:?}"
     );
+    // **16b cut B.1**: the two lines are told apart on the wire by their tag. The
+    // answer to the typed line (`Locking BA.`) is a reply and keeps the arena's
+    // category; `Locked on BA, …` is the `Sys` copy of a notice the frame after it
+    // carries, and wears the notice tag — so a panel ring that takes the replies
+    // leaves it out and composes it from the frame instead, once.
+    let tags_of = |needle: &str| -> Vec<Option<String>> {
+        rig.log
+            .iter()
+            .skip(spoken)
+            .filter_map(|(_, event)| match event {
+                OutputEvent::Sys(text) if text.to_plain_text().starts_with(needle) => Some(
+                    text.spans()
+                        .iter()
+                        .map(|span| span.tag.as_deref().map(str::to_owned))
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    };
+    let reply = tags_of("Locking BA.");
+    let sentence = tags_of("Locked on BA,");
+    assert!(!reply.is_empty() && !sentence.is_empty(), "{told:?}");
+    assert!(
+        reply
+            .iter()
+            .all(|tag| tag.as_deref() == Some(tacsim::arena_bridge::NOTICE_CATEGORY)),
+        "a reply is tagged with the arena's category: {reply:?}"
+    );
+    assert!(
+        sentence
+            .iter()
+            .all(|tag| tag.as_deref() == Some(tacsim::arena_bridge::NOTICE_SENTENCE_TAG)),
+        "a notice's own sentence is tagged as one: {sentence:?}"
+    );
 
     // (3) The four reads that fall back to the lock, each with no argument.
     for verb in ["range", "bearing", "weaponstatus", "scan"] {
@@ -3584,11 +3620,17 @@ fn d2_the_notice_object_carries_the_sentence_s_own_parts() {
     });
     assert_eq!(key(&struck, "kind"), serde_json::json!("struck_spent"));
     assert_eq!(key(&struck, "spent"), serde_json::json!(true));
+    // **16b cut B.1** (`T-86`): the victim's own section IS on the `section`
+    // key now — the pilot's own tank, outside the observer rule — and `kind`
+    // says whose it is; it names no contact. The stronger pin, over all three
+    // victim kinds, is `b1_the_victims_section_and_the_old_name_are_published`.
     assert_eq!(
         key(&struck, "section"),
-        serde_json::Value::Null,
-        "the victim's own section is not the gunner's key"
+        serde_json::json!("left_track"),
+        "the victim's own section rides the `section` key, and `kind` says whose"
     );
+    assert_eq!(key(&struck, "contact"), serde_json::Value::Null);
+    assert_eq!(key(&struck, "designator"), serde_json::Value::Null);
     assert_eq!(
         key(&struck, "text"),
         serde_json::json!("Hit on the left_track, which is already destroyed.")
@@ -3605,7 +3647,7 @@ fn d2_the_notice_object_carries_the_sentence_s_own_parts() {
     assert!(!notices.is_empty());
     for notice in notices.iter().chain([&refused, &cycling, &held, &struck]) {
         for name in [
-            "cause", "refusal", "order", "weapon", "detail", "friendly", "spent",
+            "cause", "refusal", "order", "weapon", "detail", "friendly", "spent", "was", "section",
         ] {
             let word = serde_json::to_string(&key(notice, name)).unwrap_or_default();
             for part in word.split(|c: char| !c.is_ascii_hexdigit()) {
@@ -4271,4 +4313,151 @@ async fn d4_status_prints_the_receiver_and_range_reads_the_plots_own_step() {
     rig.push_frame(0, frame);
     let said = rig.say(0, "range ba");
     assert!(said.contains("Range to BA: 450 m"), "{said}");
+}
+
+/// **16b cut B.1** (`T-86`): the notice object carries the old name on the two
+/// lines that quote one, and the victim's own section on the victim's three
+/// kinds — so neither panel has to parse either back out of `text`.
+///
+/// The stronger pin that replaced cut D.2's "the victim's own section is not the
+/// gunner's key": on `struck`, `struck_spent` and `section_lost` the published
+/// `section` is one of the pilot's OWN frame's `sections[].id`, and the notice
+/// names no contact — no `contact`, no `designator`, no `was` — so it is never a
+/// contact's. No reader highlights by this key alone; `kind` says whose it is.
+#[test]
+fn b1_the_victims_section_and_the_old_name_are_published() {
+    use tacsim::arena::perception::{FrameNotice, Named, NoticeKind};
+    use tacsim::arena::state::{Classification, ContactId, Designator, Team};
+
+    let frame = fixture::frame();
+    let object = |notice: FrameNotice| -> serde_json::Value {
+        let mut one = frame.clone();
+        one.notices = vec![notice];
+        cockpit::status_frame(fixture::MATCH, &one)
+            .get("notices")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|list| list.first().cloned())
+            .unwrap_or_else(|| panic!("one notice"))
+    };
+    let key = |value: &serde_json::Value, name: &str| value.get(name).cloned().unwrap_or_default();
+    let blue_one = Designator::Slot {
+        team: Team::Blue,
+        slot: 1,
+    };
+    let hostile = ContactId(0x1111_1111_1111_1111);
+
+    // `X2 identified: BA` — the provisional number it was told apart from.
+    let classified = FrameNotice::Contact {
+        kind: NoticeKind::Classified,
+        contact: Named {
+            id: hostile,
+            designator: blue_one,
+        },
+        class: Classification::Classified { team: Team::Blue },
+        was: Some(Designator::Provisional(2)),
+    };
+    assert_eq!(classified.was(), Some(Designator::Provisional(2)));
+    let published = object(classified);
+    assert_eq!(key(&published, "kind"), serde_json::json!("classified"));
+    assert_eq!(key(&published, "designator"), serde_json::json!("BA"));
+    assert_eq!(key(&published, "was"), serde_json::json!("X2"));
+    assert_eq!(key(&published, "section"), serde_json::Value::Null);
+
+    // `BA unidentified again: X2` — the name a flicker cost it.
+    let unidentified = FrameNotice::Contact {
+        kind: NoticeKind::Unidentified,
+        contact: Named {
+            id: hostile,
+            designator: Designator::Provisional(2),
+        },
+        class: Classification::Unknown,
+        was: Some(blue_one),
+    };
+    let published = object(unidentified);
+    assert_eq!(key(&published, "kind"), serde_json::json!("unidentified"));
+    assert_eq!(key(&published, "designator"), serde_json::json!("X2"));
+    assert_eq!(key(&published, "was"), serde_json::json!("BA"));
+
+    // Every notice of the one scene carries the key, `null` where no old name
+    // is quoted — present, so a panel can tell "none" from "not sent".
+    let payload = cockpit::status_frame(fixture::MATCH, &frame);
+    let notices = payload
+        .get("notices")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(!notices.is_empty());
+    for notice in &notices {
+        assert_eq!(
+            notice.get("was"),
+            Some(&serde_json::Value::Null),
+            "{notice}"
+        );
+    }
+
+    // The victim's three: the section is the pilot's own, and nothing names a
+    // contact.
+    let own: Vec<serde_json::Value> = payload
+        .get("sections")
+        .and_then(serde_json::Value::as_array)
+        .map(|sections| {
+            sections
+                .iter()
+                .filter_map(|section| section.get("id").cloned())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(!own.is_empty());
+    let section = |name: &str| smol_str::SmolStr::new(name);
+    for (notice, word, expected) in [
+        (
+            FrameNotice::Struck {
+                section: section("hull"),
+                armor_section: section("hull"),
+                facet: section("front"),
+                armor_left: 55,
+                armor_max: 80,
+                internals_left: 60,
+                internals_max: 60,
+            },
+            "struck",
+            "hull",
+        ),
+        (
+            FrameNotice::StruckSpent {
+                section: section("right_track"),
+            },
+            "struck_spent",
+            "right_track",
+        ),
+        (
+            FrameNotice::SectionLost {
+                section: section("right_track"),
+                consequences: vec![section("immobile")],
+            },
+            "section_lost",
+            "right_track",
+        ),
+    ] {
+        assert_eq!(
+            notice.section().map(smol_str::SmolStr::as_str),
+            Some(expected)
+        );
+        assert_eq!(notice.was(), None);
+        let published = object(notice);
+        assert_eq!(key(&published, "kind"), serde_json::json!(word));
+        let said = key(&published, "section");
+        assert_eq!(said, serde_json::json!(expected), "{word}");
+        assert!(
+            own.contains(&said),
+            "{word}'s section {said} is not one of the pilot's own sections {own:?}"
+        );
+        for empty in ["contact", "designator", "was"] {
+            assert_eq!(
+                key(&published, empty),
+                serde_json::Value::Null,
+                "{word}.{empty}"
+            );
+        }
+    }
 }
