@@ -102,11 +102,14 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///    the count of `next` rows as `u64`, then per row the viewer's `u32` and the
 ///    number as `u16`; then the count of issued numbers as `u64`, then per issued
 ///    number the viewer's `u32`, the target's `u32` and the number as `u16`.
-/// 6. The tempo byte (`0` quiet, `1` alert, `2` engaged).
-/// 7. `now_ms`, `i64`.
-/// 8. The due-event count, `u64`.
-/// 9. **The in-flight shot count** (16b cut W.1), `u64`.
-/// 10. The ledger's event sequence, `u64`.
+/// 6. **The held losses** (16b cut M.2), in the map's own key order: the count of
+///    entries as `u64`, then per entry the viewer's `u32`, the contact id's `u64`
+///    and the deadline as `i64`. The designator in the value is not folded.
+/// 7. The tempo byte (`0` quiet, `1` alert, `2` engaged).
+/// 8. `now_ms`, `i64`.
+/// 9. The due-event count, `u64`.
+/// 10. **The in-flight shot count** (16b cut W.1), `u64`.
+/// 11. The ledger's event sequence, `u64`.
 ///
 /// **Why the contacts are in it** (16b cut S.1). Doc 16 §3.1 makes the arena the
 /// single writer for *unit poses, unit condition cells, contacts, orders,
@@ -274,6 +277,22 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 /// whole centimetre of pose. The cell and the stamp both go in: a hold against a
 /// different cell is a different hold, and a hold that started earlier matures
 /// earlier.
+///
+/// **Cut M.2's extension** (16c `T-83`): [`Arena::held_losses`], under cut D.4's
+/// one rule. It was kept out while a sweep at the end of every pulse said the
+/// expired entries, because folding a table a pulse boundary moved would have
+/// made the hash a function of the tempo; since the expiry is a
+/// [`crate::arena::state::DueKind::LossSettles`] at the deadline's own
+/// millisecond, nothing but an arena timestamp moves it, and it decides whether a
+/// later substep says `lost` — a replay whose contact was re-detected a pass
+/// later would otherwise compare equal until the two pilots were shown
+/// different lines. It is written only in the staging scan (the `lost` arm
+/// inserts, the `detected` arm cancels, the settle removes), which runs after
+/// the substep's hash is recorded, so an entry written at substep *k* — and the
+/// due event scheduled beside it, which the due count folds — is first folded at
+/// *k + 1*, exactly as `spent_said`'s writes are. The designator in the value is
+/// not folded: it is a name derived from the book and the callsign, both of
+/// which are already in here.
 #[must_use]
 pub fn state_hash(arena: &Arena) -> u64 {
     let mut hash = FNV_OFFSET_BASIS;
@@ -479,6 +498,16 @@ pub fn state_hash(arena: &Arena) -> u64 {
         hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
         hash = fnv1a64_update(hash, &target.0.to_le_bytes());
         hash = fnv1a64_update(hash, &n.to_le_bytes());
+    }
+    // **16b cut M.2** (16c `T-83`): the held losses, in the map's own key order —
+    // the deadline decides whether a later substep says `lost`. The designator
+    // beside it is not folded: it is read off the book and the callsign, both
+    // already in here.
+    hash = fnv1a64_update(hash, &(arena.held_losses.len() as u64).to_le_bytes());
+    for ((viewer, contact), (deadline, _)) in &arena.held_losses {
+        hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
+        hash = fnv1a64_update(hash, &contact.0.to_le_bytes());
+        hash = fnv1a64_update(hash, &deadline.to_le_bytes());
     }
     hash = fnv1a64_update(hash, &[arena.clock.tempo().code()]);
     hash = fnv1a64_update(hash, &arena.now_ms.to_le_bytes());
@@ -989,6 +1018,38 @@ mod tests {
             unit.orders_in_window = 0;
         }
         assert_eq!(state_hash(&counted), base);
+    }
+
+    /// **16b cut M.2's extension** (`T-83`): a held loss moves the hash — its
+    /// viewer, its contact and its deadline each on their own — its expiry moves
+    /// it back, and the designator carried beside the deadline is not folded.
+    #[test]
+    fn m2_the_hash_folds_a_held_loss_and_its_expiry_moves_it_back() {
+        use crate::arena::state::{ContactId, Designator};
+
+        let base = state_hash(&two_tanks());
+        let held = |viewer: u32, contact: u64, deadline: i64, n: u16| {
+            let mut probe = two_tanks();
+            probe.held_losses.insert(
+                (ObjId(viewer), ContactId(contact)),
+                (deadline, Designator::Provisional(n)),
+            );
+            probe
+        };
+        let first = state_hash(&held(4, 7, 2_004, 1));
+        assert_ne!(first, base, "a held loss went unhashed");
+        assert_ne!(state_hash(&held(9, 7, 2_004, 1)), first, "the viewer");
+        assert_ne!(state_hash(&held(4, 8, 2_004, 1)), first, "the contact");
+        assert_ne!(state_hash(&held(4, 7, 2_005, 1)), first, "the deadline");
+        assert_eq!(
+            state_hash(&held(4, 7, 2_004, 2)),
+            first,
+            "the designator was folded"
+        );
+        // The expiry takes it out again: the same state as before the loss.
+        let mut expired = held(4, 7, 2_004, 1);
+        expired.held_losses.remove(&(ObjId(4), ContactId(7)));
+        assert_eq!(state_hash(&expired), base);
     }
 
     #[test]

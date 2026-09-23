@@ -519,8 +519,15 @@ fn a_cold_ai_tank_starts_itself_up_and_then_walks_the_waypoint_graph() {
     assert_eq!(arena.unit(RED).map(|unit| unit.power), Some(Power::Off));
 
     let mut bytes: Vec<u8> = Vec::new();
-    // One second: the first tick stages `STARTUP` and `match.startup_ms` is 500.
-    run(&mut arena, 1_500, &mut bytes);
+    // One second: the first tick, at 4 ms, stages `STARTUP`, which resolves at the
+    // tick and completes `match.startup_ms` (500) later, at 504 — the moment the
+    // second tick finds it online and sets off. **16b cut M.2** (16c `T-02`)
+    // resolves the machine's order at its tick; it resolved at the substep's end
+    // (250) until then, so the second tick found it still starting and the walk
+    // began a tick later, which is why this read `1_500` before the cut. At 1,500
+    // the tank has been turning for a second and its next plot is taken off a
+    // pose north of the row, so the heading below would no longer read due west.
+    run(&mut arena, 1_000, &mut bytes);
     assert_eq!(arena.unit(RED).map(|unit| unit.power), Some(Power::Online));
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
     let log = events(&mut arena, &mut bytes);
@@ -1424,6 +1431,34 @@ fn two_reflex_units_at_three_cadences_are_one_event_list_and_one_hash_sequence()
         );
     }
     assert!(first.hashes.len() >= 100, "{} substeps", first.hashes.len());
+    // **16b cut M.2** (16c `T-02`): every machine action is stamped at its own
+    // tick, `id % decide_ms` into each decide window — `RED`'s at 4, `RED2`'s at
+    // 6, neither of them a substep boundary. Before the cut these lines carried
+    // the end of the substep the tick ran in, a multiple of 250.
+    let decide = i64::from(reflex_cfg().decide_ms);
+    let mut stamped = 0_usize;
+    for (t_ms, json, _) in &first.events {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+            continue;
+        };
+        let kind = value.get("kind").and_then(serde_json::Value::as_str);
+        if !matches!(kind, Some("fired" | "locked" | "startup")) {
+            continue;
+        }
+        let Some(unit) = value.get("unit").and_then(serde_json::Value::as_i64) else {
+            continue;
+        };
+        if unit == i64::from(BLUE.0) {
+            continue;
+        }
+        assert_eq!(
+            t_ms.rem_euclid(decide),
+            unit % decide,
+            "a {kind:?} line of #{unit} off its tick: {t_ms}"
+        );
+        stamped += 1;
+    }
+    assert!(stamped >= 3, "the machines stamped {stamped} actions");
 
     for (at, run) in runs.iter().enumerate().skip(1) {
         let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
@@ -2299,8 +2334,15 @@ fn a_dry_withdrawal_drives_on_where_an_armed_one_stands_and_fights() {
     // deliberately, because the old behaviour was a tank that shot past the goal
     // and restarted its rally clock. What this test is about is the *difference*
     // between the two magazines, and that is untouched: 4,990 cm against nothing.
+    //
+    // **16b cut M.2 lowered it again, to 4,000** (16c `T-02`; the run makes
+    // 4,490). The machine's own `STARTUP` resolves at its tick now, so it came
+    // online a decide tick sooner and had patrolled five metres further west by
+    // the four seconds the contact is planted at; it withdraws to the same
+    // cell as before (measured: 2,644 cm either way) from a start five metres
+    // nearer it. The difference between the magazines is still the claim.
     assert!(
-        dry_west > 4_500 && dry_west > armed_west + 3_000,
+        dry_west > 4_000 && dry_west > armed_west + 3_000,
         "a dry tank drives home instead of stopping in front of the gun: \
          {dry_west} cm against the armed tank's {armed_west} cm"
     );
@@ -5882,7 +5924,14 @@ fn e4_run_until_hunt(
 fn e4_a_lost_contact_is_searched_for_where_it_was_last_seen() {
     // Twenty seconds of search, no hunt: this test is about the first of the two
     // clocks and nothing else.
-    let mut arena = e4_field((2, 8), (6, 8), &[], &e4_cfg(20_000, 0));
+    //
+    // **16b cut M.2** (16c `T-02`): the machine starts at (1, 8), not (2, 8). It
+    // starts up at its own tick now rather than at the substep's end, so it sets
+    // off a decide tick sooner and halts in `Engage` five metres further east —
+    // at (4, 8) from (2, 8), one cell from the plot, which the guard below reads
+    // as an arrival. From (1, 8) it halts at (3, 8), the margin the test was
+    // written with.
+    let mut arena = e4_field((1, 8), (6, 8), &[], &e4_cfg(20_000, 0));
     let mut bytes: Vec<u8> = Vec::new();
     run(&mut arena, 6_000, &mut bytes);
     assert_eq!(
@@ -5985,7 +6034,9 @@ fn e4_a_lost_contact_is_searched_for_where_it_was_last_seen() {
 /// four cells from its plot would have arrived.
 #[test]
 fn e4_a_hostile_found_while_searching_pre_empts_it() {
-    let mut arena = e4_field((2, 8), (6, 8), &[], &e4_cfg(20_000, 0));
+    // 16b cut M.2: from (1, 8), for the reason
+    // `e4_a_lost_contact_is_searched_for_where_it_was_last_seen` gives.
+    let mut arena = e4_field((1, 8), (6, 8), &[], &e4_cfg(20_000, 0));
     let mut bytes: Vec<u8> = Vec::new();
     run(&mut arena, 6_000, &mut bytes);
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage));
@@ -6058,7 +6109,9 @@ fn e4_an_aged_plot_and_a_search_switched_off_are_both_the_old_lost_edge() {
         // Off: the first `Patrol` tick drops it unread.
         (0, 0, "`search_ms` switched off"),
     ] {
-        let mut arena = e4_field((2, 8), (6, 8), &[], &e4_cfg(search_ms, 0));
+        // 16b cut M.2: from (1, 8), for the reason
+        // `e4_a_lost_contact_is_searched_for_where_it_was_last_seen` gives.
+        let mut arena = e4_field((1, 8), (6, 8), &[], &e4_cfg(search_ms, 0));
         let mut bytes: Vec<u8> = Vec::new();
         run(&mut arena, 6_000, &mut bytes);
         assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage), "{why}");
@@ -7959,4 +8012,208 @@ fn aa1_an_immobile_machine_in_the_annulus_is_one_log_at_three_cadences() {
             "the field ended differently at {cadence} ms"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut M.2 (16c `T-02`) — a machine's action is stamped at its tick
+// ---------------------------------------------------------------------------
+
+/// The (j) duel without the second machine: `RED` under the controller with the
+/// cannon, `BLUE` a parked pilot tank three cells east.
+fn m2_duel() -> Arena {
+    arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    )
+}
+
+/// `RED`'s next scheduled tick.
+fn m2_next_tick(arena: &Arena) -> i64 {
+    arena
+        .due
+        .iter()
+        .find(|event| {
+            matches!(
+                event.kind,
+                tacsim::arena::state::DueKind::ReflexTick { unit, .. } if unit == RED
+            )
+        })
+        .map(|event| event.t_ms)
+        .expect("a machine has a next tick")
+}
+
+/// **A machine's actions happen at its tick** (16b cut M.2, 16c `T-02`). `RED`'s
+/// ticks are at `4 + 500·k` — never a substep boundary on the 250 ms grid — and
+/// the tick runs inside the substep after arena time was advanced to that
+/// substep's end. Its `STARTUP`, its `fired` line, the round's flight and the
+/// cycle are all read from the tick's own millisecond, not from the boundary:
+/// before the cut the `startup` line read 250 and the `fired` line the next
+/// multiple of 250.
+#[test]
+fn m2_a_machines_startup_and_shot_are_stamped_at_its_tick() {
+    let mut arena = m2_duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let decide = i64::from(reflex_cfg().decide_ms);
+    let stagger = i64::from(RED.0) % decide;
+    assert_ne!(
+        stagger % 250,
+        0,
+        "the fixture needs a tick that is not a substep boundary"
+    );
+    let mut fired: Option<LedgerEvent> = None;
+    while fired.is_none() && arena.now_ms < 30_000 {
+        let until = arena.now_ms + 500;
+        run(&mut arena, until, &mut bytes);
+        fired = events(&mut arena, &mut bytes).into_iter().find(|event| {
+            matches!(event.kind, tacsim::arena::ledger::EventKind::Fired { unit, .. } if unit == RED)
+        });
+    }
+    let fired = fired.expect("the machine fired");
+    let log = events(&mut arena, &mut bytes);
+
+    // The startup at the first tick, and its completion `startup_ms` after it.
+    let startup = log
+        .iter()
+        .find(|event| event.kind.as_str() == "startup")
+        .map(|event| event.t_ms);
+    assert_eq!(startup, Some(stagger), "the `startup` line is the tick's");
+    let online = log
+        .iter()
+        .find(|event| event.kind.as_str() == "power_online")
+        .map(|event| event.t_ms);
+    assert_eq!(
+        online,
+        Some(stagger + i64::from(arena.match_cfg.startup_ms)),
+        "`StartupComplete` is scheduled from the tick"
+    );
+
+    // The shot.
+    assert_eq!(
+        fired.t_ms % decide,
+        stagger,
+        "the `fired` line is at a tick: {}",
+        fired.t_ms
+    );
+    let tacsim::arena::ledger::EventKind::Fired {
+        shot_seq, range_cm, ..
+    } = fired.kind
+    else {
+        panic!("a fired line");
+    };
+    let impact = log
+        .iter()
+        .find(|event| {
+            matches!(
+                event.kind,
+                tacsim::arena::ledger::EventKind::Impact { shot_seq: seq, .. } if seq == shot_seq
+            )
+        })
+        .map(|event| event.t_ms);
+    assert_eq!(
+        impact,
+        Some(fired.t_ms + cannon().flight_ms(range_cm)),
+        "the round flew from the tick"
+    );
+    assert_eq!(
+        arena
+            .unit(RED)
+            .map(|unit| unit.weapon_ready_at_ms("cannon")),
+        Some(fired.t_ms + i64::from(cannon().cycle_ms)),
+        "the cycle runs from the tick"
+    );
+}
+
+/// **The planner reads the tick's clock** (16b cut M.2, 16c `T-02`; review F10).
+/// A cannon that comes ready a hundred milliseconds after a tick — between the
+/// tick and the end of the substep it runs in — is not fired on that tick: the
+/// planner and the resolver both read the tick's millisecond, so the machine
+/// neither plans a shot the resolver would refuse `Cycling` nor takes one early.
+///
+/// **What tells the two clocks apart** (the M.2 review's `M2-R2`): `RED` also
+/// carries the coaxial, ready at the tick and later in component order. Read at
+/// the tick, the planner passes over the cycling cannon and fires the coaxial
+/// ON the tick. Read at the substep's end, it would pick the cannon — ready by
+/// then — the resolver would refuse it `Cycling` at the tick, `order` would drop
+/// the refusal, and nothing would fire until the next tick. So the shot list is
+/// the coaxial at the tick and the cannon at the tick after, and a planner put
+/// back on `now_ms` fails it.
+#[test]
+fn m2_a_weapon_ready_between_the_tick_and_the_substep_end_waits_for_the_next_tick() {
+    let mut arena = arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon(), coaxial()],
+                Controller::Reflex,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    let decide = i64::from(reflex_cfg().decide_ms);
+    // Bring it to the fight: the first shot.
+    while count(&events(&mut arena, &mut bytes), "fired") == 0 && arena.now_ms < 30_000 {
+        let until = arena.now_ms + 500;
+        run(&mut arena, until, &mut bytes);
+    }
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage));
+    let tick = m2_next_tick(&arena);
+    let substep_end = tick - tick.rem_euclid(250) + 250;
+    let ready = tick + 100;
+    assert!(ready < substep_end, "the fixture's premise");
+    // The cannon comes ready between the tick and the substep's end; the
+    // coaxial is ready already.
+    if let Some(unit) = arena.unit_mut(RED) {
+        unit.ready_at_ms.insert(SmolStr::new("cannon"), ready);
+        unit.ready_at_ms.insert(SmolStr::new("coaxial"), tick);
+    }
+    let before = count(&events(&mut arena, &mut bytes), "fired");
+    run(&mut arena, tick + decide + 250, &mut bytes);
+    let shots: Vec<(i64, SmolStr)> = events(&mut arena, &mut bytes)
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            tacsim::arena::ledger::EventKind::Fired { unit, weapon, .. } if unit == RED => {
+                Some((event.t_ms, weapon))
+            }
+            _ => None,
+        })
+        .skip(before)
+        .collect();
+    assert_eq!(
+        shots,
+        vec![
+            (tick, SmolStr::new("coaxial")),
+            (tick + decide, SmolStr::new("cannon")),
+        ],
+        "the cannon came ready at {ready}, after the tick at {tick}: the tick fires \
+         the coaxial, and the cannon waits for the next one"
+    );
 }

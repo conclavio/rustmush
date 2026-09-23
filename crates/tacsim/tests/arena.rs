@@ -907,11 +907,12 @@ fn startup_then_released_in_one_burst_never_starts() {
     // to the reflex controller in `Withdraw`, which puts its first tick on the
     // schedule beside the position summary.
     // 16b cut F.3 adds one sensor pass per unit, which every platform now has
-    // because the pass is where its contacts expire.
+    // because the pass is where its contacts expire. **16b cut M.2** (16c `T-01`)
+    // adds the duration bound, a due event since that cut.
     assert_eq!(
         arena.due.len(),
-        4,
-        "the position summary, the released tank's first reflex tick, two passes"
+        5,
+        "the position summary, the duration bound, the released tank's first tick, two passes"
     );
 
     // **16b cut D.3 (`B-34`) replaced this block's claim.** It used to assert
@@ -1084,9 +1085,12 @@ fn the_duration_bound_ends_the_match_and_a_further_step_does_nothing() {
     }
     let ended = ended.expect("the match timed out");
     assert_eq!(ended.reason, EndReason::Timeout);
+    // **16b cut M.2** (16c `T-01`): the bound is a due event, so the match ends
+    // at the deadline's own millisecond and not at the end of the pulse that
+    // crossed it (15,000, which this assertion read before the cut).
     assert_eq!(
-        ended.t_ms, 15_000,
-        "the pulse that crossed the bound ended it"
+        ended.t_ms, 12_000,
+        "the deadline's own millisecond ended it"
     );
     assert_eq!(arena.ended, Some(ended));
 
@@ -1112,7 +1116,8 @@ fn the_duration_bound_ends_the_match_and_a_further_step_does_nothing() {
     assert!(after.ledger_chunks.is_empty());
     assert!(after.frames.is_empty());
     assert_eq!(after.ended, Some(ended));
-    assert_eq!(arena.now_ms, 15_000);
+    // 16b cut M.2: the pulse stopped at the substep the deadline fell in.
+    assert_eq!(arena.now_ms, 12_000);
 
     // And a `Stop` after the end cannot reopen it either.
     arena.stop(StopReason::Abort);
@@ -2045,5 +2050,88 @@ fn one_scripted_stop_at_three_cadences_is_one_end_one_event_list_and_one_hash_se
                 "{stop:?}: {cadence} ms ran the same pulses"
             );
         }
+    }
+}
+
+/// **16b cut M.2** (16c `T-01`): the duration bound at three cadences. The bound
+/// is 22,600 ms — inside a pulse at every cadence and inside a substep — and
+/// the tank is under way when it comes, so there is motion to cut off. Before
+/// the cut the timeout was settled at the end of whichever pulse crossed it:
+/// 25,000 at 5,000 ms, 23,000 at 1,000 and 500. It is a due event now, so it is
+/// one `match_ended { timeout }` at 22,600, the ledger's last line, behind one
+/// event list and one hash sequence at every cadence.
+#[test]
+fn m2_a_duration_bound_mid_pulse_is_one_timeout_at_one_millisecond_at_three_cadences() {
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = arena_of(
+            vec![
+                tank(MOVER, Team::Red, centre(5, 5)),
+                tank(PARKED, Team::Blue, centre(5, 40)),
+            ],
+            &MatchConfig {
+                max_duration_ms: 22_600,
+                ..MatchConfig::default()
+            },
+        );
+        let script = vec![
+            Beat::at(0, Vec::new(), vec![intent(MOVER, IntentKind::Startup, 1)]),
+            Beat::at(
+                10_000,
+                Vec::new(),
+                vec![
+                    intent(MOVER, IntentKind::Heading { mdeg: 0 }, 2),
+                    intent(MOVER, IntentKind::Speed { cms: 1_000 }, 3),
+                ],
+            ),
+        ];
+        let run = replay(&mut arena, cadence, 60_000, &script, &quiet);
+        assert_eq!(
+            arena.ended,
+            Some(tacsim::arena::state::MatchEnd {
+                reason: EndReason::Timeout,
+                t_ms: 22_600
+            }),
+            "at {cadence} ms the timeout was not at the bound's own millisecond"
+        );
+        assert_eq!(
+            arena.now_ms, 22_750,
+            "at {cadence} ms the pulse did not stop at the substep the bound fell in"
+        );
+        runs.push((cadence, run));
+    }
+    let (_, first) = runs.first().expect("three cadences");
+    assert_eq!(first.count("match_ended"), 1, "{:?}", first.kinds());
+    let timeout = serde_json::to_string(&EventKind::MatchEnded {
+        reason: EndReason::Timeout,
+    })
+    .unwrap_or_default();
+    assert_eq!(
+        first
+            .events
+            .last()
+            .map(|(t_ms, kind, _, _)| (*t_ms, kind.clone())),
+        Some((22_600, timeout)),
+        "the timeout is the ledger's last line: {:?}",
+        first.kinds()
+    );
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events,
+            first.events,
+            "the event list differs at {cadence} ms: {:?} against {:?}",
+            run.kinds(),
+            first.kinds()
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the final state differs at {cadence} ms"
+        );
+        assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
     }
 }

@@ -1211,10 +1211,15 @@ impl Task {
 /// Both readings are in the task's monotonic wall milliseconds, so the interval
 /// between them is what the timer sleeps — measured from *now* rather than from
 /// the base, so a pulse that overran does not ask to be stepped in the past.
-/// An arena that is behind gets a zero-length sleep and the next pulse's own
-/// clamp (doc 16 §3.1 "Clock and lag") absorbs the lag.
+/// An arena that is behind gets the shortest sleep there is and the next
+/// pulse's own clamp (doc 16 §3.1 "Clock and lag") absorbs the lag.
+///
+/// **16b cut M.2** (16c `B-51`): that shortest sleep is one millisecond, not
+/// zero. A zero sleep re-pulses inside the same wall millisecond, whose `dt` is
+/// `0` and integrates nothing, so an event due "now" spun the timer instead of
+/// letting arena time reach it.
 fn deadline(wall_now_ms: i64, next_due_ms: i64) -> Instant {
-    let ahead = next_due_ms.saturating_sub(wall_now_ms).max(0);
+    let ahead = next_due_ms.saturating_sub(wall_now_ms).max(1);
     Instant::now() + Duration::from_millis(u64::try_from(ahead).unwrap_or(0))
 }
 
@@ -1597,5 +1602,24 @@ mod tests {
         assert_eq!(reserve(0), 2);
         assert_eq!(reserve(2), 8);
         assert_eq!(reserve(24), 74);
+    }
+
+    /// **16b cut M.2** (16c `B-51`): the timer's floor. An event due "now" — or an arena that is behind — sleeps one
+    /// millisecond, never zero: a zero sleep re-pulses inside the same wall
+    /// millisecond and integrates nothing.
+    #[test]
+    fn m2_a_deadline_due_now_or_in_the_past_is_at_least_one_millisecond_ahead() {
+        for (now, due) in [(5_000_i64, 5_000_i64), (5_000, 4_000), (0, i64::MIN)] {
+            let before = Instant::now();
+            let at = deadline(now, due);
+            assert!(
+                at >= before + Duration::from_millis(1),
+                "deadline({now}, {due}) slept for nothing"
+            );
+        }
+        // And a future event is still the interval to it.
+        let before = Instant::now();
+        let at = deadline(1_000, 1_250);
+        assert!(at >= before + Duration::from_millis(250));
     }
 }

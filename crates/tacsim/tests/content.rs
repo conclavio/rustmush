@@ -1160,3 +1160,55 @@ fn q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_ord
         "16b cut Q.8 latches nothing new"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut M.2 (16c `T-05`) — the shipped substep divides the three periods
+// ---------------------------------------------------------------------------
+
+/// **Every fielded unit's substep divides all three tempo periods** (16b cut
+/// M.2; doc 16 §3.1 as amended, Q24).
+///
+/// Substeps are cut from each pulse's own start with the remainder last, so the
+/// three cadences cut arena time on one set of boundaries only when the shipped
+/// substep divides every shipped period — which is why the scripted cross-tempo
+/// replays agree substep for substep. A production pulse also ends at due
+/// events and at wall jitter, so its boundaries are not period-aligned and rate
+/// independence rests on the due-event rule, not on this; the absolute lattice
+/// that would make it hold for any unit is not built. What this pins is that no
+/// fielded unit — tracked or legged — is fast enough on the shipped 10 m cell to
+/// shorten the substep to a length that does not divide them: above 3,996 cm/s
+/// the crossing bound goes under 250 ms, and only some shorter lengths divide
+/// 500, 1,000 and 5,000.
+#[test]
+fn m2_every_fielded_units_substep_divides_the_three_periods() {
+    let tempo = tacsim::config::TempoConfig::default();
+    let catalog = Catalog::build_fielded(&[], "tacsim").expect("the fielded content binds");
+    assert!(!catalog.specs.is_empty(), "the fielded catalog has units");
+    let mut checked = 0_usize;
+    for (entry, spec) in &catalog.specs {
+        let modes = spec.mobility.modes();
+        assert!(!modes.is_empty(), "{entry} declares a mode");
+        for mode in modes {
+            let speed = mode.rules.max_speed_cms;
+            let substep = tacsim::arena::clock::substep_ms(&tempo, 1_000, speed);
+            for (name, period) in [
+                ("quiet_ms", tempo.quiet_ms),
+                ("alert_ms", tempo.alert_ms),
+                ("engaged_ms", tempo.engaged_ms),
+            ] {
+                assert_eq!(
+                    period % substep,
+                    0,
+                    "{entry}'s {} mode at {speed} cm/s cuts {substep} ms substeps, which do \
+                     not divide {name} = {period}",
+                    mode.mode
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 6,
+        "every fielded unit's modes were read: {checked}"
+    );
+}

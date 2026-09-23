@@ -2162,13 +2162,23 @@ fn tacsim_harness_arena_step() {
         tempo.period_ms,
         tempo.ms.len()
     );
+    // **16b cut M.2** (16c `T-05`; doc 16 §3.1 as amended, Q24): whether the
+    // cohort's substep divides all three periods — the one thing that makes the
+    // scripted three-cadence replays cut arena time on one set of boundaries.
+    let substep = tacsim::arena::clock::substep_ms(
+        &arena_cfg.tempo,
+        CELL_CM,
+        harness_mobility().max_speed_cms,
+    );
+    let substep_divides_periods = [
+        arena_cfg.tempo.quiet_ms,
+        arena_cfg.tempo.alert_ms,
+        arena_cfg.tempo.engaged_ms,
+    ]
+    .iter()
+    .all(|period| period % substep == 0);
     println!(
-        "harness_arena_substeps: per_pulse_min={substeps_min} per_pulse_max={substeps_max} substep_ms={}",
-        tacsim::arena::clock::substep_ms(
-            &arena_cfg.tempo,
-            CELL_CM,
-            harness_mobility().max_speed_cms
-        )
+        "harness_arena_substeps: per_pulse_min={substeps_min} per_pulse_max={substeps_max} substep_ms={substep} divides_periods={substep_divides_periods}"
     );
     // **16b cut E.3**: the stops split by what refused them, so that "`blocked`
     // fell" is evidence and not an observation. The `blocked` event carries the
@@ -2388,6 +2398,8 @@ fn tacsim_harness_arena_step() {
         "substeps": {
             "per_pulse_min": substeps_min,
             "per_pulse_max": substeps_max,
+            "substep_ms": substep,
+            "substep_divides_periods": substep_divides_periods,
         },
         "counters": {
             "blocked_events": counts.blocked,
@@ -2512,6 +2524,11 @@ fn tacsim_harness_arena_step() {
     println!("harness_arena_json: {}", path.display());
 
     if knobs.assert {
+        // 16b cut M.2 (`T-05`): the cohort's own substep divides the periods.
+        assert!(
+            substep_divides_periods,
+            "the cohort's {substep} ms substep does not divide the three periods"
+        );
         assert!(
             p99 <= f64::from(knobs.engaged_p99_ms),
             "per-pulse p99 {p99:.3} ms is past harness.engaged_p99_ms {}",

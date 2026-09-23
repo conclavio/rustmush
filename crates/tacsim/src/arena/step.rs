@@ -398,8 +398,13 @@ pub struct StepOutput {
     pub lagged: bool,
     /// Set once, on the pulse the match ends.
     pub ended: Option<MatchEnd>,
-    /// How many substeps phase 3 ran. Zero on the opening pulse, which only
-    /// establishes the wall reference.
+    /// How many substeps this pulse ran, the phase-4 drain included; the opening
+    /// pulse runs none, because it only establishes the wall reference.
+    ///
+    /// **16b cut M.2** (16c `T-10`): it is counted as the substeps run, so a pulse
+    /// whose second of four substeps ended the match reports `2` — it reported
+    /// the whole partition — and a pulse whose phase 4 scheduled a zero-flight
+    /// event reports one more than its partition (`Arena::step`'s phase-4 drain).
     pub substeps: u32,
     /// **What perception cost this pulse** (16b cut S.1; doc 16 §2 W4 and W6). The
     /// harness asserts `harness.max_traces_per_pulse` and
@@ -591,10 +596,14 @@ impl Arena {
         let (dt_ms, clock_lagged) = self.clock.advance(wall_now_ms, &self.arena_cfg);
         let length = substep_ms(&self.arena_cfg.tempo, self.cell_cm(), self.max_speed_cms());
         let pieces = substeps(dt_ms, length);
-        let ran = u32::try_from(pieces.len()).unwrap_or(u32::MAX);
+        // **16b cut M.2** (16c `T-10`): what ran, counted as it runs — the loop
+        // below breaks on the substep that ended the match, and the partition's
+        // length would report the pieces it never ran.
+        let mut ran: u32 = 0;
         let mut ledger_full = false;
         for piece in pieces {
             ledger_full |= self.substep(piece, &mut perception, &mut reflex);
+            ran = ran.saturating_add(1);
             // **16b cut W.2**: a substep that ended the match ends the pulse. A
             // match is over at the arena millisecond it was won, and stepping the
             // rest of the pulse would journal contacts expiring and summaries
@@ -624,6 +633,15 @@ impl Arena {
         // after `match_ended` would be a line in the black box about a match that was
         // already over (16b cut W.2).
         self.action_hash = Some(state_hash(self));
+        // **16b cut M.2** (16c `T-02`; doc 16 §11's D-16-2 as amended): a pilot's
+        // discrete action resolves at the end of the pulse that accepted it, so
+        // its arena millisecond is this one — which in production is a wall-clock
+        // instant, since arena time is elapsed wall time and a pulse ends at the
+        // earlier of its period and the next due event. Everything the action
+        // schedules from here is a due event and rate-independent. The resolvers
+        // take the millisecond as an argument because a machine's actions resolve
+        // at its tick instead (`crate::arena::reflex`).
+        let at_ms = self.now_ms;
         let ids: Vec<ObjId> = if self.ended.is_some() {
             Vec::new()
         } else {
@@ -640,12 +658,12 @@ impl Arena {
                 match order.kind {
                     // Doc 16 §3.3 "Startup".
                     IntentKind::Startup => {
-                        if let Err(refusal) = resolve_startup(self, id) {
+                        if let Err(refusal) = resolve_startup(self, id, at_ms) {
                             self.stage_refusal(id, word, refusal, None);
                         }
                     }
                     // **16b cut W.1** (doc 16 §3.7, §3.5): the lock, and the shot.
-                    IntentKind::Lock { contact } => match self.resolve_lock(id, contact) {
+                    IntentKind::Lock { contact } => match self.resolve_lock(id, contact, at_ms) {
                         // **16b cut F.2** (doc 16 §3.5 step 5): the percentage
                         // *on `LOCK` before any shot*. The lock resolves here, at
                         // its own arena timestamp, so this is where it is said —
@@ -661,7 +679,7 @@ impl Arena {
                         Err(refusal) => self.stage_refusal(id, word, refusal, None),
                     },
                     IntentKind::Fire { ref weapon } => {
-                        if let Err(refusal) = self.resolve_fire(id, weapon) {
+                        if let Err(refusal) = self.resolve_fire(id, weapon, at_ms) {
                             self.stage_refusal(id, word, refusal, Some(weapon.clone()));
                         }
                     }
@@ -676,6 +694,48 @@ impl Arena {
             }
         }
         self.action_hash = None;
+
+        // ---- the phase-4 drain (16b cut M.2, 16c `B-51`) ----
+        //
+        // A pilot's beam flies in no time, so phase 4 schedules its impact at
+        // `now_ms` — and phase 4 drains nothing. The round then resolved in the
+        // NEXT pulse's first substep, against positions later than the fire
+        // timestamp it is stamped with, and `next_due_ms` answered the wall
+        // reading itself, so the task's timer slept for nothing. One zero-length
+        // substep here pops exactly what phase 4 left due at `now_ms`.
+        //
+        // **The `ran > 0` guard is the rule, not a precaution.** After at least
+        // one substep, every event at or before `now_ms` that was in the heap
+        // before phase 4 has already been popped by the last substep's due loop,
+        // and the substep's staging scan schedules nothing at or before `now_ms`
+        // (a held loss whose window closes inside the substep is settled by the
+        // scan itself, never scheduled into the past), so anything still due now
+        // was scheduled BY phase 4 — a beam's zero-flight impact — and the drain
+        // is exactly "phase 4's own zero-flight events". (A `WeaponReady` cannot
+        // be one with shipped content: `cycle_ms` is floored at 1,000 by W14,
+        // longer than any substep.) The opening pulse runs no substep and drains
+        // nothing: its `t = 0` events (a `SensorPass` for a unit whose id is a
+        // multiple of `pass_ms`, a `ReflexTick` at `id % decide_ms == 0`, a
+        // `MatchDeadline` of `0`) pop in the next pulse's first substep exactly
+        // as they always did, so the opening pulse's hash sequence, its
+        // `substeps == 0` and phase 5's duration backstop are untouched. A
+        // zero-length substep is well-defined (`Arena::substep` skips motion at
+        // `dt 0`, `dissipate_heat(0)` sheds nothing, the index is rebuilt once,
+        // the due loop pops what phase 4 scheduled, elimination settles, one hash
+        // is recorded).
+        //
+        // **The drain runs only on a pulse that ran a substep.** Under the
+        // scripted zero-`dt` drivers a beat's pulse runs none, so there the drain
+        // never runs: a beam fired on a beat still lands in the next pulse's
+        // first substep, the same at every cadence, which is why those replays
+        // agree and why they do not prove the drain. It is proved on a driver
+        // whose pulse ends on the beat, the production shape
+        // (`tests/extensions.rs`'s beam replay and `tests/weapons.rs`'s
+        // `a_beam_is_scheduled_at_now`).
+        if ran > 0 && self.ended.is_none() && self.due.peek_due(self.now_ms).is_some() {
+            ledger_full |= self.substep(0, &mut perception, &mut reflex);
+            ran = ran.saturating_add(1);
+        }
 
         // ---- phase 5: the pulse's own record ----
         //
@@ -707,9 +767,20 @@ impl Arena {
             impact_scheduled: shot_fired,
             hostile_in_weapons_range: self.hostile_in_weapons_range(),
         };
-        let changed = self
-            .clock
-            .evaluate(self.now_ms, &signals, &self.arena_cfg.tempo);
+        //
+        // **16b cut M.2**: a match a substep already ended moves no tempo and
+        // journals no `tempo` or `lagged` line. Cut W.2's rule is that nothing is
+        // journalled after `match_ended`, and with the duration bound settled
+        // inside the substep (16c `T-01`) a timeout is now such an end too: the
+        // shot in flight that the deadline cut off would otherwise raise
+        // `Engaged` a line after the match was over.
+        let over = self.ended.is_some();
+        let changed = if over {
+            None
+        } else {
+            self.clock
+                .evaluate(self.now_ms, &signals, &self.arena_cfg.tempo)
+        };
         // One hash for every event this phase appends, taken after the tempo is
         // settled so that a `tempo` event carries the tempo it announces.
         let hash = state_hash(self);
@@ -721,7 +792,7 @@ impl Arena {
         // egress is backing up past `ledger.max_unflushed_chunks` (§3.1's egress
         // paragraph). `dt_ms` is the clamped `dt` the pulse actually ran with.
         let egress_lagged = self.ledger.lagged();
-        if clock_lagged || egress_lagged {
+        if !over && (clock_lagged || egress_lagged) {
             ledger_full |= !self.journal(self.now_ms, EventKind::Lagged { dt_ms }, hash);
         }
         // **16b cut W.2**, the **backstop** for doc 16 §3.8's team elimination. Every
@@ -748,6 +819,13 @@ impl Arena {
                 hash,
             );
         }
+        // **16b cut M.2** (16c `T-01`): the duration bound is a due event now
+        // (`DueKind::MatchDeadline`), settled inside the substep at its own
+        // millisecond, so this check is the **backstop** and fires only on a pulse
+        // that ran no substep — the opening pulse of a match whose
+        // `max_duration_ms` is `0`, which AA.3's stalled-terminal proof relies on
+        // and which the phase-4 drain never touches. On a pulse whose deadline the
+        // due loop already settled, `ended` is set and this is skipped.
         if self.ended.is_none() && self.now_ms >= i64::from(self.match_cfg.max_duration_ms) {
             let reason = EndReason::Timeout;
             ledger_full |= !self.journal(self.now_ms, EventKind::MatchEnded { reason }, hash);
@@ -850,10 +928,20 @@ impl Arena {
         // asks the crossing's own question of the cell in front of every such
         // machine and orders the ones that would be refused to stop, through the
         // same door a pilot's `SPEED 0` goes through.
-        self.hold_routeless(reflex);
+        //
+        // **16b cut M.2**: neither it nor motion runs in a zero-length substep —
+        // the phase-4 drain (`Arena::step`), which exists to pop what phase 4
+        // scheduled at `now_ms` and nothing else. No time passes in it, so there
+        // is no motion to integrate, and `integrate` at `dt 0` is not a pure
+        // no-op: it clears the per-substep `blocked` flag, which would make the
+        // next real substep's re-collision with the same bank a second `blocked`
+        // line for one stop.
+        if dt_ms > 0 {
+            self.hold_routeless(reflex);
+        }
 
         // ---- (a) motion ----
-        {
+        if dt_ms > 0 {
             // **16b cut E.3**: the arena millisecond this substep *ends* at, and
             // the key that prices a traffic hold against it. Both are read before
             // the borrow below, because arena time itself is not advanced until
@@ -938,8 +1026,58 @@ impl Arena {
         // 16 §4's event kinds are a closed list and heat is a cell, whose changes
         // are M32's own journal's to record.
         self.dissipate_heat(dt_ms, self.now_ms);
-        while let Some(event) = self.due.pop_due(self.now_ms) {
+        // **16b cut M.2** (16c `T-01`): the duration bound's millisecond, once its
+        // event has popped in this substep, and the loop's horizon with it.
+        let mut deadline_hit: Option<i64> = None;
+        // **16b cut M.2** (16c `T-83`): the held losses whose deadline popped in
+        // this loop, each with how many journal entries preceded it, so the
+        // staging scan below settles it at exactly its place in `(t_ms, seq)`
+        // order — see the `LossSettles` arm.
+        let mut settles: Vec<(usize, ObjId, ContactId, i64)> = Vec::new();
+        // The horizon is the substep's end until the deadline pops, and the
+        // deadline's own millisecond after: `pop_due` then answers only what
+        // shares that millisecond (everything earlier has already been popped),
+        // and the loop stops with every later event left in the heap.
+        while let Some(event) = self.due.pop_due(deadline_hit.unwrap_or(self.now_ms)) {
             match event.kind {
+                // **16b cut M.2** (16c `T-01`; doc 16 §3.8's `Timeout`): the match's
+                // duration bound, at its own arena millisecond. The arm only
+                // records the millisecond; the loop's horizon then shrinks to it,
+                // so an event due at the deadline's own millisecond still lands —
+                // an impact scheduled there resolves, and a kill there still wins,
+                // because elimination is settled below before the timeout is — but
+                // an impact, pass, share or tick due AFTER the deadline and at or
+                // before this substep's end is NOT applied and journals nothing.
+                // Cut W.2's rule is that nothing is journalled after the match is
+                // over, and without the horizon a round landing after the deadline
+                // turned a timeout into an elimination. What is left in the heap
+                // is never applied: the match is over.
+                DueKind::MatchDeadline => {
+                    deadline_hit = Some(event.t_ms);
+                }
+                // **16b cut M.2** (16c `T-83`; doc 16 §3.6 "What a pilot sees"): a
+                // held loss's hysteresis has run out. **The rule**: the loss is
+                // said at the first substep boundary at or after the deadline
+                // unless the platform re-detected the contact at or before it. A
+                // sensor pass landing exactly on the deadline is applied before
+                // the expiry (it was scheduled earlier, so its sequence is lower),
+                // and a mesh share landing exactly on it after (it is scheduled
+                // by that pass), which is the one millisecond the two arms can
+                // differ on and is the same at every cadence.
+                //
+                // It is **settled in the staging scan**, not here, at the position
+                // the event popped at. A re-detection's `detected` is journalled
+                // into `notices` by its pass and only reaches
+                // `Arena::stage_pilot_notice` — which is where a held loss is
+                // cancelled — in the scan below, after this whole loop; removing
+                // the entry here would say a loss that a pass earlier in this same
+                // substep had already cancelled. Recording the position keeps the
+                // two in `(t_ms, seq)` order, and it also means every write to
+                // `held_losses` happens in the scan, after the substep's hash, so
+                // each is first folded at *k + 1* (the `spent_said` rule).
+                DueKind::LossSettles { viewer, contact } => {
+                    settles.push((notices.len(), viewer, contact, event.t_ms));
+                }
                 // Doc 16 §3.3 "Startup": `match.startup_ms` after `STARTUP` was
                 // accepted. `resolve_startup` already journalled the transition
                 // into `starting`.
@@ -1059,6 +1197,15 @@ impl Arena {
                 // resolves journal through `Arena::event_hash`, and a fresh hash per
                 // action is the 5 ms a pulse cut W.1 measured. A substep with no
                 // reflex work pays nothing for this.
+                //
+                // **16b cut M.2** (16c `T-02`): the tick's actions are resolved at
+                // `event.t_ms`, the tick's own millisecond, and not at `now_ms`,
+                // which this substep has already advanced to its end. Anything a
+                // tick schedules at or before `now_ms` — a beam's zero-flight
+                // impact — is popped by this same loop in `(t_ms, seq)` order:
+                // **the same-substep property**. (A `WeaponReady` could be one only
+                // with a `cycle_ms` shorter than a substep, which W14's 1,000 ms
+                // floor rules out for shipped content.)
                 DueKind::ReflexTick { unit, tick_seq } => {
                     if self.ended.is_none() {
                         if self.action_hash.is_none() {
@@ -1105,6 +1252,18 @@ impl Arena {
                 None,
             ));
         }
+        // **16b cut M.2** (16c `T-01`): the duration bound, at the deadline's own
+        // millisecond, after the two settles above and only when neither ended
+        // the match — an elimination or a `Spent` in the same substep wins, the
+        // order phase 5's backstop has always had.
+        if settled.is_none()
+            && self.ended.is_none()
+            && let Some(t_ms) = deadline_hit
+        {
+            let reason = EndReason::Timeout;
+            notices.push((t_ms, EventKind::MatchEnded { reason }, None));
+            self.ended = Some(MatchEnd { reason, t_ms });
+        }
 
         // ---- the substep's record ----
         let hash = state_hash(self);
@@ -1129,14 +1288,108 @@ impl Arena {
         // `by` off their own event, which carries the shooter where a round did
         // it and `None` where nothing did.
         let mut in_flight: Option<(ObjId, ObjId)> = None;
-        for (t_ms, kind, draw) in notices {
+        // 16b cut M.2: the held losses that came due, each settled just before the
+        // first journal entry that popped after it (`LossSettles`' arm).
+        let mut settles = settles.into_iter().peekable();
+        // **16b cut M.2** (the M.2 review): and the held losses whose window
+        // closes inside THIS substep — staged by this very scan with a deadline at
+        // or before `now_ms`, which only a `[tacsim.sensors].pass_ms` shorter than
+        // the substep can make (config allows 50 against a 250 ms substep). A due
+        // event for one would be scheduled into the past: it would pop a boundary
+        // late, and at a pulse's end the phase-4 drain would run a substep for it
+        // at one cadence that another cadence never runs — two hash sequences.
+        // So it never reaches the heap: it is settled here, before the first
+        // entry of this scan whose millisecond is past the deadline (an entry AT
+        // the deadline is a re-detection "at or before" it and goes first), which
+        // is exactly the place `(t_ms, seq)` order would have popped it — its
+        // event would have been scheduled after every event this loop popped, so
+        // it would sort after all of them on its own millisecond.
+        let mut closing: Vec<(i64, ObjId, ContactId)> = Vec::new();
+        // Everything to settle before the next entry, ordered by millisecond and,
+        // on one millisecond, a due event's settle before a closing window's.
+        let mut due_now: Vec<(i64, u8, ObjId, ContactId)> = Vec::new();
+        for (index, (t_ms, kind, draw)) in notices.into_iter().enumerate() {
+            while let Some((_, viewer, contact, at)) =
+                settles.next_if(|(before, ..)| *before <= index)
+            {
+                due_now.push((at, 0, viewer, contact));
+            }
+            closing.retain(|&(at, viewer, contact)| {
+                if at < t_ms {
+                    due_now.push((at, 1, viewer, contact));
+                    false
+                } else {
+                    true
+                }
+            });
+            self.settle_held_losses(&mut due_now);
             // 16b cut S.2: the pilot's notice and the ledger's event come off the
             // same journal entry, in the same order, so a line a pilot read is a
             // line the black box can be searched for.
-            self.stage_pilot_notice(t_ms, &kind, &mut in_flight);
+            if let Some(window) = self.stage_pilot_notice(t_ms, &kind, &mut in_flight) {
+                closing.push(window);
+            }
             refused |= !self.journal_drawn(t_ms, kind, draw, hash);
         }
+        due_now.extend(
+            settles
+                .map(|(_, viewer, contact, at)| (at, 0, viewer, contact))
+                .chain(
+                    closing
+                        .into_iter()
+                        .map(|(at, viewer, contact)| (at, 1, viewer, contact)),
+                ),
+        );
+        self.settle_held_losses(&mut due_now);
         refused
+    }
+
+    /// Settle every held loss in `due` in `(t_ms, kind, viewer, contact)` order
+    /// and leave it empty (16b cut M.2) — the one ordering both of the staging
+    /// scan's sources of expiries are put through.
+    fn settle_held_losses(&mut self, due: &mut Vec<(i64, u8, ObjId, ContactId)>) {
+        due.sort_unstable();
+        for (at, _, viewer, contact) in due.drain(..) {
+            self.settle_held_loss(viewer, contact, at);
+        }
+    }
+
+    /// **Say one held loss whose hysteresis ran out** (16b cut M.2, 16c `T-83`;
+    /// doc 16 §3.6 "What a pilot sees"), for the [`DueKind::LossSettles`] that
+    /// came due at `at_ms`.
+    ///
+    /// Only when the entry is still there **with that deadline**: a loss the
+    /// platform re-detected at or before it was taken out by the `detected` arm
+    /// of `Arena::stage_pilot_notice`, and one lost again since carries a later
+    /// deadline and its own event, so either way this event fires into nothing.
+    /// A held loss whose platform has left the match is dropped rather than said:
+    /// there is nobody it is a fact about any more (the rule the pulse-end sweep
+    /// this replaced had).
+    fn settle_held_loss(&mut self, viewer: ObjId, contact: ContactId, at_ms: i64) {
+        let Some((at, designator)) = self.held_losses.get(&(viewer, contact)).copied() else {
+            return;
+        };
+        if at != at_ms {
+            return;
+        }
+        self.held_losses.remove(&(viewer, contact));
+        if self.unit(viewer).is_none() {
+            return;
+        }
+        // 16b cut Q.1: the designator travels with the deadline, because the
+        // contact row the name could have been read off went at the expiry.
+        self.stage_notice(
+            viewer,
+            FrameNotice::Contact {
+                kind: NoticeKind::Lost,
+                contact: Named {
+                    id: contact,
+                    designator,
+                },
+                class: Classification::Unknown,
+                was: None,
+            },
+        );
     }
 
     /// The world asked the arena to stop (doc 16 §3.1's `Stop`): the reason is
@@ -1223,7 +1476,6 @@ impl Arena {
     /// remembered frames. A pilot seated on a unit this arena does not hold gets
     /// nothing rather than an empty frame.
     fn frames(&mut self, tempo: Tempo) -> Vec<(ObjId, Frame)> {
-        self.sweep_held_losses();
         let mut candidates: Vec<(ObjId, Frame)> = Vec::with_capacity(self.pilots.len());
         for pilot in &self.pilots {
             let Some(unit) = self.unit(pilot.unit) else {
@@ -1325,17 +1577,27 @@ impl Arena {
     ///
     /// * `detected` — an acquisition, **unless** a held loss for the same
     ///   `(platform, contact)` is still inside its window, in which case the
-    ///   contact merely flickered: the held loss is cancelled and nothing is said.
+    ///   contact merely flickered: the held loss is cancelled and nothing is said
+    ///   — unless the row came back under another name, which is said as a
+    ///   regression (16b cut D.4) or, for a mesh insert that arrived told apart,
+    ///   as an identification (16b cut M.2).
     /// * `classified` — always said; being told apart is not something that
     ///   flickers (the pass keeps a classification across a gap by design).
     /// * `lost` — held for one further pass rather than said, which is the whole
-    ///   hysteresis; [`Arena::sweep_held_losses`] is what eventually says it.
+    ///   hysteresis; a `DueKind::LossSettles` at the deadline is what eventually
+    ///   says it (16b cut M.2 — a sweep at the end of every pulse said it until
+    ///   then, which made the end of the window a pulse boundary).
+    ///
+    /// Answers `Some((deadline, viewer, contact))` for a `lost` whose window
+    /// already closes at or before `now_ms` — only a pass shorter than the
+    /// substep does that — so the staging scan settles it itself rather than a
+    /// due event in the past; `None` for everything else.
     fn stage_pilot_notice(
         &mut self,
         t_ms: i64,
         kind: &EventKind,
         in_flight: &mut Option<(ObjId, ObjId)>,
-    ) {
+    ) -> Option<(i64, ObjId, ContactId)> {
         let window_ms = i64::from(self.sensors_cfg.pass_ms.max(1));
         match *kind {
             EventKind::Detected {
@@ -1375,6 +1637,39 @@ impl Arena {
                         .contacts
                         .resolve(viewer, contact)
                         .is_some_and(|held| held.class == Classification::Unknown);
+                    // **16b cut M.2** (16c `B-74`) says the third case, which
+                    // D.4's rule left silent: the name moved and the row is NOT
+                    // `Unknown` — a hold lost as `X1` and handed back over the
+                    // mesh inside the window, already told apart, so it reads
+                    // `BA`. Before D.4 the pilot read `Contact X1 identified: BA,
+                    // blue.` there and after it nothing, so a row renamed itself
+                    // under the pilot's eyes. It is the `classified` notice with
+                    // the old name, exactly as a share that classifies a
+                    // still-held row says it, with the class read off the same
+                    // `resolve`. No new state: the name and the class were both
+                    // already in hand.
+                    //
+                    // **Only a mesh insert that arrived told apart**, which is
+                    // 16c `B-74`'s own case, read off the row the scan sees at
+                    // the end of the substep: `numbered` false (the row came over
+                    // the mesh, not from this platform's own pass) and
+                    // `Classified`. Anything else stays silent here, because
+                    // anything else is said elsewhere or is not true: a row this
+                    // platform's own pass re-opened (`numbered`) and a share then
+                    // classified later in the same substep is said by that
+                    // share's own `classified` line, with this very `was`, and
+                    // saying it here too would be the sentence twice; and a row
+                    // that is already gone again by the scan (a stale mesh copy
+                    // the viewer's own pass expired) has no class to announce and
+                    // would read `identified: X0, unknown`.
+                    let identified = self
+                        .contacts
+                        .resolve(viewer, contact)
+                        .filter(|held| {
+                            !held.numbered
+                                && matches!(held.class, Classification::Classified { .. })
+                        })
+                        .map(|held| held.class);
                     if regressed && named.designator != was {
                         self.stage_notice(
                             viewer,
@@ -1385,8 +1680,20 @@ impl Arena {
                                 was: Some(was),
                             },
                         );
+                    } else if let Some(class) = identified
+                        && named.designator != was
+                    {
+                        self.stage_notice(
+                            viewer,
+                            FrameNotice::Contact {
+                                kind: NoticeKind::Classified,
+                                contact: named,
+                                class,
+                                was: Some(was),
+                            },
+                        );
                     }
-                    return;
+                    return None;
                 }
                 self.stage_notice(
                     viewer,
@@ -1712,13 +2019,29 @@ impl Arena {
                         },
                     );
                 }
-                self.held_losses.insert(
-                    (viewer, contact),
-                    (t_ms.saturating_add(window_ms), named.designator),
-                );
+                // **16b cut M.2** (16c `T-83`): the end of the hysteresis is a due
+                // event at the very deadline written into the table, so it is
+                // said at an arena millisecond and not at whichever pulse
+                // boundary came next. This runs in the staging scan, after the
+                // substep's hash, so the entry and its event are first folded at
+                // *k + 1*.
+                //
+                // A deadline at or before `now_ms` — a window shorter than the
+                // substep it opened in — is not scheduled into the past: it is
+                // handed back to the staging scan, which settles it at its place
+                // in this same scan (see `Arena::substep`).
+                let deadline = t_ms.saturating_add(window_ms);
+                self.held_losses
+                    .insert((viewer, contact), (deadline, named.designator));
+                if deadline <= self.now_ms {
+                    return Some((deadline, viewer, contact));
+                }
+                self.due
+                    .schedule(deadline, DueKind::LossSettles { viewer, contact });
             }
             _ => {}
         }
+        None
     }
 
     /// **Whose armour the round passed, and what that facet and this section hold
@@ -1914,41 +2237,6 @@ impl Arena {
             .entry(platform)
             .or_default()
             .push(notice);
-    }
-
-    /// **Say the losses whose hysteresis window has run out** (16b cut S.2), at the
-    /// end of the pulse that reached it.
-    ///
-    /// A held loss whose platform has left the match is dropped rather than said:
-    /// there is nobody it is a fact about any more.
-    fn sweep_held_losses(&mut self) {
-        let now = self.now_ms;
-        // 16b cut Q.1: the designator travels with the deadline, because the
-        // contact row the name could have been read off went at the expiry.
-        let due: Vec<(ObjId, ContactId, crate::arena::state::Designator)> = self
-            .held_losses
-            .iter()
-            .filter(|(_, (at, _))| *at <= now)
-            .map(|((viewer, contact), (_, named))| (*viewer, *contact, *named))
-            .collect();
-        for (viewer, contact, designator) in due {
-            self.held_losses.remove(&(viewer, contact));
-            if self.unit(viewer).is_none() {
-                continue;
-            }
-            self.stage_notice(
-                viewer,
-                FrameNotice::Contact {
-                    kind: NoticeKind::Lost,
-                    contact: Named {
-                        id: contact,
-                        designator,
-                    },
-                    class: Classification::Unknown,
-                    was: None,
-                },
-            );
-        }
     }
 
     /// **The pair one contact id is named by right now** (16b cut Q.1), for a
@@ -2371,13 +2659,18 @@ mod tests {
         assert!(out.ended.is_none());
         let out = arena.step(4_000, &[], &[]);
         journal.absorb(&out);
+        // **16b cut M.2** (16c `T-01`): at the deadline's own millisecond, 3,000,
+        // and not at the end of the pulse that crossed it (4,000 before the cut).
         assert_eq!(
             out.ended,
             Some(MatchEnd {
                 reason: EndReason::Timeout,
-                t_ms: 4_000
+                t_ms: 3_000
             })
         );
+        // The pulse stopped at the substep the deadline fell in: 3,000 is the end
+        // of the fourth of this pulse's eight, and the other four never ran.
+        assert_eq!(out.substeps, 4);
         let log = journal.events(&mut arena);
         assert_eq!(
             log.last().map(|event| event.kind.as_str()),
@@ -2387,7 +2680,7 @@ mod tests {
         let after = arena.step(6_000, &[], &[]);
         assert_eq!(after.substeps, 0);
         assert!(after.ledger_chunks.is_empty());
-        assert_eq!(arena.now_ms, 4_000);
+        assert_eq!(arena.now_ms, 3_000);
     }
 
     #[test]
@@ -2421,11 +2714,12 @@ mod tests {
             arena.reflex.unit(A).map(|row| row.state),
             Some(crate::arena::reflex::ReflexState::Withdraw)
         );
-        // 16b cut F.3 adds the third: this platform's own sensor pass.
+        // 16b cut F.3 adds the third: this platform's own sensor pass. **16b cut
+        // M.2** (16c `T-01`) the fourth: the duration bound.
         assert_eq!(
             arena.due.len(),
-            3,
-            "the position summary, the released tank's first reflex tick, its pass"
+            4,
+            "the position summary, the duration bound, the released tank's first tick, its pass"
         );
         let mut journal = Log::default();
         journal.absorb(&out);
@@ -3399,6 +3693,559 @@ mod tests {
         assert!(
             gunners_notices(&mut arena).is_empty(),
             "a miss with no impact before it named a shooter"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut M.2 — the duration bound, the substep count and the drain
+    // -----------------------------------------------------------------------
+
+    /// Two scouts four cells apart, each holding the other after its first
+    /// pass, on a match whose duration bound is `max_duration_ms`.
+    fn m2_pair(max_duration_ms: u32) -> Arena {
+        use crate::arena::test_support::scout;
+        m2_pair_with(
+            max_duration_ms,
+            scout(ObjId(9), Team::Blue, pose(4_500, 500)),
+        )
+    }
+
+    /// The same with `blue` for the target — which must stand where
+    /// [`m2_pair`]'s does, four cells east of `A`.
+    fn m2_pair_with(max_duration_ms: u32, blue: crate::arena::state::CustodyUnit) -> Arena {
+        use crate::arena::test_support::scout;
+        Arena::new(
+            crate::arena::test_support::custody(
+                vec![scout(A, Team::Red, pose(500, 500)), blue],
+                Vec::new(),
+            ),
+            &ArenaConfig::default(),
+            &MatchConfig {
+                max_duration_ms,
+                ..MatchConfig::default()
+            },
+            &crate::config::SensorsConfig::default(),
+        )
+        .expect("two scouts")
+    }
+
+    /// Move the duration bound to `deadline`, as `Arena::new` would have put
+    /// it: the one `MatchDeadline` on the heap, and the backstop's number.
+    fn m2_move_deadline(arena: &mut Arena, deadline: i64) {
+        let _ = arena.due.retain(|kind| *kind != DueKind::MatchDeadline);
+        arena.due.schedule(deadline, DueKind::MatchDeadline);
+        arena.match_cfg.max_duration_ms = u32::try_from(deadline).unwrap_or(u32::MAX);
+    }
+
+    /// **16b cut M.2** (16c `T-01`): a deadline that falls inside a substep ends
+    /// the match at its own millisecond on a pulse whose end is later, and an
+    /// impact due after it but inside the same substep is **not** applied — no
+    /// `impact`, no `hit`, no `miss`, the round still in flight and still on the
+    /// heap — so `match_ended { timeout }` is the last line and a round landing
+    /// after the whistle cannot turn a timeout into an elimination.
+    #[test]
+    fn m2_a_deadline_inside_a_substep_ends_the_match_there_and_nothing_after_it_lands() {
+        const B: ObjId = ObjId(9);
+        let mut arena = m2_pair(60_000);
+        let mut journal = Log::default();
+        journal.absorb(&arena.step(0, &[], &[]));
+        for wall in [1_000, 2_000, 3_000] {
+            journal.absorb(&arena.step(wall, &[], &[]));
+        }
+        assert_eq!(arena.now_ms, 3_000);
+        // A live cannon, locked on the contact its own pass holds.
+        if let Some(state) = arena.unit_mut(A) {
+            state.power = Power::Online;
+        }
+        let contact = crate::arena::rng::draw_contact_id(arena.seed, A, B);
+        assert_eq!(arena.resolve_lock(A, contact, 3_000), Ok(()));
+        let seq = arena
+            .resolve_fire(A, "cannon", 3_010)
+            .unwrap_or_else(|refusal| panic!("the shot was refused: {refusal:?}"));
+        let impact_at = arena.shot(seq).map_or(0, |shot| shot.impact_at_ms);
+        assert!(
+            impact_at > 3_011 && impact_at <= 3_250,
+            "the fixture needs the impact inside the next substep: {impact_at}"
+        );
+        // The whistle one millisecond before the round arrives.
+        let deadline = impact_at - 1;
+        m2_move_deadline(&mut arena, deadline);
+        let out = arena.step(4_000, &[], &[]);
+        journal.absorb(&out);
+        assert_eq!(
+            out.ended,
+            Some(MatchEnd {
+                reason: EndReason::Timeout,
+                t_ms: deadline
+            }),
+            "the deadline's own millisecond, not the pulse's end (4,000)"
+        );
+        // 16c `T-10`: the first of four substeps ended it, so one ran.
+        assert_eq!(out.substeps, 1);
+        assert_eq!(arena.now_ms, 3_250, "the substep the deadline fell in");
+        let log = journal.events(&mut arena);
+        for word in ["impact", "hit", "miss"] {
+            assert!(
+                !log.iter().any(|event| event.kind.as_str() == word),
+                "a round due after the deadline journalled `{word}`: {log:?}"
+            );
+        }
+        assert!(arena.shot(seq).is_some(), "the round was resolved");
+        assert!(
+            arena
+                .due
+                .iter()
+                .any(|event| event.kind == DueKind::Impact { shot_seq: seq }),
+            "the impact left the heap"
+        );
+        assert_eq!(
+            log.last().map(|event| (event.t_ms, event.kind.clone())),
+            Some((
+                deadline,
+                EventKind::MatchEnded {
+                    reason: EndReason::Timeout
+                }
+            )),
+            "the timeout is the last line, at the deadline"
+        );
+    }
+
+    /// Run `arena` to 3,000 and have `A` lock `ObjId(9)` and fire its cannon at
+    /// 3,010, the way every T-01 test below does: the journal so far, the shot's
+    /// sequence and the millisecond its round is due.
+    fn m2_fire(arena: &mut Arena) -> (Log, u64, i64) {
+        const B: ObjId = ObjId(9);
+        let mut journal = Log::default();
+        journal.absorb(&arena.step(0, &[], &[]));
+        for wall in [1_000, 2_000, 3_000] {
+            journal.absorb(&arena.step(wall, &[], &[]));
+        }
+        if let Some(state) = arena.unit_mut(A) {
+            state.power = Power::Online;
+        }
+        let contact = crate::arena::rng::draw_contact_id(arena.seed, A, B);
+        assert_eq!(arena.resolve_lock(A, contact, 3_000), Ok(()));
+        let seq = arena
+            .resolve_fire(A, "cannon", 3_010)
+            .unwrap_or_else(|refusal| panic!("the shot was refused: {refusal:?}"));
+        let impact_at = arena.shot(seq).map_or(0, |shot| shot.impact_at_ms);
+        (journal, seq, impact_at)
+    }
+
+    /// Every `match_ended` line in `log`, with its millisecond.
+    fn m2_ends(log: &[LedgerEvent]) -> Vec<(i64, EventKind)> {
+        log.iter()
+            .filter(|event| matches!(event.kind, EventKind::MatchEnded { .. }))
+            .map(|event| (event.t_ms, event.kind.clone()))
+            .collect()
+    }
+
+    /// **The production order**: the match's own `MatchDeadline`, scheduled by
+    /// `Arena::new` at sequence 2, is on the heap at `impact_at` with a lower
+    /// sequence than the round's `Impact`, so it pops FIRST and the impact is
+    /// popped under the horizon it shrank.
+    fn m2_assert_the_deadline_pops_first(arena: &Arena, seq: u64, impact_at: i64) {
+        let deadline = arena
+            .due
+            .iter()
+            .find(|event| event.kind == DueKind::MatchDeadline)
+            .map(|event| (event.t_ms, event.seq));
+        let impact = arena
+            .due
+            .iter()
+            .find(|event| event.kind == DueKind::Impact { shot_seq: seq })
+            .map(|event| (event.t_ms, event.seq));
+        assert_eq!(deadline.map(|(t_ms, _)| t_ms), Some(impact_at));
+        assert_eq!(impact.map(|(t_ms, _)| t_ms), Some(impact_at));
+        assert!(
+            deadline.map(|(_, seq)| seq) < impact.map(|(_, seq)| seq),
+            "the fixture needs the match's own deadline to pop first: {deadline:?} {impact:?}"
+        );
+    }
+
+    /// **16b cut M.2** (16c `T-01`): an impact due at the deadline's **own**
+    /// millisecond still lands, in the same due loop, before the timeout is
+    /// settled — the horizon shrinks to the deadline, not below it.
+    ///
+    /// In the production order: the duration bound is the one `Arena::new`
+    /// scheduled, so it pops BEFORE the impact on their shared millisecond, and
+    /// the impact is popped under the horizon the deadline set. A horizon one
+    /// millisecond short of the deadline, or a loop that stopped at the
+    /// deadline's own arm, would leave this round unapplied.
+    #[test]
+    fn m2_an_impact_at_the_deadlines_own_millisecond_still_lands() {
+        // Where the round lands, from a probe with the bound out of the way —
+        // the bound decides nothing before it, so the two runs agree to there.
+        let (_, _, impact_at) = m2_fire(&mut m2_pair(60_000));
+        let bound = u32::try_from(impact_at).unwrap_or(u32::MAX);
+        let mut arena = m2_pair(bound);
+        let (mut journal, seq, landed_at) = m2_fire(&mut arena);
+        assert_eq!(landed_at, impact_at, "the probe and the run agree");
+        m2_assert_the_deadline_pops_first(&arena, seq, impact_at);
+        let out = arena.step(4_000, &[], &[]);
+        journal.absorb(&out);
+        let log = journal.events(&mut arena);
+        assert!(
+            log.iter()
+                .any(|event| event.kind.as_str() == "impact" && event.t_ms == impact_at),
+            "the round on the deadline's own millisecond did not land: {log:?}"
+        );
+        assert!(arena.shot(seq).is_none(), "the round is still in flight");
+        assert_eq!(
+            out.ended.map(|end| (end.reason, end.t_ms)),
+            Some((EndReason::Timeout, impact_at)),
+            "a round that does not kill leaves the timeout standing"
+        );
+        assert_eq!(
+            m2_ends(&log),
+            vec![(
+                impact_at,
+                EventKind::MatchEnded {
+                    reason: EndReason::Timeout
+                }
+            )],
+            "one end, the timeout"
+        );
+    }
+
+    /// **16b cut M.2** (16c `T-01`): **a kill on the deadline's own millisecond
+    /// wins.** The same production order as the test above, with a target the
+    /// round destroys: one hull section, its armour and internals less than one
+    /// round's damage, facing the shooter, whose loss is `DestroyUnit`. The
+    /// impact pops after the deadline on their shared millisecond, destroys the
+    /// last blue unit, and elimination is settled before the timeout is — so the
+    /// match ends by elimination, and no timeout line is journalled beside it.
+    #[test]
+    fn m2_a_kill_on_the_deadlines_own_millisecond_wins() {
+        use crate::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitProfile};
+        use crate::arena::test_support::scout;
+        let glass = || {
+            let mut blue = scout(ObjId(9), Team::Blue, pose(4_500, 500));
+            // Facing west, down the line of fire, so the round meets the one
+            // facet `tactical_unit` has: `hull/front`, ten armour over eight
+            // internals against the cannon's 120.
+            blue.pose.heading_mdeg = 270_000;
+            blue.profile = UnitProfile {
+                bands: vec![BandProfile {
+                    band: SmolStr::new("front"),
+                    width_cm: 350,
+                    height_cm: 250,
+                    sections: vec![(SmolStr::new("hull"), 100)],
+                }],
+                sections: vec![SectionProfile {
+                    id: SmolStr::new("hull"),
+                    facets: vec![SmolStr::new("front")],
+                    consequences: vec![Consequence::DestroyUnit],
+                    struck_through: None,
+                }],
+            };
+            blue
+        };
+        let (_, _, impact_at) = m2_fire(&mut m2_pair_with(60_000, glass()));
+        let bound = u32::try_from(impact_at).unwrap_or(u32::MAX);
+        let mut arena = m2_pair_with(bound, glass());
+        let (mut journal, seq, landed_at) = m2_fire(&mut arena);
+        assert_eq!(landed_at, impact_at, "the probe and the run agree");
+        m2_assert_the_deadline_pops_first(&arena, seq, impact_at);
+        let out = arena.step(4_000, &[], &[]);
+        journal.absorb(&out);
+        let log = journal.events(&mut arena);
+        assert!(
+            log.iter()
+                .any(|event| event.kind.as_str() == "hit" && event.t_ms == impact_at),
+            "the fixture needs the round to hit on the deadline: {log:?}"
+        );
+        assert!(
+            arena.unit(ObjId(9)).is_some_and(|unit| unit.limits.wreck),
+            "the round on the deadline did not destroy the target: {log:?}"
+        );
+        assert_eq!(
+            out.ended.map(|end| end.reason),
+            Some(EndReason::Elimination {
+                winner: Some(Team::Red)
+            }),
+            "the kill on the whistle is an elimination"
+        );
+        let ends = m2_ends(&log);
+        assert_eq!(
+            ends.iter()
+                .map(|(_, kind)| kind.clone())
+                .collect::<Vec<_>>(),
+            vec![EventKind::MatchEnded {
+                reason: EndReason::Elimination {
+                    winner: Some(Team::Red)
+                }
+            }],
+            "exactly one end, the elimination, and no timeout beside it: {ends:?}"
+        );
+        assert_eq!(
+            log.last().map(|event| event.kind.as_str()),
+            Some("match_ended"),
+            "nothing after the end"
+        );
+    }
+
+    /// **16b cut M.2** (16c `T-01`): an elimination settled in the substep the
+    /// deadline falls in wins, the order phase 5 always had. The wreck is the
+    /// fixture's hand, placed so the side goes out in the very substep whose
+    /// due loop pops the deadline. Every pulse's output is absorbed — the ending
+    /// pulse flushes the ledger's tail into its own `ledger_chunks` — so the
+    /// line count below is read off the whole black box.
+    #[test]
+    fn m2_an_elimination_in_the_deadlines_own_substep_wins() {
+        const B: ObjId = ObjId(9);
+        let mut arena = m2_pair(3_100);
+        let mut journal = Log::default();
+        journal.absorb(&arena.step(0, &[], &[]));
+        journal.absorb(&arena.step(3_000, &[], &[]));
+        assert!(arena.ended.is_none());
+        if let Some(state) = arena.unit_mut(B) {
+            state.limits.wreck = true;
+        }
+        let out = arena.step(4_000, &[], &[]);
+        journal.absorb(&out);
+        assert_eq!(
+            out.ended.map(|end| end.reason),
+            Some(EndReason::Elimination {
+                winner: Some(Team::Red)
+            })
+        );
+        // The elimination is stamped at the end of the substep it was settled
+        // in, 3,250 — the deadline's substep — which is `settle_elimination`'s
+        // rule from before this cut, not the deadline's millisecond.
+        assert_eq!(out.ended.map(|end| end.t_ms), Some(3_250));
+        let log = journal.events(&mut arena);
+        assert!(!log.is_empty(), "the journal read nothing");
+        assert_eq!(
+            m2_ends(&log),
+            vec![(
+                3_250,
+                EventKind::MatchEnded {
+                    reason: EndReason::Elimination {
+                        winner: Some(Team::Red)
+                    }
+                }
+            )],
+            "exactly one end, the elimination: {log:?}"
+        );
+    }
+
+    /// **16b cut M.2** (16c `T-10`): `substeps` is what ran. A pulse cut into
+    /// four whose second substep ends the match reports two; the opening pulse
+    /// reports none.
+    #[test]
+    fn m2_a_pulse_ended_in_its_second_of_four_substeps_reports_two() {
+        let mut arena = m2_pair(1_500);
+        let opening = arena.step(0, &[], &[]);
+        assert_eq!(opening.substeps, 0);
+        arena.step(1_000, &[], &[]);
+        let out = arena.step(2_000, &[], &[]);
+        assert_eq!(out.ended.map(|end| end.t_ms), Some(1_500));
+        assert_eq!(out.substeps, 2);
+        assert_eq!(arena.substep_hashes.len(), 2);
+    }
+
+    /// **16b cut M.2** (16c `B-51`): the opening pulse drains nothing. A unit
+    /// whose id is a multiple of `pass_ms` has its first pass at `t = 0`, and it
+    /// runs in the next pulse's first substep exactly as before the drain
+    /// existed — the opening pulse runs no substep, so the drain's `ran > 0`
+    /// guard leaves it alone.
+    #[test]
+    fn m2_the_opening_pulse_drains_nothing_and_a_pass_at_zero_runs_next_pulse() {
+        use crate::arena::test_support::scout;
+        const EARLY: ObjId = ObjId(1_000);
+        let mut arena = crate::arena::test_support::arena_at_epoch(
+            vec![
+                scout(EARLY, Team::Red, pose(500, 500)),
+                scout(ObjId(9), Team::Blue, pose(4_500, 500)),
+            ],
+            1,
+        );
+        assert_eq!(arena.sensors_cfg.pass_ms, 1_000, "the default cadence");
+        let opening = arena.step(0, &[], &[]);
+        assert_eq!(opening.substeps, 0);
+        assert_eq!(
+            opening.perception.passes, 0,
+            "no pass ran on the opening pulse"
+        );
+        assert!(
+            arena.due.iter().any(|event| event.t_ms == 0
+                && matches!(event.kind, DueKind::SensorPass { unit, .. } if unit == EARLY)),
+            "the pass at zero left the heap"
+        );
+        let next = arena.step(250, &[], &[]);
+        assert_eq!(next.substeps, 1);
+        assert_eq!(
+            next.perception.passes, 2,
+            "the pass at 0 and the pass at 9 both ran in the first substep"
+        );
+    }
+
+    /// **16b cut M.2** (16c `T-83`): the held loss is said at its own deadline,
+    /// by a due event, and a re-detection inside the window cancels it — the
+    /// `LossSettles` it left behind then fires into nothing.
+    #[test]
+    fn m2_a_held_loss_is_said_by_its_own_due_event_and_a_cancel_leaves_a_no_op() {
+        const B: ObjId = ObjId(9);
+        let mut arena = m2_pair(60_000);
+        arena.step(0, &[], &[]);
+        arena.step(1_000, &[], &[]);
+        let contact = crate::arena::rng::draw_contact_id(arena.seed, A, B);
+        assert!(arena.contacts.resolve(A, contact).is_some());
+        let mut in_flight = None;
+        // A `lost` staged at 1,250: held until 2,250 and scheduled there.
+        arena.stage_pilot_notice(
+            1_250,
+            &EventKind::Lost {
+                viewer: A,
+                contact,
+                target: B,
+            },
+            &mut in_flight,
+        );
+        assert_eq!(
+            arena.held_losses.get(&(A, contact)).map(|(at, _)| *at),
+            Some(2_250)
+        );
+        assert!(
+            arena.due.iter().any(|event| event.t_ms == 2_250
+                && event.kind == DueKind::LossSettles { viewer: A, contact }),
+            "the deadline is on the heap"
+        );
+        let _ = arena.pending_notices.remove(&A);
+        // Said at its deadline, and not before.
+        arena.settle_held_loss(A, contact, 2_000);
+        assert!(
+            arena.held_losses.contains_key(&(A, contact)),
+            "a stale settle"
+        );
+        arena.settle_held_loss(A, contact, 2_250);
+        assert!(!arena.held_losses.contains_key(&(A, contact)));
+        assert!(
+            arena
+                .pending_notices
+                .get(&A)
+                .is_some_and(|told| told.iter().any(|notice| matches!(
+                    notice,
+                    FrameNotice::Contact {
+                        kind: NoticeKind::Lost,
+                        ..
+                    }
+                ))),
+            "the loss was not said"
+        );
+    }
+
+    /// **16b cut M.2** (16c `B-74`, and the review's guard on it): a cancelled
+    /// loss whose row came back under another name is said as an identification
+    /// **only** for a mesh insert that arrived told apart, and then once.
+    ///
+    /// Three rows a held `X1` can come back as, each run through the staging
+    /// scan's two calls exactly as one substep would make them — the `detected`
+    /// and then the `classified` a share journals:
+    ///
+    /// * a mesh insert, already `Classified` (`numbered` false): the cancel says
+    ///   `identified` with `was: X1`, and the share's own `classified` carries no
+    ///   `was` and renders nothing — one line;
+    /// * this platform's own pass re-opened the row (`numbered` true) and a share
+    ///   classified it later in the same substep, so the scan reads it
+    ///   `Classified`: the cancel stays silent and the share's `classified` says
+    ///   the rename — one line, not the same sentence twice;
+    /// * the row is gone again by the scan (a stale mesh copy the viewer's own
+    ///   pass expired): nothing at all, where the unguarded arm said
+    ///   `identified: X0, unknown`.
+    #[test]
+    fn m2_a_renamed_cancel_is_said_once_and_only_for_a_mesh_insert_told_apart() {
+        use crate::arena::state::Designator;
+        const B: ObjId = ObjId(9);
+        let mut arena = m2_pair(60_000);
+        arena.step(0, &[], &[]);
+        arena.step(1_000, &[], &[]);
+        let contact = crate::arena::rng::draw_contact_id(arena.seed, A, B);
+        assert!(arena.contacts.resolve(A, contact).is_some(), "A holds B");
+        let was = Designator::Provisional(
+            arena
+                .designators
+                .provisional(A, B)
+                .unwrap_or_else(|| panic!("the fixture needs B numbered")),
+        );
+        let detected = EventKind::Detected {
+            viewer: A,
+            contact,
+            target: B,
+        };
+        let classified = EventKind::Classified {
+            viewer: A,
+            contact,
+            target: B,
+            team: Team::Blue,
+        };
+        // The identifications staged for `A` by one `detected` then one
+        // `classified`, with the held loss and the row set up by `shape`.
+        let mut run = |shape: &dyn Fn(&mut Arena)| -> Vec<FrameNotice> {
+            shape(&mut arena);
+            arena.held_losses.insert((A, contact), (5_000, was));
+            let _ = arena.pending_notices.remove(&A);
+            let mut in_flight = None;
+            let _ = arena.stage_pilot_notice(1_100, &detected, &mut in_flight);
+            if arena.contacts.resolve(A, contact).is_some() {
+                let _ = arena.stage_pilot_notice(1_100, &classified, &mut in_flight);
+            }
+            assert!(
+                !arena.held_losses.contains_key(&(A, contact)),
+                "the `detected` did not cancel the held loss"
+            );
+            arena.pending_notices.remove(&A).unwrap_or_default()
+        };
+        let said = |notices: &[FrameNotice]| -> Vec<FrameNotice> {
+            notices
+                .iter()
+                .filter(|notice| matches!(notice, FrameNotice::Contact { was: Some(_), .. }))
+                .cloned()
+                .collect()
+        };
+
+        // A mesh insert, told apart.
+        let mesh = run(&|arena: &mut Arena| {
+            if let Some(held) = arena.contacts.get_mut(A, contact) {
+                held.numbered = false;
+                held.class = Classification::Classified { team: Team::Blue };
+            }
+        });
+        let mesh_said = said(&mesh);
+        assert_eq!(mesh_said.len(), 1, "one identification: {mesh:?}");
+        assert!(
+            matches!(
+                mesh_said.first(),
+                Some(FrameNotice::Contact {
+                    kind: NoticeKind::Classified,
+                    was: Some(old),
+                    ..
+                }) if *old == was
+            ),
+            "the mesh insert said the rename from {was:?}: {mesh:?}"
+        );
+
+        // This platform's own row, classified by a share in the same substep.
+        let own = run(&|arena: &mut Arena| {
+            if let Some(held) = arena.contacts.get_mut(A, contact) {
+                held.numbered = true;
+                held.class = Classification::Classified { team: Team::Blue };
+            }
+        });
+        assert_eq!(
+            said(&own).len(),
+            1,
+            "the rename was said twice (or not at all): {own:?}"
+        );
+
+        // The row already gone again.
+        let gone = run(&|arena: &mut Arena| {
+            let _ = arena.contacts.remove(A, contact);
+        });
+        assert!(
+            gone.is_empty(),
+            "a row that is gone was announced: {gone:?}"
         );
     }
 }

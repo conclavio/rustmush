@@ -61,7 +61,10 @@
 //! timestamp**, in the same event, rather than left in the queue for a phase 4
 //! whose `now_ms` is the pulse's end: a `fired` line at the pulse boundary would
 //! carry a different arena millisecond at every cadence, which is the same
-//! divergence read once more.
+//! divergence read once more. (**16b cut M.2**, 16c `T-02`, made that sentence
+//! true: until then the resolvers read `now_ms`, which the substep had already
+//! advanced to its end when the tick ran; they now take the tick's `t_ms`, and
+//! the planner reads readiness against the same clock.)
 //!
 //! The one thing phase 4 keeps is the hash discipline: a substep that runs reflex
 //! work takes **one** [`crate::arena::hash::state_hash`] before its due-event loop
@@ -820,7 +823,7 @@ impl Arena {
         if plan.ordered {
             counters.ordered = counters.ordered.saturating_add(1);
         }
-        self.order(unit, &plan, counters);
+        self.order(unit, &plan, t_ms, counters);
         true
     }
 
@@ -853,7 +856,40 @@ impl Arena {
     /// collects the ids before it orders any of them, so no borrow is held across
     /// [`apply_intent`]. The four cheap tests come first and the map lookup last,
     /// because this runs once per substep over the whole field.
+    ///
+    /// # One cell was never enough: it looks as far as the unit needs to stop
+    ///
+    /// **16b cut M.2** (reopening E.3's `B-44` closure; the fix was the M.2
+    /// review's). Asking only the one cell in front was a rule for a unit that
+    /// can stop inside a cell, and a stock tank cannot: it needs `v² / 2·brake` —
+    /// 56 m from 15 m/s at 2 m/s² — so the hold came when the seam was already
+    /// inside its stopping distance and the tank was refused at the boundary
+    /// anyway. E.3's own proof missed it only because its thirty-second window
+    /// closed five hundred milliseconds before the first approach arrived; M.2's
+    /// machine `STARTUP` at its tick moved the same approach one decide tick
+    /// earlier and into the window.
+    ///
+    /// So a machine is held when **any** cell on its actual heading within
+    /// `stopping_reach_cm`, beyond the one in front, would be refused by the same
+    /// rule — the stopping
+    /// distance from the fastest it can be going at the end of this substep, plus
+    /// what it travels in the substep before the next pre-pass can ask again —
+    /// walked by `Arena::way_ahead_is_open`. The one-cell question is still
+    /// asked first, unchanged, so a unit at a standstill is exactly as free as it
+    /// was. Held early, the tank brakes on its own profile and stops short of the
+    /// seam; the next decide tick orders it on only while the cell in front is
+    /// open, and the pre-pass holds it again the substep it would outrun its
+    /// brakes, so it closes on the seam slower and slower and never reaches it.
+    /// A platform with no braking rate is asked the one cell alone: it cannot
+    /// slow down, which is `braking_speed_cms`'s answer too.
     pub fn hold_routeless(&mut self, counters: &mut ReflexCounters) {
+        // The full substep, which is what the unit travels before the next
+        // pre-pass: the same length `Arena::step` cuts the pulse into.
+        let substep = i64::from(crate::arena::clock::substep_ms(
+            &self.arena_cfg.tempo,
+            self.cell_cm(),
+            self.max_speed_cms(),
+        ));
         let mut holding: Vec<ObjId> = Vec::new();
         for (id, row) in self.reflex.rows() {
             if !row.route.is_empty() {
@@ -874,7 +910,9 @@ impl Arena {
             let Some(here) = self.definition.terrain.cell_of(&unit.pose) else {
                 continue;
             };
-            if self.first_step_is_open(unit, here, unit.pose.heading_mdeg, &row.avoid) {
+            if self.first_step_is_open(unit, here, unit.pose.heading_mdeg, &row.avoid)
+                && self.way_ahead_is_open(unit, here, &row.avoid, stopping_reach_cm(unit, substep))
+            {
                 continue;
             }
             holding.push(*id);
@@ -1500,7 +1538,14 @@ impl Arena {
                             row.state = ReflexState::Engage;
                             row.goal = None;
                             row.route.clear();
-                            self.engage_orders(id, contact, order.as_ref(), &ranges, &mut plan);
+                            self.engage_orders(
+                                id,
+                                contact,
+                                order.as_ref(),
+                                &ranges,
+                                t_ms,
+                                &mut plan,
+                            );
                         } else {
                             row.goal = plot
                                 .and_then(|plot| plot.cell(&self.definition.terrain))
@@ -1537,7 +1582,7 @@ impl Arena {
                         row.route.clear();
                         plan.speed_cms = Some(0);
                         plan.heading_mdeg = plot.map(|plot| plot.bearing_from(&unit.pose));
-                        self.engage_orders(id, contact, order.as_ref(), &ranges, &mut plan);
+                        self.engage_orders(id, contact, order.as_ref(), &ranges, t_ms, &mut plan);
                     }
                 }
             }
@@ -1595,7 +1640,7 @@ impl Arena {
                     row.quiet_since_ms = None;
                     plan.speed_cms = Some(0);
                     plan.heading_mdeg = Some(plot.bearing_from(&unit.pose));
-                    self.engage_orders(id, contact, order.as_ref(), &ranges, &mut plan);
+                    self.engage_orders(id, contact, order.as_ref(), &ranges, t_ms, &mut plan);
                 } else if row.stand_until_ms.is_some_and(|until| t_ms < until) {
                     // The dwell: the line has gone for the moment, and a tank
                     // that turned its back on the last three seconds of it would
@@ -1903,12 +1948,20 @@ impl Arena {
     /// in component order that is ready, loaded and in reach — component order,
     /// because that is the order `WEAPONSTATUS` prints and the order a pilot would
     /// read down.
+    ///
+    /// **16b cut M.2** (16c `T-02`): readiness is read at `t_ms`, the tick's own
+    /// arena millisecond, which is the millisecond [`Arena::resolve_fire`] is then
+    /// handed. It read `now_ms` — the end of the substep the tick ran in — so a
+    /// weapon coming ready between the tick and the substep end was planned as a
+    /// shot, refused `Cycling` by a resolver reading the tick's clock, and the
+    /// refusal (which `Arena::order` drops) cost the machine a whole `decide_ms`.
     fn engage_orders(
         &self,
         id: ObjId,
         contact: ContactId,
         order: Option<&Order>,
         ranges: &Ranges,
+        t_ms: i64,
         plan: &mut ReflexPlan,
     ) {
         let Some(unit) = self.unit(id) else {
@@ -1953,7 +2006,7 @@ impl Arena {
             .weapons
             .iter()
             .find(|weapon| {
-                unit.weapon_ready(&weapon.id, self.now_ms)
+                unit.weapon_ready(&weapon.id, t_ms)
                     && unit.weapon_ammo(&weapon.id) > 0
                     && u64::from(weapon.max_range_cm) >= range
                     && !would_overheat(unit, &weapon.id)
@@ -2737,6 +2790,80 @@ impl Arena {
         edge_is_open(terrain, unit, here_cell, to_cell, here, (nx, ny))
     }
 
+    /// **Whether every cell on the unit's heading within `reach_cm` is one it
+    /// would plan through** (16b cut M.2, for [`Arena::hold_routeless`]).
+    ///
+    /// [`Arena::first_step_is_open`]'s four questions and Q.7's remembered stops,
+    /// asked of each cell the unit's own line of travel enters: the pose is
+    /// walked along its actual `pose.heading_mdeg` in steps of half a cell, with
+    /// [`crate::arena::motion`]'s own fixed-point sine and cosine (no float: doc
+    /// 16 §3.1's D-16-4), and every change of cell is one edge put to the
+    /// search's rule. Half a cell is fine enough that the walk enters every cell
+    /// the line does except where it clips a corner, and the corner it clips is
+    /// the one the diagonal edge it then tests shoulders onto. A step off the
+    /// window is a refusal, as the crossing's is.
+    ///
+    /// **The first cell the walk enters is not asked here**: the one cell in
+    /// front is `first_step_is_open`'s question, asked exactly as Q.7 asked it
+    /// (the octant the crossing tests first), and the walk only reaches the cells
+    /// beyond it that the one-cell rule never looked at. This is measured, not
+    /// tidiness: asking the walk's own first cell holds a unit that a stop has
+    /// just clamped at a boundary — any reach at all, from there, is into the
+    /// cell it was refused — so it can never turn away under power, re-plans from
+    /// the same centimetre every `repath_ms` and is refused the same cell again;
+    /// on the harness field that took one line tank to eight `blocked` lines at
+    /// one cell and the field from 341 to 439. A `reach_cm` of nought walks
+    /// nothing and answers `true`.
+    fn way_ahead_is_open(
+        &self,
+        unit: &UnitState,
+        here: (u16, u16),
+        avoid: &[((u16, u16), i64)],
+        reach_cm: i64,
+    ) -> bool {
+        use crate::arena::motion::{SIN_ONE, cos_fx, sin_fx};
+        let terrain = &self.definition.terrain;
+        let stride = (i64::from(terrain.cell_cm()) / 2).max(1);
+        let east = sin_fx(unit.pose.heading_mdeg);
+        let north = cos_fx(unit.pose.heading_mdeg);
+        let mut from = here;
+        let mut walked: i64 = 0;
+        while walked < reach_cm {
+            walked = walked.saturating_add(stride).min(reach_cm);
+            let x = unit
+                .pose
+                .x_cm
+                .saturating_add(walked.saturating_mul(east) / SIN_ONE);
+            let y = unit
+                .pose
+                .y_cm
+                .saturating_add(walked.saturating_mul(north) / SIN_ONE);
+            let Some(to) = terrain.cell_at(x, y) else {
+                return false;
+            };
+            if to == from {
+                continue;
+            }
+            if from == here {
+                from = to;
+                continue;
+            }
+            let (Some(from_cell), Some(to_cell)) =
+                (terrain.get(from.0, from.1), terrain.get(to.0, to.1))
+            else {
+                return false;
+            };
+            if !to_cell.passable()
+                || avoid.iter().any(|(cell, _)| *cell == to)
+                || !edge_is_open(terrain, unit, from_cell, to_cell, from, to)
+            {
+                return false;
+            }
+            from = to;
+        }
+        true
+    }
+
     /// The `unreachable` edge's landing: the nearest waypoint, or the next one
     /// along the graph when the nearest is what could not be reached.
     fn fall_back_to_waypoint(&self, id: ObjId, row: &mut ReflexUnit, here: (u16, u16)) {
@@ -2776,7 +2903,12 @@ impl Arena {
     /// over mid-match. `apply_intent` is what accepts or refuses it; a discrete
     /// action it queued is taken straight back out and resolved here, at this
     /// tick's arena timestamp (see the module head for why not at phase 4).
-    fn order(&mut self, id: ObjId, plan: &ReflexPlan, counters: &mut ReflexCounters) {
+    ///
+    /// **16b cut M.2** (16c `T-02`): that timestamp is `t_ms`, handed to the
+    /// three resolvers. They read `now_ms` until this cut, and the tick runs
+    /// after the substep has advanced `now_ms` to its end, so a machine's
+    /// `fired` line carried the substep boundary and not the tick.
+    fn order(&mut self, id: ObjId, plan: &ReflexPlan, t_ms: i64, counters: &mut ReflexCounters) {
         let mut seq = 0_u64;
         let mut orders: Vec<IntentKind> = Vec::new();
         if plan.startup {
@@ -2822,13 +2954,13 @@ impl Arena {
             }
             match &intent.kind {
                 IntentKind::Startup => {
-                    let _ = resolve_startup(self, id);
+                    let _ = resolve_startup(self, id, t_ms);
                 }
                 IntentKind::Lock { contact } => {
-                    let _ = self.resolve_lock(id, *contact);
+                    let _ = self.resolve_lock(id, *contact, t_ms);
                 }
                 IntentKind::Fire { weapon } => {
-                    if self.resolve_fire(id, weapon).is_ok() {
+                    if self.resolve_fire(id, weapon, t_ms).is_ok() {
                         counters.shots = counters.shots.saturating_add(1);
                     }
                 }
@@ -2901,6 +3033,39 @@ fn braking_speed_cms(unit: &UnitState, goal: (u16, u16), cell_cm: i64, decide_ms
     let effective = distance.saturating_sub(ahead);
     let stopping = brake.saturating_mul(2).saturating_mul(effective).isqrt();
     i32::try_from(ceiling.min(stopping)).unwrap_or(i32::MAX)
+}
+
+/// **How far ahead a routeless machine must be able to go** (16b cut M.2, for
+/// [`Arena::hold_routeless`]), centimetres: the distance it needs to stop from
+/// the fastest it can be going at the end of the next substep, plus what it
+/// covers in that substep before the pre-pass asks again.
+///
+/// ```text
+/// v      = max(0, speed_cms)
+/// v_next = min(v + accel_cms2 × substep_ms / 1000, max(v, desired_speed_cms))
+/// reach  = v_next² / (2 × brake_cms2) + v_next × substep_ms / 1000
+/// ```
+///
+/// `v_next` bounds the speed from above: a unit ordered faster than it is going
+/// gains at most one substep of acceleration, and one ordered slower is already
+/// braking. The travel term is at the same bound, so it also covers what the
+/// integration's per-substep speed update adds over the continuous stopping
+/// distance. Integer arithmetic throughout (doc 16 §3.1's D-16-4). A platform
+/// with no braking rate answers nought — it cannot stop in any distance, so the
+/// look-ahead has nothing to buy it, which is [`braking_speed_cms`]'s rule — and
+/// so does one moving backwards, whose way ahead is not on its heading.
+fn stopping_reach_cm(unit: &UnitState, substep_ms: i64) -> i64 {
+    let brake = i64::from(unit.mobility.brake_cms2);
+    if brake == 0 {
+        return 0;
+    }
+    let speed = i64::from(unit.speed_cms.max(0));
+    let gained = speed.saturating_add(
+        i64::from(unit.mobility.accel_cms2).saturating_mul(substep_ms.max(0)) / 1_000,
+    );
+    let next = gained.min(speed.max(i64::from(unit.desired_speed_cms)));
+    next.saturating_mul(next) / brake.saturating_mul(2)
+        + next.saturating_mul(substep_ms.max(0)) / 1_000
 }
 
 /// **The 8-neighbour step nearest a bearing** (16b cut Q.7).

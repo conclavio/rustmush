@@ -1788,6 +1788,15 @@ fn e1_an_ordered_close_caps_the_squad_at_the_pilots_own_close() {
     // its fire rather than shooting at the distance doctrine alone would allow.
     let mut held = field(&cfg);
     let mut held_bytes = Vec::new();
+    // **16b cut M.2** (16c `T-02`): pinned BEFORE the two opening seconds, not
+    // after them. The machine's own `STARTUP` resolves at its tick now, so it is
+    // online a quarter of a second sooner and is already rolling at 6 m/s when
+    // the two seconds are up — pinned then, it coasted to 11,493 cm, inside the
+    // ceiling, and shot. Pinned from the start it never leaves its cell, which is
+    // the parked machine this case was written about.
+    if let Some(state) = held.unit_mut(RED_A) {
+        state.mobility.max_speed_cms = 0;
+    }
     run(&mut held, 2_000, &mut held_bytes);
     if let Some(state) = held.unit_mut(RED_A) {
         // Pinned in place: a machine that may not close cannot walk into range.
@@ -1824,6 +1833,11 @@ fn e1_an_ordered_close_caps_the_squad_at_the_pilots_own_close() {
     // because doctrine's own ceiling is the 35,000 cm sight.
     let mut free = field(&cfg);
     let mut free_bytes = Vec::new();
+    // 16b cut M.2: pinned from the start too, so the control stands where the
+    // held case stands.
+    if let Some(state) = free.unit_mut(RED_A) {
+        state.mobility.max_speed_cms = 0;
+    }
     run(&mut free, 2_000, &mut free_bytes);
     if let Some(state) = free.unit_mut(RED_A) {
         state.mobility.max_speed_cms = 0;

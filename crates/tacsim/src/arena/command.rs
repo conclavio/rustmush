@@ -169,7 +169,8 @@ pub struct SquadSignal {
 
 /// What the arena remembers about one squad between signals.
 ///
-/// A **view**, exactly as `Arena::held_losses` is: it is not folded into the state
+/// A **view**, exactly as `Arena::last_frames` is (`Arena::held_losses` was the
+/// example here until 16b cut M.2 folded it): it is not folded into the state
 /// hash, because it is a fact about what the world has been told and not about the
 /// match. Folding it would make the hash a function of the request cadence.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

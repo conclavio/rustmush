@@ -457,7 +457,9 @@ fn duel(paint: &[(u16, u16, TerrainCell)]) -> Arena {
             plot_of(&arena, BLUE),
         ),
     );
-    arena.resolve_lock(RED, contact).expect("the lock holds");
+    arena
+        .resolve_lock(RED, contact, arena.now_ms)
+        .expect("the lock holds");
     arena
 }
 
@@ -602,7 +604,7 @@ fn x1_a_beam_is_a_weapon_with_no_flight_time_and_its_impact_is_scheduled_at_now(
 
     let mut arena = duel(&[]);
     let seq = arena
-        .resolve_fire(RED, "laser")
+        .resolve_fire(RED, "laser", arena.now_ms)
         .expect("the shot is accepted");
     let shot = arena.shot(seq).cloned().expect("the shot is in flight");
     assert_eq!(
@@ -635,9 +637,11 @@ fn x1_a_beam_is_a_weapon_with_no_flight_time_and_its_impact_is_scheduled_at_now(
             plot_of(&direct, BLUE),
         ),
     );
-    direct.resolve_lock(RED, contact).expect("the lock holds");
+    direct
+        .resolve_lock(RED, contact, direct.now_ms)
+        .expect("the lock holds");
     let seq = direct
-        .resolve_fire(RED, "cannon")
+        .resolve_fire(RED, "cannon", direct.now_ms)
         .expect("the shot is accepted");
     let round = direct.shot(seq).cloned().expect("the round is in flight");
     assert!(
@@ -692,13 +696,19 @@ fn x1_heat_rises_per_shot_falls_per_pulse_and_refuses_the_shot_at_the_ceiling() 
 
     // Three pulses of 20 against a ceiling of 60. The cycle is cleared between
     // them because the cycle is not what this test is about.
-    arena.resolve_fire(RED, "laser").expect("the first shot");
+    arena
+        .resolve_fire(RED, "laser", arena.now_ms)
+        .expect("the first shot");
     assert_eq!(heat(&arena), Some(20), "one pulse, one heat_per_shot");
     ready(&mut arena);
-    arena.resolve_fire(RED, "laser").expect("the second shot");
+    arena
+        .resolve_fire(RED, "laser", arena.now_ms)
+        .expect("the second shot");
     assert_eq!(heat(&arena), Some(40));
     ready(&mut arena);
-    arena.resolve_fire(RED, "laser").expect("the third shot");
+    arena
+        .resolve_fire(RED, "laser", arena.now_ms)
+        .expect("the third shot");
     assert_eq!(heat(&arena), Some(60), "at the ceiling");
 
     // And the fourth is refused, in its own word, with rounds and a cycle to
@@ -711,7 +721,7 @@ fn x1_heat_rises_per_shot_falls_per_pulse_and_refuses_the_shot_at_the_ceiling() 
         "the magazine is not what stops it"
     );
     assert_eq!(
-        arena.resolve_fire(RED, "laser"),
+        arena.resolve_fire(RED, "laser", arena.now_ms),
         Err(Refusal::Overheated),
         "doc 16 §9 item 1: a shot refused above a heat ceiling"
     );
@@ -724,7 +734,7 @@ fn x1_heat_rises_per_shot_falls_per_pulse_and_refuses_the_shot_at_the_ceiling() 
     assert_eq!(heat(&arena), Some(54), "two seconds at three a second");
     ready(&mut arena);
     arena
-        .resolve_fire(RED, "laser")
+        .resolve_fire(RED, "laser", arena.now_ms)
         .expect("cooled enough to fire");
     assert_eq!(heat(&arena), Some(60), "and straight back to the ceiling");
 
@@ -740,7 +750,9 @@ fn x1_the_dissipation_is_the_same_at_every_tempo() {
     let mut fine = duel(&[]);
     let mut coarse = duel(&[]);
     for arena in [&mut fine, &mut coarse] {
-        arena.resolve_fire(RED, "laser").expect("one pulse of heat");
+        arena
+            .resolve_fire(RED, "laser", arena.now_ms)
+            .expect("one pulse of heat");
         assert_eq!(arena.unit(RED).and_then(UnitState::heat_now), Some(20));
     }
     // Four seconds of arena time: eight 500 ms pulses, and two 2,000 ms ones
@@ -871,7 +883,9 @@ fn x1_a_laser_pulse_against_the_line_tanks_armour_is_small_by_definition() {
     // leaves the facet standing.
     let mut arena = duel(&[]);
     let mut journal = Vec::new();
-    let seq = arena.resolve_fire(RED, "laser").expect("the shot");
+    let seq = arena
+        .resolve_fire(RED, "laser", arena.now_ms)
+        .expect("the shot");
     let struck = arena
         .resolve_shot(RED, BLUE, "laser", 100_000, mush_atlas::Cover::None)
         .band
@@ -911,7 +925,9 @@ fn x1_a_laser_pulse_against_the_line_tanks_armour_is_small_by_definition() {
 #[test]
 fn x1_the_heat_goes_home_with_the_cells() {
     let mut arena = duel(&[]);
-    arena.resolve_fire(RED, "laser").expect("one pulse of heat");
+    arena
+        .resolve_fire(RED, "laser", arena.now_ms)
+        .expect("one pulse of heat");
     let returned: Vec<UnitReturn> = arena.returned_units();
     let red = returned
         .iter()
@@ -951,7 +967,9 @@ fn x1_the_overheated_refusal_carries_the_arenas_own_word() {
     let mut arena = duel(&[]);
     for _ in 0..3 {
         ready(&mut arena);
-        arena.resolve_fire(RED, "laser").expect("a pulse");
+        arena
+            .resolve_fire(RED, "laser", arena.now_ms)
+            .expect("a pulse");
     }
     // The opening pulse: doc 16 §3.1 makes it establish the wall reference and
     // integrate nothing, so the frame it sends carries the heat the three shots
@@ -4778,14 +4796,16 @@ fn x6_a_ridge_blocks_the_line_both_ways_and_a_taller_eye_sees_over_it() {
             plot_of(&arena, BLUE),
         ),
     );
-    arena.resolve_lock(RED, contact).expect("the lock holds");
+    arena
+        .resolve_lock(RED, contact, arena.now_ms)
+        .expect("the lock holds");
     let cannon = SmolStr::new("cannon");
     let before = arena
         .unit(RED)
         .and_then(|unit| unit.ammo.get(&cannon).copied())
         .expect("the cannon's rounds");
     arena
-        .resolve_fire(RED, "cannon")
+        .resolve_fire(RED, "cannon", arena.now_ms)
         .expect("the shot is taken");
     assert_eq!(
         arena
@@ -5542,7 +5562,9 @@ fn duel_with_a_spent_track() -> Arena {
             plot_of(&arena, BLUE),
         ),
     );
-    arena.resolve_lock(RED, contact).expect("the lock holds");
+    arena
+        .resolve_lock(RED, contact, arena.now_ms)
+        .expect("the lock holds");
     arena
 }
 
@@ -5569,7 +5591,9 @@ fn q2_the_band_cache_survives_an_entry_consequence_a_beam_and_a_heat_cycle() {
     //     writers `Arena::set_unit` took over. A heat cell moves no band — which
     //     is exactly why it is the writer that would have been forgotten.
     ready(&mut arena);
-    arena.resolve_fire(RED, "laser").expect("the shot");
+    arena
+        .resolve_fire(RED, "laser", arena.now_ms)
+        .expect("the shot");
     assert_eq!(
         arena.unit(RED).and_then(UnitState::heat_now),
         Some(20),
@@ -5602,7 +5626,7 @@ fn q2_the_band_cache_survives_an_entry_consequence_a_beam_and_a_heat_cycle() {
         // shot is answered by letting it cool rather than by clearing the cell:
         // the ceiling is `x1_heat_rises_per_shot...`'s property, and driving it
         // honestly here is what keeps both writers in the run.
-        if arena.resolve_fire(RED, "laser").is_err() {
+        if arena.resolve_fire(RED, "laser", arena.now_ms).is_err() {
             run(&mut arena, &mut wall, 1_000, 4);
             cache_agrees(&arena, "while the laser cooled");
             continue;
@@ -6961,12 +6985,12 @@ fn d2_the_reflex_controller_takes_the_cold_gun_from_a_cooked_platform() {
     let mut engine = duel(&[]);
     at_the_ceiling(&mut engine, RED);
     assert_eq!(
-        engine.resolve_fire(RED, "laser"),
+        engine.resolve_fire(RED, "laser", engine.now_ms),
         Err(tacsim::arena::intents::Refusal::Overheated),
         "the hot gun is still refused at the ceiling"
     );
     engine
-        .resolve_fire(RED, "machine_gun")
+        .resolve_fire(RED, "machine_gun", engine.now_ms)
         .expect("the cold gun fires from a cooked platform");
 
     // And the machine's, over five seconds of arena time.
@@ -7549,19 +7573,19 @@ fn d4_one_scripted_drive_through_a_bubble_journals_the_receiver_at_three_cadence
 /// the whole run. Over thirty seconds of arena time it is refused nothing at all,
 /// against the five `blocked` lines 16c's row counted.
 ///
-/// **What closes the row here, measured and not assumed.** The pre-pass fires
-/// **zero** times on this window (the count printed below is `follow`'s own decide
-/// ticks and no more): the bearing to the sealed goal runs over open ground right
-/// up to the seam, so 16b cut Q.7's tick-time check inside `follow` catches every
-/// approach on its own, and 16b cut E.3's braking profile takes the machine's
-/// speed down as it closes on a goal it will never reach. So this test is **not**
-/// the regression test for [`Arena::hold_routeless`] and must not be read as one:
-/// it would stay green with the pre-pass deleted. The pre-pass's own work is
-/// proved where it can be isolated —
-/// `tests/reflex.rs`'s `a_routeless_machine_is_ordered_to_stop_within_one_substep_of_a_stop`
-/// for the case `follow` cannot see, and `arena::reflex`'s own
-/// `e3_the_pre_pass_holds_a_routeless_machine_and_skips_everyone_else` for its
-/// guards and its intent count.
+/// **What this window really measured, corrected by 16b cut M.2.** E.3 wrote
+/// here that the pre-pass fired zero times because `follow`'s tick-time check
+/// and E.3's braking profile caught every approach. Neither did: the goal is past
+/// the cliff, so the braking profile never slows the tank for the seam, and a
+/// one-cell check cannot stop a tank whose stopping distance is five and a half
+/// cells. The window simply closed five hundred milliseconds before the first
+/// approach arrived at the seam at fifteen metres a second. M.2's machine
+/// `STARTUP` at its own tick moved that approach one decide tick earlier and
+/// this test went red — with one `blocked` line at `(20, 3)` — which is what
+/// exposed it. The pre-pass now looks as far ahead as the tank needs to stop
+/// ([`Arena::hold_routeless`]), and it is the pre-pass that holds this tank:
+/// deleting it turns this test red again. The whole approach, to a standstill,
+/// is `m2_a_routeless_machine_stops_short_of_the_seam_it_is_steering_at`.
 #[test]
 fn e3_a_routeless_machine_is_held_off_the_cliff_every_substep() {
     let catalog = catalog();
@@ -7604,13 +7628,219 @@ fn e3_a_routeless_machine_is_held_off_the_cliff_every_substep() {
         cell.0 < 20 && z == 0,
         "the tank got onto a plateau nothing can climb: {cell:?} at {z} cm"
     );
-    // The brief's second assertion for this fixture — "`ReflexCounters::intents`
-    // shows the holds" — is **not** made here, because the measurement says there
-    // are none to show: see the header. What is asserted is that the controller
-    // ran at all, so that `stops.is_empty()` is a fact about a machine that was
-    // being driven and not about one that never moved.
+    // What is asserted is that the controller ran at all, so that
+    // `stops.is_empty()` is a fact about a machine that was being driven and not
+    // about one that never moved. (E.3 left out "`ReflexCounters::intents` shows
+    // the holds" because it measured none; the holds are real — see the header —
+    // and the standstill they end in is asserted by the M.2 test below.)
     assert!(
         counters.ticks > 0,
         "the controller never ran, so nothing was measured"
     );
+}
+
+/// **A routeless machine at full speed stops short of the seam it steers at**
+/// (16b cut M.2, reopening E.3's `B-44`; the M.2 review's finding).
+///
+/// The E.3 fixture run on past its first approach, to a standstill. The tank
+/// reaches fifteen metres a second on open ground steering at a goal behind the
+/// cliff; braking from there at two metres a second squared takes fifty-six
+/// metres, five and a half cells, so a pre-pass that asked only the cell in front
+/// ordered the stop with the seam already inside the stopping distance and the
+/// tank was refused at `(20, 3)` anyway. Looking as far ahead as it needs to
+/// stop, it is held early, brakes on its own profile, and comes to rest in the
+/// last cell before the cliff with no `blocked` line — and stays there, because
+/// the next decide tick orders it on only while the cell in front is open.
+///
+/// Without the look-ahead this is red: the refusal at `(20, 3)` at 29,500.
+#[test]
+fn m2_a_routeless_machine_stops_short_of_the_seam_it_is_steering_at() {
+    let catalog = catalog();
+    let cfg = ArenaConfig::default();
+    let mut definition = plateau(false);
+    definition.waypoints = relief_waypoint((40, 2));
+    let mut arena = arena_over(
+        &catalog,
+        vec![under_reflex(blind(unit_of(
+            &catalog,
+            content::LINE_TANK,
+            RED,
+            Team::Red,
+            (2, 4),
+        )))],
+        definition,
+        &cfg,
+    );
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    // Forty-five seconds: the tank is on the move from ten, flat out by
+    // twenty-five, and at rest by thirty-four.
+    let pulses = usize::try_from(45_000_i64 / 500).unwrap_or(0);
+    let mut fastest = 0_i32;
+    for _ in 0..pulses {
+        run_logged(&mut arena, &mut wall, 500, 1, &mut bytes);
+        fastest = fastest.max(arena.unit(RED).map_or(0, |unit| unit.speed_cms));
+    }
+    let top = arena
+        .unit(RED)
+        .map_or(0, |unit| unit.mobility.max_speed_cms);
+    assert_eq!(
+        u32::try_from(fastest).unwrap_or(0),
+        top,
+        "the fixture needs the tank at full speed on the approach"
+    );
+    let events = ledger_of(&mut arena, &mut bytes);
+    let stops = blocked_cells(&events, RED);
+    assert!(
+        stops.is_empty(),
+        "the tank outran its brakes into the seam: {stops:?}"
+    );
+    let (cell, z, _) = standing(&arena, RED);
+    assert_eq!(
+        (cell.0, z),
+        (19, 0),
+        "the tank stopped in the last cell before the cliff: {cell:?} at {z} cm"
+    );
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.speed_cms),
+        Some(0),
+        "and it is standing there"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut M.2 (16c `B-51`) — a pilot's beam lands in the pulse that fired it
+// ---------------------------------------------------------------------------
+
+/// What one cadence of the beam replay produced: the ledger lines as
+/// `(t_ms, kind json)`, the per-substep hashes, and for the pulse that fired,
+/// `(substeps run, substeps the partition cut)`.
+type M2BeamRun = (Vec<(i64, String)>, Vec<u64>, Option<(u32, u32)>);
+
+/// [`duel`] through **a pulse that ends on the beat**: the order rides the pulse
+/// whose end is the beat's millisecond, which is the production shape — a
+/// pilot's order resolves at the end of the pulse that accepted it. (The
+/// zero-`dt` driver the other replays use cannot show the drain: a beat's pulse
+/// there runs no substep, so the drain's `ran > 0` guard holds it back and the
+/// impact pops in the next pulse's first substep, as the opening pulse's events
+/// do.)
+///
+/// The pulse carrying the order is 4,500 → 5,000 at every cadence — the wall
+/// is stepped to 4,500 first whatever the cadence — because phase 2 counts a
+/// seat's order against the arena second the pulse **starts** in (16b cut M.1's
+/// rate, which the hash folds), so an order delivered to 0 → 5,000 at one
+/// cadence and to 4,500 → 5,000 at another would be two different states for
+/// a reason that is the driver's and not the engine's.
+fn m2_beam_replay(cadence_ms: i64) -> M2BeamRun {
+    let mut arena = duel(&[]);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut firing: Option<(u32, u32)> = None;
+    let mut wall = 0_i64;
+    arena
+        .clock
+        .pin_tempo_for_tests(tacsim::arena::clock::Tempo::Quiet);
+    let out = arena.step(wall, &[], &[]);
+    for chunk in &out.ledger_chunks {
+        bytes.extend_from_slice(&chunk.bytes);
+    }
+    while arena.now_ms < 10_000 {
+        arena
+            .clock
+            .pin_tempo_for_tests(tacsim::arena::clock::Tempo::Quiet);
+        wall = if wall < 4_500 {
+            (wall + cadence_ms).min(4_500)
+        } else if wall < 5_000 {
+            5_000
+        } else {
+            wall + cadence_ms
+        };
+        let intents = if wall == 5_000 {
+            vec![relief_intent(
+                RED,
+                tacsim::arena::intents::IntentKind::Fire {
+                    weapon: SmolStr::new("laser"),
+                },
+                2,
+            )]
+        } else {
+            Vec::new()
+        };
+        let out = arena.step(wall, &[], &intents);
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if !intents.is_empty() {
+            // 4,500 → 5,000: two substeps of 250 at every cadence.
+            let partition = 2;
+            firing = Some((out.substeps, partition));
+        }
+    }
+    arena.ledger.flush();
+    for chunk in arena.ledger.take_chunks() {
+        bytes.extend_from_slice(&chunk.bytes);
+    }
+    let events = String::from_utf8(bytes)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<tacsim::arena::ledger::LedgerEvent>(line).ok())
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+            )
+        })
+        .collect();
+    (events, hashes, firing)
+}
+
+/// **A pilot's beam lands in the pulse that fired it** (16b cut M.2, 16c
+/// `B-51`). Phase 4 schedules a beam's impact at `now_ms` and drains nothing, so
+/// the round used to resolve in the next pulse's first substep, against later
+/// positions under the fire timestamp. The phase-4 drain — one zero-length
+/// substep — resolves it in the pulse that fired: the `impact` and its `hit` or
+/// `miss` carry the `fired` line's millisecond, that pulse ran one substep more
+/// than its partition, and the three cadences are one event list and one hash
+/// sequence.
+#[test]
+fn m2_a_pilots_beam_lands_in_the_pulse_that_fired_it_at_three_cadences() {
+    let runs: Vec<(i64, M2BeamRun)> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| (cadence, m2_beam_replay(cadence)))
+        .collect();
+    let Some((_, (events, hashes, _))) = runs.first() else {
+        panic!("three replays");
+    };
+    let at = |kind: &str| -> Vec<i64> {
+        let head = format!("{{\"kind\":\"{kind}\",");
+        events
+            .iter()
+            .filter(|(_, json)| json.starts_with(&head))
+            .map(|(t_ms, _)| *t_ms)
+            .collect()
+    };
+    assert_eq!(at("fired"), vec![5_000], "one laser pulse, at the beat");
+    assert_eq!(
+        at("impact"),
+        vec![5_000],
+        "the beam arrived as it was fired"
+    );
+    let outcome: Vec<i64> = at("hit").into_iter().chain(at("miss")).collect();
+    assert_eq!(outcome, vec![5_000], "and was resolved then");
+    for (cadence, (_, _, firing)) in &runs {
+        let (ran, partition) = firing.unwrap_or_else(|| panic!("{cadence}: no firing pulse"));
+        assert_eq!(
+            ran,
+            partition + 1,
+            "at {cadence} ms the firing pulse ran its {partition} substeps and the drain"
+        );
+    }
+    for (cadence, (run_events, run_hashes, _)) in runs.iter().skip(1) {
+        assert_eq!(run_events, events, "the event list differs at {cadence} ms");
+        assert_eq!(
+            run_hashes, hashes,
+            "the per-substep hash sequence differs at {cadence} ms"
+        );
+    }
 }

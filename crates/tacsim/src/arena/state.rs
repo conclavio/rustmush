@@ -1315,8 +1315,10 @@ pub struct UnitState {
     /// learns from that **event** (16b cut Q.7's
     /// [`Arena::note_blocked`](crate::arena::state::Arena), not from either flag)
     /// — and it is deliberately **not** folded into
-    /// [`crate::arena::hash::state_hash`], for the reason `held_losses` is not: it
-    /// is a fact about what a pilot is being shown.
+    /// [`crate::arena::hash::state_hash`], for the reason `last_frames` is not: it
+    /// is a fact about what a pilot is being shown. (This sentence named
+    /// `held_losses` until 16b cut M.2 made that table's expiry a due event and
+    /// folded it.)
     ///
     /// **16b cut E.3**: a *hold* against another unit
     /// ([`UnitState::occupied_hold`]) is neither a stop nor a substep that moved,
@@ -2179,7 +2181,10 @@ impl EpochTable {
 /// Cut A schedules [`DueKind::StartupComplete`] and [`DueKind::PositionSummary`]
 /// and nothing else; the remaining kinds exist so that the heap, the ordering
 /// and the state hash are built once and the later cuts add bodies rather than
-/// shapes.
+/// shapes. **16b cut M.2** added the last two: the duration bound and the end
+/// of a held loss's hysteresis, the two things that still happened at a pulse
+/// boundary — doc 16 §3.1's rate independence says everything in the arena
+/// happens at an arena timestamp.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DueKind {
     /// `match.startup_ms` after `STARTUP` was accepted: power goes online.
@@ -2232,6 +2237,38 @@ pub enum DueKind {
     },
     /// Every `ledger.summary_ms` of arena time, in every tempo (doc 16 §4).
     PositionSummary,
+    /// **The duration bound** (16b cut M.2, 16c `T-01`): doc 16 §3.8's `Timeout`,
+    /// scheduled once, by [`Arena::new`], at `match.max_duration_ms`.
+    ///
+    /// It is a due event for the reason every other end is settled inside the
+    /// substep: phase 5 compared `now_ms` against the bound at the pulse's end,
+    /// so the `match_ended { timeout }` line carried the millisecond the cadence
+    /// happened to end a pulse on. `Arena::substep`'s arm stops the due loop
+    /// after the deadline's own millisecond, so nothing due after it is applied
+    /// or journalled; the substep then settles the timeout unless an elimination
+    /// or a `Spent` in the same substep won.
+    MatchDeadline,
+    /// **A held loss's hysteresis has run out** (16b cut M.2, 16c `T-83`): doc 16
+    /// §3.6 "What a pilot sees", one event per held loss, scheduled by the `lost`
+    /// arm of `Arena::stage_pilot_notice` at the very deadline it writes into
+    /// [`Arena::held_losses`].
+    ///
+    /// Its arm says the loss when the entry is still there with that deadline,
+    /// and is a no-op otherwise: a loss cancelled by a re-detection, or one lost
+    /// again with a later deadline, leaves a stale event that fires into nothing,
+    /// and the due count folds it deterministically.
+    ///
+    /// The one held loss that gets **no** event is one whose window closes at or
+    /// before the end of the substep that staged it — only a
+    /// `[tacsim.sensors].pass_ms` shorter than the substep makes one — because
+    /// an event for it would be scheduled into the past. The staging scan that
+    /// staged it settles it itself, at its place in `(t_ms, seq)` order.
+    LossSettles {
+        /// The platform whose pilots are owed the line.
+        viewer: ObjId,
+        /// The contact it lost.
+        contact: ContactId,
+    },
 }
 
 /// One scheduled event: its arena timestamp, its insertion sequence, and what it
@@ -2683,9 +2720,10 @@ pub struct Arena {
     /// [`Arena::event_hash`]'s `None` arm — takes a fresh hash, so a direct
     /// `resolve_fire` in a test is unchanged.
     ///
-    /// It is a **view** and is deliberately not folded into the state hash, for the
-    /// same reason `held_losses` is not: it is scratch for one phase, and folding it
-    /// would make the hash a function of where in the pulse it was taken.
+    /// It is a **view** and is deliberately not folded into the state hash: it is
+    /// scratch for one phase, and folding it would make the hash a function of
+    /// where in the pulse it was taken. (`held_losses` was named beside it until
+    /// 16b cut M.2 folded that table.)
     pub action_hash: Option<u64>,
     /// A `Stop` the world sent, honoured by phase 1 of the next step.
     pub stop: Option<StopReason>,
@@ -2709,11 +2747,20 @@ pub struct Arena {
     ///
     /// This is [`FrameNotice`]'s hysteresis, and the whole of it: a loss goes in
     /// here instead of into `pending_notices`, a re-acquisition inside the window
-    /// takes it back out and says nothing, and a sweep at the pulse's end says what
-    /// is left. It is a **view** and is deliberately not folded into the state hash
-    /// — the sweep happens at pulse boundaries, so folding it would make the hash a
-    /// function of the tempo, which is exactly what the cross-tempo property
-    /// refuses.
+    /// takes it back out and says nothing, and a [`DueKind::LossSettles`] at the
+    /// deadline says what is left.
+    ///
+    /// **16b cut M.2** (16c `T-83`) made the expiry a due event and folded the
+    /// table into [`crate::arena::hash::state_hash`]. Until then a sweep at the
+    /// end of every pulse said the expired entries, so the end of the hysteresis
+    /// was a pulse boundary — a re-detection past the deadline was cancelled at
+    /// `Quiet` and said at `Engaged`, two tempos and two stories — and the table
+    /// was kept out of the hash because folding a thing a pulse boundary moved
+    /// would have made the hash a function of the tempo. Now nothing but an
+    /// arena timestamp moves it, and it decides what a later substep says, so it
+    /// is folded under `spent_said`'s rule: it is written in the staging scan,
+    /// after the substep's hash, so a write at substep *k* is first folded at
+    /// *k + 1*.
     ///
     /// **16b cut Q.1** put the designator in the value beside the deadline: the
     /// row is already gone when the notice is finally said, so the name it read
@@ -2783,7 +2830,8 @@ pub struct Arena {
     /// **What the world was last told about each squad** (16b cut N.2), so the
     /// trigger can be *event-driven* rather than a poll.
     ///
-    /// A **view**, like `held_losses` and `action_hash`: it is a fact about what
+    /// A **view**, like `action_hash` and `last_frames` (and unlike `held_losses`,
+    /// which 16b cut M.2 folded): it is a fact about what
     /// has been reported and not about the match, so
     /// [`crate::arena::hash::state_hash`] does not fold it. Folding it would make
     /// the hash a function of the request cadence, which is the opposite of what
@@ -2802,7 +2850,8 @@ impl Arena {
     /// pose is checked to be a bearing on the window; each seated pilot's
     /// station raises the epoch table; the spatial index is built over the
     /// opening poses; the first `position_summary` is scheduled at
-    /// `ledger.summary_ms`; and `match_started` is the ledger's first event,
+    /// `ledger.summary_ms` and the duration bound at `match.max_duration_ms`
+    /// (16b cut M.2); and `match_started` is the ledger's first event,
     /// carrying the opening state hash.
     ///
     /// # Stations and epochs
@@ -3052,6 +3101,14 @@ impl Arena {
             i64::from(arena_cfg.ledger.summary_ms),
             DueKind::PositionSummary,
         );
+        // **16b cut M.2** (16c `T-01`): the duration bound, as a due event, so the
+        // timeout is settled at its own millisecond (see `DueKind::MatchDeadline`).
+        // Scheduled second, after the summary and before the passes and the reflex
+        // ticks: the order of scheduling is what hands out the sequence numbers, so
+        // it is fixed here once and every arena opened from one check-out numbers
+        // its schedule identically — and the opening hash folds the due count,
+        // which this event is now one of.
+        due.schedule(i64::from(match_cfg.max_duration_ms), DueKind::MatchDeadline);
         // Doc 16 §3.4 step 5: occupancy is one unit per cell. Motion is what keeps
         // it true once the match is running (step 4 refuses an occupied cell), and
         // this is what makes it true to begin with — the alternative is a cell whose
@@ -3557,8 +3614,20 @@ mod tests {
         // `ledger.summary_ms`, and — **16b cut F.3** — one sensor pass per unit,
         // staggered at `id % pass_ms`. The pass is where a platform's contacts
         // expire, so every platform has one whether or not it carries a sight.
-        assert_eq!(arena.due.len(), 3);
+        // **16b cut M.2** (16c `T-01`) adds the fourth: the duration bound, at
+        // `match.max_duration_ms`, scheduled second.
+        assert_eq!(arena.due.len(), 4);
         assert_eq!(arena.due.next_t_ms(), Some(4), "unit #4's own stagger");
+        assert_eq!(
+            arena
+                .due
+                .iter()
+                .filter(|event| event.kind == DueKind::MatchDeadline)
+                .map(|event| (event.t_ms, event.seq))
+                .collect::<Vec<_>>(),
+            vec![(i64::from(MatchConfig::default().max_duration_ms), 2)],
+            "one deadline, at the bound, second in the schedule"
+        );
         // And one ledger event: `match_started`, sequence 1.
         assert_eq!(arena.ledger.seq(), 1);
         assert!(arena.ledger.bytes_total() > 0);

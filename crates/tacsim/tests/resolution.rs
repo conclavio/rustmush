@@ -3418,7 +3418,7 @@ fn an_order_the_arena_never_queued_and_a_shot_the_controller_took_are_both_silen
     // And the shape the reflex controller resolves in — straight into
     // `resolve_fire`, inside a substep, never through pulse phase 4 — stages
     // nothing for anybody.
-    assert!(arena.resolve_fire(RED, "cannon").is_err());
+    assert!(arena.resolve_fire(RED, "cannon", arena.now_ms).is_err());
     wall += 500;
     let out = pulse(&mut arena, wall, &[], &mut bytes);
     assert!(

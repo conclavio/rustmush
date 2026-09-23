@@ -78,7 +78,9 @@ use tokio::task::JoinHandle;
 ///
 /// **16b cut M.1** adds its own rows (`2_356` onwards). None of its proofs arms
 /// a hook, but a row each keeps one match per proof and the rule in one place.
-const SEEDS: [(u64, &str); 17] = [
+///
+/// **16b cut M.2** adds `2_398` and `2_399` for the same reason.
+const SEEDS: [(u64, &str); 19] = [
     (2_350, "the round trip"),
     (2_351, "the injected panic"),
     (2_352, "the stall"),
@@ -99,6 +101,14 @@ const SEEDS: [(u64, &str); 17] = [
     (2_394, "M.1: the Ended in flight"),
     (2_395, "M.1: the task that died without a result"),
     (2_397, "M.1: a frame the world can take is never cut"),
+    (
+        2_398,
+        "M.2: a pilot's STARTUP through the task, 50 ms periods",
+    ),
+    (
+        2_399,
+        "M.2: a pilot's STARTUP through the task, 250 ms periods",
+    ),
 ];
 
 /// **16b cut AA.3**: the stall hook is one global seed slot, and arming it
@@ -1935,4 +1945,152 @@ async fn m1_a_stop_meeting_an_ended_in_flight_is_busy_and_a_dead_task_is_gone() 
         tasks.send_stop(MatchId(9_999), StopReason::Abort),
         Err(ControlRefusal::NoMatch)
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut M.2 (16c `T-03`) — a pilot's action at the end of the pulse that
+// accepted it, on the production shape
+// ---------------------------------------------------------------------------
+
+/// What one production-shaped `STARTUP` came to: the clock of the `Frames` the
+/// world had before it offered the order, the clock of the first `Frames` whose
+/// `RED` frame reads `Starting`, and the `startup` and `power_online` lines'
+/// arena milliseconds.
+struct M2Startup {
+    before_ms: i64,
+    accepted_ms: i64,
+    startup_ms: i64,
+    online_ms: i64,
+}
+
+/// The `now_ms` of a `Frames` message.
+fn clock_of(message: &ArenaOut) -> Option<i64> {
+    match message {
+        ArenaOut::Frames { now_ms, .. } => Some(*now_ms),
+        _ => None,
+    }
+}
+
+/// One match of `fast_arena`'s shape with every period at `period_ms` and the
+/// **default** `summary_ms` — so nothing but the period, the passes and the
+/// startup's own completion wakes the task — offered one `STARTUP` for `RED`
+/// after its first `Frames`, and aborted once `Power online.` has been seen.
+async fn m2_startup_through_the_task(seed: u64, period_ms: u32, startup_ms: u32) -> M2Startup {
+    let mut arena_cfg = fast_arena();
+    arena_cfg.tempo.quiet_ms = period_ms;
+    arena_cfg.tempo.alert_ms = period_ms;
+    arena_cfg.tempo.engaged_ms = period_ms;
+    arena_cfg.ledger.summary_ms = ArenaConfig::default().ledger.summary_ms;
+    let match_cfg = MatchConfig {
+        startup_ms,
+        ..MatchConfig::default()
+    };
+    let (handle, _join, mut rx) = start_with_egress(seed, &arena_cfg, &match_cfg, 256);
+    let mut messages: Vec<ArenaOut> = Vec::new();
+    // The first `Frames`, which the opening pulse sends because nobody has been
+    // told anything yet.
+    let before_ms = loop {
+        let message = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("the arena published")
+            .expect("the egress is open");
+        let clock = clock_of(&message);
+        messages.push(message);
+        if let Some(clock) = clock {
+            break clock;
+        }
+    };
+    let offered_at = messages.len();
+    handle
+        .offer(ArenaMsg::Intent(Intent {
+            unit: RED,
+            channel: Channel::Helm,
+            epoch: 1,
+            kind: IntentKind::Startup,
+            seq: 1,
+        }))
+        .expect("the inbox takes a startup");
+    loop {
+        let message = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("the arena published")
+            .expect("the egress is open");
+        messages.push(message);
+        if notices_for(&messages, RED_PILOT)
+            .iter()
+            .any(|(_, notice)| matches!(notice, FrameNotice::PowerOnline))
+        {
+            break;
+        }
+    }
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    messages.extend(collect(&mut rx, Duration::from_secs(10)).await);
+    assert_eq!(ended(&messages), Some(EndReason::Abort));
+
+    let accepted_ms = messages
+        .iter()
+        .skip(offered_at)
+        .find_map(|message| match message {
+            ArenaOut::Frames { frames, now_ms, .. }
+                if frames
+                    .iter()
+                    .any(|(to, frame)| *to == RED_PILOT && frame.power == Power::Starting) =>
+            {
+                Some(*now_ms)
+            }
+            _ => None,
+        })
+        .expect("a frame read `Starting`");
+    let log = events(&messages);
+    let line = |kind: &str| -> i64 {
+        log.iter()
+            .find(|event| event.kind.as_str() == kind)
+            .map(|event| event.t_ms)
+            .unwrap_or_else(|| panic!("no `{kind}` line"))
+    };
+    M2Startup {
+        before_ms,
+        accepted_ms,
+        startup_ms: line("startup"),
+        online_ms: line("power_online"),
+    }
+}
+
+/// **`T-03`: a discrete action given by a pilot resolves at the end of the pulse
+/// that accepted it** (16b cut M.2; doc 16 §11's D-16-2 as amended) — asserted on
+/// the task, where arena time is elapsed wall time and a pulse ends at the
+/// earlier of its period and the next due event, at a 50 ms period and at a
+/// 250 ms one.
+///
+/// The `startup` line's millisecond IS the `now_ms` of the first `Frames` whose
+/// frame reads `Starting` — the accepting pulse's end — and it is later than the
+/// `Frames` the world held when it offered the order. The completion is a due
+/// event, so `power_online` is exactly `startup_ms` after it whatever the
+/// period. No value and no modulus is asserted: a production pulse ends where
+/// the wall and the due events put it, so `t_ms % period` does not hold and is
+/// not supposed to.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m2_a_pilots_startup_resolves_at_the_end_of_the_pulse_that_accepted_it() {
+    const STARTUP_MS: u32 = 300;
+    for (seed, period_ms) in [(SEEDS[17].0, 50_u32), (SEEDS[18].0, 250)] {
+        let run = m2_startup_through_the_task(seed, period_ms, STARTUP_MS).await;
+        assert_eq!(
+            run.startup_ms, run.accepted_ms,
+            "at a {period_ms} ms period the `startup` line is not the accepting pulse's end"
+        );
+        assert!(
+            run.startup_ms > run.before_ms,
+            "at a {period_ms} ms period the order resolved in a pulse the world had already \
+             seen ({} against {})",
+            run.startup_ms,
+            run.before_ms
+        );
+        assert_eq!(
+            run.online_ms,
+            run.startup_ms + i64::from(STARTUP_MS),
+            "at a {period_ms} ms period the completion is not at its own millisecond"
+        );
+    }
 }

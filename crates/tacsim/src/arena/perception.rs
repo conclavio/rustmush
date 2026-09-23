@@ -1975,6 +1975,15 @@ pub enum RefusalDetail {
 /// that outlives the window is announced, one pass late. The ledger's `lost` event
 /// is unaffected — it is written at the moment the contact expired, which is what
 /// makes the black box the record and the notice only the telling.
+///
+/// **16b cut M.2** (16c `T-83`) put the end of the window on arena time: a
+/// `DueKind::LossSettles` at the deadline says the held loss, at the first
+/// substep boundary at or after it, unless the platform re-detected the contact
+/// at or before it — so the story is the same at every cadence, where the
+/// pulse-end sweep it replaced said a late re-detection as a cancel at one tempo
+/// and as a loss and a new contact at another. And a cancel whose row came back
+/// **renamed and told apart** (a mesh copy inside the window) is said as the
+/// identification it is (16c `B-74`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FrameNotice {
     /// A contact's lifecycle transition (16b cut S.2).

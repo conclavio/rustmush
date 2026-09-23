@@ -555,8 +555,14 @@ pub fn drain_pending(arena: &mut Arena, unit: ObjId) -> Vec<Intent> {
 }
 
 /// **Resolve `STARTUP`** (doc 16 §3.3 "Startup"): `Off` becomes `Starting` and
-/// `StartupComplete` is scheduled at `now + match.startup_ms`, with one `startup`
-/// ledger event.
+/// `StartupComplete` is scheduled at `at_ms + match.startup_ms`, with one
+/// `startup` ledger event at `at_ms`.
+///
+/// **16b cut M.2** (16c `T-02`): `at_ms` is the arena millisecond the order
+/// resolves at. Phase 4 passes `now_ms`, the end of the pulse that accepted a
+/// pilot's `STARTUP`; the reflex controller passes its tick's own timestamp,
+/// which is earlier than the substep end `now_ms` had already been advanced to
+/// when the tick ran.
 ///
 /// **Idempotent**: a unit already `Starting` or `Online` is a no-op answering
 /// `Ok(())`, so a pilot mashing the key schedules one completion and not five.
@@ -574,7 +580,7 @@ pub fn drain_pending(arena: &mut Arena, unit: ObjId) -> Vec<Intent> {
 /// for a wreck. A ledger that has reached its byte bound does **not** fail the
 /// transition: the black box is a record, not an authority (see
 /// [`crate::arena::ledger::LedgerFull`]).
-pub fn resolve_startup(arena: &mut Arena, unit: ObjId) -> Result<(), Refusal> {
+pub fn resolve_startup(arena: &mut Arena, unit: ObjId, at_ms: i64) -> Result<(), Refusal> {
     let Some(state) = arena.unit(unit) else {
         return Err(Refusal::Unknown);
     };
@@ -584,9 +590,7 @@ pub fn resolve_startup(arena: &mut Arena, unit: ObjId) -> Result<(), Refusal> {
     if state.power != Power::Off {
         return Ok(());
     }
-    let at = arena
-        .now_ms
-        .saturating_add(i64::from(arena.match_cfg.startup_ms));
+    let at = at_ms.saturating_add(i64::from(arena.match_cfg.startup_ms));
     let hash = arena.event_hash();
     if let Some(state) = arena.unit_mut(unit) {
         state.power = Power::Starting;
@@ -594,7 +598,7 @@ pub fn resolve_startup(arena: &mut Arena, unit: ObjId) -> Result<(), Refusal> {
     arena.due.schedule(at, DueKind::StartupComplete { unit });
     let _ = arena
         .ledger
-        .append(arena.now_ms, EventKind::Startup { unit }, None, hash);
+        .append(at_ms, EventKind::Startup { unit }, None, hash);
     Ok(())
 }
 
@@ -1199,7 +1203,7 @@ mod tests {
         let mut arena = two_tanks(1);
         let before = arena.due.len();
         let ledger_before = arena.ledger.seq();
-        assert_eq!(resolve_startup(&mut arena, RED), Ok(()));
+        assert_eq!(resolve_startup(&mut arena, RED, 0), Ok(()));
         assert_eq!(
             arena.unit(RED).map(|state| state.power),
             Some(Power::Starting)
@@ -1217,14 +1221,14 @@ mod tests {
 
         // Mashing the key changes nothing.
         for _ in 0..4 {
-            assert_eq!(resolve_startup(&mut arena, RED), Ok(()));
+            assert_eq!(resolve_startup(&mut arena, RED, 0), Ok(()));
         }
         assert_eq!(arena.due.len(), before + 1);
         assert_eq!(arena.ledger.seq(), ledger_before + 1);
 
         // Already online is a no-op too.
         online(&mut arena, RED);
-        assert_eq!(resolve_startup(&mut arena, RED), Ok(()));
+        assert_eq!(resolve_startup(&mut arena, RED, 0), Ok(()));
         assert_eq!(
             arena.unit(RED).map(|state| state.power),
             Some(Power::Online)
@@ -1236,7 +1240,7 @@ mod tests {
     fn startup_is_scheduled_from_the_current_arena_time() {
         let mut arena = two_tanks(1);
         arena.now_ms = 42_000;
-        assert_eq!(resolve_startup(&mut arena, BLUE), Ok(()));
+        assert_eq!(resolve_startup(&mut arena, BLUE, 42_000), Ok(()));
         assert_eq!(
             arena
                 .due
@@ -1247,17 +1251,53 @@ mod tests {
         );
     }
 
+    /// **16b cut M.2** (16c `T-02`): the order resolves at the millisecond it is
+    /// handed, not at `now_ms` — a reflex tick at 1,009 ms inside a substep whose
+    /// end `now_ms` already reads 1,250 starts up at 1,009.
+    #[test]
+    fn m2_startup_resolves_at_the_millisecond_it_is_given_and_not_at_now() {
+        let mut arena = two_tanks(1);
+        arena.now_ms = 1_250;
+        let before = arena.ledger.seq();
+        assert_eq!(resolve_startup(&mut arena, BLUE, 1_009), Ok(()));
+        assert_eq!(
+            arena
+                .due
+                .iter()
+                .find(|event| event.kind == DueKind::StartupComplete { unit: BLUE })
+                .map(|event| event.t_ms),
+            Some(11_009)
+        );
+        arena.ledger.flush();
+        let lines: Vec<crate::arena::ledger::LedgerEvent> = arena
+            .ledger
+            .take_chunks()
+            .iter()
+            .flat_map(|chunk| {
+                String::from_utf8_lossy(&chunk.bytes)
+                    .lines()
+                    .filter_map(|line| serde_json::from_str(line).ok())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let startup = lines
+            .iter()
+            .find(|event| event.seq == before + 1)
+            .map(|event| (event.t_ms, event.kind.as_str()));
+        assert_eq!(startup, Some((1_009, "startup")));
+    }
+
     #[test]
     fn startup_refuses_an_unknown_unit_and_a_wreck() {
         let mut arena = two_tanks(1);
         assert_eq!(
-            resolve_startup(&mut arena, ObjId(77)),
+            resolve_startup(&mut arena, ObjId(77), 0),
             Err(Refusal::Unknown)
         );
         if let Some(state) = arena.unit_mut(RED) {
             state.limits.wreck = true;
         }
-        assert_eq!(resolve_startup(&mut arena, RED), Err(Refusal::Wreck));
+        assert_eq!(resolve_startup(&mut arena, RED, 0), Err(Refusal::Wreck));
         assert_eq!(arena.unit(RED).map(|state| state.power), Some(Power::Off));
     }
 

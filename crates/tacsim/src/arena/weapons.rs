@@ -215,11 +215,16 @@ impl UnitState {
         self.ready_at_ms.get(id).copied().unwrap_or(0)
     }
 
-    /// Whether that weapon's cycle has finished by `now_ms` (doc 16 §3.5: the
+    /// Whether that weapon's cycle has finished by `at_ms` (doc 16 §3.5: the
     /// cycle is `ready_at_ms`, and readiness is a comparison and not a flag).
+    ///
+    /// **16b cut M.2** (16c `T-02`): `at_ms` is whatever arena millisecond the
+    /// question is asked at — the pulse's end for phase 4 and the frame, the
+    /// tick's own timestamp for the reflex controller's planner and for the
+    /// shot it then stages — so the planner and the resolver read one clock.
     #[must_use]
-    pub fn weapon_ready(&self, id: &str, now_ms: i64) -> bool {
-        self.weapon_ready_at_ms(id) <= now_ms
+    pub fn weapon_ready(&self, id: &str, at_ms: i64) -> bool {
+        self.weapon_ready_at_ms(id) <= at_ms
     }
 
     /// How long until that weapon is ready, milliseconds; `0` when it already is.
@@ -600,12 +605,22 @@ impl Arena {
     /// does not need power either: a cold tank with an intact sight can hold and name
     /// what it sees. What the cold tank cannot do is fire.
     ///
+    /// **`at_ms` is the arena millisecond the lock happens at** (16b cut M.2, 16c
+    /// `T-02`), and the `locked` line carries it: phase 4 passes `now_ms`, the
+    /// pulse's end, and the reflex controller passes its tick's own timestamp,
+    /// which may be earlier than the substep end `now_ms` was advanced to.
+    ///
     /// # Errors
     ///
     /// [`Refusal::Unknown`] for a unit this arena does not hold, [`Refusal::Wreck`]
     /// for a wreck (doc 16 §3.3: no longer the subject of any order), and
     /// [`Refusal::NoContact`] for an id this platform does not hold.
-    pub fn resolve_lock(&mut self, unit: ObjId, contact: ContactId) -> Result<(), Refusal> {
+    pub fn resolve_lock(
+        &mut self,
+        unit: ObjId,
+        contact: ContactId,
+        at_ms: i64,
+    ) -> Result<(), Refusal> {
         let Some(state) = self.unit(unit) else {
             return Err(Refusal::Unknown);
         };
@@ -627,7 +642,7 @@ impl Arena {
             state.lock = Some(contact);
         }
         let _ = self.ledger.append(
-            self.now_ms,
+            at_ms,
             EventKind::Locked {
                 unit,
                 contact,
@@ -646,19 +661,33 @@ impl Arena {
     /// the weapon is ready, there are rounds, the power is up — and then, in one
     /// step, the four things an accepted shot *is*:
     ///
-    /// 1. `ready_at_ms = now + cycle_ms` (the floor of 1,000 is the content
+    /// 1. `ready_at_ms = at_ms + cycle_ms` (the floor of 1,000 is the content
     ///    loader's, W14);
     /// 2. `ammo` less the burst;
-    /// 3. one `fired` ledger event carrying the shot's sequence, its target and its
-    ///    range;
-    /// 4. a [`DueKind::Impact`] at `now + range_cm × 1000 / muzzle_speed_cms`, and a
-    ///    [`DueKind::WeaponReady`] at the ready time.
+    /// 3. one `fired` ledger event, at `at_ms`, carrying the shot's sequence, its
+    ///    target and its range;
+    /// 4. a [`DueKind::Impact`] at `at_ms + range_cm × 1000 / muzzle_speed_cms`,
+    ///    and a [`DueKind::WeaponReady`] at the ready time.
     ///
     /// The `WeaponReady` event changes no state: readiness is
-    /// [`UnitState::weapon_ready`], a comparison against `now_ms`. What it is for is
-    /// `next_due_ms` — it makes the arena step at the millisecond the weapon comes
-    /// ready, so the pilot's frame says so then rather than at the next period
-    /// boundary.
+    /// [`UnitState::weapon_ready`], a comparison against an arena millisecond.
+    /// What it is for is `next_due_ms` — it makes the arena step at the
+    /// millisecond the weapon comes ready, so the pilot's frame says so then
+    /// rather than at the next period boundary.
+    ///
+    /// **`at_ms` is the arena millisecond the shot is fired at** (16b cut M.2, 16c
+    /// `T-02`), and everything above is read against it — the cycle gate, the two
+    /// schedules, the shot's `fired_at_ms`, the heat and the line. Phase 4 passes
+    /// `now_ms`, the pulse's end, because a pilot's discrete action resolves at the
+    /// end of the pulse that accepted it (doc 16 §11's D-16-2 as amended). The
+    /// reflex controller passes its tick's own timestamp: the tick runs inside a
+    /// substep *after* `now_ms` was advanced to the substep's end, so reading
+    /// `now_ms` here stamped a tick at 1,009 ms `fired` at 1,250 and flew its
+    /// round from there. An event the tick schedules at or before the substep's
+    /// end — a beam's zero-flight impact — is popped by the same due loop, in
+    /// `(t_ms, seq)` order: **the same-substep property**. (A `WeaponReady` could
+    /// be one only with a `cycle_ms` shorter than a substep, which W14's 1,000 ms
+    /// floor rules out for shipped content.)
     ///
     /// **A last short burst rather than a refusal.** A weapon with fewer rounds left
     /// than its burst fires what it has: the round count is `min(ammo, burst_rounds)`
@@ -672,8 +701,7 @@ impl Arena {
     /// One [`Refusal`] word: [`Refusal::Unknown`], [`Refusal::Wreck`],
     /// [`Refusal::NoWeapon`], [`Refusal::NoLock`], [`Refusal::Cycling`],
     /// [`Refusal::Empty`], [`Refusal::Overheated`], [`Refusal::PowerNotOnline`].
-    pub fn resolve_fire(&mut self, unit: ObjId, weapon: &str) -> Result<u64, Refusal> {
-        let now_ms = self.now_ms;
+    pub fn resolve_fire(&mut self, unit: ObjId, weapon: &str, at_ms: i64) -> Result<u64, Refusal> {
         let Some(state) = self.unit(unit) else {
             return Err(Refusal::Unknown);
         };
@@ -698,7 +726,7 @@ impl Arena {
             return Err(Refusal::Unknown);
         };
         // (2) The cycle.
-        if !state.weapon_ready(weapon, now_ms) {
+        if !state.weapon_ready(weapon, at_ms) {
             return Err(Refusal::Cycling);
         }
         // (3) The rounds.
@@ -747,8 +775,8 @@ impl Arena {
             .map(|state| range_cm(&state.pose, &aim))
             .unwrap_or(0);
         let rounds = held.min(summary.burst_rounds.max(1));
-        let ready_at = now_ms.saturating_add(i64::from(summary.cycle_ms));
-        let impact_at = now_ms.saturating_add(summary.flight_ms(range));
+        let ready_at = at_ms.saturating_add(i64::from(summary.cycle_ms));
+        let impact_at = at_ms.saturating_add(summary.flight_ms(range));
         let seq = self.next_shot_seq.saturating_add(1);
         self.next_shot_seq = seq;
         // **16b cut W.2**: doc 16 §3.5 resolves here, at acceptance. One trace, for
@@ -772,7 +800,7 @@ impl Arena {
                 contact,
                 target,
                 rounds,
-                fired_at_ms: now_ms,
+                fired_at_ms: at_ms,
                 impact_at_ms: impact_at,
                 range_cm: range,
                 aim_x_cm: aim.x_cm,
@@ -785,7 +813,7 @@ impl Arena {
         // **16b cut X.1**: what the shot cost the platform, after the round and the
         // cycle are spent and before the shot is journalled — so the `fired` line
         // and the heat it made belong to one moment.
-        self.raise_heat(unit, weapon, seq, now_ms);
+        self.raise_heat(unit, weapon, seq, at_ms);
         self.due
             .schedule(impact_at, DueKind::Impact { shot_seq: seq });
         self.due.schedule(
@@ -796,7 +824,7 @@ impl Arena {
             },
         );
         let _ = self.ledger.append(
-            now_ms,
+            at_ms,
             EventKind::Fired {
                 unit,
                 weapon: SmolStr::new(weapon),
@@ -1180,63 +1208,84 @@ mod tests {
         let mut arena = two_scouts();
         // An id nobody minted.
         assert_eq!(
-            arena.resolve_lock(RED, ContactId(1)),
+            arena.resolve_lock(RED, ContactId(1), arena.now_ms),
             Err(Refusal::NoContact)
         );
         assert_eq!(arena.unit(RED).and_then(|state| state.lock), None);
         // Another platform's id is the same answer.
         let blues = hold(&mut arena, BLUE, RED);
-        assert_eq!(arena.resolve_lock(RED, blues), Err(Refusal::NoContact));
+        assert_eq!(
+            arena.resolve_lock(RED, blues, arena.now_ms),
+            Err(Refusal::NoContact)
+        );
         // The platform's own id is a lock, and one `locked` line.
         let id = hold(&mut arena, RED, BLUE);
         let before = arena.ledger.seq();
-        assert_eq!(arena.resolve_lock(RED, id), Ok(()));
+        assert_eq!(arena.resolve_lock(RED, id, arena.now_ms), Ok(()));
         assert_eq!(arena.unit(RED).and_then(|state| state.lock), Some(id));
         assert_eq!(arena.ledger.seq(), before.saturating_add(1));
         // Idempotent: the same lock again journals nothing.
-        assert_eq!(arena.resolve_lock(RED, id), Ok(()));
+        assert_eq!(arena.resolve_lock(RED, id, arena.now_ms), Ok(()));
         assert_eq!(arena.ledger.seq(), before.saturating_add(1));
         // A wreck is the subject of no order.
         if let Some(state) = arena.unit_mut(RED) {
             state.limits.wreck = true;
         }
-        assert_eq!(arena.resolve_lock(RED, id), Err(Refusal::Wreck));
-        assert_eq!(arena.resolve_lock(ObjId(77), id), Err(Refusal::Unknown));
+        assert_eq!(
+            arena.resolve_lock(RED, id, arena.now_ms),
+            Err(Refusal::Wreck)
+        );
+        assert_eq!(
+            arena.resolve_lock(ObjId(77), id, arena.now_ms),
+            Err(Refusal::Unknown)
+        );
     }
 
     #[test]
     fn fire_refuses_in_doc_16_s_order_and_an_accepted_shot_costs_its_round_and_its_cycle() {
         let mut arena = two_scouts();
         // No weapon by that name, before anything else about the shot.
-        assert_eq!(arena.resolve_fire(RED, "trebuchet"), Err(Refusal::NoWeapon));
+        assert_eq!(
+            arena.resolve_fire(RED, "trebuchet", arena.now_ms),
+            Err(Refusal::NoWeapon)
+        );
         // No lock, while the tank is also cold: the lock is the answer (doc 16
         // §3.7's column order puts power last).
-        assert_eq!(arena.resolve_fire(RED, "cannon"), Err(Refusal::NoLock));
+        assert_eq!(
+            arena.resolve_fire(RED, "cannon", arena.now_ms),
+            Err(Refusal::NoLock)
+        );
         let id = hold(&mut arena, RED, BLUE);
-        assert_eq!(arena.resolve_lock(RED, id), Ok(()));
+        assert_eq!(arena.resolve_lock(RED, id, arena.now_ms), Ok(()));
         // Cycling, still cold.
         if let Some(state) = arena.unit_mut(RED) {
             state.ready_at_ms.insert(SmolStr::new("cannon"), 1);
         }
-        assert_eq!(arena.resolve_fire(RED, "cannon"), Err(Refusal::Cycling));
+        assert_eq!(
+            arena.resolve_fire(RED, "cannon", arena.now_ms),
+            Err(Refusal::Cycling)
+        );
         // Empty, ready, still cold.
         if let Some(state) = arena.unit_mut(RED) {
             state.ready_at_ms.insert(SmolStr::new("cannon"), 0);
             state.ammo.insert(SmolStr::new("cannon"), 0);
         }
-        assert_eq!(arena.resolve_fire(RED, "cannon"), Err(Refusal::Empty));
+        assert_eq!(
+            arena.resolve_fire(RED, "cannon", arena.now_ms),
+            Err(Refusal::Empty)
+        );
         // Loaded, ready, locked — and cold.
         if let Some(state) = arena.unit_mut(RED) {
             state.ammo.insert(SmolStr::new("cannon"), 40);
         }
         assert_eq!(
-            arena.resolve_fire(RED, "cannon"),
+            arena.resolve_fire(RED, "cannon", arena.now_ms),
             Err(Refusal::PowerNotOnline)
         );
         // Online, and the shot is accepted.
         online(&mut arena, RED);
         let seq = arena
-            .resolve_fire(RED, "cannon")
+            .resolve_fire(RED, "cannon", arena.now_ms)
             .unwrap_or_else(|_| panic!("the shot is accepted"));
         assert_eq!(seq, 1, "the first shot of a match is 1");
         let state = arena.unit(RED).unwrap_or_else(|| panic!("the red scout"));
@@ -1256,14 +1305,17 @@ mod tests {
         assert_eq!((shot.aim_x_cm, shot.aim_y_cm), (1_500, 5_500));
         assert_eq!(shot.impact_at_ms, cannon().flight_ms(4_000));
         // The cycle refuses the next one.
-        assert_eq!(arena.resolve_fire(RED, "cannon"), Err(Refusal::Cycling));
+        assert_eq!(
+            arena.resolve_fire(RED, "cannon", arena.now_ms),
+            Err(Refusal::Cycling)
+        );
     }
 
     #[test]
     fn a_last_short_burst_is_fired_and_the_rounds_are_conserved() {
         let mut arena = two_scouts();
         let id = hold(&mut arena, RED, BLUE);
-        let _ = arena.resolve_lock(RED, id);
+        let _ = arena.resolve_lock(RED, id, arena.now_ms);
         online(&mut arena, RED);
         // A ten-round burst with four rounds left fires four.
         if let Some(state) = arena.unit_mut(RED) {
@@ -1275,7 +1327,7 @@ mod tests {
             state.ammo.insert(SmolStr::new("cannon"), 4);
         }
         let seq = arena
-            .resolve_fire(RED, "cannon")
+            .resolve_fire(RED, "cannon", arena.now_ms)
             .unwrap_or_else(|_| panic!("the shot is accepted"));
         assert_eq!(arena.shot(seq).map(|shot| shot.rounds), Some(4));
         assert_eq!(
@@ -1286,17 +1338,20 @@ mod tests {
         if let Some(state) = arena.unit_mut(RED) {
             state.ready_at_ms.insert(SmolStr::new("cannon"), 0);
         }
-        assert_eq!(arena.resolve_fire(RED, "cannon"), Err(Refusal::Empty));
+        assert_eq!(
+            arena.resolve_fire(RED, "cannon", arena.now_ms),
+            Err(Refusal::Empty)
+        );
     }
 
     #[test]
     fn an_impact_journals_its_arrival_and_then_exactly_one_outcome() {
         let mut arena = two_scouts();
         let id = hold(&mut arena, RED, BLUE);
-        let _ = arena.resolve_lock(RED, id);
+        let _ = arena.resolve_lock(RED, id, arena.now_ms);
         online(&mut arena, RED);
         let seq = arena
-            .resolve_fire(RED, "cannon")
+            .resolve_fire(RED, "cannon", arena.now_ms)
             .unwrap_or_else(|_| panic!("the shot is accepted"));
         let mut journal: Vec<crate::arena::perception::Notice> = Vec::new();
         arena.resolve_impact(seq, 100, &mut journal);
@@ -1361,9 +1416,9 @@ mod tests {
         );
         // Cycling, after a shot.
         let id = hold(&mut arena, RED, BLUE);
-        let _ = arena.resolve_lock(RED, id);
+        let _ = arena.resolve_lock(RED, id, arena.now_ms);
         online(&mut arena, RED);
-        let _ = arena.resolve_fire(RED, "cannon");
+        let _ = arena.resolve_fire(RED, "cannon", arena.now_ms);
         let row = arena
             .frame_weapons(RED, Some(&aim(4_000)))
             .first()

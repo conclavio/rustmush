@@ -2486,8 +2486,15 @@ struct Cadenced {
     events: Vec<Line>,
     /// Every substep hash, in order.
     hashes: Vec<u64>,
-    /// Every line each pilot was sent, in order.
+    /// Every line each pilot was sent, in order — rendered, so read only for the
+    /// sentence assertions on the first run.
     notices: BTreeMap<ObjId, Vec<String>>,
+    /// **Every notice each pilot was staged**, in order, as the arena staged it
+    /// (16b cut M.2, 16c `T-84`). The three-cadence comparison is made on this
+    /// and not on `notices`: a rendered line reads a bearing and a band off the
+    /// frame of the pulse it arrived in, so the lines agree across cadences only
+    /// while the observers stand still.
+    staged: BTreeMap<ObjId, Vec<FrameNotice>>,
     /// **The designator column each platform's scope read** at every checkpoint
     /// — a multiple of five seconds of arena time, which is a pulse boundary at
     /// all three cadences.
@@ -2536,6 +2543,7 @@ fn replayed(mut arena: Arena, script: &[Beat], cadence_ms: i64, until_ms: i64) -
     let mut tape: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
     let mut notices: BTreeMap<ObjId, Vec<String>> = BTreeMap::new();
+    let mut staged: BTreeMap<ObjId, Vec<FrameNotice>> = BTreeMap::new();
     let mut columns: Vec<(i64, ObjId, Vec<String>)> = Vec::new();
     let mut wall = 0_i64;
     let mut next = 0_usize;
@@ -2566,6 +2574,12 @@ fn replayed(mut arena: Arena, script: &[Beat], cadence_ms: i64, until_ms: i64) -
                 if !lines.is_empty() {
                     notices.entry(*pilot).or_default().extend(lines);
                 }
+                if !frame.notices.is_empty() {
+                    staged
+                        .entry(*pilot)
+                        .or_default()
+                        .extend(frame.notices.iter().cloned());
+                }
             }
             hashes.extend(arena.substep_hashes.iter().copied());
             pulses = pulses.saturating_add(1);
@@ -2582,6 +2596,12 @@ fn replayed(mut arena: Arena, script: &[Beat], cadence_ms: i64, until_ms: i64) -
             let lines = cockpit::notice_lines(frame);
             if !lines.is_empty() {
                 notices.entry(*pilot).or_default().extend(lines);
+            }
+            if !frame.notices.is_empty() {
+                staged
+                    .entry(*pilot)
+                    .or_default()
+                    .extend(frame.notices.iter().cloned());
             }
         }
         hashes.extend(arena.substep_hashes.iter().copied());
@@ -2617,6 +2637,7 @@ fn replayed(mut arena: Arena, script: &[Beat], cadence_ms: i64, until_ms: i64) -
             .collect(),
         hashes,
         notices,
+        staged,
         columns,
         pulses,
     }
@@ -2737,9 +2758,10 @@ fn one_scripted_approach_at_three_cadences_is_one_list_one_hash_and_one_column()
             run.hashes, first.hashes,
             "the hashes differ at {cadence} ms"
         );
+        // 16b cut M.2 (`T-84`): what was staged, not what it rendered as.
         assert_eq!(
-            run.notices, first.notices,
-            "the pilots' lines differ at {cadence} ms"
+            run.staged, first.staged,
+            "the pilots' staged notices differ at {cadence} ms"
         );
         assert_eq!(
             run.columns, first.columns,
@@ -4013,9 +4035,42 @@ fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
     // ---- one pulse carries both: `EYE` expires at 6,004 and the share lands at
     // 6,013, nine milliseconds inside the thousand the window is open for.
     let mut after: Vec<String> = Vec::new();
+    let mut staged: Vec<FrameNotice> = Vec::new();
     if let Some(frame) = pulse(&mut arena, PULSE_MS * 7, &mut tape) {
         after.extend(cockpit::notice_lines(&frame));
+        staged.extend(frame.notices.iter().cloned());
     }
+    // 16b cut M.2 (`B-74`): the notice itself, as staged — an identification
+    // quoting the number the pilot had, first, and no regression. (The mesh
+    // insert also journals its own `classified`, whose notice carries no `was`
+    // because the row was never provisional in this hold, and renders as
+    // nothing: the one rendered line asserted below is all the pilot reads.)
+    assert_eq!(
+        staged.first().cloned(),
+        Some(FrameNotice::Contact {
+            kind: NoticeKind::Classified,
+            contact: tacsim::arena::perception::Named {
+                id: draw_contact_id(arena.seed, EYE, MARK),
+                designator: Designator::Slot {
+                    team: Team::Blue,
+                    slot: 1,
+                },
+            },
+            class: Classification::Classified { team: Team::Blue },
+            was: Some(Designator::Provisional(1)),
+        }),
+        "the cancel said something other than the rename: {staged:?}"
+    );
+    assert!(
+        !staged.iter().any(|notice| matches!(
+            notice,
+            FrameNotice::Contact {
+                kind: NoticeKind::Unidentified,
+                ..
+            }
+        )),
+        "a regression was staged"
+    );
     assert_eq!(
         numbered(&arena, EYE, MARK),
         Some(false),
@@ -4032,12 +4087,15 @@ fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
     );
     // What the pilot reads for the whole exchange, in full: the cancel is a
     // cancel, so the acquisition is not said either, exactly as it was before this
-    // cut. (`B-21` leaves the rename unsaid because the row `EYE` holds now is a
-    // mesh insert; that the pilot's column goes from `X1` to `BA` with no line is
-    // recorded for the reviewer and is not this arm's to fix.)
-    assert!(
-        after.is_empty(),
-        "the cancelled loss said something: {after:?}"
+    // cut — but **16b cut M.2** (16c `B-74`) says the rename. D.4 left it unsaid
+    // (this assertion read `after.is_empty()` until that cut), and the pilot's
+    // column went from `X1` to `BA` with no line; the cancel arm now stages the
+    // `classified` notice with the old name, the sentence a share that
+    // classifies a still-held row says.
+    assert_eq!(
+        after,
+        vec!["Contact X1 identified: BA, blue.".to_owned()],
+        "the renamed row was not said as one identification: {after:?}"
     );
     // And the column reads the live name alone: the number is gone with the hold
     // that carried it, and `EYE` never learned an alias either way.
@@ -4187,13 +4245,508 @@ fn one_scripted_flicker_at_three_cadences_is_one_list_one_hash_and_one_column() 
             run.hashes, first.hashes,
             "the hashes differ at {cadence} ms"
         );
+        // 16b cut M.2 (`T-84`): what was staged, not what it rendered as.
         assert_eq!(
-            run.notices, first.notices,
-            "the pilots' lines differ at {cadence} ms"
+            run.staged, first.staged,
+            "the pilots' staged notices differ at {cadence} ms"
         );
         assert_eq!(
             run.columns, first.columns,
             "the designator column differs at {cadence} ms"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// (s) the end of the hysteresis at three cadences — 16b cut M.2 (16c `T-83`,
+//     `T-84`)
+//
+// Until this cut a sweep at the end of every pulse said the held losses whose
+// window had run out, so the end of the hysteresis was a pulse boundary: a
+// contact re-detected after its deadline was cancelled at a cadence whose
+// pulse held both the deadline and the re-detection, and said lost and then
+// new at a cadence whose boundary fell between them. The expiry is a
+// `DueKind::LossSettles` at the deadline's own millisecond now, so the story
+// is one story at every cadence — and each test below compares what was
+// STAGED (`Cadenced::staged`), not what it rendered as.
+//
+// **Which of them is the regression proof.** Only the relay-604 share (a
+// return 600 ms past the deadline, inside one 1,000 ms pulse and across a
+// 500 ms boundary) told two stories under the old sweep; the return one whole
+// pass after the deadline, at 20,004, was said lost first at every cadence
+// then as now, and pins the rule rather than the fix.
+//
+// All but the last two run on the (r) fixture: a five-second pass and a
+// one-pass loss band, `MARK` lost at 10,004 and its window ending at 15,004.
+// ---------------------------------------------------------------------------
+
+/// The kinds of every contact notice `EYE`'s pilot was staged, in order.
+fn eye_contact_kinds(run: &Cadenced) -> Vec<NoticeKind> {
+    run.staged
+        .get(&ObjId(1_000))
+        .into_iter()
+        .flatten()
+        .filter_map(|notice| match notice {
+            FrameNotice::Contact { kind, .. } => Some(*kind),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Replay `script` on `arena()` at 5,000, 1,000 and 500 ms, assert the three
+/// runs are one event list, one hash sequence and one staged story, and hand
+/// back the first.
+fn three_cadences(arena: impl Fn() -> Arena, script: &[Beat], until_ms: i64) -> Cadenced {
+    let mut runs: Vec<(i64, Cadenced)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        runs.push((cadence, replayed(arena(), script, cadence, until_ms)));
+    }
+    let counts: Vec<u32> = runs.iter().map(|(_, run)| run.pulses).collect();
+    assert!(
+        counts.windows(2).all(|pair| pair.first() != pair.get(1)),
+        "the three replays ran the same number of pulses: {counts:?}"
+    );
+    let mut runs = runs.into_iter();
+    let Some((_, first)) = runs.next() else {
+        panic!("three replays");
+    };
+    for (cadence, run) in runs {
+        assert_eq!(
+            run.events, first.events,
+            "the events differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hashes differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.staged, first.staged,
+            "the staged notices differ at {cadence} ms"
+        );
+    }
+    first
+}
+
+/// **Re-detected one pass after the deadline** (16c `T-83`): the loss is said
+/// at the deadline, the return is a new contact, and both are said at every
+/// cadence.
+#[test]
+fn m2_a_return_one_pass_after_the_deadline_is_a_loss_then_a_contact_at_every_cadence() {
+    let script = vec![
+        Beat {
+            t_ms: 10_000,
+            intents: Vec::new(),
+            places: vec![(MARK, away())],
+        },
+        // The pass at 15,004 is the deadline's and finds nothing; the one at
+        // 20,004 finds it.
+        Beat {
+            t_ms: 20_000,
+            intents: Vec::new(),
+            places: vec![(MARK, centre(15, 10))],
+        },
+    ];
+    let first = three_cadences(flicker_replay_arena, &script, 30_000);
+    let kinds = eye_contact_kinds(&first);
+    let lost = kinds
+        .iter()
+        .position(|kind| *kind == NoticeKind::Lost)
+        .unwrap_or_else(|| panic!("the loss was never said: {kinds:?}"));
+    assert!(
+        kinds
+            .iter()
+            .skip(lost)
+            .any(|kind| *kind == NoticeKind::Acquired),
+        "the return was not said after the loss: {kinds:?}"
+    );
+    assert!(
+        !kinds.contains(&NoticeKind::Unidentified),
+        "a return past the window said the regression: {kinds:?}"
+    );
+}
+
+/// **Re-detected on the deadline itself** (16c `T-83`): the platform's own pass
+/// at 15,004 is applied before the expiry (it was scheduled a pass earlier, so
+/// its sequence is lower), so the loss is cancelled — no `Lost`, and no second
+/// `Acquired` — at every cadence. This is the (r) fixture's own script, read on
+/// what was staged.
+#[test]
+fn m2_a_return_on_the_deadline_is_cancelled_at_every_cadence() {
+    let first = three_cadences(flicker_replay_arena, &flicker_replay_script(), 25_000);
+    let kinds = eye_contact_kinds(&first);
+    assert!(
+        !kinds.contains(&NoticeKind::Lost),
+        "a loss re-detected on its deadline was said: {kinds:?}"
+    );
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| **kind == NoticeKind::Acquired)
+            .count(),
+        1,
+        "the return was said as a new contact: {kinds:?}"
+    );
+}
+
+/// A red relay for the mesh cases below: sees ten cells, tells a return apart
+/// in a second, and starts seventy cells away from `EYE`, out of every reach.
+fn relay(id: ObjId) -> CustodyUnit {
+    tank(
+        id,
+        Team::Red,
+        centre(60, 60),
+        Some(SensorProfile {
+            max_range_cells: 10,
+            classify_after_ms: 1_000,
+            ..visual()
+        }),
+    )
+}
+
+/// The (r) fixture with a relay whose passes fall at `id % 5_000`.
+fn relayed_arena(relay_id: ObjId) -> Arena {
+    arena_with_sensors(
+        vec![
+            tank(
+                EYE,
+                Team::Red,
+                centre(10, 10),
+                Some(SensorProfile {
+                    max_range_cells: 10,
+                    classify_after_ms: 5_000,
+                    ..visual()
+                }),
+            ),
+            tank(MARK, Team::Blue, centre(15, 10), None),
+            relay(relay_id),
+        ],
+        &[],
+        &flicker_sensors(),
+    )
+}
+
+/// `MARK` goes where only the relay sees it at ten seconds, and at fifteen the
+/// relay and `MARK` come within the mesh's reach of `EYE` — but never within
+/// `EYE`'s own sight — so the only way `EYE` can hold `MARK` again is a share.
+fn relayed_script(relay_id: ObjId) -> Vec<Beat> {
+    vec![
+        Beat {
+            t_ms: 10_000,
+            intents: Vec::new(),
+            places: vec![(MARK, centre(60, 55))],
+        },
+        Beat {
+            t_ms: 15_000,
+            intents: Vec::new(),
+            places: vec![(relay_id, centre(30, 10)), (MARK, centre(35, 10))],
+        },
+    ]
+}
+
+/// **A mesh share landing exactly on the deadline** (16c `T-83`, the one
+/// millisecond the two arms can differ on). The relay's id is 5,004, so its pass
+/// falls at 15,004 with `EYE`'s own; the share it schedules there is sequenced
+/// AFTER the `LossSettles` that `EYE`'s loss scheduled at 10,004, so the loss
+/// is said first and the share is then a new contact — the same story at every
+/// cadence.
+#[test]
+fn m2_a_share_landing_on_the_deadline_is_one_story_at_every_cadence() {
+    const RELAY: ObjId = ObjId(5_004);
+    let first = three_cadences(|| relayed_arena(RELAY), &relayed_script(RELAY), 25_000);
+    let kinds = eye_contact_kinds(&first);
+    let lost = kinds
+        .iter()
+        .position(|kind| *kind == NoticeKind::Lost)
+        .unwrap_or_else(|| panic!("the loss was never said: {kinds:?}"));
+    assert!(
+        kinds
+            .iter()
+            .skip(lost)
+            .any(|kind| *kind == NoticeKind::Acquired),
+        "the share was not said as a contact after the loss: {kinds:?}"
+    );
+    // And the share really landed on the deadline's own millisecond.
+    let shared_at: Vec<i64> = first
+        .events
+        .iter()
+        .filter(|(_, json, _, _)| {
+            json.contains("\"kind\":\"detected\"")
+                && json.contains(&format!("\"viewer\":{}", EYE.0))
+        })
+        .map(|(t_ms, _, _, _)| *t_ms)
+        .collect();
+    assert!(
+        shared_at.contains(&15_004),
+        "the share did not land on the deadline: {shared_at:?}"
+    );
+}
+
+/// **A mesh share landing after the deadline** — the case the pulse-end sweep
+/// split by tempo, and the one test in this section that fails on the old
+/// sweep. At 5,000 and 1,000 ms the share at 15,604 fell in the same pulse as
+/// the deadline (15,000 to 20,000, and 15,000 to 16,000) and cancelled the loss
+/// before the pulse-end sweep said it; at 500 ms the sweep at 15,500 said it
+/// first and the share was a new contact. The due event says it at the deadline
+/// at every cadence.
+#[test]
+fn m2_a_share_landing_after_the_deadline_is_a_loss_then_a_contact_at_every_cadence() {
+    const RELAY: ObjId = ObjId(604);
+    let first = three_cadences(|| relayed_arena(RELAY), &relayed_script(RELAY), 25_000);
+    let kinds = eye_contact_kinds(&first);
+    let lost = kinds
+        .iter()
+        .position(|kind| *kind == NoticeKind::Lost)
+        .unwrap_or_else(|| panic!("the loss was never said: {kinds:?}"));
+    assert!(
+        kinds
+            .iter()
+            .skip(lost)
+            .any(|kind| *kind == NoticeKind::Acquired),
+        "the share was not said as a contact after the loss: {kinds:?}"
+    );
+}
+
+/// **A moving observer** (16c `T-84`): the (r) flicker with `EYE` started up
+/// and driven north while it happens. A rendered line reads its bearing and its
+/// band off the frame of the pulse it arrived in, so with the observer moving
+/// the rendered lines are a function of the cadence; what was STAGED is not,
+/// and that is the comparison `three_cadences` makes.
+#[test]
+fn m2_a_moving_observer_stages_one_story_at_every_cadence() {
+    let mut script = vec![
+        Beat {
+            t_ms: 0,
+            intents: vec![intent(EYE, IntentKind::Startup, 1)],
+            places: Vec::new(),
+        },
+        // Online at 10,000 (the ten-second startup): creep north at two metres a
+        // second, slow enough that `MARK` is still in reach when it comes back.
+        Beat {
+            t_ms: 10_000,
+            intents: vec![intent(EYE, IntentKind::Speed { cms: 200 }, 2)],
+            places: Vec::new(),
+        },
+    ];
+    // The flicker itself, merged into the same two beats' timeline.
+    for beat in flicker_replay_script() {
+        if let Some(same) = script.iter_mut().find(|mine| mine.t_ms == beat.t_ms) {
+            same.places.extend(beat.places);
+        } else {
+            script.push(beat);
+        }
+    }
+    script.sort_by_key(|beat| beat.t_ms);
+    let first = three_cadences(flicker_replay_arena, &script, 25_000);
+    // The run is worth comparing: the observer really moved, and the pilot was
+    // told about the contact.
+    let kinds = eye_contact_kinds(&first);
+    assert!(
+        kinds.contains(&NoticeKind::Acquired) && kinds.contains(&NoticeKind::Classified),
+        "the moving observer was told nothing: {kinds:?}"
+    );
+    assert!(
+        first
+            .events
+            .iter()
+            .any(|(_, json, _, _)| json.contains("\"kind\":\"power_online\"")),
+        "the observer never came online, so it never moved"
+    );
+    // **And it moved** (the M.2 review's `M2T-7`): `EYE`'s northing off the
+    // black box's own position summaries, first against last. A `Speed` refused
+    // on its beat would leave it standing, and this test would be the static
+    // (r) fixture again.
+    let northing: Vec<(i64, i64)> = first
+        .events
+        .iter()
+        .filter_map(
+            |(t_ms, json, _, _)| match serde_json::from_str::<EventKind>(json) {
+                Ok(EventKind::PositionSummary { units }) => units
+                    .iter()
+                    .find(|(unit, ..)| *unit == EYE)
+                    .map(|(_, _, y_cm, _, _)| (*t_ms, *y_cm)),
+                _ => None,
+            },
+        )
+        .collect();
+    let (Some((_, from)), Some((until, to))) = (northing.first(), northing.last()) else {
+        panic!("no position summary carried EYE");
+    };
+    // Two metres a second from ten seconds on, less the time to get up to it.
+    assert!(
+        to - from >= 2_000,
+        "EYE crept {} cm north by {until}: it never really moved ({northing:?})",
+        to - from
+    );
+}
+
+/// **A cancel that renames the row, at every cadence** (16c `B-74`, the M.2
+/// review's `M2T-5`). `EYE` numbers `MARK` `X1` at 4 and, taking ten seconds to
+/// tell a contact apart, still holds it as `X1` when `MARK` goes out of its
+/// sight at ten seconds: lost at 10,004, the window ending at 15,004. A red
+/// relay, far out of the mesh's reach, sees `MARK` at its pass at 10,003; at
+/// fifteen seconds the relay is put twenty cells east of `EYE`, inside the
+/// mesh's reach, with `MARK` five cells beyond it and still out of `EYE`'s own
+/// sight, and the relay's pass at 15,003 tells `MARK` apart and shares it —
+/// one millisecond inside the window. So the cancel arm meets a mesh insert
+/// that reads `BA` where the loss read `X1`, and says so as one identification:
+/// the same staged story at 5,000, 1,000 and 500 ms, with no loss, no second
+/// acquisition and no regression.
+#[test]
+fn m2_a_share_that_renames_a_held_loss_is_one_identification_at_every_cadence() {
+    const RELAY: ObjId = ObjId(5_003);
+    let arena = || {
+        arena_with_sensors(
+            vec![
+                tank(
+                    EYE,
+                    Team::Red,
+                    centre(10, 10),
+                    Some(SensorProfile {
+                        max_range_cells: 10,
+                        classify_after_ms: 10_000,
+                        ..visual()
+                    }),
+                ),
+                tank(MARK, Team::Blue, centre(15, 10), None),
+                relay(RELAY),
+            ],
+            &[],
+            &flicker_sensors(),
+        )
+    };
+    let script = vec![
+        Beat {
+            t_ms: 10_000,
+            intents: Vec::new(),
+            places: vec![(MARK, centre(60, 55))],
+        },
+        Beat {
+            t_ms: 15_000,
+            intents: Vec::new(),
+            places: vec![(RELAY, centre(30, 10)), (MARK, centre(35, 10))],
+        },
+    ];
+    let first = three_cadences(arena, &script, 20_000);
+    let kinds = eye_contact_kinds(&first);
+    for never in [NoticeKind::Lost, NoticeKind::Unidentified] {
+        assert!(
+            !kinds.contains(&never),
+            "the cancel said {never:?}: {kinds:?}"
+        );
+    }
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| **kind == NoticeKind::Acquired)
+            .count(),
+        1,
+        "the return was said as a new contact: {kinds:?}"
+    );
+    let renamed: Vec<&FrameNotice> = first
+        .staged
+        .get(&ObjId(1_000))
+        .into_iter()
+        .flatten()
+        .filter(|notice| {
+            matches!(
+                notice,
+                FrameNotice::Contact {
+                    kind: NoticeKind::Classified,
+                    was: Some(_),
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(
+        renamed.len(),
+        1,
+        "the rename was not said exactly once: {:?}",
+        first.staged.get(&ObjId(1_000))
+    );
+    assert!(
+        matches!(
+            renamed.first(),
+            Some(FrameNotice::Contact {
+                class: Classification::Classified { team: Team::Blue },
+                was: Some(Designator::Provisional(1)),
+                ..
+            })
+        ),
+        "the identification did not quote X1: {renamed:?}"
+    );
+    // The share really landed inside the window, and the pilot read the rename.
+    assert!(
+        first.notices.get(&ObjId(1_000)).is_some_and(|lines| lines
+            .iter()
+            .any(|line| line.as_str() == "Contact X1 identified: BA, blue.")),
+        "the pilot did not read the identification: {:?}",
+        first.notices.get(&ObjId(1_000))
+    );
+}
+
+/// **A window shorter than the substep** (the M.2 review's `M2-R4`):
+/// `[tacsim.sensors].pass_ms` may be as short as 50 against a 250 ms substep,
+/// so a loss can open and close its hysteresis inside one substep. Its expiry
+/// is then settled by the staging scan that staged it, at its own place, and
+/// never scheduled into the past — where it popped a boundary late and, at a
+/// pulse's end, made the phase-4 drain run a substep at one cadence that the
+/// others never ran. With a 100 ms pass and a four-pass loss band `MARK` is
+/// lost a little after 10,250, in the substep that ends a 500 ms pulse, and the
+/// three cadences are one event list, one hash sequence and one staged story:
+/// the loss, and the return at fifteen seconds.
+#[test]
+fn m2_a_window_shorter_than_the_substep_is_one_story_at_every_cadence() {
+    let arena = || {
+        arena_with_sensors(
+            vec![
+                tank(
+                    EYE,
+                    Team::Red,
+                    centre(10, 10),
+                    Some(SensorProfile {
+                        max_range_cells: 10,
+                        classify_after_ms: 5_000,
+                        ..visual()
+                    }),
+                ),
+                tank(MARK, Team::Blue, centre(15, 10), None),
+            ],
+            &[],
+            &SensorsConfig {
+                pass_ms: 100,
+                lost_after_passes: 4,
+                ..SensorsConfig::default()
+            },
+        )
+    };
+    let first = three_cadences(arena, &flicker_replay_script(), 20_000);
+    let lost_at: Vec<i64> = first
+        .events
+        .iter()
+        .filter(|(_, json, _, _)| {
+            json.contains("\"kind\":\"lost\"") && json.contains(&format!("\"viewer\":{}", EYE.0))
+        })
+        .map(|(t_ms, ..)| *t_ms)
+        .collect();
+    assert_eq!(lost_at.len(), 1, "one loss: {lost_at:?}");
+    let lost = lost_at.first().copied().unwrap_or(0);
+    // The fixture's premise: the window (one 100 ms pass) opens and closes
+    // inside the substep that ends the 500 ms pulse at 10,500.
+    assert!(
+        lost > 10_250 && lost + 100 <= 10_500,
+        "the fixture needs the loss's whole window inside 10,250..10,500: {lost}"
+    );
+    let kinds = eye_contact_kinds(&first);
+    let said = kinds
+        .iter()
+        .position(|kind| *kind == NoticeKind::Lost)
+        .unwrap_or_else(|| panic!("the loss was never said: {kinds:?}"));
+    assert!(
+        kinds
+            .iter()
+            .skip(said)
+            .any(|kind| *kind == NoticeKind::Acquired),
+        "the return was not said after the loss: {kinds:?}"
+    );
 }

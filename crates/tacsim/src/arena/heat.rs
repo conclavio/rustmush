@@ -112,6 +112,10 @@ impl Arena {
     /// A plan M32 refuses leaves the unit exactly as it was and the shot stands:
     /// the round has left the barrel either way, and a shot unfired because a
     /// journal entry would not take is the wrong failure.
+    ///
+    /// `t_ms` is the shot's own `at_ms` (16b cut M.2, 16c `T-02`): the pulse's end
+    /// for a pilot's shot, the tick's timestamp for a machine's, so the heat and
+    /// the `fired` line belong to one arena millisecond.
     pub fn raise_heat(&mut self, unit: ObjId, weapon: &str, shot_seq: u64, t_ms: i64) {
         let Some(state) = self.unit(unit) else {
             return;

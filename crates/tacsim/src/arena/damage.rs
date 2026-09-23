@@ -1069,7 +1069,13 @@ impl Arena {
             // `Disabled` state *is* a wreck, so the distribution a report prints
             // has to agree with the field.
             DueKind::ReflexTick { unit, .. } => *unit != target,
-            DueKind::Impact { .. } | DueKind::PositionSummary => true,
+            // **16b cut M.2**: the duration bound is the match's, and a wreck's
+            // held losses are still said to whoever sits in it — the sweep this
+            // event replaced said them too.
+            DueKind::Impact { .. }
+            | DueKind::PositionSummary
+            | DueKind::MatchDeadline
+            | DueKind::LossSettles { .. } => true,
         });
         if self
             .unit(target)

@@ -462,11 +462,20 @@ fn fire_is_refused_for_a_lock_a_cycle_a_round_and_power_in_that_order() {
     // Cold, unlocked, loaded, ready. **Power is checked last** (doc 16 §3.7's
     // refusal column), so the answer is the lock.
     assert_eq!(arena.unit(RED).map(|state| state.power), Some(Power::Off));
-    assert_eq!(arena.resolve_fire(RED, "cannon"), Err(Refusal::NoLock));
+    assert_eq!(
+        arena.resolve_fire(RED, "cannon", arena.now_ms),
+        Err(Refusal::NoLock)
+    );
     // A weapon the unit does not carry is refused before anything about the shot.
-    assert_eq!(arena.resolve_fire(RED, "trebuchet"), Err(Refusal::NoWeapon));
+    assert_eq!(
+        arena.resolve_fire(RED, "trebuchet", arena.now_ms),
+        Err(Refusal::NoWeapon)
+    );
     // A tank with nothing to shoot with is the same answer, not a panic.
-    assert_eq!(arena.resolve_fire(BLUE, "cannon"), Err(Refusal::NoWeapon));
+    assert_eq!(
+        arena.resolve_fire(BLUE, "cannon", arena.now_ms),
+        Err(Refusal::NoWeapon)
+    );
 
     let wall = warm(&mut arena, &mut bytes);
     let contact = contact_of(RED, BLUE);
@@ -485,20 +494,26 @@ fn fire_is_refused_for_a_lock_a_cycle_a_round_and_power_in_that_order() {
             .ready_at_ms
             .insert(SmolStr::new("cannon"), cycling_until);
     }
-    assert_eq!(arena.resolve_fire(RED, "cannon"), Err(Refusal::Cycling));
+    assert_eq!(
+        arena.resolve_fire(RED, "cannon", arena.now_ms),
+        Err(Refusal::Cycling)
+    );
     // Empty, ready.
     if let Some(state) = arena.unit_mut(RED) {
         state.ready_at_ms.insert(SmolStr::new("cannon"), 0);
         state.ammo.insert(SmolStr::new("cannon"), 0);
     }
-    assert_eq!(arena.resolve_fire(RED, "cannon"), Err(Refusal::Empty));
+    assert_eq!(
+        arena.resolve_fire(RED, "cannon", arena.now_ms),
+        Err(Refusal::Empty)
+    );
     // Loaded, ready, locked — and cold, which is the last thing asked.
     if let Some(state) = arena.unit_mut(RED) {
         state.ammo.insert(SmolStr::new("cannon"), 40);
         state.power = Power::Off;
     }
     assert_eq!(
-        arena.resolve_fire(RED, "cannon"),
+        arena.resolve_fire(RED, "cannon", arena.now_ms),
         Err(Refusal::PowerNotOnline)
     );
 
@@ -687,7 +702,7 @@ fn a_beam_is_scheduled_at_now() {
     let mut bytes: Vec<u8> = Vec::new();
     let wall = warm(&mut arena, &mut bytes);
     let contact = contact_of(RED, BLUE);
-    pulse(
+    let out = pulse(
         &mut arena,
         wall + 500,
         &[
@@ -702,12 +717,34 @@ fn a_beam_is_scheduled_at_now() {
         ],
         &mut bytes,
     );
-    let shot = arena.shot(1).cloned().expect("shot 1");
+    // **16b cut M.2** (16c `B-51`): the round is no longer left in flight for
+    // the next pulse to find — the phase-4 drain lands it in the pulse that fired
+    // it, so what this test reads is the ledger and not `Arena::shot`. (It read
+    // `arena.shot(1)` and compared its two stamps before the cut; the shot is
+    // resolved by the time the pulse returns now.)
+    assert!(arena.shot(1).is_none(), "the beam is still in flight");
     assert_eq!(
-        shot.impact_at_ms, shot.fired_at_ms,
-        "a beam has no flight time"
+        out.substeps, 3,
+        "the pulse's two substeps and the phase-4 drain"
     );
-    assert!(shot.range_cm > 0, "and it still has a range");
+    let log = events(&mut arena, &mut bytes);
+    let fired = log
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::Fired {
+                shot_seq: 1,
+                range_cm,
+                ..
+            } => Some((event.t_ms, *range_cm)),
+            _ => None,
+        })
+        .expect("the `fired` line");
+    assert!(fired.1 > 0, "and it still has a range");
+    let impact = log
+        .iter()
+        .find(|event| matches!(event.kind, EventKind::Impact { shot_seq: 1, .. }))
+        .map(|event| event.t_ms);
+    assert_eq!(impact, Some(fired.0), "a beam has no flight time");
 }
 
 // ---------------------------------------------------------------------------
@@ -1020,7 +1057,10 @@ fn a_contact_the_platform_loses_clears_the_lock_with_one_notice() {
         "and it has a line of its own"
     );
     // A `FIRE` afterwards is refused for want of the lock it used to have.
-    assert_eq!(arena.resolve_fire(RED, "cannon"), Err(Refusal::NoLock));
+    assert_eq!(
+        arena.resolve_fire(RED, "cannon", arena.now_ms),
+        Err(Refusal::NoLock)
+    );
 }
 
 // ---------------------------------------------------------------------------
