@@ -1,7 +1,7 @@
 //! **The arena task, on a real runtime** (16b cut T.2, T1; doc 16 §3.1 "The seam
 //! is seven messages", "The arena core is a library", "Failure").
 //!
-//! Four proofs, each driving the task the way the world half does — a check-out,
+//! Six proofs, each driving the task the way the world half does — a check-out,
 //! an inbox, an egress and a stop signal — and nothing else:
 //!
 //! - **(a)** a two-unit match takes a `Startup` intent and a heading, publishes
@@ -15,14 +15,24 @@
 //! - **(e)** (16b cut D.1) [`ArenaOut::Frames`] carries the arena's clock and is
 //!   sent when there is a frame **or** when the arena second has moved, so a
 //!   match nobody is moving in still publishes its clock — once an arena second,
-//!   never twice.
+//!   never twice;
+//! - **(f)** (16b cut AA.3, 16c `B-79`) a stall on the pulse that **ended** the
+//!   match voids it too: the result is `Void` with no unit returned, and the
+//!   black box keeps the end the arena journalled — `match_ended` for a timeout,
+//!   `aborted` for an abort — and no `void` event; while the same terminal pulse
+//!   inside the bound keeps its reason and returns both tanks.
 //!
 //! # Seeds
 //!
 //! Each test uses its own match seed, because the two fault-injection hooks in
-//! `arena/step.rs` are armed by seed so that two tests running beside each other
-//! in this binary cannot arm each other's arena. The seeds are listed in [`SEEDS`]
-//! so a fifth test cannot quietly reuse one.
+//! `arena/step.rs` fire only for the arena whose seed they were armed with, so
+//! one test's FAULT cannot land in another's match. The seeds are listed in
+//! [`SEEDS`] so a new test cannot quietly reuse one.
+//!
+//! Distinct seeds do **not** stop one test's ARMING overwriting another's: each
+//! hook stores its seed in one global slot, and arming replaces whatever seed is
+//! there. The proofs that arm the stall hook therefore hold [`STALL_HOOK`]
+//! from before they arm until their match has ended (16b cut AA.3).
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -46,16 +56,27 @@ use tokio::sync::mpsc;
 
 /// Every seed this file arms an arena with, and which proof owns it. The two
 /// hooks in `arena/step.rs` key on the seed, so a duplicate here would let one
-/// test's fault land in another's match.
+/// test's fault land in another's match. (A distinct seed does not stop one
+/// test's arming overwriting another's — that is [`STALL_HOOK`]'s job.)
 /// **16b cut D.1**: proof (e) arms no hook, so its matches are numbered out of
 /// the way rather than listed here — `2_360 + period_ms` for the idle clock and
-/// `2_371` for the frame that outranks it.
-const SEEDS: [(u64, &str); 4] = [
+/// `2_371` for the frame that outranks it, and `2_377` for the shipped config's
+/// clock. **16b cut AA.3** follows the same convention for its hook-free
+/// control: `2_381`, the terminal pulse inside the bound.
+const SEEDS: [(u64, &str); 6] = [
     (2_350, "the round trip"),
     (2_351, "the injected panic"),
     (2_352, "the stall"),
     (2_353, "the stop signal"),
+    (2_354, "the stalled terminal pulse"),
+    (2_355, "the stalled abort"),
 ];
+
+/// **16b cut AA.3**: the stall hook is one global seed slot, and arming it
+/// overwrites whatever seed is there — so every proof that arms it holds
+/// this from before it arms until its `collect` returns. Tokio's mutex,
+/// because the guard lives across `.await`.
+static STALL_HOOK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 // ---------------------------------------------------------------------------
 // Fixtures — the same shapes `tests/arena.rs` builds, for the same reason: the
@@ -236,15 +257,29 @@ fn fast_arena() -> ArenaConfig {
     cfg
 }
 
-/// Start one match on the current runtime.
+/// Start one match on the current runtime, on the default match rules.
 fn start(seed: u64, arena_cfg: &ArenaConfig) -> (ArenaHandle, mpsc::Receiver<ArenaOut>) {
+    start_with(seed, arena_cfg, &MatchConfig::default())
+}
+
+/// Start one match on the current runtime, on the match rules given.
+///
+/// **16b cut AA.3**: [`spawn_arena`] does not validate the `MatchConfig` (the
+/// 60,000 ms floor on `max_duration_ms` is `MatchConfig::validate`'s, run by the
+/// server's config load), which is what lets a test end a match on its opening
+/// pulse with `max_duration_ms: 0`.
+fn start_with(
+    seed: u64,
+    arena_cfg: &ArenaConfig,
+    match_cfg: &MatchConfig,
+) -> (ArenaHandle, mpsc::Receiver<ArenaOut>) {
     let (egress_tx, egress_rx) = mpsc::channel(256);
     let (handle, _join) = spawn_arena(
         &tokio::runtime::Handle::current(),
         MatchId(seed),
         custody(seed),
         arena_cfg,
-        &MatchConfig::default(),
+        match_cfg,
         &SensorsConfig::default(),
         egress_tx,
     )
@@ -491,6 +526,9 @@ async fn a_panic_in_step_voids_the_match_and_publishes_nothing_from_that_pulse()
 /// the arena has no preemption.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_pulse_past_the_stall_bound_voids_the_match() {
+    // 16b cut AA.3: held until the match has ended, so proof (f)'s armings cannot
+    // overwrite this one's in the window before the first pulse.
+    let _stall = STALL_HOOK.lock().await;
     let seed = SEEDS[2].0;
     let mut arena_cfg = fast_arena();
     arena_cfg.tempo.stall_ms = 30;
@@ -522,6 +560,203 @@ async fn a_pulse_past_the_stall_bound_voids_the_match() {
                 .any(|event| matches!(event.kind, EventKind::Void)),
         "whatever left carries the void, never a clean end: {:?}",
         log.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (f) The stalled terminal pulse (16b cut AA.3, 16c `B-79`)
+// ---------------------------------------------------------------------------
+
+/// Match rules whose **opening pulse is the terminal one**: phase 5's `Timeout`
+/// test is `now_ms >= max_duration_ms`, which is `0 >= 0` on the first pulse. That
+/// pulse integrates nothing but runs every phase, so it journals
+/// `match_ended { timeout }`, flushes the chunk and ends the match — and the
+/// by-seed stall hook lands on exactly that pulse.
+fn ends_on_the_opening_pulse() -> MatchConfig {
+    MatchConfig {
+        max_duration_ms: 0,
+        ..MatchConfig::default()
+    }
+}
+
+/// The units the arena handed back on its `Ended`, if it reported one.
+fn returned(messages: &[ArenaOut]) -> Option<usize> {
+    messages.iter().rev().find_map(|message| match message {
+        ArenaOut::Ended { units, .. } => Some(units.len()),
+        _ => None,
+    })
+}
+
+/// **A stall on the pulse that ENDED the match voids it** (16b cut AA.3, 16c
+/// `B-79`; doc 16 §3.1 "Failure").
+///
+/// Before AA.3 the task honoured the pulse's own end before it read the
+/// watchdog, so a 200 ms pulse under a 30 ms bound that also timed the match out
+/// was reported `Timeout` with both tanks' arena-derived cells returned for
+/// commit. Now the result is `Void`, no unit comes back (the world restores the
+/// check-out snapshots), and — the forced void is not journalled — the black box
+/// ends in the arena's own `match_ended { timeout }` with no `void` event.
+#[tokio::test(flavor = "multi_thread")]
+async fn aa3_a_stall_on_the_pulse_that_ends_the_match_voids_it_and_returns_no_units() {
+    // Held until the match has ended: proof (c) and the stalled-abort proof arm
+    // the same global slot.
+    let _stall = STALL_HOOK.lock().await;
+    let seed = SEEDS[4].0;
+    let mut arena_cfg = fast_arena();
+    arena_cfg.tempo.stall_ms = 30;
+    let match_cfg = ends_on_the_opening_pulse();
+    let mut armed = Arena::new(
+        custody(seed),
+        &arena_cfg,
+        &match_cfg,
+        &SensorsConfig::default(),
+    )
+    .expect("the arming arena is accepted");
+    armed.stall_next_step_for_tests(Duration::from_millis(200));
+    drop(armed);
+
+    let (_handle, mut rx) = start_with(seed, &arena_cfg, &match_cfg);
+    let messages = collect(&mut rx, Duration::from_millis(2_000)).await;
+
+    assert_eq!(
+        ended(&messages),
+        Some(EndReason::Void),
+        "a 200 ms terminal pulse under a 30 ms bound voids the match: {messages:#?}"
+    );
+    assert_eq!(
+        returned(&messages),
+        Some(0),
+        "a voided match returns no unit, so the world restores every snapshot: {messages:#?}"
+    );
+    // The stalled pulse completed, so its own chunk left — and it carries the
+    // arena's own end and no `void` event: the forced void is the task's, not
+    // the ledger's.
+    let log = events(&messages);
+    let kinds: Vec<&str> = log.iter().map(|e| e.kind.as_str()).collect();
+    assert!(
+        log.iter().any(|event| matches!(
+            event.kind,
+            EventKind::MatchEnded {
+                reason: EndReason::Timeout
+            }
+        )),
+        "the black box ends in the arena's own `match_ended {{ timeout }}`: {kinds:?}"
+    );
+    assert!(
+        !log.iter()
+            .any(|event| matches!(event.kind, EventKind::Void)),
+        "the forced void is not journalled: {kinds:?}"
+    );
+    // `collect` returns at the first `Ended`, so "exactly one" is proved only by
+    // asking again: nothing more arrives, and no stopping pulse ran.
+    assert!(
+        collect(&mut rx, Duration::from_millis(300))
+            .await
+            .is_empty(),
+        "a voided match publishes nothing further"
+    );
+}
+
+/// **The control: the same terminal pulse inside the bound keeps its reason and
+/// its units** (16b cut AA.3).
+///
+/// No hook and no lock, on an out-of-the-way seed (see [`SEEDS`]), and
+/// [`fast_arena`] UNCHANGED: its `stall_ms` is the default 2,000, so the control
+/// does not depend on a debug-build opening pulse finishing inside a tight bound.
+#[tokio::test(flavor = "multi_thread")]
+async fn aa3_a_fast_pulse_that_ends_the_match_keeps_its_reason_and_its_units() {
+    let seed = 2_381;
+    let arena_cfg = fast_arena();
+    let (_handle, mut rx) = start_with(seed, &arena_cfg, &ends_on_the_opening_pulse());
+    let messages = collect(&mut rx, Duration::from_millis(2_000)).await;
+
+    assert_eq!(
+        ended(&messages),
+        Some(EndReason::Timeout),
+        "a terminal pulse inside the bound keeps its own reason: {messages:#?}"
+    );
+    assert_eq!(
+        returned(&messages),
+        Some(2),
+        "and both tanks come back for the check-in: {messages:#?}"
+    );
+    let log = events(&messages);
+    assert!(
+        log.iter().any(|event| matches!(
+            event.kind,
+            EventKind::MatchEnded {
+                reason: EndReason::Timeout
+            }
+        )),
+        "the chunk carries the arena's `match_ended {{ timeout }}`: {:?}",
+        log.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>()
+    );
+}
+
+/// **A stall on the pulse that honours an ABORT voids it too, and the black box
+/// ends in `aborted`** (16b cut AA.3, 16c `B-79`).
+///
+/// The terminal arm is reason-agnostic, and the end the arena journals is not
+/// always a `match_ended`: the library's `Stop` path writes `aborted` for an
+/// abort. This pins what the black box actually holds when the forced void lands
+/// on that path.
+///
+/// A **current-thread** runtime makes the stalled pulse deterministically the
+/// stopping one: the spawned task is not polled until this test first awaits, so
+/// the `Stop(Abort)` is already in the inbox, and the loop's biased select takes
+/// the inbox before the (already due) opening pulse — whose phase 1 then honours
+/// the stop.
+#[tokio::test(flavor = "current_thread")]
+async fn aa3_a_stall_on_the_pulse_that_honours_an_abort_voids_it_and_ends_in_aborted() {
+    // Held until the match has ended: proof (c) and the terminal-pulse proof arm
+    // the same global slot.
+    let _stall = STALL_HOOK.lock().await;
+    let seed = SEEDS[5].0;
+    let mut arena_cfg = fast_arena();
+    arena_cfg.tempo.stall_ms = 30;
+    let mut armed = Arena::new(
+        custody(seed),
+        &arena_cfg,
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the arming arena is accepted");
+    armed.stall_next_step_for_tests(Duration::from_millis(200));
+    drop(armed);
+
+    let (handle, mut rx) = start(seed, &arena_cfg);
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    let messages = collect(&mut rx, Duration::from_millis(2_000)).await;
+
+    assert_eq!(
+        ended(&messages),
+        Some(EndReason::Void),
+        "a 200 ms stopping pulse under a 30 ms bound voids the match: {messages:#?}"
+    );
+    assert_eq!(
+        returned(&messages),
+        Some(0),
+        "a voided match returns no unit: {messages:#?}"
+    );
+    let log = events(&messages);
+    let kinds: Vec<&str> = log.iter().map(|e| e.kind.as_str()).collect();
+    assert!(
+        log.last()
+            .is_some_and(|event| matches!(event.kind, EventKind::Aborted)),
+        "the black box ends in the arena's own `aborted`: {kinds:?}"
+    );
+    assert!(
+        !log.iter()
+            .any(|event| matches!(event.kind, EventKind::Void | EventKind::MatchEnded { .. })),
+        "no `void` and no `match_ended`: the forced void is the task's: {kinds:?}"
+    );
+    assert!(
+        collect(&mut rx, Duration::from_millis(300))
+            .await
+            .is_empty(),
+        "a voided match publishes nothing further"
     );
 }
 
@@ -673,7 +908,7 @@ fn clocks(messages: &[ArenaOut]) -> Vec<(usize, i64)> {
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn d1_an_idle_match_publishes_its_clock_once_an_arena_second() {
     for (period_ms, gap_ms) in [(500_u32, 1_000_i64), (1_000, 1_000), (5_000, 5_000)] {
-        // A seed of its own per cadence, and none of the four fault seeds.
+        // A seed of its own per cadence, and none of the seeds in `SEEDS`.
         let seed = 2_360 + u64::from(period_ms);
         let (_handle, mut rx) = start_unseated(seed, &arena_at(period_ms), &no_passes());
         let messages = collect(&mut rx, Duration::from_millis(10_050)).await;

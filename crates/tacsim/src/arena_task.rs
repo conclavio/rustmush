@@ -52,8 +52,12 @@
 //! never touches the arena's chunk egress again. A pulse that takes longer than
 //! `tempo.stall_ms` is voided by the watchdog after it returns (the arena has no
 //! preemption, so a stalled pulse cannot be interrupted, only refused a
-//! successor). Both are consistent with the world task's own firewall: nothing a
-//! faulted turn touched reaches the store.
+//! successor — or, when the stalled pulse is the one that ended the match,
+//! refused its result: the match is void at the task, no unit is returned, and
+//! the black box keeps whatever end the arena journalled — `match_ended`, or
+//! `aborted` for an abort — and no `void` event; 16b cut AA.3). Both are
+//! consistent with the world task's own firewall: nothing a faulted turn touched
+//! reaches the store.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -505,8 +509,44 @@ impl Task {
         let next_due_ms = out.next_due_ms;
         self.publish(out).await;
 
+        // **16b cut AA.3 (16c `B-79`)**: the watchdog is read BEFORE the end is
+        // honoured. A pulse that overran `tempo.stall_ms` and also ended the match
+        // used to be accepted with its own reason and its arena-derived cells
+        // committed, where doc 16 §3.1 says a stalled pulse is void and every unit
+        // goes back to its check-out snapshot. The void is forced HERE and not asked
+        // of the arena: `Arena::stop` is first-wins and `Arena::step` echoes an
+        // already-recorded end before it reads the stop, so the library's own
+        // stopping pulse would hand the original reason straight back. Nothing is
+        // stepped again; `Task::end` sends no units for a `Void`, and the world
+        // restores the snapshots. The black box therefore keeps the arena's own
+        // end wherever it journalled one (`match_ended`, or `aborted` for an
+        // abort; a ledger-full timeout journals none) and no `void` event, while
+        // the result says `void` — recorded in 16b's AA row; the journalled
+        // variant is a library change and larger.
+        let stalled = took > self.stall;
         if let Some(end) = ended {
-            self.end(end).await;
+            // An end that is already a void keeps its word: both reasons are void
+            // on both sides of the seam (`Task::end` and `match_::finish` test the
+            // same pair), and the overflow's `void` event is already in the black
+            // box — there is nothing truer to say.
+            let already_void = matches!(end.reason, EndReason::Void | EndReason::LedgerOverflow);
+            if stalled && !already_void {
+                tracing::error!(
+                    match_id = %self.match_id,
+                    took_ms = took.as_millis(),
+                    stall_ms = self.stall.as_millis(),
+                    reason = ?end.reason,
+                    arena_ms = end.t_ms,
+                    "arena pulse exceeded tempo.stall_ms on the pulse that ended the match; the match is void and its units are restored"
+                );
+                self.end(MatchEnd {
+                    reason: EndReason::Void,
+                    t_ms: self.arena.now_ms,
+                })
+                .await;
+            } else {
+                self.end(end).await;
+            }
             return Pulse::Done;
         }
 
@@ -515,7 +555,7 @@ impl Task {
         // successor. The stopping pulse below is the library's own `Stop` path,
         // so the `void` event and the ledger's tail are recorded the same way an
         // aborted match records them.
-        if took > self.stall {
+        if stalled {
             tracing::error!(
                 match_id = %self.match_id,
                 took_ms = took.as_millis(),

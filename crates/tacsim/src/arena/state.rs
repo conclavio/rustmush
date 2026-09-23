@@ -2391,6 +2391,12 @@ pub enum EndReason {
     /// `SIM ABORT`.
     Abort,
     /// A panic or a watchdog: no arena-derived cell may be committed.
+    ///
+    /// **16b cut AA.3 (16c `B-79`)**: a stall on the pulse that ended the match
+    /// is voided by the arena task without a stopping pulse, so the ledger keeps
+    /// the arena's own end wherever it journalled one (`match_ended`, or `aborted`
+    /// for an abort; a ledger-full timeout journals none) and no `void` event,
+    /// while the result says void.
     Void,
     /// The bounded egress backed up past `ledger.max_unflushed_chunks`.
     LedgerOverflow,
