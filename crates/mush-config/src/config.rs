@@ -104,7 +104,6 @@
 //! | `[tacsim.resolution].paths` | `[]` | **16b cut G** (doc 16 §4): the resolution tables (hit curve, error terms, `p_min`, `p_max`); parsed and **inert** until cut W reads them |
 //! | `[tacsim.harness].units` | `300` | **16b cut G** (doc 16 §1 A2): units the scale harness places and moves |
 //! | `[tacsim.harness].fighting` | `24` | how many of those are fighting |
-//! | `[tacsim.harness].weapons` | `150` | weapons on their cadences |
 //! | `[tacsim.harness].engaged_p99_ms` | `25` | the per-pulse p99 ceiling in `Engaged` tempo |
 //! | `[tacsim.harness].max_traces_per_pulse` | `4000` | line-of-sight traces one pulse may make |
 //! | `[tacsim.harness].max_path_queries_per_pulse` | `64` | path queries one pulse may make |
@@ -1378,6 +1377,10 @@ pub struct TacsimResolutionCfg {
 /// connected fake sessions, on one core*, with a per-pulse p99 under 25 ms in
 /// `Engaged`. These are that acceptance's numbers, in config so the harness runs
 /// at the configuration maxima rather than at constants compiled into it.
+///
+/// The weapon count is **not** a key (16b cut U.3, 16c `T-37`): the harness
+/// fields the catalog armed as authored, so the cohort decides what is armed,
+/// and the `weapons` key it once carried was read by no lane.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TacsimHarnessCfg {
@@ -1385,8 +1388,6 @@ pub struct TacsimHarnessCfg {
     pub units: u32,
     /// How many of those are fighting.
     pub fighting: u32,
-    /// Weapons on their cadences across the fighting units.
-    pub weapons: u32,
     /// The per-pulse p99 ceiling, milliseconds, in `Engaged` tempo.
     pub engaged_p99_ms: u32,
     /// The most line-of-sight traces one pulse may make. Perception has no
@@ -1434,7 +1435,6 @@ impl Default for TacsimHarnessCfg {
         TacsimHarnessCfg {
             units: 300,
             fighting: 24,
-            weapons: 150,
             engaged_p99_ms: 25,
             max_traces_per_pulse: 4_000,
             max_path_queries_per_pulse: 64,
@@ -2593,7 +2593,7 @@ scene_turn_dedline_secs = 30
         );
 
         let h = &cfg.tacsim.harness;
-        assert_eq!((h.units, h.fighting, h.weapons), (300, 24, 150));
+        assert_eq!((h.units, h.fighting), (300, 24));
         assert_eq!(h.engaged_p99_ms, 25);
         assert_eq!(
             (
@@ -2655,7 +2655,6 @@ scene_turn_dedline_secs = 30
              [tacsim.harness]\n\
              units = 10\n\
              fighting = 4\n\
-             weapons = 6\n\
              engaged_p99_ms = 50\n\
              max_traces_per_pulse = 100\n\
              max_path_queries_per_pulse = 8\n\
@@ -2721,13 +2720,12 @@ scene_turn_dedline_secs = 30
             (
                 h.units,
                 h.fighting,
-                h.weapons,
                 h.engaged_p99_ms,
                 h.max_traces_per_pulse,
                 h.max_path_queries_per_pulse,
                 h.max_share_ops_per_pulse,
             ),
-            (10, 4, 6, 50, 100, 8, 12)
+            (10, 4, 50, 100, 8, 12)
         );
         assert_eq!(h.max_ledger_bytes, 2_048);
         // 16b cut U.2: the five bounds, written out like the rest.
@@ -2773,6 +2771,20 @@ scene_turn_dedline_secs = 30
             assert!(refused.contains(key), "{text}: {refused}");
             assert!(refused.contains("unknown field"), "{text}: {refused}");
         }
+    }
+
+    /// **16b cut U.3** (16c `T-37`): `[tacsim.harness].weapons` is retired. The
+    /// harness read it into a knob and reported it, and since 16b cut W no lane
+    /// armed anything by it — the cohort is armed as the catalog authors it — so
+    /// the key went with the knob, and a `mushd.toml` that still carries it
+    /// refuses to start like any other unknown key rather than keeping a number
+    /// that means nothing.
+    #[test]
+    fn u3_the_retired_harness_weapons_key_refuses_to_start() {
+        let text = "[tacsim.harness]\nweapons = 150\n";
+        let refused = toml::from_str::<Config>(text).expect_err(text).to_string();
+        assert!(refused.contains("weapons"), "{refused}");
+        assert!(refused.contains("unknown field"), "{refused}");
     }
 
     #[test]

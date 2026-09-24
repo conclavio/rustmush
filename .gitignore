@@ -31,3 +31,8 @@ Thumbs.db
 
 # Local run config (ids, ports); the tracked ones live under deploy/ and mushd.toml.example
 /mushd.toml
+
+# The TacSim harness's reports, written at the root by scripts/harness-weekly.sh and
+# the CI job (16b cut U.3); the committed baselines live under
+# crates/tacsim/tests/harness_baseline/
+/harness*.json

@@ -8,8 +8,10 @@
 //!
 //! 1. two pilots walk `Selection → Boarding → Running → Aborted → Idle` twice in
 //!    a row, boarding through `BOARD` and leaving through `EXIT`;
-//! 2. a pilot who types `FIRE` and `EXIT` in one burst fires nothing: no `fired`
-//!    event reaches the match's ledger, and nothing refuses after the `EXIT`;
+//! 2. a pilot who types `FIRE` and `EXIT` in one burst fires nothing: the `FIRE`
+//!    is one the cockpit **accepted** (16b cut U.3: a lock held, the other tank
+//!    36 cells down the road), no `fired` event for her unit reaches the match's
+//!    ledger at or after her seat's release, and nothing refuses after the `EXIT`;
 //! 3. a pilot whose line drops mid-match keeps their tank's heading and speed,
 //!    reclaims the seat on reconnect inside the grace (a fresh `HEADING` is
 //!    taken), and — past the grace — finds the seat gone (16b cut N.1 is what the
@@ -48,6 +50,7 @@ use mushd::persist::load_or_seed_world;
 use mushd::ssh_bridge::{SshBridge, SshListener, start_listener};
 use mushd::staff::{StaffQueue, register_server_commands};
 use mushd::world_task::{self, PersistHandles, ServerDeps};
+use serde_json::Value;
 
 use support::{Term, play_client, scratch_dir, strip_ansi};
 
@@ -76,10 +79,44 @@ const OUTSIDE_TEAM_ROOM: &str = "Boarding is through one of the simulator's team
 const NOT_IN_A_POD: &str = "You are not in a pod.";
 /// The one line a motion order refuses with while the tank is cold.
 const POWER_NOT_ONLINE: &str = "Power not online";
+/// What `CONTACTS` says when the platform holds nothing.
+const NO_CONTACTS: &str = "No contacts.";
 /// The same refusal once `STARTUP` has been accepted and the ten seconds are
 /// running (16b cut F.1): a pilot who has already asked is told to wait, not told
 /// to ask again.
 const POWER_STARTING: &str = "Power is still coming up";
+
+/// The arena's muster room, as the shipped pack labels it: the room the arena
+/// applier made and hosts the domain on.
+const MUSTER: &str = "The Proving Ground";
+/// Slot 1 of each side, as the shipped pack names them.
+const RED_TANK: &str = "Red Tank 1";
+const BLUE_TANK: &str = "Blue Tank 1";
+
+/// **Where the burst test re-poses the two slot-1 tanks** (16b cut U.3; 16c
+/// `T-42`): on the east–west road, row 97, **36 cells apart** — 360 m between
+/// cell centres.
+///
+/// Each bound is a reason:
+///
+/// * **inside the stock sight**, `visual_mk1`'s 60 cells, and the road's
+///   signature is 1,000 per mille stopped or moving, so each pilot classifies
+///   the other tank without either of them driving (`observer_rule.rs`'
+///   seventy cells are outside it on purpose, and a classified `BA` could never
+///   appear there);
+/// * **inside the cannon's reach**, `cannon_105`'s 300,000 cm (3 km) and its
+///   inner band's 150,000 cm, so `FIRE` has a target the arena would shoot;
+/// * **outside the 200 m `stand_cm`** a withdrawing machine turns and fights
+///   inside (`arena/reflex.rs`' `Ranges::stand_cm`, the `close` band: a third of
+///   the 3 km edge held to the 600 m sight). On `EXIT` the seat is `Released`
+///   and the tank goes to the reflex controller in `Withdraw`
+///   (`arena/intents.rs`' `Released` arm), and neither tank is near its side's
+///   entry zone (columns 0–15 and 240–255), so the machine is not *arrived*
+///   and fires on nothing past `stand_cm`. Any closer and the machine would fire
+///   a legitimate shot after the purge, and the test would fail for the wrong
+///   reason.
+const RED_CELL: (i64, i64) = (107, 97);
+const BLUE_CELL: (i64, i64) = (143, 97);
 
 // ---------------------------------------------------------------------------
 // The rig
@@ -348,22 +385,146 @@ fn kph_of(seen: &str) -> i32 {
         .unwrap_or(0)
 }
 
-/// Every ledger chunk one match wrote, as one string.
-async fn ledger_text(store: &Arc<dyn ObjectStore>, match_id: u64) -> String {
+/// Every ledger line one match wrote, parsed (`sim_reflex.rs`' reader: each
+/// chunk document's `"lines"` strings, one JSON object a line).
+async fn ledger_events(store: &Arc<dyn ObjectStore>, match_id: u64) -> Vec<Value> {
     let log = format!("match.{match_id}");
-    let mut text = String::new();
-    for chunk in 0..16 {
+    let mut events = Vec::new();
+    for chunk in 0..256 {
         let key = mush_core::chunk_key(&log, chunk);
-        match store
+        let Some(value) = store
             .module_json_get("tacsim", key.as_str())
             .await
             .expect("the store read")
-        {
-            Some(value) => text.push_str(&value.to_string()),
-            None => break,
+        else {
+            break;
+        };
+        let mut lines: Vec<String> = Vec::new();
+        collect_lines(&value, &mut lines);
+        for blob in lines {
+            for line in blob.lines().filter(|line| !line.trim().is_empty()) {
+                if let Ok(event) = serde_json::from_str::<Value>(line) {
+                    events.push(event);
+                }
+            }
         }
     }
-    text
+    events
+}
+
+/// Every `"lines"` string in one chunk document, in document order.
+fn collect_lines(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                match (key.as_str(), child.as_str()) {
+                    ("lines", Some(text)) => out.push(text.to_owned()),
+                    _ => collect_lines(child, out),
+                }
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|item| collect_lines(item, out)),
+        _ => {}
+    }
+}
+
+/// The ledger lines of one `kind` about one unit, as their `t_ms`.
+fn stamps_of(events: &[Value], kind: &str, unit: u32) -> Vec<i64> {
+    events
+        .iter()
+        .filter(|event| event.get("kind").and_then(Value::as_str) == Some(kind))
+        .filter(|event| event.get("unit").and_then(Value::as_u64) == Some(u64::from(unit)))
+        .filter_map(|event| event.get("t_ms").and_then(Value::as_i64))
+        .collect()
+}
+
+/// The domain hosted on `host`, out of an `@domain` listing.
+fn domain_of(listing: &str, host: &str) -> u64 {
+    listing
+        .lines()
+        .find(|line| line.contains(&format!("host {host}")))
+        .and_then(|line| {
+            let rest = line.split_once('#')?.1;
+            rest.split_whitespace().next()?.parse::<u64>().ok()
+        })
+        .unwrap_or_else(|| panic!("no domain hosted on {host:?} in:\n{listing}"))
+}
+
+/// **Re-pose the two slot-1 tanks for the burst** (16b cut U.3): `@find` the
+/// tanks and the muster's domain as `observer_rule.rs`' `seat_the_witnesses`
+/// does, and place each with `@spatial/place/domain` as its `close_the_gap`
+/// does — on [`RED_CELL`] and [`BLUE_CELL`], facing each other. Answers the two
+/// tanks' dbrefs, which are the units' ids in the ledger.
+async fn pose_for_the_burst(god: &mut Term) -> (u32, u32) {
+    let listing = ask(god, &format!("@find {RED_TANK}"), "END OF LIST").await;
+    let red = dbref_of(&listing, RED_TANK);
+    let listing = ask(god, &format!("@find {BLUE_TANK}"), "END OF LIST").await;
+    let blue = dbref_of(&listing, BLUE_TANK);
+    let listing = ask(god, "@domain", &format!("host {MUSTER}")).await;
+    let domain = domain_of(&listing, MUSTER);
+    for (unit, (x, y), heading) in [(red, RED_CELL, 90_000), (blue, BLUE_CELL, 270_000)] {
+        let pose = format!(
+            "{{\"x_cm\":{},\"y_cm\":{},\"heading_mdeg\":{heading}}}",
+            x * 1_000 + 500,
+            y * 1_000 + 500
+        );
+        say(
+            god,
+            &format!("@spatial/place/domain #{unit}={domain},{pose}"),
+            "Placed",
+        )
+        .await;
+    }
+    (red, blue)
+}
+
+/// Send one cockpit read and wait for its answer (or a transient), so whatever
+/// else the server has sent this pilot since — a notice — has been read too.
+async fn pump(term: &mut Term, line: &str, answers: &[&str]) {
+    let mut needles = answers.to_vec();
+    needles.extend([COMMIT_PENDING, CONTROL_UNKNOWN]);
+    let mark = term.mark();
+    term.send_line(line).await;
+    term.expect_one_of_after(mark, &needles).await;
+}
+
+/// Whether a `CONTACTS` answer holds a row for `designator` — the row's first
+/// word, on a line carrying the bearing and the relative bearing (`arena_story.rs`'
+/// `designator_of`, asked about one name).
+fn holds_contact(listing: &str, designator: &str) -> bool {
+    listing.lines().any(|line| {
+        line.contains("bearing ")
+            && line.contains("(rel ")
+            && line.split_whitespace().next() == Some(designator)
+    })
+}
+
+/// Poll `CONTACTS` until the platform holds `designator` classified.
+async fn wait_for_contact(term: &mut Term, designator: &str) {
+    wait_until(
+        STEP_TIMEOUT,
+        &format!("the classified contact {designator}"),
+        async || {
+            let mark = term.mark();
+            pump(term, "CONTACTS", &["(rel ", NO_CONTACTS]).await;
+            holds_contact(&strip_ansi(&term.seen[mark..]), designator)
+        },
+    )
+    .await;
+}
+
+/// Poll `STATUS` — which never prints a lock line or the capitalised `Power
+/// online.` — until `notice` has arrived anywhere after `mark`.
+async fn wait_for_notice(term: &mut Term, mark: usize, notice: &str) {
+    wait_until(
+        STEP_TIMEOUT,
+        &format!("the `{notice}` notice"),
+        async || {
+            pump(term, "STATUS", &["power"]).await;
+            strip_ansi(&term.seen[mark..]).contains(notice)
+        },
+    )
+    .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -409,51 +570,139 @@ async fn two_pilots_board_fly_and_climb_out_twice_in_a_row() {
 // (2) `FIRE` then `EXIT` in one burst
 // ---------------------------------------------------------------------------
 
+/// **Doc 16 §3.1's burst, with a `FIRE` that would have fired** (16b cut U.3;
+/// 16c `T-42`).
+///
+/// Until this cut the burst's `FIRE` went out with no lock, so the cockpit
+/// refused it locally off the last frame and nothing ever reached the arena for
+/// the purge to drop: the test proved the refusal and called it the purge. Now
+/// both tanks stand 36 cells apart on the road ([`RED_CELL`]), both pilots bring
+/// power up, Ada classifies the blue tank as `BA` and locks it, and the burst is
+/// sent only once the `Locked on BA` notice has arrived — the lock resolves in the
+/// arena's next pulse and `FIRE` checks it against the last frame, so `Locking`
+/// alone would have sent the burst into the same refusal. Then:
+///
+/// * the cockpit **accepts** the `FIRE` (`Firing cannon.`, before `climb out`);
+/// * nothing after `climb out` is a hit, a miss or a refusal;
+/// * the ledger holds **no `fired` for her unit at or after her seat's release.**
+///
+/// **Where the release is on the ledger's clock.** The ledger records no seat
+/// release — a `Control` raises the epoch table and writes nothing — so the
+/// bound is the brief's fallback, *the first pulse after `climb out` was read*,
+/// and it is taken off the ledger itself: the moment Ada's `climb out` has been
+/// read, Bo types `LOCK RA`, and the `t_ms` of Bo's `locked` line is the first
+/// pulse that drained a line sent after it. The arena's inbox is one FIFO, and
+/// the world sent the release before it printed `climb out`, so that pulse is at
+/// or after the one that applied the release.
+///
+/// **The race the burst can lose.** A pulse can wake between the world handing
+/// the arena the `FIRE` and handing it the `EXIT`'s release; the shot is then
+/// fired legitimately, before the release. That run is not a failure and not a
+/// pass of the purge either: the test prints `the burst lost the race to a
+/// pulse; the purge was not exercised this run` and goes on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pilot_who_types_fire_then_exit_in_one_burst_fires_nothing() {
     let server = boot("sim-cockpit-burst", Duration::from_secs(120)).await;
     let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     open_the_centre(&mut god, "Simulator Lobby").await;
+    // Before `SIM START`: the placement is what the match opens on.
+    let (red, blue) = pose_for_the_burst(&mut god).await;
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
     take_off(&mut ada, &mut bo).await;
+
+    // Both tanks online, each holding the other classified.
+    let ada_up = ada.mark();
     say(&mut ada, "STARTUP", "Startup sequence").await;
+    let bo_up = bo.mark();
+    say(&mut bo, "STARTUP", "Startup sequence").await;
+    wait_for_notice(&mut ada, ada_up, "Power online.").await;
+    wait_for_notice(&mut bo, bo_up, "Power online.").await;
+    wait_for_contact(&mut ada, "BA").await;
+    wait_for_contact(&mut bo, "RA").await;
+
+    // The lock, and the frame that carries it.
+    let locking = ada.mark();
+    say(&mut ada, "LOCK BA", "Locking BA.").await;
+    wait_for_notice(&mut ada, locking, "Locked on BA").await;
 
     // The burst: two lines, no wait between them.
     let mark = ada.mark();
     ada.send_line("FIRE").await;
     ada.send_line("EXIT").await;
     ada.expect_after(mark, "climb out").await;
+    // The release bound's marker, typed the moment `climb out` was read.
+    let marked = bo.mark();
+    say(&mut bo, "LOCK RA", "Locking RA.").await;
+    wait_for_notice(&mut bo, marked, "Locked on RA").await;
+    // Everything Ada was sent up to the pulse that bound drained.
+    pump(&mut ada, "STATUS", &[OUTSIDE_COCKPIT]).await;
     let seen = strip_ansi(&ada.seen[mark..]);
-    let after = seen
+    let (before, after) = seen
         .split_once("climb out")
-        .map(|(_, tail)| tail.to_owned())
-        .unwrap_or_default();
+        .unwrap_or_else(|| panic!("no `climb out` in:\n{seen}"));
     assert!(
-        !after.contains("Refused") && !after.contains("No lock"),
-        "nothing refuses after the EXIT — the order was purged, not answered: {after:?}"
+        before.contains("Firing cannon."),
+        "the burst's FIRE was accepted by the cockpit, before the EXIT:\n{seen}"
+    );
+    let answered: Vec<&str> = after
+        .lines()
+        .filter(|line| {
+            let line = line.trim();
+            line == "Hit."
+                || line.contains("Hit on ")
+                || line.contains("Miss on ")
+                || line.contains("Miss: ")
+                || line.contains("Refused")
+                || line.contains(" refused.")
+                || line.contains("No lock")
+        })
+        .collect();
+    assert!(
+        answered.is_empty(),
+        "nothing answers the FIRE after the EXIT — the order was purged, not answered: \
+         {answered:?}\n{after}"
     );
 
-    // And the arena's own record says no shot was ever resolved.
-    // Let a pulse process the purged order before aborting, so an early abort
-    // cannot conceal a failure to revoke it.
-    support::wait_arena_seconds(&mut god, 1).await;
+    // And the arena's own record.
     say(&mut ada, "SIM ABORT", "aborts match").await;
-    let mut ledger = String::new();
+    let mut events = Vec::new();
     wait_until(
         STEP_TIMEOUT,
-        "the purged shot's completed ledger",
+        "the burst match's completed ledger",
         async || {
-            ledger = ledger_text(&server.store, 1).await;
+            events = ledger_events(&server.store, 1).await;
             // SIM ABORT closes the journal with `aborted`, not `match_ended`.
-            ledger.contains("\"kind\":\"aborted\"")
-                || ledger.contains("\\\"kind\\\":\\\"aborted\\\"")
+            events
+                .iter()
+                .any(|event| event.get("kind").and_then(Value::as_str) == Some("aborted"))
         },
     )
     .await;
+    let released_by = stamps_of(&events, "locked", blue)
+        .first()
+        .copied()
+        .unwrap_or_else(|| panic!("the ledger holds no `locked` line for Bo's unit #{blue}"));
+    println!(
+        "burst: the ledger records no seat release; the bound is the first pulse after \
+         `climb out` was read, t_ms={released_by} (Bo's `LOCK RA`, typed then)"
+    );
+    let fired = stamps_of(&events, "fired", red);
+    for t_ms in fired.iter().filter(|t_ms| **t_ms < released_by) {
+        println!(
+            "burst: `fired` for #{red} at t_ms={t_ms}, before the release bound \
+             t_ms={released_by}: the burst lost the race to a pulse; the purge was not \
+             exercised this run"
+        );
+    }
+    let late: Vec<i64> = fired
+        .into_iter()
+        .filter(|t_ms| *t_ms >= released_by)
+        .collect();
     assert!(
-        !ledger.contains("\\\"fired\\\"") && !ledger.contains("\"fired\""),
-        "the match ledger records no shot: {ledger}"
+        late.is_empty(),
+        "the match ledger records a shot from Ada's unit #{red} at t_ms {late:?}, at or \
+         after her seat's release (bound t_ms={released_by}): the burst's FIRE was not purged"
     );
 }
 

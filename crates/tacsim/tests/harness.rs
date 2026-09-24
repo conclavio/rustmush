@@ -25,8 +25,10 @@
 //! (the report path, default `target/harness.json`) and `TACSIM_ASSERT=1`, which
 //! turns the thresholds into assertions. The default is **report-only** (D-H-8,
 //! D-16-19): a shared runner's speed is not a threshold. `TACSIM_PULSES` is the
-//! ground-pulse lane's count of fires and nothing else's, and `TACSIM_WEAPONS` is
-//! reported by that lane and read by no arena lane.
+//! ground-pulse lane's count of fires and nothing else's. There is no weapons
+//! knob (16b cut U.3, 16c `T-37`): `TACSIM_WEAPONS` and `[tacsim.harness].weapons`
+//! were parsed and reported and armed nothing since cut W — the cohort is armed as
+//! the catalog authors it — so both are gone.
 //!
 //! **The arena lanes since 16b cut U.1** (16c `T-35`, `T-22`, `T-25`, `T-24`,
 //! `T-34`). The field is the game's: every unit is a unit of the fielded catalog
@@ -54,6 +56,22 @@
 //! bounded, and `tacsim_harness_fan_out`, 24 staff-seated pilots in one match on
 //! the shipped proving ground with the real egress applied one message per apply,
 //! its keyframe bytes and output events per pulse bounded.
+//!
+//! **The delta since 16b cut U.3** (16c `T-37`, Q29). A measurement that is never
+//! compared with the last one is a number nobody reads, so one more ignored test,
+//! `tacsim_harness_delta_against_the_committed_baseline`, reads the fresh CI-cohort
+//! report and the committed `tests/harness_baseline/arena.<os>.json` and compares
+//! them in two blocks: **the deterministic block** (the world, the substeps, the
+//! counters, the weapons, the perception and controller totals and peaks, the
+//! window peaks, the thresholds) exactly, and **the timing block** (the wake p50
+//! and p99 and the window p99) only on the host that blessed the file, failing
+//! only on a fresh figure more than 20 per cent *slower*. `TACSIM_BASELINE_BLESS=1`
+//! writes the file from the fresh report instead. A report older than the test
+//! binary is refused, so a change is never judged on the last build's numbers.
+//! It is the one step that fails the CI job — which leaves the absolutes
+//! report-only, because it runs on a shared runner — while
+//! `scripts/harness-weekly.sh`, the one command the owner runs by hand, asserts
+//! the absolutes as well (D-16-19: *assert locally*).
 //!
 //! What it must not do (16b §9's `H` row): touch `mush-sim` or `mush-atlas` — a
 //! harness that needs a new API in the thing it measures is measuring its own
@@ -83,13 +101,10 @@ use tacsim::definitions::{Catalog, content};
 // Knobs
 // ---------------------------------------------------------------------------
 
-/// The world facts one run was driven at, and the four thresholds.
+/// The world facts one run was driven at, and the thresholds.
 struct Knobs {
     units: u32,
     fighting: u32,
-    /// Parsed and reported by the ground-pulse lane; no arena lane reads it
-    /// (16b cut U.1: the cohort is armed as the catalog authors it).
-    weapons: u32,
     /// The ground-pulse lane's count of fires. The arena lanes run for
     /// [`Knobs::arena_s`] arena seconds instead (16b cut U.1).
     pulses: u32,
@@ -146,7 +161,6 @@ impl Knobs {
         Knobs {
             units: env_u32("TACSIM_UNITS", cfg.units),
             fighting: env_u32("TACSIM_FIGHTING", cfg.fighting),
-            weapons: env_u32("TACSIM_WEAPONS", cfg.weapons),
             pulses: env_u32("TACSIM_PULSES", DEFAULT_PULSES),
             arena_s: env_u32("TACSIM_ARENA_S", DEFAULT_ARENA_S),
             jitter_ms: i64::from(env_u32("TACSIM_WAKE_JITTER_MS", 0)),
@@ -1075,18 +1089,18 @@ fn tacsim_harness_reports_the_ground_pulse_baseline() {
         .copied()
         .fold(0.0_f64, |a, b| if b > a { b } else { a });
 
-    // No cut produces any of these yet; they are reported as zero so the shape
-    // of the report does not change when one starts to.
-    let traces_per_pulse = 0_u64;
-    let cell_probes_per_pulse = 0_u64;
-    let path_queries_per_pulse = 0_u64;
-    let share_ops_per_pulse = 0_u64;
-    let ledger_bytes = 0_u64;
+    // **16b cut U.3** (16c `T-37`): this lane reports no per-pulse counters. It
+    // printed five hard-coded zeros — traces, cell probes, path queries, share
+    // operations, ledger bytes — and asserted three of them under `TACSIM_ASSERT`,
+    // which was a green check on a constant: the world-side pulse traces nothing,
+    // searches nothing and streams no ledger, and the arena lanes below are where
+    // those counters are real. What this lane measures is the passive domain's
+    // pulse, and its p99 is what it asserts.
 
     // ---- the report ----
     println!(
-        "harness_world: units={placed}/{} fighting={sessions} placed_sessions={placed_sessions} weapons={} (reported; no arena lane reads it — the cohort is armed as the catalog authors it)",
-        knobs.units, knobs.weapons
+        "harness_world: units={placed}/{} fighting={sessions} placed_sessions={placed_sessions}",
+        knobs.units
     );
     println!(
         "harness_relief: side={SIDE} cell_cm={CELL_CM} arena_m={} quadrants={} seed={} elev_step_cm={ELEV_STEP_CM} terraces={}",
@@ -1138,15 +1152,8 @@ fn tacsim_harness_reports_the_ground_pulse_baseline() {
         vmrss_words(vmrss_start_kib, vmrss_end_kib)
     );
     println!(
-        "harness_counters: traces_per_pulse={traces_per_pulse} cell_probes_per_pulse={cell_probes_per_pulse} path_queries_per_pulse={path_queries_per_pulse} share_ops_per_pulse={share_ops_per_pulse} ledger_bytes={ledger_bytes} (no cut produces these yet)"
-    );
-    println!(
-        "harness_thresholds: assert={} engaged_p99_ms={} max_traces_per_pulse={} max_path_queries_per_pulse={} max_ledger_bytes={}",
-        knobs.assert,
-        knobs.engaged_p99_ms,
-        knobs.max_traces_per_pulse,
-        knobs.max_path_queries_per_pulse,
-        knobs.max_ledger_bytes
+        "harness_thresholds: assert={} engaged_p99_ms={} (the passive domain's pulse; the per-pulse counter bounds are the arena lanes')",
+        knobs.assert, knobs.engaged_p99_ms
     );
 
     let report = serde_json::json!({
@@ -1155,7 +1162,6 @@ fn tacsim_harness_reports_the_ground_pulse_baseline() {
             "units_placed": placed,
             "fighting": sessions,
             "sessions_placed": placed_sessions,
-            "weapons": knobs.weapons,
             "cell_cm": CELL_CM,
             "pulse_ms": tempo.period_ms,
             "pulses": tempo.ms.len(),
@@ -1201,21 +1207,10 @@ fn tacsim_harness_reports_the_ground_pulse_baseline() {
             "vmrss_start_kib": vmrss_start_kib,
             "vmrss_end_kib": vmrss_end_kib,
         },
-        "counters": {
-            "traces_per_pulse": traces_per_pulse,
-            "cell_probes_per_pulse": cell_probes_per_pulse,
-            "path_queries_per_pulse": path_queries_per_pulse,
-            "share_operations_per_pulse": share_ops_per_pulse,
-            "ledger_bytes_streamed": ledger_bytes,
-            "note": "no cut produces these yet; cuts A, S and W do",
-        },
+        // 16b cut U.3: no `counters` object — see the note above the report.
         "thresholds": {
             "assert": knobs.assert,
-            "max_path_queries_per_pulse": knobs.max_path_queries_per_pulse,
             "engaged_p99_ms": knobs.engaged_p99_ms,
-            "max_traces_per_pulse": knobs.max_traces_per_pulse,
-            "max_path_queries_per_pulse": knobs.max_path_queries_per_pulse,
-            "max_ledger_bytes": knobs.max_ledger_bytes,
         },
     });
     let path = report_path(&knobs.json);
@@ -1232,25 +1227,11 @@ fn tacsim_harness_reports_the_ground_pulse_baseline() {
     println!("harness_json: {}", path.display());
 
     if knobs.assert {
+        // The passive domain's pulse, measured: the one bound this lane has.
         assert!(
             p99 <= f64::from(knobs.engaged_p99_ms),
-            "per-pulse p99 {p99:.3} ms is past harness.engaged_p99_ms {}",
+            "per-pulse p99 {p99:.3} ms of the passive domain is past harness.engaged_p99_ms {}",
             knobs.engaged_p99_ms
-        );
-        assert!(
-            traces_per_pulse <= u64::from(knobs.max_traces_per_pulse),
-            "traces per pulse {traces_per_pulse} is past harness.max_traces_per_pulse {}",
-            knobs.max_traces_per_pulse
-        );
-        assert!(
-            path_queries_per_pulse <= u64::from(knobs.max_path_queries_per_pulse),
-            "path queries per pulse {path_queries_per_pulse} is past harness.max_path_queries_per_pulse {}",
-            knobs.max_path_queries_per_pulse
-        );
-        assert!(
-            ledger_bytes <= knobs.max_ledger_bytes,
-            "ledger bytes {ledger_bytes} is past harness.max_ledger_bytes {}",
-            knobs.max_ledger_bytes
         );
     }
 }
@@ -3216,6 +3197,745 @@ fn write_report(path: &std::path::Path, report: &serde_json::Value) {
         serde_json::to_string_pretty(report).expect("the report encodes"),
     )
     .expect("the report is written");
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut U.3: the delta against a committed baseline
+// ---------------------------------------------------------------------------
+
+/// **Where the committed baselines live**: `crates/tacsim/tests/harness_baseline/`
+/// (16b cut U.3, 16c `T-37`). A `.json` under `tests/` is not a cargo target,
+/// and the underscore in the directory's name keeps anything from reading it as
+/// a test module.
+fn baseline_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("harness_baseline")
+}
+
+/// **This platform's baseline**: `arena.<os>.json`, `<os>` being
+/// `std::env::consts::OS` (`windows`, `linux`, `macos`). One file per platform,
+/// because the timing block is only ever compared on the host that blessed it
+/// and a host is on one platform; the deterministic block is the same in every
+/// file, which [`every_committed_baseline_agrees_on_the_deterministic_block`]
+/// holds.
+fn baseline_path() -> std::path::PathBuf {
+    baseline_dir().join(format!("arena.{}.json", std::env::consts::OS))
+}
+
+/// **The deterministic block's objects**, compared leaf by leaf and exactly
+/// (16b cut U.3; 16c Q29). Everything under each of these is a count or an
+/// arena-time figure of one seeded run of an integer arena over an
+/// integer-generated relief (16b cut U.1), so it is the same on every host: a
+/// difference in any of them is a change in what the arena *did*, never in how
+/// fast a box did it. `world` carries the wake count as `world.pulses`.
+const DETERMINISTIC_OBJECTS: [&str; 9] = [
+    "world",
+    "substeps",
+    "counters",
+    "weapons",
+    "perception.total",
+    "perception.peak_per_pulse",
+    "reflex.total",
+    "reflex.peak_per_pulse",
+    "reflex.states_at_end",
+];
+
+/// **The deterministic block's single fields**: the cohort's word, the wake
+/// jitter the run was driven at (a stand-in for the timer's overshoot that
+/// changes every count after it), and the four per-window counter peaks — the
+/// window's *milliseconds* are the timing block's.
+const DETERMINISTIC_LEAVES: [&str; 6] = [
+    "cohort",
+    "loop.jitter_ms",
+    "window.traces_peak",
+    "window.cell_probes_peak",
+    "window.jam_checks_peak",
+    "window.share_ops_peak",
+];
+
+/// **The thresholds the deterministic block leaves out**: `assert` and `lens`,
+/// both the one fact of whether this run asserted (`lens` is `report-only` or
+/// `per-wake-and-per-window` according to it). The baseline is blessed under
+/// `TACSIM_ASSERT=1` and the CI job never asserts, so comparing either would
+/// fail every run by hand without the flag and every CI run for a reason that
+/// is not a change. Every other `thresholds.*` key is compared: a bound that
+/// moved is a reviewed change and the baseline moves with it.
+const RUN_ONLY_THRESHOLDS: [&str; 2] = ["thresholds.assert", "thresholds.lens"];
+
+/// **The timing block** (16b cut U.3; 16c Q29): the wake p50 and p99 and the
+/// per-window p99, as `(name printed, JSON pointer)`. Compared only on the host
+/// that blessed the baseline, and failing only on a fresh figure more than
+/// [`TIMING_SLOWER_PERCENT`] slower.
+const TIMING_COMPARED: [(&str, &str); 3] = [
+    ("tempos[0].p50_ms", "/tempos/0/p50_ms"),
+    ("tempos[0].p99_ms", "/tempos/0/p99_ms"),
+    ("window.ms_p99", "/window/ms_p99"),
+];
+
+/// **Printed on both sides and never compared**: the worst single wake (one
+/// sample) and the warm-up's wall time (a figure the build and the page cache
+/// shape as much as the arena does).
+const TIMING_PRINTED: [(&str, &str); 2] = [
+    ("tempos[0].max_ms", "/tempos/0/max_ms"),
+    ("setup_ms.warm_up", "/setup_ms/warm_up"),
+];
+
+/// **How much slower a timing figure may be before the delta fails**, per cent
+/// of the baseline's (16c Q29 at its default). A figure this much *faster* is
+/// printed and passes: a faster box is not a regression, and the bless is one
+/// command.
+const TIMING_SLOWER_PERCENT: f64 = 20.0;
+
+/// The word a missing field is compared as, so a key present on one side and
+/// not the other is a difference and never a silent skip.
+const ABSENT: &str = "<absent>";
+
+/// Every leaf under `value` into `out`, keyed by its dotted path — `[i]` for an
+/// array element.
+fn flatten(path: &str, value: &serde_json::Value, out: &mut BTreeMap<String, serde_json::Value>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                flatten(&format!("{path}.{key}"), child, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (at, child) in items.iter().enumerate() {
+                flatten(&format!("{path}[{at}]"), child, out);
+            }
+        }
+        leaf => {
+            out.insert(path.to_string(), leaf.clone());
+        }
+    }
+}
+
+/// A dotted path as a JSON pointer.
+fn pointer(path: &str) -> String {
+    format!("/{}", path.replace('.', "/"))
+}
+
+/// **The deterministic block of one report**, flattened: every leaf of
+/// [`DETERMINISTIC_OBJECTS`], every one of [`DETERMINISTIC_LEAVES`], and every
+/// `thresholds.*` leaf but [`RUN_ONLY_THRESHOLDS`]. A named object or field the
+/// report does not carry is recorded as [`ABSENT`] under its own name.
+fn deterministic_block(report: &serde_json::Value) -> BTreeMap<String, serde_json::Value> {
+    let mut block = BTreeMap::new();
+    for path in DETERMINISTIC_OBJECTS.iter().chain(["thresholds"].iter()) {
+        match report.pointer(&pointer(path)) {
+            Some(value) => flatten(path, value, &mut block),
+            None => {
+                block.insert((*path).to_string(), serde_json::json!(ABSENT));
+            }
+        }
+    }
+    for path in DETERMINISTIC_LEAVES {
+        let value = report
+            .pointer(&pointer(path))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(ABSENT));
+        block.insert(path.to_string(), value);
+    }
+    for path in RUN_ONLY_THRESHOLDS {
+        block.remove(path);
+    }
+    block
+}
+
+/// Every key on which two deterministic blocks differ, as one
+/// `harness_delta: <path> baseline=<v> now=<v>` line each, in key order — a key
+/// on one side only included.
+fn block_differences(
+    baseline: &BTreeMap<String, serde_json::Value>,
+    now: &BTreeMap<String, serde_json::Value>,
+) -> Vec<String> {
+    let absent = serde_json::json!(ABSENT);
+    let keys: std::collections::BTreeSet<&String> = baseline.keys().chain(now.keys()).collect();
+    keys.into_iter()
+        .filter_map(|key| {
+            let was = baseline.get(key).unwrap_or(&absent);
+            let is = now.get(key).unwrap_or(&absent);
+            (was != is).then(|| format!("harness_delta: {key} baseline={was} now={is}"))
+        })
+        .collect()
+}
+
+/// **This host**, as a baseline's `blessed.host` names it: the platform, the
+/// cores `std` reports, and the machine's name — `COMPUTERNAME` on Windows,
+/// `HOSTNAME` elsewhere, then the first line of `/etc/hostname`, then
+/// `unknown`. The timing block is compared only when all three match.
+fn this_host() -> serde_json::Value {
+    let named = |var: &str| {
+        std::env::var(var)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let hostname = if cfg!(windows) {
+        named("COMPUTERNAME")
+    } else {
+        named("HOSTNAME")
+    }
+    .or_else(|| {
+        std::fs::read_to_string("/etc/hostname")
+            .ok()
+            .and_then(|text| text.lines().next().map(|l| l.trim().to_string()))
+            .filter(|v| !v.is_empty())
+    })
+    .unwrap_or_else(|| "unknown".to_string());
+    serde_json::json!({
+        "os": std::env::consts::OS,
+        "cpus": std::thread::available_parallelism().map_or(0, std::num::NonZeroUsize::get),
+        "hostname": hostname,
+    })
+}
+
+/// A host as `<os>/<cpus>/<hostname>`.
+fn host_words(host: Option<&serde_json::Value>) -> String {
+    let field = |key: &str| {
+        host.and_then(|h| h.get(key)).map_or_else(
+            || "?".to_string(),
+            |v| v.to_string().trim_matches('"').to_string(),
+        )
+    };
+    format!("{}/{}/{}", field("os"), field("cpus"), field("hostname"))
+}
+
+/// **What one comparison found** (16b cut U.3): every line to print, the
+/// deterministic differences, and the timing fields that were past the bound
+/// (or missing) on a matching host.
+struct Delta {
+    lines: Vec<String>,
+    differences: usize,
+    slower: Vec<String>,
+}
+
+/// **The comparison itself**, a pure function of the two reports and this host,
+/// so a unit test can hold what fails and what does not
+/// ([`the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else`]).
+fn delta(
+    baseline: &serde_json::Value,
+    fresh: &serde_json::Value,
+    host: &serde_json::Value,
+) -> Delta {
+    let mut lines = block_differences(&deterministic_block(baseline), &deterministic_block(fresh));
+    let differences = lines.len();
+    if differences == 0 {
+        lines.push(format!(
+            "harness_delta: deterministic block equal ({} fields)",
+            deterministic_block(fresh).len()
+        ));
+    }
+    let figure =
+        |doc: &serde_json::Value, at: &str| doc.pointer(at).and_then(serde_json::Value::as_f64);
+    let word = |v: Option<f64>| v.map_or_else(|| "absent".to_string(), |v| format!("{v:.3}"));
+    let blessed_on = baseline.pointer("/blessed/host");
+    let mut slower = Vec::new();
+    if blessed_on == Some(host) {
+        for (name, at) in TIMING_COMPARED {
+            match (figure(baseline, at), figure(fresh, at)) {
+                (Some(was), Some(is)) if was > 0.0 => {
+                    let moved = (is - was) / was * 100.0;
+                    if moved > TIMING_SLOWER_PERCENT {
+                        lines.push(format!(
+                            "harness_delta: {name} baseline={was:.3} now={is:.3} slower than the \
+                             baseline by {moved:.1}%, past the {TIMING_SLOWER_PERCENT}% bound"
+                        ));
+                        slower.push(name.to_string());
+                    } else if moved < -TIMING_SLOWER_PERCENT {
+                        lines.push(format!(
+                            "harness_delta: {name} baseline={was:.3} now={is:.3}"
+                        ));
+                        lines.push(format!(
+                            "harness_delta: {name} faster than the baseline by {:.1}%; re-bless \
+                             when this holds",
+                            -moved
+                        ));
+                    } else {
+                        lines.push(format!(
+                            "harness_delta: {name} baseline={was:.3} now={is:.3} ({moved:+.1}%, \
+                             inside {TIMING_SLOWER_PERCENT}%)"
+                        ));
+                    }
+                }
+                (was, is) => {
+                    lines.push(format!(
+                        "harness_delta: {name} baseline={} now={} not comparable",
+                        word(was),
+                        word(is)
+                    ));
+                    slower.push(name.to_string());
+                }
+            }
+        }
+    } else {
+        for (name, at) in TIMING_COMPARED {
+            lines.push(format!(
+                "harness_delta: {name} baseline={} now={}",
+                word(figure(baseline, at)),
+                word(figure(fresh, at))
+            ));
+        }
+        lines.push(format!(
+            "harness_delta: timing skipped, host differs (baseline {}, now {})",
+            host_words(blessed_on),
+            host_words(Some(host))
+        ));
+    }
+    for (name, at) in TIMING_PRINTED {
+        lines.push(format!(
+            "harness_delta: {name} baseline={} now={} (printed, never compared)",
+            word(figure(baseline, at)),
+            word(figure(fresh, at))
+        ));
+    }
+    Delta {
+        lines,
+        differences,
+        slower,
+    }
+}
+
+/// **Whether the fresh report predates the binary reading it** (16b cut U.3):
+/// the delta reads whatever `harness-arena.json` is on disk, and nothing but
+/// the order of the script's two lines (and the CI job's two steps) says the
+/// lane that writes it ran first. A report older than this test binary was
+/// written by an earlier build — the tree changed since — so comparing it, or
+/// blessing it, would judge a change on the numbers of the run before it. The
+/// script's and the job's two lines share one build, so their report is always
+/// the newer. An unreadable time on either side is not a refusal: the check
+/// guards against a stale file, it does not demand a filesystem that keeps
+/// times.
+fn report_predates_the_build(
+    report_modified: Option<std::time::SystemTime>,
+    binary_built: Option<std::time::SystemTime>,
+) -> bool {
+    matches!((report_modified, binary_built), (Some(report), Some(built)) if report < built)
+}
+
+/// Whether `TACSIM_BASELINE_BLESS` asks for a bless: exactly `1`, the
+/// `TACSIM_ASSERT` rule, so a stray `0` or `false` never rewrites the file.
+fn bless_requested(value: Option<&str>) -> bool {
+    value.is_some_and(|v| v.trim() == "1")
+}
+
+/// Seconds since the epoch as an ISO 8601 UTC instant, `YYYY-MM-DDTHH:MM:SSZ`
+/// (the civil-from-days algorithm, so the harness takes no date crate).
+fn iso_utc(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rem / 3_600,
+        rem % 3_600 / 60,
+        rem % 60
+    )
+}
+
+/// **Bless**: write `path` from the fresh report with a `blessed` stanza —
+/// `commit` (`git rev-parse HEAD` now), `date` (ISO, UTC) and `host`
+/// ([`this_host`]) — the panic budget's own shape: the variable rewrites the
+/// file, and the comparison that follows reads it back.
+fn bless_baseline(path: &std::path::Path, fresh: &serde_json::Value) {
+    let commit = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|commit| !commit.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+    let mut doc = fresh.clone();
+    if let Some(map) = doc.as_object_mut() {
+        map.insert(
+            "blessed".to_string(),
+            serde_json::json!({
+                "commit": commit,
+                "date": iso_utc(now_s),
+                "host": this_host(),
+            }),
+        );
+    }
+    let mut text = serde_json::to_string_pretty(&doc).expect("the baseline encodes");
+    text.push('\n');
+    write_text(path, &text);
+}
+
+/// Write `text` to `path`, creating its directory.
+fn write_text(path: &std::path::Path, text: &str) {
+    if let Some(dir) = path.parent()
+        && !dir.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(dir).expect("the baseline directory is writable");
+    }
+    std::fs::write(path, text).expect("the baseline is written");
+}
+
+/// **The delta against the committed baseline** (16b cut U.3; 16c `T-37`, Q29
+/// at its default).
+///
+/// Reads the fresh CI-cohort report `tacsim_harness_arena_step` left at
+/// `<stem>-arena.<ext>` and this platform's committed baseline ([`baseline_path`])
+/// and compares them ([`delta`]):
+///
+/// * **the deterministic block**, exactly, every difference printed as
+///   `harness_delta: <path> baseline=<v> now=<v>` before the test fails;
+/// * **the timing block**, on the blessing host alone, failing only on a figure
+///   more than 20 per cent slower; a figure more than 20 per cent faster says so
+///   and passes; on another host every figure is printed and the block skipped.
+///
+/// No file for this platform prints how to write one and passes. A fresh report
+/// older than this test binary is refused before anything is compared or
+/// blessed ([`report_predates_the_build`]): run the lanes and the delta as the
+/// script's two lines, in order, on one build. `TACSIM_BASELINE_BLESS=1` writes the file first ([`bless_baseline`]), and
+/// never on an ordinary run. It is the one step that fails the CI job
+/// (`.github/workflows/ci.yml`'s `tacsim-harness`), and the last line of
+/// `scripts/harness-weekly.sh`.
+///
+/// **What a failure means.** A deterministic difference is a change in what the
+/// arena did at the default knobs — stop and find the change, or re-bless it in
+/// the same diff that made it and say why. A timing-only failure is re-run once
+/// before it is believed: two runs of one tree on one box have differed by 16 per
+/// cent at the p99 (16b cut N.1's own record).
+#[test]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+fn tacsim_harness_delta_against_the_committed_baseline() {
+    let knobs = Knobs::from_env();
+    let fresh_path = arena_report_path(&knobs.json, "arena");
+    let fresh: serde_json::Value = std::fs::read_to_string(&fresh_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_else(|| {
+            panic!(
+                "harness_delta: no fresh report at {} — run tacsim_harness_arena_step first \
+                 (scripts/harness-weekly.sh runs it before this)",
+                fresh_path.display()
+            )
+        });
+    // A report left by an earlier build is not this tree's: refuse it before it
+    // is compared or blessed (`report_predates_the_build`).
+    let modified = |path: &std::path::Path| {
+        std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .ok()
+    };
+    let report_modified = modified(&fresh_path);
+    let binary_built = std::env::current_exe().ok().and_then(|exe| modified(&exe));
+    assert!(
+        !report_predates_the_build(report_modified, binary_built),
+        "harness_delta: {} is older than this test binary, so an earlier build wrote it — \
+         run scripts/harness-weekly.sh (the lanes first, then this delta, one build) rather \
+         than comparing or blessing a stale report",
+        fresh_path.display()
+    );
+    if let Some(age) = report_modified.and_then(|at| at.elapsed().ok()) {
+        println!(
+            "harness_delta: fresh report written {:.0} s ago{}",
+            age.as_secs_f64(),
+            if binary_built.is_some() {
+                ", after this binary was built"
+            } else {
+                " (this binary's build time is unreadable; not checked)"
+            }
+        );
+    }
+    let path = baseline_path();
+    if bless_requested(std::env::var("TACSIM_BASELINE_BLESS").ok().as_deref()) {
+        bless_baseline(&path, &fresh);
+        println!("harness_delta: blessed {}", path.display());
+    }
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        println!(
+            "harness_delta: no baseline for {}; run with TACSIM_BASELINE_BLESS=1 to write one",
+            std::env::consts::OS
+        );
+        return;
+    };
+    let baseline: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    println!(
+        "harness_delta: fresh {} against {} (blessed at {} on {})",
+        fresh_path.display(),
+        path.display(),
+        baseline
+            .pointer("/blessed/commit")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("?"),
+        baseline
+            .pointer("/blessed/date")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("?")
+    );
+    let found = delta(&baseline, &fresh, &this_host());
+    for line in &found.lines {
+        println!("{line}");
+    }
+    assert_eq!(
+        found.differences, 0,
+        "the deterministic block moved in {} field(s) (the `harness_delta:` lines above): \
+         the arena did something different at the default knobs. Find the change, or \
+         re-bless in the diff that made it with TACSIM_BASELINE_BLESS=1 and say why",
+        found.differences
+    );
+    assert!(
+        found.slower.is_empty(),
+        "timing past the {TIMING_SLOWER_PERCENT}% bound on the blessing host: {:?}. Re-run \
+         once before believing it (two runs of one tree have differed 16% at the p99)",
+        found.slower
+    );
+}
+
+/// **Two hosts' baselines cannot drift** (16b cut U.3): every committed
+/// `arena.*.json` carries one deterministic block, it names the platform its
+/// file is named for, it carries every object and field the block reads, and at
+/// least one file exists. Not ignored: it reads committed files and runs
+/// nothing.
+#[test]
+fn every_committed_baseline_agrees_on_the_deterministic_block() {
+    let dir = baseline_dir();
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("arena.") && name.ends_with(".json"))
+        })
+        .collect();
+    files.sort();
+    assert!(
+        !files.is_empty(),
+        "no committed baseline under {}: bless one with TACSIM_BASELINE_BLESS=1 \
+         scripts/harness-weekly.sh",
+        dir.display()
+    );
+    let mut first: Option<(std::path::PathBuf, BTreeMap<String, serde_json::Value>)> = None;
+    for path in files {
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let doc: serde_json::Value =
+            serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let named_for = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("arena."))
+            .and_then(|name| name.strip_suffix(".json"))
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(
+            doc.pointer("/blessed/host/os")
+                .and_then(serde_json::Value::as_str),
+            Some(named_for.as_str()),
+            "{} was not blessed on the platform it is named for",
+            path.display()
+        );
+        let block = deterministic_block(&doc);
+        let missing: Vec<&String> = block
+            .iter()
+            .filter(|(_, value)| value.as_str() == Some(ABSENT))
+            .map(|(key, _)| key)
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} lacks part of the deterministic block: {missing:?}",
+            path.display()
+        );
+        match &first {
+            None => first = Some((path, block)),
+            Some((first_path, first_block)) => {
+                let differences = block_differences(first_block, &block);
+                assert!(
+                    differences.is_empty(),
+                    "{} and {} disagree on the deterministic block:\n{}",
+                    first_path.display(),
+                    path.display(),
+                    differences.join("\n")
+                );
+            }
+        }
+    }
+}
+
+/// **The script by hand runs the job's two lines** (16b cut U.3):
+/// `scripts/harness-weekly.sh` carries both `cargo test` lines of the CI
+/// `tacsim-harness` job verbatim, the job's comparison step is the delta and
+/// nothing else, and the job itself sets no `TACSIM_ASSERT` (D-H-8, D-16-19: a
+/// shared runner's speed is not a threshold) while the script does. The two
+/// differ in their environment and nowhere else, so a lane added to one and not
+/// the other, or an assertion switched on in CI, is a failure here and not a
+/// drift somebody finds in a month.
+#[test]
+fn the_weekly_script_runs_the_ci_jobs_two_lines_verbatim() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("crates/<pkg> has a workspace root two levels up")
+        .to_path_buf();
+    let read = |rel: &str| {
+        std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
+    };
+    let ci = read(".github/workflows/ci.yml");
+    let script = read("scripts/harness-weekly.sh");
+    let job = ci
+        .split_once("\n  tacsim-harness:")
+        .map(|(_, rest)| rest)
+        .and_then(|rest| rest.split("\n\n  ").next())
+        .expect("ci.yml has a `tacsim-harness` job");
+    let job_lines: Vec<&str> = job
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("run: cargo test"))
+        .collect();
+    let script_lines: Vec<&str> = script
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("cargo test"))
+        .collect();
+    assert_eq!(
+        job_lines.len(),
+        2,
+        "the job runs the lanes and then the delta:\n{job}"
+    );
+    assert_eq!(
+        script_lines, job_lines,
+        "scripts/harness-weekly.sh and the CI job run different cargo lines"
+    );
+    assert!(
+        job_lines.last().is_some_and(|line| line
+            .contains("tacsim_harness_delta_against_the_committed_baseline")
+            && line.contains("--exact")),
+        "the job's last step is the delta: {job_lines:?}"
+    );
+    assert!(
+        !job.contains("TACSIM_ASSERT"),
+        "the CI job asserts no absolutes (D-H-8, D-16-19):\n{job}"
+    );
+    assert!(
+        script.contains("export TACSIM_ASSERT=1")
+            && script.contains("export TACSIM_JSON=harness.json"),
+        "the script asserts the absolutes and writes the job's report names"
+    );
+}
+
+/// **The delta's own lens** (16b cut U.3): the comparison fails on a
+/// deterministic difference and on a timing figure past the bound on the
+/// blessing host, and on nothing else — not on the run-only thresholds, not on a
+/// faster box, not on a slower figure from another host, and not on the
+/// printed-only fields. And a report older than the binary reading it is
+/// refused ([`report_predates_the_build`]).
+#[test]
+fn the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else() {
+    let host = serde_json::json!({ "os": "testos", "cpus": 8, "hostname": "box" });
+    let report = |p99: f64, blocked: u64, asserting: bool| {
+        serde_json::json!({
+            "cohort": "ci",
+            "world": { "units": 300, "pulses": 600 },
+            "loop": { "jitter_ms": 0 },
+            "substeps": { "per_wake_min": 1 },
+            "counters": { "blocked_events": blocked },
+            "weapons": { "fired_events": 9 },
+            "perception": { "total": { "traces": 5 }, "peak_per_pulse": { "traces": 2 } },
+            "window": {
+                "ms_p99": p99, "traces_peak": 3, "cell_probes_peak": 4,
+                "jam_checks_peak": 5, "share_ops_peak": 6,
+            },
+            "reflex": {
+                "total": { "ticks": 7 }, "peak_per_pulse": { "ticks": 1 },
+                "states_at_end": { "engage": 2 },
+            },
+            "tempos": [{ "p50_ms": 1.0, "p99_ms": p99, "max_ms": p99 * 3.0 }],
+            "setup_ms": { "warm_up": 100.0 },
+            "thresholds": {
+                "assert": asserting,
+                "lens": if asserting { "per-wake-and-per-window" } else { "report-only" },
+                "engaged_p99_ms": 25,
+            },
+        })
+    };
+    let mut baseline = report(2.0, 10, true);
+    baseline["blessed"] = serde_json::json!({ "host": host.clone() });
+
+    // The same run, not asserting: nothing moved.
+    let found = delta(&baseline, &report(2.0, 10, false), &host);
+    assert_eq!(
+        (found.differences, found.slower.len()),
+        (0, 0),
+        "{:?}",
+        found.lines
+    );
+    // One count moved: one difference, named.
+    let found = delta(&baseline, &report(2.0, 11, true), &host);
+    assert_eq!(found.differences, 1, "{:?}", found.lines);
+    assert!(
+        found
+            .lines
+            .iter()
+            .any(|line| line == "harness_delta: counters.blocked_events baseline=10 now=11"),
+        "{:?}",
+        found.lines
+    );
+    // A key on one side only is a difference too.
+    let mut extra = report(2.0, 10, true);
+    extra["weapons"]["hits"] = serde_json::json!(1);
+    assert_eq!(delta(&baseline, &extra, &host).differences, 1);
+    // A quarter slower on the blessing host fails: the p99 and the window p99.
+    let found = delta(&baseline, &report(2.5, 10, true), &host);
+    assert_eq!(found.slower.len(), 2, "{:?}", found.lines);
+    // A quarter faster passes, and says so.
+    let found = delta(&baseline, &report(1.5, 10, true), &host);
+    assert!(found.slower.is_empty(), "{:?}", found.lines);
+    assert!(
+        found
+            .lines
+            .iter()
+            .any(|line| line.contains("faster than the baseline by 25.0%; re-bless")),
+        "{:?}",
+        found.lines
+    );
+    // Twice as slow on another host is not compared.
+    let other = serde_json::json!({ "os": "testos", "cpus": 8, "hostname": "elsewhere" });
+    let found = delta(&baseline, &report(4.0, 10, true), &other);
+    assert!(found.slower.is_empty(), "{:?}", found.lines);
+    assert!(
+        found
+            .lines
+            .iter()
+            .any(|line| line.starts_with("harness_delta: timing skipped, host differs")),
+        "{:?}",
+        found.lines
+    );
+    // A report older than the binary reading it is refused; the same second,
+    // a newer one, or an unreadable time on either side is not.
+    let built = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_208_000);
+    let second = std::time::Duration::from_secs(1);
+    assert!(report_predates_the_build(Some(built - second), Some(built)));
+    assert!(!report_predates_the_build(Some(built), Some(built)));
+    assert!(!report_predates_the_build(
+        Some(built + second),
+        Some(built)
+    ));
+    assert!(!report_predates_the_build(None, Some(built)));
+    assert!(!report_predates_the_build(Some(built - second), None));
+    // And the bless variable is exactly `1`.
+    assert!(bless_requested(Some("1")) && bless_requested(Some(" 1 ")));
+    assert!(
+        !bless_requested(None) && !bless_requested(Some("0")) && !bless_requested(Some("true"))
+    );
+    assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
+    assert_eq!(iso_utc(1_790_208_000), "2026-09-24T00:00:00Z");
 }
 
 /// **The long run** (16b cut U.2; 16c `T-36`: *a long-run mode with an RSS

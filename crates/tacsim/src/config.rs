@@ -650,14 +650,16 @@ pub struct ResolutionConfig {
 
 /// The scale harness's shape and its thresholds (**16b cut G**; doc 16 §1's
 /// acceptance A2).
+///
+/// No weapon count (16b cut U.3, 16c `T-37`): the harness fields the catalog
+/// armed as authored, so the cohort decides what is armed; the `weapons` field
+/// it once carried was read by no lane and went with its knob.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HarnessConfig {
     /// Units the harness places and moves.
     pub units: u32,
     /// How many of those are fighting.
     pub fighting: u32,
-    /// Weapons on their cadences.
-    pub weapons: u32,
     /// The per-pulse p99 ceiling, milliseconds, in `Engaged` tempo.
     pub engaged_p99_ms: u32,
     /// The most line-of-sight traces one pulse may make.
@@ -726,7 +728,6 @@ impl Default for HarnessConfig {
         HarnessConfig {
             units: 300,
             fighting: 24,
-            weapons: 150,
             engaged_p99_ms: 25,
             max_traces_per_pulse: 4_000,
             max_path_queries_per_pulse: 64,

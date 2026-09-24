@@ -345,10 +345,10 @@ paths = []                         # resolution-table files, or directories sear
 # Doc 16's acceptance A2: 300 units placed and moving, 24 of them fighting, 150
 # weapons on their cadences, at least 12 connected fake sessions, on one core.
 # The numbers live here rather than in the harness so it runs at the
-# CONFIGURATION MAXIMA rather than at constants compiled into it.
+# CONFIGURATION MAXIMA rather than at constants compiled into it. There is no
+# weapons key (16b cut U.3): the harness fields the catalog armed as authored.
 units = 300                        # units the harness places and moves
 fighting = 24                      # how many of those are fighting
-weapons = 150                      # weapons on their cadences
 engaged_p99_ms = 25                # the per-pulse p99 ceiling, ms, in Engaged tempo
 max_traces_per_pulse = 4000        # line-of-sight traces one pulse may make (perception has no cross-observer cache)
 max_path_queries_per_pulse = 64    # path queries one pulse may make

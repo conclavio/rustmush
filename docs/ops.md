@@ -1188,6 +1188,80 @@ Two operational tradeoffs of the file appender are **deliberate**:
   sweep like `find <data_dir>/logs -name '*.log.*' -mtime +14 -delete` (the
   glob must cover every half: `mushd.log.*`, `gateway.log.*`, `server.log.*`).
 
+## The weekly harness by hand
+
+The TacSim scale harness (`crates/tacsim/tests/harness.rs`, 16b cut H through
+cut U) is meant to run weekly in the CI `tacsim-harness` job, and GitHub CI is
+billing-blocked, so the run that actually happens is the owner's. It is one
+command from the repository root, under bash (Linux, or Git Bash on Windows):
+
+```sh
+scripts/harness-weekly.sh
+```
+
+It runs every ignored harness lane in release — the ground pulse, the arena at
+the CI reach and at the authored reach, the ten-minute long run and the 24-pilot
+fan-out — and then the **delta** against the committed baseline, and stops
+non-zero at the first failure. The two `cargo test` lines are the CI job's,
+verbatim (a test holds them equal); only the environment differs.
+
+**What asserts where.**
+
+- **The script** exports `TACSIM_ASSERT=1`, so every lane asserts its absolutes
+  (the 12 ms lens, the per-pulse bounds of `[tacsim.harness]`, the memory growth,
+  the frame bytes) — D-16-19's *assert locally*, on a box that is not shared.
+- **The delta** (`tacsim_harness_delta_against_the_committed_baseline`) reads the
+  fresh `harness-arena.json` and `crates/tacsim/tests/harness_baseline/arena.<os>.json`.
+  It fails on **any** difference in the deterministic block (the world, the
+  substeps, the counters, the weapons, the perception and controller totals and
+  peaks, the window peaks, the thresholds), printing one `harness_delta:` line
+  per field first, and on a timing figure (the wake p50 and p99, the window p99)
+  more than **20 per cent slower** — but only on the host that blessed the file
+  (the same OS, core count and machine name). Faster by as much prints
+  `re-bless when this holds` and passes.
+- **The CI job** sets no `TACSIM_ASSERT`: it runs on a shared runner, whose speed
+  is not a threshold (D-H-8), so there the absolutes are report-only and the delta
+  is the one step that fails the job. The runner is never the blessing host, so
+  on CI the delta gates the deterministic block alone.
+
+**Blessing.** `TACSIM_BASELINE_BLESS=1 scripts/harness-weekly.sh` rewrites this
+platform's `arena.<os>.json` from the fresh report, with a `blessed` stanza (the
+commit, the date, the host), and then compares against what it wrote. Commit
+the file. Re-bless when a change moves the deterministic block on purpose (in
+the same diff, saying why), or when the box has got faster and says so. The
+**Windows** baseline is committed (16b cut U.3); the **Linux** one is the
+owner's to bless on their own box — cut L measured a 14.998 ms p99 there with
+the assertions off — and until it exists the delta on Linux says
+`no baseline for linux` and passes. Every committed file must carry the same
+deterministic block; an ordinary test holds that.
+
+**A timing-only failure is re-run once before it is believed.** Two runs of one
+tree on one box have differed by 16 per cent at the p99 (16b cut N.1). A
+deterministic difference is never noise: it means the arena did something
+different at the default knobs.
+
+The reports land at the repository root: `harness.json` (the ground pulse),
+`harness-arena.json`, `harness-arena-authored.json`, `harness-arena-long.json`
+and `harness-fan-out.json`. The delta reads `harness-arena.json` alone, so the
+knobs that move it are the arena's: `TACSIM_UNITS`, `TACSIM_ARENA_S`,
+`TACSIM_FIGHTING`, `TACSIM_SEED`, `TACSIM_SENSOR_CELLS`, `TACSIM_SHARE_CELLS`
+and `TACSIM_WAKE_JITTER_MS` — expect the delta to fail on the deterministic
+block when you set any of them, because it is a different run.
+`TACSIM_LONG_RUN_S` sizes the long run and `TACSIM_PULSES` the ground-pulse
+lane; neither reaches the file the delta reads.
+
+The delta refuses a `harness-arena.json` older than the test binary that reads
+it, naming the script: a report left by an earlier build is not this tree's.
+Run the two lines in order, as the script does — never the whole target with
+`--ignored` and no `--test-threads=1`, where the delta would race the lane that
+writes its input.
+
+If the script answers `Permission denied`, the checkout lost its executable
+bit: `bash scripts/harness-weekly.sh` runs it the same way.
+
+**Never run it on a host that is serving players.** It competes with the game
+server for every core, and a pulse past `stall_ms` voids a live match.
+
 ## Discord bot (D1–D5): `[discord]`
 
 The Discord transport (`mush-net-discord`, plan `docs/interface/04-discord-implementation-plan.md`)

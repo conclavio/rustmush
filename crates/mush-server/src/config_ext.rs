@@ -367,7 +367,6 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
         harness: tacsim::config::HarnessConfig {
             units: cfg.harness.units,
             fighting: cfg.harness.fighting,
-            weapons: cfg.harness.weapons,
             engaged_p99_ms: cfg.harness.engaged_p99_ms,
             max_traces_per_pulse: cfg.harness.max_traces_per_pulse,
             max_path_queries_per_pulse: cfg.harness.max_path_queries_per_pulse,
@@ -997,7 +996,6 @@ mod tests {
              [tacsim.harness]\n\
              units = 10\n\
              fighting = 4\n\
-             weapons = 6\n\
              engaged_p99_ms = 50\n\
              max_traces_per_pulse = 100\n\
              max_path_queries_per_pulse = 8\n\
@@ -1094,7 +1092,6 @@ mod tests {
             tacsim::config::HarnessConfig {
                 units: 10,
                 fighting: 4,
-                weapons: 6,
                 engaged_p99_ms: 50,
                 max_traces_per_pulse: 100,
                 max_path_queries_per_pulse: 8,

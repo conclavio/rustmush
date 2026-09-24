@@ -1,0 +1,236 @@
+{
+  "blessed": {
+    "commit": "297294bf2492a4e0e0b4d6e88cfe7c22b759292c",
+    "date": "2026-09-24T08:18:39Z",
+    "host": {
+      "cpus": 32,
+      "hostname": "ALIEN18",
+      "os": "windows"
+    }
+  },
+  "classes": {
+    "grass": 11428,
+    "ground": 22054,
+    "road": 3084,
+    "rubble": 2184,
+    "water": 14278,
+    "woods_heavy": 4396,
+    "woods_light": 8112
+  },
+  "cohort": "ci",
+  "cohort_mix": {
+    "biped": 38,
+    "eccm": 36,
+    "ecm": 36,
+    "laser": 38,
+    "line_tank": 114,
+    "thermal": 38
+  },
+  "counters": {
+    "blocked_causes": {
+      "edge": 0,
+      "impassable": 192,
+      "occupied": 18,
+      "too_steep": 2
+    },
+    "blocked_events": 212,
+    "blocked_impassable": 192,
+    "blocked_interior_passable": 20,
+    "blocked_ring_passable": 0,
+    "ended": null,
+    "frames_per_pulse_mean": 19.525,
+    "held_at_end": 14,
+    "lagged_pulses": 0,
+    "ledger_bytes_streamed": 3404107,
+    "ledger_chunks": 211,
+    "moving_at_end": 124
+  },
+  "loop": {
+    "arena_s": 30.0,
+    "jitter_ms": 0,
+    "short_substeps": 0,
+    "substep_ms": 250,
+    "substeps_per_wake_mean": 1.0,
+    "wakes": 120,
+    "wakes_per_arena_s": 4.0
+  },
+  "memory": {
+    "rss_end_kib": 43492,
+    "rss_start_kib": 20956,
+    "vmrss_end_kib": null,
+    "vmrss_start_kib": null
+  },
+  "perception": {
+    "alert_range_cm": 362000,
+    "contacts_at_end": 699,
+    "lost_after_passes": 3,
+    "pass_ms": 1000,
+    "peak_per_pulse": {
+      "candidates": 753,
+      "cell_probes": 7462,
+      "classified": 25,
+      "detected": 23,
+      "jam_checks": 383,
+      "lost": 37,
+      "passes": 94,
+      "share_ops": 59,
+      "traces": 570
+    },
+    "sensor_cells": 24,
+    "share_cells": 8,
+    "total": {
+      "candidates": 71224,
+      "cell_probes": 611611,
+      "classified": 654,
+      "detected": 897,
+      "jam_checks": 34363,
+      "lost": 951,
+      "passes": 8652,
+      "share_ops": 5641,
+      "traces": 49782
+    }
+  },
+  "reflex": {
+    "decide_ms": 1000,
+    "max_path_queries_per_window": 64,
+    "path_max_cells": 65536,
+    "peak_per_pulse": {
+      "intents": 234,
+      "path_cells": 26194,
+      "path_deferred": 28,
+      "path_failures": 1,
+      "path_queries": 32,
+      "shots": 43,
+      "slope_refusals": 316,
+      "ticks": 94,
+      "traces": 7
+    },
+    "repath_ms": 4000,
+    "states_at_end": {
+      "approach": 11,
+      "disabled": 35,
+      "engage": 117,
+      "patrol": 118,
+      "startup": 0,
+      "withdraw": 19
+    },
+    "total": {
+      "intents": 21324,
+      "path_cells": 182969,
+      "path_deferred": 391,
+      "path_failures": 1,
+      "path_queries": 713,
+      "shots": 3967,
+      "slope_refusals": 856,
+      "ticks": 8652,
+      "traces": 328
+    },
+    "waypoint_nodes": 256,
+    "waypoint_pitch_cells": 16
+  },
+  "relief": {
+    "edges_over_45": 73,
+    "edges_over_70": 32,
+    "terraces": [
+      {
+        "radius_cells": 16,
+        "rise_cm": 800,
+        "x": 78,
+        "y": 252
+      },
+      {
+        "radius_cells": 14,
+        "rise_cm": 500,
+        "x": 253,
+        "y": 165
+      }
+    ]
+  },
+  "setup_ms": {
+    "arena_open": 1.585,
+    "boot": 19.487,
+    "generate": 3.844,
+    "killed_warming": 0,
+    "pack_apply": 20.528,
+    "terrain_convert": 1.121,
+    "warm_pulses": 47,
+    "warm_up": 56.192,
+    "window_open": 13.209
+  },
+  "slope": {
+    "refusals": 877,
+    "units_at_45": 262,
+    "units_at_70": 38
+  },
+  "substeps": {
+    "per_wake_max": 1,
+    "per_wake_min": 1,
+    "substep_divides_periods": true,
+    "substep_ms": 250
+  },
+  "tempos": [
+    {
+      "max_ms": 10.156,
+      "name": "arena_engaged",
+      "p50_ms": 2.423,
+      "p95_ms": 3.918,
+      "p99_ms": 5.678,
+      "period_ms": 500,
+      "pulses": 120
+    }
+  ],
+  "thresholds": {
+    "assert": true,
+    "cut_a_p99_ms": 5.0,
+    "cut_s_p99_ms": 12.0,
+    "engaged_p99_ms": 25,
+    "lens": "per-wake-and-per-window",
+    "max_cell_probes_per_pulse": 32000,
+    "max_jam_checks_per_pulse": 2048,
+    "max_ledger_bytes": 67108864,
+    "max_path_queries_per_pulse": 64,
+    "max_share_ops_per_pulse": 256,
+    "max_traces_per_pulse": 4000
+  },
+  "weapons": {
+    "armed_units": 245,
+    "disabled_at_end": 3,
+    "fired_events": 4183,
+    "hits": 3991,
+    "impact_events": 4172,
+    "in_flight_at_end": 11,
+    "locked_events": 480,
+    "misses": 181,
+    "rounds_left": 597127,
+    "rounds_loaded": 629480,
+    "rounds_spent": 25409,
+    "sections_destroyed": 91,
+    "shot_seq_at_end": 4183,
+    "units_destroyed": 33,
+    "wrecks_at_end": 33
+  },
+  "what": "16b cut U.2: `Arena::step` at the harness's scale, the fielded catalog on the reflex controller, woken where the task wakes it, with the cell-probe and jam-check bounds asserted",
+  "window": {
+    "cell_probes_peak": 12523,
+    "jam_checks_peak": 688,
+    "ms_max": 13.013,
+    "ms_p50": 4.992,
+    "ms_p95": 8.573,
+    "ms_p99": 9.791,
+    "share_ops_peak": 107,
+    "traces_peak": 952,
+    "window_ms": 500,
+    "windows": 60
+  },
+  "world": {
+    "arena_ms": 41500,
+    "cell_cm": 1000,
+    "move_cost_table": "harness-local (harness_move_cost); 16c B-58's per-locomotion layer is not built",
+    "passable_cells": 51258,
+    "pilots": 24,
+    "pulses": 120,
+    "seed": 2350,
+    "side_cells": 256,
+    "units": 300
+  }
+}

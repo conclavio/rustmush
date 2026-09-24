@@ -374,21 +374,41 @@ jobs:
   # 16b cut H (§5, H3): the TacSim scale harness — doc 16 §1's A2 acceptance.
   # It composes the production composition root in a memory-store test world,
   # generates a relief from TACSIM_SEED, applies it through the atlas's pack
-  # route, places the units on a domain window and times the ground pulse. Every
-  # test is `#[ignore]`; this job is the only thing that runs them, on demand or
-  # weekly, never on push, and no Redis is involved. Report-only per D-H-8 and
-  # D-16-19 — read the `harness_*:` lines in the log, or the uploaded
-  # `harness.json`. Run it locally with TACSIM_ASSERT=1 to assert the
-  # thresholds, and size it with TACSIM_UNITS / TACSIM_FIGHTING /
-  # TACSIM_WEAPONS / TACSIM_PULSES (the ground pulse only; the arena lanes run TACSIM_ARENA_S) / TACSIM_SEED.
+  # route, and measures the ground pulse, `Arena::step` on the fielded catalog
+  # at the CI reach and at the authored reach, a long run and a 24-pilot
+  # fan-out (`harness_*:` lines in the log, `harness*.json` uploaded). Every
+  # test is `#[ignore]`; this job is the only CI job that runs them, on demand
+  # or weekly, never on push, and no Redis is involved.
   #
-  # 16b cut A.2 added a second measurement to the same target: the same relief and
-  # the same unit count driven through `Arena::step` directly (`harness_arena_*:`
-  # in the log, `harness-arena.json` beside the baseline's report).
+  # The absolutes are REPORT-ONLY here (D-H-8, D-16-19): this is
+  # `ubuntu-latest`, a shared runner, and a shared runner's speed is not a
+  # threshold — so there is no TACSIM_ASSERT on this job. What gates it is the
+  # delta (16b cut U.3, 16c T-37 and Q29): the second step compares the fresh
+  # CI-cohort report with the committed
+  # crates/tacsim/tests/harness_baseline/arena.<os>.json and is THE ONE STEP
+  # THAT FAILS THE JOB — on any difference in the deterministic block, or on a
+  # timing figure more than 20 per cent slower on the host that blessed the
+  # file. The GitHub runner never is that host, so here the delta gates the
+  # deterministic block alone, and with no linux file committed it passes
+  # after saying so. TACSIM_BASELINE_BLESS=1 re-blesses the file.
+  #
+  # scripts/harness-weekly.sh runs the same two cargo lines by hand with
+  # TACSIM_ASSERT=1, which asserts the absolutes on the owner's own box
+  # (D-16-19: assert locally). The two lines below and the script's must stay
+  # equal; the environment is where the two differ.
+  #
+  # Size it with TACSIM_UNITS / TACSIM_ARENA_S / TACSIM_LONG_RUN_S / TACSIM_FIGHTING /
+  # TACSIM_SEED / TACSIM_SENSOR_CELLS / TACSIM_SHARE_CELLS /
+  # TACSIM_WAKE_JITTER_MS (TACSIM_PULSES sizes the ground-pulse lane only). The
+  # delta reads harness-arena.json alone: an arena knob at other than its
+  # default is a different run, and its delta says so; TACSIM_LONG_RUN_S and
+  # TACSIM_PULSES size lanes the delta does not read.
   tacsim-harness:
     name: 16b cut H TacSim harness
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
+    env:
+      TACSIM_JSON: harness.json
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain (pinned by rust-toolchain.toml)
@@ -398,15 +418,14 @@ jobs:
           rustc --version
       - uses: Swatinem/rust-cache@v2
       - name: TacSim harness
-        env:
-          TACSIM_JSON: harness.json
-        run: cargo test --release -p tacsim --test harness -- --ignored --test-threads=1 --nocapture
+        run: cargo test --release -p tacsim --test harness -- --ignored --test-threads=1 --nocapture --skip tacsim_harness_delta_against_the_committed_baseline
+      - name: Compare with the committed baseline
+        run: cargo test --release -p tacsim --test harness tacsim_harness_delta_against_the_committed_baseline -- --exact --ignored --nocapture
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: tacsim-harness-report
-          path: |
-            harness.json
-            harness-arena.json
+          path: harness*.json
           if-no-files-found: error
 
   definition-wire-fixtures:
