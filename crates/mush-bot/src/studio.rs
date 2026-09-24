@@ -519,13 +519,18 @@ mod tests {
         )
     }
     fn directory() -> PathBuf {
+        // Tests in one binary run in parallel under one pid, and the Windows
+        // clock ticks in 100 ns steps, so the time alone can repeat: the counter
+        // keeps two fixtures from racing to create_dir the same path.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let directory = std::env::temp_dir().join(format!(
-            "mush-bot-studio-{}-{}",
+            "mush-bot-studio-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::create_dir(&directory).unwrap();
         directory
