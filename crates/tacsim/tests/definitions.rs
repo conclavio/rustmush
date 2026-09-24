@@ -1069,3 +1069,57 @@ fn q8_build_fielded_refuses_an_edited_pack_wearing_a_shipped_name() {
         "{refused}"
     );
 }
+
+/// **16b cut M.4 (16c `T-14`): an entry zone with no cell a unit could open on
+/// is refused when the arena is built.** The shipped proving ground with the red
+/// zone moved onto one cell of deep water: `from_pack` refuses it by name, the
+/// arena and the team (content, not a unit), and the shipped zones themselves
+/// pass.
+#[test]
+fn m4_an_entry_zone_of_water_is_refused_by_name() {
+    let tw = TestWorld::with_modules(production_roster());
+    let records = tw
+        .world()
+        .module_state::<mush_atlas::AtlasState>()
+        .map(|state| state.records.clone())
+        .expect("the atlas is composed");
+    let catalog = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    let (id, def) = catalog
+        .arenas
+        .iter()
+        .next()
+        .expect("the proving ground is shipped");
+    let shipped = tacsim::definitions::from_pack(id.as_str(), def, &records)
+        .expect("the shipped zones are usable");
+    let (x, y) = (0..shipped.terrain.height())
+        .flat_map(|y| (0..shipped.terrain.width()).map(move |x| (x, y)))
+        .find(|(x, y)| {
+            shipped
+                .terrain
+                .get(*x, *y)
+                .is_some_and(|cell| cell.class == mush_atlas::TerrainClass::WaterDeep)
+        })
+        .expect("the proving ground has deep water");
+    let mut wet = def.clone();
+    for zone in &mut wet.entry_zones {
+        if zone.team == tacsim::arena::state::Team::Red {
+            zone.x0 = x;
+            zone.x1 = x;
+            zone.y0 = y;
+            zone.y1 = y;
+        }
+    }
+    let refused = tacsim::definitions::from_pack(id.as_str(), &wet, &records)
+        .expect_err("a zone of deep water fields nobody");
+    assert!(
+        matches!(
+            &refused,
+            tacsim::definitions::ArenaBuildError::EntryZoneUnusable { team: "red", .. }
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        refused.to_string(),
+        format!("arena {id}: team red's entry zone has no passable cell with a passable neighbour")
+    );
+}

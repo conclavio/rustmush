@@ -349,7 +349,7 @@ const DIGESTS: [(&str, &str); 9] = [
     ),
     (
         "tacsim.pack.line_tank",
-        "6208ec938711ca2f8b2bd878ee059aa03e5e79efbedd215c12d849a50cfb29c1",
+        "607a1d6c9ab1dfb182df4b64983719d7e83df492fe0d63e6102679c216d904ee",
     ),
     (
         "tacsim.pack.resolution",
@@ -1210,5 +1210,89 @@ fn m2_every_fielded_units_substep_divides_the_three_periods() {
     assert!(
         checked >= 6,
         "every fielded unit's modes were read: {checked}"
+    );
+}
+
+/// **16b cut M.4 (16c `B-47`): every fielded tank's two tracks carry the pair
+/// rule.**
+///
+/// Walks the fielded catalog's unit specs — the stock tank and the four
+/// extension tanks — and asserts that each unit with a `left_track` and a
+/// `right_track` authors `disable_motion_when_all_of: [left_track, right_track]`
+/// on **both** of them, so a tank on no tracks neither turns nor drives
+/// whichever track goes last. Five tanks, exactly; the biped's legs are X.2's
+/// and are asserted by its own test.
+#[test]
+fn m4_every_fielded_tanks_two_tracks_carry_the_pair_rule() {
+    use tacsim::definitions::unit::Consequence;
+
+    let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let pair = Consequence::DisableMotionWhenAllOf {
+        sections: vec![
+            mush_core::CanonicalId::new("left_track").expect("a section id"),
+            mush_core::CanonicalId::new("right_track").expect("a section id"),
+        ],
+    };
+    let mut tanks: Vec<String> = Vec::new();
+    for (id, spec) in &fielded.specs {
+        let track = |name: &str| spec.sections.iter().find(|row| row.id.as_str() == name);
+        let (Some(left), Some(right)) = (track("left_track"), track("right_track")) else {
+            continue;
+        };
+        for row in [left, right] {
+            assert!(
+                row.consequences.contains(&pair),
+                "{id}'s {} does not carry the pair rule: {:?}",
+                row.id,
+                row.consequences
+            );
+        }
+        tanks.push(id.as_str().to_owned());
+    }
+    tanks.sort();
+    assert_eq!(
+        tanks,
+        vec![
+            content::LINE_TANK,
+            content::LINE_TANK_ECCM,
+            content::LINE_TANK_ECM,
+            content::LINE_TANK_LASER,
+            content::LINE_TANK_THERMAL,
+        ],
+        "the five tanks, and nothing else with two tracks"
+    );
+}
+
+/// **16b cut M.4 (16c `B-47`): the five tank packs are version 2.** Their bytes
+/// moved (the pair rule), and `boot_reconcile` refuses a published `(id,
+/// version)` whose digest moved, so the version had to. The biped is not among
+/// them: its legs carried the pair rule since X.2, and nothing in its file moved.
+#[test]
+fn m4_the_five_tank_packs_are_version_two_and_the_biped_is_not_moved() {
+    for (json, id) in [
+        (content::LINE_TANK_JSON, "tacsim.pack.line_tank"),
+        (content::LINE_TANK_LASER_JSON, "tacsim.pack.line_tank_laser"),
+        (
+            content::LINE_TANK_THERMAL_JSON,
+            "tacsim.pack.line_tank_thermal",
+        ),
+        (content::LINE_TANK_ECM_JSON, "tacsim.pack.line_tank_ecm"),
+        (content::LINE_TANK_ECCM_JSON, "tacsim.pack.line_tank_eccm"),
+    ] {
+        let pack = tacsim::pack::load_pack(json).unwrap_or_else(|error| panic!("{id}: {error}"));
+        assert_eq!(pack.manifest().id().as_str(), id);
+        assert_eq!(pack.manifest().version(), 2, "{id} is version 2");
+    }
+    let biped = content::extension_sources_of(&content::EXTENSIONS_BIPED)
+        .into_iter()
+        .find_map(|source| {
+            let pack = tacsim::pack::load_pack(&source.bytes).ok()?;
+            (pack.manifest().id().as_str() == "tacsim.pack.biped_mk1").then_some(pack)
+        })
+        .unwrap_or_else(|| panic!("the biped ships as an extension"));
+    assert_eq!(
+        biped.manifest().version(),
+        1,
+        "the biped is not re-versioned"
     );
 }

@@ -61,8 +61,10 @@ thread_local! {
 ///    5. `pose.heading_mdeg`, `u32`;
 ///    6. `speed_cms`, `i32`;
 ///    7. the power byte (`0` off, `1` starting, `2` online);
-///    8. the four limit bytes: `slow_pct`; `no_turn_toward` (`0` none, `1` left,
-///       `2` right); `motion_disabled` (`0`/`1`); `wreck` (`0`/`1`);
+///    8. **the five limit bytes** (16b cut M.4, 16c `B-47`; four until then, when
+///       one byte named at most one closed side): `slow_pct`; `no_turn_left`
+///       (`0`/`1`); `no_turn_right` (`0`/`1`); `motion_disabled` (`0`/`1`);
+///       `wreck` (`0`/`1`);
 ///    9. **what it is held against** (16b cut M.3, 16c `T-04`):
 ///       [`crate::arena::state::UnitState::held`] as a presence byte, then the
 ///       held cell's `x` and `y` as `u16` and the cause as one byte
@@ -80,9 +82,12 @@ thread_local! {
 ///        unit entered its cell by;
 ///    14. **the traffic hold** (16b cut E.3): a presence byte, then the held
 ///        cell's two `u16` and the `i64` arena millisecond it opened at;
-///    15. **the four motion carries** (16b cut Q.6), in field order: `carry.turn`
+///    15. **the motion carries** (16b cut Q.6), in field order: `carry.turn`
 ///        as `u32`, `carry.speed` as `u32`, `carry.east` as `i64` and
-///        `carry.north` as `i64`;
+///        `carry.north` as `i64`; then (16b cut M.4, 16c `T-16`) the two sign
+///        bytes `carry.turn_side` and `carry.speed_rate` in one call — which way
+///        the turn carry was banked and by which rate the speed carry was, so a
+///        replay about to zero a carry on a flip differs from one that is not;
 ///    16. **the platform's own receiver** (16b cut D.4): a presence byte, then
 ///        `budget` and `budget_max` as **one byte each** (the fold writes
 ///        `[1, budget, budget_max]` in one call), then `reach_permille` as `u16`
@@ -228,7 +233,16 @@ thread_local! {
 /// own, and two replays whose carries differ are two replays that are about to
 /// disagree about a whole centimetre — several substeps later, when the drift has
 /// accumulated, which is precisely the divergence the per-substep sequence exists
-/// to catch at the substep it happened.
+/// to catch at the substep it happened. **16b cut M.4** (16c `T-16`) adds the two
+/// sign bytes beside them, `turn_side` and `speed_rate`: a carry is now zeroed on
+/// the substep that turns the other way or changes rate, so which way it was
+/// banked decides the next substep's heading and speed.
+///
+/// **What a shot in flight carries is still not folded** beyond the count, and
+/// that includes 16b cut M.4's `Resolution::beyond` (16c `B-52`): it is a
+/// function of the range at acceptance and the weapon's authored bands, both
+/// fixed when the shot was accepted, exactly as the rest of the recorded
+/// resolution is.
 ///
 /// The *callsign* on each unit is deliberately **not** folded: it is a pure
 /// function of the check-out message, resolved once by `Arena::new` and never
@@ -387,17 +401,15 @@ pub fn state_hash(arena: &Arena) -> u64 {
             hash,
             &[
                 unit.limits.slow_pct,
-                match unit.limits.no_turn_toward {
-                    None => 0,
-                    Some(crate::arena::state::Side::Left) => 1,
-                    Some(crate::arena::state::Side::Right) => 2,
-                },
+                // 16b cut M.4 (`B-47`): the two sides are two bytes.
+                u8::from(unit.limits.no_turn_left),
+                u8::from(unit.limits.no_turn_right),
                 u8::from(unit.limits.motion_disabled),
                 u8::from(unit.limits.wreck),
             ],
         );
         // **16b cut M.3** (`T-04`): what it is held against — its own item after
-        // the four limit bytes, which stay four.
+        // the limit bytes (five since 16b cut M.4).
         match unit.held {
             Some(held) => {
                 hash = fnv1a64_update(hash, &[1_u8]);
@@ -443,6 +455,8 @@ pub fn state_hash(arena: &Arena) -> u64 {
         hash = fnv1a64_update(hash, &unit.carry.speed.to_le_bytes());
         hash = fnv1a64_update(hash, &unit.carry.east.to_le_bytes());
         hash = fnv1a64_update(hash, &unit.carry.north.to_le_bytes());
+        // 16b cut M.4 (`T-16`): which way each of the first two was banked.
+        hash = fnv1a64_update(hash, &[unit.carry.turn_side, unit.carry.speed_rate]);
         // **16b cut D.4**: what this platform's own last pass ran under.
         match unit.receiver {
             Some(receiver) => {
@@ -659,7 +673,7 @@ fn fold_plot(hash: u64, plot: &crate::arena::state::SeenPose) -> u64 {
 mod tests {
     use super::*;
     use crate::arena::clock::{Tempo, TempoSignals};
-    use crate::arena::state::{DueKind, Power, Side, Team};
+    use crate::arena::state::{DueKind, Power, Team};
     use crate::arena::test_support::{arena_of, pose, tank};
     use crate::config::TempoConfig;
     use mush_core::ObjId;
@@ -715,7 +729,8 @@ mod tests {
             |unit| unit.speed_cms += 1,
             |unit| unit.power = Power::Online,
             |unit| unit.limits.slow_pct = 50,
-            |unit| unit.limits.no_turn_toward = Some(Side::Left),
+            |unit| unit.limits.no_turn_left = true,
+            |unit| unit.limits.no_turn_right = true,
             |unit| unit.limits.motion_disabled = true,
             |unit| unit.limits.wreck = true,
         ] {
@@ -908,6 +923,9 @@ mod tests {
             |unit| unit.carry.speed = 1,
             |unit| unit.carry.east = 1,
             |unit| unit.carry.north = 1,
+            // 16b cut M.4 (`T-16`): the two sign bytes, each on its own.
+            |unit| unit.carry.turn_side = 1,
+            |unit| unit.carry.speed_rate = 2,
         ] {
             let mut probe = two_tanks();
             if let Some(unit) = probe.unit_mut(ObjId(9)) {
@@ -915,6 +933,17 @@ mod tests {
             }
             assert_ne!(state_hash(&probe), base, "a carry went unhashed");
         }
+        // And the two sign bytes are not one number either: a left turn's
+        // carry and an accelerating one are different states.
+        let mut left = two_tanks();
+        if let Some(unit) = left.unit_mut(ObjId(9)) {
+            unit.carry.turn_side = 1;
+        }
+        let mut accel = two_tanks();
+        if let Some(unit) = accel.unit_mut(ObjId(9)) {
+            unit.carry.speed_rate = 1;
+        }
+        assert_ne!(state_hash(&left), state_hash(&accel));
         // The four are separate fields and not one number: a carry moved from one
         // to another is a different state.
         let mut east = two_tanks();

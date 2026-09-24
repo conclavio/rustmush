@@ -776,3 +776,34 @@ fn d3_every_shipped_configuration_declares_the_unattended_interval() {
         );
     }
 }
+
+/// **16b cut M.4 (16c `B-55`, `T-26`): every shipped configuration carries a
+/// signature factor of exactly 1.0**, the default beside it.
+///
+/// The factor also scales the perception pass's candidate cull; 1.0 is the
+/// exact cull (no shipped signature row exceeds 1.0) and the host refuses
+/// anything below it. The 1.5 every file carried until M.4 was a circle 2.25
+/// times the area it needed.
+#[test]
+fn m4_every_shipped_configuration_carries_the_exact_signature_factor() {
+    let exact = |factor: f64| (factor - 1.0).abs() < f64::EPSILON;
+    assert!(
+        exact(Config::default().tacsim.sensors.max_signature_factor),
+        "the compiled-in default is 1.0"
+    );
+    let root = repo_root();
+    let example = Config::load(&root.join("mushd.toml.example"))
+        .unwrap_or_else(|e| panic!("mushd.toml.example does not parse: {e}"));
+    assert!(
+        exact(example.tacsim.sensors.max_signature_factor),
+        "mushd.toml.example: [tacsim.sensors].max_signature_factor is 1.0"
+    );
+    for instance in SHIPPED {
+        let env_file = instance.env;
+        let (_, cfg) = rendered_instance(instance);
+        assert!(
+            exact(cfg.tacsim.sensors.max_signature_factor),
+            "{env_file}: the rendered [tacsim.sensors].max_signature_factor is 1.0"
+        );
+    }
+}

@@ -331,12 +331,25 @@ pub struct Resolution {
     pub p_permille: u32,
     /// What the target's cover did to the presented width.
     pub cover: Cover,
+    /// **The range was past the weapon's last band at acceptance** (16b cut
+    /// M.4; 16c `B-52`, §5's Q19: *an authored band list is a hard range
+    /// limit*). Set by [`Resolution::beyond_reach`], which
+    /// [`Arena::resolve_shot`] answers when
+    /// [`WeaponSummary::band_of`](crate::arena::state::WeaponSummary::band_of)
+    /// finds no band, and `false` everywhere else. A `beyond` resolution is
+    /// [`Resolution::blind`] — `p_permille` is `0` — and **stays blind through
+    /// [`Arena::reresolve`]**: the impact has no weapon to test a band against
+    /// (by then the shooter may be a wreck with its weapon table cleared), so the
+    /// fact is carried here, and a target that turns in flight cannot earn the
+    /// curve's `p_min` back through a new face.
+    pub beyond: bool,
 }
 
 impl Resolution {
     /// A shot at something that presents nothing: doc 16 §3.5's *zero presented
     /// area is zero*, which is the one answer the clamp to `p_min` does not
-    /// override.
+    /// override. `beyond` is `false`: the target presents nothing, the weapon
+    /// reaches it.
     #[must_use]
     pub fn blind(band: &str, error_urad: u32, cover: Cover) -> Resolution {
         Resolution {
@@ -348,8 +361,36 @@ impl Resolution {
             x_permille: 0,
             p_permille: 0,
             cover,
+            beyond: false,
         }
     }
+
+    /// **A shot past the weapon's last band** (16b cut M.4; 16c `B-52`, Q19):
+    /// [`Resolution::blind`] with [`Resolution::beyond`] set. Nothing the weapon
+    /// authors reaches the range, so the round is fired, costs its cycle and its
+    /// ammunition (doc 16 §3.5: there is no free probe of anything), and cannot
+    /// land — where before M.4 it took the outermost band's dispersion and
+    /// resolved at the curve's 1 per cent floor while the cockpit printed
+    /// `beyond`.
+    #[must_use]
+    pub fn beyond_reach(band: &str, error_urad: u32, cover: Cover) -> Resolution {
+        Resolution {
+            beyond: true,
+            ..Resolution::blind(band, error_urad, cover)
+        }
+    }
+}
+
+/// **Whether `range_cm` is past every band `weapon` authors** on `shooter`
+/// (16b cut M.4; 16c `B-52`):
+/// [`WeaponSummary::band_of`](crate::arena::state::WeaponSummary::band_of) is the
+/// one gate, the same one the cockpit's `beyond` word and the frame's weapon band
+/// read. A weapon the unit does not carry is not "beyond": it resolves on the
+/// bare cone as it always has.
+fn past_last_band(shooter: &UnitState, weapon: &str, range_cm: u64) -> bool {
+    shooter
+        .weapon(weapon)
+        .is_some_and(|summary| summary.band_of(range_cm).is_none())
 }
 
 /// **What cover leaves of a presented silhouette**, per mille (doc 16 §3.5 step
@@ -386,6 +427,15 @@ impl Arena {
     /// [`Resolution::blind`] on a bare cone: there is nothing to present and
     /// nothing to aim, and an answer of zero is better than an `Option` every
     /// caller would have to turn into one anyway.
+    ///
+    /// **Past the last band the shot is blind** (16b cut M.4; 16c `B-52`, §5's
+    /// Q19: *an authored band list is a hard range limit*): when the weapon's
+    /// [`WeaponSummary::band_of`](crate::arena::state::WeaponSummary::band_of)
+    /// finds no band for `range_cm`, the answer is
+    /// [`Resolution::beyond_reach`] over the cone as computed — `p_permille` `0`,
+    /// [`Resolution::beyond`] set — instead of the outermost band's dispersion
+    /// clamped up to `p_min`. The round is still fired and paid for; it cannot
+    /// land.
     #[must_use]
     pub fn resolve_shot(
         &self,
@@ -400,6 +450,9 @@ impl Arena {
         };
         let band = facet_band(at, from);
         let error_urad = self.error_urad(from, at, weapon, range_cm);
+        if past_last_band(from, weapon, range_cm) {
+            return Resolution::beyond_reach(band, error_urad, cover);
+        }
         self.presented(at, band, error_urad, range_cm, cover)
     }
 
@@ -424,6 +477,11 @@ impl Arena {
     /// target that has moved since the sighting the two are deliberately different
     /// numbers; while the target is in continuous view the plot is at most one
     /// `sensors.pass_ms` old and they agree.
+    ///
+    /// **16b cut M.4** (16c `B-52`): past the weapon's last band the advice is
+    /// [`Resolution::beyond_reach`] too, by the same gate, so the percentage a
+    /// pilot is quoted beside the word `beyond` is the nought the shot resolves
+    /// at and not the curve's floor.
     #[must_use]
     pub fn resolve_seen(&self, shooter: ObjId, aim: &LockAim, weapon: &str) -> Resolution {
         let (Some(from), Some(at)) = (self.unit(shooter), self.unit(aim.target)) else {
@@ -431,6 +489,9 @@ impl Arena {
         };
         let band = facet_band_seen(&aim.seen_at, from);
         let error_urad = self.error_urad_seen(from, aim, weapon);
+        if past_last_band(from, weapon, aim.range_cm) {
+            return Resolution::beyond_reach(band, error_urad, aim.cover);
+        }
         self.presented(at, band, error_urad, aim.range_cm, aim.cover)
     }
 
@@ -478,6 +539,7 @@ impl Arena {
             x_permille,
             p_permille,
             cover,
+            beyond: false,
         }
     }
 
@@ -503,9 +565,8 @@ impl Arena {
     ///
     /// The weapon band's own dispersion at this range plus the four weighted
     /// terms. A range past the weapon's last band has no dispersion to read and
-    /// takes the **outermost** band's: the shot is out of reach and is going to
-    /// miss, and taking the widest authored cone says so in the arithmetic rather
-    /// than by a special case.
+    /// contributes none: since 16b cut M.4 (16c `B-52`) such a shot is
+    /// [`Resolution::beyond_reach`] and its cone is recorded, not used.
     #[must_use]
     pub fn error_urad(
         &self,
@@ -567,9 +628,7 @@ impl Arena {
             .map(|summary| {
                 summary
                     .band_of(range_cm)
-                    .map(|(_, band)| band.dispersion_mrad)
-                    .or_else(|| summary.bands.last().map(|band| band.dispersion_mrad))
-                    .unwrap_or(0)
+                    .map_or(0, |(_, band)| band.dispersion_mrad)
             })
             .unwrap_or(0);
         let terms = &self.resolution.error_terms;
@@ -672,6 +731,14 @@ impl Arena {
     /// all — it is keyed on the shot's sequence, so reading it again is reading the
     /// same number (that is the whole reason doc 16 §3.5 keys draws on labels
     /// rather than on a stream position).
+    ///
+    /// **A `beyond` shot stays blind** (16b cut M.4; 16c `B-52`, Q19). This has
+    /// no weapon — by the impact the shooter may be a wreck whose weapon table
+    /// is cleared — so it cannot test a band; the acceptance's answer is carried
+    /// on [`Resolution::beyond`] instead, and a `beyond` resolution comes back as
+    /// itself with only the band changed. Without it a target that turned in
+    /// flight went through the silhouette again and got the curve's `p_min` back
+    /// for a round that nothing the weapon authors could deliver.
     #[must_use]
     pub fn reresolve(
         &self,
@@ -680,6 +747,12 @@ impl Arena {
         band: &str,
         range_cm: u64,
     ) -> Resolution {
+        if taken.beyond {
+            return Resolution {
+                band: SmolStr::new(band),
+                ..taken.clone()
+            };
+        }
         let Some(at) = self.unit(target) else {
             return Resolution::blind(band, taken.error_urad, taken.cover);
         };
@@ -808,39 +881,36 @@ fn lateral_seen_cms(shooter: &UnitState, target: &SeenPose) -> i32 {
 
 /// **The shooter's sight condition**, 0 to [`FULL_CONDITION`].
 ///
-/// The `condition` cell of the **first component, in component-id order, that has
-/// one**, read off the M32 unit. For doc 16 §3.3's tank that is exactly the
-/// `visual_sensor`: a weapon component has `ammo` and `ready_at_ms`, the power plant
-/// has no cell at all, and the sight is the only thing with a `condition`
-/// (`crate::definitions::unit::bind` is what gives each role its cells). The arena
-/// cannot ask *which* component is the sight — the seam carries the sensor's
-/// numbers, not the component id it came from — so a unit whose content gave a
-/// second component a `condition` cell would be read through whichever id sorts
-/// first. Carrying the sensor component's id across the seam is the clean fix and is
-/// a field nobody needs yet.
+/// The `condition` cell of **the sensor component the unit sees with** — the one
+/// [`crate::arena::perception::SensorProfile::component`] names, which the
+/// check-out copies across the seam from the spec's first `sensor` component — read
+/// off the M32 unit. **16b cut M.4** (16c `B-53`): until then this read the first
+/// component in component-id order that had a `condition` cell, which on the ECM
+/// and ECCM tanks is the pod or the filter (`ecm_pod`, `eccm_filter` sort before
+/// `visual_sensor`), so a shot-off pod widened the gun's cone and a shot-off sight
+/// did not.
 ///
-/// A unit with no such cell — every cut-A fixture — reads as **full**: the term is
-/// *how much a damaged sensor widens the cone*, and a unit that has no sensor to
-/// damage is not shooting worse for the lack of one (what it cannot do is hold a
-/// contact, which is `FIRE`'s own refusal).
+/// A unit with **no sensor**, or whose named component carries no such cell —
+/// every cut-A fixture — reads as **full**: the term is *how much a damaged sensor
+/// widens the cone*, and a unit that has no sensor to damage is not shooting worse
+/// for the lack of one (what it cannot do is hold a contact, which is `FIRE`'s own
+/// refusal).
 fn sight_condition(shooter: &UnitState) -> u32 {
-    let Ok(cell) = mush_tactics::CellId::new(crate::definitions::unit::CONDITION_CELL) else {
+    let Some(sensor) = shooter.sensor.as_ref() else {
+        return FULL_CONDITION;
+    };
+    let (Ok(component), Ok(cell)) = (
+        mush_tactics::ComponentId::new(sensor.component.as_str()),
+        mush_tactics::CellId::new(crate::definitions::unit::CONDITION_CELL),
+    ) else {
         return FULL_CONDITION;
     };
     shooter
         .unit
-        .components()
-        .find_map(|(component, _)| {
-            shooter
-                .unit
-                .cell(&mush_tactics::CellAddr::Component {
-                    component: component.clone(),
-                    cell: cell.clone(),
-                })
-                .map(|scalar| scalar.current)
-        })
-        .map_or(FULL_CONDITION, |current| {
-            u32::try_from(current.clamp(0, i64::from(FULL_CONDITION))).unwrap_or(FULL_CONDITION)
+        .cell(&mush_tactics::CellAddr::Component { component, cell })
+        .map_or(FULL_CONDITION, |scalar| {
+            u32::try_from(scalar.current.clamp(0, i64::from(FULL_CONDITION)))
+                .unwrap_or(FULL_CONDITION)
         })
 }
 
@@ -1038,5 +1108,153 @@ mod tests {
         let blind = arena.resolve_shot(RED, BLUE, "cannon", 100_000, Cover::None);
         assert_eq!(healthy.error_urad, 4_000);
         assert_eq!(blind.error_urad, 4_500, "500 µrad at weight 500");
+    }
+
+    /// **16b cut M.4 (16c `B-52`, §5's Q19): past the last band a shot is
+    /// blind.** The fixture cannon's last band ends at 2,500 m: one centimetre
+    /// past it the shot resolves at nought with [`Resolution::beyond`] set, where
+    /// before the cut it took the outermost band's cone and the curve's 1 per
+    /// cent floor; at the edge itself it is an ordinary shot at the floor.
+    #[test]
+    fn m4_a_shot_past_the_last_band_is_blind_and_one_at_its_edge_is_not() {
+        let arena = duel();
+        let edge_cm = u64::from(cannon().bands.last().map_or(0, |band| band.max_range_cm));
+        assert_eq!(edge_cm, 250_000);
+        let past = arena.resolve_shot(RED, BLUE, "cannon", edge_cm + 1, Cover::None);
+        assert!(past.beyond, "past the last band is beyond");
+        assert_eq!(past.p_permille, 0, "and blind");
+        assert_eq!((past.presented_width_cm, past.x_permille), (0, 0));
+        assert_eq!(
+            past.band, "rear",
+            "the face it was aimed at is still recorded"
+        );
+        let edge = arena.resolve_shot(RED, BLUE, "cannon", edge_cm, Cover::None);
+        assert!(!edge.beyond);
+        assert!(
+            edge.p_permille > 0,
+            "the edge is in reach, at the curve's floor"
+        );
+        // The advice is the same answer: the chance a pilot is quoted beside the
+        // word `beyond` is nought, by the same gate.
+        let blue = arena.unit(BLUE).unwrap_or_else(|| panic!("blue"));
+        let aim = LockAim {
+            target: BLUE,
+            seen_at: SeenPose::of(blue),
+            range_cm: edge_cm + 1,
+            cover: Cover::None,
+        };
+        let seen = arena.resolve_seen(RED, &aim, "cannon");
+        assert!(seen.beyond && seen.p_permille == 0, "{seen:?}");
+        let near = LockAim {
+            range_cm: edge_cm,
+            ..aim
+        };
+        assert!(!arena.resolve_seen(RED, &near, "cannon").beyond);
+        // A weapon the unit does not carry is not "beyond": it is the bare cone.
+        assert!(
+            !arena
+                .resolve_shot(RED, BLUE, "no_such_gun", edge_cm + 1, Cover::None)
+                .beyond
+        );
+    }
+
+    /// **16b cut M.4 (16c `B-52`): a `beyond` shot stays blind through
+    /// `reresolve`.** The target turns in flight and presents its 700 cm flank —
+    /// which, for an in-reach shot, re-resolves to a better chance — and the
+    /// beyond shot comes back with the new band and nothing else changed.
+    #[test]
+    fn m4_a_beyond_shot_whose_target_turns_in_flight_stays_blind() {
+        let arena = duel();
+        let past = arena.resolve_shot(RED, BLUE, "cannon", 250_001, Cover::None);
+        let turned = arena.reresolve(BLUE, &past, "left", 250_001);
+        assert_eq!(turned.band, "left");
+        assert!(turned.beyond);
+        assert_eq!(turned.p_permille, 0, "the flank earned no chance back");
+        assert_eq!(
+            Resolution {
+                band: past.band.clone(),
+                ..turned.clone()
+            },
+            past,
+            "only the band moved"
+        );
+        // The same turn on an in-reach shot does re-resolve.
+        let near = arena.resolve_shot(RED, BLUE, "cannon", 100_000, Cover::None);
+        let flank = arena.reresolve(BLUE, &near, "left", 100_000);
+        assert!(!flank.beyond && flank.p_permille > near.p_permille);
+    }
+
+    /// Set one component cell of `unit` on the arena, through one plan.
+    fn set_component_cell(arena: &mut Arena, unit: ObjId, component: &str, value: i64) {
+        let addr = mush_tactics::CellAddr::Component {
+            component: mush_tactics::ComponentId::new(component)
+                .unwrap_or_else(|_| panic!("a component id")),
+            cell: mush_tactics::CellId::new(crate::definitions::unit::CONDITION_CELL)
+                .unwrap_or_else(|_| panic!("a cell id")),
+        };
+        let plan = mush_tactics::UnitMutationPlan::new(
+            vec![mush_tactics::UnitMutationOp::SetCell { addr, value }],
+            None,
+            None,
+        )
+        .unwrap_or_else(|_| panic!("a one-op plan"));
+        if let Some(state) = arena.unit_mut(unit) {
+            let (post, _) = mush_tactics::apply(&state.unit, &plan, 0)
+                .unwrap_or_else(|error| panic!("{component} takes the value: {error}"));
+            state.unit = post;
+        }
+    }
+
+    /// **16b cut M.4 (16c `B-53`): the gunnery term reads the sight the unit
+    /// sees with.** The check-out carries the sensor component's id
+    /// ([`crate::arena::perception::SensorProfile::component`]); the term reads
+    /// that component's `condition` and nothing else. A unit with no sensor
+    /// reads full whatever its cells say.
+    #[test]
+    fn m4_the_sensor_condition_term_reads_the_named_sight() {
+        let mut arena = duel();
+        assert_eq!(
+            arena
+                .unit(RED)
+                .and_then(|state| state.sensor.as_ref())
+                .map(|sensor| sensor.component.as_str()),
+            Some("visual_sensor")
+        );
+        let full = arena
+            .resolve_shot(RED, BLUE, "cannon", 100_000, Cover::None)
+            .error_urad;
+        set_component_cell(&mut arena, RED, "visual_sensor", 0);
+        let dark = arena
+            .resolve_shot(RED, BLUE, "cannon", 100_000, Cover::None)
+            .error_urad;
+        assert_eq!(
+            dark,
+            full + 500,
+            "the named sight at nought widens the cone"
+        );
+        // A profile naming another component reads that one: the fixture's
+        // sight is still dark, and a sensor named on the cannon (which has no
+        // `condition` cell) reads full.
+        if let Some(sensor) = arena.unit_mut(RED).and_then(|state| state.sensor.as_mut()) {
+            sensor.component = SmolStr::new("cannon");
+        }
+        assert_eq!(
+            arena
+                .resolve_shot(RED, BLUE, "cannon", 100_000, Cover::None)
+                .error_urad,
+            full,
+            "a named component with no condition cell reads full"
+        );
+        // No sensor at all: full, though the sight cell is at nought.
+        if let Some(state) = arena.unit_mut(RED) {
+            state.sensor = None;
+        }
+        assert_eq!(
+            arena
+                .resolve_shot(RED, BLUE, "cannon", 100_000, Cover::None)
+                .error_urad,
+            full,
+            "a unit with no sensor is not shooting worse for the lack of one"
+        );
     }
 }

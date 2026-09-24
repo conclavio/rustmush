@@ -315,8 +315,11 @@ unattended_ms = 300000
 pass_ms = 1000                     # arena ms between one unit's passes, staggered by unit id
 # THE ONLY FLOAT IN THIS TREE, and it never reaches the engine: arena state is
 # integer (centimetres, millidegrees, milliseconds, per-mille probabilities), so
-# the host converts this ONCE, at boot, into per mille -- 1.5 becomes 1500.
-max_signature_factor = 1.5         # the ceiling on a target's signature factor, which also bounds the candidate cull radius
+# the host converts this ONCE, at boot, into per mille -- 1.0 becomes 1000.
+# (16b cut M.4) AT LEAST 1.0, or the boot is refused: the ceiling also scales the
+# candidate cull, and a cull shorter than the range test would drop contacts the
+# sensor can see. No shipped signature row exceeds 1.0, so 1.0 is the exact cull.
+max_signature_factor = 1.0         # the ceiling on a target's signature factor, which also bounds the candidate cull radius
 lost_after_passes = 3              # (16b cut S.1) passes a contact may go unrefreshed before it is lost: the TTL is pass_ms x this
 # (16b cut Q.1) true names a contact by team and centre slot (BA) the moment it is
 # detected: the other side's tanks are legible classify_after_ms before doc 16 W5

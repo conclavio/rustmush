@@ -170,6 +170,14 @@ pub fn definition_for(
 /// `taken` accumulates the cells already handed out, because doc 16 §3.4's
 /// occupancy rule is one unit per cell and `Arena::new` refuses a check-out that
 /// breaks it.
+///
+/// **16b cut M.4** (16c `T-14`): either way the cell must be passable **and
+/// have a way out** — a passable orthogonal neighbour
+/// ([`ArenaTerrain::has_way_out`](crate::arena::state::ArenaTerrain::has_way_out)).
+/// A world pose on a passable cell walled in on four sides falls through to the
+/// zone, exactly as one on an occupied cell does, and the zone's own walk skips
+/// such a cell; `crate::definitions::arena::from_pack` refuses a zone with none
+/// to give, and `Arena::new` refuses an impassable opening cell whoever chose it.
 #[must_use]
 pub fn opening_pose(
     definition: &ArenaDefinition,
@@ -181,10 +189,7 @@ pub fn opening_pose(
         && pose.heading_mdeg < 360_000
         && let Some(cell) = definition.terrain.cell_of(&pose)
         && !taken.contains(&cell)
-        && definition
-            .terrain
-            .get(cell.0, cell.1)
-            .is_some_and(TerrainCell::passable)
+        && definition.terrain.has_way_out(cell.0, cell.1)
     {
         taken.push(cell);
         return Some(pose);
@@ -204,11 +209,7 @@ pub fn opening_pose(
             if taken.contains(&(x, y)) {
                 continue;
             }
-            if !definition
-                .terrain
-                .get(x, y)
-                .is_some_and(TerrainCell::passable)
-            {
+            if !definition.terrain.has_way_out(x, y) {
                 continue;
             }
             taken.push((x, y));
@@ -392,21 +393,26 @@ pub fn sensor_height_cm(catalog: &Catalog, unit: &mush_tactics::TacticalUnit) ->
 ///
 /// `None` — no spec, no sensor component, or a definition the catalog does not
 /// hold — runs no sensor pass at all, which is a unit that cannot see.
+///
+/// **16b cut M.4** (16c `B-53`): the profile carries the chosen component's own
+/// id ([`SensorProfile::component`]), so the gunnery cone's `sensor_condition`
+/// term reads the sight's `condition` cell and not the first one in id order.
 #[must_use]
 pub fn sensor_profile(
     catalog: &Catalog,
     unit: &mush_tactics::TacticalUnit,
 ) -> Option<SensorProfile> {
     let spec = spec_of(catalog, unit)?;
-    let named = spec
-        .components
-        .iter()
-        .find_map(|component| match &component.role {
-            ComponentRole::Sensor { sensor, .. } => Some(sensor),
-            _ => None,
-        })?;
+    let (component, named) =
+        spec.components
+            .iter()
+            .find_map(|component| match &component.role {
+                ComponentRole::Sensor { sensor, .. } => Some((component, sensor)),
+                _ => None,
+            })?;
     let def = entry(&catalog.sensors, named.as_str())?;
     Some(SensorProfile {
+        component: SmolStr::new(component.id.as_str()),
         max_range_cells: def.max_range_cells,
         max_attenuation: def.max_attenuation,
         classify_after_ms: def.classify_after_ms,
@@ -705,5 +711,68 @@ mod tests {
             assert!(!cells.contains(&cell), "two units opened on {cell:?}");
             cells.push(cell);
         }
+    }
+
+    /// **16b cut M.4 (16c `T-14`): an opening cell has a way out.** A world pose
+    /// on a passable cell whose four orthogonal neighbours are all impassable
+    /// falls through to the zone, exactly as one on an occupied cell does; the
+    /// zone's own walk skips such a cell too; a world pose with an open
+    /// neighbour is kept.
+    #[test]
+    fn m4_a_world_pose_on_a_walled_in_cell_falls_through_to_the_zone() {
+        use crate::arena::state::{ArenaTerrain, EntryZone, Waypoints};
+        let ground = TerrainCell {
+            class: mush_atlas::TerrainClass::Ground,
+            elev_cm: 0,
+            move_cost: 100,
+        };
+        let wall = TerrainCell {
+            class: mush_atlas::TerrainClass::Wall,
+            elev_cm: 0,
+            move_cost: 0,
+        };
+        let mut cells = vec![ground; 64];
+        // (4, 4) walled in on four sides; (0, 0) walled in by (1, 0) and (0, 1),
+        // the zone's first cell in row-major order.
+        for (x, y) in [(3, 4), (5, 4), (4, 3), (4, 5), (1, 0), (0, 1)] {
+            if let Some(slot) = cells.get_mut(y * 8 + x) {
+                *slot = wall;
+            }
+        }
+        let definition = ArenaDefinition {
+            id: SmolStr::new("m4.walled"),
+            terrain: ArenaTerrain::new(8, 8, 1_000, cells).expect("a window"),
+            entry_zones: vec![EntryZone {
+                team: Team::Red,
+                x0: 0,
+                y0: 0,
+                x1: 2,
+                y1: 2,
+            }],
+            key_spots: Vec::new(),
+            waypoints: Waypoints::default(),
+        };
+        let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
+            .unwrap_or_else(|_| panic!("a posture"));
+        let at = |x: i64, y: i64| Pose {
+            x_cm: x * 1_000 + 500,
+            y_cm: y * 1_000 + 500,
+            z_cm: 0,
+            heading_mdeg: 0,
+            posture: posture.clone(),
+        };
+        assert!(definition.terrain.has_way_out(6, 6));
+        assert!(!definition.terrain.has_way_out(4, 4));
+        assert!(!definition.terrain.has_way_out(0, 0));
+        let mut taken = Vec::new();
+        let placed = opening_pose(&definition, Team::Red, Some(at(4, 4)), &mut taken)
+            .unwrap_or_else(|| panic!("the zone has room"));
+        let cell = definition.terrain.cell_of(&placed);
+        assert_ne!(cell, Some((4, 4)), "the walled-in world pose was kept");
+        assert_ne!(cell, Some((0, 0)), "the zone handed out a walled-in cell");
+        assert_eq!(cell, Some((2, 0)), "the zone's first cell with a way out");
+        let kept = opening_pose(&definition, Team::Red, Some(at(6, 6)), &mut taken)
+            .unwrap_or_else(|| panic!("an open world pose"));
+        assert_eq!(definition.terrain.cell_of(&kept), Some((6, 6)));
     }
 }

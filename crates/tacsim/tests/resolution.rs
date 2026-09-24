@@ -295,12 +295,17 @@ fn line_tank_profile() -> UnitProfile {
                     section: SmolStr::new("turret"),
                 }],
             ),
+            // 16b cut M.4 (`B-47`): the pair rule, as the version-2 pack
+            // authors it on both tracks.
             section(
                 "left_track",
                 &["left"],
                 vec![
                     Consequence::Slow { percent: 50 },
                     Consequence::NoTurnToward { side: Side::Left },
+                    Consequence::DisableMotionWhenAllOf {
+                        sections: vec![SmolStr::new("left_track"), SmolStr::new("right_track")],
+                    },
                 ],
             ),
             section(
@@ -309,6 +314,9 @@ fn line_tank_profile() -> UnitProfile {
                 vec![
                     Consequence::Slow { percent: 50 },
                     Consequence::NoTurnToward { side: Side::Right },
+                    Consequence::DisableMotionWhenAllOf {
+                        sections: vec![SmolStr::new("left_track"), SmolStr::new("right_track")],
+                    },
                 ],
             ),
             SectionProfile {
@@ -394,6 +402,7 @@ fn sight() -> SensorProfile {
         stopped_permille: stopped,
     };
     SensorProfile {
+        component: smol_str::SmolStr::new("visual_sensor"),
         max_range_cells: 5,
         max_attenuation: 40,
         classify_after_ms: 3_000,
@@ -5284,4 +5293,194 @@ fn d4_one_scripted_duel_carries_the_shooter_on_its_ledger_at_three_cadences() {
             "the pilots' lines differ at {cadence} ms"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut M.4: a shot past the last band, and a tank on no tracks
+// ---------------------------------------------------------------------------
+
+/// **16b cut M.4 (16c `B-52`, §5's Q19), end to end through the impact.** Red's
+/// cannon is given one band a metre long, so the duel's range is past it: the
+/// `FIRE` is accepted and paid for, the shot in flight carries a `beyond`
+/// resolution at nought, blue turns in flight to show its flank, and the impact —
+/// `damage.rs`'s `reresolve` of a turned target — keeps it blind: the round
+/// misses. Before the cut the flank re-resolved through the silhouette and got
+/// the curve's 1 per cent floor back.
+#[test]
+fn m4_a_shot_past_the_last_band_is_paid_for_and_stays_blind_when_the_target_turns() {
+    let mut arena = duel();
+    if let Some(state) = arena.unit_mut(RED) {
+        for weapon in &mut state.weapons {
+            weapon.bands = vec![WeaponBand {
+                max_range_cm: 100,
+                dispersion_mrad: 3,
+            }];
+        }
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    let wall = warm(&mut arena, &mut bytes);
+    let contact = hold(&mut arena, RED, BLUE);
+    let rounds_before = arena
+        .unit(RED)
+        .map(|state| state.weapon_ammo("cannon"))
+        .unwrap_or(0);
+    pulse(
+        &mut arena,
+        wall + 500,
+        &[
+            intent(RED, IntentKind::Lock { contact }, 3),
+            intent(
+                RED,
+                IntentKind::Fire {
+                    weapon: SmolStr::new("cannon"),
+                },
+                4,
+            ),
+        ],
+        &mut bytes,
+    );
+    let taken = arena
+        .shot(1)
+        .map(|shot| shot.resolution.clone())
+        .unwrap_or_else(|| panic!("the FIRE was accepted"));
+    assert!(taken.beyond, "the range is past the one band");
+    assert_eq!(taken.p_permille, 0);
+    assert_eq!(taken.band, "rear");
+    assert_eq!(
+        arena.unit(RED).map(|state| state.weapon_ammo("cannon")),
+        Some(rounds_before.saturating_sub(1)),
+        "the round is spent: there is no free probe"
+    );
+    // Blue turns to show red its flank while the round is in the air.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose.heading_mdeg = 90_000;
+    }
+    let mut wall_ms = wall + 500;
+    while !arena.shots.is_empty() && arena.now_ms < wall + 5_000 {
+        wall_ms += 500;
+        pulse(&mut arena, wall_ms, &[], &mut bytes);
+    }
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "hit"), 0, "a beyond shot never lands");
+    assert_eq!(
+        misses(&log),
+        vec!["dispersion".to_owned()],
+        "it misses, as any round the draw does not land"
+    );
+}
+
+/// The duel of `scripted_arena`, with every band of blue's aimed at its two
+/// tracks and red's rounds heavy enough to destroy a track outright — so the
+/// facet draw decides only which track a round finds, and blue, which carries no
+/// weapon, is **disabled** the moment its second track goes.
+fn two_track_arena() -> Arena {
+    let mut arena = scripted_arena();
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.profile.bands = state
+            .profile
+            .bands
+            .iter()
+            .map(|band| BandProfile {
+                sections: vec![
+                    (SmolStr::new("left_track"), 1),
+                    (SmolStr::new("right_track"), 1),
+                ],
+                ..band.clone()
+            })
+            .collect();
+    }
+    if let Some(state) = arena.unit_mut(RED) {
+        for weapon in &mut state.weapons {
+            weapon.damage = 1_000;
+        }
+    }
+    arena
+}
+
+/// **16b cut M.4 (16c `B-47`): a tank on no tracks, at three cadences.**
+///
+/// Red fires eight rounds at blue's tracks. The second track to go fires the
+/// version-2 pack's `disable_motion_when_all_of`, so blue — unarmed — is
+/// `unit_disabled`, the blue side is eliminated and the match ends; its pilot is
+/// told `the tank cannot move`. Before the cut both tracks gone left a tank
+/// slowed and turning one way, which is not disabled, and the match ran on. The
+/// cross-tempo property (16b §11, mandatory): one event list, one hash sequence
+/// and one notice list at 5,000, 1,000 and 500 ms.
+#[test]
+fn m4_both_tracks_shot_off_stop_the_tank_at_three_cadences() {
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    let mut limits = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = two_track_arena();
+        let run = replay(&mut arena, cadence, 60_000, &spent_section_script());
+        limits.push(arena.unit(BLUE).map(|state| state.limits));
+        runs.push((cadence, run));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+    let destroyed: Vec<&String> = first
+        .events
+        .iter()
+        .filter(|(_, encoded, _, _)| encoded.contains("\"kind\":\"section_destroyed\""))
+        .map(|(_, encoded, _, _)| encoded)
+        .collect();
+    assert_eq!(destroyed.len(), 2, "both tracks, once each: {destroyed:?}");
+    assert!(
+        destroyed.iter().any(|line| line.contains("left_track"))
+            && destroyed.iter().any(|line| line.contains("right_track")),
+        "{destroyed:?}"
+    );
+    assert!(
+        destroyed
+            .iter()
+            .all(|line| line.contains("disable_motion_when_all_of")),
+        "each track's line carries its whole authored list: {destroyed:?}"
+    );
+    assert!(
+        first
+            .events
+            .iter()
+            .any(|(_, encoded, _, _)| encoded.contains("\"kind\":\"unit_disabled\"")),
+        "an unarmed tank on no tracks is disabled"
+    );
+    assert_eq!(
+        first.ended,
+        Some(EndReason::Elimination {
+            winner: Some(Team::Red)
+        }),
+        "and the blue side is eliminated"
+    );
+    let told = first.notices.get(&BLUE_PILOT).cloned().unwrap_or_default();
+    assert!(
+        told.iter()
+            .any(|line| line.contains("the tank cannot move")),
+        "blue's pilot is told the tank cannot move: {told:?}"
+    );
+    let stopped = limits
+        .first()
+        .copied()
+        .flatten()
+        .unwrap_or_else(|| panic!("blue is still in the arena"));
+    assert!(stopped.no_turn_left && stopped.no_turn_right && stopped.motion_disabled);
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "the event list differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.notices, first.notices,
+            "the notices differ at {cadence} ms"
+        );
+        assert_eq!(run.ended, first.ended);
+    }
+    assert!(
+        limits
+            .iter()
+            .all(|at| *at == limits.first().copied().flatten())
+    );
 }

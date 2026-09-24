@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.line_tank",
-    "version": 1,
+    "version": 2,
     "kind": "rules_definition",
-    "digest": "6208ec938711ca2f8b2bd878ee059aa03e5e79efbedd215c12d849a50cfb29c1",
+    "digest": "607a1d6c9ab1dfb182df4b64983719d7e83df492fe0d63e6102679c216d904ee",
     "requires": [
       {
         "id": "tacsim.pack.cannon_105",
@@ -54,7 +54,8 @@
             "internals": 100,
             "consequences": [
               { "kind": "slow", "percent": 50 },
-              { "kind": "no_turn_toward", "side": "left" }
+              { "kind": "no_turn_toward", "side": "left" },
+              { "kind": "disable_motion_when_all_of", "sections": ["left_track", "right_track"] }
             ]
           },
           {
@@ -63,7 +64,8 @@
             "internals": 100,
             "consequences": [
               { "kind": "slow", "percent": 50 },
-              { "kind": "no_turn_toward", "side": "right" }
+              { "kind": "no_turn_toward", "side": "right" },
+              { "kind": "disable_motion_when_all_of", "sections": ["left_track", "right_track"] }
             ]
           },
           {
@@ -169,7 +171,7 @@
           { "band": "top", "width_cm": 700, "height_cm": 350 }
         ],
         "sensor_height_cm": 150,
-        "note": "The five sections, their facets, their components and the tracked mode are doc 16 section 3.3's table verbatim; sensor_height_cm 150 and the five mobility numbers are doc 16's and the brief's. Everything else is cut C's. The armour reads front-heavy and thin behind on purpose: 400 front hull against 150 rear hull is what makes the facet-attribution table of section 3.3 a tactical fact rather than a formality, and 120 on each track against 400 on the front is why a flank shot is worth manoeuvring for. The default facet table of section 3.3 is authored literally: front to hull and turret, rear to hull, engine and turret, a side to hull, that side's track and the turret, top to hull and turret. The silhouettes are a real tank's box: 3.5 m across the bow, 7 m down the flank, 2.5 m tall, 3.5 m presented from above."
+        "note": "The five sections, their facets, their components and the tracked mode are doc 16 section 3.3's table verbatim; sensor_height_cm 150 and the five mobility numbers are doc 16's and the brief's. Everything else is cut C's. The armour reads front-heavy and thin behind on purpose: 400 front hull against 150 rear hull is what makes the facet-attribution table of section 3.3 a tactical fact rather than a formality, and 120 on each track against 400 on the front is why a flank shot is worth manoeuvring for. The default facet table of section 3.3 is authored literally: front to hull and turret, rear to hull, engine and turret, a side to hull, that side's track and the turret, top to hull and turret. The silhouettes are a real tank's box: 3.5 m across the bow, 7 m down the flank, 2.5 m tall, 3.5 m presented from above. Version 2 (16b cut M.4): both tracks carry disable_motion_when_all_of, so a tank with no tracks neither drives nor turns."
       }
     }
   }

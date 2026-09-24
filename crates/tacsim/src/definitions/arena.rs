@@ -471,6 +471,21 @@ pub enum ArenaBuildError {
         /// What is wrong.
         detail: String,
     },
+    /// **16b cut M.4** (16c `T-14`) — an entry zone holds no cell a unit could
+    /// open on: none that is passable with a passable orthogonal neighbour
+    /// (`ArenaTerrain::has_way_out`). A side whose zone is all water or all
+    /// walled-in cells could field nobody, or field a tank that can never move,
+    /// so the content is refused when the arena is built. The sentence names the
+    /// arena and the team, which are content, and no unit.
+    #[error(
+        "arena {arena}: team {team}'s entry zone has no passable cell with a passable neighbour"
+    )]
+    EntryZoneUnusable {
+        /// The arena entry.
+        arena: String,
+        /// The side whose zone it is, by its wire word (`red`, `blue`).
+        team: &'static str,
+    },
 }
 
 /// **Build the arena's window from this world's atlas records** (16b cut C.2;
@@ -601,6 +616,18 @@ pub fn from_pack(
             detail: error.to_string(),
         }
     })?;
+    // **16b cut M.4** (16c `T-14`): every entry zone holds at least one cell a
+    // unit could open on and drive out of, or no check-out can place that side.
+    for zone in &def.entry_zones {
+        let usable =
+            (zone.y0..=zone.y1).any(|y| (zone.x0..=zone.x1).any(|x| terrain.has_way_out(x, y)));
+        if !usable {
+            return Err(ArenaBuildError::EntryZoneUnusable {
+                arena: entry.to_string(),
+                team: zone.team.as_str(),
+            });
+        }
+    }
     Ok(ArenaDefinition {
         id: smol_str::SmolStr::new(entry),
         terrain,

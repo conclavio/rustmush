@@ -69,6 +69,32 @@ impl TerrainCell {
     }
 }
 
+impl ArenaTerrain {
+    /// **Whether a unit may open a match on `(x, y)`** (16b cut M.4, 16c
+    /// `T-14`): the cell is passable **and has a way out** — at least one of its
+    /// four orthogonal neighbours is passable too. A passable cell walled in on
+    /// four sides is a cell a tank could stand on and never leave (a diagonal
+    /// might still be open, but an opening cell is chosen to be driven out of, and
+    /// the orthogonal rule is the one both the loader and the check-out can state
+    /// without a slope table).
+    ///
+    /// Read by `crate::definitions::arena::from_pack` (a zone must hold at least
+    /// one such cell) and by `crate::match_::opening_pose` (a unit is only ever
+    /// placed on one).
+    #[must_use]
+    pub fn has_way_out(&self, x: u16, y: u16) -> bool {
+        let passable = |x: Option<u16>, y: Option<u16>| match (x, y) {
+            (Some(x), Some(y)) => self.get(x, y).is_some_and(TerrainCell::passable),
+            _ => false,
+        };
+        passable(Some(x), Some(y))
+            && (passable(x.checked_sub(1), Some(y))
+                || passable(x.checked_add(1), Some(y))
+                || passable(Some(x), y.checked_sub(1))
+                || passable(Some(x), y.checked_add(1)))
+    }
+}
+
 /// The arena window's cell grid: row-major, `width × height` cells of `cell_cm`
 /// centimetres each (doc 16 §3.2 "The arena window", D-16-5: 256 by 256 at
 /// 1,000 cm).
@@ -584,8 +610,23 @@ impl TrackedRules {
 pub struct MotionLimits {
     /// The surviving fraction of the speed cap, per cent; `100` is no slow.
     pub slow_pct: u8,
-    /// A side the unit can no longer turn toward (a destroyed track).
-    pub no_turn_toward: Option<Side>,
+    /// The unit can no longer turn toward its **left** (anticlockwise): a
+    /// destroyed left track, doc 16 §3.3's `no_turn_toward(left)`.
+    ///
+    /// **16b cut M.4 (16c `B-47`)**: the two sides are two flags, not one
+    /// `Option<Side>`, because a tank can lose both tracks and the second loss
+    /// must not overwrite the first. Damage only ever sets a flag (it is ORed in,
+    /// never cleared inside a match). **The pair rule**: with one side closed a
+    /// turn whose short arc goes that way takes the long way round; with **both**
+    /// closed the unit does not turn at all
+    /// (`crate::arena::motion`'s `turn`). The shipped tanks also author
+    /// `disable_motion_when_all_of: [left_track, right_track]`, so a tank on no
+    /// tracks is `motion_disabled` too; the flags hold the rule for a pack that
+    /// does not.
+    pub no_turn_left: bool,
+    /// The unit can no longer turn toward its **right** (clockwise): a destroyed
+    /// right track. The same pair rule as [`MotionLimits::no_turn_left`].
+    pub no_turn_right: bool,
     /// Motion is disabled outright (a destroyed engine).
     pub motion_disabled: bool,
     /// The unit is a wreck (doc 16 §3.3): an obstacle and a contact, never a
@@ -598,9 +639,32 @@ impl Default for MotionLimits {
     fn default() -> MotionLimits {
         MotionLimits {
             slow_pct: 100,
-            no_turn_toward: None,
+            no_turn_left: false,
+            no_turn_right: false,
             motion_disabled: false,
             wreck: false,
+        }
+    }
+}
+
+impl MotionLimits {
+    /// Close `side` to turning — the `no_turn_toward(side)` consequence, **ORed
+    /// in** (16b cut M.4, 16c `B-47`): closing one side never reopens the other,
+    /// so a tank that loses its left track and then its right is closed both
+    /// ways, whichever order the two losses land in.
+    pub fn close_turn(&mut self, side: Side) {
+        match side {
+            Side::Left => self.no_turn_left = true,
+            Side::Right => self.no_turn_right = true,
+        }
+    }
+
+    /// Whether the unit may no longer turn toward `side`.
+    #[must_use]
+    pub const fn turn_closed(&self, side: Side) -> bool {
+        match side {
+            Side::Left => self.no_turn_left,
+            Side::Right => self.no_turn_right,
         }
     }
 }
@@ -658,6 +722,20 @@ pub struct MotionCarry {
     pub east: i64,
     /// The same northward.
     pub north: i64,
+    /// **Which way [`MotionCarry::turn`] was banked** (16b cut M.4, 16c `T-16`):
+    /// `0` none, `1` left (anticlockwise), `2` right (clockwise). A carry is a
+    /// fraction of a rate spent in one direction; a turn that reverses direction
+    /// starts from nothing, so `crate::arena::motion`'s `turn` zeroes the carry
+    /// whenever this substep turns the other way from the one recorded here, and
+    /// records the new side. Reset to `0` with the carry on every return that
+    /// zeroes it.
+    pub turn_side: u8,
+    /// **Which kind of speed change [`MotionCarry::speed`] was banked by** (16b
+    /// cut M.4, 16c `T-16`): `0` none, `1` accelerating (`accel_cms2`), `2`
+    /// braking (`brake_cms2`). A thousandth of a cm/s banked while speeding up is
+    /// not owed to a brake, so `accelerate` zeroes the carry on a flip between
+    /// the two and records the new kind. Reset to `0` with the carry.
+    pub speed_rate: u8,
 }
 
 /// **A unit standing against another unit's cell, and since when** (16b cut E.3;
@@ -739,6 +817,23 @@ fn rounds_on_record(unit: &mush_tactics::TacticalUnit, weapon: &SmolStr) -> Opti
     };
     let held = unit.cell(&addr)?;
     Some(u32::try_from(held.current.max(0)).unwrap_or(u32::MAX))
+}
+
+/// **The speed ceiling of a set of units on a window whose cheapest passable
+/// cell costs `min_move_cost`**, cm/s (16b cut M.4, 16c `T-15`):
+/// `fastest × 100 / min(100, min_move_cost)`, the fastest being the greatest
+/// `max_speed_cms` of a unit that is neither a wreck nor disabled. Written once
+/// for [`Arena::max_speed_cms`] and for [`Arena::new`]'s substep refusal, which
+/// runs before there is an [`Arena`] to ask.
+fn speed_ceiling_cms(units: &[UnitState], min_move_cost: u32) -> u32 {
+    let fastest = units
+        .iter()
+        .filter(|state| !state.limits.wreck && !state.limits.motion_disabled)
+        .map(|state| state.mobility.max_speed_cms)
+        .max()
+        .unwrap_or(0);
+    let cheapest = u64::from(min_move_cost.clamp(1, 100));
+    u32::try_from(u64::from(fastest).saturating_mul(100) / cheapest).unwrap_or(u32::MAX)
 }
 
 /// **Which of a unit's sections carry [`crate::arena::resolution::Consequence::DestroyUnit`]**,
@@ -2604,6 +2699,50 @@ pub enum ArenaError {
         /// The repeated slot.
         slot: u8,
     },
+    /// **16b cut M.4** (16c `B-57`, `T-15`) — the fastest unit would cross more
+    /// than one cell in the shortest substep the clock will cut.
+    ///
+    /// The substep is `min(substep_max_ms, (cell_cm − 1) × 1000 / ceiling)`
+    /// floored at [`crate::arena::clock::MIN_SUBSTEP_MS`], and the floor wins
+    /// above 19,980 cm/s on 1,000 cm cells: past it a substep's travel is more
+    /// than a cell, which is the one bound step 4's single-crossing test rests on.
+    /// Nothing refused that before M.4; `crate::arena::motion`'s one-cell guard
+    /// stopped the unit instead, every substep, for the whole match. The ceiling
+    /// is [`Arena::max_speed_cms`]'s, the true one.
+    ///
+    /// The sentence names no unit and no cell: `lobby::run` announces
+    /// `Match {id} could not start: {error}.` to the whole centre, so it is read
+    /// by bystanders.
+    #[error(
+        "the fastest unit would cross more than one cell in a {min_substep_ms} ms substep on \
+         {cell_cm} cm cells; the match cannot be timed",
+        min_substep_ms = crate::arena::clock::MIN_SUBSTEP_MS
+    )]
+    SubstepBound {
+        /// The true speed ceiling, cm/s ([`Arena::max_speed_cms`]).
+        ceiling_cms: u32,
+        /// The window's cell size, centimetres.
+        cell_cm: u16,
+    },
+    /// **16b cut M.4** (16c `T-14`) — a unit was handed over standing on a cell
+    /// nothing may enter.
+    ///
+    /// Motion never puts a unit there (step 4 refuses the crossing), so a unit
+    /// that opens on one could never drive out of it: the terrain factor caps its
+    /// speed at zero. The world side's `opening_pose` never chooses such a cell;
+    /// this is the arena refusing to trust that, as it refuses an off-window pose.
+    ///
+    /// The sentence names no object and no cell, for [`ArenaError::SubstepBound`]'s
+    /// reason; the fields ride a `tracing::warn!` at the refusal site.
+    #[error("a unit's opening cell is not passable")]
+    CellImpassable {
+        /// The unit.
+        unit: ObjId,
+        /// The column.
+        x: u16,
+        /// The row.
+        y: u16,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -2754,6 +2893,16 @@ pub struct Arena {
     /// one buffer for the whole match and not one per unit, and because a unit
     /// under a pilot carries no machine at all.
     pub reflex: crate::arena::reflex::ReflexMemory,
+    /// **The cheapest passable cell on the window**, its `move_cost`
+    /// ([`crate::arena::path::min_move_cost`]; at least `1`), read once at
+    /// check-out because the terrain is immutable for the life of a match.
+    ///
+    /// Two readers, one copy (16b cut M.4, 16c `T-15`): the reflex controller's
+    /// A\* heuristic scale (16b cut N.1, which kept it on
+    /// [`crate::arena::reflex::ReflexMemory`] until M.4) and
+    /// [`Arena::max_speed_cms`]'s true ceiling. Not folded into the state hash:
+    /// it is a function of the definition and never moves.
+    pub min_move_cost: u32,
     /// Queued discrete actions per unit, with **no bound of their own** (16b
     /// cut M.1, `T-82`): a seat's `intents.max_pending_per_unit` orders a unit
     /// per arena second (counted in `apply_intent`) and the arena task's
@@ -2979,6 +3128,25 @@ impl Arena {
                     y_cm: unit.pose.y_cm,
                 });
             };
+            // **16b cut M.4** (16c `T-14`): and on a cell a unit may stand on. The
+            // announcement names nobody, so the unit and the cell go to the log.
+            if !definition
+                .terrain
+                .get(opening_cell.0, opening_cell.1)
+                .is_some_and(TerrainCell::passable)
+            {
+                tracing::warn!(
+                    unit = %unit.id,
+                    x = opening_cell.0,
+                    y = opening_cell.1,
+                    "arena refused: a unit's opening cell is not passable"
+                );
+                return Err(ArenaError::CellImpassable {
+                    unit: unit.id,
+                    x: opening_cell.0,
+                    y: opening_cell.1,
+                });
+            }
             // **16b cut X.6** (doc 16 §3.2 "Terrain"): *a unit's `z_cm` equals the
             // cell's `elev_cm`*, and that is true from the opening hash and not
             // merely from the first crossing. [`CustodyOut`] is the only door into
@@ -3231,8 +3399,24 @@ impl Arena {
             .collect();
         // 16b cut N.1: the cheapest cell on the window, read once here so the A*
         // heuristic is admissible without a scan per query
-        // (`crate::arena::path::min_move_cost`).
+        // (`crate::arena::path::min_move_cost`). **16b cut M.4** (`T-15`): and the
+        // speed ceiling reads it too, so it is held on the arena, once.
         let min_move_cost = crate::arena::path::min_move_cost(&definition.terrain);
+        // **16b cut M.4** (16c `B-57`): the substep floor may not beat the
+        // one-cell bound. The ceiling is the terrain factor's (`speed_ceiling_cms`),
+        // so a window with a cell cheaper than 100 is judged at the speed its
+        // terrain factor allows — a conservative margin, since the order clamp
+        // (`apply_intent`) keeps every unit at or under its authored speed.
+        let ceiling_cms = speed_ceiling_cms(&states, min_move_cost);
+        let cell_cm = definition.terrain.cell_cm();
+        if u64::from(crate::arena::clock::MIN_SUBSTEP_MS).saturating_mul(u64::from(ceiling_cms))
+            > u64::from(cell_cm.saturating_sub(1)).saturating_mul(1_000)
+        {
+            return Err(ArenaError::SubstepBound {
+                ceiling_cms,
+                cell_cm,
+            });
+        }
         // 16b §9's `tempo.alert_range_cm`: **the lesser of twice the longest
         // weapon range in the match and the window's own diagonal**, and the
         // configured `0` is what asks for that. Derived once, here, from the units
@@ -3293,7 +3477,8 @@ impl Arena {
             seed,
             resolution,
             pilots,
-            reflex: crate::arena::reflex::ReflexMemory::new(&arena_cfg.reflex, min_move_cost),
+            reflex: crate::arena::reflex::ReflexMemory::new(&arena_cfg.reflex),
+            min_move_cost,
             pending: BTreeMap::new(),
             shots: BTreeMap::new(),
             next_shot_seq: 0,
@@ -3499,19 +3684,31 @@ impl Arena {
         }
     }
 
-    /// The fastest unit in the match, cm/s — the divisor of the substep length
-    /// (doc 16 §3.1 "Rate independence"). Zero when nothing can move.
+    /// **The speed ceiling of the match**, cm/s — the divisor of the substep
+    /// length (doc 16 §3.1 "Rate independence";
+    /// [`crate::arena::clock::substep_ms`]). Zero when nothing can move.
     ///
     /// A wreck and a unit whose motion is disabled are excluded: a substep sized
     /// for a speed no unit can reach costs every pulse a needless subdivision.
+    ///
+    /// **The terrain factor's ceiling since 16b cut M.4** (16c `T-15`):
+    /// `fastest × 100 / min(100, min_move_cost)`. Motion's cap is
+    /// `max_speed_cms × 100 / move_cost`, which on a cell cheaper than 100 sits
+    /// above the authored speed, and the one-cell bound used to rest on every
+    /// cost being at least 100. **No unit reaches that cap today**: every order
+    /// is clamped to the authored `max_speed_cms` (`apply_intent`, seat and
+    /// machine alike) and `accelerate` drives toward the order, so the authored
+    /// speed is the real top speed. The scale is a **conservative margin**: it
+    /// keeps the one-cell bound true of the terrain factor itself, should a later
+    /// order path ever let the factor lift a unit past its authored figure. On
+    /// the shipped ground every passable cost is at least 100, so the answer is
+    /// the fastest authored speed exactly as before; a future 80-cost row
+    /// shortens the substep by a fifth for that margin. [`Arena::new`] refuses a
+    /// match whose ceiling beats the substep floor
+    /// ([`ArenaError::SubstepBound`]).
     #[must_use]
     pub fn max_speed_cms(&self) -> u32 {
-        self.units
-            .iter()
-            .filter(|state| !state.limits.wreck && !state.limits.motion_disabled)
-            .map(|state| state.mobility.max_speed_cms)
-            .max()
-            .unwrap_or(0)
+        speed_ceiling_cms(&self.units, self.min_move_cost)
     }
 
     /// The side of one cell, centimetres.
@@ -4345,5 +4542,176 @@ mod tests {
                 "{op:?}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut M.4: the substep bound, the true ceiling and the opening cell
+    // -----------------------------------------------------------------------
+
+    /// The test window with `paint`ed cells and `units` handed over, opened or
+    /// refused.
+    fn open_on(
+        units: Vec<CustodyUnit>,
+        paint: &[((u16, u16), TerrainCell)],
+    ) -> Result<Arena, ArenaError> {
+        let mut out = custody(units, Vec::new());
+        let (width, height) = (
+            out.definition.terrain.width(),
+            out.definition.terrain.height(),
+        );
+        let mut cells = out.definition.terrain.cells().to_vec();
+        for ((x, y), cell) in paint {
+            if let Some(slot) =
+                cells.get_mut(usize::from(*y) * usize::from(width) + usize::from(*x))
+            {
+                *slot = *cell;
+            }
+        }
+        out.definition.terrain =
+            ArenaTerrain::new(width, height, 1_000, cells).expect("the painted window");
+        Arena::new(
+            out,
+            &ArenaConfig::default(),
+            &MatchConfig::default(),
+            &SensorsConfig::default(),
+        )
+    }
+
+    /// A stock fixture tank at `speed_cms`.
+    fn fast(id: ObjId, team: Team, at: Pose, speed_cms: u32) -> CustodyUnit {
+        let mut unit = tank(id, team, at);
+        unit.mobility.max_speed_cms = speed_cms;
+        unit
+    }
+
+    /// **16b cut M.4 (16c `T-15`): the substep is sized on the terrain factor's
+    /// ceiling.** One passable cell at cost 80 raises motion's terrain cap a
+    /// quarter above the authored speed (a cap the order clamp keeps any unit
+    /// from reaching; the scale is a conservative margin), so `max_speed_cms`
+    /// answers `fastest × 100 / 80` and the substep shortens with it; on uniform
+    /// ground (every cost 100) nothing moves.
+    #[test]
+    fn m4_a_cell_cheaper_than_a_hundred_raises_the_ceiling_and_shortens_the_substep() {
+        let red = || fast(ObjId(4), Team::Red, pose(1_500, 1_500), 5_000);
+        let flat = open_on(vec![red()], &[]).expect("the flat window opens");
+        assert_eq!(flat.min_move_cost, 100);
+        assert_eq!(
+            flat.max_speed_cms(),
+            5_000,
+            "the authored speed on cost 100"
+        );
+        let cheap = TerrainCell {
+            move_cost: 80,
+            ..ground()
+        };
+        let fast_ground = open_on(vec![red()], &[((5, 5), cheap)]).expect("it opens");
+        assert_eq!(fast_ground.min_move_cost, 80);
+        assert_eq!(fast_ground.max_speed_cms(), 6_250, "5,000 × 100 / 80");
+        let tempo = crate::config::TempoConfig::default();
+        let before = crate::arena::clock::substep_ms(&tempo, 1_000, flat.max_speed_cms());
+        let after = crate::arena::clock::substep_ms(&tempo, 1_000, fast_ground.max_speed_cms());
+        assert_eq!((before, after), (199, 159), "999,000 / 5,000 and / 6,250");
+        // A cell dearer than 100 never lengthens it: the ceiling is capped at
+        // the authored speed from below.
+        let dear = TerrainCell {
+            move_cost: 250,
+            ..ground()
+        };
+        let mut all_dear = Vec::new();
+        for y in 0..8 {
+            for x in 0..8 {
+                all_dear.push(((x, y), dear));
+            }
+        }
+        let slow = open_on(vec![red()], &all_dear).expect("it opens");
+        assert_eq!(slow.max_speed_cms(), 5_000);
+    }
+
+    /// **16b cut M.4 (16c `B-57`): a match the substep floor cannot time is
+    /// refused by name.** 50 ms at 20,000 cm/s is a whole 1,000 cm cell; 19,980
+    /// is the last speed the floor still bounds. The ceiling is the true one, so
+    /// 16,000 cm/s over one 80-cost cell is 20,000 and refused as well. The
+    /// sentence names no unit and no cell.
+    #[test]
+    fn m4_a_unit_the_substep_floor_cannot_bound_is_refused_by_name() {
+        let refused = open_on(
+            vec![fast(ObjId(4), Team::Red, pose(1_500, 1_500), 20_000)],
+            &[],
+        );
+        let Err(error) = refused else {
+            panic!("20,000 cm/s on 1,000 cm cells opened");
+        };
+        assert_eq!(
+            error,
+            ArenaError::SubstepBound {
+                ceiling_cms: 20_000,
+                cell_cm: 1_000,
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "the fastest unit would cross more than one cell in a 50 ms substep on 1000 cm \
+             cells; the match cannot be timed"
+        );
+        assert!(
+            open_on(
+                vec![fast(ObjId(4), Team::Red, pose(1_500, 1_500), 19_980)],
+                &[],
+            )
+            .is_ok(),
+            "19,980 cm/s is 999 cm a substep, inside one cell"
+        );
+        let cheap = TerrainCell {
+            move_cost: 80,
+            ..ground()
+        };
+        assert!(matches!(
+            open_on(
+                vec![fast(ObjId(4), Team::Red, pose(1_500, 1_500), 16_000)],
+                &[((6, 6), cheap)],
+            ),
+            Err(ArenaError::SubstepBound {
+                ceiling_cms: 20_000,
+                ..
+            })
+        ));
+    }
+
+    /// **16b cut M.4 (16c `T-14`): an impassable opening cell is refused by
+    /// name**, with the unit and the cell on the error's fields (and in the
+    /// log) and neither in the sentence the centre is read.
+    #[test]
+    fn m4_an_impassable_opening_cell_is_refused_and_the_sentence_names_nobody() {
+        let water = TerrainCell {
+            class: mush_atlas::TerrainClass::Water,
+            move_cost: 0,
+            ..ground()
+        };
+        let refused = open_on(
+            vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))],
+            &[((1, 1), water)],
+        );
+        let Err(error) = refused else {
+            panic!("a tank opened standing in water");
+        };
+        assert_eq!(
+            error,
+            ArenaError::CellImpassable {
+                unit: ObjId(4),
+                x: 1,
+                y: 1,
+            }
+        );
+        let said = error.to_string();
+        assert_eq!(said, "a unit's opening cell is not passable");
+        assert!(!said.contains('#') && !said.chars().any(|c| c.is_ascii_digit()));
+        // The neighbouring cell is fine.
+        assert!(
+            open_on(
+                vec![tank(ObjId(4), Team::Red, pose(2_500, 1_500))],
+                &[((1, 1), water)],
+            )
+            .is_ok()
+        );
     }
 }

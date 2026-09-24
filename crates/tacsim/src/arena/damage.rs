@@ -227,7 +227,9 @@ pub fn entry_consequences(
                 Consequence::Slow { percent } => {
                     entry.limits.slow_pct = entry.limits.slow_pct.min((*percent).clamp(1, 100));
                 }
-                Consequence::NoTurnToward { side } => entry.limits.no_turn_toward = Some(*side),
+                // 16b cut M.4 (`B-47`): ORed in, so a record with both tracks
+                // destroyed opens closed both ways, whichever is read first.
+                Consequence::NoTurnToward { side } => entry.limits.close_turn(*side),
                 Consequence::DisableMotion => entry.limits.motion_disabled = true,
                 Consequence::DisableMotionWhenAllOf { sections } => {
                     if !sections.is_empty()
@@ -962,9 +964,13 @@ impl Arena {
                     state.limits.slow_pct = state.limits.slow_pct.min((*percent).clamp(1, 100));
                 }
             }
+            // **16b cut M.4** (16c `B-47`): ORed in. Before M.4 the second
+            // track's loss overwrote the first's side and a tank on no tracks
+            // still turned one way; now both sides stay closed and
+            // `crate::arena::motion`'s `turn` does not turn at all.
             Consequence::NoTurnToward { side } => {
                 if let Some(state) = self.unit_mut(target) {
-                    state.limits.no_turn_toward = Some(*side);
+                    state.limits.close_turn(*side);
                 }
             }
             Consequence::DisableMotion => self.disable_motion(target),
@@ -1574,9 +1580,10 @@ mod tests {
         );
         let state = arena.unit(BLUE).unwrap_or_else(|| panic!("blue"));
         assert_eq!(state.limits.slow_pct, 50);
+        // 16b cut M.4 (`B-47`): the side is a flag of its own now.
         assert_eq!(
-            state.limits.no_turn_toward,
-            Some(crate::arena::state::Side::Left)
+            (state.limits.no_turn_left, state.limits.no_turn_right),
+            (true, false)
         );
         // Idempotent: the same consequence again does not compound.
         arena.apply_consequence(
@@ -1664,12 +1671,162 @@ mod tests {
         );
         assert_eq!(state.limits.slow_pct, 50, "the track's `slow(50)`");
         assert_eq!(
-            state.limits.no_turn_toward,
-            Some(crate::arena::state::Side::Left),
+            (state.limits.no_turn_left, state.limits.no_turn_right),
+            (true, false),
             "and its `no_turn_toward(left)`"
         );
         assert!(!state.limits.wreck && !state.limits.motion_disabled);
         assert_eq!(state.weapons.len(), 1, "it still has its gun");
+    }
+
+    /// **16b cut M.4** (16c `B-47`): a record with **both** tracks destroyed
+    /// opens closed both ways — the second `no_turn_toward` is ORed in, not
+    /// written over the first — and, through the stock tank's pair rule, with its
+    /// motion disabled.
+    #[test]
+    fn m4_a_unit_whose_tracks_are_both_gone_enters_unable_to_turn_or_move() {
+        let fixture = line_tank_unit(BLUE);
+        let gone = |name: &str| UnitMutationOp::SetSectionCondition {
+            section: SectionId::new(name).expect("a section"),
+            condition: ConditionId::new(DESTROYED).expect("a condition"),
+        };
+        let state = mutate(&fixture, vec![gone("left_track"), gone("right_track")]);
+        assert_eq!(
+            (state.limits.no_turn_left, state.limits.no_turn_right),
+            (true, true),
+            "both sides closed, whichever track was read first"
+        );
+        assert!(
+            state.limits.motion_disabled,
+            "the pair rule: no tracks is no motion"
+        );
+        assert_eq!(state.limits.slow_pct, 50);
+        assert!(!state.limits.wreck);
+        assert_eq!(state.weapons.len(), 1, "it still has its gun");
+        assert!(!state.disabled, "an armed tank is not disabled");
+    }
+
+    /// **16b cut M.4** (16c `B-47`): the two track losses through
+    /// `apply_consequence`, in either order, leave one state — both sides closed
+    /// and, once the second section is actually destroyed, motion disabled by
+    /// the pair rule.
+    #[test]
+    fn m4_two_track_losses_in_either_order_close_both_sides_and_stop_the_tank() {
+        use crate::arena::state::Side;
+        let pair = Consequence::DisableMotionWhenAllOf {
+            sections: vec![SmolStr::new("left_track"), SmolStr::new("right_track")],
+        };
+        let mut outcomes = Vec::new();
+        for order in [[Side::Left, Side::Right], [Side::Right, Side::Left]] {
+            let mut arena = duel();
+            let mut journal: Vec<Notice> = Vec::new();
+            for side in order {
+                let section = match side {
+                    Side::Left => "left_track",
+                    Side::Right => "right_track",
+                };
+                // The section's own condition first, as `apply_hit`'s plan sets
+                // it, so the pair rule reads a fact about the unit.
+                let plan = UnitMutationPlan::new(
+                    vec![UnitMutationOp::SetSectionCondition {
+                        section: SectionId::new(section).expect("a section"),
+                        condition: ConditionId::new(DESTROYED).expect("a condition"),
+                    }],
+                    None,
+                    None,
+                )
+                .expect("a plan");
+                let post = arena
+                    .unit(BLUE)
+                    .map(|state| mush_tactics::apply(&state.unit, &plan, 0))
+                    .and_then(Result::ok)
+                    .map(|(post, _)| post)
+                    .unwrap_or_else(|| panic!("the plan applies"));
+                arena.set_unit(BLUE, post, false);
+                arena.apply_consequence(
+                    BLUE,
+                    &Consequence::NoTurnToward { side },
+                    0,
+                    None,
+                    &mut journal,
+                );
+                arena.apply_consequence(BLUE, &pair, 0, None, &mut journal);
+            }
+            let limits = arena
+                .unit(BLUE)
+                .map(|state| state.limits)
+                .unwrap_or_else(|| panic!("blue"));
+            outcomes.push(limits);
+        }
+        assert_eq!(outcomes.first(), outcomes.get(1), "one state either way");
+        let limits = outcomes.first().copied().unwrap_or_default();
+        assert!(limits.no_turn_left && limits.no_turn_right);
+        assert!(limits.motion_disabled);
+    }
+
+    /// **16b cut M.4** (16c `B-47`): the stock tank's two tracks shot off by
+    /// rounds. The first round leaves the tank slowed and closed one way, and its
+    /// pilot's list does **not** carry the pair rule (it did not fire); the
+    /// second fires `disable_motion_when_all_of`, and the list the `SectionLost`
+    /// notice reads (`fired_consequences`) names it.
+    #[test]
+    fn m4_the_second_track_shot_off_fires_the_pair_rule() {
+        let mut arena = duel();
+        // Every band strikes one track, so the facet draw cannot choose.
+        let only = |section: &str| vec![(SmolStr::new(section), 1_u16)];
+        let mut journal: Vec<Notice> = Vec::new();
+        for (seq, section) in [(1_u64, "left_track"), (2, "right_track")] {
+            if let Some(state) = arena.unit_mut(BLUE) {
+                for band in &mut state.profile.bands {
+                    band.sections = only(section);
+                }
+            }
+            let shot = crate::arena::weapons::Shot {
+                seq,
+                shooter: RED,
+                weapon: SmolStr::new("cannon"),
+                contact: crate::arena::state::ContactId(1),
+                target: BLUE,
+                rounds: 1,
+                fired_at_ms: 0,
+                impact_at_ms: 0,
+                range_cm: 1_000,
+                aim_x_cm: 1_500,
+                aim_y_cm: 2_500,
+                aim_cell: Some((1, 2)),
+                damage: 1_000,
+                resolution: Resolution::blind("left", 3_000, Cover::None),
+            };
+            let taken = Resolution {
+                p_permille: 1_000,
+                ..Resolution::blind("left", 3_000, Cover::None)
+            };
+            arena.apply_hit(&shot, &taken, 1, 10, arena.shot_draw(seq, 1), &mut journal);
+            let fired: Vec<SmolStr> = arena.fired_consequences(BLUE, section);
+            let limits = arena
+                .unit(BLUE)
+                .map(|state| state.limits)
+                .unwrap_or_else(|| panic!("blue"));
+            if seq == 1 {
+                assert_eq!(fired, vec!["slow", "no_turn_toward"], "one track gone");
+                assert!(limits.no_turn_left && !limits.no_turn_right);
+                assert!(!limits.motion_disabled, "one track still drives");
+            } else {
+                assert_eq!(
+                    fired,
+                    vec!["slow", "no_turn_toward", "disable_motion_when_all_of"],
+                    "the second track's notice names the pair rule"
+                );
+                assert!(limits.no_turn_left && limits.no_turn_right);
+                assert!(limits.motion_disabled, "no tracks, no motion");
+            }
+        }
+        // Both `section_destroyed` lines carry the whole authored list.
+        let destroyed = journal
+            .iter()
+            .filter(|(_, kind, _)| matches!(kind, EventKind::SectionDestroyed { .. }))
+            .count();
+        assert_eq!(destroyed, 2);
     }
 
     #[test]

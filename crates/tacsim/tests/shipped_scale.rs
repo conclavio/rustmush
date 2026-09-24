@@ -902,3 +902,94 @@ fn aa1_two_machines_with_their_engines_gone_still_fight_out_to_their_reach() {
         );
     }
 }
+
+/// **16b cut M.4 (16c `B-56`): on the ground the owner plays on, A sees B
+/// exactly when B sees A.**
+///
+/// The proving ground's authored heightfield, twenty thousand fixed-seed pairs of
+/// cells at most 60 cells apart on either axis (the shipped sight's reach), each
+/// traced both ways through the arena's own line walk
+/// (`mush_atlas::trace::trace_cells` over the arena's `ArenaTerrain`, which is
+/// what the perception pass calls) with both eyes at the stock tank's 150 cm.
+/// The answer — clear, attenuated by how much, or blocked — is the same from
+/// either end; which obstacle a blocked walk meets first is not compared, since
+/// that is a fact about the direction of the walk.
+#[test]
+fn m4_on_the_proving_ground_a_sees_b_exactly_when_b_sees_a() {
+    use mush_atlas::trace::{Eye, Sight, trace_cells};
+
+    /// splitmix64, so the pairs are the same on every run and every platform.
+    fn next(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    fn seen(sight: &Sight) -> (u8, u8) {
+        match sight {
+            Sight::Clear => (0, 0),
+            Sight::Partial(pct) => (1, *pct),
+            Sight::BlockedBy(_) => (2, 0),
+        }
+    }
+
+    let world = booted_world();
+    let definition = tacsim::match_::definition_for(
+        world.world(),
+        &smol_str::SmolStr::new_static(tacsim::match_::PROVING_GROUND),
+    )
+    .expect("the proving ground's ground builds")
+    .expect("the proving ground is shipped");
+    let terrain = &definition.terrain;
+    let (width, height) = (i64::from(terrain.width()), i64::from(terrain.height()));
+    let mut state = 0x4d56_u64;
+    let (mut blocked, mut open, mut pairs) = (0_u32, 0_u32, 0_u32);
+    while pairs < 20_000 {
+        let pick = |state: &mut u64, span: i64| {
+            i64::try_from(next(state) % u64::try_from(span).unwrap_or(1)).unwrap_or(0)
+        };
+        let a = (pick(&mut state, width), pick(&mut state, height));
+        let b = (
+            a.0 + pick(&mut state, 121) - 60,
+            a.1 + pick(&mut state, 121) - 60,
+        );
+        let (Ok(ax), Ok(ay), Ok(bx), Ok(by)) = (
+            u16::try_from(a.0),
+            u16::try_from(a.1),
+            u16::try_from(b.0),
+            u16::try_from(b.1),
+        ) else {
+            continue;
+        };
+        if b.0 >= width || b.1 >= height {
+            continue;
+        }
+        pairs += 1;
+        let from = Eye {
+            cell: (ax, ay),
+            height_cm: 150,
+        };
+        let to = Eye {
+            cell: (bx, by),
+            height_cm: 150,
+        };
+        let there = trace_cells(terrain, from, to);
+        let back = trace_cells(terrain, to, from);
+        assert_eq!(
+            seen(&there.sight),
+            seen(&back.sight),
+            "({ax}, {ay}) and ({bx}, {by}) disagree: {:?} against {:?}",
+            there.sight,
+            back.sight
+        );
+        assert_eq!(there.attenuation, back.attenuation);
+        if seen(&there.sight).0 == 2 {
+            blocked += 1;
+        } else {
+            open += 1;
+        }
+    }
+    // The ground is worth the property: both answers occur.
+    assert!(blocked > 0 && open > 0, "{blocked} blocked, {open} not");
+}

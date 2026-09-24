@@ -121,7 +121,7 @@ const DIGESTS: [(&str, &str); 3] = [
     ),
     (
         "tacsim.pack.line_tank_laser",
-        "211cabe64b5940e4092cca1009edf11263c03ef2f202ecc0705075dc27c32a1b",
+        "558a1cef3200fa228fb65de02cd8ee5f71a2b376086f9f950f91412bae1c6881",
     ),
 ];
 
@@ -150,7 +150,7 @@ const DIGESTS_THERMAL: [(&str, &str); 2] = [
     ),
     (
         "tacsim.pack.line_tank_thermal",
-        "11a9019b18d7d4d21ce1850bfcf82a2f53ec869bcab4337d9ff01d2ed82ae178",
+        "cecaa090602ef7a5d170f6f15ee8e6432c9dc1017820a9ab2bd7e5690a039f13",
     ),
 ];
 
@@ -166,7 +166,7 @@ const DIGESTS_ECM: [(&str, &str); 2] = [
     ),
     (
         "tacsim.pack.line_tank_ecm",
-        "8f83e07a3a509385b23ff13eee1984ce4a93187d856abcda4713709a6aa4596a",
+        "227d8de53a01560bafcd481c6e4f0e7fae3084d3207110e19379947b260368f8",
     ),
 ];
 
@@ -182,7 +182,7 @@ const DIGESTS_ECCM: [(&str, &str); 2] = [
     ),
     (
         "tacsim.pack.line_tank_eccm",
-        "2f48fb1438a00ff4e4bcf67f0c8244e16701de3cb320b2ad2c6e7564a6f41c8a",
+        "ba7bc4182d337ad8e9c50f20ca38ac3e4feaaac1787c2ae4119d8669a0a6e585",
     ),
 ];
 
@@ -214,9 +214,16 @@ const VISUAL_MK1_SIGNATURE: &str = concat!(
 /// joined it — and the two `skip_serializing_if`s are what keep the tank's
 /// `{"tracked": {…}}` the same bytes, hence the same payload, hence the same
 /// digest. A pin is the only way to say that about a *code* change; the content
-/// pins above only ever catch a content one. The value is this crate's answer at
+/// pins above only ever catch a content one. The value was this crate's answer at
 /// `e000f06a`, the commit before the cut, taken there and pinned here.
-const LINE_TANK_DIGEST: &str = "72a52d55e73e3d1d4308c8d69ebd3b0a91504a5935571f87ae319c69cd131660";
+///
+/// **16b cut M.4 moved it, with the content** (16c `B-47`): the tank's two tracks
+/// gained `disable_motion_when_all_of` in `tacsim.pack.line_tank` version 2, so
+/// the definition is a new one by content, not by code. A persisted `line_tank`
+/// pointing at the old digest is refitted at boot (`match_/reset.rs`'s
+/// `refit_unit` of a roster tank whose schema is not the loaded binding's). Was
+/// `72a52d55e73e3d1d4308c8d69ebd3b0a91504a5935571f87ae319c69cd131660`.
+const LINE_TANK_DIGEST: &str = "d908bc1f8d1a5b950ab2802db0e0ddc96c38360611d8f7df25cd35a4d853bb63";
 
 fn content_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("content")
@@ -4657,11 +4664,12 @@ fn x6_a_ridge_blocks_the_line_both_ways_and_a_taller_eye_sees_over_it() {
     }
 
     // (a2) and the **shallow** lines, which the sweep above does not produce: its
-    // five pairs all span eight rows, and `mush_atlas::trace::line_cells` is known
-    // not to be symmetric under swapping its endpoints on a line like two across
-    // and one down — (0,0) to (2,1) walks (1,1) where the reverse walks (1,0).
-    // Against a ridge every walk must cross, the two walks must still agree, and
-    // these are the shapes that would say otherwise.
+    // five pairs all span eight rows, and until 16b cut M.4 (16c `B-56`)
+    // `mush_atlas::trace::line_cells` was not symmetric under swapping its
+    // endpoints on a line like two across and one down — (0,0) to (2,1) walked
+    // (1,1) where the reverse walked (1,0). M.4 draws every line from its lesser
+    // end, so the two walks are one cell set; against a ridge every walk must
+    // cross they must agree, and these are the shapes that would say otherwise.
     for (from, to) in [
         ((6_u16, 6_u16), (10_u16, 8_u16)),
         ((6, 6), (2, 8)),
@@ -7838,4 +7846,123 @@ fn m2_a_pilots_beam_lands_in_the_pulse_that_fired_it_at_three_cadences() {
             "the per-substep hash sequence differs at {cadence} ms"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut M.4: the sight the gunnery term reads, and a pod that is gone
+// ---------------------------------------------------------------------------
+
+/// `unit`'s `component` with its `condition` cell at `value`, through one plan
+/// on the record — the way a hit dims a component, applied before check-out.
+fn with_condition(mut unit: CustodyUnit, component: &str, value: i64) -> CustodyUnit {
+    let addr = mush_tactics::CellAddr::Component {
+        component: mush_tactics::ComponentId::new(component).expect("a component id"),
+        cell: mush_tactics::CellId::new(tacsim::definitions::unit::CONDITION_CELL)
+            .expect("a cell id"),
+    };
+    let plan = mush_tactics::UnitMutationPlan::new(
+        vec![mush_tactics::UnitMutationOp::SetCell { addr, value }],
+        None,
+        None,
+    )
+    .expect("a one-op plan");
+    let (post, _) = mush_tactics::apply(&unit.unit, &plan, 0).expect("the cell takes the value");
+    unit.unit = post;
+    unit
+}
+
+/// **16b cut M.4 (16c `B-53`): the gunnery term reads the sight, not the pod.**
+///
+/// The ECM tank carries two components with a `condition` cell, and `ecm_pod`
+/// sorts before `visual_sensor`, so before the cut the term read the pod: a
+/// shot-off pod widened the gun's cone and a shot-off sight did not. Now the
+/// check-out names the sight (`SensorProfile::component`) and the term reads it:
+/// with the pod at nought and the sight whole the cone is the stock tank's to
+/// the microradian, and with the sight at nought it is wider by the
+/// `sensor_condition` weight.
+#[test]
+fn m4_the_ecm_tanks_gunnery_term_reads_its_sight_and_not_its_pod() {
+    let catalog = ecm_catalog();
+    let cone = |shooter: CustodyUnit| {
+        let mut arena = arena_of(
+            &catalog,
+            vec![
+                shooter,
+                unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, BLUE_CELL),
+            ],
+            &[],
+        );
+        if let Some(state) = arena.unit_mut(RED) {
+            state.power = Power::Online;
+        }
+        arena
+            .resolve_shot(RED, BLUE, "cannon", 100_000, mush_atlas::Cover::None)
+            .error_urad
+    };
+    let stock = cone(unit_of(
+        &catalog,
+        content::LINE_TANK,
+        RED,
+        Team::Red,
+        RED_CELL,
+    ));
+    let ecm = || unit_of(&catalog, content::LINE_TANK_ECM, RED, Team::Red, RED_CELL);
+    assert_eq!(
+        ecm().sensor.map(|sensor| sensor.component),
+        Some(SmolStr::new("visual_sensor")),
+        "the check-out names the sight"
+    );
+    assert_eq!(cone(ecm()), stock, "a whole ECM tank aims as a stock one");
+    assert_eq!(
+        cone(with_condition(ecm(), "ecm_pod", 0)),
+        stock,
+        "a shot-off pod does not touch the gun's cone"
+    );
+    let resolution = tacsim::match_::resolution_for(&catalog);
+    let widened = u32::try_from(
+        u64::from(resolution.error_terms.sensor_condition)
+            * u64::from(tacsim::arena::resolution::TERM_URAD)
+            / 1_000,
+    )
+    .unwrap_or(0);
+    assert!(widened > 0, "the shipped weight is not nought");
+    assert_eq!(
+        cone(with_condition(ecm(), "visual_sensor", 0)),
+        stock + widened,
+        "a shot-off sight widens it by the sensor_condition term"
+    );
+}
+
+/// **16b cut M.4 (16c `B-54`): a shot-off pod is no pod.** `Jammer::read`
+/// takes the guard `Eccm::read` always had: the pod's own `condition` at nought
+/// reads `None`, at one it still radiates. Read at check-out only (the named
+/// limit in both docs).
+#[test]
+fn m4_a_pod_at_condition_nought_reads_as_no_pod_and_at_one_still_jams() {
+    use tacsim::arena::perception::Jammer;
+    let catalog = ecm_catalog();
+    let pod = || unit_of(&catalog, content::LINE_TANK_ECM, POD, Team::Blue, POD_CELL);
+    let whole = Jammer::read(&pod().unit, CELL_CM);
+    assert!(whole.is_some(), "the shipped pod radiates");
+    assert_eq!(
+        Jammer::read(&with_condition(pod(), "ecm_pod", 0).unit, CELL_CM),
+        None,
+        "a pod shot off its mount radiates nothing"
+    );
+    assert_eq!(
+        Jammer::read(&with_condition(pod(), "ecm_pod", 1).unit, CELL_CM),
+        whole,
+        "a pod hanging on by one point of condition still jams, whole"
+    );
+    // And through the check-out: the arena opens with no pod and no bubble.
+    let arena = arena_of(
+        &catalog,
+        vec![
+            unit_of(&catalog, content::LINE_TANK, RED, Team::Red, RED_CELL),
+            with_condition(pod(), "ecm_pod", 0),
+        ],
+        &[],
+    );
+    assert_eq!(arena.unit(POD).and_then(|state| state.jammer), None);
+    assert_eq!(arena.jam_radius_cm, 0, "no pod, no bubble to query");
 }

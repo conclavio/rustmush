@@ -308,8 +308,10 @@ unattended_ms = 300000
 
 [tacsim.sensors]
 pass_ms = 1000
-# The only float; the host reads it as per mille (1.5 -> 1500).
-max_signature_factor = 1.5
+# The only float; the host reads it as per mille (1.0 -> 1000). At least 1.0
+# (16b cut M.4): it also scales the candidate cull, and a cull shorter than the
+# range test would drop contacts the sensor can see.
+max_signature_factor = 1.0
 lost_after_passes = 3
 # (16b cut Q.1) true names a contact by team and centre slot (BA) at detection:
 # the other side is legible classify_after_ms before identification is earned.

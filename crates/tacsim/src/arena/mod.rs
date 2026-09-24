@@ -422,6 +422,7 @@ pub(crate) mod test_support {
     /// (`content/sensors/visual_mk1.json`).
     pub(crate) fn visual() -> SensorProfile {
         SensorProfile {
+            component: smol_str::SmolStr::new("visual_sensor"),
             max_range_cells: 60,
             max_attenuation: 40,
             classify_after_ms: 3_000,
@@ -685,12 +686,17 @@ pub(crate) mod test_support {
                         section: SmolStr::new("turret"),
                     }],
                 ),
+                // 16b cut M.4 (`B-47`): the pair rule, as the version-2 pack
+                // authors it on both tracks.
                 section(
                     "left_track",
                     &["left"],
                     vec![
                         Consequence::Slow { percent: 50 },
                         Consequence::NoTurnToward { side: Side::Left },
+                        Consequence::DisableMotionWhenAllOf {
+                            sections: vec![SmolStr::new("left_track"), SmolStr::new("right_track")],
+                        },
                     ],
                 ),
                 section(
@@ -699,6 +705,9 @@ pub(crate) mod test_support {
                     vec![
                         Consequence::Slow { percent: 50 },
                         Consequence::NoTurnToward { side: Side::Right },
+                        Consequence::DisableMotionWhenAllOf {
+                            sections: vec![SmolStr::new("left_track"), SmolStr::new("right_track")],
+                        },
                     ],
                 ),
                 SectionProfile {

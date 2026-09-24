@@ -13,6 +13,12 @@
 //! 1. **Candidates** from the spatial index, inside
 //!    `max_range_cells × cell_cm × sensors.max_signature_factor` of the observer,
 //!    excluding wrecks unless the sensor `sees_wrecks` (doc 16 §3.6 step 1, W1).
+//!    **The factor is at least 1.0 and ships at exactly 1.0** (16b cut M.4; 16c
+//!    `B-55`, `T-26`): every signature factor step 3 can read is at most 1.0, so
+//!    a cull at 1.0 is exact — it holds every candidate the range test can pass
+//!    and no more — and a cull below it would drop contacts the sensor can see,
+//!    which the host refuses at boot and the pass floors here. The 1.5 shipped
+//!    until M.4 was a circle 2.25 times the area it needed.
 //! 2. **Line of sight** from the observer's `Eye` to the candidate's, each at its
 //!    unit's `sensor_height_cm`, accepted as `Clear` or as `Partial` under the
 //!    sensor's `max_attenuation` (step 2).
@@ -205,6 +211,14 @@ pub struct SensorProfile {
     /// The signature table, by the ground the target stands on. A class it does
     /// not name is [`FULL_SIGNATURE_PERMILLE`] in both postures.
     pub signature: Vec<SignatureFactor>,
+    /// **The sensor component's own id** on the M32 unit (16b cut M.4, 16c
+    /// `B-53`) — the component this profile was decoded from
+    /// ([`crate::match_::sensor_profile`] sets it), e.g. `visual_sensor` on the
+    /// stock tank. The gunnery cone's `sensor_condition` term reads **this**
+    /// component's `condition` cell, so on a tank that also carries a pod or a
+    /// filter (each with a `condition` cell of its own) the term reads the sight
+    /// and not whichever component sorts first.
+    pub component: SmolStr,
 }
 
 impl SensorProfile {
@@ -328,9 +342,21 @@ impl Jammer {
     ///
     /// The component is **found** rather than derived, exactly as
     /// [`ThermalSignature::read`] finds the sight that carries the thermal band: a
-    /// unit that somehow mounted two pods radiates the first in component order.
+    /// unit that somehow mounted two pods radiates the first in component order
+    /// that is still there.
+    ///
+    /// **A pod must still be there to radiate** (16b cut M.4, 16c `B-54`): the
+    /// same component's [`CONDITION_CELL`] has to be above zero — the guard
+    /// [`Eccm::read`] has always had, now on both. Before M.4 a pod shot to
+    /// condition `0` on the record still jammed. **A known limit, named**: the
+    /// condition is read **at check-out only** (this runs from
+    /// `Arena::new`), and is not re-read after damage inside a match, so a pod
+    /// hit to zero mid-match keeps radiating until the hull is a wreck; the
+    /// ECM tank mounts its pod on the hull for exactly that reason (the pack's
+    /// own note).
     ///
     /// [`JAM_RADIUS_CELL`]: crate::definitions::unit::JAM_RADIUS_CELL
+    /// [`CONDITION_CELL`]: crate::definitions::unit::CONDITION_CELL
     #[must_use]
     pub fn read(unit: &TacticalUnit, cell_cm: u16) -> Option<Jammer> {
         let radius = mush_tactics::CellId::new(crate::definitions::unit::JAM_RADIUS_CELL).ok()?;
@@ -338,6 +364,7 @@ impl Jammer {
             mush_tactics::CellId::new(crate::definitions::unit::JAM_ATTENUATION_CELL).ok()?;
         let signature =
             mush_tactics::CellId::new(crate::definitions::unit::JAM_SIGNATURE_CELL).ok()?;
+        let condition = mush_tactics::CellId::new(crate::definitions::unit::CONDITION_CELL).ok()?;
         unit.components().find_map(|(component, _)| {
             let at = |cell: &mush_tactics::CellId| {
                 let addr = mush_tactics::CellAddr::Component {
@@ -346,8 +373,14 @@ impl Jammer {
                 };
                 u32::try_from(unit.cell(&addr)?.current.max(0)).ok()
             };
+            let radius_cells = at(&radius)?;
+            // A pod that has been shot off its mount radiates nothing — the same
+            // guard, on the same cell, as `Eccm::read`'s.
+            if at(&condition)? == 0 {
+                return None;
+            }
             Some(Jammer {
-                radius_cm: at(&radius)?.saturating_mul(u32::from(cell_cm)),
+                radius_cm: radius_cells.saturating_mul(u32::from(cell_cm)),
                 attenuation_cost: u8::try_from(at(&cost)?).unwrap_or(u8::MAX),
                 signature_permille: at(&signature)?.min(FULL_SIGNATURE_PERMILLE),
             })
@@ -391,6 +424,11 @@ impl Eccm {
     /// discriminates signal from noise in the sight's own returns, so it follows the
     /// sight, and this module's head says optics are optics. A cold tank with an
     /// intact sight and an intact filter sees exactly what a warm one does.
+    ///
+    /// **A known limit, named** (16b cut M.4, 16c `B-54`): the condition is read
+    /// **at check-out only** (this runs from `Arena::new`), exactly as
+    /// [`Jammer::read`]'s is, and is not re-read after damage inside a match — a
+    /// filter hit to zero mid-match keeps filtering until the match ends.
     ///
     /// [`ECCM_ATTENUATION_CELL`]: crate::definitions::unit::ECCM_ATTENUATION_CELL
     /// [`CONDITION_CELL`]: crate::definitions::unit::CONDITION_CELL
@@ -1030,9 +1068,15 @@ impl Arena {
         // Step 1's cull radius: the sensor's reach at the *widest* signature factor
         // any target could present (W1). Every later test only ever shortens it, so
         // a candidate outside this circle cannot be detected by any of them.
+        // **16b cut M.4** (`B-55`, `T-26`): at the shipped 1.0 the circle is
+        // exact, because no signature factor exceeds 1.0 (`signature_permille`
+        // caps it there); and it is floored at 1.0 here as well as refused below
+        // it at boot, so the cull can never be shorter than the range test.
         let cull_cm = max_range_cm
             .saturating_mul(u64::from(
-                self.sensors_cfg.max_signature_factor_permille.max(1),
+                self.sensors_cfg
+                    .max_signature_factor_permille
+                    .max(FULL_SIGNATURE_PERMILLE),
             ))
             .saturating_div(1_000);
         let cull = u32::try_from(cull_cm).unwrap_or(u32::MAX);

@@ -446,7 +446,7 @@ pub fn atlas_config(
 /// integer, so `[tacsim.sensors].max_signature_factor` is a TOML float exactly
 /// once — here — and the engine is handed
 /// [`tacsim::config::SensorsConfig::max_signature_factor_permille`]. The shipped
-/// `1.5` arrives as `1500`.
+/// `1.0` arrives as `1000` (it was `1.5` until 16b cut M.4).
 ///
 /// **This is the one value cut G refuses a boot over, and it is not an exception
 /// to "the cut that reads a field validates it" — it is that rule.** Converting
@@ -454,9 +454,17 @@ pub fn atlas_config(
 /// large its per-mille has no `u32` cannot be carried, and the only alternative
 /// to refusing is inventing a number the operator never wrote.
 ///
-/// The bound is the conversion's own, deliberately: a *policy* ceiling on how far
-/// a signature may stretch a sensor's range is a sensor fact, and cut S is the
-/// cut that reads sensor facts.
+/// The upper bound is the conversion's own, deliberately: a *policy* ceiling on
+/// how far a signature may stretch a sensor's range is a sensor fact, and cut S is
+/// the cut that reads sensor facts.
+///
+/// **The floor is 1.0** (16b cut M.4; 16c `B-55`, `T-26`). The factor is not only
+/// a ceiling on a signature: the perception pass also scales its **candidate
+/// cull** by it (`max_range_cells × cell_cm × factor`), and the range test inside
+/// that circle is `max_range × signature / 1000` with every signature row at most
+/// 1.0. Below 1.0 the cull is shorter than the range test, and contacts the
+/// sensor can see silently vanish — so it is refused by name, on the input,
+/// before the round (`0.9995` is refused though it rounds to `1000`).
 ///
 /// # Errors
 ///
@@ -465,15 +473,22 @@ fn signature_factor_permille(factor: f64) -> Result<u32, String> {
     let refuse = |why: &str| {
         Err(format!(
             "[tacsim.sensors].max_signature_factor {factor} {why}: it is read as \
-             per mille (1.5 is 1500), so it must be a finite factor from 0 to \
+             per mille (1.0 is 1000), so it must be a finite factor from 1.0 to \
              {} inclusive",
             f64::from(u32::MAX) / 1_000.0
         ))
     };
-    if !factor.is_finite() || factor < 0.0 {
-        // Checked on the INPUT, before the round: `-0.0001` rounds to `-0.0`,
-        // which is not less than zero and would otherwise be accepted as 0.
+    if !factor.is_finite() {
         return refuse("is not a factor");
+    }
+    // Checked on the INPUT, before the round: `-0.0001` rounds to `-0.0` and
+    // `0.9995` to `1000`, and neither may pass.
+    if factor < 1.0 {
+        return Err(format!(
+            "[tacsim.sensors].max_signature_factor {factor} is too small: it must be \
+             at least 1.0: the ceiling scales the candidate cull, and a cull shorter \
+             than the range test would drop contacts the sensor can see"
+        ));
     }
     let permille = (factor * 1_000.0).round();
     if !permille.is_finite() || permille > f64::from(u32::MAX) {
@@ -1084,8 +1099,8 @@ mod tests {
         );
         assert_eq!(defaults.harness, tacsim::config::HarnessConfig::default());
         assert_eq!(
-            defaults.sensors.max_signature_factor_permille, 1_500,
-            "the shipped 1.5 is 1500 per mille"
+            defaults.sensors.max_signature_factor_permille, 1_000,
+            "the shipped 1.0 is 1000 per mille (16b cut M.4; 1.5 until then)"
         );
     }
 
@@ -1431,18 +1446,16 @@ mod tests {
     /// unvalidated on `[tacsim.time]`'s rule.
     #[test]
     fn cut_g_the_signature_factor_converts_to_per_mille_or_refuses_by_name() {
+        // **16b cut M.4** (16c `B-55`): the three sub-1.0 rows this table
+        // accepted — `(0.0, 0)`, `(0.001, 1)` and `(0.0004, 0)` — are refusals
+        // now, below, with the floor's own sentence.
         for (factor, permille) in [
-            (0.0, 0_u32),
-            (1.0, 1_000),
+            (1.0, 1_000_u32),
             (1.5, 1_500),
             (2.25, 2_250),
             // Rounds, never truncates: 1.0005 is 1000.5 per mille.
             (1.0005, 1_001),
             (1.0004, 1_000),
-            (0.001, 1),
-            // Under half a per mille is zero, not a refusal: a factor that small
-            // is a value question, and cut S is where values are judged.
-            (0.0004, 0),
         ] {
             let cfg = tacsim_cfg(&format!(
                 "[tacsim.sensors]\nmax_signature_factor = {factor}\n"
@@ -1467,6 +1480,30 @@ mod tests {
             assert!(
                 refused.contains("[tacsim.sensors].max_signature_factor"),
                 "{factor}: the refusal must name the key: {refused}"
+            );
+        }
+
+        // **16b cut M.4** (16c `B-55`, `T-26`): below 1.0 the candidate cull is
+        // shorter than the range test, so a factor under the floor is refused by
+        // name, with the value and the reason — including `0.9995`, which rounds
+        // to 1000 and is still refused because the floor is read on the input.
+        for factor in ["0.9", "0.0", "0.001", "0.0004", "0.9995"] {
+            let cfg = tacsim_cfg(&format!(
+                "[tacsim.sensors]\nmax_signature_factor = {factor}\n"
+            ));
+            let refused = tacsim_config(&cfg).expect_err(factor);
+            // The value as the host read it: `0.0` is the float `0`.
+            let value: f64 = factor.parse().expect("a float");
+            assert!(
+                refused.contains(&format!("[tacsim.sensors].max_signature_factor {value}")),
+                "{factor}: the refusal names the key and the value: {refused}"
+            );
+            assert!(
+                refused.contains(
+                    "it must be at least 1.0: the ceiling scales the candidate cull, and a \
+                     cull shorter than the range test would drop contacts the sensor can see"
+                ),
+                "{factor}: the refusal says why: {refused}"
             );
         }
     }

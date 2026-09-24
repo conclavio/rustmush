@@ -487,11 +487,6 @@ pub struct ReflexMemory {
     units: BTreeMap<ObjId, ReflexUnit>,
     scratch: PathScratch,
     cfg: ReflexConfig,
-    /// **The cheapest cell on the window**, for the A\* heuristic's scale. Read
-    /// once at check-out ([`crate::arena::path::min_move_cost`] is a scan of the
-    /// whole window) and handed to every search, because the terrain is immutable
-    /// for the life of a match.
-    min_move_cost: u32,
     /// Which `decide_ms` window of arena time the budget below belongs to.
     window: i64,
     /// Searches already spent in that window.
@@ -501,13 +496,17 @@ pub struct ReflexMemory {
 impl ReflexMemory {
     /// An empty memory with this match's doctrine frozen in, exactly as the two
     /// configuration blocks are frozen into [`Arena`].
+    ///
+    /// **16b cut M.4** (16c `T-15`): the window's cheapest cell, which 16b cut
+    /// N.1 kept here for the A\* heuristic, moved to
+    /// [`Arena::min_move_cost`](crate::arena::state::Arena::min_move_cost), one
+    /// copy for the search and the speed ceiling both.
     #[must_use]
-    pub fn new(cfg: &ReflexConfig, min_move_cost: u32) -> ReflexMemory {
+    pub fn new(cfg: &ReflexConfig) -> ReflexMemory {
         ReflexMemory {
             units: BTreeMap::new(),
             scratch: PathScratch::default(),
             cfg: cfg.clone(),
-            min_move_cost: min_move_cost.max(1),
             window: i64::MIN,
             spent: 0,
         }
@@ -2644,7 +2643,7 @@ impl Arena {
                 row.searched_ms = Some(t_ms);
                 counters.path_queries = counters.path_queries.saturating_add(1);
                 let budget = memory.cfg.path_max_cells;
-                let scale = memory.min_move_cost;
+                let scale = self.min_move_cost.max(1);
                 // **16b cut Q.7**: the cells this unit has been stopped at, at
                 // most `REFLEX_AVOID_MAX` of them, built once per search.
                 let avoid: Vec<(u16, u16)> = row.avoid.iter().map(|(cell, _)| *cell).collect();
@@ -3410,6 +3409,7 @@ mod tests {
 
         let mut fixture = tank(ObjId(4), Team::Red, pose(1_500, 1_500));
         fixture.sensor = Some(SensorProfile {
+            component: smol_str::SmolStr::new("visual_sensor"),
             max_range_cells: 60,
             max_attenuation: 40,
             classify_after_ms: 3_000,
@@ -3606,7 +3606,7 @@ mod tests {
     #[test]
     fn adopting_a_unit_twice_does_not_restart_its_machine() {
         let cfg = ReflexConfig::default();
-        let mut memory = ReflexMemory::new(&cfg, 100);
+        let mut memory = ReflexMemory::new(&cfg);
         memory.adopt(ObjId(4), ReflexState::Startup);
         if let Some(row) = memory.units.get_mut(&ObjId(4)) {
             row.state = ReflexState::Patrol;
@@ -3635,7 +3635,7 @@ mod tests {
             max_path_queries: 2,
             ..ReflexConfig::default()
         };
-        let mut memory = ReflexMemory::new(&cfg, 100);
+        let mut memory = ReflexMemory::new(&cfg);
         assert!(memory.may_search(0));
         assert!(memory.may_search(400));
         assert!(!memory.may_search(900), "the window's budget is spent");

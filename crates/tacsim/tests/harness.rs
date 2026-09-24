@@ -1119,6 +1119,7 @@ fn harness_sensor() -> tacsim::arena::perception::SensorProfile {
         stopped_permille: stopped,
     };
     SensorProfile {
+        component: smol_str::SmolStr::new("visual_sensor"),
         max_range_cells: sensor_cells(),
         max_attenuation: 40,
         classify_after_ms: 3_000,
@@ -1539,6 +1540,14 @@ fn harness_profile() -> tacsim::arena::resolution::UnitProfile {
                     Consequence::NoTurnToward {
                         side: tacsim::arena::state::Side::Left,
                     },
+                    // 16b cut M.4 (`B-47`): the pair rule the version-2 pack
+                    // authors on both tracks.
+                    Consequence::DisableMotionWhenAllOf {
+                        sections: vec![
+                            smol_str::SmolStr::new("left_track"),
+                            smol_str::SmolStr::new("right_track"),
+                        ],
+                    },
                 ],
             ),
             section(
@@ -1548,6 +1557,14 @@ fn harness_profile() -> tacsim::arena::resolution::UnitProfile {
                     Consequence::Slow { percent: 50 },
                     Consequence::NoTurnToward {
                         side: tacsim::arena::state::Side::Right,
+                    },
+                    // 16b cut M.4 (`B-47`): the pair rule the version-2 pack
+                    // authors on both tracks.
+                    Consequence::DisableMotionWhenAllOf {
+                        sections: vec![
+                            smol_str::SmolStr::new("left_track"),
+                            smol_str::SmolStr::new("right_track"),
+                        ],
                     },
                 ],
             ),

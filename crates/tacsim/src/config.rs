@@ -545,7 +545,14 @@ pub struct SensorsConfig {
     /// Arena milliseconds between one unit's sensor passes, staggered by unit id.
     pub pass_ms: u32,
     /// The ceiling on a target's signature factor, **per mille**: the configured
-    /// `1.5` arrives here as `1500`.
+    /// `1.0` arrives here as `1000`.
+    ///
+    /// **16b cut M.4** (16c `B-55`, `T-26`): the default is `1_000` (it was
+    /// `1_500`), and the host refuses a factor below 1.0. The perception pass
+    /// scales its candidate cull by this, and the range test inside the cull is
+    /// never longer than `max_range × 1.0` (no signature row exceeds 1.0), so
+    /// `1_000` is the exact cull and anything less would drop contacts the sensor
+    /// can see.
     ///
     /// Doc 16 §3.1 (D-16-4): the engine stores nothing in floating point, so the
     /// `[tacsim.sensors].max_signature_factor` float is converted exactly once,
@@ -609,8 +616,8 @@ impl Default for SensorsConfig {
     fn default() -> Self {
         SensorsConfig {
             pass_ms: 1_000,
-            // 1.5 × 1000.
-            max_signature_factor_permille: 1_500,
+            // 1.0 × 1000 (16b cut M.4; 1.5 until then).
+            max_signature_factor_permille: 1_000,
             lost_after_passes: 3,
             designate_on_detection: false,
             // Two thirds and a third, so the three live bands are three roughly

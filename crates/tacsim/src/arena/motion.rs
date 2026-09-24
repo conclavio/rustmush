@@ -604,6 +604,7 @@ fn advance(
         unit.speed_cms = 0;
         // **16b cut Q.6**: a refused substep banks no distance it never travelled.
         unit.carry.speed = 0;
+        unit.carry.speed_rate = 0;
         unit.carry.east = 0;
         unit.carry.north = 0;
         unit.blocked = true;
@@ -642,14 +643,7 @@ fn advance(
             // three times below — by the refusal, by the elevation and by the
             // grade. Before this cut it was read in `enterable` and again for
             // `z_cm`.
-            let crossing = Crossing {
-                from,
-                to,
-                from_cell,
-                to_cell: terrain.get(to.0, to.1),
-                kind: slope::step_kind(from, to),
-                cell_cm: u32::from(terrain.cell_cm()),
-            };
+            let crossing = Crossing::between(terrain, from, to);
             match refusal(unit, index, &crossing) {
                 None => {
                     // Doc 16 §3.2: `z_cm` is the cell's `elev_cm`, carried on entry.
@@ -739,16 +733,23 @@ fn axis(speed_cms: i32, dt: i64, fixed: i64, carry: &mut i64) -> i64 {
 }
 
 /// Step 1: turn toward `desired_heading_mdeg` at `turn_rate_mdeg_s × dt / 1000`
-/// on the shortest arc, **blocked toward a `no_turn_toward` side**.
+/// on the shortest arc, **blocked toward a closed side**.
 ///
 /// Clockwise (millidegrees increasing) is toward the unit's **right**;
 /// anticlockwise is toward its **left**. A destroyed left track is
-/// `no_turn_toward(Left)` and forbids the anticlockwise direction outright, so a
-/// turn whose short arc goes that way **takes the long way round** — which is
-/// exactly what a tank on one track does. `no_turn_toward` names at most one
-/// side, so the long way is always open; the "both ways are blocked, so do not
-/// turn" branch is written anyway, because a rule with an unhandled case is not a
-/// rule.
+/// `no_turn_toward(Left)` ([`crate::arena::state::MotionLimits::no_turn_left`])
+/// and forbids the anticlockwise direction outright, so a turn whose short arc
+/// goes that way **takes the long way round** — which is exactly what a tank on
+/// one track does.
+///
+/// **The pair rule** (16b cut M.4, 16c `B-47`): the two sides are two flags,
+/// ORed in by damage, so a tank that has lost **both** tracks has both closed,
+/// and then it **does not turn at all** and its turn carry is zeroed. Before
+/// M.4 one `Option<Side>` held the side, the second track's loss overwrote the
+/// first, and a tank on no tracks still turned one way; the branch below was
+/// unreachable then and is the pair rule now. The shipped tanks additionally
+/// author `disable_motion_when_all_of: [left_track, right_track]`, so the same
+/// tank is `motion_disabled` too and the first return below answers first.
 ///
 /// A wreck and a unit whose motion is disabled do not turn at all: doc 16 §3.3
 /// revokes `tactics.mobility` with the wreck, and a destroyed engine is
@@ -758,12 +759,17 @@ fn axis(speed_cms: i32, dt: i64, fixed: i64, carry: &mut i64) -> i64 {
 /// [`crate::arena::state::MotionCarry::turn`], so a turn of 30°/s is 30° of arc
 /// over a second however that second is cut into substeps. It is zeroed on every
 /// substep that does **not** turn — a wreck, a dead engine, a cold hull, an arc
-/// already closed, a side that is forbidden both ways — and on the substep that
-/// closes the arc, because the fraction left over then belongs to a turn that is
-/// finished.
+/// already closed, both sides closed — and on the substep that closes the arc,
+/// because the fraction left over then belongs to a turn that is finished.
+///
+/// **16b cut M.4 (16c `T-16`)**: and on the substep that turns the **other
+/// way** from the one that banked it
+/// ([`crate::arena::state::MotionCarry::turn_side`]): a fraction of a
+/// millidegree spent turning left is not owed to a turn to the right.
 fn turn(unit: &mut UnitState, dt: i64) {
     if unit.limits.wreck || unit.limits.motion_disabled || unit.power != Power::Online {
         unit.carry.turn = 0;
+        unit.carry.turn_side = 0;
         return;
     }
     let current = unit.pose.heading_mdeg % FULL_TURN_MDEG;
@@ -771,6 +777,7 @@ fn turn(unit: &mut UnitState, dt: i64) {
     let clockwise_arc = (desired + FULL_TURN_MDEG - current) % FULL_TURN_MDEG;
     if clockwise_arc == 0 {
         unit.carry.turn = 0;
+        unit.carry.turn_side = 0;
         return;
     }
     let short_is_clockwise = clockwise_arc <= HALF_TURN_MDEG;
@@ -779,15 +786,26 @@ fn turn(unit: &mut UnitState, dt: i64) {
     } else {
         Side::Left
     };
-    if unit.limits.no_turn_toward == Some(toward) {
+    if unit.limits.turn_closed(toward) {
         toward = match toward {
             Side::Right => Side::Left,
             Side::Left => Side::Right,
         };
     }
-    if unit.limits.no_turn_toward == Some(toward) {
+    // The pair rule: both sides closed, so neither way round is open.
+    if unit.limits.turn_closed(toward) {
         unit.carry.turn = 0;
+        unit.carry.turn_side = 0;
         return;
+    }
+    // 16c `T-16`: a carry banked turning the other way is not this turn's.
+    let side_code = match toward {
+        Side::Left => 1,
+        Side::Right => 2,
+    };
+    if unit.carry.turn_side != side_code {
+        unit.carry.turn = 0;
+        unit.carry.turn_side = side_code;
     }
     let arc = match toward {
         Side::Right => clockwise_arc,
@@ -832,7 +850,9 @@ fn turn(unit: &mut UnitState, dt: i64) {
 ///
 /// An impassable `move_cost` of zero caps the speed at zero: a unit standing on
 /// a cell nothing may enter cannot drive out of it. Motion never puts one there
-/// (step 4), and a check-out that does is held rather than allowed to drive.
+/// (step 4), and since **16b cut M.4** (16c `T-14`) `Arena::new` refuses a
+/// check-out that would (`ArenaError::CellImpassable`), so the zero cap is
+/// reached only by a fixture that builds an arena by hand.
 ///
 /// **The cap bounds the order, not the speed directly.** A tank that drives off a
 /// road into heavy woods, or loses a track mid-charge, does not drop to the new
@@ -853,10 +873,16 @@ fn turn(unit: &mut UnitState, dt: i64) {
 /// already at its target, when this substep reaches it, and on the wreck / dead
 /// engine / cold power return — which also zeroes the two travel carries, because
 /// a tank that has just been stopped dead did not travel the fraction they hold.
+///
+/// **16b cut M.4 (16c `T-16`)**: and on the substep whose rate is the other one
+/// from the rate that banked it ([`crate::arena::state::MotionCarry::speed_rate`]:
+/// accelerating against braking) — a thousandth of a cm/s banked at `accel_cms2`
+/// is not owed to `brake_cms2`.
 fn accelerate(unit: &mut UnitState, dt: i64, move_cost: u32) {
     if unit.limits.wreck || unit.limits.motion_disabled || unit.power != Power::Online {
         unit.speed_cms = 0;
         unit.carry.speed = 0;
+        unit.carry.speed_rate = 0;
         unit.carry.east = 0;
         unit.carry.north = 0;
         // **16b cut E.3**: and a tank that has just been stopped dead is not
@@ -881,13 +907,21 @@ fn accelerate(unit: &mut UnitState, dt: i64, move_cost: u32) {
     let current = unit.speed_cms;
     if target == current {
         unit.carry.speed = 0;
+        unit.carry.speed_rate = 0;
         return;
     }
-    let rate = if target.abs() < current.abs() {
+    let braking = target.abs() < current.abs();
+    let rate = if braking {
         unit.mobility.brake_cms2
     } else {
         unit.mobility.accel_cms2
     };
+    // 16c `T-16`: a carry banked by the other rate is not this change's.
+    let rate_code = if braking { 2 } else { 1 };
+    if unit.carry.speed_rate != rate_code {
+        unit.carry.speed = 0;
+        unit.carry.speed_rate = rate_code;
+    }
     let budget = u64::from(rate)
         .saturating_mul(u64::try_from(dt).unwrap_or(0))
         .saturating_add(u64::from(unit.carry.speed));
@@ -927,7 +961,22 @@ struct Crossing<'a> {
     cell_cm: u32,
 }
 
-impl Crossing<'_> {
+impl<'a> Crossing<'a> {
+    /// **The crossing `from` to `to` over `terrain`**: the two cells fetched once,
+    /// the [`StepKind`] and the window's `cell_cm`. One constructor for
+    /// [`advance`] and for `step_refusal` (16b cut M.4), so the crossing a test
+    /// asks about is the crossing motion builds.
+    fn between(terrain: &'a ArenaTerrain, from: (u16, u16), to: (u16, u16)) -> Crossing<'a> {
+        Crossing {
+            from,
+            to,
+            from_cell: terrain.get(from.0, from.1),
+            to_cell: terrain.get(to.0, to.1),
+            kind: slope::step_kind(from, to),
+            cell_cm: u32::from(terrain.cell_cm()),
+        }
+    }
+
     /// The **uphill** slope of this crossing, per cent; `0` for a step that is
     /// not one step, or either side of which is off the window.
     fn grade_pct(&self) -> u32 {
@@ -962,6 +1011,15 @@ impl Crossing<'_> {
 /// offer a longer jump, and the cells in between would never be tested — so a jump
 /// of more than one cell is **refused** rather than trusted, which keeps the
 /// invariant true of the code and not merely of the shipped constants.
+///
+/// **Since 16b cut M.4 the front door is the refusal** (16c `B-57`, `T-15`):
+/// `Arena::new` refuses a match whose true speed ceiling
+/// (`Arena::max_speed_cms`, which scales for a cell cheaper than 100 as a
+/// conservative margin over the order clamp) would beat
+/// the substep floor, with `ArenaError::SubstepBound`, so no shipped or
+/// configurable match reaches this guard. It stays, belt and braces, for a
+/// fixture that builds an arena by hand and drives `integrate` at a substep of
+/// its own choosing.
 ///
 /// A **diagonal** crossing tests the diagonal neighbour and nothing else: the
 /// unit cuts the corner and never occupies either edge-adjacent cell, so neither
@@ -1012,6 +1070,34 @@ fn refusal(
     }
 }
 
+/// **The crossing refusal for one step, as motion would answer it** (16b cut
+/// M.4, 16c `T-17`): `from` to `to` for `unit` over `terrain` and `index`, with
+/// the [`Crossing`] built exactly as [`advance`] builds it — the two cells, the
+/// [`StepKind`] and the window's `cell_cm` — and then [`refusal`]. `None` is
+/// "motion would accept it".
+///
+/// It exists so that the one statement about the search and motion that needs
+/// both can be held by a test: `crate::arena::path`'s **shoulder rule** is the
+/// safe direction, so every step a route the search finds takes is one this
+/// accepts (the search refuses diagonals motion allows, never the reverse).
+/// [`refusal`] takes the private [`Crossing`], so making it crate-visible alone
+/// would give the search's tests nothing they could call.
+///
+/// Compiled for tests only: its one caller is that property, and a
+/// crate-visible function nothing in the build calls is dead code the lints
+/// refuse. The crossing it builds is `Crossing::between`, the constructor
+/// [`advance`] itself calls.
+#[cfg(test)]
+pub(crate) fn step_refusal(
+    unit: &UnitState,
+    index: &SpatialIndex,
+    terrain: &ArenaTerrain,
+    from: (u16, u16),
+    to: (u16, u16),
+) -> Option<BlockedCause> {
+    refusal(unit, index, &Crossing::between(terrain, from, to))
+}
+
 /// Stop the unit at the boundary it could not cross: the pose is clamped into the
 /// cell it already occupies ([`clamp_into_cell`]), the speed goes to zero, and the
 /// stop is reported against `refused`.
@@ -1031,6 +1117,7 @@ fn stop_at_boundary(
     clamp_into_cell(unit, terrain, from);
     unit.speed_cms = 0;
     unit.carry.speed = 0;
+    unit.carry.speed_rate = 0;
     unit.carry.east = 0;
     unit.carry.north = 0;
     unit.blocked = true;
@@ -1355,21 +1442,22 @@ mod tests {
     fn a_destroyed_track_turns_the_long_way_round() {
         let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
         if let Some(unit) = arena.unit_mut(A) {
-            unit.limits.no_turn_toward = Some(Side::Left);
+            unit.limits.no_turn_left = true;
             // The short arc to 350 degrees is anticlockwise — to the left, which
             // the destroyed track forbids — so it goes the long way, clockwise.
             unit.desired_heading_mdeg = 350_000;
         }
         step_one(&mut arena, A, 1_000);
         assert_eq!(arena.unit(A).map(|u| u.pose.heading_mdeg), Some(30_000));
-        // The mirror: a destroyed right track sends a starboard order to port. The
-        // long way round is **always** open, because `no_turn_toward` names one
-        // side, which is why `turn`'s "neither way" guard is unreachable through
-        // this surface and no test claims to reach it.
+        // The mirror: a destroyed right track sends a starboard order to port.
+        // (16b cut M.4: the two sides are two flags now, so the mirror opens the
+        // left again by hand — damage never would; both closed is the pair rule,
+        // `both_tracks_gone_is_no_turn_at_all_and_no_carry`.)
         if let Some(unit) = arena.unit_mut(A) {
             unit.pose.heading_mdeg = 0;
             unit.desired_heading_mdeg = 90_000;
-            unit.limits.no_turn_toward = Some(Side::Right);
+            unit.limits.no_turn_left = false;
+            unit.limits.no_turn_right = true;
         }
         step_one(&mut arena, A, 1_000);
         assert_eq!(
@@ -1382,11 +1470,98 @@ mod tests {
         if let Some(unit) = arena.unit_mut(A) {
             unit.pose.heading_mdeg = 0;
             unit.desired_heading_mdeg = 90_000;
-            unit.limits.no_turn_toward = None;
+            unit.limits.no_turn_right = false;
             unit.mobility.turn_rate_mdeg_s = 0;
         }
         step_one(&mut arena, A, 1_000);
         assert_eq!(arena.unit(A).map(|u| u.pose.heading_mdeg), Some(0));
+    }
+
+    /// **16b cut M.4 (16c `B-47`): the pair rule.** With both sides closed the
+    /// tank does not turn at all, whichever way the order points and however long
+    /// it is driven, and the turn carry it had banked is zeroed — the branch in
+    /// `turn` that was unreachable while one `Option<Side>` held the side.
+    #[test]
+    fn both_tracks_gone_is_no_turn_at_all_and_no_carry() {
+        for desired in [90_000, 270_000, 180_000] {
+            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            if let Some(unit) = arena.unit_mut(A) {
+                unit.limits.close_turn(Side::Left);
+                unit.limits.close_turn(Side::Right);
+                unit.desired_heading_mdeg = desired;
+                unit.carry.turn = 700;
+                unit.carry.turn_side = 2;
+            }
+            for _ in 0..8 {
+                step_one(&mut arena, A, 250);
+            }
+            let state = arena.unit(A).unwrap_or_else(|| panic!("A"));
+            assert_eq!(state.pose.heading_mdeg, 0, "it turned toward {desired}");
+            assert_eq!(
+                (state.carry.turn, state.carry.turn_side),
+                (0, 0),
+                "and kept a carry it can never spend"
+            );
+        }
+        // One side alone is still the long way round (the test above), and
+        // closing a side twice is closing it once.
+        let mut limits = MotionLimits::default();
+        limits.close_turn(Side::Left);
+        limits.close_turn(Side::Left);
+        assert!(limits.turn_closed(Side::Left) && !limits.turn_closed(Side::Right));
+    }
+
+    /// **16b cut M.4 (16c `T-16`): a turn carry dies on a reversal.** A carry
+    /// banked turning left is zeroed on the substep that turns right, and the
+    /// side is recorded; a carry banked the same way is spent as before. The rate
+    /// times the substep is whole (30,000 mdeg/s × 250 ms), so whatever carry is
+    /// left after the substep is the one it started with, or nothing.
+    #[test]
+    fn a_turn_carry_dies_when_the_turn_reverses() {
+        for (banked_side, kept) in [(1_u8, false), (2_u8, true)] {
+            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            if let Some(unit) = arena.unit_mut(A) {
+                // Ordered to starboard: the short arc is clockwise, side 2.
+                unit.desired_heading_mdeg = 90_000;
+                unit.carry.turn = 700;
+                unit.carry.turn_side = banked_side;
+            }
+            step_one(&mut arena, A, 250);
+            let state = arena.unit(A).unwrap_or_else(|| panic!("A"));
+            assert_eq!(state.pose.heading_mdeg, 7_500);
+            assert_eq!(
+                state.carry.turn,
+                if kept { 700 } else { 0 },
+                "banked on side {banked_side}"
+            );
+            assert_eq!(state.carry.turn_side, 2, "the new side is recorded");
+        }
+    }
+
+    /// **16b cut M.4 (16c `T-16`): a speed carry dies on a flip between the two
+    /// rates.** A carry banked accelerating is zeroed on the substep that brakes;
+    /// one banked braking is kept. 400 cm/s² × 250 ms is whole, so the carry
+    /// after the substep is the one it started with, or nothing.
+    #[test]
+    fn a_speed_carry_dies_when_accelerating_turns_to_braking() {
+        for (banked_rate, kept) in [(1_u8, false), (2_u8, true)] {
+            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            if let Some(unit) = arena.unit_mut(A) {
+                unit.speed_cms = 500;
+                unit.desired_speed_cms = 0;
+                unit.carry.speed = 800;
+                unit.carry.speed_rate = banked_rate;
+            }
+            step_one(&mut arena, A, 250);
+            let state = arena.unit(A).unwrap_or_else(|| panic!("A"));
+            assert_eq!(state.speed_cms, 400, "one substep of braking");
+            assert_eq!(
+                state.carry.speed,
+                if kept { 800 } else { 0 },
+                "banked at rate {banked_rate}"
+            );
+            assert_eq!(state.carry.speed_rate, 2, "the new rate is recorded");
+        }
     }
 
     #[test]
@@ -2496,6 +2671,9 @@ mod tests {
                     speed: 800,
                     east: 900,
                     north: 1_000,
+                    // 16b cut M.4 (`T-16`): the two sign bytes go with them.
+                    turn_side: 2,
+                    speed_rate: 1,
                 };
                 unit.speed_cms = 500;
                 unit.desired_speed_cms = 500;

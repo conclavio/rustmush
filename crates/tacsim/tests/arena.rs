@@ -1885,6 +1885,7 @@ fn short_sight() -> tacsim::arena::perception::SensorProfile {
         stopped_permille: stopped,
     };
     SensorProfile {
+        component: smol_str::SmolStr::new("visual_sensor"),
         max_range_cells: 5,
         max_attenuation: 40,
         classify_after_ms: 3_000,

@@ -95,7 +95,7 @@
 //! | `[tacsim.match].ai_fill` | `false` | **16b cut N.1** (doc 16 §6): whether `SIM START` also fields the tanks of the pods nobody claimed, under the reflex controller. Off by default because doc 16 §1's A1 is a two-tank story |
 //! | `[tacsim.match].unattended_ms` | `300000` | **16b cut D.3** (`B-33`): world milliseconds a running match every pilot has left runs on before the lobby ends it `unattended`; `0` is off, and anything else is at least `10000` |
 //! | `[tacsim.sensors].pass_ms` | `1000` | **16b cut G** (doc 16 §3.6): arena milliseconds between one unit's sensor passes |
-//! | `[tacsim.sensors].max_signature_factor` | `1.5` | the ceiling on a target's signature factor; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism) |
+//! | `[tacsim.sensors].max_signature_factor` | `1.0` | the ceiling on a target's signature factor, which also scales the candidate cull; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism); **at least 1.0** (16b cut M.4: below it the cull is shorter than the range test), and 1.0 is exact because no shipped signature row exceeds 1.0 |
 //! | `[tacsim.sensors].lost_after_passes` | `3` | **16b cut S.1** (doc 16 §3.6): passes a contact may go unrefreshed before it is lost; the TTL is `pass_ms × lost_after_passes` |
 //! | `[tacsim.sensors].designate_on_detection` | `false` | **16b cut Q.1** (doc 16 §3.6, W5, §5): name a contact by team and centre slot (`BA`) the moment it is detected, instead of by a provisional `X<n>` until it is classified. On, the other side's tanks are legible `classify_after_ms` before the rule allows |
 //! | `[tacsim.sensors].condition_green_permille` | `667` | **16b cut Q.2** (doc 16 §3.6): at or above this fraction of what it holds whole, a section reads `green` on `SCAN` |
@@ -1296,6 +1296,13 @@ pub struct TacsimSensorsCfg {
     /// `mush_server::config_ext::tacsim_config` converts this once into per-mille
     /// and hands the engine a `u32`; that conversion **is** a read, so a negative,
     /// `NaN` or absurd factor is a hard boot error naming this key.
+    ///
+    /// **At least 1.0, and 1.0 by default** (16b cut M.4; 16c `B-55`, `T-26`):
+    /// the pass scales its candidate cull by this, so a factor below 1.0 draws a
+    /// cull circle shorter than the range test and silently drops contacts the
+    /// sensor can see — refused by name at boot. No shipped signature row exceeds
+    /// 1.0, so 1.0 is the exact cull; the 1.5 it replaced was a circle 2.25 times
+    /// the area it needed.
     pub max_signature_factor: f64,
     /// **Passes a contact may go unrefreshed before it is lost** (16b cut S.1;
     /// doc 16 §3.6 step 4). The time-to-live is `pass_ms × lost_after_passes`, so
@@ -1334,7 +1341,7 @@ impl Default for TacsimSensorsCfg {
     fn default() -> Self {
         TacsimSensorsCfg {
             pass_ms: 1_000,
-            max_signature_factor: 1.5,
+            max_signature_factor: 1.0,
             lost_after_passes: 3,
             designate_on_detection: false,
             condition_green_permille: 667,
@@ -2538,8 +2545,8 @@ scene_turn_dedline_secs = 30
 
         assert_eq!(cfg.tacsim.sensors.pass_ms, 1_000);
         assert!(
-            (cfg.tacsim.sensors.max_signature_factor - 1.5).abs() < f64::EPSILON,
-            "[tacsim.sensors].max_signature_factor is 1.5"
+            (cfg.tacsim.sensors.max_signature_factor - 1.0).abs() < f64::EPSILON,
+            "[tacsim.sensors].max_signature_factor is 1.0 (16b cut M.4; 1.5 until then)"
         );
         assert_eq!(cfg.tacsim.sensors.lost_after_passes, 3);
 

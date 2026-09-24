@@ -249,9 +249,30 @@ impl Hearing {
     }
 }
 
-/// The cells of the straight line from `a` to `b`, both included (Bresenham).
+/// The cells of the straight line from `a` to `b`, both included (Bresenham),
+/// in order from `a`.
+///
+/// **One line, whichever end it is walked from** (16b cut M.4; 16c `B-56`). A
+/// bare Bresenham breaks its ties toward the end it starts from, so on a line
+/// like two across and one down `(0,0)→(2,1)` walks `(1,1)` where
+/// `(2,1)→(0,0)` walks `(1,0)` — two different lines of sight between the same
+/// two tanks, and A could see B while B could not see A. So the line is always
+/// **drawn from the lesser endpoint in tuple order** (`(x, y)` compared
+/// lexicographically): when `b < a` it is walked from `b` to `a` and the result
+/// reversed. The two directions then visit one cell set, in opposite order.
 #[must_use]
 pub fn line_cells(a: (u16, u16), b: (u16, u16)) -> Vec<(u16, u16)> {
+    if b < a {
+        let mut out = bresenham(b, a);
+        out.reverse();
+        return out;
+    }
+    bresenham(a, b)
+}
+
+/// The bare Bresenham walk from `a` to `b`, both included — the canonical
+/// direction [`line_cells`] draws every line in.
+fn bresenham(a: (u16, u16), b: (u16, u16)) -> Vec<(u16, u16)> {
     let (mut x0, mut y0) = (i32::from(a.0), i32::from(a.1));
     let (x1, y1) = (i32::from(b.0), i32::from(b.1));
     let dx = (x1 - x0).abs();
@@ -290,10 +311,22 @@ enum Flight {
 }
 
 /// The height of the line at step `i` of `n`.
+///
+/// **The same height from either end** (16b cut M.4; 16c `B-56`). The straight
+/// term is `(z_from × (n − i) + z_to × i) / n` in `i64`. Walked from the other
+/// end the same cell is step `n − i` with the two heights swapped, and the
+/// numerator is the same sum, so the one division gives the one answer. The
+/// form it replaces, `z_from + (z_to − z_from) × i / n`, truncated its fraction
+/// toward zero, which from the other end is the ceiling instead of the floor:
+/// with 150 cm eyes on ground a metre apart in height (eyes at 150 and 250 cm),
+/// `n = 59` and `i = 29` came out at 199 cm one way and 200 cm the other, and a
+/// 200 cm ridge in that cell was a grazing tie that blocked A and not B. The
+/// arc term,
+/// `4·h·i·(n−i)/n²`, was already symmetric.
 fn line_height(z_from: i32, z_to: i32, i: usize, n: usize, flight: Flight) -> i32 {
     let n = n.max(1);
     let (i64i, i64n) = (i64::try_from(i).unwrap_or(0), i64::try_from(n).unwrap_or(1));
-    let straight = i64::from(z_from) + (i64::from(z_to) - i64::from(z_from)) * i64i / i64n;
+    let straight = (i64::from(z_from) * (i64n - i64i) + i64::from(z_to) * i64i) / i64n;
     let extra = match flight {
         Flight::Straight => 0,
         // 4·h·t·(1−t), t = i/n, in integers.
@@ -1060,5 +1093,194 @@ mod tests {
                 "and the full trace agrees"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut M.4 (16c `B-56`): one line, whichever end it is walked from
+    // -----------------------------------------------------------------------
+
+    /// A fixed-seed integer generator for the properties below: splitmix64, so
+    /// the pairs are the same on every run and every platform, and no `rand`.
+    fn next(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    /// One coordinate on a 64-cell side, off the generator.
+    fn coord(state: &mut u64) -> u16 {
+        u16::try_from(next(state) % 64).unwrap_or(0)
+    }
+
+    /// A sight with the blocker's identity dropped: which blocker a walk meets
+    /// FIRST depends on the end it starts from, and the property is about
+    /// whether the line is seen along, and how attenuated, not about which
+    /// obstacle is named.
+    fn seen(sight: &Sight) -> (u8, u8) {
+        match sight {
+            Sight::Clear => (0, 0),
+            Sight::Partial(pct) => (1, *pct),
+            Sight::BlockedBy(_) => (2, 0),
+        }
+    }
+
+    /// **A 64 by 64 relief with walls, woods and slopes**, every height a whole
+    /// metre — the relief the tie needs, since whole-metre ground under
+    /// 150 cm eyes is where the old truncation split a line by a centimetre.
+    fn relief(seed: u64) -> PlainGrid {
+        let (width, height) = (64_u16, 64_u16);
+        let mut state = seed;
+        let mut cells = Vec::with_capacity(64 * 64);
+        for y in 0..height {
+            for x in 0..width {
+                // Two slopes and a ridge line, in whole metres.
+                let slope = i32::from(x / 8) + i32::from(y / 16);
+                let ridge = if x % 13 == 6 { 2 } else { 0 };
+                let class = match next(&mut state) % 200 {
+                    0 => TerrainClass::Wall,
+                    1..=4 => TerrainClass::WoodsLight,
+                    5 => TerrainClass::WoodsHeavy,
+                    _ => TerrainClass::Ground,
+                };
+                let bump = i32::from(next(&mut state).is_multiple_of(10));
+                cells.push((class, (slope + ridge + bump) * 100));
+            }
+        }
+        PlainGrid {
+            width,
+            height,
+            cells,
+        }
+    }
+
+    /// **`line_cells` is one cell set from either end** (16c `B-56`): for any
+    /// two cells, the walk from `b` is the walk from `a` reversed — including
+    /// the shallow lines a bare Bresenham breaks its ties on, `(0,0)`–`(2,1)`
+    /// among them.
+    #[test]
+    fn m4_a_line_is_one_cell_set_from_either_end() {
+        let mut back = line_cells((2, 1), (0, 0));
+        back.reverse();
+        assert_eq!(line_cells((0, 0), (2, 1)), back);
+        assert_eq!(line_cells((0, 0), (2, 1)), vec![(0, 0), (1, 1), (2, 1)]);
+        let mut state = 0x4d34_u64;
+        for _ in 0..10_000 {
+            let a = (coord(&mut state), coord(&mut state));
+            let b = (coord(&mut state), coord(&mut state));
+            let forward = line_cells(a, b);
+            let mut reverse = line_cells(b, a);
+            reverse.reverse();
+            assert_eq!(forward, reverse, "{a:?} to {b:?}");
+            assert_eq!(forward.first(), Some(&a));
+            assert_eq!(forward.last(), Some(&b));
+        }
+    }
+
+    /// **The line's height is one height from either end** (16c `B-56`): the
+    /// symmetric numerator gives step `i` from one end exactly what step
+    /// `n − i` gives from the other, for both flights.
+    #[test]
+    fn m4_a_lines_height_is_one_height_from_either_end() {
+        let mut state = 0x4d35_u64;
+        for _ in 0..10_000 {
+            let n = usize::try_from(next(&mut state) % 90).unwrap_or(0) + 1;
+            let i = usize::try_from(next(&mut state) % 91).unwrap_or(0) % (n + 1);
+            let z_from = i32::try_from(next(&mut state) % 2_000).unwrap_or(0) - 500;
+            let z_to = i32::try_from(next(&mut state) % 2_000).unwrap_or(0) - 500;
+            let apex_cm = i32::try_from(next(&mut state) % 3_000).unwrap_or(0);
+            for flight in [Flight::Straight, Flight::Arc { apex_cm }] {
+                assert_eq!(
+                    line_height(z_from, z_to, i, n, flight),
+                    line_height(z_to, z_from, n - i, n, flight),
+                    "{z_from} to {z_to}, step {i} of {n}, {flight:?}"
+                );
+            }
+        }
+    }
+
+    /// **A sees B exactly when B sees A** (16c `B-56`), over a synthetic relief
+    /// with walls, woods and whole-metre slopes, for ten thousand fixed-seed
+    /// pairs at equal eye heights.
+    #[test]
+    fn m4_sight_over_a_relief_is_the_same_from_either_end() {
+        let grid = relief(0x4d36);
+        let mut state = 0x4d37_u64;
+        let mut blocked = 0_u32;
+        let mut open = 0_u32;
+        for _ in 0..10_000 {
+            let a = Eye::standing((coord(&mut state), coord(&mut state)));
+            let b = Eye::standing((coord(&mut state), coord(&mut state)));
+            let there = trace_cells(&grid, a, b);
+            let back = trace_cells(&grid, b, a);
+            assert_eq!(
+                seen(&there.sight),
+                seen(&back.sight),
+                "{:?} and {:?} disagree: {:?} against {:?}",
+                a.cell,
+                b.cell,
+                there.sight,
+                back.sight
+            );
+            assert_eq!(there.attenuation, back.attenuation);
+            assert_eq!(there.visited, back.visited);
+            if seen(&there.sight).0 == 2 {
+                blocked += 1;
+            } else {
+                open += 1;
+            }
+        }
+        // The relief is worth testing over: both answers occur, often.
+        assert!(
+            blocked > 1_000 && open > 1_000,
+            "{blocked} blocked, {open} not"
+        );
+    }
+
+    /// **The hand-built tie** (16c `B-56`): eyes at 150 cm over ground a metre
+    /// apart in height, 60 cells end to end, and a ridge at 200 cm in the cell
+    /// 29 steps from the low end. Before the cut the line crossed that cell at
+    /// 199 cm walked from the low end and at 200 cm walked from the high one,
+    /// so the low tank was blocked and the high tank saw over; now it is 199 cm
+    /// both ways and the two agree.
+    #[test]
+    fn m4_the_one_centimetre_tie_is_one_answer_both_ways() {
+        // The heights first, as the old and the new arithmetic give them.
+        assert_eq!(line_height(150, 250, 29, 59, Flight::Straight), 199);
+        assert_eq!(line_height(250, 150, 30, 59, Flight::Straight), 199);
+        let old = |z_from: i64, z_to: i64, i: i64, n: i64| z_from + (z_to - z_from) * i / n;
+        assert_eq!(
+            (old(150, 250, 29, 59), old(250, 150, 30, 59)),
+            (199, 200),
+            "the truncation the cut removed split this cell by a centimetre"
+        );
+        let mut row = surface(60, 1, TerrainClass::Ground);
+        set(&mut row, 59, 0, TerrainClass::Ground, 100);
+        set(&mut row, 29, 0, TerrainClass::Ground, 200);
+        let grid = PlainGrid::of(&row);
+        let low = Eye {
+            cell: (0, 0),
+            height_cm: 150,
+        };
+        let high = Eye {
+            cell: (59, 0),
+            height_cm: 150,
+        };
+        let there = trace_cells(&grid, low, high).sight;
+        let back = trace_cells(&grid, high, low).sight;
+        assert!(
+            matches!(
+                there,
+                Sight::BlockedBy(Blocker::Elevation { at: (29, 0), .. })
+            ),
+            "{there:?}"
+        );
+        assert_eq!(there, back, "A sees B exactly when B sees A");
+        // And a centimetre lower the ridge is under the line both ways.
+        set(&mut row, 29, 0, TerrainClass::Ground, 199);
+        let grid = PlainGrid::of(&row);
+        assert_eq!(trace_cells(&grid, low, high).sight, Sight::Clear);
+        assert_eq!(trace_cells(&grid, high, low).sight, Sight::Clear);
     }
 }

@@ -238,6 +238,7 @@ fn definition_painted(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
 fn sight(cells: u16) -> SensorProfile {
     use mush_atlas::TerrainClass as C;
     SensorProfile {
+        component: smol_str::SmolStr::new("visual_sensor"),
         max_range_cells: cells,
         max_attenuation: 40,
         classify_after_ms: 3_000,

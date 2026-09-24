@@ -111,7 +111,8 @@ It is **not** a judgement of your gun. Every gun this game ships out-reaches the
 sight that finds a target for it — the stock cannon makes 3 km and the stock
 sight sees 600 m — so a contact at 450 m reads `far` and is a shot the cannon
 takes comfortably. What the gun makes of the distance is the `% to hit` on your
-lock, and the band your lock falls in on `WEAPONSTATUS`.
+lock, and the band your lock falls in on `WEAPONSTATUS`. Past a gun's last band
+the chance is 0%: the round is still fired and spent, and it cannot land.
 
 `RANGE` and `BEARING` ask about one contact without re-reading the whole scope.
 Name one, or name none and get your lock:
@@ -229,6 +230,9 @@ What you are told about your **own** tank is the other way round and complete:
 only a sensor may tell you. That last line, like the gunner's, is said at most
 once every five seconds a section: a dead track takes rounds all day and there
 is nothing new to say about it.
+
+Lose one track and the tank is slowed and will not turn that way; lose both and
+it neither drives nor turns, and the second line ends `the tank cannot move`.
 
 ## Refusals
 

@@ -325,8 +325,18 @@ impl Clock {
     /// crossing to bound — still floored at [`MIN_SUBSTEP_MS`], because a
     /// configured `substep_max_ms` below the floor would otherwise subdivide a
     /// pulse without limit. The floor is the one thing that can still beat the
-    /// bound (a unit faster than 20,000 cm/s on 10 m cells), which is why motion's
-    /// own one-cell guard refuses a longer jump rather than trusting this.
+    /// bound (a unit faster than 19,980 cm/s on 10 m cells), and since **16b cut
+    /// M.4** (16c `B-57`) a match whose ceiling does is refused at the door
+    /// ([`crate::arena::state::ArenaError::SubstepBound`]); motion's own one-cell
+    /// guard stays behind it as belt and braces.
+    ///
+    /// **`max_speed_cms` is the terrain factor's ceiling** (16b cut M.4, 16c
+    /// `T-15`): [`crate::arena::state::Arena::max_speed_cms`], `fastest × 100 /
+    /// min(100, min_move_cost)`, because on a cell cheaper than 100 motion's
+    /// terrain cap sits above the authored speed. No unit reaches it today (the
+    /// order is clamped to the authored speed in `apply_intent`), so the scale is
+    /// a conservative margin that keeps the bound true of the cap itself. On the
+    /// shipped ground every passable cost is at least 100 and the two are equal.
     #[must_use]
     pub fn substep_ms(cfg: &TempoConfig, cell_cm: u16, max_speed_cms: u32) -> u32 {
         let base = match u32::from(cell_cm)

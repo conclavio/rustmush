@@ -51,6 +51,12 @@
 //! that priced a climb at the flat's cost would promise a route motion charges
 //! differently.
 //!
+//! **The shoulder rule is the safe direction** (16b cut M.4, 16c `T-17`): the
+//! search refuses diagonals motion allows — a corner whose passable shoulder is a
+//! cliff — and never allows one motion refuses, so every step of every route it
+//! finds is a crossing `crate::arena::motion::step_refusal` accepts; a property
+//! test over fixed-seed reliefs and limits holds it.
+//!
 //! The one named residual against `mush_atlas::physics::move_cost` is the
 //! diagonal constant — 181/128 here against the atlas's 141/100 — which predates
 //! this cut and is left alone; [`crate::arena::slope`]'s own tests pin the
@@ -867,5 +873,99 @@ mod tests {
             .expect("a route"),
             second
         );
+    }
+
+    /// **16b cut M.4 (16c `T-17`): the shoulder rule is the safe direction.**
+    ///
+    /// Over several fixed-seed reliefs — whole-metre bumps, so the edges run from
+    /// level to past every limit below, with a sprinkling of impassable cells —
+    /// and three slope limits, every route [`path_with`] finds is walked step by
+    /// step through `crate::arena::motion::step_refusal`, the crossing test motion
+    /// itself runs, from a unit standing at the step's start with that limit. Not
+    /// one step is refused: the search refuses diagonals motion allows (the
+    /// shoulders), never one motion would refuse. Orthogonal steps are held too,
+    /// since they are the same edge rule without the shoulders.
+    #[test]
+    fn m4_every_step_of_a_found_route_is_one_motion_accepts() {
+        use crate::arena::index::SpatialIndex;
+        use crate::arena::motion::step_refusal;
+        use crate::arena::state::Team;
+        use crate::arena::test_support::{arena_of, pose, tank};
+
+        /// splitmix64, so the reliefs and the pairs are the same on every run.
+        fn next(state: &mut u64) -> u64 {
+            *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = *state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+
+        const SIDE: u16 = 24;
+        let base = arena_of(vec![tank(
+            mush_core::ObjId(4),
+            Team::Red,
+            pose(1_500, 1_500),
+        )]);
+        let template = base
+            .units
+            .first()
+            .cloned()
+            .unwrap_or_else(|| panic!("the fixture tank"));
+        let mut routes = 0_u32;
+        let mut diagonals = 0_u32;
+        let mut state = 0x4d17_u64;
+        for _relief in 0..6 {
+            let mut cells = vec![ground(); usize::from(SIDE) * usize::from(SIDE)];
+            for cell in &mut cells {
+                let roll = next(&mut state) % 100;
+                if roll < 6 {
+                    cell.move_cost = 0;
+                }
+                cell.elev_cm = i16::try_from(next(&mut state) % 6).unwrap_or(0) * 100;
+            }
+            let terrain = ArenaTerrain::new(SIDE, SIDE, 1_000, cells).expect("a relief window");
+            let index = SpatialIndex::new(&terrain);
+            for limit in [20_u32, 35, 60] {
+                let mut unit = template.clone();
+                unit.slope_limit_pct = Some(limit);
+                for _pair in 0..30 {
+                    let coord =
+                        |state: &mut u64| u16::try_from(next(state) % u64::from(SIDE)).unwrap_or(0);
+                    let start = (coord(&mut state), coord(&mut state));
+                    let goal = (coord(&mut state), coord(&mut state));
+                    let Ok(found) = path_with(
+                        &terrain,
+                        &mut PathScratch::default(),
+                        start,
+                        goal,
+                        4_096,
+                        min_move_cost(&terrain),
+                        Some(limit),
+                        &[],
+                    ) else {
+                        continue;
+                    };
+                    routes += 1;
+                    let mut here = start;
+                    for &step in &found.cells {
+                        if here.0 != step.0 && here.1 != step.1 {
+                            diagonals += 1;
+                        }
+                        assert_eq!(
+                            step_refusal(&unit, &index, &terrain, here, step),
+                            None,
+                            "limit {limit}%: the search took {here:?} -> {step:?} and motion \
+                             refuses it"
+                        );
+                        here = step;
+                    }
+                }
+            }
+        }
+        // The property is worth asserting: routes were found, and they cut
+        // corners.
+        assert!(routes > 100, "{routes} routes");
+        assert!(diagonals > 100, "{diagonals} diagonal steps");
     }
 }

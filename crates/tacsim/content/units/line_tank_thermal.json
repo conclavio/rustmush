@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.line_tank_thermal",
-    "version": 1,
+    "version": 2,
     "kind": "rules_definition",
-    "digest": "11a9019b18d7d4d21ce1850bfcf82a2f53ec869bcab4337d9ff01d2ed82ae178",
+    "digest": "cecaa090602ef7a5d170f6f15ee8e6432c9dc1017820a9ab2bd7e5690a039f13",
     "requires": [
       {
         "id": "tacsim.pack.cannon_105",
@@ -54,7 +54,8 @@
             "internals": 100,
             "consequences": [
               { "kind": "slow", "percent": 50 },
-              { "kind": "no_turn_toward", "side": "left" }
+              { "kind": "no_turn_toward", "side": "left" },
+              { "kind": "disable_motion_when_all_of", "sections": ["left_track", "right_track"] }
             ]
           },
           {
@@ -63,7 +64,8 @@
             "internals": 100,
             "consequences": [
               { "kind": "slow", "percent": 50 },
-              { "kind": "no_turn_toward", "side": "right" }
+              { "kind": "no_turn_toward", "side": "right" },
+              { "kind": "disable_motion_when_all_of", "sections": ["left_track", "right_track"] }
             ]
           },
           {
@@ -173,7 +175,7 @@
           { "band": "top", "width_cm": 700, "height_cm": 350 }
         ],
         "sensor_height_cm": 150,
-        "note": "The line tank with the Mk1 visual sight swapped for the Mk1 thermal one, and nothing else touched: the same five sections, the same armour, the same facet table, the same silhouettes, the same tracked mode and the same two guns, so a match between the two is a match between the sights. The two numbers cut X.3 adds are the thermal term of doc 16 section 9 item 3, keyed on the TARGET's power and speed and multiplied into the ground's own signature factor: a tank under way presents 1000 -- a running engine is the plume this sight is for -- an idling one 650, and a shut-down one 120. At the sight's 45 cells that is 450 m against a moving tank, about 290 m against an idling one and about 54 m against a cold one, which is the whole of \"an idling tank is cold\": shutting down is how a tank hides from it, and standing in woods is not."
+        "note": "The line tank with the Mk1 visual sight swapped for the Mk1 thermal one, and nothing else touched: the same five sections, the same armour, the same facet table, the same silhouettes, the same tracked mode and the same two guns, so a match between the two is a match between the sights. The two numbers cut X.3 adds are the thermal term of doc 16 section 9 item 3, keyed on the TARGET's power and speed and multiplied into the ground's own signature factor: a tank under way presents 1000 -- a running engine is the plume this sight is for -- an idling one 650, and a shut-down one 120. At the sight's 45 cells that is 450 m against a moving tank, about 290 m against an idling one and about 54 m against a cold one, which is the whole of \"an idling tank is cold\": shutting down is how a tank hides from it, and standing in woods is not. Version 2 (16b cut M.4): both tracks carry disable_motion_when_all_of, so a tank with no tracks neither drives nor turns."
       }
     }
   }

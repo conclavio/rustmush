@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.line_tank_laser",
-    "version": 1,
+    "version": 2,
     "kind": "rules_definition",
-    "digest": "211cabe64b5940e4092cca1009edf11263c03ef2f202ecc0705075dc27c32a1b",
+    "digest": "558a1cef3200fa228fb65de02cd8ee5f71a2b376086f9f950f91412bae1c6881",
     "requires": [
       {
         "id": "tacsim.pack.laser_mk1",
@@ -54,7 +54,8 @@
             "internals": 100,
             "consequences": [
               { "kind": "slow", "percent": 50 },
-              { "kind": "no_turn_toward", "side": "left" }
+              { "kind": "no_turn_toward", "side": "left" },
+              { "kind": "disable_motion_when_all_of", "sections": ["left_track", "right_track"] }
             ]
           },
           {
@@ -63,7 +64,8 @@
             "internals": 100,
             "consequences": [
               { "kind": "slow", "percent": 50 },
-              { "kind": "no_turn_toward", "side": "right" }
+              { "kind": "no_turn_toward", "side": "right" },
+              { "kind": "disable_motion_when_all_of", "sections": ["left_track", "right_track"] }
             ]
           },
           {
@@ -171,7 +173,7 @@
         "sensor_height_cm": 150,
         "heat_max": 60,
         "heat_dissipation_per_s": 3,
-        "note": "The line tank with the 105 swapped for the Mk1 laser, and nothing else touched: the same five sections, the same armour, the same facet table, the same silhouettes, the same tracked mode, the same coaxial and the same sight, so a match between the two is a match between the weapons. The two numbers cut X.1 adds are the ones the swap needs. 60 is three pulses of the laser's 20, which is what makes the third shot the one that locks the turret out rather than the first. 3 a second empties that ceiling in twenty seconds, so a tank that fires its three and waits is firing about one pulse every seven seconds sustained, against the cannon's six-second cycle."
+        "note": "The line tank with the 105 swapped for the Mk1 laser, and nothing else touched: the same five sections, the same armour, the same facet table, the same silhouettes, the same tracked mode, the same coaxial and the same sight, so a match between the two is a match between the weapons. The two numbers cut X.1 adds are the ones the swap needs. 60 is three pulses of the laser's 20, which is what makes the third shot the one that locks the turret out rather than the first. 3 a second empties that ceiling in twenty seconds, so a tank that fires its three and waits is firing about one pulse every seven seconds sustained, against the cannon's six-second cycle. Version 2 (16b cut M.4): both tracks carry disable_motion_when_all_of, so a tank with no tracks neither drives nor turns."
       }
     }
   }
