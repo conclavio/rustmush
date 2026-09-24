@@ -451,6 +451,14 @@ pub struct ReflexCounters {
     pub orders_expired: u32,
     /// Ticks that ended in each state, in [`ReflexState::ALL`] order.
     pub in_state: [u32; 6],
+    /// **Edges refused by the slope rule** (16b cut U.1; 16c `T-35`): every edge
+    /// a search refused as too steep either way or by the shoulder rule
+    /// ([`crate::arena::path::PathScratch::slope_refusals`]), plus every time the
+    /// follower's one-cell test (`Arena::first_step_is_open`) found the cell in
+    /// front open to the class and the avoid list and refused it by the same
+    /// edge rule. What the harness asserts non-zero to prove the cohort's
+    /// locomotion met the relief; a counter, not state, so it moves no hash.
+    pub slope_refusals: u32,
 }
 
 impl ReflexCounters {
@@ -466,6 +474,7 @@ impl ReflexCounters {
         self.shots = self.shots.saturating_add(other.shots);
         self.ordered = self.ordered.saturating_add(other.ordered);
         self.orders_expired = self.orders_expired.saturating_add(other.orders_expired);
+        self.slope_refusals = self.slope_refusals.saturating_add(other.slope_refusals);
         for (mine, theirs) in self.in_state.iter_mut().zip(other.in_state.iter()) {
             *mine = mine.saturating_add(*theirs);
         }
@@ -776,8 +785,8 @@ fn stand_off_want(engage_cm: u64, cell_cm: u64, range_cm: u64) -> u64 {
 
 impl Arena {
     /// **The first [`DueKind::ReflexTick`] of every unit the check-out handed to
-    /// the controller**, at `id % decide_ms` of arena time (doc 16 §6 read the way
-    /// §3.6's pass is: *staggered by unit id*).
+    /// the controller**, at `stagger_ms(seed, id, decide_ms)` of arena time (doc 16
+    /// §6 read the way §3.6's pass is: *staggered by unit id*; 16b cut U.1).
     ///
     /// Only the controller's units get one. A tank with a pilot in it schedules
     /// nothing at all — a match of twelve pilots costs exactly what it cost before
@@ -797,14 +806,22 @@ impl Arena {
     }
 
     /// Put one unit's next tick on the stagger grid: the next multiple of
-    /// `decide_ms` offset by `id % decide_ms` that is strictly after `now_ms`.
+    /// `decide_ms` offset by `stagger_ms(seed, id, decide_ms)` that is at or after
+    /// `now_ms`.
     ///
-    /// The grid is a function of arena time and the unit id alone, so a unit
-    /// adopted halfway through a match lands on the same cadence as one adopted at
-    /// check-out and the field stays spread.
+    /// The grid is a function of arena time, the match seed and the unit id alone,
+    /// so a unit adopted halfway through a match lands on the same cadence as one
+    /// adopted at check-out and the field stays spread.
+    ///
+    /// **16b cut U.1** (16c `T-25`): the offset was `id % decide_ms`, which put a
+    /// field of contiguous object numbers' ticks inside the first `units`
+    /// milliseconds of each decide window, the way it put the sensor passes in
+    /// the first `units` milliseconds of each second. It is
+    /// [`crate::arena::rng::stagger_ms`] now, the pass's own rule, and the grid
+    /// formula around it is unchanged.
     fn schedule_reflex_tick(&mut self, unit: ObjId) {
         let cadence = i64::from(self.arena_cfg.reflex.decide_ms.max(1));
-        let offset = i64::from(unit.0) % cadence;
+        let offset = crate::arena::rng::stagger_ms(self.seed, unit, cadence);
         let mut at = self.now_ms - self.now_ms.rem_euclid(cadence) + offset;
         if at < self.now_ms {
             at = at.saturating_add(cadence);
@@ -931,12 +948,9 @@ impl Arena {
     /// slow down, which is `braking_speed_cms`'s answer too.
     pub fn hold_routeless(&mut self, counters: &mut ReflexCounters) {
         // The full substep, which is what the unit travels before the next
-        // pre-pass: the same length `Arena::step` cuts the pulse into.
-        let substep = i64::from(crate::arena::clock::substep_ms(
-            &self.arena_cfg.tempo,
-            self.cell_cm(),
-            self.max_speed_cms(),
-        ));
+        // pre-pass: the same length `Arena::step` cuts the pulse into, read off
+        // the one method both use (16b cut U.1).
+        let substep = self.substep_len_ms();
         let mut holding: Vec<ObjId> = Vec::new();
         for (id, row) in self.reflex.rows() {
             if !row.route.is_empty() {
@@ -957,7 +971,7 @@ impl Arena {
             let Some(here) = self.definition.terrain.cell_of(&unit.pose) else {
                 continue;
             };
-            if self.first_step_is_open(unit, here, unit.pose.heading_mdeg, &row.avoid)
+            if self.first_step_is_open(unit, here, unit.pose.heading_mdeg, &row.avoid, counters)
                 && self.way_ahead_is_open(unit, here, &row.avoid, stopping_reach_cm(unit, substep))
             {
                 continue;
@@ -1154,7 +1168,8 @@ impl Arena {
                     held.class.team().is_some_and(|team| team != viewer.team)
                         && self.unit(held.target).is_some()
                         && !self.contact_reads_dead(held)
-                        && held.seen_at.range_from(&viewer.pose) <= reach
+                        // 16b cut U.1 (16c `T-24`): the squared test, no root.
+                        && held.seen_at.within_cm(&viewer.pose, reach)
                 })
         })
     }
@@ -2652,7 +2667,7 @@ impl Arena {
                 // crossing will accept. A route over an edge motion then refuses
                 // is a tank driving at a bluff and re-planning at it every
                 // `repath_ms` for the rest of the match.
-                match path_with(
+                let searched = path_with(
                     &self.definition.terrain,
                     &mut memory.scratch,
                     here,
@@ -2661,7 +2676,12 @@ impl Arena {
                     scale,
                     unit.slope_limit_pct,
                     &avoid,
-                ) {
+                );
+                // 16b cut U.1: what the search refused by slope, won or lost.
+                counters.slope_refusals = counters
+                    .slope_refusals
+                    .saturating_add(memory.scratch.slope_refusals());
+                match searched {
                     Ok(found) => {
                         counters.path_cells = counters
                             .path_cells
@@ -2776,7 +2796,7 @@ impl Arena {
         // search rather than driving at a cliff or back into the cell it was just
         // stopped at. With a route the question is already answered — the search
         // asked it of every edge it planned.
-        if routed.is_none() && !self.first_step_is_open(unit, here, heading, &row.avoid) {
+        if routed.is_none() && !self.first_step_is_open(unit, here, heading, &row.avoid, counters) {
             plan.speed_cms = Some(0);
             return;
         }
@@ -2823,12 +2843,17 @@ impl Arena {
     ///
     /// A unit with no slope limit at all is refused by no slope, exactly as
     /// `path` and `motion` refuse it by none.
+    ///
+    /// **16b cut U.1**: a refusal by the edge rule — the slope either way or the
+    /// shoulders, after the class and the avoid list let the cell through — is
+    /// counted in [`ReflexCounters::slope_refusals`].
     fn first_step_is_open(
         &self,
         unit: &UnitState,
         here: (u16, u16),
         heading_mdeg: u32,
         avoid: &[((u16, u16), i64)],
+        counters: &mut ReflexCounters,
     ) -> bool {
         let terrain = &self.definition.terrain;
         let (dx, dy) = octant_step(heading_mdeg);
@@ -2851,7 +2876,11 @@ impl Arena {
         if avoid.iter().any(|(cell, _)| *cell == (nx, ny)) {
             return false;
         }
-        edge_is_open(terrain, unit, here_cell, to_cell, here, (nx, ny))
+        let open = edge_is_open(terrain, unit, here_cell, to_cell, here, (nx, ny));
+        if !open {
+            counters.slope_refusals = counters.slope_refusals.saturating_add(1);
+        }
+        open
     }
 
     /// **Whether every cell on the unit's heading within `reach_cm` is one it
@@ -3857,6 +3886,71 @@ mod tests {
             }),
             (800, 0),
             "the pass stopped a machine whose next cell was open"
+        );
+    }
+
+    /// **16b cut U.1**: the follower's one-cell test counts a refusal by the
+    /// **edge rule** in [`ReflexCounters::slope_refusals`] — here an 8 m bluff
+    /// in front of a unit with a 45 per cent limit, an 80 per cent edge — and a
+    /// refusal by the machine's own remembered stop counts none: that cell is
+    /// shut by the avoid list, not by the slope.
+    #[test]
+    fn u1_the_one_cell_test_counts_a_slope_refusal_and_not_a_remembered_stop() {
+        use crate::arena::state::{ArenaTerrain, Power};
+        use crate::arena::test_support::ground;
+
+        /// Cell (3, 3) facing north onto (3, 4), as in the E.3 fixture; `bluff`
+        /// raises (3, 4) by 800 cm and `remembered` puts it on the avoid list.
+        fn asked(bluff: bool, remembered: bool) -> (i32, u32) {
+            let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(3_500, 3_500))]);
+            if bluff {
+                let mut cells = vec![ground(); 8 * 8];
+                if let Some(slot) = cells.get_mut(4 * 8 + 3) {
+                    slot.elev_cm = 800;
+                }
+                arena.definition.terrain =
+                    ArenaTerrain::new(8, 8, 1_000, cells).expect("the bluff window");
+            }
+            if let Some(state) = arena.unit_mut(ObjId(4)) {
+                state.controller = Controller::Reflex;
+                state.power = Power::Online;
+                state.desired_speed_cms = 800;
+                state.slope_limit_pct = Some(45);
+            }
+            arena.reflex.adopt(ObjId(4), ReflexState::Patrol);
+            if let Some(row) = arena.reflex.units.get_mut(&ObjId(4)) {
+                row.goal = Some((3, 7));
+                row.route.clear();
+                row.avoid = if remembered {
+                    vec![((3, 4), 0)]
+                } else {
+                    Vec::new()
+                };
+            }
+            let mut counters = ReflexCounters::default();
+            arena.hold_routeless(&mut counters);
+            (
+                arena
+                    .unit(ObjId(4))
+                    .map_or(i32::MIN, |state| state.desired_speed_cms),
+                counters.slope_refusals,
+            )
+        }
+
+        assert_eq!(
+            asked(true, false),
+            (0, 1),
+            "the bluff in front did not hold the machine, or was not counted as a slope refusal"
+        );
+        assert_eq!(
+            asked(false, true),
+            (0, 0),
+            "a remembered stop was counted as a slope refusal"
+        );
+        assert_eq!(
+            asked(false, false),
+            (800, 0),
+            "level ground refused an edge"
         );
     }
 

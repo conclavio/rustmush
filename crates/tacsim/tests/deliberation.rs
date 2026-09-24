@@ -1988,14 +1988,26 @@ fn e2_b41_an_unreachable_ordered_cell_ends_the_order_and_the_commander_hears() {
     );
     assert_eq!(counters.orders_expired, 2);
 
-    // One line per unit, carrying the objective word, and nothing after it.
+    // One line per unit, carrying the objective word, and nothing after it —
+    // in the order the two ticks fall. **16b cut U.1**: a machine's tick is on
+    // `stagger_ms(seed, id, decide_ms)` and no longer at `id % decide_ms`, so the
+    // order is read off the stagger rather than off the ids (at seed 2,350 and
+    // 500 ms, `#6` ticks at 4 and `#4` at 482).
     let log = events(&mut arena, &mut bytes);
+    let tick = |unit: ObjId| tacsim::arena::rng::stagger_ms(SEED, unit, 500);
+    let mut ticking = [RED_A, RED_B];
+    ticking.sort_by_key(|unit| tick(*unit));
+    assert_ne!(
+        tick(RED_A),
+        tick(RED_B),
+        "the precondition: two ticks, not one"
+    );
     assert_eq!(
         expiries(&log),
-        vec![
-            (u64::from(RED_A.0), "advance".to_string()),
-            (u64::from(RED_B.0), "advance".to_string()),
-        ]
+        ticking
+            .iter()
+            .map(|unit| (u64::from(unit.0), "advance".to_string()))
+            .collect::<Vec<_>>()
     );
     // At the arena millisecond of the tick whose search failed, which is the
     // first decide tick past the order and not the order's nominal expiry.

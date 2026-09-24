@@ -1567,7 +1567,10 @@ impl Arena {
             self.contacts.of(viewer.id).any(|(_, held)| {
                 self.unit(held.target).is_some()
                     && !self.contact_reads_dead(held)
-                    && held.seen_at.range_from(&viewer.pose) < reach
+                    // 16b cut U.1 (16c `T-24`): `range < reach` squared, as
+                    // `range <= reach − 1`; `reach` is at least 1 here, the
+                    // nought having answered `false` above.
+                    && held.seen_at.within_cm(&viewer.pose, reach - 1)
             })
         })
     }
@@ -1622,8 +1625,9 @@ impl Arena {
             })
     }
 
-    /// The first [`DueKind::SensorPass`] of **every unit**, at **`id % pass_ms`**
-    /// of arena time (doc 16 §3.6: *staggered by unit id*).
+    /// The first [`DueKind::SensorPass`] of **every unit**, at
+    /// **`stagger_ms(seed, id, pass_ms)`** of arena time (doc 16 §3.6: *staggered
+    /// by unit id*).
     ///
     /// **16b cut F.3** widened it from the units that carry a sensor. The pass is
     /// also where a platform's contacts expire, and a platform with no sight of
@@ -1633,16 +1637,22 @@ impl Arena {
     /// returns before the index is touched — which is the cheapest place to put
     /// an expiry that must run for everyone and must not become a per-pulse sweep.
     ///
-    /// The stagger is the object number modulo the cadence, so it needs no state,
-    /// it is the same on a replay, and two units never collide unless their ids do
-    /// modulo `pass_ms`. It spreads a match's passes across the cadence rather than
-    /// bunching every unit's on one substep boundary, which is what keeps the
-    /// worst pulse's trace count near the average (doc 16 §2 W4).
+    /// **16b cut U.1** (16c `T-25`): the stagger is
+    /// [`crate::arena::rng::stagger_ms`], the unit's number mixed with the match
+    /// seed modulo the cadence. It was the object number modulo the cadence, and a
+    /// match's numbers are contiguous, so 300 units put every first pass inside
+    /// the first 300 ms of each second and the worst pulse carried every pass. The
+    /// mixed offset still needs no state and is the same on a replay and at every
+    /// tempo (the cadence is `pass_ms`, never the period), and it spreads a
+    /// match's passes across the whole cadence, which is what keeps the worst
+    /// pulse's trace count near the average (doc 16 §2 W4). Two units may share
+    /// an offset; nothing depends on their not doing so — same-millisecond passes
+    /// apply in event-sequence order like any other due events.
     pub fn schedule_first_passes(&mut self) {
         let cadence = i64::from(self.sensors_cfg.pass_ms.max(1));
         let ids: Vec<ObjId> = self.units.iter().map(|unit| unit.id).collect();
         for id in ids {
-            let offset = i64::from(id.0) % cadence;
+            let offset = crate::arena::rng::stagger_ms(self.seed, id, cadence);
             self.due.schedule(
                 offset,
                 DueKind::SensorPass {
@@ -2541,31 +2551,69 @@ mod tests {
         assert_eq!(seeing.detected, 1);
     }
 
+    /// **16b cut U.1** (16c `T-25`): every unit's first pass is at
+    /// `stagger_ms(seed, id, pass_ms)` — keyed on the seed as well as the id, so
+    /// two seeds spread the same ids differently — and two arenas with the same
+    /// seed and ids schedule the same passes at every tempo, because the offset is
+    /// taken against `pass_ms` and never the period.
     #[test]
-    fn the_stagger_is_the_object_number_modulo_the_cadence() {
-        // Three ids whose remainders differ, so the schedule spreads.
-        let mut arena = arena_of(vec![
-            tank(ObjId(4), Team::Red, pose(1_500, 1_500)),
-            tank(ObjId(9), Team::Blue, pose(2_500, 1_500)),
-        ]);
-        for id in [ObjId(4), ObjId(9)] {
-            if let Some(unit) = arena.unit_mut(id) {
-                unit.sensor = Some(visual());
-                unit.sensor_height_cm = 150;
-            }
+    fn the_stagger_is_seeded_and_the_same_at_every_cadence() {
+        use crate::arena::rng::stagger_ms;
+        let ids: Vec<ObjId> = (100_000..100_024).map(ObjId).collect();
+        let arena_at = |seed: u64, quiet_ms: u32| -> Arena {
+            let units = ids
+                .iter()
+                .enumerate()
+                .map(|(n, id)| {
+                    let x = i64::try_from(n % 8).unwrap_or(0) * 1_000 + 500;
+                    let y = i64::try_from(n / 8).unwrap_or(0) * 1_000 + 500;
+                    tank(*id, Team::Red, pose(x, y))
+                })
+                .collect();
+            let mut cfg = crate::config::ArenaConfig::default();
+            cfg.tempo.quiet_ms = quiet_ms;
+            Arena::new(
+                crate::arena::state::CustodyOut {
+                    seed,
+                    ..crate::arena::test_support::custody(units, Vec::new())
+                },
+                &cfg,
+                &crate::config::MatchConfig::default(),
+                &crate::config::SensorsConfig::default(),
+            )
+            .expect("the stagger arena")
+        };
+        let first_passes = |arena: &Arena| -> Vec<(ObjId, i64)> {
+            let mut passes: Vec<(ObjId, i64)> = arena
+                .due
+                .iter()
+                .filter_map(|event| match event.kind {
+                    DueKind::SensorPass { unit, pass_seq: 1 } => Some((unit, event.t_ms)),
+                    _ => None,
+                })
+                .collect();
+            passes.sort_unstable();
+            passes
+        };
+        let arena = arena_at(2_350, 5_000);
+        let cadence = i64::from(arena.sensors_cfg.pass_ms);
+        let passes = first_passes(&arena);
+        assert_eq!(passes.len(), ids.len(), "one first pass a unit");
+        for (id, t_ms) in &passes {
+            assert_eq!(*t_ms, stagger_ms(2_350, *id, cadence), "#{}", id.0);
+            assert!((0..cadence).contains(t_ms));
         }
-        // 16b cut F.3: `Arena::new` already scheduled a pass for **every** unit,
-        // so the explicit call cut S.1's version of this test needed (the fixture
-        // mounts its sights afterwards) would now schedule a second one each.
-        let scheduled: Vec<(i64, ObjId)> = arena
-            .due
-            .iter()
-            .filter_map(|event| match event.kind {
-                DueKind::SensorPass { unit, pass_seq: 1 } => Some((event.t_ms, unit)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(scheduled, vec![(4, ObjId(4)), (9, ObjId(9))]);
+        // Contiguous ids no longer bunch into the first `units` milliseconds.
+        assert!(
+            passes.iter().any(|(_, t_ms)| *t_ms >= 24),
+            "the stagger is still the id modulo the cadence: {passes:?}"
+        );
+        // Another seed spreads the same ids differently.
+        assert_ne!(first_passes(&arena_at(2_351, 5_000)), passes);
+        // The same seed and ids agree, at every tempo's period.
+        for quiet_ms in [5_000, 1_000, 500] {
+            assert_eq!(first_passes(&arena_at(2_350, quiet_ms)), passes);
+        }
     }
 
     /// The signature table, end to end through one pass on the 8 by 8 window: the

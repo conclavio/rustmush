@@ -146,6 +146,9 @@ pub struct PathScratch {
     stamp: Vec<u32>,
     generation: u32,
     heap: BinaryHeap<Reverse<(u32, u32)>>,
+    /// Edges the last search refused by the slope rule (16b cut U.1): see
+    /// [`PathScratch::slope_refusals`].
+    slope_refused: u32,
 }
 
 impl PartialEq for PathScratch {
@@ -183,6 +186,20 @@ impl PathScratch {
             self.generation = 1;
         }
         self.heap.clear();
+        self.slope_refused = 0;
+    }
+
+    /// **How many edges the last search refused by the slope rule** (16b cut
+    /// U.1; 16c `T-35`): an edge too steep either way for the caller's limit, or
+    /// a diagonal the shoulder rule refused. Counted once per refusal as the
+    /// search meets it, so an edge met from two expansions is two; reset at the
+    /// start of every search, and nought for a search with no limit, which reads
+    /// no slope. It is a cost figure for the harness's report and the reflex
+    /// controller's [`crate::arena::reflex::ReflexCounters::slope_refusals`], not
+    /// state: [`PathScratch`]'s equality ignores it with the rest of the buffers.
+    #[must_use]
+    pub fn slope_refusals(&self) -> u32 {
+        self.slope_refused
     }
 
     fn at(&self, x: u16, y: u16) -> Option<usize> {
@@ -304,6 +321,11 @@ pub fn path_with(
     slope_limit: Option<u32>,
     avoid: &[(u16, u16)],
 ) -> Result<PathResult, PathFailure> {
+    // The refusal count is this search's, whichever way it ends: the two early
+    // answers below return before `fit`, and a caller that reads
+    // `slope_refusals()` after every search (the reflex follower does) would
+    // otherwise count the previous search's refusals a second time.
+    scratch.slope_refused = 0;
     let passable = |x: u16, y: u16| terrain.get(x, y).is_some_and(|cell| cell.passable());
     let cell_cm = u32::from(terrain.cell_cm());
     if !passable(start.0, start.1) || !passable(goal.0, goal.1) {
@@ -410,15 +432,18 @@ pub fn path_with(
             let mut grade = 0;
             if let Some(here_cell) = here_cell {
                 if let Some(limit) = slope_limit {
+                    // 16b cut U.1: each refusal counted, for the report.
                     if slope::too_steep(
                         Some(limit),
                         slope::steepness_pct(here_cell, cell, kind, cell_cm),
                     ) {
+                        scratch.slope_refused = scratch.slope_refused.saturating_add(1);
                         continue;
                     }
                     if kind == StepKind::Diagonal
                         && shoulder_refuses(terrain, Some(limit), here_cell, cell, (x, y), (nx, ny))
                     {
+                        scratch.slope_refused = scratch.slope_refused.saturating_add(1);
                         continue;
                     }
                 }
@@ -873,6 +898,104 @@ mod tests {
             .expect("a route"),
             second
         );
+    }
+
+    /// **16b cut U.1**: [`PathScratch::slope_refusals`] is the **last** search's
+    /// count. A limited search round an 8 m bluff (80 per cent on every
+    /// orthogonal rim edge, past a 45 per cent limit) counts refusals; the same
+    /// search with no limit counts none; and a search that ends before it looks
+    /// at an edge — an impassable end, or a start that is the goal — answers
+    /// nought rather than the previous search's figure, which the reflex
+    /// follower would otherwise add a second time.
+    #[test]
+    fn u1_the_slope_refusal_count_is_the_last_searchs_and_an_early_answer_is_nought() {
+        let mut cells = vec![ground(); 8 * 8];
+        for y in 2..=5_usize {
+            if let Some(slot) = cells.get_mut(y * 8 + 4) {
+                slot.elev_cm = 800;
+            }
+        }
+        if let Some(slot) = cells.get_mut(7 * 8 + 7) {
+            slot.move_cost = 0;
+        }
+        let terrain = ArenaTerrain::new(8, 8, 1_000, cells).expect("a bluff window");
+        let scale = min_move_cost(&terrain);
+        let mut scratch = PathScratch::default();
+        let limited = path_with(
+            &terrain,
+            &mut scratch,
+            (0, 4),
+            (7, 4),
+            4_096,
+            scale,
+            Some(45),
+            &[],
+        )
+        .expect("a route round the bluff");
+        assert!(
+            limited
+                .cells
+                .iter()
+                .all(|&(x, y)| x != 4 || !(2..=5).contains(&y)),
+            "the limited route climbed the bluff: {:?}",
+            limited.cells
+        );
+        let refused = scratch.slope_refusals();
+        assert!(refused > 0, "the bluff refused no edge");
+
+        // An impassable goal: `OffGround` before the search looks at an edge.
+        assert_eq!(
+            path_with(
+                &terrain,
+                &mut scratch,
+                (0, 4),
+                (7, 7),
+                4_096,
+                scale,
+                Some(45),
+                &[]
+            ),
+            Err(PathFailure::OffGround)
+        );
+        assert_eq!(
+            scratch.slope_refusals(),
+            0,
+            "an OffGround search kept {refused}"
+        );
+
+        // The start is the goal: an empty route, and nothing refused.
+        path_with(
+            &terrain,
+            &mut scratch,
+            (0, 4),
+            (7, 4),
+            4_096,
+            scale,
+            Some(45),
+            &[],
+        )
+        .expect("the bluff again");
+        assert_eq!(scratch.slope_refusals(), refused, "one search, one count");
+        path_with(
+            &terrain,
+            &mut scratch,
+            (0, 4),
+            (0, 4),
+            4_096,
+            scale,
+            Some(45),
+            &[],
+        )
+        .expect("the start cell");
+        assert_eq!(
+            scratch.slope_refusals(),
+            0,
+            "a start-is-goal search kept a count"
+        );
+
+        // No limit reads no slope, and refuses nothing.
+        path(&terrain, &mut scratch, (0, 4), (7, 4), 4_096, scale).expect("over the bluff");
+        assert_eq!(scratch.slope_refusals(), 0);
     }
 
     /// **16b cut M.4 (16c `T-17`): the shoulder rule is the safe direction.**

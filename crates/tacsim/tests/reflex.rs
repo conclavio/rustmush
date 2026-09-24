@@ -50,7 +50,7 @@ use tacsim::arena::intents::{Control, ControlState};
 use tacsim::arena::ledger::LedgerEvent;
 use tacsim::arena::perception::{SensorProfile, SignatureFactor};
 use tacsim::arena::reflex::ReflexState;
-use tacsim::arena::rng::draw_contact_id;
+use tacsim::arena::rng::{draw_contact_id, stagger_ms};
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Classification, Controller, CustodyOut,
     CustodyUnit, EntryZone, Pilot, Power, SeenPose, ShadowContact, Team, TerrainCell, TrackedRules,
@@ -520,14 +520,21 @@ fn a_cold_ai_tank_starts_itself_up_and_then_walks_the_waypoint_graph() {
     assert_eq!(arena.unit(RED).map(|unit| unit.power), Some(Power::Off));
 
     let mut bytes: Vec<u8> = Vec::new();
-    // One second: the first tick, at 4 ms, stages `STARTUP`, which resolves at the
-    // tick and completes `match.startup_ms` (500) later, at 504 — the moment the
-    // second tick finds it online and sets off. **16b cut M.2** (16c `T-02`)
+    // One second: the first tick, at `stagger_ms(SEED, RED, 500)` — 482 ms since
+    // 16b cut U.1 seeded the stagger (it was 4, `id % decide_ms`) — stages
+    // `STARTUP`, which resolves at the tick and completes `match.startup_ms`
+    // (500) later, at 982: the moment the second tick finds it online and sets
+    // off, 18 ms before the check below. **16b cut M.2** (16c `T-02`)
     // resolves the machine's order at its tick; it resolved at the substep's end
     // (250) until then, so the second tick found it still starting and the walk
     // began a tick later, which is why this read `1_500` before the cut. At 1,500
     // the tank has been turning for a second and its next plot is taken off a
     // pose north of the row, so the heading below would no longer read due west.
+    assert_eq!(
+        stagger_ms(SEED, RED, 500),
+        482,
+        "the timings above are this offset's"
+    );
     run(&mut arena, 1_000, &mut bytes);
     assert_eq!(arena.unit(RED).map(|unit| unit.power), Some(Power::Online));
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
@@ -1330,7 +1337,26 @@ struct Replay {
     pulses: u32,
 }
 
+/// How a replay is driven (16b cut U.1): at a fixed cadence of wall time, the
+/// three drivers the (j) property has always compared; or the way the task
+/// drives it, waking at [`tacsim::arena::step::StepOutput::next_due_ms`] with the
+/// `Quiet` period set to the figure given — the substep lattice in absolute
+/// arena time, where the controller's ticks and the passes are due off it.
+#[derive(Clone, Copy, Debug)]
+enum Drive {
+    /// `wall += cadence` after every pulse.
+    Every(i64),
+    /// `wall = out.next_due_ms` after every pulse, `tempo.quiet_ms` set first.
+    Task(u32),
+}
+
 fn replay(cadence_ms: i64, until_ms: i64) -> Replay {
+    replay_driven(Drive::Every(cadence_ms), until_ms).0
+}
+
+/// The (j) field replayed under `drive`; answers the replay, every arena
+/// millisecond a pulse after the opening one ended at, and the substep length.
+fn replay_driven(drive: Drive, until_ms: i64) -> (Replay, Vec<i64>, i64) {
     let mut arena = arena_of(
         vec![
             tank(
@@ -1362,19 +1388,43 @@ fn replay(cadence_ms: i64, until_ms: i64) -> Replay {
     // D-16-2: the tempo decides only how often the arena steps. It is pinned so
     // that the three replays differ in **cadence** and in nothing else.
     arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    // The task driver's period is set on the arena's own frozen tempo block,
+    // which `next_due_ms` reads, before the opening pulse (the pattern
+    // `arena.rs`'s `replay_as_the_task` uses; the hash does not fold it).
+    if let Drive::Task(period_ms) = drive {
+        arena.arena_cfg.tempo.quiet_ms = period_ms;
+    }
+    let substep = i64::from(tacsim::arena::clock::substep_ms(
+        &arena.arena_cfg.tempo,
+        arena.cell_cm(),
+        arena.max_speed_cms(),
+    ));
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
     let mut wall = 0_i64;
     let mut pulses = 0_u32;
+    let mut woke_at: Vec<i64> = Vec::new();
     loop {
         let out = arena.step(wall, &[], &[]);
         pulses = pulses.saturating_add(1);
+        if pulses > 1 {
+            woke_at.push(arena.now_ms);
+        }
         absorb(&out, &mut bytes);
         hashes.extend(arena.substep_hashes.iter().copied());
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
         }
-        wall += cadence_ms;
+        wall = match drive {
+            Drive::Every(cadence_ms) => wall + cadence_ms,
+            Drive::Task(_) => {
+                assert!(
+                    out.next_due_ms > wall,
+                    "the task was asked to wake in the past"
+                );
+                out.next_due_ms
+            }
+        };
     }
     let events = events(&mut arena, &mut bytes)
         .into_iter()
@@ -1402,11 +1452,83 @@ fn replay(cadence_ms: i64, until_ms: i64) -> Replay {
             )
         })
         .collect();
-    Replay {
-        events,
-        hashes,
-        finals,
-        pulses,
+    (
+        Replay {
+            events,
+            hashes,
+            finals,
+            pulses,
+        },
+        woke_at,
+        substep,
+    )
+}
+
+/// **16b cut U.1's cross-tempo proof on an effectful field** (16b §11; doc 16
+/// §3.1 "Rate independence", D-16-2; 16c `T-22`). `arena.rs`'s task-driver test
+/// replays a script whose off-lattice due events change nothing; this is the
+/// (j) field — two reflex machines, one of them armed, and a seated tank they
+/// detect, classify, lock and shoot — whose ticks fall at 482 and 4 ms into
+/// each decide window and whose passes fall off the lattice too. Driven the way
+/// the task drives it, waking only on the 250 ms lattice (one substep a pulse,
+/// a partition no fixed cadence uses) with the `Quiet` period at 5,000, 1,000
+/// and 500 ms, it is one event list, one per-substep hash sequence and one set
+/// of finals, all three the fixed 5,000 ms replay's.
+#[test]
+fn u1_two_reflex_units_on_the_task_s_own_wakes_are_the_fixed_cadence_replay() {
+    let fixed = replay(5_000, 30_000);
+    // The run is worth comparing: the machines acted, off the lattice.
+    for want in ["startup", "detected", "classified", "locked", "fired"] {
+        assert!(
+            fixed.events.iter().any(|(_, kind, _)| kind.contains(want)),
+            "the fixed replay never journalled a {want}"
+        );
+    }
+    let decide = i64::from(reflex_cfg().decide_ms);
+    for machine in [RED, RED2] {
+        assert_ne!(
+            stagger_ms(SEED, machine, decide) % 250,
+            0,
+            "the precondition: #{}'s tick is off the lattice",
+            machine.0
+        );
+    }
+    for period in [5_000_u32, 1_000, 500] {
+        let (run, woke_at, substep) = replay_driven(Drive::Task(period), 30_000);
+        assert_eq!(substep, 250, "the fixture's lattice");
+        let off: Vec<i64> = woke_at
+            .iter()
+            .copied()
+            .filter(|now| now % substep != 0)
+            .collect();
+        assert!(
+            off.is_empty(),
+            "the task woke off the lattice at a {period} ms period: {off:?}"
+        );
+        assert!(
+            woke_at.windows(2).any(|pair| {
+                let [a, b] = pair else { return false };
+                b - a == substep
+            }),
+            "the task never woke a substep apart at a {period} ms period, so no pulse was one \
+             substep"
+        );
+        assert_eq!(
+            run.events, fixed.events,
+            "the event list diverged on the task's wakes at a {period} ms period"
+        );
+        assert_eq!(
+            run.hashes, fixed.hashes,
+            "the hash sequence diverged on the task's wakes at a {period} ms period"
+        );
+        assert_eq!(
+            run.finals, fixed.finals,
+            "the field ended differently on the task's wakes at a {period} ms period"
+        );
+        assert_ne!(
+            run.pulses, fixed.pulses,
+            "the task driver ran the fixed replay's pulses at a {period} ms period"
+        );
     }
 }
 
@@ -1433,10 +1555,20 @@ fn two_reflex_units_at_three_cadences_are_one_event_list_and_one_hash_sequence()
     }
     assert!(first.hashes.len() >= 100, "{} substeps", first.hashes.len());
     // **16b cut M.2** (16c `T-02`): every machine action is stamped at its own
-    // tick, `id % decide_ms` into each decide window — `RED`'s at 4, `RED2`'s at
-    // 6, neither of them a substep boundary. Before the cut these lines carried
-    // the end of the substep the tick ran in, a multiple of 250.
+    // tick, its stagger into each decide window — `stagger_ms(seed, id,
+    // decide_ms)` since 16b cut U.1, `RED`'s at 482 and `RED2`'s at 4 at seed
+    // 2,350 (they were 4 and 6, `id % decide_ms`), neither of them a substep
+    // boundary. Before M.2 these lines carried the end of the substep the tick
+    // ran in, a multiple of 250.
     let decide = i64::from(reflex_cfg().decide_ms);
+    for machine in [RED, RED2] {
+        assert_ne!(
+            stagger_ms(SEED, machine, decide) % 250,
+            0,
+            "the precondition: #{}'s tick is not a substep boundary",
+            machine.0
+        );
+    }
     let mut stamped = 0_usize;
     for (t_ms, json, _) in &first.events {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
@@ -1452,9 +1584,10 @@ fn two_reflex_units_at_three_cadences_are_one_event_list_and_one_hash_sequence()
         if unit == i64::from(BLUE.0) {
             continue;
         }
+        let id = ObjId(u32::try_from(unit).unwrap_or(0));
         assert_eq!(
             t_ms.rem_euclid(decide),
-            unit % decide,
+            stagger_ms(SEED, id, decide),
             "a {kind:?} line of #{unit} off its tick: {t_ms}"
         );
         stamped += 1;
@@ -5726,10 +5859,11 @@ fn a_routeless_machine_is_ordered_to_stop_within_one_substep_of_a_stop() {
     let stopped_at = stopped_at.expect("the parked tank stopped the machine");
     let ordered_off_at = ordered_off_at.expect("the machine was never ordered to stand");
     // **The decide grid, so that the 250 ms reading cannot be a coincidence.** A
-    // unit's ticks are at `id % decide_ms` and every `decide_ms` after it
+    // unit's ticks are at its stagger — `stagger_ms(seed, id, decide_ms)` since
+    // 16b cut U.1, `id % decide_ms` before it — and every `decide_ms` after it
     // (`Arena::schedule_reflex_tick`), so this is exactly the arena time at which
     // `follow` could have ordered the same speed on its own.
-    let grid = |at: i64| (at - i64::from(RED.0) % 1_000).rem_euclid(1_000);
+    let grid = |at: i64| (at - stagger_ms(SEED, RED, 1_000)).rem_euclid(1_000);
     println!(
         "e3_b44: stopped at {stopped_at} ms, ordered off at {ordered_off_at} ms, \
          {} ms past that pulse's decide tick, {intents_on_the_order} intents on the pulse",
@@ -8134,7 +8268,8 @@ fn m2_next_tick(arena: &Arena) -> i64 {
 }
 
 /// **A machine's actions happen at its tick** (16b cut M.2, 16c `T-02`). `RED`'s
-/// ticks are at `4 + 500·k` — never a substep boundary on the 250 ms grid — and
+/// ticks are at `482 + 500·k` (`stagger_ms(2_350, RED, 500)` since 16b cut U.1;
+/// `4 + 500·k` before it) — never a substep boundary on the 250 ms grid — and
 /// the tick runs inside the substep after arena time was advanced to that
 /// substep's end. Its `STARTUP`, its `fired` line, the round's flight and the
 /// cycle are all read from the tick's own millisecond, not from the boundary:
@@ -8145,7 +8280,8 @@ fn m2_a_machines_startup_and_shot_are_stamped_at_its_tick() {
     let mut arena = m2_duel();
     let mut bytes: Vec<u8> = Vec::new();
     let decide = i64::from(reflex_cfg().decide_ms);
-    let stagger = i64::from(RED.0) % decide;
+    // 16b cut U.1: the seeded stagger, where it was `RED.0 % decide`.
+    let stagger = stagger_ms(SEED, RED, decide);
     assert_ne!(
         stagger % 250,
         0,
@@ -8160,6 +8296,11 @@ fn m2_a_machines_startup_and_shot_are_stamped_at_its_tick() {
         });
     }
     let fired = fired.expect("the machine fired");
+    // 16b cut U.1: the tick is 18 ms before a 500 ms boundary now, so the round
+    // it fired lands in the next half second and not in the pulse that fired
+    // it; one more pulse lets it arrive.
+    let until = arena.now_ms + 500;
+    run(&mut arena, until, &mut bytes);
     let log = events(&mut arena, &mut bytes);
 
     // The startup at the first tick, and its completion `startup_ms` after it.
@@ -8215,8 +8356,10 @@ fn m2_a_machines_startup_and_shot_are_stamped_at_its_tick() {
 }
 
 /// **The planner reads the tick's clock** (16b cut M.2, 16c `T-02`; review F10).
-/// A cannon that comes ready a hundred milliseconds after a tick — between the
-/// tick and the end of the substep it runs in — is not fired on that tick: the
+/// A cannon that comes ready after a tick and before the end of the substep it
+/// runs in — halfway between them; it was a hundred milliseconds after the tick
+/// until 16b cut U.1 moved `RED`'s tick to 18 ms before a boundary — is not
+/// fired on that tick: the
 /// planner and the resolver both read the tick's millisecond, so the machine
 /// neither plans a shot the resolver would refuse `Cycling` nor takes one early.
 ///
@@ -8261,8 +8404,8 @@ fn m2_a_weapon_ready_between_the_tick_and_the_substep_end_waits_for_the_next_tic
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage));
     let tick = m2_next_tick(&arena);
     let substep_end = tick - tick.rem_euclid(250) + 250;
-    let ready = tick + 100;
-    assert!(ready < substep_end, "the fixture's premise");
+    let ready = tick + (substep_end - tick) / 2;
+    assert!(tick < ready && ready < substep_end, "the fixture's premise");
     // The cannon comes ready between the tick and the substep's end; the
     // coaxial is ready already.
     if let Some(unit) = arena.unit_mut(RED) {

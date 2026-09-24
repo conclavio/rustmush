@@ -435,7 +435,8 @@ fn warm(arena: &mut Arena, bytes: &mut Vec<u8>) -> i64 {
         bytes,
     );
     // One second of arena time: `match.startup_ms` is 500 and the first pass of each
-    // unit is at `id % sensors.pass_ms`, so both are behind us.
+    // unit is at its stagger inside `sensors.pass_ms` (`stagger_ms`, 16b cut U.1),
+    // so both are behind us.
     while arena.now_ms < 1_000 {
         wall += 500;
         pulse(arena, wall, &[], bytes);

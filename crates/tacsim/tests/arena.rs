@@ -676,6 +676,187 @@ fn one_scripted_log_at_three_cadences_is_one_event_list_and_one_hash_sequence() 
 }
 
 // ---------------------------------------------------------------------------
+// (a1) the task's own wake rule: 16b cut U.1 (16c `T-22`, Q25)
+// ---------------------------------------------------------------------------
+
+/// **The fourth driver: the loop the task runs** (16b cut U.1). The three
+/// drivers above step at a fixed cadence; production steps at
+/// [`tacsim::arena::step::StepOutput::next_due_ms`], which since this cut is
+/// the earlier of the next period multiple and the first substep boundary at or
+/// after the next due event, in absolute arena time. This driver does exactly
+/// that — `wall = out.next_due_ms` after every pulse, the opening pulse at
+/// `wall = 0` — with the tempo pinned `Quiet` and the `Quiet` period set to
+/// `period_ms`, and delivers each beat at the first wake at or after its `t_ms`,
+/// which is production's semantics and, every beat being a multiple of 5,000 ms
+/// and the period term absolute, a wake exactly on the beat.
+///
+/// `Quiet` and not the tempo each period belongs to: the state hash folds the
+/// tempo byte, so an `Alert` or `Engaged` run could never hash-equal the
+/// `Quiet` fixed-cadence replay it is compared with. The period is changed on
+/// the arena's own frozen `arena_cfg.tempo.quiet_ms`, which `next_due_ms`
+/// reads, before the opening pulse.
+///
+/// Answers the replay and every arena millisecond it pulsed at after the
+/// opening pulse.
+fn replay_as_the_task(
+    arena: &mut Arena,
+    period_ms: u32,
+    until_ms: i64,
+    script: &[Beat],
+) -> (Replay, Vec<i64>) {
+    arena.arena_cfg.tempo.quiet_ms = period_ms;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut wall = 0_i64;
+    let mut next = 0_usize;
+    let mut pulses = 0_u32;
+    let mut substeps = 0_u32;
+    let mut told: Vec<String> = Vec::new();
+    let mut woke_at: Vec<i64> = Vec::new();
+    loop {
+        arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+        let mut controls: Vec<Control> = Vec::new();
+        let mut intents: Vec<Intent> = Vec::new();
+        while let Some(beat) = script.get(next) {
+            if beat.t_ms > arena.now_ms {
+                break;
+            }
+            controls.extend(beat.controls.iter().copied());
+            intents.extend(beat.intents.iter().cloned());
+            if let Some(stop) = beat.stop {
+                arena.stop(stop);
+            }
+            next += 1;
+        }
+        if pulses > 0 {
+            woke_at.push(arena.now_ms);
+        }
+        let out = arena.step(wall, &controls, &intents);
+        absorb(&out, &mut bytes);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        pulses += 1;
+        substeps += out.substeps;
+        told.extend(heard(&out.frames, MOVER_PILOT));
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        assert!(
+            out.next_due_ms > wall,
+            "the task was asked to wake in the past"
+        );
+        wall = out.next_due_ms;
+    }
+    arena.ledger.flush();
+    for chunk in arena.ledger.take_chunks() {
+        bytes.extend_from_slice(&chunk.bytes);
+    }
+    let replay = Replay {
+        events: lines(&bytes),
+        hashes,
+        finals: arena
+            .units
+            .iter()
+            .map(|unit| {
+                (
+                    unit.id,
+                    unit.pose.x_cm,
+                    unit.pose.y_cm,
+                    unit.pose.z_cm,
+                    unit.pose.heading_mdeg,
+                    unit.speed_cms,
+                    unit.blocked,
+                    unit.linkdead,
+                )
+            })
+            .collect(),
+        pulses,
+        substeps,
+        told,
+    };
+    (replay, woke_at)
+}
+
+/// **16b cut U.1's mandatory cross-tempo test** (16b §11; doc 16 §3.1 "Rate
+/// independence", D-16-2): the (a) script driven the way the task drives it,
+/// waking at `next_due_ms` with the `Quiet` period at 5,000, 1,000 and 500 ms,
+/// is one event list, one per-substep hash sequence, one set of finals and one
+/// list of notices — and all three are the fixed-cadence replay's at 5,000 ms.
+/// Every wake after the opening pulse is on the substep lattice.
+#[test]
+fn the_task_s_own_wakes_at_three_periods_are_the_fixed_cadence_replay() {
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut fixed_arena = scripted_arena();
+    let fixed = replay(&mut fixed_arena, 5_000, 60_000, &script(), &quiet);
+    assert_eq!(fixed.count("\"blocked\""), 2, "the fixed replay is (a)'s");
+    let substep = i64::from(tacsim::arena::clock::substep_ms(
+        &fixed_arena.arena_cfg.tempo,
+        fixed_arena.cell_cm(),
+        fixed_arena.max_speed_cms(),
+    ));
+    assert_eq!(substep, 250, "the fixture's lattice");
+    let mut pulse_counts: Vec<u32> = Vec::new();
+    for period in [5_000_u32, 1_000, 500] {
+        let mut arena = scripted_arena();
+        let (run, woke_at) = replay_as_the_task(&mut arena, period, 60_000, &script());
+        assert_eq!(
+            arena.now_ms, 60_000,
+            "period {period} ran to a different time"
+        );
+        assert!(
+            arena.unit(MOVER).is_some_and(|unit| unit.linkdead),
+            "the scripted control did not reach the arena at a {period} ms period"
+        );
+        // Every wake is a lattice point: the task never ends a pulse off it.
+        let off: Vec<i64> = woke_at
+            .iter()
+            .copied()
+            .filter(|now| now % substep != 0)
+            .collect();
+        assert!(
+            off.is_empty(),
+            "the task woke off the {substep} ms lattice at a {period} ms period: {off:?}"
+        );
+        // And the period term is absolute: every multiple of it is a wake.
+        for multiple in (1..60_000 / i64::from(period)).map(|k| k * i64::from(period)) {
+            assert!(
+                woke_at.contains(&multiple),
+                "no wake at {multiple}, a multiple of the {period} ms period"
+            );
+        }
+        assert_eq!(
+            run.events,
+            fixed.events,
+            "the event list differs at a {period} ms period: {:?} against {:?}",
+            run.kinds(),
+            fixed.kinds()
+        );
+        assert_eq!(
+            run.hashes,
+            fixed.hashes,
+            "the per-substep hash sequence differs at a {period} ms period ({} against {})",
+            run.hashes.len(),
+            fixed.hashes.len()
+        );
+        assert_eq!(
+            run.finals, fixed.finals,
+            "the final state differs at a {period} ms period"
+        );
+        assert_eq!(
+            run.told, fixed.told,
+            "the pilot was told something different at a {period} ms period"
+        );
+        pulse_counts.push(run.pulses);
+    }
+    // The drivers really were different: the task's wakes are not the fixed
+    // cadence's pulses.
+    assert!(
+        pulse_counts.iter().all(|pulses| *pulses != fixed.pulses),
+        "a task driver ran the fixed replay's pulses: {pulse_counts:?} against {}",
+        fixed.pulses
+    );
+}
+
+// ---------------------------------------------------------------------------
 // (a2) a released seat mid-run: 16b cut F.1
 // ---------------------------------------------------------------------------
 
@@ -1976,7 +2157,8 @@ fn one_scripted_approach_at_three_cadences_is_one_detect_classify_lose_sequence(
             ],
             &MatchConfig::default(),
         );
-        // Both passes are scheduled at `id % pass_ms`, so at 4 ms and 9 ms.
+        // Both passes are scheduled at their stagger (`stagger_ms(seed, id,
+        // pass_ms)` since 16b cut U.1; it was `id % pass_ms`), one a unit.
         assert_eq!(
             arena
                 .due

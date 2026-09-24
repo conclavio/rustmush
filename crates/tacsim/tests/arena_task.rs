@@ -79,8 +79,9 @@ use tokio::task::JoinHandle;
 /// **16b cut M.1** adds its own rows (`2_356` onwards). None of its proofs arms
 /// a hook, but a row each keeps one match per proof and the rule in one place.
 ///
-/// **16b cut M.2** adds `2_398` and `2_399` for the same reason.
-const SEEDS: [(u64, &str); 19] = [
+/// **16b cut M.2** adds `2_398` and `2_399` for the same reason, and **16b cut
+/// U.1** `2_400` and `2_401`.
+const SEEDS: [(u64, &str); 21] = [
     (2_350, "the round trip"),
     (2_351, "the injected panic"),
     (2_352, "the stall"),
@@ -109,6 +110,8 @@ const SEEDS: [(u64, &str); 19] = [
         2_399,
         "M.2: a pilot's STARTUP through the task, 250 ms periods",
     ),
+    (2_400, "U.1: a two-tank match wakes on the substep lattice"),
+    (2_401, "U.1: a late wake does not carry its lateness"),
 ];
 
 /// **16b cut AA.3**: the stall hook is one global seed slot, and arming it
@@ -920,8 +923,14 @@ fn start_unseated(
 }
 
 /// A sensors block whose pass cadence is past any window a test here opens: the
-/// pass is a due event for **every** unit, staggered by object id, so on the
-/// defaults it — and not the tempo — is what decides the pulse rate at `Quiet`.
+/// pass is a due event for **every** unit, at its seeded offset inside the
+/// cadence (`tacsim::arena::rng::stagger_ms`, 16b cut U.1), so on the defaults
+/// it — and not the tempo — is what decides the wakes at `Quiet`.
+///
+/// "Past any window" is **by seed, not by construction** since U.1: the first
+/// pass falls anywhere in the 600 s, and a unit whose offset landed inside a
+/// test's ten or so seconds would add wakes. The D.1 idle-clock test asserts it
+/// of its seeds before it starts; a new use of this block has to do the same.
 fn no_passes() -> SensorsConfig {
     SensorsConfig {
         pass_ms: 600_000,
@@ -934,8 +943,10 @@ fn no_passes() -> SensorsConfig {
 ///
 /// The two recurring due events are pushed past any window a test here opens, so
 /// that `next_due_ms` really is the period: the `position_summary` cadence and
-/// the reflex controller's `decide_ms`, which on this fixture's ids falls every
-/// 1,000 ms and would otherwise be what decides the pulse rate at `Quiet`.
+/// the reflex controller's `decide_ms`, which falls every 1,000 ms on the
+/// defaults and would otherwise be what decides the wakes at `Quiet`. As with
+/// [`no_passes`], the reflex tick's first offset is seeded inside the 600 s
+/// (16b cut U.1), so "past the window" holds on the seeds these tests use.
 fn arena_at(period_ms: u32) -> ArenaConfig {
     let mut cfg = ArenaConfig::default();
     cfg.tempo.quiet_ms = period_ms;
@@ -960,11 +971,11 @@ fn clocks(messages: &[ArenaOut]) -> Vec<(usize, i64)> {
 /// **`B-29`: an empty `Frames` carries the arena's clock, and is sent when the
 /// arena SECOND has moved** (16b cut D.1).
 ///
-/// **This pins the clause, not the shipped cadence.** The clause is only visible
-/// where a pulse is shorter than a second, and on the shipped config no pulse is:
-/// the per-unit sensor pass and the reflex decision are both due every 1,000 ms
-/// and `next_due_ms` is the earlier of a due event and the period, so the shipped
-/// pulse rate is about 1,000 ms at all three tempos. [`no_passes`] and
+/// **This pins the clause, not the shipped cadence.** On the shipped config the
+/// per-unit sensor pass and the reflex decision are both due every 1,000 ms, at
+/// seeded offsets, and `next_due_ms` wakes the task at the first substep boundary
+/// at or after each (16b cut U.1), so the shipped wakes are wherever those
+/// offsets round up to and not a period at all. [`no_passes`] and
 /// [`arena_at`] push those events out past the window so that the period really
 /// is the pulse rate, which is the only way to make a 500 ms pulse and watch the
 /// clause suppress every other one. The gap between two messages is what is
@@ -985,6 +996,17 @@ async fn d1_an_idle_match_publishes_its_clock_once_an_arena_second() {
     for (period_ms, gap_ms) in [(500_u32, 1_000_i64), (1_000, 1_000), (5_000, 5_000)] {
         // A seed of its own per cadence, and none of the seeds in `SEEDS`.
         let seed = 2_360 + u64::from(period_ms);
+        // 16b cut U.1: the pushed-out pass and tick land at a seeded offset
+        // inside their 600 s cadence, so "past the window" is this seed's to
+        // hold, and it is asserted rather than assumed.
+        for unit in [RED, BLUE] {
+            let offset = tacsim::arena::rng::stagger_ms(seed, unit, 600_000);
+            assert!(
+                offset > 10_050,
+                "seed {seed}: {unit:?}'s first pass and tick fall at {offset} ms, inside the \
+                 window"
+            );
+        }
         let (_handle, mut rx) = start_unseated(seed, &arena_at(period_ms), &no_passes());
         let messages = collect(&mut rx, Duration::from_millis(10_050)).await;
         let clocks = clocks(&messages);
@@ -1030,9 +1052,12 @@ async fn d1_an_idle_match_publishes_its_clock_once_an_arena_second() {
 /// way; this one changes nothing at all. On the defaults the per-unit sensor pass
 /// (`sensors.pass_ms`, 1,000 ms) and the reflex decision (`reflex.decide_ms`,
 /// 1,000 ms) are both due more often than `tempo.quiet_ms`, and `next_due_ms` is
-/// the earlier of a due event and the period — so the pulse rate is about a
-/// second whatever tempo the arena picks, and the board's staleness bound is one
-/// arena second and not one tempo period.
+/// the earlier of the next period multiple and the first substep boundary at or
+/// after the next due event (16b cut U.1) — so every arena second has a wake
+/// whatever tempo the arena picks, and the board's staleness bound is about one
+/// arena second and not one tempo period: one second plus the lattice point the
+/// earliest pass rounds up to, at most `2,000 − substep` ms (the
+/// [`tacsim::arena_task::ArenaOut::Frames`] doc has the arithmetic).
 ///
 /// That is the figure the seam is sized by and the figure
 /// [`tacsim::arena_task::ArenaOut::Frames`]' own doc states, so it is pinned on
@@ -1062,19 +1087,42 @@ async fn d1_the_shipped_config_publishes_its_clock_about_once_an_arena_second() 
         published,
         "two clocks in one arena second on the shipped config: {clocks:?}"
     );
-    // And never a second and a bit apart, which is the staleness bound: a 5,000
-    // ms gap here would mean the pulse rate really was `tempo.quiet_ms` and the
-    // seam's own doc was over-stating the board's freshness by five times.
+    // And never further apart than the staleness bound: a 5,000 ms gap here
+    // would mean the pulse rate really was `tempo.quiet_ms` and the seam's own
+    // doc was over-stating the board's freshness by five times.
+    //
+    // **16b cut U.1**: the bound was a second and 50 ms. The task now wakes on
+    // the substep lattice (`Arena::next_due_ms`) and the passes fall at seeded
+    // offsets, so a second that no `Quiet` period multiple opens opens at the
+    // earliest pass offset rounded up to the lattice (an offset past the last
+    // lattice point rounds up to the next second's start). The gap after a
+    // period multiple is one second plus that; it is computed off the fixture,
+    // held to the general `2,000 − substep` on top, and is **reached** — the
+    // five-second boundary is inside the window — so the rule is pinned and
+    // not this seed's luck.
+    let substep = fixture_substep();
+    let earliest = tacsim::arena::rng::stagger_ms(2_377, RED, 1_000)
+        .min(tacsim::arena::rng::stagger_ms(2_377, BLUE, 1_000));
+    let opens_at = (earliest + substep - 1) / substep * substep % 1_000;
+    let bound = 1_000 + opens_at;
+    assert!(bound <= 2_000 - substep, "{bound}");
+    let mut widest = 0_i64;
     for pair in clocks.windows(2) {
         let [(_, first), (_, next)] = pair else {
             continue;
         };
+        widest = widest.max(next - first);
         assert!(
-            next - first <= 1_050,
-            "the shipped board went {} ms without a clock: {clocks:?}",
+            next - first <= bound,
+            "the shipped board went {} ms without a clock, past {bound}: {clocks:?}",
             next - first
         );
     }
+    assert_eq!(
+        widest, bound,
+        "the gap after the Quiet period multiple was not one second plus the first pass's \
+         lattice point: {clocks:?}"
+    );
 }
 
 /// **A pulse with a frame in it is sent whatever the second says** (16b cut
@@ -2061,16 +2109,16 @@ async fn m2_startup_through_the_task(seed: u64, period_ms: u32, startup_ms: u32)
 /// **`T-03`: a discrete action given by a pilot resolves at the end of the pulse
 /// that accepted it** (16b cut M.2; doc 16 §11's D-16-2 as amended) — asserted on
 /// the task, where arena time is elapsed wall time and a pulse ends at the
-/// earlier of its period and the next due event, at a 50 ms period and at a
-/// 250 ms one.
+/// earlier of the next period multiple and the first substep boundary at or after
+/// the next due event (16b cut U.1), at a 50 ms period and at a 250 ms one.
 ///
 /// The `startup` line's millisecond IS the `now_ms` of the first `Frames` whose
 /// frame reads `Starting` — the accepting pulse's end — and it is later than the
 /// `Frames` the world held when it offered the order. The completion is a due
 /// event, so `power_online` is exactly `startup_ms` after it whatever the
 /// period. No value and no modulus is asserted: a production pulse ends where
-/// the wall and the due events put it, so `t_ms % period` does not hold and is
-/// not supposed to.
+/// the wall and the lattice put it, so `t_ms % period` does not hold and is not
+/// supposed to.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn m2_a_pilots_startup_resolves_at_the_end_of_the_pulse_that_accepted_it() {
     const STARTUP_MS: u32 = 300;
@@ -2093,4 +2141,129 @@ async fn m2_a_pilots_startup_resolves_at_the_end_of_the_pulse_that_accepted_it()
             "at a {period_ms} ms period the completion is not at its own millisecond"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut U.1 (16c `T-22`, Q25) — the task wakes on the substep lattice, from
+// its base
+// ---------------------------------------------------------------------------
+
+/// The substep the two fixture tanks cut: 1,000 cm/s on 1,000 cm cells of
+/// ground at cost 100, so the 250 ms cap.
+fn fixture_substep() -> i64 {
+    i64::from(tacsim::arena::clock::substep_ms(
+        &ArenaConfig::default().tempo,
+        CELL_CM,
+        1_000,
+    ))
+}
+
+/// **Every wake is a lattice point, and there are at most `1000 / substep` of
+/// them an arena second** (16b cut U.1). A two-tank match at `Quiet` on the
+/// shipped config, `RED` started and driven north so that its pilot's view
+/// changes on every pulse and every wake therefore publishes a `Frames`: each
+/// message's `now_ms` is a multiple of the substep, no arena second carries more
+/// than four, and more than one message lands in some second — the proof that
+/// the messages are the wakes and not the once-a-second clock.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn u1_a_two_tank_match_wakes_on_the_lattice_at_most_once_a_substep() {
+    let seed = SEEDS[19].0;
+    let match_cfg = MatchConfig {
+        startup_ms: 500,
+        ..MatchConfig::default()
+    };
+    let (handle, _join, mut rx) = start_with_egress(seed, &ArenaConfig::default(), &match_cfg, 256);
+    handle
+        .offer(order(RED, IntentKind::Startup, 1))
+        .expect("the inbox takes the startup");
+    let mut messages = collect(&mut rx, Duration::from_millis(2_000)).await;
+    handle
+        .offer(order(RED, IntentKind::Speed { cms: 1_000 }, 2))
+        .expect("the inbox takes the speed");
+    messages.extend(collect(&mut rx, Duration::from_millis(6_000)).await);
+    let substep = fixture_substep();
+    assert_eq!(substep, 250, "the fixture's lattice");
+    let clocks = clocks(&messages);
+    let off: Vec<i64> = clocks
+        .iter()
+        .map(|(_, now_ms)| *now_ms)
+        .filter(|now_ms| now_ms % substep != 0)
+        .collect();
+    assert!(
+        off.is_empty(),
+        "a wake off the lattice: {off:?} of {clocks:?}"
+    );
+    let mut per_second: BTreeMap<i64, u32> = BTreeMap::new();
+    for (_, now_ms) in &clocks {
+        *per_second.entry(now_ms / 1_000).or_default() += 1;
+    }
+    let most = per_second.values().copied().max().unwrap_or(0);
+    assert!(
+        i64::from(most) <= 1_000 / substep,
+        "{most} wakes in one arena second, past 1,000 / {substep}: {clocks:?}"
+    );
+    assert!(
+        most > 1,
+        "never more than one message a second, so these were the clock and not the \
+         wakes: {clocks:?}"
+    );
+    // At `Quiet` throughout: nobody sees anybody, so nothing raised the tempo.
+    assert!(
+        !events(&messages)
+            .iter()
+            .any(|event| event.kind.as_str() == "tempo"),
+        "the match left Quiet"
+    );
+}
+
+/// **A late wake does not carry its lateness into the next deadline** (16b cut
+/// U.1): an idle match whose only wake is the 1,000 ms period, woken three
+/// milliseconds late by advancing the paused clock past its deadline, pulses at
+/// 1,003 and then at 2,000 — the base plus the next lattice point — and not at
+/// 2,003. Before the cut the next wake was measured from the late one, and every
+/// late wake moved the rest of the match off the lattice for good.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn u1_a_late_wake_still_asks_for_the_next_lattice_point_from_the_base() {
+    let seed = SEEDS[20].0;
+    // The period is the only wake only while the pushed-out pass and tick land
+    // past the window (see `no_passes`).
+    for unit in [RED, BLUE] {
+        assert!(tacsim::arena::rng::stagger_ms(seed, unit, 600_000) > 2_000);
+    }
+    let (_handle, mut rx) = start_unseated(seed, &arena_at(1_000), &no_passes());
+    let next_clock =
+        |message: Option<ArenaOut>| -> Option<i64> { message.as_ref().and_then(clock_of) };
+    // The opening pulse's clock, at the base.
+    let opening = loop {
+        let message = rx.recv().await;
+        assert!(message.is_some(), "the egress closed");
+        if let Some(clock) = next_clock(message) {
+            break clock;
+        }
+    };
+    assert_eq!(opening, 0);
+    // The deadline is the base plus 1,000; the clock jumps three past it.
+    tokio::time::advance(Duration::from_millis(1_003)).await;
+    let late = loop {
+        let message = rx.recv().await;
+        assert!(message.is_some(), "the egress closed");
+        if let Some(clock) = next_clock(message) {
+            break clock;
+        }
+    };
+    assert_eq!(
+        late, 1_003,
+        "the wake was not late: the fixture proves nothing"
+    );
+    let back = loop {
+        let message = rx.recv().await;
+        assert!(message.is_some(), "the egress closed");
+        if let Some(clock) = next_clock(message) {
+            break clock;
+        }
+    };
+    assert_eq!(
+        back, 2_000,
+        "the late wake's three milliseconds were carried into the next deadline"
+    );
 }

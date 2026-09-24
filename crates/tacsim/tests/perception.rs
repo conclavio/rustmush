@@ -48,7 +48,7 @@ use tacsim::arena::perception::{
     FrameNotice, Notice, NoticeKind, PerceptionCounters, SensorProfile, SignatureFactor,
     bearing_mdeg,
 };
-use tacsim::arena::rng::{DrawLabel, draw, draw_contact_id};
+use tacsim::arena::rng::{DrawLabel, draw, draw_contact_id, stagger_ms};
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, CustodyOut, CustodyUnit,
     Designator, DueKind, EntryZone, Pilot, SeenPose, Team, TerrainCell, TrackedRules,
@@ -802,9 +802,22 @@ fn the_pass_runs_once_per_cadence_per_unit_staggered_by_unit_id() {
         ],
         &[],
     );
-    // Doc 16 §3.6: staggered by unit id. The offsets are the object numbers modulo
-    // `sensors.pass_ms`, so 4 ms and 9 ms, and exactly one pass per unit is ever
-    // scheduled at a time.
+    // Doc 16 §3.6: staggered by unit id. **16b cut U.1** (16c `T-25`): the
+    // offsets are `stagger_ms(seed, id, pass_ms)` — the object number mixed with
+    // the match seed, where they were the number modulo `sensors.pass_ms` (4 ms
+    // and 9 ms) — so `MARK`'s pass at 189 ms comes before `EYE`'s at 482 at seed
+    // 2,350; and exactly one pass per unit is ever scheduled at a time.
+    let cadence = i64::from(arena.sensors_cfg.pass_ms);
+    let mut staggered = vec![
+        (stagger_ms(arena.seed, EYE, cadence), EYE),
+        (stagger_ms(arena.seed, MARK, cadence), MARK),
+    ];
+    staggered.sort_unstable();
+    assert_ne!(
+        staggered.first().map(|(t_ms, _)| *t_ms),
+        staggered.get(1).map(|(t_ms, _)| *t_ms),
+        "the precondition: two passes, at two milliseconds"
+    );
     let scheduled: Vec<(i64, ObjId)> = arena
         .due
         .iter()
@@ -813,7 +826,7 @@ fn the_pass_runs_once_per_cadence_per_unit_staggered_by_unit_id() {
             _ => None,
         })
         .collect();
-    assert_eq!(scheduled, vec![(4, EYE), (9, MARK)]);
+    assert_eq!(scheduled, staggered);
 
     // Ten seconds of arena time, one pulse a second: ten passes each and not one
     // more, whatever the substep boundary the event landed on.
@@ -1009,8 +1022,9 @@ fn a_contact_id_is_the_pair_and_the_seed_and_resolves_for_nobody_else() {
 // ---------------------------------------------------------------------------
 
 /// One wall millisecond per arena millisecond, a pulse a second: the cadence that
-/// puts each of `EYE`'s passes (`4`, `1_004`, `2_004`, …) in a pulse of its own, so
-/// a test can say *which pulse* a notice arrived in.
+/// puts each of `EYE`'s passes (its stagger, then a second after each; 482,
+/// 1,482, 2,482, … at seed 2,350 since 16b cut U.1) in a pulse of its own, so a
+/// test can say *which pulse* a notice arrived in.
 const PULSE_MS: i64 = 1_000;
 
 /// Step the arena to `wall_ms`, spool whatever ledger chunks closed onto `tape`,
@@ -1057,6 +1071,19 @@ fn told(frame: &Frame) -> Vec<&'static str> {
         .collect()
 }
 
+/// `EYE`'s own pass offset at the fixture's seed and the default one-second
+/// cadence (16b cut U.1: `stagger_ms`, 482 ms), asserted strictly inside the
+/// first pulse so every story below that is told in whole-second pulses still
+/// puts each pass in a pulse of its own.
+fn eye_offset(arena: &Arena) -> i64 {
+    let offset = stagger_ms(arena.seed, EYE, i64::from(arena.sensors_cfg.pass_ms));
+    assert!(
+        offset > 0 && offset < PULSE_MS,
+        "the precondition: EYE's pass is inside its pulse, not on its edge ({offset})"
+    );
+    offset
+}
+
 /// A two-tank arena with `EYE` looking and `MARK` thirty cells east, opened and
 /// stepped past its reference pulse.
 fn watching() -> Arena {
@@ -1099,7 +1126,11 @@ fn the_frame_renders_a_contact_as_a_designator_a_band_and_two_bearings() {
     // limit is 60,000 cm and 30,000 cm is the middle third.
     assert_eq!(row.band.as_str(), "effective");
     assert_eq!(row.cell, Some((40, 10)), "the marker's cell");
-    assert_eq!(row.age_ms, arena.now_ms - 4, "held since its first pass");
+    assert_eq!(
+        row.age_ms,
+        arena.now_ms - eye_offset(&arena),
+        "held since its first pass"
+    );
     // **16b cut Q.1**: the line names the designator where it used to name the
     // sixteen digits, and the digits are not in it at all.
     assert!(
@@ -1287,8 +1318,8 @@ fn a_loss_is_announced_one_pass_late_and_the_ledger_records_it_at_once() {
     assert_eq!(told(&frame), vec!["acquired"]);
     place(&mut arena, MARK, away(), 0);
 
-    // The pass at 3,004 expires the contact the pass at 4 minted: three passes at
-    // the shipped `lost_after_passes`.
+    // The pass at 3,000 and `EYE`'s offset expires the contact the pass at the
+    // offset minted: three passes at the shipped `lost_after_passes`.
     let mut words: Vec<(i64, &'static str)> = Vec::new();
     for n in 2..=6 {
         if let Some(frame) = pulse(&mut arena, PULSE_MS * n, &mut tape) {
@@ -1307,7 +1338,7 @@ fn a_loss_is_announced_one_pass_late_and_the_ledger_records_it_at_once() {
     // the pilot was told.
     assert_eq!(
         event_times(&mut arena, &mut tape, "lost"),
-        vec![3_004],
+        vec![3_000 + eye_offset(&arena)],
         "the ledger's own timestamp"
     );
 }
@@ -1320,8 +1351,9 @@ fn a_contact_that_flickers_costs_the_pilot_no_lines_at_all() {
     assert_eq!(told(&frame), vec!["acquired"]);
     place(&mut arena, MARK, away(), 0);
 
-    // Out of reach through the pass that expires the contact (3,004) — and back
-    // before the next one (4,004), which is the window the rule names.
+    // Out of reach through the pass that expires the contact (3,000 and `EYE`'s
+    // offset) — and back before the next one a second later, which is the window
+    // the rule names.
     let mut words: Vec<&'static str> = Vec::new();
     for n in 2..=7 {
         if arena.now_ms >= 3_500 {
@@ -1338,10 +1370,14 @@ fn a_contact_that_flickers_costs_the_pilot_no_lines_at_all() {
     // It is held again, under the same id, and the ledger has both halves.
     let id = draw_contact_id(arena.seed, EYE, MARK);
     assert!(arena.contacts.resolve(EYE, id).is_some());
-    assert_eq!(event_times(&mut arena, &mut tape, "lost"), vec![3_004]);
+    let offset = eye_offset(&arena);
+    assert_eq!(
+        event_times(&mut arena, &mut tape, "lost"),
+        vec![3_000 + offset]
+    );
     assert_eq!(
         event_times(&mut arena, &mut tape, "detected"),
-        vec![4, 4_004],
+        vec![offset, 4_000 + offset],
         "the record is complete even though the pilot heard nothing about the flicker"
     );
 }
@@ -2541,7 +2577,35 @@ fn cadenced(cadence_ms: i64, until_ms: i64) -> Cadenced {
 
 /// The driver itself (16b cut D.4 split it out of [`cadenced`], which is now one
 /// fixture's call of it).
-fn replayed(mut arena: Arena, script: &[Beat], cadence_ms: i64, until_ms: i64) -> Cadenced {
+fn replayed(arena: Arena, script: &[Beat], cadence_ms: i64, until_ms: i64) -> Cadenced {
+    replayed_driven(arena, script, Drive::Every(cadence_ms), until_ms).0
+}
+
+/// How [`replayed_driven`] advances the wall (16b cut U.1).
+#[derive(Clone, Copy, Debug)]
+enum Drive {
+    /// A fixed cadence: `wall += cadence` after every pulse.
+    Every(i64),
+    /// The task's own wake rule: `wall = out.next_due_ms`, with the `Quiet`
+    /// period set to this figure on the arena's frozen tempo block first. Every
+    /// beat is a multiple of 5,000 ms and the period term is absolute, so every
+    /// beat is a wake at 5,000, 1,000 and 500 alike, and so is every checkpoint.
+    Task(u32),
+}
+
+/// [`replayed`] under `drive`; answers the replay and every arena millisecond a
+/// pulse after the opening one ended at.
+fn replayed_driven(
+    mut arena: Arena,
+    script: &[Beat],
+    drive: Drive,
+    until_ms: i64,
+) -> (Cadenced, Vec<i64>) {
+    if let Drive::Task(period_ms) = drive {
+        arena.arena_cfg.tempo.quiet_ms = period_ms;
+    }
+    let mut next_due = 0_i64;
+    let mut woke_at: Vec<i64> = Vec::new();
     let mut tape: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
     let mut notices: BTreeMap<ObjId, Vec<String>> = BTreeMap::new();
@@ -2585,12 +2649,25 @@ fn replayed(mut arena: Arena, script: &[Beat], cadence_ms: i64, until_ms: i64) -
             }
             hashes.extend(arena.substep_hashes.iter().copied());
             pulses = pulses.saturating_add(1);
+            next_due = out.next_due_ms;
         }
         if arena.now_ms >= until_ms {
             break;
         }
-        wall += cadence_ms;
+        wall = match drive {
+            Drive::Every(cadence_ms) => wall + cadence_ms,
+            // The opening pulse is at wall nought, as the task's is.
+            Drive::Task(_) if pulses == 0 => 0,
+            Drive::Task(_) => {
+                assert!(next_due > wall, "the task was asked to wake in the past");
+                next_due
+            }
+        };
         let out = arena.step(wall, &[] as &[Control], &[]);
+        next_due = out.next_due_ms;
+        if pulses > 0 {
+            woke_at.push(arena.now_ms);
+        }
         for chunk in &out.ledger_chunks {
             tape.extend_from_slice(&chunk.bytes);
         }
@@ -2625,7 +2702,7 @@ fn replayed(mut arena: Arena, script: &[Beat], cadence_ms: i64, until_ms: i64) -
         }
     }
     let log = events(&mut arena, &mut tape);
-    Cadenced {
+    let replay = Cadenced {
         events: log
             .iter()
             .map(|event| {
@@ -2642,6 +2719,87 @@ fn replayed(mut arena: Arena, script: &[Beat], cadence_ms: i64, until_ms: i64) -
         staged,
         columns,
         pulses,
+    };
+    (replay, woke_at)
+}
+
+/// **16b cut U.1's cross-tempo proof where the passes change things** (16b §11;
+/// doc 16 §3.1 "Rate independence", D-16-2; 16c `T-22`). The approach and the
+/// flicker of this file, driven the way the task drives them — waking only on
+/// the 250 ms substep lattice in absolute arena time, one substep a pulse
+/// wherever a pass falls, with the `Quiet` period at 5,000, 1,000 and 500 ms —
+/// against their fixed 5,000 ms replays. `EYE`'s passes are off the lattice
+/// (482 ms into each second on the approach, 2,482 into each five on the
+/// flicker, both asserted), and they detect, classify, expire and re-acquire:
+/// one event list, one per-substep hash sequence, one staged notice list and
+/// one designator column, at all three periods.
+#[test]
+fn u1_the_passes_on_the_task_s_own_wakes_are_the_fixed_cadence_replay() {
+    let approach: Vec<Beat> = designator_script()
+        .into_iter()
+        .map(|(t_ms, intents)| Beat {
+            t_ms,
+            intents,
+            places: Vec::new(),
+        })
+        .collect();
+    let flicker = flicker_replay_script();
+    type Fixture = fn() -> Arena;
+    let cases: [(&str, Fixture, &[Beat], i64, i64); 2] = [
+        ("approach", designator_arena, &approach, 35_000, 1_000),
+        ("flicker", flicker_replay_arena, &flicker, 25_000, 5_000),
+    ];
+    for (name, fixture, script, until_ms, pass_ms) in cases {
+        let offset = stagger_ms(2_350, EYE, pass_ms);
+        assert_ne!(
+            offset % 250,
+            0,
+            "the precondition: {name}'s passes are off the lattice"
+        );
+        let (fixed, _) = replayed_driven(fixture(), script, Drive::Every(5_000), until_ms);
+        let kinds: Vec<&str> = ["detected", "classified", "lost"]
+            .into_iter()
+            .filter(|want| {
+                !fixed
+                    .events
+                    .iter()
+                    .any(|(_, json, _, _)| json.contains(&format!("\"kind\":\"{want}\"")))
+            })
+            .collect();
+        assert!(kinds.is_empty(), "{name} journalled no {kinds:?}");
+        for period in [5_000_u32, 1_000, 500] {
+            let (run, woke_at) = replayed_driven(fixture(), script, Drive::Task(period), until_ms);
+            let off: Vec<i64> = woke_at
+                .iter()
+                .copied()
+                .filter(|now| now % 250 != 0)
+                .collect();
+            assert!(
+                off.is_empty(),
+                "{name}: the task woke off the lattice at a {period} ms period: {off:?}"
+            );
+            assert_ne!(
+                run.pulses, fixed.pulses,
+                "{name}: the task driver ran the fixed replay's pulses at {period} ms"
+            );
+            assert_eq!(
+                run.events, fixed.events,
+                "{name}: the events differ on the task's wakes at a {period} ms period"
+            );
+            assert_eq!(
+                run.hashes, fixed.hashes,
+                "{name}: the hashes differ on the task's wakes at a {period} ms period"
+            );
+            assert_eq!(
+                run.staged, fixed.staged,
+                "{name}: the staged notices differ on the task's wakes at a {period} ms period"
+            );
+            assert_eq!(
+                run.columns, fixed.columns,
+                "{name}: the designator column differs on the task's wakes at a {period} ms \
+                 period"
+            );
+        }
     }
 }
 
@@ -3556,10 +3714,15 @@ fn flicker_lines(
 fn a_classified_contact_that_flickers_back_to_a_number_says_so_once() {
     let mut arena = arena_of(flicker_units(), &[]);
     let _ = arena.step(0, &[] as &[Control], &[]);
+    // EYE's passes fall at its seeded offset inside each second (4 under
+    // `id % pass_ms` before 16b cut U.1), and the times below are
+    // whole seconds plus that offset; `eye_offset` holds it inside the pulse.
+    let offset = eye_offset(&arena);
 
-    // Held from the first pass and told apart at 3,004; out of reach through the
-    // pass that expires it (6,004) and back for the next one (7,004), which is
-    // the hysteresis window the flicker rule names.
+    // Held from the first pass and told apart at 3,000 + offset; out of reach
+    // through the pass that expires it (6,000 + offset) and back for the next
+    // one (7,000 + offset), which is the hysteresis window the flicker rule
+    // names.
     let (lines, _) = flicker_lines(&mut arena, 1..=12, |now| {
         if (3_500..6_500).contains(&now) {
             Some(away())
@@ -3598,15 +3761,17 @@ fn a_classified_contact_that_flickers_back_to_a_number_says_so_once() {
         "the re-acquisition was announced: {lines:?}"
     );
     // The name comes back at the SECOND classification, `classify_after_ms`
-    // after the re-detection at 7,004 — and it is the same sentence cut Q.1
-    // writes for a first classification, because that is what it is.
+    // after the re-detection at 7,000 + offset — and it is the same sentence cut
+    // Q.1 writes for a first classification, because that is what it is.
     assert_eq!(
         lines
             .iter()
             .filter(|line| *line == "Contact X2 identified: BA, blue.")
             .count(),
         2,
-        "once at 3,004 and once at 10,004: {lines:?}"
+        "once at {} and once at {}: {lines:?}",
+        3_000 + offset,
+        10_000 + offset
     );
 
     // **The old name is never an alias** (16c section 6). Between the two
@@ -3945,13 +4110,17 @@ fn a_share_renames_a_hold_this_platform_opened_and_a_mesh_arrival_is_one_line() 
 /// the arm is gated on the live row still being `Unknown` as well as on the name,
 /// and this pilot reads no regression at all.
 ///
-/// The fixture is the stagger itself: passes are scheduled at `id % pass_ms`
-/// (`Arena::schedule_first_passes`), so `MATE` (13) passes nine milliseconds
-/// after `EYE` (4) and its share lands well inside the one-pass window `EYE`'s
-/// expiry opened. That `Contact X1 lost.` is never said is the proof the window
-/// really was open when the copy arrived.
+/// The fixture is the stagger itself: passes are scheduled at
+/// `stagger_ms(seed, id, pass_ms)` (`Arena::schedule_first_passes`; `id %
+/// pass_ms` until 16b cut U.1), so this test's teammate is `#79`, picked so that
+/// it passes seven milliseconds after `EYE` (489 against 482 at seed 2,350),
+/// and its share lands well inside the one-pass window `EYE`'s expiry opened.
+/// That `Contact X1 lost.` is never said is the proof the window really was
+/// open when the copy arrived.
 #[test]
 fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
+    // 16b cut U.1: re-picked for the seeded stagger, and asserted below.
+    const MATE: ObjId = ObjId(79);
     let mut arena = arena_of(
         vec![
             // Sees eight cells and never tells a return apart on its own, so its
@@ -3983,6 +4152,14 @@ fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
             tank(MARK, Team::Blue, centre(15, 10), None),
         ],
         &[],
+    );
+    // The precondition the story is built on: `MATE` passes after `EYE`, inside
+    // the same one-second pulse.
+    let eye = eye_offset(&arena);
+    let mate = stagger_ms(arena.seed, MATE, i64::from(arena.sensors_cfg.pass_ms));
+    assert!(
+        eye < mate && mate < PULSE_MS,
+        "the precondition: MATE's pass ({mate}) is after EYE's ({eye}) in one pulse"
     );
     let _ = arena.step(0, &[] as &[Control], &[]);
     let mut tape: Vec<u8> = Vec::new();
@@ -4034,8 +4211,8 @@ fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
         ),
     );
 
-    // ---- one pulse carries both: `EYE` expires at 6,004 and the share lands at
-    // 6,013, nine milliseconds inside the thousand the window is open for.
+    // ---- one pulse carries both: `EYE` expires at 6,482 and the share lands at
+    // 6,489, seven milliseconds inside the thousand the window is open for.
     let mut after: Vec<String> = Vec::new();
     let mut staged: Vec<FrameNotice> = Vec::new();
     if let Some(frame) = pulse(&mut arena, PULSE_MS * 7, &mut tape) {
@@ -4125,6 +4302,18 @@ fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
 // therefore land at one arena millisecond at 5,000, 1,000 and 500 ms alike.
 // ---------------------------------------------------------------------------
 
+/// `EYE`'s offset on the five-second pass (16b cut U.1), asserted strictly inside
+/// the five seconds between two beats, which is what puts every one of its
+/// passes between the beats the (r) and (s) stories are told on.
+fn flicker_offset() -> i64 {
+    let offset = stagger_ms(2_350, EYE, i64::from(flicker_sensors().pass_ms));
+    assert!(
+        offset > 0 && offset < 5_000,
+        "the precondition: EYE's pass is between the beats ({offset})"
+    );
+    offset
+}
+
 /// A five-second pass and a one-pass loss band (16b cut D.4), so the whole
 /// flicker fits between two beats the three cadences agree on.
 fn flicker_sensors() -> SensorsConfig {
@@ -4157,9 +4346,11 @@ fn flicker_replay_arena() -> Arena {
     )
 }
 
-/// Out of every reach at ten seconds, back at fifteen: the pass at 10,004
-/// expires a contact last seen at 5,004, and the pass at 15,004 re-acquires it
-/// inside the one-pass hysteresis window that ends at 15,004.
+/// Out of every reach at ten seconds, back at fifteen: `EYE`'s five-second
+/// pass falls at 2,482 and every five seconds after it (16b cut U.1:
+/// `stagger_ms(2_350, EYE, 5_000)`; it was 4), so the pass at 12,482 expires a
+/// contact last seen at 7,482, and the pass at 17,482 re-acquires it inside the
+/// one-pass hysteresis window that ends at 17,482.
 fn flicker_replay_script() -> Vec<Beat> {
     vec![
         Beat {
@@ -4205,7 +4396,9 @@ fn one_scripted_flicker_at_three_cadences_is_one_list_one_hash_and_one_column() 
         ],
         "the flicker's own four lines, in order"
     );
-    // And the black box has the loss the pilot was never told about.
+    // And the black box has the loss the pilot was never told about, at the
+    // first of `EYE`'s passes after the ten-second beat.
+    let offset = flicker_offset();
     assert_eq!(
         first
             .events
@@ -4213,7 +4406,7 @@ fn one_scripted_flicker_at_three_cadences_is_one_list_one_hash_and_one_column() 
             .filter(|(_, json, _, _)| json.contains("\"kind\":\"lost\""))
             .map(|(t_ms, _, _, _)| *t_ms)
             .collect::<Vec<i64>>(),
-        vec![10_004],
+        vec![10_000 + offset],
         "the expiry is recorded at its own arena millisecond"
     );
     // The designator column really moved: `X1`, the slot name, nothing, `X1`.
@@ -4272,14 +4465,17 @@ fn one_scripted_flicker_at_three_cadences_is_one_list_one_hash_and_one_column() 
 // is one story at every cadence — and each test below compares what was
 // STAGED (`Cadenced::staged`), not what it rendered as.
 //
-// **Which of them is the regression proof.** Only the relay-604 share (a
-// return 600 ms past the deadline, inside one 1,000 ms pulse and across a
+// **Which of them is the regression proof.** Only the late relay's share (a
+// return 266 ms past the deadline, inside one 1,000 ms pulse and across a
 // 500 ms boundary) told two stories under the old sweep; the return one whole
-// pass after the deadline, at 20,004, was said lost first at every cadence
+// pass after the deadline, at 22,482, was said lost first at every cadence
 // then as now, and pins the rule rather than the fix.
 //
 // All but the last two run on the (r) fixture: a five-second pass and a
-// one-pass loss band, `MARK` lost at 10,004 and its window ending at 15,004.
+// one-pass loss band, `MARK` lost at 12,482 and its window ending at 17,482
+// (16b cut U.1's seeded stagger moved `EYE`'s pass from 4 to 2,482 of each
+// five seconds; the relays below were re-picked to keep their stories, each
+// asserted against `EYE`'s offset).
 // ---------------------------------------------------------------------------
 
 /// The kinds of every contact notice `EYE`'s pilot was staged, in order.
@@ -4340,8 +4536,8 @@ fn m2_a_return_one_pass_after_the_deadline_is_a_loss_then_a_contact_at_every_cad
             intents: Vec::new(),
             places: vec![(MARK, away())],
         },
-        // The pass at 15,004 is the deadline's and finds nothing; the one at
-        // 20,004 finds it.
+        // The pass at 17,482 is the deadline's and finds nothing; the one at
+        // 22,482 finds it.
         Beat {
             t_ms: 20_000,
             intents: Vec::new(),
@@ -4368,7 +4564,7 @@ fn m2_a_return_one_pass_after_the_deadline_is_a_loss_then_a_contact_at_every_cad
 }
 
 /// **Re-detected on the deadline itself** (16c `T-83`): the platform's own pass
-/// at 15,004 is applied before the expiry (it was scheduled a pass earlier, so
+/// at 17,482 is applied before the expiry (it was scheduled a pass earlier, so
 /// its sequence is lower), so the loss is cancelled — no `Lost`, and no second
 /// `Acquired` — at every cadence. This is the (r) fixture's own script, read on
 /// what was staged.
@@ -4405,7 +4601,8 @@ fn relay(id: ObjId) -> CustodyUnit {
     )
 }
 
-/// The (r) fixture with a relay whose passes fall at `id % 5_000`.
+/// The (r) fixture with a relay whose passes fall at `stagger_ms(2_350, id,
+/// 5_000)` (16b cut U.1; `id % 5_000` before it).
 fn relayed_arena(relay_id: ObjId) -> Arena {
     arena_with_sensors(
         vec![
@@ -4446,14 +4643,21 @@ fn relayed_script(relay_id: ObjId) -> Vec<Beat> {
 }
 
 /// **A mesh share landing exactly on the deadline** (16c `T-83`, the one
-/// millisecond the two arms can differ on). The relay's id is 5,004, so its pass
-/// falls at 15,004 with `EYE`'s own; the share it schedules there is sequenced
-/// AFTER the `LossSettles` that `EYE`'s loss scheduled at 10,004, so the loss
-/// is said first and the share is then a new contact — the same story at every
-/// cadence.
+/// millisecond the two arms can differ on). The relay's id is 7,156, picked so
+/// that its stagger collides with `EYE`'s (16b cut U.1; it was 5,004 under `id %
+/// 5_000`), so its pass falls at 17,482 with `EYE`'s own; the share it schedules
+/// there is sequenced AFTER the `LossSettles` that `EYE`'s loss scheduled at
+/// 12,482, so the loss is said first and the share is then a new contact — the
+/// same story at every cadence.
 #[test]
 fn m2_a_share_landing_on_the_deadline_is_one_story_at_every_cadence() {
-    const RELAY: ObjId = ObjId(5_004);
+    const RELAY: ObjId = ObjId(7_156);
+    let offset = flicker_offset();
+    assert_eq!(
+        stagger_ms(2_350, RELAY, 5_000),
+        offset,
+        "the precondition: the relay's pass collides with EYE's"
+    );
     let first = three_cadences(|| relayed_arena(RELAY), &relayed_script(RELAY), 25_000);
     let kinds = eye_contact_kinds(&first);
     let lost = kinds
@@ -4478,21 +4682,32 @@ fn m2_a_share_landing_on_the_deadline_is_one_story_at_every_cadence() {
         .map(|(t_ms, _, _, _)| *t_ms)
         .collect();
     assert!(
-        shared_at.contains(&15_004),
+        shared_at.contains(&(15_000 + offset)),
         "the share did not land on the deadline: {shared_at:?}"
     );
 }
 
 /// **A mesh share landing after the deadline** — the case the pulse-end sweep
 /// split by tempo, and the one test in this section that fails on the old
-/// sweep. At 5,000 and 1,000 ms the share at 15,604 fell in the same pulse as
-/// the deadline (15,000 to 20,000, and 15,000 to 16,000) and cancelled the loss
-/// before the pulse-end sweep said it; at 500 ms the sweep at 15,500 said it
-/// first and the share was a new contact. The due event says it at the deadline
-/// at every cadence.
+/// sweep. At 5,000 and 1,000 ms the share at 17,748 falls in the same pulse as
+/// the deadline at 17,482 (15,000 to 20,000, and 17,000 to 18,000) and would
+/// cancel the loss before a pulse-end sweep said it; at 500 ms a sweep at 17,500
+/// would say it first and the share would be a new contact. The due event says
+/// it at the deadline at every cadence. The relay's id is 51, picked for the
+/// seeded stagger (16b cut U.1; it was 604, whose share fell at 15,604 against
+/// a deadline at 15,004) and asserted: its pass is after `EYE`'s, past the next
+/// 500 ms boundary and inside the same second.
 #[test]
 fn m2_a_share_landing_after_the_deadline_is_a_loss_then_a_contact_at_every_cadence() {
-    const RELAY: ObjId = ObjId(604);
+    const RELAY: ObjId = ObjId(51);
+    let offset = flicker_offset();
+    let relay_at = stagger_ms(2_350, RELAY, 5_000);
+    let boundary = (offset / 500 + 1) * 500;
+    assert!(
+        relay_at > boundary && relay_at / 1_000 == offset / 1_000,
+        "the precondition: the relay's pass ({relay_at}) is across a 500 ms boundary from \
+         EYE's ({offset}) and inside its second"
+    );
     let first = three_cadences(|| relayed_arena(RELAY), &relayed_script(RELAY), 25_000);
     let kinds = eye_contact_kinds(&first);
     let lost = kinds
@@ -4582,20 +4797,27 @@ fn m2_a_moving_observer_stages_one_story_at_every_cadence() {
 }
 
 /// **A cancel that renames the row, at every cadence** (16c `B-74`, the M.2
-/// review's `M2T-5`). `EYE` numbers `MARK` `X1` at 4 and, taking ten seconds to
-/// tell a contact apart, still holds it as `X1` when `MARK` goes out of its
-/// sight at ten seconds: lost at 10,004, the window ending at 15,004. A red
-/// relay, far out of the mesh's reach, sees `MARK` at its pass at 10,003; at
-/// fifteen seconds the relay is put twenty cells east of `EYE`, inside the
+/// review's `M2T-5`). `EYE` numbers `MARK` `X1` at 2,482 and, taking ten
+/// seconds to tell a contact apart, still holds it as `X1` when `MARK` goes out
+/// of its sight at ten seconds: lost at 12,482, the window ending at 17,482. A
+/// red relay, far out of the mesh's reach, sees `MARK` at its pass at 12,481;
+/// at fifteen seconds the relay is put twenty cells east of `EYE`, inside the
 /// mesh's reach, with `MARK` five cells beyond it and still out of `EYE`'s own
-/// sight, and the relay's pass at 15,003 tells `MARK` apart and shares it —
-/// one millisecond inside the window. So the cancel arm meets a mesh insert
+/// sight, and the relay's pass at 17,481 tells `MARK` apart and shares it —
+/// one millisecond inside the window. (16b cut U.1: the times were 4, 10,004,
+/// 15,004 and a relay at 10,003 and 15,003 under `id % 5_000`; the relay is
+/// re-picked, `#9627`, whose stagger is `EYE`'s less one, and asserted.) So the cancel arm meets a mesh insert
 /// that reads `BA` where the loss read `X1`, and says so as one identification:
 /// the same staged story at 5,000, 1,000 and 500 ms, with no loss, no second
 /// acquisition and no regression.
 #[test]
 fn m2_a_share_that_renames_a_held_loss_is_one_identification_at_every_cadence() {
-    const RELAY: ObjId = ObjId(5_003);
+    const RELAY: ObjId = ObjId(9_627);
+    assert_eq!(
+        stagger_ms(2_350, RELAY, 5_000),
+        flicker_offset() - 1,
+        "the precondition: the relay passes one millisecond before EYE"
+    );
     let arena = || {
         arena_with_sensors(
             vec![

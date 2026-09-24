@@ -398,8 +398,11 @@ pub struct StepOutput {
     /// The tempo the arena is now in — the period cut T's timer uses.
     pub tempo: Tempo,
     /// When the task should step again, in the **wall** milliseconds
-    /// `wall_now_ms` was given in: the earlier of the next period boundary and the
-    /// next due event.
+    /// `wall_now_ms` was given in: the earlier of the next multiple of the period
+    /// and the first substep boundary at or after the next due event, both in
+    /// absolute arena time (16b cut U.1; `Arena::next_due_ms` has the rule and
+    /// why), so a production wake is on the substep lattice and never at a due
+    /// event's own millisecond.
     pub next_due_ms: i64,
     /// The pulse absorbed more wall time than the clamp allows, or the egress is
     /// backing up.
@@ -602,7 +605,7 @@ impl Arena {
 
         // ---- phase 3: time, in substeps ----
         let (dt_ms, clock_lagged) = self.clock.advance(wall_now_ms, &self.arena_cfg);
-        let length = substep_ms(&self.arena_cfg.tempo, self.cell_cm(), self.max_speed_cms());
+        let length = u32::try_from(self.substep_len_ms()).unwrap_or(u32::MAX);
         let pieces = substeps(dt_ms, length);
         // **16b cut M.2** (16c `T-10`): what ran, counted as it runs — the loop
         // below breaks on the substep that ended the match, and the partition's
@@ -650,8 +653,10 @@ impl Arena {
         // **16b cut M.2** (16c `T-02`; doc 16 §11's D-16-2 as amended): a pilot's
         // discrete action resolves at the end of the pulse that accepted it, so
         // its arena millisecond is this one — which in production is a wall-clock
-        // instant, since arena time is elapsed wall time and a pulse ends at the
-        // earlier of its period and the next due event. Everything the action
+        // instant, since arena time is elapsed wall time and a pulse ends on the
+        // substep lattice (the earlier of the next period multiple and the first
+        // boundary at or after the next due event, 16b cut U.1) plus the timer's
+        // overshoot. Everything the action
         // schedules from here is a due event and rate-independent. The resolvers
         // take the millisecond as an argument because a machine's actions resolve
         // at its tick instead (`crate::arena::reflex`).
@@ -728,8 +733,8 @@ impl Arena {
         // is exactly "phase 4's own zero-flight events". (A `WeaponReady` cannot
         // be one with shipped content: `cycle_ms` is floored at 1,000 by W14,
         // longer than any substep.) The opening pulse runs no substep and drains
-        // nothing: its `t = 0` events (a `SensorPass` for a unit whose id is a
-        // multiple of `pass_ms`, a `ReflexTick` at `id % decide_ms == 0`, a
+        // nothing: its `t = 0` events (a `SensorPass` or a `ReflexTick` for a
+        // unit whose stagger is nought — `stagger_ms`, 16b cut U.1 — and a
         // `MatchDeadline` of `0`) pop in the next pulse's first substep exactly
         // as they always did, so the opening pulse's hash sequence, its
         // `substeps == 0` and phase 5's duration backstop are untouched. A
@@ -1200,8 +1205,10 @@ impl Arena {
                 // **16b cut W.1**: the weapon's cycle has run down. It changes no
                 // state — readiness is `ready_at_ms <= now_ms`, a comparison — and
                 // it is scheduled for `next_due_ms`: it makes the arena pulse at the
-                // millisecond the weapon comes ready, so the pilot's frame says
-                // "ready" then rather than at the next period boundary.
+                // first substep boundary at or after the millisecond the weapon
+                // comes ready (16b cut U.1: within one substep of it, 250 ms on the
+                // shipped content), so the pilot's frame says "ready" then rather
+                // than at the next period boundary.
                 DueKind::WeaponReady { .. } => {}
                 // **16b cut N.1** (doc 16 §6): one AI unit's decision, applied at
                 // its own arena timestamp against the positions this substep
@@ -2501,23 +2508,91 @@ impl Arena {
             .collect()
     }
 
-    /// When the task should step again, in wall milliseconds: the earlier of the
-    /// next period boundary and the next due event (doc 16 §3.1 phase 5).
+    /// **The substep length**, arena milliseconds (doc 16 §3.1 "Rate
+    /// independence"): `substep_ms` over this match's tempo block, its cell and
+    /// its true speed ceiling.
     ///
-    /// The due event's time is arena time, so it is offered as the interval from
-    /// *now* rather than as an absolute: an arena that is behind does not ask to be
-    /// stepped in the past.
-    fn next_due_ms(&self, wall_now_ms: i64) -> i64 {
-        let period = i64::from(self.clock.tempo().period_ms(&self.arena_cfg.tempo));
-        let by_period = wall_now_ms.saturating_add(period);
-        match self.due.next_t_ms() {
-            Some(due) => {
-                let ahead = due.saturating_sub(self.now_ms).max(0);
-                by_period.min(wall_now_ms.saturating_add(ahead))
-            }
-            None => by_period,
-        }
+    /// **16b cut U.1**: one number with three readers — the partition in
+    /// [`Arena::step`], the lattice [`Arena::next_due_ms`] wakes the task on, and
+    /// the stopping look-ahead in [`Arena::hold_routeless`] — where the first and
+    /// the last each computed the product for themselves.
+    ///
+    /// **It is read live, and it is not frozen in general.** The tempo block and
+    /// the cell are fixed at [`Arena::new`], but [`Arena::max_speed_cms`] is
+    /// recomputed on every call over the units that are neither a wreck nor
+    /// motion-disabled, and both of those change mid-match. The ceiling can only
+    /// fall, so the substep can only lengthen, up to `tempo.substep_max_ms`. On
+    /// the shipped content the answer is constant because that cap binds for
+    /// every fielded unit (250 ms; 16c Q24); on a config whose fastest unit cuts
+    /// a shorter substep, losing that unit lengthens it from the next pulse, and
+    /// both the step's partition and [`Arena::next_due_ms`]'s lattice read the
+    /// new figure there. Freezing the ceiling at check-out would be a behaviour
+    /// change and is not this cut's.
+    pub(crate) fn substep_len_ms(&self) -> i64 {
+        i64::from(substep_ms(
+            &self.arena_cfg.tempo,
+            self.cell_cm(),
+            self.max_speed_cms(),
+        ))
     }
+
+    /// **When the task should step again**, in the wall milliseconds
+    /// `wall_now_ms` was given in (doc 16 §3.1 phase 5; 16c Q25).
+    ///
+    /// The rule, in **absolute arena time**: the earlier of the next multiple of
+    /// the tempo's period strictly after `now_ms`, and — when anything is due —
+    /// the first multiple of the substep length at or after the next due event
+    /// (never `now_ms` itself); answered as `wall_now_ms + (target − now_ms)`, so
+    /// never sooner than a millisecond away.
+    ///
+    /// **Why the targets are absolute** (16b cut U.1; 16c `T-22`). A due event
+    /// inside a substep is applied in that substep, at its own timestamp,
+    /// against the positions at the substep's **end** (§3.1 phase 3). Woken at
+    /// the due event itself — 16c's first sketch — the pulse would end there, and
+    /// the next substep would be cut from that wake: the position the event is
+    /// applied against would be a function of when the task woke, which is
+    /// exactly what D-16-2 forbids. So the wake is the substep boundary the event
+    /// already belongs to. And the target is a lattice point in arena time, not
+    /// an interval from the last wake: a rule of `wall + period` or `wall +
+    /// (due − now)` measures from wherever the last wake landed, so after one
+    /// late wake it would never return to the lattice; this one pulls a late
+    /// wake back (from `now = 253` with a due at 500 on a 250 ms lattice, it asks
+    /// for 247 ms). The period is a multiple of the substep for every shipped
+    /// configuration (asserted for every fielded unit since 16b cut M.2, 16c
+    /// Q24), so the period multiples are lattice points too, and a task that
+    /// wakes on time wakes only on the lattice.
+    ///
+    /// In production arena time is wall time, so a wake is the lattice plus the
+    /// OS timer's overshoot (wall jitter, §3.1); a late wake's pulse ends off the
+    /// lattice, and the next one returns to it.
+    ///
+    /// The lattice is the **current** [`Arena::substep_len_ms`], which is
+    /// constant on the shipped content and can lengthen mid-match elsewhere (see
+    /// there); the partition inside a pulse is still cut from that pulse's start.
+    fn next_due_ms(&self, wall_now_ms: i64) -> i64 {
+        let now = self.now_ms;
+        let period = i64::from(self.clock.tempo().period_ms(&self.arena_cfg.tempo));
+        let substep = self.substep_len_ms();
+        let after_now = now.saturating_add(1);
+        let target_period = ceil_to(after_now, period);
+        let target = match self.due.next_t_ms() {
+            Some(due) => target_period.min(ceil_to(due.max(after_now), substep)),
+            None => target_period,
+        };
+        wall_now_ms.saturating_add(target.saturating_sub(now))
+    }
+}
+
+/// **`t` rounded up to a multiple of `m`** (16b cut U.1), saturating: the least
+/// multiple of `m` at or after `t`. An `m` of nought or below answers `t`, so a
+/// degenerate period or substep asks for the moment itself rather than for
+/// nothing. Integer arithmetic only; `t` is arena milliseconds and never
+/// negative where [`Arena::next_due_ms`] calls it.
+fn ceil_to(t: i64, m: i64) -> i64 {
+    if m <= 0 {
+        return t;
+    }
+    t.saturating_add(m - 1).div_euclid(m).saturating_mul(m)
 }
 
 /// The remembered frames, as [`Arena`] holds them — a type alias so the field's
@@ -2587,9 +2662,14 @@ mod tests {
         assert_eq!(out.tempo, Tempo::Quiet);
         // The next step is asked for at the period, at the first summary, or at
         // the first sensor pass, whichever is soonest. **16b cut F.3** makes that
-        // the pass: every unit has one, staggered at `id % pass_ms`, and this
-        // fixture's is unit #4's at 4 ms.
-        assert_eq!(out.next_due_ms, 1_000_004);
+        // the pass: every unit has one. **16b cut U.1**: staggered at
+        // `stagger_ms(seed, id, pass_ms)` — unit #4's is 482 ms at seed 2,350 —
+        // and the wake is the first substep boundary at or after it, 500 on
+        // this fixture's 250 ms lattice (16c Q25).
+        let pass = crate::arena::rng::stagger_ms(arena.seed, A, 1_000);
+        assert_eq!(pass, 482, "the fixture's precondition");
+        assert_eq!(arena.substep_len_ms(), 250);
+        assert_eq!(out.next_due_ms, 1_000_500);
         assert!(arena.substep_hashes.is_empty());
         // One frame, because the pilot has never been told anything.
         assert_eq!(out.frames.len(), 1);
@@ -2600,6 +2680,85 @@ mod tests {
         // And nothing more until something changes.
         let again = arena.step(1_000_000, &[], &[]);
         assert!(again.frames.is_empty());
+    }
+
+    /// An arena at arena millisecond `now` whose heap holds nothing but `due`,
+    /// for [`Arena::next_due_ms`]'s rule on its own. `Quiet`, so the period is
+    /// 5,000 ms; the fixture tank's 1,000 cm/s on 1,000 cm cells cuts a 250 ms
+    /// substep.
+    fn at_now_with(now: i64, due: Option<i64>) -> Arena {
+        let mut arena = arena();
+        arena.due.retain(|_| false);
+        arena.now_ms = now;
+        if let Some(t_ms) = due {
+            arena.due.schedule(t_ms, DueKind::PositionSummary);
+        }
+        assert_eq!(arena.clock.tempo(), Tempo::Quiet);
+        assert_eq!(arena.substep_len_ms(), 250, "the fixture's lattice");
+        arena
+    }
+
+    /// **16b cut U.1** (16c `T-22`, Q25): the wake is on the substep lattice in
+    /// absolute arena time — a due event wakes the arena at the first substep
+    /// boundary at or after it, the period term is the next period multiple, and
+    /// a late arena is pulled back onto the lattice.
+    #[test]
+    fn next_due_is_the_first_lattice_point_at_or_after_the_due_event() {
+        const WALL: i64 = 1_000_000;
+        // From `now` on the lattice, a due event 3 ms ahead is the next boundary.
+        assert_eq!(
+            at_now_with(1_000, Some(1_003)).next_due_ms(WALL),
+            WALL + 250
+        );
+        // One a substep and a millisecond ahead is the boundary after that.
+        assert_eq!(
+            at_now_with(1_000, Some(1_251)).next_due_ms(WALL),
+            WALL + 500
+        );
+        // One exactly on a boundary is that boundary.
+        assert_eq!(
+            at_now_with(1_000, Some(1_250)).next_due_ms(WALL),
+            WALL + 250
+        );
+        // One due now — or already past — is the next boundary, never now.
+        assert_eq!(
+            at_now_with(1_000, Some(1_000)).next_due_ms(WALL),
+            WALL + 250
+        );
+        assert_eq!(at_now_with(1_000, Some(400)).next_due_ms(WALL), WALL + 250);
+        // An empty heap is the next period multiple.
+        assert_eq!(at_now_with(1_000, None).next_due_ms(WALL), WALL + 4_000);
+        // The period term wins when it is the nearer.
+        assert_eq!(
+            at_now_with(4_900, Some(6_000)).next_due_ms(WALL),
+            WALL + 100
+        );
+        // **The pull-back**: a wake that landed late, at 253, with a due event
+        // at 500 asks for 500 — 247 ms — and not for 250 after the late wake.
+        assert_eq!(at_now_with(253, Some(500)).next_due_ms(WALL), WALL + 247);
+        assert_eq!(at_now_with(253, None).next_due_ms(WALL), WALL + 4_747);
+    }
+
+    /// **16b cut U.1**: a period shorter than the substep answers the period,
+    /// and the answer is never sooner than a millisecond away, wherever `now`
+    /// and the due event sit.
+    #[test]
+    fn next_due_takes_a_short_period_and_is_never_below_a_millisecond() {
+        const WALL: i64 = 7_000;
+        let mut arena = at_now_with(1_000, Some(3_000));
+        arena.arena_cfg.tempo.quiet_ms = 100;
+        assert_eq!(arena.next_due_ms(WALL), WALL + 100);
+        for now in [0_i64, 1, 249, 250, 251, 999, 4_999, 5_000] {
+            for due in [None, Some(0), Some(now), Some(now + 1), Some(now + 250)] {
+                let answer = at_now_with(now, due).next_due_ms(WALL);
+                assert!(
+                    answer > WALL,
+                    "now {now}, due {due:?}: {answer} is not a millisecond away"
+                );
+                // And every target is a lattice point.
+                assert_eq!((now + answer - WALL) % 250, 0, "now {now}, due {due:?}");
+            }
+        }
     }
 
     #[test]
@@ -2809,7 +2968,13 @@ mod tests {
         // The next one is scheduled, always. The four above are already journalled,
         // so it is the *schedule* and not the log that says the cadence continues —
         // and `next_t_ms` cannot say it since 16b cut F.3 gives every unit a sensor
-        // pass, which on this fixture falls nearer (unit #4's, at 20,004 ms).
+        // pass, which on this fixture falls nearer (unit #4's, at 20,000 ms plus
+        // its stagger; 16b cut U.1 made that `stagger_ms`, 482 ms at seed 2,350).
+        let offset = crate::arena::rng::stagger_ms(arena.seed, A, 1_000);
+        assert!(
+            offset > 0,
+            "the fixture's precondition: #4's pass is not on a second"
+        );
         assert!(
             arena
                 .due
@@ -2818,7 +2983,11 @@ mod tests {
             "the next position summary is not on the schedule: {:?}",
             arena.due.iter().collect::<Vec<_>>()
         );
-        assert_eq!(arena.due.next_t_ms(), Some(20_004), "unit #4's own stagger");
+        assert_eq!(
+            arena.due.next_t_ms(),
+            Some(20_000 + offset),
+            "unit #4's own stagger"
+        );
     }
 
     /// **16b cut S.1, the pulse end to end**: the sensor pass is due in phase
@@ -2847,8 +3016,10 @@ mod tests {
         let out = arena.step(0, &[], &[]);
         assert_eq!(out.perception.passes, 0);
         assert!(arena.contacts.is_empty());
-        // One second of arena time: both staggered passes (at 4 ms and 9 ms) run,
-        // each holds the other, and the tempo rises to `Alert`.
+        // One second of arena time: both staggered passes (at their seeded
+        // offsets inside the first second, `rng::stagger_ms`; 4 ms and 9 ms
+        // under `id % pass_ms` before 16b cut U.1) run, each holds the other,
+        // and the tempo rises to `Alert`.
         let out = arena.step(1_000, &[], &[]);
         assert_eq!(out.perception.passes, 2, "{:?}", out.perception);
         assert_eq!(out.perception.detected, 2);
@@ -4071,14 +4242,19 @@ mod tests {
     }
 
     /// **16b cut M.2** (16c `B-51`): the opening pulse drains nothing. A unit
-    /// whose id is a multiple of `pass_ms` has its first pass at `t = 0`, and it
-    /// runs in the next pulse's first substep exactly as before the drain
-    /// existed — the opening pulse runs no substep, so the drain's `ran > 0`
-    /// guard leaves it alone.
+    /// whose stagger is nought has its first pass at `t = 0`, and it runs in the
+    /// next pulse's first substep exactly as before the drain existed — the
+    /// opening pulse runs no substep, so the drain's `ran > 0` guard leaves it
+    /// alone.
+    ///
+    /// **16b cut U.1**: the stagger is `stagger_ms(seed, id, pass_ms)`, so the
+    /// fixture's ids are re-picked for it — `#2355`'s is nought at seed 2,350 and
+    /// `#9`'s is 189, inside the first substep — and both are asserted before
+    /// the property is.
     #[test]
     fn m2_the_opening_pulse_drains_nothing_and_a_pass_at_zero_runs_next_pulse() {
         use crate::arena::test_support::scout;
-        const EARLY: ObjId = ObjId(1_000);
+        const EARLY: ObjId = ObjId(2_355);
         let mut arena = crate::arena::test_support::arena_at_epoch(
             vec![
                 scout(EARLY, Team::Red, pose(500, 500)),
@@ -4087,6 +4263,12 @@ mod tests {
             1,
         );
         assert_eq!(arena.sensors_cfg.pass_ms, 1_000, "the default cadence");
+        let stagger = |id: ObjId| crate::arena::rng::stagger_ms(arena.seed, id, 1_000);
+        assert_eq!(stagger(EARLY), 0, "the precondition: a pass due at 0");
+        assert!(
+            (1..=arena.substep_len_ms()).contains(&stagger(ObjId(9))),
+            "the precondition: a pass inside the first substep"
+        );
         let opening = arena.step(0, &[], &[]);
         assert_eq!(opening.substeps, 0);
         assert_eq!(
@@ -4102,7 +4284,7 @@ mod tests {
         assert_eq!(next.substeps, 1);
         assert_eq!(
             next.perception.passes, 2,
-            "the pass at 0 and the pass at 9 both ran in the first substep"
+            "the pass at 0 and the pass at 189 both ran in the first substep"
         );
     }
 

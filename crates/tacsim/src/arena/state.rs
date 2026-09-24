@@ -1713,6 +1713,23 @@ impl SeenPose {
         )
     }
 
+    /// **Whether this plot is within `reach_cm` of `pose`** — exactly
+    /// `self.range_from(pose) <= reach_cm`, without the root (16b cut U.1; 16c
+    /// `T-24`): [`crate::arena::index::within_between`] over the same six
+    /// coordinates, whose identity (`floor(sqrt(s)) ≤ r` iff `s < (r+1)²`) is why
+    /// it is a cost fix and not a behaviour change.
+    ///
+    /// The strict form `range_from(pose) < r` is `r >= 1 && within_cm(pose, r −
+    /// 1)`, which is how `Arena::contact_within_alert_range` reads it; the two
+    /// per-pulse tempo signals are its callers, one test per held contact per
+    /// pulse, where the root was the whole cost.
+    #[must_use]
+    pub fn within_cm(&self, pose: &Pose, reach_cm: u64) -> bool {
+        crate::arena::index::within_between(
+            pose.x_cm, pose.y_cm, pose.z_cm, self.x_cm, self.y_cm, self.z_cm, reach_cm,
+        )
+    }
+
     /// The bearing from `pose` to this plot, millidegrees clockwise from north.
     #[must_use]
     pub fn bearing_from(&self, pose: &Pose) -> u32 {
@@ -3947,12 +3964,21 @@ mod tests {
         }
         // Three scheduled events: the first position summary at
         // `ledger.summary_ms`, and — **16b cut F.3** — one sensor pass per unit,
-        // staggered at `id % pass_ms`. The pass is where a platform's contacts
-        // expire, so every platform has one whether or not it carries a sight.
+        // staggered at `stagger_ms(seed, id, pass_ms)` since 16b cut U.1 (it was
+        // `id % pass_ms`). The pass is where a platform's contacts expire, so
+        // every platform has one whether or not it carries a sight.
         // **16b cut M.2** (16c `T-01`) adds the fourth: the duration bound, at
         // `match.max_duration_ms`, scheduled second.
         assert_eq!(arena.due.len(), 4);
-        assert_eq!(arena.due.next_t_ms(), Some(4), "unit #4's own stagger");
+        let first = [ObjId(4), ObjId(9)]
+            .iter()
+            .map(|id| crate::arena::rng::stagger_ms(arena.seed, *id, 1_000))
+            .min();
+        assert_eq!(
+            arena.due.next_t_ms(),
+            first,
+            "the nearer unit's own stagger"
+        );
         assert_eq!(
             arena
                 .due

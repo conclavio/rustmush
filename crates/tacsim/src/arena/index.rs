@@ -75,7 +75,8 @@ pub fn range_cm(a: &Pose, b: &Pose) -> u64 {
 /// pose carries the driver's opaque posture blob.
 ///
 /// [`range_cm`] is this function over two poses. One implementation, so a plot's
-/// range and a true range cannot be two arithmetics.
+/// range and a true range cannot be two arithmetics: the root of
+/// [`square_between`].
 #[must_use]
 pub fn range_between(
     ax_cm: i64,
@@ -85,39 +86,65 @@ pub fn range_between(
     by_cm: i64,
     bz_cm: i32,
 ) -> u64 {
-    let dx = i128::from(ax_cm) - i128::from(bx_cm);
-    let dy = i128::from(ay_cm) - i128::from(by_cm);
-    let dz = i128::from(az_cm) - i128::from(bz_cm);
-    let square = dx
-        .saturating_mul(dx)
-        .saturating_add(dy.saturating_mul(dy))
-        .saturating_add(dz.saturating_mul(dz));
+    let square = square_between(ax_cm, ay_cm, az_cm, bx_cm, by_cm, bz_cm);
     // A sum of squares is never negative, so `unsigned_abs` is the cast and not
     // a policy; `isqrt` floors, which makes the answer a whole centimetre.
     u64::try_from(square.unsigned_abs().isqrt()).unwrap_or(u64::MAX)
 }
 
-/// The **squared** separation of two poses, square centimetres, in `i128` for the
-/// same reason [`range_cm`] takes its squares there: a pose is `i64` centimetres
-/// and two poses far apart in the region frame would overflow `i64` squared.
+/// The **squared** separation of two points given as six coordinates, square
+/// centimetres (16b cut U.1; 16c `T-24`): the sum [`range_between`] roots.
 ///
-/// Saturating, so the answer is monotone in the separation even at the edges of
-/// the region frame, which is what keeps [`within_cm`] and [`range_cm`] agreeing
-/// there.
-fn square_cm(a: &Pose, b: &Pose) -> i128 {
-    let dx = i128::from(a.x_cm) - i128::from(b.x_cm);
-    let dy = i128::from(a.y_cm) - i128::from(b.y_cm);
-    let dz = i128::from(a.z_cm) - i128::from(b.z_cm);
+/// In `i128` for the reason [`range_cm`] takes its squares there: a pose is `i64`
+/// centimetres and two poses far apart in the region frame would overflow `i64`
+/// squared. Saturating, so the answer is monotone in the separation even at the
+/// edges of the region frame, which is what keeps [`within_between`] and
+/// [`range_between`] agreeing there.
+#[must_use]
+pub fn square_between(
+    ax_cm: i64,
+    ay_cm: i64,
+    az_cm: i32,
+    bx_cm: i64,
+    by_cm: i64,
+    bz_cm: i32,
+) -> i128 {
+    let dx = i128::from(ax_cm) - i128::from(bx_cm);
+    let dy = i128::from(ay_cm) - i128::from(by_cm);
+    let dz = i128::from(az_cm) - i128::from(bz_cm);
     dx.saturating_mul(dx)
         .saturating_add(dy.saturating_mul(dy))
         .saturating_add(dz.saturating_mul(dz))
 }
 
+/// **Whether two points given as six coordinates are within `reach_cm` of each
+/// other** — [`range_between`]'s comparison without its square root (16b cut
+/// U.1; 16c `T-24`), the identity [`within_cm`] documents: `range_between(..) ≤
+/// r` is exactly `square_between(..) < (r+1)²`.
+///
+/// [`within_cm`] is this function over two poses, and
+/// [`crate::arena::state::SeenPose::within_cm`] is it over a plot and a pose, so
+/// the cull and the two per-pulse tempo signals decide membership with one
+/// arithmetic.
+#[must_use]
+pub fn within_between(
+    ax_cm: i64,
+    ay_cm: i64,
+    az_cm: i32,
+    bx_cm: i64,
+    by_cm: i64,
+    bz_cm: i32,
+    reach_cm: u64,
+) -> bool {
+    let bound = i128::from(reach_cm).saturating_add(1);
+    square_between(ax_cm, ay_cm, az_cm, bx_cm, by_cm, bz_cm) < bound.saturating_mul(bound)
+}
+
 /// **Whether two poses are within `reach_cm` of each other** — [`range_cm`]'s
 /// comparison without its square root (16b cut S.2).
 ///
-/// `range_cm` floors, so `range_cm(a, b) ≤ r` is *exactly* `square_cm(a, b) <
-/// (r+1)²`: `floor(sqrt(s)) ≤ r` iff `s < (r+1)²` for whole `r`. That identity is
+/// `range_cm` floors, so `range_cm(a, b) ≤ r` is *exactly* `square(a, b) <
+/// (r+1)²` ([`square_between`]): `floor(sqrt(s)) ≤ r` iff `s < (r+1)²` for whole `r`. That identity is
 /// why this is a cost fix and not a behaviour change, and
 /// `the_squared_test_agrees_with_the_rooted_one_at_every_boundary` below pins it
 /// over every distance either function can be asked about near a boundary.
@@ -126,8 +153,7 @@ fn square_cm(a: &Pose, b: &Pose) -> i128 {
 /// 300-unit cull costs three multiplications a pair instead of an `i128::isqrt`.
 #[must_use]
 pub fn within_cm(a: &Pose, b: &Pose, reach_cm: u64) -> bool {
-    let bound = i128::from(reach_cm).saturating_add(1);
-    square_cm(a, b) < bound.saturating_mul(bound)
+    within_between(a.x_cm, a.y_cm, a.z_cm, b.x_cm, b.y_cm, b.z_cm, reach_cm)
 }
 
 /// **The uniform grid of cell buckets over unit positions** (doc 16 §3.2 "The
@@ -601,6 +627,50 @@ mod tests {
             &far,
             u64::from(u32::MAX)
         ));
+    }
+
+    /// **16b cut U.1** (16c `T-24`): a plot's squared membership test,
+    /// [`crate::arena::state::SeenPose::within_cm`], is `range_from() <= r`
+    /// exactly — at every separation from 0 to 400 cm against every reach from
+    /// 0 to 400, on the axis and off it in three coordinates — and the strict
+    /// form the alert-range signal uses, `r >= 1 && within_cm(r − 1)`, is
+    /// `range_from() < r`. The two tempo signals changed arithmetic and no
+    /// answer.
+    #[test]
+    fn a_plots_squared_test_agrees_with_its_rooted_range_at_every_boundary() {
+        use crate::arena::state::SeenPose;
+        let viewer = pose(0, 0);
+        for d in 0..=400_i64 {
+            for plot in [
+                SeenPose {
+                    x_cm: d,
+                    ..SeenPose::default()
+                },
+                SeenPose {
+                    x_cm: d,
+                    y_cm: d / 2,
+                    z_cm: i32::try_from(d / 3).unwrap_or(0),
+                    ..SeenPose::default()
+                },
+            ] {
+                let exact = plot.range_from(&viewer);
+                for reach in 0..=400_u64 {
+                    assert_eq!(
+                        plot.within_cm(&viewer, reach),
+                        exact <= reach,
+                        "within_cm and range_from disagree at {plot:?} reach={reach}"
+                    );
+                    assert_eq!(
+                        reach >= 1 && plot.within_cm(&viewer, reach - 1),
+                        exact < reach,
+                        "the strict form disagrees at {plot:?} reach={reach}"
+                    );
+                }
+            }
+        }
+        // And `square_between` is what `range_between` roots.
+        assert_eq!(square_between(0, 0, 0, 300, 400, 1_200), 1_690_000);
+        assert_eq!(range_between(0, 0, 0, 300, 400, 1_200), 1_300);
     }
 
     #[test]

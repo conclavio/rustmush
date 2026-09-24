@@ -28,8 +28,9 @@
 //! there: `CONTACTS` and `VIEW` never name another unit, a designator nobody is
 //! flying is one byte-identical refusal, and no line of the whole session
 //! carries a contact id. **Timing is not part of the claim**: a sensor pass runs
-//! whether or not the platform has power and the first one falls at `id %
-//! sensors.pass_ms`, so "before detection" belongs to the file that controls its
+//! whether or not the platform has power and the first one falls at
+//! `stagger_ms(seed, id, sensors.pass_ms)` (a seeded offset inside the cadence,
+//! 16b cut U.1), so "before detection" belongs to the file that controls its
 //! own muster and not to this one.
 //!
 //! # Why staff re-poses the tanks
@@ -451,9 +452,10 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
     //
     // **Every claim here holds at any arena millisecond**, deliberately. A
     // sensor pass is not gated on power (`Arena::detections` reads a wreck and a
-    // sensor and nothing else) and a unit's first pass falls at `id %
-    // sensors.pass_ms`, so "before anything is detected" on two tanks two
-    // hundred metres apart is a race against a dbref;
+    // sensor and nothing else) and a unit's first pass falls at
+    // `stagger_ms(seed, id, sensors.pass_ms)` (16b cut U.1), so "before anything
+    // is detected" on two tanks two hundred metres apart is a race against a
+    // seeded offset;
     // `crates/mushd/tests/observer_rule.rs` controls its own timing and makes
     // the cold-platform claim there. What cannot race is a byte-identical
     // refusal for a designator this platform will never hold — blue fields one

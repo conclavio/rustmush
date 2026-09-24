@@ -380,7 +380,7 @@ jobs:
   # D-16-19 — read the `harness_*:` lines in the log, or the uploaded
   # `harness.json`. Run it locally with TACSIM_ASSERT=1 to assert the
   # thresholds, and size it with TACSIM_UNITS / TACSIM_FIGHTING /
-  # TACSIM_WEAPONS / TACSIM_PULSES / TACSIM_SEED.
+  # TACSIM_WEAPONS / TACSIM_PULSES (the ground pulse only; the arena lanes run TACSIM_ARENA_S) / TACSIM_SEED.
   #
   # 16b cut A.2 added a second measurement to the same target: the same relief and
   # the same unit count driven through `Arena::step` directly (`harness_arena_*:`

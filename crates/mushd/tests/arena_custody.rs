@@ -112,11 +112,25 @@ fn tacsim_config() -> tacsim::TacsimConfig {
     // not what this file is about: two machines that patrol, close and shoot make
     // "the unit nothing happened to comes back byte-identical" false for a reason
     // that has nothing to do with custody. So the controller's cadence is pushed
-    // past this test's lifetime. Its **first** tick still lands (the stagger is
-    // `id % decide_ms`), which brings both tanks online and orders nothing else,
-    // and the second is an hour of arena time away. What the controller does with
-    // a released seat and an AI-filled lobby is `sim_reflex.rs`'s.
-    cfg.arena.reflex.decide_ms = 3_600_000;
+    // past this test's lifetime.
+    //
+    // **16b cut U.1** moved the premise. The **first** tick lands at the unit's
+    // seeded stagger inside one cadence (`stagger_ms(seed, id, decide_ms)`; it
+    // was `id % decide_ms`, which put it in the first second), and the match
+    // seed folds the world clock and a process salt, so it moves every run. At
+    // an hour's cadence a first tick inside this file's twenty-odd seconds was
+    // about one run in two hundred per machine: a tank leaving `Startup`
+    // mid-drive, planning its own route and moving the pose the check-in
+    // compares. The cadence is therefore the largest the field holds (about
+    // forty-nine days of arena time), which puts that chance near five in a
+    // million per machine; the arithmetic that reads `decide_ms` is `i64` and
+    // saturating throughout, and the module is handed this config directly, so
+    // `ArenaConfig::validate`'s cross-key checks (the server's config load runs
+    // them), which this value fails exactly as the hour did, are not in the
+    // way. A tank may never come online
+    // here, and nothing in this file reads whether it did. What the controller
+    // does with a released seat and an AI-filled lobby is `sim_reflex.rs`'s.
+    cfg.arena.reflex.decide_ms = u32::MAX;
     cfg
 }
 

@@ -672,8 +672,9 @@ impl Arena {
     ///
     /// The `WeaponReady` event changes no state: readiness is
     /// [`UnitState::weapon_ready`], a comparison against an arena millisecond.
-    /// What it is for is `next_due_ms` — it makes the arena step at the
-    /// millisecond the weapon comes ready, so the pilot's frame says so then
+    /// What it is for is `next_due_ms` — it makes the arena step at the first
+    /// substep boundary at or after the millisecond the weapon comes ready (16b
+    /// cut U.1: within one substep of it), so the pilot's frame says so then
     /// rather than at the next period boundary.
     ///
     /// **`at_ms` is the arena millisecond the shot is fired at** (16b cut M.2, 16c

@@ -229,6 +229,31 @@ pub const fn splitmix64(state: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// **Where in its cadence a unit's recurring event first falls** (16b cut U.1;
+/// 16c `T-25`): `splitmix64(seed ^ id) % cadence`, in `0..cadence` arena
+/// milliseconds. A `cadence_ms` below 1 is read as 1, so the answer is `0`.
+///
+/// It is what `Arena::schedule_first_passes` offsets each unit's first sensor
+/// pass by and what `Arena::schedule_reflex_tick` offsets each machine's decide
+/// grid by (doc 16 §3.6 *staggered by unit id*, read as *keyed on it*). The
+/// stagger was `id % cadence`, and a match's object numbers are contiguous, so
+/// every first pass fell inside the first `units` milliseconds of each second —
+/// 300 units put all 300 passes in the first 300 ms, and the worst pulse
+/// carried every pass while the rest of the second carried none. Mixed through
+/// [`splitmix64`] the offsets spread over the whole cadence.
+///
+/// **Not a draw.** It takes no [`DrawLabel`], so the pinned label set does not
+/// move, and it is not in the ledger: an offset is a function of the match seed
+/// and the unit's number and nothing else — no state, no stream, the same on a
+/// replay and the same at every tempo, because the cadence it is taken against
+/// is a configuration value and never the tempo's period.
+#[must_use]
+pub fn stagger_ms(seed: u64, id: ObjId, cadence_ms: i64) -> i64 {
+    let cadence = cadence_ms.max(1);
+    i64::try_from(splitmix64(seed ^ u64::from(id.0)) % u64::try_from(cadence).unwrap_or(1))
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,6 +487,37 @@ mod tests {
         // Not a statistical test: only that no decile is empty, which a broken
         // mix (a constant, or a low-bit-only hash) would fail outright.
         assert!(buckets.iter().all(|count| *count > 0), "{buckets:?}");
+    }
+
+    /// **16b cut U.1** (16c `T-25`): the stagger is inside its cadence, keyed on
+    /// the seed and the id, a nought or negative cadence answers nought, and
+    /// three hundred contiguous ids no longer bunch into the first three hundred
+    /// milliseconds of a second.
+    #[test]
+    fn the_stagger_is_inside_its_cadence_and_spreads_contiguous_ids() {
+        assert_eq!(stagger_ms(2350, ObjId(4), 0), 0);
+        assert_eq!(stagger_ms(2350, ObjId(4), -5), 0);
+        assert_eq!(stagger_ms(2350, ObjId(4), 1), 0);
+        assert_eq!(
+            stagger_ms(2350, ObjId(4), 1_000),
+            i64::try_from(splitmix64(2350 ^ 4) % 1_000).unwrap_or(-1)
+        );
+        assert_ne!(
+            (0..24)
+                .map(|n| stagger_ms(2350, ObjId(n), 1_000))
+                .collect::<Vec<_>>(),
+            (0..24)
+                .map(|n| stagger_ms(2351, ObjId(n), 1_000))
+                .collect::<Vec<_>>()
+        );
+        let offsets: Vec<i64> = (100_000..100_300)
+            .map(|n| stagger_ms(2350, ObjId(n), 1_000))
+            .collect();
+        assert!(offsets.iter().all(|at| (0..1_000).contains(at)));
+        assert!(
+            offsets.iter().filter(|at| **at >= 300).count() > 150,
+            "the offsets bunch under 300 ms"
+        );
     }
 
     #[test]

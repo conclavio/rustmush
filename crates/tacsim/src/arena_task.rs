@@ -36,8 +36,10 @@
 //!
 //! # The timer, and why a message never steps
 //!
-//! The task sleeps until `next_due_ms` (doc 16 §3.1 phase 5: the earlier of the
-//! next period boundary and the next due event). An arriving message **wakes the
+//! The task sleeps until `next_due_ms` (doc 16 §3.1 phase 5, as 16b cut U.1 made
+//! it: the earlier of the next multiple of the period and the first substep
+//! boundary at or after the next due event, in absolute arena time, the deadline
+//! measured from the task's base). An arriving message **wakes the
 //! task early but does not step it**: it is buffered and drained at the next
 //! pulse (§3.1 phases 1 and 2). That is what makes a laggy pilot harmless and a
 //! fast one no faster — the tempo decides how often `step` runs, and nothing
@@ -173,26 +175,33 @@ pub enum ArenaOut {
     /// itself carries the clock and `Task::publish` sends it when there is a
     /// frame **or** when the arena second has moved since the last one it sent.
     ///
-    /// **What the rule does, stated against the pulse rate and not against the
+    /// **What the rule does, stated against the wake rate and not against the
     /// tempo.** A pulse is not a period: the task sleeps until `next_due_ms`,
-    /// which is *the earlier of the next period boundary and the next due event*
-    /// (see this module's head), so the pulse rate is
-    /// `min(period, next due event)`. On the shipped config the recurring due
-    /// events are the per-unit sensor pass (`sensors.pass_ms`, 1,000 ms) and the
-    /// reflex decision (`reflex.decide_ms`, 1,000 ms), both under
-    /// `tempo.alert_ms`, so **the pulse rate is about 1,000 ms at all three
-    /// tempos** and the tempo period only bites where a config pushes those
-    /// events out past it.
+    /// which is *the earlier of the next multiple of the period and the first
+    /// substep boundary at or after the next due event*, both in absolute arena
+    /// time (16b cut U.1; see this module's head), so every wake is on the
+    /// substep lattice (250 ms on the shipped content) and a match wakes at most
+    /// once a substep. On the shipped config the recurring due events are the
+    /// per-unit sensor pass (`sensors.pass_ms`, 1,000 ms) and the reflex decision
+    /// (`reflex.decide_ms`, 1,000 ms), each at the unit's own seeded offset inside
+    /// the second (`crate::arena::rng::stagger_ms`): a field of many units wakes
+    /// on every lattice point, and two tanks on the one to four points their
+    /// offsets round up to.
     ///
     /// The clause therefore suppresses an empty message whenever a pulse lands in
-    /// a second the last message already carried — every other pulse at the
-    /// shipped `Engaged` 500 ms period, and none at all where a pulse is a second
-    /// or more apart. Either way the steady state is **at most one empty message
-    /// per match per arena second**, and the board is at worst one arena second
-    /// stale. A config that pushes the sensor pass past the tempo (the
-    /// `arena_task` tests do, to see the clause at all) gets one message a pulse
-    /// at `Alert` and `Quiet` and one every other pulse at `Engaged`, and a board
-    /// one period stale.
+    /// a second the last message already carried, so the steady state is **at
+    /// most one empty message per match per arena second**. The board is stale by
+    /// the gap between the first wakes of two arena seconds. At `Engaged` and
+    /// `Alert` every second opens with a wake (a multiple of the period), so the
+    /// gap is one arena second. At `Quiet` only every fifth second does; any other
+    /// second opens at its earliest recurring offset rounded up to the lattice,
+    /// so the gap after a `Quiet` period multiple is one second **plus that
+    /// offset** — at most `2,000 − substep` ms, 1,750 on the shipped lattice, and
+    /// one second only where some unit's offset rounds up to the second's start.
+    /// A config that pushes the sensor pass past the tempo (the `arena_task`
+    /// tests do, to see the clause at all) gets one message a pulse at `Alert`
+    /// and `Quiet` and one every other pulse at `Engaged`, and a board one period
+    /// stale.
     ///
     /// **The new steady-state traffic is one small droppable message per match
     /// per arena second.** A match whose pilots are all parked sent nothing
@@ -745,8 +754,10 @@ enum Drain {
 
 /// What one pulse asked the loop to do next.
 enum Pulse {
-    /// Sleep until this deadline and pulse again.
-    Again(Instant),
+    /// Pulse again at this `next_due_ms` — the step's own answer, in the task's
+    /// wall milliseconds since its base. The loop turns it into an instant with
+    /// [`deadline`], because the base is the loop's (16b cut U.1).
+    Again(i64),
     /// The match is over; the task is done.
     Done,
 }
@@ -828,7 +839,8 @@ async fn arena_loop(mut task: Task) {
                 let wall = elapsed_ms(base);
                 let (controls, intents) = waiting.take();
                 match task.pulse(wall, &controls, &intents).await {
-                    Pulse::Again(next) => due = next,
+                    // 16b cut U.1: from the base, never from now.
+                    Pulse::Again(next_due_ms) => due = deadline(base, next_due_ms),
                     Pulse::Done => return,
                 }
             }
@@ -949,7 +961,7 @@ impl Task {
             return Pulse::Done;
         }
 
-        Pulse::Again(deadline(wall_now_ms, next_due_ms))
+        Pulse::Again(next_due_ms)
     }
 
     /// Publish one pulse's output: its chunks in order, then its frames, then
@@ -1206,21 +1218,37 @@ impl Task {
     }
 }
 
-/// When to pulse again, from the pulse's own `next_due_ms`.
+/// When to pulse again, from the pulse's own `next_due_ms`: the task's base
+/// plus that many milliseconds, or one millisecond from now if that has already
+/// passed.
 ///
-/// Both readings are in the task's monotonic wall milliseconds, so the interval
-/// between them is what the timer sleeps — measured from *now* rather than from
-/// the base, so a pulse that overran does not ask to be stepped in the past.
-/// An arena that is behind gets the shortest sleep there is and the next
-/// pulse's own clamp (doc 16 §3.1 "Clock and lag") absorbs the lag.
+/// **16b cut U.1** (16c `T-22`): the deadline is **absolute**. `next_due_ms` is
+/// in the task's own wall milliseconds since `base` (the reading `step` was given
+/// is `elapsed_ms(base)`), and `Arena::next_due_ms` answers a lattice point of
+/// arena time in them, so the deadline is `base + next_due_ms`. It used to be
+/// the interval `next_due_ms − wall_now_ms` measured from *now*, the instant the
+/// pulse finished — which added the pulse's own cost, and the timer's overshoot
+/// on the wake before it, to arena time on every wake, so the task drifted off
+/// the lattice by a little more each pulse and never came back.
 ///
-/// **16b cut M.2** (16c `B-51`): that shortest sleep is one millisecond, not
+/// Arena time is still wall time (doc 16 §3.1 "Clock and lag"): a production
+/// wake is the lattice point plus the OS timer's overshoot, which §3.1 calls wall
+/// jitter, and the pulse it starts ends that much off the lattice. The overshoot
+/// no longer **accumulates**, because the next deadline is again a point from the
+/// base and `Arena::next_due_ms` pulls a late arena back onto the lattice. (The
+/// task does not hand `step` the scheduled wall instead of the reading; that
+/// would make arena time exactly the lattice with lateness carried as lag, and
+/// is an owner question, not this cut's.)
+///
+/// **16b cut M.2** (16c `B-51`): the floor is one millisecond from now, never
 /// zero. A zero sleep re-pulses inside the same wall millisecond, whose `dt` is
 /// `0` and integrates nothing, so an event due "now" spun the timer instead of
-/// letting arena time reach it.
-fn deadline(wall_now_ms: i64, next_due_ms: i64) -> Instant {
-    let ahead = next_due_ms.saturating_sub(wall_now_ms).max(1);
-    Instant::now() + Duration::from_millis(u64::try_from(ahead).unwrap_or(0))
+/// letting arena time reach it; and an arena that is behind still gets the
+/// shortest sleep there is, with the next pulse's own clamp (doc 16 §3.1
+/// "Clock and lag") absorbing the lag.
+fn deadline(base: Instant, next_due_ms: i64) -> Instant {
+    let at = base + Duration::from_millis(u64::try_from(next_due_ms).unwrap_or(0));
+    at.max(Instant::now() + Duration::from_millis(1))
 }
 
 /// Milliseconds since the task's monotonic base, saturating.
@@ -1604,22 +1632,26 @@ mod tests {
         assert_eq!(reserve(24), 74);
     }
 
-    /// **16b cut M.2** (16c `B-51`): the timer's floor. An event due "now" — or an arena that is behind — sleeps one
-    /// millisecond, never zero: a zero sleep re-pulses inside the same wall
-    /// millisecond and integrates nothing.
+    /// **16b cut M.2** (16c `B-51`): the timer's floor. An event due "now" — or
+    /// an arena that is behind — sleeps one millisecond, never zero: a zero sleep
+    /// re-pulses inside the same wall millisecond and integrates nothing.
+    ///
+    /// **16b cut U.1**: the deadline takes the task's base, so a deadline already
+    /// past is the floor and a future one is the base plus it, not now plus the
+    /// interval.
     #[test]
     fn m2_a_deadline_due_now_or_in_the_past_is_at_least_one_millisecond_ahead() {
-        for (now, due) in [(5_000_i64, 5_000_i64), (5_000, 4_000), (0, i64::MIN)] {
+        let base = Instant::now();
+        for due in [0_i64, -1_000, i64::MIN] {
             let before = Instant::now();
-            let at = deadline(now, due);
+            let at = deadline(base, due);
             assert!(
                 at >= before + Duration::from_millis(1),
-                "deadline({now}, {due}) slept for nothing"
+                "deadline(base, {due}) slept for nothing"
             );
         }
-        // And a future event is still the interval to it.
-        let before = Instant::now();
-        let at = deadline(1_000, 1_250);
-        assert!(at >= before + Duration::from_millis(250));
+        // And a future event is the base plus it, exactly.
+        let at = deadline(base, 60_000);
+        assert_eq!(at, base + Duration::from_millis(60_000));
     }
 }
