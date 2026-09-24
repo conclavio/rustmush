@@ -98,7 +98,7 @@ use crate::arena::damage::UnitReturn;
 use crate::arena::intents::{Control, ControlState, Intent, IntentKind};
 use crate::arena::ledger::LedgerChunk;
 use crate::arena::state::{
-    Arena, ArenaError, Channel, CustodyOut, EndReason, MatchEnd, StopReason,
+    Arena, ArenaError, Channel, CustodyOut, Designator, EndReason, MatchEnd, StopReason,
 };
 use crate::arena::step::{Frame, StepOutput};
 use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
@@ -382,6 +382,10 @@ impl ArenaHandle {
     }
 }
 
+/// **Every unit's callsign, in unit-id order** (16b cut V.2): what
+/// [`Arena::callsigns`] answers and [`spawn_arena`] hands back beside the task.
+pub type Callsigns = Vec<(ObjId, Designator)>;
+
 /// **Start one match** (16b T1).
 ///
 /// The arena is built first, on the caller's thread, so a refused check-out
@@ -395,6 +399,12 @@ impl ArenaHandle {
 /// [`ArenaHandle::offer`]). The egress `Sender` is shared by every match on the
 /// world (one receiver, drained by the world loop).
 ///
+/// **16b cut V.2**: the third element of the answer is every unit's callsign
+/// ([`Arena::callsigns`]), read off the arena this built **before** it moves into
+/// the task — the slot rule of 16b cut Q.1 is applied once, by `Arena::new`, and
+/// the result record names each unit by what that one application said. Nothing
+/// is computed for it: it is a read of state the constructor already fixed.
+///
 /// # Errors
 ///
 /// Whatever [`Arena::new`] refuses: a unit off the window, two units in one
@@ -407,9 +417,11 @@ pub fn spawn_arena(
     match_cfg: &MatchConfig,
     sensors_cfg: &SensorsConfig,
     egress: mpsc::Sender<ArenaOut>,
-) -> Result<(ArenaHandle, JoinHandle<()>), ArenaError> {
+) -> Result<(ArenaHandle, JoinHandle<()>, Callsigns), ArenaError> {
     let units = custody.units.len();
     let arena = Arena::new(custody, arena_cfg, match_cfg, sensors_cfg)?;
+    // 16b cut V.2: read before `arena` is moved into the task below.
+    let callsigns = arena.callsigns();
     let per_unit = usize::try_from(arena_cfg.intents.max_pending_per_unit).unwrap_or(usize::MAX);
     let reserve = reserve(units);
     // Clamped to what tokio's channel accepts, which is a bound no real config
@@ -457,6 +469,7 @@ pub fn spawn_arena(
             reported,
         },
         join,
+        callsigns,
     ))
 }
 

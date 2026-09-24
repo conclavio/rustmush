@@ -295,6 +295,9 @@ impl GameModule for ArenaStarter {
                     &MatchConfig::default(),
                     &tacsim::config::SensorsConfig::default(),
                 )
+                // 16b cut V.2: the answer is the callsigns, which this rig
+                // does not read.
+                .map(|_callsigns| ())
                 .map_err(|error| CmdError::msg(error.to_string()))
             }),
         )?;

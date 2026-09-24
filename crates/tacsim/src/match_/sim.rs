@@ -10,6 +10,7 @@
 //! SIM AI [n]              how many units a side fields when the machines fill in
 //! SIM UNIT [<type>]       which unit type your own slot fields
 //! SIM CONCEDE             give the match up for your side (its lead, while it runs)
+//! SIM HISTORY             the centre's last twenty matches, newest first
 //! ```
 //!
 //! # Why one verb and not five
@@ -96,11 +97,15 @@ pub enum Selector {
     /// **`SIM CONCEDE`** (16b cut D.3, `B-33`): a side's lead gives the
     /// running match up, and the other side wins it.
     Concede,
+    /// **`SIM HISTORY`** (16b cut V.2; 16c N2): the centre's last
+    /// [`crate::match_::HISTORY_DEPTH`] finished matches, newest first, in
+    /// public words.
+    History,
 }
 
 impl Selector {
-    /// The eight words, in help order.
-    pub const ALL: [(Selector, &'static str); 8] = [
+    /// The nine words, in help order (16b cut V.2 added `history`, ninth).
+    pub const ALL: [(Selector, &'static str); 9] = [
         (Selector::Team, "team"),
         (Selector::Leave, "leave"),
         (Selector::Start, "start"),
@@ -109,6 +114,7 @@ impl Selector {
         (Selector::Status, "status"),
         (Selector::Ai, "ai"),
         (Selector::Unit, "unit"),
+        (Selector::History, "history"),
     ];
 
     /// One word, however it was spelled.
@@ -156,15 +162,15 @@ fn selector_of(ctx: &Ctx<'_>) -> Option<(Selector, String)> {
     Selector::parse(head).map(|selector| (selector, rest.to_owned()))
 }
 
-/// `SIM <team|leave|start|abort|concede|status|ai|unit>` — the whole lobby (doc
-/// 16 §3.7).
+/// `SIM <team|leave|start|abort|concede|status|ai|unit|history>` — the whole
+/// lobby (doc 16 §3.7).
 ///
 /// # Errors
 ///
 /// Whatever the centre refused, as the one line the player sees.
 pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "SIM TEAM red|blue | SIM LEAVE | SIM START | SIM ABORT | SIM CONCEDE | \
-                         SIM STATUS | SIM AI [n] | SIM UNIT [type]";
+                         SIM STATUS | SIM AI [n] | SIM UNIT [type] | SIM HISTORY";
     // **Where before what** (16b cut F.4 residual). The deleted gate answered
     // every spelling of the verb outside the centre with the one
     // [`crate::match_::OUTSIDE_CENTRE`] line, and taking it away put the parser
@@ -233,6 +239,25 @@ pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let actor = ctx.actor;
             for row in lobby::status_lines(ctx.w, lobby::BoardReader::Player(actor)) {
                 ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, row);
+            }
+            Ok(())
+        }
+        // **16b cut V.2 (16c N2, the result half)**: the ninth selector, and no
+        // ninth verb. A pure read of the book's RAM ring — filled from the result
+        // documents at boot and at every result write — so it writes nothing and
+        // reads no store. Of the centre like every selector, and refused outside
+        // it by the check at the top of this function. Its lines are the public
+        // outcome: no object number, no pilot's name, no position, no contact and
+        // never the seed (`record::history_lines`).
+        Selector::History => {
+            let actor = ctx.actor;
+            let lines = ctx
+                .w
+                .module_state::<crate::match_::MatchBook>()
+                .map(|book| crate::match_::history_lines(book.history(), actor))
+                .unwrap_or_else(|| crate::match_::history_lines(std::iter::empty(), actor));
+            for line in lines {
+                ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
             }
             Ok(())
         }
@@ -389,6 +414,9 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    what this server can field and what you are flying; with a type, your pod's \
                    tank is refitted to it when the match starts. Your own slot only, before the \
                    match starts, and the pod goes back to its own tank afterwards.\n\
+                   SIM HISTORY         the centre's last twenty matches, newest first: who \
+                   won and why, how long, how many a side, when; your own callsign on the ones \
+                   you flew.\n\
                    The switch spelling (SIM/STATUS) is the same command. All of it works in \
                    the simulator lobby, the two team rooms and the pods; anywhere else every \
                    spelling of SIM answers only where the simulator is."
@@ -414,8 +442,9 @@ mod tests {
     fn every_selector_has_a_word_and_a_switch() {
         let switches = register_switches();
         // 16b cut Q.7 made it six: `ai` joined the five. 16b cut Q.8 made it
-        // seven with `unit`, and 16b cut D.3 eight with `concede`.
-        assert_eq!(switches.len(), 8);
+        // seven with `unit`, 16b cut D.3 eight with `concede`, and 16b cut V.2
+        // nine with `history`.
+        assert_eq!(switches.len(), 9);
         for (selector, name) in Selector::ALL {
             assert!(switches.iter().any(|switch| switch == name), "{name}");
             assert_eq!(Selector::parse(name), Some(selector));

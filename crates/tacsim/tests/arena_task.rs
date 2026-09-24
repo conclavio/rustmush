@@ -329,7 +329,7 @@ fn start_with_egress(
     capacity: usize,
 ) -> (ArenaHandle, JoinHandle<()>, mpsc::Receiver<ArenaOut>) {
     let (egress_tx, egress_rx) = mpsc::channel(capacity);
-    let (handle, join) = spawn_arena(
+    let (handle, join, _callsigns) = spawn_arena(
         &tokio::runtime::Handle::current(),
         MatchId(seed),
         custody(seed),
@@ -909,7 +909,7 @@ fn start_unseated(
     sensors_cfg: &SensorsConfig,
 ) -> (ArenaHandle, mpsc::Receiver<ArenaOut>) {
     let (egress_tx, egress_rx) = mpsc::channel(256);
-    let (handle, _join) = spawn_arena(
+    let (handle, _join, _callsigns) = spawn_arena(
         &tokio::runtime::Handle::current(),
         MatchId(seed),
         unseated_custody(seed),
@@ -1939,7 +1939,7 @@ async fn m1_a_stop_meeting_an_ended_in_flight_is_busy_and_a_dead_task_is_gone() 
 
     // The `Ended` in flight: stopped, reported, never drained.
     let seed = SEEDS[14].0;
-    let (handle, join) = spawn(seed);
+    let (handle, join, _callsigns) = spawn(seed);
     handle
         .offer(ArenaMsg::Stop(StopReason::Abort))
         .expect("the inbox takes a stop");
@@ -1972,7 +1972,7 @@ async fn m1_a_stop_meeting_an_ended_in_flight_is_busy_and_a_dead_task_is_gone() 
 
     // The task that died without one.
     let seed = SEEDS[15].0;
-    let (handle, join) = spawn(seed);
+    let (handle, join, _callsigns) = spawn(seed);
     handle.signal_stop();
     let join = {
         let mut join = join;

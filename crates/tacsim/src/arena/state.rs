@@ -3588,6 +3588,24 @@ impl Arena {
         self.units.get_mut(index)
     }
 
+    /// **Every unit's callsign, in unit-id order** (16b cut V.2): the one place
+    /// the slot rule of 16b cut Q.1 was applied, read back for the result record.
+    ///
+    /// A pure read of [`UnitState::callsign`] over the already id-sorted
+    /// [`Arena::units`]. The world side reads it off the arena
+    /// `crate::arena_task::spawn_arena` has just built, before the arena moves
+    /// into its task, rather than re-deriving the rule from the roster: the
+    /// roster's order is not the slot order (explicit slots resolve first, then
+    /// the slot-0 units in unit-id order), and one source of truth cannot
+    /// disagree with itself.
+    #[must_use]
+    pub fn callsigns(&self) -> Vec<(ObjId, Designator)> {
+        self.units
+            .iter()
+            .map(|state| (state.id, state.callsign))
+            .collect()
+    }
+
     /// **The one assignment of [`UnitState::unit`] in non-test code** (16b cut
     /// Q.2; doc 16 §3.5 "Damage", D-16-6): take the unit `mush_tactics::apply`
     /// handed back, and recompute the band cache beside it.

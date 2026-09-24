@@ -87,14 +87,16 @@ pub use lobby::{
     status_lines, unattended_deadline, unattended_line, unit_type as sim_unit_type,
 };
 pub use record::{
-    MatchOutcome, MatchRecord, MatchState, PoseNumbers, TeamRoster, UnitOutcome, UnitResult,
-    match_id_of_key, result_key, write_restart_abort,
+    HISTORY_DEPTH, HistoryRow, HistoryUnit, MatchOutcome, MatchRecord, MatchState, NO_HISTORY,
+    PoseNumbers, TeamRoster, UnitOutcome, UnitResult, arena_label, civil_utc, duration_words,
+    end_words, history_lines, match_id_of_key, outcome_words, report_key, result_key,
+    write_restart_abort,
 };
 pub use reset::{RESET_CAUSE, ResetReport, reset_stock_tanks, spec_plan};
 pub use sim::{SIM_VERB, Selector, sim_command};
 pub use verbs::{ArenaVerbError, arena_command, register_switches, state_word};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use mush_core::{Ctx, ObjId};
 use smol_str::SmolStr;
@@ -137,6 +139,18 @@ pub const MAX_TRACKED_MATCHES: usize = 256;
 /// the registry's rows exist only while a task does, and a [`MatchRecord`] exists
 /// from `Selection` (before any task) to the moment its result is written (after
 /// the task is gone).
+///
+/// **The history ring** (16b cut V.2; 16c N2, the result half). The book also
+/// remembers the centre's last [`HISTORY_DEPTH`] finished matches, newest first,
+/// as one [`HistoryRow`] each ([`MatchBook::remember`]). The ring is **RAM**,
+/// filled at boot from the result documents the module's boot data already
+/// carries (`boot_matches` in the crate root, before its restart-abort loop
+/// writes anything) and kept current by every result write
+/// (`record::write_result`, [`write_restart_abort`]), each of which remembers
+/// the very document it pushes. It is what `SIM HISTORY` reads, and what 16b cut
+/// V.3's `SIM REPORT` will read — **never the store**: the depth is past
+/// [`mush_core::MAX_STORE_READ_KEYS`], and every result document is already a
+/// boot document, so a store read would fetch what the book was handed at boot.
 #[derive(Clone, Debug, Default)]
 pub struct MatchBook {
     /// The next id to mint. `0` means "not loaded yet"; the first allocation
@@ -172,6 +186,9 @@ pub struct MatchBook {
     /// **16b cut U.4** — the match whose check-out used [`Self::opening_cells`],
     /// so that match's end, and no other, clears them.
     opening_consumed_by: Option<MatchId>,
+    /// **16b cut V.2** — the last [`HISTORY_DEPTH`] finished matches, in
+    /// **descending id order** (newest first). See [`MatchBook::remember`].
+    history: VecDeque<HistoryRow>,
 }
 
 /// **One opening cell staff chose for a centre slot** (16b cut U.4, 16c `T-52`;
@@ -374,6 +391,42 @@ impl MatchBook {
     /// The centre, mutably — the lobby's own transitions and nothing else.
     pub(crate) fn centre_mut(&mut self) -> &mut lobby::Centre {
         &mut self.centre
+    }
+
+    /// **Remember one finished match** (16b cut V.2): replaces a row of the same
+    /// id, inserts in **descending id order** whatever the order of the calls,
+    /// truncates to [`HISTORY_DEPTH`] and answers the row that fell off, if one
+    /// did.
+    ///
+    /// The order is the ids' and never the calls': the boot remembers the result
+    /// documents in whatever order its key-value pairs arrive and then writes its
+    /// restart aborts, and a result written later in the boot can name a lower id
+    /// than one the boot already read. The row that falls off is the lowest id,
+    /// which can be `row` itself when the ring is full of newer ones.
+    pub fn remember(&mut self, row: HistoryRow) -> Option<HistoryRow> {
+        self.history.retain(|held| held.id != row.id);
+        let at = self
+            .history
+            .iter()
+            .position(|held| held.id < row.id)
+            .unwrap_or(self.history.len());
+        self.history.insert(at, row);
+        if self.history.len() > HISTORY_DEPTH {
+            self.history.pop_back()
+        } else {
+            None
+        }
+    }
+
+    /// The remembered matches, newest first (16b cut V.2).
+    pub fn history(&self) -> impl Iterator<Item = &HistoryRow> {
+        self.history.iter()
+    }
+
+    /// One remembered match by id, if the ring still holds it (16b cut V.2).
+    #[must_use]
+    pub fn remembered(&self, id: MatchId) -> Option<&HistoryRow> {
+        self.history.iter().find(|row| row.id == id)
     }
 
     /// Which match holds `unit`, as the book knows it (the registry's binding is
@@ -706,6 +759,8 @@ pub fn start(
         ledger_digest: String::new(),
         seed,
         last_pose: BTreeMap::new(),
+        // 16b cut V.2: filled from the arena's own answer once it is open.
+        callsigns: BTreeMap::new(),
         // 16b cut N.2: the same grouping `Arena::new` derives, from the same
         // triples — a side's reflex units in pod pairs, lowest id commanding.
         squads: crate::deliberation::squads_of(
@@ -775,21 +830,33 @@ pub fn start(
         resolution,
         seed,
     };
-    if let Err(error) =
-        crate::arena_bridge::open_match(ctx, match_id, custody, arena_cfg, match_cfg, sensors_cfg)
-    {
-        roll_back(ctx, match_id, &checked_out);
-        return Err(StartError::Open(error));
-    }
+    let callsigns = match crate::arena_bridge::open_match(
+        ctx,
+        match_id,
+        custody,
+        arena_cfg,
+        match_cfg,
+        sensors_cfg,
+    ) {
+        Ok(callsigns) => callsigns,
+        Err(error) => {
+            roll_back(ctx, match_id, &checked_out);
+            return Err(StartError::Open(error));
+        }
+    };
 
     // **`Boarding` -> `Running`** - the trigger itself, and the last thing that
     // happens, so a refusal above never leaves a match claiming to run.
+    //
+    // **16b cut V.2**: and the callsigns beside it — the arena's own read of the
+    // slot rule it applied (`Arena::callsigns`), kept for the result record.
     if let Some(record) = ctx
         .w
         .module_state_mut::<MatchBook>()
         .and_then(|book| book.get_mut(match_id))
     {
         record.state = MatchState::Running;
+        record.callsigns = callsigns.into_iter().collect();
     }
     Ok(match_id)
 }
@@ -1110,7 +1177,7 @@ pub fn finish(
                 "tacsim: a deployed unit no longer exists at check-in; its custody is lost"
             );
             mush_sim::deployed::clear(ctx.w, unit);
-            results.push(UnitResult::lost(unit));
+            results.push(UnitResult::lost(unit, record.callsign_word(unit)));
             continue;
         }
         // **16b cut W.2** fills `CustodyIn::cells`: the plan is the diff between the
@@ -1160,7 +1227,7 @@ pub fn finish(
                              stays on the record, and `@arena/release <unit>` or a restart of \
                              the server half is what clears one"
                         );
-                        results.push(UnitResult::lost(unit));
+                        results.push(UnitResult::lost(unit, record.callsign_word(unit)));
                         continue;
                     }
                 }
@@ -1199,7 +1266,7 @@ pub fn finish(
         // — the counters and the outcome beside them describe cells that were
         // never committed.
         if custody_lost {
-            results.push(UnitResult::lost(unit));
+            results.push(UnitResult::lost(unit, record.callsign_word(unit)));
             continue;
         }
         // **16b cut W.2**: doc 16 §4's per-unit row — what became of it and its two
@@ -1212,8 +1279,10 @@ pub fn finish(
                 .get(&unit)
                 .copied()
                 .unwrap_or((UnitOutcome::Intact, 0, 0));
+        // 16b cut V.2: named by the callsign the arena resolved at check-out.
         results.push(UnitResult {
             unit: unit.0,
+            callsign: record.callsign_word(unit),
             outcome,
             shots,
             hits,
@@ -1233,9 +1302,16 @@ pub fn finish(
         .module_state::<ArenaRegistry>()
         .map(|registry| registry.pilots_of(match_id))
         .unwrap_or_default();
-    if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
-        registry.untrack(match_id);
-    }
+    // **16b cut V.2**: the mirror `untrack` hands back is kept for its chunk
+    // count, which the result document carries as `ledger.chunks`. By now the
+    // world has appended the whole tape: the task sends every queued chunk
+    // before its `Ended` (`drain_backlog_waiting`), and the egress is one
+    // ordered queue.
+    let chunks = ctx
+        .w
+        .module_state_mut::<ArenaRegistry>()
+        .and_then(|registry| registry.untrack(match_id))
+        .map_or(0, |mirror| mirror.chunks_appended);
     for pilot in orphans {
         crate::arena_bridge::clear_cockpit(ctx, pilot);
     }
@@ -1258,7 +1334,15 @@ pub fn finish(
         record.ended = Some(end);
         record.ledger_digest.clone_from(&ledger_digest);
     }
-    record::write_result(ctx, match_id, outcome, end, &ledger_digest, &results);
+    record::write_result(
+        ctx,
+        match_id,
+        outcome,
+        end,
+        &ledger_digest,
+        &results,
+        chunks,
+    );
     // 16b cut K.1: and the lobby's own half of the release — the pods and the
     // slots — in this same authoritative action, with the centre left in its
     // terminal state carrying the outcome until somebody resets it.

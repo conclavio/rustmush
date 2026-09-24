@@ -42,6 +42,9 @@ the same thing this topic does, in fewer words.
   SIM UNIT [type]     which unit type your own slot fields. The bare word lists
                       what this server can field, for anybody in the centre, and
                       adds what you are flying if you hold a slot.
+  SIM HISTORY         the centre's last twenty matches, newest first: who won
+                      and why, how long, how many a side, when; your own
+                      callsign on the ones you flew.
 
 A slot belongs to your **account**, not to your character, so an alt cannot take
 a second one. All of these work in the lobby, the two team rooms and the pods,
@@ -184,6 +187,19 @@ tanks stand where they stopped, damaged as they ended — that is the match's ow
 evidence, and `SIM STATUS` keeps showing the result until somebody starts the
 next match. Staff can read the full record with `@arena/status` and the tanks
 with `@unit/show`.
+
+The centre remembers its last twenty matches after the board has moved on.
+`SIM HISTORY` lists them, newest first — one line each, with the match number,
+how it ended, how long it ran, how many a side and when it finished:
+
+  The centre's last 2 matches, newest first:
+    #2  blue won (red eliminated)  4 m 32 s  1 v 1  2026-09-24 14:02 UTC  (you flew RA)
+    #1  aborted (the server restarted)  0 s  0 v 0  2026-09-24 13:02 UTC
+
+`(you flew RA)` marks a match you piloted, with the callsign you flew it under.
+The list is the public outcome and nothing more: it names no tank and nobody's
+position. A debrief of a match you flew — what your cockpit saw of it — is not
+available yet; when it comes, it will be read from this same list.
 
 The next `SIM TEAM` clears the board, puts all eight tanks back at spec, back at
 muster and back to their own types, and opens selection again.

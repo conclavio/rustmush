@@ -461,6 +461,61 @@ async fn ask_whole(term: &mut Term, line: &str) -> String {
     panic!("`{line}` never produced a whole answer")
 }
 
+/// **A `SIM HISTORY` row holds its public words and nothing else** (16b cut V.2).
+///
+/// `flat` is the answer with its whitespace collapsed (the session wraps a row
+/// past eighty columns). The row runs from `head` — its id and outcome words —
+/// to its `UTC`, and on to the `(you flew ..)` suffix when `flew` is `Some`;
+/// every word between the two must be one the pinned format prints there — the
+/// duration's `<n> h|m|s` pairs, `<red> v <blue>`, the date and the time — so a
+/// word the format does not print is a leak, whatever it is.
+fn history_row_is_public(flat: &str, id: u64, head: &str, flew: Option<&str>) {
+    let start = flat
+        .find(head)
+        .unwrap_or_else(|| panic!("no row starting {head:?} in: {flat}"));
+    let rest = flat.get(start + head.len()..).unwrap_or_default();
+    let tail = flew.map_or_else(
+        || " UTC".to_owned(),
+        |callsign| format!(" UTC (you flew {callsign})"),
+    );
+    let end = rest
+        .find(&tail)
+        .unwrap_or_else(|| panic!("row #{id} does not end {tail:?}: {flat}"));
+    let words: Vec<&str> = rest
+        .get(..end)
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect();
+    let digits = |word: &str| !word.is_empty() && word.bytes().all(|b| b.is_ascii_digit());
+    // The duration: one or more `<n> <unit>` pairs.
+    let mut at = 0;
+    while let (Some(n), Some(unit)) = (words.get(at), words.get(at + 1)) {
+        if digits(n) && ["h", "m", "s"].contains(unit) {
+            at += 2;
+        } else {
+            break;
+        }
+    }
+    assert!(at >= 2, "row #{id} has no duration: {words:?}");
+    // Then `<red> v <blue>`, the date and the time, and nothing else.
+    let date = |word: &str| {
+        let parts: Vec<&str> = word.split('-').collect();
+        parts.len() == 3 && parts.iter().all(|part| digits(part))
+    };
+    let clock = |word: &str| {
+        word.split_once(':')
+            .is_some_and(|(hours, minutes)| digits(hours) && digits(minutes))
+    };
+    assert!(
+        matches!(
+            words.get(at..).unwrap_or_default(),
+            [red, "v", blue, day, time]
+                if digits(red) && digits(blue) && date(day) && clock(time)
+        ),
+        "row #{id} carries a word its public format does not print: {words:?}"
+    );
+}
+
 /// One object's dbref, out of an `@find` listing or a `@domain` row.
 fn dbref_of(listing: &str, name: &str) -> u32 {
     listing
@@ -3172,7 +3227,7 @@ async fn the_ends_of_a_match_name_sides_and_pilots_and_nothing_of_the_field() {
     // Bo's own object numbers, so the sweep below can look for them by name —
     // taken before the match, since 16b cut U.4 (16c `T-67`) `@find` names
     // nothing an arena holds.
-    let (_red, blue_tank, _muster, _domain) = seat_the_witnesses(&mut god).await;
+    let (red_tank, blue_tank, _muster, _domain) = seat_the_witnesses(&mut god).await;
     take_off(&mut ada, &mut bo).await;
 
     // The second witness for that rule: during `Running`, God's `@find` counts
@@ -3220,6 +3275,46 @@ async fn the_ends_of_a_match_name_sides_and_pilots_and_nothing_of_the_field() {
         );
     }
     no_sixteen_digit_word(&board, "the terminal board");
+
+    // **16b cut V.2 (16c N2)**: and the centre's history of it is the same public
+    // outcome — who won and why, how long, how many a side, when, and the
+    // reader's own callsign — and nothing of the field. The row's `#1` is the
+    // match id; no `#` on it may be the tank's object number. The result was
+    // written in the check-in action whose line Bo has just read, so the ring
+    // already holds it.
+    let history = ask_whole(&mut bo, "SIM HISTORY").await;
+    // Flattened: a row with its suffix runs past the terminal's eighty columns
+    // and the session wraps it; the two-space layout is pinned in `tacsim`.
+    let flat = history.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("#1 blue won (red conceded) ") && flat.contains(" 1 v 1 "),
+        "{history}"
+    );
+    assert!(
+        flat.contains(" (you flew BA)"),
+        "the reader's own callsign: {history}"
+    );
+    for leak in [
+        RED_TANK, BLUE_TANK, "bearing", "cell", " m east", " m north", "contact",
+    ] {
+        assert!(
+            !history.contains(leak),
+            "`SIM HISTORY` leaked {leak:?}:\n{history}"
+        );
+    }
+    // Neither side's tank by object number: not the reader's own and not the
+    // other side's, which is the leak this rule exists for.
+    for tank in [red_tank, blue_tank] {
+        assert!(
+            !history.contains(&format!("#{tank}")),
+            "`SIM HISTORY` named an object:\n{history}"
+        );
+    }
+    no_sixteen_digit_word(&history, "`SIM HISTORY`");
+    // And no bare number either: the row is read word by word against its whole
+    // public shape, so any word it does not account for — an object number
+    // without its `#`, a pilot's name, a coordinate — fails it.
+    history_row_is_public(&flat, 1, "#1 blue won (red conceded)", Some("BA"));
 
     // The unattended end's sentence is the same shape with the person taken out
     // of it, so there is even less in it: it names the match and nothing else.

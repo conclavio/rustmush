@@ -875,6 +875,11 @@ pub enum OpenMatchError {
 /// arena's table therefore agree from the first pulse, which is what lets
 /// [`forward_intent`] stamp an epoch the arena will authorise.
 ///
+/// **16b cut V.2**: the answer is every unit's callsign, in unit-id order, as
+/// [`crate::arena_task::spawn_arena`] read it off the arena it built — the
+/// check-out keeps it on `MatchRecord::callsigns` so the result record can name
+/// each unit by the designator every viewer called it by.
+///
 /// # Errors
 ///
 /// [`OpenMatchError`]: no registry, no runtime, a duplicate id, or whatever
@@ -886,7 +891,7 @@ pub fn open_match(
     arena_cfg: &crate::config::ArenaConfig,
     match_cfg: &crate::config::MatchConfig,
     sensors_cfg: &crate::config::SensorsConfig,
-) -> Result<(), OpenMatchError> {
+) -> Result<crate::arena_task::Callsigns, OpenMatchError> {
     let tasks = ctx
         .w
         .module_state::<ArenaRegistry>()
@@ -910,7 +915,7 @@ pub fn open_match(
     // world keeps its own immutable copy rather than reaching across the seam or
     // rebuilding it from the atlas per look.
     let ground = Arc::new(custody.definition.clone());
-    let (handle, join) = crate::arena_task::spawn_arena(
+    let (handle, join, callsigns) = crate::arena_task::spawn_arena(
         &runtime,
         match_id,
         custody,
@@ -944,7 +949,7 @@ pub fn open_match(
             }
         }
     }
-    Ok(())
+    Ok(callsigns)
 }
 
 // ---------------------------------------------------------------------------

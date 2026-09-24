@@ -27,6 +27,9 @@
 //!    START` + `BOARD` succeeds and opens on a full magazine at the authored
 //!    muster. `arena_custody.rs`'s restart test drives the **staff** path
 //!    (`@arena/start`, no pods, no seats) and therefore proves none of that.
+//!    **16b cut V.2** ends it with a third boot over the same store, with no
+//!    match running, so the two rows `SIM HISTORY` lists after it are the ones
+//!    the boot read out of the result documents.
 //!
 //! Both tests read the store directly for the durable `assignment:<unit>` billet,
 //! and every such read is **waited for** ([`wait_for_cockpit`]): no line sent to
@@ -104,6 +107,10 @@ const OUTSIDE_COCKPIT: &str = "You are not at the station of a deployed unit.";
 const SENTINEL: &str = "zzz-sentinel";
 /// The parser's refusal, which is the sentinel's answer.
 const HUH: &str = "Huh?";
+/// `SIM`'s one refusal outside the centre (`tacsim::match_::OUTSIDE_CENTRE`).
+const OUTSIDE: &str = "The simulator is through the lobby.";
+/// Match one's row, in `SIM HISTORY`'s public words (16b cut V.2).
+const MATCH_ONE_WON: &str = "#1  red won (blue eliminated)";
 
 // ---------------------------------------------------------------------------
 // The rig
@@ -364,6 +371,52 @@ fn dbref_of(listing: &str, name: &str) -> u32 {
         .unwrap_or_else(|| panic!("no dbref for {name:?} in:\n{listing}"))
 }
 
+/// **An answer with every run of whitespace made one space** (16b cut V.2).
+///
+/// The session wraps a line at the terminal's width, and a `SIM HISTORY` row
+/// with its suffix runs past eighty columns, so the break can fall anywhere in
+/// its tail. The exact two-space layout is pinned without a terminal by
+/// `tacsim`'s own `v2_history_lines_are_verbatim`; over SSH the words and their
+/// order are what is asserted.
+fn flat(seen: &str) -> String {
+    seen.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// **One match's row of a `SIM HISTORY` answer** (16b cut V.2), flattened: from
+/// `#<id> ` to the next row's `#`, the sentinel's own echo or the sentinel's
+/// refusal.
+///
+/// The echo is a stop too: the session echoes each submitted line from its own
+/// data handler while the world's answer travels a separate pump, so on a loaded
+/// machine `zzz-sentinel` can land between the last row and the `Huh?` — and a
+/// flattened last row would then end in it.
+fn history_row(seen: &str, id: u64) -> String {
+    let flat = flat(seen);
+    let start = flat
+        .find(&format!("#{id} "))
+        .unwrap_or_else(|| panic!("no row #{id} in:\n{seen}"));
+    let rest = flat.get(start..).unwrap_or_default();
+    let echo = format!(" {SENTINEL}");
+    let end = [" #", echo.as_str(), " Huh?"]
+        .iter()
+        .filter_map(|stop| {
+            rest.get(1..)
+                .and_then(|tail| tail.find(stop))
+                .map(|at| at + 1)
+        })
+        .min()
+        .unwrap_or(rest.len());
+    rest.get(..end).unwrap_or(rest).trim().to_owned()
+}
+
+/// Where a match's row sits in a `SIM HISTORY` answer, so newest-first can be
+/// asserted.
+fn row_at(seen: &str, id: u64) -> usize {
+    flat(seen)
+        .find(&format!("#{id} "))
+        .unwrap_or_else(|| panic!("no row #{id} in:\n{seen}"))
+}
+
 /// One cell's current value out of an `@unit/show` listing
 /// (`cell section/hull/internals: 200/200` answers `200`).
 fn cell_current(listing: &str, path: &str) -> i64 {
@@ -605,6 +658,32 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
         "the winner's magazine is down after {shots} shot(s): {survivor}"
     );
 
+    // **16b cut V.2 (16c N2)**: and the centre remembers it. The winner reads
+    // the row with their own callsign on it — waited for, because the result is
+    // written when the check-in runs and no line the winner types is ordered
+    // after that write.
+    let history = poll_whole(&mut ada, "SIM HISTORY", MATCH_ONE_WON).await;
+    assert!(
+        history.contains("The centre's last match:"),
+        "one row, one header: {history}"
+    );
+    let row = history_row(&history, 1);
+    assert!(
+        row.contains(" 1 v 1 ") && row.ends_with(" (you flew RA)"),
+        "the winner's row: {row}"
+    );
+    // A third character, standing in the lobby, reads the same row and no
+    // suffix: they flew nothing.
+    let history = poll_whole(&mut god, "SIM HISTORY", MATCH_ONE_WON).await;
+    let row = history_row(&history, 1);
+    assert!(
+        row.contains(" 1 v 1 ") && !row.contains("you flew"),
+        "a bystander's row: {row}"
+    );
+    // And outside the centre the line is refused like every other `SIM` line.
+    say(&mut god, &format!("@teleport #{}=#0", GOD.0), "Limbo").await;
+    say(&mut god, "SIM HISTORY", OUTSIDE).await;
+
     // ---- match two, by the two players alone -----------------------------
     //
     // Nothing is typed at the staff terminal from here on. The claim itself is
@@ -684,6 +763,29 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     say(&mut bo, "HEADING 270", "Steering to 270").await;
 
     say(&mut ada, "SIM ABORT", "aborts match").await;
+
+    // **16b cut V.2**: two rows now, the newer first, and the loser of match one
+    // reads their own callsign on both.
+    let history = poll_whole(&mut bo, "SIM HISTORY", "#2  aborted  ").await;
+    assert!(
+        history.contains("The centre's last 2 matches, newest first:"),
+        "{history}"
+    );
+    assert!(
+        row_at(&history, 2) < row_at(&history, 1),
+        "newest first: {history}"
+    );
+    assert!(
+        history_row(&history, 1).starts_with(&flat(MATCH_ONE_WON)),
+        "{history}"
+    );
+    for id in [1, 2] {
+        let row = history_row(&history, id);
+        assert!(
+            row.contains(" 1 v 1 ") && row.ends_with(" (you flew BA)"),
+            "Bo flew blue slot 1 both times: {row}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -776,6 +878,24 @@ async fn a_restart_mid_match_through_the_lobby_leaves_no_body_in_a_pod() {
     say(&mut ada, "look", "Red Room").await;
     say(&mut bo, "look", "Blue Room").await;
 
+    // (3b) **16b cut V.2**: the centre remembers the match the restart ended —
+    //      the `aborted(restart)` result this boot WROTE for match one (the
+    //      first server died with match one running, so the store held no result
+    //      for it to read), remembered on the ring by the same write —
+    //      teamless, so `0 v 0`, and named for nobody. The boot's READ of the
+    //      result documents is (6) below, across a third boot.
+    let history = poll_whole(
+        &mut ada,
+        "SIM HISTORY",
+        "#1  aborted (the server restarted)  0 s  0 v 0",
+    )
+    .await;
+    assert!(history.contains("The centre's last match:"), "{history}");
+    assert!(
+        !history_row(&history, 1).contains("you flew"),
+        "a restart result names no unit: {history}"
+    );
+
     // (4) And the centre runs a second match, through the lobby, with nobody's
     //     help.
     back_to_the_lobby(&mut ada).await;
@@ -797,6 +917,91 @@ async fn a_restart_mid_match_through_the_lobby_leaves_no_body_in_a_pod() {
         "the rounds staff spent before the restart were never put back: {seen}"
     );
     say(&mut ada, "SIM ABORT", "aborts match").await;
+
+    // (5) **16b cut V.2**: and the second match's abort is remembered above the
+    //     restart's, with the callsign Ada flew it under.
+    let history = poll_whole(&mut ada, "SIM HISTORY", "#2  aborted  ").await;
+    assert!(
+        history.contains("The centre's last 2 matches, newest first:"),
+        "{history}"
+    );
+    assert!(
+        row_at(&history, 2) < row_at(&history, 1),
+        "newest first: {history}"
+    );
+    assert!(
+        history_row(&history, 2).ends_with(" (you flew RA)"),
+        "{history}"
+    );
+    assert!(
+        history_row(&history, 1).starts_with("#1 aborted (the server restarted) 0 s 0 v 0"),
+        "{history}"
+    );
+
+    // (6) **16b cut V.2: the ring is filled from the boot documents.** Both
+    //     results are now in the store — match one's restart abort, written by
+    //     the second boot, and match two's own `aborted`, written by its
+    //     check-in — and no match is running, so a third boot writes no result
+    //     at all. Whatever `SIM HISTORY` lists after it was READ by
+    //     `boot_matches`, in id order, off the documents; without that read the
+    //     centre would answer that it has no finished match on record.
+    //
+    //     Waited for: the check-in's writes travel the persist lane, which no
+    //     line typed here orders. Its markers are waited out too, so the third
+    //     boot finds nothing checked out and has no restart abort to write over
+    //     match two's own result.
+    wait_until(
+        STEP_TIMEOUT,
+        "both results and the cleared markers to reach the store",
+        async || {
+            let mut settled = true;
+            for (id, reason) in [(1_u64, "restart"), (2, "abort")] {
+                settled &= store
+                    .module_json_get("tacsim", &format!("tacsim:match:{id}"))
+                    .await
+                    .expect("the store read")
+                    .is_some_and(|document| document["reason"].as_str() == Some(reason));
+            }
+            for unit in [red, blue] {
+                settled &= store
+                    .module_json_get("tactics", &format!("unit:{unit}"))
+                    .await
+                    .expect("the store read")
+                    .is_some_and(|document| document.get("deployed").is_none());
+            }
+            settled
+        },
+    )
+    .await;
+    drop(ada);
+    drop(bo);
+    drop(god);
+    drop(second);
+
+    let third = boot("sim-restart-c", Some(Arc::clone(&store))).await;
+    let (_god3, mut god) = login(third.addr, "boss", GM_PASSWORD, "God").await;
+    // Everybody into the lobby by staff hand, so the read below is typed
+    // inside the centre whatever room the last check-in's hatch left Ada in.
+    open_the_centre(&mut god).await;
+    let (_a3, mut ada) = login(third.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let history = poll_whole(&mut ada, "SIM HISTORY", "#2  aborted  ").await;
+    assert!(
+        history.contains("The centre's last 2 matches, newest first:"),
+        "both results read back from the store: {history}"
+    );
+    assert!(
+        row_at(&history, 2) < row_at(&history, 1),
+        "newest first, as read: {history}"
+    );
+    assert!(
+        history_row(&history, 2).ends_with(" (you flew RA)"),
+        "match two's callsign survived the store: {history}"
+    );
+    assert!(
+        history_row(&history, 1).starts_with("#1 aborted (the server restarted) 0 s 0 v 0")
+            && !history_row(&history, 1).contains("you flew"),
+        "{history}"
+    );
 }
 
 /// `@unit/show <unit>`, repeated until `settled` is happy with the listing.

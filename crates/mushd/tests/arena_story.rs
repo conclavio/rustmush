@@ -1522,6 +1522,49 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         Some(u64::from(ADA.0)),
         "{result}"
     );
+    // **16b cut V.2**: every unit row and every pilot row names its unit by the
+    // callsign the arena resolved at check-out — red slot 1 `RA`, blue slot 1
+    // `BA` — and the ledger object counts the tape's chunks.
+    assert_eq!(
+        row_of(red).get("callsign").and_then(Value::as_str),
+        Some("RA"),
+        "{result}"
+    );
+    assert_eq!(
+        row_of(blue).get("callsign").and_then(Value::as_str),
+        Some("BA"),
+        "{result}"
+    );
+    for (team, pilot, callsign) in [("red", ADA, "RA"), ("blue", BO, "BA")] {
+        let row = result
+            .get("teams")
+            .and_then(Value::as_array)
+            .and_then(|teams| {
+                teams
+                    .iter()
+                    .find(|roster| roster.get("team").and_then(Value::as_str) == Some(team))
+            })
+            .and_then(|roster| roster.get("pilots").and_then(Value::as_array))
+            .and_then(|rows| rows.first())
+            .unwrap_or_else(|| panic!("the {team} roster carries its pilot: {result}"));
+        assert_eq!(
+            row.get("pilot").and_then(Value::as_u64),
+            Some(u64::from(pilot.0)),
+            "{result}"
+        );
+        assert_eq!(
+            row.get("callsign").and_then(Value::as_str),
+            Some(callsign),
+            "{result}"
+        );
+    }
+    assert!(
+        result
+            .pointer("/ledger/chunks")
+            .and_then(Value::as_u64)
+            .is_some_and(|chunks| chunks >= 1),
+        "the result counts the tape it names: {result}"
+    );
 
     // -----------------------------------------------------------------
     // (12) The money rule: nothing in the campaign economy moved.

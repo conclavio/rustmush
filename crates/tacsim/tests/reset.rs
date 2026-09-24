@@ -28,7 +28,11 @@
 //!    post-boot hook (16b cut U.4) — and the module's first tick says the hatch
 //!    line and the room to that body, once a boot; a body whose session is not
 //!    attached yet is told on the first tick after it is, within
-//!    `match_::HATCH_HOLD_S`, and never after it.
+//!    `match_::HATCH_HOLD_S`, and never after it;
+//! 9. **16b cut V.2**: the boot reads the result documents it is handed onto the
+//!    match book's history ring — the newest twenty, newest first whatever the
+//!    order they arrive in, a document whose `match` disagrees with its key left
+//!    out — and `SIM HISTORY` prints what it read.
 //!
 //! **16b cut F.4** adds one more to the deadline's pair: with the layer off, the
 //! deadline drives nothing at all, because the tick that calls it is registered
@@ -155,6 +159,13 @@ impl Rig {
     /// `on_all_loaded`. The account oracle is the host's post-composition wiring,
     /// so it is wired again exactly as [`Rig::boot`] wired it.
     fn reboot(&mut self) {
+        self.reboot_with(Vec::new());
+    }
+
+    /// [`Rig::reboot`], with `seeded` written into the store before it — each
+    /// `(key, document)` a `tacsim` document some earlier process left behind
+    /// (16b cut V.2: the result documents the history ring is filled from).
+    fn reboot_with(&mut self, seeded: Vec<(smol_str::SmolStr, serde_json::Value)>) {
         *self
             .tw
             .world_mut()
@@ -162,6 +173,9 @@ impl Rig {
             .expect("the match book") = match_::MatchBook::new();
         let mut kv: BTreeMap<smol_str::SmolStr, Vec<(smol_str::SmolStr, serde_json::Value)>> =
             BTreeMap::new();
+        kv.entry(smol_str::SmolStr::new(tacsim::NS))
+            .or_default()
+            .extend(seeded);
         for op in self.tw.take_module_ops() {
             let entry = kv.entry(op.ns.clone()).or_default();
             match op.op {
@@ -1152,4 +1166,148 @@ fn an_arena_reset_on_an_already_idle_centre_sweeps_a_stranded_body_and_billet() 
     // And the second run is the one that says nothing changed.
     let said = rig.staff("@arena/reset");
     assert!(said.contains("already idle; nothing changed"), "{said}");
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut V.2 — the history ring is filled from the boot documents
+// ---------------------------------------------------------------------------
+
+/// One finished match's result document, in the shape `record::result_document`
+/// writes (its own round trip is pinned in-source by
+/// `v2_a_result_document_round_trips_into_a_history_row`): red's `unit`, flown
+/// by `pilot` as `RA`, beat blue's `unit + 1`.
+fn finished_result(id: u64, pilot: ObjId, unit: u32) -> serde_json::Value {
+    let ended_ms = 1_700_000_000_000_i64 + i64::try_from(id).expect("a small id") * 60_000;
+    serde_json::json!({
+        "record": "tacsim.match",
+        "record_version": 1,
+        "match": id,
+        "arena": match_::CENTRE_ARENA,
+        "arena_definition_digest": "",
+        "outcome": "red",
+        "reason": "elimination",
+        "teams": [
+            { "team": "red", "units": [unit], "pilots": [
+                { "pilot": pilot.0, "unit": unit, "callsign": "RA" },
+            ] },
+            { "team": "blue", "units": [unit + 1], "pilots": [] },
+        ],
+        "units": [
+            { "unit": unit, "callsign": "RA", "outcome": "intact", "shots": 3, "hits": 2 },
+            { "unit": unit + 1, "callsign": "BA", "outcome": "destroyed", "shots": 1, "hits": 0 },
+        ],
+        "ledger": { "log": format!("tacsim.match.{id}"), "digest": "ab", "chunks": 4 },
+        "seed": 7,
+        "started_ms": ended_ms - 272_000,
+        "ended_ms": ended_ms,
+        "arena_ms": 272_000,
+    })
+}
+
+/// **The boot reads the result documents onto the history ring** (16b cut V.2;
+/// 16c N2): twenty-three finished matches left in the store in no particular
+/// order come back as the newest twenty, in descending id order; a document
+/// whose own `match` disagrees with its key, and a document that is no result,
+/// are left out; and the boot writes no result of its own for any of them — so
+/// every row the ring holds, and every row `SIM HISTORY` prints, was READ.
+///
+/// The live proof, across a real reboot over SSH with one restart abort and one
+/// finished match in the store, is `crates/mushd/tests/sim_rematch.rs`'s restart
+/// test; this one is the ordering and the filter, which that test's two rows
+/// cannot reach.
+#[test]
+fn v2_the_boot_fills_the_history_ring_from_the_result_documents_newest_first() {
+    let mut rig = Rig::boot(1);
+    let pilot = rig.pilot(0);
+    let order: [u64; 23] = [
+        7, 23, 1, 15, 2, 22, 9, 3, 21, 4, 20, 5, 19, 6, 18, 8, 17, 10, 16, 11, 14, 12, 13,
+    ];
+    let mut seeded: Vec<(smol_str::SmolStr, serde_json::Value)> = order
+        .iter()
+        .map(|id| {
+            let unit = 500 + u32::try_from(*id).expect("a small id") * 2;
+            (
+                match_::result_key(tacsim::arena_task::MatchId(*id)),
+                finished_result(*id, pilot, unit),
+            )
+        })
+        .collect();
+    // A document under one match's key that says it is another match's.
+    seeded.push((
+        match_::result_key(tacsim::arena_task::MatchId(40)),
+        finished_result(50, pilot, 900),
+    ));
+    // And a document under a result key that is no result at all.
+    seeded.push((
+        match_::result_key(tacsim::arena_task::MatchId(30)),
+        serde_json::json!({ "record": "tacsim.other", "match": 30 }),
+    ));
+    rig.reboot_with(seeded);
+
+    // The boot wrote no result: nothing was running, so every row below is one
+    // it read.
+    let written: Vec<String> = rig
+        .tw
+        .take_module_ops()
+        .into_iter()
+        .filter_map(|op| match op.op {
+            mush_core::ModuleWrite::JsonSet { key, .. }
+                if match_::match_id_of_key(key.as_str()).is_some() =>
+            {
+                Some(key.to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(written, Vec::<String>::new(), "the boot wrote a result");
+
+    let book = rig
+        .tw
+        .world()
+        .module_state::<match_::MatchBook>()
+        .expect("the match book");
+    assert_eq!(
+        book.history().map(|row| row.id.0).collect::<Vec<_>>(),
+        (4..=23).rev().collect::<Vec<u64>>(),
+        "the newest twenty, newest first, whatever order the store handed them in"
+    );
+    assert_eq!(
+        book.history().count(),
+        match_::HISTORY_DEPTH,
+        "the ring holds its depth"
+    );
+    for id in [50, 40, 30, 3, 2, 1] {
+        assert!(
+            book.remembered(tacsim::arena_task::MatchId(id)).is_none(),
+            "match {id} is not a row the ring should hold"
+        );
+    }
+    let newest = book
+        .remembered(tacsim::arena_task::MatchId(23))
+        .expect("the newest match");
+    assert_eq!(
+        Some(newest),
+        match_::HistoryRow::from_document(&finished_result(23, pilot, 546)).as_ref(),
+        "the row is the document, read"
+    );
+
+    // And `SIM HISTORY`, typed in the lobby, prints what was read.
+    let said = rig.say(0, "sim history");
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some("The centre's last 20 matches, newest first:"),
+        "{said}"
+    );
+    assert_eq!(lines.len(), 21, "{said}");
+    assert!(
+        lines.get(1).is_some_and(|row| row
+            .starts_with("  #23  red won (blue eliminated)  4 m 32 s  1 v 1  ")
+            && row.ends_with("  (you flew RA)")),
+        "{said}"
+    );
+    assert!(
+        lines.last().is_some_and(|row| row.starts_with("  #4  ")),
+        "{said}"
+    );
 }

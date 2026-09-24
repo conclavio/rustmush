@@ -122,6 +122,9 @@ struct Rig {
     /// takes it at its first iteration. A `TestWorld` has no loop, so
     /// [`Rig::pump`] is the loop's `Wake::ArenaEgress` arm, written out.
     egress: Option<tokio::sync::mpsc::Receiver<tacsim::arena_task::ArenaOut>>,
+    /// **16b cut V.2**: every ledger chunk [`Rig::pump`] has handed the world,
+    /// by match — the count the result document's `ledger.chunks` must equal.
+    chunks_seen: BTreeMap<u64, u64>,
 }
 
 impl Rig {
@@ -160,6 +163,7 @@ impl Rig {
             tw,
             pilots: who,
             egress,
+            chunks_seen: BTreeMap::new(),
         }
     }
 
@@ -181,8 +185,17 @@ impl Rig {
             while staged < tacsim::arena_bridge::MAX_EGRESS_PER_DRAIN {
                 match rx.try_recv() {
                     Ok(message) => {
+                        let chunk_of = match &message {
+                            tacsim::arena_task::ArenaOut::Ledger { match_id, .. } => {
+                                Some(match_id.0)
+                            }
+                            _ => None,
+                        };
                         if !tasks.stage(message) {
                             break;
+                        }
+                        if let Some(match_id) = chunk_of {
+                            *self.chunks_seen.entry(match_id).or_default() += 1;
                         }
                         staged += 1;
                     }
@@ -3960,7 +3973,7 @@ async fn m1_a_busy_arena_is_told_to_try_again_and_nothing_changes() {
         .build()
         .expect("a current-thread runtime");
     let cfg = config();
-    let (handle, join) = tacsim::arena_task::spawn_arena(
+    let (handle, join, _callsigns) = tacsim::arena_task::spawn_arena(
         undriven.handle(),
         match_id,
         replacement_custody(&rig),
@@ -4333,4 +4346,283 @@ async fn u4_arena_pose_opens_a_slot_on_its_cell_for_the_next_match_and_no_later(
     );
     let said = rig.staff("@arena/pose");
     assert!(said.contains("No opening cell is overridden."), "{said}");
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut V.2 — the result names every unit and counts its tape
+// ---------------------------------------------------------------------------
+
+/// **The result document names every unit by the arena's own callsign and
+/// counts the tape, and the book remembers it** (16b cut V.2).
+///
+/// A real boarded duel, ended by a real `SIM ABORT` through the arena's own `Ended`. The
+/// callsign each pilot's tank carries **in the arena** is read off the frame the
+/// arena sent that pilot — `Frame::callsign` is `UnitState::callsign`, the same
+/// field `Arena::callsigns` reads — and the result document must carry exactly
+/// it on the tank's unit row and on the pilot's row. `ledger.chunks` must equal
+/// the chunks the rig handed the world, and the book's history ring must hold
+/// the row the document reads as.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_the_result_names_every_unit_by_the_arenas_callsign_and_counts_its_tape() {
+    let mut rig = Rig::boot(2);
+    // The control-lease mirror, read once before anybody boards; then a real
+    // `BOARD` on each side, which is what puts a pilot on the arena's roster.
+    rig.tick_to(1);
+    board_both(&mut rig);
+    let match_id = rig.centre().match_id.expect("a running match");
+    let _ = rig.tw.take_module_ops();
+
+    // The arena's own callsigns, off the frames it sent.
+    let mut flown: BTreeMap<u64, (u64, String)> = BTreeMap::new();
+    for _ in 0..600 {
+        rig.pump();
+        for n in 0..2 {
+            let pilot = rig.pilot(n);
+            if let Some(held) = rig
+                .tw
+                .world()
+                .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+                .and_then(|registry| registry.last_frame(pilot))
+                .filter(|held| held.match_id == match_id)
+            {
+                flown.insert(
+                    u64::from(pilot.0),
+                    (
+                        u64::from(held.frame.unit.0),
+                        held.frame.callsign.to_string(),
+                    ),
+                );
+            }
+        }
+        if flown.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(flown.len(), 2, "the arena sent both pilots a frame");
+    assert_eq!(
+        flown
+            .values()
+            .map(|(_, callsign)| callsign.as_str())
+            .collect::<Vec<_>>(),
+        vec!["RA", "BA"],
+        "slot 1 of each side, by 16b cut Q.1's rule"
+    );
+
+    // The end, through the arena.
+    let said = rig.say(1, "sim abort");
+    assert!(said.contains("aborts match"), "{said}");
+    for _ in 0..400 {
+        if rig.state() == MatchState::Aborted {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+    }
+    assert_eq!(rig.state(), MatchState::Aborted, "the check-in lands");
+
+    let key = format!("tacsim:match:{}", match_id.0);
+    let document = rig
+        .tw
+        .take_module_ops()
+        .into_iter()
+        .filter(|op| op.ns == tacsim::NS)
+        .find_map(|op| match op.op {
+            mush_core::ModuleWrite::JsonSet {
+                key: written,
+                value,
+            } if written == key => Some(value),
+            _ => None,
+        })
+        .expect("the check-in wrote the result document");
+
+    // Every unit row, and every pilot row, carries the arena's callsign.
+    let units = document["units"].as_array().expect("unit rows");
+    assert_eq!(units.len(), 2, "{document}");
+    for (unit, callsign) in flown.values() {
+        let row = units
+            .iter()
+            .find(|row| row["unit"].as_u64() == Some(*unit))
+            .expect("the tank has a unit row");
+        assert_eq!(row["callsign"].as_str(), Some(callsign.as_str()), "{row}");
+    }
+    let mut pilot_rows = 0;
+    for team in document["teams"].as_array().expect("teams") {
+        for row in team["pilots"].as_array().expect("pilot rows") {
+            pilot_rows += 1;
+            let pilot = row["pilot"].as_u64().expect("a pilot id");
+            let (unit, callsign) = flown.get(&pilot).expect("a pilot the arena framed");
+            assert_eq!(row["unit"].as_u64(), Some(*unit), "{row}");
+            assert_eq!(row["callsign"].as_str(), Some(callsign.as_str()), "{row}");
+        }
+    }
+    assert_eq!(pilot_rows, 2);
+
+    // The tape: every chunk the world was handed, and at least the opening one.
+    let seen = rig.chunks_seen.get(&match_id.0).copied().unwrap_or(0);
+    assert!(seen >= 1, "the arena flushed its tape before its end");
+    assert_eq!(
+        document["ledger"]["chunks"].as_u64(),
+        Some(seen),
+        "{document}"
+    );
+    assert_eq!(document["record_version"].as_u64(), Some(1));
+
+    // The book remembers exactly that document.
+    let expected = match_::HistoryRow::from_document(&document).expect("a result document");
+    assert!(expected.named);
+    let book = rig
+        .tw
+        .world()
+        .module_state::<match_::MatchBook>()
+        .expect("the book");
+    assert_eq!(book.remembered(match_id), Some(&expected));
+    assert_eq!(
+        book.history().map(|row| row.id).collect::<Vec<_>>(),
+        vec![match_id]
+    );
+    let bystander = match_::history_lines(book.history(), GOD);
+    assert_eq!(
+        bystander,
+        vec![
+            "The centre's last match:".to_owned(),
+            format!(
+                "  #{}  aborted  {}  1 v 1  {}",
+                match_id.0,
+                match_::duration_words(expected.arena_ms),
+                match_::civil_utc(expected.ended_ms / 1_000)
+            ),
+        ]
+    );
+
+    // The authored arena's name, and the id itself for an arena with none.
+    assert_eq!(
+        match_::arena_label(rig.tw.world(), match_::CENTRE_ARENA),
+        "The Proving Ground"
+    );
+    assert_eq!(
+        match_::arena_label(rig.tw.world(), match_::STAND_IN),
+        match_::STAND_IN
+    );
+}
+
+/// The `tacsim` writes one `write_restart_abort` pushes, each as `(set|del, key)`
+/// (16b cut V.2), through a real `Ctx` on the rig's own world.
+fn restart_abort_writes(rig: &mut Rig, match_id: u64) -> Vec<(&'static str, String)> {
+    let mut out = Outbox::new();
+    let engine = rig.tw.engine_mut();
+    let mut ctx = Ctx {
+        w: &mut engine.world,
+        actor: GOD,
+        switches: SwitchSet::default(),
+        args: ParsedArgs::default(),
+        out: &mut out,
+        reg: &engine.registry,
+        module: Some(smol_str::SmolStr::new(tacsim::NS)),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    match_::write_restart_abort(
+        &mut ctx,
+        tacsim::arena_task::MatchId(match_id),
+        &[ObjId(500)],
+    );
+    out.take_deferred()
+        .into_iter()
+        .filter_map(|deferred| match deferred {
+            mush_core::Deferred::Persist(op) => Some(op),
+            _ => None,
+        })
+        .map(|op| {
+            assert_eq!(op.ns, tacsim::NS, "{op:?}");
+            match op.op {
+                mush_core::ModuleWrite::JsonSet { key, .. } => ("set", key.to_string()),
+                mush_core::ModuleWrite::Del { key } => ("del", key.to_string()),
+                other => panic!("a result write is a set or a delete: {other:?}"),
+            }
+        })
+        .collect()
+}
+
+/// **A row the history ring lets go takes its report documents with it, in the
+/// same write** (16b cut V.2; the report documents are 16b cut V.3's, and this is
+/// what keeps them bounded by the ring).
+///
+/// Driven through `write_restart_abort`, the result writer an integration test
+/// can reach; `record::write_result` ends in the same private tail
+/// (`remember_and_push`), so one statement covers both. Three cases: a newer
+/// match pushes the oldest row out and deletes exactly that row's reports and
+/// nobody else's; a match older than every row held falls straight off and,
+/// having no reports, deletes nothing; a same-id rewrite replaces its row and
+/// evicts nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_a_row_the_ring_evicts_has_its_report_documents_deleted_in_the_same_write() {
+    let mut rig = Rig::boot(0);
+    let row = |id: u64, reports: Vec<ObjId>| match_::HistoryRow {
+        id: tacsim::arena_task::MatchId(id),
+        outcome: match_::MatchOutcome::Abort,
+        reason: smol_str::SmolStr::new("abort"),
+        arena: smol_str::SmolStr::default(),
+        started_ms: 0,
+        ended_ms: 0,
+        arena_ms: 0,
+        log: String::new(),
+        digest: String::new(),
+        chunks: 0,
+        seed: 0,
+        units: Vec::new(),
+        named: true,
+        reports,
+    };
+    {
+        let book = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<match_::MatchBook>()
+            .expect("the book");
+        for id in 101..=120_u64 {
+            let reports = match id {
+                101 => vec![ObjId(7), ObjId(9)],
+                102 => vec![ObjId(11)],
+                _ => Vec::new(),
+            };
+            assert!(book.remember(row(id, reports)).is_none(), "{id} fits");
+        }
+    }
+    let ids = |rig: &Rig| {
+        rig.tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .expect("the book")
+            .history()
+            .map(|row| row.id.0)
+            .collect::<Vec<u64>>()
+    };
+
+    // (1) Match 121 pushes 101 out: its result, then 101's two reports — and
+    //     not 102's, which the ring still holds.
+    assert_eq!(
+        restart_abort_writes(&mut rig, 121),
+        vec![
+            ("set", "tacsim:match:121".to_owned()),
+            ("del", "tacsim:report:101:7".to_owned()),
+            ("del", "tacsim:report:101:9".to_owned()),
+        ]
+    );
+    assert_eq!(ids(&rig), (102..=121).rev().collect::<Vec<u64>>());
+
+    // (2) Match 50 is older than every row held: it falls straight off the
+    //     ring, and a row with no reports deletes nothing.
+    assert_eq!(
+        restart_abort_writes(&mut rig, 50),
+        vec![("set", "tacsim:match:50".to_owned())]
+    );
+    assert_eq!(ids(&rig), (102..=121).rev().collect::<Vec<u64>>());
+
+    // (3) Match 110 again replaces its own row: nothing is evicted, so 102's
+    //     report stays.
+    assert_eq!(
+        restart_abort_writes(&mut rig, 110),
+        vec![("set", "tacsim:match:110".to_owned())]
+    );
+    assert_eq!(ids(&rig), (102..=121).rev().collect::<Vec<u64>>());
 }

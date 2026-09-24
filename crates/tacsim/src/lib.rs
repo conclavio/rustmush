@@ -552,7 +552,9 @@ impl GameModule for TacsimRuleset {
 ///    result document this world already holds. The second half is what makes a
 ///    lost or truncated counter cost nothing: a match id names a durable ledger
 ///    log and a durable result, and re-using one would write the second match of
-///    this boot over the second match of the last.
+///    this boot over the second match of the last. **16b cut V.2**: the same walk
+///    reads each result document into a [`match_::HistoryRow`] and remembers it
+///    on the book's history ring, before anything below writes.
 /// 2. **Custody.** `mush-tactics`' recovery pass has already restored every
 ///    `deployed` marker it found and cleared it — that is its own document. What
 ///    it cannot do is write the *match's* result, which is this module's, or
@@ -564,15 +566,31 @@ impl GameModule for TacsimRuleset {
 /// layer, so its `on_world_loaded` has run and its restored list is waiting.
 fn boot_matches(ctx: &mut ModuleCtx<'_>, kv: &[(smol_str::SmolStr, serde_json::Value)]) {
     let mut high_water = 0_u64;
+    let mut remembered: Vec<match_::HistoryRow> = Vec::new();
     for (key, value) in kv {
         if key.as_str() == match_::SEQ_KEY {
             high_water = high_water.max(match_::seq_from_document(value));
         } else if let Some(id) = match_::match_id_of_key(key.as_str()) {
             high_water = high_water.max(id.0);
+            // **16b cut V.2**: every result document is a boot document, so the
+            // history ring is filled from here and never read from the store. A
+            // document whose own `match` disagrees with its key is not a result
+            // this key holds, and is left out rather than listed twice.
+            if let Some(row) = match_::HistoryRow::from_document(value).filter(|row| row.id == id) {
+                remembered.push(row);
+            }
         }
     }
     if let Some(book) = ctx.w.module_state_mut::<match_::MatchBook>() {
         book.adopt_seq(high_water);
+        // **Before** the restart-abort loop below writes anything. The ring
+        // orders itself by id whatever the order of these calls
+        // (`MatchBook::remember`), so this placement is no longer what decides
+        // the order — but a restart abort written first and then displaced by a
+        // stale boot document of the same id would be, and the pin belongs here.
+        for row in remembered {
+            let _ = book.remember(row);
+        }
     }
 
     let restored = mush_tactics::custody::take_boot_restored(ctx.w);
