@@ -556,6 +556,32 @@
     "shape": "terrain",
     "version": 1
   },
+  "spots": [
+    {
+      "cell": [
+        25,
+        3
+      ],
+      "letter": "A",
+      "name": "The Ford"
+    },
+    {
+      "cell": [
+        14,
+        7
+      ],
+      "letter": "B",
+      "name": "The Roof"
+    },
+    {
+      "cell": [
+        50,
+        25
+      ],
+      "letter": "C",
+      "name": "The Woods"
+    }
+  ],
   "surface": "fixture_yard",
   "width": 96
 }

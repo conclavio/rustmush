@@ -22,14 +22,19 @@
 //! VIEW                       the arena window, as a text map
 //! CONTACTS                   what the platform holds
 //! LOCK <contact>             hold one of them
-//! RANGE [<contact>]          how far away one of them plotted
-//! BEARING [<contact>]        which way one of them plotted
+//! RANGE [<contact>|<spot>]   how far away one of them plotted, or a named spot is
+//! BEARING [<contact>|<spot>] which way one of them plotted, or a named spot is
 //! SCAN [<contact>]           what is left of one of them, by section
 //! FIRE [<weapon>]            shoot it
 //! WEAPONSTATUS               ammunition and readiness
-//! STATUS                     callsign, power, speed, heading, scope, damage
+//! STATUS                     callsign, power, speed, heading, scope, nearest spot, damage
 //! EXIT                       climb out
 //! ```
+//!
+//! **16b cut V.1** named the ground: the arena's authored key spots are on the
+//! map payload, on `VIEW`'s window as a letter with its name in the legend, and
+//! behind `RANGE`/`BEARING` as a second resolution arm — see "The named ground"
+//! below [`crate::match_::cockpit::stale_clause`].
 //!
 //! # Boarding is four facts, in one order
 //!
@@ -119,7 +124,9 @@ use crate::arena::damage;
 use crate::arena::intents::{ControlState, IntentKind};
 use crate::arena::motion::BlockedCause;
 use crate::arena::perception::{FrameNotice, NoticeKind, RefusalDetail};
-use crate::arena::state::{ArenaTerrain, Channel, Classification, ContactId, Designator, Power};
+use crate::arena::state::{
+    ArenaTerrain, Channel, Classification, ContactId, Designator, KeySpot, Power,
+};
 use crate::arena::step::Frame;
 use crate::arena_bridge::{
     ArenaRegistry, CockpitFrame, FRAME_FEED, IntentRefusal, NOTICE_CATEGORY, forward_intent,
@@ -226,6 +233,37 @@ pub const FRIEND_GLYPH: &str = "+";
 /// A contact resolved to the **other** side.
 pub const HOSTILE_GLYPH: &str = "x";
 
+/// **The marker each key spot is drawn as, by its authored index** (16b cut V.1;
+/// doc 16 §3.2 "Terrain": the ground is surveyed, so its named places are
+/// known to every pilot at check-out).
+///
+/// The letters a spot may NOT be, and why each is left out: a spot marker is one
+/// byte in the grid, and the three renderers must draw the same byte, so it can
+/// never be a byte the ground is already drawn with — `D`, `T` and `W` are
+/// [`mush_atlas::TerrainClass::glyph`]'s platform, heavy woods and deep water,
+/// and a pilot must never read a field's letter as ground. `X` is
+/// [`crate::arena::state::PROVISIONAL_PREFIX`], the letter an unidentified
+/// contact's designator opens with beside the map. Twenty-two letters remain,
+/// and [`crate::definitions::arena::MAX_KEY_SPOTS`] is their count, so an arena
+/// that names a spot past the alphabet never loads.
+pub const SPOT_LETTERS: [char; 22] = [
+    'A', 'B', 'C', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'U',
+    'V', 'Y', 'Z',
+];
+
+/// **The letter of the spot at `index`** (16b cut V.1), or `None` past the
+/// alphabet — which the load-time cap makes unreachable for a loaded arena, and
+/// which every caller answers by drawing nothing rather than panicking.
+#[must_use]
+pub fn spot_letter(index: usize) -> Option<char> {
+    SPOT_LETTERS.get(index).copied()
+}
+
+/// **The step a spot's range is rounded to**, metres (16b cut V.1). Ground does
+/// not move and is not a plot, so it earns neither the scope's coarse step nor
+/// the lock's age-bound one: ten metres, a cell.
+pub const SPOT_RANGE_STEP_M: u64 = 10;
+
 // ---------------------------------------------------------------------------
 // The refusals
 // ---------------------------------------------------------------------------
@@ -282,6 +320,16 @@ pub const NO_LOCK: &str = "No lock: LOCK a contact first.";
 /// lie about what the verb accepts. `RANGE` and `BEARING` do take a contact, so
 /// they get their own sentence and both are pinned.
 pub const NO_LOCK_OR_NAME: &str = "No lock: LOCK a contact first, or name one.";
+
+/// **What `RANGE` and `BEARING` answer about a named spot before the arena has
+/// told the pilot anything** (16b cut V.1).
+///
+/// The spot is real — the ground is surveyed and every pilot knows its names —
+/// and what is missing is the pilot's own position, so this is not
+/// [`NO_SUCH_CONTACT`]: that sentence is about what the platform holds, and a
+/// spot is not held. A **contact** word with no frame still answers
+/// [`NO_SUCH_CONTACT`], exactly as it did.
+pub const NO_FRAME_YET: &str = "The panel has told you nothing yet.";
 
 /// **The words `FIRE` refuses with while the breech is busy** (16b cut W.1; doc 16
 /// §3.7: *cycling*). The seconds left follow it, so the const is the stable needle
@@ -403,6 +451,10 @@ pub enum CockpitError {
     /// Q.1).
     #[error("{NO_LOCK_OR_NAME}")]
     NoLockOrName,
+    /// A named spot, asked about before the arena has sent the pilot a frame
+    /// (16b cut V.1).
+    #[error("{NO_FRAME_YET}")]
+    NoFrameYet,
     /// The named weapon's cycle has not finished (16b cut W.1).
     #[error("{CYCLING}: {secs} s to go.")]
     Cycling {
@@ -2313,10 +2365,29 @@ fn lock(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> 
 /// A locked contact earns [`LOCK_RANGE_STEP_M`] and the rest of the scope
 /// [`CONTACT_RANGE_STEP_M`]: a lock is a fire-control solution and the platform
 /// is tracking that one return continuously.
+///
+/// **16b cut V.1**: a word that names no held contact is tried against the
+/// ground's named spots second ([`named_target`]), so `RANGE The Ford` and
+/// `RANGE a` answer [`spot_range_line`]; a word that is neither is still the one
+/// byte-identical [`NO_SUCH_CONTACT`].
 fn range(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
     let held = last_frame(ctx.w, seat.driver);
-    let (frame, row) = named_row(held.as_ref(), rest)?;
-    let line = range_line(frame, &row, pass_ms(ctx.w));
+    let (spots, cell_cm) = spots_of(ctx.w, match_of(ctx.w, seat.driver, held.as_ref()));
+    let line = match named_target(held.as_ref(), &spots, rest)? {
+        Target::Contact(frame, row) => range_line(frame, &row, pass_ms(ctx.w)),
+        Target::Spot {
+            frame,
+            letter,
+            spot,
+        } => spot_range_line(
+            &spot,
+            letter,
+            range_m_rounded(
+                spot_range_cm(&frame.pose, &spot, cell_cm),
+                SPOT_RANGE_STEP_M,
+            ),
+        ),
+    };
     say_and_frame(ctx, held.as_ref(), vec![line]);
     Ok(())
 }
@@ -2363,11 +2434,27 @@ pub fn range_line(frame: &Frame, row: &ContactRow, pass_ms: i64) -> String {
 }
 
 /// **`BEARING [<designator>]`** — which way one contact plotted (16b cut Q.1),
-/// absolute and off the platform's own nose. The same rules [`range`] follows.
+/// absolute and off the platform's own nose. The same rules [`range`] follows,
+/// the second resolution arm included (16b cut V.1).
 fn bearing(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
     let held = last_frame(ctx.w, seat.driver);
-    let (_, row) = named_row(held.as_ref(), rest)?;
-    let line = bearing_line(&row, pass_ms(ctx.w));
+    let (spots, cell_cm) = spots_of(ctx.w, match_of(ctx.w, seat.driver, held.as_ref()));
+    let line = match named_target(held.as_ref(), &spots, rest)? {
+        Target::Contact(_, row) => bearing_line(&row, pass_ms(ctx.w)),
+        Target::Spot {
+            frame,
+            letter,
+            spot,
+        } => {
+            let bearing = spot_bearing_mdeg(&frame.pose, &spot, cell_cm);
+            spot_bearing_line(
+                &spot,
+                letter,
+                bearing / 1_000,
+                relative_mdeg(frame.pose.heading_mdeg, bearing) / 1_000,
+            )
+        }
+    };
     say_and_frame(ctx, held.as_ref(), vec![line]);
     Ok(())
 }
@@ -2526,6 +2613,79 @@ fn named_row<'a>(
         .map(|row| (frame, row))
 }
 
+/// **What `RANGE` or `BEARING` is about** (16b cut V.1): a held contact, as
+/// [`named_row`] resolves one, or one of the ground's named spots.
+enum Target<'a> {
+    /// A contact the platform holds, on the frame that holds it.
+    Contact(&'a Frame, ContactRow),
+    /// A key spot, with the frame whose pose the range and bearing are read from.
+    Spot {
+        /// The pilot's last frame.
+        frame: &'a Frame,
+        /// The spot's marker letter ([`spot_letter`] of its authored index).
+        letter: char,
+        /// The spot itself.
+        spot: KeySpot,
+    },
+}
+
+/// **The target of a read verb that takes a contact or a spot** (16b cut V.1):
+/// `RANGE` and `BEARING` only.
+///
+/// The word goes to [`resolve_designator`] first and to [`resolve_spot`] second,
+/// and a miss on both is [`CockpitError::NoSuchContact`] — **the one
+/// byte-identical `No such contact.`**, so `RANGE The Fjord` cannot be told from
+/// `RANGE ZZ`, and neither from `RANGE BA` against a `BA` the platform has not
+/// found. The two arms cannot collide: a one-character word is never a
+/// designator (the shortest is two, `RA` or `X1`), and the load-time name check
+/// (`definitions::arena`'s `check_spot_name`) keeps a spot's name from ever
+/// having a designator's shape.
+///
+/// An empty word is the lock, exactly as [`named_row`] reads it. With **no frame
+/// held**, a contact word keeps [`CockpitError::NoSuchContact`] (as
+/// [`named_row`] answers it: a pilot who could tell an empty scope from a missing
+/// one could tell a name that exists from one that does not), and a spot word
+/// answers [`CockpitError::NoFrameYet`] — the spot is surveyed ground every
+/// pilot knows, and what is missing is the pilot's own position.
+///
+/// `SCAN` and `LOCK` keep [`named_row`] and [`resolve_designator`] alone: a spot
+/// is ground and neither verb means anything about ground.
+///
+/// # Errors
+///
+/// [`CockpitError::NoSuchContact`], [`CockpitError::NoLockOrName`] and
+/// [`CockpitError::NoFrameYet`], as above.
+fn named_target<'a>(
+    held: Option<&'a CockpitFrame>,
+    spots: &[KeySpot],
+    rest: &str,
+) -> Result<Target<'a>, CockpitError> {
+    let named = rest.trim();
+    if named.is_empty() {
+        return named_row(held, rest).map(|(frame, row)| Target::Contact(frame, row));
+    }
+    // The designator arm, first and exactly as `named_row` resolves it.
+    if let Some(held) = held {
+        let rows = frame_contacts_held(&held.frame, &held.ranges);
+        if let Some(row) = resolve_designator(&rows, named)
+            .and_then(|id| rows.into_iter().find(|row| row.id == id))
+        {
+            return Ok(Target::Contact(&held.frame, row));
+        }
+    }
+    // The spot arm. A miss here is the one refusal, whatever the frame.
+    let (index, spot) = resolve_spot(spots, named).ok_or(CockpitError::NoSuchContact)?;
+    let letter = spot_letter(index).ok_or(CockpitError::NoSuchContact)?;
+    let Some(held) = held else {
+        return Err(CockpitError::NoFrameYet);
+    };
+    Ok(Target::Spot {
+        frame: &held.frame,
+        letter,
+        spot: spot.clone(),
+    })
+}
+
 /// **How old a plot has to be before a read verb says so** (16b cut Q.1): the
 /// sensor pass's own period, read the way [`lobby::configs`] reads it.
 ///
@@ -2549,6 +2709,290 @@ pub fn stale_clause(age_ms: i64, pass_ms: i64) -> String {
     } else {
         String::new()
     }
+}
+
+// ---------------------------------------------------------------------------
+// The named ground (16b cut V.1; doc 16 §3.2 "Terrain")
+// ---------------------------------------------------------------------------
+//
+// Doc 16 §3.2 rules the proving ground surveyed: its terrain is known to every
+// pilot at check-out, its units are not. The arena pack's `key_spots` are part
+// of that ground — The Ford, The Crossroads, North Barn, East Compound — and
+// this is where a pilot reads them: a letter on the map ([`SPOT_LETTERS`]), a
+// name in the legend, `RANGE`/`BEARING <spot>`, `STATUS`'s nearest spot and
+// `VIEW`'s off-window line. Every function here is a pure function of the
+// authored spots and the pilot's OWN pose, so nothing in this section can say
+// anything about another unit; and ground does not age, so none of it carries
+// a stale clause.
+
+/// **The ground's named spots and its cell size** (16b cut V.1), off the match's
+/// own definition ([`ArenaRegistry::arena_of`]).
+///
+/// A clone of at most [`crate::definitions::arena::MAX_KEY_SPOTS`] rows, made
+/// only when a verb is typed. A match the registry holds no ground for answers
+/// no spots, which every caller reads as "the ground names none".
+fn spots_of(w: &World, match_id: Option<MatchId>) -> (Vec<KeySpot>, u16) {
+    match_id
+        .and_then(|match_id| {
+            w.module_state::<ArenaRegistry>()
+                .and_then(|registry| registry.arena_of(match_id))
+        })
+        .map_or((Vec::new(), 1), |ground| {
+            (ground.key_spots.clone(), ground.terrain.cell_cm())
+        })
+}
+
+/// The match a pilot's cockpit reads: the last frame's, else the registry's own
+/// binding — which is how a read verb typed before the first frame still knows
+/// whose ground it is standing on (16b cut V.1).
+fn match_of(w: &World, pilot: ObjId, held: Option<&CockpitFrame>) -> Option<MatchId> {
+    held.map(|held| held.match_id).or_else(|| {
+        w.module_state::<ArenaRegistry>()
+            .and_then(|registry| registry.seat_of_pilot(pilot))
+            .map(|(match_id, _)| match_id)
+    })
+}
+
+/// **The spot a pilot's word names** (16b cut V.1), with its authored index, or
+/// `None`.
+///
+/// Trimmed and ASCII case-folded: the whole name (`the ford`), else a
+/// one-character word equal to the spot's letter (`a`). **No prefixes**: `the`
+/// is not The Ford, because a prefix that two spots share is a word that names
+/// two places. A spot past [`SPOT_LETTERS`] — which the load-time cap makes
+/// impossible — is never resolved, by name or otherwise.
+///
+/// It can never answer a designator's word: a one-character word is shorter
+/// than every designator (`RA` and `X1` are two), and the load-time name check
+/// (`definitions::arena`'s `check_spot_name`) refuses a name with a designator's
+/// shape. So the two arms of `RANGE` and `BEARING` never both match.
+#[must_use]
+pub fn resolve_spot<'a>(spots: &'a [KeySpot], word: &str) -> Option<(usize, &'a KeySpot)> {
+    let word = word.trim();
+    if word.is_empty() {
+        return None;
+    }
+    let lettered = || spots.iter().zip(SPOT_LETTERS).enumerate();
+    if let Some((index, (spot, _))) =
+        lettered().find(|(_, (spot, _))| spot.name.eq_ignore_ascii_case(word))
+    {
+        return Some((index, spot));
+    }
+    let mut chars = word.chars();
+    let (Some(one), None) = (chars.next(), chars.next()) else {
+        return None;
+    };
+    lettered()
+        .find(|(_, (_, letter))| letter.eq_ignore_ascii_case(&one))
+        .map(|(index, (spot, _))| (index, spot))
+}
+
+/// The centre of a spot's cell, arena centimetres: `x × cell_cm + cell_cm / 2`,
+/// the same centre a pose placed on that cell stands at.
+fn spot_centre_cm(spot: &KeySpot, cell_cm: u16) -> (i64, i64) {
+    let cell = i64::from(cell_cm);
+    (
+        i64::from(spot.x)
+            .saturating_mul(cell)
+            .saturating_add(cell / 2),
+        i64::from(spot.y)
+            .saturating_mul(cell)
+            .saturating_add(cell / 2),
+    )
+}
+
+/// **How far a spot is from a pose**, whole centimetres, over the ground (16b
+/// cut V.1): 2-D, from the pose to the spot's cell centre, through the arena's
+/// one range function ([`crate::arena::index::range_between`]) with both heights
+/// at the datum — a spot is a place on the map, not a point in the air.
+#[must_use]
+pub fn spot_range_cm(pose: &mush_sim::data::Pose, spot: &KeySpot, cell_cm: u16) -> u64 {
+    let (sx, sy) = spot_centre_cm(spot, cell_cm);
+    crate::arena::index::range_between(pose.x_cm, pose.y_cm, 0, sx, sy, 0)
+}
+
+/// **Which way a spot is from a pose**, millidegrees clockwise from north (16b
+/// cut V.1), through [`crate::arena::perception::bearing_of`] — the function a
+/// contact's bearing is read with — so the cockpit and the arena agree on north.
+#[must_use]
+pub fn spot_bearing_mdeg(pose: &mush_sim::data::Pose, spot: &KeySpot, cell_cm: u16) -> u32 {
+    let (sx, sy) = spot_centre_cm(spot, cell_cm);
+    crate::arena::perception::bearing_of(sx.saturating_sub(pose.x_cm), sy.saturating_sub(pose.y_cm))
+}
+
+/// **The sentence `RANGE <spot>` says** (16b cut V.1):
+/// `Range to The Ford (A): 430 m.` — metres already rounded to
+/// [`SPOT_RANGE_STEP_M`]. No stale clause: ground does not age.
+#[must_use]
+pub fn spot_range_line(spot: &KeySpot, letter: char, metres: u64) -> String {
+    format!("Range to {} ({letter}): {metres} m.", spot.name)
+}
+
+/// **The sentence `BEARING <spot>` says** (16b cut V.1):
+/// `Bearing to The Ford (A): 087° (rel 357°).` — the absolute bearing and the
+/// same off the platform's own nose, in whole degrees.
+#[must_use]
+pub fn spot_bearing_line(
+    spot: &KeySpot,
+    letter: char,
+    bearing_deg: u32,
+    relative_deg: u32,
+) -> String {
+    format!(
+        "Bearing to {} ({letter}): {bearing_deg:03}° (rel {relative_deg:03}°).",
+        spot.name
+    )
+}
+
+/// **The spot nearest a pose** (16b cut V.1): its authored index, the spot and
+/// its range in centimetres ([`spot_range_cm`]); the least range, ties to the
+/// lowest index. `None` when the ground names no spot. A spot past
+/// [`SPOT_LETTERS`] is not considered, for the reason [`resolve_spot`] skips it.
+#[must_use]
+pub fn nearest_spot<'a>(
+    spots: &'a [KeySpot],
+    pose: &mush_sim::data::Pose,
+    cell_cm: u16,
+) -> Option<(usize, &'a KeySpot, u64)> {
+    let mut best: Option<(usize, &KeySpot, u64)> = None;
+    for (index, (spot, _)) in spots.iter().zip(SPOT_LETTERS).enumerate() {
+        let range = spot_range_cm(pose, spot, cell_cm);
+        // Strictly nearer only, so the first of two equal ranges keeps it.
+        if best.is_none_or(|(_, _, held)| range < held) {
+            best = Some((index, spot, range));
+        }
+    }
+    best
+}
+
+/// **`STATUS`'s nearest-spot line** (16b cut V.1):
+/// `  nearest spot: The Ford (A), 120 m at 045°` — the range rounded to
+/// [`SPOT_RANGE_STEP_M`] and the absolute bearing. `None` when the ground names
+/// no spot, and `STATUS` then prints no line at all.
+#[must_use]
+pub fn nearest_spot_line(
+    spots: &[KeySpot],
+    pose: &mush_sim::data::Pose,
+    cell_cm: u16,
+) -> Option<String> {
+    let (index, spot, range) = nearest_spot(spots, pose, cell_cm)?;
+    let letter = spot_letter(index)?;
+    Some(format!(
+        "  nearest spot: {} ({letter}), {} m at {:03}°",
+        spot.name,
+        range_m_rounded(range, SPOT_RANGE_STEP_M),
+        spot_bearing_mdeg(pose, spot, cell_cm) / 1_000
+    ))
+}
+
+/// **`VIEW`'s line about the named ground its window could not draw** (16b cut
+/// V.1): every spot whose index is not in `drawn`, in authored order, as
+/// `<letter> <name>, <range> m at <bearing>°`, joined by `; ` and closed with a
+/// full stop:
+///
+/// `Off the window: C North Barn, 1010 m at 045°; E East Compound, 2090 m at 070°.`
+///
+/// `drawn` is the spots the window placed ([`spot_markers`]' third answer, or
+/// read back off a window's `units`) — so a spot hidden under a contact, whose
+/// cell IS in the window, is drawn and is not listed. `None` when every spot is
+/// drawn or the ground names none.
+#[must_use]
+pub fn off_window_spots_line(
+    spots: &[KeySpot],
+    drawn: &[usize],
+    pose: &mush_sim::data::Pose,
+    cell_cm: u16,
+) -> Option<String> {
+    let parts: Vec<String> = spots
+        .iter()
+        .zip(SPOT_LETTERS)
+        .enumerate()
+        .filter(|(index, _)| !drawn.contains(index))
+        .map(|(_, (spot, letter))| {
+            format!(
+                "{letter} {}, {} m at {:03}°",
+                spot.name,
+                range_m_rounded(spot_range_cm(pose, spot, cell_cm), SPOT_RANGE_STEP_M),
+                spot_bearing_mdeg(pose, spot, cell_cm) / 1_000
+            )
+        })
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!("Off the window: {}.", parts.join("; ")))
+}
+
+/// **The spot markers a window carries, the legend entries they would earn, and
+/// which spots they are** (16b cut V.1), clipped to the window `origin` and
+/// `size` exactly as [`contact_markers`] clips, with cells relative to the
+/// window's own corner.
+///
+/// One marker is `{ "id": "A", "name": "The Ford", "cell": [dx, dy], "glyph":
+/// "A", "you": false, "spot": true }`: `id` is display text on the grid shape,
+/// as a contact marker's is, `name` the authored name, and `spot: true` is what
+/// tells it from a contact. One legend entry is `["A", "The Ford"]`; whether it
+/// is published is [`view_window`]'s call, after every marker is placed (the
+/// owner rule). The third answer is the authored indexes drawn, in order.
+///
+/// Surveyed ground and nothing else: a spot names no unit.
+#[must_use]
+pub fn spot_markers(
+    spots: &[KeySpot],
+    origin: (u16, u16),
+    size: (u16, u16),
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>, Vec<usize>) {
+    let (x0, y0) = origin;
+    let (width, height) = size;
+    let mut markers: Vec<serde_json::Value> = Vec::new();
+    let mut legend: Vec<serde_json::Value> = Vec::new();
+    let mut drawn: Vec<usize> = Vec::new();
+    for (index, (spot, letter)) in spots.iter().zip(SPOT_LETTERS).enumerate() {
+        if spot.x < x0 || spot.y < y0 {
+            continue;
+        }
+        let (dx, dy) = (spot.x.saturating_sub(x0), spot.y.saturating_sub(y0));
+        if dx >= width || dy >= height {
+            continue;
+        }
+        let letter = letter.to_string();
+        markers.push(serde_json::json!({
+            "id": letter,
+            "name": spot.name.as_str(),
+            "cell": [u32::from(dx), u32::from(dy)],
+            "glyph": letter,
+            "you": false,
+            "spot": true,
+        }));
+        legend.push(serde_json::json!([letter, spot.name.as_str()]));
+        drawn.push(index);
+    }
+    (markers, legend, drawn)
+}
+
+/// **The spots a composed window drew** (16b cut V.1), read back off its
+/// `units` — the markers with `spot: true`, by their letter — so `VIEW`'s
+/// off-window line counts the drawing's own spots and cannot drift from it, the
+/// way [`beyond_window_line`] counts its contacts.
+fn drawn_spots(window: &serde_json::Value) -> Vec<usize> {
+    window
+        .get("units")
+        .and_then(serde_json::Value::as_array)
+        .map(|units| {
+            units
+                .iter()
+                .filter(|unit| unit.get("spot").and_then(serde_json::Value::as_bool) == Some(true))
+                .filter_map(|unit| {
+                    let letter = unit
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)?
+                        .chars()
+                        .next()?;
+                    SPOT_LETTERS.iter().position(|held| *held == letter)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// `FIRE [<weapon>]` — shoot the lock (doc 16 §3.7).
@@ -2703,6 +3147,14 @@ fn status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
                     }
                 ),
             ];
+            // **16b cut V.1**: the named ground nearest the pilot's own pose, on a
+            // line of its own after the position and only when the ground names a
+            // spot — so two pilots can say where they are in words. Surveyed
+            // ground and the pilot's own position: nothing about any other unit.
+            let (spots, cell_cm) = spots_of(ctx.w, Some(held.match_id));
+            if let Some(line) = nearest_spot_line(&spots, &frame.pose, cell_cm) {
+                lines.push(line);
+            }
             // **16b cut X.1**: a line of its own, and only for a platform that
             // carries heat.
             if let Some(heat) = frame.heat {
@@ -2845,7 +3297,8 @@ pub fn section_lines(sections: &[crate::arena::step::FrameSection]) -> Vec<Strin
 ///
 /// **16b cut Q.3**: the panel goes first and the one line that may follow it
 /// comes after, because the line is *about* the map the pilot has just been
-/// shown ([`beyond_window_line`]).
+/// shown ([`beyond_window_line`]). **16b cut V.1** added a second such line,
+/// after the first: the named spots off the window ([`off_window_spots_line`]).
 fn view(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
     let actor = ctx.actor;
     // The map is the frame's; a line client's renderer draws it. Nothing is said
@@ -2879,6 +3332,13 @@ fn view(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
         return Ok(());
     }
     let beyond = beyond_window_line(&held.frame, &payload);
+    // **16b cut V.1**: the named ground the window could not draw, after the
+    // contacts' line — a spot is a place the pilot may name whether or not it
+    // is in sight, because the ground is surveyed. Read against the drawing's
+    // own spots, so a spot under a contact (drawn, then covered) is not listed.
+    let (spots, cell_cm) = spots_of(ctx.w, Some(held.match_id));
+    let off_window =
+        off_window_spots_line(&spots, &drawn_spots(&payload), &held.frame.pose, cell_cm);
     ctx.out.push(
         mush_core::Audience::Actor(actor),
         OutputEvent::Panel {
@@ -2888,6 +3348,9 @@ fn view(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
         },
     );
     if let Some(line) = beyond {
+        ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    }
+    if let Some(line) = off_window {
         ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
     }
     Ok(())
@@ -3369,12 +3832,37 @@ fn terrain_rows(
 /// the bound is checked when the arena is applied, over this very function at
 /// the widest `match` and `surface` the handler can send, so an arena whose map
 /// would pass it never loads and nothing here needs to refuse.
+///
+/// **The second thing the map may say: the named spots** (16b cut V.1). One key
+/// after `legend`, `spots`, is `[{ "letter": "A", "name": "The Ford", "cell":
+/// [64, 97] }, …]` — the arena's authored `key_spots` in authored order, in
+/// arena cells, each with the marker letter [`spot_letter`] gives its index. They
+/// are surveyed ground exactly as the terrain is (doc 16 §3.2: known to every
+/// pilot at check-out), and they name no unit. A spot past [`SPOT_LETTERS`] —
+/// which the load-time cap refuses — is left out rather than drawn with no
+/// letter. [`MAP_VERSION`] stays `1`: a field added is not a version.
 #[must_use]
-pub fn map_frame(match_id: MatchId, surface: &str, terrain: &ArenaTerrain) -> serde_json::Value {
+pub fn map_frame(
+    match_id: MatchId,
+    surface: &str,
+    terrain: &ArenaTerrain,
+    spots: &[KeySpot],
+) -> serde_json::Value {
     let (rows, classes) = terrain_rows(terrain, (0, 0), (terrain.width(), terrain.height()));
     let legend: Vec<serde_json::Value> = classes
         .iter()
         .map(|class| serde_json::json!([class.glyph().to_string(), class.label()]))
+        .collect();
+    let spots: Vec<serde_json::Value> = spots
+        .iter()
+        .zip(SPOT_LETTERS)
+        .map(|(spot, letter)| {
+            serde_json::json!({
+                "letter": letter.to_string(),
+                "name": spot.name.as_str(),
+                "cell": [spot.x, spot.y],
+            })
+        })
         .collect();
     serde_json::json!({
         "schema": {
@@ -3395,6 +3883,7 @@ pub fn map_frame(match_id: MatchId, surface: &str, terrain: &ArenaTerrain) -> se
         "origin_cell": [0, 0],
         "rows": rows,
         "legend": legend,
+        "spots": spots,
     })
 }
 
@@ -3472,17 +3961,30 @@ pub fn view_frame_held(
     else {
         return payload;
     };
-    let mut payload = view_window(payload, ground.id.as_str(), &ground.terrain, frame);
+    let mut payload = view_window(
+        payload,
+        ground.id.as_str(),
+        &ground.terrain,
+        &ground.key_spots,
+        frame,
+    );
     // The pilot's own tank's name, which is theirs to have and which a pure
     // window has no world to ask for: [`view_window`] leaves the key out rather
     // than inventing a value the live feed does not send, and this is the one
     // place it is filled in. The whole payload is byte for byte what it was
     // before cut Q.3 apart from `schema.retain`.
+    //
+    // **16b cut V.1**: the own marker is found by its `you` flag. It used to be
+    // `units.first()`, and the first marker is now a spot whenever the window
+    // holds one.
     if let Some(you) = payload
         .get_mut("units")
         .and_then(serde_json::Value::as_array_mut)
-        .and_then(|units| units.first_mut())
-        .filter(|unit| unit.get("you").and_then(serde_json::Value::as_bool) == Some(true))
+        .and_then(|units| {
+            units
+                .iter_mut()
+                .find(|unit| unit.get("you").and_then(serde_json::Value::as_bool) == Some(true))
+        })
         .and_then(serde_json::Value::as_object_mut)
     {
         you.insert(
@@ -3507,10 +4009,25 @@ pub fn view_frame_held(
 /// to clip it to a narrow terminal and never has to ask for more. A pose off the
 /// window answers the payload untouched.
 ///
-/// **The marker order is the rule every compositor follows**: the pilot's own
-/// marker first, then the contacts in frame order, a later marker overwriting an
-/// earlier one on the same cell (which is what `mush_ansi::panel::expand_rows`
-/// does with `units`, and what the TUI and the web must do too).
+/// **The marker order is the rule every compositor follows** — since **16b cut
+/// V.1**: the named spots inside the window in authored order
+/// ([`spot_markers`]), then the pilot's own marker, then the contacts in frame
+/// order, a later marker overwriting an earlier one on the same cell (which is
+/// what `mush_ansi::panel::expand_rows` does with `units`, and what the TUI and
+/// the web must do too). So a contact standing on a spot hides its letter — the
+/// spot is ground and the contact is what the pilot holds — and so does the
+/// pilot's own `@`.
+///
+/// **The naming order is the reverse of the drawing** (16b cut V.1). `legend`
+/// is the terrain classes, then `["@", "you"]`, then the contact glyph labels,
+/// and THEN `["A", "The Ford"]` for each spot that **owns its cell** — that no
+/// later marker landed on, computed here after all three groups are placed. A
+/// covered spot is still in `units` (the grid renderer draws in order and the
+/// later write wins, which is the rule) but is named nowhere, so the line
+/// client's, the TUI's and the web's legends name the same spots. Contacts come
+/// first because a narrow legend is cut from the back — the TUI's `fit_legend`
+/// keeps entries from the front and a zoomed canvas's `labelPlan` places labels
+/// in order — and a narrow pane must keep `x BA` before the name of a field.
 ///
 /// The own marker carries **no `name`**: a window has no world, and the name the
 /// live feed sends there is the tank's display name, which only [`view_frame`]
@@ -3521,6 +4038,7 @@ pub fn view_window(
     payload: serde_json::Value,
     surface: &str,
     terrain: &ArenaTerrain,
+    spots: &[KeySpot],
     frame: &Frame,
 ) -> serde_json::Value {
     let mut payload = payload;
@@ -3541,23 +4059,40 @@ pub fn view_window(
         .map(|class| serde_json::json!([class.glyph().to_string(), class.label()]))
         .collect();
     legend.push(serde_json::json!([YOU_GLYPH, "you"]));
-    // The platform at the centre, then one marker per contact. Cells are
-    // relative to the window's own origin, which is what the grid renderer
-    // centres on.
+    // 16b cut V.1: the named spots inside the window go down FIRST, then the
+    // platform at the centre, then one marker per contact. Cells are relative to
+    // the window's own origin, which is what the grid renderer centres on.
+    let (spot_units, spot_legend, _drawn) = spot_markers(spots, (x0, y0), (width, height));
+    let spot_count = spot_units.len();
     let you = [
         u32::from(cx.saturating_sub(x0)),
         u32::from(cy.saturating_sub(y0)),
     ];
-    let mut units = vec![serde_json::json!({
+    let mut units = spot_units;
+    units.push(serde_json::json!({
         "id": format!("#{}", frame.unit.0),
         "cell": you,
         "glyph": YOU_GLYPH,
         "you": true,
-    })];
+    }));
     let (markers, glyphs) = contact_markers(frame, (x0, y0), (width, height));
     units.extend(markers);
     for entry in glyphs {
         if !legend.contains(&entry) {
+            legend.push(entry);
+        }
+    }
+    // The spots are NAMED last, and only those that own their cell: a spot
+    // marker any later marker (the `@`, a contact, or a later spot) landed on is
+    // drawn and then covered, so it is named nowhere — the owner rule the TUI's
+    // and the web's legends apply, applied here once every marker is placed.
+    for (index, entry) in spot_legend.into_iter().enumerate().take(spot_count) {
+        let cell = units.get(index).and_then(|unit| unit.get("cell"));
+        let covered = units
+            .iter()
+            .skip(index.saturating_add(1))
+            .any(|later| later.get("cell") == cell);
+        if !covered {
             legend.push(entry);
         }
     }
@@ -3621,14 +4156,19 @@ pub fn view_window(
 ///
 /// `window` is the payload [`view_window`] just produced: its `units` are the
 /// markers that were drawn, so the count is the drawing's own and cannot drift
-/// from it. A payload with no window at all owes nothing.
+/// from it. A payload with no window at all owes nothing. **16b cut V.1**: a
+/// marker is a contact only when it is neither the pilot's own (`you`) nor a
+/// named spot (`spot`); the spots have their own line, [`off_window_spots_line`].
 #[must_use]
 pub fn beyond_window_line(frame: &Frame, window: &serde_json::Value) -> Option<String> {
+    let flag = |unit: &serde_json::Value, key: &str| {
+        unit.get(key).and_then(serde_json::Value::as_bool) == Some(true)
+    };
     let drawn = window
         .get("units")
         .and_then(serde_json::Value::as_array)?
         .iter()
-        .filter(|unit| unit.get("you").and_then(serde_json::Value::as_bool) != Some(true))
+        .filter(|unit| !flag(unit, "you") && !flag(unit, "spot"))
         .count();
     match frame.contacts.len().saturating_sub(drawn) {
         0 => None,
@@ -4237,11 +4777,13 @@ fn cockpit_help(verb: &str) -> String {
         "lock" => "LOCK <contact>      hold one of your contacts by the designator CONTACTS \
                    prints (BA, or X2 before it is identified)."
             .to_owned(),
+        // 16b cut V.1: and a named spot of the ground, by its name or its letter.
         "range" => "RANGE [<contact>]   how far away a contact plotted; your lock if you name \
-                    none. A locked contact reads to the nearest ten metres."
+                    none. A locked contact reads to the nearest ten metres. A named spot of the \
+                    ground works too, by its name or its map letter: RANGE The Ford."
             .to_owned(),
         "bearing" => "BEARING [<contact>] which way a contact plotted, absolute and off your own \
-                      nose; your lock if you name none."
+                      nose; your lock if you name none. A named spot works too: BEARING a."
             .to_owned(),
         // 16b cut Q.2: and the help says what earns a reading, because a pilot
         // who reads `No reading yet` needs to know the answer is to drive closer.
@@ -4260,8 +4802,9 @@ fn cockpit_help(verb: &str) -> String {
         // help did not mention it, so a pilot asked "who is RA?" had nowhere to
         // be sent; and cut D.1 replaced the arena's global tempo on the third
         // line with this platform's own scope.
-        _ => "STATUS              your callsign, power, speed, heading, position, what your own \
-              scope holds, and your armour and internals section by section."
+        _ => "STATUS              your callsign, power, speed, heading, position, the named spot \
+              nearest you, what your own scope holds, and your armour and internals section by \
+              section."
             .to_owned(),
     }
 }
@@ -4944,6 +5487,320 @@ mod tests {
         assert!(
             !status.contains("tempo"),
             "the help still promises the arena's global tempo: {status}"
+        );
+    }
+
+    // -- 16b cut V.1: the named ground ------------------------------------------
+
+    /// A spot at a cell, as the arena carries one.
+    fn spot(name: &str, x: u16, y: u16) -> KeySpot {
+        KeySpot {
+            name: SmolStr::new(name),
+            x,
+            y,
+        }
+    }
+
+    /// The shipped proving ground's four, in authored order (the pack's own
+    /// `key_spots`).
+    fn shipped() -> Vec<KeySpot> {
+        vec![
+            spot("The Ford", 64, 97),
+            spot("The Crossroads", 129, 97),
+            spot("North Barn", 106, 194),
+            spot("East Compound", 208, 148),
+        ]
+    }
+
+    /// A pose on a cell's centre at ten-metre cells, heading `heading_mdeg`.
+    fn pose_on(x: i64, y: i64, heading_mdeg: u32) -> mush_sim::data::Pose {
+        let mut pose = mush_sim::data::Pose::at(
+            x * 1_000 + 500,
+            y * 1_000 + 500,
+            0,
+            mush_sim::data::passive_rules_value(serde_json::json!({}))
+                .expect("an empty posture blob"),
+        );
+        pose.heading_mdeg = heading_mdeg;
+        pose
+    }
+
+    /// **The alphabet** (16b cut V.1): as long as the cap, every letter its own,
+    /// and no letter a byte the map already draws or the pilot already reads.
+    ///
+    /// This is about the SPOT letters only. Two existing markers already share a
+    /// byte with the ground — `x` (a hostile) is `Rubble`'s glyph and `+` (a
+    /// friendly) is `Door`'s — and that is not this cut's to fix.
+    #[test]
+    fn v1_the_spot_alphabet_is_the_cap_and_collides_with_nothing() {
+        assert_eq!(
+            SPOT_LETTERS.len(),
+            crate::definitions::arena::MAX_KEY_SPOTS,
+            "the cap is the alphabet's length"
+        );
+        for (i, a) in SPOT_LETTERS.iter().enumerate() {
+            for b in SPOT_LETTERS.iter().skip(i + 1) {
+                assert_ne!(a, b, "{a} is in the alphabet twice");
+            }
+        }
+        let mut taken: Vec<char> = mush_atlas::TerrainClass::ALL
+            .iter()
+            .map(|class| class.glyph())
+            .collect();
+        for glyph in [YOU_GLYPH, UNKNOWN_GLYPH, FRIEND_GLYPH, HOSTILE_GLYPH] {
+            taken.extend(glyph.chars());
+        }
+        taken.push(crate::arena::state::PROVISIONAL_PREFIX);
+        for letter in SPOT_LETTERS {
+            assert!(
+                !taken.contains(&letter),
+                "the spot letter {letter} is a byte the map or the scope already uses"
+            );
+        }
+        assert_eq!(spot_letter(0), Some('A'));
+        assert_eq!(
+            spot_letter(3),
+            Some('E'),
+            "D is a platform, so the fourth is E"
+        );
+        assert_eq!(spot_letter(21), Some('Z'));
+        assert_eq!(spot_letter(22), None, "past the alphabet is nothing");
+    }
+
+    /// **`resolve_spot`** (16b cut V.1): the whole name or the one letter, case
+    /// folded and trimmed, and nothing else — no prefix, and never a word with a
+    /// designator's shape.
+    #[test]
+    fn v1_a_spot_resolves_by_its_whole_name_or_its_letter_and_nothing_else() {
+        let spots = shipped();
+        let at = |word: &str| resolve_spot(&spots, word).map(|(index, _)| index);
+        assert_eq!(at("The Ford"), Some(0));
+        assert_eq!(at("the ford"), Some(0));
+        assert_eq!(at("  THE FORD "), Some(0));
+        assert_eq!(at("north barn"), Some(2));
+        assert_eq!(at("a"), Some(0));
+        assert_eq!(at("B"), Some(1));
+        assert_eq!(at("c"), Some(2));
+        // The fourth spot is `E`: `D` is not a spot letter at all.
+        assert_eq!(at("e"), Some(3));
+        assert_eq!(at("d"), None);
+        // No prefix, no fragment, no near miss.
+        for word in ["the", "The Fo", "Ford", "The Fjord", "north", "", "  "] {
+            assert_eq!(at(word), None, "{word:?} names no spot");
+        }
+        // A designator is never a spot, in either case.
+        for word in ["RA", "BA", "X1", "x1", "ra"] {
+            assert_eq!(at(word), None, "{word} is a designator's shape");
+        }
+        // The spot answered is the one at that index.
+        assert_eq!(
+            resolve_spot(&spots, "e").map(|(_, spot)| spot.name.as_str()),
+            Some("East Compound")
+        );
+    }
+
+    /// **Range and bearing to a spot's cell centre** (16b cut V.1), on the
+    /// canonical fixture's pose — the pilot on cell (6, 4) at ten-metre cells,
+    /// so at (6,500, 4,500) cm — against hand-worked numbers.
+    ///
+    /// * `A` at (25, 3): its centre is (25,500, 3,500), so dx = 19,000 and
+    ///   dy = −1,000. The range is `isqrt(19,000² + 1,000²)` =
+    ///   `isqrt(362,000,000)` = 19,026 cm, which rounds to 190 m at the 10 m
+    ///   step. The bearing is `atan2(19,000, −1,000)` = 90° + `atan(1/19)` =
+    ///   90° + 3.0128° = 93.013°, so 93,013 mdeg.
+    /// * `C` at (50, 25): dx = 44,000 and dy = 21,000, so `isqrt(1,936,000,000 +
+    ///   441,000,000)` = `isqrt(2,377,000,000)` = 48,754 cm (490 m), bearing
+    ///   `atan2(44, 21)` = 64.486° = 64,486 mdeg.
+    #[test]
+    fn v1_a_spot_s_range_and_bearing_are_read_to_its_cell_centre() {
+        let pose = pose_on(6, 4, 45_000);
+        let ford = spot("The Ford", 25, 3);
+        let woods = spot("The Woods", 50, 25);
+        assert_eq!(spot_range_cm(&pose, &ford, 1_000), 19_026);
+        assert_eq!(spot_bearing_mdeg(&pose, &ford, 1_000), 93_013);
+        assert_eq!(range_m_rounded(19_026, SPOT_RANGE_STEP_M), 190);
+        assert_eq!(spot_range_cm(&pose, &woods, 1_000), 48_754);
+        assert_eq!(spot_bearing_mdeg(&pose, &woods, 1_000), 64_486);
+        assert_eq!(range_m_rounded(48_754, SPOT_RANGE_STEP_M), 490);
+        // The two sentences, verbatim.
+        assert_eq!(
+            spot_range_line(&ford, 'A', 190),
+            "Range to The Ford (A): 190 m."
+        );
+        assert_eq!(
+            spot_bearing_line(&ford, 'A', 93, relative_mdeg(45_000, 93_013) / 1_000),
+            "Bearing to The Ford (A): 093° (rel 048°)."
+        );
+        // Standing on the spot's own cell is range 0 and bearing 0, and the
+        // range still rounds to one step (`range_m_rounded` never says nought).
+        let on = pose_on(25, 3, 0);
+        assert_eq!(spot_range_cm(&on, &ford, 1_000), 0);
+        assert_eq!(spot_bearing_mdeg(&on, &ford, 1_000), 0);
+    }
+
+    /// **`nearest_spot`** (16b cut V.1): the least range, ties to the lowest
+    /// authored index, and nothing on ground that names none.
+    #[test]
+    fn v1_the_nearest_spot_ties_to_the_lowest_index() {
+        let pose = pose_on(6, 4, 0);
+        // West and east of the pilot, one cell each: the same range.
+        let spots = vec![
+            spot("West Gate", 5, 4),
+            spot("East Gate", 7, 4),
+            spot("Far Field", 60, 60),
+        ];
+        let (index, found, range) = nearest_spot(&spots, &pose, 1_000).expect("a spot");
+        assert_eq!((index, found.name.as_str(), range), (0, "West Gate", 1_000));
+        // Authored the other way round, the first is still the one kept.
+        let flipped = vec![spots[1].clone(), spots[0].clone(), spots[2].clone()];
+        assert_eq!(
+            nearest_spot(&flipped, &pose, 1_000).map(|(index, spot, _)| (index, spot.name.clone())),
+            Some((0, SmolStr::new("East Gate")))
+        );
+        // A strictly nearer later spot wins.
+        let nearer = vec![spot("Far Field", 60, 60), spot("East Gate", 7, 4)];
+        assert_eq!(
+            nearest_spot(&nearer, &pose, 1_000).map(|(index, _, _)| index),
+            Some(1)
+        );
+        assert!(nearest_spot(&[], &pose, 1_000).is_none());
+        // The line: `West Gate` is due west, 10 m.
+        assert_eq!(
+            nearest_spot_line(&spots, &pose, 1_000).as_deref(),
+            Some("  nearest spot: West Gate (A), 10 m at 270°")
+        );
+        assert_eq!(nearest_spot_line(&[], &pose, 1_000), None);
+        // The shipped muster: red slot 1 on (6, 97), 58 cells short of the ford
+        // on the same row — 580 m due east.
+        assert_eq!(
+            nearest_spot_line(&shipped(), &pose_on(6, 97, 90_000), 1_000).as_deref(),
+            Some("  nearest spot: The Ford (A), 580 m at 090°")
+        );
+    }
+
+    /// **`VIEW`'s off-window line** (16b cut V.1), verbatim: nothing when every
+    /// spot is drawn (or there are none), one spot, and two in authored order.
+    #[test]
+    fn v1_the_off_window_line_names_every_undrawn_spot_in_authored_order() {
+        let pose = pose_on(6, 4, 45_000);
+        let spots = vec![
+            spot("The Ford", 25, 3),
+            spot("The Roof", 14, 7),
+            spot("The Woods", 50, 25),
+        ];
+        assert_eq!(off_window_spots_line(&[], &[], &pose, 1_000), None);
+        assert_eq!(
+            off_window_spots_line(&spots, &[0, 1, 2], &pose, 1_000),
+            None,
+            "every spot drawn"
+        );
+        assert_eq!(
+            off_window_spots_line(&spots, &[0, 1], &pose, 1_000).as_deref(),
+            Some("Off the window: C The Woods, 490 m at 064°.")
+        );
+        assert_eq!(
+            off_window_spots_line(&spots, &[1], &pose, 1_000).as_deref(),
+            Some("Off the window: A The Ford, 190 m at 093°; C The Woods, 490 m at 064°.")
+        );
+        // The shipped ground from the red muster, whose 39 by 20 window (x 0..38)
+        // draws none of the four.
+        assert_eq!(
+            off_window_spots_line(&shipped(), &[], &pose_on(6, 97, 90_000), 1_000).as_deref(),
+            Some(
+                "Off the window: A The Ford, 580 m at 090°; B The Crossroads, 1230 m at 090°; \
+                 C North Barn, 1390 m at 045°; E East Compound, 2080 m at 075°."
+            )
+        );
+    }
+
+    /// **`spot_markers`** (16b cut V.1): clipped at every edge exactly as
+    /// `contact_markers` clips — the west and south edges are the corner itself,
+    /// the east and north edges are `corner + size`, exclusive — with cells
+    /// relative to the corner, one legend entry per marker, and the authored
+    /// indexes drawn.
+    #[test]
+    fn v1_spot_markers_clip_at_every_edge_and_carry_their_legend() {
+        let spots = vec![
+            spot("West Out", 9, 25),   // one column west of the window
+            spot("West In", 10, 25),   // on its west edge
+            spot("South Out", 20, 19), // one row south
+            spot("South In", 20, 20),  // on its south edge
+            spot("East In", 48, 30),   // on its east edge (10 + 39 - 1)
+            spot("East Out", 49, 30),  // one column past it
+            spot("North In", 30, 39),  // on its north edge (20 + 20 - 1)
+            spot("North Out", 30, 40), // one row past it
+        ];
+        let (markers, legend, drawn) = spot_markers(&spots, (10, 20), (39, 20));
+        assert_eq!(drawn, vec![1, 3, 4, 6]);
+        let cells: Vec<serde_json::Value> = markers
+            .iter()
+            .filter_map(|marker| marker.get("cell").cloned())
+            .collect();
+        assert_eq!(
+            cells,
+            vec![
+                serde_json::json!([0, 5]),
+                serde_json::json!([10, 0]),
+                serde_json::json!([38, 10]),
+                serde_json::json!([20, 19]),
+            ]
+        );
+        // The letter is the AUTHORED index's, not the drawn order's.
+        assert_eq!(
+            markers.first(),
+            Some(&serde_json::json!({
+                "id": "B",
+                "name": "West In",
+                "cell": [0, 5],
+                "glyph": "B",
+                "you": false,
+                "spot": true,
+            }))
+        );
+        assert_eq!(
+            legend,
+            vec![
+                serde_json::json!(["B", "West In"]),
+                serde_json::json!(["E", "South In"]),
+                serde_json::json!(["F", "East In"]),
+                serde_json::json!(["H", "North In"]),
+            ]
+        );
+        // Nothing to draw, nothing drawn.
+        let (none, no_legend, none_drawn) = spot_markers(&[], (0, 0), (39, 20));
+        assert!(none.is_empty() && no_legend.is_empty() && none_drawn.is_empty());
+    }
+
+    /// **`drawn_spots`** (16b cut V.1) reads the drawing's own spots back off
+    /// `units` — every marker flagged `spot`, by its letter's authored index —
+    /// **including one a later marker covers**: a spot under a contact is drawn
+    /// (then overwritten), so `VIEW` never lists it off the window. The pilot's
+    /// own marker and the contacts are never counted, whatever their `id`.
+    #[test]
+    fn v1_the_drawn_spots_are_every_spot_marker_even_a_covered_one() {
+        let window = serde_json::json!({
+            "units": [
+                { "id": "A", "name": "The Ford", "cell": [25, 3], "glyph": "A", "you": false, "spot": true },
+                { "id": "C", "name": "The Roof", "cell": [14, 7], "glyph": "C", "you": false, "spot": true },
+                { "id": "@", "cell": [19, 10], "glyph": "@", "you": true },
+                // A contact on C's cell: it owns the cell, and C is still drawn.
+                { "id": "X3", "cell": [14, 7], "glyph": "?", "you": false },
+                // A contact whose designator starts with a spot letter is not one.
+                { "id": "BA", "cell": [30, 12], "glyph": "x", "you": false },
+            ]
+        });
+        assert_eq!(drawn_spots(&window), vec![0, 2]);
+        assert!(drawn_spots(&serde_json::json!({})).is_empty());
+        // Read against it, the off-window line names only the spot not drawn.
+        let spots = vec![
+            spot("The Ford", 25, 3),
+            spot("North Gate", 7, 4),
+            spot("The Roof", 14, 7),
+        ];
+        assert_eq!(
+            off_window_spots_line(&spots, &drawn_spots(&window), &pose_on(6, 4, 0), 1_000)
+                .as_deref(),
+            Some("Off the window: B North Gate, 10 m at 090°.")
         );
     }
 }

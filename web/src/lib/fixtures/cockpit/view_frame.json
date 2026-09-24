@@ -130,6 +130,10 @@
     [
       "?",
       "contact"
+    ],
+    [
+      "A",
+      "The Ford"
     ]
   ],
   "lock": "1111111111111111",
@@ -448,6 +452,28 @@
   "title": "Arena window",
   "unit": 101,
   "units": [
+    {
+      "cell": [
+        25,
+        3
+      ],
+      "glyph": "A",
+      "id": "A",
+      "name": "The Ford",
+      "spot": true,
+      "you": false
+    },
+    {
+      "cell": [
+        14,
+        7
+      ],
+      "glyph": "B",
+      "id": "B",
+      "name": "The Roof",
+      "spot": true,
+      "you": false
+    },
     {
       "cell": [
         6,

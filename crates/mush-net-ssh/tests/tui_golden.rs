@@ -706,11 +706,90 @@ fn the_cockpit_map_composes_the_committed_grid() {
         "the unknown contact's marker beats the building it stands on"
     );
     assert_eq!(from_south(7).chars().nth(13), Some('#'));
+    // **16b cut V.1**: the named spot `A` The Ford over the pond, and the spot
+    // `B` The Roof under `X3` — drawn first, then covered: the contact owns the
+    // spot's cell, so the cell reads `?`.
+    assert_eq!(from_south(3).chars().nth(25), Some('A'));
+    assert_eq!(
+        from_south(7).chars().nth(14),
+        Some('?'),
+        "the contact owns the spot's cell"
+    );
     // X4 plots at (50, 33), off a twenty-row window: not drawn, and not in the
-    // marker legend either — it is still in the contacts pane.
+    // marker legend either — it is still in the contacts pane. The spots are
+    // named after the contacts, and the covered `B` not at all.
     let legend = rows.rows.last().map(|row| row.text()).unwrap_or_default();
-    assert_eq!(legend, "x BA  + RB  ? X3", "{legend:?}");
+    assert_eq!(legend, "x BA  + RB  ? X3  A The Ford", "{legend:?}");
     assert!(!legend.contains("X4"));
+    assert!(!legend.contains("The Roof"));
+}
+
+/// A render context over a store holding the committed terrain with its
+/// `spots` replaced (16b cut V.1).
+fn store_with_spots(spots: serde_json::Value) -> PanelStore {
+    let mut map = fixture(ARENA_MAP);
+    map["spots"] = spots;
+    let mut store = PanelStore::new();
+    store.apply_panel(
+        &SmolStr::new_static("arena.map"),
+        PanelFrameKind::Keyframe,
+        &map,
+        0,
+    );
+    store
+}
+
+/// **16b cut V.1: a spot under the pilot's own `@` is the `@`'s.** The `@` is
+/// placed after the spots and recorded in the owner map, so it owns the cell,
+/// the spot beneath it is named nowhere, and the `@` itself is never listed.
+#[test]
+fn a_spot_under_the_pilot_s_own_marker_is_hidden_and_the_marker_is_never_listed() {
+    let store = store_with_spots(serde_json::json!([
+        { "letter": "A", "name": "The Ford", "cell": [25, 3] },
+        { "letter": "B", "name": "Home Plate", "cell": [6, 4] },
+    ]));
+    let theme = AnsiTheme::default();
+    let ctx = map_ctx(&theme, &store, (39, 22));
+    let rows = render_cockpit_map_rows(&fixture(COCKPIT_FRAME), &ctx);
+    let from_south = |y: usize| -> String {
+        rows.rows
+            .get(20 - y)
+            .map(mush_net_ssh::tui::render::PaneRow::text)
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        from_south(4).chars().nth(6),
+        Some('@'),
+        "the pilot's own marker covers the spot"
+    );
+    assert_eq!(from_south(3).chars().nth(25), Some('A'));
+    let legend = rows.rows.last().map(|row| row.text()).unwrap_or_default();
+    assert_eq!(legend, "x BA  + RB  ? X3  A The Ford", "{legend:?}");
+    assert!(!legend.contains("Home Plate"), "{legend:?}");
+    assert!(!legend.contains('@'), "{legend:?}");
+}
+
+/// **16b cut V.1: a pane too narrow for the whole legend drops the spot before
+/// it drops a contact.** `fit_legend` keeps whole entries from the FRONT, and
+/// the contacts come first, so `x BA` survives and `1 more` is the spot.
+#[test]
+fn a_narrow_legend_keeps_the_contacts_and_counts_the_spot_it_dropped() {
+    let store = store_with_spots(serde_json::json!([
+        { "letter": "A", "name": "The Long Ford Across The Pond", "cell": [25, 3] },
+    ]));
+    let theme = AnsiTheme::default();
+    let ctx = map_ctx(&theme, &store, (39, 22));
+    let rows = render_cockpit_map_rows(&fixture(COCKPIT_FRAME), &ctx);
+    // The letter is still on the ground; only its name is cut from the legend.
+    let south_3 = rows
+        .rows
+        .get(20 - 3)
+        .map(mush_net_ssh::tui::render::PaneRow::text)
+        .unwrap_or_default();
+    assert_eq!(south_3.chars().nth(25), Some('A'));
+    let legend = rows.rows.last().map(|row| row.text()).unwrap_or_default();
+    assert_eq!(legend, "x BA  + RB  ? X3  1 more", "{legend:?}");
+    assert!(legend.chars().count() <= 39);
 }
 
 /// The composition at a NON-ZERO window origin, which the committed fixture

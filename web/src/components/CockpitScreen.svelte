@@ -29,6 +29,7 @@
     contactText,
     damageText,
     labelPlan,
+    markerOwners,
     NOT_IN_A_COCKPIT,
     scanText,
     terrainCacheKey,
@@ -41,13 +42,15 @@
 
   let { app }: { app: GameApp } = $props();
 
-  /** What a marker is painted in. The four kinds are the whole vocabulary:
-   * nothing has classified it, your side, the other side, and you. */
+  /** What a marker is painted in. The five kinds are the whole vocabulary:
+   * nothing has classified it, your side, the other side, you — and (16b cut
+   * V.1) a named spot of the ground, in a sand tone none of the four is. */
   const MARKER_COLOURS: Record<Marker["kind"], string> = {
     you: "#f2c94c",
     unknown: "#b9a23a",
     friendly: "#4fa86a",
     hostile: "#e05a5a",
+    spot: "#d8c8a0",
   };
 
   /** The viewport, in arena cells; `+`/`−` step through `COCKPIT_ZOOM_CELLS`. */
@@ -142,14 +145,44 @@
     // Under 6 px a label is a fixed 8 px font with a one-pixel halo in the
     // canvas's own background, so it reads over terrain and over other dots.
     const halo = px < 6 ? getComputedStyle(c).backgroundColor || "#000" : null;
-    // Then the markers, in the order they were composed, so a later one covers
-    // an earlier one here exactly as it does in the glyph rows.
-    for (const [i, marker] of w.markers.entries()) {
-      const cx = marker.x * px + px / 2;
+    // 16b cut V.1: which markers own their cell, once per paint — the owner rule
+    // `markerLegend` names by. A spot a later marker landed on is drawn nowhere.
+    const owns = markerOwners(w.markers);
+    const centre = (marker: Marker): [number, number] => [
+      marker.x * px + px / 2,
       // `marker.y` counts from the SOUTH; the canvas paints north-up.
-      const cy = (w.h - 1 - marker.y) * px + px / 2;
+      (w.h - 1 - marker.y) * px + px / 2,
+    ];
+    const label = (marker: Marker, cx: number, cy: number, colour: string): void => {
+      ctx.fillStyle = colour;
+      ctx.textBaseline = "middle";
+      if (halo !== null) {
+        ctx.font = "8px ui-monospace, monospace";
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = halo;
+        ctx.strokeText(marker.designator, cx + px * 0.8, cy);
+      } else {
+        ctx.font = `${Math.max(8, px)}px ui-monospace, monospace`;
+      }
+      ctx.fillText(marker.designator, cx + px * 0.8, cy);
+    };
+    // Then the markers, in the order they were composed — the spots first — so
+    // a later one covers an earlier one here exactly as it does in the glyph
+    // rows.
+    for (const [i, marker] of w.markers.entries()) {
+      const [cx, cy] = centre(marker);
       const colour = MARKER_COLOURS[marker.kind];
       ctx.fillStyle = colour;
+      if (marker.kind === "spot") {
+        // A hollow square, never a dot, a wedge or a ring: ground, not a unit.
+        // `strokeRect` and not a path, so the lock ring stays the one `stroke`.
+        if (owns[i] !== true) continue;
+        const side = Math.max(4, px * 0.9);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = colour;
+        ctx.strokeRect(cx - side / 2, cy - side / 2, side, side);
+        continue;
+      }
       if (marker.kind === "you") {
         // A wedge, pointing the way the tank is pointing (0° is north).
         const r = Math.max(3, px * 0.9);
@@ -173,18 +206,16 @@
         }
       }
       if (labels[i] === true) {
-        ctx.fillStyle = colour;
-        ctx.textBaseline = "middle";
-        if (halo !== null) {
-          ctx.font = "8px ui-monospace, monospace";
-          ctx.lineWidth = 2;
-          ctx.strokeStyle = halo;
-          ctx.strokeText(marker.designator, cx + px * 0.8, cy);
-        } else {
-          ctx.font = `${Math.max(8, px)}px ui-monospace, monospace`;
-        }
-        ctx.fillText(marker.designator, cx + px * 0.8, cy);
+        label(marker, cx, cy, colour);
       }
+    }
+    // 16b cut V.1: the spots' names last, in authored order, under the same
+    // owner gate as their squares — `labelPlan` placed them after every
+    // contact, so a field's name never displaces a contact's label.
+    for (const [i, marker] of w.markers.entries()) {
+      if (marker.kind !== "spot" || owns[i] !== true || labels[i] !== true) continue;
+      const [cx, cy] = centre(marker);
+      label(marker, cx, cy, MARKER_COLOURS.spot);
     }
   });
 </script>

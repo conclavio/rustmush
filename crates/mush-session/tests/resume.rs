@@ -980,6 +980,56 @@ fn the_latest_slot_replays_each_feeds_newest_keyframe_merged_by_seq() {
     );
 }
 
+/// **16b cut V.1: the latest slot carries the committed `VIEW` payload
+/// unchanged.** The canonical `view_frame.json` — the window whose `units` now
+/// open with the named spots' markers and whose `legend` ends with a spot's
+/// name — is sent as a retain-latest `Keyframe` on `arena.cockpit` to one
+/// character, and a resume from nothing replays it with its `data` equal to the
+/// fixture, value for value. The slot is shape-blind, and this pins that the
+/// payload's new shape crosses it whole.
+#[test]
+fn the_latest_slot_replays_the_committed_view_frame_unchanged() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../web/src/lib/fixtures/cockpit/view_frame.json"
+    ))
+    .expect("the committed fixture is JSON");
+    assert_eq!(
+        fixture.pointer("/schema/retain"),
+        Some(&serde_json::json!(LATEST)),
+        "the fixture asks to be retained latest-only"
+    );
+    assert_eq!(
+        fixture
+            .pointer("/units/0/spot")
+            .and_then(serde_json::Value::as_bool),
+        Some(true),
+        "the fixture's first marker is a named spot (16b cut V.1)"
+    );
+    let mgr = manager_with_ticking_clock(SessionConfig::default());
+    let (web, _rx) = web_conn(1, 64);
+    let (sess, _) = mgr.attach(web, CharKey(7), "g".into());
+    mgr.send_event_to_char(
+        CharKey(7),
+        OutputEvent::Panel {
+            feed: "arena.cockpit".into(),
+            kind: mush_proto::PanelFrameKind::Keyframe,
+            data: fixture.clone(),
+        },
+    );
+    let replayed = mgr.replay_since(sess, 0).expect("never TooOld");
+    assert_eq!(replayed.len(), 1, "the one keyframe, from the slot");
+    let OutputEvent::Panel { feed, kind, data } = &replayed[0].event else {
+        panic!("the replayed event is the panel: {:?}", replayed[0].event);
+    };
+    assert_eq!(feed.as_str(), "arena.cockpit");
+    assert_eq!(*kind, mush_proto::PanelFrameKind::Keyframe);
+    assert_eq!(data, &fixture, "the payload crosses the slot unchanged");
+    assert!(
+        ring_only(&mgr, sess).is_empty(),
+        "and it lives in the slot, not the ring"
+    );
+}
+
 // ---- I12 leak tripwire: the ring's non-Char writers refuse a Narrative ------
 //
 // The narrative backlog's leak proof rests on one invariant: a `Narrative`

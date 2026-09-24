@@ -2001,9 +2001,14 @@ impl mush_core::QueryHandler for MapQuery {
         _params: &serde_json::Value,
     ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
         let data = match seated_ground(w, actor) {
-            Some((match_id, ground)) => {
-                crate::match_::cockpit::map_frame(match_id, ground.id.as_str(), &ground.terrain)
-            }
+            // 16b cut V.1: the ground's named spots ride the map, because they
+            // are surveyed ground exactly as the terrain is.
+            Some((match_id, ground)) => crate::match_::cockpit::map_frame(
+                match_id,
+                ground.id.as_str(),
+                &ground.terrain,
+                &ground.key_spots,
+            ),
             // Nothing about any match: not its id, not its ground, not whether
             // one is running at all.
             None => crate::match_::cockpit::map_unseated(),

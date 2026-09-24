@@ -14,8 +14,9 @@ else — `help simulator` is how you get there.
                       prints. Bare, it answers
                       `LOCK <contact>; CONTACTS lists them.`
   RANGE [<contact>]   how far away a contact plotted; your lock if you name
-                      none.
+                      none. A named spot of the ground works too.
   BEARING [<contact>] which way a contact plotted; your lock if you name none.
+                      A named spot of the ground works too.
   SCAN [<contact>]    what is left of a contact, section by section; your lock
                       if you name none. Needs a contact you have identified and
                       had a close look at.
@@ -23,10 +24,11 @@ else — `help simulator` is how you get there.
                       A weapon of two words takes its initials: FIRE mg.
   WEAPONSTATUS        every weapon: ready or cycling, its rounds, its own chance
                       against your lock, and that lock's range band.
-  STATUS              your callsign, power, speed, heading, position, what your
-                      own scope holds, and your armour and internals section by
-                      section. If you chose a chassis with `SIM UNIT`, the
-                      second line brackets it — `Red Tank 1 [biped_mk1]: …` —
+  STATUS              your callsign, power, speed, heading, position, the named
+                      spot nearest you, what your own scope holds, and your
+                      armour and internals section by section. If you chose
+                      a chassis with `SIM UNIT`, the second line brackets it
+                      — `Red Tank 1 [biped_mk1]: …` —
                       because a pod's tank keeps the pod's own name whatever is
                       fitted to it.
 
@@ -119,6 +121,7 @@ Name one, or name none and get your lock:
 
   RANGE BA         Range to BA: 440 m.
   BEARING          Bearing to BA: 087° (rel 357°).
+  RANGE The Ford   Range to The Ford (A): 430 m.
 
 Your **lock** reads finer than 50 m: it is a fire-control solution and the
 platform is tracking that one return continuously. How much finer is what the
@@ -180,10 +183,23 @@ nose-on spends its thickest plate and a tank caught broadside or from behind
 spends its thinnest. Turn into the shot.
 
 `VIEW` draws the same picture as a map: terrain glyphs, `@` for you, `?` for a
-contact nothing has classified, `+` for your side and `x` for the other. It is
-a close-in window, 39 cells across and 20 up, each cell printed two columns
-wide so the ground is square; a line under it says how many contacts plot
-beyond it, and `CONTACTS` lists them.
+contact nothing has classified, `+` for your side and `x` for the other. `A`,
+`B`, `C` and so on are the ground's named spots, listed by name in the legend
+after the contacts; a contact standing on one hides its letter, because the
+contact is what you hold. It is a close-in window, 39 cells across and 20 up,
+each cell printed two columns wide so the ground is square; a line under it
+says how many contacts plot beyond it, and `CONTACTS` lists them. A last line
+names every spot the window could not draw, with its range and bearing:
+`Off the window: C North Barn, 1390 m at 045°; E East Compound, 2080 m at 075°.`
+
+**Named ground.** The proving ground is surveyed, so its named places are yours
+from the moment you board: `A` The Ford, `B` The Crossroads, `C` North Barn and
+`E` East Compound. `RANGE` and `BEARING` take a spot's name or its letter —
+`RANGE The Ford`, `BEARING c` — whether or not it is in sight, and `STATUS`
+names the one nearest you. A name is the whole name, in any case; a word that is
+neither a contact you hold nor a spot's name is `No such contact.`, as ever.
+Before the panel has told you anything a spot answers `The panel has told you
+nothing yet.`, because what is missing is where you are.
 
 Contacts arrive and leave on their own: `New contact X2: bearing 087°,
 effective.`, `Contact X2 identified: BA, blue.`, `Contact BA lost.`

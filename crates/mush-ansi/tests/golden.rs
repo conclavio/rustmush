@@ -1209,9 +1209,38 @@ fn the_cockpit_window_fixture_prints_the_committed_grid() {
     assert_eq!(
         row_from_south(7).get(14).copied(),
         Some('?'),
-        "the unknown contact's marker beats the building it stands on"
+        "the unknown contact's marker beats the building it stands on — and \
+         (16b cut V.1) the spot `B` placed under it first: the contact owns the \
+         spot's cell"
     );
     assert_eq!(row_from_south(7).get(13).copied(), Some('#'));
+    // **16b cut V.1**: the named spot `A` The Ford, drawn over the pond.
+    assert_eq!(
+        row_from_south(3).get(25).copied(),
+        Some('A'),
+        "the spot's letter is drawn over the water it stands in"
+    );
+    // The legend names the spot after the contacts — the line client prints
+    // each contact's glyph with its class word (`? contact`), the TUI and the web
+    // with its designator (`? X3`) — and never the covered `B`.
+    let head = lines
+        .iter()
+        .take(footer.saturating_sub(20))
+        .copied()
+        .collect::<Vec<&str>>()
+        .join(" ");
+    let contact = head
+        .find("? contact")
+        .expect("the unknown contact's legend entry");
+    let spot = head.find("A The Ford").expect("the spot's legend entry");
+    assert!(
+        contact < spot,
+        "the spot is named after the contacts: {head}"
+    );
+    assert!(
+        !head.contains("The Roof"),
+        "a covered spot is named nowhere: {head}"
+    );
 
     let path = fixture_dir().join("view_grid.txt");
     if std::env::var("TACSIM_BLESS").is_ok() {

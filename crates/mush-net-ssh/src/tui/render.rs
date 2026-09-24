@@ -2271,11 +2271,15 @@ fn designator_of(contact: &Value) -> String {
 ///    B.4), the window `VIEW` sends.
 /// 2. The terrain is `window_rows(map rows, map width, map height, x0, y0, w,
 ///    h)`: row `0` is the window's SOUTH row, each exactly `w` glyphs.
-/// 3. The markers go down in the order 16b cut Q.3 fixed — the pilot's own `@`
-///    first, then the contacts in the frame's own order — each at its ABSOLUTE
-///    cell less the window origin, and a later marker overwrites an earlier one
-///    on the same cell. A contact whose `cell` is null or outside the window is
-///    not drawn (it is still in the contacts pane).
+/// 3. The markers go down in the order 16b cut V.1 fixed — the map's named
+///    `spots` first, in authored order, each as its one-character `letter`;
+///    then the pilot's own `@`; then the contacts in the frame's own order —
+///    each at its ABSOLUTE cell less the window origin, and a later marker
+///    overwrites an earlier one on the same cell. So a contact or the `@`
+///    standing on a spot hides its letter. A spot or a contact whose `cell` is
+///    null or outside the window is not drawn (a contact is still in the
+///    contacts pane), and a spot with no letter, a longer one or no cell is
+///    skipped.
 /// 4. A contact's glyph is `contact_glyph`'s: `?` unknown, `+` friendly, `x`
 ///    hostile.
 /// 5. The rows print NORTH-UP: `y` from `h - 1` down to `0`.
@@ -2284,12 +2288,18 @@ fn designator_of(contact: &Value) -> String {
 /// then the marker legend. The parity test reads the `h` in the middle.
 ///
 /// **The legend names what is drawn** (16b cut B.3, `B-62`). It lists, in frame
-/// order, each contact that OWNS its window cell — the last contact written
+/// order, each contact that OWNS its window cell — the last marker written
 /// there — so two contacts on one cell name the later, whose glyph is the one on
 /// screen; the earlier is still a row of the contacts pane. A contact under the
 /// pilot's own `@` cannot hide from the legend: the `@` is placed first and a
-/// contact overwrites it, so the `@` owns a cell only no contact is on. The web's
-/// `markerLegend` runs the same rule.
+/// contact overwrites it, so the `@` owns a cell only no contact is on. **Then**
+/// (16b cut V.1) it lists, in authored order, each spot that owns its cell, as
+/// `A The Ford`; a spot under the `@` or a contact is named nowhere. The owner
+/// map is keyed by `MapOwner`, and the `@` is recorded in it, so neither a
+/// covered spot nor the `@` is ever listed. Contacts come first because
+/// `fit_legend` keeps entries from the front: a pane too narrow for the whole
+/// legend drops the name of a field before it drops a contact a pilot aims by.
+/// The web's `markerLegend` runs the same rule, and so does `VIEW`'s own legend.
 ///
 /// **The chrome goes before the grid does** (16b cut B.3, `B-65`). With the
 /// pane's height `h` known: four rows or more are the heading, `h − 2` grid rows
@@ -2327,14 +2337,46 @@ pub fn render_cockpit_map_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     let (x0, y0, w, h) =
         mush_ansi::viewport(width, height, you, usize::from(grid_w), usize::from(grid_h));
     let mut grid = mush_ansi::window_rows(rows, width, height, x0, y0, w, h);
-    // The pilot's own marker first, then the contacts in frame order: a later
-    // marker overwrites an earlier one on the same cell.
-    if let Some(cell) = you {
-        put_marker(&mut grid, (x0, y0), cell, '@');
-    }
-    // Which contact wrote each window cell LAST (16b cut B.3): only a lookup,
+    // Which marker wrote each window cell LAST (16b cut B.3): only a lookup,
     // never iterated, so the legend's order is the frame's and nothing else.
-    let mut owner: HashMap<(usize, usize), usize> = HashMap::new();
+    // **16b cut V.1** keyed it by `MapOwner`, so a spot's index, the `@` and a
+    // contact's index cannot be mistaken for one another.
+    let mut owner: HashMap<(usize, usize), MapOwner> = HashMap::new();
+    // 16b cut V.1: the map's named spots FIRST, in authored order — the ground
+    // under everything — then the pilot's own `@`, then the contacts in frame
+    // order: a later marker overwrites an earlier one on the same cell.
+    let mut spots_landed: Vec<(usize, char, String, (usize, usize))> = Vec::new();
+    let empty_spots = Vec::new();
+    let spots = map
+        .get("spots")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty_spots);
+    for (index, spot) in spots.iter().enumerate() {
+        // An entry with no letter, a letter that is not exactly one
+        // character, or no cell is skipped: the map is server text.
+        let Some(letter) = spot
+            .get("letter")
+            .and_then(Value::as_str)
+            .and_then(one_char)
+        else {
+            continue;
+        };
+        let Some(cell) = cell_pair(spot.get("cell")) else {
+            continue;
+        };
+        if let Some(at) = put_marker(&mut grid, (x0, y0), cell, letter) {
+            owner.insert(at, MapOwner::Spot(index));
+            let name = clean(spot.get("name").and_then(Value::as_str).unwrap_or(""));
+            spots_landed.push((index, letter, name, at));
+        }
+    }
+    // The `@` is recorded too (16b cut V.1): a spot under the pilot's own cell
+    // is hidden by it exactly as by a contact. It is never listed.
+    if let Some(cell) = you
+        && let Some(at) = put_marker(&mut grid, (x0, y0), cell, '@')
+    {
+        owner.insert(at, MapOwner::You);
+    }
     let mut landed: Vec<(usize, char, (usize, usize))> = Vec::new();
     let empty_contacts = Vec::new();
     let contacts = data
@@ -2347,19 +2389,28 @@ pub fn render_cockpit_map_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
         };
         let glyph = contact_glyph(contact);
         if let Some(at) = put_marker(&mut grid, (x0, y0), cell, glyph) {
-            owner.insert(at, index);
+            owner.insert(at, MapOwner::Contact(index));
             landed.push((index, glyph, at));
         }
     }
-    let legend: Vec<String> = landed
+    // Named contacts first, then spots — the reverse of the drawing, so that
+    // `fit_legend`, which keeps entries from the FRONT, drops a field's name
+    // before it drops a contact a pilot aims by.
+    let mut legend: Vec<String> = landed
         .iter()
-        .filter(|(index, _, at)| owner.get(at) == Some(index))
+        .filter(|(index, _, at)| owner.get(at) == Some(&MapOwner::Contact(*index)))
         .filter_map(|(index, glyph, _)| {
             contacts
                 .get(*index)
                 .map(|contact| format!("{glyph} {}", designator_of(contact)))
         })
         .collect();
+    legend.extend(
+        spots_landed
+            .iter()
+            .filter(|(index, _, _, at)| owner.get(at) == Some(&MapOwner::Spot(*index)))
+            .map(|(_, letter, name, _)| format!("{letter} {name}")),
+    );
     let mut out = Vec::with_capacity(h + 2);
     if heading {
         let sep = if ctx.utf8 { "\u{2014}" } else { "-" };
@@ -2435,6 +2486,30 @@ fn put_marker(
     let slot = grid.get_mut(at.1).and_then(|row| row.get_mut(at.0))?;
     *slot = glyph;
     Some(at)
+}
+
+/// **Who wrote a map-pane cell last** (16b cut V.1): the key of
+/// [`render_cockpit_map_rows`]' owner map. Three kinds of marker go down on the
+/// one grid, and an index of one kind must never read as an index of another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MapOwner {
+    /// A named spot, by its index in the map's `spots`.
+    Spot(usize),
+    /// The pilot's own `@`.
+    You,
+    /// A contact, by its index in the frame's `contacts`.
+    Contact(usize),
+}
+
+/// The one character of a one-character string (a spot's `letter`), or `None`
+/// for an empty or a longer one — or a control character, which a grid cell
+/// must never be painted with (server text is cleaned on this surface).
+fn one_char(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(one), None) if !one.is_control() => Some(one),
+        _ => None,
+    }
 }
 
 /// **The status pane** (16b cut Q.4): the callsign the whole arena calls this

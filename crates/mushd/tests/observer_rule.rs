@@ -1017,6 +1017,20 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     let seen = ask(&mut ada, "CONTACTS", NO_CONTACTS).await;
     names_nothing(&seen, red, blue, "the pilot's `CONTACTS`");
 
+    // **16b cut V.1**: `STATUS` names the ground nearest her own pose — the ford,
+    // twenty-six cells west of her re-posed cell on the same road. (Asked before
+    // the battery's window below opens, because `STATUS` rightly names her own
+    // tank, which `names_nothing` would refuse. Whole, fenced by the sentinel,
+    // so its damage lines cannot spill into the battery's first answer.)
+    let seen = ask_whole(&mut ada, "STATUS").await;
+    assert!(
+        seen.contains("nearest spot: The Ford (A), 260 m at 270°"),
+        "`STATUS` names the nearest spot:\n{seen}"
+    );
+    // Everything she is sent from here to the end of the pre-detection battery
+    // is held to `names_nothing` at the end of it.
+    let battery_mark = ada.mark();
+
     // **16b cut Q.1: naming a contact you do not hold tells you nothing.**
     //
     // A designator is short and guessable in a way sixteen base-16 digits were
@@ -1037,6 +1051,10 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         "LOCK zzzz",
         "RANGE BA",
         "BEARING BA",
+        // 16b cut V.1: the second resolution arm tells nothing either — a
+        // designator of nothing and a spot that does not exist are one answer.
+        "RANGE ZZ",
+        "RANGE The Fjord",
     ] {
         let seen = ask(&mut ada, line, NO_SUCH_CONTACT).await;
         refusals.push(seen.trim_start_matches(line).trim().to_owned());
@@ -1051,6 +1069,8 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         "LOCK zzzz",
         "RANGE BA",
         "BEARING BA",
+        "RANGE ZZ",
+        "RANGE The Fjord",
     ]
     .into_iter()
     .zip(refusals.iter())
@@ -1070,11 +1090,61 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
             "{line} with neither a lock nor a name:\n{seen}"
         );
     }
-    let seen = ask(&mut ada, "VIEW", "Arena window").await;
+    // **16b cut V.1**: a named spot answers, before any detection, because the
+    // ground is surveyed: the ford is 26 cells due west of her.
+    let seen = ask(&mut ada, "RANGE The Ford", "Range to The Ford (A): ").await;
+    assert!(
+        seen.contains("Range to The Ford (A): 260 m."),
+        "`RANGE The Ford` before detection:\n{seen}"
+    );
+    // The window's own lines arrive after the panel: the named spots' line comes
+    // last, and all four spots are off a window that runs from column 71 to 109.
+    // The line wraps, and a needle taken from its opening could return before
+    // the wrapped rest has arrived, so the answer is read whole (to the
+    // sentinel's refusal) and the sentence is cut at its one full stop.
+    let seen = ask_whole(&mut ada, "VIEW").await;
     names_nothing(&seen, red, blue, "the pilot's `VIEW`");
     assert!(
         !seen.contains(" x ") && !seen.contains("hostile"),
         "no hostile marker before detection:\n{seen}"
+    );
+    // The terminal wraps the line at eighty columns, so it is read back from
+    // its opening to the end of the answer with the wraps undone.
+    let off = seen
+        .find("Off the window:")
+        .and_then(|at| seen.get(at..))
+        .and_then(|rest| rest.find('.').and_then(|stop| rest.get(..=stop)))
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ");
+    assert_eq!(
+        off,
+        "Off the window: A The Ford, 260 m at 270°; B The Crossroads, 390 m at 090°; \
+         C North Barn, 980 m at 009°; E East Compound, 1290 m at 066°.",
+        "the off-window line names the spots, in authored order:\n{seen}"
+    );
+    // Spots only: every clause is a spot's letter and name, and nothing else.
+    for clause in off.trim_start_matches("Off the window: ").split("; ") {
+        assert!(
+            [
+                "A The Ford, ",
+                "B The Crossroads, ",
+                "C North Barn, ",
+                "E East Compound, "
+            ]
+            .iter()
+            .any(|spot| clause.starts_with(spot)),
+            "the off-window line named something that is not a spot: {clause:?}"
+        );
+    }
+    // And the whole battery — the refusals, the named spot, the window — says
+    // nothing about either tank.
+    names_nothing(
+        &strip_ansi(&ada.seen[battery_mark..]),
+        red,
+        blue,
+        "the pre-detection battery",
     );
 
     // The same account, through the web client.
@@ -1649,6 +1719,19 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
     assert!(
         map.get("units").is_none(),
         "the map carries no `units` key by construction: {map}"
+    );
+    // **16b cut V.1**: and the ground's named spots, which are surveyed ground
+    // exactly as the terrain is — the four the pack authors, in its order, in
+    // arena cells, each with its map letter. Places, never units.
+    assert_eq!(
+        map.get("spots"),
+        Some(&json!([
+            { "letter": "A", "name": "The Ford", "cell": [64, 97] },
+            { "letter": "B", "name": "The Crossroads", "cell": [129, 97] },
+            { "letter": "C", "name": "North Barn", "cell": [106, 194] },
+            { "letter": "E", "name": "East Compound", "cell": [208, 148] },
+        ])),
+        "the map names the shipped ground's four spots: {map}"
     );
     assert!(
         map.get("you").is_none(),

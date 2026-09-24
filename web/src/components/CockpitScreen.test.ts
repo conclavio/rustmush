@@ -15,7 +15,9 @@
 // and the fill and stroke styles it was made under. The frame and the map are
 // the committed fixtures every renderer reads (`fixtures/cockpit/`), so the
 // geometry below is the fixture's: a 96 by 64 ground, `@` RA at (6,4), `x BA`
-// at (36,14) and locked, `+ RB` at (2,9), `? X3` at (14,7), `? X4` at (50,33).
+// at (36,14) and locked, `+ RB` at (2,9), `? X3` at (14,7), `? X4` at (50,33) —
+// and (16b cut V.1) the named spots `A` The Ford at (25,3), `B` The Roof at
+// (14,7) under X3, and `C` The Woods at (50,25).
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -94,6 +96,8 @@ function recordingContext(canvas: HTMLCanvasElement, log: Call[]): Record<string
     "closePath",
     "clearRect",
     "drawImage",
+    // 16b cut V.1: a spot's hollow square.
+    "strokeRect",
   ]) {
     ctx[op] = vi.fn((...args: unknown[]) => {
       log.push({
@@ -171,7 +175,9 @@ describe("CockpitScreen mounted", () => {
     await seated();
     const headings = [...document.querySelectorAll("h4")].map((h) => h.textContent);
     expect(headings).toEqual(["status", "damage", "weapons", "contacts", "notices"]);
-    expect(document.querySelector(".legendline")?.textContent).toBe("x BA  + RB  ? X3  ? X4");
+    expect(document.querySelector(".legendline")?.textContent).toBe(
+      "x BA  + RB  ? X3  ? X4  A The Ford  C The Woods",
+    );
     expect(screen.queryByText(NOT_IN_A_COCKPIT)).toBeNull();
   });
 
@@ -265,9 +271,41 @@ describe("CockpitScreen mounted", () => {
     await fireEvent.click(zoomButton("zoom in"));
     const canvas = document.querySelector("canvas");
     expect(canvas?.width).toBe(64 * 8);
-    expect(texts("fillText")).toEqual(["RA", "BA", "RB", "X3", "X4"]);
+    // 16b cut V.1: then the spots that own their cell, LAST, in authored order
+    // — `B` The Roof is under X3 and is labelled nowhere.
+    expect(texts("fillText")).toEqual(["RA", "BA", "RB", "X3", "X4", "The Ford", "The Woods"]);
     expect(texts("strokeText")).toEqual([]);
-    expect(document.querySelector(".legendline")?.textContent).toBe("x BA  + RB  ? X3  ? X4");
+    expect(document.querySelector(".legendline")?.textContent).toBe(
+      "x BA  + RB  ? X3  ? X4  A The Ford  C The Woods",
+    );
+  });
+
+  it("squares each spot that owns its cell, in its own colour, and no other (16b cut V.1)", async () => {
+    await seated();
+    // At 128 cells (the whole ground, 5 px): A and C own their cells, B is under
+    // X3 — two squares, stroked on the screen, in the sand tone.
+    const squares = (): Call[] => calls("strokeRect");
+    expect(squares()).toHaveLength(2);
+    const onScreen = document.querySelector("canvas");
+    expect(squares().every((c) => c.canvas === onScreen)).toBe(true);
+    expect(squares().every((c) => c.strokeStyle === "#d8c8a0")).toBe(true);
+    // A at (25, 3): its centre is (127.5, 302.5) north-up at 5 px, and the side
+    // is `max(4, 5 * 0.9)` = 4.5.
+    expect(squares()[0]?.args).toEqual([125.25, 300.25, 4.5, 4.5]);
+    // Not labelled below 6 px, so no spot name is painted.
+    expect(texts("fillText")).toEqual(["BA"]);
+    // A square is not a path: the lock's ring is still the one `stroke`, and a
+    // spot adds no dot.
+    expect(calls("stroke")).toHaveLength(1);
+    expect(calls("arc")).toHaveLength(5);
+    // Zoomed in (64 cells, 8 px): the same two, and now their names.
+    resetLog();
+    await fireEvent.click(zoomButton("zoom in"));
+    expect(squares()).toHaveLength(2);
+    expect(squares()[0]?.args).toEqual([25 * 8 + 4 - 3.6, (63 - 3) * 8 + 4 - 3.6, 7.2, 7.2]);
+    expect(texts("fillText")).toContain("The Ford");
+    expect(texts("fillText")).toContain("The Woods");
+    expect(texts("fillText")).not.toContain("The Roof");
   });
 
   it("paints the terrain once per window: a frame after it costs one drawImage (T-33)", async () => {

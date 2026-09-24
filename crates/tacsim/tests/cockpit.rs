@@ -1008,17 +1008,16 @@ async fn the_live_window_is_the_pure_one_plus_the_tank_s_own_name() {
         cockpit::status_frame(held.match_id, &held.frame),
         ground.id.as_str(),
         &ground.terrain,
+        &ground.key_spots,
         &held.frame,
     );
 
     // The pure window says nothing about what the tank is called, and the live
-    // one says the name it has always said — never the callsign.
-    let you = pure
-        .get("units")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|units| units.first())
-        .cloned()
-        .expect("the platform's own marker is first");
+    // one says the name it has always said — never the callsign. **16b cut
+    // V.1**: the own marker is the one flagged `you`, not the first — the red
+    // muster's window (x 0..38) holds none of the shipped spots, so here it
+    // happens to be first as well; the moved pose below is where it is not.
+    let you = own_marker(&pure).expect("the platform's own marker is in the window");
     assert_eq!(
         you.get("you").and_then(serde_json::Value::as_bool),
         Some(true)
@@ -1027,12 +1026,7 @@ async fn the_live_window_is_the_pure_one_plus_the_tank_s_own_name() {
         you.get("name").is_none(),
         "a pure window invents no name: {you}"
     );
-    let live_you = live
-        .get("units")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|units| units.first())
-        .cloned()
-        .expect("the live payload's own marker is first too");
+    let live_you = own_marker(&live).expect("the live payload's own marker is there too");
     assert_eq!(
         live_you.get("name").and_then(serde_json::Value::as_str),
         Some(name.as_str()),
@@ -1045,15 +1039,58 @@ async fn the_live_window_is_the_pure_one_plus_the_tank_s_own_name() {
     );
 
     // With that one field put back, the two payloads are the same payload.
-    if let Some(marker) = pure
-        .get_mut("units")
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|units| units.first_mut())
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        marker.insert("name".to_owned(), serde_json::json!(name));
-    }
+    name_own_marker(&mut pure, &name);
     assert_eq!(live, pure, "the live window is the pure one, plus the name");
+
+    // **16b cut V.1**: the same frame stood four cells west of The Ford (64, 97),
+    // so the window's first marker is the spot and the own marker follows it.
+    // The live payload names the tank on the `you` marker and on nothing else —
+    // taking `units.first()` would have put the tank's name on the ford and left
+    // the pilot's own marker bare.
+    let mut near = held.frame.clone();
+    near.pose.x_cm = 60 * 1_000 + 500;
+    near.pose.y_cm = 97 * 1_000 + 500;
+    let live_near = rig.with_ctx(0, |ctx| cockpit::view_frame(ctx, held.match_id, &near));
+    let mut pure_near = cockpit::view_window(
+        cockpit::status_frame(held.match_id, &near),
+        ground.id.as_str(),
+        &ground.terrain,
+        &ground.key_spots,
+        &near,
+    );
+    let units = live_near
+        .get("units")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let first = units.first().expect("the window draws the ford");
+    assert_eq!(
+        (
+            first.get("id").and_then(serde_json::Value::as_str),
+            first.get("name").and_then(serde_json::Value::as_str),
+            first.get("spot").and_then(serde_json::Value::as_bool),
+        ),
+        (Some("A"), Some("The Ford"), Some(true)),
+        "the ford is drawn first, under its own name: {live_near}"
+    );
+    let you_at = units
+        .iter()
+        .position(|unit| unit.get("you").and_then(serde_json::Value::as_bool) == Some(true))
+        .expect("the own marker");
+    assert_eq!(you_at, 1, "the own marker follows the one spot drawn");
+    assert_eq!(
+        own_marker(&live_near)
+            .as_ref()
+            .and_then(|you| you.get("name"))
+            .and_then(serde_json::Value::as_str),
+        Some(name.as_str()),
+        "the tank's name is on the pilot's own marker: {live_near}"
+    );
+    name_own_marker(&mut pure_near, &name);
+    assert_eq!(
+        live_near, pure_near,
+        "with a spot in the window, the live window is still the pure one plus the name"
+    );
 
     // And the schema is the one cut K.2 wrote, plus the marker the session ring
     // reads — the whole of what this cut changed about what `VIEW` sends.
@@ -1066,6 +1103,34 @@ async fn the_live_window_is_the_pure_one_plus_the_tank_s_own_name() {
             "retain": "latest",
         }))
     );
+}
+
+/// The window's own marker — the one flagged `you` (16b cut V.1: a spot may be
+/// drawn before it, so it is found by its flag and never by its place).
+fn own_marker(window: &serde_json::Value) -> Option<serde_json::Value> {
+    window
+        .get("units")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .find(|unit| unit.get("you").and_then(serde_json::Value::as_bool) == Some(true))
+        .cloned()
+}
+
+/// Put the tank's display name on a pure window's own marker, which is the one
+/// field the live window adds.
+fn name_own_marker(window: &mut serde_json::Value, name: &str) {
+    if let Some(marker) = window
+        .get_mut("units")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|units| {
+            units
+                .iter_mut()
+                .find(|unit| unit.get("you").and_then(serde_json::Value::as_bool) == Some(true))
+        })
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        marker.insert("name".to_owned(), serde_json::json!(name));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2221,7 +2286,7 @@ mod fixture {
     use tacsim::arena::condition::{Condition, ConditionBand};
     use tacsim::arena::perception::{FrameCondition, FrameContact, FrameNotice, Named, NoticeKind};
     use tacsim::arena::state::{
-        ArenaTerrain, Classification, ContactId, Designator, Power, Team, TerrainCell,
+        ArenaTerrain, Classification, ContactId, Designator, KeySpot, Power, Team, TerrainCell,
     };
     use tacsim::arena::step::{Frame, FrameFacet, FrameHeat, FrameSection};
     use tacsim::arena::weapons::{FrameBand, FrameWeapon};
@@ -2555,14 +2620,41 @@ mod fixture {
         }
     }
 
+    /// **The scene's three named spots** (16b cut V.1), each exercising one
+    /// rule of the window:
+    ///
+    /// * `A` The Ford at (25, 3) — inside the window, on the pond: a letter drawn
+    ///   over water, named in every legend;
+    /// * `B` The Roof at (14, 7) — inside the window and under contact `X3`: the
+    ///   spot goes down first and `X3`'s `?` overwrites it, so `B` is in the
+    ///   window's `units` (placed, then covered) and named in no legend, because
+    ///   the contact owns the cell;
+    /// * `C` The Woods at (50, 25) — off the 39 by 20 window and inside the woods,
+    ///   so `VIEW`'s off-window line names it, and it is on the map (and on the
+    ///   web's default whole-arena view) but not in the window.
+    #[must_use]
+    pub fn spots() -> Vec<KeySpot> {
+        let spot = |name: &str, x: u16, y: u16| KeySpot {
+            name: SmolStr::new(name),
+            x,
+            y,
+        };
+        vec![
+            spot("The Ford", 25, 3),
+            spot("The Roof", 14, 7),
+            spot("The Woods", 50, 25),
+        ]
+    }
+
     /// The three payloads of the one scene, through the three pure builders.
     #[must_use]
     pub fn payloads() -> (serde_json::Value, serde_json::Value, serde_json::Value) {
         let frame = frame();
         let terrain = terrain();
+        let spots = spots();
         let cockpit = cockpit::status_frame(MATCH, &frame);
-        let map = cockpit::map_frame(MATCH, SURFACE, &terrain);
-        let view = cockpit::view_window(cockpit.clone(), SURFACE, &terrain, &frame);
+        let map = cockpit::map_frame(MATCH, SURFACE, &terrain, &spots);
+        let view = cockpit::view_window(cockpit.clone(), SURFACE, &terrain, &spots, &frame);
         (cockpit, map, view)
     }
 
@@ -2726,27 +2818,94 @@ fn the_fixture_scene_exercises_the_clamp_the_building_and_the_off_window_contact
         Some(u64::from(cockpit::VIEW_ROWS))
     );
     // Three of the four contacts are drawn; the fourth is beyond the window.
+    // **16b cut V.1**: and two of the three spots, which go down FIRST.
     let units = view
         .get("units")
         .and_then(serde_json::Value::as_array)
         .cloned()
         .unwrap_or_default();
-    assert_eq!(units.len(), 4, "the platform and three markers: {view}");
     assert_eq!(
-        units
-            .first()
-            .and_then(|unit| unit.get("you"))
-            .and_then(serde_json::Value::as_bool),
-        Some(true),
-        "the pilot's own marker is FIRST: the marker order is the rule every \
-         compositor follows"
+        units.len(),
+        6,
+        "two spot markers, the platform and three contact markers: {view}"
+    );
+    assert_eq!(
+        units.first(),
+        Some(&serde_json::json!({
+            "id": "A",
+            "name": "The Ford",
+            "cell": [25, 3],
+            "glyph": "A",
+            "you": false,
+            "spot": true,
+        })),
+        "the first spot is FIRST: the marker order (spots, `@`, contacts) is the \
+         rule every compositor follows"
+    );
+    let own = units
+        .iter()
+        .position(|unit| unit.get("you").and_then(serde_json::Value::as_bool) == Some(true))
+        .expect("the pilot's own marker is in the window");
+    assert_eq!(
+        own, 2,
+        "the pilot's own marker follows the two spot markers: {view}"
     );
     let drawn: Vec<&str> = units
         .iter()
-        .skip(1)
+        .skip(own + 1)
         .filter_map(|unit| unit.get("id").and_then(serde_json::Value::as_str))
         .collect();
     assert_eq!(drawn, vec!["BA", "RB", "X3"], "in frame order: {view}");
+    // `B` The Roof is placed — it is in `units` — and then covered by `X3`,
+    // which stands on the same cell; so it is named in no legend. `C` The Woods
+    // is off the window and is not a marker at all.
+    let roof = units
+        .iter()
+        .find(|unit| unit.get("id").and_then(serde_json::Value::as_str) == Some("B"))
+        .expect("B is placed before X3 covers it");
+    assert_eq!(roof.get("cell"), Some(&serde_json::json!([14, 7])));
+    assert!(
+        !units
+            .iter()
+            .any(|unit| unit.get("id").and_then(serde_json::Value::as_str) == Some("C")),
+        "C is off the window: {view}"
+    );
+    let legend = view
+        .get("legend")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !legend
+            .iter()
+            .any(|entry| entry.get(0).and_then(serde_json::Value::as_str) == Some("B")),
+        "a spot a contact covers is named nowhere: {view}"
+    );
+    let unknown = legend
+        .iter()
+        .position(|entry| entry == &serde_json::json!(["?", "contact"]))
+        .expect("the unknown contact's glyph is in the legend");
+    assert_eq!(
+        legend.last(),
+        Some(&serde_json::json!(["A", "The Ford"])),
+        "the spots are named LAST: {view}"
+    );
+    assert!(unknown < legend.len() - 1, "after the contacts: {view}");
+    // The map carries all three, in authored order, in arena cells.
+    assert_eq!(
+        map.get("spots"),
+        Some(&serde_json::json!([
+            { "letter": "A", "name": "The Ford", "cell": [25, 3] },
+            { "letter": "B", "name": "The Roof", "cell": [14, 7] },
+            { "letter": "C", "name": "The Woods", "cell": [50, 25] },
+        ])),
+        "{map}"
+    );
+    // And the contacts' own line still counts contacts: X4 alone.
+    assert_eq!(
+        cockpit::beyond_window_line(&fixture::frame(), &view),
+        Some("1 contact plots beyond this window; CONTACTS lists it.".to_owned())
+    );
     // `X3` stands on a wall cell, and its marker wins the cell.
     let on_a_roof = units
         .iter()
@@ -2812,6 +2971,76 @@ fn the_fixture_scene_exercises_the_clamp_the_building_and_the_off_window_contact
         .unwrap_or_default();
     assert!(map_legend.contains("woods_light"), "{map_legend}");
     assert!(!view_legend.contains("woods_light"), "{view_legend}");
+}
+
+/// **16b cut V.1: the pilot's own `@` owns a spot's cell exactly as a contact
+/// does**, on the line client's legend — the case the TUI and the web each pin
+/// (`tui_golden.rs`, `cockpit.test.ts`) and the fixture, whose covered spot is
+/// under a contact, cannot. The fixture frame with `B` Home Plate put on the
+/// pilot's own cell (6, 4): the spot is placed in `units` before the `@` and
+/// then covered, so the grid draws `@` there and the legend names `A` and not
+/// `B` — the three renderers name the same spots.
+#[test]
+fn v1_a_spot_under_the_pilot_s_own_marker_is_placed_and_named_nowhere() {
+    let frame = fixture::frame();
+    let spots = {
+        let mut spots = fixture::spots();
+        spots.truncate(1);
+        spots.push(tacsim::arena::state::KeySpot {
+            name: smol_str::SmolStr::new("Home Plate"),
+            x: 6,
+            y: 4,
+        });
+        spots
+    };
+    let view = cockpit::view_window(
+        cockpit::status_frame(fixture::MATCH, &frame),
+        fixture::SURFACE,
+        &fixture::terrain(),
+        &spots,
+        &frame,
+    );
+    let units = view
+        .get("units")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let home = units
+        .iter()
+        .position(|unit| unit.get("id").and_then(serde_json::Value::as_str) == Some("B"))
+        .expect("the spot on the pilot's cell is placed");
+    let own = units
+        .iter()
+        .position(|unit| unit.get("you").and_then(serde_json::Value::as_bool) == Some(true))
+        .expect("the pilot's own marker");
+    assert!(home < own, "the spot goes down before the `@`: {view}");
+    assert_eq!(
+        units.get(home).and_then(|unit| unit.get("cell")),
+        units.get(own).and_then(|unit| unit.get("cell")),
+        "on the very cell the `@` is drawn on"
+    );
+    let legend = view
+        .get("legend")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !legend
+            .iter()
+            .any(|entry| entry.get(0).and_then(serde_json::Value::as_str) == Some("B")),
+        "a spot the `@` covers is named nowhere: {view}"
+    );
+    assert_eq!(
+        legend.last(),
+        Some(&serde_json::json!(["A", "The Ford"])),
+        "the ford still owns its cell and is named last: {view}"
+    );
+    let rows = fixture::expand_rows(&view);
+    assert_eq!(
+        rows.get(4).and_then(|row| row.get(6)).copied(),
+        Some('@'),
+        "the grid draws the pilot, not the spot"
+    );
 }
 
 /// Every keyframe either arena feed sends carries the retain marker, and the
@@ -3039,7 +3268,12 @@ async fn the_shipped_arena_s_map_is_small_enough_to_send_and_expands_to_the_grou
         .cloned()
         .expect("the running match's ground");
     let terrain = &definition.terrain;
-    let map = cockpit::map_frame(match_id, definition.id.as_str(), terrain);
+    let map = cockpit::map_frame(
+        match_id,
+        definition.id.as_str(),
+        terrain,
+        &definition.key_spots,
+    );
     // 16b cut U.4 (16c `T-57`): the size bound is a rule now, enforced when the
     // arena is applied (`definitions::arena_map_within_bound`), and its test is
     // `tests/definitions.rs`'. What is left here is the round trip.
@@ -3079,6 +3313,7 @@ fn view_says_how_many_contacts_plot_beyond_its_window() {
             cockpit::status_frame(fixture::MATCH, frame),
             fixture::SURFACE,
             &terrain,
+            &fixture::spots(),
             frame,
         )
     };
@@ -5053,4 +5288,289 @@ async fn b4_an_ejected_pilot_is_shown_the_room_after_the_hatch_line() {
             "pilot {n}'s team room after the hatch line: {events:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut V.1: the named ground on the read verbs
+// ---------------------------------------------------------------------------
+
+/// The shipped proving ground's spots, as the running match's definition
+/// carries them.
+fn shipped_spots(rig: &Rig) -> (Vec<tacsim::arena::state::KeySpot>, u16) {
+    let registry = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .expect("the arena registry is composed");
+    let match_id = rig.centre().match_id.expect("a running match");
+    let ground = registry
+        .arena_of(match_id)
+        .expect("the running match's ground");
+    (ground.key_spots.clone(), ground.terrain.cell_cm())
+}
+
+/// **16b cut V.1: `RANGE`, `BEARING` and `STATUS` name the ground**, over the
+/// real composition and the shipped proving ground.
+///
+/// The red pilot's tank opens on (6, 97), the ford on (64, 97): fifty-eight
+/// cells due east on the same road, 580 m at 090°. North Barn on (106, 194) is
+/// 100 cells east and 97 north, `isqrt(100,000² + 97,000²)` = 139,316 cm (1,390
+/// m) at `atan2(100, 97)` = 45.87°, so `045°`, and off a nose pointing east
+/// (090°) that is `rel 315°`. The numbers are computed from the pilot's own
+/// frame through the pure helpers as well, so the test pins both the arithmetic
+/// and the sentence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_range_bearing_and_status_name_the_shipped_ground() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let frame = rig.held_frame(0);
+    let (spots, cell_cm) = shipped_spots(&rig);
+    assert_eq!(
+        spots
+            .iter()
+            .map(|spot| spot.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["The Ford", "The Crossroads", "North Barn", "East Compound"],
+        "the shipped four, in authored order"
+    );
+    assert_eq!(frame.cell, Some((6, 97)), "red slot 1 musters on the road");
+
+    // Each answer is the sentence, then the frame it read re-pushed (which the
+    // rig prints as `[panel arena.cockpit]`): the sentence is the first line.
+    let first = |said: String| said.lines().next().unwrap_or_default().to_owned();
+    let said = first(rig.say(0, "RANGE The Ford"));
+    assert_eq!(said, "Range to The Ford (A): 580 m.");
+    assert_eq!(
+        first(rig.say(0, "range a")),
+        said,
+        "the map letter is the same spot"
+    );
+    assert_eq!(
+        first(rig.say(0, "range THE FORD")),
+        said,
+        "and case does not matter"
+    );
+    let ford = spots.first().expect("the ford");
+    assert_eq!(
+        cockpit::range_m_rounded(
+            cockpit::spot_range_cm(&frame.pose, ford, cell_cm),
+            cockpit::SPOT_RANGE_STEP_M
+        ),
+        580
+    );
+
+    let said = first(rig.say(0, "BEARING north barn"));
+    assert_eq!(said, "Bearing to North Barn (C): 045° (rel 315°).");
+    let barn = spots.get(2).expect("the barn");
+    assert_eq!(
+        cockpit::spot_bearing_mdeg(&frame.pose, barn, cell_cm) / 1_000,
+        45
+    );
+
+    let status = rig.say(0, "status");
+    assert!(
+        status.contains("  nearest spot: The Ford (A), 580 m at 090°"),
+        "{status}"
+    );
+    // After the position line and before anything else.
+    let lines: Vec<&str> = status.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| line.starts_with("  at "))
+        .expect("the position line");
+    assert_eq!(
+        lines.get(at + 1).copied(),
+        Some("  nearest spot: The Ford (A), 580 m at 090°"),
+        "{status}"
+    );
+}
+
+/// **16b cut V.1: a word that is neither a held contact nor a spot is the one
+/// refusal**, and `SCAN` and `LOCK` never take a spot.
+///
+/// `RANGE ZZ` (a designator of nothing), `RANGE The Fjord` (a spot that does not
+/// exist) and `RANGE BA` (a tank out there and undetected) are byte-identical to
+/// each other and to `LOCK ZZ`, so the second resolution arm tells a pilot
+/// nothing the first did not. `SCAN The Ford` and `LOCK The Ford` are refused
+/// exactly as they always were: ground is not a contact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_a_word_that_names_nothing_is_still_the_one_refusal() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let lock = rig.say(0, "LOCK ZZ");
+    assert_eq!(lock, cockpit::NO_SUCH_CONTACT);
+    for line in [
+        "RANGE ZZ",
+        "RANGE The Fjord",
+        "RANGE BA",
+        "BEARING The Fjord",
+        "BEARING BA",
+        "RANGE the",
+        "RANGE d",
+        "SCAN The Ford",
+        "LOCK The Ford",
+        "SCAN a",
+        "LOCK a",
+    ] {
+        assert_eq!(
+            rig.say(0, line),
+            lock,
+            "{line} answered something other than the one refusal"
+        );
+    }
+}
+
+/// **16b cut V.1: a spot named before the arena has spoken answers
+/// `NO_FRAME_YET`**, and a contact word still answers the one refusal.
+///
+/// Straight after the second `BOARD` the match is running and nothing has been
+/// pumped, so the world holds no frame for the pilot: the spot is real (the
+/// ground is surveyed) and the pilot's own position is what is missing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_a_spot_named_before_the_first_frame_says_the_panel_is_dark() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame(0).is_none(), "nothing has been pumped yet");
+    assert_eq!(rig.say(0, "RANGE The Ford"), cockpit::NO_FRAME_YET);
+    assert_eq!(rig.say(0, "BEARING a"), cockpit::NO_FRAME_YET);
+    assert_eq!(rig.say(0, "RANGE ZZ"), cockpit::NO_SUCH_CONTACT);
+    assert_eq!(rig.say(0, "RANGE BA"), cockpit::NO_SUCH_CONTACT);
+}
+
+/// **16b cut V.1: `VIEW` at the muster names the ground off its window**, after
+/// the panel, and says nothing about any unit.
+///
+/// The red muster's 39 by 20 window is columns 0 to 38 and rows 87 to 106, and
+/// all four shipped spots are east of it, so all four are listed, in authored
+/// order, each with the range and bearing from the pilot's own pose.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_view_at_the_muster_names_every_spot_off_its_window() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let frame = rig.held_frame(0);
+    let (spots, cell_cm) = shipped_spots(&rig);
+    let events = rig.events(0, "view");
+    let view = Rig::panel(&events).expect("VIEW pushes the window");
+    // The window drew no spot, and its own units are the pilot alone.
+    let units = view
+        .get("units")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        units.len(),
+        1,
+        "the pilot's own marker and nothing else: {view}"
+    );
+    let said = rig.tw.seen_by(&events, rig.pilot(0)).join("\n");
+    let expected = cockpit::off_window_spots_line(&spots, &[], &frame.pose, cell_cm)
+        .expect("four spots, none drawn");
+    assert_eq!(
+        expected,
+        "Off the window: A The Ford, 580 m at 090°; B The Crossroads, 1230 m at 090°; \
+         C North Barn, 1390 m at 045°; E East Compound, 2080 m at 075°."
+    );
+    assert!(said.contains(&expected), "{said}");
+    // Nothing about any unit: not the other tank's name, pilot or callsign.
+    for leak in ["Blue Tank", "Pilot1", "BA"] {
+        assert!(
+            !expected.contains(leak) && !said.contains(leak),
+            "VIEW leaked {leak:?}: {said}"
+        );
+    }
+}
+
+/// **16b cut V.1: a spot inside the window is drawn and is not listed off it**,
+/// over the real composition.
+///
+/// The red tank is stood on (60, 97) while the centre is `Boarding`, four cells
+/// west of The Ford (64, 97), so `VIEW`'s window holds the ford and none of the
+/// other three. What that proves, which the muster test cannot (its window
+/// draws no spot at all):
+///
+/// * the live panel's first marker is the `A` spot and the pilot's own marker —
+///   found by its flag — follows it and carries the tank's display name, so
+///   `view_frame_held` names the pilot and not the ford;
+/// * the off-window line is read against the drawing's own spots: it names B, C
+///   and E and not A. From (60,500, 97,500) cm: The Crossroads (129, 97) is
+///   69,000 cm due east, 690 m at 090°; North Barn (106, 194) is dx 46,000,
+///   dy 97,000, `isqrt` 107,354 cm (1,070 m) at `atan2(46, 97)` = 25.4°, so
+///   025°; East Compound (208, 148) is dx 148,000, dy 51,000, `isqrt` 156,541
+///   cm (1,570 m) at `atan2(148, 51)` = 71.0°, so 070°.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_view_beside_the_ford_draws_it_and_names_only_the_others_off_the_window() {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    rig.place(rig.tank(0), (60, 97), 90_000);
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    let said = rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running, "{said}");
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let frame = rig.held_frame(0);
+    let (spots, cell_cm) = shipped_spots(&rig);
+    let name = mush_core::output::display_name(rig.tw.world(), frame.unit);
+
+    let events = rig.events(0, "view");
+    let view = Rig::panel(&events).expect("VIEW pushes the window");
+    let units = view
+        .get("units")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let spot_ids: Vec<&str> = units
+        .iter()
+        .filter(|unit| unit.get("spot").and_then(serde_json::Value::as_bool) == Some(true))
+        .filter_map(|unit| unit.get("id").and_then(serde_json::Value::as_str))
+        .collect();
+    assert_eq!(
+        spot_ids,
+        vec!["A"],
+        "the window draws the ford alone: {view}"
+    );
+    assert_eq!(
+        units
+            .first()
+            .and_then(|first| first.get("name"))
+            .and_then(serde_json::Value::as_str),
+        Some("The Ford"),
+        "the spot is drawn first, under its own name: {view}"
+    );
+    let you = own_marker(&view).expect("the pilot's own marker");
+    assert_eq!(
+        units.iter().position(|unit| unit == &you),
+        Some(1),
+        "the own marker follows the spot"
+    );
+    assert_eq!(
+        you.get("name").and_then(serde_json::Value::as_str),
+        Some(name.as_str()),
+        "the tank's name is on the pilot's own marker, not on the ford: {view}"
+    );
+
+    let said = rig.tw.seen_by(&events, rig.pilot(0)).join("\n");
+    let expected = cockpit::off_window_spots_line(&spots, &[0], &frame.pose, cell_cm)
+        .expect("three spots undrawn");
+    assert_eq!(
+        expected,
+        "Off the window: B The Crossroads, 690 m at 090°; C North Barn, 1070 m at 025°; \
+         E East Compound, 1570 m at 070°."
+    );
+    // The one off-window line `VIEW` said is that sentence exactly: the drawn
+    // ford is not in it.
+    let off: Vec<&str> = said
+        .lines()
+        .filter(|line| line.starts_with("Off the window:"))
+        .collect();
+    assert_eq!(
+        off,
+        vec![expected.as_str()],
+        "a drawn spot is never listed off the window: {said}"
+    );
 }

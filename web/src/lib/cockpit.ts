@@ -76,8 +76,10 @@ export const WAITING_FOR_THE_MAP = "Waiting for the arena map...";
  * uncoloured rather than painted green, which would say "whole". */
 export type ScanBand = "green" | "yellow" | "red" | "destroyed" | "unknown";
 
-/** What a marker is, which is the whole of what the canvas colours it by. */
-export type MarkerKind = "you" | "unknown" | "friendly" | "hostile";
+/** What a marker is, which is the whole of what the canvas colours it by.
+ * `spot` (16b cut V.1) is one of the ground's named places — surveyed ground,
+ * never a unit. */
+export type MarkerKind = "you" | "unknown" | "friendly" | "hostile" | "spot";
 
 export interface CockpitCondition {
   /** The index into the frame's `scan_tables`. */
@@ -231,6 +233,15 @@ export interface CockpitFrame {
   notices: CockpitNotice[];
 }
 
+/** One of the ground's named places, as `arena.map` carries it (16b cut V.1):
+ * the marker letter it is drawn as, its authored name, and its ABSOLUTE arena
+ * cell. */
+export interface ArenaSpot {
+  letter: string;
+  name: string;
+  cell: [number, number];
+}
+
 /** One `arena.map` keyframe, decoded. Row `0` of `rows` is the SOUTH edge. */
 export interface ArenaMap {
   seated: boolean;
@@ -242,6 +253,9 @@ export interface ArenaMap {
   origin_cell: [number, number];
   rows: [string, number][][];
   legend: [string, string][];
+  /** The ground's named spots in authored order (16b cut V.1); `[]` from a
+   * server that sends none, and from the unseated answer. */
+  spots: ArenaSpot[];
 }
 
 /** A marker drawn on the composed window. */
@@ -252,7 +266,8 @@ export interface Marker {
   y: number;
   glyph: string;
   kind: MarkerKind;
-  /** The designator (or the pilot's callsign for their own marker). */
+  /** The designator (or the pilot's callsign for their own marker, or — 16b
+   * cut V.1 — a spot's authored name). It is the marker's label. */
   designator: string;
 }
 
@@ -509,6 +524,23 @@ export function decodeArenaMap(data: unknown): ArenaMap | null {
         ? [[e[0], clean(e[1], "", 24)]]
         : [],
   );
+  // 16b cut V.1: the named spots. An entry with no one-character `letter` (a
+  // control character is none), no `name` or no cell pair is dropped; the name
+  // is cleaned to the forty the server's load-time check bounds it to, so the
+  // three legends agree.
+  const spots: ArenaSpot[] = (Array.isArray(data.spots) ? data.spots : []).flatMap(
+    (e): ArenaSpot[] => {
+      if (!isObj(e) || typeof e.letter !== "string") {
+        return [];
+      }
+      const letter = clean(e.letter, "", 1);
+      const name = clean(e.name, "", 40);
+      const cell = cellPair(e.cell);
+      return letter.length > 0 && letter === e.letter && name.length > 0 && cell !== null
+        ? [{ letter, name, cell }]
+        : [];
+    },
+  );
   return {
     seated: data.seated !== false,
     match: optInt(data.match),
@@ -519,6 +551,7 @@ export function decodeArenaMap(data: unknown): ArenaMap | null {
     origin_cell: cellPair(data.origin_cell) ?? [0, 0],
     rows,
     legend,
+    spots,
   };
 }
 
@@ -546,12 +579,21 @@ export function contactKind(contact: CockpitContact): MarkerKind {
  *    and CLAMPED to the arena, so a tank in a corner is drawn at its own cell;
  * 2. the terrain comes out of the run-length `rows`, whose row `0` is the SOUTH
  *    edge, clipped to the window and padded with spaces;
- * 3. the markers go down in the order 16b cut Q.3 fixed — the pilot's own `@`
- *    FIRST, then the contacts in the frame's own order — each at its ABSOLUTE
- *    cell less the window origin, a later marker overwriting an earlier one;
- * 4. a contact whose `cell` is `null`, or which falls outside the window, is not
- *    drawn (it is still in the contacts table);
+ * 3. the markers go down in the order 16b cut V.1 fixed — the map's named
+ *    `spots` FIRST, in authored order, each as its letter; then the pilot's own
+ *    `@`; then the contacts in the frame's own order — each at its ABSOLUTE
+ *    cell less the window origin, a later marker overwriting an earlier one, so
+ *    a contact or the `@` standing on a spot hides its letter (the spot is
+ *    ground, the contact is what the pilot holds);
+ * 4. a spot or a contact whose `cell` is `null`, or which falls outside the
+ *    window, is not drawn (a contact is still in the contacts table);
  * 5. `grid` prints NORTH-UP: `grid[0]` is the window's north row.
+ *
+ * **The naming order is the reverse of the drawing** (16b cut V.1):
+ * `markerLegend` names the contacts that own their cell first and the spots
+ * that own theirs after them, and `labelPlan` places the contacts' labels
+ * before any spot's — so a narrow legend or a crowded canvas keeps the hostile
+ * a pilot aims by before the name of a field.
  *
  * Every glyph is the payload's own. There is no second table anywhere on this
  * path, which is why composing the committed `arena_map.json` and
@@ -622,6 +664,10 @@ export function composeWindow(
     row[x] = glyph;
     markers.push({ x, y, glyph, kind, designator });
   };
+  // 16b cut V.1: the ground's named spots first — under everything.
+  for (const spot of map.spots) {
+    put(spot.cell, spot.letter, "spot", spot.name);
+  }
   if (frame.cell) {
     put(frame.cell, "@", "you", frame.callsign);
   }
@@ -975,23 +1021,41 @@ export function terrainCacheKey(win: ComposedWindow, px: number): string {
 }
 
 /**
+ * **Which markers own their cell** (16b cut V.1): one flag per marker, `true`
+ * when no later marker landed on the same cell. The last write wins, in the
+ * grid and here — so `markerLegend`, `labelPlan` and the canvas all name and
+ * draw exactly what the grid shows.
+ */
+export function markerOwners(markers: readonly Marker[]): boolean[] {
+  const owner = new Map<string, number>();
+  markers.forEach((m, i) => owner.set(`${m.x},${m.y}`, i));
+  return markers.map((m, i) => owner.get(`${m.x},${m.y}`) === i);
+}
+
+/**
  * **The marker legend** (16b cut B.3, `B-62`): the contact markers that OWN
  * their cell, in frame order — the TUI's `render_cockpit_map_rows` rule. The
  * last marker written to a cell owns it, so two contacts on one cell name the
  * later, whose glyph is the one drawn; the earlier is still a row of the
- * contacts table. The pilot's own `@` is written first, so a contact on the
- * pilot's cell owns it and is named, and the `@` itself is never listed.
+ * contacts table. The pilot's own `@` is written before the contacts, so a
+ * contact on the pilot's cell owns it and is named, and the `@` itself is never
+ * listed.
+ *
+ * **16b cut V.1**: THEN the named spots that own their cell, in authored order,
+ * as `A The Ford`. A spot is written first of all, so one under a contact or
+ * under the `@` owns nothing and is named nowhere. The contacts lead because a
+ * narrow legend is read from the front.
  */
 export function markerLegend(win: ComposedWindow | null): string {
   if (win === null) {
     return "";
   }
-  const owner = new Map<string, number>();
-  win.markers.forEach((m, i) => owner.set(`${m.x},${m.y}`, i));
-  return win.markers
-    .filter((m, i) => m.kind !== "you" && owner.get(`${m.x},${m.y}`) === i)
-    .map((m) => `${m.glyph} ${m.designator}`)
-    .join("  ");
+  const owns = markerOwners(win.markers);
+  const named = (spots: boolean): string[] =>
+    win.markers
+      .filter((m, i) => m.kind !== "you" && (m.kind === "spot") === spots && owns[i] === true)
+      .map((m) => `${m.glyph} ${m.designator}`);
+  return [...named(false), ...named(true)].join("  ");
 }
 
 /** The cell size, in canvas pixels, from which every marker is labelled — and
@@ -1007,6 +1071,8 @@ const LABEL_ALL_PX = 6;
  * two identical red dots — the pilot could not tell which one to lock. Your own
  * marker, a friendly and an unknown keep the old gate (`px >= 6`); they are not
  * what a pilot aims at, and labelling them too would bury the ones that are.
+ * A named spot (16b cut V.1) keeps the friendly's rule: ground, labelled from
+ * 6 px and never below.
  */
 export function labelledAt(
   kind: MarkerKind,
@@ -1014,6 +1080,9 @@ export function labelledAt(
   lock: string | null,
   px: number,
 ): boolean {
+  if (kind === "spot") {
+    return px >= LABEL_ALL_PX;
+  }
   return kind === "hostile" || designator === lock || px >= LABEL_ALL_PX;
 }
 
@@ -1031,6 +1100,13 @@ export function labelledAt(
  * `max(8, px) * 0.6` from 6 px, so a 6 or 7 px cell, whose font is still 8 px,
  * is not measured narrower than it is painted — and is 8 px tall about the
  * row's middle. Boxes that only touch do not overlap.
+ *
+ * **16b cut V.1**: the order is the lock, then every marker that is not a spot
+ * in order, and the spots LAST — so a spot's label never displaces a
+ * contact's. `B-09`'s promise is that a hostile and the lock are labelled at
+ * every zoom, and the name of a field must not undo it. A spot that does not
+ * own its cell (a later marker landed on it, so it is drawn nowhere) is never
+ * labelled and places no box.
  */
 export function labelPlan(markers: readonly Marker[], lock: string | null, px: number): boolean[] {
   const glyph = px < LABEL_ALL_PX ? 5 : Math.max(8, px) * 0.6;
@@ -1043,21 +1119,37 @@ export function labelPlan(markers: readonly Marker[], lock: string | null, px: n
   const overlaps = (b: [number, number, number, number]): boolean =>
     placed.some(([x0, y0, x1, y1]) => b[0] < x1 && x0 < b[2] && b[1] < y1 && y0 < b[3]);
   const flags = markers.map(() => false);
-  // The lock's first, and unconditionally.
+  // The lock's first, and unconditionally. A spot is never the lock.
   markers.forEach((m, i) => {
-    if (lock !== null && m.kind !== "you" && m.designator === lock) {
+    if (lock !== null && m.kind !== "you" && m.kind !== "spot" && m.designator === lock) {
       flags[i] = true;
       placed.push(box(m));
     }
   });
-  markers.forEach((m, i) => {
+  const owns = markerOwners(markers);
+  const place = (m: Marker, i: number): void => {
     if (flags[i] || !labelledAt(m.kind, m.designator, lock, px)) {
+      return;
+    }
+    // A covered spot is drawn nowhere, so it is labelled nowhere.
+    if (m.kind === "spot" && owns[i] !== true) {
       return;
     }
     const b = box(m);
     if (!overlaps(b)) {
       flags[i] = true;
       placed.push(b);
+    }
+  };
+  // Every other marker in order, then the spots (16b cut V.1).
+  markers.forEach((m, i) => {
+    if (m.kind !== "spot") {
+      place(m, i);
+    }
+  });
+  markers.forEach((m, i) => {
+    if (m.kind === "spot") {
+      place(m, i);
     }
   });
   return flags;

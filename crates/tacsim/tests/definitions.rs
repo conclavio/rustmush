@@ -1153,7 +1153,7 @@ fn an_arena_map_past_the_bound_is_refused_by_name_and_the_shipped_ground_is_unde
         })
         .collect();
     let chequered = ArenaTerrain::new(256, 256, 1_000, cells).expect("a 256 by 256 window");
-    let refused = arena_map_within_bound("tacsim.arena.chequered", &chequered)
+    let refused = arena_map_within_bound("tacsim.arena.chequered", &chequered, &[])
         .expect_err("a checkerboard's map is past the bound");
     let ArenaBuildError::MapTooLarge {
         ref arena,
@@ -1189,7 +1189,7 @@ fn an_arena_map_past_the_bound_is_refused_by_name_and_the_shipped_ground_is_unde
         .expect("the proving ground is shipped");
     let ground = tacsim::definitions::from_pack(id.as_str(), def, &records)
         .expect("the arena's ground is in this world's records");
-    let bytes = arena_map_within_bound(id.as_str(), &ground.terrain)
+    let bytes = arena_map_within_bound(id.as_str(), &ground.terrain, &ground.key_spots)
         .expect("the shipped proving ground's map is under the bound");
     println!(
         "u4_map_bound: {id} map frame {bytes} bytes of {MAP_MAX_BYTES} ({} per cent)",
@@ -1289,4 +1289,74 @@ fn u4_the_arena_applier_refuses_an_arena_whose_map_is_past_the_bound() {
         muster_rooms,
         "the refused apply made a muster room"
     );
+}
+
+/// **16b cut V.1: a spot's name and the spot cap are refused at load**, through
+/// the public `ArenaDef::check` over the shipped proving ground — not only the
+/// private rule it calls. Each case edits a clone of the shipped arena in one
+/// place and reads the refusal's detail, which names the spot by its index.
+///
+/// * a name with a designator's shape (`RA`): `RANGE`/`BEARING` try the
+///   designator arm first, so a spot so named could never be reached, and the
+///   rule is what keeps the two arms from colliding;
+/// * a name that case-folds onto an earlier one (`the ford` after `The Ford`);
+/// * a name with a space at an edge (`North Barn `);
+/// * twenty-two spots load, twenty-three do not — the alphabet is the cap.
+#[test]
+fn v1_the_arena_check_refuses_a_bad_spot_name_and_a_twenty_third_spot() {
+    use tacsim::definitions::arena::{KeySpot, MAX_KEY_SPOTS};
+
+    let catalog = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    let (id, def) = catalog
+        .arenas
+        .iter()
+        .next()
+        .map(|(id, def)| (id.clone(), def.clone()))
+        .expect("the proving ground is shipped");
+    def.check(id.as_str())
+        .expect("the shipped ground passes its own check");
+
+    let refusal = |edit: &dyn Fn(&mut tacsim::definitions::ArenaDef)| -> String {
+        let mut edited = def.clone();
+        edit(&mut edited);
+        match edited.check(id.as_str()) {
+            Err(DefinitionError::Value { detail, .. }) => detail,
+            other => panic!("the edited arena was not refused as a value: {other:?}"),
+        }
+    };
+
+    let why = refusal(&|arena| arena.key_spots[1].name = "RA".to_owned());
+    assert!(
+        why.contains("key spot 1 `RA`") && why.contains("designator"),
+        "{why}"
+    );
+    let why = refusal(&|arena| arena.key_spots[1].name = "the ford".to_owned());
+    assert!(
+        why.contains("key spot 1 `the ford`") && why.contains("`The Ford` is taken"),
+        "{why}"
+    );
+    let why = refusal(&|arena| arena.key_spots[2].name = "North Barn ".to_owned());
+    assert!(
+        why.contains("key spot 2 `North Barn `") && why.contains("starts nor ends"),
+        "{why}"
+    );
+
+    // The cap: fill the spot list to exactly the alphabet on distinct names and
+    // on-window cells, and it loads; one more and it does not.
+    let fill = |count: usize| -> Vec<KeySpot> {
+        (0..count)
+            .map(|n| KeySpot {
+                name: format!("Survey Mark {n}"),
+                x: u16::try_from(n).expect("a small index"),
+                y: 1,
+            })
+            .collect()
+    };
+    let mut full = def.clone();
+    full.key_spots = fill(MAX_KEY_SPOTS);
+    assert_eq!(MAX_KEY_SPOTS, 22);
+    full.check(id.as_str())
+        .expect("twenty-two spots are the alphabet, and load");
+    let why = refusal(&|arena| arena.key_spots = fill(MAX_KEY_SPOTS + 1));
+    assert!(why.contains("at most 22 key spots; 23 is not"), "{why}");
 }

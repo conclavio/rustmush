@@ -458,8 +458,13 @@ impl ArenaApplier {
             // keyframe is held to. Checked here, once, because `from_pack` is
             // rebuilt at every match start and must not encode the map each
             // time; an arena that applies is an arena whose map can be sent.
-            crate::definitions::arena_map_within_bound(id.as_str(), &ground.terrain)
-                .map_err(|error| error.to_string())?;
+            // 16b cut V.1: over the named spots too, which the map now carries.
+            crate::definitions::arena_map_within_bound(
+                id.as_str(),
+                &ground.terrain,
+                &ground.key_spots,
+            )
+            .map_err(|error| error.to_string())?;
         }
         // (2) The muster room and its domain.
         let owner = ctx.actor;

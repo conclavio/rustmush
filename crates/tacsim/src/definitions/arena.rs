@@ -32,8 +32,8 @@ use mush_core::CanonicalId;
 use serde::{Deserialize, Serialize};
 
 use crate::arena::state::{
-    ArenaDefinition, ArenaTerrain, EntryZone, KeySpot as ArenaKeySpot, Team, TerrainCell,
-    Waypoint as ArenaWaypoint, Waypoints,
+    ArenaDefinition, ArenaTerrain, EntryZone, KeySpot as ArenaKeySpot, PROVISIONAL_PREFIX, Team,
+    TerrainCell, Waypoint as ArenaWaypoint, Waypoints,
 };
 use crate::definitions::DefinitionError;
 use crate::definitions::unit::TRACKED;
@@ -43,7 +43,20 @@ use crate::definitions::unit::TRACKED;
 pub const MAX_ARENA_TILES: usize = 16;
 
 /// The most named key spots one arena may carry (doc 16 §3.2: *three or four*).
-pub const MAX_KEY_SPOTS: usize = 32;
+///
+/// **16b cut V.1 made it the alphabet's length.** Every spot is drawn on the
+/// map as one letter of [`crate::match_::cockpit::SPOT_LETTERS`] by its authored
+/// index, and those are the twenty-two capitals that are neither a terrain glyph
+/// (`D`, `T`, `W`) nor the provisional prefix (`X`); a spot past them could not
+/// be drawn, so it is refused here, at load. Doc 16 §3.2 asks for three or four
+/// and the shipped ground has four, so no content moved. A test in
+/// `match_::cockpit` pins the two numbers together.
+pub const MAX_KEY_SPOTS: usize = 22;
+
+/// **The longest a key spot's name may be**, bytes (16b cut V.1). The web
+/// cockpit cleans every legend name to forty characters and the TUI and the line
+/// client print a name whole, so the three legends only agree under this bound.
+pub const MAX_SPOT_NAME_BYTES: usize = 40;
 
 /// The most waypoint nodes one arena may carry. Cut N walks the graph inside a
 /// pulse, so its size is a bound and not a preference.
@@ -289,8 +302,16 @@ impl ArenaDef {
                 ),
             ));
         }
-        for spot in &self.key_spots {
+        for (index, spot) in self.key_spots.iter().enumerate() {
             crate::definitions::check_label(entry, &spot.name)?;
+            // 16b cut V.1: and the name is one a pilot can type and three
+            // legends can print alike.
+            check_spot_name(
+                entry,
+                index,
+                &spot.name,
+                self.key_spots.get(..index).unwrap_or_default(),
+            )?;
             self.on_window(entry, spot.x, spot.y, &format!("key spot `{}`", spot.name))?;
         }
         self.check_waypoints(entry)?;
@@ -423,6 +444,97 @@ impl ArenaDef {
     }
 }
 
+/// **A key spot's name, checked at load** (16b cut V.1), beside
+/// [`crate::definitions::check_label`]'s byte bound. `earlier` is the spots
+/// authored before this one, `index` this one's place in the list.
+///
+/// The rules, each with its reason:
+///
+/// * **2 to [`MAX_SPOT_NAME_BYTES`] bytes of printable ASCII** (`0x20..=0x7E`),
+///   **not all spaces** — the web cleans a legend name to forty characters and
+///   the TUI and the line client print it whole, so the three legends only agree
+///   under a bound and over bytes all three print as themselves; and one byte
+///   would be a name no longer than the map letter it stands beside;
+/// * **no space at either end** — `RANGE` trims the word a pilot types and the
+///   web trims the name it prints, so `The Ford ` could be reached only by its
+///   letter and would read one way on the web and another on the TUI and the
+///   line client;
+/// * **unique when ASCII-case-folded** — `RANGE the ford` folds case, so two
+///   names that fold together are one word naming two places (every earlier
+///   name already passed the edge rule, so the fold compares trimmed names);
+/// * **not a designator's word form** — a team letter (`R`, `B`) followed only by
+///   ASCII letters, or [`PROVISIONAL_PREFIX`] followed only by ASCII digits, in
+///   either case: the two shapes `match_::cockpit::resolve_designator` resolves.
+///   `RANGE`/`BEARING` try the designator first and the spot second, and the
+///   second arm only never collides with the first because no name can be one.
+///
+/// Validation encodes nothing, so the shipped ground's digest does not move.
+///
+/// # Errors
+///
+/// [`DefinitionError::Value`] naming the entry and the spot.
+fn check_spot_name(
+    entry: &str,
+    index: usize,
+    name: &str,
+    earlier: &[KeySpot],
+) -> Result<(), DefinitionError> {
+    let refuse = |why: &str| {
+        Err(DefinitionError::value(
+            entry,
+            format!("key spot {index} `{name}`: {why}"),
+        ))
+    };
+    if name.len() < 2 || name.len() > MAX_SPOT_NAME_BYTES {
+        return refuse(&format!(
+            "a spot's name is 2 to {MAX_SPOT_NAME_BYTES} bytes; {} is not",
+            name.len()
+        ));
+    }
+    if !name.bytes().all(|byte| (0x20..=0x7E).contains(&byte)) {
+        return refuse("a spot's name is printable ASCII");
+    }
+    if name.bytes().all(|byte| byte == b' ') {
+        return refuse("a spot's name is not all spaces");
+    }
+    if name.trim() != name {
+        return refuse("a spot's name neither starts nor ends with a space");
+    }
+    if let Some(twin) = earlier
+        .iter()
+        .find(|spot| spot.name.eq_ignore_ascii_case(name))
+    {
+        return refuse(&format!(
+            "a spot's name is its own whatever the case; `{}` is taken",
+            twin.name
+        ));
+    }
+    if is_designator_shaped(name) {
+        return refuse("a spot's name may not read as a contact's designator");
+    }
+    Ok(())
+}
+
+/// **Whether a word has the shape of a designator** (16b cut V.1), either case:
+/// a team's letter followed only by ASCII letters (`RA`, `bAA`) — a slot in
+/// bijective base 26 — or [`PROVISIONAL_PREFIX`] followed only by ASCII digits
+/// (`X1`). The team letters are read off [`Team::ALL`], so a third side is
+/// covered without touching this.
+fn is_designator_shaped(word: &str) -> bool {
+    let mut chars = word.chars();
+    let Some(first) = chars.next().map(|c| c.to_ascii_uppercase()) else {
+        return false;
+    };
+    let rest = chars.as_str();
+    if rest.is_empty() {
+        return false;
+    }
+    if Team::ALL.iter().any(|team| team.letter() == first) {
+        return rest.chars().all(|c| c.is_ascii_alphabetic());
+    }
+    first == PROVISIONAL_PREFIX && rest.chars().all(|c| c.is_ascii_digit())
+}
+
 /// Why an authored arena could not be built over this world's records.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ArenaBuildError {
@@ -523,14 +635,18 @@ const WIDEST_MATCH: crate::arena_task::MatchId = crate::arena_task::MatchId(u64:
 /// match start and every `@arena/pose`, and which must not encode a 256 × 256
 /// map each time.
 ///
+/// **16b cut V.1**: `spots` is the definition's own `key_spots`, encoded with
+/// the terrain because they are bytes of the very frame this bounds.
+///
 /// # Errors
 ///
 /// [`ArenaBuildError::MapTooLarge`], naming the entry, the size and the bound.
 pub fn arena_map_within_bound(
     entry: &str,
     terrain: &ArenaTerrain,
+    spots: &[ArenaKeySpot],
 ) -> Result<usize, ArenaBuildError> {
-    let frame = crate::match_::cockpit::map_frame(WIDEST_MATCH, entry, terrain);
+    let frame = crate::match_::cockpit::map_frame(WIDEST_MATCH, entry, terrain, spots);
     // A `Value` always encodes; `usize::MAX` would refuse rather than pass, which
     // is the fail-closed direction if it ever did not.
     let bytes = serde_json::to_vec(&frame).map_or(usize::MAX, |encoded| encoded.len());
@@ -788,4 +904,94 @@ fn tile_origin(
         offset(tile_cm.0, origin_cm.0, "east")?,
         offset(tile_cm.1, origin_cm.1, "north")?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spot(name: &str) -> KeySpot {
+        KeySpot {
+            name: name.to_owned(),
+            x: 0,
+            y: 0,
+        }
+    }
+
+    /// The detail a refusal carries, or `None` for a name that passed.
+    fn refused(name: &str, earlier: &[KeySpot]) -> Option<String> {
+        match check_spot_name("tacsim.arena.test", earlier.len(), name, earlier) {
+            Ok(()) => None,
+            Err(DefinitionError::Value { entry, detail }) => {
+                assert_eq!(entry, "tacsim.arena.test", "the refusal names the entry");
+                assert!(
+                    detail.contains(&format!("`{name}`")),
+                    "and the spot: {detail}"
+                );
+                Some(detail)
+            }
+            Err(other) => panic!("a spot's name refuses as a value: {other:?}"),
+        }
+    }
+
+    /// **16b cut V.1**: every rule `check_spot_name` holds a name to, one case
+    /// each, and the shipped four passing them all.
+    #[test]
+    fn a_spot_name_is_short_printable_unique_and_never_a_designator() {
+        // The shipped ground's four, in authored order, each against the ones
+        // before it — which is how `ArenaDef::check` calls it.
+        let shipped = ["The Ford", "The Crossroads", "North Barn", "East Compound"];
+        let mut earlier: Vec<KeySpot> = Vec::new();
+        for name in shipped {
+            assert_eq!(refused(name, &earlier), None, "{name} is a good name");
+            earlier.push(spot(name));
+        }
+        // Length: one byte is shorter than a name may be, forty-one longer.
+        assert!(refused("A", &[]).is_some_and(|why| why.contains("2 to 40 bytes")));
+        let long = "N".repeat(41);
+        assert!(refused(&long, &[]).is_some_and(|why| why.contains("41 is not")));
+        assert_eq!(refused(&"N".repeat(40), &[]), None, "forty is the bound");
+        // Printable ASCII: a non-ASCII byte and a control byte both refuse.
+        assert!(refused("The F\u{f6}rd", &[]).is_some_and(|why| why.contains("printable ASCII")));
+        assert!(refused("The\tFord", &[]).is_some_and(|why| why.contains("printable ASCII")));
+        // All spaces.
+        assert!(refused("   ", &[]).is_some_and(|why| why.contains("all spaces")));
+        // A space at either end: the typed word is trimmed and the web trims the
+        // name it prints, so an edge space makes a name no pilot can type and
+        // two legends that disagree — and would slip `The Ford ` past the twin
+        // rule beside `The Ford`.
+        for name in ["The Ford ", " The Ford", " Ford "] {
+            assert!(
+                refused(name, &[]).is_some_and(|why| why.contains("starts nor ends")),
+                "`{name}` has a space at an edge"
+            );
+        }
+        assert!(
+            refused("The Ford ", &[spot("The Ford")]).is_some(),
+            "a trailing-space twin of an earlier name never loads"
+        );
+        // Two names that differ only in case are one word naming two places.
+        assert!(refused("THE FORD", &[spot("The Ford")]).is_some_and(|why| why.contains("taken")));
+        // A designator's shapes, in either case: a team letter and letters, the
+        // provisional prefix and digits.
+        for word in ["RA", "BAA", "ra", "Bc", "X1", "x12"] {
+            assert!(
+                refused(word, &[]).is_some_and(|why| why.contains("designator")),
+                "{word} reads as a designator"
+            );
+        }
+        // …and the near misses that do not: a space, a digit after a team
+        // letter, a letter after the prefix, and a letter that is no team's.
+        for word in ["R A", "R1", "XA", "X 1", "Ford", "AB"] {
+            assert_eq!(refused(word, &[]), None, "{word} is not a designator");
+        }
+    }
+
+    /// The cap is the alphabet's length (16b cut V.1), so every spot an arena
+    /// may load has a letter to be drawn with.
+    #[test]
+    fn the_spot_cap_is_twenty_two() {
+        assert_eq!(MAX_KEY_SPOTS, 22);
+        assert_eq!(MAX_KEY_SPOTS, crate::match_::cockpit::SPOT_LETTERS.len());
+    }
 }

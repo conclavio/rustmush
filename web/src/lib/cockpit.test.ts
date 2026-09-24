@@ -29,6 +29,7 @@ import {
   decodeCockpitFrame,
   labelledAt,
   labelPlan,
+  markerLegend,
   noticeLine,
   noticeLines,
   scanChips,
@@ -139,6 +140,39 @@ describe("the decoders", () => {
     expect(map.rows).toHaveLength(64);
     expect(map.rows[0]).toEqual([['"', 96]]);
     expect(map.legend[0]).toEqual(['"', "grass"]);
+    // 16b cut V.1: the ground's three named spots, in authored order.
+    expect(map.spots).toEqual([
+      { letter: "A", name: "The Ford", cell: [25, 3] },
+      { letter: "B", name: "The Roof", cell: [14, 7] },
+      { letter: "C", name: "The Woods", cell: [50, 25] },
+    ]);
+  });
+
+  it("drops a malformed spot and keeps the rest (16b cut V.1)", () => {
+    const raw = json("arena_map.json") as Record<string, unknown>;
+    const map = decodeArenaMap({
+      ...raw,
+      spots: [
+        { letter: "A", name: "The Ford", cell: [25, 3] },
+        { letter: "AB", name: "Two Letters", cell: [1, 1] },
+        { letter: "", name: "No Letter", cell: [1, 1] },
+        { letter: "\u0007", name: "A Bell", cell: [1, 1] },
+        { name: "No Letter Key", cell: [1, 1] },
+        { letter: "E", cell: [1, 1] },
+        { letter: "F", name: "No Cell" },
+        { letter: "G", name: "Bad Cell", cell: [-1, 2] },
+        "junk",
+        { letter: "H", name: `Long ${"n".repeat(60)}`, cell: [2, 2] },
+      ],
+    });
+    expect(map?.spots.map((s) => s.letter)).toEqual(["A", "H"]);
+    // Cleaned and cut to forty, as the server bounds a name at load.
+    expect([...(map?.spots[1]?.name ?? "")]).toHaveLength(40);
+    // No `spots` key at all is no spots.
+    const older = { ...raw };
+    delete older.spots;
+    expect(decodeArenaMap(older)?.spots).toEqual([]);
+    expect(decodeArenaMap({ ...raw, spots: "the ford" })?.spots).toEqual([]);
   });
 
   it("decode the VIEW composite as one more status frame, its grid ignored", () => {
@@ -204,6 +238,7 @@ describe("the decoders", () => {
     const odd = decodeArenaMap({ width: 2, height: 1, rows: [[["#", 2], "junk"]], legend: "no" });
     expect(odd?.rows).toEqual([[["#", 2]]]);
     expect(odd?.legend).toEqual([]);
+    expect(odd?.spots).toEqual([]);
   });
 
   it("strip control characters and cut each string to its own length", () => {
@@ -318,14 +353,48 @@ describe("composeWindow", () => {
     expect(at(6, 4)).toBe("@");
     expect(at(36, 14)).toBe("x");
     expect(at(2, 9)).toBe("+");
-    expect(at(14, 7)).toBe("?"); // beats the building it stands on
+    expect(at(14, 7)).toBe("?"); // beats the building — and the spot B — it stands on
     expect(at(13, 7)).toBe("#");
+    // 16b cut V.1: the spot A over the pond.
+    expect(at(25, 3)).toBe("A");
     // The marker-free rows keep the building under the contact.
     expect(win.terrain[win.h - 1 - 7]?.charAt(14)).toBe("#");
     // X4 at (50, 33) is off a twenty-row window: not drawn, not in the legend,
-    // still in the table.
-    expect(win.markers.map((m) => m.designator)).toEqual(["RA", "BA", "RB", "X3"]);
-    expect(cockpitView(theFrame(), win, []).legend).toBe("x BA  + RB  ? X3");
+    // still in the table. The spots go down FIRST (16b cut V.1): A, then B,
+    // which X3 then covers; C at (50, 25) is off the window.
+    expect(win.markers.map((m) => m.designator)).toEqual([
+      "The Ford",
+      "The Roof",
+      "RA",
+      "BA",
+      "RB",
+      "X3",
+    ]);
+    expect(cockpitView(theFrame(), win, []).legend).toBe("x BA  + RB  ? X3  A The Ford");
+  });
+
+  it("names the spots after the contacts, and only those that own their cell (16b cut V.1)", () => {
+    const frame = theFrame();
+    // The default 128-cell view holds the whole 96 by 64 ground: X4 and C are
+    // inside it, B is still under X3.
+    const whole = composeWindow(theMap(), frame, 128, 128);
+    expect(markerLegend(whole)).toBe("x BA  + RB  ? X3  ? X4  A The Ford  C The Woods");
+    // A spot under a contact is not listed; move X3 off it and it is.
+    const moved: CockpitFrame = {
+      ...frame,
+      contacts: frame.contacts.map((c) => (c.designator === "X3" ? { ...c, cell: [15, 7] } : c)),
+    };
+    expect(markerLegend(composeWindow(theMap(), moved, 39, 20))).toBe(
+      "x BA  + RB  ? X3  A The Ford  B The Roof",
+    );
+    // A spot under the pilot's own `@` is the `@`'s, and the `@` is never listed.
+    const home: ArenaMap = {
+      ...theMap(),
+      spots: [{ letter: "A", name: "Home Plate", cell: [6, 4] }],
+    };
+    const under = composeWindow(home, frame, 39, 20);
+    expect(under.grid[under.h - 1 - 4]?.charAt(6)).toBe("@");
+    expect(markerLegend(under)).toBe("x BA  + RB  ? X3");
   });
 
   it("names in the legend only the marker that owns its cell (16b cut B.3, B-62)", () => {
@@ -344,10 +413,19 @@ describe("composeWindow", () => {
       ],
     };
     const win = composeWindow(theMap(), stacked, 78, 20);
-    expect(win.markers.map((m) => m.designator)).toEqual(["RA", "BA", "X3", "RB", "X5"]);
+    // 16b cut V.1: the two spots inside 78 by 20 go down first; B is under X3.
+    expect(win.markers.map((m) => m.designator)).toEqual([
+      "The Ford",
+      "The Roof",
+      "RA",
+      "BA",
+      "X3",
+      "RB",
+      "X5",
+    ]);
     expect(win.grid[win.h - 1 - 9]?.charAt(2)).toBe("+");
     expect(win.grid[win.h - 1 - 4]?.charAt(6)).toBe("?");
-    expect(cockpitView(stacked, win, []).legend).toBe("? X3  + RB  ? X5");
+    expect(cockpitView(stacked, win, []).legend).toBe("? X3  + RB  ? X5  A The Ford");
   });
 
   it("subtracts a NON-ZERO window origin from every absolute cell", () => {
@@ -401,6 +479,7 @@ describe("composeWindow", () => {
       origin_cell: [0, 0],
       rows: [],
       legend: [],
+      spots: [],
     };
     const win = composeWindow(empty, { ...theFrame(), cell: [1, 1], contacts: [] }, 10, 10);
     expect(win.grid).toEqual(["    ", " @  ", "    "]);
@@ -681,6 +760,41 @@ describe("16b cut B.1", () => {
     expect(labelledAt("friendly", "RB", null, 5)).toBe(false);
     expect(labelledAt("you", "RA", null, 5)).toBe(false);
     expect(labelledAt("you", "RA", null, 8)).toBe(true);
+    // 16b cut V.1: a named spot keeps the friendly's rule — from 6 px — and is
+    // never forced by a name that happens to read like the lock.
+    expect(labelledAt("spot", "The Ford", null, 5)).toBe(false);
+    expect(labelledAt("spot", "The Ford", null, 6)).toBe(true);
+    expect(labelledAt("spot", "BA", "BA", 2)).toBe(false);
+  });
+
+  it("labels the spots after every contact, and never a covered one (16b cut V.1)", () => {
+    // The committed scene at 64 cells (8 px): X3 stands on The Roof. The
+    // contact's label is placed first and the spot's box would overlap it — and
+    // a spot under a contact is drawn nowhere, so it is labelled nowhere.
+    const frame = theFrame();
+    const win = composeWindow(theMap(), frame, 64, 64);
+    const flags = labelPlan(win.markers, frame.lock_designator, 8);
+    const labelled = win.markers.filter((_, i) => flags[i]).map((m) => m.designator);
+    expect(labelled).toContain("X3");
+    expect(labelled).not.toContain("The Roof");
+    // Every other marker is labelled; the list is in MARKER order (all three
+    // spots were drawn first), which is not the order the labels were placed in.
+    expect(labelled).toEqual(["The Ford", "The Woods", "RA", "BA", "RB", "X3", "X4"]);
+    // A spot one cell west of a contact, drawn FIRST: its label box runs over
+    // the contact's, and the contact's is placed first anyway — the spot gives
+    // way even though it came earlier in the drawing.
+    const m = (x: number, designator: string, kind: Marker["kind"]): Marker => ({
+      x,
+      y: 10,
+      glyph: kind === "spot" ? "A" : "?",
+      kind,
+      designator,
+    });
+    const pair = [m(40, "The Long Field", "spot"), m(41, "X3", "unknown")];
+    expect(labelPlan(pair, null, 8)).toEqual([false, true]);
+    // With room, both.
+    const apart = [m(10, "The Long Field", "spot"), m(41, "X3", "unknown")];
+    expect(labelPlan(apart, null, 8)).toEqual([true, true]);
   });
 
   it("skips an overlapping label in frame order, and never the lock's", () => {
