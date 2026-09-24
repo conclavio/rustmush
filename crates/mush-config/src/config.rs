@@ -110,6 +110,11 @@
 //! | `[tacsim.harness].max_path_queries_per_pulse` | `64` | path queries one pulse may make |
 //! | `[tacsim.harness].max_share_ops_per_pulse` | `256` | **16b cut S.1** (doc 16 §2 W6): contact-share operations one pulse may make — one `(sharer, teammate)` pair each |
 //! | `[tacsim.harness].max_ledger_bytes` | `67108864` | 64 MiB the streamed ledger must stay under over an hour of arena time |
+//! | `[tacsim.harness].max_cell_probes_per_pulse` | `32000` | **16b cut U.2** (doc 16 §2 W4): cells one pulse's line-of-sight traces may read — detection's and the mesh's together |
+//! | `[tacsim.harness].max_jam_checks_per_pulse` | `2048` | **16b cut U.2** (doc 16 §9 item 4): index candidates one pulse's jammer scans may look at |
+//! | `[tacsim.harness].max_rss_growth_kib` | `65536` | **16b cut U.2**: how far resident memory may grow over the harness's long run, KiB |
+//! | `[tacsim.harness].max_frame_bytes` | `16384` | **16b cut U.2**: the largest encoded `arena.cockpit` keyframe the fan-out lane may see; the lane measures the opening with no enemy in sight, so a combat frame is unmeasured |
+//! | `[tacsim.harness].max_output_events_per_pulse` | `512` | **16b cut U.2**: the most output events one arena pulse may produce through the world's output path; sized against the fan-out lane's measured acquisition burst (24 panels + 11 contact-notice lines per pilot = 288), 512 so a 24-pilot burst has headroom — whoever moves it next must say why; that burst is teammates only, so an engaged pulse is unmeasured |
 //! | `[game].starter_area` | `true` | S1: apply the shipped starter area (the lot, the OOC Area, the Staff Lobby) at a world's first boot; static content, no LLM call; never re-applied |
 //! | `[atlas].tile_max_cells` | `65536` | S1: the most cells one map tile holds; a larger footprint rasterizes coarser |
 //! | `[atlas].nearest_room_cells` | `8` | S4: cells a pose may stand off every footprint and still resolve to the nearest room |
@@ -1400,6 +1405,28 @@ pub struct TacsimHarnessCfg {
     /// arena time (64 MiB) — the proof that resident memory stays flat because
     /// the ledger leaves.
     pub max_ledger_bytes: u64,
+    /// **The most cells one pulse's line-of-sight traces may read** (16b cut
+    /// U.2, 16c `T-36`; doc 16 §2 W4). A threshold the harness asserts, never a
+    /// throttle the arena applies.
+    pub max_cell_probes_per_pulse: u32,
+    /// **The most index candidates one pulse's jammer scans may look at** (16b
+    /// cut U.2, 16c `T-29`; doc 16 §9 item 4). A threshold, never a throttle.
+    pub max_jam_checks_per_pulse: u32,
+    /// **How far resident memory may grow over the harness's long run**,
+    /// kibibytes (16b cut U.2, 16c `T-36`).
+    pub max_rss_growth_kib: u32,
+    /// **The largest encoded `arena.cockpit` keyframe the fan-out lane may see**,
+    /// bytes (16b cut U.2, 16c `T-36`). The lane measures the opening, with no
+    /// enemy in sight, so a combat frame is not yet measured against it.
+    pub max_frame_bytes: u32,
+    /// **The most output events one arena pulse may produce through the world's
+    /// output path**, as the fan-out lane counts them (16b cut U.2, 16c `T-36`).
+    /// It is sized against the lane's first measured burst, the acquisition pass
+    /// after power-up (24 panels plus 11 contact-notice lines per pilot = 288
+    /// events), and set to 512 so a 24-pilot burst has headroom; whoever moves it
+    /// next must say why. That burst is teammates only, so an engaged pulse's
+    /// fire and damage notices are unmeasured.
+    pub max_output_events_per_pulse: u32,
 }
 
 impl Default for TacsimHarnessCfg {
@@ -1414,6 +1441,16 @@ impl Default for TacsimHarnessCfg {
             max_share_ops_per_pulse: 256,
             // 64 MiB.
             max_ledger_bytes: 67_108_864,
+            // 16b cut U.2: the five bounds.
+            max_cell_probes_per_pulse: 32_000,
+            max_jam_checks_per_pulse: 2_048,
+            // 64 MiB.
+            max_rss_growth_kib: 65_536,
+            // 16 KiB.
+            max_frame_bytes: 16_384,
+            // The measured burst is 288 (24 panels + 11 lines per pilot), on
+            // the opening with no enemy in sight; an engaged pulse is unmeasured.
+            max_output_events_per_pulse: 512,
         }
     }
 }
@@ -2567,6 +2604,17 @@ scene_turn_dedline_secs = 30
             (4_000, 64, 256)
         );
         assert_eq!(h.max_ledger_bytes, 67_108_864, "64 MiB");
+        // 16b cut U.2: the five bounds.
+        assert_eq!(
+            (
+                h.max_cell_probes_per_pulse,
+                h.max_jam_checks_per_pulse,
+                h.max_rss_growth_kib,
+                h.max_frame_bytes,
+                h.max_output_events_per_pulse,
+            ),
+            (32_000, 2_048, 65_536, 16_384, 512)
+        );
     }
 
     /// Cut G: every key of all eight tables parses to what it says. Written as
@@ -2612,7 +2660,12 @@ scene_turn_dedline_secs = 30
              max_traces_per_pulse = 100\n\
              max_path_queries_per_pulse = 8\n\
              max_share_ops_per_pulse = 12\n\
-             max_ledger_bytes = 2048\n",
+             max_ledger_bytes = 2048\n\
+             max_cell_probes_per_pulse = 900\n\
+             max_jam_checks_per_pulse = 70\n\
+             max_rss_growth_kib = 4096\n\
+             max_frame_bytes = 2000\n\
+             max_output_events_per_pulse = 30\n",
         )
         .expect("the written-out blocks parse");
 
@@ -2677,6 +2730,17 @@ scene_turn_dedline_secs = 30
             (10, 4, 6, 50, 100, 8, 12)
         );
         assert_eq!(h.max_ledger_bytes, 2_048);
+        // 16b cut U.2: the five bounds, written out like the rest.
+        assert_eq!(
+            (
+                h.max_cell_probes_per_pulse,
+                h.max_jam_checks_per_pulse,
+                h.max_rss_growth_kib,
+                h.max_frame_bytes,
+                h.max_output_events_per_pulse,
+            ),
+            (900, 70, 4_096, 2_000, 30)
+        );
     }
 
     /// Cut G's one enforced property: **a typo in any of the eight tables refuses

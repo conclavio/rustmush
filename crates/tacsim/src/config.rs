@@ -679,6 +679,46 @@ pub struct HarnessConfig {
     /// arena time (64 MiB) — the proof that memory stays flat because the ledger
     /// leaves.
     pub max_ledger_bytes: u64,
+    /// **The most cells one pulse's line-of-sight traces may read** (16b cut U.2,
+    /// 16c `T-36`; doc 16 §2 W4: *traces and cell probes per pulse*), detection's
+    /// and the share mesh's together, asserted against the worst wake of the CI
+    /// cohort.
+    ///
+    /// A threshold the harness asserts, never a throttle the arena applies: a pass
+    /// that stopped tracing when a budget ran out would make what a pilot sees a
+    /// function of the tempo, which D-16-2 forbids.
+    pub max_cell_probes_per_pulse: u32,
+    /// **The most index candidates one pulse's jammer scans may look at** (16b cut
+    /// U.2, 16c `T-29`; doc 16 §9 item 4), asserted against the worst wake. The
+    /// scan runs once per unit between two clears of the arena's jamming memo,
+    /// and the memo is cleared at the substep's two index rebuilds and after
+    /// **every** `StartupComplete` and **every** `Impact`, whoever it touched —
+    /// so under fire the count grows with the impacts a substep resolves, and
+    /// this bound is sized on a fight, not on the unit count alone. Like every
+    /// key here it is a threshold and not a throttle.
+    pub max_jam_checks_per_pulse: u32,
+    /// **How far resident memory may grow over the harness's long run**,
+    /// kibibytes (16b cut U.2, 16c `T-36`): the reading after the warm-up against
+    /// the reading at the end of `TACSIM_LONG_RUN_S` arena seconds. The claim is
+    /// that memory stays flat because the ledger leaves.
+    pub max_rss_growth_kib: u32,
+    /// **The largest encoded `arena.cockpit` keyframe the fan-out lane may see**,
+    /// bytes (16b cut U.2, 16c `T-36`; 16b §11's fan-out risk): what one pilot's
+    /// socket is handed in one pulse. The lane measures the opening — the two
+    /// musters stand 2.4 km apart, past every stock sight — so the frames it saw
+    /// carry teammates only; a combat frame (enemy rows, a lock, readings) is
+    /// not yet measured against this bound.
+    pub max_frame_bytes: u32,
+    /// **The most output events one arena pulse may produce through the world's
+    /// output path** (16b cut U.2, 16c `T-36`), counted by the fan-out lane on the
+    /// one apply that carried that pulse's frames: every pilot's keyframe and
+    /// every sentence its notices rendered. It is sized against the lane's first
+    /// measured burst, the acquisition pass after power-up (24 `arena.cockpit`
+    /// panels plus 11 contact-notice lines per pilot = 288 events), and set to 512
+    /// so a 24-pilot burst has headroom; whoever moves it next must say why. That
+    /// burst is teammates only — no enemy is in sight in the lane's thirty
+    /// seconds — so an engaged pulse's fire and damage notices are unmeasured.
+    pub max_output_events_per_pulse: u32,
 }
 
 impl Default for HarnessConfig {
@@ -693,6 +733,16 @@ impl Default for HarnessConfig {
             max_share_ops_per_pulse: 256,
             // 64 MiB.
             max_ledger_bytes: 67_108_864,
+            // 16b cut U.2: the five bounds 16c `T-36` and `T-29` asked for.
+            max_cell_probes_per_pulse: 32_000,
+            max_jam_checks_per_pulse: 2_048,
+            // 64 MiB.
+            max_rss_growth_kib: 65_536,
+            // 16 KiB.
+            max_frame_bytes: 16_384,
+            // The measured burst is 288 (24 panels + 11 lines per pilot), on
+            // the opening with no enemy in sight; an engaged pulse is unmeasured.
+            max_output_events_per_pulse: 512,
         }
     }
 }
@@ -1005,6 +1055,26 @@ impl HarnessConfig {
                 "[tacsim.harness].fighting must be at most units ({}) (it is {})",
                 self.units, self.fighting
             ));
+        }
+        // **16b cut U.2**: a bound of nought is a harness that fails on the first
+        // pulse that does anything, so each of the five is at least one.
+        for (key, value) in [
+            (
+                "max_cell_probes_per_pulse",
+                u64::from(self.max_cell_probes_per_pulse),
+            ),
+            (
+                "max_jam_checks_per_pulse",
+                u64::from(self.max_jam_checks_per_pulse),
+            ),
+            ("max_rss_growth_kib", u64::from(self.max_rss_growth_kib)),
+            ("max_frame_bytes", u64::from(self.max_frame_bytes)),
+            (
+                "max_output_events_per_pulse",
+                u64::from(self.max_output_events_per_pulse),
+            ),
+        ] {
+            at_least(&format!("[tacsim.harness].{key}"), 1, value)?;
         }
         Ok(())
     }

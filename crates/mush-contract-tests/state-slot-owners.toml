@@ -265,6 +265,18 @@ oracle would prove nothing but that the oracle is unwired.
 """
 
 [[site]]
+path = "crates/tacsim/tests/harness.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut U.2 (16c T-36), for the cockpit rig's reason one row above: the fan-out
+lane seats twenty-four pilots through `+focus`, which consumes each ACCOUNT's one
+foreground focus and fails closed on an unmapped character, so the lane installs
+the same boot-hydrated map `mush_server::boot` installs.
+"""
+
+[[site]]
 path = "crates/mushd/tests/sim_lobby.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

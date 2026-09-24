@@ -313,21 +313,36 @@ impl Frame {
     /// Whether this frame says the same thing as `other`: the unit, the four pose
     /// integers, the speed, the power, the block, the tempo and the contact list.
     ///
-    /// The contacts are compared **in full**, age included, because a contact's age
-    /// is one of the columns `CONTACTS` prints; a pilot parked beside a held target
-    /// therefore gets a frame per pulse, which is the price of the age column being
-    /// live rather than a lie.
+    /// **The contacts are compared as a pilot reads them** (16b cut U.2, 16c
+    /// `T-30`, Q27, Q28, `T-20`; doc 16 §3.1's latest-wins slot). A row's age
+    /// moves every millisecond it is held, and it reaches a pilot through three
+    /// surfaces: the **whole second** every panel and `CONTACTS` print, the
+    /// **stale clause** the read verbs add once the plot is older than
+    /// `pass_ms`, and on the locked row the **lock's range step**, which moves
+    /// below a second. A frame is sent when any of them would print differently
+    /// ([`crate::arena::perception::FrameContact::same_as`], through
+    /// [`crate::arena::perception::age_key`] and
+    /// [`crate::arena::perception::lock_range_step_m`]) and not on every pulse
+    /// the milliseconds moved. The keyframe still carries `age_ms` to the
+    /// millisecond, so what a pilot **may read** is unchanged on every surface;
+    /// only what they are **sent** is. Until this cut the rows were compared in
+    /// full, and every pilot holding any contact was sent a whole keyframe every
+    /// wake.
+    ///
+    /// `pass_ms` is the arena's own `[tacsim.sensors].pass_ms`
+    /// (`Arena::sensors_cfg`), the same number the world's `stale_clause` reads
+    /// off its configuration.
     ///
     /// The notices are **not** compared: see [`Frame::notices`]. Nor is a weapon's
     /// `ready_in_ms` countdown: see [`FrameWeapon::same_as`].
     ///
-    /// **16b cut X.1** put the heat in, with the same trade the contact age makes:
-    /// a platform that is cooling changes a number every substep and its pilot is
-    /// told, because a heat gauge that lagged a tempo behind would be a lie about
-    /// the one thing standing between them and the next shot. A platform with no
-    /// heat compares `None` to `None` and costs nothing.
+    /// **16b cut X.1** put the heat in: a platform that is cooling changes a
+    /// number every substep and its pilot is told, because a heat gauge that
+    /// lagged a tempo behind would be a lie about the one thing standing between
+    /// them and the next shot. A platform with no heat compares `None` to `None`
+    /// and costs nothing.
     #[must_use]
-    pub fn same_as(&self, other: &Frame) -> bool {
+    pub fn same_as(&self, other: &Frame, pass_ms: i64) -> bool {
         self.unit == other.unit
             && self.team == other.team
             // 16b cut Q.1: both are surfaces a pilot reads — the callsign on
@@ -357,9 +372,16 @@ impl Frame {
             // are both fixed at check-out — so comparing it costs no frame
             // anybody would not already have been sent.
             && self.sight_cm == other.sight_cm
-            && self.contacts == other.contacts
+            // **16b cut U.2** (16c `T-30`): row by row, at the resolutions a
+            // surface prints the age at; the locked row at the lock's step too.
+            && self.contacts.len() == other.contacts.len()
+            && self
+                .contacts
+                .iter()
+                .zip(other.contacts.iter())
+                .all(|(mine, theirs)| mine.same_as(theirs, pass_ms, self.lock == Some(mine.id)))
             // **16b cut Q.2**: the readings ride the contacts, which are already
-            // compared in full, and the tables are what those readings are in the
+            // compared row by row, and the tables are what those readings are in the
             // order of — so a table list that moved with no contact moving would
             // be a panel drawing the wrong section names. Two `Vec<Vec<SmolStr>>`
             // of at most one entry per distinct chassis in the scope.
@@ -973,6 +995,9 @@ impl Arena {
             let end_ms = self.now_ms.saturating_add(i64::from(dt_ms));
             let occupied_stop_ms = self.arena_cfg.occupied_stop_ms;
             self.index.rebuild(&self.definition.terrain, &self.units);
+            // **16b cut U.2** (16c `T-29`): the jamming memo goes with the index it
+            // was folded over — motion is about to move the poses it read.
+            self.jam_fold.clear();
             let terrain = &self.definition.terrain;
             let index = &mut self.index;
             for slot in 0..self.units.len() {
@@ -1031,6 +1056,11 @@ impl Arena {
 
         // ---- (b) the index over the positions motion committed ----
         self.index.rebuild(&self.definition.terrain, &self.units);
+        // **16b cut U.2** (16c `T-29`): and the jamming memo is emptied with it.
+        // From here to the next rebuild no pose moves, so a fold taken by the due
+        // loop below stays true until a `StartupComplete` or an `Impact` moves a
+        // pod's power or wreck — the two arms that clear it again.
+        self.jam_fold.clear();
 
         // ---- (c) arena time, and every due event at or before it ----
         self.now_ms = self.now_ms.saturating_add(i64::from(dt_ms));
@@ -1125,6 +1155,11 @@ impl Arena {
                         state.power = Power::Online;
                         notices.push((event.t_ms, EventKind::PowerOnline { unit }, Vec::new()));
                     }
+                    // **16b cut U.2** (16c `T-29`): a pod that has just come online
+                    // radiates from this millisecond, so every fold taken earlier in
+                    // this substep is stale. Cleared whether or not the flip
+                    // happened: cheaper to ask again than to reason about it.
+                    self.jam_fold.clear();
                 }
                 // Doc 16 §4: every unit, every `ledger.summary_ms` of arena time,
                 // in every tempo. The next one is scheduled from **this one's
@@ -1201,6 +1236,11 @@ impl Arena {
                 // whether it hits.
                 DueKind::Impact { shot_seq } => {
                     self.resolve_impact(shot_seq, event.t_ms, &mut notices);
+                    // **16b cut U.2** (16c `T-29`): a round can wreck the hull a
+                    // pod rides on, which turns its power off and stops it
+                    // radiating (`Arena::destroy_unit`), so a fold taken before
+                    // it may count a pod that is gone.
+                    self.jam_fold.clear();
                 }
                 // **16b cut W.1**: the weapon's cycle has run down. It changes no
                 // state — readiness is `ready_at_ms <= now_ms`, a comparison — and
@@ -1579,6 +1619,9 @@ impl Arena {
         // accumulates nothing.
         self.pending_notices.clear();
         candidates.sort_by_key(|(pilot, _)| *pilot);
+        // 16b cut U.2 (16c `T-30`): the cadence the stale clause is read against,
+        // as `Frame::same_as` compares an age.
+        let pass_ms = i64::from(self.sensors_cfg.pass_ms.max(1));
         let mut changed: Vec<(ObjId, Frame)> = Vec::new();
         for (pilot, frame) in candidates {
             let told = !frame.notices.is_empty();
@@ -1586,7 +1629,7 @@ impl Arena {
                 || self
                     .last_frames
                     .get(&pilot)
-                    .is_none_or(|last| !last.same_as(&frame))
+                    .is_none_or(|last| !last.same_as(&frame, pass_ms))
             {
                 // The remembered copy carries no notice: `CONTACTS` and `VIEW`
                 // re-render it, and a notice said twice is a notice said wrong.
@@ -3405,10 +3448,10 @@ mod tests {
         // Both are compared, so the flip sends a frame at once.
         let mut dead = frame.clone();
         dead.wreck = true;
-        assert!(!frame.same_as(&dead));
+        assert!(!frame.same_as(&dead, 1_000));
         let mut stuck = frame.clone();
         stuck.immobile = true;
-        assert!(!frame.same_as(&stuck));
+        assert!(!frame.same_as(&stuck, 1_000));
         if let Some(unit) = arena.unit_mut(A) {
             unit.limits.wreck = true;
             unit.limits.motion_disabled = true;
@@ -4549,5 +4592,124 @@ mod tests {
                 .all(|event| event.hash == phase_four[0].hash && event.t_ms == 5_000),
             "one phase, one moment, one hash: {phase_four:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut U.2 — the age compared at every resolution a surface derives
+    // (16c `T-30`, Q27, Q28)
+    // -----------------------------------------------------------------------
+
+    /// One contact row `age_ms` old, everything else fixed.
+    fn u2_row(age_ms: i64) -> FrameContact {
+        FrameContact {
+            id: ContactId(0x2350),
+            designator: crate::arena::state::Designator::Provisional(1),
+            alias: None,
+            class: Classification::Unknown,
+            bearing_mdeg: 90_000,
+            range_cm: 43_400,
+            age_ms,
+            cell: Some((12, 7)),
+            condition: None,
+        }
+    }
+
+    /// **16b cut U.2**: an unlocked row is the same row across a sub-second
+    /// move of its age, and a different one the moment the whole second moves
+    /// or the stale clause flips — at `pass_ms` 1,000 that is `1,000` against
+    /// `1,001`, inside one whole second.
+    #[test]
+    fn u2_an_unlocked_row_moves_with_the_second_and_the_stale_clause() {
+        let same = |a: i64, b: i64| u2_row(a).same_as(&u2_row(b), 1_000, false);
+        assert!(same(400, 900), "inside the first second, before the clause");
+        assert!(!same(900, 1_000), "the whole second moved");
+        assert!(
+            !same(1_000, 1_001),
+            "the stale clause flips past one pass: `, plotted 1 s ago`"
+        );
+        assert!(same(1_001, 1_999), "one second, stale throughout");
+        assert!(!same(1_999, 2_000), "and the next second");
+        // A shorter pass moves the clause and nothing else.
+        assert!(!u2_row(400).same_as(&u2_row(600), 500, false));
+        assert!(u2_row(600).same_as(&u2_row(900), 500, false));
+    }
+
+    /// **16b cut U.2**: the locked row also moves with the lock's range step,
+    /// which crosses from 10 m to 20 m at 648 ms — below any second — and the
+    /// same two ages on an unlocked row are one row.
+    #[test]
+    fn u2_a_locked_row_moves_with_the_locks_range_step() {
+        use crate::arena::perception::lock_range_step_m;
+        assert_eq!(lock_range_step_m(600), 10);
+        assert_eq!(lock_range_step_m(700), 20);
+        assert!(
+            !u2_row(600).same_as(&u2_row(700), 1_000, true),
+            "a locked pilot would read RANGE at a different step"
+        );
+        assert!(
+            u2_row(600).same_as(&u2_row(700), 1_000, false),
+            "an unlocked row prints no step"
+        );
+        assert!(
+            u2_row(700).same_as(&u2_row(900), 1_000, true),
+            "20 m either side"
+        );
+    }
+
+    /// **16b cut U.2**: a reading's own age follows the same rule, and a row
+    /// that gained or lost its reading is a different row.
+    #[test]
+    fn u2_a_readings_age_is_compared_at_the_same_resolutions() {
+        let read = |age_ms: i64| FrameContact {
+            condition: Some(FrameCondition {
+                table: 0,
+                bands: crate::arena::condition::Condition::default(),
+                age_ms,
+            }),
+            ..u2_row(200)
+        };
+        assert!(read(100).same_as(&read(800), 1_000, false));
+        assert!(!read(800).same_as(&read(1_000), 1_000, false));
+        assert!(!read(1_000).same_as(&read(1_001), 1_000, false));
+        assert!(!read(100).same_as(&u2_row(200), 1_000, false));
+        let (Some(young), Some(old)) = (read(100).condition, read(2_500).condition) else {
+            panic!("both rows carry a reading");
+        };
+        assert!(!young.same_as(&old, 1_000));
+        assert!(young.same_as(&young, 1_000));
+    }
+
+    /// **16b cut U.2**: `Frame::same_as` over two frames that differ only in a
+    /// sub-second unlocked age is `true` — nothing a pilot prints moved — and
+    /// over two that differ in a row's range is `false`; a row more or less is
+    /// always a new frame.
+    #[test]
+    fn u2_a_frame_is_sent_when_a_printed_figure_moves_and_not_per_millisecond() {
+        let mut arena = fresh();
+        let out = arena.step(0, &[], &[]);
+        let base = out
+            .frames
+            .first()
+            .map(|(_, frame)| frame.clone())
+            .unwrap_or_else(|| panic!("the opening frame"));
+        let with = |row: FrameContact| Frame {
+            contacts: vec![row],
+            ..base.clone()
+        };
+        assert!(with(u2_row(250)).same_as(&with(u2_row(750)), 1_000));
+        assert!(!with(u2_row(750)).same_as(&with(u2_row(1_000)), 1_000));
+        let moved = FrameContact {
+            range_cm: 44_400,
+            ..u2_row(250)
+        };
+        assert!(!with(u2_row(250)).same_as(&with(moved), 1_000));
+        assert!(!with(u2_row(250)).same_as(&base, 1_000));
+        // Locked on the row: the step decides.
+        let locked = |row: FrameContact| Frame {
+            lock: Some(row.id),
+            ..with(row)
+        };
+        assert!(!locked(u2_row(600)).same_as(&locked(u2_row(700)), 1_000));
+        assert!(locked(u2_row(100)).same_as(&locked(u2_row(600)), 1_000));
     }
 }

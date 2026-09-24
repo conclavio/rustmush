@@ -109,6 +109,15 @@ struct Rig {
     /// `arena.map` frame unasked, one cleared cockpit per pilot and not two —
     /// and an absence can only be asserted against a whole record.
     log: Vec<(Audience, OutputEvent)>,
+    /// **The latest arena clock a staged `ArenaOut::Frames` carried** (16b cut
+    /// U.2), recorded by [`Rig::pump`] as it stages each message.
+    ///
+    /// Since 16c `T-30` a pulse that changed nothing a pilot can read sends that
+    /// pilot nothing, so "the mirror's frame changed" is no longer a signal that
+    /// a pulse ran; this is. The task publishes a `Frames` whenever a pulse
+    /// carries a frame **or** the arena second has moved (16b cut D.1), so the
+    /// clock reaches here at least once an arena second whatever the frames do.
+    staged_now_ms: i64,
 }
 
 impl Rig {
@@ -147,6 +156,7 @@ impl Rig {
             egress,
             now: 0,
             log: Vec::new(),
+            staged_now_ms: 0,
         };
         // **The control-lease mirror.** `request_seat_activation` fails closed on
         // an unread one (`SeatError::ControlUnknown`), and the mirror is
@@ -174,8 +184,17 @@ impl Rig {
             while staged < tacsim::arena_bridge::MAX_EGRESS_PER_DRAIN {
                 match rx.try_recv() {
                     Ok(message) => {
+                        // 16b cut U.2: the arena's clock, as each pulse's message
+                        // carries it — see `Rig::staged_now_ms`.
+                        let clock = match &message {
+                            tacsim::arena_task::ArenaOut::Frames { now_ms, .. } => Some(*now_ms),
+                            _ => None,
+                        };
                         if !tasks.stage(message) {
                             break;
+                        }
+                        if let Some(now_ms) = clock {
+                            self.staged_now_ms = self.staged_now_ms.max(now_ms);
                         }
                         staged += 1;
                     }
@@ -1390,6 +1409,15 @@ async fn a_lock_taken_on_a_provisional_number_still_answers_to_both_names() {
     //     forwarded as an intent and resolved in the arena's next pulse, so a
     //     frame read straight after `say` is the one from before the order and
     //     would make the assertion below true by construction.
+    //
+    //     **16b cut U.2** (16c `T-30`): the pulse is recognised by the arena's own
+    //     clock on a staged `Frames`, not by the mirror's frame changing. The
+    //     pair is parked in continuous view, so the plot is re-taken every pass
+    //     and its age never leaves the first second; a frame that differs only
+    //     in milliseconds is no longer sent, and the old wait (`!now.same_as(&
+    //     before)`) had become a wait for the lock's range step to cross 648 ms.
+    //     The clock moves on every pulse that carries a frame and at least once
+    //     an arena second regardless (16b cut D.1).
     let spoken = rig.log.len();
     for word in ["BA", "ba", &number, "x1"] {
         let said = rig.say(0, &format!("lock {word}"));
@@ -1398,11 +1426,11 @@ async fn a_lock_taken_on_a_provisional_number_still_answers_to_both_names() {
             "LOCK {word} was refused after the rename: {said}"
         );
         assert!(said.contains("Locking BA."), "LOCK {word}: {said}");
-        let before = rig.frame(0).expect("a seated pilot holds a frame");
+        let before = rig.staged_now_ms;
         let mut pulsed = false;
         for _ in 0..600 {
             rig.pump();
-            if rig.frame(0).is_some_and(|now| !now.same_as(&before)) {
+            if rig.staged_now_ms > before {
                 pulsed = true;
                 break;
             }
@@ -4189,7 +4217,7 @@ fn d4_the_frame_carries_a_receiver_key_and_the_clean_scene_is_null() {
         reach_permille: 600,
     });
     assert!(
-        !frame.same_as(&jammed),
+        !frame.same_as(&jammed, 1_000),
         "a receiver that changed degree sent no frame"
     );
     let payload = cockpit::status_frame(fixture::MATCH, &jammed);

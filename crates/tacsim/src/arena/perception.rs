@@ -616,12 +616,25 @@ pub struct PerceptionCounters {
     pub cell_probes: u64,
     /// `(sharer, teammate)` pairs considered.
     pub share_ops: u32,
-    /// **Units the jammer scan looked at** (16b cut X.4), one per unit the spatial
-    /// index offered inside the match's widest pod radius, pod or not.
+    /// **Index candidates the jammer scan looked at** (16b cut X.4), one per unit
+    /// the spatial index offered inside the match's widest pod radius, pod or
+    /// not — **once per unit between two clears of [`Arena::jam_fold`]** (16b
+    /// cut U.2, 16c `T-29`): the fold is memoised there and counted on a miss
+    /// only.
+    ///
+    /// **The clears are per event, not per pod.** The memo is emptied at the
+    /// substep's two index rebuilds and after **every** `StartupComplete` and
+    /// **every** `Impact` the due loop applies, whoever started up or was hit,
+    /// because either can move a pod's power or wreck and the memo does not ask
+    /// which. So a unit is folded at most once per substep only while the
+    /// substep resolves neither; under fire the count grows with the impacts in
+    /// the substep times the units asked again after each, and a regression in
+    /// it can be the fight getting hotter as well as the memo getting worse.
     ///
     /// Zero for every match in which nothing carries a pod, because the scan does
     /// not run at all then — which is the cost claim this counter exists to make
-    /// checkable rather than assumed.
+    /// checkable rather than assumed. `harness.max_jam_checks_per_pulse` is
+    /// asserted against the worst wake of it.
     pub jam_checks: u32,
     /// Contacts newly held.
     pub detected: u32,
@@ -708,6 +721,11 @@ struct Shared {
 /// time — which would re-run the index query and bump `jam_checks` once per unit
 /// in range, doubling a perception counter the harness prints. So the fold is
 /// carried out of the function that already made it, and no counter moves.
+///
+/// **16b cut U.2** moved the making of it up a level: `sensor_pass` takes the
+/// fold through [`Arena::jam_fold_of`] and hands it to `detections`, which
+/// recovers it with the observer's filter; this is still where the recovered
+/// value leaves.
 struct Sweep {
     /// The candidates that passed every test.
     found: Vec<Detection>,
@@ -815,7 +833,19 @@ impl Arena {
         journal: &mut Vec<Notice>,
     ) -> bool {
         // ---- the read half: who is detected, decided against one snapshot ----
-        let sweep = self.detections(observer, counters);
+        //
+        // **16b cut U.2** (16c `T-29`): the observer's jamming fold comes out of
+        // the per-substep memo, and it is taken only once `detections` is certain
+        // to run — the same four conditions it returns early on, checked first
+        // here. A fold taken for a wreck or a sightless hull would count
+        // `jam_checks` that no pass before this cut ever counted, and would
+        // fill the memo for a pass that never reads it.
+        let fold = if self.runs_a_sweep(observer) {
+            self.jam_fold_of(observer, counters)
+        } else {
+            None
+        };
+        let sweep = self.detections(observer, fold, counters);
 
         // ---- the platform's own receiver (16b cut D.4, `B-22`) ----
         //
@@ -1056,7 +1086,19 @@ impl Arena {
     /// that the jamming fold this function makes for its own two terms leaves with
     /// it. Nothing else changed: the fold is the same one value, made once, and
     /// [`Arena::jamming_at`] is still called exactly once a pass.
-    fn detections(&self, observer: ObjId, counters: &mut PerceptionCounters) -> Option<Sweep> {
+    ///
+    /// **16b cut U.2** (16c `T-29`) hands the fold in: `fold` is the observer's
+    /// raw [`Jamming`] off [`Arena::jam_fold_of`] — `None` for no live pod in
+    /// reach — and this function recovers it with the observer's own filter
+    /// exactly as it did when it made the fold itself. The caller takes it only
+    /// when [`Arena::runs_a_sweep`] says this function will not return early, so
+    /// the scan is counted where it was counted before.
+    fn detections(
+        &self,
+        observer: ObjId,
+        fold: Option<Jamming>,
+        counters: &mut PerceptionCounters,
+    ) -> Option<Sweep> {
         let watcher = self.unit(observer)?;
         if watcher.limits.wreck {
             return None;
@@ -1091,9 +1133,8 @@ impl Arena {
         // `map` and not a branch of its own, because a filter with no bubble on it
         // has nothing to subtract from: an observer standing outside every bubble is
         // the same observer with the filter and without it, to the centimetre.
-        let jam = self
-            .jamming_at(&watcher.pose, counters)
-            .map(|jam| jam.recovered(watcher.eccm));
+        // **16b cut U.2**: the fold is the caller's, out of the per-substep memo.
+        let jam = fold.map(|jam| jam.recovered(watcher.eccm));
         let attenuation = jam.map_or(sensor.max_attenuation, |jam| {
             jam.budget(sensor.max_attenuation)
         });
@@ -1198,6 +1239,13 @@ impl Arena {
     ///
     /// A pod is inside its own bubble at range zero, so a unit that carries one
     /// jams itself. There is no exception: the rule is about where the *looker* is.
+    ///
+    /// **Who calls it directly** (16b cut U.2, 16c `T-29`). It stays the pure
+    /// primitive — a pose in, a fold out, the scan counted — and exactly two
+    /// kinds of caller use it: [`Arena::jam_fold_of`], the substep's memo
+    /// every pass and share reads through, and tests that want the arithmetic at
+    /// a pose no unit stands on. A pass that called it directly would scan again
+    /// what the memo already holds and count `jam_checks` the harness bounds.
     pub fn jamming_at(
         &self,
         pose: &mush_sim::data::Pose,
@@ -1232,6 +1280,55 @@ impl Arena {
         jammed.then_some(Jamming {
             attenuation_cost: cost,
             signature_permille: permille,
+        })
+    }
+
+    /// **The jamming one unit is standing in, folded once between two clears**
+    /// (16b cut U.2, 16c `T-29`; doc 16 §9 item 4): [`Arena::jam_fold`]'s entry
+    /// for `unit` when it has one, and otherwise [`Arena::jamming_at`] of the
+    /// unit's pose, computed once and stored. The clears are the substep's two
+    /// index rebuilds and every `StartupComplete` and `Impact` the due loop
+    /// applies (see [`Arena::jam_fold`]).
+    ///
+    /// The answer is the **raw** fold — the pods alone, no filter — and each
+    /// caller applies [`Jamming::recovered`] with its own unit's filter, exactly
+    /// as it did before the memo existed; the memo is a cache of a pure function
+    /// of the state it is keyed on, so it changes no answer anywhere.
+    ///
+    /// `jam_checks` is counted on a miss only, which is the whole of what the memo
+    /// buys: a unit folded by its own pass, by its own share and as a mate in every
+    /// teammate's share inside one substep scans its bubble once. A match with no
+    /// pod (`jam_radius_cm == 0`, every match the game ships) returns `None`
+    /// before the memo is touched, so a stock match is bit-identical to the one
+    /// cut X.4 left in every count. A unit that is not in the match is `None` and
+    /// is not stored.
+    pub fn jam_fold_of(
+        &mut self,
+        unit: ObjId,
+        counters: &mut PerceptionCounters,
+    ) -> Option<Jamming> {
+        if self.jam_radius_cm == 0 {
+            return None;
+        }
+        if let Some(fold) = self.jam_fold.get(&unit) {
+            return *fold;
+        }
+        let fold = {
+            let state = self.unit(unit)?;
+            self.jamming_at(&state.pose, counters)
+        };
+        self.jam_fold.insert(unit, fold);
+        fold
+    }
+
+    /// **Whether [`Arena::detections`] runs for `observer` at all** (16b cut
+    /// U.2): it is in the match, it is not a wreck, it carries a sight and its
+    /// pose is on the window — the four early returns `detections` makes, asked
+    /// first so the caller folds the observer's jamming only for a pass that
+    /// reads it.
+    fn runs_a_sweep(&self, observer: ObjId) -> bool {
+        self.unit(observer).is_some_and(|watcher| {
+            !watcher.limits.wreck && watcher.sensor.is_some() && self.eye_of(watcher).is_some()
         })
     }
 
@@ -1308,17 +1405,10 @@ impl Arena {
         let cell_cm = u64::from(self.definition.terrain.cell_cm());
         let reach = u32::try_from(u64::from(sensor.share_range_cells).saturating_mul(cell_cm))
             .unwrap_or(u32::MAX);
-        // **16b cut Q.6**: the pods the *sharer* is standing among, folded once for
-        // the whole pass and not once per mate — the observer's own fold in
-        // `detections` is read the same way, and for the same reason. The sharer's
-        // own filter takes its share back out before either term is read, exactly
-        // as an observer's does. A match with no pod in it has `jam_radius_cm == 0`
-        // and never reaches the index or a counter, so a stock share is
-        // bit-identical to the one cut F.3 left.
-        let sharer_jam = self
-            .jamming_at(&sharing.pose, counters)
-            .map(|jam| jam.recovered(sharing.eccm));
-        let sharer_reach = sharer_jam.map_or(u64::from(reach), |jam| jam.scale(u64::from(reach)));
+        // Copied out of the borrow: the folds below go through the memo, which
+        // takes the arena mutably.
+        let side = sharing.team;
+        let sharer_eccm = sharing.eccm;
         // What there is to say: [`ShadowContact::shareable`], which is both of this
         // function's rules written once — classified, and seen by **this
         // platform's own** sensors inside the time to live, with that sighting's
@@ -1342,20 +1432,45 @@ impl Arena {
         if mine.is_empty() {
             return;
         }
-        let side = sharing.team;
-        // Who to say it to, decided against the same snapshot.
+        // **16b cut Q.6**: the pods the *sharer* is standing among, folded once for
+        // the whole pass and not once per mate — the observer's own fold in
+        // `detections` is read the same way, and for the same reason. The sharer's
+        // own filter takes its share back out before either term is read, exactly
+        // as an observer's does. A match with no pod in it has `jam_radius_cm == 0`
+        // and never reaches the index or a counter, so a stock share is
+        // bit-identical to the one cut F.3 left.
+        //
+        // **16b cut U.2** (16c `T-29`): through the per-substep memo, and below the
+        // return above rather than over it — a sharer with nothing to say scans
+        // nothing. The share is applied in the same substep as the pass that
+        // scheduled it, so the fold is almost always the one that pass took.
+        let sharer_jam = self
+            .jam_fold_of(sharer, counters)
+            .map(|jam| jam.recovered(sharer_eccm));
+        let sharer_reach = sharer_jam.map_or(u64::from(reach), |jam| jam.scale(u64::from(reach)));
+        // Who to say it to, decided against the same snapshot: the index query and
+        // the side and wreck tests, collected first (16b cut U.2) because each
+        // mate's fold below goes through the memo, which takes the arena mutably.
+        let candidates: Vec<ObjId> = self
+            .unit(sharer)
+            .map(|sharing| {
+                self.index
+                    .in_range(&sharing.pose, reach, &self.units)
+                    .into_iter()
+                    .filter(|id| *id != sharer)
+                    .filter(|id| {
+                        self.unit(*id)
+                            .is_some_and(|mate| mate.team == side && !mate.limits.wreck)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut mates: Vec<ObjId> = Vec::new();
-        for id in self.index.in_range(&sharing.pose, reach, &self.units) {
-            if id == sharer {
-                continue;
-            }
-            let Some(mate) = self.unit(id) else {
-                continue;
-            };
-            if mate.team != side || mate.limits.wreck {
-                continue;
-            }
-            let Some(to) = self.eye_of(mate) else {
+        for id in candidates {
+            let Some((to, mate_eccm)) = self
+                .unit(id)
+                .and_then(|mate| Some((self.eye_of(mate)?, mate.eccm)))
+            else {
                 continue;
             };
             counters.share_ops = counters.share_ops.saturating_add(1);
@@ -1372,10 +1487,12 @@ impl Arena {
             // by the same ECM* — is the whole rule, and "the same" is meant
             // literally: this is `jamming_at`, `recovered`, `budget` and `scale`,
             // the four the sensor pass uses, so detection and the mesh cannot jam
-            // differently.
+            // differently. **16b cut U.2**: the mate's fold through the memo, in
+            // the same place — after the trace, because the budget it feeds is the
+            // line test's.
             let mate_jam = self
-                .jamming_at(&mate.pose, counters)
-                .map(|jam| jam.recovered(mate.eccm));
+                .jam_fold_of(id, counters)
+                .map(|jam| jam.recovered(mate_eccm));
             let budget = sharer_jam
                 .map_or(attenuation, |jam| jam.budget(attenuation))
                 .min(mate_jam.map_or(attenuation, |jam| jam.budget(attenuation)));
@@ -1384,7 +1501,11 @@ impl Arena {
             }
             let link_reach = sharer_reach
                 .min(mate_jam.map_or(u64::from(reach), |jam| jam.scale(u64::from(reach))));
-            if range_cm(&sharing.pose, &mate.pose) > link_reach {
+            let apart = match (self.unit(sharer), self.unit(id)) {
+                (Some(sharing), Some(mate)) => range_cm(&sharing.pose, &mate.pose),
+                _ => continue,
+            };
+            if apart > link_reach {
                 continue;
             }
             mates.push(id);
@@ -1800,6 +1921,201 @@ pub struct FrameCondition {
     /// stamp, which is older than the plot's whenever the platform has held the
     /// target since without getting close enough to read it again.
     pub age_ms: i64,
+}
+
+impl FrameCondition {
+    /// **Whether this reading would print the same as `other`** (16b cut U.2,
+    /// 16c `T-30`): the table and the bands equal, and the look's age equal at
+    /// every resolution a surface derives from it — [`age_key`] at `pass_ms`.
+    ///
+    /// The age is carried on the keyframe to the millisecond whatever this
+    /// answers; what it decides is whether a frame is *sent*, never what a pilot
+    /// may read off the one they hold.
+    ///
+    /// **Both sides are destructured with no `..`**, so a field added to this
+    /// struct breaks the build here until someone decides how it is compared:
+    /// a field this method forgot would be a figure a parked pilot is never
+    /// sent again, with no test to notice (the stale-frame lie `T-30` is
+    /// careful to avoid).
+    #[must_use]
+    pub fn same_as(&self, other: &FrameCondition, pass_ms: i64) -> bool {
+        let FrameCondition {
+            table,
+            bands,
+            age_ms,
+        } = self;
+        let FrameCondition {
+            table: their_table,
+            bands: their_bands,
+            age_ms: their_age_ms,
+        } = other;
+        table == their_table
+            && bands == their_bands
+            && age_key(*age_ms, pass_ms) == age_key(*their_age_ms, pass_ms)
+    }
+}
+
+impl FrameContact {
+    /// **Whether this row would print the same as `other`** (16b cut U.2, 16c
+    /// `T-30`; doc 16 §3.1's latest-wins slot, 16c Q27).
+    ///
+    /// Every field equal — the id, the designator and its alias, the class, the
+    /// bearing, the range and the cell — except the plot's age, which moves every
+    /// millisecond a contact is held and is compared at the resolutions a surface
+    /// derives from it instead: [`age_key`] at `pass_ms` (the whole second every
+    /// panel prints, and the line client's stale clause), and, on the row the
+    /// platform is **locked** on, [`lock_range_step_m`] as well — the lock's
+    /// published metres, which move below a second (at 648 ms and about every
+    /// 590 ms after). Comparing at whole seconds alone would let a parked, locked
+    /// pilot keep reading a 10 m step on a plot 900 ms old, which is the invented
+    /// digit `T-20` took out.
+    ///
+    /// The reading rides the row and is compared by
+    /// [`FrameCondition::same_as`] under the same rule.
+    ///
+    /// **Both sides are destructured with no `..`**, as there: a field added to
+    /// the row breaks the build here until its comparison is decided, where the
+    /// derived `PartialEq` this replaced was total by construction.
+    #[must_use]
+    pub fn same_as(&self, other: &FrameContact, pass_ms: i64, locked: bool) -> bool {
+        let FrameContact {
+            id,
+            designator,
+            alias,
+            class,
+            bearing_mdeg,
+            range_cm,
+            age_ms,
+            cell,
+            condition,
+        } = self;
+        let FrameContact {
+            id: their_id,
+            designator: their_designator,
+            alias: their_alias,
+            class: their_class,
+            bearing_mdeg: their_bearing_mdeg,
+            range_cm: their_range_cm,
+            age_ms: their_age_ms,
+            cell: their_cell,
+            condition: their_condition,
+        } = other;
+        id == their_id
+            && designator == their_designator
+            && alias == their_alias
+            && class == their_class
+            && bearing_mdeg == their_bearing_mdeg
+            && range_cm == their_range_cm
+            && cell == their_cell
+            && age_key(*age_ms, pass_ms) == age_key(*their_age_ms, pass_ms)
+            && (!locked || lock_range_step_m(*age_ms) == lock_range_step_m(*their_age_ms))
+            && match (condition, their_condition) {
+                (Some(mine), Some(theirs)) => mine.same_as(theirs, pass_ms),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+/// **The age of a plot or a look, as the surfaces that print it read it** (16b
+/// cut U.2, 16c `T-30`, Q27): `(age_ms / 1000, age_ms > pass_ms)`.
+///
+/// This is the list of every surface that derives something from an age, and
+/// the next surface that does is added here, so a frame comparison cannot fall
+/// behind it:
+///
+/// 1. **the whole second** — the web's and the TUI's `age_s`, the line client's
+///    `CONTACTS` column and the seconds `stale_clause` prints;
+/// 2. **the stale clause** — `crate::match_::cockpit::stale_clause` says `,
+///    plotted N s ago` once the age is past one sensor pass, `pass_ms` read as
+///    at least one exactly as that function reads it.
+///
+/// The locked row's third surface, the lock's range step, is
+/// [`lock_range_step_m`]'s own and is compared beside this by
+/// [`FrameContact::same_as`], because it applies to one row and not to every
+/// age.
+#[must_use]
+pub fn age_key(age_ms: i64, pass_ms: i64) -> (i64, bool) {
+    (age_ms / 1_000, age_ms > pass_ms.max(1))
+}
+
+/// **How coarsely a contact's range is reported**, metres (16b cut F.3; moved
+/// here from `crate::match_::cockpit`, which re-exports it, by 16b cut U.2).
+///
+/// Doc 16 §3.6 gives `CONTACTS` a *range band* and no range, and cut S.2 read
+/// that strictly. In play it left a pilot with no distance information whatever:
+/// the band could only ever read `close` (see
+/// `crate::match_::cockpit::contact_band`), so from acquisition to kill every row
+/// said the same word whether the other tank was 600 m away or 40 m away.
+///
+/// A passive sight giving a coarse range is a **playtest-usability decision**,
+/// recorded here for the owner to revisit: it departs from doc 16 §3.6 in the
+/// direction of a pilot being able to act. The rounding is the whole of the
+/// coarseness and it lives in this one constant, so tightening or loosening it is
+/// one number.
+pub const CONTACT_RANGE_STEP_M: u64 = 50;
+
+/// **The finest a *locked* contact's range is ever reported**, metres (16b cut
+/// Q.1; 16b cut D.4 made it the floor rather than the step).
+///
+/// A lock is a fire-control solution: the platform is tracking one return
+/// continuously and resolving a hit chance against it every pulse, so the range
+/// it can quote about that one contact is better than the range it quotes about
+/// the rest of the scope. It is a second step past doc 16 §3.6's band-only
+/// wording, recorded here beside the first for the owner to revisit, and it is
+/// what makes `RANGE` worth typing after `LOCK`.
+///
+/// [`lock_range_step_m`] is what a lock's range is actually rounded to: this is
+/// the floor it clamps up from, which is what a plot taken this instant is worth.
+pub const LOCK_RANGE_STEP_M: u64 = 10;
+
+/// **The fastest thing the catalog fields**, metres a second, rounded up (16b cut
+/// D.4, `T-20`).
+///
+/// 17 m/s is about 60 kph, which is over the stock tank's 54 and over every other
+/// hull the game ships. It is the drift term of [`lock_range_step_m`]: the
+/// furthest a plot's subject could have got since the plot was taken.
+pub const PLOT_DRIFT_M_PER_S: i64 = 17;
+
+/// **How finely a locked contact's range may honestly be reported**, metres,
+/// given a plot `age_ms` old (16b cut D.4, `T-20`; 16c §5 Q28: *derived from the
+/// plot's age, floor 10 m*).
+///
+/// **16b cut U.2** moved it here from `crate::match_::cockpit`, which re-exports
+/// it: [`FrameContact::same_as`] compares a locked row at this step, and the
+/// library does not reach up into the cockpit. Pure integer arithmetic, no I/O;
+/// there is still exactly one of it.
+///
+/// `LOCK_RANGE_STEP_M` was a fixed 10 m, which is finer than a plot one pass old
+/// can carry: a target making 60 kph has moved 17 m in the second since the
+/// sighting, so a 10 m figure quoted about it is three significant digits of
+/// which the last one is invented.
+///
+/// The step is the drift, `age_ms × `[`PLOT_DRIFT_M_PER_S`]` / 1000`, rounded
+/// **up** to a multiple of ten and clamped into
+/// `LOCK_RANGE_STEP_M..=CONTACT_RANGE_STEP_M`: a plot up to 647 ms old keeps
+/// 10 m, a one-second plot gets 20 m, two seconds gets 40 m, and about two and a
+/// half seconds and older reads at the ordinary scope step, because a lock on a
+/// plot that stale is not a better fire-control solution than any other row.
+///
+/// **It publishes nothing new.** The one number it is a function of — the
+/// `age_ms` on the contact's own row — is already on the frame the pilot holds,
+/// and is the same `1 s` `CONTACTS` prints. It is deliberately **not** priced off
+/// `[tacsim.sensors].pass_ms`, which a pilot has never been sent.
+///
+/// The **metres** are a different matter and a client must not compute them: a
+/// contact row publishes `range_m` already rounded to [`CONTACT_RANGE_STEP_M`],
+/// so re-rounding that to this step gives the coarse figure back (450 m where the
+/// lock reads 440). The lock's own metres are published once, as the frame's
+/// `lock_range_m`, and `RANGE` prints the same call of the same function — which
+/// is the whole of `T-20`'s *one function* rule.
+#[must_use]
+pub fn lock_range_step_m(age_ms: i64) -> u64 {
+    let drift_m = age_ms.max(0).saturating_mul(PLOT_DRIFT_M_PER_S) / 1_000;
+    let step = drift_m.saturating_add(9) / 10 * 10;
+    u64::try_from(step)
+        .unwrap_or(CONTACT_RANGE_STEP_M)
+        .clamp(LOCK_RANGE_STEP_M, CONTACT_RANGE_STEP_M)
 }
 
 /// **A contact, as a notice names it** (16b cut Q.1): the stable id a panel keys
@@ -2664,5 +2980,373 @@ mod tests {
                 "{class:?} answered the wrong way"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut U.2 — one jamming fold per unit per substep (16c `T-29`)
+    // -----------------------------------------------------------------------
+
+    const U2_RED: ObjId = ObjId(4);
+    const U2_MATE: ObjId = ObjId(5);
+    const U2_BLUE: ObjId = ObjId(9);
+    const U2_POD: ObjId = ObjId(13);
+    /// A second blue hull outside every bubble, so a wrecked pod carrier is
+    /// not the end of its side.
+    const U2_SPARE: ObjId = ObjId(21);
+
+    /// A pod with round numbers: 30 m of bubble on the 8 by 8 window, a
+    /// quarter of the Mk1 sight's budget, 150 per mille of a signature left.
+    fn u2_pod() -> Jammer {
+        Jammer {
+            radius_cm: 3_000,
+            attenuation_cost: 25,
+            signature_permille: 150,
+        }
+    }
+
+    /// Fit `carrier` with the pod and give the match its bubble radius, which
+    /// `Arena::new` would have resolved from the check-out.
+    fn u2_fit_pod(arena: &mut Arena, carrier: ObjId, power: Power) {
+        if let Some(state) = arena.unit_mut(carrier) {
+            state.jammer = Some(u2_pod());
+            state.power = power;
+        }
+        arena.jam_radius_cm = u2_pod().radius_cm;
+    }
+
+    /// Two red line tanks a cell apart, a blue one four cells east and a blue
+    /// pod carrier on the diagonal between: every one of them inside the pod's
+    /// 30 m. Powered up; the index built over the opening poses and the memo
+    /// empty, as phase 3(b) leaves them.
+    fn u2_field() -> Arena {
+        use crate::arena::test_support::line_tank;
+        let mut arena = arena_of(vec![
+            line_tank(U2_RED, Team::Red, pose(1_500, 1_500)),
+            line_tank(U2_MATE, Team::Red, pose(1_500, 2_500)),
+            line_tank(U2_BLUE, Team::Blue, pose(5_500, 1_500)),
+            line_tank(U2_POD, Team::Blue, pose(3_500, 3_500)),
+        ]);
+        for id in [U2_RED, U2_MATE, U2_BLUE, U2_POD] {
+            if let Some(state) = arena.unit_mut(id) {
+                state.power = Power::Online;
+            }
+        }
+        u2_fit_pod(&mut arena, U2_POD, Power::Online);
+        let units = arena.units.clone();
+        arena.index.rebuild(&arena.definition.terrain, &units);
+        arena.jam_fold.clear();
+        arena
+    }
+
+    /// Where one unit of the fixture stands.
+    fn u2_pose_of(arena: &Arena, id: ObjId) -> mush_sim::data::Pose {
+        arena
+            .unit(id)
+            .map(|state| state.pose.clone())
+            .unwrap_or_else(|| panic!("#{} is in the match", id.0))
+    }
+
+    /// **The memo answers what `jamming_at` answers, for every unit** — with
+    /// the pod on and with it off — and a miss scans exactly what the
+    /// primitive scans while a hit scans nothing.
+    #[test]
+    fn u2_the_memo_is_the_primitive_folded_once() {
+        for power in [Power::Online, Power::Off] {
+            let mut arena = u2_field();
+            u2_fit_pod(&mut arena, U2_POD, power);
+            for id in [U2_RED, U2_MATE, U2_BLUE, U2_POD] {
+                let at = u2_pose_of(&arena, id);
+                let mut direct = PerceptionCounters::default();
+                let expected = arena.jamming_at(&at, &mut direct);
+                assert_eq!(
+                    expected.is_some(),
+                    power == Power::Online,
+                    "#{}: the fixture's pod reaches every unit when it is on",
+                    id.0
+                );
+                let mut missed = PerceptionCounters::default();
+                assert_eq!(arena.jam_fold_of(id, &mut missed), expected, "#{}", id.0);
+                assert_eq!(
+                    missed.jam_checks, direct.jam_checks,
+                    "#{}: a miss scans what the primitive scans",
+                    id.0
+                );
+                assert!(missed.jam_checks > 0);
+                let mut hit = PerceptionCounters::default();
+                assert_eq!(arena.jam_fold_of(id, &mut hit), expected, "#{}", id.0);
+                assert_eq!(hit.jam_checks, 0, "#{}: a hit scans nothing", id.0);
+            }
+            assert_eq!(arena.jam_fold.len(), 4, "one row a unit");
+            // A unit not in the match is no fold and no row.
+            let mut none = PerceptionCounters::default();
+            assert_eq!(arena.jam_fold_of(ObjId(999), &mut none), None);
+            assert_eq!(none.jam_checks, 0);
+            assert_eq!(arena.jam_fold.len(), 4);
+        }
+    }
+
+    /// **Every unit's pass and share in one substep scans each unit's bubble
+    /// once** when no pod's state moves: a unit folded by its own pass, by its
+    /// own share and as a mate in a teammate's share, twice over, is counted
+    /// once — exactly the sum of one primitive scan per unit.
+    #[test]
+    fn u2_a_substep_of_passes_and_shares_scans_each_unit_once() {
+        let mut arena = u2_field();
+        // Every unit holds its enemy classified, as its own sighting, so every
+        // share has something to say and every teammate is a mate.
+        for (viewer, target, team) in [
+            (U2_RED, U2_BLUE, Team::Blue),
+            (U2_MATE, U2_BLUE, Team::Blue),
+            (U2_BLUE, U2_RED, Team::Red),
+            (U2_POD, U2_RED, Team::Red),
+        ] {
+            let plot = arena
+                .unit(target)
+                .map(SeenPose::of)
+                .unwrap_or_else(|| panic!("#{} is in the match", target.0));
+            let id = crate::arena::rng::draw_contact_id(arena.seed, viewer, target);
+            arena.contacts.insert(
+                viewer,
+                id,
+                crate::arena::state::ShadowContact::sighted(
+                    target,
+                    Classification::Classified { team },
+                    0,
+                    plot,
+                ),
+            );
+        }
+        let mut expected = 0_u32;
+        for id in [U2_RED, U2_MATE, U2_BLUE, U2_POD] {
+            let at = u2_pose_of(&arena, id);
+            let mut one = PerceptionCounters::default();
+            let _ = arena.jamming_at(&at, &mut one);
+            expected += one.jam_checks;
+        }
+        let mut counters = PerceptionCounters::default();
+        let mut journal: Vec<Notice> = Vec::new();
+        for (pass_seq, t_ms) in [(1_u64, 100_i64), (2, 200)] {
+            for id in [U2_RED, U2_MATE, U2_BLUE, U2_POD] {
+                arena.sensor_pass(id, pass_seq, t_ms, &mut counters, &mut journal);
+                arena.share_pass(id, t_ms, &mut counters, &mut journal);
+            }
+        }
+        assert!(
+            counters.share_ops > 0,
+            "the mesh ran, so mates were folded too: {counters:?}"
+        );
+        assert_eq!(
+            counters.jam_checks, expected,
+            "each unit's bubble was scanned once in the substep: {counters:?}"
+        );
+        assert_eq!(arena.jam_fold.len(), 4);
+    }
+
+    /// An arena of `units` over the test window whose sensor pass runs every
+    /// 100 ms, so one unit passes two or three times inside one substep.
+    fn u2_fast_passes(units: Vec<crate::arena::state::CustodyUnit>) -> Arena {
+        let sensors = crate::config::SensorsConfig {
+            pass_ms: 100,
+            ..crate::config::SensorsConfig::default()
+        };
+        Arena::new(
+            crate::arena::test_support::custody(units, Vec::new()),
+            &crate::config::ArenaConfig::default(),
+            &crate::config::MatchConfig::default(),
+            &sensors,
+        )
+        .expect("the fast-pass arena")
+    }
+
+    /// `U2_RED`'s first pass and the substep it falls in, with the
+    /// precondition both proofs below stand on asserted: the second pass, 100 ms
+    /// after the first, is inside the same first substep.
+    fn u2_first_pass(arena: &Arena) -> (i64, i64) {
+        let first = crate::arena::rng::stagger_ms(arena.seed, U2_RED, 100);
+        let substep = arena.substep_len_ms();
+        assert!(
+            first + 100 <= substep,
+            "the fixture wants two passes of #{} in the first {substep} ms substep; the first is \
+             at {first}",
+            U2_RED.0
+        );
+        (first, substep)
+    }
+
+    /// **The exactness proof, first half**: a pod that comes online between two
+    /// folds in one substep is seen by the second. The `StartupComplete` due
+    /// between the observer's two passes clears the memo, so the second pass
+    /// scans again and its receiver reads the bubble; without the clear it would
+    /// have read the first fold's `None` for the rest of the substep.
+    #[test]
+    fn u2_a_pod_that_comes_online_between_two_folds_is_seen_by_the_second() {
+        use crate::arena::test_support::line_tank;
+        let mut arena = u2_fast_passes(vec![
+            line_tank(U2_RED, Team::Red, pose(1_500, 1_500)),
+            tank(U2_POD, Team::Blue, pose(3_500, 3_500)),
+        ]);
+        u2_fit_pod(&mut arena, U2_POD, Power::Starting);
+        let (first, substep) = u2_first_pass(&arena);
+        arena
+            .due
+            .schedule(first + 50, DueKind::StartupComplete { unit: U2_POD });
+        let at = u2_pose_of(&arena, U2_RED);
+        let mut one = PerceptionCounters::default();
+        let _ = arena.jamming_at(&at, &mut one);
+
+        arena.step(0, &[], &[]);
+        let out = arena.step(substep, &[], &[]);
+        assert_eq!(out.substeps, 1, "one substep, holding both passes");
+        assert_eq!(
+            arena.unit(U2_POD).map(|state| state.power),
+            Some(Power::Online)
+        );
+        assert!(
+            matches!(arena.jam_fold.get(&U2_RED), Some(Some(_))),
+            "the fold after the startup is the online pod's: {:?}",
+            arena.jam_fold
+        );
+        assert!(
+            arena
+                .unit(U2_RED)
+                .and_then(|state| state.receiver)
+                .is_some(),
+            "the second pass ran under the pod that had just come up"
+        );
+        assert_eq!(
+            out.perception.jam_checks,
+            2 * one.jam_checks,
+            "one scan before the startup and one after it, and none for a third pass"
+        );
+    }
+
+    /// **The exactness proof, second half**: a pod wrecked by an `Impact` between
+    /// two folds in one substep is not seen by the second. The round finishes the
+    /// carrier's hull (`destroy_unit` turns its power off), the arm clears the
+    /// memo, and the observer's next pass reads a clear receiver.
+    #[test]
+    fn u2_a_pod_wrecked_by_an_impact_between_two_folds_is_not_seen_by_the_second() {
+        use crate::arena::test_support::line_tank;
+        let mut arena = u2_fast_passes(vec![
+            line_tank(U2_RED, Team::Red, pose(1_500, 1_500)),
+            line_tank(U2_POD, Team::Blue, pose(3_500, 3_500)),
+            tank(U2_SPARE, Team::Blue, pose(7_500, 7_500)),
+        ]);
+        u2_fit_pod(&mut arena, U2_POD, Power::Online);
+        // The carrier sees nothing (so it folds nothing of its own) and every
+        // round that reaches it goes into the hull, whose loss wrecks the tank.
+        if let Some(state) = arena.unit_mut(U2_POD) {
+            state.sensor = None;
+            for band in &mut state.profile.bands {
+                band.sections = vec![(SmolStr::new("hull"), 1)];
+            }
+        }
+        let (first, substep) = u2_first_pass(&arena);
+        let band = match (arena.unit(U2_POD), arena.unit(U2_RED)) {
+            (Some(target), Some(shooter)) => {
+                crate::arena::resolution::facet_band(target, shooter).to_owned()
+            }
+            _ => panic!("both tanks are in the match"),
+        };
+        let aim_cell = arena
+            .unit(U2_POD)
+            .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
+        arena.shots.insert(
+            1,
+            crate::arena::weapons::Shot {
+                seq: 1,
+                shooter: U2_RED,
+                weapon: SmolStr::new("cannon"),
+                contact: crate::arena::state::ContactId(1),
+                target: U2_POD,
+                rounds: 1,
+                fired_at_ms: 0,
+                impact_at_ms: first + 50,
+                range_cm: 2_828,
+                aim_x_cm: 3_500,
+                aim_y_cm: 3_500,
+                aim_cell,
+                damage: 1_000_000,
+                resolution: crate::arena::resolution::Resolution {
+                    p_permille: 1_000,
+                    ..crate::arena::resolution::Resolution::blind(
+                        &band,
+                        3_000,
+                        mush_atlas::Cover::None,
+                    )
+                },
+            },
+        );
+        arena.next_shot_seq = 1;
+        arena
+            .due
+            .schedule(first + 50, DueKind::Impact { shot_seq: 1 });
+
+        arena.step(0, &[], &[]);
+        let out = arena.step(substep, &[], &[]);
+        assert_eq!(out.substeps, 1, "one substep, holding both passes");
+        assert!(
+            arena.unit(U2_POD).is_some_and(|state| state.limits.wreck),
+            "the round finished the carrier"
+        );
+        assert_eq!(
+            arena.jam_fold.get(&U2_RED),
+            Some(&None),
+            "the fold after the impact is a field with no live pod: {:?}",
+            arena.jam_fold
+        );
+        assert_eq!(
+            arena.unit(U2_RED).and_then(|state| state.receiver),
+            None,
+            "the second pass ran with the pod gone, and the receiver cleared"
+        );
+    }
+
+    /// **A rebuild empties the memo**: filled by hand, it is empty after a
+    /// substep in which nothing folded — the rebuilds cleared it and no pass
+    /// refilled it.
+    #[test]
+    fn u2_the_memo_is_empty_after_a_rebuild() {
+        let mut arena = arena_of(vec![
+            tank(U2_RED, Team::Red, pose(1_500, 1_500)),
+            tank(U2_POD, Team::Blue, pose(3_500, 3_500)),
+        ]);
+        u2_fit_pod(&mut arena, U2_POD, Power::Online);
+        let mut counters = PerceptionCounters::default();
+        assert!(arena.jam_fold_of(U2_RED, &mut counters).is_some());
+        assert!(arena.jam_fold_of(U2_POD, &mut counters).is_some());
+        assert_eq!(arena.jam_fold.len(), 2);
+        // Neither tank carries a sight, so no pass in the substep folds.
+        arena.step(0, &[], &[]);
+        let substep = arena.substep_len_ms();
+        let out = arena.step(substep, &[], &[]);
+        assert!(out.substeps >= 1);
+        assert!(arena.jam_fold.is_empty(), "{:?}", arena.jam_fold);
+        assert_eq!(out.perception.jam_checks, 0);
+    }
+
+    /// **A stock match is bit-identical**: no pod, so `jam_radius_cm` is nought,
+    /// the memo is never touched and `jam_checks` stays at zero however many
+    /// passes and shares run.
+    #[test]
+    fn u2_a_stock_match_counts_no_jam_check_and_touches_no_memo() {
+        use crate::arena::test_support::line_tank;
+        let mut arena = arena_of(vec![
+            line_tank(U2_RED, Team::Red, pose(1_500, 1_500)),
+            line_tank(U2_MATE, Team::Red, pose(1_500, 2_500)),
+            line_tank(U2_BLUE, Team::Blue, pose(5_500, 1_500)),
+        ]);
+        assert_eq!(arena.jam_radius_cm, 0);
+        let mut counters = PerceptionCounters::default();
+        assert_eq!(arena.jam_fold_of(U2_RED, &mut counters), None);
+        let mut total = PerceptionCounters::default();
+        arena.step(0, &[], &[]);
+        for wall in 1..=24_i64 {
+            let out = arena.step(wall * 500, &[], &[]);
+            total.absorb(&out.perception);
+        }
+        assert!(total.passes > 0 && total.detected > 0, "{total:?}");
+        assert_eq!(total.jam_checks + counters.jam_checks, 0);
+        assert!(arena.jam_fold.is_empty());
     }
 }

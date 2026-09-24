@@ -268,6 +268,14 @@ thread_local! {
 /// taken *before* that scan, so in a substep where a round found a spent section
 /// the table is holding that shot at this very line, and that costs nothing.
 ///
+/// **Cut U.2's `jam_fold` is absent too, on a plainer argument** (16c `T-29`):
+/// [`crate::arena::state::Arena::jam_fold`] is a memo of
+/// [`crate::arena::Arena::jamming_at`], a pure function of the poses, the power
+/// bytes and the wreck bytes item 1 already folds, and it is cleared at every
+/// point inside a substep where one of those moves. Folding a cache would add no
+/// information and would make the hash a function of which folds had been asked
+/// for by the time the record was taken.
+///
 /// **Cut D.2's `spent_said` is the opposite case, and it IS folded.** It persists
 /// for [`crate::arena::state::SPENT_NOTICE_MS`] across substeps and pulses and it
 /// decides what a *later* substep says, so `lost_designators`' argument is simply

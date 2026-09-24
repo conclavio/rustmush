@@ -354,6 +354,18 @@ max_traces_per_pulse = 4000        # line-of-sight traces one pulse may make (pe
 max_path_queries_per_pulse = 64    # path queries one pulse may make
 max_share_ops_per_pulse = 256      # (16b cut S.1) contact-share operations one pulse may make: one (sharer, teammate) pair each
 max_ledger_bytes = 67108864        # 64 MiB the streamed ledger must stay under over an hour of arena time
+# (16b cut U.2) Five more, each a THRESHOLD THE HARNESS ASSERTS and never a throttle
+# the arena applies: an arena that stopped tracing or jamming when a budget ran out
+# would make what a pilot sees a function of the tempo.
+max_cell_probes_per_pulse = 32000  # (16b cut U.2) cells one pulse's line-of-sight traces may read, detection's and the mesh's together
+max_jam_checks_per_pulse = 2048    # (16b cut U.2) index candidates one pulse's jammer scans may look at
+max_rss_growth_kib = 65536         # (16b cut U.2) KiB resident memory may grow over the harness's long run
+max_frame_bytes = 16384            # (16b cut U.2) bytes of the largest arena.cockpit keyframe the fan-out lane may see
+# The measured burst is the acquisition pass after power-up: 24 arena.cockpit panels plus
+# 11 contact-notice lines per pilot = 288 events; 512 gives a 24-pilot burst headroom, and
+# whoever moves it next must say why. Both fan-out bounds were measured on the opening, with
+# no enemy in sight: a combat frame and an engaged pulse are not measured yet.
+max_output_events_per_pulse = 512  # (16b cut U.2) output events one arena pulse may produce through the world's output path
 
 [onboarding]                       # (M9) the chargen_required gate + start rooms
 # When off (the default), a fresh character plays immediately, exactly as

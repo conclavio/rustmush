@@ -333,6 +333,9 @@ fn pass(
     let mut journal: Vec<Notice> = Vec::new();
     let units = arena.units.clone();
     arena.index.rebuild(&arena.definition.terrain, &units);
+    // 16b cut U.2: and the jamming memo with it, exactly as phase 3(b) empties
+    // it beside its own rebuild — a pass driven directly reads through the memo.
+    arena.jam_fold.clear();
     let shares = arena.sensor_pass(observer, pass_seq, t_ms, &mut counters, &mut journal);
     if shares {
         arena.share_pass(observer, t_ms, &mut counters, &mut journal);
@@ -4972,5 +4975,337 @@ fn m2_a_window_shorter_than_the_substep_is_one_story_at_every_cadence() {
             .skip(said)
             .any(|kind| *kind == NoticeKind::Acquired),
         "the return was not said after the loss: {kinds:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut U.2 — a frame when a printed figure moves (16c `T-30`, Q27, Q28)
+//
+// `Frame::same_as` used to compare every contact row in full, age included, so a
+// pilot holding anything was sent a whole keyframe every wake. It now compares
+// the age at the resolutions a surface prints it at — the whole second, the
+// stale clause past `pass_ms`, and on the locked row the lock's range step — and
+// the keyframe still carries `age_ms` to the millisecond. The two properties
+// below drive the real pulse and read the frames it sends.
+//
+// A target in continuous view is re-plotted every pass and its age never leaves
+// the first second, so both fixtures break the line of sight **inside the loss
+// window** (`lost_after_passes` raised to ten, so the plot is held, unrefreshed,
+// for the whole run) and let the held plot's age really climb.
+// ---------------------------------------------------------------------------
+
+/// The `[tacsim.sensors]` block both fixtures run under: the shipped one with a
+/// ten-pass time to live, so a plot the wall cut off is held for ten seconds.
+fn u2_long_hold() -> SensorsConfig {
+    SensorsConfig {
+        lost_after_passes: 10,
+        ..SensorsConfig::default()
+    }
+}
+
+/// `EYE` watching `MARK` at `mark`, the tempo pinned so the one thing that can
+/// move on a parked pair is the plot's age, and the opening pulse run.
+fn u2_parked_pair(mark: Pose) -> Arena {
+    u2_parked_pair_under(mark, &u2_long_hold())
+}
+
+/// [`u2_parked_pair`] under a named `[tacsim.sensors]` block.
+fn u2_parked_pair_under(mark: Pose, sensors: &SensorsConfig) -> Arena {
+    let mut arena = arena_with_sensors(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, mark, None),
+        ],
+        &[],
+        sensors,
+    );
+    if let Some(state) = arena.unit_mut(EYE) {
+        state.power = tacsim::arena::state::Power::Online;
+    }
+    arena.clock.pin_tempo_for_tests(Tempo::Alert);
+    let _ = arena.step(0, &[], &[]);
+    arena
+}
+
+/// Put the wall up between the pair — the same window with `curtain(25)` on it —
+/// so `EYE`'s later passes see nothing and its plot of `MARK` is never refreshed.
+fn u2_break_the_line(arena: &mut Arena) {
+    let walled = arena_with_sensors(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(40, 10), None),
+        ],
+        &curtain(25),
+        &u2_long_hold(),
+    );
+    arena.definition = walled.definition.clone();
+}
+
+/// The age of the one plot `EYE` holds, as the store has it now.
+fn u2_held_age(arena: &Arena) -> i64 {
+    arena
+        .frame_contacts(EYE)
+        .first()
+        .map(|row| row.age_ms)
+        .unwrap_or_else(|| panic!("EYE still holds its contact at {}", arena.now_ms))
+}
+
+/// **A parked watcher holding an unrefreshed plot is sent a frame on the pulse
+/// the second moves and on no pulse between** (16b cut U.2, 16c `T-30`), across
+/// five arena seconds of 250 ms pulses — and each frame it is sent carries the
+/// plot's true age to the millisecond, so what the pilot may read did not change;
+/// only how often they are sent it did.
+#[test]
+fn u2_a_parked_watcher_is_sent_a_frame_when_the_plots_second_moves_and_not_between() {
+    use tacsim::arena::perception::age_key;
+    let mut arena = u2_parked_pair(centre(40, 10));
+    let offset = eye_offset(&arena);
+    let mut tape: Vec<u8> = Vec::new();
+    let first = pulse(&mut arena, PULSE_MS, &mut tape).expect("the acquiring pulse sends a frame");
+    let row = first
+        .contacts
+        .first()
+        .copied()
+        .unwrap_or_else(|| panic!("the acquiring frame carries the contact"));
+    assert_eq!(row.age_ms, PULSE_MS - offset, "plotted at EYE's own pass");
+    u2_break_the_line(&mut arena);
+
+    let pass_ms = i64::from(arena.sensors_cfg.pass_ms);
+    let mut read = row.age_ms;
+    let mut sent: Vec<i64> = Vec::new();
+    let mut silent = 0_u32;
+    let mut wall = PULSE_MS;
+    while wall < PULSE_MS + 5_000 {
+        wall += 250;
+        let frame = pulse(&mut arena, wall, &mut tape);
+        let age = u2_held_age(&arena);
+        assert_eq!(
+            age,
+            arena.now_ms - offset,
+            "the plot was refreshed through the wall at {}",
+            arena.now_ms
+        );
+        let moved = age_key(age, pass_ms) != age_key(read, pass_ms);
+        match frame {
+            Some(frame) => {
+                assert!(
+                    moved,
+                    "a frame at {} ({age} ms) printed what the pilot already read ({read} ms)",
+                    arena.now_ms
+                );
+                let row = frame
+                    .contacts
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| panic!("the frame at {} lost its row", arena.now_ms));
+                assert_eq!(row.age_ms, age, "the keyframe carries the true age");
+                read = row.age_ms;
+                sent.push(arena.now_ms);
+            }
+            None => {
+                assert!(
+                    !moved,
+                    "no frame at {} although the pilot's {read} ms now prints as {age} ms",
+                    arena.now_ms
+                );
+                silent += 1;
+            }
+        }
+    }
+    // One a second: the plot crosses 1, 2, 3, 4 and 5 s old inside the run, and
+    // the stale clause flips on the first of those pulses.
+    assert_eq!(
+        sent,
+        vec![1_500, 2_500, 3_500, 4_500, 5_500],
+        "one frame a second, on the pulse the second moved"
+    );
+    assert_eq!(silent, 15, "and nothing on the fifteen pulses between");
+}
+
+/// **A locked, parked pair is sent a frame on the pulse the plot's age crosses
+/// 648 ms**, because the lock's published metres move there (16b cut U.2; 16c
+/// `T-20`, Q28): at 305 m the 10 m step reads `310` and the 20 m step `300`, so
+/// a pilot left on the first frame would be reading a digit the plot cannot
+/// carry. Nothing is sent on the pulse before, where the step has not moved.
+#[test]
+fn u2_a_locked_pair_is_sent_a_frame_when_the_locks_range_step_moves() {
+    use tacsim::arena::perception::lock_range_step_m;
+    // 305 m east: a figure the two steps round apart.
+    let mut arena = u2_parked_pair(pose(41_000, 10_500));
+    let offset = eye_offset(&arena);
+    let contact = draw_contact_id(arena.seed, EYE, MARK);
+    // The acquiring pulse, with the lock in it: the intent waits in phase 2, the
+    // pass at `offset` inserts the contact, and phase 4 takes the lock at 1,000.
+    let out = arena.step(
+        PULSE_MS,
+        &[],
+        &[intent(EYE, IntentKind::Lock { contact }, 1)],
+    );
+    let first = out
+        .frames
+        .into_iter()
+        .find(|(pilot, _)| *pilot == ObjId(1_000))
+        .map(|(_, frame)| frame)
+        .unwrap_or_else(|| panic!("the acquiring pulse sends a frame"));
+    assert_eq!(first.lock, Some(contact), "the lock was taken");
+    let lock_range = |frame: &Frame| -> serde_json::Value {
+        cockpit::status_frame(tacsim::arena_task::MatchId(1), frame)
+            .get("lock_range_m")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let age = PULSE_MS - offset;
+    assert!(
+        age < 648,
+        "the fixture needs the first frame under the step: {age}"
+    );
+    assert_eq!(lock_range_step_m(age), 10);
+    assert_eq!(lock_range(&first), serde_json::json!(310));
+    u2_break_the_line(&mut arena);
+
+    let mut tape: Vec<u8> = Vec::new();
+    // The pulse before the crossing: nothing a pilot prints has moved.
+    let before = offset + 647 - 60;
+    assert!(
+        before > PULSE_MS,
+        "the fixture's quiet pulse is after the lock: {before}"
+    );
+    assert!(
+        pulse(&mut arena, before, &mut tape).is_none(),
+        "a frame at {before} ({} ms old) although the step is still 10 m",
+        u2_held_age(&arena)
+    );
+    // The pulse after it.
+    let after = offset + 700;
+    let frame = pulse(&mut arena, after, &mut tape).unwrap_or_else(|| {
+        panic!(
+            "no frame when the plot turned {} ms old",
+            u2_held_age(&arena)
+        )
+    });
+    let row = frame
+        .contacts
+        .first()
+        .copied()
+        .unwrap_or_else(|| panic!("the locked row"));
+    assert_eq!(row.age_ms, 700, "the true age, as ever");
+    assert_eq!(frame.lock, Some(contact));
+    assert_eq!(lock_range_step_m(row.age_ms), 20);
+    assert_eq!(
+        lock_range(&frame),
+        serde_json::json!(300),
+        "the lock's metres moved with the step"
+    );
+    assert!(
+        frame.notices.is_empty(),
+        "sent for the step alone: {:?}",
+        frame.notices
+    );
+}
+
+/// **The stale clause is compared at the arena's own `pass_ms`** (16b cut U.2,
+/// 16c `T-30`): under `[tacsim.sensors].pass_ms = 1500` a parked watcher holding
+/// an unrefreshed plot is sent a frame on the pulse its age crosses 1,500 ms —
+/// halfway through a second, where no whole second moved — and that frame's
+/// `stale_clause` says `, plotted 1 s ago` where the one before said nothing.
+///
+/// At the default cadence the stale flip and the whole-second flip fall on the
+/// same pulse, so the two properties above cannot tell the arena's `pass_ms`
+/// from a constant `1_000` at `Frame::same_as`'s call site; this one can: under
+/// `age_key(…, 1_000)` the two ages either side of the crossing read alike, and
+/// a pilot left on the earlier frame would be missing the clause.
+#[test]
+fn u2_the_stale_clause_moves_a_frame_at_the_arenas_own_pass_ms() {
+    use tacsim::arena::perception::age_key;
+    let sensors = SensorsConfig {
+        pass_ms: 1_500,
+        ..u2_long_hold()
+    };
+    let mut arena = u2_parked_pair_under(centre(40, 10), &sensors);
+    let pass_ms = i64::from(arena.sensors_cfg.pass_ms);
+    assert_eq!(pass_ms, 1_500, "the arena runs the named cadence");
+    let offset = stagger_ms(arena.seed, EYE, pass_ms);
+    let mut tape: Vec<u8> = Vec::new();
+
+    // Pulse at 250 ms until `EYE`'s first pass has plotted `MARK`.
+    let mut wall = 0_i64;
+    let row = loop {
+        wall += 250;
+        assert!(
+            wall <= offset + 250,
+            "no acquiring frame by {wall} although EYE's pass is at {offset}"
+        );
+        if let Some(row) =
+            pulse(&mut arena, wall, &mut tape).and_then(|frame| frame.contacts.first().copied())
+        {
+            break row;
+        }
+    };
+    assert_eq!(
+        row.age_ms,
+        arena.now_ms - offset,
+        "plotted at EYE's own pass"
+    );
+    u2_break_the_line(&mut arena);
+
+    let acquired = wall;
+    let mut read = row.age_ms;
+    // The one frame sent for the stale clause alone: (what was read, what is sent).
+    let mut clause_only: Vec<(i64, i64)> = Vec::new();
+    while wall < acquired + 4_000 {
+        wall += 250;
+        let frame = pulse(&mut arena, wall, &mut tape);
+        let age = u2_held_age(&arena);
+        assert_eq!(
+            age,
+            arena.now_ms - offset,
+            "the plot was refreshed through the wall at {}",
+            arena.now_ms
+        );
+        let moved = age_key(age, pass_ms) != age_key(read, pass_ms);
+        match frame {
+            Some(frame) => {
+                assert!(
+                    moved,
+                    "a frame at {} ({age} ms) printed what the pilot already read ({read} ms)",
+                    arena.now_ms
+                );
+                let row = frame
+                    .contacts
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| panic!("the frame at {} lost its row", arena.now_ms));
+                assert_eq!(row.age_ms, age, "the keyframe carries the true age");
+                if age / 1_000 == read / 1_000 {
+                    clause_only.push((read, age));
+                }
+                read = age;
+            }
+            None => assert!(
+                !moved,
+                "no frame at {} although the pilot's {read} ms now prints as {age} ms",
+                arena.now_ms
+            ),
+        }
+    }
+    // Exactly one frame moved for the clause and not for a second, and it was
+    // the crossing of the arena's own `pass_ms`.
+    let [(before, after)] = clause_only.as_slice() else {
+        panic!("one frame for the stale clause alone, not {clause_only:?}");
+    };
+    assert!(
+        *before <= pass_ms && *after > pass_ms,
+        "the clause frame straddles {pass_ms}: {before} -> {after}"
+    );
+    assert_eq!(
+        age_key(*before, 1_000),
+        age_key(*after, 1_000),
+        "at the default cadence these two ages read alike, so only the arena's own pass_ms sends this frame"
+    );
+    assert_eq!(cockpit::stale_clause(*before, pass_ms), "");
+    assert_eq!(
+        cockpit::stale_clause(*after, pass_ms),
+        ", plotted 1 s ago",
+        "the frame carries the clause the earlier one could not"
     );
 }

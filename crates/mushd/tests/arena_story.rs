@@ -966,7 +966,21 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         strip_ansi(&ada.seen).contains(&format!("New contact {contact}")),
         "the acquisition notice reached the pilot:\n{held}"
     );
-    let classified = poll_whole(&mut ada, "CONTACTS", "blue").await;
+    // The *row* has to be re-read until it is renamed, not merely until the
+    // answer says `blue`: the `identified` notice arrives on its own, and an
+    // answer window that caught it may still carry the `X<n>` row rendered
+    // before it (`observer_rule.rs`' Q.1 wait, for the same race).
+    let mut classified = String::new();
+    wait_until(
+        STEP_TIMEOUT,
+        "the `CONTACTS` row to read the classified name",
+        async || {
+            classified = ask_whole(&mut ada, "CONTACTS").await;
+            classified.contains("blue")
+                && designator_of(&classified).is_some_and(|row| row != contact)
+        },
+    )
+    .await;
     names_nothing(&classified, red, blue, "the classified `CONTACTS`");
     assert!(
         strip_ansi(&ada.seen).contains(&format!("Contact {contact} identified")),

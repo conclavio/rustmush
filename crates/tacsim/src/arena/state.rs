@@ -3063,6 +3063,32 @@ pub struct Arena {
     /// put it, which costs one index query of a bubble nobody is filling and is the
     /// honest price of not recomputing a maximum per pass.
     pub jam_radius_cm: u32,
+    /// **The jamming each unit is standing in, folded at most once between two
+    /// clears** (16b cut U.2, 16c `T-29`; doc 16 §9 item 4): unit to its raw
+    /// [`crate::arena::perception::Jamming`] off
+    /// [`crate::arena::Arena::jamming_at`] — `None` for no live pod in reach —
+    /// with no filter applied (each caller recovers its own). Read and filled
+    /// only through [`crate::arena::Arena::jam_fold_of`].
+    ///
+    /// **It is exact, not approximate.** The fold reads four things: the unit's
+    /// pose, and for every pod in the bubble its pose, its `power` and its
+    /// `limits.wreck` (a pod's `jammer` row is fixed at check-out). The memo is
+    /// cleared at **both** `SpatialIndex::rebuild` sites in `Arena::step`'s
+    /// substep — the poses are fixed from each rebuild to the next — and after
+    /// **every `StartupComplete` and every `Impact`** the due loop applies,
+    /// which are the only two things inside a substep that move a pod's power or
+    /// wreck (a startup brings a pod online; an impact can wreck its hull, which
+    /// turns the power off). Between two clears nothing the fold reads can move,
+    /// so a memoised answer is the answer `jamming_at` would give.
+    ///
+    /// A `BTreeMap`, two integers a row, and empty for every match with no pod:
+    /// [`crate::arena::Arena::jam_fold_of`] returns before touching it when
+    /// `jam_radius_cm` is zero. **Not folded into
+    /// [`crate::arena::hash::state_hash`]**: it is a cache of state the hash
+    /// already folds (every pose, power byte and wreck byte it is a function
+    /// of), so folding it would add no information and would make the hash a
+    /// function of which folds had been asked for by the time it was taken.
+    pub jam_fold: BTreeMap<ObjId, Option<crate::arena::perception::Jamming>>,
     /// **The squads this match's reflex units are commanded in** (16b cut N.2;
     /// doc 16 §6 "Deliberation": *per squad or commander rather than per unit*),
     /// derived at check-out by [`crate::deliberation::squads_of`] — the same
@@ -3512,6 +3538,8 @@ impl Arena {
             sensors_cfg: sensors_cfg.clone(),
             alert_range_cm,
             jam_radius_cm,
+            // 16b cut U.2: filled by the first fold of the first substep.
+            jam_fold: BTreeMap::new(),
             // **16b cut N.2**: the squads are *derived* from the check-out, by the
             // same `squads_of` the match record files them with — a side's reflex
             // units in pod pairs, lowest id commanding. Derived rather than handed

@@ -680,78 +680,16 @@ pub fn frame_contacts_held(frame: &Frame, ranges: &BTreeMap<ContactId, u64>) -> 
         .collect()
 }
 
-/// **How coarsely a contact's range is reported**, metres (16b cut F.3).
-///
-/// Doc 16 §3.6 gives `CONTACTS` a *range band* and no range, and cut S.2 read
-/// that strictly. In play it left a pilot with no distance information whatever:
-/// the band could only ever read `close` (see [`contact_band`]), so from
-/// acquisition to kill every row said the same word whether the other tank was
-/// 600 m away or 40 m away.
-///
-/// A passive sight giving a coarse range is a **playtest-usability decision**,
-/// recorded here for the owner to revisit: it departs from doc 16 §3.6 in the
-/// direction of a pilot being able to act. The rounding is the whole of the
-/// coarseness and it lives in this one constant, so tightening or loosening it is
-/// one number.
-pub const CONTACT_RANGE_STEP_M: u64 = 50;
-
-/// **The finest a *locked* contact's range is ever reported**, metres (16b cut
-/// Q.1; 16b cut D.4 made it the floor rather than the step).
-///
-/// A lock is a fire-control solution: the platform is tracking one return
-/// continuously and resolving a hit chance against it every pulse, so the range
-/// it can quote about that one contact is better than the range it quotes about
-/// the rest of the scope. It is a second step past doc 16 §3.6's band-only
-/// wording, recorded here beside the first for the owner to revisit, and it is
-/// what makes `RANGE` worth typing after `LOCK`.
-///
-/// [`lock_range_step_m`] is what a lock's range is actually rounded to: this is
-/// the floor it clamps up from, which is what a plot taken this instant is worth.
-pub const LOCK_RANGE_STEP_M: u64 = 10;
-
-/// **The fastest thing the catalog fields**, metres a second, rounded up (16b cut
-/// D.4, `T-20`).
-///
-/// 17 m/s is about 60 kph, which is over the stock tank's 54 and over every other
-/// hull the game ships. It is the drift term of [`lock_range_step_m`]: the
-/// furthest a plot's subject could have got since the plot was taken.
-pub const PLOT_DRIFT_M_PER_S: i64 = 17;
-
-/// **How finely a locked contact's range may honestly be reported**, metres,
-/// given a plot `age_ms` old (16b cut D.4, `T-20`; 16c §5 Q28: *derived from the
-/// plot's age, floor 10 m*).
-///
-/// `LOCK_RANGE_STEP_M` was a fixed 10 m, which is finer than a plot one pass old
-/// can carry: a target making 60 kph has moved 17 m in the second since the
-/// sighting, so a 10 m figure quoted about it is three significant digits of
-/// which the last one is invented.
-///
-/// The step is the drift, `age_ms × `[`PLOT_DRIFT_M_PER_S`]` / 1000`, rounded
-/// **up** to a multiple of ten and clamped into
-/// `LOCK_RANGE_STEP_M..=CONTACT_RANGE_STEP_M`: a plot up to 647 ms old keeps
-/// 10 m, a one-second plot gets 20 m, two seconds gets 40 m, and about two and a
-/// half seconds and older reads at the ordinary scope step, because a lock on a
-/// plot that stale is not a better fire-control solution than any other row.
-///
-/// **It publishes nothing new.** The one number it is a function of — the
-/// `age_ms` on the contact's own row — is already on the frame the pilot holds,
-/// and is the same `1 s` `CONTACTS` prints. It is deliberately **not** priced off
-/// `[tacsim.sensors].pass_ms`, which a pilot has never been sent.
-///
-/// The **metres** are a different matter and a client must not compute them: a
-/// contact row publishes `range_m` already rounded to [`CONTACT_RANGE_STEP_M`],
-/// so re-rounding that to this step gives the coarse figure back (450 m where the
-/// lock reads 440). The lock's own metres are published once, as the frame's
-/// `lock_range_m`, and `RANGE` prints the same call of the same function — which
-/// is the whole of `T-20`'s *one function* rule.
-#[must_use]
-pub fn lock_range_step_m(age_ms: i64) -> u64 {
-    let drift_m = age_ms.max(0).saturating_mul(PLOT_DRIFT_M_PER_S) / 1_000;
-    let step = drift_m.saturating_add(9) / 10 * 10;
-    u64::try_from(step)
-        .unwrap_or(CONTACT_RANGE_STEP_M)
-        .clamp(LOCK_RANGE_STEP_M, CONTACT_RANGE_STEP_M)
-}
+/// **The range steps and the lock's own step** (16b cut F.3, Q.1, D.4), which
+/// live in the arena library since **16b cut U.2** (16c `T-30`): the arena's
+/// `Frame::same_as` has to know when a lock's published metres would move, and
+/// the library may not reach up into this module. They are re-exported here so
+/// every caller — `RANGE`, `lock_range_m`, the contact rows — still names them
+/// where it always did, and `T-20`'s *one function* rule holds: there is one
+/// [`lock_range_step_m`], and the frame comparison calls the same one.
+pub use crate::arena::perception::{
+    CONTACT_RANGE_STEP_M, LOCK_RANGE_STEP_M, PLOT_DRIFT_M_PER_S, lock_range_step_m,
+};
 
 /// A contact's range in metres, rounded to the nearest `step` (16b cut F.3;
 /// 16b cut Q.1 made the step an argument). Half a step rounds up.

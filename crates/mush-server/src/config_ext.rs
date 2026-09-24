@@ -373,6 +373,17 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             max_path_queries_per_pulse: cfg.harness.max_path_queries_per_pulse,
             max_share_ops_per_pulse: cfg.harness.max_share_ops_per_pulse,
             max_ledger_bytes: cfg.harness.max_ledger_bytes,
+            // 16b cut U.2: the five bounds, mapped straight across.
+            max_cell_probes_per_pulse: cfg.harness.max_cell_probes_per_pulse,
+            max_jam_checks_per_pulse: cfg.harness.max_jam_checks_per_pulse,
+            max_rss_growth_kib: cfg.harness.max_rss_growth_kib,
+            max_frame_bytes: cfg.harness.max_frame_bytes,
+            // Default 512, sized against the fan-out lane's measured acquisition
+            // burst (24 panels + 11 contact-notice lines per pilot = 288) so a
+            // 24-pilot burst has headroom; whoever moves it next must say why.
+            // The burst is the opening's, teammates only: an engaged pulse is
+            // unmeasured.
+            max_output_events_per_pulse: cfg.harness.max_output_events_per_pulse,
         },
     };
     // **16b cut Q.7**: the arena's own values, checked here and nowhere else.
@@ -991,7 +1002,12 @@ mod tests {
              max_traces_per_pulse = 100\n\
              max_path_queries_per_pulse = 8\n\
              max_share_ops_per_pulse = 12\n\
-             max_ledger_bytes = 2048\n",
+             max_ledger_bytes = 2048\n\
+             max_cell_probes_per_pulse = 900\n\
+             max_jam_checks_per_pulse = 70\n\
+             max_rss_growth_kib = 4096\n\
+             max_frame_bytes = 2000\n\
+             max_output_events_per_pulse = 30\n",
         );
         let typed = tacsim_config(&cfg).expect("the blocks map");
 
@@ -1084,6 +1100,12 @@ mod tests {
                 max_path_queries_per_pulse: 8,
                 max_share_ops_per_pulse: 12,
                 max_ledger_bytes: 2_048,
+                // 16b cut U.2: the five bounds, mapped like the rest.
+                max_cell_probes_per_pulse: 900,
+                max_jam_checks_per_pulse: 70,
+                max_rss_growth_kib: 4_096,
+                max_frame_bytes: 2_000,
+                max_output_events_per_pulse: 30,
             }
         );
 
@@ -1322,6 +1344,37 @@ mod tests {
                 "units = 10\nfighting = 11\n",
                 "[tacsim.harness].fighting",
                 "11",
+            ),
+            // 16b cut U.2: each of the five bounds is at least one.
+            (
+                "[tacsim.harness]",
+                "max_cell_probes_per_pulse = 0\n",
+                "[tacsim.harness].max_cell_probes_per_pulse",
+                "0",
+            ),
+            (
+                "[tacsim.harness]",
+                "max_jam_checks_per_pulse = 0\n",
+                "[tacsim.harness].max_jam_checks_per_pulse",
+                "0",
+            ),
+            (
+                "[tacsim.harness]",
+                "max_rss_growth_kib = 0\n",
+                "[tacsim.harness].max_rss_growth_kib",
+                "0",
+            ),
+            (
+                "[tacsim.harness]",
+                "max_frame_bytes = 0\n",
+                "[tacsim.harness].max_frame_bytes",
+                "0",
+            ),
+            (
+                "[tacsim.harness]",
+                "max_output_events_per_pulse = 0\n",
+                "[tacsim.harness].max_output_events_per_pulse",
+                "0",
             ),
             // 16b cut D.3 (`B-33`): off, or a lull and not a hiccup.
             (

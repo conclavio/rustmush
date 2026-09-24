@@ -1652,6 +1652,9 @@ fn thermal_pass(
     let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
     let units = arena.units.clone();
     arena.index.rebuild(&arena.definition.terrain, &units);
+    // 16b cut U.2: and the jamming memo with it, exactly as phase 3(b) empties
+    // it beside its own rebuild — a pass driven directly reads through the memo.
+    arena.jam_fold.clear();
     arena.sensor_pass(observer, pass_seq, t_ms, &mut counters, &mut journal);
     counters
 }
@@ -5756,6 +5759,12 @@ struct Q6Replay {
     /// How many pulses it took, which is the guard that the three runs really
     /// were three cadences.
     pulses: u32,
+    /// **What the run's perception cost, summed over every pulse** (16b cut
+    /// U.2, 16c `T-29`). Its `jam_checks` and `traces` are compared across
+    /// cadences: the jamming memo is cleared at substep boundaries and at a
+    /// pod's power and wreck, all of them arena timestamps, so how often a
+    /// bubble is scanned may not depend on how often the arena was woken.
+    perception: tacsim::arena::perception::PerceptionCounters,
 }
 
 impl Q6Replay {
@@ -5788,6 +5797,8 @@ fn q6_replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Relief
     let mut lines: std::collections::BTreeMap<mush_core::ObjId, Vec<String>> =
         std::collections::BTreeMap::new();
     let mut pulses = 0_u32;
+    // 16b cut U.2: the run's perception cost, every pulse's summed.
+    let mut perception = tacsim::arena::perception::PerceptionCounters::default();
     let mut wall = 0_i64;
     let mut next = 0_usize;
     let mut ended = false;
@@ -5814,6 +5825,7 @@ fn q6_replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Relief
                 bytes.extend_from_slice(&chunk.bytes);
             }
             q6_absorb_notices(&out, &mut notices, &mut lines);
+            perception.absorb(&out.perception);
             hashes.extend(arena.substep_hashes.iter().copied());
             pulses = pulses.saturating_add(1);
             ended = out.ended.is_some();
@@ -5827,6 +5839,7 @@ fn q6_replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Relief
             bytes.extend_from_slice(&chunk.bytes);
         }
         q6_absorb_notices(&out, &mut notices, &mut lines);
+        perception.absorb(&out.perception);
         hashes.extend(arena.substep_hashes.iter().copied());
         pulses = pulses.saturating_add(1);
         if out.ended.is_some() || arena.now_ms >= until_ms {
@@ -5873,6 +5886,7 @@ fn q6_replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Relief
         notices,
         lines,
         pulses,
+        perception,
     }
 }
 
@@ -5901,7 +5915,8 @@ fn q6_absorb_notices(
 
 /// **The three cadences, compared** (16b §11): one scripted log at 5,000, 1,000
 /// and 500 ms gives one event list, one per-substep hash sequence, one per-pilot
-/// notice list and one final state — with the sibling tests' differing-pulses
+/// notice list, one final state and (16b cut U.2) one total of jam checks and
+/// traces — with the sibling tests' differing-pulses
 /// guard, which is that every replay ran to exactly the same arena time **on a
 /// different number of pulses**.
 ///
@@ -5946,6 +5961,15 @@ fn q6_three_cadences(
         assert_eq!(
             run.finals, first.finals,
             "{label}: a final pose, limit or speed differs at {cadence} ms"
+        );
+        // 16b cut U.2 (16c `T-29`): and what the perception cost. The jamming
+        // memo is cleared at substep boundaries and at a pod's power and wreck,
+        // all of them arena timestamps, so the scans it saves are the same at
+        // every cadence — as are the traces the passes and the mesh walked.
+        assert_eq!(
+            (run.perception.jam_checks, run.perception.traces),
+            (first.perception.jam_checks, first.perception.traces),
+            "{label}: the run's jam checks or traces differ at {cadence} ms"
         );
         assert_ne!(
             run.pulses, first.pulses,
@@ -6327,6 +6351,13 @@ fn q6_one_scripted_drive_through_a_bubble_at_three_cadences_is_one_event_list() 
 
     let found = first.lines("detected", &["\"viewer\":4", "\"target\":9"]);
     let lost = first.lines("lost", &["\"viewer\":4", "\"target\":9"]);
+    // 16b cut U.2 (16c `T-29`): the pod was scanned for, so the three cadences'
+    // equal jam-check totals are a comparison of something.
+    assert!(
+        first.perception.jam_checks > 0,
+        "the drive through the bubble scanned for no pod: {:?}",
+        first.perception
+    );
     assert_eq!(
         lost.len(),
         1,
@@ -6413,6 +6444,9 @@ fn q6_share(
     let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
     let units = arena.units.clone();
     arena.index.rebuild(&arena.definition.terrain, &units);
+    // 16b cut U.2: and the jamming memo with it, exactly as phase 3(b) empties
+    // it beside its own rebuild — a pass driven directly reads through the memo.
+    arena.jam_fold.clear();
     arena.share_pass(sharer, t_ms, &mut counters, &mut journal);
     counters
 }
@@ -6736,6 +6770,13 @@ fn q6_one_scripted_jammed_share_at_three_cadences_is_one_event_list() {
     );
     let lost = first.lines("lost", &["\"viewer\":5", "\"target\":9"]);
     let found = first.lines("detected", &["\"viewer\":5", "\"target\":9"]);
+    // 16b cut U.2 (16c `T-29`): the mesh's two ends were folded through the
+    // memo, so the equal totals at three cadences compare a real count.
+    assert!(
+        first.perception.jam_checks > 0 && first.perception.share_ops > 0,
+        "the jammed share scanned for no pod: {:?}",
+        first.perception
+    );
     assert_eq!(
         lost.len(),
         1,
@@ -7071,6 +7112,9 @@ fn receiver_pass(
     let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
     let units = arena.units.clone();
     arena.index.rebuild(&arena.definition.terrain, &units);
+    // 16b cut U.2: and the jamming memo with it, exactly as phase 3(b) empties
+    // it beside its own rebuild — a pass driven directly reads through the memo.
+    arena.jam_fold.clear();
     arena.sensor_pass(observer, pass_seq, t_ms, &mut counters, &mut journal);
     (counters, journal)
 }

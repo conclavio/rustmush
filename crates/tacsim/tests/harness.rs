@@ -45,6 +45,16 @@
 //! harness's own one table (`harness_move_cost`): 16c `B-58`'s per-locomotion
 //! cost layer is not built.
 //!
+//! **The bounds since 16b cut U.2** (16c `T-36`, `T-29`, `T-30`). The CI lane
+//! asserts cell probes and jam checks per wake beside the traces; resident memory
+//! is read on every platform through `memory-stats` (Linux's `VmRSS` printed
+//! beside it); and two more lanes run on the same ignore string:
+//! `tacsim_harness_arena_long_run`, the CI cohort for `TACSIM_LONG_RUN_S` arena
+//! seconds (default 600) with memory read every arena minute and its growth
+//! bounded, and `tacsim_harness_fan_out`, 24 staff-seated pilots in one match on
+//! the shipped proving ground with the real egress applied one message per apply,
+//! its keyframe bytes and output events per pulse bounded.
+//!
 //! What it must not do (16b §9's `H` row): touch `mush-sim` or `mush-atlas` — a
 //! harness that needs a new API in the thing it measures is measuring its own
 //! change — assert by default, or run on push.
@@ -99,6 +109,23 @@ struct Knobs {
     /// **16b cut S.1** — contact-share operations one pulse may make.
     max_share_ops_per_pulse: u32,
     max_ledger_bytes: u64,
+    /// **16b cut U.2** (16c `T-36`): cells one wake's traces may read.
+    max_cell_probes_per_pulse: u32,
+    /// **16b cut U.2** (16c `T-29`): index candidates one wake's jammer scans
+    /// may look at.
+    max_jam_checks_per_pulse: u32,
+    /// **16b cut U.2** (16c `T-36`): resident-memory growth the long run may
+    /// show, KiB.
+    max_rss_growth_kib: u32,
+    /// **16b cut U.2** (16c `T-36`): the largest `arena.cockpit` keyframe the
+    /// fan-out lane may see, bytes.
+    max_frame_bytes: u32,
+    /// **16b cut U.2** (16c `T-36`): output events one arena pulse may produce
+    /// through the fan-out lane.
+    max_output_events_per_pulse: u32,
+    /// **`TACSIM_LONG_RUN_S`** (16b cut U.2): the long-run lane's measured
+    /// window, arena seconds. Default [`DEFAULT_LONG_RUN_S`].
+    long_run_s: u32,
 }
 
 fn env_u64(name: &str, fallback: u64) -> u64 {
@@ -132,6 +159,12 @@ impl Knobs {
             max_path_queries_per_pulse: cfg.max_path_queries_per_pulse,
             max_share_ops_per_pulse: cfg.max_share_ops_per_pulse,
             max_ledger_bytes: cfg.max_ledger_bytes,
+            max_cell_probes_per_pulse: cfg.max_cell_probes_per_pulse,
+            max_jam_checks_per_pulse: cfg.max_jam_checks_per_pulse,
+            max_rss_growth_kib: cfg.max_rss_growth_kib,
+            max_frame_bytes: cfg.max_frame_bytes,
+            max_output_events_per_pulse: cfg.max_output_events_per_pulse,
+            long_run_s: env_u32("TACSIM_LONG_RUN_S", DEFAULT_LONG_RUN_S),
         }
     }
 }
@@ -142,6 +175,13 @@ const DEFAULT_PULSES: u32 = 60;
 /// The arena lanes' measured window, arena seconds (16b cut U.1): the thirty
 /// the sixty 500 ms pulses they used to step covered.
 const DEFAULT_ARENA_S: u32 = 30;
+
+/// **The long-run lane's measured window**, arena seconds (16b cut U.2, 16c
+/// `T-36`): ten minutes, sampled every [`LONG_RUN_SAMPLE_S`].
+const DEFAULT_LONG_RUN_S: u32 = 600;
+
+/// How often the long run reads resident memory, arena seconds.
+const LONG_RUN_SAMPLE_S: i64 = 60;
 
 /// The fixed seed, so a run with no environment at all is reproducible.
 const DEFAULT_SEED: u64 = 2_350;
@@ -769,14 +809,49 @@ fn report_path(given: &str) -> std::path::PathBuf {
         .unwrap_or(path)
 }
 
-/// Resident memory, kibibytes, where the platform exposes it. `/proc/self/status`
-/// on Linux; **absent** everywhere else, never faked (16b §9's `H` row).
+/// **Resident memory, kibibytes, on every platform** (16b cut U.2, 16c `T-36`):
+/// the process's physical memory as the `memory-stats` crate reads it from the
+/// OS — `GetProcessMemoryInfo`'s working set on Windows, the resident set on
+/// Linux and macOS — through a safe API, so the harness stays free of `unsafe`.
+///
+/// Until 16b cut U.2 this read `/proc/self/status` and answered nothing on any
+/// other host, so the Windows box the baselines are taken on printed `absent`
+/// and memory was compared nowhere. It is still **absent** when the crate
+/// answers `None`, never faked (16b §9's `H` row); [`vmrss_kib`] keeps the
+/// Linux figure beside it as a second reading, never in its place.
 fn resident_kib() -> Option<u64> {
+    memory_stats::memory_stats()
+        .map(|stats| u64::try_from(stats.physical_mem).unwrap_or(u64::MAX) / 1_024)
+}
+
+/// **Linux's own `VmRSS`**, kibibytes, off `/proc/self/status` — the reading
+/// every harness line printed before 16b cut U.2, kept as a second figure beside
+/// [`resident_kib`] (`vmrss_*_kib=`). `None` on every other platform.
+fn vmrss_kib() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     status
         .lines()
         .find_map(|l| l.strip_prefix("VmRSS:"))
         .and_then(|rest| rest.split_whitespace().next()?.parse::<u64>().ok())
+}
+
+/// One memory reading as a report word: the number, or `absent`.
+fn kib_word(kib: Option<u64>) -> String {
+    kib.map_or("absent".to_string(), |k| k.to_string())
+}
+
+/// ` vmrss_start_kib=… vmrss_end_kib=…` where Linux answered either reading,
+/// and nothing at all where it answered neither — the second figure is printed
+/// beside the first only on a host that has one.
+fn vmrss_words(start: Option<u64>, end: Option<u64>) -> String {
+    if start.is_none() && end.is_none() {
+        return String::new();
+    }
+    format!(
+        " vmrss_start_kib={} vmrss_end_kib={}",
+        kib_word(start),
+        kib_word(end)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -835,6 +910,7 @@ fn tacsim_harness_reports_the_ground_pulse_baseline() {
         "the harness's cell size is no longer `[tacsim].ground_cell_cm`"
     );
     let rss_start_kib = resident_kib();
+    let vmrss_start_kib = vmrss_kib();
 
     // ---- the relief, the world and the window ----
     let Window {
@@ -986,6 +1062,7 @@ fn tacsim_harness_reports_the_ground_pulse_baseline() {
     let (c50, c95, c99, cmax) = control.stats();
 
     let rss_end_kib = resident_kib();
+    let vmrss_end_kib = vmrss_kib();
     let (p50, p95, p99, max) = tempo.stats();
     #[allow(clippy::cast_precision_loss)]
     let events_mean = if events_per_pulse.is_empty() {
@@ -1052,10 +1129,13 @@ fn tacsim_harness_reports_the_ground_pulse_baseline() {
         control.ms.len()
     );
     println!("harness_events: per_pulse_mean={events_mean:.2} per_pulse_max={events_max:.0}");
+    // 16b cut U.2 (16c `T-36`): resident memory on every platform, with
+    // Linux's own `VmRSS` beside it.
     println!(
-        "harness_memory: vmrss_start_kib={} vmrss_end_kib={}",
-        rss_start_kib.map_or("absent".to_string(), |k| k.to_string()),
-        rss_end_kib.map_or("absent".to_string(), |k| k.to_string())
+        "harness_memory: rss_start_kib={} rss_end_kib={}{}",
+        kib_word(rss_start_kib),
+        kib_word(rss_end_kib),
+        vmrss_words(vmrss_start_kib, vmrss_end_kib)
     );
     println!(
         "harness_counters: traces_per_pulse={traces_per_pulse} cell_probes_per_pulse={cell_probes_per_pulse} path_queries_per_pulse={path_queries_per_pulse} share_ops_per_pulse={share_ops_per_pulse} ledger_bytes={ledger_bytes} (no cut produces these yet)"
@@ -1115,7 +1195,12 @@ fn tacsim_harness_reports_the_ground_pulse_baseline() {
             "max_ms": num(cmax),
         },
         "events": { "per_pulse_mean": num(events_mean), "per_pulse_max": events_max },
-        "memory": { "vmrss_start_kib": rss_start_kib, "vmrss_end_kib": rss_end_kib },
+        "memory": {
+            "rss_start_kib": rss_start_kib,
+            "rss_end_kib": rss_end_kib,
+            "vmrss_start_kib": vmrss_start_kib,
+            "vmrss_end_kib": vmrss_end_kib,
+        },
         "counters": {
             "traces_per_pulse": traces_per_pulse,
             "cell_probes_per_pulse": cell_probes_per_pulse,
@@ -1868,43 +1953,115 @@ fn tacsim_harness_arena_authored_reach() {
     measure_arena(&Knobs::from_env(), Reach::Authored);
 }
 
-/// **The arena measurement** (16b cut A.2 through 16b cut U.1).
+/// **The long run** (16b cut U.2, 16c `T-36`): [`measure_long_run`] — the CI
+/// cohort's field for `TACSIM_LONG_RUN_S` arena seconds (ten minutes by
+/// default), resident memory read after the warm-up and at every minute of arena
+/// time, the streamed ledger's size and the due heap's depth at the end, JSON at
+/// `<stem>-arena-long.<ext>`. Under `TACSIM_ASSERT` it asserts the memory growth
+/// and the ledger bound, and never the p99: the lens is the 30-second lane's.
+#[test]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+fn tacsim_harness_arena_long_run() {
+    measure_long_run(&Knobs::from_env());
+}
+
+/// **The seeded stand-in for the timer's overshoot** (16b cut U.1), one draw a
+/// wake: `stagger_ms(seed, wake, TACSIM_WAKE_JITTER_MS + 1)` added to the
+/// step's own `next_due_ms`. A struct since 16b cut U.2, so the two lanes that
+/// share [`run_wakes`] carry it between the warm-up and the measured window.
+struct WakeClock {
+    seed: u64,
+    cadence: i64,
+    index: u32,
+}
+
+impl WakeClock {
+    fn new(knobs: &Knobs) -> WakeClock {
+        WakeClock {
+            seed: knobs.seed,
+            cadence: knobs.jitter_ms.max(0).saturating_add(1),
+            index: 0,
+        }
+    }
+
+    /// The wall the next wake happens at, after a step that answered
+    /// `next_due_ms`.
+    fn next(&mut self, next_due_ms: i64) -> i64 {
+        self.index = self.index.wrapping_add(1);
+        next_due_ms.saturating_add(tacsim::arena::rng::stagger_ms(
+            self.seed,
+            ObjId(self.index),
+            self.cadence,
+        ))
+    }
+}
+
+/// **An arena fielded, opened and warmed up** — everything the measurement lanes
+/// share before their measured window (16b cut U.2 factored it out of
+/// [`measure_arena`], so the 30-second lane and the long run have one body and
+/// differ only in their window and their sampling).
+struct Field {
+    cohort: &'static str,
+    arena: tacsim::arena::state::Arena,
+    arena_cfg: tacsim::config::ArenaConfig,
+    sensors_cfg: tacsim::config::SensorsConfig,
+    class_counts: BTreeMap<&'static str, u64>,
+    terraces: Vec<(u16, u16, u16, i32)>,
+    relief_edges_45: u64,
+    relief_edges_70: u64,
+    waypoint_nodes: usize,
+    passable: usize,
+    placed: u32,
+    seated: u32,
+    /// Units of each [`COHORT_ENTRIES`] row, in that order.
+    fielded: [u32; 6],
+    /// The cohort's substep, the lattice `next_due_ms` answers on.
+    substep: u32,
+    slope_45: usize,
+    slope_70: usize,
+    /// Every unit's magazines as checked out.
+    ammo_at_start: BTreeMap<ObjId, u64>,
+    /// The streamed ledger, counted as it goes — the warm-up's included.
+    counts: Counts,
+    clock: WakeClock,
+    /// The wall the next wake is at.
+    wall: i64,
+    /// The slope refusals over the whole run, the warm-up included.
+    slope_refusals: u64,
+    generate_ms: f64,
+    boot_ms: f64,
+    apply_ms: f64,
+    open_ms: f64,
+    convert_ms: f64,
+    arena_open_ms: f64,
+    warm_ms: f64,
+    warm_pulses: u32,
+    killed_warming: usize,
+    /// Arena time at the end of the warm-up: the measured window starts here.
+    warm_end: i64,
+}
+
+/// **The relief, the field and the warm-up** (16b cut A.2 through 16b cut U.1;
+/// factored out by 16b cut U.2).
 ///
 /// The same generated relief as the ground-pulse baseline, converted into an
 /// `ArenaDefinition` through [`harness_move_cost`], with `TACSIM_UNITS` units of
 /// the fielded catalog ([`field`]) on it and `TACSIM_FIGHTING` of them seated,
 /// every one on the reflex controller, the tempo pinned `Engaged`.
 ///
-/// **The loop is the task's** (16b cut U.1; 16c `T-22`, Q25). The harness
-/// stepped at a fixed 500 ms period the production task never runs; it now
-/// wakes the arena where `arena_task` does — `wall = out.next_due_ms` after
-/// every step, the first at `wall = 0` — plus a seeded stand-in for the OS
-/// timer's overshoot, `stagger_ms(seed, wake, TACSIM_WAKE_JITTER_MS + 1)`
-/// (default nought), so the record can say what the overshoot's remainder
-/// substeps cost. `next_due_ms` is on the substep lattice, so a wake is at most
-/// one substep and the per-wake p99 is a smaller unit than the 500 ms pulse the
-/// 12 ms lens was calibrated on: every measured wake is also folded into
-/// [`WINDOW_MS`] windows of arena time ([`windows`]) and the lens binds both.
-///
 /// The warm-up is the controller's own: every unit starts cold and the
 /// machine's first state brings it online, so the warm-up is over when arena
 /// time has passed `startup_ms + decide_ms` and a period, and it is asserted —
 /// a controller that started nothing would otherwise be measured driving an
-/// arena of cold tanks. The measured window is then `TACSIM_ARENA_S` arena
-/// seconds. No scripted order and no scripted fire: what steers, closes, locks
-/// and fires is the reflex controller alone.
+/// arena of cold tanks.
 ///
 /// The arena frame is the **window's own**: cell `(0, 0)` is at the origin,
 /// because `ArenaTerrain` puts the window's corner there.
 #[allow(clippy::too_many_lines)]
-fn measure_arena(knobs: &Knobs, reach: Reach) {
+fn open_field(knobs: &Knobs, reach: Reach) -> Field {
     use tacsim::arena::clock::Tempo as ArenaTempo;
-    use tacsim::arena::perception::PerceptionCounters;
-    use tacsim::arena::state::{Arena, CustodyOut, MatchEnd, Power};
+    use tacsim::arena::state::{Arena, CustodyOut, Power};
     use tacsim::config::{ArenaConfig, MatchConfig};
-
-    let cohort = reach.word();
-    let rss_start_kib = resident_kib();
 
     // ---- the relief, as an arena definition ----
     let Window {
@@ -1979,7 +2136,6 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
     // which is the length `Arena::step` cuts and `next_due_ms`'s lattice.
     let substep =
         tacsim::arena::clock::substep_ms(&arena_cfg.tempo, arena.cell_cm(), arena.max_speed_cms());
-    let substep_ms = i64::from(substep);
     // The locomotion the cohort carried onto the field (16c `T-35`).
     let slope_45 = arena
         .units
@@ -2005,17 +2161,7 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         .collect();
 
     let mut counts = Counts::default();
-    // The seeded stand-in for the timer's overshoot, one draw a wake.
-    let jitter_cadence = knobs.jitter_ms.max(0).saturating_add(1);
-    let mut wake_index = 0_u32;
-    let mut next_wall = |out_next_due_ms: i64| -> i64 {
-        wake_index = wake_index.wrapping_add(1);
-        out_next_due_ms.saturating_add(tacsim::arena::rng::stagger_ms(
-            knobs.seed,
-            ObjId(wake_index),
-            jitter_cadence,
-        ))
-    };
+    let mut clock = WakeClock::new(knobs);
     // The slope refusals over the whole run, the warm-up included: the
     // controller plans its first routes there.
     let mut slope_refusals = 0_u64;
@@ -2026,7 +2172,7 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
     for chunk in &out.ledger_chunks {
         counts.absorb(&chunk.bytes);
     }
-    let mut wall = next_wall(out.next_due_ms);
+    let mut wall = clock.next(out.next_due_ms);
     let mut warm_pulses = 1_u32;
     let warm_until = i64::from(match_cfg.startup_ms)
         .saturating_add(i64::from(arena_cfg.reflex.decide_ms))
@@ -2038,7 +2184,7 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             counts.absorb(&chunk.bytes);
         }
         arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
-        wall = next_wall(out.next_due_ms);
+        wall = clock.next(out.next_due_ms);
         warm_pulses += 1;
     }
     let warm_ms = warm_at.elapsed().as_secs_f64() * 1_000.0;
@@ -2075,32 +2221,105 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             wrecked.len()
         );
     }
-
-    // ---- the measured wakes ----
     let warm_end = arena.now_ms;
-    let measured_until = warm_end.saturating_add(i64::from(knobs.arena_s) * 1_000);
-    let mut wakes: Vec<Wake> = Vec::new();
-    let mut substeps: Vec<u32> = Vec::new();
-    let mut short_substeps = 0_u64;
-    let mut frames: Vec<f64> = Vec::new();
-    let mut ended: Option<MatchEnd> = None;
-    let mut lagged_pulses = 0_u32;
-    // 16b cut S.1: the perception cost, as a running total and as the worst
-    // wake. Doc 16 §2 W4 and W6 bound *per pulse*, and the pulse production runs
-    // is the wake, so the per-wake peak is what the per-pulse bounds are
-    // asserted against; the windows below carry the per-window figure.
-    let mut perception_total = PerceptionCounters::default();
-    let mut peak = PerceptionCounters::default();
-    // 16b cut N.1: the controller's cost, as a running total and as the worst
-    // wake. `harness.max_path_queries_per_pulse` is asserted against the peak.
-    let mut reflex_total = tacsim::arena::reflex::ReflexCounters::default();
-    let mut reflex_peak = tacsim::arena::reflex::ReflexCounters::default();
-    while arena.now_ms < measured_until {
+    Field {
+        cohort: reach.word(),
+        arena,
+        arena_cfg,
+        sensors_cfg,
+        class_counts,
+        terraces,
+        relief_edges_45,
+        relief_edges_70,
+        waypoint_nodes,
+        passable: passable.len(),
+        placed,
+        seated,
+        fielded,
+        substep,
+        slope_45,
+        slope_70,
+        ammo_at_start,
+        counts,
+        clock,
+        wall,
+        slope_refusals,
+        generate_ms,
+        boot_ms,
+        apply_ms,
+        open_ms,
+        convert_ms,
+        arena_open_ms,
+        warm_ms,
+        warm_pulses,
+        killed_warming,
+        warm_end,
+    }
+}
+
+/// **What one measured window of wakes produced** (16b cut U.2): the per-wake
+/// record, the substep partition, the perception and controller counters as a
+/// total and as the worst wake, and whether the match ended inside it.
+struct Run {
+    wakes: Vec<Wake>,
+    substeps: Vec<u32>,
+    short_substeps: u64,
+    frames: Vec<f64>,
+    ended: Option<tacsim::arena::state::MatchEnd>,
+    lagged_pulses: u32,
+    perception_total: tacsim::arena::perception::PerceptionCounters,
+    peak: tacsim::arena::perception::PerceptionCounters,
+    reflex_total: tacsim::arena::reflex::ReflexCounters,
+    reflex_peak: tacsim::arena::reflex::ReflexCounters,
+}
+
+/// **The measured wakes** (16b cut U.1; one body for both lanes since 16b cut
+/// U.2): the field stepped where the task wakes it until arena time reaches
+/// `until_ms` or the match ends, `sample` handed the arena after every wake —
+/// the long run reads memory there, the 30-second lane nothing.
+///
+/// **The loop is the task's** (16b cut U.1; 16c `T-22`, Q25). The harness
+/// stepped at a fixed 500 ms period the production task never runs; it wakes
+/// the arena where `arena_task` does — `wall = out.next_due_ms` after every
+/// step, the first at `wall = 0` — plus [`WakeClock`]'s seeded overshoot
+/// (default nought), so the record can say what the overshoot's remainder
+/// substeps cost. `next_due_ms` is on the substep lattice, so a wake is at most
+/// one substep. No scripted order and no scripted fire: what steers, closes,
+/// locks and fires is the reflex controller alone.
+///
+/// Whatever the ledger is still holding leaves with the measurement, counted.
+fn run_wakes(
+    field: &mut Field,
+    until_ms: i64,
+    mut sample: impl FnMut(&tacsim::arena::state::Arena),
+) -> Run {
+    use tacsim::arena::perception::PerceptionCounters;
+    let substep_ms = i64::from(field.substep);
+    let mut run = Run {
+        wakes: Vec::new(),
+        substeps: Vec::new(),
+        short_substeps: 0,
+        frames: Vec::new(),
+        ended: None,
+        lagged_pulses: 0,
+        // 16b cut S.1: the perception cost, as a running total and as the worst
+        // wake. Doc 16 §2 W4 and W6 bound *per pulse*, and the pulse production
+        // runs is the wake, so the per-wake peak is what the per-pulse bounds are
+        // asserted against; the windows carry the per-window figure.
+        perception_total: PerceptionCounters::default(),
+        peak: PerceptionCounters::default(),
+        // 16b cut N.1: the controller's cost, as a running total and as the worst
+        // wake. `harness.max_path_queries_per_pulse` is asserted against the peak.
+        reflex_total: tacsim::arena::reflex::ReflexCounters::default(),
+        reflex_peak: tacsim::arena::reflex::ReflexCounters::default(),
+    };
+    let arena = &mut field.arena;
+    while arena.now_ms < until_ms {
         let before = arena.now_ms;
         let at = Instant::now();
-        let out = arena.step(wall, &[], &[]);
+        let out = arena.step(field.wall, &[], &[]);
         let ms = at.elapsed().as_secs_f64() * 1_000.0;
-        wakes.push(Wake {
+        run.wakes.push(Wake {
             ms,
             now_ms: arena.now_ms,
             traces: out.perception.traces,
@@ -2111,9 +2330,10 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         // A substep shorter than the lattice's: the remainder a wake off the
         // lattice cuts, and a phase-4 drain's zero-length one.
         let full = u32::try_from((arena.now_ms - before) / substep_ms.max(1)).unwrap_or(0);
-        short_substeps += u64::from(out.substeps.saturating_sub(full));
-        slope_refusals += u64::from(out.reflex.slope_refusals);
-        perception_total.absorb(&out.perception);
+        run.short_substeps += u64::from(out.substeps.saturating_sub(full));
+        field.slope_refusals += u64::from(out.reflex.slope_refusals);
+        run.perception_total.absorb(&out.perception);
+        let peak = &mut run.peak;
         peak.passes = peak.passes.max(out.perception.passes);
         peak.candidates = peak.candidates.max(out.perception.candidates);
         peak.traces = peak.traces.max(out.perception.traces);
@@ -2123,7 +2343,8 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         peak.detected = peak.detected.max(out.perception.detected);
         peak.classified = peak.classified.max(out.perception.classified);
         peak.lost = peak.lost.max(out.perception.lost);
-        reflex_total.absorb(&out.reflex);
+        run.reflex_total.absorb(&out.reflex);
+        let reflex_peak = &mut run.reflex_peak;
         reflex_peak.ticks = reflex_peak.ticks.max(out.reflex.ticks);
         reflex_peak.path_queries = reflex_peak.path_queries.max(out.reflex.path_queries);
         reflex_peak.path_deferred = reflex_peak.path_deferred.max(out.reflex.path_deferred);
@@ -2133,31 +2354,102 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         reflex_peak.intents = reflex_peak.intents.max(out.reflex.intents);
         reflex_peak.shots = reflex_peak.shots.max(out.reflex.shots);
         reflex_peak.slope_refusals = reflex_peak.slope_refusals.max(out.reflex.slope_refusals);
-        substeps.push(out.substeps);
+        run.substeps.push(out.substeps);
         #[allow(clippy::cast_precision_loss)]
-        frames.push(out.frames.len() as f64);
+        run.frames.push(out.frames.len() as f64);
         if out.lagged {
-            lagged_pulses += 1;
+            run.lagged_pulses += 1;
         }
         for chunk in &out.ledger_chunks {
-            counts.absorb(&chunk.bytes);
+            field.counts.absorb(&chunk.bytes);
         }
         // The world half's acknowledgement (doc 16 §3.1's ack-gated egress), so the
         // bounded ring is measured draining as it would in production.
         arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
+        sample(arena);
         if let Some(end) = out.ended {
-            ended = Some(end);
+            run.ended = Some(end);
             break;
         }
-        wall = next_wall(out.next_due_ms);
+        field.wall = field.clock.next(out.next_due_ms);
     }
     // Whatever is still open leaves with the measurement.
     arena.ledger.flush();
     for chunk in arena.ledger.take_chunks() {
-        counts.absorb(&chunk.bytes);
+        field.counts.absorb(&chunk.bytes);
     }
+    run
+}
 
+/// **The arena measurement** (16b cut A.2 through 16b cut U.2): [`open_field`],
+/// then [`run_wakes`] for `TACSIM_ARENA_S` arena seconds after the warm-up, and
+/// the report.
+///
+/// Every measured wake is also folded into [`WINDOW_MS`] windows of arena time
+/// ([`windows`]) and the 12 ms lens binds both: a wake is at most one substep,
+/// a smaller unit than the 500 ms pulse the lens was calibrated on.
+///
+/// **16b cut U.2** (16c `T-36`, `T-29`) added the two per-pulse bounds the
+/// report had printed and never asserted — cell probes and jam checks, against
+/// the worst wake — and resident memory read on every platform
+/// ([`resident_kib`]), with Linux's `VmRSS` beside it.
+#[allow(clippy::too_many_lines)]
+fn measure_arena(knobs: &Knobs, reach: Reach) {
+    let rss_start_kib = resident_kib();
+    let vmrss_start_kib = vmrss_kib();
+    let mut field = open_field(knobs, reach);
+    let until_ms = field
+        .warm_end
+        .saturating_add(i64::from(knobs.arena_s) * 1_000);
+    let run = run_wakes(&mut field, until_ms, |_| {});
     let rss_end_kib = resident_kib();
+    let vmrss_end_kib = vmrss_kib();
+
+    let Field {
+        cohort,
+        arena,
+        arena_cfg,
+        sensors_cfg,
+        class_counts,
+        terraces,
+        relief_edges_45,
+        relief_edges_70,
+        waypoint_nodes,
+        passable,
+        placed,
+        seated,
+        fielded,
+        substep,
+        slope_45,
+        slope_70,
+        ammo_at_start,
+        counts,
+        slope_refusals,
+        generate_ms,
+        boot_ms,
+        apply_ms,
+        open_ms,
+        convert_ms,
+        arena_open_ms,
+        warm_ms,
+        warm_pulses,
+        killed_warming,
+        warm_end,
+        ..
+    } = field;
+    let Run {
+        wakes,
+        substeps,
+        short_substeps,
+        frames,
+        ended,
+        lagged_pulses,
+        perception_total,
+        peak,
+        reflex_total,
+        reflex_peak,
+    } = run;
+
     let tempo = Tempo {
         name: "arena_engaged",
         period_ms: arena_cfg.tempo.engaged_ms,
@@ -2176,6 +2468,7 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
     let window_jam_checks_peak = folded.iter().map(|w| w.3).max().unwrap_or(0);
     let window_share_ops_peak = folded.iter().map(|w| w.4).max().unwrap_or(0);
     let wake_count = wakes.len();
+    #[allow(clippy::cast_precision_loss)]
     let arena_s_run = (arena.now_ms - warm_end) as f64 / 1_000.0;
     #[allow(clippy::cast_precision_loss)]
     let wakes_per_arena_s = if arena_s_run > 0.0 {
@@ -2344,11 +2637,8 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
 
     // ---- the report ----
     println!(
-        "harness_arena_world: cohort={cohort} units={placed}/{} pilots={seated} cell_cm={CELL_CM} side={SIDE} passable_cells={} seed={} arena_ms={}",
-        knobs.units,
-        passable.len(),
-        knobs.seed,
-        arena.now_ms
+        "harness_arena_world: cohort={cohort} units={placed}/{} pilots={seated} cell_cm={CELL_CM} side={SIDE} passable_cells={passable} seed={} arena_ms={}",
+        knobs.units, knobs.seed, arena.now_ms
     );
     let classes = class_counts
         .iter()
@@ -2585,10 +2875,13 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         arena.contacts.len(),
         arena.alert_range_cm
     );
+    // **16b cut U.2** (16c `T-36`): resident memory on every platform, with
+    // Linux's own `VmRSS` beside it where there is one.
     println!(
-        "harness_arena_memory: cohort={cohort} vmrss_start_kib={} vmrss_end_kib={}",
-        rss_start_kib.map_or("absent".to_string(), |k| k.to_string()),
-        rss_end_kib.map_or("absent".to_string(), |k| k.to_string())
+        "harness_arena_memory: cohort={cohort} rss_start_kib={} rss_end_kib={}{}",
+        kib_word(rss_start_kib),
+        kib_word(rss_end_kib),
+        vmrss_words(vmrss_start_kib, vmrss_end_kib)
     );
     // Whether this run asserts its thresholds: the CI cohort under
     // `TACSIM_ASSERT`, and the authored reaches never.
@@ -2599,23 +2892,25 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         "report-only"
     };
     println!(
-        "harness_arena_thresholds: cohort={cohort} assert={asserting} lens={lens} cut_a_p99_ms={ARENA_P99_MS} cut_s_p99_ms={ARENA_S_P99_MS} engaged_p99_ms={} max_traces_per_pulse={} max_share_ops_per_pulse={} max_path_queries_per_pulse={} max_ledger_bytes={}",
+        "harness_arena_thresholds: cohort={cohort} assert={asserting} lens={lens} cut_a_p99_ms={ARENA_P99_MS} cut_s_p99_ms={ARENA_S_P99_MS} engaged_p99_ms={} max_traces_per_pulse={} max_share_ops_per_pulse={} max_path_queries_per_pulse={} max_cell_probes_per_pulse={} max_jam_checks_per_pulse={} max_ledger_bytes={}",
         knobs.engaged_p99_ms,
         knobs.max_traces_per_pulse,
         knobs.max_share_ops_per_pulse,
         knobs.max_path_queries_per_pulse,
+        knobs.max_cell_probes_per_pulse,
+        knobs.max_jam_checks_per_pulse,
         knobs.max_ledger_bytes
     );
 
     let report = serde_json::json!({
-        "what": "16b cut U.1: `Arena::step` at the harness's scale, the fielded catalog on the reflex controller, woken where the task wakes it",
+        "what": "16b cut U.2: `Arena::step` at the harness's scale, the fielded catalog on the reflex controller, woken where the task wakes it, with the cell-probe and jam-check bounds asserted",
         "cohort": cohort,
         "world": {
             "units": placed,
             "pilots": seated,
             "cell_cm": CELL_CM,
             "side_cells": SIDE,
-            "passable_cells": passable.len(),
+            "passable_cells": passable,
             "seed": knobs.seed,
             "arena_ms": arena.now_ms,
             "pulses": wake_count,
@@ -2794,7 +3089,14 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
                 ))
                 .collect::<BTreeMap<String, u32>>(),
         },
-        "memory": { "vmrss_start_kib": rss_start_kib, "vmrss_end_kib": rss_end_kib },
+        // 16b cut U.2: the crate's reading on every platform, and Linux's own
+        // beside it (`null` elsewhere).
+        "memory": {
+            "rss_start_kib": rss_start_kib,
+            "rss_end_kib": rss_end_kib,
+            "vmrss_start_kib": vmrss_start_kib,
+            "vmrss_end_kib": vmrss_end_kib,
+        },
         "thresholds": {
             "assert": asserting,
             "lens": lens,
@@ -2804,6 +3106,8 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             "max_traces_per_pulse": knobs.max_traces_per_pulse,
             "max_share_ops_per_pulse": knobs.max_share_ops_per_pulse,
             "max_path_queries_per_pulse": knobs.max_path_queries_per_pulse,
+            "max_cell_probes_per_pulse": knobs.max_cell_probes_per_pulse,
+            "max_jam_checks_per_pulse": knobs.max_jam_checks_per_pulse,
             "max_ledger_bytes": knobs.max_ledger_bytes,
         },
     });
@@ -2814,16 +3118,7 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             Reach::Authored => "arena-authored",
         },
     );
-    if let Some(dir) = path.parent()
-        && !dir.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(dir).expect("the report directory is writable");
-    }
-    std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&report).expect("the report encodes"),
-    )
-    .expect("the report is written");
+    write_report(&path, &report);
     println!("harness_arena_json: cohort={cohort} {}", path.display());
 
     if asserting {
@@ -2864,6 +3159,28 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             knobs.max_traces_per_pulse,
             sensor_cells()
         );
+        // **16b cut U.2** (16c `T-36`; doc 16 §2 W4 names probes beside traces):
+        // the cells those traces read, in the same shape.
+        assert!(
+            peak.cell_probes <= u64::from(knobs.max_cell_probes_per_pulse),
+            "cell probes in one wake {} is past harness.max_cell_probes_per_pulse {} at \
+             sensor_cells={} (doc 16 §2 W4: traces and cell probes per pulse)",
+            peak.cell_probes,
+            knobs.max_cell_probes_per_pulse,
+            sensor_cells()
+        );
+        // **16b cut U.2** (16c `T-29`; doc 16 §9 item 4): the jammer scans, one
+        // per unit between two clears of the memo since U.2 — the substep's two
+        // rebuilds and every `StartupComplete` and `Impact` it resolves, so the
+        // figure grows with the fire as well as with the field.
+        assert!(
+            peak.jam_checks <= knobs.max_jam_checks_per_pulse,
+            "jam checks in one wake {} is past harness.max_jam_checks_per_pulse {} (doc 16 \
+             §9 item 4: one fold per unit between two memo clears, and the memo is cleared \
+             at each rebuild and after every startup and impact)",
+            peak.jam_checks,
+            knobs.max_jam_checks_per_pulse
+        );
         assert!(
             peak.share_ops <= knobs.max_share_ops_per_pulse,
             "share operations in one wake {} is past harness.max_share_ops_per_pulse {} at \
@@ -2883,6 +3200,187 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             "path queries in one wake {} is past harness.max_path_queries_per_pulse {}",
             reflex_peak.path_queries,
             knobs.max_path_queries_per_pulse
+        );
+    }
+}
+
+/// Write one report, creating its directory.
+fn write_report(path: &std::path::Path, report: &serde_json::Value) {
+    if let Some(dir) = path.parent()
+        && !dir.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(dir).expect("the report directory is writable");
+    }
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(report).expect("the report encodes"),
+    )
+    .expect("the report is written");
+}
+
+/// **The long run** (16b cut U.2; 16c `T-36`: *a long-run mode with an RSS
+/// growth bound*; the M row's *the harness reports no due-heap depth*).
+///
+/// [`open_field`] on the CI cohort, then [`run_wakes`] — the 30-second lane's
+/// own body — for `TACSIM_LONG_RUN_S` arena seconds after the warm-up, with
+/// resident memory read after the warm-up and at every [`LONG_RUN_SAMPLE_S`] of
+/// arena time. The claim it checks is doc 16 §4's: memory stays flat because the
+/// ledger leaves, so what it reports beside the growth is what could grow — the
+/// streamed ledger, the contact store, the due heap (`arena.due.len()`) and the
+/// held losses.
+///
+/// Under `TACSIM_ASSERT`, first that the window was **the whole window**: the
+/// match did not end (an elimination, or `[tacsim.match].max_duration_ms`
+/// under a `TACSIM_LONG_RUN_S` past it) and arena time reached the mark, because
+/// a growth figure over three minutes passed off as ten is a green claim the
+/// lane never measured. Then, when a reading exists: the growth from the first
+/// reading to the last is under `harness.max_rss_growth_kib`, and the ledger
+/// under `harness.max_ledger_bytes`. It does **not** assert the p99: a ten-minute
+/// run's tail on a shared box is a different number, and the lens is the
+/// 30-second lane's.
+#[allow(clippy::too_many_lines)]
+fn measure_long_run(knobs: &Knobs) {
+    let mut field = open_field(knobs, Reach::Ci);
+    let warm_end = field.warm_end;
+    let rss_start_kib = resident_kib();
+    let vmrss_start_kib = vmrss_kib();
+    let until_ms = warm_end.saturating_add(i64::from(knobs.long_run_s) * 1_000);
+    // `(arena second, reading)` at every mark, the warm-up's end first.
+    let mut samples: Vec<(i64, Option<u64>)> = vec![(0, rss_start_kib)];
+    let mut next_mark = warm_end.saturating_add(LONG_RUN_SAMPLE_S * 1_000);
+    let started = Instant::now();
+    let run = run_wakes(&mut field, until_ms, |arena| {
+        while arena.now_ms >= next_mark {
+            samples.push(((next_mark - warm_end) / 1_000, resident_kib()));
+            next_mark = next_mark.saturating_add(LONG_RUN_SAMPLE_S * 1_000);
+        }
+    });
+    let wall_s = started.elapsed().as_secs_f64();
+    let rss_end_kib = resident_kib();
+    let vmrss_end_kib = vmrss_kib();
+    let arena = &field.arena;
+    #[allow(clippy::cast_precision_loss)]
+    let arena_s = (arena.now_ms - warm_end) as f64 / 1_000.0;
+    let rss_growth_kib: Option<i64> = match (rss_start_kib, rss_end_kib) {
+        (Some(start), Some(end)) => Some(
+            i64::try_from(end)
+                .unwrap_or(i64::MAX)
+                .saturating_sub(i64::try_from(start).unwrap_or(i64::MAX)),
+        ),
+        _ => None,
+    };
+    let rss_peak_kib = samples
+        .iter()
+        .filter_map(|(_, kib)| *kib)
+        .chain(rss_end_kib)
+        .max();
+    let wakes = run.wakes.len();
+    let (p50, _, p99, max) = Tempo {
+        name: "arena_long",
+        period_ms: field.arena_cfg.tempo.engaged_ms,
+        ms: run.wakes.iter().map(|wake| wake.ms).collect(),
+    }
+    .stats();
+    let ended = run
+        .ended
+        .map_or("none".to_string(), |end| format!("{:?}", end.reason));
+    let cohort = field.cohort;
+    assert!(wakes > 0, "the long run woke the arena no times at all");
+    assert!(
+        field.counts.bytes > 0,
+        "the ledger streamed nothing: the long run measured an idle arena"
+    );
+    println!(
+        "harness_long_run: cohort={cohort} arena_s={arena_s:.3} wakes={wakes} rss_start_kib={} rss_end_kib={} rss_growth_kib={} rss_peak_kib={} ledger_bytes={} ledger_chunks={} contacts_at_end={} due_heap_at_end={} held_losses_at_end={} ended={ended}{}",
+        kib_word(rss_start_kib),
+        kib_word(rss_end_kib),
+        rss_growth_kib.map_or("absent".to_string(), |kib| kib.to_string()),
+        kib_word(rss_peak_kib),
+        field.counts.bytes,
+        field.counts.chunks,
+        arena.contacts.len(),
+        arena.due.len(),
+        arena.held_losses.len(),
+        vmrss_words(vmrss_start_kib, vmrss_end_kib)
+    );
+    println!(
+        "harness_long_run_samples: cohort={cohort} every_arena_s={LONG_RUN_SAMPLE_S} {}",
+        samples
+            .iter()
+            .map(|(at, kib)| format!("{at}s={}", kib_word(*kib)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    println!(
+        "harness_long_run_wakes: cohort={cohort} wall_s={wall_s:.1} p50={p50:.3} p99={p99:.3} max={max:.3} (reported, never asserted: the lens is the 30-second lane's)"
+    );
+    println!(
+        "harness_long_run_thresholds: cohort={cohort} assert={} max_rss_growth_kib={} max_ledger_bytes={}",
+        knobs.assert, knobs.max_rss_growth_kib, knobs.max_ledger_bytes
+    );
+    let report = serde_json::json!({
+        "what": "16b cut U.2: the CI cohort's field for TACSIM_LONG_RUN_S arena seconds, resident memory read every minute of arena time",
+        "cohort": cohort,
+        "arena_s": num(arena_s),
+        "wakes": wakes,
+        "wall_s": num(wall_s),
+        "memory": {
+            "rss_start_kib": rss_start_kib,
+            "rss_end_kib": rss_end_kib,
+            "rss_growth_kib": rss_growth_kib,
+            "rss_peak_kib": rss_peak_kib,
+            "vmrss_start_kib": vmrss_start_kib,
+            "vmrss_end_kib": vmrss_end_kib,
+            "every_arena_s": LONG_RUN_SAMPLE_S,
+            "samples": samples
+                .iter()
+                .map(|(at, kib)| serde_json::json!({ "arena_s": at, "rss_kib": kib }))
+                .collect::<Vec<_>>(),
+        },
+        "ledger": {
+            "bytes": field.counts.bytes,
+            "chunks": field.counts.chunks,
+        },
+        "at_end": {
+            "contacts": arena.contacts.len(),
+            "due_heap": arena.due.len(),
+            "held_losses": arena.held_losses.len(),
+            "shots_in_flight": arena.shots.len(),
+            "ended": run.ended.map(|end| format!("{:?}", end.reason)),
+        },
+        "wake_ms": { "p50": num(p50), "p99": num(p99), "max": num(max), "asserted": false },
+        "thresholds": {
+            "assert": knobs.assert,
+            "max_rss_growth_kib": knobs.max_rss_growth_kib,
+            "max_ledger_bytes": knobs.max_ledger_bytes,
+        },
+    });
+    let path = arena_report_path(&knobs.json, "arena-long");
+    write_report(&path, &report);
+    println!("harness_long_run_json: cohort={cohort} {}", path.display());
+
+    if knobs.assert {
+        // The bounds below are claims about `long_run_s` arena seconds, so a run
+        // that stopped short proves nothing about them: refuse it by name.
+        assert!(
+            run.ended.is_none() && arena.now_ms >= until_ms,
+            "the long run covered {arena_s:.3} of TACSIM_LONG_RUN_S={} arena seconds (ended={ended}): \
+             its memory and ledger figures are not the long run's",
+            knobs.long_run_s
+        );
+        if let Some(growth) = rss_growth_kib {
+            assert!(
+                growth <= i64::from(knobs.max_rss_growth_kib),
+                "resident memory grew {growth} KiB over {arena_s:.0} arena seconds, past \
+                 harness.max_rss_growth_kib {}",
+                knobs.max_rss_growth_kib
+            );
+        }
+        assert!(
+            field.counts.bytes <= knobs.max_ledger_bytes,
+            "ledger bytes {} over the long run is past harness.max_ledger_bytes {}",
+            field.counts.bytes,
+            knobs.max_ledger_bytes
         );
     }
 }
@@ -3375,5 +3873,616 @@ fn mock_order_response() -> mush_llm::CompletionResponse {
             cost_usd: Some(0.000_08),
         },
         model: "z-ai/glm-5.3-flash".to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The fan-out lane (16b cut U.2; 16c `T-36`; 16b §11 "Risks": the fan-out row)
+// ---------------------------------------------------------------------------
+//
+// **What this is.** The arena lanes above step a library and hand its frames to
+// nobody, so the arena-to-session fan-out 16b §11 names as the risk had no
+// number. This lane is the world side of it: the production roster, one match
+// on the shipped proving ground, and the real egress seam pumped the way the
+// world loop's `Wake::ArenaEgress` arm pumps it — except **one egress message
+// per apply**, so an `ArenaOut::Frames` (one arena pulse) is exactly one apply
+// and the per-pulse counts are exact rather than a function of how many pulses
+// the host's timing let one drain absorb.
+//
+// 16c's sketch said "boards N real sessions"; the lobby has eight pods, so the
+// twenty-four pilots are seated through the **staff** path instead. The unit,
+// its placement, its seat and the match go through production verbs —
+// `@unit/create`, `@behavior/add`, `@spatial/place/domain`, `@spatial/station`,
+// `@spatial/assign`, `+focus` and `@arena/start` — and two steps are direct
+// world calls, as the cockpit rig makes them: the tank's thing is created with
+// `World::create` before `@unit/create` makes it a unit, and each pilot is
+// walked to the tank's room with `World::move_to` before `+focus` (the rig's
+// `walk_to`). The pilots then fly with the cockpit's own `STARTUP` and `SPEED`,
+// so the frames the world sends are frames of tanks that move.
+
+/// The boot-hydrated character → account map `mush-server` builds, as the
+/// cockpit rig installs one (`tests/cockpit.rs`): a seat is refused to a
+/// character the oracle cannot place.
+#[derive(Default)]
+struct FanOutAccounts(BTreeMap<ObjId, mush_core::AccountId>);
+
+impl mush_core::AccountIdentity for FanOutAccounts {
+    fn account_of(&self, character: ObjId) -> Option<mush_core::AccountId> {
+        self.0.get(&character).copied()
+    }
+}
+
+/// **The production roster the cockpit rig boots** (`tests/cockpit.rs`'s
+/// `roster_with`): the composition `mush_server::boot` makes, with the starter
+/// area (the simulator centre) and the game's boot packs (the proving ground)
+/// on, and `[tacsim]` at its defaults with the layer enabled — a real `Quiet`,
+/// `Alert` and `Engaged` tempo, because this lane measures the world side and
+/// not the arena. The character sheet is left out for the reason that file
+/// gives: its chargen payload handler cannot be registered twice in one
+/// process.
+fn fan_out_roster() -> Vec<Box<dyn GameModule>> {
+    use tacsim::composition as comp;
+    let cfg = tacsim::TacsimConfig {
+        enabled: true,
+        ..tacsim::TacsimConfig::default()
+    };
+    let llm = std::sync::Arc::new(
+        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
+            .expect("a disabled LLM service composes"),
+    );
+    let onboarding = mush_core::OnboardingConfig::default();
+    let game = tacsim::GameEconomyConfig::default();
+    let mut mods = comp::server_modules_with(
+        mush_weather::WeatherConfig::default(),
+        mush_economy::EconomyConfig::default(),
+        AtlasConfig::default(),
+        &onboarding,
+        &game,
+        comp::recovery_policy(&cfg.recovery),
+    );
+    mods.push(comp::worldgen_module_with(
+        std::sync::Arc::clone(&llm),
+        mush_worldgen::WorldgenConfig::default(),
+    ));
+    mods.push(comp::npc_module_with(
+        comp::npc_agent_adapter(),
+        &mush_config::config::NpcCfg::default(),
+    ));
+    mods.push(comp::tacsim_module(cfg));
+    mods.push(comp::content_module_with(true, true).expect("the content module composes"));
+    mods
+}
+
+/// **The fan-out lane** (16b cut U.2, 16c `T-36`): [`measure_fan_out`] at
+/// `TACSIM_FIGHTING` (24) pilots, JSON at `<stem>-fan-out.<ext>`; under
+/// `TACSIM_ASSERT`, `panel_bytes_max <= harness.max_frame_bytes` and
+/// `events_per_pulse_max <= harness.max_output_events_per_pulse`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+async fn tacsim_harness_fan_out() {
+    measure_fan_out(&Knobs::from_env()).await;
+}
+
+/// How long the fan-out lane runs the match for, arena milliseconds.
+const FAN_OUT_ARENA_MS: i64 = 30_000;
+
+/// The speed the fan-out lane's pilots order once their power is up, kph —
+/// below the stock tank's 54, so every order is accepted.
+const FAN_OUT_KPH: i32 = 40;
+
+/// What one apply of one egress message did (16b cut U.2).
+#[derive(Default)]
+struct Applied {
+    /// Every output event the apply produced.
+    events: u64,
+    /// `arena.cockpit` panel keyframes among them.
+    panels: u64,
+    /// `serde_json::to_vec(data)` of each of those, in bytes.
+    panel_bytes: Vec<u64>,
+    /// Sentences on the pilots' line (the notices the frames carried).
+    sys: u64,
+}
+
+/// Count one apply's output: the panel keyframes on the cockpit feed and their
+/// encoded size, and the lines.
+fn applied(out: &[(Audience, OutputEvent)]) -> Applied {
+    let mut count = Applied {
+        events: u64::try_from(out.len()).unwrap_or(u64::MAX),
+        ..Applied::default()
+    };
+    for (_, event) in out {
+        match event {
+            OutputEvent::Panel { feed, data, .. }
+                if feed.as_str() == tacsim::arena_bridge::FRAME_FEED =>
+            {
+                count.panels += 1;
+                let bytes = serde_json::to_vec(data).map_or(0, |encoded| encoded.len());
+                count
+                    .panel_bytes
+                    .push(u64::try_from(bytes).unwrap_or(u64::MAX));
+            }
+            OutputEvent::Sys(_) => count.sys += 1,
+            _ => {}
+        }
+    }
+    count
+}
+
+/// Run one line as `actor` and answer what it said to them.
+fn line(tw: &mut TestWorld, actor: ObjId, text: &str) -> String {
+    let events = tw.run(actor, text);
+    tw.seen_by(&events, actor).join("\n")
+}
+
+/// **The fan-out measurement** (16b cut U.2; 16c `T-36`: *a third lane that
+/// boards N real sessions through `arena_bridge` and bounds bytes per frame and
+/// output events per pulse at 24 pilots*).
+///
+/// 1. The production roster ([`fan_out_roster`]) with the account oracle the
+///    cockpit rig installs, and the egress receiver taken as the world loop
+///    takes it.
+/// 2. `TACSIM_FIGHTING` players; as many things (made with `World::create`)
+///    made line tanks with `@unit/create`, placed on the proving ground's muster
+///    domain inside their side's entry zone — `content/arenas/proving_ground.json`
+///    version 2's muster extended to twelve a side: red in column 6 facing east,
+///    blue in column 249 facing west, slot one on row 97 and the rest
+///    alternating two rows either side of it (95, 99, 93, 101, …), a clear
+///    row between each pair — each given a cockpit station with
+///    `@spatial/station` and its pilot with `@spatial/assign`; one world tick
+///    for the lease mirror; each pilot walked to the tank's room with
+///    `World::move_to` and `+focus` as the pilot.
+/// 3. `@arena/start` as God; the match is `Running` and the registry has every
+///    pilot seated in it.
+/// 4. The egress pumped **one message per apply** for 30 arena seconds, every
+///    apply timed, every `Frames` apply's output counted: the pilots `STARTUP`
+///    at once and order `SPEED` when their frame says the power is up, so the
+///    tanks the frames describe are moving.
+/// 5. The report, and `@arena/abort` so the task stops.
+///
+/// **What it does not measure.** The musters stand 243 cells (2.4 km) apart and
+/// the stock sight reaches 60 cells; at `FAN_OUT_KPH` the sides close about
+/// 660 m in thirty seconds, so no pilot ever holds an enemy contact, a lock, a
+/// reading or a weapon cycle, and no fire or damage notice is rendered. The two
+/// bounds it asserts are therefore sized on the opening — every frame carries
+/// teammates only, and the busiest pulse is the acquisition burst — and a
+/// combat frame or an engaged pulse (16b §11's fan-out risk at twelve a side)
+/// is not measured by this lane.
+#[allow(clippy::too_many_lines)]
+async fn measure_fan_out(knobs: &Knobs) {
+    use tacsim::arena_bridge::{ArenaRegistry, EGRESS_PAYLOAD, MODULE};
+    use tacsim::arena_task::ArenaOut;
+    use tacsim::match_::{self, MatchState};
+
+    let wanted = usize::try_from(knobs.fighting).unwrap_or(0);
+    let per_side = wanted.div_ceil(2);
+    let boot_at = Instant::now();
+    let mut tw = TestWorld::with_modules(fan_out_roster());
+    let boot_ms = boot_at.elapsed().as_secs_f64() * 1_000.0;
+
+    // ---- (1) the pilots, their accounts and the egress ----
+    let mut accounts = FanOutAccounts::default();
+    let mut pilots: Vec<ObjId> = Vec::new();
+    for n in 0..wanted {
+        let pilot = tw.spawn_player(&format!("Pilot{n}"));
+        accounts.0.insert(
+            pilot,
+            mush_core::AccountId::mint(&format!("account-{n}"), i64::try_from(n).unwrap_or(0))
+                .expect("an account id"),
+        );
+        pilots.push(pilot);
+    }
+    *tw.world_mut()
+        .module_state_mut::<mush_sim::AccountOracle>()
+        .expect("the simulation is composed") =
+        mush_sim::AccountOracle::new(std::sync::Arc::new(accounts));
+    let tasks = tw
+        .world()
+        .module_state::<ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+        .expect("the arena registry is composed");
+    let mut egress = tasks
+        .take_egress()
+        .expect("the egress is the world loop's to take");
+
+    // ---- (2) the tanks, placed and crewed ----
+    let domain = {
+        let arena = CanonicalId::new(match_::CENTRE_ARENA).expect("a canonical arena id");
+        let room = tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .and_then(|store| store.arena_roster(&arena))
+            .map(|roster| ObjId(roster.room))
+            .expect("the proving ground's roster names its muster room");
+        tw.world()
+            .module_state::<mush_sim::SpatialState>()
+            .and_then(|state| state.domain_of_host(room))
+            .map(|record| record.id)
+            .expect("the muster room hosts the proving ground's domain")
+    };
+    let mut red: Vec<ObjId> = Vec::new();
+    let mut blue: Vec<ObjId> = Vec::new();
+    let mut units: Vec<ObjId> = Vec::new();
+    for (n, pilot) in pilots.iter().enumerate() {
+        let is_red = n < per_side;
+        let slot = i64::try_from(if is_red { n } else { n - per_side }).unwrap_or(0);
+        // The shipped muster, extended (`content/arenas/proving_ground.json`,
+        // version 2): column 6 for red and 249 for blue, facing each other, slot
+        // one on row 97 and the rest alternating two rows either side of it —
+        // 95, 99, 93, 101, … — with a clear cell between each pair.
+        let row = 97 + if slot % 2 == 1 { -1 } else { 1 } * 2 * ((slot + 1) / 2);
+        let (column, heading_mdeg) = if is_red {
+            (6_i64, 90_000)
+        } else {
+            (249, 270_000)
+        };
+        let unit = tw
+            .world_mut()
+            .create(
+                ObjKind::Thing,
+                &format!("fan-out-tank-{n}"),
+                GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("a unit object is created");
+        let made = line(
+            &mut tw,
+            GOD,
+            &format!("@unit/create #{}={}", unit.0, content::LINE_TANK),
+        );
+        assert!(
+            made.contains("is now a tactical unit"),
+            "@unit/create refused #{}: {made}",
+            unit.0
+        );
+        participant(&mut tw, unit);
+        let placed = line(
+            &mut tw,
+            GOD,
+            &format!(
+                "@spatial/place/domain #{}={},{{\"x_cm\":{},\"y_cm\":{},\"heading_mdeg\":{heading_mdeg}}}",
+                unit.0,
+                domain.0,
+                column * 1_000 + 500,
+                row * 1_000 + 500
+            ),
+        );
+        assert!(
+            placed.contains("Placed"),
+            "#{} was not placed: {placed}",
+            unit.0
+        );
+        let station = line(
+            &mut tw,
+            GOD,
+            &format!(
+                "@spatial/station #{}={},{},channels:{}",
+                unit.0,
+                match_::cockpit::STATION,
+                match_::cockpit::STATION_ROLE,
+                // Every channel `BOARD` grants (`cockpit_channels`): the helm,
+                // the sensors and the gun, so `STARTUP` and `SPEED` are the
+                // pilot's to give.
+                tacsim::arena::state::Channel::ALL
+                    .iter()
+                    .map(|channel| channel.as_str())
+                    .collect::<Vec<_>>()
+                    .join("+")
+            ),
+        );
+        let assigned = line(
+            &mut tw,
+            GOD,
+            &format!(
+                "@spatial/assign #{}={},#{}",
+                unit.0,
+                match_::cockpit::STATION,
+                pilot.0
+            ),
+        );
+        let seated = tw
+            .world()
+            .module_state::<mush_sim::SpatialState>()
+            .and_then(|state| state.assignments.get(&unit))
+            .is_some_and(|host| host.seats.values().any(|seat| seat.actor == *pilot));
+        assert!(
+            seated,
+            "the staff seat path refused #{}'s cockpit to #{}: @spatial/station said `{station}`, \
+             @spatial/assign said `{assigned}`",
+            unit.0, pilot.0
+        );
+        units.push(unit);
+        if is_red {
+            red.push(unit);
+        } else {
+            blue.push(unit);
+        }
+    }
+    // The control-lease mirror `+focus` reads is refreshed by `mush-sim`'s own
+    // coarse tick: one second of world time, as the cockpit rig's boot does.
+    tw.set_now(1);
+    let _ = tw.fire_due(1_000);
+    for (pilot, unit) in pilots.iter().zip(units.iter()) {
+        // A station with no console of its own is reached where its host
+        // stands (`mush_sim`'s `console_room`: *move there first*), so the pilot
+        // walks to the tank's room before taking the seat, as a lobby pilot
+        // walks to the team room before `BOARD`.
+        let console = tw
+            .world()
+            .get(*unit)
+            .and_then(|object| object.location)
+            .expect("the tank stands somewhere");
+        tw.world_mut()
+            .move_to(*pilot, console)
+            .expect("the pilot walks to the tank's console");
+        let focus = line(
+            &mut tw,
+            *pilot,
+            &format!("+focus #{}/{}", unit.0, match_::cockpit::STATION),
+        );
+        let focused = tw
+            .world()
+            .module_state::<mush_sim::FocusState>()
+            .and_then(|state| state.focus_of_actor(*pilot))
+            .is_some_and(|held| held.unit == *unit);
+        assert!(
+            focused,
+            "+focus refused #{} at #{}'s cockpit: {focus}",
+            pilot.0, unit.0
+        );
+    }
+
+    // ---- (3) the match ----
+    let ids = |side: &[ObjId]| {
+        side.iter()
+            .map(|unit| format!("#{}", unit.0))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let started = line(
+        &mut tw,
+        GOD,
+        &format!(
+            "@arena/start {}={}/{}",
+            match_::PROVING_GROUND,
+            ids(&red),
+            ids(&blue)
+        ),
+    );
+    assert!(started.contains("is running on"), "@arena/start: {started}");
+    let state = match_::centre_of(tw.world()).map(|centre| centre.state);
+    assert_eq!(state, Some(MatchState::Running), "{started}");
+    let match_id = match_::centre_of(tw.world())
+        .and_then(|centre| centre.match_id)
+        .expect("the centre adopted the match");
+    let bound = pilots
+        .iter()
+        .filter(|pilot| {
+            tw.world()
+                .module_state::<ArenaRegistry>()
+                .and_then(|registry| registry.seat_of_pilot(**pilot))
+                .is_some_and(|(held, _)| held == match_id)
+        })
+        .count();
+    assert_eq!(bound, wanted, "every pilot is on the arena's roster");
+    for pilot in &pilots {
+        let said = line(&mut tw, *pilot, "startup");
+        assert!(
+            said.contains("Startup sequence begun"),
+            "#{}'s STARTUP was refused: {said}",
+            pilot.0
+        );
+    }
+
+    // ---- (4) the pump ----
+    let mut world_ms: Vec<f64> = Vec::new();
+    let mut events_per_pulse: Vec<u64> = Vec::new();
+    let mut panel_bytes: Vec<u64> = Vec::new();
+    let mut sys_lines = 0_u64;
+    let mut pulses = 0_u64;
+    let mut applies = 0_u64;
+    // The busiest pulse: its arena millisecond, its events, its panels and its
+    // lines — what a reader needs to say *why* it was the busiest.
+    let mut busiest: (i64, u64, u64, u64) = (0, 0, 0, 0);
+    let mut first_ms: Option<i64> = None;
+    let mut last_ms = 0_i64;
+    let mut moving: Vec<bool> = vec![false; wanted];
+    let deadline = Instant::now() + std::time::Duration::from_secs(180);
+    while last_ms < FAN_OUT_ARENA_MS {
+        assert!(
+            Instant::now() < deadline,
+            "the arena reached {last_ms} ms of {FAN_OUT_ARENA_MS} in three minutes of wall time"
+        );
+        let message = match egress.try_recv() {
+            Ok(message) => message,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                continue;
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                panic!("the egress closed with the match at {last_ms} ms")
+            }
+        };
+        let clock = match &message {
+            ArenaOut::Frames { now_ms, .. } => Some(*now_ms),
+            _ => None,
+        };
+        assert!(tasks.stage(message), "the staging table took the message");
+        let at = Instant::now();
+        let out = tw.apply(mush_core::WorldCommand::ModuleAsyncDone {
+            module: smol_str::SmolStr::new_static(MODULE),
+            actor: GOD,
+            correlation: 0,
+            payload: EGRESS_PAYLOAD.to_owned(),
+        });
+        world_ms.push(at.elapsed().as_secs_f64() * 1_000.0);
+        tasks.stamp_ledger_writes(1);
+        tasks.ack_ledger_upto(1);
+        applies += 1;
+        if let Some(now_ms) = clock {
+            let counted = applied(&out);
+            if counted.events > busiest.1 {
+                busiest = (now_ms, counted.events, counted.panels, counted.sys);
+            }
+            pulses += 1;
+            events_per_pulse.push(counted.events);
+            panel_bytes.extend(counted.panel_bytes);
+            sys_lines += counted.sys;
+            first_ms.get_or_insert(now_ms);
+            last_ms = last_ms.max(now_ms);
+        }
+        // A pilot whose frame says the power is up makes way, once.
+        for (n, pilot) in pilots.iter().enumerate() {
+            let Some(flag) = moving.get_mut(n) else {
+                continue;
+            };
+            if *flag {
+                continue;
+            }
+            let online = tw
+                .world()
+                .module_state::<ArenaRegistry>()
+                .and_then(|registry| registry.last_frame(*pilot))
+                .is_some_and(|held| held.frame.power == tacsim::arena::state::Power::Online);
+            if online {
+                let said = line(&mut tw, *pilot, &format!("speed {FAN_OUT_KPH}"));
+                assert!(
+                    said.contains("Making"),
+                    "#{}'s SPEED was refused: {said}",
+                    pilot.0
+                );
+                *flag = true;
+            }
+        }
+    }
+    let underway = moving.iter().filter(|flag| **flag).count();
+
+    // ---- (5) the report ----
+    #[allow(clippy::cast_precision_loss)]
+    let arena_s = (last_ms - first_ms.unwrap_or(0)).max(1) as f64 / 1_000.0;
+    let frames = u64::try_from(panel_bytes.len()).unwrap_or(u64::MAX);
+    let bytes_total: u64 = panel_bytes.iter().sum();
+    #[allow(clippy::cast_precision_loss)]
+    let panel_bytes_mean = if panel_bytes.is_empty() {
+        0.0
+    } else {
+        bytes_total as f64 / panel_bytes.len() as f64
+    };
+    let panel_bytes_max = panel_bytes.iter().copied().max().unwrap_or(0);
+    #[allow(clippy::cast_precision_loss)]
+    let per_pilot_per_s = bytes_total as f64 / wanted.max(1) as f64 / arena_s;
+    #[allow(clippy::cast_precision_loss)]
+    let events_mean = if events_per_pulse.is_empty() {
+        0.0
+    } else {
+        events_per_pulse.iter().sum::<u64>() as f64 / events_per_pulse.len() as f64
+    };
+    let events_max = events_per_pulse.iter().copied().max().unwrap_or(0);
+    let (w50, w95, w99, wmax) = Tempo {
+        name: "world_apply",
+        period_ms: 0,
+        ms: world_ms.clone(),
+    }
+    .stats();
+    println!(
+        "harness_fan_out: pilots={wanted} units={} arena_s={arena_s:.3} pulses={pulses} frames={frames} panel_bytes_mean={panel_bytes_mean:.1} panel_bytes_max={panel_bytes_max} panel_bytes_per_pilot_per_arena_s={per_pilot_per_s:.1} events_per_pulse_mean={events_mean:.2} events_per_pulse_max={events_max} world_ms_p50={w50:.3} world_ms_p95={w95:.3} world_ms_p99={w99:.3} world_ms_max={wmax:.3}",
+        units.len()
+    );
+    println!(
+        "harness_fan_out_detail: applies={applies} sys_lines={sys_lines} underway={underway} busiest_pulse_ms={} busiest_panels={} busiest_lines={} boot_ms={boot_ms:.1} match={}",
+        busiest.0, busiest.2, busiest.3, match_id.0
+    );
+    let asserting = knobs.assert;
+    println!(
+        "harness_fan_out_thresholds: assert={asserting} max_frame_bytes={} max_output_events_per_pulse={}",
+        knobs.max_frame_bytes, knobs.max_output_events_per_pulse
+    );
+    let report = serde_json::json!({
+        "what": "16b cut U.2: one match of 24 staff-seated pilots on the proving ground, the real egress applied one message per apply",
+        "pilots": wanted,
+        "units": units.len(),
+        "arena_s": num(arena_s),
+        "pulses": pulses,
+        "applies": applies,
+        "frames": frames,
+        "underway": underway,
+        "panel_bytes": {
+            "mean": num(panel_bytes_mean),
+            "max": panel_bytes_max,
+            "total": bytes_total,
+            "per_pilot_per_arena_s": num(per_pilot_per_s),
+        },
+        "events_per_pulse": {
+            "mean": num(events_mean),
+            "max": events_max,
+            "busiest": {
+                "arena_ms": busiest.0,
+                "events": busiest.1,
+                "panels": busiest.2,
+                "lines": busiest.3,
+            },
+        },
+        "sys_lines": sys_lines,
+        "world_ms": {
+            "p50": num(w50),
+            "p95": num(w95),
+            "p99": num(w99),
+            "max": num(wmax),
+        },
+        "thresholds": {
+            "assert": asserting,
+            "max_frame_bytes": knobs.max_frame_bytes,
+            "max_output_events_per_pulse": knobs.max_output_events_per_pulse,
+        },
+    });
+    let path = arena_report_path(&knobs.json, "fan-out");
+    write_report(&path, &report);
+    println!("harness_fan_out_json: {}", path.display());
+
+    // The match is stopped so the task does not outlive the lane, and its
+    // check-in is pumped through so the world sees it end.
+    let aborted = line(&mut tw, GOD, &format!("@arena/abort {}", match_id.0));
+    assert!(aborted.contains("is stopping"), "@arena/abort: {aborted}");
+    let stop_by = Instant::now() + std::time::Duration::from_secs(10);
+    while Instant::now() < stop_by && tasks.is_live(match_id) {
+        match egress.try_recv() {
+            Ok(message) => {
+                if tasks.stage(message) {
+                    let _ = tw.apply(mush_core::WorldCommand::ModuleAsyncDone {
+                        module: smol_str::SmolStr::new_static(MODULE),
+                        actor: GOD,
+                        correlation: 0,
+                        payload: EGRESS_PAYLOAD.to_owned(),
+                    });
+                    tasks.stamp_ledger_writes(1);
+                    tasks.ack_ledger_upto(1);
+                }
+            }
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+        }
+    }
+
+    // Unconditionally: the lane measured what it said it did.
+    assert_eq!(
+        wanted,
+        pilots.len(),
+        "the pilots asked for were the pilots seated"
+    );
+    assert!(frames > 0, "the world sent no cockpit frame at all");
+    assert!(
+        underway > 0,
+        "no pilot's tank came up and made way: the frames were of a parked field"
+    );
+    if asserting {
+        assert!(
+            panel_bytes_max <= u64::from(knobs.max_frame_bytes),
+            "a cockpit keyframe of {panel_bytes_max} bytes is past harness.max_frame_bytes {}",
+            knobs.max_frame_bytes
+        );
+        assert!(
+            events_max <= u64::from(knobs.max_output_events_per_pulse),
+            "one arena pulse produced {events_max} output events, past \
+             harness.max_output_events_per_pulse {}",
+            knobs.max_output_events_per_pulse
+        );
     }
 }

@@ -101,6 +101,9 @@ mush-proto.workspace = true
 # three tempos, and the slowest of them is a 5,000 ms period. `start_paused`
 # (virtual clock) is what keeps that a test rather than half a minute of sleep.
 tokio = { workspace = true, features = ["test-util"] }
+# 16b cut U.2 (16c `T-36`): `tests/harness.rs` reads resident memory through it
+# on every platform, where `/proc/self/status` answered on Linux alone.
+memory-stats.workspace = true
 
 [lints]
 workspace = true
