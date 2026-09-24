@@ -2635,3 +2635,55 @@ fn m2_a_duration_bound_mid_pulse_is_one_timeout_at_one_millisecond_at_three_cade
         assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
     }
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut Y.1 — the issuer is state; the spot is not
+// ---------------------------------------------------------------------------
+
+/// **16b cut Y.1** (the cut's one hash move): two arenas equal but for a
+/// standing order's `issuer` hash differently — the issuer decides which object
+/// a hint names, so the two are two states and a replay that lost it must not
+/// compare equal — while an order's `spot`, the commander's word for a cell
+/// that nothing steering reads, moves nothing.
+#[test]
+fn the_hash_folds_the_issuer_and_not_the_spot() {
+    let told = |issuer: Option<ObjId>, spot: Option<&str>| tacsim::deliberation::Order {
+        squad: tacsim::deliberation::SquadId {
+            team: Team::Red,
+            index: 1,
+        },
+        objective: tacsim::deliberation::Objective::Advance { to: (12, 9) },
+        target: None,
+        horizon_ms: 600_000,
+        constraints: tacsim::deliberation::Constraints::default(),
+        ttl_ms: 600_000,
+        issued_ms: 0,
+        issuer,
+        spot: spot.map(SmolStr::new),
+    };
+    let under = |order: tacsim::deliberation::Order| {
+        let mut arena = arena_of(
+            vec![
+                tank(MOVER, Team::Red, centre(10, 10)),
+                tank(PARKED, Team::Blue, centre(30, 30)),
+            ],
+            &MatchConfig::default(),
+        );
+        arena.reflex.set_order(
+            MOVER,
+            tacsim::deliberation::StandingOrder::accepted(order, 0),
+        );
+        tacsim::arena::hash::state_hash(&arena)
+    };
+    let machines = under(told(None, None));
+    let pilots = under(told(Some(ObjId(77)), None));
+    let another = under(told(Some(ObjId(78)), None));
+    assert_ne!(machines, pilots, "the issuer is folded");
+    assert_ne!(pilots, another, "and which issuer it is");
+    assert_eq!(
+        under(told(Some(ObjId(77)), Some("The Ford"))),
+        pilots,
+        "the spot is the commander's word and steers nothing"
+    );
+    assert_eq!(under(told(None, Some("The Ford"))), machines);
+}

@@ -345,6 +345,41 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         by: Option<ObjId>,
     },
+    /// **An order landed on a unit** (16b cut Y.1; doc 16 §6 "Deliberation": *an
+    /// order (objective, target, horizon, constraints) with a time to live*).
+    ///
+    /// One line per **unit** the order landed on, at the arena millisecond
+    /// `crate::arena::intents::apply_intent` took it at — a pilot's `ORDER ALL`
+    /// over two squads of two is four lines at one `t_ms` under the phase's one
+    /// hash. A refused order journals nothing: the line records what the arena
+    /// accepted, not what anybody asked for.
+    ///
+    /// `target` is the order's preferred contact **as the order carries it**: the
+    /// issuer's opaque contact id (a pilot's own, or the squad commander's when
+    /// `issuer` is `None`). It is never a target object id — the black box records
+    /// what was said, and which object that named is the reflex row's business.
+    Ordered {
+        /// The unit the order landed on.
+        unit: ObjId,
+        /// The squad the order was written for, rendered (`red-1`).
+        squad: SmolStr,
+        /// The unit whose scope the hint is written in, `None` for the squad's
+        /// own commander (the LLM seam).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        issuer: Option<ObjId>,
+        /// The objective, by its word.
+        objective: SmolStr,
+        /// The issuer's opaque contact id the order points at, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<ContactId>,
+        /// The commander's word for an `advance` cell (a key spot's name).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spot: Option<SmolStr>,
+        /// Whether the order forbids shooting.
+        hold_fire: bool,
+        /// Its time to live, milliseconds of arena time.
+        ttl_ms: u32,
+    },
     /// **A squad's standing order ran out unrenewed** (16b cut N.2; doc 16 §6
     /// "Provider failure": *the visible in-world effect — "mind link dropped, unit
     /// on doctrine" — is a notice when an order expires unrenewed*).
@@ -418,6 +453,7 @@ impl EventKind {
             EventKind::SectionDestroyed { .. } => "section_destroyed",
             EventKind::UnitDisabled { .. } => "unit_disabled",
             EventKind::UnitDestroyed { .. } => "unit_destroyed",
+            EventKind::Ordered { .. } => "ordered",
             EventKind::OrderExpired { .. } => "order_expired",
             EventKind::Lagged { .. } => "lagged",
             EventKind::MatchEnded { .. } => "match_ended",

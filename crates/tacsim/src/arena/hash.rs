@@ -109,7 +109,10 @@ thread_local! {
 ///    state byte, the goal cell's two `u16` (`u16::MAX` twice for none), the
 ///    waypoint index as `u16` (`u16::MAX` for none), the route's length as `u64`
 ///    and the target unit's `u32` (`0` for none); then the standing order (16b
-///    cut N.2) and, from **16b cut Q.7**, the avoided cells — their count as
+///    cut N.2: `[0]` alone for none, else the objective's code byte, the `i64`
+///    expiry and the `hold_fire` byte, then — **16b cut Y.1** — the issuer's
+///    `u32`, `0` for none; the order's `spot` is deliberately not folded, since
+///    it steers nothing) and, from **16b cut Q.7**, the avoided cells — their count as
 ///    `u64`, then per entry the cell's two `u16` and the stop's `i64` stamp — and
 ///    `stand_until_ms`, `quiet_since_ms` (each a presence byte then an `i64`) and
 ///    the `rallied` byte; then, from **16b cut E.4**, `last_plot` (a presence
@@ -522,6 +525,15 @@ pub fn state_hash(arena: &Arena) -> u64 {
                 hash = fnv1a64_update(hash, &[standing.order.objective.code()]);
                 hash = fnv1a64_update(hash, &standing.expires_ms.to_le_bytes());
                 hash = fnv1a64_update(hash, &[u8::from(standing.order.constraints.hold_fire)]);
+                // **16b cut Y.1** (the cut's one hash move): whose scope the hint
+                // is written in, `0` for the squad's own commander. Two orders
+                // that differ only in the issuer point at different objects, so
+                // they are two states. `spot` is NOT folded: it is the
+                // commander's word for the cell, and nothing that steers reads it.
+                hash = fnv1a64_update(
+                    hash,
+                    &standing.order.issuer.map_or(0_u32, |id| id.0).to_le_bytes(),
+                );
             }
             None => hash = fnv1a64_update(hash, &[0_u8]),
         }

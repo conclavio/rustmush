@@ -112,6 +112,9 @@ const NOT_SPATIAL: &str = "not a spatial entity.";
 /// imported, so a test over SSH asserts the sentence a pilot reads and not a
 /// constant the code could rename underneath it.
 const NO_SUCH_CONTACT: &str = "No such contact.";
+/// **The one refusal for a squad a pilot may not order** (16b cut Y.1), spelled
+/// out for the same reason.
+const NO_SUCH_SQUAD: &str = "No such squad.";
 
 /// The cell each slot-1 tank is re-posed to: 70 cells apart on the east-west
 /// road, which is outside the stock sensor's 60 cells at every signature factor.
@@ -1140,6 +1143,31 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         );
     }
     assert_eq!(first, NO_SUCH_CONTACT, "and the refusal is that sentence");
+    // **16b cut Y.1: `ORDER` refuses the squad before it looks at a contact.**
+    //
+    // This match fields no machine, so nobody holds a squad, and authority is
+    // refused before the target is resolved: an `ENGAGE` at a tank that is out
+    // there and undetected, an `ENGAGE` at nothing, the other side's squad and a
+    // squad that does not exist all answer one byte-identical `No such squad.`
+    // — a pilot who may not order learns nothing about the scope by naming a
+    // contact, and nothing about the other side by naming its squads.
+    let orders = [
+        "ORDER red-1 ENGAGE BA",
+        "ORDER red-1 ENGAGE ZZ",
+        "ORDER blue-1 HOLD",
+        "ORDER red-9 HOLD",
+    ];
+    let mut answers: Vec<String> = Vec::new();
+    for line in orders {
+        let seen = ask(&mut ada, line, NO_SUCH_SQUAD).await;
+        answers.push(seen.trim_start_matches(line).trim().to_owned());
+    }
+    for (line, answer) in orders.into_iter().zip(answers.iter()) {
+        assert_eq!(
+            answer, NO_SUCH_SQUAD,
+            "{line} answered something other than the one byte-identical squad refusal"
+        );
+    }
     // With no lock and no name the two read verbs say their own line, which is
     // NOT `FIRE`'s: `FIRE` takes a weapon and never a contact.
     for line in ["RANGE", "BEARING"] {

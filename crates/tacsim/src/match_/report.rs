@@ -408,6 +408,11 @@ pub struct Fold {
     /// The most recently completed shot line: its target and, when it was
     /// kept, its index in `lines`.
     last_completed: Option<(ObjId, Option<usize>)>,
+    /// **The pilot's last `ordered` line said** (16b cut Y.1), as `(t_ms,
+    /// squad)`: the tape carries one line per unit the order landed on, and the
+    /// pilot gave one order, so a second line of the same moment and squad says
+    /// nothing.
+    last_order: Option<(i64, SmolStr)>,
 }
 
 /// **A folded report** (16b cut V.3): what one reader is told of one match.
@@ -457,6 +462,7 @@ impl Fold {
             kills: 0,
             last_ms: 0,
             last_completed: None,
+            last_order: None,
         }
     }
 
@@ -712,6 +718,41 @@ impl Fold {
                 self.tail
                     .push(stamped(t_ms, "the match was voided.".to_owned()));
             }
+            // **16b cut Y.1**: the pilot's own orders, once per order. Only the
+            // issuer reads them — an order the machines' own commander gave, or
+            // another pilot's, is not this pilot's to be told about.
+            EventKind::Ordered {
+                squad,
+                issuer: Some(issuer),
+                objective,
+                target,
+                spot,
+                hold_fire,
+                ..
+            } if *issuer == me => {
+                let moment = (t_ms, squad.clone());
+                if self.last_order.as_ref() == Some(&moment) {
+                    return;
+                }
+                self.last_order = Some(moment);
+                let what = match objective.as_str() {
+                    "advance" => match spot {
+                        Some(spot) => format!("advance on {spot}"),
+                        // The cell pair is never printed: it is a coordinate
+                        // and not a word the pilot used.
+                        None => "advance".to_owned(),
+                    },
+                    // The hint is the pilot's own contact id, so it is named
+                    // through the pilot's own knowledge, exactly as a lock is.
+                    "engage" => match target {
+                        Some(contact) => format!("engage {}", self.contact_name(*contact)),
+                        None => "engage".to_owned(),
+                    },
+                    other => other.to_owned(),
+                };
+                let holding = if *hold_fire { ", holding fire" } else { "" };
+                let _ = self.push_line(t_ms, seq, format!("ordered {squad}{holding}: {what}."));
+            }
             // Everything else prints nothing: every other unit's detections,
             // classifications and losses, position summaries, tempo, blocked,
             // receiver, lag, startup, order expiry, impact, and every event of
@@ -768,6 +809,20 @@ impl Fold {
         self.known
             .values()
             .any(|known| known.target == target && known.classified)
+    }
+
+    /// **A contact id of the pilot's own, as they would read it** (16b cut Y.1):
+    /// the callsign of its target while the platform holds it designated, and
+    /// `a contact` otherwise — a hint the pilot typed at a still-unknown `X2`
+    /// is not named after the fact.
+    fn contact_name(&self, contact: ContactId) -> String {
+        match self.known.get(&contact) {
+            Some(known) if known.designated => self
+                .roster
+                .callsign(known.target)
+                .map_or_else(|| "a contact".to_owned(), str::to_owned),
+            _ => "a contact".to_owned(),
+        }
     }
 
     /// `BA` while the platform holds `target` named, and `a contact` otherwise.
@@ -953,6 +1008,23 @@ impl Fold {
             } => format!(
                 "{word} unit={} squad={squad} objective={objective}",
                 unit(id)
+            ),
+            EventKind::Ordered {
+                unit: id,
+                squad,
+                issuer,
+                objective,
+                target,
+                spot,
+                hold_fire,
+                ttl_ms,
+            } => format!(
+                "{word} unit={} squad={squad} issuer={} objective={objective} target={} \
+                 spot={} hold_fire={hold_fire} ttl_ms={ttl_ms}",
+                unit(id),
+                issuer.as_ref().map_or_else(|| "-".to_owned(), unit),
+                target.map_or_else(|| "-".to_owned(), |contact| contact.to_string()),
+                spot.as_ref().map_or("-", SmolStr::as_str)
             ),
             EventKind::Lagged { dt_ms } => format!("{word} dt_ms={dt_ms}"),
             EventKind::MatchEnded { reason } => {
@@ -2974,5 +3046,140 @@ mod tests {
         assert_eq!(match_word("-1"), None);
         assert_eq!(short_digest(""), "none");
         assert_eq!(short_digest("abcdef"), "abcdef");
+    }
+
+    /// One `ordered` line, as the arena journals it per unit.
+    #[allow(clippy::too_many_arguments)]
+    fn ordered(
+        unit: ObjId,
+        issuer: Option<ObjId>,
+        objective: &str,
+        target: Option<ContactId>,
+        spot: Option<&str>,
+        hold_fire: bool,
+    ) -> EventKind {
+        EventKind::Ordered {
+            unit,
+            squad: SmolStr::new("red-1"),
+            issuer,
+            objective: SmolStr::new(objective),
+            target,
+            spot: spot.map(SmolStr::new),
+            hold_fire,
+            ttl_ms: 600_000,
+        }
+    }
+
+    /// **16b cut Y.1**: the issuer reads their own orders — once per order,
+    /// though the tape carries one line per unit of the squad — with the hint
+    /// named through their own knowledge (`BA` for a contact they had told
+    /// apart, `a contact` for one they had not), an advance by the spot's name
+    /// and never by its cell, and `holding fire` where it was said. The other
+    /// pilot reads none of it, an order the machines' own commander gave reads
+    /// nothing to anybody, and staff read every field of every line.
+    #[test]
+    fn y1_the_issuer_reads_their_own_orders_once_and_nobody_else_does() {
+        const WING: ObjId = ObjId(301);
+        const WING2: ObjId = ObjId(302);
+        const BLIP: ContactId = ContactId(0x0000_0000_0000_0042);
+        let mut tape = Tape::new();
+        tape.at(
+            10_000,
+            EventKind::Detected {
+                viewer: ME,
+                contact: SEEN,
+                target: THEM,
+            },
+        )
+        .at(
+            11_000,
+            EventKind::Detected {
+                viewer: ME,
+                contact: BLIP,
+                target: ObjId(202),
+            },
+        )
+        .at(
+            25_000,
+            EventKind::Classified {
+                viewer: ME,
+                contact: SEEN,
+                target: THEM,
+                team: Team::Blue,
+            },
+        )
+        // One order to a squad of two: two lines, one moment.
+        .at(
+            62_000,
+            ordered(WING, Some(ME), "engage", Some(SEEN), None, false),
+        )
+        .at(
+            62_000,
+            ordered(WING2, Some(ME), "engage", Some(SEEN), None, false),
+        )
+        .at(
+            70_000,
+            ordered(WING, Some(ME), "engage", Some(BLIP), None, true),
+        )
+        .at(
+            71_000,
+            ordered(WING, Some(ME), "advance", None, Some("The Ford"), false),
+        )
+        .at(
+            72_000,
+            ordered(WING, Some(ME), "advance", None, None, false),
+        )
+        .at(
+            73_000,
+            ordered(WING, Some(ME), "withdraw", None, None, true),
+        )
+        .at(74_000, ordered(WING, Some(ME), "engage", None, None, false))
+        // Somebody else's order, and the machines' own commander's.
+        .at(75_000, ordered(WING, Some(THEM), "hold", None, None, false))
+        .at(76_000, ordered(WING, None, "hold", None, None, false));
+        let events = tape.0.clone();
+
+        let mine = fold(&events, &roster(), Reader::Pilot { unit: ME }, RULES);
+        assert_eq!(
+            mine.lines,
+            vec![
+                "  1:02  ordered red-1: engage BA.",
+                "  1:10  ordered red-1, holding fire: engage a contact.",
+                "  1:11  ordered red-1: advance on The Ford.",
+                "  1:12  ordered red-1: advance.",
+                "  1:13  ordered red-1, holding fire: withdraw.",
+                "  1:14  ordered red-1: engage.",
+            ]
+        );
+
+        let theirs = fold(&events, &roster(), Reader::Pilot { unit: THEM }, RULES);
+        assert_eq!(
+            theirs.lines,
+            vec!["  1:15  ordered red-1: hold."],
+            "the other pilot reads none of ME's orders, only their own"
+        );
+
+        let staff = fold(&events, &roster(), Reader::Staff, RULES);
+        let lines: Vec<&String> = staff
+            .lines
+            .iter()
+            .filter(|line| line.contains("ordered"))
+            .collect();
+        assert_eq!(lines.len(), 9, "staff read every line: {lines:?}");
+        assert_eq!(
+            lines[0].as_str(),
+            "  1:02.000  ordered unit=#301 squad=red-1 issuer=RA(#101) objective=engage \
+             target=0123456789abcdef spot=- hold_fire=false ttl_ms=600000"
+        );
+        assert_eq!(
+            lines[3].as_str(),
+            "  1:11.000  ordered unit=#301 squad=red-1 issuer=RA(#101) objective=advance \
+             target=- spot=The Ford hold_fire=false ttl_ms=600000"
+        );
+        assert!(
+            lines[8].contains("issuer=- objective=hold"),
+            "the machines' commander is `-`: {}",
+            lines[8]
+        );
     }
 }

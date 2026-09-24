@@ -486,9 +486,36 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
             return IntentOutcome::Refused(Refusal::NotReflex);
         }
         let at = arena.now_ms;
+        // **16b cut Y.1**: the hash is asked **before** the order is written —
+        // `Arena::event_hash`'s own rule, *every resolver asks before it writes* —
+        // so the line carries the state the order landed on, and every `ordered`
+        // line of one pulse shares phase 2's one lazy hash (`step.rs` opens
+        // `ActionHash::Pending` around the intent loop).
+        let hash = arena.event_hash();
         arena.reflex.set_order(
             i.unit,
             crate::deliberation::order::StandingOrder::accepted((**order).clone(), at),
+        );
+        // **16b cut Y.1** — the black box records the order that landed, one line
+        // per unit, at `now_ms`, with no draws. It is cadence-safe for the reason
+        // `StandingOrder::accepted_ms` already is: phase 2 runs at the pulse's
+        // start, and a world beat lands in the pulse that reaches it, so the same
+        // scripted order journals at the same `t_ms` at 5,000, 1,000 and 500 ms.
+        // A refused order returned above and journals nothing.
+        let _ = arena.ledger.append(
+            at,
+            EventKind::Ordered {
+                unit: i.unit,
+                squad: SmolStr::new(order.squad.to_string()),
+                issuer: order.issuer,
+                objective: SmolStr::new_static(order.objective.as_str()),
+                target: order.preferred_contact(),
+                spot: order.spot.clone(),
+                hold_fire: order.constraints.hold_fire,
+                ttl_ms: order.ttl_ms,
+            },
+            Vec::new(),
+            hash,
         );
         // Latest-wins, like every other continuous order: a squad that is sent two
         // orders in one burst obeys the second, and neither queues.
@@ -1320,5 +1347,132 @@ mod tests {
         assert_eq!(unique.len(), words.len());
         assert!(words.iter().all(|word| !word.is_empty()));
         assert_eq!(ControlState::Linkdead.as_str(), "linkdead");
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut Y.1 — the `ordered` line
+    // -----------------------------------------------------------------------
+
+    /// Every line the ledger holds, flushed.
+    fn y1_lines(arena: &mut Arena) -> Vec<crate::arena::ledger::LedgerEvent> {
+        arena.ledger.flush();
+        arena
+            .ledger
+            .take_chunks()
+            .iter()
+            .flat_map(|chunk| {
+                String::from_utf8_lossy(&chunk.bytes)
+                    .lines()
+                    .filter_map(|line| serde_json::from_str(line).ok())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// **16b cut Y.1**: an order from a pilot journals one `ordered` line per
+    /// unit it lands on, at `now_ms`, with every field off the order — the
+    /// issuer, the squad, the objective's word, the hint **as the order carries
+    /// it** (the issuer's contact id), the spot, the constraint and the time to
+    /// live — and a refused order (here a seated tank's, `NotReflex`) journals
+    /// nothing at all.
+    #[test]
+    fn y1_an_order_journals_one_ordered_line_per_unit_and_a_refused_one_nothing() {
+        let mut arena = two_tanks(1);
+        arena.now_ms = 7_000;
+        for unit in [RED, BLUE] {
+            if let Some(state) = arena.unit_mut(unit) {
+                state.controller = Controller::Reflex;
+            }
+        }
+        let hint = ContactId(0x2350_0000_0000_0001);
+        let squad = crate::deliberation::squad::SquadId {
+            team: Team::Red,
+            index: 1,
+        };
+        let told = crate::deliberation::order::Order {
+            squad,
+            objective: crate::deliberation::order::Objective::Engage {
+                target_hint: Some(hint),
+            },
+            target: None,
+            horizon_ms: 600_000,
+            constraints: crate::deliberation::order::Constraints {
+                hold_fire: true,
+                max_range_band: None,
+            },
+            ttl_ms: 600_000,
+            issued_ms: 3,
+            issuer: Some(ObjId(77)),
+            spot: Some(SmolStr::new("The Ford")),
+        };
+        let before = arena.ledger.seq();
+        for (seq, unit) in [RED, BLUE].into_iter().enumerate() {
+            assert_eq!(
+                apply_intent(
+                    &mut arena,
+                    &intent(
+                        unit,
+                        1,
+                        u64::try_from(seq).unwrap_or(0),
+                        IntentKind::Order(Box::new(told.clone()))
+                    ),
+                    IntentSource::Seat
+                ),
+                IntentOutcome::AppliedContinuous
+            );
+        }
+        let lines: Vec<crate::arena::ledger::LedgerEvent> = y1_lines(&mut arena)
+            .into_iter()
+            .filter(|event| event.seq > before)
+            .collect();
+        assert_eq!(lines.len(), 2, "one line per unit: {lines:?}");
+        for (line, unit) in lines.iter().zip([RED, BLUE]) {
+            assert_eq!(line.t_ms, 7_000, "at now_ms");
+            assert!(line.draws.is_empty(), "an order draws nothing");
+            assert_eq!(
+                line.kind,
+                EventKind::Ordered {
+                    unit,
+                    squad: SmolStr::new("red-1"),
+                    issuer: Some(ObjId(77)),
+                    objective: SmolStr::new("engage"),
+                    target: Some(hint),
+                    spot: Some(SmolStr::new("The Ford")),
+                    hold_fire: true,
+                    ttl_ms: 600_000,
+                }
+            );
+        }
+        assert_eq!(lines[0].kind.as_str(), "ordered");
+        // The order stands on both machines, stamped at `now_ms`.
+        for unit in [RED, BLUE] {
+            assert_eq!(
+                arena
+                    .reflex
+                    .order(unit)
+                    .map(|standing| standing.accepted_ms),
+                Some(7_000)
+            );
+        }
+
+        // Refused: a seated tank takes no order, and the black box says nothing.
+        if let Some(state) = arena.unit_mut(RED) {
+            state.controller = Controller::Pilot;
+        }
+        let before = arena.ledger.seq();
+        assert_eq!(
+            apply_intent(
+                &mut arena,
+                &intent(RED, 1, 9, IntentKind::Order(Box::new(told))),
+                IntentSource::Seat
+            ),
+            IntentOutcome::Refused(Refusal::NotReflex)
+        );
+        assert_eq!(
+            arena.ledger.seq(),
+            before,
+            "a refused order journals nothing"
+        );
+        assert!(y1_lines(&mut arena).is_empty());
     }
 }

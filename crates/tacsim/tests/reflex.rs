@@ -4875,6 +4875,8 @@ fn a_kill_under_a_withdraw_order() -> Arena {
         constraints: tacsim::deliberation::Constraints::default(),
         ttl_ms: 25_000,
         issued_ms: 0,
+        issuer: None,
+        spot: None,
     };
     for unit in [RED, RED2] {
         arena.reflex.set_order(
@@ -4929,6 +4931,273 @@ fn e2_a_kill_under_an_expiring_withdraw_order_is_one_log_at_three_cadences() {
             "the field ended differently at {cadence} ms"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Y.1 — a pilot's order, the hint on the issuer's scope (16b §11:
+// mandatory)
+// ---------------------------------------------------------------------------
+
+/// The seated red tank whose pilot gives the order: in no squad, because a
+/// pilot's tank takes none.
+const Y1_PILOT: ObjId = ObjId(5);
+
+/// The arena millisecond the wingman's choice is read at: a multiple of all
+/// three cadences, so every replay has a pulse that ends there.
+const Y1_READ_AT_MS: i64 = 5_000;
+
+/// **A pilot points their wingman at the tank the machine would not have
+/// chosen.**
+///
+/// Red's squad is a pair of machines: the commander (`RED`, the lowest id) out
+/// on the western edge holding nothing at all, and the wingman (`RED2`) holding
+/// **two** classified hostiles on row 8 east of it — `BLUE2` two cells off
+/// showing its rear, and `BLUE` four cells off showing its front, which the
+/// utility score ranks last on both terms. The seated red tank (`Y1_PILOT`)
+/// holds `BLUE` from four cells south of it, and nothing it can see ever
+/// leaves its sight, so its contact id stays good for the whole replay.
+///
+/// Blue's two tanks are cold and seated, so neither moves; the pair's cannon
+/// never fires because the order holds fire, so neither target is ever shot
+/// out from under the choice this replay is about.
+fn y1_a_wingman_holding_two_hostiles() -> Arena {
+    let mut hinted = tank(
+        BLUE,
+        Team::Blue,
+        centre(11, 8),
+        Vec::new(),
+        Controller::Pilot,
+    );
+    // Facing west, at the wingman: its front.
+    hinted.pose.heading_mdeg = 270_000;
+    let mut other = tank(
+        BLUE2,
+        Team::Blue,
+        centre(9, 8),
+        Vec::new(),
+        Controller::Pilot,
+    );
+    // Facing east, away from the wingman: its rear.
+    other.pose.heading_mdeg = 90_000;
+    let mut arena = arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(1, 1),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                Y1_PILOT,
+                Team::Red,
+                centre(11, 12),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+            tank(
+                RED2,
+                Team::Red,
+                centre(7, 8),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            hinted,
+            other,
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[Y1_PILOT, BLUE, BLUE2],
+    );
+    plant_contact(&mut arena, RED2, BLUE, Team::Blue, 0);
+    plant_contact(&mut arena, RED2, BLUE2, Team::Blue, 0);
+    plant_contact(&mut arena, Y1_PILOT, BLUE, Team::Blue, 0);
+    arena
+}
+
+/// **One scripted replay of a pilot's `ENGAGE` order**, delivered at beat 0 —
+/// the opening pulse, whose phase 2 runs at arena millisecond 0 at every
+/// cadence — as the world delivers one: an [`IntentKind::Order`] per unit of
+/// the squad, on each unit's own `helm` epoch. `issuer` is the order's
+/// [`tacsim::deliberation::Order::issuer`]; the hint is always the **pilot's**
+/// contact id on `BLUE`.
+///
+/// Answers the replay and the wingman's target at [`Y1_READ_AT_MS`].
+fn y1_replay(cadence_ms: i64, until_ms: i64, issuer: Option<ObjId>) -> (Replay, Option<ObjId>) {
+    let mut arena = y1_a_wingman_holding_two_hostiles();
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    let squad = arena
+        .squad_of(RED2)
+        .map(|roster| roster.id)
+        .expect("red's pair is a squad");
+    assert_eq!(
+        arena.squad_of(RED2).map(|roster| roster.commander),
+        Some(RED),
+        "the commander is the lowest id, and it is not the wingman"
+    );
+    assert!(
+        hold_on(&arena, RED, BLUE).is_none(),
+        "the commander holds nothing on the hinted tank"
+    );
+    let hint = draw_contact_id(SEED, Y1_PILOT, BLUE);
+    let told = tacsim::deliberation::Order {
+        squad,
+        objective: tacsim::deliberation::Objective::Engage {
+            target_hint: Some(hint),
+        },
+        target: None,
+        horizon_ms: 600_000,
+        constraints: tacsim::deliberation::Constraints {
+            hold_fire: true,
+            max_range_band: None,
+        },
+        ttl_ms: 600_000,
+        issued_ms: 0,
+        issuer,
+        spot: None,
+    };
+    let beat: Vec<tacsim::arena::intents::Intent> = [RED, RED2]
+        .into_iter()
+        .zip(1_u64..)
+        .map(|(unit, seq)| tacsim::arena::intents::Intent {
+            unit,
+            channel: Channel::Helm,
+            epoch: arena.epochs.current(unit, Channel::Helm),
+            kind: tacsim::arena::intents::IntentKind::Order(Box::new(told.clone())),
+            seq,
+        })
+        .collect();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut wall = 0_i64;
+    let mut pulses = 0_u32;
+    let mut read: Option<Option<ObjId>> = None;
+    loop {
+        let intents: &[tacsim::arena::intents::Intent] = if pulses == 0 { &beat } else { &[] };
+        let out = arena.step(wall, &[], intents);
+        pulses = pulses.saturating_add(1);
+        absorb(&out, &mut bytes);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if arena.now_ms == Y1_READ_AT_MS {
+            read = Some(target_of(&arena, RED2));
+        }
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    let events = events(&mut arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    let finals = arena
+        .units
+        .iter()
+        .map(|unit| {
+            let row = arena.reflex.unit(unit.id);
+            (
+                unit.id,
+                unit.pose.x_cm,
+                unit.pose.y_cm,
+                unit.pose.heading_mdeg,
+                unit.speed_cms,
+                row.map_or(ReflexState::Startup, |row| row.state),
+                row.and_then(|row| row.goal),
+            )
+        })
+        .collect();
+    (
+        Replay {
+            events,
+            hashes,
+            finals,
+            pulses,
+        },
+        read.expect("a pulse ended at the reading's millisecond"),
+    )
+}
+
+/// **16b cut Y.1 (16b §11: mandatory)**: a pilot's `ENGAGE` with a hint is one
+/// log at three cadences, and the hint is resolved on **the issuer's** scope.
+///
+/// At 5,000, 1,000 and 500 ms the event list — the two `ordered` lines at
+/// arena millisecond 0 among it — the hash sequence (which now folds the
+/// issuer) and the field's end are one. The wingman, holding both hostiles,
+/// takes `BLUE`, which its own score ranks last: the pilot's contact id named
+/// it, resolved on the pilot's store into an object, and the wingman found its
+/// own contact on that object. **And an otherwise identical replay with `issuer:
+/// None` takes `BLUE2`**: resolved on the commander's store, the pilot's id
+/// names nothing (contact ids are drawn per viewer), so the wingman chooses on
+/// its own score. The test fails if the issuer is ignored or resolved on the
+/// commander, and if it is resolved on the wingman itself.
+#[test]
+fn y1_a_pilots_order_with_an_issuer_hint_is_one_log_at_three_cadences() {
+    let cadences = [5_000_i64, 1_000, 500];
+    let runs: Vec<(Replay, Option<ObjId>)> = cadences
+        .into_iter()
+        .map(|cadence| y1_replay(cadence, 10_000, Some(Y1_PILOT)))
+        .collect();
+    let (first, chosen) = runs.first().expect("three replays");
+    let ordered: Vec<&(i64, String, u64)> = first
+        .events
+        .iter()
+        .filter(|(_, kind, _)| kind.contains("\"kind\":\"ordered\""))
+        .collect();
+    assert_eq!(
+        ordered.len(),
+        2,
+        "one line per unit of the squad: {ordered:?}"
+    );
+    assert!(
+        ordered.iter().all(|(t_ms, kind, hash)| *t_ms == 0
+            && kind.contains("\"issuer\":5")
+            && *hash == ordered[0].2),
+        "at beat 0, the issuer on the line, one phase's hash: {ordered:?}"
+    );
+    assert_eq!(
+        *chosen,
+        Some(BLUE),
+        "the wingman took the tank the pilot pointed at"
+    );
+    assert!(first.hashes.len() >= 10, "{} substeps", first.hashes.len());
+    assert!(
+        runs.iter()
+            .map(|(run, _)| run.pulses)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]),
+        "three cadences, three different numbers of pulses"
+    );
+    for ((run, target), cadence) in runs.iter().zip(cadences).skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the field ended differently at {cadence} ms"
+        );
+        assert_eq!(*target, *chosen, "the choice diverged at {cadence} ms");
+    }
+
+    // The same replay with the order's issuer left to the squad's commander.
+    let (_, commanders) = y1_replay(1_000, 10_000, None);
+    assert_eq!(
+        commanders,
+        Some(BLUE2),
+        "resolved on the commander's scope the pilot's id names nothing, and the \
+         wingman chose on its own score"
+    );
 }
 
 /// **The cell in the corner pocket**, sealed by [`a_pocket`] and reached by no
@@ -4999,6 +5268,8 @@ fn an_unreachable_order_and_a_hot_gun() -> Arena {
         constraints: tacsim::deliberation::Constraints::default(),
         ttl_ms: 600_000,
         issued_ms: 0,
+        issuer: None,
+        spot: None,
     };
     arena
         .reflex
@@ -6874,6 +7145,8 @@ fn e4_order(
         constraints: tacsim::deliberation::Constraints::default(),
         ttl_ms,
         issued_ms: arena.now_ms,
+        issuer: None,
+        spot: None,
     };
     arena.reflex.set_order(
         unit,
@@ -7738,6 +8011,8 @@ fn aa1_order(
         constraints,
         ttl_ms: 60_000,
         issued_ms: arena.now_ms,
+        issuer: None,
+        spot: None,
     };
     arena.reflex.set_order(
         RED,

@@ -27,7 +27,9 @@
 //! lands). The vocabulary — four objectives, three range bands — is closed and
 //! lives in Rust, which is doc 16 §7's *what stays Rust*.
 
+use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 
 use crate::arena::state::ContactId;
 use crate::deliberation::squad::SquadId;
@@ -253,6 +255,20 @@ pub struct Order {
     /// never a clock the arena reads: expiry is measured from the arena
     /// millisecond the order was applied at (see [`StandingOrder`]).
     pub issued_ms: i64,
+    /// **The unit whose scope a target hint is written in** (16b cut Y.1; 16c N3):
+    /// a pilot's own tank when a pilot typed `ORDER`, `None` for the squad's own
+    /// commander (the LLM seam). `ordered_target` resolves the hint there; the
+    /// receiving unit still chooses only among what it holds itself.
+    ///
+    /// Folded into `crate::arena::hash::state_hash` beside the constraint byte
+    /// (the one hash move of cut Y), because it decides which object a hint names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<ObjId>,
+    /// **The commander's word for an `Advance` cell** (16b cut Y.1) — the key
+    /// spot's name — for the record and the debrief. Read by nothing that steers,
+    /// and deliberately not hashed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spot: Option<SmolStr>,
 }
 
 /// Why an order was refused before it ever reached the arena.
@@ -386,6 +402,8 @@ mod tests {
             constraints: Constraints::default(),
             ttl_ms: 30_000,
             issued_ms: 1,
+            issuer: None,
+            spot: None,
         }
     }
 

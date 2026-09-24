@@ -2774,18 +2774,21 @@ pub enum ArenaError {
 /// takes no hash at all.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ActionHash {
-    /// Not inside phase 4 or a substep's reflex ticks: every
-    /// [`Arena::event_hash`] takes a fresh [`crate::arena::hash::state_hash`] and
-    /// stores nothing. What a direct resolver call in a test sees.
+    /// Not inside phase 2's intent loop, phase 4 or a substep's reflex ticks:
+    /// every [`Arena::event_hash`] takes a fresh
+    /// [`crate::arena::hash::state_hash`] and stores nothing. What a direct
+    /// resolver call in a test sees.
     #[default]
     Outside,
     /// Inside, and nothing has journalled yet: the first
     /// [`Arena::event_hash`] takes the hash, stores it as
-    /// [`ActionHash::Taken`], and answers it. Set by phase 4 before its loop and
-    /// by a substep's first `ReflexTick`.
+    /// [`ActionHash::Taken`], and answers it. Set by phase 2 before its intent
+    /// loop (16b cut Y.1: the `ordered` lines of one pulse), by phase 4 before
+    /// its loop and by a substep's first `ReflexTick`.
     Pending,
     /// Inside, and taken: every later line of the run carries this one hash.
-    /// Phase 4 and the substep's end set [`ActionHash::Outside`] again.
+    /// Phase 2's and phase 4's ends and the substep's end set
+    /// [`ActionHash::Outside`] again.
     Taken(u64),
 }
 
@@ -3705,9 +3708,10 @@ impl Arena {
     }
 
     /// **The hash one discrete action's ledger line carries** (16b cut W.1):
-    /// the one `Arena::action_hash` holds while the pulse is inside phase 4 or
-    /// a substep's reflex ticks, and a fresh [`crate::arena::hash::state_hash`]
-    /// outside them.
+    /// the one `Arena::action_hash` holds while the pulse is inside phase 2's
+    /// intent loop (16b cut Y.1, the `ordered` lines), phase 4 or a substep's
+    /// reflex ticks, and a fresh [`crate::arena::hash::state_hash`] outside
+    /// them.
     ///
     /// Every resolver of a discrete action goes through this rather than hashing for
     /// itself, so the phase's lines share one hash exactly as a substep's do, and a

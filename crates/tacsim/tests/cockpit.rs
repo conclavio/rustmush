@@ -118,6 +118,10 @@ struct Rig {
     /// carries a frame **or** the arena second has moved (16b cut D.1), so the
     /// clock reaches here at least once an arena second whatever the frames do.
     staged_now_ms: i64,
+    /// **The match ledger as it left the arena** (16b cut Y.1): every line of
+    /// every closed chunk [`Rig::pump`] has staged, in order — the `ordered`
+    /// lines an `ORDER` journals are read here.
+    tape: Vec<tacsim::arena::ledger::LedgerEvent>,
 }
 
 impl Rig {
@@ -157,6 +161,7 @@ impl Rig {
             now: 0,
             log: Vec::new(),
             staged_now_ms: 0,
+            tape: Vec::new(),
         };
         // **The control-lease mirror.** `request_seat_activation` fails closed on
         // an unread one (`SeatError::ControlUnknown`), and the mirror is
@@ -190,6 +195,14 @@ impl Rig {
                             tacsim::arena_task::ArenaOut::Frames { now_ms, .. } => Some(*now_ms),
                             _ => None,
                         };
+                        // 16b cut Y.1: the tape, as each closed chunk carries it.
+                        if let tacsim::arena_task::ArenaOut::Ledger { chunk, .. } = &message {
+                            self.tape.extend(
+                                String::from_utf8_lossy(&chunk.bytes)
+                                    .lines()
+                                    .filter_map(|line| serde_json::from_str(line).ok()),
+                            );
+                        }
                         if !tasks.stage(message) {
                             break;
                         }
@@ -549,6 +562,103 @@ impl Rig {
             typed_state: mush_core::ModuleActionState::unavailable(),
         };
         f(&ctx)
+    }
+
+    /// **The same with a mutable `Ctx`** (16b cut Y.1), for a test that calls a
+    /// world-side function that writes — `forward_intent`, `forward_order` —
+    /// directly. What it emits is recorded into [`Rig::log`].
+    fn with_ctx_mut<T>(&mut self, n: usize, f: impl FnOnce(&mut mush_core::Ctx<'_>) -> T) -> T {
+        let actor = self.pilot(n);
+        let mut out = mush_core::Outbox::new();
+        let answer = {
+            let engine = self.tw.engine_mut();
+            let mut ctx = mush_core::Ctx {
+                w: &mut engine.world,
+                actor,
+                switches: mush_core::SwitchSet::default(),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(smol_str::SmolStr::new(tacsim::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            f(&mut ctx)
+        };
+        self.log.extend(out.take());
+        answer
+    }
+
+    /// **`reds` pilots on red and `blues` on blue, each side topped up to
+    /// `fielded` by the AI fill, started and boarded** (16b cut Y.1). Pilot `0`
+    /// claims first and leads red; the side's slots follow claim order, so red
+    /// pilot `n` sits in slot `n + 1`.
+    async fn fly_with_ai(&mut self, reds: usize, blues: usize, fielded: u8) {
+        for n in 0..reds {
+            self.say(n, "sim team red");
+        }
+        for n in reds..reds + blues {
+            self.say(n, "sim team blue");
+        }
+        let said = self.say(0, &format!("sim ai {fielded}"));
+        assert!(!said.is_empty(), "SIM AI answers");
+        self.say(0, "sim start");
+        for n in 0..reds {
+            self.walk_to(n, match_::RED_ROOM_ENTRY);
+            self.say(n, "board");
+        }
+        for n in reds..reds + blues {
+            self.walk_to(n, match_::BLUE_ROOM_ENTRY);
+            self.say(n, "board");
+        }
+        assert_eq!(self.state(), MatchState::Running);
+    }
+
+    /// The running match's record: its squads and every unit's callsign (16b
+    /// cut Y.1).
+    fn record(&self) -> tacsim::match_::MatchRecord {
+        let match_id = self.centre().match_id.expect("a running match");
+        self.tw
+            .world()
+            .module_state::<tacsim::match_::MatchBook>()
+            .and_then(|book| book.get(match_id))
+            .cloned()
+            .expect("the match is on the book")
+    }
+
+    /// Pump until the tape holds a line `pick` answers, or give up (16b cut
+    /// Y.1). A chunk closes at 16 KiB, which the fast summaries this rig runs
+    /// fill in a few seconds.
+    async fn tape_until(
+        &mut self,
+        pick: impl Fn(&tacsim::arena::ledger::LedgerEvent) -> bool,
+    ) -> bool {
+        for _ in 0..3_000 {
+            self.pump();
+            if self.tape.iter().any(&pick) {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    /// Pump until the tape holds at least `want` lines `pick` answers, and
+    /// answer how many it holds then (16b cut Y.1). An order lands on every unit
+    /// of a squad in one pulse, but a chunk may close between two of its lines,
+    /// so a count is waited for rather than read off the first line's chunk.
+    async fn tape_count_until(
+        &mut self,
+        pick: impl Fn(&tacsim::arena::ledger::LedgerEvent) -> bool,
+        want: usize,
+    ) -> usize {
+        for _ in 0..3_000 {
+            self.pump();
+            if self.tape.iter().filter(|event| pick(event)).count() >= want {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        self.tape.iter().filter(|event| pick(event)).count()
     }
 
     /// The panel frame in a command's events, if it emitted one.
@@ -4140,7 +4250,16 @@ async fn d2_the_cockpit_refuses_a_dead_tank_and_an_immobile_one() {
     dead.immobile = true;
     dead.power = tacsim::arena::state::Power::Off;
     rig.push_frame(0, dead);
-    for verb in ["startup", "heading 90", "speed 10", "lock BA", "fire"] {
+    // 16b cut Y.1: `ORDER` too, and before its authority — this rig fields no
+    // machine, so a check that came after it would answer `No such squad.`.
+    for verb in [
+        "startup",
+        "heading 90",
+        "speed 10",
+        "lock BA",
+        "fire",
+        "order red-1 hold",
+    ] {
         let said = rig.say(0, verb);
         assert!(said.contains(cockpit::DESTROYED), "{verb}: {said}");
         assert!(
@@ -5573,4 +5692,541 @@ async fn v1_view_beside_the_ford_draws_it_and_names_only_the_others_off_the_wind
         vec![expected.as_str()],
         "a drawn spot is never listed off the window: {said}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Y.1 — `ORDER`
+// ---------------------------------------------------------------------------
+
+/// The tail every acknowledgement ends with.
+const Y1_TAIL: &str = " It stands for 10 minutes or until your next order to it.";
+
+/// [`config`] with the AI fill on, so a side has machines to order.
+fn y1_config() -> TacsimConfig {
+    let mut cfg = config();
+    cfg.match_.ai_fill = true;
+    cfg
+}
+
+/// **16b cut Y.1**: the side's lead orders the side's machines, and every
+/// refusal is one line.
+///
+/// `SIM AI 3` with one pilot a side fields two machines on each, in one squad
+/// (`red-1`, `blue-1`). The red lead's `ORDER red-1 HOLD` acknowledges in the
+/// doctrine's words and `@arena/status` counts it; the ordinal and `ALL` reach
+/// the same squad; `blue-1` (the other side's), `red-9` (nothing) and `2` (the
+/// own side's second squad, which does not exist) all answer one byte-identical
+/// `No such squad.`; a target or a spot the panel does not know is byte for
+/// byte `LOCK ZZ`'s refusal; a known spot is named with its letter; and a bare
+/// or unknown objective is the usage.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y1_the_lead_orders_the_sides_machines_and_every_squad_refusal_is_one_line() {
+    let mut rig = Rig::boot_with(2, y1_config());
+    rig.fly_with_ai(1, 1, 3).await;
+    let squads: Vec<String> = rig
+        .record()
+        .squads
+        .iter()
+        .map(|roster| roster.id.to_string())
+        .collect();
+    assert_eq!(squads, vec!["red-1", "blue-1"], "one squad of two a side");
+
+    let said = rig.say(0, "ORDER red-1 HOLD");
+    assert_eq!(
+        said,
+        format!("Ordered red-1 to hold: it stops where it stands and fires nothing.{Y1_TAIL}")
+    );
+    let status = rig.staff("@arena/status");
+    assert!(
+        status.contains("  orders: 1 by pilots, 0 by the machines"),
+        "{status}"
+    );
+
+    let said = rig.say(0, "ORDER 1 WITHDRAW HOLD FIRE");
+    assert_eq!(
+        said,
+        format!(
+            "Ordered red-1 to withdraw, holding fire: it breaks for its entry zone and fires \
+             nothing.{Y1_TAIL}"
+        )
+    );
+    let said = rig.say(0, "order all engage");
+    assert_eq!(
+        said,
+        format!("Ordered red-1 to engage: it closes and fires on what it finds.{Y1_TAIL}")
+    );
+
+    // One sentence for every squad the pilot may not order.
+    for line in ["ORDER blue-1 HOLD", "ORDER red-9 HOLD", "ORDER 2 HOLD"] {
+        assert_eq!(rig.say(0, line), cockpit::NO_SUCH_SQUAD, "{line}");
+    }
+
+    // A target or a spot the panel does not know: `LOCK ZZ`'s refusal, byte for
+    // byte.
+    let lock = rig.say(0, "LOCK ZZ");
+    assert_eq!(lock, cockpit::NO_SUCH_CONTACT);
+    for line in [
+        "ORDER red-1 ENGAGE ZZ",
+        "ORDER red-1 ENGAGE BA",
+        "ORDER red-1 ADVANCE The Fjord",
+    ] {
+        assert_eq!(rig.say(0, line), lock, "{line}");
+    }
+    let said = rig.say(0, "ORDER red-1 ADVANCE The Ford");
+    assert_eq!(
+        said,
+        format!(
+            "Ordered red-1 to advance on The Ford (A): it drives there and fights nothing on \
+             the way.{Y1_TAIL}"
+        )
+    );
+    for line in ["ORDER red-1", "ORDER red-1 DANCE", "ORDER"] {
+        assert_eq!(rig.say(0, line), cockpit::ORDER_USAGE, "{line}");
+    }
+    let status = rig.staff("@arena/status");
+    assert!(
+        status.contains("  orders: 4 by pilots, 0 by the machines"),
+        "every order that reached a squad is counted, and no refusal is: {status}"
+    );
+}
+
+/// **16b cut Y.1 (16c Q38, the cut Y plan's decision 2)**: anyone but the lead
+/// orders one tank — their pod pair's, when a machine flies it.
+///
+/// Three red pilots in slots 1–3 and `SIM AI 4`: red's one machine flies pod 4
+/// (`RD`) and is `red-1` on its own. Slot 3's pilot (pair 4) is answered by the
+/// wingman's callsign and the tape's `ordered` line names that one unit; slot
+/// 2's pilot (pair 1, a human) has no wingman and reads `No such squad.` for
+/// `red-1` and `You have no squad to order.` for `ALL`; and the lead still
+/// orders the squad by its name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y1_a_pilot_orders_their_pod_pair_and_nothing_else() {
+    let mut rig = Rig::boot_with(4, y1_config());
+    rig.fly_with_ai(3, 1, 4).await;
+    let record = rig.record();
+    let wingman = record
+        .callsigns
+        .iter()
+        .find(|(_, callsign)| callsign.to_string() == "RD")
+        .map(|(unit, _)| *unit)
+        .expect("red pod 4 is flown by a machine");
+    let red: Vec<&tacsim::deliberation::SquadRoster> = record
+        .squads
+        .iter()
+        .filter(|roster| roster.id.team == Team::Red)
+        .collect();
+    assert_eq!(red.len(), 1);
+    assert_eq!(red[0].units, vec![wingman], "red's one machine is red-1");
+
+    let said = rig.say(2, "ORDER red-1 HOLD");
+    assert_eq!(
+        said,
+        format!("Ordered RD to hold: it stops where it stands and fires nothing.{Y1_TAIL}")
+    );
+    let issuer = rig.tank(2);
+    let from_slot_three = |event: &tacsim::arena::ledger::LedgerEvent| {
+        matches!(
+            &event.kind,
+            tacsim::arena::ledger::EventKind::Ordered { issuer: Some(by), .. } if *by == issuer
+        )
+    };
+    assert!(
+        rig.tape_until(from_slot_three).await,
+        "the order was never journalled"
+    );
+    let lines: Vec<ObjId> = rig
+        .tape
+        .iter()
+        .filter_map(|event| match &event.kind {
+            tacsim::arena::ledger::EventKind::Ordered {
+                unit,
+                issuer: Some(by),
+                squad,
+                objective,
+                ..
+            } if *by == issuer => {
+                assert_eq!(squad.as_str(), "red-1");
+                assert_eq!(objective.as_str(), "hold");
+                Some(*unit)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lines, vec![wingman], "one line, on the wingman alone");
+    assert_eq!(rig.say(2, "ORDER blue-1 HOLD"), cockpit::NO_SUCH_SQUAD);
+
+    // Slot 2's pair is slot 1, a human.
+    assert_eq!(rig.say(1, "ORDER red-1 HOLD"), cockpit::NO_SUCH_SQUAD);
+    assert_eq!(rig.say(1, "ORDER ALL HOLD"), cockpit::NO_SQUAD_TO_ORDER);
+
+    // The lead orders the squad by its name.
+    let said = rig.say(0, "ORDER red-1 HOLD");
+    assert_eq!(
+        said,
+        format!("Ordered red-1 to hold: it stops where it stands and fires nothing.{Y1_TAIL}")
+    );
+}
+
+/// **16b cut Y.1 — `authorise_seat`, pinned for the first time.** Steps (1)–(4)
+/// of `forward_intent` moved into one function `ORDER` shares, and no test
+/// named a refusal arm before. From the seat, `HEADING 90` still steers and
+/// `forward_order` is admitted; with the pilot climbed out into the team room,
+/// both `forward_intent` and `forward_order` answer `NotFocused` and offer
+/// nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y1_authorise_seat_refuses_a_pilot_out_of_the_seat_and_the_seat_still_steers() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    rig.say(0, "startup");
+    assert!(rig.powered(0).await, "the arena brings power online");
+    let said = rig.say(0, "heading 90");
+    assert!(said.contains("Steering to 90"), "{said}");
+
+    let tank = rig.tank(0);
+    let pilot = rig.pilot(0);
+    let told = |issuer: ObjId| tacsim::deliberation::Order {
+        squad: tacsim::deliberation::SquadId {
+            team: Team::Red,
+            index: 1,
+        },
+        objective: tacsim::deliberation::Objective::Hold,
+        target: None,
+        horizon_ms: 600_000,
+        constraints: tacsim::deliberation::Constraints::default(),
+        ttl_ms: 600_000,
+        issued_ms: 0,
+        issuer: Some(issuer),
+        spot: None,
+    };
+    // From the seat: authorised, and nothing to offer to (this match fields no
+    // machine).
+    let seated = rig.with_ctx_mut(0, |ctx| {
+        tacsim::arena_bridge::forward_order(ctx, pilot, tank, &[], told(tank))
+    });
+    assert_eq!(seated, Ok(0));
+
+    // Stand the pilot in the team room. Through `EXIT`, the one route that
+    // gives the seat and its focus back: a body merely moved out of the pod
+    // (`mush_sim::unplace` and a `move_to`) keeps its focus, and the world's
+    // four checks still pass for it. The tank stays in the match, so step 1
+    // still finds it and step 2 is the one that answers.
+    let said = rig.say(0, "exit");
+    assert!(!said.is_empty(), "EXIT answers");
+    let room = match_::centre_object(rig.tw.world(), match_::RED_ROOM_ENTRY).expect("red's room");
+    assert_eq!(
+        rig.location(0),
+        Some(room),
+        "the pilot stands in the team room"
+    );
+    let steer = rig.with_ctx_mut(0, |ctx| {
+        tacsim::arena_bridge::forward_intent(
+            ctx,
+            pilot,
+            tank,
+            tacsim::arena::intents::IntentKind::Heading { mdeg: 180_000 },
+        )
+    });
+    assert_eq!(steer, Err(tacsim::arena_bridge::IntentRefusal::NotFocused));
+    let order = rig.with_ctx_mut(0, |ctx| {
+        tacsim::arena_bridge::forward_order(ctx, pilot, tank, &[tank], told(tank))
+    });
+    assert_eq!(order, Err(tacsim::arena_bridge::IntentRefusal::NotFocused));
+}
+
+/// One `ordered` line off the tape, as `(unit, squad, objective, target)`, when
+/// `issuer` wrote it (16b cut Y.1).
+fn y1_ordered_by(
+    event: &tacsim::arena::ledger::LedgerEvent,
+    issuer: ObjId,
+) -> Option<(
+    ObjId,
+    String,
+    String,
+    Option<tacsim::arena::state::ContactId>,
+)> {
+    match &event.kind {
+        tacsim::arena::ledger::EventKind::Ordered {
+            unit,
+            squad,
+            issuer: Some(by),
+            objective,
+            target,
+            ..
+        } if *by == issuer => Some((*unit, squad.to_string(), objective.to_string(), *target)),
+        _ => None,
+    }
+}
+
+/// **16b cut Y.1 (16c Q38, the cut Y plan's decision 2; review Y-08)**: a
+/// non-lead reaches their pod pair's tank **and not the rest of its squad**,
+/// and the answer goes to the issuer alone.
+///
+/// [`y1_a_pilot_orders_their_pod_pair_and_nothing_else`] fields one red
+/// machine, so its squad and its wingman are the same one unit and cannot tell
+/// a one-unit fan-out from a whole-roster one. Here red pilots claim slots 1, 2
+/// and 3, slot 2 is given up (`SIM LEAVE` keeps the other indices) and its
+/// pilot goes blue, so `SIM AI 4` flies red pods 2 and 4 — `RB` and `RD`, one
+/// squad of two. Slot 3's pilot (pair 4) orders `red-1` and then `ALL`: each
+/// journals exactly one `ordered` line, on `RD`; the lead's `ORDER red-1 HOLD`
+/// journals two, one per unit. Every event either order produced is addressed
+/// to its issuer and nobody else hears it: no room line, no side line, no
+/// radio line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y1_a_non_lead_reaches_their_wingman_and_not_the_rest_of_its_squad() {
+    let mut rig = Rig::boot_with(3, y1_config());
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    rig.say(2, "sim team red");
+    rig.say(1, "sim leave");
+    rig.say(1, "sim team blue");
+    let said = rig.say(0, "sim ai 4");
+    assert!(!said.is_empty(), "SIM AI answers");
+    rig.say(0, "sim start");
+    for n in [0, 2] {
+        rig.walk_to(n, match_::RED_ROOM_ENTRY);
+        rig.say(n, "board");
+    }
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+    assert_eq!(
+        rig.centre()
+            .slot_of_pilot(rig.pilot(2))
+            .map(|slot| slot.index),
+        Some(3),
+        "the third red claimant keeps slot 3"
+    );
+
+    let record = rig.record();
+    let unit_of = |word: &str| {
+        record
+            .callsigns
+            .iter()
+            .find(|(_, callsign)| callsign.to_string() == word)
+            .map(|(unit, _)| *unit)
+            .unwrap_or_else(|| panic!("{word} is fielded"))
+    };
+    let (rb, rd) = (unit_of("RB"), unit_of("RD"));
+    let red: Vec<&tacsim::deliberation::SquadRoster> = record
+        .squads
+        .iter()
+        .filter(|roster| roster.id.team == Team::Red)
+        .collect();
+    assert_eq!(red.len(), 1, "fewer than four machines are one squad");
+    let mut roster = red[0].units.clone();
+    roster.sort();
+    let mut both = vec![rb, rd];
+    both.sort();
+    assert_eq!(roster, both, "red-1 is RB and RD");
+
+    // Slot 3 orders its pair, by the squad's word.
+    let (lead, third, blue) = (rig.pilot(0), rig.pilot(2), rig.pilot(1));
+    let events = rig.events(2, "ORDER red-1 HOLD");
+    assert_eq!(
+        rig.tw.seen_by(&events, third).join("\n"),
+        format!("Ordered RD to hold: it stops where it stands and fires nothing.{Y1_TAIL}")
+    );
+    assert!(
+        events
+            .iter()
+            .all(|(audience, _)| *audience == Audience::Actor(third)),
+        "the answer is the issuer's alone: {events:?}"
+    );
+    for other in [lead, blue] {
+        assert!(
+            rig.tw.seen_by(&events, other).is_empty(),
+            "nobody else hears an order"
+        );
+    }
+    let issuer = rig.tank(2);
+    let holds = |event: &tacsim::arena::ledger::LedgerEvent| {
+        y1_ordered_by(event, issuer).is_some_and(|(_, _, objective, _)| objective == "hold")
+    };
+    assert_eq!(rig.tape_count_until(holds, 1).await, 1);
+
+    // The lead's order to the same squad reaches both machines. Waiting for
+    // its two lines also closes the question of slot 3's: they were journalled
+    // a pulse earlier, so every one of them is on the tape by now.
+    let events = rig.events(0, "ORDER red-1 HOLD");
+    assert_eq!(
+        rig.tw.seen_by(&events, lead).join("\n"),
+        format!("Ordered red-1 to hold: it stops where it stands and fires nothing.{Y1_TAIL}")
+    );
+    assert!(
+        events
+            .iter()
+            .all(|(audience, _)| *audience == Audience::Actor(lead)),
+        "the lead's answer is the lead's alone: {events:?}"
+    );
+    assert!(rig.tw.seen_by(&events, third).is_empty());
+    let by_lead = rig.tank(0);
+    let from_lead =
+        |event: &tacsim::arena::ledger::LedgerEvent| y1_ordered_by(event, by_lead).is_some();
+    assert_eq!(rig.tape_count_until(from_lead, 2).await, 2);
+    let mut reached: Vec<ObjId> = rig
+        .tape
+        .iter()
+        .filter_map(|event| y1_ordered_by(event, by_lead))
+        .map(|(unit, squad, _, _)| {
+            assert_eq!(squad, "red-1");
+            unit
+        })
+        .collect();
+    reached.sort();
+    assert_eq!(
+        reached, both,
+        "the lead's order lands on every unit of red-1"
+    );
+    let from_third: Vec<ObjId> = rig
+        .tape
+        .iter()
+        .filter_map(|event| y1_ordered_by(event, issuer))
+        .map(|(unit, _, _, _)| unit)
+        .collect();
+    assert_eq!(from_third, vec![rd], "slot 3's order landed on RD alone");
+
+    // `ALL` from slot 3 is the same one tank.
+    let said = rig.say(2, "ORDER ALL WITHDRAW");
+    assert_eq!(
+        said,
+        format!(
+            "Ordered RD to withdraw: it breaks for its entry zone and still fights inside its \
+             bands.{Y1_TAIL}"
+        )
+    );
+    let withdraws = |event: &tacsim::arena::ledger::LedgerEvent| {
+        y1_ordered_by(event, issuer).is_some_and(|(_, _, objective, _)| objective == "withdraw")
+    };
+    assert_eq!(rig.tape_count_until(withdraws, 1).await, 1);
+    // One more of the lead's, so the pulse that carried slot 3's `ALL` is
+    // wholly on the tape before it is counted.
+    rig.say(0, "ORDER red-1 HOLD");
+    assert_eq!(rig.tape_count_until(from_lead, 4).await, 4);
+    let withdrawn: Vec<ObjId> = rig
+        .tape
+        .iter()
+        .filter(|event| withdraws(event))
+        .filter_map(|event| y1_ordered_by(event, issuer))
+        .map(|(unit, _, _, _)| unit)
+        .collect();
+    assert_eq!(
+        withdrawn,
+        vec![rd],
+        "ALL from a non-lead is their wingman alone"
+    );
+}
+
+/// **16b cut Y.1 — `ENGAGE <contact>` end to end**: the hint is the pilot's
+/// own row's opaque id, stamped with the pilot's own tank as its issuer, and
+/// an own-side row is no target.
+///
+/// The red lead's tank is stood fourteen cells south of the blue pilot's (as
+/// the lock test stands them) with red's first machine (`RB`) four cells to its
+/// west; `ORDER ALL HOLD` keeps red's machines where they stand until the
+/// lead's panel holds both, classified. Then:
+///
+/// * `ORDER red-1 ENGAGE BA` answers with the hint, and both of red-1's
+///   `ordered` lines carry `target` = the id of the lead's own `BA` row and the
+///   lead's tank as `issuer` — the arena resolves it on that scope;
+/// * `ORDER red-1 ENGAGE RB` — a row the lead's panel classes as red — is a
+///   plain engage, answered and journalled as one (`target` none): the
+///   machines never fire on their own side, so nothing may promise they will.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y1_an_engage_carries_the_pilots_own_row_and_an_own_side_row_is_no_target() {
+    let mut rig = Rig::boot_with(2, y1_config());
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    let said = rig.say(0, "sim ai 3");
+    assert!(!said.is_empty(), "SIM AI answers");
+    rig.say(0, "sim start");
+    let middle = i64::from(match_::ARENA_CELLS / 2);
+    rig.place(rig.tank(0), (middle, middle), 0);
+    rig.place(rig.tank(1), (middle, middle + 14), 180_000);
+    let rb =
+        match_::centre::tank_for_slot(rig.tw.world(), Team::Red, 2).expect("red pod 2 has a tank");
+    rig.place(rb, (middle - 4, middle), 0);
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    let said = rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running, "{said}");
+    let said = rig.say(0, "ORDER ALL HOLD");
+    assert!(said.starts_with("Ordered red-1 to hold"), "{said}");
+    rig.say(0, "startup");
+    rig.say(1, "startup");
+    assert!(rig.powered(0).await, "the tank wakes up");
+
+    // Until the lead's panel holds BA and RB, each under its callsign.
+    let lead = rig.pilot(0);
+    let mut held = None;
+    for _ in 0..1_500 {
+        rig.pump();
+        let rows = rig
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.last_frame(lead))
+            .map(|held| cockpit::frame_contacts(&held.frame))
+            .unwrap_or_default();
+        let row = |word: &str| {
+            rows.iter()
+                .find(|row| row.designator.to_string() == word)
+                .cloned()
+        };
+        if let (Some(ba), Some(own)) = (row("BA"), row("RB")) {
+            held = Some((ba, own));
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let (ba, own) = held.expect("the lead's panel holds BA and RB");
+    assert!(!ba.friendly, "BA is blue");
+    assert!(own.friendly, "RB is the lead's own side");
+
+    let said = rig.say(0, "ORDER red-1 ENGAGE BA");
+    assert_eq!(
+        said,
+        format!(
+            "Ordered red-1 to engage BA: it closes and fires on BA where it can see it, else on \
+             what it finds.{Y1_TAIL}"
+        )
+    );
+    let issuer = rig.tank(0);
+    let engaged = |event: &tacsim::arena::ledger::LedgerEvent| {
+        y1_ordered_by(event, issuer).is_some_and(|(_, _, objective, _)| objective == "engage")
+    };
+    assert_eq!(
+        rig.tape_count_until(engaged, 2).await,
+        2,
+        "one line per unit of red-1"
+    );
+    for (_, squad, _, target) in rig
+        .tape
+        .iter()
+        .filter(|event| engaged(event))
+        .filter_map(|event| y1_ordered_by(event, issuer))
+    {
+        assert_eq!(squad, "red-1");
+        assert_eq!(
+            target,
+            Some(ba.id),
+            "the hint is the lead's own row's id, never an object id"
+        );
+    }
+
+    let said = rig.say(0, "ORDER red-1 ENGAGE RB");
+    assert_eq!(
+        said,
+        format!("Ordered red-1 to engage: it closes and fires on what it finds.{Y1_TAIL}"),
+        "an own-side row is no target"
+    );
+    assert_eq!(rig.tape_count_until(engaged, 4).await, 4);
+    let bare = rig
+        .tape
+        .iter()
+        .filter(|event| engaged(event))
+        .filter_map(|event| y1_ordered_by(event, issuer))
+        .filter(|(_, _, _, target)| target.is_none())
+        .count();
+    assert_eq!(bare, 2, "the own-side hint is dropped, not journalled");
 }

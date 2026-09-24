@@ -373,6 +373,8 @@ fn order_of(brief: &SquadBrief, payload: &OrderPayload) -> Result<Order, String>
         },
         ttl_ms,
         issued_ms: 0,
+        issuer: None,
+        spot: None,
     };
     order.validate(Some(window)).map_err(|why| {
         format!("{why}: `ttl_ms` must be between {MIN_TTL_MS} and {MAX_TTL_MS} milliseconds")

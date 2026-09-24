@@ -751,3 +751,128 @@ async fn d3_the_match_a_lone_pilot_walks_out_of_ends_itself() {
     // `SIM TEAM` opens the next one, which is the whole point of ending it.
     say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut Y.1 — a lone pilot orders their wingman
+// ---------------------------------------------------------------------------
+
+/// Everything `seen` holds, with the terminal's wraps undone: one space for
+/// every run of whitespace, so a sentence longer than the eighty columns reads
+/// back whole.
+fn unwrapped(seen: &str) -> String {
+    seen.split_whitespace().collect::<Vec<&str>>().join(" ")
+}
+
+/// **16b cut Y.1**: over the production composition and the real front door, a
+/// lone pilot with the AI fill orders the machine beside her.
+///
+/// `SIM AI 2` fields her and one machine on red (`red-1`, a squad of one) and
+/// two machines on blue (`blue-1`). Blue's first tank is parked seventy cells
+/// down the road, past the stock sight, so nothing of blue is held while the
+/// orders are typed. She leads red, so `ORDER red-1 HOLD` is hers and is
+/// acknowledged in the doctrine's words; the black box carries an `ordered`
+/// line with her own tank as the issuer; `WITHDRAW HOLD FIRE` is acknowledged
+/// too; `ENGAGE BA` before her platform holds `BA` is byte for byte what `LOCK
+/// ZZ` answers (here she does own the squad, so it is the contact that is
+/// refused); and the other side's squad is `No such squad.`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn y1_a_lone_pilot_orders_their_wingman() {
+    let server = boot("sim-solo-order").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+    // Blue's first tank, seventy cells east of Ada's: outside the stock sensor's
+    // sixty at every signature factor, as `observer_rule.rs` parks it.
+    let listing = ask(&mut god, "@find Proving Ground", "END OF LIST").await;
+    let ground = dbref_of(&listing, "Proving Ground");
+    let listing = ask(&mut god, "@find Blue Tank 1", "END OF LIST").await;
+    let blue = dbref_of(&listing, "Blue Tank 1");
+    say(
+        &mut god,
+        &format!(
+            "@spatial/place/domain #{blue}=#{ground},{{\"x_cm\":{},\"y_cm\":{ROW_Y_CM},\
+             \"heading_mdeg\":{WEST_MDEG}}}",
+            RED_X_CM + 70_000
+        ),
+        "Placed",
+    )
+    .await;
+    let listing = ask(&mut god, "@find Red Tank 1", "END OF LIST").await;
+    let own = dbref_of(&listing, "Red Tank 1");
+
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut ada, "SIM AI 2", "AI fill set to 2 a side.").await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+
+    // A contact her platform does not hold: `LOCK ZZ`'s refusal, byte for byte.
+    let mut answers: Vec<String> = Vec::new();
+    for line in ["LOCK ZZ", "ORDER red-1 ENGAGE BA"] {
+        let seen = ask(&mut ada, line, "No such contact.").await;
+        answers.push(seen.trim_start_matches(line).trim().to_owned());
+    }
+    assert_eq!(answers[0], "No such contact.");
+    assert_eq!(
+        answers[1], answers[0],
+        "`ORDER red-1 ENGAGE BA` before detection is `LOCK ZZ`'s answer"
+    );
+
+    let seen = ask(&mut ada, "ORDER red-1 HOLD", "order to it.").await;
+    let seen = unwrapped(&seen);
+    assert!(
+        seen.contains(
+            "Ordered red-1 to hold: it stops where it stands and fires nothing. It stands for \
+             10 minutes or until your next order to it."
+        ),
+        "{seen}"
+    );
+    let seen = ask(&mut ada, "ORDER red-1 WITHDRAW HOLD FIRE", "order to it.").await;
+    let seen = unwrapped(&seen);
+    assert!(
+        seen.contains(
+            "Ordered red-1 to withdraw, holding fire: it breaks for its entry zone and fires \
+             nothing. It stands for 10 minutes or until your next order to it."
+        ),
+        "{seen}"
+    );
+    let seen = ask(&mut ada, "ORDER blue-1 HOLD", "No such squad.").await;
+    assert_eq!(
+        seen.trim_start_matches("ORDER blue-1 HOLD").trim(),
+        "No such squad."
+    );
+
+    // The black box: the order that landed, with her own tank as its issuer.
+    // What is in the store is what CLOSED, so the wait is on the chunk.
+    let mut events = Vec::new();
+    wait_until(
+        STEP_TIMEOUT,
+        "the solo match's ordered line to persist",
+        async || {
+            events = ledger_events(&server.store, 1).await;
+            count(&events, "ordered") > 0
+        },
+    )
+    .await;
+    // Which of her two orders it is depends on whether a pulse fell between
+    // them: the task's inbox keeps a continuous order latest-wins per unit, and
+    // an order that never landed journals nothing.
+    let hold = events
+        .iter()
+        .find(|event| event.get("kind").and_then(Value::as_str) == Some("ordered"))
+        .unwrap_or_else(|| panic!("no `ordered` line: {events:?}"));
+    assert_eq!(
+        hold.get("issuer").and_then(Value::as_u64),
+        Some(u64::from(own)),
+        "the issuer is her own tank: {hold}"
+    );
+    assert_eq!(hold.get("squad").and_then(Value::as_str), Some("red-1"));
+    assert_eq!(hold.get("ttl_ms").and_then(Value::as_u64), Some(600_000));
+    assert_ne!(
+        hold.get("unit").and_then(Value::as_u64),
+        Some(u64::from(own)),
+        "it landed on the machine, not on her tank: {hold}"
+    );
+    no_sixteen_digit_word(&strip_ansi(&ada.seen));
+}

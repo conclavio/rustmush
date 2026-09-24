@@ -1,18 +1,21 @@
-//! **The cockpit: boarding, the pilot's fourteen verbs, and the frame they
+//! **The cockpit: boarding, the pilot's fifteen verbs, and the frame they
 //! read** (16b cut K.2; 16b §8 cut K, K2–K4; doc 16 §3.3 "Startup", "Stations
-//! are on the tank", §3.6 "What a pilot sees", §3.7, §3.8 "Disconnects", §5).
+//! are on the tank", §3.6 "What a pilot sees", §3.7, §3.8 "Disconnects", §5, §6
+//! "Deliberation").
 //!
 //! Cut K.1 built the lobby: a centre, slots, pods locked to pilots, and the
 //! named `Boarding → Running` trigger waiting for somebody to report a seat.
 //! This is the half that reports one, and everything the pilot can do once
 //! seated.
 //!
-//! **Fourteen**: the twelve cockpit selectors of [`COCKPIT_VERBS`], plus
+//! **Fifteen**: the thirteen cockpit selectors of [`COCKPIT_VERBS`], plus
 //! [`BOARD_VERB`] and [`EXIT_VERB`], which are not selectors — they are how a
 //! pilot gets into the cockpit and out of it. The table below is that list in
 //! that order, and **16b cut D.2** made the three agree: the head said twelve in
 //! one place and fourteen in another, and the table was missing `RANGE` and
-//! `BEARING` altogether (16c `T-77`).
+//! `BEARING` altogether (16c `T-77`). **16b cut Y.1** added the thirteenth
+//! selector, `ORDER` — see "Commanding the machines" below
+//! [`crate::match_::cockpit::resolve_designator`].
 //!
 //! ```text
 //! BOARD                      climb into your pod and take the tank's cockpit
@@ -28,6 +31,7 @@
 //! FIRE [<weapon>]            shoot it
 //! WEAPONSTATUS               ammunition and readiness
 //! STATUS                     callsign, power, speed, heading, scope, nearest spot, damage
+//! ORDER <squad|ALL> <what>   command your side's machines (HOLD, ADVANCE, ENGAGE, WITHDRAW)
 //! EXIT                       climb out
 //! ```
 //!
@@ -72,10 +76,10 @@
 //! # The verbs are contextual, and the gate is what makes them so
 //!
 //! There is no such thing as a verb that exists only in a cockpit: the command
-//! table is global. So all fourteen are registered globally and
+//! table is global. So all fifteen are registered globally and
 //! [`CockpitGate`] refuses each of them, with one line, wherever it does not
 //! mean anything — `BOARD` outside a team room, `EXIT` outside a pod, and the
-//! twelve cockpit selectors to anyone who is not focused on a station of a
+//! thirteen cockpit selectors to anyone who is not focused on a station of a
 //! **deployed** unit. A pilot who has boarded but whose match has not started
 //! yet is in that last case on purpose: there is no arena to order until the
 //! trigger fires.
@@ -160,7 +164,11 @@ pub const EXIT_VERB: &str = "exit";
 /// as columns to re-read `CONTACTS` for.
 ///
 /// **16b cut Q.2** added `scan`, which is the third: *what have I done to it*.
-pub const COCKPIT_VERBS: [&str; 12] = [
+///
+/// **16b cut Y.1** added `order`, the thirteenth and the first that speaks to a
+/// unit other than the pilot's own: doc 16 §6's orders from a pilot rather than
+/// from the LLM seam.
+pub const COCKPIT_VERBS: [&str; 13] = [
     "startup",
     "heading",
     "speed",
@@ -173,6 +181,7 @@ pub const COCKPIT_VERBS: [&str; 12] = [
     "range",
     "bearing",
     "scan",
+    "order",
 ];
 
 /// The station id one pod's pilot holds **on the tank** (doc 16 §3.3).
@@ -475,6 +484,14 @@ pub enum CockpitError {
     /// One line for every contact id the platform does not hold.
     #[error("{NO_SUCH_CONTACT}")]
     NoSuchContact,
+    /// **A squad the pilot may not order** (16b cut Y.1): the other side's, one
+    /// that does not exist, or the own side's beyond the pilot's authority — one
+    /// line for all three.
+    #[error("{NO_SUCH_SQUAD}")]
+    NoSuchSquad,
+    /// **`ORDER ALL` with nothing to order** (16b cut Y.1).
+    #[error("{NO_SQUAD_TO_ORDER}")]
+    NoSquadToOrder,
     /// The unit carries no weapon by that name.
     #[error("That unit carries no weapon called `{0}`.")]
     NoSuchWeapon(String),
@@ -2155,7 +2172,8 @@ pub(crate) fn eject_pilot(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
 }
 
 // ---------------------------------------------------------------------------
-// K3: the twelve cockpit verbs
+// K3: the cockpit verbs (twelve at K3; `ORDER`, the thirteenth, is below
+// under "Commanding the machines")
 // ---------------------------------------------------------------------------
 
 /// `STARTUP` — bring power up (doc 16 §3.3).
@@ -4583,10 +4601,560 @@ pub fn resolve_designator(rows: &[ContactRow], word: &str) -> Option<ContactId> 
 }
 
 // ---------------------------------------------------------------------------
+// Commanding the machines (16b cut Y.1; doc 16 §3.7, §6; 16c N3, Q38)
+// ---------------------------------------------------------------------------
+//
+// Doc 16 §6's deliberation had one issuer, the LLM seam, which the shipped
+// server has off. `ORDER` is the second: a pilot tells their side's machines
+// what to do with the same four objectives and the same `IntentKind::Order`
+// the seam sends, so the arena cannot tell the two apart except by
+// `Order::issuer` — the scope a target hint is written in. Who may order what is
+// 16c Q38's default read as the cut Y plan's decision 2: the side's **lead**
+// orders every squad of the side; **anyone else** orders the one unit of their
+// pod pair when a machine flies it ([`Command`]). Every refusal is one line; the
+// squad refusal is byte-identical for the other side's squad, a squad that does
+// not exist and one the pilot may not order, and it is said **before** any
+// contact is looked at, so a pilot learns nothing about the scope by naming a
+// squad they cannot order.
+
+/// **`ORDER`'s grammar**, said for anything [`parse_order`] cannot read (16b cut
+/// Y.1).
+pub const ORDER_USAGE: &str =
+    "Usage: ORDER <squad|ALL> HOLD | ADVANCE <spot> | ENGAGE [<contact>] | WITHDRAW [HOLD FIRE]";
+
+/// **A squad the pilot may not order** (16b cut Y.1) — the other side's, one that
+/// does not exist, and the pilot's own side's beyond their authority, **byte for
+/// byte one sentence**, so the count of the other side's squads is never learned.
+pub const NO_SUCH_SQUAD: &str = "No such squad.";
+
+/// **`ORDER ALL` from a pilot who commands nothing** (16b cut Y.1): a pilot who
+/// does not lead the side and whose pod pair is a human, an empty pod, or a seat
+/// with no slot at all.
+pub const NO_SQUAD_TO_ORDER: &str = "You have no squad to order.";
+
+/// **How long a pilot's order stands** (16b cut Y.1; the cut Y plan's decision 7),
+/// milliseconds: the ten-minute ceiling, with no key of its own. A human order
+/// stands ten minutes or until replaced; the arena's `order_expired` line and the
+/// world's `mind link dropped` sentence are the same as for the LLM's.
+pub const HUMAN_ORDER_TTL_MS: u32 = crate::deliberation::MAX_TTL_MS;
+
+/// **The squad an `ORDER` names** (16b cut Y.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SquadWord {
+    /// `ALL`: every squad the pilot may order.
+    All,
+    /// A rendered squad id, `red-1` or `blue-2`
+    /// ([`crate::deliberation::SquadId::parse`]).
+    Id(crate::deliberation::SquadId),
+    /// A bare ordinal, `1`: the pilot's own side's squad of that number.
+    Ordinal(u16),
+}
+
+/// **The objective an `ORDER` names**, in the pilot's words (16b cut Y.1) — the
+/// spot and the contact still unresolved, because resolving them is the world's
+/// business and comes after authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ObjectiveWords {
+    /// `HOLD`.
+    Hold,
+    /// `ADVANCE <spot>`: every word between `ADVANCE` and the `HOLD FIRE` tail,
+    /// joined by one space, as typed (`The Ford`).
+    Advance {
+        /// The spot's name or letter, as typed.
+        spot: String,
+    },
+    /// `ENGAGE [<contact>]`: at most one word, as typed.
+    Engage {
+        /// The contact's designator, as typed, or `None` for "what you find".
+        contact: Option<String>,
+    },
+    /// `WITHDRAW`.
+    Withdraw,
+}
+
+impl ObjectiveWords {
+    /// The objective's wire word — `crate::deliberation::Objective::as_str`'s,
+    /// so the world's watch, the ledger and the sentence name it one way.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            ObjectiveWords::Hold => "hold",
+            ObjectiveWords::Advance { .. } => "advance",
+            ObjectiveWords::Engage { .. } => "engage",
+            ObjectiveWords::Withdraw => "withdraw",
+        }
+    }
+}
+
+/// **One `ORDER`, parsed** (16b cut Y.1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrderWords {
+    /// Which squad.
+    pub squad: SquadWord,
+    /// What it is told.
+    pub objective: ObjectiveWords,
+    /// Whether the trailing `HOLD FIRE` was given.
+    pub hold_fire: bool,
+}
+
+/// **Parse `ORDER`'s argument** (16b cut Y.1) — pure, so every line of the
+/// grammar is pinned without a world:
+///
+/// ```text
+/// ORDER <squad|ALL> HOLD                 [HOLD FIRE]
+/// ORDER <squad|ALL> ADVANCE <spot>       [HOLD FIRE]
+/// ORDER <squad|ALL> ENGAGE [<contact>]   [HOLD FIRE]
+/// ORDER <squad|ALL> WITHDRAW             [HOLD FIRE]
+/// ```
+///
+/// Whitespace-split and case-folded: the keywords and the squad word are
+/// compared lower-cased, and a spot or contact word is kept as typed (both are
+/// resolved case-insensitively later). The trailing `HOLD FIRE` is the last two
+/// words **after** the objective word, so `ORDER red-1 HOLD HOLD FIRE` holds and
+/// holds fire, and `ORDER red-1 HOLD FIRE` is usage rather than a guess.
+///
+/// # Errors
+///
+/// [`CockpitError::Usage`] with [`ORDER_USAGE`] for an empty argument, a squad
+/// word that is neither `ALL`, a squad id nor an ordinal, an unknown objective,
+/// `ADVANCE` with no spot, `ENGAGE` with more than one word, and any other
+/// trailing word.
+pub fn parse_order(rest: &str) -> Result<OrderWords, CockpitError> {
+    let usage = || CockpitError::Usage(ORDER_USAGE.to_owned());
+    let typed: Vec<&str> = rest.split_whitespace().collect();
+    let folded: Vec<String> = typed.iter().map(|word| word.to_ascii_lowercase()).collect();
+    let (Some(squad_word), Some(objective_word)) = (folded.first(), folded.get(1)) else {
+        return Err(usage());
+    };
+    let squad = if squad_word == "all" {
+        SquadWord::All
+    } else if let Some(id) = crate::deliberation::SquadId::parse(squad_word) {
+        SquadWord::Id(id)
+    } else if let Ok(ordinal) = squad_word.parse::<u16>() {
+        SquadWord::Ordinal(ordinal)
+    } else {
+        return Err(usage());
+    };
+    // The words after the objective, with the `HOLD FIRE` tail taken off.
+    let mut args: &[&str] = typed.get(2..).unwrap_or(&[]);
+    let mut hold_fire = false;
+    if let [head @ .., hold, fire] = args
+        && hold.eq_ignore_ascii_case("hold")
+        && fire.eq_ignore_ascii_case("fire")
+    {
+        hold_fire = true;
+        args = head;
+    }
+    let objective = match objective_word.as_str() {
+        "hold" if args.is_empty() => ObjectiveWords::Hold,
+        "withdraw" if args.is_empty() => ObjectiveWords::Withdraw,
+        "advance" if !args.is_empty() => ObjectiveWords::Advance {
+            spot: args.join(" "),
+        },
+        "engage" => match args {
+            [] => ObjectiveWords::Engage { contact: None },
+            [one] => ObjectiveWords::Engage {
+                contact: Some((*one).to_owned()),
+            },
+            _ => return Err(usage()),
+        },
+        _ => return Err(usage()),
+    };
+    Ok(OrderWords {
+        squad,
+        objective,
+        hold_fire,
+    })
+}
+
+/// **A slot's pod pair** (16b cut Y.1; the cut Y plan's decision 2): pods are
+/// claimed in pairs, `1↔2`, `3↔4` — odd `n` with `n + 1`, even `n` with `n − 1`.
+/// Saturating at both ends: `0`, which no slot is, pairs with itself.
+#[must_use]
+pub const fn pair(slot: u8) -> u8 {
+    if slot % 2 == 1 {
+        slot.saturating_add(1)
+    } else {
+        slot.saturating_sub(1)
+    }
+}
+
+/// **What one seat may order** (16b cut Y.1; 16c Q38 read as the cut Y plan's
+/// decision 2), read once per `ORDER` in one borrow of the
+/// [`crate::match_::MatchBook`].
+///
+/// **Why the wingman and not "the squad holding my pair".** A pilot's tank is in
+/// no squad, and `crate::deliberation::squads_of` cuts a side's *machines* in
+/// unit-id order, with a side of fewer than four machines always **one** squad —
+/// so on a four-pod side "my pair's squad" would hand any pilot whose pair is a
+/// machine every machine of the side, and let them silently undo the lead's
+/// orders (latest-wins, no radio line). So a non-lead orders exactly one unit:
+/// their pod pair's, addressed by the word of the squad that holds it (the
+/// arena's own squad filter accepts it) and acknowledged by its callsign.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Command {
+    /// The side's lead: every roster of the side, in ordinal order.
+    Squads(Vec<crate::deliberation::SquadRoster>),
+    /// Anyone else whose pod pair a machine flies: that one unit, the squad that
+    /// holds it, and its callsign.
+    Wingman {
+        /// The squad holding the wingman.
+        squad: crate::deliberation::SquadId,
+        /// The wingman.
+        unit: ObjId,
+        /// Its callsign, as the arena resolved it.
+        callsign: Designator,
+    },
+    /// Nothing: the pair is a human, empty, or the seat has no slot.
+    None,
+}
+
+/// **The seat's command** (16b cut Y.1): the running match, the seat's own side
+/// (for a bare ordinal) and the [`Command`].
+///
+/// The centre's slot for the driver gives the side, the slot index and the
+/// account; the running record ([`ArenaRegistry::match_of_unit`] on the seat's
+/// own tank) gives the squads and the callsigns. A lead
+/// ([`crate::match_::lobby::Centre::leads_side`]) commands every roster of the
+/// side; anyone else the unit whose callsign is `Slot { team, pair(index) }`
+/// **and** that one roster holds — a unit in no roster is a human's tank or one
+/// abandoned by `EXIT`, and is nobody's wingman.
+pub(crate) fn command_of(
+    w: &World,
+    seat: &Seat,
+) -> (Option<MatchId>, Option<crate::arena::state::Team>, Command) {
+    let match_id = w
+        .module_state::<ArenaRegistry>()
+        .and_then(|registry| registry.match_of_unit(seat.unit));
+    let Some(book) = w.module_state::<crate::match_::MatchBook>() else {
+        return (match_id, None, Command::None);
+    };
+    let Some(slot) = book.centre().slot_of_pilot(seat.driver) else {
+        return (match_id, None, Command::None);
+    };
+    let (team, index, account) = (slot.team, slot.index, slot.account);
+    let leads = book.centre().leads_side(team, account);
+    let Some(record) = match_id.and_then(|match_id| book.get(match_id)) else {
+        return (match_id, Some(team), Command::None);
+    };
+    if leads {
+        let mut rosters: Vec<crate::deliberation::SquadRoster> = record
+            .squads
+            .iter()
+            .filter(|roster| roster.id.team == team)
+            .cloned()
+            .collect();
+        rosters.sort_by_key(|roster| roster.id.index);
+        return (match_id, Some(team), Command::Squads(rosters));
+    }
+    let wanted = Designator::Slot {
+        team,
+        slot: u16::from(pair(index)),
+    };
+    let wingman = record
+        .callsigns
+        .iter()
+        .find(|(_, callsign)| **callsign == wanted)
+        .and_then(|(unit, callsign)| {
+            record
+                .squads
+                .iter()
+                .find(|roster| roster.holds(*unit))
+                .map(|roster| Command::Wingman {
+                    squad: roster.id,
+                    unit: *unit,
+                    callsign: *callsign,
+                })
+        });
+    (match_id, Some(team), wingman.unwrap_or(Command::None))
+}
+
+/// **`ORDER <squad|ALL> <objective> [HOLD FIRE]`** — command the side's machines
+/// (16b cut Y.1; doc 16 §3.7, §6; 16c N3, Q38).
+///
+/// In this order, and the order is the observer rule:
+///
+/// 1. [`parse_order`] — [`ORDER_USAGE`];
+/// 2. [`require_alive`] — a wreck takes no order at all, as every ordering verb;
+/// 3. **authority** ([`command_of`]) — a squad word outside the pilot's set is
+///    [`NO_SUCH_SQUAD`], byte-identical whether it is the other side's, names
+///    nothing, or is the own side's beyond the pilot's authority; `ALL` with an
+///    empty set is [`NO_SQUAD_TO_ORDER`];
+/// 4. **the objective** — an `ENGAGE` word resolved on the pilot's own held rows
+///    ([`resolve_designator`]) and an `ADVANCE` word on the ground's named spots
+///    ([`resolve_spot`]); a miss on either is the one byte-identical
+///    [`NO_SUCH_CONTACT`], with or without a frame. After authority, so a pilot
+///    with no right to order a squad learns nothing about contacts by naming one.
+///    A row the pilot's panel classes as their own side drops the hint (the
+///    machines never fire on their own side), so the order is a bare `ENGAGE`;
+/// 5. **the order** — `issuer: Some(own tank)`, [`HUMAN_ORDER_TTL_MS`] as both
+///    time to live and horizon, validated against the window;
+/// 6. **the fan-out** — [`crate::arena_bridge::forward_order`] per squad (the
+///    seat authorised once, on the pilot's own tank), `Busy` when no unit could
+///    be offered, and the world's watch on each squad reached
+///    ([`ArenaRegistry::note_human_order`]);
+/// 7. **the acknowledgement** ([`order_ack`]) to the issuer alone — nothing to
+///    the room and nothing to the side: 16c Q38's *no radio line*.
+///
+/// It writes no document; the arena journals one `ordered` line per unit the
+/// order lands on.
+fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
+    let actor = ctx.actor;
+    let words = parse_order(rest)?;
+    require_alive(ctx.w, seat.driver)?;
+
+    // (3) Authority, before anything is resolved.
+    let (match_id, own_team, command) = command_of(ctx.w, seat);
+    let wanted = match words.squad {
+        SquadWord::All => None,
+        SquadWord::Id(id) => Some(id),
+        SquadWord::Ordinal(index) => Some(crate::deliberation::SquadId {
+            team: own_team.ok_or(CockpitError::NoSuchSquad)?,
+            index,
+        }),
+    };
+    // `(squad, units, who)` per squad the order goes to.
+    let targets: Vec<(crate::deliberation::SquadId, Vec<ObjId>, String)> = match (&command, wanted)
+    {
+        (Command::Squads(rosters), None) => rosters
+            .iter()
+            .map(|roster| (roster.id, roster.units.clone(), roster.id.to_string()))
+            .collect(),
+        (Command::Squads(rosters), Some(id)) => rosters
+            .iter()
+            .find(|roster| roster.id == id)
+            .map(|roster| vec![(roster.id, roster.units.clone(), roster.id.to_string())])
+            .ok_or(CockpitError::NoSuchSquad)?,
+        (
+            Command::Wingman {
+                squad,
+                unit,
+                callsign,
+            },
+            wanted,
+        ) => {
+            if wanted.is_some_and(|id| id != *squad) {
+                return Err(CockpitError::NoSuchSquad);
+            }
+            vec![(*squad, vec![*unit], callsign.to_string())]
+        }
+        (Command::None, None) => return Err(CockpitError::NoSquadToOrder),
+        (Command::None, Some(_)) => return Err(CockpitError::NoSuchSquad),
+    };
+    if targets.is_empty() {
+        return Err(CockpitError::NoSquadToOrder);
+    }
+    let Some(match_id) = match_id else {
+        return Err(CockpitError::NoSuchSquad);
+    };
+
+    // (4) The objective, on the issuer's own scope and the surveyed ground.
+    let mut hint: Option<String> = None;
+    let mut spot_named: Option<(SmolStr, char)> = None;
+    let objective = match &words.objective {
+        ObjectiveWords::Hold => crate::deliberation::Objective::Hold,
+        ObjectiveWords::Withdraw => crate::deliberation::Objective::Withdraw,
+        ObjectiveWords::Engage { contact: None } => {
+            crate::deliberation::Objective::Engage { target_hint: None }
+        }
+        ObjectiveWords::Engage {
+            contact: Some(word),
+        } => {
+            // `named_row`'s rule for a name with no frame: the one refusal.
+            let held = last_frame(ctx.w, seat.driver).ok_or(CockpitError::NoSuchContact)?;
+            let rows = frame_contacts_held(&held.frame, &held.ranges);
+            let id = resolve_designator(&rows, word).ok_or(CockpitError::NoSuchContact)?;
+            // **A row the pilot's own panel classes as their own side is no
+            // target** (`best_hostile` skips a classified own-side row, so a
+            // machine can never fire on it): the hint is dropped and the order
+            // is a bare `ENGAGE`, acknowledged and journalled as one, so
+            // neither the answer nor the debrief promises a shot that will not
+            // come. Not a refusal: the pilot knows their own side, and the
+            // squad was still told to engage.
+            let row = rows.iter().find(|row| row.id == id);
+            if row.is_some_and(|row| row.friendly) {
+                crate::deliberation::Objective::Engage { target_hint: None }
+            } else {
+                hint = row.map(|row| row.designator.to_string());
+                crate::deliberation::Objective::Engage {
+                    target_hint: Some(id),
+                }
+            }
+        }
+        ObjectiveWords::Advance { spot } => {
+            // V.1's rule: a word that is neither a contact nor a spot keeps the
+            // one refusal.
+            let (spots, _) = spots_of(ctx.w, Some(match_id));
+            let (index, found) = resolve_spot(&spots, spot).ok_or(CockpitError::NoSuchContact)?;
+            let letter = spot_letter(index).ok_or(CockpitError::NoSuchContact)?;
+            spot_named = Some((found.name.clone(), letter));
+            crate::deliberation::Objective::Advance {
+                to: (found.x, found.y),
+            }
+        }
+    };
+
+    // (5) The order.
+    let now_ms = ctx.w.now().saturating_mul(1_000);
+    let spot_word = spot_named.as_ref().map(|(name, _)| name.clone());
+    let order_for = |squad: crate::deliberation::SquadId| crate::deliberation::Order {
+        squad,
+        objective,
+        target: None,
+        horizon_ms: HUMAN_ORDER_TTL_MS,
+        constraints: crate::deliberation::Constraints {
+            hold_fire: words.hold_fire,
+            max_range_band: None,
+        },
+        ttl_ms: HUMAN_ORDER_TTL_MS,
+        issued_ms: now_ms,
+        issuer: Some(seat.unit),
+        spot: spot_word.clone(),
+    };
+    // A spot is on the window by construction, so a refusal here is the bounds
+    // check doing its job on something no pilot can type.
+    let window = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .and_then(|registry| registry.arena_of(match_id))
+        .map(|ground| (ground.terrain.width(), ground.terrain.height()));
+    for (squad, _, _) in &targets {
+        order_for(*squad)
+            .validate(window)
+            .map_err(|why| CockpitError::Usage(why.to_string()))?;
+    }
+
+    // (6) The fan-out: the seat authorised once, on the issuer's own tank.
+    let mut reached: Vec<(crate::deliberation::SquadId, String)> = Vec::new();
+    for (squad, units, who) in targets {
+        let offered = crate::arena_bridge::forward_order(
+            ctx,
+            seat.driver,
+            seat.unit,
+            &units,
+            order_for(squad),
+        )?;
+        if offered > 0 {
+            reached.push((squad, who));
+        }
+    }
+    if reached.is_empty() {
+        return Err(CockpitError::Order(IntentRefusal::Busy));
+    }
+    let expires_ms = now_ms.saturating_add(i64::from(HUMAN_ORDER_TTL_MS));
+    if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+        for (squad, _) in &reached {
+            registry.note_human_order(
+                match_id,
+                *squad,
+                SmolStr::new_static(words.objective.as_str()),
+                seat.unit,
+                expires_ms,
+            );
+        }
+    }
+
+    // (7) The acknowledgement, to the issuer alone.
+    let who: Vec<String> = reached.into_iter().map(|(_, who)| who).collect();
+    let line = order_ack(
+        &who,
+        &words.objective,
+        hint.as_deref(),
+        spot_named
+            .as_ref()
+            .map(|(name, letter)| (name.as_str(), *letter)),
+        words.hold_fire,
+    );
+    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    Ok(())
+}
+
+/// **`ORDER`'s acknowledgement** (16b cut Y.1) — what the order means, in the
+/// doctrine's own words (doc 16 §11 E.1/E.2: an ordered `Withdraw` stands and
+/// fights inside its bands unless it holds fire; an `Advance` or a `Hold`
+/// suppresses the hostile edges; `HOLD FIRE` stops the trigger and nothing else).
+///
+/// `who` is the squad ids for a lead (`red-1`, `red-1 and red-2`, `red-1, red-2
+/// and red-3`) and the wingman's callsign (`RB`) for anyone else; `hint` is the
+/// designator the issuer's own row prints (`BA`); `spot` is `(name, letter)`.
+/// Verbatim, with `red-1`:
+///
+/// ```text
+/// Ordered red-1 to hold: it stops where it stands and fires nothing.
+/// Ordered red-1 to advance on The Ford (A): it drives there and fights nothing on the way.
+/// Ordered red-1 to engage BA: it closes and fires on BA where it can see it, else on what it finds.
+/// Ordered red-1 to engage: it closes and fires on what it finds.
+/// Ordered red-1 to engage BA, holding fire: it closes and locks but fires nothing.
+/// Ordered red-1 to engage, holding fire: it closes and locks on what it finds but fires nothing.
+/// Ordered red-1 to withdraw: it breaks for its entry zone and still fights inside its bands.
+/// Ordered red-1 to withdraw, holding fire: it breaks for its entry zone and fires nothing.
+/// ```
+///
+/// `HOLD FIRE` on a hold or an advance adds `, holding fire` before the colon and
+/// changes nothing else (those arms fire nothing already; the constraint is still
+/// set). Every acknowledgement ends ` It stands for 10 minutes or until your next
+/// order to it.`
+#[must_use]
+pub fn order_ack(
+    who: &[String],
+    objective: &ObjectiveWords,
+    hint: Option<&str>,
+    spot: Option<(&str, char)>,
+    hold_fire: bool,
+) -> String {
+    let who = join_names(who);
+    let holding = if hold_fire { ", holding fire" } else { "" };
+    let said = match (objective, hold_fire) {
+        (ObjectiveWords::Hold, _) => {
+            format!("to hold{holding}: it stops where it stands and fires nothing.")
+        }
+        (ObjectiveWords::Advance { .. }, _) => {
+            let on = spot.map_or_else(String::new, |(name, letter)| {
+                format!(" on {name} ({letter})")
+            });
+            format!("to advance{on}{holding}: it drives there and fights nothing on the way.")
+        }
+        (ObjectiveWords::Engage { .. }, false) => match hint {
+            Some(hint) => format!(
+                "to engage {hint}: it closes and fires on {hint} where it can see it, else on \
+                 what it finds."
+            ),
+            None => "to engage: it closes and fires on what it finds.".to_owned(),
+        },
+        (ObjectiveWords::Engage { .. }, true) => match hint {
+            Some(hint) => {
+                format!("to engage {hint}, holding fire: it closes and locks but fires nothing.")
+            }
+            None => "to engage, holding fire: it closes and locks on what it finds but fires \
+                     nothing."
+                .to_owned(),
+        },
+        (ObjectiveWords::Withdraw, false) => {
+            "to withdraw: it breaks for its entry zone and still fights inside its bands."
+                .to_owned()
+        }
+        (ObjectiveWords::Withdraw, true) => {
+            "to withdraw, holding fire: it breaks for its entry zone and fires nothing.".to_owned()
+        }
+    };
+    let minutes = HUMAN_ORDER_TTL_MS / 60_000;
+    format!("Ordered {who} {said} It stands for {minutes} minutes or until your next order to it.")
+}
+
+/// `a`, `a and b`, `a, b and c` — the names an acknowledgement lists.
+fn join_names(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [head @ .., last] => format!("{} and {last}", head.join(", ")),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The gate and the dispatch
 // ---------------------------------------------------------------------------
 
-/// **The contextual gate**: the fourteen verbs exist everywhere and mean
+/// **The contextual gate**: the fifteen verbs exist everywhere and mean
 /// something in a team room, in a pod, and at a deployed unit's station.
 ///
 /// One line each, and nothing else refused: a gate that is asked about `look`
@@ -4728,7 +5296,7 @@ fn refusal(error: CockpitError) -> CmdError {
     CmdError::msg(error.to_string())
 }
 
-/// Run one cockpit verb: resolve the station first, so every one of the twelve
+/// Run one cockpit verb: resolve the station first, so every one of the thirteen
 /// answers the same way to somebody who is not flying.
 ///
 /// **16b cut U.4 (16c `T-53`)**: the seat is resolved **once**, here, and every
@@ -4756,6 +5324,8 @@ fn cockpit_command(ctx: &mut Ctx<'_>, verb: &'static str) -> Result<(), CmdError
         // 16b cut Q.2: what is left of a contact, off the reading the arena put
         // on it.
         "scan" => scan(ctx, &seat, &rest),
+        // 16b cut Y.1: the side's machines, on the four objectives.
+        "order" => order(ctx, &seat, &rest),
         // Not reachable: the table below registers exactly `COCKPIT_VERBS`, and
         // this arm is the closed-set proof rather than a panic.
         _ => Err(CockpitError::OutsideCockpit),
@@ -4801,6 +5371,13 @@ fn cockpit_help(verb: &str) -> String {
             .to_owned(),
         "fire" => "FIRE [<weapon>]     shoot your lock; the cannon unless you name another weapon."
             .to_owned(),
+        // 16b cut Y.1: who may order what, in the help, because the refusal for
+        // a squad a pilot may not order is deliberately one bare sentence.
+        "order" => "ORDER <squad|ALL> <objective>  command your side's machines: HOLD, ADVANCE \
+                    <spot>, ENGAGE [<contact>] or WITHDRAW, with HOLD FIRE at the end to forbid \
+                    shooting. A side's lead orders any squad of the side; anyone else their pod \
+                    pair's tank."
+            .to_owned(),
         // 16b cut F.2 gave both of these more to say, and a help line that
         // undersells a surface is a pilot who never looks at it.
         "weaponstatus" => "WEAPONSTATUS        every weapon you carry: ready or cycling, its \
@@ -4817,7 +5394,7 @@ fn cockpit_help(verb: &str) -> String {
     }
 }
 
-/// Register the cockpit on the **tacsim** module: fourteen verbs and one gate.
+/// Register the cockpit on the **tacsim** module: fifteen verbs and one gate.
 ///
 /// The state the verbs read is [`ArenaRegistry`]'s and [`crate::match_::MatchBook`]'s, both
 /// registered by [`crate::arena_bridge::register`], so nothing here declares a
@@ -4829,9 +5406,10 @@ fn cockpit_help(verb: &str) -> String {
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // `BOARD` writes a station document, a placement, a billet and (at the
     // trigger) cut T.3's whole check-out; `EXIT` writes the same in reverse. Of
-    // the twelve selectors, five stage one arena intent each and the other seven
-    // — cut Q.1's `RANGE` and `BEARING` and cut Q.2's `SCAN` among them — only
-    // read the last frame; none of the twelve writes anything at all. They are
+    // the thirteen selectors, five stage one arena intent each, cut Y.1's `ORDER`
+    // stages one per unit it fans out to, and the other seven — cut Q.1's `RANGE`
+    // and `BEARING` and cut Q.2's `SCAN` among them — only read the last frame;
+    // none of the thirteen writes a document. They are
     // registered on the same
     // lane as their two neighbours rather than split across two classifications
     // for one subsystem.
@@ -5254,8 +5832,9 @@ mod tests {
         }
         assert_eq!(
             COCKPIT_VERBS.len(),
-            12,
-            "doc 16 section 3.7's nine, cut Q.1's two read verbs and cut Q.2's SCAN"
+            13,
+            "doc 16 section 3.7's nine, cut Q.1's two read verbs, cut Q.2's SCAN and cut \
+             Y.1's ORDER"
         );
     }
 
@@ -5478,7 +6057,7 @@ mod tests {
     /// and the `STATUS` help names the callsign line.
     #[test]
     fn d2_the_verb_table_and_the_help_agree_with_the_selector_list() {
-        assert_eq!(COCKPIT_VERBS.len(), 12);
+        assert_eq!(COCKPIT_VERBS.len(), 13);
         let head = include_str!("cockpit.rs");
         for verb in COCKPIT_VERBS {
             let upper = verb.to_uppercase();
@@ -5809,6 +6388,293 @@ mod tests {
             off_window_spots_line(&spots, &drawn_spots(&window), &pose_on(6, 4, 0), 1_000)
                 .as_deref(),
             Some("Off the window: B North Gate, 10 m at 090°.")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut Y.1 — `ORDER`'s grammar, the pod pair and the acknowledgement
+    // -----------------------------------------------------------------------
+
+    fn y1_red(index: u16) -> crate::deliberation::SquadId {
+        crate::deliberation::SquadId {
+            team: crate::arena::state::Team::Red,
+            index,
+        }
+    }
+
+    fn y1_words(squad: SquadWord, objective: ObjectiveWords, hold_fire: bool) -> OrderWords {
+        OrderWords {
+            squad,
+            objective,
+            hold_fire,
+        }
+    }
+
+    /// **16b cut Y.1**: every line of the grammar, both squad forms and `ALL`,
+    /// case-folded; a spot of two words with and without the `HOLD FIRE` tail;
+    /// and every usage error answering [`ORDER_USAGE`] verbatim.
+    #[test]
+    fn y1_parse_order_reads_every_line_of_the_grammar() {
+        assert_eq!(
+            parse_order("red-1 HOLD"),
+            Ok(y1_words(
+                SquadWord::Id(y1_red(1)),
+                ObjectiveWords::Hold,
+                false
+            ))
+        );
+        assert_eq!(
+            parse_order("  Blue-2   hold  hold FIRE "),
+            Ok(y1_words(
+                SquadWord::Id(crate::deliberation::SquadId {
+                    team: crate::arena::state::Team::Blue,
+                    index: 2,
+                }),
+                ObjectiveWords::Hold,
+                true
+            ))
+        );
+        assert_eq!(
+            parse_order("1 WITHDRAW"),
+            Ok(y1_words(
+                SquadWord::Ordinal(1),
+                ObjectiveWords::Withdraw,
+                false
+            ))
+        );
+        assert_eq!(
+            parse_order("1 withdraw HOLD FIRE"),
+            Ok(y1_words(
+                SquadWord::Ordinal(1),
+                ObjectiveWords::Withdraw,
+                true
+            ))
+        );
+        assert_eq!(
+            parse_order("ALL engage"),
+            Ok(y1_words(
+                SquadWord::All,
+                ObjectiveWords::Engage { contact: None },
+                false
+            ))
+        );
+        assert_eq!(
+            parse_order("all ENGAGE ba"),
+            Ok(y1_words(
+                SquadWord::All,
+                ObjectiveWords::Engage {
+                    contact: Some("ba".to_owned())
+                },
+                false
+            ))
+        );
+        assert_eq!(
+            parse_order("red-1 ENGAGE BA HOLD FIRE"),
+            Ok(y1_words(
+                SquadWord::Id(y1_red(1)),
+                ObjectiveWords::Engage {
+                    contact: Some("BA".to_owned())
+                },
+                true
+            ))
+        );
+        assert_eq!(
+            parse_order("red-1 ENGAGE HOLD FIRE"),
+            Ok(y1_words(
+                SquadWord::Id(y1_red(1)),
+                ObjectiveWords::Engage { contact: None },
+                true
+            ))
+        );
+        assert_eq!(
+            parse_order("red-1 ADVANCE The Ford"),
+            Ok(y1_words(
+                SquadWord::Id(y1_red(1)),
+                ObjectiveWords::Advance {
+                    spot: "The Ford".to_owned()
+                },
+                false
+            ))
+        );
+        assert_eq!(
+            parse_order("1 advance The   Ford hold fire"),
+            Ok(y1_words(
+                SquadWord::Ordinal(1),
+                ObjectiveWords::Advance {
+                    spot: "The Ford".to_owned()
+                },
+                true
+            ))
+        );
+        assert_eq!(
+            parse_order("red-1 ADVANCE a"),
+            Ok(y1_words(
+                SquadWord::Id(y1_red(1)),
+                ObjectiveWords::Advance {
+                    spot: "a".to_owned()
+                },
+                false
+            ))
+        );
+        // Every usage error, one sentence.
+        for bad in [
+            "",
+            "   ",
+            "red-1",
+            "red-1 DANCE",
+            "HOLD",
+            "green-1 HOLD",
+            "squad HOLD",
+            "red-1 ADVANCE",
+            "red-1 ADVANCE HOLD FIRE",
+            "red-1 ENGAGE BA XB",
+            "red-1 HOLD now",
+            "red-1 HOLD FIRE",
+            "red-1 WITHDRAW HOLD",
+            "red-1 WITHDRAW FIRE",
+        ] {
+            assert_eq!(
+                parse_order(bad),
+                Err(CockpitError::Usage(ORDER_USAGE.to_owned())),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            CockpitError::Usage(ORDER_USAGE.to_owned()).to_string(),
+            "Usage: ORDER <squad|ALL> HOLD | ADVANCE <spot> | ENGAGE [<contact>] | WITHDRAW \
+             [HOLD FIRE]"
+        );
+        assert_eq!(CockpitError::NoSuchSquad.to_string(), "No such squad.");
+        assert_eq!(
+            CockpitError::NoSquadToOrder.to_string(),
+            "You have no squad to order."
+        );
+    }
+
+    /// **16b cut Y.1**: pods are claimed in pairs.
+    #[test]
+    fn y1_the_pod_pair_is_odd_with_the_next_and_even_with_the_last() {
+        assert_eq!(pair(1), 2);
+        assert_eq!(pair(2), 1);
+        assert_eq!(pair(3), 4);
+        assert_eq!(pair(4), 3);
+        assert_eq!(pair(7), 8);
+        assert_eq!(pair(0), 0, "no slot is 0; it pairs with itself");
+        assert_eq!(pair(u8::MAX), u8::MAX, "saturating at the top");
+        assert_eq!(HUMAN_ORDER_TTL_MS, 600_000);
+    }
+
+    /// **16b cut Y.1**: the acknowledgement, verbatim, for every arm — with and
+    /// without a hint, with `HOLD FIRE` — for one, two and three squads, and for
+    /// a wingman's callsign.
+    #[test]
+    fn y1_the_acknowledgement_says_what_the_order_means() {
+        const TAIL: &str = " It stands for 10 minutes or until your next order to it.";
+        let one = vec!["red-1".to_owned()];
+        let ack =
+            |objective: &ObjectiveWords,
+             hint: Option<&str>,
+             spot: Option<(&str, char)>,
+             hold_fire: bool| order_ack(&one, objective, hint, spot, hold_fire);
+        let hold = ObjectiveWords::Hold;
+        let advance = ObjectiveWords::Advance {
+            spot: "the ford".to_owned(),
+        };
+        let engage = ObjectiveWords::Engage {
+            contact: Some("ba".to_owned()),
+        };
+        let engage_any = ObjectiveWords::Engage { contact: None };
+        let withdraw = ObjectiveWords::Withdraw;
+        let cases = [
+            (
+                ack(&hold, None, None, false),
+                "Ordered red-1 to hold: it stops where it stands and fires nothing.",
+            ),
+            (
+                ack(&hold, None, None, true),
+                "Ordered red-1 to hold, holding fire: it stops where it stands and fires \
+                 nothing.",
+            ),
+            (
+                ack(&advance, None, Some(("The Ford", 'A')), false),
+                "Ordered red-1 to advance on The Ford (A): it drives there and fights nothing \
+                 on the way.",
+            ),
+            (
+                ack(&advance, None, Some(("The Ford", 'A')), true),
+                "Ordered red-1 to advance on The Ford (A), holding fire: it drives there and \
+                 fights nothing on the way.",
+            ),
+            (
+                ack(&engage, Some("BA"), None, false),
+                "Ordered red-1 to engage BA: it closes and fires on BA where it can see it, \
+                 else on what it finds.",
+            ),
+            (
+                ack(&engage_any, None, None, false),
+                "Ordered red-1 to engage: it closes and fires on what it finds.",
+            ),
+            (
+                ack(&engage, Some("BA"), None, true),
+                "Ordered red-1 to engage BA, holding fire: it closes and locks but fires \
+                 nothing.",
+            ),
+            (
+                ack(&engage_any, None, None, true),
+                "Ordered red-1 to engage, holding fire: it closes and locks on what it finds \
+                 but fires nothing.",
+            ),
+            (
+                ack(&withdraw, None, None, false),
+                "Ordered red-1 to withdraw: it breaks for its entry zone and still fights \
+                 inside its bands.",
+            ),
+            (
+                ack(&withdraw, None, None, true),
+                "Ordered red-1 to withdraw, holding fire: it breaks for its entry zone and \
+                 fires nothing.",
+            ),
+        ];
+        for (said, want) in cases {
+            assert_eq!(said, format!("{want}{TAIL}"));
+        }
+        // Two and three squads for a lead, a callsign for a wingman.
+        let two = vec!["red-1".to_owned(), "red-2".to_owned()];
+        assert_eq!(
+            order_ack(&two, &hold, None, None, false),
+            format!(
+                "Ordered red-1 and red-2 to hold: it stops where it stands and fires nothing.{TAIL}"
+            )
+        );
+        let three = vec!["red-1".to_owned(), "red-2".to_owned(), "red-3".to_owned()];
+        assert_eq!(
+            order_ack(&three, &withdraw, None, None, false),
+            format!(
+                "Ordered red-1, red-2 and red-3 to withdraw: it breaks for its entry zone and \
+                 still fights inside its bands.{TAIL}"
+            )
+        );
+        let wingman = vec!["RB".to_owned()];
+        assert_eq!(
+            order_ack(&wingman, &engage, Some("X2"), None, false),
+            format!(
+                "Ordered RB to engage X2: it closes and fires on X2 where it can see it, else \
+                 on what it finds.{TAIL}"
+            )
+        );
+    }
+
+    /// **16b cut Y.1**: the thirteenth selector is registered, walked by the
+    /// gate, and carries its help line.
+    #[test]
+    fn y1_order_is_the_thirteenth_selector() {
+        assert_eq!(COCKPIT_VERBS.len(), 13);
+        assert_eq!(COCKPIT_VERBS.last(), Some(&"order"));
+        assert_eq!(
+            cockpit_help("order"),
+            "ORDER <squad|ALL> <objective>  command your side's machines: HOLD, ADVANCE <spot>, \
+             ENGAGE [<contact>] or WITHDRAW, with HOLD FIRE at the end to forbid shooting. A \
+             side's lead orders any squad of the side; anyone else their pod pair's tank."
         );
     }
 }

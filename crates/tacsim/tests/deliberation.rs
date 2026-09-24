@@ -503,6 +503,8 @@ fn order(objective: Objective, ttl_ms: u32) -> Order {
         constraints: Constraints::default(),
         ttl_ms,
         issued_ms: 1,
+        issuer: None,
+        spot: None,
     }
 }
 
@@ -1625,6 +1627,8 @@ async fn the_world_says_the_mind_link_dropped_when_an_order_runs_out() {
             constraints: Constraints::default(),
             ttl_ms: 1_000,
             issued_ms: 0,
+            issuer: None,
+            spot: None,
         },
         model: "mock".to_string(),
         prompt_hash: "hash".to_string(),
@@ -2547,5 +2551,216 @@ fn aa1_an_advance_ends_for_the_machine_that_cannot_carry_it_out() {
             .iter()
             .map(|signal| (signal.squad, signal.reason))
             .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Y.1 — a pilot's order outranks the machines' own commander
+// ---------------------------------------------------------------------------
+
+/// Start one match on the production composition root with a pilot a side and
+/// `ai_fill` fielding the rest, and answer it with its squads and the red
+/// pilot's tank — the setup of
+/// `the_world_says_the_mind_link_dropped_when_an_order_runs_out`.
+fn y1_running_match(
+    tw: &mut TestWorld,
+) -> (
+    tacsim::arena_task::MatchId,
+    Vec<tacsim::deliberation::SquadRoster>,
+    ObjId,
+) {
+    let lobby = tacsim::match_::centre_object(tw.world(), tacsim::match_::LOBBY_ENTRY)
+        .expect("the OOC pack carries the simulator lobby");
+    let mut map = Accounts::default();
+    let mut pilots = Vec::new();
+    for n in 0..2 {
+        let pilot = tw.spawn_player(&format!("Pilot{n}"));
+        tw.world_mut()
+            .move_to(pilot, lobby)
+            .expect("a player walks into the lobby");
+        map.0.insert(
+            pilot,
+            AccountId::mint(&format!("account-{n}"), i64::from(n)).expect("an account id"),
+        );
+        pilots.push(pilot);
+    }
+    *tw.world_mut()
+        .module_state_mut::<mush_sim::AccountOracle>()
+        .expect("the simulation is composed") = mush_sim::AccountOracle::new(Arc::new(map));
+    tw.run(pilots[0], "sim team red");
+    tw.run(pilots[1], "sim team blue");
+    tw.run(pilots[0], "sim start");
+    let mut red_tank = None;
+    for pilot in &pilots {
+        let pod = tacsim::match_::pod_of(tw.world(), *pilot).expect("a claimed slot locks a pod");
+        let unit =
+            tacsim::match_::tank_of(tw.world(), pod).expect("the pod's tank is in the world");
+        red_tank.get_or_insert(unit);
+        let match_id = tacsim::match_::centre_of(tw.world())
+            .expect("the centre")
+            .match_id
+            .expect("a boarding centre has a match id");
+        let pilot = *pilot;
+        let _ = with_ctx(tw, pilot, |ctx| {
+            tacsim::match_::slot_seated(ctx, match_id, pilot, unit).expect("the seat is reported");
+        });
+    }
+    let match_id = tacsim::match_::centre_of(tw.world())
+        .expect("the centre")
+        .match_id
+        .expect("the match started");
+    let squads = tw
+        .world()
+        .module_state::<tacsim::match_::MatchBook>()
+        .and_then(|book| book.get(match_id))
+        .map(|record| record.squads.clone())
+        .expect("the record carries its squads");
+    (match_id, squads, red_tank.expect("the red pilot's tank"))
+}
+
+/// One signal for `squad`, as a pulse of the arena would raise it.
+fn y1_signal(roster: &tacsim::deliberation::SquadRoster) -> tacsim::arena::command::SquadSignal {
+    tacsim::arena::command::SquadSignal {
+        squad: roster.id,
+        commander: roster.commander,
+        team: roster.id.team,
+        reason: tacsim::arena::command::SignalReason::NoOrder,
+        at_ms: 0,
+        digest: tacsim::arena::command::SquadDigest::default(),
+        contacts: Vec::new(),
+        bands_cm: Vec::new(),
+        sight_cm: 0,
+        default_ttl_ms: 30_000,
+        health_permille: 1_000,
+        states: [0; 6],
+        cell: None,
+        window: (16, 16),
+    }
+}
+
+/// The machines' own commander's reply for `squad`: a `withdraw` standing a
+/// minute.
+fn y1_reply(match_id: tacsim::arena_task::MatchId, squad: SquadId) -> String {
+    serde_json::to_string(&tacsim::deliberation::DeliberationReply::Ok {
+        match_id: match_id.0,
+        order: Order {
+            squad,
+            objective: Objective::Withdraw,
+            target: None,
+            horizon_ms: 60_000,
+            constraints: Constraints::default(),
+            ttl_ms: 60_000,
+            issued_ms: 0,
+            issuer: None,
+            spot: None,
+        },
+        model: "mock".to_string(),
+        prompt_hash: "hash".to_string(),
+    })
+    .expect("a reply encodes")
+}
+
+/// `(issued, refused, in_flight)` and the watch's issuer, as the registry holds
+/// them.
+fn y1_state(
+    tw: &TestWorld,
+    match_id: tacsim::arena_task::MatchId,
+    squad: SquadId,
+) -> ((u64, u64, usize), Option<ObjId>) {
+    tw.world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| {
+            (
+                registry.deliberation_counts(match_id),
+                registry.order_issuer(match_id, squad),
+            )
+        })
+        .expect("the registry")
+}
+
+/// **16b cut Y.1 — the shield, both halves** (16c N3's default: *a human order
+/// outranks a live LLM order*).
+///
+/// A request for the squad is in flight when the pilot speaks. Then:
+///
+/// 1. a signal for the squad under the pilot's live watch takes **no** in-flight
+///    slot — `on_deliberate` spent nothing on it;
+/// 2. the in-flight reply's `Ok` is **dropped** after its slot is given back:
+///    `in_flight` is back to 0, nothing was issued (the fan-out to the task was
+///    never reached), and the watch's issuer is still the pilot;
+/// 3. once the watch has expired, the next signal is spent as it always was,
+///    and a reply is issued and replaces the watch with the machines' own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y1_a_pilots_live_order_shields_the_squad_from_the_machines_commander() {
+    let mut tw = TestWorld::with_modules(roster());
+    let (match_id, squads, red_tank) = y1_running_match(&mut tw);
+    let roster = squads
+        .iter()
+        .find(|roster| roster.id.team == Team::Red)
+        .cloned()
+        .expect("red fields machines");
+    let squad = roster.id;
+    let signal = y1_signal(&roster);
+
+    // A request goes out before the pilot says anything.
+    let _ = with_ctx(&mut tw, GOD, |ctx| {
+        tacsim::arena_bridge::on_deliberate(ctx, match_id, std::slice::from_ref(&signal));
+    });
+    assert_eq!(y1_state(&tw, match_id, squad), ((0, 0, 1), None));
+
+    // The pilot orders the squad: a watch with an issuer, ten minutes long.
+    let now_ms = tw.world().now() * 1_000;
+    tw.world_mut()
+        .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+        .expect("the registry")
+        .note_human_order(
+            match_id,
+            squad,
+            SmolStr::new("hold"),
+            red_tank,
+            now_ms + 600_000,
+        );
+    assert_eq!(y1_state(&tw, match_id, squad), ((0, 0, 1), Some(red_tank)));
+
+    // (1) A signal under the watch takes no slot.
+    let _ = with_ctx(&mut tw, GOD, |ctx| {
+        tacsim::arena_bridge::on_deliberate(ctx, match_id, std::slice::from_ref(&signal));
+    });
+    assert_eq!(
+        y1_state(&tw, match_id, squad),
+        ((0, 0, 1), Some(red_tank)),
+        "a squad under a pilot's order is not asked about"
+    );
+
+    // (2) The reply that was already in flight is dropped.
+    let payload = y1_reply(match_id, squad);
+    let _ = with_ctx(&mut tw, GOD, |ctx| {
+        tacsim::arena_bridge::on_deliberation_reply(ctx, &payload);
+    });
+    assert_eq!(
+        y1_state(&tw, match_id, squad),
+        ((0, 0, 0), Some(red_tank)),
+        "the slot came back, nothing was issued and the pilot's watch stands"
+    );
+
+    // (3) Past the watch, the machines' commander is asked again, and its
+    // answer lands.
+    let now = tw.world().now();
+    tw.set_now(now + 601);
+    let _ = with_ctx(&mut tw, GOD, |ctx| {
+        tacsim::arena_bridge::on_deliberate(ctx, match_id, std::slice::from_ref(&signal));
+    });
+    assert_eq!(
+        y1_state(&tw, match_id, squad).0,
+        (0, 0, 1),
+        "after the expiry the next signal is spent"
+    );
+    let _ = with_ctx(&mut tw, GOD, |ctx| {
+        tacsim::arena_bridge::on_deliberation_reply(ctx, &payload);
+    });
+    assert_eq!(
+        y1_state(&tw, match_id, squad),
+        ((1, 0, 0), None),
+        "the machines' order is issued and its watch replaces the pilot's"
     );
 }

@@ -585,8 +585,29 @@ pub struct MatchDeliberation {
     orders: BTreeMap<crate::deliberation::SquadId, OrderWatch>,
     /// Orders issued, for `@arena/status` and the cost run.
     issued: u64,
+    /// **Orders pilots gave** (16b cut Y.1): one per squad an `ORDER` reached,
+    /// counted by [`ArenaRegistry::note_human_order`]; `@arena/status`'s
+    /// `orders:` line prints it beside [`MatchDeliberation::issued`].
+    human_issued: u64,
     /// Requests refused by the provider path, whatever the reason.
     refused: u64,
+}
+
+impl MatchDeliberation {
+    /// **Whether a pilot's order still stands on `squad`** at world millisecond
+    /// `now_ms` (16b cut Y.1; 16c N3's default, *a human order outranks a live LLM
+    /// order*): the squad's watch has an issuer and has not expired.
+    ///
+    /// Read by both halves of the shield — [`on_deliberate`] spends no signal on
+    /// such a squad and [`on_deliberation_reply`] drops an order for it — so a
+    /// human's order stands until it runs out or the pilot replaces it, and the
+    /// machine's commander asks again at the next signal after the expiry.
+    #[must_use]
+    pub(crate) fn human_holds(&self, squad: crate::deliberation::SquadId, now_ms: i64) -> bool {
+        self.orders
+            .get(&squad)
+            .is_some_and(|watch| watch.issuer.is_some() && watch.expires_ms > now_ms)
+    }
 }
 
 /// One squad's order, as the world remembers it.
@@ -598,6 +619,10 @@ struct OrderWatch {
     objective: SmolStr,
     /// Whether the expiry has already been said. A notice is said once.
     said: bool,
+    /// **Who gave it** (16b cut Y.1): the pilot's own tank for an `ORDER`, `None`
+    /// for the LLM seam. What `MatchDeliberation::human_holds` reads, and what
+    /// cut Y.2's span counts per issuer.
+    issuer: Option<ObjId>,
 }
 
 impl ArenaRegistry {
@@ -628,6 +653,52 @@ impl ArenaRegistry {
         self.deliberation.get(&match_id).map_or((0, 0, 0), |state| {
             (state.issued, state.refused, state.in_flight)
         })
+    }
+
+    /// **Remember a pilot's order on `squad`** (16b cut Y.1): the world's watch
+    /// on it, latest-wins over whatever was there — an LLM watch included, so
+    /// `say_expired_orders` still says its one sentence once per squad — and one
+    /// more on the match's `human_issued`.
+    ///
+    /// `expires_ms` is a **world** millisecond. A plain registry write, `pub` so
+    /// an integration test can seed a watch; the cockpit's `ORDER` calls it once
+    /// per squad it reached.
+    pub fn note_human_order(
+        &mut self,
+        match_id: MatchId,
+        squad: crate::deliberation::SquadId,
+        objective: SmolStr,
+        issuer: ObjId,
+        expires_ms: i64,
+    ) {
+        let state = self.deliberation.entry(match_id).or_default();
+        state.orders.insert(
+            squad,
+            OrderWatch {
+                expires_ms,
+                objective,
+                said: false,
+                issuer: Some(issuer),
+            },
+        );
+        state.human_issued = state.human_issued.saturating_add(1);
+    }
+
+    /// **Who gave the order the world remembers on `squad`** (16b cut Y.1): the
+    /// pilot's own tank for an `ORDER`, and `None` for an order from the LLM
+    /// seam or a squad with no watch at all. Expired or not: it is the watch's
+    /// record, and `MatchDeliberation::human_holds` is what asks whether it
+    /// still stands. A read for tests and for cut Y.2's span.
+    #[must_use]
+    pub fn order_issuer(
+        &self,
+        match_id: MatchId,
+        squad: crate::deliberation::SquadId,
+    ) -> Option<ObjId> {
+        self.deliberation
+            .get(&match_id)
+            .and_then(|state| state.orders.get(&squad))
+            .and_then(|watch| watch.issuer)
     }
 
     /// The shared table of live tasks.
@@ -1038,6 +1109,10 @@ pub enum ControlRefusal {
 /// 5. the order is stamped with the epoch the world published to the arena and
 ///    with the world's next sequence, and offered to the inbox without waiting.
 ///
+/// Steps 1–4 are `authorise_seat` since **16b cut Y.1**, which `ORDER`'s
+/// [`forward_order`] shares; this function's behaviour is byte-identical to what
+/// it was before the factoring.
+///
 /// The arena authorises again **at apply**, against its own table, because the
 /// world's answer was true when the order was typed and an order sits in a queue.
 ///
@@ -1051,6 +1126,47 @@ pub fn forward_intent(
     kind: IntentKind,
 ) -> Result<(), IntentRefusal> {
     let channel = kind.channel_required();
+    let match_id = authorise_seat(ctx, actor, unit, channel)?;
+
+    // (5) The stamp, and the offer.
+    let (intent, tasks) = {
+        let registry = ctx
+            .w
+            .module_state_mut::<ArenaRegistry>()
+            .ok_or(IntentRefusal::Unavailable)?;
+        let intent = Intent {
+            unit,
+            channel,
+            epoch: registry.epoch_of(unit, channel),
+            kind,
+            seq: registry.next_seq(),
+        };
+        (intent, registry.tasks.clone())
+    };
+    match tasks.offer(match_id, ArenaMsg::Intent(intent)) {
+        Ok(()) => Ok(()),
+        Err(_) if tasks.is_live(match_id) => Err(IntentRefusal::Busy),
+        Err(_) => Err(IntentRefusal::Gone),
+    }
+}
+
+/// **Is `actor` at a seat of `unit` that carries `channel`?** — steps (1)–(4) of
+/// [`forward_intent`], factored out by **16b cut Y.1** so `ORDER` can authorise
+/// a commander once on their own tank ([`forward_order`]).
+///
+/// Answers the running match that holds `unit` — what step 1 finds — so the
+/// caller stamps and offers into it without a second lookup.
+///
+/// # Errors
+///
+/// One [`IntentRefusal`] word, in step order: `Unavailable`/`NoMatch` (1),
+/// `NotFocused` (2), `NoStation`/`Channel` (3), `LeaseUnknown`/`LeaseHeld` (4).
+pub(crate) fn authorise_seat(
+    ctx: &mut Ctx<'_>,
+    actor: ObjId,
+    unit: ObjId,
+    channel: Channel,
+) -> Result<MatchId, IntentRefusal> {
     let Some(channel_id) = ChannelId::new(channel.as_str()) else {
         // `Channel::as_str` is three canonical lowercase words; this cannot fail
         // on a tree that compiles, and a refusal is the fail-closed answer if it
@@ -1060,6 +1176,7 @@ pub fn forward_intent(
         });
     };
 
+    // (1) The running match.
     let match_id = ctx
         .w
         .module_state::<ArenaRegistry>()
@@ -1112,27 +1229,43 @@ pub fn forward_intent(
             channel: SmolStr::new(channel.as_str()),
         });
     }
+    Ok(match_id)
+}
 
-    // (5) The stamp, and the offer.
-    let (intent, tasks) = {
-        let registry = ctx
-            .w
-            .module_state_mut::<ArenaRegistry>()
-            .ok_or(IntentRefusal::Unavailable)?;
-        let intent = Intent {
-            unit,
-            channel,
-            epoch: registry.epoch_of(unit, channel),
-            kind,
-            seq: registry.next_seq(),
-        };
-        (intent, registry.tasks.clone())
-    };
-    match tasks.offer(match_id, ArenaMsg::Intent(intent)) {
-        Ok(()) => Ok(()),
-        Err(_) if tasks.is_live(match_id) => Err(IntentRefusal::Busy),
-        Err(_) => Err(IntentRefusal::Gone),
+/// **Forward a pilot's `ORDER` to every unit it names** (16b cut Y.1; doc 16
+/// §3.7, §6; 16c N3).
+///
+/// The seat is authorised **once, on the issuer's own tank** (`own_unit`) and the
+/// `helm` channel (`authorise_seat`) — not on each ordered unit, because a
+/// commander is focused on their own station and a wingman flown by the machine
+/// has no station anybody is focused on; [`forward_intent`]'s step 2 would refuse
+/// every squad order ever typed. Then the order is stamped and offered **per
+/// unit** with that unit's own `helm` epoch, exactly as [`send_order`] stamps the
+/// LLM seam's. The arena authorises each unit again at apply against its own
+/// table: a unit a pilot has since boarded refuses `NotReflex` silently, as
+/// today.
+///
+/// Answers how many units were offered; `Ok(0)` when every offer refused (the
+/// cockpit turns that into [`IntentRefusal::Busy`]).
+///
+/// # Errors
+///
+/// `authorise_seat`'s refusal, and nothing is offered.
+pub fn forward_order(
+    ctx: &mut Ctx<'_>,
+    actor: ObjId,
+    own_unit: ObjId,
+    units: &[ObjId],
+    order: crate::deliberation::Order,
+) -> Result<usize, IntentRefusal> {
+    let match_id = authorise_seat(ctx, actor, own_unit, Channel::Helm)?;
+    let mut offered = 0_usize;
+    for unit in units {
+        if send_order(ctx, match_id, *unit, order.clone()).is_ok() {
+            offered = offered.saturating_add(1);
+        }
     }
+    Ok(offered)
 }
 
 /// **Publish one authority change to the arena** (doc 16 §3.1's `Control`).
@@ -1989,6 +2122,16 @@ fn status_rows(ctx: &Ctx<'_>) -> Vec<String> {
             mirror.chunks_lost,
             mirror.frames_sent,
         ));
+        // **16b cut Y.1**: who has been giving orders — a line of its own and not
+        // a clause on the match row, because `mushd`'s test support parses that
+        // row (`arena_clock_seconds`).
+        let (human, machine) = registry
+            .deliberation
+            .get(&match_id)
+            .map_or((0, 0), |state| (state.human_issued, state.issued));
+        rows.push(format!(
+            "  orders: {human} by pilots, {machine} by the machines"
+        ));
     }
     if !rows.is_empty() {
         rows.push(format!(
@@ -2273,11 +2416,18 @@ pub const MODULE: &str = NS;
 /// against ([`mush_llm::CallCtx::with_actor`]) and therefore what makes per-squad
 /// cost a read of the budget ledger rather than a second counter. It never reaches
 /// the prompt.
+///
+/// **16b cut Y.1 — the shield's first half.** A squad under a pilot's live order
+/// (`MatchDeliberation::human_holds`) gets no request: the signal is skipped
+/// **before** an in-flight slot is taken, so a human's order stands until it
+/// runs out or the pilot replaces it, and the machine's commander asks again at
+/// the next signal after the expiry.
 pub fn on_deliberate(
     ctx: &mut Ctx<'_>,
     match_id: MatchId,
     signals: &[crate::arena::command::SquadSignal],
 ) {
+    let now_ms = ctx.w.now().saturating_mul(1_000);
     for signal in signals {
         // The roster, for the unit count the brief carries and for the fan-out the
         // reply needs. A signal for a squad the record no longer holds is dropped:
@@ -2304,6 +2454,10 @@ pub fn on_deliberate(
             else {
                 return;
             };
+            // 16b cut Y.1: a pilot's order stands; nothing is asked over it.
+            if state.human_holds(signal.squad, now_ms) {
+                continue;
+            }
             if state.in_flight >= crate::deliberation::MAX_IN_FLIGHT_PER_MATCH {
                 continue;
             }
@@ -2351,6 +2505,12 @@ fn release_in_flight(ctx: &mut Ctx<'_>, match_id: MatchId) {
 /// exactly as it authorises a pilot's. A refusal is doc 16 §6's fallback and costs
 /// one counter: the squad is already on doctrine, because doctrine is what a squad
 /// with no order runs.
+///
+/// **16b cut Y.1 — the shield's second half.** An order for a squad a pilot's
+/// order still holds (`MatchDeliberation::human_holds`) — a request that was
+/// already in flight when the pilot spoke — is dropped after its in-flight slot
+/// is given back: the human's order stands until it runs out or the pilot
+/// replaces it.
 pub fn on_deliberation_reply(ctx: &mut Ctx<'_>, payload: &str) {
     let Ok(reply) = serde_json::from_str::<crate::deliberation::DeliberationReply>(payload) else {
         tracing::warn!("tacsim: undecodable deliberation reply dropped");
@@ -2373,6 +2533,19 @@ pub fn on_deliberation_reply(ctx: &mut Ctx<'_>, payload: &str) {
         crate::deliberation::DeliberationReply::Ok {
             mut order, model, ..
         } => {
+            // 16b cut Y.1: a pilot's live order outranks the machine's.
+            if ctx
+                .w
+                .module_state::<ArenaRegistry>()
+                .and_then(|registry| registry.deliberation.get(&match_id))
+                .is_some_and(|state| state.human_holds(order.squad, now_ms))
+            {
+                tracing::debug!(
+                    %match_id, squad = %order.squad,
+                    "arena deliberation reply dropped under a pilot's order"
+                );
+                return;
+            }
             // The world stamps `issued_ms`: it is a world millisecond by definition,
             // and letting the provider name it would let a model backdate an order.
             order.issued_ms = now_ms;
@@ -2414,6 +2587,7 @@ pub fn on_deliberation_reply(ctx: &mut Ctx<'_>, payload: &str) {
                         expires_ms,
                         objective: objective.clone(),
                         said: false,
+                        issuer: None,
                     },
                 );
             }

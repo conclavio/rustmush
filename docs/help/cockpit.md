@@ -1,6 +1,6 @@
 # The cockpit
 
-The twelve verbs you fly a tank with, in the order a pilot uses them. They work
+The thirteen verbs you fly a tank with, in the order a pilot uses them. They work
 while you are at the station of a tank a running match has deployed, and nowhere
 else — `help simulator` is how you get there.
 
@@ -31,6 +31,9 @@ else — `help simulator` is how you get there.
                       — `Red Tank 1 [biped_mk1]: …` —
                       because a pod's tank keeps the pod's own name whatever is
                       fitted to it.
+  ORDER <squad|ALL> <objective>
+                      command your side's machines: hold, advance on a named
+                      spot, engage or withdraw. See "Commanding the machines".
 
 `EXIT` climbs out. Once the match is running that is final: see
 `help simulator`.
@@ -249,6 +252,60 @@ is nothing new to say about it.
 
 Lose one track and the tank is slowed and will not turn that way; lose both and
 it neither drives nor turns, and the second line ends `the tank cannot move`.
+
+## Commanding the machines
+
+When the simulator fills the empty pods with machines (`SIM AI`), they fight on
+their own doctrine. `ORDER` tells them what to do instead.
+
+**Who may order what.** Your side's lead — the pilot who may `SIM START` and
+`SIM CONCEDE` — orders any squad of your side. Anyone else orders one tank: the
+one in their pod pair (pod 1 with pod 2, 3 with 4), when a machine is flying it.
+Your side's machines are grouped into squads, red-1 first: fewer than four
+machines are one squad, and four or more go in pairs. Name a squad in full,
+`ORDER red-1 HOLD`; by its number alone, `ORDER 1 HOLD`, which is your own
+side's; or every squad you may order at once, `ORDER ALL HOLD`.
+
+There are four orders, and the answer says what each one means:
+
+  ORDER red-1 ENGAGE BA          Ordered red-1 to engage BA: it closes and fires
+                                 on BA where it can see it, else on what it
+                                 finds.
+  ORDER ALL HOLD                 Ordered red-1 to hold: it stops where it stands
+                                 and fires nothing.
+  ORDER 1 ADVANCE The Ford       Ordered red-1 to advance on The Ford (A): it
+                                 drives there and fights nothing on the way.
+  ORDER red-1 WITHDRAW HOLD FIRE Ordered red-1 to withdraw, holding fire: it
+                                 breaks for its entry zone and fires nothing.
+
+Engage without a contact — `ORDER red-1 ENGAGE` — and the squad closes and fires
+on what it finds. A withdrawal without hold fire still fights anything that comes
+inside its bands on the way out. Hold fire, as the last two words of any order,
+forbids shooting and nothing else: `ORDER red-1 ENGAGE BA HOLD FIRE` closes and
+locks but fires nothing. If you are not the lead, name the squad your pod
+pair's tank flies in, or `ORDER ALL`, and the answer names that one tank by its
+callsign: `ORDER ALL HOLD` is answered `Ordered RB to hold: …`.
+
+An order **stands for ten minutes or until your next order to it**, and
+every answer ends by saying so. When it runs out the machines go back to their
+own doctrine and your side hears `Squad red-1: mind link dropped, unit on
+doctrine (its hold order has run out).` Nobody else is told you gave an order:
+there is no radio line.
+
+**You may point, but a tank that cannot see still cannot see.** The contact you
+name is one of yours, by the designator your `CONTACTS` prints, and a machine
+that holds nothing of its own on that tank takes the best target it does hold.
+Your own side's tanks are never a target: name one and the order is a plain
+engage, answered as one.
+An advance names one of the ground's spots, by its name or its letter, as
+`RANGE` takes one.
+
+Two refusals are the order's own. `No such squad.` is the answer for any squad
+you cannot order — the other side's, one that does not exist, or one of your own
+side's that is not yours to command — and it is one line for all three, so it
+tells you nothing about the other side. `You have no squad to order.` is `ORDER
+ALL` from a pilot with nothing under them. A target or a spot your panel does not
+know is `No such contact.`, as it is everywhere else.
 
 ## Refusals
 

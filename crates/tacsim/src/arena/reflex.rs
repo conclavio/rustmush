@@ -2204,21 +2204,29 @@ impl Arena {
         })
     }
 
-    /// **The object an order points this unit at**, or `None` (16b cut N.2).
+    /// **The object an order points this unit at**, or `None` (16b cut N.2; the
+    /// issuer since cut Y.1).
     ///
-    /// The hint is written in the **commander's** contact ids, because that is the
-    /// only contact store the request was built from; it is resolved there into an
-    /// object, and the caller then looks for *this* unit's own contact on that
+    /// The hint is written in **the issuer's** contact ids — a pilot's own tank
+    /// when a pilot typed `ORDER` ([`Order::issuer`]), or the squad commander's
+    /// when the LLM seam wrote it (`issuer: None`), because that is the contact
+    /// store the order was written against — and it is resolved there into an
+    /// object; the caller then looks for **this** unit's own contact on that
     /// object. A unit that holds nothing on it prefers nothing and takes its
     /// doctrine's best target, which is doc 16 §3.6's observer rule read through an
     /// order: a commander may point, and a tank that cannot see still cannot see.
+    ///
+    /// A `match` and not `unwrap_or(self.squad_of(id)?.commander)`: that
+    /// argument's `?` is eager, and would drop a pilot's hint on a unit that is in
+    /// no squad before the issuer were ever looked at.
     fn ordered_target(&self, id: ObjId, order: Option<&Order>) -> Option<ObjId> {
         let order = order?;
         let hint = order.preferred_contact()?;
-        let commander = self.squad_of(id)?.commander;
-        self.contacts
-            .resolve(commander, hint)
-            .map(|held| held.target)
+        let viewer = match order.issuer {
+            Some(unit) => unit,
+            None => self.squad_of(id)?.commander,
+        };
+        self.contacts.resolve(viewer, hint).map(|held| held.target)
     }
 
     /// Whether a shot at `target` would have a line at all — the test `Approach`
@@ -3494,6 +3502,8 @@ mod tests {
             },
             ttl_ms: 30_000,
             issued_ms: 0,
+            issuer: None,
+            spot: None,
         };
         for (band, engage_cm, release_cm, stand_cm) in [
             (None, 42_000_u64, 60_000_u64, 20_000_u64),

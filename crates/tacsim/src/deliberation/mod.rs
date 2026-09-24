@@ -284,6 +284,8 @@ mod tests {
                 constraints: Constraints::default(),
                 ttl_ms: 30_000,
                 issued_ms: 5,
+                issuer: None,
+                spot: None,
             },
             model: "m".to_string(),
             prompt_hash: "h".to_string(),

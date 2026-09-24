@@ -605,6 +605,14 @@ impl Arena {
         // are now staged, and the other five are silent on purpose: see
         // [`Arena::phase_two_tells`].
         let mut fire_intent_queued = false;
+        // **16b cut Y.1**: phase 2 runs at one arena timestamp, so every `ordered`
+        // line of one pulse belongs to one hash — an `ORDER ALL` over four pairs
+        // costs one `state_hash`, not eight. 16b cut M.3's rule (`T-23`) kept: the
+        // slot is `Pending`, the first `ordered` line takes it
+        // (`Arena::event_hash`), and a pulse with no order takes nothing. Nothing
+        // else in phase 2 journals today (`stage_refusal` writes no ledger line),
+        // so nothing else observes the slot.
+        self.action_hash = ActionHash::Pending;
         for intent in intents {
             // **16b cut M.1** (`T-82`): every order in this slice came through the
             // world's seam, so it is a seat's and counts against the rate.
@@ -624,6 +632,8 @@ impl Arena {
                 self.stage_refusal(intent.unit, intent.kind.as_str(), refusal, weapon);
             }
         }
+        // **16b cut Y.1**: the phase-2 window closes before time moves.
+        self.action_hash = ActionHash::Outside;
 
         // ---- phase 3: time, in substeps ----
         let (dt_ms, clock_lagged) = self.clock.advance(wall_now_ms, &self.arena_cfg);
@@ -3423,6 +3433,8 @@ mod tests {
             constraints: crate::deliberation::order::Constraints::default(),
             ttl_ms: 30_000,
             issued_ms: 1,
+            issuer: None,
+            spot: None,
         };
         let out = arena.step(
             5_000,
@@ -4591,6 +4603,90 @@ mod tests {
                 .iter()
                 .all(|event| event.hash == phase_four[0].hash && event.t_ms == 5_000),
             "one phase, one moment, one hash: {phase_four:?}"
+        );
+    }
+
+    /// **16b cut Y.1**: phase 2's `ordered` lines take **one** hash between them
+    /// — M.3's rule (`T-23`) kept for the phase that journals now. An order to
+    /// two units in one pulse takes exactly one `state_hash` more than a quiet
+    /// pulse (the substeps' records and phase 5's), both lines carry it, both
+    /// sit at the pulse's opening arena millisecond, and the slot is closed
+    /// again after the phase.
+    ///
+    /// The two scouts are handed to the machine by the controller byte alone,
+    /// with no reflex tick scheduled, so nothing inside the substeps can open a
+    /// slot of its own and the count is phase 2's.
+    #[test]
+    fn y1_phase_two_takes_one_hash_for_every_ordered_line_of_a_pulse() {
+        const B: ObjId = ObjId(9);
+        let mut arena = m2_pair(600_000);
+        let mut journal = Log::default();
+        journal.absorb(&arena.step(0, &[], &[]));
+        for wall in [1_000, 2_000, 3_000] {
+            journal.absorb(&arena.step(wall, &[], &[]));
+        }
+        for unit in [A, B] {
+            if let Some(state) = arena.unit_mut(unit) {
+                state.controller = crate::arena::state::Controller::Reflex;
+            }
+        }
+        let taken = || crate::arena::hash::STATE_HASHES_TAKEN.with(std::cell::Cell::get);
+        let before = taken();
+        let quiet = arena.step(4_000, &[], &[]);
+        let quiet_taken = taken() - before;
+        journal.absorb(&quiet);
+        assert_eq!(
+            quiet_taken,
+            u64::from(quiet.substeps) + 1,
+            "the baseline: one hash per substep and phase 5's"
+        );
+        let told = crate::deliberation::order::Order {
+            squad: crate::deliberation::squad::SquadId::parse("red-1").expect("a squad id"),
+            objective: crate::deliberation::order::Objective::Hold,
+            target: None,
+            horizon_ms: 600_000,
+            constraints: crate::deliberation::order::Constraints::default(),
+            ttl_ms: 600_000,
+            issued_ms: 1,
+            issuer: Some(A),
+            spot: None,
+        };
+        let intents: Vec<Intent> = [A, B]
+            .into_iter()
+            .zip(1_u64..)
+            .map(|(unit, seq)| Intent {
+                unit,
+                channel: Channel::Helm,
+                epoch: arena.epochs.current(unit, Channel::Helm),
+                kind: IntentKind::Order(Box::new(told.clone())),
+                seq,
+            })
+            .collect();
+        let before = taken();
+        let busy = arena.step(5_000, &[], &intents);
+        let busy_taken = taken() - before;
+        journal.absorb(&busy);
+        assert_eq!(
+            busy_taken,
+            u64::from(busy.substeps) + 2,
+            "the two `ordered` lines shared phase 2's one hash"
+        );
+        assert_eq!(
+            arena.action_hash,
+            ActionHash::Outside,
+            "closed after the pulse"
+        );
+        let log = journal.events(&mut arena);
+        let ordered: Vec<&LedgerEvent> = log
+            .iter()
+            .filter(|event| event.kind.as_str() == "ordered")
+            .collect();
+        assert_eq!(ordered.len(), 2, "one line per unit: {ordered:?}");
+        assert!(
+            ordered
+                .iter()
+                .all(|event| event.hash == ordered[0].hash && event.t_ms == 4_000),
+            "one phase, one moment, one hash: {ordered:?}"
         );
     }
 
