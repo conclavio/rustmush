@@ -297,7 +297,7 @@ four a side on content while the config asks for twelve and the harness carries 
 the ranking is mostly a surface for something built. Ranking is by what it gives a pilot in a fight per
 line of work, with the scale target's one blocker (`N5`) placed where its dependents need it.
 
-### N1. Name the ground
+### N1. Name the ground — landed V.1
 
 - **Pitch.** `The Ford`, `The Crossroads`, `North Barn` and `East Compound` go on the map, on `BEARING`
   and `RANGE`, on `STATUS` and into orders, so two pilots can say where they are in words.
@@ -314,7 +314,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
 - **Owner's choices.** Legend or in-grid names (default: legend plus a one-letter marker). May a pilot
   name a spot they cannot see (default: yes, surveyed ground). More spots now (default: no).
 
-### N2. The debrief: `SIM REPORT`, `SIM HISTORY`, `@arena/report`
+### N2. The debrief: `SIM REPORT`, `SIM HISTORY`, `@arena/report` — landed V.2 and V.3
 
 - **Pitch.** A match ends in one line. This gives each pilot a report of their own match (shots, hits,
   what they killed, what killed them, how long) and the centre a history of its last matches.
@@ -763,6 +763,8 @@ Depends on M (one re-bless of timestamps after the stagger and the coalescing). 
 Assumes Q25, Q27, Q29, Q34. Size: medium to large.
 
 ### Cut V: talk about the fight
+
+Landed 2026-09-24 at `14430594`; see 16b section 9, row V. Built as the three sub-cuts below, each committed and pushed on its own green gate (V.1 `23dcac43`, V.2 `2ff2d8eb`, V.3 `14430594`), then the full sweep with no repair (its one failure a `mush-server` world-task timing flake, green on both reruns). Six corrections to this section's sketches are recorded in the V row's design note: the debrief is folded as the tape passes the world and written as one report document per pilot at check-in rather than paged back from the store; the callsigns come off `Arena::callsigns()`; the history is a RAM ring of twenty rows loaded from the boot documents; the marker alphabet is 22 letters and a spot's name is checked at load; `VIEW` names every undrawn spot; a pilot's shot line carries no range and no damage figure. Deferred: the width of the designator-shape rule on spot names (it refuses `Ridge` and `Barn`; a candidate row), the rubble `x` and door `+` glyphs sharing a byte with the hostile and friendly markers (pre-existing; a candidate row), the `SIM HISTORY` row wrapping past 80 columns with its suffix (an owner call), the boot skipping its restart write over a finished match whose `deployed` marker survived and deleting the reports of the rows it evicts, `Report.kills` printed nowhere, and the fold of a chunk the ledger later refused; every one is in the V row's residuals.
 
 **When it lands.** A pilot can say `The Ford`, steer by it, and read after a match what they did and
 what was done to them; the centre keeps a history.
