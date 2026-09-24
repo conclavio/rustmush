@@ -1686,6 +1686,11 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
     ) {
         Ok(_) => {
             if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+                // 16b cut U.4 (16c `T-52`): this check-out used whatever
+                // `@arena/pose` had set, so this match's end is what clears it.
+                // A check-out that refused used nothing, and the overrides stand
+                // for the next attempt.
+                book.consume_openings(match_id);
                 let centre = book.centre_mut();
                 centre.state = MatchState::Running;
                 centre.board_deadline_ms = None;
@@ -1714,6 +1719,14 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
         .filter(|arena| !arena.is_empty())
         .unwrap_or_else(|| SmolStr::new_static(CENTRE_ARENA));
     let mut sides: Vec<Side> = Vec::new();
+    // **16b cut U.4 (16c `T-52`)**: the opening cells staff set with
+    // `@arena/pose`, which ride each slot's `Fielded` into the check-out — for a
+    // claimed pod and an AI-filled one alike, since both are the slot's.
+    let openings = ctx
+        .w
+        .module_state::<MatchBook>()
+        .map(|book| book.opening_cells().clone())
+        .unwrap_or_default();
     {
         let Some(centre) = centre(ctx.w) else {
             return Err(SimError::Unavailable);
@@ -1738,6 +1751,7 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                     slot.unit.map(|unit| crate::match_::Fielded {
                         unit,
                         slot: slot.index,
+                        opening: openings.get(&(team, slot.index)).copied(),
                     })
                 })
                 .collect();
@@ -1785,6 +1799,7 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                         units.push(crate::match_::Fielded {
                             unit: tank,
                             slot: index,
+                            opening: openings.get(&(team, index)).copied(),
                         });
                     }
                 }
@@ -2375,6 +2390,15 @@ pub(crate) fn on_match_finished(
     outcome: MatchOutcome,
     reason: EndReason,
 ) {
+    // **16b cut U.4 (16c `T-52`)**: the `@arena/pose` overrides were for the
+    // next match, and when that match is the one ending they have been honoured.
+    // Asked before the centre test below, and by match id rather than by
+    // centre: an override set after this match started is refused, one set
+    // while it is `Ended` belongs to the match after, and a staff `@arena/start`
+    // match never consumed any.
+    if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+        book.release_openings(match_id);
+    }
     if centre(ctx.w).and_then(|centre| centre.match_id) != Some(match_id) {
         return;
     }

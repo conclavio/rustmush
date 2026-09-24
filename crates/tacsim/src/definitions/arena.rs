@@ -486,6 +486,63 @@ pub enum ArenaBuildError {
         /// The side whose zone it is, by its wire word (`red`, `blue`).
         team: &'static str,
     },
+    /// **16b cut U.4** (16c `T-57`) — the arena's `arena.map` keyframe would be
+    /// past [`crate::match_::cockpit::MAP_MAX_BYTES`], the bound a pulled
+    /// keyframe is held to. Refused when the arena is applied, so no loaded
+    /// arena can make the map handler send one. See [`arena_map_within_bound`].
+    #[error(
+        "{arena}: the arena map is {bytes} bytes, past the {bound}-byte bound a pulled keyframe is held to"
+    )]
+    MapTooLarge {
+        /// The arena entry.
+        arena: String,
+        /// How many bytes its widest map frame encodes to.
+        bytes: usize,
+        /// The bound it passed.
+        bound: usize,
+    },
+}
+
+/// **The widest `match` an `arena.map` frame can carry** (16b cut U.4): the
+/// frame spells the match id as a JSON integer, and `u64::MAX` is its longest
+/// spelling — twenty digits against `MatchId(0)`'s one.
+const WIDEST_MATCH: crate::arena_task::MatchId = crate::arena_task::MatchId(u64::MAX);
+
+/// **Whether an arena's map fits the bound a pulled keyframe is held to** (16b
+/// cut U.4, 16c `T-57`), answering the encoded size.
+///
+/// It encodes [`crate::match_::cockpit::map_frame`] — the frame the `arena.map`
+/// handler sends, and nothing else — at its widest: `WIDEST_MATCH` (`u64::MAX`) for the
+/// `match` key and, for `surface`, `entry` itself, because the handler's surface
+/// is the running definition's `id` and [`from_pack`] builds that `id` from the
+/// entry it is given (the stock stand-in ids never reach an applier). So a
+/// definition this passes can never be sent larger.
+///
+/// Called **once, at apply**, by the arena applier after [`from_pack`] — not
+/// inside `from_pack`, which `crate::match_::definition_for` rebuilds on every
+/// match start and every `@arena/pose`, and which must not encode a 256 × 256
+/// map each time.
+///
+/// # Errors
+///
+/// [`ArenaBuildError::MapTooLarge`], naming the entry, the size and the bound.
+pub fn arena_map_within_bound(
+    entry: &str,
+    terrain: &ArenaTerrain,
+) -> Result<usize, ArenaBuildError> {
+    let frame = crate::match_::cockpit::map_frame(WIDEST_MATCH, entry, terrain);
+    // A `Value` always encodes; `usize::MAX` would refuse rather than pass, which
+    // is the fail-closed direction if it ever did not.
+    let bytes = serde_json::to_vec(&frame).map_or(usize::MAX, |encoded| encoded.len());
+    let bound = crate::match_::cockpit::MAP_MAX_BYTES;
+    if bytes > bound {
+        return Err(ArenaBuildError::MapTooLarge {
+            arena: entry.to_string(),
+            bytes,
+            bound,
+        });
+    }
+    Ok(bytes)
 }
 
 /// **Build the arena's window from this world's atlas records** (16b cut C.2;

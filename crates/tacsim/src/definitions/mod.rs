@@ -57,7 +57,7 @@ use crate::config::LoadedPack;
 use crate::pack::PackEntry;
 
 pub use ammunition::AmmunitionDef;
-pub use arena::{ArenaBuildError, ArenaDef, from_pack};
+pub use arena::{ArenaBuildError, ArenaDef, arena_map_within_bound, from_pack};
 pub use resolution::ResolutionDef;
 pub use resources::ResourceTable;
 pub use sensor::SensorDef;

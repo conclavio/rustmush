@@ -418,6 +418,252 @@ fn e7c7_a3_a_detection_pass_is_deterministic_ordered_and_bounded() {
     assert!(again.is_empty(), "a second pass re-arms nothing");
 }
 
+/// Whether one intent names `unit` as its acting platform, as the truth it
+/// observes, or as the platform a share goes to.
+fn names_platform(intent: &mush_core::ObservationIntent, unit: ObjId) -> bool {
+    if intent.observer().platform() == unit {
+        return true;
+    }
+    match intent.op() {
+        mush_core::ObservationOp::Observe {
+            truth: SubjectKey::Object { id },
+            ..
+        } => *id == unit,
+        mush_core::ObservationOp::Share { to, .. } => to.platform() == unit,
+        _ => false,
+    }
+}
+
+/// **16b cut U.4 (16c `T-68`): the pass is a world unit listing, on all four of
+/// its paths** (doc 16 §3.6 "World-side exclusion").
+///
+/// Both crewed platforms hold a contact in the refresh band, and each has
+/// delivered the other a report sharing it — so `e7c7_a3`'s pass names `alpha`
+/// as an observer, as a subject, as the platform a `Refresh` acts for and at
+/// both ends of a `Share`. Mark `alpha` the way a check-out does and the pass
+/// names it on none of the four: no sighting from it, none of it, no ageing of
+/// its contact, and no share from it or to it — while `bravo` is still observed
+/// and refreshed, so the pass itself still runs. Clear the mark and the pass is
+/// exactly the control again.
+#[test]
+fn u4_a_platform_an_arena_holds_is_neither_observer_subject_refresher_nor_sharer() {
+    let (mut tw, fx) = scene();
+    tw.set_now(2_000);
+    let at = stamp(&tw);
+    let clock = at.clock.clone();
+    let (held, other) = ([0xa1; 16], [0xb2; 16]);
+    install_ledger(
+        &mut tw,
+        vec![
+            row_at(&clock, fx.alpha, held, true, at.at - 20, None),
+            row_at(&clock, fx.bravo, other, true, at.at - 20, None),
+        ],
+    );
+    let mut store = book(&tw);
+    for (issuer, recipient, contact) in [(fx.alpha, fx.bravo, held), (fx.bravo, fx.alpha, other)] {
+        let id = store.alloc_envelope().expect("an envelope id");
+        let report = Envelope::report(
+            id,
+            issuer,
+            recipient,
+            ContactId::from_bytes(contact),
+            1,
+            at.clone(),
+        )
+        .expect("a report")
+        .in_state(EnvelopeState::Delivered, at.clone());
+        store.put_envelope(report).expect("the report is booked");
+    }
+    set_book(&mut tw, store);
+    let ledger = tw
+        .world()
+        .module_state::<ContactLedgerState>()
+        .cloned()
+        .expect("the ledger");
+    // Each pass over a fresh copy of the book, so no sighting one pass booked
+    // hides a pair from the next.
+    let pass = |tw: &TestWorld| {
+        let state = state(tw);
+        let mut store = book(tw);
+        detection_pass(&mut store, &state, tw.world(), &ledger, &at, None, ARM).intents
+    };
+    let keys = |intents: &[mush_core::ObservationIntent]| {
+        intents
+            .iter()
+            .map(|intent| intent.key().as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    // The control: alpha on every path.
+    let control = pass(&tw);
+    let by = |intents: &[mush_core::ObservationIntent], kind, unit: ObjId| {
+        intents
+            .iter()
+            .any(|intent| intent.kind() == kind && intent.observer().platform() == unit)
+    };
+    use mush_core::ObservationKind as K;
+    assert!(
+        by(&control, K::Observe, fx.alpha),
+        "alpha observes: {control:?}"
+    );
+    assert!(
+        control.iter().any(|intent| matches!(
+            intent.op(),
+            mush_core::ObservationOp::Observe { truth: SubjectKey::Object { id }, .. } if *id == fx.alpha
+        )),
+        "alpha is observed: {control:?}"
+    );
+    assert!(
+        by(&control, K::Refresh, fx.alpha),
+        "alpha's contact ages: {control:?}"
+    );
+    assert!(
+        by(&control, K::Share, fx.alpha),
+        "alpha shares: {control:?}"
+    );
+    assert!(
+        control.iter().any(|intent| matches!(
+            intent.op(),
+            mush_core::ObservationOp::Share { to, .. } if to.platform() == fx.alpha
+        )),
+        "alpha is shared to: {control:?}"
+    );
+
+    // Held by an arena.
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        fx.alpha,
+        mush_sim::deployed::DeployedMark::new(1, "arena"),
+    );
+    let during = pass(&tw);
+    let named: Vec<&mush_core::ObservationIntent> = during
+        .iter()
+        .filter(|intent| names_platform(intent, fx.alpha))
+        .collect();
+    assert!(
+        named.is_empty(),
+        "a platform an arena holds is named by the world-side pass: {named:?}"
+    );
+    assert!(
+        by(&during, K::Observe, fx.bravo) && by(&during, K::Refresh, fx.bravo),
+        "and the rest of the world is still observed and aged: {during:?}"
+    );
+
+    // The check-in.
+    mush_sim::deployed::clear(tw.world_mut(), fx.alpha);
+    assert_eq!(
+        keys(&pass(&tw)),
+        keys(&control),
+        "a cleared mark gives the pass back exactly"
+    );
+}
+
+/// **16b cut U.4: and on the phantom path** — the fifth, beside `T-68`'s four.
+///
+/// A phantom's expiry arms `Loss` with the holder as the acting platform, and a
+/// live phantom its holder has no row for arms an `Observe` credited to that
+/// holder: both act for the holder exactly as ageing does. So with `alpha` the
+/// holder of one phantom that has expired (a ledger row backs it) and of one
+/// still live (no row), the control arms a `Loss` and a phantom `Observe` for
+/// `alpha`; marked, the pass arms neither; cleared, both come back.
+#[test]
+fn u4_a_platform_an_arena_holds_neither_loses_nor_is_credited_a_phantom() {
+    let (mut tw, fx) = scene();
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@prop/phantom #{}=decoy,10", fx.alpha.0),
+    );
+    let expiring = book(&tw)
+        .phantoms()
+        .next()
+        .map(|p| p.id().as_str().to_owned())
+        .expect("a phantom was minted");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@prop/phantom #{}=spoof,300", fx.alpha.0),
+    );
+    let clock = stamp(&tw).clock;
+    install_ledger(
+        &mut tw,
+        vec![row_at(
+            &clock,
+            fx.alpha,
+            [0xcd; 16],
+            true,
+            1_000,
+            Some(&expiring),
+        )],
+    );
+    tw.set_now(1_100);
+    let at = stamp(&tw);
+    let ledger = tw
+        .world()
+        .module_state::<ContactLedgerState>()
+        .cloned()
+        .expect("the ledger");
+    let pass = |tw: &TestWorld| {
+        let state = state(tw);
+        let mut store = book(tw);
+        detection_pass(&mut store, &state, tw.world(), &ledger, &at, None, ARM).intents
+    };
+    // The two phantom intents, as `alpha`'s: the expiry's `Loss` of the backed
+    // contact, and an `Observe` whose truth is a phantom's scoped subject.
+    let phantom_intents = |intents: &[mush_core::ObservationIntent]| {
+        let lost = intents.iter().any(|intent| {
+            intent.observer().platform() == fx.alpha
+                && matches!(
+                    intent.op(),
+                    mush_core::ObservationOp::Loss { contact, .. }
+                        if *contact == ContactId::from_bytes([0xcd; 16])
+                )
+        });
+        let credited = intents.iter().any(|intent| {
+            intent.observer().platform() == fx.alpha
+                && matches!(
+                    intent.op(),
+                    mush_core::ObservationOp::Observe {
+                        truth: SubjectKey::Scoped { .. },
+                        ..
+                    }
+                )
+        });
+        (lost, credited)
+    };
+
+    let control = pass(&tw);
+    assert_eq!(
+        phantom_intents(&control),
+        (true, true),
+        "alpha loses the expired phantom and is credited the live one: {control:?}"
+    );
+
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        fx.alpha,
+        mush_sim::deployed::DeployedMark::new(1, "arena"),
+    );
+    let during = pass(&tw);
+    assert_eq!(
+        phantom_intents(&during),
+        (false, false),
+        "a platform an arena holds is the acting holder on the phantom path: {during:?}"
+    );
+    let named: Vec<&mush_core::ObservationIntent> = during
+        .iter()
+        .filter(|intent| names_platform(intent, fx.alpha))
+        .collect();
+    assert!(named.is_empty(), "{named:?}");
+
+    mush_sim::deployed::clear(tw.world_mut(), fx.alpha);
+    assert_eq!(
+        phantom_intents(&pass(&tw)),
+        (true, true),
+        "a cleared mark gives the phantom path back"
+    );
+}
+
 /// The production composition freezes **eight** schedule sources: cut 5's
 /// `control_handoff`, cut 4's `production`, and cut 7's six sensor sources —
 /// one per contact kind, all under `mush-tactics`' owner, all disjoint ids.

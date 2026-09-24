@@ -782,6 +782,17 @@ fn find_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         if !staff && Some(o.owner) != my_owner {
             continue;
         }
+        // **16b cut U.4 (16c `T-67`, Q34)**: nothing the caller cannot
+        // perceive is listed, staff included. This is the kernel's own
+        // per-observer seam — the one `look` asks — and it is how doc 16 §3.6's
+        // world-side exclusion reaches this listing without `mush-core` naming
+        // `mush-sim`: `PlacementGate::perceives` answers `Conceal` for every unit
+        // an arena holds, for every observer. A listing omits and says nothing
+        // about what it omitted, so the count below counts only what it listed
+        // and the answer for a held unit is the one an unheld name gets.
+        if !ctx.can_perceive(ctx.actor, o.id) {
+            continue;
+        }
         let hit = pattern.is_empty()
             || if use_glob {
                 crate::lock::glob_match(&pattern, &o.name)

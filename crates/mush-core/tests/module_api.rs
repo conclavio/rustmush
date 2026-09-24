@@ -4320,3 +4320,141 @@ fn an_async_completion_hook_sees_live_typed_state() {
         "a detached lens must leave the family unreadable, not silently empty: {detached:?}"
     );
 }
+
+// ----------------------------------------------------------------------
+// 16b cut U.4 (16c `B-37`): the post-boot hook
+// ----------------------------------------------------------------------
+
+/// A module that writes what it was called for into a shared log.
+struct BootProbe {
+    name: &'static str,
+    log: Arc<std::sync::Mutex<Vec<String>>>,
+    refuse: bool,
+}
+
+impl GameModule for BootProbe {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn register(&mut self, _reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        Ok(())
+    }
+
+    fn on_world_loaded(
+        &mut self,
+        _ctx: &mut ModuleCtx<'_>,
+        _data: ModuleBootData,
+    ) -> Result<(), ModError> {
+        self.log
+            .lock()
+            .expect("the log")
+            .push(format!("loaded {}", self.name));
+        Ok(())
+    }
+
+    fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        // The same identity a load gets: this module's name, acting as GOD.
+        let who = format!(
+            "all {} as {} by {}",
+            self.name,
+            ctx.module.as_deref().unwrap_or("<none>"),
+            ctx.actor
+        );
+        self.log.lock().expect("the log").push(who);
+        if self.refuse {
+            return Err(ModError::msg(format!("{} refuses the boot", self.name)));
+        }
+        Ok(())
+    }
+}
+
+fn probes(
+    log: &Arc<std::sync::Mutex<Vec<String>>>,
+    refusing: Option<&'static str>,
+) -> Vec<Box<dyn GameModule>> {
+    ["alpha", "bravo", "charlie"]
+        .into_iter()
+        .map(|name| {
+            Box::new(BootProbe {
+                name,
+                log: Arc::clone(log),
+                refuse: refusing == Some(name),
+            }) as Box<dyn GameModule>
+        })
+        .collect()
+}
+
+/// **`on_all_loaded` runs once per module, in list order, after every module's
+/// `on_world_loaded`** — the hook a module needs for state a module composed after
+/// it produces (the tacsim pod sweep and the content latch) — **and its error
+/// fails the boot**, as a load's does, with the modules after it never called.
+#[test]
+fn on_all_loaded_runs_once_each_in_list_order_after_every_load_and_can_fail_the_boot() {
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut engine =
+        Engine::with_modules(World::new_minimal(), Registry::new(), probes(&log, None))
+            .expect("three probes compose");
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine
+        .modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+        .expect("boot");
+    assert_eq!(
+        log.lock().expect("the log").clone(),
+        vec![
+            "loaded alpha".to_owned(),
+            "loaded bravo".to_owned(),
+            "loaded charlie".to_owned(),
+            format!("all alpha as alpha by {GOD}"),
+            format!("all bravo as bravo by {GOD}"),
+            format!("all charlie as charlie by {GOD}"),
+        ],
+        "every load first, then every post-boot hook once, each in list order"
+    );
+
+    // The J4 shape: the driver delivers the modules one at a time and ends the
+    // boot itself. The hook is the same call, so it is the same log.
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut engine =
+        Engine::with_modules(World::new_minimal(), Registry::new(), probes(&log, None))
+            .expect("three probes compose");
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    for name in ["alpha", "bravo", "charlie"] {
+        engine
+            .module_loaded(name, ModuleBootData::default(), &mut out, &mut fx)
+            .expect("one module loads");
+    }
+    assert_eq!(
+        log.lock().expect("the log").len(),
+        3,
+        "module_loaded alone never runs the post-boot hook"
+    );
+    engine
+        .all_modules_loaded(&mut out, &mut fx)
+        .expect("the end of the boot");
+    assert_eq!(log.lock().expect("the log").len(), 6);
+
+    // A refusal fails the boot and stops the walk where it stood.
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        probes(&log, Some("bravo")),
+    )
+    .expect("three probes compose");
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    let refused = engine
+        .modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+        .expect_err("a post-boot hook's error fails the boot");
+    assert!(
+        refused.to_string().contains("bravo refuses the boot"),
+        "{refused}"
+    );
+    let seen = log.lock().expect("the log").clone();
+    assert_eq!(
+        seen.last().map(String::as_str),
+        Some(format!("all bravo as bravo by {GOD}").as_str()),
+        "the modules after the refusal are not called: {seen:?}"
+    );
+    assert!(!seen.iter().any(|line| line.starts_with("all charlie")));
+}

@@ -63,8 +63,8 @@ mod verbs;
 
 pub use arena_def::{
     ARENA_CELL_CM, ARENA_CELLS, PROVING_GROUND, STAND_IN, custody_unit, definition_for,
-    opening_pose, resolution_for, sensor_height_cm, sensor_profile, stock_definition,
-    stock_resolution, tracked_rules, unit_profile, weapon_summaries,
+    opening_cell_pose, opening_pose, resolution_for, sensor_height_cm, sensor_profile,
+    stock_definition, stock_resolution, tracked_rules, unit_profile, weapon_summaries,
 };
 pub(crate) use centre::record_roster;
 pub use centre::{
@@ -76,7 +76,7 @@ pub use centre::{
 pub use cockpit::{
     BOARD_VERB, COCKPIT_VERBS, CockpitError, CockpitGate, EXIT_VERB, EjectReport, NO_LOCK,
     NO_SUCH_CONTACT, NOT_IN_A_POD, NOT_STARTED_YET, OUTSIDE_COCKPIT, OUTSIDE_TEAM_ROOM,
-    POWER_NOT_ONLINE, POWER_STARTING, STATION, board as cockpit_board, exit as cockpit_exit,
+    POWER_NOT_ONLINE, POWER_STARTING, STATION, Seat, board as cockpit_board, exit as cockpit_exit,
     flying,
 };
 pub use lobby::{
@@ -107,6 +107,19 @@ use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
 
 /// The persisted key of the match counter, inside the tacsim namespace.
 pub const SEQ_KEY: &str = "tacsim:match:seq";
+
+/// **How long a boot's hatch line waits for its pilot's session** (16b cut U.4,
+/// 16c `B-37`), in world seconds from the first boarding tick that holds it.
+///
+/// The boot's pod sweep owes each body it moved one line, said by the module's
+/// tick. On the split server a pilot's SSH session survives a restart of the
+/// server half, but the world only learns it is attached when the gateway's
+/// re-announce reaches it — after the boot, and not ordered against the first
+/// tick. So a line whose body is not yet connected is **held** rather than
+/// said to nobody, and said on the first tick that finds the body connected.
+/// This bounds the wait: a pilot who is not back by then logged off across the
+/// restart, and a hatch line an hour later would be about nothing they saw.
+pub const HATCH_HOLD_S: i64 = 60;
 
 /// How many matches one server tracks in RAM before `@arena/status` stops
 /// listing them. A finished match's record is dropped as its result is written,
@@ -140,9 +153,43 @@ pub struct MatchBook {
     /// and a match record are two halves of one story: the centre names the
     /// match it is holding and a check-in has to release both in one action.
     centre: lobby::Centre,
-    /// **16b cut F.1** — whether this boot still owes the centre its pod sweep.
-    /// See [`MatchBook::arm_boot_sweep`].
-    boot_sweep: bool,
+    /// **16b cut U.4 (16c `B-37`)** — the hatch lines the boot's pod sweep owes,
+    /// as `(body, pod)`. See [`MatchBook::defer_hatch`].
+    hatch_notices: Vec<(ObjId, ObjId)>,
+    /// **16b cut U.4** — the world second after which a hatch line still owed
+    /// is dropped unsaid, set by the first boarding tick that holds one. See
+    /// [`HATCH_HOLD_S`].
+    hatch_hold_until_s: Option<i64>,
+    /// **16b cut U.4 (16c `T-52`)** — the opening cells staff chose with
+    /// `@arena/pose`, by `(team, slot)`. See [`MatchBook::set_opening_cell`].
+    ///
+    /// Beside the centre and deliberately **not inside it**: every return to
+    /// `Idle` and every staff `@arena/start` rebuilds the centre from
+    /// [`lobby::Centre::default`], and a player's lone `SIM TEAM` on a terminal
+    /// centre is one of those returns — an override kept on the centre would be
+    /// wiped by the very claim that starts the match it was set for.
+    opening_cells: BTreeMap<(Team, u8), OpeningCell>,
+    /// **16b cut U.4** — the match whose check-out used [`Self::opening_cells`],
+    /// so that match's end, and no other, clears them.
+    opening_consumed_by: Option<MatchId>,
+}
+
+/// **One opening cell staff chose for a centre slot** (16b cut U.4, 16c `T-52`;
+/// `@arena/pose`): an arena cell on the centre's arena and the heading the unit
+/// opens at.
+///
+/// A cell and not a [`mush_sim::data::Pose`]: the pose carries the unit's own
+/// opaque posture, which is the unit's at check-out and nobody's at set time, and
+/// a cell is what rides [`Fielded`] (`Copy + Eq`, which a `Pose` is not). The
+/// check-out turns it into the world pose at the cell's centre.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpeningCell {
+    /// The arena cell's column.
+    pub x: u16,
+    /// The arena cell's row.
+    pub y: u16,
+    /// The opening heading, millidegrees clockwise from north, `0..360_000`.
+    pub heading_mdeg: u32,
 }
 
 impl MatchBook {
@@ -152,45 +199,105 @@ impl MatchBook {
         MatchBook::default()
     }
 
-    /// **Owe the centre its pod sweep, at the first tick of this boot** (16b cut
-    /// F.1).
+    /// **Owe one body its hatch line** (16b cut U.4, 16c `B-37`).
     ///
-    /// The work is `cockpit::eject_all`, and it starts from the centre's eight
-    /// **pods** — which are resolved through the **content latch**
-    /// (`mush_atlas::travel::latched_object`). The latch is the content module's
-    /// own state, and the content module is composed *after* this one, so at
-    /// `on_world_loaded` time it is still empty: a sweep run there finds no pods
-    /// at all, however many bodies are stranded in them.
-    ///
-    /// So the boot pass arms this and the module's own 1 s tick performs it,
-    /// once, by which time every module's `on_world_loaded` has run.
-    ///
-    /// **The stock-tank reset is not armed with it.** It needs no latch — the
-    /// roster document and the definitions are this module's own state and
-    /// `mush-sim` and `mush-tactics` are composed before it — so it runs inside
-    /// the boot pass itself (`boot_matches`). That distinction is the
-    /// whole of the difference between a window that matters and one that does
-    /// not: the reset **writes** to every roster tank's record and placement, so
-    /// a deferred one undoes a staff `@spatial/place` typed in the first second
-    /// of a boot, which is precisely how the arena story opens. This sweep only
-    /// takes back what `BOARD` put in a pod, and `BOARD` fails closed on the
-    /// control-lease mirror until that same 1 Hz projection has been read once,
-    /// so there is nothing of anybody's to take.
-    ///
-    /// **16b cut Q.6 looked at moving it and did not** (doc 16 §9 item 6's
-    /// carry-over list). `mush_core::Module` has `on_world_loaded` and no hook
-    /// that runs *after* every module's load, so the only places a sweep could run
-    /// earlier than this tick are a new kernel lifecycle hook or an assertion
-    /// about composition order — a dependency on another module's position in the
-    /// roster, which is the thing the composition root exists to keep nobody
-    /// needing. The tick is where it stays, and this paragraph is why.
-    pub fn arm_boot_sweep(&mut self) {
-        self.boot_sweep = true;
+    /// The boot's pod sweep ([`cockpit::eject_all_at_boot`], run from the
+    /// module's `on_all_loaded`) moves bodies out of the pods and gives the
+    /// cockpit billets back **inside the boot**, where every module's load has
+    /// run and the content latch the pods resolve through is full. What it
+    /// cannot do there is *tell* anybody: boot output is dropped — no session is
+    /// attached yet — and on the split server, which is production, a pilot's
+    /// SSH session survives a restart of the server half and is waiting to read
+    /// why it is standing in the team room. So each `(body, pod)` is kept here,
+    /// and the module's boarding tick ([`sim`]'s `board_tick`) takes the list
+    /// and says the hatch line and the room to each body whose session is
+    /// attached — holding the rest for at most [`HATCH_HOLD_S`], because on the
+    /// split server the gateway's re-announce is not ordered against that tick.
+    /// Only the boot adds to it, so a pilot who boards later in the same boot is
+    /// never told a hatch opened.
+    pub(crate) fn defer_hatch(&mut self, body: ObjId, pod: ObjId) {
+        self.hatch_notices.push((body, pod));
     }
 
-    /// Take the boot sweep, once. A second caller gets `false`.
-    pub fn take_boot_sweep(&mut self) -> bool {
-        std::mem::take(&mut self.boot_sweep)
+    /// The hatch lines still owed, as `(body, pod)`, in the order the sweep
+    /// opened them. Empty once each has been said, or dropped at the hold.
+    #[must_use]
+    pub fn hatch_notices(&self) -> &[(ObjId, ObjId)] {
+        &self.hatch_notices
+    }
+
+    /// Take every owed hatch line. A second caller gets nothing until the
+    /// first hands back what it could not say yet
+    /// (`MatchBook::hold_hatch_notices`).
+    pub fn take_hatch_notices(&mut self) -> Vec<(ObjId, ObjId)> {
+        std::mem::take(&mut self.hatch_notices)
+    }
+
+    /// The world second the owed hatch lines are held until, once a boarding
+    /// tick has started holding them ([`HATCH_HOLD_S`]).
+    #[must_use]
+    pub const fn hatch_hold_until_s(&self) -> Option<i64> {
+        self.hatch_hold_until_s
+    }
+
+    /// Hand back the hatch lines a tick could not say yet — their bodies have no
+    /// session attached — to be held until `until_s`. An empty hand-back ends
+    /// the hold.
+    pub(crate) fn hold_hatch_notices(&mut self, held: Vec<(ObjId, ObjId)>, until_s: i64) {
+        self.hatch_hold_until_s = (!held.is_empty()).then_some(until_s);
+        self.hatch_notices = held;
+    }
+
+    /// **The opening cells overridden for the next match** (16b cut U.4), by
+    /// `(team, slot)`, in team-then-slot order.
+    #[must_use]
+    pub fn opening_cells(&self) -> &BTreeMap<(Team, u8), OpeningCell> {
+        &self.opening_cells
+    }
+
+    /// One slot's overridden opening cell, if staff set one.
+    #[must_use]
+    pub fn opening_cell(&self, team: Team, slot: u8) -> Option<OpeningCell> {
+        self.opening_cells.get(&(team, slot)).copied()
+    }
+
+    /// The match whose check-out used the overrides, if one has since the last
+    /// time they were cleared.
+    #[must_use]
+    pub const fn opening_consumed_by(&self) -> Option<MatchId> {
+        self.opening_consumed_by
+    }
+
+    /// Set one slot's opening cell (`@arena/pose <callsign>=<x> <y>`), replacing
+    /// any it had. The caller has validated it.
+    pub(crate) fn set_opening_cell(&mut self, team: Team, slot: u8, cell: OpeningCell) {
+        self.opening_cells.insert((team, slot), cell);
+    }
+
+    /// Give one slot its authored cell back (`@arena/pose <callsign>=off`).
+    pub(crate) fn clear_opening_cell(&mut self, team: Team, slot: u8) {
+        self.opening_cells.remove(&(team, slot));
+    }
+
+    /// Clear every override (`@arena/reset`, and the end of the match that used
+    /// them).
+    pub(crate) fn clear_opening_cells(&mut self) {
+        self.opening_cells.clear();
+        self.opening_consumed_by = None;
+    }
+
+    /// Record that `match_id`'s check-out used the overrides (the lobby's
+    /// `Boarding → Running`), so its end clears them.
+    pub(crate) fn consume_openings(&mut self, match_id: MatchId) {
+        self.opening_consumed_by = Some(match_id);
+    }
+
+    /// The end of `match_id`: clears the overrides when that match is the one
+    /// that used them, and leaves them alone for any other.
+    pub(crate) fn release_openings(&mut self, match_id: MatchId) {
+        if self.opening_consumed_by == Some(match_id) {
+            self.clear_opening_cells();
+        }
     }
 
     /// Adopt the persisted counter at boot. Never lowers: a result document that
@@ -335,13 +442,22 @@ pub struct Fielded {
     pub unit: ObjId,
     /// Its 1-based centre slot, or `0`.
     pub slot: u8,
+    /// **16b cut U.4 (16c `T-52`)** — the opening cell staff chose for this
+    /// slot with `@arena/pose`, or `None` for the unit's own world pose and the
+    /// entry zone behind it. [`start`] offers it to [`opening_pose`] as the
+    /// world pose, so it is held to exactly what a staff placement is held to.
+    pub opening: Option<OpeningCell>,
 }
 
 impl Fielded {
     /// A unit no lobby placed.
     #[must_use]
     pub const fn unslotted(unit: ObjId) -> Fielded {
-        Fielded { unit, slot: 0 }
+        Fielded {
+            unit,
+            slot: 0,
+            opening: None,
+        }
     }
 }
 
@@ -515,8 +631,31 @@ pub fn start(
                 .ok_or(StartError::NotAUnit(unit))?
                 .clone();
             let world_pose = mush_sim::pose_of(ctx.w, unit).map(|(_, pose)| pose);
-            let pose = arena_def::opening_pose(&definition, side.team, world_pose, &mut taken)
+            // **16b cut U.4 (16c `T-52`)**: an `@arena/pose` override stands in
+            // for the world pose — the cell's centre at its heading, on the
+            // unit's own posture — so it is validated exactly as a staff
+            // placement is (on the window, a way out, not taken) and falls back
+            // to the entry zone the same way.
+            let offered = match fielded.opening {
+                Some(cell) => world_pose.as_ref().map(|pose| {
+                    arena_def::opening_cell_pose(&definition, cell, pose.posture.clone())
+                }),
+                None => world_pose,
+            };
+            let pose = arena_def::opening_pose(&definition, side.team, offered.clone(), &mut taken)
                 .ok_or(StartError::NoEntryCell(side.team.as_str()))?;
+            if let Some(cell) = fielded.opening
+                && offered.as_ref() != Some(&pose)
+            {
+                tracing::warn!(
+                    team = side.team.as_str(),
+                    slot = fielded.slot,
+                    x = cell.x,
+                    y = cell.y,
+                    "tacsim: an @arena/pose opening cell could not be used (off the window, no \
+                     way out, or already taken); the unit opens in its entry zone instead"
+                );
+            }
             // **16b cut E.1** lifted the assembly into `arena_def::custody_unit`
             // (16b §0.4), so a shipped-scale test rig builds the same unit this
             // loop does instead of a second copy of it.

@@ -235,6 +235,31 @@ pub fn opening_pose(
     None
 }
 
+/// **The world pose an `@arena/pose` opening cell stands for** (16b cut U.4, 16c
+/// `T-52`): the cell's centre on `definition`'s window, at the cell's heading,
+/// `z_cm` 0, on `posture` — the unit's own, which the pose carries opaquely and
+/// the arena never reads.
+///
+/// The centre for the reason the entry zone's walk uses it: a unit never opens on
+/// a boundary the very first substep would test. It is only ever offered to
+/// [`opening_pose`], which is where it is judged.
+#[must_use]
+pub fn opening_cell_pose(
+    definition: &ArenaDefinition,
+    cell: crate::match_::OpeningCell,
+    posture: mush_sim::data::RulesValue,
+) -> Pose {
+    let cell_cm = i64::from(definition.terrain.cell_cm());
+    let half = cell_cm / 2;
+    Pose {
+        x_cm: i64::from(cell.x) * cell_cm + half,
+        y_cm: i64::from(cell.y) * cell_cm + half,
+        z_cm: 0,
+        heading_mdeg: cell.heading_mdeg,
+        posture,
+    }
+}
+
 /// **One unit, as the check-out hands it to the arena** (16b cut E.1; 16b §0.4).
 ///
 /// It is the literal that used to sit inside [`crate::match_::start`]'s loop,

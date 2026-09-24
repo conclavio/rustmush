@@ -3520,6 +3520,10 @@ async fn d3_arena_release_clears_a_stranded_marker_and_frees_the_pod() {
         "{said}"
     );
     assert!(mush_sim::deployed::is_deployed(rig.tw.world(), red));
+    // **16b cut U.4**: and `@arena/status` does not call a live match's marker
+    // stranded.
+    let said = rig.staff("@arena/status");
+    assert!(!said.contains("stranded"), "{said}");
 
     // The match ends, and a marker is left behind the way a refused check-in
     // leaves one: a real check-out, so BOTH halves of the marker are there — the
@@ -3528,6 +3532,30 @@ async fn d3_arena_release_clears_a_stranded_marker_and_frees_the_pod() {
     rig.end_match(tacsim::arena::EndReason::Abort);
     assert!(rig.state().is_terminal());
     rig.strand(red, match_id.0);
+
+    // **16b cut U.4 (16c `T-67`)**: `@find` no longer lists a unit any marker
+    // holds, so `@arena/status` is where staff read the dbref the repair takes.
+    let said = rig.staff("@arena/status");
+    assert!(
+        said.contains(&format!(
+            "#{} carries a stranded deployed marker (match {}); @arena/release #{}",
+            red.0, match_id.0, red.0
+        )),
+        "{said}"
+    );
+    let said = rig.staff("@find Red Tank 1");
+    assert!(
+        said.contains("(0 found)") && !said.contains(&format!("#{}", red.0)),
+        "{said}"
+    );
+    // A staff surface: a pilot asking is refused, and reads no dbref.
+    let said = rig.say(0, "@arena/status");
+    assert!(
+        said.contains("Permission denied.")
+            && !said.contains("stranded")
+            && !said.contains(&format!("#{}", red.0)),
+        "a pilot read the stranded line: {said}"
+    );
 
     // (b) Now it is stranded, and the verb releases it.
     let said = rig.staff(&format!("@arena/release #{}", red.0));
@@ -3545,6 +3573,11 @@ async fn d3_arena_release_clears_a_stranded_marker_and_frees_the_pod() {
     assert!(
         said.contains(&format!("#{} carries no deployed marker.", red.0)),
         "{said}"
+    );
+    let said = rig.staff("@arena/status");
+    assert!(
+        !said.contains("stranded"),
+        "a released unit is not stranded: {said}"
     );
 
     // After it a pilot can board that pod again.
@@ -4054,4 +4087,250 @@ async fn m1_a_busy_arena_is_told_to_try_again_and_nothing_changes() {
         "a match with no task is finished on the spot: {said}"
     );
     assert_eq!(rig.state(), MatchState::Aborted);
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut U.4 (16c `T-52`) — `@arena/pose`
+// ---------------------------------------------------------------------------
+
+/// Claim, start and really `BOARD` both pods from their team rooms, which is what
+/// puts each pilot on the arena's frame roster.
+fn board_both(rig: &mut Rig) {
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    for (n, entry) in [(0, match_::RED_ROOM_ENTRY), (1, match_::BLUE_ROOM_ENTRY)] {
+        let room = match_::centre_object(rig.tw.world(), entry).expect("a team room");
+        let pilot = rig.pilot(n);
+        rig.tw
+            .world_mut()
+            .move_to(pilot, room)
+            .expect("a pilot walks into their team room");
+        let said = rig.say(n, "board");
+        assert!(said.contains("climb into"), "{said}");
+    }
+    assert_eq!(rig.state(), MatchState::Running);
+}
+
+/// **Where red slot 1's tank opened this match**: the arena cell and heading on
+/// the first frame the arena sent its pilot in the centre's current match. The
+/// tank is cold until somebody types `STARTUP`, so the first frame is the
+/// opening pose.
+async fn opening_of_red_one(rig: &mut Rig) -> ((i64, i64), u32) {
+    let match_id = rig.centre().match_id.expect("a running centre has a match");
+    let pilot = rig.pilot(0);
+    for _ in 0..600 {
+        rig.pump();
+        let held = rig
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.last_frame(pilot))
+            .filter(|held| held.match_id == match_id)
+            .map(|held| {
+                let pose = &held.frame.pose;
+                ((pose.x_cm / 1_000, pose.y_cm / 1_000), pose.heading_mdeg)
+            });
+        if let Some(opening) = held {
+            return opening;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the arena sent red slot 1's pilot no frame");
+}
+
+/// **`@arena/pose`: an opening cell for the next match, and no later one** (16b
+/// cut U.4, 16c `T-52`).
+///
+/// The override is set on an `Idle` centre, survives a lone claimant's `SIM
+/// TEAM` and `SIM LEAVE` (both of which return the centre to `Idle` and rebuild
+/// it), opens red slot 1 on its cell at its heading, and is gone once that match
+/// ends — so the next match opens on the authored cell. One set on the terminal
+/// centre between matches is the next match's in turn, and `@arena/reset` clears
+/// one nobody has used. Every refusal says its own sentence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn u4_arena_pose_opens_a_slot_on_its_cell_for_the_next_match_and_no_later() {
+    let mut rig = Rig::boot(2);
+    // The control-lease mirror, read once before anybody boards.
+    rig.tick_to(1);
+    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let authored = mush_sim::pose_of(rig.tw.world(), red)
+        .expect("the applier placed it")
+        .1;
+    let authored_cell = (authored.x_cm / 1_000, authored.y_cm / 1_000);
+
+    // The bare read, on nothing.
+    let said = rig.staff("@arena/pose");
+    assert!(said.contains("No opening cell is overridden."), "{said}");
+
+    // A staff switch: a pilot is refused, moves nothing, and reads no list.
+    let said = rig.say(0, "@arena/pose RA=90 97");
+    assert!(said.contains("Permission denied."), "{said}");
+    let said = rig.say(0, "@arena/pose");
+    assert!(
+        said.contains("Permission denied.") && !said.contains("overridden"),
+        "{said}"
+    );
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .is_some_and(|book| book.opening_cells().is_empty()),
+        "a pilot set an opening cell"
+    );
+
+    // Every refusal, in the order they are asked.
+    let said = rig.staff("@arena/pose RZ=90 97");
+    assert!(
+        said.contains("There is no slot RZ on this centre."),
+        "{said}"
+    );
+    let said = rig.staff("@arena/pose RA=300 97");
+    assert!(
+        said.contains("Cell (300, 97) is off the arena window."),
+        "{said}"
+    );
+    let (bx, by) = {
+        let definition = match_::definition_for(
+            rig.tw.world(),
+            &smol_str::SmolStr::new_static(match_::CENTRE_ARENA),
+        )
+        .expect("the centre's ground builds")
+        .expect("the centre's arena");
+        let terrain = &definition.terrain;
+        (0..terrain.height())
+            .flat_map(|y| (0..terrain.width()).map(move |x| (x, y)))
+            .find(|(x, y)| !terrain.has_way_out(*x, *y))
+            .expect("the proving ground has a cell nobody can open on")
+    };
+    let said = rig.staff(&format!("@arena/pose RA={bx} {by}"));
+    assert!(
+        said.contains(&format!(
+            "Cell ({bx}, {by}) is impassable, or has no way out."
+        )),
+        "{said}"
+    );
+    let said = rig.staff("@arena/pose RA=90 97 360");
+    assert!(said.contains("Heading is 0 to 359."), "{said}");
+    let said = rig.staff("@arena/pose RA");
+    assert!(
+        said.contains(
+            "Usage: @arena/pose <callsign>=<x> <y>[ <heading>] | <callsign>=off | (bare) list"
+        ),
+        "{said}"
+    );
+
+    // Set, case-folded; a second slot on the same cell is refused by name.
+    let said = rig.staff("@arena/pose ra=90 97 90");
+    assert!(
+        said.contains("RA opens at cell (90, 97) heading 90 for the next match."),
+        "{said}"
+    );
+    let said = rig.staff("@arena/pose RB=90 97");
+    assert!(
+        said.contains("Cell (90, 97) is already RA's opening cell."),
+        "{said}"
+    );
+    let said = rig.staff("@arena/pose RB=107 97");
+    assert!(
+        said.contains("RB opens at cell (107, 97) heading 90 for the next match."),
+        "red's own facing when no heading is given: {said}"
+    );
+    let said = rig.staff("@arena/pose RB=off");
+    assert!(
+        said.contains("RB opens at its authored cell again."),
+        "{said}"
+    );
+    let said = rig.staff("@arena/pose BC=off");
+    assert!(
+        said.contains("BC opens at its authored cell again."),
+        "off on a slot with no override says the same: {said}"
+    );
+    let said = rig.staff("@arena/pose");
+    assert!(
+        said.contains("Opening cells overridden for the next match:")
+            && said.contains("  RA: cell (90, 97) heading 90")
+            && !said.contains("RB:"),
+        "{said}"
+    );
+
+    // A lone claimant who leaves returns the centre to `Idle` — and the centre is
+    // rebuilt from its default — and the override stands.
+    rig.say(0, "sim team red");
+    rig.say(0, "sim leave");
+    assert_eq!(rig.state(), MatchState::Idle);
+    let said = rig.staff("@arena/pose");
+    assert!(said.contains("  RA: cell (90, 97) heading 90"), "{said}");
+
+    // Match 1 honours it, and it cannot be changed under the running match.
+    board_both(&mut rig);
+    let said = rig.staff("@arena/pose RA=94 97");
+    assert!(
+        said.contains(
+            "The simulator centre is running; set opening cells before the match starts."
+        ),
+        "{said}"
+    );
+    assert_eq!(
+        opening_of_red_one(&mut rig).await,
+        ((90, 97), 90_000),
+        "red slot 1 opens on the cell staff chose"
+    );
+    rig.end_match(tacsim::arena::EndReason::Abort);
+    assert!(rig.state().is_terminal());
+    let said = rig.staff("@arena/pose");
+    assert!(
+        said.contains("No opening cell is overridden."),
+        "the match that used it is over: {said}"
+    );
+
+    // Match 2 opens on the authored cell.
+    rig.tick_to(2);
+    board_both(&mut rig);
+    assert_eq!(
+        opening_of_red_one(&mut rig).await,
+        (authored_cell, authored.heading_mdeg),
+        "the next match is back on the authored cell"
+    );
+    rig.end_match(tacsim::arena::EndReason::Abort);
+
+    // An override set on the terminal centre, between matches, is the next
+    // match's.
+    let said = rig.staff("@arena/pose RA=94 97 180");
+    assert!(
+        said.contains("RA opens at cell (94, 97) heading 180 for the next match."),
+        "{said}"
+    );
+    rig.tick_to(3);
+    board_both(&mut rig);
+    assert_eq!(opening_of_red_one(&mut rig).await, ((94, 97), 180_000));
+    rig.end_match(tacsim::arena::EndReason::Abort);
+
+    // And `@arena/reset` clears one nobody used — and says so, rather than
+    // "nothing changed", on a centre whose only state was the override.
+    let said = rig.staff("@arena/pose RA=90 97");
+    assert!(said.contains("RA opens at cell (90, 97)"), "{said}");
+    let said = rig.staff("@arena/reset");
+    assert!(
+        said.contains("The simulator centre is reset; its slots and pods are free.")
+            && said.contains("1 opening cell override(s) cleared."),
+        "{said}"
+    );
+    let said = rig.staff("@arena/reset");
+    assert!(
+        said.contains("The simulator centre is already idle; nothing changed.")
+            && !said.contains("override(s) cleared"),
+        "a second reset has nothing to clear: {said}"
+    );
+    let said = rig.staff("@arena/pose RA=90 97");
+    assert!(said.contains("RA opens at cell (90, 97)"), "{said}");
+    let said = rig.staff("@arena/reset");
+    assert!(
+        said.contains("The simulator centre is reset; its slots and pods are free.")
+            && said.contains("1 opening cell override(s) cleared.")
+            && !said.contains("nothing changed"),
+        "an override is the only thing an idle, clean centre held: {said}"
+    );
+    let said = rig.staff("@arena/pose");
+    assert!(said.contains("No opening cell is overridden."), "{said}");
 }

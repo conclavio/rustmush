@@ -14,6 +14,7 @@
 //! | `@arena/intent <unit>=<kind> [args]` | one order, as the unit's own seat |
 //! | `@arena/abort [<match>]` | `Stop { Abort }` |
 //! | `@arena/release <unit>` | **16b cut D.3**: clear one unit's stranded `deployed` marker and free its seat |
+//! | `@arena/pose <callsign>=<x> <y>[ <heading>]` | **16b cut U.4**: the cell a centre slot's unit opens the next match on (`=off`, or bare to list) |
 //! | `@arena/fault <match>` | **test builds only** — arm a panic inside the next `step` |
 //!
 //! `@arena/start` is deliberately the whole of `Selection → Boarding → Running`
@@ -37,21 +38,23 @@ use mush_core::{CmdError, Ctx, ObjId};
 use smol_str::SmolStr;
 
 use crate::arena::intents::IntentKind;
-use crate::arena::state::StopReason;
+use crate::arena::state::{Designator, StopReason, Team};
 use crate::arena_bridge::ArenaRegistry;
 use crate::arena_task::{ArenaMsg, MatchId};
 
 use super::{MatchBook, Side, allocate_id};
 
 /// The switches cut T.3 adds to `@arena`, in help order (16b cut K.1 adds
-/// `reset`; 16b cut D.3 adds `release`).
+/// `reset`; 16b cut D.3 adds `release`; 16b cut U.4 adds `pose`).
 #[must_use]
 pub fn register_switches() -> Vec<SmolStr> {
-    let mut switches: Vec<SmolStr> = ["status", "start", "intent", "abort", "reset", "release"]
-        .iter()
-        .copied()
-        .map(SmolStr::new)
-        .collect();
+    let mut switches: Vec<SmolStr> = [
+        "status", "start", "intent", "abort", "reset", "release", "pose",
+    ]
+    .iter()
+    .copied()
+    .map(SmolStr::new)
+    .collect();
     if cfg!(any(test, feature = "fault-injection")) {
         switches.push(SmolStr::new("fault"));
     }
@@ -296,6 +299,17 @@ pub fn reset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ));
     }
     let outcome = super::lobby::reset(ctx);
+    // **16b cut U.4 (16c `T-52`)**: and every `@arena/pose` override, whether a
+    // match has used it or not. The reset is staff's "start from the pack
+    // again", and an opening cell is the one thing staff set that neither the
+    // centre's return to `Idle` nor a new match clears on its own. Counted
+    // first, so that a reset whose only work was the overrides does not answer
+    // "nothing changed" over a book it just emptied.
+    let overrides = ctx.w.module_state_mut::<MatchBook>().map_or(0, |book| {
+        let standing = book.opening_cells().len();
+        book.clear_opening_cells();
+        standing
+    });
     let actor = ctx.actor;
     // **16b cut D.3 (`B-31`)**: three headlines, not two. A reset that wrote
     // nothing because every tank it wanted to write was still deployed, or
@@ -305,7 +319,7 @@ pub fn reset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     ctx.out.sys_to_actor(
         actor,
         crate::arena_bridge::NOTICE_CATEGORY,
-        if outcome.changed() {
+        if outcome.changed() || (outcome.is_empty() && overrides > 0) {
             "The simulator centre is reset; its slots and pods are free."
         } else if outcome.is_empty() {
             "The simulator centre is already idle; nothing changed."
@@ -357,6 +371,231 @@ pub fn reset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         );
         ctx.out
             .sys_to_actor(actor, crate::arena_bridge::NOTICE_CATEGORY, line);
+    }
+    // **16b cut U.4**: and the `@arena/pose` overrides it dropped, said last so
+    // the "idle, but not clean:" rows stay under their headline. Silent when
+    // there were none.
+    if overrides > 0 {
+        ctx.out.sys_to_actor(
+            actor,
+            crate::arena_bridge::NOTICE_CATEGORY,
+            format!("{overrides} opening cell override(s) cleared."),
+        );
+    }
+    Ok(())
+}
+
+/// `@arena/pose`'s usage, after the `Usage: ` prefix [`ArenaVerbError::Usage`]
+/// renders.
+const POSE_USAGE: &str =
+    "@arena/pose <callsign>=<x> <y>[ <heading>] | <callsign>=off | (bare) list";
+
+/// **`@arena/pose`** — **16b cut U.4 (16c `T-52`)**: choose the cell a centre
+/// slot's unit opens the **next match** on.
+///
+/// Three forms, staff like every `@arena` switch:
+///
+/// * `@arena/pose <callsign>=<x> <y>[ <heading>]` — the slot's callsign as the
+///   board prints it (`RA`, `BC`: the team letter and the slot letter,
+///   case-folded), an arena cell on the centre's own arena, and a heading in
+///   whole degrees (the side's facing when left out: red 90, blue 270, the entry
+///   zone's own).
+/// * `@arena/pose <callsign>=off` — the slot opens on its authored cell again.
+/// * bare `@arena/pose` — the overrides standing, one line each.
+///
+/// Before it, the one way to open a match anywhere but the authored cells was a
+/// raw-JSON `@spatial/place` of the tank, which every return to `Idle` undid —
+/// and a lone claimant's `SIM TEAM` on a terminal centre *is* such a return. So
+/// the override lives on the match book beside the centre
+/// ([`MatchBook::opening_cells`]), rides the slot's [`super::Fielded`] into the
+/// check-out, and is offered to [`super::opening_pose`] as the world pose — held
+/// to exactly what a staff placement is held to. It is cleared by the end of the
+/// match that used it, by `@arena/reset`, and per slot by `off`.
+///
+/// Settable in every state but `Running` and `Stopping`: `Idle`, `Selection`,
+/// `Boarding`, and the terminal states staff stand in between matches. Checked
+/// against [`super::CENTRE_ARENA`], because a centre in `Idle` names no arena at
+/// all. The other overrides are checked for the same cell here; the authored
+/// cells are the check-out's business.
+///
+/// A staff surface naming a slot and a cell staff chose; nothing reaches a pilot.
+///
+/// # Errors
+///
+/// One sentence per refusal, in the order they are asked.
+pub fn pose(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let word = ctx.args.lhs().trim().to_owned();
+    let rhs = ctx.args.rhs().map(str::trim).map(str::to_owned);
+    let actor = ctx.actor;
+    // The bare read.
+    if word.is_empty() && rhs.as_deref().is_none_or(str::is_empty) {
+        let rows: Vec<String> = ctx
+            .w
+            .module_state::<MatchBook>()
+            .map(|book| {
+                book.opening_cells()
+                    .iter()
+                    .map(|((team, slot), cell)| {
+                        format!(
+                            "  {}: cell ({}, {}) heading {}",
+                            callsign(*team, *slot),
+                            cell.x,
+                            cell.y,
+                            cell.heading_mdeg / 1_000
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if rows.is_empty() {
+            ctx.out.sys_to_actor(
+                actor,
+                crate::arena_bridge::NOTICE_CATEGORY,
+                "No opening cell is overridden.",
+            );
+        } else {
+            ctx.out.sys_to_actor(
+                actor,
+                crate::arena_bridge::NOTICE_CATEGORY,
+                "Opening cells overridden for the next match:",
+            );
+            for row in rows {
+                ctx.out
+                    .sys_to_actor(actor, crate::arena_bridge::NOTICE_CATEGORY, row);
+            }
+        }
+        return Ok(());
+    }
+    let Some(rhs) = rhs.filter(|rhs| !rhs.is_empty()) else {
+        return Err(ArenaVerbError::Usage(POSE_USAGE).into());
+    };
+    if word.is_empty() {
+        return Err(ArenaVerbError::Usage(POSE_USAGE).into());
+    }
+    let named = word.to_ascii_uppercase();
+    // `off`, before the numbers are parsed.
+    if rhs.eq_ignore_ascii_case("off") {
+        let (team, slot) = slot_of_callsign(ctx.w, &named)?;
+        refuse_while_running(ctx.w)?;
+        if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+            book.clear_opening_cell(team, slot);
+        }
+        ctx.out.sys_to_actor(
+            actor,
+            crate::arena_bridge::NOTICE_CATEGORY,
+            format!("{} opens at its authored cell again.", callsign(team, slot)),
+        );
+        return Ok(());
+    }
+    // `<x> <y>[ <heading>]`: whole numbers, or it is not this form at all.
+    let numbers: Vec<&str> = rhs.split_whitespace().collect();
+    let (x, y, heading) = match numbers.as_slice() {
+        [x, y] => (x.parse::<u16>().ok(), y.parse::<u16>().ok(), None),
+        [x, y, heading] => (
+            x.parse::<u16>().ok(),
+            y.parse::<u16>().ok(),
+            Some(heading.parse::<i64>().ok()),
+        ),
+        _ => (None, None, None),
+    };
+    let (Some(x), Some(y)) = (x, y) else {
+        return Err(ArenaVerbError::Usage(POSE_USAGE).into());
+    };
+    let heading = match heading {
+        None => None,
+        Some(Some(degrees)) => Some(degrees),
+        Some(None) => return Err(ArenaVerbError::Usage(POSE_USAGE).into()),
+    };
+    // (1) The slot.
+    let (team, slot) = slot_of_callsign(ctx.w, &named)?;
+    // (2) and (3) The cell, on the centre's own arena.
+    let definition = super::definition_for(ctx.w, &SmolStr::new_static(super::CENTRE_ARENA))
+        .map_err(CmdError::msg)?
+        .ok_or(ArenaVerbError::Unavailable)?;
+    if definition.terrain.get(x, y).is_none() {
+        return Err(CmdError::msg(format!(
+            "Cell ({x}, {y}) is off the arena window."
+        )));
+    }
+    if !definition.terrain.has_way_out(x, y) {
+        return Err(CmdError::msg(format!(
+            "Cell ({x}, {y}) is impassable, or has no way out."
+        )));
+    }
+    // (4) Another override on the same cell.
+    let clash = ctx.w.module_state::<MatchBook>().and_then(|book| {
+        book.opening_cells()
+            .iter()
+            .find(|(key, cell)| **key != (team, slot) && cell.x == x && cell.y == y)
+            .map(|((other_team, other_slot), _)| callsign(*other_team, *other_slot))
+    });
+    if let Some(other) = clash {
+        return Err(CmdError::msg(format!(
+            "Cell ({x}, {y}) is already {other}'s opening cell."
+        )));
+    }
+    // (5) The heading.
+    let degrees = match heading {
+        Some(degrees) => u32::try_from(degrees)
+            .ok()
+            .filter(|degrees| *degrees < 360)
+            .ok_or_else(|| CmdError::msg("Heading is 0 to 359."))?,
+        // Facing the other side, as the entry zone's own walk does.
+        None => match team {
+            Team::Red => 90,
+            Team::Blue => 270,
+        },
+    };
+    // (6) The state.
+    refuse_while_running(ctx.w)?;
+    let cell = super::OpeningCell {
+        x,
+        y,
+        heading_mdeg: degrees.saturating_mul(1_000),
+    };
+    if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+        book.set_opening_cell(team, slot, cell);
+    }
+    ctx.out.sys_to_actor(
+        actor,
+        crate::arena_bridge::NOTICE_CATEGORY,
+        format!(
+            "{} opens at cell ({x}, {y}) heading {degrees} for the next match.",
+            callsign(team, slot)
+        ),
+    );
+    Ok(())
+}
+
+/// A centre slot's callsign as the board prints it: the team letter and the slot
+/// letter ([`Designator::Slot`]'s own rendering, so the two cannot differ).
+fn callsign(team: Team, slot: u8) -> String {
+    Designator::Slot {
+        team,
+        slot: u16::from(slot),
+    }
+    .to_string()
+}
+
+/// The `(team, slot)` a typed callsign names on this centre — a pod the centre's
+/// content actually made — or the one refusal for any other word.
+fn slot_of_callsign(w: &mush_core::World, named: &str) -> Result<(Team, u8), CmdError> {
+    super::POD_ENTRIES
+        .iter()
+        .map(|(team, slot, _)| (*team, *slot))
+        .find(|(team, slot)| {
+            callsign(*team, *slot) == named && super::pod_object(w, *team, *slot).is_some()
+        })
+        .ok_or_else(|| CmdError::msg(format!("There is no slot {named} on this centre.")))
+}
+
+/// Refuse a change to the overrides while the centre holds a running match: its
+/// units are checked out, and a cell chosen now would apply to nothing.
+fn refuse_while_running(w: &mush_core::World) -> Result<(), CmdError> {
+    if super::lobby::centre(w).is_some_and(|centre| centre.state.is_live()) {
+        return Err(CmdError::msg(
+            "The simulator centre is running; set opening cells before the match starts.",
+        ));
     }
     Ok(())
 }
@@ -623,6 +862,9 @@ pub fn arena_command(
         abort(ctx)
     } else if ctx.switches.has("reset") {
         reset(ctx)
+    } else if ctx.switches.has("pose") {
+        // 16b cut U.4 (`T-52`).
+        pose(ctx)
     } else if ctx.switches.has("release") {
         // 16b cut D.3 (`T-49`).
         release(ctx)

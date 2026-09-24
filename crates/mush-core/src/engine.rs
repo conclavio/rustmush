@@ -2167,6 +2167,51 @@ impl Engine {
             let data = boot.remove(self.modules[index].name()).unwrap_or_default();
             self.load_module_at(index, data, out, fx)?;
         }
+        self.all_modules_loaded(out, fx)
+    }
+
+    /// **The end of boot** (16b cut U.4, 16c `B-37`): every module's
+    /// [`GameModule::on_all_loaded`], once, in list order, after every
+    /// module's `on_world_loaded` — then the WS03-S8 census
+    /// ([`Engine::warn_unowned_state_slots`]).
+    ///
+    /// Each hook gets the [`Ctx`] [`Engine::module_loaded`] builds (the module's
+    /// name, `GOD`, the module's typed-state lens), and whatever it defers is
+    /// drained after it exactly as a load's is. [`Engine::modules_loaded`] calls
+    /// this at its end; a driver that delivers the modules one at a time (the J4
+    /// path, [`Engine::module_loaded`]) calls it once the last one is in, so no
+    /// boot path runs without the hook.
+    ///
+    /// # Errors
+    /// The first module's `on_all_loaded` error, which fails the boot; the
+    /// modules after it are not called and the census does not run.
+    pub fn all_modules_loaded(
+        &mut self,
+        out: &mut Outbox,
+        fx: &mut Effects,
+    ) -> Result<(), ModError> {
+        for index in 0..self.modules.len() {
+            let mut modules = std::mem::take(&mut self.modules);
+            let module_name = SmolStr::new(modules[index].name());
+            let typed_state = crate::action_state::ModuleActionState::for_module(
+                crate::action_state::TypedStateLens::Live(&self.action_state),
+                Some(module_name.as_str()),
+            );
+            let mut ctx = Ctx {
+                w: &mut self.world,
+                actor: GOD,
+                switches: SwitchSet::default(),
+                args: ParsedArgs::default(),
+                out,
+                reg: &self.registry,
+                module: Some(module_name),
+                typed_state,
+            };
+            let result = modules[index].on_all_loaded(&mut ctx);
+            self.modules = modules;
+            self.drain_deferred(out, fx);
+            result?;
+        }
         self.warn_unowned_state_slots();
         Ok(())
     }
@@ -2182,10 +2227,11 @@ impl Engine {
     /// is **warned and never refused** — but it is also the hole ownership
     /// cannot see through, so boot says which slots are in it.
     ///
-    /// Drivers that deliver modules one at a time (the J4 path, which calls
-    /// [`Engine::module_loaded`] per module rather than
-    /// [`Engine::modules_loaded`]) call this themselves once the last module
-    /// is loaded. Returns the names it warned about.
+    /// [`Engine::all_modules_loaded`] calls it last (16b cut U.4), so every
+    /// boot path runs it once: [`Engine::modules_loaded`], and a driver that
+    /// delivers the modules one at a time through [`Engine::module_loaded`]
+    /// (the J4 path) and then ends the boot with that call. Returns the names
+    /// it warned about.
     pub fn warn_unowned_state_slots(&self) -> Vec<&'static str> {
         let unowned = self.world.unowned_state_slots();
         for slot in &unowned {
@@ -2201,7 +2247,8 @@ impl Engine {
     /// driver walks the modules itself when a module may answer
     /// [`ModError::RetryFullFetch`] to a narrowed namespace and needs its data
     /// fetched whole and delivered again — to that module alone, in its place
-    /// in the order.
+    /// in the order. The driver ends the boot with
+    /// [`Engine::all_modules_loaded`] once the last module is in (16b cut U.4).
     ///
     /// # Errors
     /// No module of that name; or whatever the module's

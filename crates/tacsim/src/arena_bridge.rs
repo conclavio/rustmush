@@ -1874,12 +1874,39 @@ pub fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
     if rows.is_empty() {
         ctx.out.sys_to_actor(actor, "arena", "No match is running.");
-        return Ok(());
     }
     for row in rows {
         ctx.out.sys_to_actor(actor, "arena", row);
     }
+    // **16b cut U.4 (16c `T-67`)**: and then every unit a stranded marker still
+    // holds, by dbref. Since this cut `@find` omits a unit an arena holds — any
+    // marker, live match or not, which is `deployed::excluded`'s rule — and
+    // `@arena/release`, the repair for a marker a failed check-in left, takes a
+    // dbref and nothing else. This is where staff read it.
+    for row in stranded_rows(ctx.w) {
+        ctx.out.sys_to_actor(actor, "arena", row);
+    }
     Ok(())
+}
+
+/// **One line per unit a stranded `deployed` marker holds** (16b cut U.4) —
+/// exactly the units `@arena/release` would accept: a marker whose unit no live
+/// match of the registry binds, the test that verb refuses by.
+///
+/// A staff surface, so it names object ids (doc 16 §5's observer rule is about
+/// pilots; `crate::match_::verbs`' own head says the same of `@arena/release`).
+fn stranded_rows(w: &mush_core::World) -> Vec<String> {
+    let registry = w.module_state::<ArenaRegistry>();
+    mush_sim::deployed::deployed_units(w)
+        .into_iter()
+        .filter(|(unit, _)| registry.is_none_or(|registry| registry.match_of_unit(*unit).is_none()))
+        .map(|(unit, mark)| {
+            format!(
+                "#{} carries a stranded deployed marker (match {}); @arena/release #{}",
+                unit.0, mark.match_id, unit.0
+            )
+        })
+        .collect()
 }
 
 /// One row per running match: its tempo, its arena time, its lag and its chunk
@@ -2110,7 +2137,8 @@ pub fn register(
                    running: its lifecycle state, its tempo, its arena time, how often it has \
                    lagged, how many ledger chunks have been appended and lost, how many cockpit \
                    frames have gone out, and how many ledger writes are still waiting for the \
-                   store to acknowledge them. A read.\n\
+                   store to acknowledge them; then one line per unit a stranded deployed \
+                   marker still holds, with the @arena/release that clears it. A read.\n\
                    @arena/start <arena>=<red #ids>/<blue #ids>   (staff) check those units out \
                    and run a match: ONE authoritative action that marks every unit deployed, \
                    freezes its world placement and hands the arena custody of it.\n\
@@ -2128,7 +2156,12 @@ pub fn register(
                    @arena/release <unit>               (staff) clear one unit's stranded \
                    deployed marker: it is restored from its own check-out snapshot and its \
                    cockpit seat is freed. For a unit a refused check-in left unusable; refused \
-                   while its match is still live, where @arena/abort is the verb."
+                   while its match is still live, where @arena/abort is the verb.\n\
+                   @arena/pose <callsign>=<x> <y>[ <heading>]   (staff) open that centre slot \
+                   (RA, BC: as the board prints it) on that arena cell for the next match, \
+                   facing the heading or its side's own; `=off` gives it its authored cell \
+                   back, and bare lists what is set. Refused while a match runs; cleared when \
+                   the match that used it ends, and by @arena/reset."
                 .into(),
             ..CommandSpec::default()
         },

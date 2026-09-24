@@ -2845,12 +2845,180 @@ fn both_feeds_ask_the_session_ring_to_keep_only_the_latest() {
     }
 }
 
-/// The map of the SHIPPED proving ground fits in one message, and expanding it
-/// gives back the authored terrain cell for cell.
+/// **The seat, resolved once** (16b cut U.4, 16c `T-53`).
+///
+/// `flying` answers the whole [`match_::Seat`] — the driver, the unit and the
+/// station — and every cockpit verb reads the cockpit as `seat.driver` while it
+/// answers the typist. For a human flying their own seat the driver **is** the
+/// typist, the unit is the pod's tank, and the station is the cockpit. The case
+/// where they differ — a human driving an NPC's seat — is
+/// [`a_human_driving_an_npc_s_seat_reads_the_npc_s_cockpit`].
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flying_names_the_seat_a_human_pilot_drives_themselves() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    for n in 0..2 {
+        let pilot = rig.pilot(n);
+        let seat =
+            match_::flying(rig.tw.world(), pilot).expect("a boarded pilot of a running match");
+        assert_eq!(
+            seat,
+            match_::Seat {
+                driver: pilot,
+                unit: rig.tank(n),
+                station: mush_sim::StationId::new(match_::STATION).expect("the cockpit station"),
+            },
+            "pilot {n}'s seat is their own"
+        );
+    }
+    // The verbs read it: STATUS answers the pilot, off the pilot's own frame.
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let said = rig.say(0, "status");
+    assert!(said.contains("Callsign RA."), "{said}");
+}
+
+/// **A human driving an NPC's seat reads the NPC's cockpit** (16b cut U.4, 16c
+/// `T-53`).
+///
+/// An NPC claims red slot 1 and boards it like anybody; then a human's account
+/// takes that seat as a proxy (the `ActiveFocus` `+seat/activate` installs,
+/// seeded through `mush-sim`'s `testkit` door as `mush-propagation`'s proxy-seat
+/// tests seed it). The arena keys the cockpit — the last frame, the power hint,
+/// the pilot binding — on the NPC, so the human's `STATUS` must read the NPC's
+/// frame. Before the seat was resolved once, the unit came through the proxy and
+/// the frame was looked up under the typist: the human read their own empty
+/// mirror about the NPC's tank.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_human_driving_an_npc_s_seat_reads_the_npc_s_cockpit() {
+    // Pilot1 flies blue; Pilot2 is the human who will drive the NPC's seat.
+    let mut rig = Rig::boot(3);
+    let human = rig.pilot(2);
+    let lobby = match_::centre_object(rig.tw.world(), match_::LOBBY_ENTRY).expect("the lobby");
+    let npc = rig
+        .tw
+        .world_mut()
+        .create(mush_core::ObjKind::Npc, "Ace", GOD, Some(lobby))
+        .expect("an NPC walks into the lobby");
+    // The NPC is on an account of its own (it takes the seat before any proxy
+    // does); the humans keep theirs.
+    let mut map = Accounts::default();
+    for (n, pilot) in rig.pilots.iter().enumerate() {
+        map.0.insert(
+            *pilot,
+            AccountId::mint(&format!("account-{n}"), n as i64).expect("an account id"),
+        );
+    }
+    map.0.insert(
+        npc,
+        AccountId::mint("account-npc", 99).expect("an account id"),
+    );
+    let human_account = map.0.get(&human).copied().expect("the human's account");
+    *rig.tw
+        .world_mut()
+        .module_state_mut::<mush_sim::AccountOracle>()
+        .expect("the simulation is composed") = mush_sim::AccountOracle::new(Arc::new(map));
+
+    let npc_says = |rig: &mut Rig, line: &str| {
+        let events = rig.events_of(npc, line);
+        rig.tw.seen_by(&events, npc).join("\n")
+    };
+    npc_says(&mut rig, "sim team red");
+    rig.say(1, "sim team blue");
+    npc_says(&mut rig, "sim start");
+    let red_room =
+        match_::centre_object(rig.tw.world(), match_::RED_ROOM_ENTRY).expect("the red room");
+    rig.tw
+        .world_mut()
+        .move_to(npc, red_room)
+        .expect("the centre's rooms take anybody");
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    let said = npc_says(&mut rig, "board");
+    let pod = match_::pod_of(rig.tw.world(), npc)
+        .unwrap_or_else(|| panic!("the NPC's pod is not locked: {said}"));
+    let tank = match_::tank_of(rig.tw.world(), pod).expect("the pod's tank");
+    let said = rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running, "{said}");
+    let station = mush_sim::StationId::new(match_::STATION).expect("the cockpit station");
+    assert_eq!(
+        match_::flying(rig.tw.world(), npc),
+        Some(match_::Seat {
+            driver: npc,
+            unit: tank,
+            station: station.clone(),
+        }),
+        "the NPC flies its own seat"
+    );
+
+    // The arena speaks to the NPC.
+    let mut heard = false;
+    for _ in 0..400 {
+        rig.pump();
+        heard = rig
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.last_frame(npc))
+            .is_some();
+        if heard {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(heard, "the arena sends the NPC a frame");
+
+    // The human's account takes the seat: `actor` the NPC, `driver` the human,
+    // `proxy` — exactly what `+seat/activate` installs over the NPC's own focus.
+    let mut focus = rig
+        .tw
+        .world()
+        .module_state::<mush_sim::FocusState>()
+        .and_then(|state| state.focus_of_actor(npc))
+        .cloned()
+        .expect("the NPC's boarding focused the cockpit");
+    focus.account = human_account;
+    focus.driver = human;
+    focus.proxy = true;
+    rig.tw
+        .world_mut()
+        .module_state_mut::<mush_sim::FocusState>()
+        .expect("the focus slot")
+        .claim_for_test(focus);
+    assert_eq!(
+        mush_sim::driving_actor(rig.tw.world(), human),
+        npc,
+        "the human drives the NPC"
+    );
+
+    // One resolution names both: the NPC's seat, with the NPC as its driver.
+    assert_eq!(
+        match_::flying(rig.tw.world(), human),
+        Some(match_::Seat {
+            driver: npc,
+            unit: tank,
+            station,
+        }),
+        "the human's seat is the NPC's"
+    );
+
+    // And the verb reads it: the human's STATUS is the NPC's cockpit, addressed
+    // to the human.
+    let theirs = npc_says(&mut rig, "status");
+    let said = rig.say(2, "status");
+    assert!(said.contains("Callsign RA."), "{said}");
+    assert_eq!(
+        said, theirs,
+        "the driver read something other than the NPC's own cockpit"
+    );
+}
+
+/// The map of the SHIPPED proving ground expands to the authored terrain cell
+/// for cell.
 ///
 /// The live ground and not [`match_::stock_definition`]'s uniform stand-in: the
-/// bound is about what the content pack actually paints, and a flat window would
-/// run-length-encode to nothing and prove nothing.
+/// round trip is about what the content pack actually paints, and a flat window
+/// would run-length-encode to nothing and prove nothing. **16b cut U.4** moved
+/// the size half to `tests/definitions.rs`, beside the rule that now enforces it
+/// at apply.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_shipped_arena_s_map_is_small_enough_to_send_and_expands_to_the_ground() {
     let mut rig = Rig::boot(2);
@@ -2872,12 +3040,9 @@ async fn the_shipped_arena_s_map_is_small_enough_to_send_and_expands_to_the_grou
         .expect("the running match's ground");
     let terrain = &definition.terrain;
     let map = cockpit::map_frame(match_id, definition.id.as_str(), terrain);
-    let bytes = serde_json::to_vec(&map).expect("the map encodes").len();
-    assert!(
-        bytes < 256 * 1024,
-        "the shipped arena's map is {bytes} bytes, past the 256 KiB bound a \
-         pulled keyframe is held to"
-    );
+    // 16b cut U.4 (16c `T-57`): the size bound is a rule now, enforced when the
+    // arena is applied (`definitions::arena_map_within_bound`), and its test is
+    // `tests/definitions.rs`'. What is left here is the round trip.
     // The renderer's own decode, and it reads `width`/`height` off the payload —
     // so this is the round trip a client makes. (`mush-ansi/tests/golden.rs`
     // drives the real `mush_ansi::panel::expand_rows` over the committed

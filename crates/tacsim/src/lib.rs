@@ -498,6 +498,49 @@ impl GameModule for TacsimRuleset {
         boot_matches(ctx, &kv);
         boot_reconcile(ctx)
     }
+
+    /// **The boot's pod sweep** (16b cut F.1; moved here by 16b cut U.4, 16c
+    /// `B-37`).
+    ///
+    /// A restart mid-match leaves the centre `Idle` by construction — the match
+    /// book is RAM — but what `BOARD` wrote is durable: the body placed inside
+    /// the pod and the cockpit billet on the tank's `assignment:<unit>`
+    /// document. So the boot opens every pod and gives every billet back
+    /// (`match_::cockpit::eject_all_at_boot`).
+    ///
+    /// It needs the pods, and a pod resolves through the **content latch**,
+    /// which the content module fills in its own `on_world_loaded` — after this
+    /// module's, because it is composed after it. Until this hook it ran on the
+    /// module's first 1 s tick, a window in which a player's line could land
+    /// first. Now it runs here, still inside the boot and after every module's
+    /// load: the front door serves nothing until the boot is done.
+    ///
+    /// **Nothing it does waits on a projection.** Giving a seat back is a
+    /// `Revoke`, and `mush_sim::request_seat_activation` consults the
+    /// control-lease mirror only for an `Activate` (its fail-closed leg in
+    /// `mush-sim`'s `seat.rs`); the mirror's first 1 Hz read is not needed to let
+    /// anybody out.
+    ///
+    /// **What it cannot do here is tell anybody.** Boot output is dropped — no
+    /// session is attached yet — and on the split server, which is production, a
+    /// pilot's session survives a restart of the server half. So the sweep says
+    /// nothing and records each `(body, pod)` on the match book, and the module's
+    /// boarding tick says the hatch line and the room to each of them once its
+    /// session is attached — which on the split server is the gateway's
+    /// re-announce, in no order against that tick — holding each for at most
+    /// [`match_::HATCH_HOLD_S`] ([`match_::MatchBook::take_hatch_notices`]).
+    fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        let ejected = match_::cockpit::eject_all_at_boot(ctx);
+        if !ejected.is_empty() {
+            tracing::warn!(
+                bodies = ejected.bodies.len(),
+                seats = ejected.seats.len(),
+                "tacsim: a restart left pilots in the simulator's pods; they are out and the \
+                 cockpit billets are given back"
+            );
+        }
+        Ok(())
+    }
 }
 
 /// **The match half of the boot pass** (16b cut T.3; T5, doc 16 §3.1 "Boot
@@ -587,14 +630,13 @@ fn boot_matches(ctx: &mut ModuleCtx<'_>, kv: &[(smol_str::SmolStr, serde_json::V
         );
     }
 
-    // The **pod sweep** cannot come with it: a pod is resolved through the
-    // content latch, which is the content module's state and is still empty
-    // while this runs. So that half alone is armed and the module's own tick
-    // performs it — see [`match_::MatchBook::arm_boot_sweep`], which says why
-    // that window is not the one above.
-    if let Some(book) = ctx.w.module_state_mut::<match_::MatchBook>() {
-        book.arm_boot_sweep();
-    }
+    // The **pod sweep** is not here: a pod is resolved through the content
+    // latch, which is the content module's state, and the content module is
+    // composed after this one — so while this runs the latch is empty and a
+    // sweep would find no pods at all. **16b cut U.4 (16c `B-37`)** gave it the
+    // hook it was waiting for: it runs in this module's `on_all_loaded`, still
+    // inside the boot, once every module's `on_world_loaded` has run (see
+    // `TacsimRuleset::on_all_loaded`).
 }
 
 /// Reconcile every seed latch's placement map against the world (independent verify

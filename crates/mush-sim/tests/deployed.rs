@@ -256,3 +256,57 @@ fn a_deployed_unit_is_not_in_the_room_a_looker_is_shown() {
         "and the check-in gives it back:\n{seen}"
     );
 }
+
+/// **16b cut U.4 (16c `T-67`): `@find`** (doc 16 §3.6: *every world unit
+/// listing, for every viewer including staff*).
+///
+/// `@find` is `mush-core`'s and cannot name `mush-sim`, so the exclusion reaches
+/// it the way it reaches `look`: the listing asks the kernel's `Perceive` seam,
+/// and the placement gate answers `Conceal` for a unit an arena holds. The
+/// listing omits it and counts it out — the answer for a held unit is the one a
+/// name nobody holds gets — for the unit's own owner and for God alike, and the
+/// check-in gives it back.
+#[test]
+fn find_omits_a_deployed_unit_for_its_owner_and_for_god_and_counts_it_out() {
+    let mut tw = boot();
+    let owner = tw.spawn_player("Owner");
+    let tank = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Red Tank 1", owner, Some(owner))
+        .expect("a tank of the owner's own");
+    let listed = format!("({tank})");
+
+    for who in [owner, GOD] {
+        let seen = texts(&tw.run(who, "@find Red Tank"));
+        assert!(
+            seen.contains(&listed) && seen.contains("(1 found)"),
+            "the control: {who}'s @find lists the tank before it deploys:\n{seen}"
+        );
+    }
+
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        tank,
+        DeployedMark::new(3, "tacsim.arena.proving_ground"),
+    );
+    for who in [owner, GOD] {
+        let seen = texts(&tw.run(who, "@find Red Tank"));
+        assert!(
+            seen.contains("(0 found)"),
+            "{who}'s @find counts a held unit out:\n{seen}"
+        );
+        assert!(
+            !seen.contains("Red Tank 1") && !seen.contains(&listed),
+            "{who}'s @find names nothing of a unit an arena holds:\n{seen}"
+        );
+    }
+
+    mush_sim::deployed::clear(tw.world_mut(), tank);
+    for who in [owner, GOD] {
+        let seen = texts(&tw.run(who, "@find Red Tank"));
+        assert!(
+            seen.contains(&listed) && seen.contains("(1 found)"),
+            "and the check-in gives it back to {who}'s @find:\n{seen}"
+        );
+    }
+}

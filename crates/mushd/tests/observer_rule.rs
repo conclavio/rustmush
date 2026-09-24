@@ -981,6 +981,23 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     );
     let seen = ask(&mut god, "+map", "not on a map").await;
     names_nothing(&seen, red, blue, "the staffer's `+map`");
+    // **16b cut U.4 (16c `T-67`)**: `@find`, the listing that hands out the
+    // dbref every other staff verb takes. The tanks are God's (the arena applier
+    // makes them as the booting actor), so this is their owner's `@find` as well
+    // as staff's: a held unit is counted out and named nowhere.
+    let seen = ask(&mut god, &format!("@find {RED_TANK}"), "END OF LIST").await;
+    assert!(
+        seen.contains("(0 found)"),
+        "`@find` counted a held unit:\n{seen}"
+    );
+    // The terminal echoes the typed line, which names the tank; the answer is
+    // everything after it.
+    let answered: String = seen
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("@find"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    names_nothing(&answered, red, blue, "the staffer's `@find`");
 
     // Doc 16 §3.6: *"deployed" to a viewer stationed on it*.
     let seen = ask(&mut ada, &format!("@unit/status #{red}"), "deployed").await;
@@ -1393,6 +1410,18 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     names_nothing(&seen, red, blue, "the web client's `look` after detection");
 
     say(&mut ada, "SIM ABORT", "aborts match").await;
+
+    // **16b cut U.4**: and once the check-in has cleared the markers, `@find`
+    // names the tank again.
+    wait_until(
+        STEP_TIMEOUT,
+        "`@find` to list the checked-in tank",
+        async || {
+            let seen = ask(&mut god, &format!("@find {RED_TANK}"), "END OF LIST").await;
+            seen.contains(&format!("(#{red})")) && seen.contains("(1 found)")
+        },
+    )
+    .await;
 }
 
 /// **The observer rule with the switch on** (16b cut Q.1;
@@ -3057,12 +3086,19 @@ async fn the_ends_of_a_match_name_sides_and_pilots_and_nothing_of_the_field() {
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
 
-    let _ = seat_the_witnesses(&mut god).await;
+    // Bo's own object numbers, so the sweep below can look for them by name —
+    // taken before the match, since 16b cut U.4 (16c `T-67`) `@find` names
+    // nothing an arena holds.
+    let (_red, blue_tank, _muster, _domain) = seat_the_witnesses(&mut god).await;
     take_off(&mut ada, &mut bo).await;
 
-    // Bo's own object numbers, so the sweep below can look for them by name.
+    // The second witness for that rule: during `Running`, God's `@find` counts
+    // the blue tank out and names it nowhere.
     let listing = ask(&mut god, &format!("@find {BLUE_TANK}"), "END OF LIST").await;
-    let blue_tank = dbref_of(&listing, BLUE_TANK);
+    assert!(
+        listing.contains("(0 found)") && !listing.contains(&format!("#{blue_tank}")),
+        "`@find` named a unit an arena holds:\n{listing}"
+    );
 
     // From inside the pod: red gives the match up, and blue — the side that did
     // not — reads the announcement.

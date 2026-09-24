@@ -265,6 +265,20 @@ oracle would prove nothing but that the oracle is unwired.
 """
 
 [[site]]
+path = "crates/tacsim/tests/cockpit.rs"
+accessor = "World::module_state_mut"
+slot = "FocusState"
+owner = "sim"
+reason = """
+16b cut U.4 (16c T-53): the one cockpit test where the seat's driver is not the
+typist. A human's account takes an NPC's seat as a proxy, which production does
+through `+seat/activate`; the test seeds that same `ActiveFocus` through
+`FocusState::claim_for_test`, the `testkit`-fenced door mush-propagation's and
+mush-campaign's proxy-seat tests already use, rather than drive a whole campaign
+seat offer the arena roster has no NPC for.
+"""
+
+[[site]]
 path = "crates/tacsim/tests/harness.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
@@ -389,6 +403,19 @@ above give: every claim in the file starts from a pilot who really BOARDed, and
 and fails closed on an unmapped character. A stranded cockpit billet is the thing
 under test, so a harness with no oracle would prove nothing but that the oracle
 is unwired.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/definitions.rs"
+accessor = "World::module_state_mut"
+slot = "AtlasState"
+owner = "atlas"
+reason = """
+16b cut U.4 (16c T-57): the map bound is enforced by the arena applier at apply,
+and the only way to hand that applier an arena whose map is past the bound is to
+paint the ground it reads. The test repaints the arena's four tiles in this
+world's atlas records as a checkerboard (RAM only; nothing is persisted), then
+applies the shipped pack through `mush_content::apply` and asserts the refusal.
 """
 
 [[site]]

@@ -1,0 +1,780 @@
+# The matcher audit (16b cut U.4; 16c T-67, answering Q34 at its default: the
+# gate and @find now, the lens is H6). Read by
+# crates/mush-contract-tests/tests/matcher_call_sites.rs.
+#
+# `mush_core::matchit::match_object` resolves `#N` for ANY object in the world
+# and `*name` for ANY player, with no observer test. Every production call site
+# (every `crates/*/src/**/*.rs`, comments, literals and `#[cfg(test)]` items
+# stripped, `mush-core/src/matchit.rs` itself skipped) is listed here once per
+# enclosing function -- `function`, or `Type::method` when it is a method --
+# with the guard that stands between the match and what the caller does with
+# it. An unlisted site fails the test, an unused row fails the test, and the
+# guard is one of exactly five words:
+#
+#   perceive  the result passes `can_perceive` (the kernel's Perceive seam, on
+#             which mush-sim answers Conceal for every unit an arena holds) or
+#             `mush_sim::deployed::excluded` BEFORE it names or acts on anything.
+#   locality  only what is in the actor's room or inventory can match: the
+#             matcher's own pools, with a `#N`/`*name` spelling refused, or
+#             checked for nearness, before anything is named or done.
+#   staff     the verb is Builder or above, or power-gated (SIM_ADMIN,
+#             Royalty, EXAMINE_ALL, BUILDER_LLM, CHOWN_ANY ...), and the gate
+#             runs before the match.
+#   self      the target can only be the actor or something the actor holds.
+#   none      audited: the call names or acts on the match with no perception
+#             test. A permission check that runs AFTER the match (control,
+#             examine rights, an authority the caller must hold over the
+#             target) is still `none`, and the note says which check it is,
+#             because it answers a different sentence for "exists, not yours"
+#             than for "does not exist".
+#
+# `locality` AND `staff` DO NOT SATISFY DOC 16 §3.6's ARENA EXCLUSION. A deployed
+# unit's world placement is frozen where check-out found it and its
+# `Obj.location` is still the arena's muster room (mush-sim/src/lib.rs, the
+# placement gate's own comment), so a `locality` site names it for anyone
+# standing in that room, and a `staff` site names anything at all. The H6 lens
+# -- the matcher asking the Perceive seam itself -- therefore takes the `none`
+# rows first and the `locality` and `staff` rows after; only a `perceive` row is
+# already closed.
+#
+# A helper several player-facing verbs call is ONE row, and its note names the
+# callers. Written from the code at 16b cut U.4: 110 rows over 131 call sites
+# (a plain grep finds 166 lines naming the function: the 35 in matchit.rs and
+# the doc comment in mush-economy/src/contract_live.rs are not call sites).
+# Guards at U.4: perceive 5, locality 3, staff 59, self 1, none 42.
+
+# ---------------------------------------------------------------------------
+# mush-atlas
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-atlas/src/hydrate_cmd.rs"
+function = "character"
+guard = "staff"
+note = "@atlas/hydrate's character argument; every caller is behind is_staff (SIM_ADMIN or Royalty)."
+
+[[site]]
+file = "mush-atlas/src/theme_cmd.rs"
+function = "theme_exemplar"
+guard = "staff"
+note = "@atlas/theme/exemplar; theme_admin gates on is_staff first."
+
+[[site]]
+file = "mush-atlas/src/theme_cmd.rs"
+function = "theme_show"
+guard = "staff"
+note = "@atlas/theme/show; theme_admin gates on is_staff first."
+
+[[site]]
+file = "mush-atlas/src/travel_cmd.rs"
+function = "find_journey"
+guard = "staff"
+note = "@atlas/journey's journey argument; journey_admin gates on is_staff first."
+
+[[site]]
+file = "mush-atlas/src/travel_cmd.rs"
+function = "find_traveler"
+guard = "none"
+note = "+intercept <traveler>: the match is kept only when it is a live journey's traveler or a service vehicle, with no perception test and no nearness."
+
+[[site]]
+file = "mush-atlas/src/travel_cmd.rs"
+function = "journey_admin"
+guard = "staff"
+note = "@atlas/journey send <object>=<place>; is_staff first."
+
+[[site]]
+file = "mush-atlas/src/window_cmd.rs"
+function = "los_admin"
+guard = "staff"
+note = "@atlas/los <a>=<b>; is_staff first."
+
+[[site]]
+file = "mush-atlas/src/window_cmd.rs"
+function = "open_cmd"
+guard = "staff"
+note = "@atlas/window open <room>,...; window_admin gates on is_staff first."
+
+# ---------------------------------------------------------------------------
+# mush-campaign
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-campaign/src/seatcmd.rs"
+function = "resolve_unit"
+guard = "none"
+note = "@crew/assign|complement|readiness <unit>: may_seat (force.assign over the unit's compartment) runs after the match and refuses with the same NO_SUCH_CREW line a nonexistent unit gets."
+
+[[site]]
+file = "mush-campaign/src/seatcmd.rs"
+function = "seat_audit"
+guard = "staff"
+note = "@seat/audit <op>/<id>=<character>; is_staff first."
+
+[[site]]
+file = "mush-campaign/src/seatcmd.rs"
+function = "seat_offer"
+guard = "none"
+note = "+seat/offer's unit, npc, area: and to: arguments: the operation must be visible and may_seat must hold, both answering the one no_seat() line, but nothing asks whether the matched objects are perceived."
+
+# ---------------------------------------------------------------------------
+# mush-comsys
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-comsys/src/commands.rs"
+function = "channel_perm"
+guard = "none"
+note = "@channel/perm's lock expression: a channel admin's key names resolve through the matcher (and resolve_player) and are stored, not echoed."
+
+# ---------------------------------------------------------------------------
+# mush-core
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-core/src/behavior.rs"
+function = "behavior_cmd"
+guard = "staff"
+note = "@behavior/add|remove; the verb is Builder."
+
+[[site]]
+file = "mush-core/src/behavior.rs"
+function = "behavior_list"
+guard = "staff"
+note = "@behavior/list; the verb is Builder."
+
+[[site]]
+file = "mush-core/src/commands/building.rs"
+function = "chown_cmd"
+guard = "staff"
+note = "@chown; the verb is CHOWN_ANY power-gated."
+
+[[site]]
+file = "mush-core/src/commands/building.rs"
+function = "desc_cmd"
+guard = "none"
+note = "@desc: can_modify after the match; a #N the caller does not control answers Permission denied."
+
+[[site]]
+file = "mush-core/src/commands/building.rs"
+function = "destroy_cmd"
+guard = "none"
+note = "@destroy: controls after the match."
+
+[[site]]
+file = "mush-core/src/commands/building.rs"
+function = "link_cmd"
+guard = "none"
+note = "@link: can_modify on the target, can_link_to on the destination, both after the match."
+
+[[site]]
+file = "mush-core/src/commands/building.rs"
+function = "lock_cmd"
+guard = "none"
+note = "@lock: can_modify on the target after the match; the key's names resolve through the matcher and are stored."
+
+[[site]]
+file = "mush-core/src/commands/building.rs"
+function = "name_cmd"
+guard = "none"
+note = "@name: can_modify after the match."
+
+[[site]]
+file = "mush-core/src/commands/building.rs"
+function = "open_cmd"
+guard = "staff"
+note = "@open's destination; the verb is Builder."
+
+[[site]]
+file = "mush-core/src/commands/building.rs"
+function = "parent_cmd"
+guard = "none"
+note = "@parent: can_modify on the target and controls on the parent, after the match."
+
+[[site]]
+file = "mush-core/src/commands/building.rs"
+function = "set_cmd"
+guard = "none"
+note = "@set attribute and flag forms: can_modify (and the flag's own role) after the match."
+
+[[site]]
+file = "mush-core/src/commands/building.rs"
+function = "teleport_cmd"
+guard = "none"
+note = "@teleport: the move's permission and lock checks run after both matches."
+
+[[site]]
+file = "mush-core/src/commands/building.rs"
+function = "unlock_cmd"
+guard = "none"
+note = "@unlock: can_modify after the match."
+
+[[site]]
+file = "mush-core/src/commands/building.rs"
+function = "zone_cmd"
+guard = "none"
+note = "@zone: can_modify on the target after the match; the zone master is checked for its flag only."
+
+[[site]]
+file = "mush-core/src/commands/items.rs"
+function = "drop_cmd"
+guard = "self"
+note = "drop: the match must be in the actor's inventory, or You don't have that!"
+
+[[site]]
+file = "mush-core/src/commands/items.rs"
+function = "get_cmd"
+guard = "locality"
+note = "get: the match must stand in the actor's room, or I don't see that here."
+
+[[site]]
+file = "mush-core/src/commands/items.rs"
+function = "give_cmd"
+guard = "locality"
+note = "give: the object must be held (self) and the recipient must stand in the actor's room, or They aren't here."
+
+[[site]]
+file = "mush-core/src/commands/look.rs"
+function = "examine_cmd"
+guard = "perceive"
+note = "examine: can_perceive after the match, a concealed target answering the NoMatch an unheld name gets (16b cut S.2)."
+
+[[site]]
+file = "mush-core/src/commands/look.rs"
+function = "look_cmd"
+guard = "perceive"
+note = "look <target>: can_perceive, and a #N or *name spelling must be near unless the looker could examine it anyway."
+
+[[site]]
+file = "mush-core/src/commands/speech.rs"
+function = "whisper_cmd"
+guard = "locality"
+note = "whisper: the target must share the actor's room, or They aren't here."
+
+# ---------------------------------------------------------------------------
+# mush-economy
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-economy/src/commands.rs"
+function = "account_open"
+guard = "staff"
+note = "@account/open <obj>=<instrument>; cmd_account gates the switch on require_admin."
+
+[[site]]
+file = "mush-economy/src/commands.rs"
+function = "asset_target"
+guard = "none"
+note = "The shared <obj> parser of the @asset verbs (/catalog, /title, /transfer, /assign, /unassign, /maintenance, /lien, /release, /abandon, /writeoff, /stolen, /unfreeze, /show) and of @vault/deposit and /withdraw; each verb's own authority check (may_view_asset and the rest) answers through the existence-hiding renderer afterwards."
+
+[[site]]
+file = "mush-economy/src/commands.rs"
+function = "parse_policy"
+guard = "none"
+note = "@account/policy named:<n>:<obj>,...: the approvers resolve through the matcher and are stored."
+
+[[site]]
+file = "mush-economy/src/commands.rs"
+function = "parse_principal"
+guard = "none"
+note = "The shared principal parser (an object, org:<name>, sys:<id>) of the economy verbs that name a counterparty -- payments, transfers, grants; the org: arm asks resolve_org_visible, the object arm asks nothing."
+
+[[site]]
+file = "mush-economy/src/commands.rs"
+function = "vault_create"
+guard = "staff"
+note = "@vault/create; require_admin first."
+
+[[site]]
+file = "mush-economy/src/commands.rs"
+function = "vault_withdraw"
+guard = "none"
+note = "@vault/withdraw to=<destination>: the engine re-checks the destination is the actor or the actor's location, after the match."
+
+# ---------------------------------------------------------------------------
+# mush-faction
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-faction/src/commands.rs"
+function = "faction_principal"
+guard = "staff"
+note = "@faction/principal; cmd_faction gates on require_admin."
+
+[[site]]
+file = "mush-faction/src/commands.rs"
+function = "faction_remove"
+guard = "staff"
+note = "@faction/remove; cmd_faction gates on require_admin."
+
+[[site]]
+file = "mush-faction/src/commands.rs"
+function = "parse_member_spec"
+guard = "staff"
+note = "@faction/add and @faction/mod's member argument; cmd_faction gates on require_admin."
+
+[[site]]
+file = "mush-faction/src/commands.rs"
+function = "region_zone"
+guard = "staff"
+note = "@region/zone; cmd_region gates on require_admin."
+
+# ---------------------------------------------------------------------------
+# mush-housing
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-housing/src/commands.rs"
+function = "cmd_guest"
+guard = "none"
+note = "+guest add|remove <who>: the tenant names any character; is_character is the only test."
+
+[[site]]
+file = "mush-housing/src/commands.rs"
+function = "parse_landlord"
+guard = "none"
+note = "The landlord/principal parser: @property/create (staff), @property/list landlord= (any player, refused with the record's own hidden text) and a lease's inspect= term."
+
+[[site]]
+file = "mush-housing/src/commands.rs"
+function = "room_arg"
+guard = "staff"
+note = "@property/create and /rooms' room arguments; cmd_property gates both on require_staff."
+
+[[site]]
+file = "mush-housing/src/commands.rs"
+function = "tenancy_create"
+guard = "staff"
+note = "@tenancy/create's tenant; require_staff first."
+
+# ---------------------------------------------------------------------------
+# mush-jobs
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-jobs/src/commands.rs"
+function = "resolve_char"
+guard = "none"
+note = "+job/assign's staffer (after the caller's own queue-role check) and +note <char>: a global character resolution by name, *name or #N."
+
+# ---------------------------------------------------------------------------
+# mush-market
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-market/src/commands.rs"
+function = "admin_vendor"
+guard = "none"
+note = "@market/vendor stock object=: may_stock_for the vendor runs before; the object itself is not tested."
+
+[[site]]
+file = "mush-market/src/commands.rs"
+function = "sell"
+guard = "none"
+note = "+sell <obj>=<vendor>: the trade refuses an object the actor has no title to, after the match."
+
+# ---------------------------------------------------------------------------
+# mush-npc
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-npc/src/module.rs"
+function = "agent_audit"
+guard = "staff"
+note = "@agent/audit; the verb is Builder."
+
+[[site]]
+file = "mush-npc/src/module.rs"
+function = "agent_set"
+guard = "staff"
+note = "@agent/set's character principal; the verb is Builder."
+
+[[site]]
+file = "mush-npc/src/module.rs"
+function = "cmd_agent"
+guard = "staff"
+note = "@agent <npc>; the verb is Builder."
+
+[[site]]
+file = "mush-npc/src/module.rs"
+function = "cmd_intel"
+guard = "none"
+note = "+intel <subject>: the match only filters the actor's own and readable faction intel records and is never printed, but nothing asks whether it is perceived."
+
+# ---------------------------------------------------------------------------
+# mush-org, mush-party
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-org/src/commands.rs"
+function = "org_grant"
+guard = "staff"
+note = "@org/grant; cmd_org gates on require_admin."
+
+[[site]]
+file = "mush-party/src/commands.rs"
+function = "character"
+guard = "none"
+note = "+party invite, uninvite, kick and role: any live character, one No such player. line for everything else."
+
+# ---------------------------------------------------------------------------
+# mush-propagation
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-propagation/src/commands.rs"
+function = "cmd_order"
+guard = "none"
+note = "+order <recipient>=...: may_address filters the match AFTER it (an unaddressable recipient and a nonexistent one both answer NO_SUCH_CONTACT), but it is not locality: a unit the actor is billeted on (viewable_holders) passes from anywhere, and with no proxy seat its is_admin arm (SIM_ADMIN/Royalty) addresses ANY object -- no perception test on either arm."
+
+[[site]]
+file = "mush-propagation/src/commands.rs"
+function = "prop_envelopes"
+guard = "none"
+note = "@prop/envelopes <subject>: the filter runs AFTER the match and is not `self` for everyone: a player's subject must be the actor, but the verb is not staff-gated and its is_admin arm (SIM_ADMIN/Royalty) lists ANY object's envelopes; anything else answers NO_SUCH_ENVELOPE."
+
+[[site]]
+file = "mush-propagation/src/commands.rs"
+function = "prop_jam"
+guard = "staff"
+note = "@prop/jam; is_admin first."
+
+[[site]]
+file = "mush-propagation/src/commands.rs"
+function = "prop_phantom"
+guard = "staff"
+note = "@prop/phantom; is_admin first."
+
+# ---------------------------------------------------------------------------
+# mush-ruleset
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-ruleset/src/commands.rs"
+function = "SheetQuery::query"
+guard = "none"
+note = "The sheet panel query's target: can_examine after the match (the actor, what they control, or EXAMINE_ALL)."
+
+[[site]]
+file = "mush-ruleset/src/commands.rs"
+function = "resolve_view_target"
+guard = "none"
+note = "+sheet and @sheet <target>: can_examine after the match."
+
+[[site]]
+file = "mush-ruleset/src/commands.rs"
+function = "sheet_set"
+guard = "none"
+note = "@sheet/set <target>: can_modify after the match."
+
+[[site]]
+file = "mush-ruleset/src/vitals.rs"
+function = "VitalsQuery::query_with_context"
+guard = "none"
+note = "The vitals panel query's target: can_examine after the match."
+
+# ---------------------------------------------------------------------------
+# mush-scenes
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-scenes/src/commands.rs"
+function = "scene_facilitate"
+guard = "staff"
+note = "+scene/facilitate: staff_scene resolves the scene for staff only, before the match."
+
+[[site]]
+file = "mush-scenes/src/commands.rs"
+function = "scene_outcome"
+guard = "none"
+note = "+scene/outcome's subjects: the conferred sealer (or staff) names any character."
+
+[[site]]
+file = "mush-scenes/src/commands.rs"
+function = "timestop_release"
+guard = "none"
+note = "+timestop/release <participant>: the scene's facilitator (or staff); the release itself only finds a participant of that scene."
+
+# ---------------------------------------------------------------------------
+# mush-script
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-script/src/lib.rs"
+function = "use_cmd"
+guard = "none"
+note = "use <obj>: any object carrying a script:use, by #N from anywhere."
+
+[[site]]
+file = "mush-script/src/runtime.rs"
+function = "match_obj"
+guard = "none"
+note = "The Rhai matchit() builtin: a script resolves names from its own object's viewpoint."
+
+# ---------------------------------------------------------------------------
+# mush-sim
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "build_route"
+guard = "none"
+note = "@journey/plan and /depart's destination place (crew-driven since E7 residue pass 1), and /divert's (staff); the place is not tested."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "cmd_identity"
+guard = "staff"
+note = "@identity/audit; require_admin first."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "domain_create"
+guard = "staff"
+note = "@domain/create; cmd_domain gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "domain_present"
+guard = "staff"
+note = "@domain/present; cmd_domain gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "focus_acquire"
+guard = "none"
+note = "+focus <unit>/<station>: the billet and reach checks after the match refuse; the unit is not tested for perception."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "journey_depart"
+guard = "none"
+note = "@journey/depart <carrier>: may_command_departure (staff, owner/controller or billet holder), with the match failure folded into the same denied() line."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "journey_divert"
+guard = "staff"
+note = "@journey/divert; cmd_journey gates it on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "journey_plan"
+guard = "none"
+note = "@journey/plan <carrier>: may_read_journey (staff or crew), a bystander answering No journey."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "journey_show"
+guard = "none"
+note = "@journey/show <carrier>: may_read_journey (staff or crew), a bystander answering No journey."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "parse_anchor"
+guard = "staff"
+note = "@spatial/space's anchor; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "resolve_domain"
+guard = "staff"
+note = "The @domain and @spatial domain resolver (every caller behind require_admin); a domain an arena holds is refused through deployed::excluded(Shown::Domain), but the host object it matches is not."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "resolve_domain_opt"
+guard = "staff"
+note = "@domain/summary and /replay; cmd_domain gates on require_admin; excludes a held domain as resolve_domain does."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_assign"
+guard = "staff"
+note = "@spatial/assign; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_authority"
+guard = "staff"
+note = "@spatial/authority; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_detach"
+guard = "staff"
+note = "@spatial/detach; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_egress"
+guard = "staff"
+note = "@spatial/egress; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_mount"
+guard = "staff"
+note = "@spatial/mount; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_place"
+guard = "staff"
+note = "@spatial/place; cmd_spatial gates on require_admin; refuse_deployed is an admission check, not a perception one."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_recover"
+guard = "staff"
+note = "@spatial/recover; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_show"
+guard = "perceive"
+note = "@spatial <obj>: deployed::excluded(Shown::Unit) answers the not-a-spatial-entity line before anything is named (16b cut S.2); staff-only besides."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_slot"
+guard = "staff"
+note = "@spatial/slot; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_space"
+guard = "staff"
+note = "@spatial/space; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_station"
+guard = "staff"
+note = "@spatial/station; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_tree"
+guard = "staff"
+note = "@spatial/tree; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_unassign"
+guard = "staff"
+note = "@spatial/unassign; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_unmount"
+guard = "staff"
+note = "@spatial/unmount; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_unplace"
+guard = "staff"
+note = "@spatial/unplace; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_unspace"
+guard = "staff"
+note = "@spatial/unspace; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/commands.rs"
+function = "spatial_unstation"
+guard = "staff"
+note = "@spatial/unstation; cmd_spatial gates on require_admin."
+
+[[site]]
+file = "mush-sim/src/station.rs"
+function = "resolve_visible_unit"
+guard = "perceive"
+note = "The station verbs' unit: can_perceive on the match, anything else the byte-identical refusal."
+
+[[site]]
+file = "mush-sim/src/station.rs"
+function = "station_fallback"
+guard = "staff"
+note = "@station/fallback's holder; is_admin first."
+
+# ---------------------------------------------------------------------------
+# mush-tactics
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-tactics/src/module.rs"
+function = "unit_create"
+guard = "staff"
+note = "@unit/create; cmd_unit gates every switch but /status on require_admin."
+
+[[site]]
+file = "mush-tactics/src/module.rs"
+function = "unit_damage"
+guard = "staff"
+note = "@unit/damage; require_admin first; refuse_deployed is an admission check."
+
+[[site]]
+file = "mush-tactics/src/module.rs"
+function = "unit_remove"
+guard = "staff"
+note = "@unit/remove; require_admin first; refuse_deployed is an admission check."
+
+[[site]]
+file = "mush-tactics/src/module.rs"
+function = "unit_show"
+guard = "perceive"
+note = "@unit/show (staff): view::unit_source answers nothing for a unit deployed::excluded holds, so it reads It is not a tactical unit. before anything is named."
+
+# ---------------------------------------------------------------------------
+# mush-testkit (a src tree: the toy ruleset is compiled into test consumers)
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-testkit/src/toy_ruleset.rs"
+function = "ToySheetLive::query_with_context"
+guard = "none"
+note = "The toy sheet query's target: can_examine after the match."
+
+[[site]]
+file = "mush-testkit/src/toy_ruleset.rs"
+function = "subtle_cmd"
+guard = "none"
+note = "+toysubtle <target>=<text>: the toy perception probe names its target to the actor by design."
+
+# ---------------------------------------------------------------------------
+# mush-weather, mush-worldgen
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "mush-weather/src/commands.rs"
+function = "WeatherCmd::resolve_place"
+guard = "staff"
+note = "@weather <place>; the verb is Royalty."
+
+[[site]]
+file = "mush-worldgen/src/commands.rs"
+function = "gen_building"
+guard = "staff"
+note = "@gen/building; the verb is BUILDER_LLM power-gated."
+
+[[site]]
+file = "mush-worldgen/src/commands.rs"
+function = "gen_here"
+guard = "staff"
+note = "@gen here=; the verb is BUILDER_LLM power-gated."
+
+[[site]]
+file = "mush-worldgen/src/commands.rs"
+function = "gen_review"
+guard = "staff"
+note = "@gen/review; the verb is BUILDER_LLM power-gated."
+
+[[site]]
+file = "mush-worldgen/src/commands.rs"
+function = "llm_toggle_npc"
+guard = "staff"
+note = "@llm/kill and /revive; the verb is Wizard."

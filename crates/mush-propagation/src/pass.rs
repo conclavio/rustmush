@@ -22,8 +22,21 @@
 //! Neither pass panics after its first mutation: there is no `?`, no `unwrap`,
 //! no `expect` and no panicking index anywhere below, and every arithmetic term
 //! saturates or is checked (E5a S2).
+//!
+//! **The detection pass is a world unit listing** in doc 16 §3.6's sense (16b
+//! cut U.4, 16c `T-68`): *while an arena holds custody, its domain is excluded
+//! from … every world unit listing, for every viewer including staff*. So a
+//! unit an arena holds is never the observer of a sighting, never its subject,
+//! never the platform a `Refresh`, a `Loss` or a `Reacquire` acts for and never
+//! either end of a `Share` — each of the pass's paths asks
+//! [`mush_sim::deployed::excluded`] (through `held_by_an_arena`) before it
+//! acts. The arena's own contacts are its in-RAM shadow (doc 16 §3.6); the
+//! world-side book must not mint, refresh or share a second picture of a unit
+//! whose pose the world no longer owns. On check-in the marker is cleared and
+//! the unit is an ordinary platform again on the next pass.
 
 use mush_core::{ClockStamp, ContactLedgerState, ObjId, World};
+use mush_sim::deployed::Shown;
 use mush_sim::{DomainId, SpatialState};
 
 use crate::context::{PropagationContext, domain_of_place, resolve_delivery, resolve_detection};
@@ -599,14 +612,34 @@ pub fn active_order(store: &PropagationStore, recipient: ObjId) -> Option<&Envel
 ///
 /// A platform with a crew station is a thing somebody can see FROM; a loose
 /// crate is not. Bounded, canonical order, so two passes agree.
+///
+/// **The unfiltered primitive** (16b cut U.4): with no world it cannot ask
+/// [`mush_sim::deployed::excluded`], so a unit an arena holds is on it. The
+/// pass itself never calls it — `detect_new` walks [`observers_from`] with the
+/// world, which is filtered — and neither does anything else in the tree today;
+/// it is kept as the placement graph's own answer to "who has a station".
 #[must_use]
 pub fn observers(state: &SpatialState) -> Vec<ObjId> {
     observers_from(state, None, None, None)
 }
 
+/// **Whether an arena holds `unit`** (16b cut U.4, 16c `T-68`): the one question
+/// every path of the detection pass asks before it acts for or on a platform —
+/// doc 16 §3.6's world-side exclusion, read through
+/// [`mush_sim::deployed::excluded`] like every other world unit listing.
+fn held_by_an_arena(world: &World, unit: ObjId) -> bool {
+    mush_sim::deployed::excluded(world, Shown::Unit(unit))
+}
+
 /// The roster a detection pass walks, scoped to one domain and resumed from one
 /// observer. At most [`MAX_OBSERVERS_PER_PASS`] entries are materialised per
 /// pass, and the cursor is what makes the 33rd host reachable on the next one.
+///
+/// **With a world, a unit an arena holds is not on it** (16b cut U.4, 16c
+/// `T-68`; doc 16 §3.6), whatever `domain` says: a deployed platform's placement
+/// is frozen at muster while the arena moves it, so nothing the world could
+/// compute from it would be true. Without one it is [`observers`]' unfiltered
+/// primitive.
 #[must_use]
 pub fn observers_from(
     state: &SpatialState,
@@ -620,6 +653,7 @@ pub fn observers_from(
         .copied()
         .filter(|host| state.placements.contains_key(host))
         .filter(|host| from.is_none_or(|start| *host >= start))
+        .filter(|host| world.is_none_or(|world| !held_by_an_arena(world, *host)))
         .filter(|host| match (world, domain) {
             (Some(world), Some(_)) => in_domain(state, world, domain, *host),
             _ => true,
@@ -799,7 +833,15 @@ fn detect_new(
     report: &mut DetectionReport,
 ) {
     let cursor = store.detection_cursor();
-    let subjects: Vec<ObjId> = state.placements.keys().copied().collect();
+    // 16b cut U.4 (16c `T-68`): a unit an arena holds is sighted by nobody on
+    // the world side (doc 16 §3.6); the observers are filtered the same way,
+    // inside `observers_from`.
+    let subjects: Vec<ObjId> = state
+        .placements
+        .keys()
+        .copied()
+        .filter(|subject| !held_by_an_arena(world, *subject))
+        .collect();
     let mut visited = 0_usize;
     let mut stopped: Option<(ObjId, ObjId)> = None;
     'observers: for observer in
@@ -920,7 +962,9 @@ fn expire_phantoms(
         let mush_core::PrincipalId::Object { id: holder } = row.holder else {
             continue;
         };
-        if is_gone(world, holder) {
+        // 16b cut U.4: the expiry's `Loss` acts for the holder as `age_contacts`'
+        // does, so a holder an arena holds waits for its check-in here too.
+        if is_gone(world, holder) || held_by_an_arena(world, holder) {
             continue;
         }
         push_contact_intent(
@@ -957,7 +1001,8 @@ fn expire_phantoms(
             let mush_core::PrincipalId::Object { id: platform } = holder else {
                 continue;
             };
-            if is_gone(world, *platform) {
+            // 16b cut U.4: nor is a holder an arena holds credited with one.
+            if is_gone(world, *platform) || held_by_an_arena(world, *platform) {
                 continue;
             }
             if ledger
@@ -1022,6 +1067,13 @@ fn age_contacts(
         // A transition whose holder is gone can never commit, and arming it
         // leaves a durable cursor standing for ever (fold K4(c)).
         if is_gone(world, holder) {
+            continue;
+        }
+        // 16b cut U.4 (16c `T-68`): nor does the world age a contact whose
+        // holder an arena holds — every arm below acts with the holder as the
+        // platform, and the arena is that platform's single writer (doc 16
+        // §3.6). The row waits, untouched, for the check-in.
+        if held_by_an_arena(world, holder) {
             continue;
         }
         let observer = mush_core::ObserverRef::Platform { id: holder };
@@ -1101,6 +1153,15 @@ fn share_delivered(
             continue;
         }
         if is_gone(world, envelope.issuer()) || is_gone(world, envelope.recipient()) {
+            continue;
+        }
+        // 16b cut U.4 (16c `T-68`): a `Share` is armed FROM the issuer and names
+        // the recipient, so a unit an arena holds is neither end of one (doc 16
+        // §3.6). The envelope stays `Delivered`, and a later pass shares it once
+        // both ends are back in the world.
+        if held_by_an_arena(world, envelope.issuer())
+            || held_by_an_arena(world, envelope.recipient())
+        {
             continue;
         }
         let issuer_holder = mush_core::PrincipalId::Object {

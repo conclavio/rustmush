@@ -30,8 +30,11 @@
 //!
 //! Both tests read the store directly for the durable `assignment:<unit>` billet,
 //! and every such read is **waited for** ([`wait_for_cockpit`]): no line sent to
-//! the server orders that write, and after a reboot the pod half of it is owed by
-//! the module's own first tick.
+//! the server orders that write. After a reboot the whole release, the pod half
+//! included, is part of the boot (the pod sweep runs in the module's
+//! `on_all_loaded`, 16b cut U.4) — but it still reaches the store through the
+//! boot's own write, which a login does not order; only the hatch line waits for
+//! the module's first tick.
 
 mod support;
 
@@ -740,9 +743,11 @@ async fn a_restart_mid_match_through_the_lobby_leaves_no_body_in_a_pod() {
     //     billet goes back in `boot_matches`' own `release_seats_after_restart`
     //     (for a unit that carried a marker); the record is put back by the reset
     //     in the same pass, and the **pod** half of the sweep — the bodies at (3)
-    //     below — is the one that waits for the module's first 1 s tick. All
-    //     three then travel their own persist lane, so an unwaited `@unit/show`
-    //     still catches the restored check-out snapshot on its way past.
+    //     below — runs in the module's `on_all_loaded`, still inside the boot
+    //     (16b cut U.4; before it, it waited for the module's first 1 s tick).
+    //     All three then travel the boot's write to the store, which no login
+    //     orders, so an unwaited `@unit/show` still catches the restored
+    //     check-out snapshot on its way past.
     for (unit, who) in [(red, RED_TANK), (blue, BLUE_TANK)] {
         wait_for_cockpit(&store, unit, false, who).await;
         let seen = poll_unit_show(&mut god, unit, who, |seen| {
@@ -827,12 +832,12 @@ async fn poll_unit_show(
 /// A store read is not a command: nothing about sending a line to the server
 /// orders the write this is looking for. Before the restart the billet arrives
 /// through `BOARD`'s own persist lane; after it, a marked unit's billet goes back
-/// in `boot_matches` and an unmarked one's on the module's **first 1 s tick**
-/// (the pod sweep cannot run in `on_world_loaded`, which is before the content
-/// latch exists), and either then travels `vacate_station` →
-/// `persist_assignments` → the world task's persist lane. On a loaded machine a
-/// warm `login` beats all of that, and an unwaited assertion fails against
-/// correct code.
+/// in `boot_matches` and an unmarked one's in the pod sweep, which runs in the
+/// module's `on_all_loaded` once every module's `on_world_loaded` (and so the
+/// content latch) is done (16b cut U.4) — both inside the boot, and either then
+/// travels `vacate_station` → `persist_assignments` → the boot's write to the
+/// store. On a loaded machine a warm `login` can beat that write, and an
+/// unwaited assertion fails against correct code.
 async fn wait_for_cockpit(store: &Arc<dyn ObjectStore>, unit: u32, want: bool, who: &str) {
     wait_until(
         STEP_TIMEOUT,

@@ -1123,3 +1123,170 @@ fn m4_an_entry_zone_of_water_is_refused_by_name() {
         format!("arena {id}: team red's entry zone has no passable cell with a passable neighbour")
     );
 }
+
+/// **The `arena.map` bound is a rule of the definition** (16b cut U.4, 16c
+/// `T-57`): an arena whose widest map frame is past
+/// `cockpit::MAP_MAX_BYTES` is refused **by name**, and the shipped proving
+/// ground is under it — measured the way the check measures, at the widest
+/// `match` the frame can carry and with the arena's own entry as its surface.
+///
+/// The synthetic ground is a checkerboard of two classes, because the map is
+/// run-length encoded row by row and a uniform window would encode to nothing.
+#[test]
+fn an_arena_map_past_the_bound_is_refused_by_name_and_the_shipped_ground_is_under_it() {
+    use tacsim::arena::state::{ArenaTerrain, TerrainCell};
+    use tacsim::definitions::{ArenaBuildError, arena_map_within_bound};
+    use tacsim::match_::cockpit::MAP_MAX_BYTES;
+
+    let cell = |class| TerrainCell {
+        class,
+        elev_cm: 0,
+        move_cost: 100,
+    };
+    let cells: Vec<TerrainCell> = (0..256_u32 * 256)
+        .map(|at| {
+            if (at % 256 + at / 256) % 2 == 0 {
+                cell(mush_atlas::TerrainClass::Ground)
+            } else {
+                cell(mush_atlas::TerrainClass::Grass)
+            }
+        })
+        .collect();
+    let chequered = ArenaTerrain::new(256, 256, 1_000, cells).expect("a 256 by 256 window");
+    let refused = arena_map_within_bound("tacsim.arena.chequered", &chequered)
+        .expect_err("a checkerboard's map is past the bound");
+    let ArenaBuildError::MapTooLarge {
+        ref arena,
+        bytes,
+        bound,
+    } = refused
+    else {
+        panic!("the refusal is MapTooLarge: {refused:?}");
+    };
+    assert_eq!(arena, "tacsim.arena.chequered");
+    assert_eq!(bound, MAP_MAX_BYTES);
+    assert!(bytes > MAP_MAX_BYTES, "{bytes}");
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "tacsim.arena.chequered: the arena map is {bytes} bytes, past the 262144-byte bound \
+             a pulled keyframe is held to"
+        )
+    );
+
+    // The shipped ground, built the way the applier builds it.
+    let tw = TestWorld::with_modules(production_roster());
+    let records = tw
+        .world()
+        .module_state::<mush_atlas::AtlasState>()
+        .map(|state| state.records.clone())
+        .expect("the atlas is composed");
+    let catalog = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    let (id, def) = catalog
+        .arenas
+        .iter()
+        .next()
+        .expect("the proving ground is shipped");
+    let ground = tacsim::definitions::from_pack(id.as_str(), def, &records)
+        .expect("the arena's ground is in this world's records");
+    let bytes = arena_map_within_bound(id.as_str(), &ground.terrain)
+        .expect("the shipped proving ground's map is under the bound");
+    println!(
+        "u4_map_bound: {id} map frame {bytes} bytes of {MAP_MAX_BYTES} ({} per cent)",
+        bytes.saturating_mul(100) / MAP_MAX_BYTES
+    );
+    assert!(bytes <= MAP_MAX_BYTES);
+}
+
+/// **The bound is enforced where the arena is applied** (16b cut U.4, 16c
+/// `T-57`): the arena applier itself refuses an arena whose map is past the
+/// bound, naming it, and makes nothing.
+///
+/// The shipped proving ground's own pack, applied through the content crate's
+/// `apply` with the appliers this world composed, over a world whose atlas
+/// records for the arena's four tiles were repainted as a checkerboard of two
+/// passable classes — so the entry zones stay usable, `from_pack` builds the
+/// ground, and the one refusal left is the map's size. With no latch for the pack
+/// the plan creates every entry, so the arena entry reaches the applier's
+/// apply-time half. The boot of the same world is the control: the untouched
+/// ground applied.
+#[test]
+fn u4_the_arena_applier_refuses_an_arena_whose_map_is_past_the_bound() {
+    let mut tw = TestWorld::with_modules(production_roster());
+    let catalog = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    let (id, def) = catalog
+        .arenas
+        .iter()
+        .next()
+        .map(|(id, def)| (id.clone(), def.clone()))
+        .expect("the proving ground is shipped");
+    let muster_rooms = objects_named(&tw, &def.label).len();
+    assert_eq!(muster_rooms, 1, "the boot applied the shipped arena once");
+
+    // Repaint the arena's ground in this world's records.
+    {
+        let atlas = tw
+            .world_mut()
+            .module_state_mut::<mush_atlas::AtlasState>()
+            .expect("the atlas is composed");
+        for key in def
+            .tile_keys(id.as_str())
+            .expect("the arena names its tiles")
+        {
+            let tile = atlas
+                .records
+                .tiles
+                .get_mut(&key)
+                .expect("the arena's tile is in this world's records");
+            for y in 0..tile.cells.height() {
+                for x in 0..tile.cells.width() {
+                    tile.cells.update(x, y, |cell| {
+                        cell.class = if (x + y) % 2 == 0 {
+                            mush_atlas::TerrainClass::Ground
+                        } else {
+                            mush_atlas::TerrainClass::Grass
+                        };
+                    });
+                }
+            }
+        }
+    }
+
+    let pack = mush_content::load_pack(content::PROVING_GROUND_JSON)
+        .expect("the shipped proving ground verifies");
+    let appliers = tw
+        .world()
+        .module_state::<mush_content::ContentState>()
+        .map(|state| state.appliers.clone())
+        .expect("the content module is composed");
+    let mut latches = mush_content::Latches::new();
+    let mut out = mush_core::Outbox::new();
+    let engine = tw.engine_mut();
+    let mut ctx = mush_core::Ctx {
+        w: &mut engine.world,
+        actor: GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &engine.registry,
+        module: Some(SmolStr::new(mush_content::NS)),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    let said = match mush_content::apply(&mut ctx, &mut latches, &appliers, &pack) {
+        Ok((_, report)) => report
+            .anomaly
+            .clone()
+            .unwrap_or_else(|| panic!("the oversized arena applied: {report:?}")),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        said.contains(&format!("{id}: the arena map is "))
+            && said.contains("bytes, past the 262144-byte bound a pulled keyframe is held to"),
+        "the applier did not refuse the map by name: {said}"
+    );
+    assert_eq!(
+        objects_named(&tw, &def.label).len(),
+        muster_rooms,
+        "the refused apply made a muster room"
+    );
+}

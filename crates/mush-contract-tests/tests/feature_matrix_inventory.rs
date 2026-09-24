@@ -171,8 +171,8 @@ const ALLOWED: &[Allowed] = &[
     Allowed {
         package: "mush-sim",
         feature: "testkit",
-        reason: "turned on by `mush-campaign` and `mush-propagation` through a \
-                 `[dev-dependencies]` edge, so `cargo test --workspace` unifies it on \
+        reason: "turned on by `mush-campaign`, `mush-propagation` and `tacsim` through \
+                 a `[dev-dependencies]` edge, so `cargo test --workspace` unifies it on \
                  and compiles it",
         dev_dep_activated: true,
     },

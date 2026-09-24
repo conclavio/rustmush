@@ -104,6 +104,13 @@ tokio = { workspace = true, features = ["test-util"] }
 # 16b cut U.2 (16c `T-36`): `tests/harness.rs` reads resident memory through it
 # on every platform, where `/proc/self/status` answered on Linux alone.
 memory-stats.workspace = true
+# 16b cut U.4 (16c `T-53`): not a new crate edge -- `mush-sim` is already a normal
+# dependency (above). The test build turns on its `testkit` feature so
+# `tests/cockpit.rs` may seed a proxy focus through
+# `FocusState::claim_for_test`, the fenced door `mush-propagation`'s and
+# `mush-campaign`'s proxy-seat tests already use: a human driving another
+# character's cockpit is the one case where the seat's driver is not the typist.
+mush-sim = { workspace = true, features = ["testkit"] }
 
 [lints]
 workspace = true

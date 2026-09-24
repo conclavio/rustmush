@@ -270,37 +270,32 @@ fn refusal(error: SimError) -> CmdError {
 // stand-aside rule outside it.
 
 /// The boarding tick's body: one comparison, and nothing at all on a centre that
-/// is not boarding — **plus the boot pod sweep, once** (16b cut F.1).
+/// is not boarding — **plus, after a boot, the hatch lines the boot's pod sweep
+/// owes** (16b cut U.4, 16c `B-37`).
+///
+/// The sweep itself is no longer here. Cut F.1 armed it at boot and ran it on
+/// this tick's first fire, because the pods resolve through the content latch
+/// and nothing ran after every module's load; the kernel now has that hook, so
+/// the module's `on_all_loaded` moves the bodies and gives the billets back
+/// inside the boot (`crate::match_::cockpit::eject_all_at_boot`). What it cannot
+/// do there is speak — boot output reaches no session — so it leaves
+/// [`crate::match_::MatchBook::hatch_notices`], and this tick says each one to
+/// a body whose session is attached. A body that is not yet attached is held,
+/// for at most [`crate::match_::HATCH_HOLD_S`]: on the split server the pilot's
+/// surviving SSH session is re-attached by the gateway's re-announce, which
+/// reaches the world after the boot and in no order against this tick, and a
+/// line said before it would reach nobody. Only the boot adds to the list, so a
+/// pilot who boards later in the same boot is never told a hatch opened.
 ///
 /// The tick is registered whether or not the layer is on, and the two halves
-/// want opposite things of that (16b cut F.4). The **sweep** must still run with
-/// the layer off: a server restarted with `[tacsim].enabled` turned off is
-/// exactly where bodies are left shut in pods by the run before it, and nothing
-/// else lets them out. The **deadline** must not: it is the simulator driving
-/// itself on a server whose simulator is off, so `lobby::board_deadline` asks
-/// the layer first.
+/// want opposite things of that (16b cut F.4). The **hatch lines** are said with
+/// the layer off too, because the sweep that owes them ran with it off: a server
+/// restarted with `[tacsim].enabled` turned off is exactly where bodies were left
+/// in pods by the run before it. The **deadline** must not run: it is the
+/// simulator driving itself on a server whose simulator is off, so
+/// `lobby::board_deadline` asks the layer first.
 fn board_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
-    // The boot pass arms this and the first tick performs it: a pod is resolved
-    // through the content latch, which is the content module's state and is
-    // still empty while this module's `on_world_loaded` runs (see
-    // `crate::match_::MatchBook::arm_boot_sweep`). The stock-tank reset needs no
-    // latch and is done inside the boot pass itself, where nothing can race it.
-    // Once per boot, and on a clean world it finds nothing at all.
-    let owed = ctx
-        .w
-        .module_state_mut::<crate::match_::MatchBook>()
-        .is_some_and(crate::match_::MatchBook::take_boot_sweep);
-    if owed {
-        let ejected = crate::match_::cockpit::eject_all(ctx);
-        if !ejected.is_empty() {
-            tracing::warn!(
-                bodies = ejected.bodies.len(),
-                seats = ejected.seats.len(),
-                "tacsim: a restart left pilots in the simulator's pods; they are out and the \
-                 cockpit billets are given back"
-            );
-        }
-    }
+    say_owed_hatch_lines(ctx);
     let now_ms = ctx.w.now().saturating_mul(1_000);
     lobby::board_deadline(ctx, now_ms);
     // **16b cut D.3 (`B-33`)**: the other deadline the lobby owns. `Boarding` has
@@ -309,6 +304,48 @@ fn board_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     // frames to is empty, and only the centre knows that. One comparison against
     // one `Option<i64>` on a world that is idle anyway, beside the one above it.
     lobby::unattended_deadline(ctx, now_ms);
+}
+
+/// **The boot's hatch lines, to the bodies that can read them** (16b cut U.4,
+/// 16c `B-37`) — see [`board_tick`].
+///
+/// A connected body is told and shown the room it stands in now (the one the
+/// sweep put it in, unless it has walked since — a room line about a room it
+/// has left would be a lie). A body back inside a pod is told nothing: it
+/// boarded again, and its hatch is shut. A body with no session attached is
+/// held until the hold the first holding tick set, and dropped after it.
+fn say_owed_hatch_lines(ctx: &mut Ctx<'_>) {
+    let Some((owed, until_s)) = ctx
+        .w
+        .module_state_mut::<crate::match_::MatchBook>()
+        .map(|book| (book.take_hatch_notices(), book.hatch_hold_until_s()))
+    else {
+        return;
+    };
+    if owed.is_empty() {
+        return;
+    }
+    let now_s = ctx.w.now();
+    let until_s = until_s.unwrap_or_else(|| now_s.saturating_add(crate::match_::HATCH_HOLD_S));
+    let mut held = Vec::new();
+    for (body, pod) in owed {
+        if !ctx.w.is_connected(body) {
+            if now_s < until_s {
+                held.push((body, pod));
+            }
+            continue;
+        }
+        if crate::match_::cockpit::in_a_pod(ctx.w, body) {
+            continue;
+        }
+        let Some(room) = ctx.w.get(body).and_then(|object| object.location) else {
+            continue;
+        };
+        crate::match_::cockpit::tell_hatch_open(ctx, body, pod, room);
+    }
+    if let Some(book) = ctx.w.module_state_mut::<crate::match_::MatchBook>() {
+        book.hold_hatch_notices(held, until_s);
+    }
 }
 
 /// Register the lobby's surface on the **tacsim** module: the verb and the

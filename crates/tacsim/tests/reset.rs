@@ -23,10 +23,12 @@
 //! 7. `@arena/reset` on an **already idle** centre sweeps a stranded body and
 //!    billet — the state a restart leaves, which the old reset's first line
 //!    returned on;
-//! 8. the **boot pod sweep** — the half `boot_matches` arms rather than performs
-//!    — gives a stranded pod and billet back on the module's first tick, once a
-//!    boot, and leaves the tanks alone, because the reset is the boot pass's own
-//!    work and a deferred one would undo whatever staff had just done.
+//! 8. the **boot pod sweep** gives a stranded pod and billet back **inside the
+//!    boot**, before any tick — from tacsim's `on_all_loaded`, the kernel's
+//!    post-boot hook (16b cut U.4) — and the module's first tick says the hatch
+//!    line and the room to that body, once a boot; a body whose session is not
+//!    attached yet is told on the first tick after it is, within
+//!    `match_::HATCH_HOLD_S`, and never after it.
 //!
 //! **16b cut F.4** adds one more to the deadline's pair: with the layer off, the
 //! deadline drives nothing at all, because the tick that calls it is registered
@@ -142,6 +144,60 @@ impl Rig {
         // server before its first player types anything.
         rig.tick_to(1);
         rig
+    }
+
+    /// **A restart of the server half, in place** (16b cut U.4).
+    ///
+    /// The match book is RAM (D-16-3) and starts fresh. Everything else comes
+    /// back the way a real boot brings it back: every module is handed the
+    /// documents this world has written so far and the engine's boot runs again
+    /// over the same objects — every `on_world_loaded`, then every
+    /// `on_all_loaded`. The account oracle is the host's post-composition wiring,
+    /// so it is wired again exactly as [`Rig::boot`] wired it.
+    fn reboot(&mut self) {
+        *self
+            .tw
+            .world_mut()
+            .module_state_mut::<match_::MatchBook>()
+            .expect("the match book") = match_::MatchBook::new();
+        let mut kv: BTreeMap<smol_str::SmolStr, Vec<(smol_str::SmolStr, serde_json::Value)>> =
+            BTreeMap::new();
+        for op in self.tw.take_module_ops() {
+            let entry = kv.entry(op.ns.clone()).or_default();
+            match op.op {
+                mush_core::ModuleWrite::JsonSet { key, value } => {
+                    entry.retain(|(k, _)| *k != key);
+                    entry.push((key, value));
+                }
+                mush_core::ModuleWrite::Del { key } => entry.retain(|(k, _)| *k != key),
+                mush_core::ModuleWrite::StreamAppend { .. } => {}
+            }
+        }
+        let data: std::collections::HashMap<smol_str::SmolStr, mush_core::ModuleBootData> = kv
+            .into_iter()
+            .map(|(ns, entries)| {
+                (
+                    ns,
+                    mush_core::ModuleBootData {
+                        kv: entries,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        self.tw.modules_loaded(data);
+        let mut map = Accounts::default();
+        for (n, pilot) in self.pilots.iter().enumerate() {
+            map.0.insert(
+                *pilot,
+                AccountId::mint(&format!("account-{n}"), n as i64).expect("an account id"),
+            );
+        }
+        *self
+            .tw
+            .world_mut()
+            .module_state_mut::<mush_sim::AccountOracle>()
+            .expect("the simulation is composed") = mush_sim::AccountOracle::new(Arc::new(map));
     }
 
     fn pilot(&self, n: usize) -> ObjId {
@@ -447,52 +503,86 @@ fn a_wrecked_stock_tank_is_back_at_spec_and_at_muster_and_a_second_reset_says_no
     );
 }
 
-/// **The boot pod sweep, and what it deliberately is not** (16b cut F.1; doc 16
-/// §3.3's *every `Idle` transition*, of which a reboot performs one).
+/// **The boot opens the pods before any tick, and the first tick says so** (16b
+/// cut U.4, 16c `B-37`; 16b cut F.1; doc 16 §3.3's *every `Idle` transition*, of
+/// which a reboot performs one).
 ///
-/// The boot pass owes the centre two things, and does them at two moments,
-/// because they need different facts and carry different risks:
+/// The boot owes the centre two things:
 ///
-/// * the **stock-tank reset** happens inside `boot_matches` itself. It needs no
-///   content latch — the roster document and the definitions are tacsim's own
-///   state and `mush-sim` and `mush-tactics` are composed before it — and it
-///   **writes** every roster tank's record *and its placement*, so a copy of it
-///   running a second later would undo whatever staff had done in that second.
-///   That is not hypothetical: through the gateway the arena story's opening line
-///   is a `@spatial/place` of the two slot-1 tanks nose to nose, and a reset
-///   deferred to the first tick put them back on their authored cells 2.4 km
-///   apart, after which they never detected each other and the match never
-///   started. `crates/mushd/tests/sim_rematch.rs`'s restart test is the end-to-end
-///   proof of the boot reset: a spent magazine and a tank parked off its cell,
-///   both put back across a real SSH reboot.
-/// * the **pod sweep** cannot go with it: a pod is resolved through the content
-///   latch, which is the content module's state and is still empty while tacsim's
-///   `on_world_loaded` runs. So that half alone is armed, and the module's own
-///   1 s tick performs it. Its window is harmless because it only takes back what
-///   `BOARD` put in a pod, and `BOARD` fails closed on the control-lease mirror
-///   until that same 1 Hz projection has been read once.
+/// * the **stock-tank reset**, inside `boot_matches` itself. It needs no content
+///   latch — the roster document and the definitions are tacsim's own state and
+///   `mush-sim` and `mush-tactics` are composed before it — and it **writes**
+///   every roster tank's record *and its placement*, so a copy of it running a
+///   second later would undo whatever staff had done in that second (through the
+///   gateway the arena story's opening line is a `@spatial/place` of the two
+///   slot-1 tanks nose to nose). `crates/mushd/tests/sim_rematch.rs`'s restart
+///   test is the end-to-end proof of it.
+/// * the **pod sweep**, which needs the pods, which resolve through the content
+///   latch the content module fills after tacsim's own load. Cut F.1 had to arm
+///   it and let the module's first 1 s tick perform it; since cut U.4 it runs in
+///   tacsim's `on_all_loaded`, which the kernel calls once every module has
+///   loaded — still inside the boot, so nothing a player types can land first.
+///   Giving a seat back is a `Revoke`, which never reads the control-lease
+///   mirror, so it needs no tick either.
 ///
-/// This is that tick: it gives a stranded pod and billet back, it leaves a
-/// wrecked tank exactly where it stands, and it is owed once a boot.
+/// What the boot cannot do is **speak**: its output reaches no session. So the
+/// sweep says nothing and leaves each `(body, pod)` on the match book, and the
+/// first tick tells that body its hatch is open and shows it the room — and
+/// leaves a tank staff wrecked and moved after the boot exactly where it stands.
+/// Once a boot: a pilot who boards again later is neither thrown out nor told
+/// again.
 #[test]
-fn the_armed_boot_tick_sweeps_the_pods_once_and_leaves_the_tanks_to_the_boot_pass() {
+fn the_boot_opens_the_pods_before_any_tick_and_the_first_tick_says_the_hatch() {
     let mut rig = Rig::boot(2);
     one_aboard(&mut rig);
+    let pilot = rig.pilot(0);
     let red = rig.tank(tacsim::arena::state::Team::Red, 1);
     let pod = rig.pod(0).expect("red pod 1 is locked to the first pilot");
+    let team_room = rig
+        .tw
+        .world()
+        .get(pod)
+        .and_then(|object| object.location)
+        .expect("the pod stands in the red room");
     assert_eq!(rig.billets(red).len(), 1, "the pilot holds the cockpit");
 
-    // **A restart, exactly** (test 7's line): the match book is RAM, so a reboot
-    // starts from a fresh slot while the body in the pod and the billet on the
-    // tank are both durable.
-    *rig.tw
-        .world_mut()
-        .module_state_mut::<match_::MatchBook>()
-        .expect("the match book") = match_::MatchBook::new();
-    assert_eq!(rig.state(), MatchState::Idle);
+    // A tick with no boot behind it opens nothing: the sweep is a boot concern
+    // and not something the boarding tick does every second.
+    rig.tick_to(2);
+    assert_eq!(rig.location(0), Some(pod), "a tick opened the pods");
 
-    // Something for a reset to answer, so "the tick left the tanks alone" is a
-    // claim and not a fact about a world nobody touched.
+    // **A restart, exactly**: the match book is RAM (D-16-3) and starts fresh;
+    // everything else comes back from the documents this world has written — the
+    // body placed inside the pod, the billet on the tank — through every module's
+    // own boot, and then every module's `on_all_loaded`.
+    rig.reboot();
+
+    // (1) Before any tick: out of the pod and the billet given back.
+    assert_eq!(
+        rig.location(0),
+        Some(team_room),
+        "the boot left the body shut in the pod"
+    );
+    assert_eq!(
+        rig.billets(red),
+        Vec::new(),
+        "the boot left the cockpit billet held against the next pilot"
+    );
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .map(|book| book.hatch_notices().to_vec()),
+        Some(vec![(pilot, pod)]),
+        "the sweep owes that body one hatch line, and said nothing at boot"
+    );
+
+    // Something for a reset to answer, done after the boot and before its first
+    // tick, so "the tick that drains the hatch lines leaves the tanks alone" is a
+    // claim and not a fact about a world nobody touched. The reset is the boot
+    // pass's own work, done before the front door serves a line; move it (or any
+    // tank write) into this tick and a staff `@spatial/place` typed in the first
+    // second is undone — the arena story through the gateway goes red.
     let authored = rig.pose(red).expect("the applier placed it").1;
     rig.wreck(red);
     let elsewhere = mush_sim::data::Pose {
@@ -502,49 +592,44 @@ fn the_armed_boot_tick_sweeps_the_pods_once_and_leaves_the_tanks_to_the_boot_pas
     let domain = rig.pose(red).expect("placed").0;
     let died_at = elsewhere.y_cm;
     rig.with_ctx(|ctx| {
-        mush_sim::place(ctx, red, domain, elsewhere).expect("the match left it where it died");
+        mush_sim::place(ctx, red, domain, elsewhere).expect("staff moved it after the boot");
     });
 
-    // A tick with nothing armed changes nothing: the sweep is a boot concern and
-    // not something the boarding tick does every second.
-    rig.tick_to(2);
-    assert_eq!(
-        rig.location(0),
-        Some(pod),
-        "an unarmed tick opened the pods"
+    // (2) The first tick says it: the hatch line, then the room the body is in.
+    rig.tw.set_now(3);
+    let events = rig.tw.fire_due(3_000);
+    let heard = rig.tw.seen_by(&events, pilot).join("\n");
+    let pod_name = mush_core::output::display_name(rig.tw.world(), pod);
+    let room_name = mush_core::output::display_name(rig.tw.world(), team_room);
+    assert!(
+        heard.contains(&format!("The hatch of {pod_name} swings open.")),
+        "the first tick did not say the hatch line: {heard}"
+    );
+    assert!(
+        heard.contains(&room_name),
+        "the first tick did not show the room: {heard}"
+    );
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .is_some_and(|book| book.hatch_notices().is_empty()),
+        "the hatch lines are owed once"
     );
 
-    // What `boot_matches` arms, and then the first tick of the boot.
-    rig.tw
-        .world_mut()
-        .module_state_mut::<match_::MatchBook>()
-        .expect("the match book")
-        .arm_boot_sweep();
-    rig.tick_to(3);
-
-    assert_ne!(
-        rig.location(0),
-        Some(pod),
-        "the boot sweep left the body shut in the pod"
-    );
-    assert_eq!(
-        rig.billets(red),
-        Vec::new(),
-        "the boot sweep left the cockpit billet held against the next pilot"
-    );
-
-    // And it left the tank exactly as it stood. The reset is `boot_matches`' own
-    // work, done before the front door serves a line; move it back into this tick
-    // and the arena story through the gateway goes red.
+    // And that tick left the tank exactly as staff left it.
     let held = mush_tactics::module::unit_of(rig.tw.world(), red)
         .expect("a unit")
         .clone();
     assert!(
         match_::spec_plan(&held, &rig.pristine(red)).is_some(),
-        "the boarding tick reset a tank"
+        "the first tick after the boot reset a tank"
     );
     let (_, standing) = rig.pose(red).expect("still placed");
-    assert_eq!(standing.y_cm, died_at, "the boarding tick re-placed a tank");
+    assert_eq!(
+        standing.y_cm, died_at,
+        "the first tick after the boot re-placed a tank"
+    );
 
     // What the boot pass itself calls, on the same state, does do it.
     let report = rig.with_ctx(match_::reset_stock_tanks);
@@ -567,21 +652,121 @@ fn the_armed_boot_tick_sweeps_the_pods_once_and_leaves_the_tanks_to_the_boot_pas
         "the boot pass's reset did not put the tank back at its authored slot"
     );
 
-    // And the sweep is owed **once**: a pilot who boards later in the same boot
-    // is not thrown out a second later, which is what stops a 1 Hz tick emptying
-    // the pods for ever.
+    // (3) Once a boot: a pilot who boards later is not thrown out a second later,
+    // and nobody is told a hatch opened.
     rig.walk_to(0, match_::LOBBY_ENTRY);
     rig.walk_to(1, match_::LOBBY_ENTRY);
     one_aboard(&mut rig);
     let pod = rig
         .pod(0)
         .expect("red pod 1 is locked to the first pilot again");
-    rig.tick_to(4);
+    rig.tw.set_now(4);
+    let events = rig.tw.fire_due(4_000);
+    let heard = rig.tw.seen_by(&events, pilot).join("\n");
     assert_eq!(
         rig.location(0),
         Some(pod),
-        "the boot sweep runs on every tick, not once a boot"
+        "the boot sweep ran again on a later tick"
     );
+    assert!(
+        !heard.contains("swings open"),
+        "a later tick said a hatch line: {heard}"
+    );
+}
+
+/// **The hatch line waits for the pilot's session, and no longer than the
+/// hold** (16b cut U.4, 16c `B-37`).
+///
+/// On the split server the world learns a surviving SSH session is attached
+/// only when the gateway's re-announce reaches it, which nothing orders against
+/// the module's first tick. A restarted world's connection map is empty — it is
+/// RAM — so the pilot here is marked not connected across the reboot, the way
+/// the fresh server half sees it. The first tick says nothing and holds the
+/// line; the tick after the re-attach says it, once. A pilot who is not back
+/// within `match_::HATCH_HOLD_S` is never told.
+#[test]
+fn the_hatch_line_waits_for_the_pilots_session_and_no_longer_than_the_hold() {
+    for reattached in [true, false] {
+        let mut rig = Rig::boot(2);
+        one_aboard(&mut rig);
+        let pilot = rig.pilot(0);
+        let pod = rig.pod(0).expect("red pod 1 is locked to the first pilot");
+        let pod_name = mush_core::output::display_name(rig.tw.world(), pod);
+        let hatch = format!("The hatch of {pod_name} swings open.");
+
+        rig.tw.world_mut().set_connected(pilot, false);
+        rig.reboot();
+        assert_ne!(rig.location(0), Some(pod), "the boot opened the pod");
+
+        // The first tick: nobody attached to tell, so the line is held.
+        rig.tw.set_now(3);
+        let events = rig.tw.fire_due(3_000);
+        assert!(
+            !rig.tw
+                .seen_by(&events, pilot)
+                .join("\n")
+                .contains("swings open"),
+            "a line was said to a body with no session"
+        );
+        let book = rig
+            .tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .expect("the match book");
+        assert_eq!(book.hatch_notices(), [(pilot, pod)], "the line is held");
+        assert_eq!(
+            book.hatch_hold_until_s(),
+            Some(3 + match_::HATCH_HOLD_S),
+            "held from the first tick that held it"
+        );
+
+        if reattached {
+            // The re-announce lands a second later: the next tick says it.
+            rig.tw.world_mut().set_connected(pilot, true);
+            rig.tw.set_now(4);
+            let events = rig.tw.fire_due(4_000);
+            let heard = rig.tw.seen_by(&events, pilot).join("\n");
+            assert!(
+                heard.contains(&hatch),
+                "the re-attached pilot was not told: {heard}"
+            );
+        } else {
+            // Nobody comes back within the hold: the line is dropped at it.
+            let last = 3 + match_::HATCH_HOLD_S;
+            rig.tw.set_now(last - 1);
+            let _ = rig.tw.fire_due((last - 1) * 1_000);
+            assert!(
+                rig.tw
+                    .world()
+                    .module_state::<match_::MatchBook>()
+                    .is_some_and(|book| book.hatch_notices().len() == 1),
+                "the line is still held inside the hold"
+            );
+            rig.tw.set_now(last);
+            let _ = rig.tw.fire_due(last * 1_000);
+            rig.tw.world_mut().set_connected(pilot, true);
+            rig.tw.set_now(last + 1);
+            let events = rig.tw.fire_due((last + 1) * 1_000);
+            assert!(
+                !rig.tw
+                    .seen_by(&events, pilot)
+                    .join("\n")
+                    .contains("swings open"),
+                "a line was said past the hold"
+            );
+        }
+        let book = rig
+            .tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .expect("the match book");
+        assert!(book.hatch_notices().is_empty(), "the line is owed once");
+        assert_eq!(
+            book.hatch_hold_until_s(),
+            None,
+            "the hold ends with the list"
+        );
+    }
 }
 
 #[test]

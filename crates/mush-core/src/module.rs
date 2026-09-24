@@ -2518,6 +2518,26 @@ pub trait GameModule: Send {
         Ok(())
     }
 
+    /// **Called once after EVERY module's [`GameModule::on_world_loaded`]**
+    /// (16b cut U.4, 16c `B-37`), in the same list order, with the same
+    /// [`ModuleCtx`] a load gets (acting as `GOD`, this module's name, this
+    /// module's typed-state lens).
+    ///
+    /// `on_world_loaded` sees only what the modules composed *before* it have
+    /// loaded; this is the hook for work that needs state another module's load
+    /// produced — a content latch a later module fills, an index another module
+    /// hydrates — without a dependency on the order of the roster, which is the
+    /// thing the composition root exists to keep nobody needing.
+    ///
+    /// Anything it defers is routed exactly like a load's. An `Err` fails the
+    /// boot, as an `on_world_loaded` error does. **Boot output has no session to
+    /// reach** (the drivers drop it), so a notice this hook owes a player must be
+    /// kept and said by the module's first tick instead.
+    /// Default: nothing.
+    fn on_all_loaded(&mut self, _ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        Ok(())
+    }
+
     /// Which persisted streams the driver should load into this module's
     /// [`ModuleBootData::streams`], given the module's kv documents (as the
     /// driver just listed them): `(stream key, newest-N to load)` pairs.

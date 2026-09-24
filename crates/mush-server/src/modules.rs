@@ -346,7 +346,8 @@ pub async fn run_module_migrations(
 }
 
 /// The full module boot sequence over an already-constructed engine (see
-/// the module docs): migrations → boot data → `modules_loaded` → durable
+/// the module docs): migrations → boot data → `module_loaded` per module →
+/// `all_modules_loaded` (every `on_all_loaded`, then the census) → durable
 /// write-through of whatever boot persisted. Call between
 /// [`Engine::from_composition`] (or the compatibility
 /// [`Engine::with_modules`] wrapper) and spawning the world task.
@@ -418,11 +419,15 @@ pub async fn boot_modules(engine: &mut Engine, store: &dyn ObjectStore) -> Resul
             Err(e) => return Err(format!("module boot failed: {e}")),
         }
     }
-    // WS03-S8: every module is loaded, so every slot that will exist exists.
-    // This root delivers the modules one at a time (the J4 retry needs it), so
-    // it calls the end-of-boot census itself — `Engine::modules_loaded`, the
-    // all-at-once path, calls it for its own callers.
-    engine.warn_unowned_state_slots();
+    // 16b cut U.4 (16c `B-37`): every module is loaded, so every module's
+    // `on_all_loaded` runs now, in list order — and then the WS03-S8 census,
+    // since every slot that will exist exists. This root delivers the modules
+    // one at a time (the J4 retry needs it), so it ends the boot itself —
+    // `Engine::modules_loaded`, the all-at-once path, calls the same
+    // `Engine::all_modules_loaded` for its own callers.
+    engine
+        .all_modules_loaded(&mut out, &mut fx)
+        .map_err(|e| format!("module boot failed: {e}"))?;
     // Nothing is connected yet; boot-time output has nowhere to go.
     let events = out.take();
     if !events.is_empty() {

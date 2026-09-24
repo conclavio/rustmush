@@ -452,7 +452,13 @@ impl ArenaApplier {
                 .module_state::<mush_atlas::AtlasState>()
                 .map(|state| state.records.clone())
                 .ok_or_else(|| format!("{id}: the atlas is not composed on this world"))?;
-            crate::definitions::from_pack(id.as_str(), &def, &records)
+            let ground = crate::definitions::from_pack(id.as_str(), &def, &records)
+                .map_err(|error| error.to_string())?;
+            // 16b cut U.4 (16c `T-57`): and its map fits the bound a pulled
+            // keyframe is held to. Checked here, once, because `from_pack` is
+            // rebuilt at every match start and must not encode the map each
+            // time; an arena that applies is an arena whose map can be sent.
+            crate::definitions::arena_map_within_bound(id.as_str(), &ground.terrain)
                 .map_err(|error| error.to_string())?;
         }
         // (2) The muster room and its domain.

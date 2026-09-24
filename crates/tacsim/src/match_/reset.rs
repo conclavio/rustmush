@@ -42,6 +42,16 @@
 //! module's own state, and `mush-sim` and `mush-tactics` are composed before it,
 //! so every fact is in hand while `on_world_loaded` is still running.
 //!
+//! The boot's **pod sweep** does need the latch — a pod is resolved through it,
+//! and the content module that fills it is composed after this one — so it runs
+//! a step later, and **still inside the boot**: in this module's `on_all_loaded`
+//! (16b cut U.4, 16c `B-37`), which the kernel calls once every module's
+//! `on_world_loaded` has run. It used to wait for the module's first 1 s tick for
+//! want of that hook; now only its hatch lines wait for a tick, because boot
+//! output reaches no session — and each is said on the first tick that finds
+//! its body's session attached (`crate::match_::MatchBook::hatch_notices`,
+//! `crate::match_::HATCH_HOLD_S`).
+//!
 //! # What it touches, and what it will not
 //!
 //! Only the **centre's roster tanks**: the objects the `tacsim:arena:<entry>`

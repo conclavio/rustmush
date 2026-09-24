@@ -26,7 +26,10 @@
 //!   mid-match" seen from the side the gateway can see, and (16b cut M.1, `T-42`)
 //!   the store's side of it: the boot reconciliation's result document;
 //! * the custody admission error is the same named sentence here as everywhere
-//!   else.
+//!   else;
+//! * (16b cut U.4, 16c `B-37`) two pilots who really boarded, whose sessions
+//!   survive the restart on the gateway, are let out of their pods by the boot
+//!   and read the hatch line from the reconciled world's first tick.
 //!
 //! What stays the `mushd` twin's is the rest of the claims about the **store**:
 //! the byte-identical record around an idle unit, the driven unit's final
@@ -44,8 +47,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use mush_core::GOD;
-use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
+use mush_core::{GOD, LIMBO, ObjId, ObjKind};
+use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore, WriteBatch};
 use russh::ChannelMsg;
 use tokio::sync::oneshot;
 
@@ -60,6 +63,14 @@ const GM_PASSWORD: &str = "gm-secret-1";
 const COMMIT_PENDING: &str = "please retry in a moment";
 /// How many times a line is re-sent on that refusal before the test gives up.
 const RETRY_BUDGET: usize = 8;
+/// **16b cut U.4**: the pilots' password, for the sibling that seats two of them.
+const PILOT_PASSWORD: &str = "pilot-secret-1";
+/// `BOARD`'s one transient: the control-lease mirror is a 1 Hz projection.
+const CONTROL_UNKNOWN: &str = "control state unknown";
+/// The two pilots the sibling seeds, in the order `load_or_seed_world` hands out
+/// ids after Limbo #0 and God #1.
+const ADA: ObjId = ObjId(2);
+const BO: ObjId = ObjId(3);
 
 /// **The gateway's answer while the server half is not admitting connections
 /// yet** (`ConnectErr::WorldGone`, `crates/mush-gateway/src/bridge_common.rs`).
@@ -216,7 +227,51 @@ async fn seeded_gw_store() -> Arc<dyn ObjectStore> {
 }
 
 async fn start_split(launcher: Box<dyn ServerLauncher>) -> (SocketAddr, RestartTrigger) {
-    let gw_store = seeded_gw_store().await;
+    start_split_with(seeded_gw_store().await, launcher).await
+}
+
+/// **The one store both halves are pointed at** (16b cut U.4), as
+/// `arena_story_split.rs` seeds it: the staff account, the two pilots, and the
+/// world their characters live in, written through `mush_server::persist`'s own
+/// boot-batch path. A real split points both processes at one Redis, and `SIM
+/// TEAM` fails closed on a character the account oracle does not know.
+async fn shared_store() -> Arc<dyn ObjectStore> {
+    let store = seeded_gw_store().await;
+    let mut world = mush_server::persist::load_or_seed_world(&*store)
+        .await
+        .expect("boot world");
+    for (id, name) in [(ADA, "Ada"), (BO, "Bo")] {
+        let made = world
+            .create(ObjKind::Player, name, GOD, Some(LIMBO))
+            .expect("a character");
+        assert_eq!(made, id, "character id assumption");
+        store
+            .create_account(AccountRec {
+                id: None,
+                name: name.to_lowercase(),
+                argon2_hash: hash_password(PILOT_PASSWORD).expect("a hash"),
+                created: i64::from(id.0),
+                characters: vec![CharacterRef {
+                    id,
+                    name: name.to_string(),
+                }],
+                ssh_keys: vec![],
+                discord: None,
+            })
+            .await
+            .expect("a character account");
+    }
+    let dirty = world.take_dirty();
+    let batch: WriteBatch = mush_server::persist::batch_from_dirty(&world, dirty, 0, true);
+    store.write(batch).await.expect("the character seed batch");
+    store
+}
+
+/// [`start_split`] over a given gateway store.
+async fn start_split_with(
+    gw_store: Arc<dyn ObjectStore>,
+    launcher: Box<dyn ServerLauncher>,
+) -> (SocketAddr, RestartTrigger) {
     let (ssh_tx, ssh_rx) = oneshot::channel();
     let (restart_tx, restart_rx) = oneshot::channel::<RestartTrigger>();
     std::thread::spawn(move || {
@@ -645,4 +700,103 @@ async fn the_arena_surface_survives_the_split_and_a_server_restart() {
     );
 
     drop(god);
+}
+
+/// **The hatch line reaches a pilot whose session survived the restart** (16b cut
+/// U.4, 16c `B-37`).
+///
+/// The split server is production, and it is the one place a player's session
+/// outlives the world that seated them: the gateway holds the SSH connection
+/// while the server half restarts and reattaches it afterwards. Two pilots
+/// really `BOARD` — a body placed inside a pod and a cockpit billet on each tank,
+/// both durable — and the server half then exits on its own mid-match. The boot
+/// that follows opens the pods inside the boot (tacsim's `on_all_loaded`), and
+/// because boot output reaches nobody the module's boarding tick says the hatch
+/// line — to a body whose session the gateway's re-announce has re-attached,
+/// holding it until then, since nothing orders the re-announce against the first
+/// tick. This asserts that each pilot actually reads it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pilot_in_a_pod_across_a_server_restart_reads_the_hatch_line() {
+    let store = shared_store().await;
+    let crash: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::new(Mutex::new(None));
+    let (ssh_addr, _trigger) = start_split_with(
+        Arc::clone(&store),
+        Box::new(CrashOnceLauncher {
+            store: Arc::clone(&store),
+            launches: AtomicUsize::new(0),
+            crash: Arc::clone(&crash),
+        }),
+    )
+    .await;
+
+    let (_g, mut god) = play_client(ssh_addr).await;
+    god.connect_when_admitted("boss", GM_PASSWORD, "Connected as God")
+        .await;
+    let red = dbref_of(
+        &god.ask("@find Red Tank 1", "END OF LIST").await,
+        "Red Tank 1",
+    );
+    let blue = dbref_of(
+        &god.ask("@find Blue Tank 1", "END OF LIST").await,
+        "Blue Tank 1",
+    );
+
+    let (_a, mut ada) = play_client(ssh_addr).await;
+    ada.connect_when_admitted("ada", PILOT_PASSWORD, "Connected as Ada")
+        .await;
+    let (_b, mut bo) = play_client(ssh_addr).await;
+    bo.connect_when_admitted("bo", PILOT_PASSWORD, "Connected as Bo")
+        .await;
+    for term in [&mut ada, &mut bo] {
+        term.say("ooc", "Welcome Hall").await;
+        // `SIM` is a verb before it is an exit, so the walk takes the exit's
+        // other name, as `arena_story_split.rs` does.
+        term.say("simulator", "Simulator Lobby").await;
+    }
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("red", "Red Room").await;
+    bo.say("blue", "Blue Room").await;
+    for term in [&mut ada, &mut bo] {
+        // The control-lease mirror is a 1 Hz projection, and a `BOARD` before
+        // its first read is refused as the transient it is.
+        wait_until(STEP_TIMEOUT, "a pilot to board", async || {
+            let mark = term.mark();
+            term.send_line("BOARD").await;
+            term.expect_one_of_after(mark, &["climb into", CONTROL_UNKNOWN, COMMIT_PENDING])
+                .await
+                == 0
+        })
+        .await;
+    }
+    ada.expect("Good hunting").await;
+    // The markers durable, which is what tells the reboot a match was running;
+    // the pods and the billets were written by the `BOARD`s before them.
+    wait_until(STEP_TIMEOUT, "both custody markers to land", async || {
+        deployed(&store, red).await && deployed(&store, blue).await
+    })
+    .await;
+
+    // The server half exits on its own, mid-match.
+    let (ada_mark, bo_mark) = (ada.mark(), bo.mark());
+    let crash_tx = crash
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
+        .expect("the first boot published its crash sender");
+    let _ = crash_tx.send(());
+
+    // Each pilot's session survived; each reads its hatch.
+    for (term, mark) in [(&mut ada, ada_mark), (&mut bo, bo_mark)] {
+        term.expect_after(mark, "Reconnected").await;
+        term.expect_after(mark, "The hatch of").await;
+        term.expect_after(mark, "swings open.").await;
+    }
+    // And the boot reconciliation's own claims hold across it.
+    assert!(!deployed(&store, red).await, "the red marker survived");
+    assert!(!deployed(&store, blue).await, "the blue marker survived");
+    // A pilot the boot let out of the pod holds no cockpit any more.
+    ada.say("STATUS", "You are not at the station of a deployed unit.")
+        .await;
 }

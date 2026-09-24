@@ -477,20 +477,51 @@ fn station_id() -> Option<mush_sim::StationId> {
     mush_sim::StationId::new(STATION)
 }
 
-/// **The unit and station an actor is flying** — the cockpit's one context test.
+/// **The cockpit seat one line is typed from** (16b cut U.4, 16c `T-53`): who
+/// holds it, on which unit, at which station — resolved once, by [`flying`],
+/// and handed to every cockpit verb.
+///
+/// `driver` is [`mush_sim::focus::driving_actor`] of the typist: the typist for
+/// an ordinary pilot, and the NPC for a human driving an NPC's seat through a
+/// proxy. It is the subject of the focus and of every
+/// [`crate::arena_bridge::ArenaRegistry`] key — the last frame, the power hint,
+/// the pilot binding — so a verb that reads the cockpit reads it as `driver`.
+/// Every reply is still addressed to the typist (`ctx.actor`), who is the one
+/// reading the screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Seat {
+    /// The character whose seat this is: the focus's subject.
+    pub driver: ObjId,
+    /// The unit the seat is on — one an arena holds.
+    pub unit: ObjId,
+    /// The station the seat is on.
+    pub station: mush_sim::StationId,
+}
+
+/// **The seat an actor is flying from** — the cockpit's one context test.
 ///
 /// The actor's focused station (through the proxy ingress, so a driver of an NPC
 /// gunner resolves to the NPC), narrowed to a unit an arena actually holds
 /// custody of. A pilot who has boarded but whose match has not started yet is
 /// deliberately **not** in a cockpit: there is no arena to order.
+///
+/// **16b cut U.4 (16c `T-53`)** made the answer the whole [`Seat`], the driver
+/// included. The unit was resolved through the proxy driver while every read of
+/// the cockpit was keyed on the typist, so a human flying an NPC's seat would
+/// have read their own (empty) mirror about the NPC's tank; now the one
+/// resolution names both, and the verbs take it.
 #[must_use]
-pub fn flying(w: &World, actor: ObjId) -> Option<(ObjId, mush_sim::StationId)> {
+pub fn flying(w: &World, actor: ObjId) -> Option<Seat> {
     let driver = mush_sim::focus::driving_actor(w, actor);
     let focus = w
         .module_state::<mush_sim::FocusState>()?
         .focus_of_actor(driver)?;
     let (unit, station) = (focus.unit, focus.station.clone());
-    mush_sim::deployed::is_deployed(w, unit).then_some((unit, station))
+    mush_sim::deployed::is_deployed(w, unit).then_some(Seat {
+        driver,
+        unit,
+        station,
+    })
 }
 
 /// The seats one actor holds on one station id, whatever its focus says.
@@ -1955,8 +1986,31 @@ fn hand_back_seats_of_actor(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
 /// Keyed on the **pods** and on their tanks rather than on the centre's slots, so
 /// it is equally the repair a staff `@arena/reset` performs on a centre some
 /// earlier failure left with somebody aboard, and the boot pass's answer to a
-/// restart. Idempotent, and fallible per pod without failing the others.
+/// restart ([`eject_all_at_boot`], its silent sibling). Idempotent, and fallible
+/// per pod without failing the others.
 pub(crate) fn eject_all(ctx: &mut Ctx<'_>) -> EjectReport {
+    sweep_pods(ctx, true)
+}
+
+/// **[`eject_all`] at boot** (16b cut U.4, 16c `B-37`), from the module's
+/// `on_all_loaded`: the same bodies moved and the same billets given back, and
+/// **nothing said**.
+///
+/// Boot output reaches nobody — the drivers drop it, because no session is
+/// attached yet — and on the split server a pilot's session survives the restart
+/// of the server half and is still waiting to be told why they are standing in
+/// the team room. So each `(body, pod)` it opens is recorded on the match book
+/// ([`crate::match_::MatchBook::defer_hatch`]) and the module's boarding tick
+/// says the hatch line and the room once that body's session is attached, for
+/// at most [`crate::match_::HATCH_HOLD_S`] ([`crate::match_::sim`]'s
+/// `board_tick`).
+pub(crate) fn eject_all_at_boot(ctx: &mut Ctx<'_>) -> EjectReport {
+    sweep_pods(ctx, false)
+}
+
+/// Both sweeps' one body. `told` says the hatch line and the room at once; its
+/// absence defers them to the boarding tick.
+fn sweep_pods(ctx: &mut Ctx<'_>, told: bool) -> EjectReport {
     let pods: Vec<(ObjId, Option<ObjId>, Option<ObjId>)> = centre::POD_ENTRIES
         .iter()
         .filter_map(|(team, index, _)| centre::pod_object(ctx.w, *team, *index))
@@ -1995,15 +2049,27 @@ pub(crate) fn eject_all(ctx: &mut Ctx<'_>) -> EjectReport {
             // tank's billet; the pod's tank alone would not find it.
             report.merge(hand_back_seats_of_actor(ctx, body));
             put_out(ctx, body, room);
-            let line = format!("The hatch of {} swings open.", display_name(ctx.w, pod));
-            ctx.out.sys_to_actor(body, NOTICE_CATEGORY, line);
-            // 16b cut B.4 (`B-38`): the room they are standing in, after the
-            // hatch line that explains it.
-            ctx.show_room(body, room);
+            if told {
+                tell_hatch_open(ctx, body, pod, room);
+            } else if let Some(book) = ctx.w.module_state_mut::<crate::match_::MatchBook>() {
+                book.defer_hatch(body, pod);
+            }
             report.bodies.push(body);
         }
     }
     report
+}
+
+/// **Tell one body its pod is open**: the hatch line, then the room it is
+/// standing in (16b cut B.4, `B-38`: after the line that explains it).
+///
+/// [`eject_all`] says it at once; the boot's sweep defers it, and the module's
+/// first tick says it here (16b cut U.4) — with the room the body stands in by
+/// then, which is the room the sweep put it in unless it has walked since.
+pub(crate) fn tell_hatch_open(ctx: &mut Ctx<'_>, body: ObjId, pod: ObjId, room: ObjId) {
+    let line = format!("The hatch of {} swings open.", display_name(ctx.w, pod));
+    ctx.out.sys_to_actor(body, NOTICE_CATEGORY, line);
+    ctx.show_room(body, room);
 }
 
 /// **The per-pilot form of [`eject_all`]** (16b cut F.1): one pilot's cockpit
@@ -2022,10 +2088,8 @@ pub(crate) fn eject_pilot(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
         return report;
     };
     put_out(ctx, actor, room);
-    let line = format!("The hatch of {} swings open.", display_name(ctx.w, pod));
-    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
-    // 16b cut B.4 (`B-38`): as `eject_all`, after the hatch line.
-    ctx.show_room(actor, room);
+    // 16b cut B.4 (`B-38`): as `eject_all`, the room after the hatch line.
+    tell_hatch_open(ctx, actor, pod, room);
     report.bodies.push(actor);
     report
 }
@@ -2054,12 +2118,12 @@ pub(crate) fn eject_pilot(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
 /// again, which by then is the true advice. See
 /// [`crate::arena_bridge::ArenaRegistry::starting_hints`] for the four ways it
 /// ends.
-fn startup(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
+fn startup(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
     let actor = ctx.actor;
     // 16b cut D.2 (`B-03`): before the power, so a pilot in a wreck is never told
     // to wait for a startup that is not coming.
-    require_alive(ctx.w, actor)?;
-    match power_of(ctx.w, actor) {
+    require_alive(ctx.w, seat.driver)?;
+    match power_of(ctx.w, seat.driver) {
         Power::Online => {
             ctx.out
                 .sys_to_actor(actor, NOTICE_CATEGORY, "Power is already online.");
@@ -2071,7 +2135,7 @@ fn startup(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
         }
         Power::Off => {}
     }
-    forward_intent(ctx, actor, unit, IntentKind::Startup)?;
+    forward_intent(ctx, seat.driver, seat.unit, IntentKind::Startup)?;
     // The optimism is stamped only once the order is away: a refused forward is
     // not a startup in progress.
     let stands_s =
@@ -2083,7 +2147,7 @@ fn startup(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
         });
     let until_s = ctx.w.now().saturating_add(stands_s);
     if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
-        registry.hint_starting(actor, until_s);
+        registry.hint_starting(seat.driver, until_s);
     }
     ctx.out.sys_to_actor(
         actor,
@@ -2099,7 +2163,7 @@ fn startup(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
 const HINT_FALLBACK_S: i64 = 6;
 
 /// `HEADING <deg>` — 0 to 359, clockwise from north (doc 16 §3.7).
-fn heading(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> {
+fn heading(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
     let deg: u32 = rest
         .trim()
@@ -2109,13 +2173,13 @@ fn heading(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitErro
         .ok_or_else(|| CockpitError::Usage("HEADING <0-359>, clockwise from north.".to_owned()))?;
     // 16b cut D.2 (`B-03`), in the arena's own order: the wreck, then the motion
     // limit, then the power.
-    require_alive(ctx.w, actor)?;
-    require_mobile(ctx.w, actor)?;
-    require_power(ctx.w, actor)?;
+    require_alive(ctx.w, seat.driver)?;
+    require_mobile(ctx.w, seat.driver)?;
+    require_power(ctx.w, seat.driver)?;
     forward_intent(
         ctx,
-        actor,
-        unit,
+        seat.driver,
+        seat.unit,
         IntentKind::Heading {
             mdeg: deg.saturating_mul(1_000),
         },
@@ -2137,13 +2201,13 @@ fn heading(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitErro
 /// sentence now names both, read the way
 /// [`crate::arena::intents`] reads them at apply:
 /// [`crate::arena::state::TrackedRules::reverse_ceiling_cms`].
-fn speed(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> {
+fn speed(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
     let kph: i32 =
         rest.trim().parse().ok().ok_or_else(|| {
             CockpitError::Usage("SPEED <kph>; a negative speed reverses.".to_owned())
         })?;
-    let (max_cms, reverse_cms) = speed_ceilings(ctx.w, unit);
+    let (max_cms, reverse_cms) = speed_ceilings(ctx.w, seat.unit);
     let max_kph = cms_to_kph(i32::try_from(max_cms).unwrap_or(i32::MAX));
     let reverse_kph = cms_to_kph(i32::try_from(reverse_cms).unwrap_or(i32::MAX));
     if kph > max_kph || kph < -reverse_kph {
@@ -2153,13 +2217,13 @@ fn speed(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError>
         )));
     }
     // 16b cut D.2 (`B-03`): as `HEADING`.
-    require_alive(ctx.w, actor)?;
-    require_mobile(ctx.w, actor)?;
-    require_power(ctx.w, actor)?;
+    require_alive(ctx.w, seat.driver)?;
+    require_mobile(ctx.w, seat.driver)?;
+    require_power(ctx.w, seat.driver)?;
     forward_intent(
         ctx,
-        actor,
-        unit,
+        seat.driver,
+        seat.unit,
         IntentKind::Speed {
             cms: kph_to_cms(kph),
         },
@@ -2192,12 +2256,12 @@ fn speed(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError>
 /// the lock resolves ([`crate::arena::perception::FrameNotice::Locked`]), at the
 /// timestamp it resolves at. There is one owner of the sentence and no second
 /// lane (16b §0.2), so this says `Locking {id}.` and nothing else.
-fn lock(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> {
+fn lock(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
     // 16b cut D.2 (`B-03`): a wreck takes no order at all, and the arena's own
     // refusal would be a pulse away. It is the FIRST thing this verb does, so a
     // pilot in a wreck is never answered about which contacts are out there.
-    require_alive(ctx.w, actor)?;
+    require_alive(ctx.w, seat.driver)?;
     // **16b cut D.3 (`T-60`): a bare `LOCK` is usage and not a refusal.** An
     // empty argument is not a contact id that failed to resolve — it is a pilot
     // who has not said which one — and `No such contact.` over it read as a
@@ -2210,7 +2274,7 @@ fn lock(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> 
             "LOCK <contact>; CONTACTS lists them.".to_owned(),
         ));
     }
-    let held = last_frame(ctx.w, actor)
+    let held = last_frame(ctx.w, seat.driver)
         .map(|held| frame_contacts_held(&held.frame, &held.ranges))
         .unwrap_or_default();
     // **16b cut Q.1**: the word is a designator, not sixteen digits, and the
@@ -2232,7 +2296,7 @@ fn lock(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> 
             )
         })
         .unwrap_or_default();
-    forward_intent(ctx, actor, unit, IntentKind::Lock { contact })?;
+    forward_intent(ctx, seat.driver, seat.unit, IntentKind::Lock { contact })?;
     let line = format!("Locking {named}.");
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
     Ok(())
@@ -2249,9 +2313,8 @@ fn lock(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> 
 /// A locked contact earns [`LOCK_RANGE_STEP_M`] and the rest of the scope
 /// [`CONTACT_RANGE_STEP_M`]: a lock is a fire-control solution and the platform
 /// is tracking that one return continuously.
-fn range(ctx: &mut Ctx<'_>, rest: &str) -> Result<(), CockpitError> {
-    let actor = ctx.actor;
-    let held = last_frame(ctx.w, actor);
+fn range(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
+    let held = last_frame(ctx.w, seat.driver);
     let (frame, row) = named_row(held.as_ref(), rest)?;
     let line = range_line(frame, &row, pass_ms(ctx.w));
     say_and_frame(ctx, held.as_ref(), vec![line]);
@@ -2301,9 +2364,8 @@ pub fn range_line(frame: &Frame, row: &ContactRow, pass_ms: i64) -> String {
 
 /// **`BEARING [<designator>]`** — which way one contact plotted (16b cut Q.1),
 /// absolute and off the platform's own nose. The same rules [`range`] follows.
-fn bearing(ctx: &mut Ctx<'_>, rest: &str) -> Result<(), CockpitError> {
-    let actor = ctx.actor;
-    let held = last_frame(ctx.w, actor);
+fn bearing(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
+    let held = last_frame(ctx.w, seat.driver);
     let (_, row) = named_row(held.as_ref(), rest)?;
     let line = bearing_line(&row, pass_ms(ctx.w));
     say_and_frame(ctx, held.as_ref(), vec![line]);
@@ -2333,9 +2395,8 @@ pub fn bearing_line(row: &ContactRow, pass_ms: i64) -> String {
 /// arena put on the contact ([`crate::arena::perception::FrameContact::condition`])
 /// and never a second computation, so the words a pilot reads and the bands a
 /// panel draws are one answer.
-fn scan(ctx: &mut Ctx<'_>, rest: &str) -> Result<(), CockpitError> {
-    let actor = ctx.actor;
-    let held = last_frame(ctx.w, actor);
+fn scan(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
+    let held = last_frame(ctx.w, seat.driver);
     let (frame, row) = named_row(held.as_ref(), rest)?;
     let lines = scan_lines(frame, &row);
     say_and_frame(ctx, held.as_ref(), lines);
@@ -2502,14 +2563,14 @@ pub fn stale_clause(age_ms: i64, pass_ms: i64) -> String {
 /// instead of a pulse later; the arena refuses in the same order against its own
 /// state ([`crate::arena::state::Arena::resolve_fire`]) when the mirror was stale, so
 /// a frame one pulse behind changes which half answers and never what it says.
-fn fire(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> {
+fn fire(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
     // 16b cut D.2 (`B-03`): a wreck fires nothing, and it is asked first — a
     // destroyed tank's weapons are gone, so every later check would answer about
     // the rack instead of about the tank.
-    require_alive(ctx.w, actor)?;
-    let held = last_frame(ctx.w, actor);
-    let weapon = choose_weapon(&carried(ctx.w, unit, held.as_ref()), rest)?;
+    require_alive(ctx.w, seat.driver)?;
+    let held = last_frame(ctx.w, seat.driver);
+    let weapon = choose_weapon(&carried(ctx.w, seat.unit, held.as_ref()), rest)?;
     // **16b cut D.2** (`B-16`): every one of these is `FIRE <weapon> refused. …`,
     // which is the sentence the arena's own refusal says a pulse later. The
     // `NoSuchWeapon` above is the one that is not: `choose_weapon` failed to find
@@ -2547,11 +2608,11 @@ fn fire(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> 
             max: heat.max,
         }));
     }
-    require_power(ctx.w, actor).map_err(|said| refused(&said))?;
+    require_power(ctx.w, seat.driver).map_err(|said| refused(&said))?;
     forward_intent(
         ctx,
-        actor,
-        unit,
+        seat.driver,
+        seat.unit,
         IntentKind::Fire {
             weapon: weapon.id.clone(),
         },
@@ -2562,9 +2623,8 @@ fn fire(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> 
 }
 
 /// `CONTACTS` — what the platform holds (doc 16 §3.6 "What a pilot sees").
-fn contacts(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
-    let actor = ctx.actor;
-    let held = last_frame(ctx.w, actor);
+fn contacts(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
+    let held = last_frame(ctx.w, seat.driver);
     // 16b cut B.4 (`T-60`): the ranges held against the mirror's memory, the
     // figures the panels were sent.
     let rows = held
@@ -2587,10 +2647,9 @@ fn contacts(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
 /// **16b cut W.1 made the numbers live**: they come off the arena's own frame, which
 /// is the single writer of the cycle and the rounds while a match runs, and carry the
 /// band of the platform's lock where there is one.
-fn weapon_status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
-    let actor = ctx.actor;
-    let held = last_frame(ctx.w, actor);
-    let weapons = carried(ctx.w, unit, held.as_ref());
+fn weapon_status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
+    let held = last_frame(ctx.w, seat.driver);
+    let weapons = carried(ctx.w, seat.unit, held.as_ref());
     let mut lines: Vec<String> = Vec::new();
     if weapons.is_empty() {
         lines.push("This unit carries no weapon.".to_owned());
@@ -2606,9 +2665,8 @@ fn weapon_status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
 }
 
 /// `STATUS` — the status block of doc 16 §5, as the last frame carries it.
-fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
-    let actor = ctx.actor;
-    let held = last_frame(ctx.w, actor);
+fn status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
+    let held = last_frame(ctx.w, seat.driver);
     let lines = match held.as_ref() {
         Some(held) => {
             let frame = &held.frame;
@@ -2619,10 +2677,10 @@ fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
                 format!("Callsign {}.", frame.callsign),
                 format!(
                     "{}{}: power {}, {} kph, heading {}°{}{}",
-                    display_name(ctx.w, unit),
+                    display_name(ctx.w, seat.unit),
                     // **16b cut D.3 (`T-60`)**: the chassis, when it is not the
                     // one the pod authors.
-                    fitted_bracket(ctx.w, unit, frame),
+                    fitted_bracket(ctx.w, seat.unit, frame),
                     frame.power.as_str(),
                     cms_to_kph(frame.speed_cms),
                     frame.pose.heading_mdeg / 1_000,
@@ -2678,7 +2736,7 @@ fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
         }
         None => vec![format!(
             "{}: power off. The panel has told you nothing yet.",
-            display_name(ctx.w, unit)
+            display_name(ctx.w, seat.unit)
         )],
     };
     say_and_frame(ctx, held.as_ref(), lines);
@@ -2788,11 +2846,11 @@ pub fn section_lines(sections: &[crate::arena::step::FrameSection]) -> Vec<Strin
 /// **16b cut Q.3**: the panel goes first and the one line that may follow it
 /// comes after, because the line is *about* the map the pilot has just been
 /// shown ([`beyond_window_line`]).
-fn view(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
+fn view(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
     let actor = ctx.actor;
     // The map is the frame's; a line client's renderer draws it. Nothing is said
     // twice.
-    let Some(held) = last_frame(ctx.w, actor) else {
+    let Some(held) = last_frame(ctx.w, seat.driver) else {
         ctx.out.sys_to_actor(
             actor,
             NOTICE_CATEGORY,
@@ -2878,6 +2936,17 @@ pub const MAP_SCHEMA: &str = "arena.map";
 /// Its version. The map is terrain and an origin; a field added is not a
 /// version, exactly as [`FRAME_VERSION`]'s comment says of the cockpit frame.
 pub const MAP_VERSION: u32 = 1;
+
+/// **The bound a pulled keyframe is held to**, bytes of encoded JSON (16b cut
+/// Q.3's 256 KiB; made a rule by 16b cut U.4, 16c `T-57`).
+///
+/// [`map_frame`] is the largest message the arena produces and it is only ever
+/// the answer to a query, so this is the most one `arena.map` reply may cost a
+/// session's output queue. It is enforced **once, when an arena definition is
+/// applied** (`crate::definitions::arena::arena_map_within_bound`, called by the
+/// arena applier), not every time a map is built: a loaded arena cannot exceed
+/// it, so the handler that sends one never has to ask.
+pub const MAP_MAX_BYTES: usize = 256 * 1024;
 
 /// **The terrain frame's shape** (16b cut Q.3).
 ///
@@ -3295,6 +3364,11 @@ fn terrain_rows(
 /// reliable moment to send one, because a full per-connection output queue drops
 /// an event silently and nothing retries. A client that holds a cockpit frame of
 /// match M and no map of M asks, and asks again until it has one.
+///
+/// **Total, and within [`MAP_MAX_BYTES`] for every loaded arena** (16b cut U.4):
+/// the bound is checked when the arena is applied, over this very function at
+/// the widest `match` and `surface` the handler can send, so an arena whose map
+/// would pass it never loads and nothing here needs to refuse.
 #[must_use]
 pub fn map_frame(match_id: MatchId, surface: &str, terrain: &ArenaTerrain) -> serde_json::Value {
     let (rows, classes) = terrain_rows(terrain, (0, 0), (terrain.width(), terrain.height()));
@@ -4108,28 +4182,32 @@ fn refusal(error: CockpitError) -> CmdError {
 
 /// Run one cockpit verb: resolve the station first, so every one of the twelve
 /// answers the same way to somebody who is not flying.
+///
+/// **16b cut U.4 (16c `T-53`)**: the seat is resolved **once**, here, and every
+/// verb takes it — each reads the cockpit as [`Seat::driver`] and answers
+/// `ctx.actor`.
 fn cockpit_command(ctx: &mut Ctx<'_>, verb: &'static str) -> Result<(), CmdError> {
-    let Some((unit, _station)) = flying(ctx.w, ctx.actor) else {
+    let Some(seat) = flying(ctx.w, ctx.actor) else {
         return Err(CmdError::msg(waiting_to_start(ctx.w, ctx.actor)));
     };
     let rest = ctx.args.raw().trim().to_owned();
     let outcome = match verb {
-        "startup" => startup(ctx, unit),
-        "heading" => heading(ctx, unit, &rest),
-        "speed" => speed(ctx, unit, &rest),
-        "view" => view(ctx),
-        "contacts" => contacts(ctx),
-        "lock" => lock(ctx, unit, &rest),
-        "fire" => fire(ctx, unit, &rest),
-        "weaponstatus" => weapon_status(ctx, unit),
-        "status" => status(ctx, unit),
+        "startup" => startup(ctx, &seat),
+        "heading" => heading(ctx, &seat, &rest),
+        "speed" => speed(ctx, &seat, &rest),
+        "view" => view(ctx, &seat),
+        "contacts" => contacts(ctx, &seat),
+        "lock" => lock(ctx, &seat, &rest),
+        "fire" => fire(ctx, &seat, &rest),
+        "weaponstatus" => weapon_status(ctx, &seat),
+        "status" => status(ctx, &seat),
         // 16b cut Q.1: the two read verbs, off the same plot every other surface
         // reads.
-        "range" => range(ctx, &rest),
-        "bearing" => bearing(ctx, &rest),
+        "range" => range(ctx, &seat, &rest),
+        "bearing" => bearing(ctx, &seat, &rest),
         // 16b cut Q.2: what is left of a contact, off the reading the arena put
         // on it.
-        "scan" => scan(ctx, &rest),
+        "scan" => scan(ctx, &seat, &rest),
         // Not reachable: the table below registers exactly `COCKPIT_VERBS`, and
         // this arm is the closed-set proof rather than a panic.
         _ => Err(CockpitError::OutsideCockpit),
