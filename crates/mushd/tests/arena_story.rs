@@ -436,6 +436,36 @@ async fn ask_whole(term: &mut Term, line: &str) -> String {
     panic!("`{line}` never produced a whole answer")
 }
 
+/// **`SIM REPORT`, read whole** (16b cut V.3) — `observer_rule.rs`' device.
+///
+/// The report document rides the result's batch and the store's read lane is not
+/// ordered against its write lane, so an early read answers `still being
+/// written`; the wait asks again rather than sleeping. Once the report's end line
+/// has arrived, a sentinel read to its refusal brings in the rest.
+async fn sim_report(term: &mut Term, line: &str) -> String {
+    const ENDS: [&str; 3] = [
+        "the match was aborted.",
+        "the match ended: ",
+        "the match was voided.",
+    ];
+    let mut report = String::new();
+    wait_until(STEP_TIMEOUT, "the report to be read whole", async || {
+        let mark = term.mark();
+        term.send_line(line).await;
+        let mut needles: Vec<&str> = ENDS.to_vec();
+        needles.extend(["still being written", "already being read", COMMIT_PENDING]);
+        if term.expect_one_of_after(mark, &needles).await >= ENDS.len() {
+            return false;
+        }
+        term.send_line(SENTINEL).await;
+        term.expect_after(mark, HUH).await;
+        report = strip_ansi(&term.seen[mark..]);
+        true
+    })
+    .await;
+    report
+}
+
 /// One object's dbref, out of an `@find` listing.
 fn dbref_of(listing: &str, name: &str) -> u32 {
     listing
@@ -1564,6 +1594,38 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
             .and_then(Value::as_u64)
             .is_some_and(|chunks| chunks >= 1),
         "the result counts the tape it names: {result}"
+    );
+    // **16b cut V.3**: and it names the report documents written with it — one
+    // per pilot's tank, in id order.
+    let mut flown = vec![u64::from(red), u64::from(blue)];
+    flown.sort_unstable();
+    assert_eq!(
+        result.get("reports").cloned(),
+        Some(serde_json::json!(flown)),
+        "{result}"
+    );
+
+    // -----------------------------------------------------------------
+    // (11b) The winner's debrief (16b cut V.3; 16c N2, Q37).
+    // -----------------------------------------------------------------
+    // Ada reads her own match: the public outcome at its head, her own shots,
+    // and the kill her own round made — and a match the centre never held is
+    // refused in one sentence.
+    let report = sim_report(&mut ada, "SIM REPORT").await;
+    let flat = report.split_whitespace().collect::<Vec<_>>().join(" ");
+    for want in [
+        "red won (blue eliminated)",
+        "You flew RA: ",
+        "cannon at ",
+        "destroyed by your round.",
+        "the match ended: blue eliminated.",
+    ] {
+        assert!(flat.contains(want), "{want:?} missing from:\n{report}");
+    }
+    let said = ask(&mut ada, "SIM REPORT 9", "not one of them").await;
+    assert!(
+        said.contains("The centre remembers its last 20 matches; match 9 is not one of them."),
+        "{said}"
     );
 
     // -----------------------------------------------------------------

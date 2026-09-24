@@ -55,6 +55,11 @@ pub mod centre;
 pub mod cockpit;
 pub mod lobby;
 mod record;
+// 16b cut V.3: the debrief — the pure fold from the tape to one reader's report,
+// the report documents, `SIM REPORT`, `@arena/report` and the module's store-read
+// completion. Documented by its own module doc (an outer doc here would move its
+// links into this module's scope).
+pub mod report;
 /// 16b cut F.1: **the stock-tank reset** — doc 16 §3.3's *at every `Idle`
 /// transition each is reset to its `UnitSpec` by one `UnitMutationPlan`*.
 pub mod reset;
@@ -89,7 +94,7 @@ pub use lobby::{
 pub use record::{
     HISTORY_DEPTH, HistoryRow, HistoryUnit, MatchOutcome, MatchRecord, MatchState, NO_HISTORY,
     PoseNumbers, TeamRoster, UnitOutcome, UnitResult, arena_label, civil_utc, duration_words,
-    end_words, history_lines, match_id_of_key, outcome_words, report_key, result_key,
+    end_words, history_lines, match_id_of_key, outcome_words, report_key, result_key, write_report,
     write_restart_abort,
 };
 pub use reset::{RESET_CAUSE, ResetReport, reset_stock_tanks, spec_plan};
@@ -189,6 +194,11 @@ pub struct MatchBook {
     /// **16b cut V.2** — the last [`HISTORY_DEPTH`] finished matches, in
     /// **descending id order** (newest first). See [`MatchBook::remember`].
     history: VecDeque<HistoryRow>,
+    /// **16b cut V.3** — the store reads in flight, one per actor: a `SIM
+    /// REPORT` or an `@arena/report` page waiting on
+    /// [`report::ReportRead`]. RAM, like the rest of the book: a read is a view,
+    /// and one lost to a restart is asked again.
+    pending_reads: BTreeMap<ObjId, report::PendingRead>,
 }
 
 /// **One opening cell staff chose for a centre slot** (16b cut U.4, 16c `T-52`;
@@ -421,6 +431,12 @@ impl MatchBook {
     /// The remembered matches, newest first (16b cut V.2).
     pub fn history(&self) -> impl Iterator<Item = &HistoryRow> {
         self.history.iter()
+    }
+
+    /// **The store read in flight for `actor`** (16b cut V.3), if any.
+    #[must_use]
+    pub fn pending_read(&self, actor: ObjId) -> Option<&report::PendingRead> {
+        self.pending_reads.get(&actor)
     }
 
     /// One remembered match by id, if the ring still holds it (16b cut V.2).
@@ -761,6 +777,9 @@ pub fn start(
         last_pose: BTreeMap::new(),
         // 16b cut V.2: filled from the arena's own answer once it is open.
         callsigns: BTreeMap::new(),
+        // 16b cut V.3: built beside the callsigns, which they name units by.
+        folds: BTreeMap::new(),
+        unparsed: 0,
         // 16b cut N.2: the same grouping `Arena::new` derives, from the same
         // triples — a side's reflex units in pod pairs, lowest id commanding.
         squads: crate::deliberation::squads_of(
@@ -821,6 +840,16 @@ pub fn start(
         }
     }
 
+    // **16b cut V.3**: each piloted tank's damage profile and the sections it is
+    // checked out with already destroyed, read off the custody before it goes
+    // over — what the pilot's debrief needs to say a lost section in the words
+    // the cockpit used (`report::OwnTank`).
+    let own_tanks: BTreeMap<ObjId, report::OwnTank> = custody_units
+        .iter()
+        .filter(|unit| pilots.iter().any(|seated| seated.unit == unit.id))
+        .map(|unit| (unit.id, report::OwnTank::from_custody(unit)))
+        .collect();
+
     // (4) Open. (5) And undo (3) if it refuses.
     let resolution = arena_def::resolution_for(&catalog);
     let custody = CustodyOut {
@@ -857,6 +886,25 @@ pub fn start(
     {
         record.state = MatchState::Running;
         record.callsigns = callsigns.into_iter().collect();
+        // **16b cut V.3 (16c N2, Q37)**: one debrief fold per human pilot's
+        // unit, named by the callsigns just stored and told under this match's
+        // own `designate_on_detection` — held on the fold, so a later config
+        // reload cannot change how this match is told. A unit with no pilot
+        // (a machine) gets none; a unit with two seated pilots gets one. Each
+        // carries its own tank as checked out, so a lost section reads what
+        // the cockpit said of it.
+        let roster = report::Roster::from_record(record);
+        let rules = report::ReportRules {
+            designate_on_detection: sensors_cfg.designate_on_detection,
+        };
+        record.folds = roster
+            .pilots()
+            .map(|(_, unit)| {
+                let fold = report::Fold::new(roster.clone(), report::Reader::Pilot { unit }, rules)
+                    .with_own_tank(own_tanks.get(&unit).cloned().unwrap_or_default());
+                (unit, fold)
+            })
+            .collect();
     }
     Ok(match_id)
 }
@@ -1142,6 +1190,13 @@ pub fn returned_plan(
 /// **no arena-derived cell is committed**. The pose is restored too, for the
 /// same reason: the arena's last frame is a fact the faulted pulse could have
 /// produced.
+///
+/// **16b cut V.3 (16c N2, Q37): the debriefs.** Each pilot's
+/// [`report::Fold`] is taken off the record, finished, and written as one
+/// `tacsim:report:<match>:<unit>` document ([`write_report`]) in this same
+/// action and before the result, whose `"reports"` names them. A void still
+/// writes them: what a report holds is what the tape said, and the tape says
+/// `void`.
 pub fn finish(
     ctx: &mut Ctx<'_>,
     match_id: MatchId,
@@ -1149,12 +1204,18 @@ pub fn finish(
     ledger_digest: String,
     returned: &[UnitReturn],
 ) -> bool {
-    let Some(record) = ctx
+    // **16b cut V.3**: the debrief folds come off the BOOK's record here, before
+    // the clone, so each is finished exactly once and the copy below does not
+    // carry them.
+    let Some((record, folds)) = ctx
         .w
-        .module_state::<MatchBook>()
-        .and_then(|book| book.get(match_id))
+        .module_state_mut::<MatchBook>()
+        .and_then(|book| book.get_mut(match_id))
         .filter(|record| record.state.is_live())
-        .cloned()
+        .map(|record| {
+            let folds = std::mem::take(&mut record.folds);
+            (record.clone(), folds)
+        })
     else {
         return false;
     };
@@ -1334,6 +1395,30 @@ pub fn finish(
         record.ended = Some(end);
         record.ledger_digest.clone_from(&ledger_digest);
     }
+    // **16b cut V.3 (16c N2, Q37)**: one report document per pilot fold, in this
+    // same action and before the result, which names them. By now every chunk
+    // has passed `on_chunk` — the task sends its whole backlog before `Ended` —
+    // so each fold has seen the whole tape the world holds, its end line
+    // included. A void end still writes them: the fold folded the `void`.
+    let mut reports: Vec<ObjId> = Vec::with_capacity(folds.len());
+    for (unit, fold) in folds {
+        let pilot = record
+            .teams
+            .iter()
+            .flat_map(|roster| roster.pilots.iter())
+            .find(|(_, seated)| *seated == unit)
+            .map(|(pilot, _)| *pilot);
+        let report = fold.finish();
+        record::write_report(
+            ctx,
+            match_id,
+            unit,
+            pilot,
+            &record.callsign_word(unit),
+            &report,
+        );
+        reports.push(unit);
+    }
     record::write_result(
         ctx,
         match_id,
@@ -1342,6 +1427,7 @@ pub fn finish(
         &ledger_digest,
         &results,
         chunks,
+        &reports,
     );
     // 16b cut K.1: and the lobby's own half of the release — the pods and the
     // slots — in this same authoritative action, with the centre left in its

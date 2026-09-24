@@ -429,6 +429,36 @@ impl Term {
         }
         panic!("`{line}` never produced a whole answer")
     }
+
+    /// **`SIM REPORT`, read whole** (16b cut V.3) — the in-process twin's
+    /// device. The report is a deferred store read on the server half, so an
+    /// early read can outrun the result batch's commit and answer `still being
+    /// written`; the wait asks again, and once the end line has crossed a
+    /// sentinel read to its refusal brings in the rest.
+    async fn sim_report(&mut self, line: &str) -> String {
+        const ENDS: [&str; 3] = [
+            "the match was aborted.",
+            "the match ended: ",
+            "the match was voided.",
+        ];
+        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+        loop {
+            let mark = self.mark();
+            self.send_line(line).await;
+            let mut needles: Vec<&str> = ENDS.to_vec();
+            needles.extend(["still being written", "already being read", COMMIT_PENDING]);
+            if self.expect_one_of_after(mark, &needles).await < ENDS.len() {
+                self.send_line(SENTINEL).await;
+                self.expect_after(mark, HUH).await;
+                return strip_ansi(&self.seen[mark..]);
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "`{line}` never read a whole report"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
 }
 
 const SENTINEL: &str = "zzq-split-story-sentinel";
@@ -838,6 +868,28 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     assert!(
         bystander.contains("Match 1 is running") && bystander.contains(OVER),
         "but the centre's own announcements did cross:\n{bystander}"
+    );
+
+    // ---- the winner's debrief, through the boundary (16b cut V.3) -----
+    //
+    // The in-process twin reads the report document's facts against the store;
+    // what this twin adds is that the deferred store read and the module's
+    // completion work on the split server half, and that what crosses back is
+    // the same public head and the pilot's own lines.
+    let report = ada.sim_report("SIM REPORT").await;
+    let flat = report.split_whitespace().collect::<Vec<_>>().join(" ");
+    for want in [
+        "red won (blue eliminated)",
+        "You flew RA: ",
+        "destroyed by your round.",
+        "the match ended: blue eliminated.",
+    ] {
+        assert!(flat.contains(want), "{want:?} missing from:\n{report}");
+    }
+    let said = ada.ask("SIM REPORT 9", "not one of them").await;
+    assert!(
+        said.contains("The centre remembers its last 20 matches; match 9 is not one of them."),
+        "{said}"
     );
 
     // ---- and the centre is idle again ----------------------------------

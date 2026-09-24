@@ -129,6 +129,9 @@ struct Server {
     _listener: SshListener,
     _handles: PersistHandles,
     _web: tokio::task::JoinHandle<()>,
+    /// **16b cut V.3**: the store `boot` made, so the report column can read the
+    /// black box the world wrote and compare what each pilot is told with it.
+    store: Arc<dyn ObjectStore>,
 }
 
 impl Drop for Server {
@@ -350,7 +353,7 @@ async fn boot_with(tag: &str, designate: bool) -> Server {
             sessions,
             handles.handle.clone(),
             guard,
-            store,
+            Arc::clone(&store),
             panels.clone(),
         )
         .with_metrics(Arc::clone(&metrics)),
@@ -382,6 +385,7 @@ async fn boot_with(tag: &str, designate: bool) -> Server {
         _listener: listener,
         _handles: handles,
         _web: web_task,
+        store,
     }
 }
 
@@ -1547,6 +1551,25 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         },
     )
     .await;
+
+    // **16b cut V.3 (16c N2)**: and the debrief of a match in which nothing was
+    // fired names nothing but the reader's own tank — no other callsign, no
+    // shot, and none of what the pilot's platform never learned.
+    let report = sim_report(&mut ada, "SIM REPORT").await;
+    assert!(report.contains("You flew RA:"), "{report}");
+    assert!(!report.contains("cannon at"), "{report}");
+    // The one lock the tape holds was taken under the provisional number,
+    // before the platform told the contact apart (the re-locks by the new
+    // name journal nothing: it is the same contact), so it is named as it was
+    // AT the lock — not as the platform knew it by the end.
+    assert!(report.contains("locked a contact."), "{report}");
+    for callsign in ["BA", "BB", "BC", "BD", "RB", "RC", "RD"] {
+        assert!(
+            !words_of(&report).contains(&callsign),
+            "the report named {callsign}:\n{report}"
+        );
+    }
+    report_is_the_pilots_own(&report, red, blue, "Ada's report of the approach");
 }
 
 /// **The observer rule with the switch on** (16b cut Q.1;
@@ -2196,6 +2219,157 @@ fn says_nothing_of_the_shooting(seen: &str, contact: &str, what: &str) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 16b cut V.3 — the report column
+// ---------------------------------------------------------------------------
+
+/// **Every event of one match's black box**, read back from the store the world
+/// wrote it to — `arena_story.rs`' walk, copied because an integration test
+/// cannot import another.
+async fn ledger_events(store: &Arc<dyn ObjectStore>, match_id: u64) -> Vec<Value> {
+    let log = format!("match.{match_id}");
+    let mut events = Vec::new();
+    for chunk in 0..256 {
+        let key = mush_core::chunk_key(&log, chunk);
+        let Some(value) = store
+            .module_json_get("tacsim", key.as_str())
+            .await
+            .expect("the store read")
+        else {
+            break;
+        };
+        let mut lines: Vec<String> = Vec::new();
+        collect_lines(&value, &mut lines);
+        for blob in lines {
+            for line in blob.lines().filter(|line| !line.trim().is_empty()) {
+                events.push(
+                    serde_json::from_str::<Value>(line).unwrap_or_else(|error| {
+                        panic!("a ledger line is not JSON ({error}): {line}")
+                    }),
+                );
+            }
+        }
+    }
+    events
+}
+
+/// Every `lines` string in a chunk document, depth first (`arena_story.rs`').
+fn collect_lines(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                match (key.as_str(), child.as_str()) {
+                    ("lines", Some(text)) => out.push(text.to_owned()),
+                    _ => collect_lines(child, out),
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_lines(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// **What a whole report ends on**: its tail's end line, which is the last thing
+/// the completion says.
+const REPORT_ENDS: [&str; 3] = [
+    "the match was aborted.",
+    "the match ended: ",
+    "the match was voided.",
+];
+
+/// **`SIM REPORT`, read whole** (16b cut V.3).
+///
+/// The report document rides the same batch as the result, and the store's read
+/// lane is not ordered against its write lane, so a read that outruns the commit
+/// answers `still being written` — the honest wait is to ask again, which is
+/// what [`wait_until`] does here, never a sleep. Once the end line has arrived a
+/// sentinel is sent and read to its refusal, so everything the completion said
+/// is in the slice.
+async fn sim_report(term: &mut Term, line: &str) -> String {
+    let mut report = String::new();
+    wait_until(STEP_TIMEOUT, "the report to be read whole", async || {
+        let mark = term.mark();
+        term.send_line(line).await;
+        let mut needles: Vec<&str> = REPORT_ENDS.to_vec();
+        needles.extend(["still being written", "already being read", COMMIT_PENDING]);
+        let at = term.expect_one_of_after(mark, &needles).await;
+        if at >= REPORT_ENDS.len() {
+            return false;
+        }
+        term.send_line(SENTINEL).await;
+        term.expect_after(mark, HUH).await;
+        report = strip_ansi(&term.seen[mark..]);
+        true
+    })
+    .await;
+    report
+}
+
+/// **`@arena/report`, read whole** (16b cut V.3): the page's header opens with
+/// the seed, and a sentinel read to its refusal after it brings in the rest of
+/// what the completion said.
+async fn staff_page(term: &mut Term, line: &str) -> String {
+    let mark = term.mark();
+    say(term, line, "seed ").await;
+    term.send_line(SENTINEL).await;
+    term.expect_after(mark, HUH).await;
+    strip_ansi(&term.seen[mark..])
+}
+
+/// The words of a transcript, split on everything that is not a letter or a
+/// digit — what a callsign is looked for among.
+fn words_of(text: &str) -> Vec<&str> {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+/// **A report names no unit its platform had not told apart** (16b cut V.3):
+/// every callsign in `report` other than `own` is one `viewer` classified on
+/// the tape.
+fn names_only_what_it_classified(
+    report: &str,
+    own: &str,
+    viewer: u32,
+    callsigns: &[(&str, u32)],
+    events: &[Value],
+) {
+    let words = words_of(report);
+    for (callsign, unit) in callsigns {
+        if *callsign == own || !words.contains(callsign) {
+            continue;
+        }
+        assert!(
+            events.iter().any(|event| {
+                event.get("kind").and_then(Value::as_str) == Some("classified")
+                    && event.get("viewer").and_then(Value::as_u64) == Some(u64::from(viewer))
+                    && event.get("target").and_then(Value::as_u64) == Some(u64::from(*unit))
+            }),
+            "the report of #{viewer} names {callsign}, which its platform never told \
+             apart:\n{report}"
+        );
+    }
+}
+
+/// **Nothing a pilot's report may carry** (16b cut V.3; 16c N2): no contact id,
+/// no draw, no seed, no hash, no range, no damage figure, no object number.
+fn report_is_the_pilots_own(report: &str, red: u32, blue: u32, what: &str) {
+    no_sixteen_digit_word(report, what);
+    for leak in ["seed", "hash", "draw", " m:", "damage"] {
+        assert!(!report.contains(leak), "{what} carried {leak:?}:\n{report}");
+    }
+    for tank in [red, blue] {
+        assert!(
+            !report.contains(&format!("#{tank}")),
+            "{what} named an object:\n{report}"
+        );
+    }
+}
+
 /// **The other half of the observer rule** (doc 16 §1 A1, §3.6; 16b cut W.3): the
 /// rule holds through the *shooting*, not only through the approach.
 ///
@@ -2616,6 +2790,74 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
         "the checked-in tank carries no mark of the two rounds that hit it:\n{}",
         strip_ansi(&god.seen[god.seen.len().saturating_sub(3_000)..])
     );
+
+    // ---- the report column (16b cut V.3; 16c N2, Q37) -------------------
+    //
+    // After the match each pilot reads their own debrief, and it is the same
+    // fog as the cockpit: the shooter's own shots and their outcomes, the
+    // target's own hits, and nothing of the other side's — no shooter, no
+    // range, no damage figure, no contact id, no object number, no draw and no
+    // seed. A callsign in either report is one that pilot's platform told apart
+    // on the tape the world wrote.
+    // A chunk reaches the store only at 16 KiB or at the end's flush, and the
+    // store's read lane is not ordered against its write lane, so the tape is
+    // read once its terminal `aborted` line is there (`arena_custody.rs`' wait):
+    // a partial tape would make the classification set below too small.
+    let mut events: Vec<Value> = Vec::new();
+    wait_until(STEP_TIMEOUT, "the flushed black box", async || {
+        events = ledger_events(&server.store, 1).await;
+        events
+            .iter()
+            .any(|event| event.get("kind").and_then(Value::as_str) == Some("aborted"))
+    })
+    .await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.get("kind").and_then(Value::as_str) == Some("fired")),
+        "the tape holds the shots"
+    );
+    let callsigns = [("RA", red), ("BA", blue)];
+    let adas = sim_report(&mut ada, "SIM REPORT").await;
+    assert!(adas.contains("cannon at"), "{adas}");
+    assert!(adas.contains(": hit"), "{adas}");
+    assert!(adas.contains("You flew RA:"), "{adas}");
+    report_is_the_pilots_own(&adas, red, blue, "Ada's report");
+    names_only_what_it_classified(&adas, "RA", red, &callsigns, &events);
+    let bos = sim_report(&mut bo, "SIM REPORT").await;
+    assert!(bos.contains("hit on the "), "{bos}");
+    assert!(bos.contains("You flew BA:"), "{bos}");
+    assert!(bos.contains("You fired nothing."), "{bos}");
+    for leak in ["cannon at", "You fired 1", " at "] {
+        assert!(
+            !bos.contains(leak),
+            "the target's report carried {leak:?}:\n{bos}"
+        );
+    }
+    assert!(
+        !words_of(&bos).contains(&"RA"),
+        "the target's report named the shooter:\n{bos}"
+    );
+    report_is_the_pilots_own(&bos, red, blue, "Bo's report");
+    names_only_what_it_classified(&bos, "BA", blue, &callsigns, &events);
+
+    // A bystander in the centre flew nothing, and is told exactly that.
+    let listing = ask(&mut god, "@find Simulator Lobby", "END OF LIST").await;
+    let lobby = dbref_of(&listing, "Simulator Lobby");
+    say(
+        &mut god,
+        &format!("@teleport #{}=#{lobby}", CY.0),
+        "Teleported",
+    )
+    .await;
+    let said = ask(&mut cy, "SIM REPORT 1", "did not fly").await;
+    assert!(said.contains("You did not fly in match 1."), "{said}");
+
+    // Staff read the tape itself: the seed and the object numbers are theirs.
+    let page = staff_page(&mut god, "@arena/report 1").await;
+    assert!(page.contains("seed "), "{page}");
+    assert!(page.contains(&format!("#{blue}")), "{page}");
+    assert!(page.contains("fired unit=RA("), "{page}");
 }
 
 /// Whether any facet's armour cell in a `@unit/show` listing is below its
@@ -3315,6 +3557,21 @@ async fn the_ends_of_a_match_name_sides_and_pilots_and_nothing_of_the_field() {
     // public shape, so any word it does not account for — an object number
     // without its `#`, a pilot's name, a coordinate — fails it.
     history_row_is_public(&flat, 1, "#1 blue won (red conceded)", Some("BA"));
+
+    // **16b cut V.3 (16c N2)**: and Bo's own debrief of it — the same public
+    // outcome at its head, what Bo's own tank did (nothing), and the end in the
+    // same words, with nothing of the field.
+    let report = sim_report(&mut bo, "SIM REPORT").await;
+    let flat = report.split_whitespace().collect::<Vec<_>>().join(" ");
+    for want in [
+        "blue won (red conceded)",
+        "You flew BA: intact; 0 shots, 0 hits.",
+        "You fired nothing.",
+        "the match ended: red conceded.",
+    ] {
+        assert!(flat.contains(want), "{want:?} missing from:\n{report}");
+    }
+    report_is_the_pilots_own(&report, red_tank, blue_tank, "Bo's report of the concede");
 
     // The unattended end's sentence is the same shape with the person taken out
     // of it, so there is even less in it: it names the match and nothing else.

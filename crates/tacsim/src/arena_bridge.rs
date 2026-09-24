@@ -1526,22 +1526,60 @@ fn on_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64, bytes: &[u8]) {
             chunk = seq,
             "a match ledger chunk was not UTF-8 and was not recorded"
         );
+        // **16b cut V.3**: every debrief fold on the match learns that a page
+        // of its tape is gone, and its report says so.
+        if let Some(record) = ctx
+            .w
+            .module_state_mut::<crate::match_::MatchBook>()
+            .and_then(|book| book.get_mut(match_id))
+        {
+            for fold in record.folds.values_mut() {
+                fold.lost_chunk();
+            }
+        }
         lose_chunk(ctx, match_id, seq);
         return;
     };
-    let arena_ms = last_event_ms(lines);
+    // **16b cut V.3**: each line is parsed ONCE, here, and the one list feeds
+    // the arena clock, the last pose and every debrief fold. Until this cut the
+    // two readers below parsed the chunk once each; they read the list now.
+    // This is per chunk and never per pulse: a chunk closes on fill, and the
+    // harness's `Arena::step` lens never sees it.
+    let mut unparsed = 0_u32;
+    let events: Vec<LedgerEvent> = lines
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| match serde_json::from_str::<LedgerEvent>(line) {
+            Ok(event) => Some(event),
+            Err(_) => {
+                unparsed = unparsed.saturating_add(1);
+                None
+            }
+        })
+        .collect();
+    let arena_ms = last_event_ms(&events);
     // 16b cut T.3: the black box is also where a check-in's final pose comes
     // from when nobody is in the cockpit. `position_summary` names every unit
     // every `ledger.summary_ms`, so a match with no pilot at all still hands the
     // world the arena's own numbers.
-    if let Some(poses) = last_position_summary(lines)
-        && let Some(record) = ctx
-            .w
-            .module_state_mut::<crate::match_::MatchBook>()
-            .and_then(|book| book.get_mut(match_id))
+    if let Some(record) = ctx
+        .w
+        .module_state_mut::<crate::match_::MatchBook>()
+        .and_then(|book| book.get_mut(match_id))
     {
-        for (unit, numbers) in poses {
-            record.last_pose.insert(unit, numbers);
+        if let Some(poses) = last_position_summary(&events) {
+            for (unit, numbers) in poses {
+                record.last_pose.insert(unit, numbers);
+            }
+        }
+        // **16b cut V.3 (16c N2, Q37)**: the debrief folds eat the tape as it
+        // passes — every event, in line order, to every pilot's fold — so the
+        // report is never folded from a read of the store afterwards.
+        record.unparsed = record.unparsed.saturating_add(unparsed);
+        for fold in record.folds.values_mut() {
+            for event in &events {
+                fold.absorb(event);
+            }
         }
     }
     let value = serde_json::json!({
@@ -1623,43 +1661,40 @@ fn lose_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64) {
 }
 
 /// The last `position_summary` in a chunk, as the four integers per unit.
-fn last_position_summary(lines: &str) -> Option<Vec<(ObjId, crate::match_::PoseNumbers)>> {
-    lines
-        .lines()
-        .rev()
-        .filter_map(|line| serde_json::from_str::<LedgerEvent>(line).ok())
-        .find_map(|event| match event.kind {
-            crate::arena::ledger::EventKind::PositionSummary { units } => Some(
-                units
-                    .into_iter()
-                    .map(|(unit, x_cm, y_cm, z_cm, heading_mdeg)| {
-                        (
-                            unit,
-                            crate::match_::PoseNumbers {
-                                x_cm,
-                                y_cm,
-                                z_cm,
-                                heading_mdeg,
-                            },
-                        )
-                    })
-                    .collect(),
-            ),
-            _ => None,
-        })
+///
+/// **16b cut V.3**: over the chunk's parsed events, which `on_chunk` parses once
+/// for every reader.
+fn last_position_summary(
+    events: &[LedgerEvent],
+) -> Option<Vec<(ObjId, crate::match_::PoseNumbers)>> {
+    events.iter().rev().find_map(|event| match &event.kind {
+        crate::arena::ledger::EventKind::PositionSummary { units } => Some(
+            units
+                .iter()
+                .map(|&(unit, x_cm, y_cm, z_cm, heading_mdeg)| {
+                    (
+                        unit,
+                        crate::match_::PoseNumbers {
+                            x_cm,
+                            y_cm,
+                            z_cm,
+                            heading_mdeg,
+                        },
+                    )
+                })
+                .collect(),
+        ),
+        _ => None,
+    })
 }
 
-/// The highest `t_ms` in a chunk, read from its last parsable line. One parse per
-/// chunk (a chunk is 16 KiB and closes every few seconds), which is what lets
-/// `@arena/status` report arena time without the arena reporting it.
-fn last_event_ms(lines: &str) -> i64 {
-    lines
-        .lines()
-        .rev()
-        .filter_map(|line| serde_json::from_str::<LedgerEvent>(line).ok())
-        .map(|event| event.t_ms)
-        .next()
-        .unwrap_or(0)
+/// The highest `t_ms` in a chunk, read from its last parsable line, which is
+/// what lets `@arena/status` report arena time without the arena reporting it.
+///
+/// **16b cut V.3**: over the chunk's parsed events, which `on_chunk` parses once
+/// for every reader.
+fn last_event_ms(events: &[LedgerEvent]) -> i64 {
+    events.last().map_or(0, |event| event.t_ms)
 }
 
 /// The arena says the clock or the egress is behind: one log line and one staff
@@ -2103,6 +2138,12 @@ pub fn register(
     reg.query_handler(MAP_FEED, Arc::new(MapQuery))?;
     reg.query_handler(FRAME_FEED, Arc::new(CockpitQuery))?;
     reg.async_completion(Arc::new(ArenaEgress))?;
+    // **16b cut V.3 (16c N2)**: the tacsim module's FIRST store-read completion,
+    // and its only one — `mush_core::Registrar::store_read_completion` takes one
+    // per module. It is the re-entry of both deferred reads the debrief makes:
+    // `SIM REPORT`'s one report document and `@arena/report`'s page of the tape
+    // (`crate::match_::report`).
+    reg.store_read_completion(Arc::new(crate::match_::report::ReportRead))?;
     reg.hook(mush_core::HookPoint::Connected, Arc::new(SeatFacts));
     // 16b cut K.2 (K4): the kernel's new point, and the revival that rides
     // `Connected`'s registrations above on `EventHook::revived`.
@@ -2171,7 +2212,14 @@ pub fn register(
                    (RA, BC: as the board prints it) on that arena cell for the next match, \
                    facing the heading or its side's own; `=off` gives it its authored cell \
                    back, and bare lists what is set. Refused while a match runs; cleared when \
-                   the match that used it ends, and by @arena/reset."
+                   the match that used it ends, and by @arena/reset.\n\
+                   @arena/report [<match>] [<chunk>]   (staff) read a match's tape itself: \
+                   sixteen chunks a request from the chunk named (0 by default), one line an \
+                   event with object numbers, contact ids and the draws, positions left out, \
+                   under a header with the seed and every unit's pilot, at most 200 lines a \
+                   page; its `Next:` goes on from the chunk the page was cut short in. Bare, \
+                   the newest match the centre remembers; a running or older match's tape is \
+                   read too. A read."
                 .into(),
             ..CommandSpec::default()
         },

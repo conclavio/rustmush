@@ -45,6 +45,8 @@ the same thing this topic does, in fewer words.
   SIM HISTORY         the centre's last twenty matches, newest first: who won
                       and why, how long, how many a side, when; your own
                       callsign on the ones you flew.
+  SIM REPORT [match]  your own debrief of a match you flew: the newest one
+                      bare, or the match number SIM HISTORY printed.
 
 A slot belongs to your **account**, not to your character, so an alt cannot take
 a second one. All of these work in the lobby, the two team rooms and the pods,
@@ -198,8 +200,26 @@ how it ended, how long it ran, how many a side and when it finished:
 
 `(you flew RA)` marks a match you piloted, with the callsign you flew it under.
 The list is the public outcome and nothing more: it names no tank and nobody's
-position. A debrief of a match you flew — what your cockpit saw of it — is not
-available yet; when it comes, it will be read from this same list.
+position.
+
+`SIM REPORT` is your own debrief of a match you flew — the newest one, or
+`SIM REPORT 2` for match 2. Under the public outcome and each side's losses it
+reads what your cockpit read, in match time: your own shots and what became of
+each (`cannon at BA: hit, turret.`, `cannon at a contact: miss: the round went
+wide.`), the hits on your own tank and what they cost it, what your rounds
+destroyed, how many rounds of each weapon you fired, and how your tank and the
+match ended.
+
+It never tells you more than the cockpit did. A shot carries no range and no
+damage figure, because the cockpit gave you neither. A target is named only as
+your own sensors had told it apart when the round landed — a return you had not
+identified, or had lost by then, is `a contact`, and its section stays unsaid.
+Nothing of the other side is in it: not their ammunition, not their movement,
+not what their sensors saw and not where anybody was. The fog does not lift
+after the match.
+
+A match older than the last twenty has no report, and neither has one the server
+restarted during, or one played before the debrief existed.
 
 The next `SIM TEAM` clears the board, puts all eight tanks back at spec, back at
 muster and back to their own types, and opens selection again.

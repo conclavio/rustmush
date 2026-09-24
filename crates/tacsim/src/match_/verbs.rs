@@ -15,6 +15,7 @@
 //! | `@arena/abort [<match>]` | `Stop { Abort }` |
 //! | `@arena/release <unit>` | **16b cut D.3**: clear one unit's stranded `deployed` marker and free its seat |
 //! | `@arena/pose <callsign>=<x> <y>[ <heading>]` | **16b cut U.4**: the cell a centre slot's unit opens the next match on (`=off`, or bare to list) |
+//! | `@arena/report [<match>] [<chunk>]` | **16b cut V.3**: one page of a match's tape, for staff ([`crate::match_::report::request_page`]) |
 //! | `@arena/fault <match>` | **test builds only** — arm a panic inside the next `step` |
 //!
 //! `@arena/start` is deliberately the whole of `Selection → Boarding → Running`
@@ -45,11 +46,12 @@ use crate::arena_task::{ArenaMsg, MatchId};
 use super::{MatchBook, Side, allocate_id};
 
 /// The switches cut T.3 adds to `@arena`, in help order (16b cut K.1 adds
-/// `reset`; 16b cut D.3 adds `release`; 16b cut U.4 adds `pose`).
+/// `reset`; 16b cut D.3 adds `release`; 16b cut U.4 adds `pose`; 16b cut V.3
+/// adds `report`).
 #[must_use]
 pub fn register_switches() -> Vec<SmolStr> {
     let mut switches: Vec<SmolStr> = [
-        "status", "start", "intent", "abort", "reset", "release", "pose",
+        "status", "start", "intent", "abort", "reset", "release", "pose", "report",
     ]
     .iter()
     .copied()
@@ -868,6 +870,11 @@ pub fn arena_command(
     } else if ctx.switches.has("release") {
         // 16b cut D.3 (`T-49`).
         release(ctx)
+    } else if ctx.switches.has("report") {
+        // 16b cut V.3 (16c N2): a page of the tape, for staff. The verb's own
+        // staff gate has already run; no centre gate applies.
+        let args = ctx.args.raw().to_owned();
+        super::report::request_page(ctx, &args)
     } else if cfg!(any(test, feature = "fault-injection")) && ctx.switches.has("fault") {
         #[cfg(any(test, feature = "fault-injection"))]
         {
@@ -918,6 +925,8 @@ mod tests {
         assert!(switches.iter().any(|switch| switch == "start"));
         assert!(switches.iter().any(|switch| switch == "intent"));
         assert!(switches.iter().any(|switch| switch == "abort"));
+        // 16b cut V.3: the staff page of the tape.
+        assert!(switches.iter().any(|switch| switch == "report"));
         assert_eq!(
             switches.iter().any(|switch| switch == "fault"),
             cfg!(any(test, feature = "fault-injection"))

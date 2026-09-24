@@ -345,6 +345,34 @@ async fn ask_whole(term: &mut Term, line: &str) -> String {
     panic!("`{line}` never produced a whole answer")
 }
 
+/// **`SIM REPORT`, read whole** (16b cut V.3) — `observer_rule.rs`' device: an
+/// early read that outran the result batch's commit answers `still being
+/// written` and is asked again; once the report's end line has arrived, a
+/// sentinel read to its refusal brings in the rest.
+async fn sim_report(term: &mut Term, line: &str) -> String {
+    const ENDS: [&str; 3] = [
+        "the match was aborted.",
+        "the match ended: ",
+        "the match was voided.",
+    ];
+    let mut report = String::new();
+    wait_until(STEP_TIMEOUT, "the report to be read whole", async || {
+        let mark = term.mark();
+        term.send_line(line).await;
+        let mut needles: Vec<&str> = ENDS.to_vec();
+        needles.extend(["still being written", "already being read", COMMIT_PENDING]);
+        if term.expect_one_of_after(mark, &needles).await >= ENDS.len() {
+            return false;
+        }
+        term.send_line(SENTINEL).await;
+        term.expect_after(mark, HUH).await;
+        report = strip_ansi(&term.seen[mark..]);
+        true
+    })
+    .await;
+    report
+}
+
 /// A read repeated until its answer carries `needle`.
 async fn poll_whole(term: &mut Term, line: &str, needle: &str) -> String {
     let mut seen = String::new();
@@ -786,6 +814,17 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
             "Bo flew blue slot 1 both times: {row}"
         );
     }
+
+    // **16b cut V.3**: and a debrief of each. Bare, `SIM REPORT` is the newest
+    // match Bo flew; with a number, that one — the one he lost.
+    let newest = flat(&sim_report(&mut bo, "SIM REPORT").await);
+    assert!(newest.contains("Match 2 on "), "{newest}");
+    assert!(newest.contains("the match was aborted."), "{newest}");
+    let first = flat(&sim_report(&mut bo, "SIM REPORT 1").await);
+    assert!(first.contains("Match 1 on "), "{first}");
+    assert!(first.contains("red won (blue eliminated)"), "{first}");
+    assert!(first.contains("You flew BA: destroyed;"), "{first}");
+    assert!(first.contains("your tank destroyed."), "{first}");
 }
 
 // ---------------------------------------------------------------------------
@@ -894,6 +933,14 @@ async fn a_restart_mid_match_through_the_lobby_leaves_no_body_in_a_pod() {
     assert!(
         !history_row(&history, 1).contains("you flew"),
         "a restart result names no unit: {history}"
+    );
+    // **16b cut V.3**: and there is no debrief of it — the refusal comes before
+    // the pilot check, because a restart row has no pilot rows and Ada would
+    // otherwise be told she never flew.
+    let said = ask(&mut ada, "SIM REPORT 1", "no debrief").await;
+    assert!(
+        said.contains("The server restarted during match 1; there is no debrief of it."),
+        "{said}"
     );
 
     // (4) And the centre runs a second match, through the lobby, with nobody's

@@ -324,6 +324,20 @@ pub struct MatchRecord {
     /// order and this is not re-derived from it. Empty before `Running`, and for
     /// a check-out the arena refused.
     pub callsigns: BTreeMap<ObjId, Designator>,
+    /// **One debrief fold per human pilot's unit** (16b cut V.3; 16c N2, Q37).
+    ///
+    /// Built by [`crate::match_::start`] beside [`MatchRecord::callsigns`], from
+    /// the roster ([`crate::match_::report::Roster::from_record`]) and the
+    /// match's own `designate_on_detection`; fed every event of every chunk by
+    /// `crate::arena_bridge`'s `on_chunk` as the world appends it; taken off
+    /// the record and finished exactly once by [`crate::match_::finish`], which
+    /// writes one `tacsim:report:<match>:<unit>` document per fold
+    /// ([`write_report`]). A unit with no pilot has none. Empty before
+    /// `Running`.
+    pub folds: BTreeMap<ObjId, crate::match_::report::Fold>,
+    /// **Tape lines the world could not parse** (16b cut V.3), counted by
+    /// `on_chunk` as it hands each chunk's events to the folds.
+    pub unparsed: u32,
 }
 
 /// The four integers of a pose (doc 16 §3.2), without the opaque posture.
@@ -444,6 +458,12 @@ pub fn result_key(match_id: MatchId) -> SmolStr {
 /// HISTORY` reads and what the store holds cannot disagree — and a row the ring
 /// evicts has its report documents deleted in this same action
 /// ([`report_key`]; 16b cut V.3 writes them).
+///
+/// **16b cut V.3: `"reports"`.** The units a report document was written for in
+/// this same action ([`write_report`], called first by
+/// [`crate::match_::finish`]), in id order — what [`HistoryRow::reports`] reads
+/// and what the ring's eviction deletes.
+#[allow(clippy::too_many_arguments)]
 pub fn write_result(
     ctx: &mut Ctx<'_>,
     match_id: MatchId,
@@ -452,6 +472,7 @@ pub fn write_result(
     ledger_digest: &str,
     units: &[UnitResult],
     chunks: u64,
+    reports: &[ObjId],
 ) {
     let record = ctx
         .w
@@ -468,8 +489,36 @@ pub fn write_result(
         units,
         ended_ms,
         chunks,
+        reports,
     );
     remember_and_push(ctx, match_id, value);
+}
+
+/// **Write one pilot's report document** (16b cut V.3; 16c N2, Q37) at
+/// [`report_key`], through the module's own namespace on the ordinary module-op
+/// lane — [`crate::match_::finish`] calls it once per fold, before
+/// `record::write_result`, so the result can name it and both ride one batch.
+///
+/// The shape is [`crate::match_::report::report_document`]'s: the match, the
+/// unit, its pilot and callsign, the timeline, what was not kept, the tail, the
+/// gap, the rounds per weapon and the kills. It holds what the pilot's own
+/// platform knew and nothing else — never a draw, a seed, a contact id or an
+/// object number in a line.
+pub fn write_report(
+    ctx: &mut Ctx<'_>,
+    match_id: MatchId,
+    unit: ObjId,
+    pilot: Option<ObjId>,
+    callsign: &str,
+    report: &crate::match_::report::Report,
+) {
+    crate::store::push_op(
+        ctx.out,
+        mush_core::ModuleWrite::JsonSet {
+            key: report_key(match_id, unit),
+            value: crate::match_::report::report_document(match_id, unit, pilot, callsign, report),
+        },
+    );
 }
 
 /// **The one tail both result writers share** (16b cut V.2): remember the
@@ -508,7 +557,8 @@ fn remember_and_push(ctx: &mut Ctx<'_>, match_id: MatchId, value: serde_json::Va
 /// the write, so the document's shape — the seed on it above all — is testable
 /// without a world). `record` is the match's own record when the book still
 /// holds it; `ended_ms` is the world's clock in milliseconds; `chunks` is the
-/// tape's chunk count (16b cut V.2).
+/// tape's chunk count (16b cut V.2); `reports` the units a report document was
+/// written for (16b cut V.3).
 #[allow(clippy::too_many_arguments)]
 fn result_document(
     record: Option<&MatchRecord>,
@@ -519,6 +569,7 @@ fn result_document(
     units: &[UnitResult],
     ended_ms: i64,
     chunks: u64,
+    reports: &[ObjId],
 ) -> serde_json::Value {
     let (teams, arena, arena_digest, started_ms, log_id, seed) = match record {
         Some(record) => (
@@ -580,6 +631,8 @@ fn result_document(
         "started_ms": started_ms,
         "ended_ms": ended_ms,
         "arena_ms": end.t_ms,
+        // 16b cut V.3: the units whose report documents rode this same batch.
+        "reports": reports.iter().map(|unit| unit.0).collect::<Vec<u32>>(),
     })
 }
 
@@ -634,11 +687,16 @@ fn restart_abort_document(match_id: MatchId, units: &[ObjId], ended_ms: i64) -> 
         "started_ms": 0,
         "ended_ms": ended_ms,
         "arena_ms": 0,
+        // 16b cut V.3: there was no fold to finish, so no report was written.
+        "reports": [],
     })
 }
 
 /// The word the result's `reason` field carries.
-const fn reason_word(reason: EndReason) -> &'static str {
+///
+/// **16b cut V.3** made it `pub(crate)`: a report's end line is
+/// [`end_words`] over `MatchOutcome::from(reason)` and this word.
+pub(crate) const fn reason_word(reason: EndReason) -> &'static str {
     match reason {
         EndReason::Elimination { .. } => "elimination",
         // 16b cut Q.7.
@@ -1100,6 +1158,8 @@ mod tests {
             last_pose: std::collections::BTreeMap::new(),
             squads: Vec::new(),
             callsigns: BTreeMap::new(),
+            folds: BTreeMap::new(),
+            unparsed: 0,
         };
         let end = MatchEnd {
             reason: EndReason::Timeout,
@@ -1114,6 +1174,7 @@ mod tests {
             &[],
             5_000,
             0,
+            &[],
         );
         assert_eq!(
             written["seed"],
@@ -1133,6 +1194,7 @@ mod tests {
             &[],
             5_000,
             0,
+            &[],
         );
         assert_eq!(orphan["seed"], serde_json::json!(0));
         // The restart result: no arena drew anything.
@@ -1233,6 +1295,8 @@ mod tests {
                 (ObjId(102), slot(Team::Red, 2)),
                 (ObjId(201), slot(Team::Blue, 1)),
             ]),
+            folds: BTreeMap::new(),
+            unparsed: 0,
         }
     }
 
@@ -1280,6 +1344,7 @@ mod tests {
             &v2_rows(&record),
             1_790_258_520_000,
             42,
+            &[],
         )
     }
 
@@ -1316,7 +1381,7 @@ mod tests {
         assert_eq!(row.chunks, 42);
         assert_eq!(row.seed, 2_350_235_023_502_350);
         assert!(row.named);
-        assert!(row.reports.is_empty(), "V.2 writes no report key");
+        assert!(row.reports.is_empty(), "written with no report");
         assert_eq!(
             row.units,
             vec![
@@ -1741,5 +1806,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **16b cut V.3**: the result document names the units whose report
+    /// documents rode its batch, in the order given (id order, from `finish`),
+    /// and reads them back; the restart abort names none.
+    #[test]
+    fn v3_the_result_names_its_reports_and_the_restart_abort_names_none() {
+        let record = v2_record();
+        let written = result_document(
+            Some(&record),
+            MatchId(12),
+            MatchOutcome::Red,
+            MatchEnd {
+                reason: EndReason::Elimination {
+                    winner: Some(Team::Red),
+                },
+                t_ms: 272_000,
+            },
+            "cd",
+            &v2_rows(&record),
+            1_790_258_520_000,
+            42,
+            &[ObjId(101), ObjId(201)],
+        );
+        assert_eq!(written["reports"], serde_json::json!([101, 201]));
+        assert_eq!(
+            HistoryRow::from_document(&written).map(|row| row.reports),
+            Some(vec![ObjId(101), ObjId(201)])
+        );
+        let restart = restart_abort_document(MatchId(13), &[ObjId(101)], 5_000);
+        assert_eq!(restart["reports"], serde_json::json!([]));
+        assert_eq!(
+            HistoryRow::from_document(&restart).map(|row| row.reports),
+            Some(Vec::new())
+        );
+        // A report key is the unit's, under the match's.
+        assert_eq!(
+            report_key(MatchId(12), ObjId(101)).as_str(),
+            "tacsim:report:12:101"
+        );
     }
 }

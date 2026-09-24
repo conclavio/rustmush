@@ -1322,7 +1322,10 @@ pub fn receiver_line(receiver: crate::arena::perception::Receiver) -> String {
 /// [`crate::arena::damage::MISS_REASONS`] — the ledger's own vocabulary read as a
 /// gunner hears it. An unknown word is printed as it stands rather than swallowed,
 /// so a seventh reason is a sentence somebody has to come and write.
-fn miss_words(reason: &str) -> &str {
+///
+/// **16b cut V.3** made it `pub(crate)`: a pilot's report says a miss in exactly
+/// these words (`crate::match_::report`).
+pub(crate) fn miss_words(reason: &str) -> &str {
     match reason {
         damage::TARGET_GONE => "the target is gone",
         damage::WRECK => "the target is already a wreck",
@@ -1344,7 +1347,12 @@ fn miss_words(reason: &str) -> &str {
 /// dropped the one consequence that can be authored and not fire — a biped's
 /// `disable_motion_when_all_of` on the first of its two legs — so every word
 /// joined here is true of the tank as it now stands.
-fn consequence_words(consequences: &[SmolStr]) -> String {
+///
+/// **16b cut V.3** made it `pub(crate)`: a pilot's report says a lost section of
+/// its own tank in these words, over the same fired list — the debrief's fold
+/// puts the ledger line's authored list through the question
+/// `fired_consequences` asks (`crate::match_::report::OwnTank`).
+pub(crate) fn consequence_words(consequences: &[SmolStr]) -> String {
     consequences
         .iter()
         .map(|label| match label.as_str() {

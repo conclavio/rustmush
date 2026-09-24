@@ -4626,3 +4626,354 @@ async fn v2_a_row_the_ring_evicts_has_its_report_documents_deleted_in_the_same_w
     );
     assert_eq!(ids(&rig), (102..=121).rev().collect::<Vec<u64>>());
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut V.3 — one report document per pilot, in the result's own action
+// ---------------------------------------------------------------------------
+
+/// **A finished match writes one report document per human pilot, and the
+/// result names them** (16b cut V.3; 16c N2).
+///
+/// A real boarded duel: red's pilot types `STARTUP` and blue's does nothing, the
+/// arena runs until red's frame reads power online, and a real `SIM ABORT` ends
+/// it through the arena's own `Ended`. The check-in's writes must hold one
+/// `tacsim:report:<match>:<unit>` document per pilot, written with the result,
+/// and the result's `reports` must name both units in id order. Red's report
+/// carries the one line its pilot did something for; blue's carries none; both
+/// end on the abort, which the tape wrote and the folds folded as the chunks
+/// passed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v3_a_finished_match_writes_one_report_per_pilot_and_the_result_names_them() {
+    let mut rig = Rig::boot(2);
+    rig.tick_to(1);
+    board_both(&mut rig);
+    let match_id = rig.centre().match_id.expect("a running match");
+    let said = rig.say(0, "startup");
+    assert!(!said.is_empty(), "the startup was answered");
+    let red = rig.pilot(0);
+    let mut online = false;
+    for _ in 0..600 {
+        rig.pump();
+        online = rig
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.last_frame(red))
+            .is_some_and(|held| {
+                held.match_id == match_id && held.frame.power == tacsim::arena::state::Power::Online
+            });
+        if online {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(online, "red's power came online");
+    let tanks: BTreeMap<u64, u64> = [0, 1]
+        .into_iter()
+        .filter_map(|n| {
+            let pilot = rig.pilot(n);
+            rig.tw
+                .world()
+                .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+                .and_then(|registry| registry.last_frame(pilot))
+                .map(|held| (u64::from(pilot.0), u64::from(held.frame.unit.0)))
+        })
+        .collect();
+    assert_eq!(tanks.len(), 2, "both pilots were framed");
+    let _ = rig.tw.take_module_ops();
+
+    let said = rig.say(1, "sim abort");
+    assert!(said.contains("aborts match"), "{said}");
+    for _ in 0..400 {
+        if rig.state() == MatchState::Aborted {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+    }
+    assert_eq!(rig.state(), MatchState::Aborted, "the check-in lands");
+
+    let writes: BTreeMap<String, serde_json::Value> = rig
+        .tw
+        .take_module_ops()
+        .into_iter()
+        .filter(|op| op.ns == tacsim::NS)
+        .filter_map(|op| match op.op {
+            mush_core::ModuleWrite::JsonSet { key, value } => Some((key.to_string(), value)),
+            _ => None,
+        })
+        .collect();
+    let result = writes
+        .get(&format!("tacsim:match:{}", match_id.0))
+        .expect("the check-in wrote the result document");
+    let mut units: Vec<u64> = tanks.values().copied().collect();
+    units.sort_unstable();
+    assert_eq!(result["reports"], serde_json::json!(units), "{result}");
+    let row = match_::HistoryRow::from_document(result).expect("a result document");
+    assert_eq!(
+        row.reports
+            .iter()
+            .map(|unit| u64::from(unit.0))
+            .collect::<Vec<_>>(),
+        units
+    );
+
+    for (pilot, unit) in &tanks {
+        let key = format!("tacsim:report:{}:{unit}", match_id.0);
+        let document = writes
+            .get(&key)
+            .unwrap_or_else(|| panic!("no report document at {key}: {:?}", writes.keys()));
+        assert_eq!(document["record"], serde_json::json!("tacsim.report"));
+        assert_eq!(document["match"].as_u64(), Some(match_id.0));
+        assert_eq!(document["unit"].as_u64(), Some(*unit));
+        assert_eq!(document["pilot"].as_u64(), Some(*pilot));
+        let report =
+            match_::report::report_from_document(document).expect("a report document reads");
+        assert!(!report.gap, "the rig handed the world the whole tape");
+        assert_eq!(
+            report
+                .tail
+                .last()
+                .map(|line| line.ends_with("the match was aborted.")),
+            Some(true),
+            "{:?}",
+            report.tail
+        );
+        if *pilot == u64::from(red.0) {
+            assert_eq!(document["callsign"], serde_json::json!("RA"));
+            assert!(
+                report
+                    .lines
+                    .iter()
+                    .any(|line| line.ends_with("  power online.")),
+                "{:?}",
+                report.lines
+            );
+        } else {
+            assert_eq!(document["callsign"], serde_json::json!("BA"));
+            assert!(report.lines.is_empty(), "{:?}", report.lines);
+        }
+    }
+    // The fold is RAM on the record and was finished exactly once: the book's
+    // record carries none after the check-in.
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .and_then(|book| book.get(match_id))
+            .is_none_or(|record| record.folds.is_empty()),
+        "the folds were taken off the record"
+    );
+}
+
+/// The one store read a step deferred: its correlation and its keys.
+fn one_read(effects: &[mush_core::Effect]) -> (u64, Vec<smol_str::SmolStr>) {
+    match effects {
+        [
+            mush_core::Effect::StoreRead {
+                module,
+                correlation,
+                keys,
+                ..
+            },
+        ] => {
+            assert_eq!(module.as_str(), tacsim::NS);
+            (*correlation, keys.clone())
+        }
+        other => panic!("expected exactly one StoreRead effect: {other:?}"),
+    }
+}
+
+/// Serve a read from the persisted documents the way the world task's driver
+/// does: one document per key, absent keys reported.
+fn serve(
+    kv: &BTreeMap<smol_str::SmolStr, serde_json::Value>,
+    keys: Vec<smol_str::SmolStr>,
+) -> mush_core::StoreReadResult {
+    let mut docs = Vec::new();
+    let mut absent = Vec::new();
+    for key in keys {
+        match kv.get(&key) {
+            Some(value) => docs.push((key, value.clone())),
+            None => absent.push(key),
+        }
+    }
+    mush_core::StoreReadResult::Docs { docs, absent }
+}
+
+impl Rig {
+    /// Run one line as `actor`, answering what it saw and the store reads the
+    /// step deferred.
+    fn read(&mut self, actor: ObjId, line: &str) -> (String, Vec<mush_core::Effect>) {
+        let (events, effects) = self.tw.run_with_effects(actor, line);
+        (self.seen(actor, &events), effects)
+    }
+
+    /// Re-enter one store read's result for `actor`, exactly as the world task
+    /// routes it to the tacsim module's `StoreReadCompletion`.
+    fn complete(
+        &mut self,
+        actor: ObjId,
+        correlation: u64,
+        result: &mush_core::StoreReadResult,
+    ) -> String {
+        let events = self.tw.apply(mush_core::WorldCommand::StoreReadDone {
+            module: smol_str::SmolStr::new(tacsim::NS),
+            actor,
+            correlation,
+            payload: result.to_payload(),
+        });
+        self.seen(actor, &events)
+    }
+}
+
+/// **`SIM REPORT`'s refusals, in their order, and both reads through the
+/// module's one `StoreReadCompletion`** (16b cut V.3; 16c N2).
+///
+/// Before anybody flew: the bare word has no match, and a word that is no
+/// number is the usage line. While the match runs, its own id is `still
+/// running` — checked before the ring, which never holds a live match, so a
+/// reordered check would answer `not one of them` and fail here. After it: an
+/// id the ring never held is `not one of them`, a player in the centre who
+/// flew nothing `did not fly`, and the pilot's own read goes out as ONE store
+/// read of ONE key, refuses a second while it is in flight, renders the
+/// header and the tail when the documents the check-in wrote come back, is
+/// spent by its completion (a replay renders nothing), and answers `still
+/// being written` when the key is absent. Staff page the tape the check-in
+/// appended: a page past its end is `no tape at chunk 16` under the header,
+/// and the first page carries the seed and the abort, with no `Next:`
+/// because the store returned fewer keys than it asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v3_sim_report_refuses_in_order_and_both_reads_complete_through_the_module() {
+    let mut rig = Rig::boot(3);
+    rig.tick_to(1);
+    let said = rig.say(0, "sim report");
+    assert!(
+        said.contains("You have not flown a match the centre remembers."),
+        "{said}"
+    );
+    let said = rig.say(0, "sim report twelve");
+    assert!(said.contains("Usage: SIM REPORT [<match>]"), "{said}");
+
+    board_both(&mut rig);
+    let match_id = rig.centre().match_id.expect("a running match");
+    let id = match_id.0;
+    let said = rig.say(0, &format!("sim report {id}"));
+    assert!(
+        said.contains(&format!("Match {id} is still running.")),
+        "{said}"
+    );
+    assert!(!said.contains("not one of them"), "{said}");
+
+    let said = rig.say(1, "sim abort");
+    assert!(said.contains("aborts match"), "{said}");
+    for _ in 0..400 {
+        if rig.state() == MatchState::Aborted {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+    }
+    assert_eq!(rig.state(), MatchState::Aborted, "the check-in lands");
+    // Every document the store would now hold, the last write of a key winning.
+    let mut kv: BTreeMap<smol_str::SmolStr, serde_json::Value> = BTreeMap::new();
+    for op in rig.tw.take_module_ops() {
+        if op.ns != tacsim::NS {
+            continue;
+        }
+        match op.op {
+            mush_core::ModuleWrite::JsonSet { key, value } => {
+                kv.insert(key, value);
+            }
+            mush_core::ModuleWrite::Del { key } => {
+                kv.remove(&key);
+            }
+            mush_core::ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
+
+    let said = rig.say(0, "sim report 99");
+    assert!(
+        said.contains("The centre remembers its last 20 matches; match 99 is not one of them."),
+        "{said}"
+    );
+    let said = rig.say(2, &format!("sim report {id}"));
+    assert!(
+        said.contains(&format!("You did not fly in match {id}.")),
+        "{said}"
+    );
+
+    // The pilot's own read: one key, one read in flight.
+    let red = rig.pilot(0);
+    let (said, effects) = rig.read(red, "sim report");
+    assert!(
+        said.contains(&format!("Reading your report of match {id} …")),
+        "{said}"
+    );
+    let (correlation, keys) = one_read(&effects);
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    assert!(
+        keys.iter()
+            .all(|key| key.starts_with(&format!("tacsim:report:{id}:"))),
+        "{keys:?}"
+    );
+    let (said, effects) = rig.read(red, "sim report");
+    assert!(said.contains(match_::report::READ_IN_FLIGHT), "{said}");
+    assert!(effects.is_empty(), "a refused read defers nothing");
+    let whole = rig.complete(red, correlation, &serve(&kv, keys.clone()));
+    for want in [
+        format!("Match {id}"),
+        "You flew RA: intact; 0 shots, 0 hits.".to_owned(),
+        "You fired nothing.".to_owned(),
+        "the match was aborted.".to_owned(),
+    ] {
+        assert!(whole.contains(&want), "{want:?} missing from:\n{whole}");
+    }
+    let replay = rig.complete(red, correlation, &serve(&kv, keys));
+    assert!(
+        replay.is_empty(),
+        "a completion nobody waits on renders nothing: {replay}"
+    );
+    // A read that outran the commit.
+    let (_, effects) = rig.read(red, "sim report");
+    let (correlation, keys) = one_read(&effects);
+    let early = rig.complete(red, correlation, &serve(&BTreeMap::new(), keys));
+    assert!(
+        early.contains(&format!(
+            "Your report of match {id} is still being written; ask again in a moment."
+        )),
+        "{early}"
+    );
+
+    // Staff page the tape: past its end, then from its start.
+    let (said, effects) = rig.read(GOD, &format!("@arena/report {id} 16"));
+    assert!(
+        said.contains(&format!("Reading chunks 16 to 31 of match {id} …")),
+        "{said}"
+    );
+    let (correlation, keys) = one_read(&effects);
+    let past = rig.complete(GOD, correlation, &serve(&kv, keys));
+    assert!(
+        past.contains(&format!(
+            "Match {id} has no tape at chunk 16 on this server."
+        )),
+        "{past}"
+    );
+    assert!(past.contains("seed "), "the header follows: {past}");
+    let (_, effects) = rig.read(GOD, &format!("@arena/report #{id}"));
+    let (correlation, keys) = one_read(&effects);
+    assert_eq!(keys.len(), mush_core::MAX_STORE_READ_KEYS, "{keys:?}");
+    let page = rig.complete(GOD, correlation, &serve(&kv, keys));
+    for want in [
+        "seed ",
+        "this page: chunks 0 to ",
+        "match_started",
+        "aborted",
+    ] {
+        assert!(page.contains(want), "{want:?} missing from:\n{page}");
+    }
+    assert!(
+        !page.contains("Next: "),
+        "the tape ended inside this page: {page}"
+    );
+}

@@ -55,6 +55,24 @@ live per-scene ruleset state (e.g. combat heat) — re-open the scene after
 reconnect. Everything you had already saved — rooms, your sheet, sent mail,
 jobs — is intact. Operators: see docs/ops.md "Hot-restart (split) deployment".
 
+The simulator's black box (SIM_ADMIN or Royalty):
+
+  @arena/report [match] [chunk]
+                    Read a match's tape itself: sixteen chunks a request
+                    from the chunk named (0 by default), one line an event
+                    in arena time, with object numbers, contact ids and
+                    the draws; the position summaries are left out. The
+                    header carries the outcome, the seed, the tape's
+                    digest and chunk count, and every unit with its pilot.
+                    Bare, the newest match the centre remembers; a running
+                    match, a crashed one and one older than the last
+                    twenty are read too. A page shows at most 200 lines
+                    ("... and N more of this page." past them), and its
+                    "Next: @arena/report 12 16" pages on from the chunk
+                    the page was cut short in, so following it skips
+                    nothing. A pilot's own debrief is SIM REPORT (help
+                    simulator), which never carries any of this.
+
 Powers: BOOT, EXAMINE_ALL, TEL_ANYWHERE, TEL_ANYTHING, CHOWN_ANY,
 COMSYS_ADMIN, BUILDER_LLM, SEE_HIDDEN, FACTION_ADMIN, SIM_ADMIN. Wizards
 hold every power implicitly. (There is no in-game command to grant a power

@@ -607,7 +607,10 @@ fn account_of(w: &World, actor: ObjId) -> Result<AccountId, SimError> {
 }
 
 /// Staff, on this crate's one test.
-fn is_staff(w: &World, actor: ObjId) -> bool {
+///
+/// **16b cut V.3** made it `pub(crate)`: the report completion re-validates a
+/// staff page's reader with it (`crate::match_::report::ReportRead`).
+pub(crate) fn is_staff(w: &World, actor: ObjId) -> bool {
     mush_core::perm::has_power(w, actor, mush_core::Powers::SIM_ADMIN)
         || mush_core::perm::has_role(w, actor, mush_core::Role::Royalty)
 }
@@ -2799,7 +2802,10 @@ fn announce(ctx: &mut Ctx<'_>, text: String) {
 }
 
 /// One object's name, or its dbref when it has none.
-fn display_name(w: &World, object: ObjId) -> String {
+///
+/// **16b cut V.3** made it `pub(crate)`: `@arena/report` names the pilots on its
+/// header with it.
+pub(crate) fn display_name(w: &World, object: ObjId) -> String {
     w.get(object).map_or_else(
         || format!("#{}", object.0),
         |object| object.name.to_string(),

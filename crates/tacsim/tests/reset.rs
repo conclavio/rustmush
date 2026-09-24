@@ -1311,3 +1311,44 @@ fn v2_the_boot_fills_the_history_ring_from_the_result_documents_newest_first() {
         "{said}"
     );
 }
+
+/// **A result written before the debrief existed has nothing to read** (16b cut
+/// V.3; 16c N2): a remembered match whose result names no report — the shape
+/// every result had before this cut — is refused in one sentence, bare or by
+/// id, and no store read goes out; a restart abort of the same age is refused
+/// as a restart first, because its rows name no pilot.
+#[test]
+fn v3_a_result_from_before_reports_existed_is_refused_without_a_read() {
+    let mut rig = Rig::boot(1);
+    let pilot = rig.pilot(0);
+    let mut restarted = finished_result(6, pilot, 600);
+    restarted["outcome"] = serde_json::json!("abort");
+    restarted["reason"] = serde_json::json!("restart");
+    restarted["teams"][0]["pilots"] = serde_json::json!([]);
+    rig.reboot_with(vec![
+        (
+            match_::result_key(tacsim::arena_task::MatchId(5)),
+            finished_result(5, pilot, 500),
+        ),
+        (
+            match_::result_key(tacsim::arena_task::MatchId(6)),
+            restarted,
+        ),
+    ]);
+    for line in ["sim report", "sim report 5", "sim report #5"] {
+        let (events, effects) = rig.tw.run_with_effects(pilot, line);
+        let said = rig.tw.seen_by(&events, pilot).join("\n");
+        assert!(
+            said.contains(
+                "Match 5 was recorded before reports existed; there is nothing to read of it."
+            ),
+            "{line}: {said}"
+        );
+        assert!(effects.is_empty(), "{line}: a refusal reads nothing");
+    }
+    let said = rig.say(0, "sim report 6");
+    assert!(
+        said.contains("The server restarted during match 6; there is no debrief of it."),
+        "{said}"
+    );
+}
