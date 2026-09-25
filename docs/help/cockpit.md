@@ -292,6 +292,11 @@ own doctrine and your side hears `Squad red-1: mind link dropped, unit on
 doctrine (its hold order has run out).` Nobody else is told you gave an order:
 there is no radio line.
 
+**You may hold orders on four squads at once**: a fifth is refused until one of
+the four runs out, and a new order to a squad you already hold is not another.
+**You may give twelve orders a minute**, `ORDER ALL` counting as one, and the
+thirteenth is refused until the minute has passed.
+
 **You may point, but a tank that cannot see still cannot see.** The contact you
 name is one of yours, by the designator your `CONTACTS` prints, and a machine
 that holds nothing of its own on that tank takes the best target it does hold.
@@ -300,12 +305,17 @@ engage, answered as one.
 An advance names one of the ground's spots, by its name or its letter, as
 `RANGE` takes one.
 
-Two refusals are the order's own. `No such squad.` is the answer for any squad
+Five refusals are the order's own. `No such squad.` is the answer for any squad
 you cannot order — the other side's, one that does not exist, or one of your own
 side's that is not yours to command — and it is one line for all three, so it
 tells you nothing about the other side. `You have no squad to order.` is `ORDER
-ALL` from a pilot with nothing under them. A target or a spot your panel does not
-know is `No such contact.`, as it is everywhere else.
+ALL` from a pilot with nothing under them. Three are the limits above: with your
+four squads held, any order to another is `You hold orders on 4 squad(s) already;
+wait for one to run out.`; an `ORDER ALL` that would take you past four while
+you still have room for one is `ORDER ALL would put 5 squads under you; your span
+is 4. Order them one at a time.`; and the thirteenth order in a minute is `You
+have given 12 orders in the last minute; wait.` A target or a spot your panel
+does not know is `No such contact.`, as it is everywhere else.
 
 ## Refusals
 

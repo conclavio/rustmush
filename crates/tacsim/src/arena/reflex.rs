@@ -3291,6 +3291,52 @@ fn would_overheat(unit: &UnitState, weapon: &str) -> bool {
     unit.overheated()
 }
 
+impl Arena {
+    /// **The squads under a live order, grouped by who gave it** (16b cut Y.2;
+    /// doc 16 §2 W8's *orders per commander bounded*): every machine whose
+    /// standing order has not expired at arena millisecond `now_ms`, its order's
+    /// squad filed under the order's `issuer`.
+    ///
+    /// An order with no issuer — the LLM seam's — is filed under **the squad
+    /// commander of the unit it steers** ([`Arena::squad_of`]), so the machines'
+    /// own orders count against the commander that asked for them; a unit in no
+    /// squad files it under `None`.
+    ///
+    /// A pure read for the scale harness's W8 assertion: nothing in the arena
+    /// or the world decides anything on it, and nothing but the answer
+    /// allocates. It is an **arena-time** figure (`accepted_ms + ttl_ms`), so it
+    /// can lead the world's own span — which is counted on the world's watch in
+    /// world time ([`crate::arena_bridge::ArenaRegistry::live_orders_of`]) — by
+    /// the arena's lag.
+    #[must_use]
+    pub fn live_orders_by_issuer(
+        &self,
+        now_ms: i64,
+    ) -> BTreeMap<Option<ObjId>, std::collections::BTreeSet<crate::deliberation::SquadId>> {
+        let mut grouped: BTreeMap<
+            Option<ObjId>,
+            std::collections::BTreeSet<crate::deliberation::SquadId>,
+        > = BTreeMap::new();
+        for (unit, row) in self.reflex.rows() {
+            let Some(standing) = row.order.as_ref() else {
+                continue;
+            };
+            if standing.expired_at(now_ms) {
+                continue;
+            }
+            let issuer = standing
+                .order
+                .issuer
+                .or_else(|| self.squad_of(*unit).map(|roster| roster.commander));
+            grouped
+                .entry(issuer)
+                .or_default()
+                .insert(standing.order.squad);
+        }
+        grouped
+    }
+}
+
 /// The per-unit rows, for [`crate::arena::hash::state_hash`] — the one reader
 /// outside this module that needs the machines in order and nothing else.
 impl ReflexMemory {

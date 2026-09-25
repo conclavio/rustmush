@@ -572,6 +572,14 @@ pub struct ArenaRegistry {
     /// thing — the in-world sentence doc 16 §6 asks for, which only the world can
     /// say because only the world has an output sink.
     deliberation: BTreeMap<MatchId, MatchDeliberation>,
+    /// **The order rate's window** (16b cut Y.2; doc 16 §2 W8's human
+    /// trigger): per issuer — the pilot's own tank, `Seat::unit` — the **world**
+    /// millisecond of every `ORDER` it gave in the last sixty world seconds,
+    /// oldest first. Written and read only by [`ArenaRegistry::note_order_stamp`]
+    /// at the world, where `ORDER` is admitted; nothing here crosses the seam,
+    /// so the rate can refuse an order and never change an outcome. Cleared per
+    /// unit by [`ArenaRegistry::untrack`].
+    order_stamps: BTreeMap<ObjId, VecDeque<i64>>,
 }
 
 /// **One match's deliberation state, on the world side** (16b cut N.2).
@@ -642,6 +650,7 @@ impl ArenaRegistry {
             starting_hints: BTreeMap::new(),
             arenas: BTreeMap::new(),
             deliberation: BTreeMap::new(),
+            order_stamps: BTreeMap::new(),
         }
     }
 
@@ -701,6 +710,66 @@ impl ArenaRegistry {
             .and_then(|watch| watch.issuer)
     }
 
+    /// **The squads `issuer` holds a live order on** (16b cut Y.2; doc 16 §2
+    /// W8's span of control): every squad of `match_id` whose world watch names
+    /// `issuer` and has not run out at world millisecond `now_ms`.
+    ///
+    /// The watch is the world's own, in world time, and it runs its full time to
+    /// live: the world never learns that the arena ended an order early (16b cut
+    /// AA.1, `B-41`) and nothing in `ORDER`'s grammar hands a squad back (16c
+    /// Q44), so the span this answers holds until each order runs out.
+    #[must_use]
+    pub fn live_orders_of(
+        &self,
+        match_id: MatchId,
+        issuer: ObjId,
+        now_ms: i64,
+    ) -> std::collections::BTreeSet<crate::deliberation::SquadId> {
+        self.deliberation
+            .get(&match_id)
+            .map(|state| {
+                state
+                    .orders
+                    .iter()
+                    .filter(|(_, watch)| watch.issuer == Some(issuer) && watch.expires_ms > now_ms)
+                    .map(|(squad, _)| *squad)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// **Spend one of `issuer`'s orders for this minute** (16b cut Y.2; doc 16
+    /// §2 W8's human trigger), at world millisecond `now_ms`.
+    ///
+    /// The stamps older than sixty world seconds are dropped first; if
+    /// `per_minute` or more remain, the answer is `Err(count)` and nothing is
+    /// written; otherwise the stamp is kept and the answer is `Ok(())`. One
+    /// `ORDER ALL` is one stamp, and a stamp is spent before the fan-out, so an
+    /// order no unit could be offered still spent it: the pilot typed it.
+    ///
+    /// # Errors
+    ///
+    /// `Err(n)`: `issuer` has given `n` orders in the last minute, which is the
+    /// ceiling or over it.
+    pub fn note_order_stamp(
+        &mut self,
+        issuer: ObjId,
+        now_ms: i64,
+        per_minute: u32,
+    ) -> Result<(), u32> {
+        let stamps = self.order_stamps.entry(issuer).or_default();
+        let oldest = now_ms.saturating_sub(60_000);
+        while stamps.front().is_some_and(|stamp| *stamp < oldest) {
+            stamps.pop_front();
+        }
+        let held = u32::try_from(stamps.len()).unwrap_or(u32::MAX);
+        if held >= per_minute {
+            return Err(held);
+        }
+        stamps.push_back(now_ms);
+        Ok(())
+    }
+
     /// The shared table of live tasks.
     #[must_use]
     pub fn tasks(&self) -> &ArenaTasks {
@@ -755,6 +824,12 @@ impl ArenaRegistry {
         // in-flight count left behind would be a permanent debit against the *next*
         // match that took this id.
         self.deliberation.remove(&match_id);
+        // **16b cut Y.2**: and the order rate's window for every tank of the
+        // match. The issuer is the pilot's own tank, and a tank's next match
+        // starts with a commander who has given nothing yet.
+        for unit in &units {
+            self.order_stamps.remove(unit);
+        }
         self.matches.remove(&match_id)
     }
 

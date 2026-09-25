@@ -94,6 +94,8 @@
 //! | `[tacsim.match].max_slots_per_side` | `12` | pilot slots one side may claim (doc 16 §1's 12 v 12) |
 //! | `[tacsim.match].ai_fill` | `false` | **16b cut N.1** (doc 16 §6): whether `SIM START` also fields the tanks of the pods nobody claimed, under the reflex controller. Off by default because doc 16 §1's A1 is a two-tank story |
 //! | `[tacsim.match].unattended_ms` | `300000` | **16b cut D.3** (`B-33`): world milliseconds a running match every pilot has left runs on before the lobby ends it `unattended`; `0` is off, and anything else is at least `10000` |
+//! | `[tacsim.command].max_span` | `4` | **16b cut Y.2** (doc 16 §2 W8): the most squads one commander may hold a live `ORDER` on at once; `1` to `32`, held at the world |
+//! | `[tacsim.command].orders_per_minute` | `12` | **16b cut Y.2** (W8's human trigger): the most `ORDER`s one commander may give in sixty world seconds; `1` to `600` |
 //! | `[tacsim.sensors].pass_ms` | `1000` | **16b cut G** (doc 16 §3.6): arena milliseconds between one unit's sensor passes |
 //! | `[tacsim.sensors].max_signature_factor` | `1.0` | the ceiling on a target's signature factor, which also scales the candidate cull; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism); **at least 1.0** (16b cut M.4: below it the cull is shorter than the range test), and 1.0 is exact because no shipped signature row exceeds 1.0 |
 //! | `[tacsim.sensors].lost_after_passes` | `3` | **16b cut S.1** (doc 16 §3.6): passes a contact may go unrefreshed before it is lost; the TTL is `pass_ms × lost_after_passes` |
@@ -641,6 +643,9 @@ pub struct TacsimCfg {
     /// `match`.
     #[serde(rename = "match")]
     pub match_: TacsimMatchCfg,
+    /// `[tacsim.command]` — **16b cut Y.2**: the span of control and the order
+    /// rate a pilot's `ORDER` is held to (doc 16 §2 W8).
+    pub command: TacsimCommandCfg,
     /// `[tacsim.sensors]` — **16b cut G**: the sensor pass's cadence and its
     /// signature ceiling (doc 16 §3.6).
     pub sensors: TacsimSensorsCfg,
@@ -771,6 +776,7 @@ impl Default for TacsimCfg {
             economy: TacsimEconomyCfg::default(),
             arena: TacsimArenaCfg::default(),
             match_: TacsimMatchCfg::default(),
+            command: TacsimCommandCfg::default(),
             sensors: TacsimSensorsCfg::default(),
             resolution: TacsimResolutionCfg::default(),
             harness: TacsimHarnessCfg::default(),
@@ -1279,6 +1285,35 @@ impl Default for TacsimMatchCfg {
             ai_fill: false,
             // 16b cut D.3: five minutes.
             unattended_ms: 300_000,
+        }
+    }
+}
+
+/// `[tacsim.command]` — the span of control and the order rate (**16b cut
+/// Y.2**; doc 16 §2 W8, *the Compact caps span of control and needs a human
+/// trigger*).
+///
+/// Both are held at the world, where `ORDER` is admitted, and neither reaches
+/// the arena: a refused order changes no outcome. The values are checked by
+/// `tacsim::config::CommandConfig::validate`, reached through
+/// `mush_server::config_ext::tacsim_config` whether or not the layer is on.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimCommandCfg {
+    /// The most squads one commander may hold a **live** order on at once;
+    /// replacing a squad's own live order never counts against it. `1` to `32`
+    /// (a side's most squads).
+    pub max_span: u32,
+    /// The most `ORDER`s one commander may give in sixty world seconds; one
+    /// `ORDER ALL` is one. `1` to `600`.
+    pub orders_per_minute: u32,
+}
+
+impl Default for TacsimCommandCfg {
+    fn default() -> Self {
+        TacsimCommandCfg {
+            max_span: 4,
+            orders_per_minute: 12,
         }
     }
 }
@@ -2476,6 +2511,8 @@ scene_turn_dedline_secs = 30
         // nobody wrote.
         assert_eq!(cfg.tacsim.arena, TacsimArenaCfg::default());
         assert_eq!(cfg.tacsim.match_, TacsimMatchCfg::default());
+        // 16b cut Y.2: and the command block, written out the same way.
+        assert_eq!(cfg.tacsim.command, TacsimCommandCfg::default());
         assert_eq!(cfg.tacsim.sensors, TacsimSensorsCfg::default());
         assert_eq!(cfg.tacsim.resolution, TacsimResolutionCfg::default());
         assert_eq!(cfg.tacsim.harness, TacsimHarnessCfg::default());
@@ -2578,6 +2615,14 @@ scene_turn_dedline_secs = 30
             ),
             (10_000, 120_000, 3_600_000, 12),
             "[tacsim.match]"
+        );
+
+        // 16b cut Y.2 (doc 16 W8): the span and the rate, at the figures the
+        // help quotes.
+        assert_eq!(cfg.tacsim.command.max_span, 4, "[tacsim.command].max_span");
+        assert_eq!(
+            cfg.tacsim.command.orders_per_minute, 12,
+            "[tacsim.command].orders_per_minute"
         );
 
         assert_eq!(cfg.tacsim.sensors.pass_ms, 1_000);
@@ -2760,6 +2805,8 @@ scene_turn_dedline_secs = 30
             ("[tacsim.arena.intents]\nmax_pending = 8\n", "max_pending"),
             ("[tacsim.arena.ledger]\nmax_byte = 1\n", "max_byte"),
             ("[tacsim.match]\nstartup = 10000\n", "startup"),
+            // 16b cut Y.2: the command block refuses a typo like the rest.
+            ("[tacsim.command]\nspan = 4\n", "span"),
             ("[tacsim.sensors]\npass = 1000\n", "pass"),
             ("[tacsim.resolution]\npath = []\n", "path"),
             ("[tacsim.harness]\nunit = 300\n", "unit"),
@@ -2771,6 +2818,37 @@ scene_turn_dedline_secs = 30
             assert!(refused.contains(key), "{text}: {refused}");
             assert!(refused.contains("unknown field"), "{text}: {refused}");
         }
+    }
+
+    /// **16b cut Y.2**: `[tacsim.command]` is optional, carries both keys when
+    /// written, and refuses an unknown key under it by name.
+    #[test]
+    fn y2_the_command_block_parses_absent_written_and_refuses_a_typo() {
+        let absent: Config = toml::from_str("").expect("an empty config parses");
+        assert_eq!(absent.tacsim.command, TacsimCommandCfg::default());
+        assert_eq!(
+            (
+                absent.tacsim.command.max_span,
+                absent.tacsim.command.orders_per_minute
+            ),
+            (4, 12)
+        );
+
+        let written: Config =
+            toml::from_str("[tacsim.command]\nmax_span = 2\norders_per_minute = 30\n")
+                .expect("the written block parses");
+        assert_eq!(
+            written.tacsim.command,
+            TacsimCommandCfg {
+                max_span: 2,
+                orders_per_minute: 30,
+            }
+        );
+
+        let text = "[tacsim.command]\nmax_span = 4\nmax_squads = 4\n";
+        let refused = toml::from_str::<Config>(text).expect_err(text).to_string();
+        assert!(refused.contains("max_squads"), "{refused}");
+        assert!(refused.contains("unknown field"), "{refused}");
     }
 
     /// **16b cut U.3** (16c `T-37`): `[tacsim.harness].weapons` is retired. The

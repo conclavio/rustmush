@@ -6230,3 +6230,170 @@ async fn y1_an_engage_carries_the_pilots_own_row_and_an_own_side_row_is_no_targe
         .count();
     assert_eq!(bare, 2, "the own-side hint is dropped, not journalled");
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut Y.2 — the span and the rate (doc 16 §2 W8)
+// ---------------------------------------------------------------------------
+
+/// [`y1_config`] with `[tacsim.command]` lowered to a span of one squad and two
+/// orders a minute, so both bind in a handful of lines.
+fn y2_config() -> TacsimConfig {
+    let mut cfg = y1_config();
+    cfg.command.max_span = 1;
+    cfg.command.orders_per_minute = 2;
+    cfg
+}
+
+/// **16b cut Y.2 (doc 16 §2 W8): the span is read off the world's own watch.**
+///
+/// The shipped centre's four pods a side can never make two squads
+/// (`MIN_UNITS_TO_SPLIT` is four), so the lead's second squad is a live watch
+/// seeded on the registry — which is where the span is read, and the only
+/// place. With a span of one and that watch standing, `ORDER red-1 HOLD` and
+/// `ORDER ALL HOLD` (which names the lead's one squad, so one at a time would
+/// not pass either) are each refused with the wait sentence and reach no unit;
+/// a third refusal at a rate of two a minute still answers the span, so a span
+/// refusal spends no stamp. Once the seeded watch has run out in world time the
+/// same order is taken, and
+/// re-ordering the squad the pilot already holds is taken too — a replacement
+/// never counts against the span.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y2_the_span_counts_the_other_squads_under_a_live_order_and_waits_for_one_to_run_out() {
+    let mut rig = Rig::boot_with(2, y2_config());
+    rig.fly_with_ai(1, 1, 3).await;
+    let match_id = rig.centre().match_id.expect("a running match");
+    let issuer = rig.tank(0);
+    let second = tacsim::deliberation::SquadId {
+        team: Team::Red,
+        index: 2,
+    };
+    let expires_ms = rig.now.saturating_mul(1_000).saturating_add(600_000);
+    rig.with_ctx_mut(0, |ctx| {
+        ctx.w
+            .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+            .expect("the registry is composed")
+            .note_human_order(match_id, second, "hold".into(), issuer, expires_ms);
+    });
+    let live = |rig: &Rig, at_s: i64| {
+        rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .map(|registry| registry.live_orders_of(match_id, issuer, at_s.saturating_mul(1_000)))
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        live(&rig, rig.now).into_iter().collect::<Vec<_>>(),
+        vec![second]
+    );
+
+    assert_eq!(
+        rig.say(0, "ORDER red-1 HOLD"),
+        "You hold orders on 1 squad(s) already; wait for one to run out."
+    );
+    // `ALL` names the lead's one squad here, so ordering it on its own would be
+    // refused too: the answer is to wait, never "one at a time".
+    assert_eq!(
+        rig.say(0, "ORDER ALL HOLD"),
+        "You hold orders on 1 squad(s) already; wait for one to run out."
+    );
+    // The span is checked before the rate stamp is spent: two refusals at a rate
+    // of two a minute leave the third answering the span, not the rate.
+    assert_eq!(
+        rig.say(0, "ORDER red-1 HOLD"),
+        "You hold orders on 1 squad(s) already; wait for one to run out.",
+        "a span refusal spent no stamp"
+    );
+    let status = rig.staff("@arena/status");
+    assert!(
+        status.contains("  orders: 1 by pilots, 0 by the machines"),
+        "a refused order reached no squad; the one counted is the seeded watch: {status}"
+    );
+
+    // The seeded watch runs out in world time; the span is free again.
+    let past = rig.now.saturating_add(601);
+    rig.tick_to(past);
+    assert!(live(&rig, past).is_empty(), "the seeded watch has run out");
+    assert_eq!(
+        rig.say(0, "ORDER red-1 HOLD"),
+        format!("Ordered red-1 to hold: it stops where it stands and fires nothing.{Y1_TAIL}")
+    );
+    // A replacement on the squad the pilot already holds is not a second squad.
+    assert_eq!(
+        rig.say(0, "ORDER red-1 WITHDRAW"),
+        format!(
+            "Ordered red-1 to withdraw: it breaks for its entry zone and still fights inside \
+             its bands.{Y1_TAIL}"
+        )
+    );
+    assert_eq!(
+        live(&rig, past)
+            .into_iter()
+            .map(|squad| squad.to_string())
+            .collect::<Vec<_>>(),
+        vec!["red-1".to_string()]
+    );
+}
+
+/// **16b cut Y.2 (doc 16 §2 W8's human trigger): the rate is a window of world
+/// seconds, per issuer, emptied with the match.**
+///
+/// At two a minute the third `ORDER` inside one minute is refused, and sixty
+/// one seconds on it is taken. `ORDER ALL` spends one stamp like any other.
+/// Then the match is aborted and checked in (`ArenaRegistry::untrack`), and a
+/// second match on the same rig, flown in the same world minute by the same
+/// pilot in the same tank, starts at nought.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y2_the_rate_refuses_the_third_order_in_a_minute_and_a_new_match_starts_at_nought() {
+    let mut rig = Rig::boot_with(2, y2_config());
+    rig.fly_with_ai(1, 1, 3).await;
+    let hold =
+        format!("Ordered red-1 to hold: it stops where it stands and fires nothing.{Y1_TAIL}");
+    let full = "You have given 2 orders in the last minute; wait.";
+
+    // A refusal before the rate spends nothing: two of them first, and the
+    // pilot still has both orders of the minute.
+    assert_eq!(rig.say(0, "ORDER blue-1 HOLD"), cockpit::NO_SUCH_SQUAD);
+    assert_eq!(rig.say(0, "ORDER blue-1 HOLD"), cockpit::NO_SUCH_SQUAD);
+    assert_eq!(rig.say(0, "ORDER red-1 HOLD"), hold);
+    assert_eq!(rig.say(0, "ORDER red-1 HOLD"), hold);
+    assert_eq!(rig.say(0, "ORDER red-1 HOLD"), full);
+    assert_eq!(rig.say(0, "ORDER ALL HOLD"), full, "ALL is one order");
+    // And one after the window is full is still its own sentence, not the rate's.
+    assert_eq!(rig.say(0, "ORDER blue-1 HOLD"), cockpit::NO_SUCH_SQUAD);
+
+    let later = rig.now.saturating_add(61);
+    rig.tick_to(later);
+    assert_eq!(rig.say(0, "ORDER red-1 HOLD"), hold);
+    assert_eq!(
+        rig.say(0, "ORDER ALL HOLD"),
+        hold.clone(),
+        "ALL reaches red-1 alone"
+    );
+    assert_eq!(rig.say(0, "ORDER red-1 HOLD"), full);
+
+    // End the match; the check-in untracks it.
+    let tank = rig.tank(0);
+    rig.say(0, "sim abort");
+    for _ in 0..400 {
+        if rig.state() == MatchState::Aborted {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+    }
+    assert_eq!(rig.state(), MatchState::Aborted, "the check-in lands");
+    rig.staff("@arena/reset");
+    assert_eq!(rig.state(), MatchState::Idle);
+    rig.walk_to(0, match_::LOBBY_ENTRY);
+    rig.walk_to(1, match_::LOBBY_ENTRY);
+    rig.fly_with_ai(1, 1, 3).await;
+    assert_eq!(rig.now, later, "the same world second as the refusal");
+    assert_eq!(rig.tank(0), tank, "the same tank, the same issuer");
+    assert_eq!(
+        rig.say(0, "ORDER red-1 HOLD"),
+        hold,
+        "a new match starts at nought"
+    );
+    assert_eq!(rig.say(0, "ORDER red-1 HOLD"), hold);
+    assert_eq!(rig.say(0, "ORDER red-1 HOLD"), full);
+}

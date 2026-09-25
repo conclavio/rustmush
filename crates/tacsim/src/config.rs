@@ -21,6 +21,7 @@
 //! | all of `[tacsim.time]` | parsed, **inert** | cuts 4/8/11's rate and catch-up policy |
 //! | all of `[tacsim.recovery]` | **live** (E7r1 R4) | the recovery provider's pool, tiers, cap, thresholds, cooldown and insurance policy |
 //! | all of `[tacsim.arena]`, `[tacsim.match]`, `[tacsim.sensors]`, `[tacsim.resolution]`, `[tacsim.harness]` | parsed, **inert** (16b cut G) | the combat arena's blocks; cuts A/T/S/W/H read and validate them |
+//! | all of `[tacsim.command]` | **live** (16b cut Y.2) | doc 16 W8's span of control and order rate, held at the world where `ORDER` is admitted |
 //!
 //! `[tacsim.recovery]` was cut 11's and was **not added at all** — *a knob that parses
 //! and configures nothing is a promise, and cut 11 has not made it yet*. **E7 residue
@@ -538,6 +539,47 @@ impl Default for MatchConfig {
     }
 }
 
+/// **The span of control and the order rate** (**16b cut Y.2**; doc 16 §2 W8,
+/// *the Compact caps span of control and needs a human trigger*).
+///
+/// Two numbers, and they bound different things. `max_span` is **concurrency**:
+/// how many squads one issuer may hold a live order on at the same moment, read
+/// off the world's own record of whose order each squad is under. A rate alone
+/// could not say it — twelve orders a minute to twelve different squads is a
+/// commander of twelve. `orders_per_minute` is the **floor under the human
+/// trigger**: a span of four re-ordered every pulse is a bot typing, not a
+/// commander. So the one is a set's size and the other a sliding window of
+/// stamps.
+///
+/// **Both live at the world**, where `ORDER` is admitted (`cockpit::order`),
+/// and never in the arena: a refused order reaches no pulse, so neither number
+/// can change an outcome, and the tempo that decides nothing (doc 16 §3.1) still
+/// decides nothing. The span and the window are both counted in world
+/// milliseconds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandConfig {
+    /// The most squads one issuer may hold a **live** order on at once. A
+    /// replacement of a squad's own live order never counts against it.
+    pub max_span: u32,
+    /// The most `ORDER`s one issuer may give in sixty world seconds; one
+    /// `ORDER ALL` is one.
+    pub orders_per_minute: u32,
+}
+
+impl Default for CommandConfig {
+    fn default() -> Self {
+        CommandConfig {
+            // Doc 16 W8's own figure: a lead and four machines' squads is a
+            // command a human can hold in their head.
+            max_span: 4,
+            // One every five seconds, sustained: the deliberation cadence's own
+            // order of magnitude, and far past what a pilot who is also flying
+            // types.
+            orders_per_minute: 12,
+        }
+    }
+}
+
 /// The sensor pass's cadence and its signature ceiling (**16b cut G**; doc 16
 /// §3.6 "Perception").
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -996,6 +1038,32 @@ impl MatchConfig {
     }
 }
 
+impl CommandConfig {
+    /// **Check `[tacsim.command]`** (16b cut Y.2, in Q.7's pattern).
+    ///
+    /// # Errors
+    ///
+    /// One sentence naming the key and the value it was given.
+    pub fn validate(&self) -> Result<(), String> {
+        // Nought is a commander who can order nothing; more squads than a side
+        // can ever be cut into is a span that never binds.
+        between(
+            "[tacsim.command].max_span",
+            1,
+            crate::deliberation::squad::MAX_SQUADS_PER_SIDE as u64,
+            u64::from(self.max_span),
+        )?;
+        // Nought is no orders at all; ten a second is no floor.
+        between(
+            "[tacsim.command].orders_per_minute",
+            1,
+            600,
+            u64::from(self.orders_per_minute),
+        )?;
+        Ok(())
+    }
+}
+
 impl SensorsConfig {
     /// **Check `[tacsim.sensors]`** (16b cut Q.7).
     ///
@@ -1123,6 +1191,9 @@ pub struct TacsimConfig {
     /// inert** until cut T. `match_` because `match` is a keyword; the TOML key
     /// is `match`.
     pub match_: MatchConfig,
+    /// **16b cut Y.2** — the span of control and the order rate a pilot's
+    /// `ORDER` is held to at the world (doc 16 §2 W8). **Live** since Y.2.
+    pub command: CommandConfig,
     /// **16b cut G** — the sensor pass's cadence and its per-mille signature
     /// ceiling. Live since cut S.1.
     pub sensors: SensorsConfig,
@@ -1149,4 +1220,58 @@ pub struct LoadedPack {
     pub source: String,
     /// The verified pack.
     pub pack: RulesPack,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CommandConfig;
+
+    /// **16b cut Y.2**: `[tacsim.command]` passes at its shipped values and
+    /// refuses each edge past its band in Q.7's sentence, naming the key and the
+    /// value the operator wrote.
+    #[test]
+    fn y2_the_command_block_validates_by_name() {
+        assert_eq!(CommandConfig::default().validate(), Ok(()));
+        assert_eq!(
+            CommandConfig {
+                max_span: 32,
+                orders_per_minute: 600,
+            }
+            .validate(),
+            Ok(()),
+            "both upper edges are legal"
+        );
+        for (config, sentence) in [
+            (
+                CommandConfig {
+                    max_span: 0,
+                    ..CommandConfig::default()
+                },
+                "[tacsim.command].max_span must be 1 to 32 (it is 0)",
+            ),
+            (
+                CommandConfig {
+                    max_span: 33,
+                    ..CommandConfig::default()
+                },
+                "[tacsim.command].max_span must be 1 to 32 (it is 33)",
+            ),
+            (
+                CommandConfig {
+                    orders_per_minute: 0,
+                    ..CommandConfig::default()
+                },
+                "[tacsim.command].orders_per_minute must be 1 to 600 (it is 0)",
+            ),
+            (
+                CommandConfig {
+                    orders_per_minute: 601,
+                    ..CommandConfig::default()
+                },
+                "[tacsim.command].orders_per_minute must be 1 to 600 (it is 601)",
+            ),
+        ] {
+            assert_eq!(config.validate(), Err(sentence.to_string()));
+        }
+    }
 }

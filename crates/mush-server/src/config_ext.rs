@@ -342,6 +342,12 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             // 16b cut D.3 (`B-33`): how long a match every pilot has left runs on.
             unattended_ms: cfg.match_.unattended_ms,
         },
+        // 16b cut Y.2 (doc 16 W8): the span of control and the order rate,
+        // mapped straight across and checked below with the rest.
+        command: tacsim::config::CommandConfig {
+            max_span: cfg.command.max_span,
+            orders_per_minute: cfg.command.orders_per_minute,
+        },
         sensors: tacsim::config::SensorsConfig {
             pass_ms: cfg.sensors.pass_ms,
             max_signature_factor_permille: signature_factor_permille(
@@ -393,6 +399,11 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
     // them, exactly as it bypasses this whole function.
     typed.arena.validate()?;
     typed.match_.validate()?;
+    // 16b cut Y.2: `[tacsim.command]` in the same pattern. Like every block
+    // here it is validated whether or not the layer is on (16c section 6's Q35
+    // ruling): a nonsense value in a file that turns the layer on later must not
+    // have booted clean the day before.
+    typed.command.validate()?;
     typed.sensors.validate()?;
     typed.harness.validate()?;
     // Verify here, at the host, so the boot fails with the file's name in the message.
@@ -983,6 +994,9 @@ mod tests {
              max_slots_per_side = 4\n\
              ai_fill = true\n\
              unattended_ms = 45000\n\
+             [tacsim.command]\n\
+             max_span = 2\n\
+             orders_per_minute = 30\n\
              [tacsim.sensors]\n\
              pass_ms = 750\n\
              max_signature_factor = 2.25\n\
@@ -1067,6 +1081,14 @@ mod tests {
                 unattended_ms: 45_000,
             }
         );
+        // 16b cut Y.2 (doc 16 W8): the span and the rate, mapped straight across.
+        assert_eq!(
+            typed.command,
+            tacsim::config::CommandConfig {
+                max_span: 2,
+                orders_per_minute: 30,
+            }
+        );
         assert_eq!(
             typed.sensors,
             tacsim::config::SensorsConfig {
@@ -1111,6 +1133,7 @@ mod tests {
         let defaults = tacsim_config(&TacsimCfg::default()).expect("the defaults map");
         assert_eq!(defaults.arena, tacsim::config::ArenaConfig::default());
         assert_eq!(defaults.match_, tacsim::config::MatchConfig::default());
+        assert_eq!(defaults.command, tacsim::config::CommandConfig::default());
         assert_eq!(defaults.sensors, tacsim::config::SensorsConfig::default());
         assert_eq!(
             defaults.resolution,
@@ -1407,6 +1430,33 @@ mod tests {
                 "[tacsim.arena.reflex].hunt_after_ms",
                 "500",
             ),
+            // 16b cut Y.2 (doc 16 W8): a span of nought commands nothing and one
+            // past a side's most squads never binds; a rate of nought is no
+            // orders and ten a second is no floor.
+            (
+                "[tacsim.command]",
+                "max_span = 0\n",
+                "[tacsim.command].max_span",
+                "0",
+            ),
+            (
+                "[tacsim.command]",
+                "max_span = 33\n",
+                "[tacsim.command].max_span",
+                "33",
+            ),
+            (
+                "[tacsim.command]",
+                "orders_per_minute = 0\n",
+                "[tacsim.command].orders_per_minute",
+                "0",
+            ),
+            (
+                "[tacsim.command]",
+                "orders_per_minute = 601\n",
+                "[tacsim.command].orders_per_minute",
+                "601",
+            ),
         ] {
             let cfg = tacsim_cfg(&format!("{block}\n{body}"));
             let error = tacsim_config(&cfg)
@@ -1449,9 +1499,10 @@ mod tests {
     /// **16b cut Q.7: every shipped config's arena values pass the validators.**
     ///
     /// The template is read as it ships, with its `__PLACEHOLDER__`s still in it
-    /// — so only the blocks that carry none are lifted out, which is all four of
-    /// them: the template says in its own comment that *nothing here is
-    /// per-instance*, and that is now a checked claim rather than a remark.
+    /// — so only the blocks that carry none are lifted out, which is all five of
+    /// them (16b cut Y.2 added `[tacsim.command]`): the template says in its own
+    /// comment that *nothing here is per-instance*, and that is now a checked
+    /// claim rather than a remark.
     #[test]
     fn q7_every_shipped_config_passes_the_arena_validators() {
         #[derive(serde::Deserialize)]
@@ -1475,6 +1526,7 @@ mod tests {
                 if trimmed.starts_with('[') {
                     keeping = trimmed.starts_with("[tacsim.arena")
                         || trimmed.starts_with("[tacsim.match]")
+                        || trimmed.starts_with("[tacsim.command]")
                         || trimmed.starts_with("[tacsim.sensors]")
                         || trimmed.starts_with("[tacsim.harness]");
                 }

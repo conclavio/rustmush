@@ -492,6 +492,45 @@ pub enum CockpitError {
     /// **`ORDER ALL` with nothing to order** (16b cut Y.1).
     #[error("{NO_SQUAD_TO_ORDER}")]
     NoSquadToOrder,
+    /// **One more squad would be past the span** (16b cut Y.2; doc 16 §2 W8,
+    /// `[tacsim.command].max_span`): the pilot already holds live orders on
+    /// `held` squads the order does not name, and those alone fill the span —
+    /// so no squad can be ordered, one or `ALL`, until one runs out.
+    ///
+    /// The span holds until the world's watch on each of those squads runs out
+    /// ([`HUMAN_ORDER_TTL_MS`]): the world never learns that the arena ended
+    /// an order early (16b cut AA.1, `B-41`), and nothing hands a squad back
+    /// (16c Q44, cut Z's). So the sentence says to wait for one to run out,
+    /// which is the one thing that frees the span, and says nothing of
+    /// re-ordering one of them — a replacement frees nothing.
+    #[error("You hold orders on {held} squad(s) already; wait for one to run out.")]
+    SpanFull {
+        /// Live orders on squads other than the one named.
+        held: usize,
+    },
+    /// **`ORDER ALL` would be past the span** (16b cut Y.2): the squads the
+    /// pilot holds besides the ones `ALL` names, plus those, is more than
+    /// `span`, while the ones it does not name leave room for one more. The
+    /// grammar takes one squad or `ALL`, and one squad at a time does pass, so
+    /// the sentence says to order them one at a time.
+    #[error(
+        "ORDER ALL would put {would} squads under you; your span is {span}. Order them one at \
+         a time."
+    )]
+    SpanAll {
+        /// The squads the pilot would hold, the ones `ALL` names included.
+        would: usize,
+        /// `[tacsim.command].max_span`.
+        span: u32,
+    },
+    /// **Past the order rate** (16b cut Y.2; doc 16 §2 W8's human trigger,
+    /// `[tacsim.command].orders_per_minute`): `n` orders in the last sixty
+    /// world seconds.
+    #[error("You have given {n} orders in the last minute; wait.")]
+    RateFull {
+        /// Orders given in the window.
+        n: u32,
+    },
     /// The unit carries no weapon by that name.
     #[error("That unit carries no weapon called `{0}`.")]
     NoSuchWeapon(String),
@@ -4889,11 +4928,23 @@ pub(crate) fn command_of(
 ///    machines never fire on their own side), so the order is a bare `ENGAGE`;
 /// 5. **the order** — `issuer: Some(own tank)`, [`HUMAN_ORDER_TTL_MS`] as both
 ///    time to live and horizon, validated against the window;
-/// 6. **the fan-out** — [`crate::arena_bridge::forward_order`] per squad (the
+/// 6. **the span** (16b cut Y.2; doc 16 §2 W8) — the squads the pilot holds a
+///    live order on ([`ArenaRegistry::live_orders_of`]) that this order does not
+///    name, plus those it names, may not pass `[tacsim.command].max_span`
+///    ([`span_refusal`]: [`CockpitError::SpanFull`] when the others alone fill
+///    the span, [`CockpitError::SpanAll`] when only `ALL`'s several squads pass
+///    it). A replacement of a squad's own live order never counts;
+/// 7. **the rate** (16b cut Y.2) — one stamp per `ORDER`
+///    ([`ArenaRegistry::note_order_stamp`]), refused past
+///    `[tacsim.command].orders_per_minute` in sixty world seconds
+///    ([`CockpitError::RateFull`]). Taken after the span and before the
+///    fan-out, so an order no unit could be offered still spent it. Both are
+///    reads and writes on the world's own RAM: a refusal reaches no pulse;
+/// 8. **the fan-out** — [`crate::arena_bridge::forward_order`] per squad (the
 ///    seat authorised once, on the pilot's own tank), `Busy` when no unit could
 ///    be offered, and the world's watch on each squad reached
 ///    ([`ArenaRegistry::note_human_order`]);
-/// 7. **the acknowledgement** ([`order_ack`]) to the issuer alone — nothing to
+/// 9. **the acknowledgement** ([`order_ack`]) to the issuer alone — nothing to
 ///    the room and nothing to the side: 16c Q38's *no radio line*.
 ///
 /// It writes no document; the arena journals one `ordered` line per unit the
@@ -5024,7 +5075,30 @@ fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
             .map_err(|why| CockpitError::Usage(why.to_string()))?;
     }
 
-    // (6) The fan-out: the seat authorised once, on the issuer's own tank.
+    // (6) The span (16b cut Y.2; doc 16 §2 W8), on the world's own watch. The
+    // squads this order names are out of `others`, so re-ordering a squad the
+    // pilot already holds never counts against them.
+    let command_cfg = crate::match_::lobby::command_config(ctx.w).unwrap_or_default();
+    let named: std::collections::BTreeSet<crate::deliberation::SquadId> =
+        targets.iter().map(|(squad, _, _)| *squad).collect();
+    let live = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .map(|registry| registry.live_orders_of(match_id, seat.unit, now_ms))
+        .unwrap_or_default();
+    let others = live.difference(&named).count();
+    if let Some(refusal) = span_refusal(others, named.len(), command_cfg.max_span) {
+        return Err(refusal);
+    }
+
+    // (7) The rate: one stamp per `ORDER`, spent before the fan-out.
+    if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+        registry
+            .note_order_stamp(seat.unit, now_ms, command_cfg.orders_per_minute)
+            .map_err(|n| CockpitError::RateFull { n })?;
+    }
+
+    // (8) The fan-out: the seat authorised once, on the issuer's own tank.
     let mut reached: Vec<(crate::deliberation::SquadId, String)> = Vec::new();
     for (squad, units, who) in targets {
         let offered = crate::arena_bridge::forward_order(
@@ -5054,7 +5128,7 @@ fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
         }
     }
 
-    // (7) The acknowledgement, to the issuer alone.
+    // (9) The acknowledgement, to the issuer alone.
     let who: Vec<String> = reached.into_iter().map(|(_, who)| who).collect();
     let line = order_ack(
         &who,
@@ -5067,6 +5141,35 @@ fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
     );
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
     Ok(())
+}
+
+/// **The span's answer** (16b cut Y.2; doc 16 §2 W8): `others` squads the
+/// issuer holds a live order on that this order does not name, `named` squads
+/// it names, `max_span` the configured span. `None` when `others + named` fits.
+///
+/// The sentence is chosen by what would pass, never by the squad word, so each
+/// says only what is true:
+///
+/// - `others` alone fill the span — no squad at all can be ordered until one of
+///   them runs out, whether the pilot named one or `ALL` (a wingman's `ALL`
+///   names one squad, and so may an ex-lead's): [`CockpitError::SpanFull`];
+/// - `others` leave room but `ALL`'s several squads pass it — ordering them one
+///   at a time does pass: [`CockpitError::SpanAll`]. One squad named can never
+///   land here (`others + 1 > max_span` is `others >= max_span`).
+#[must_use]
+fn span_refusal(others: usize, named: usize, max_span: u32) -> Option<CockpitError> {
+    let span = usize::try_from(max_span).unwrap_or(usize::MAX);
+    let would = others.saturating_add(named);
+    if would <= span {
+        None
+    } else if others >= span {
+        Some(CockpitError::SpanFull { held: others })
+    } else {
+        Some(CockpitError::SpanAll {
+            would,
+            span: max_span,
+        })
+    }
 }
 
 /// **`ORDER`'s acknowledgement** (16b cut Y.1) — what the order means, in the
@@ -6548,6 +6651,63 @@ mod tests {
         assert_eq!(
             CockpitError::NoSquadToOrder.to_string(),
             "You have no squad to order."
+        );
+    }
+
+    /// **16b cut Y.2** (doc 16 §2 W8): the span's two sentences and the rate's,
+    /// verbatim — each says only what is true: waiting is what frees a span, and
+    /// the grammar takes one squad or `ALL`.
+    #[test]
+    fn y2_the_span_and_rate_refusals_read_verbatim() {
+        assert_eq!(
+            CockpitError::SpanFull { held: 1 }.to_string(),
+            "You hold orders on 1 squad(s) already; wait for one to run out."
+        );
+        assert_eq!(
+            CockpitError::SpanAll { would: 5, span: 4 }.to_string(),
+            "ORDER ALL would put 5 squads under you; your span is 4. Order them one at a time."
+        );
+        assert_eq!(
+            CockpitError::RateFull { n: 12 }.to_string(),
+            "You have given 12 orders in the last minute; wait."
+        );
+    }
+
+    /// **16b cut Y.2** (doc 16 §2 W8): the span's sentence is chosen by what
+    /// would pass, not by the squad word. `ALL`'s *one at a time* only when one
+    /// at a time does pass (the others leave room); *wait for one to run out*
+    /// whenever the others alone fill the span — including an `ALL` that names
+    /// one squad, as a wingman's does.
+    #[test]
+    fn y2_the_span_sentence_says_what_would_pass() {
+        // Inside the span, a replacement included (named, not other): nothing.
+        assert_eq!(span_refusal(0, 1, 1), None);
+        assert_eq!(span_refusal(3, 1, 4), None);
+        assert_eq!(span_refusal(0, 4, 4), None);
+        // One squad named past the span — or `ALL` naming one squad, which is
+        // the same count: the others fill it, so waiting, never "one at a
+        // time", which would be refused as well.
+        assert_eq!(
+            span_refusal(1, 1, 1),
+            Some(CockpitError::SpanFull { held: 1 })
+        );
+        assert_eq!(
+            span_refusal(4, 1, 4),
+            Some(CockpitError::SpanFull { held: 4 })
+        );
+        // `ALL` naming several past the span with room for one: one at a time.
+        assert_eq!(
+            span_refusal(2, 3, 4),
+            Some(CockpitError::SpanAll { would: 5, span: 4 })
+        );
+        assert_eq!(
+            span_refusal(0, 5, 4),
+            Some(CockpitError::SpanAll { would: 5, span: 4 })
+        );
+        // `ALL` naming several while the others already fill it: waiting.
+        assert_eq!(
+            span_refusal(4, 3, 4),
+            Some(CockpitError::SpanFull { held: 4 })
         );
     }
 

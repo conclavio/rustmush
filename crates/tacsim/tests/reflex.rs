@@ -8709,3 +8709,140 @@ fn m2_a_weapon_ready_between_the_tick_and_the_substep_end_waits_for_the_next_tic
          the coaxial, and the cannon waits for the next one"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut Y.2 — W8's read: the squads under a live order, per issuer
+// ---------------------------------------------------------------------------
+
+/// A ten-minute-or-`ttl_ms` `HOLD` for `squad`, as `issuer` gave it.
+fn y2_hold(
+    squad: tacsim::deliberation::SquadId,
+    issuer: Option<ObjId>,
+    ttl_ms: u32,
+) -> tacsim::deliberation::Order {
+    tacsim::deliberation::Order {
+        squad,
+        objective: tacsim::deliberation::Objective::Hold,
+        target: None,
+        horizon_ms: ttl_ms,
+        constraints: tacsim::deliberation::Constraints {
+            hold_fire: false,
+            max_range_band: None,
+        },
+        ttl_ms,
+        issued_ms: 0,
+        issuer,
+        spot: None,
+    }
+}
+
+/// **16b cut Y.2** (doc 16 §2 W8): [`Arena::live_orders_by_issuer`] files each
+/// live order's squad under the order's issuer, files an order with no issuer —
+/// the LLM seam's — under the squad commander of the unit it steers, drops an
+/// expired one, and answers empty for an arena with no orders at all.
+///
+/// Four red machines are two squads of pairs (`MIN_UNITS_TO_SPLIT` is four);
+/// the seated red tank is the pilot who orders both, and is in no squad.
+#[test]
+fn y2_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_commander() {
+    let reds = [ObjId(20), ObjId(21), ObjId(22), ObjId(23)];
+    let mut units: Vec<CustodyUnit> = reds
+        .iter()
+        .zip([1_u16, 3, 5, 7])
+        .map(|(id, x)| {
+            tank(
+                *id,
+                Team::Red,
+                centre(x, 1),
+                vec![cannon()],
+                Controller::Reflex,
+            )
+        })
+        .collect();
+    units.push(tank(
+        Y1_PILOT,
+        Team::Red,
+        centre(1, 4),
+        Vec::new(),
+        Controller::Pilot,
+    ));
+    units.push(tank(
+        BLUE,
+        Team::Blue,
+        centre(14, 14),
+        Vec::new(),
+        Controller::Pilot,
+    ));
+    let mut arena = arena_of(units, &[], &arena_cfg(reflex_cfg()), &[Y1_PILOT, BLUE]);
+    assert!(
+        arena.live_orders_by_issuer(0).is_empty(),
+        "no order, no commander"
+    );
+
+    let squad_of = |arena: &Arena, unit: ObjId| {
+        arena
+            .squad_of(unit)
+            .map(|roster| (roster.id, roster.commander))
+            .expect("every red machine is in a squad")
+    };
+    let (first, _) = squad_of(&arena, reds[0]);
+    let (second, second_commander) = squad_of(&arena, reds[2]);
+    assert_ne!(first, second, "four machines are two squads");
+    assert_eq!(squad_of(&arena, reds[1]).0, first);
+    assert_eq!(squad_of(&arena, reds[3]).0, second);
+    assert!(
+        arena.squad_of(Y1_PILOT).is_none(),
+        "a pilot's tank is in no squad"
+    );
+
+    let standing = |order, at| tacsim::deliberation::StandingOrder::accepted(order, at);
+    // The pilot orders both squads: one squad counts once however many of its
+    // units carry the order.
+    arena.reflex.set_order(
+        reds[0],
+        standing(y2_hold(first, Some(Y1_PILOT), 600_000), 0),
+    );
+    arena.reflex.set_order(
+        reds[2],
+        standing(y2_hold(second, Some(Y1_PILOT), 600_000), 0),
+    );
+    // The machines' own order, on the second squad's wingman: filed under that
+    // squad's commander.
+    arena
+        .reflex
+        .set_order(reds[3], standing(y2_hold(second, None, 600_000), 0));
+    // A third issuer's order that ran out at 30 s.
+    arena.reflex.set_order(
+        reds[1],
+        standing(y2_hold(first, Some(ObjId(77)), 30_000), 0),
+    );
+
+    let live = arena.live_orders_by_issuer(100_000);
+    let want: std::collections::BTreeMap<
+        Option<ObjId>,
+        std::collections::BTreeSet<tacsim::deliberation::SquadId>,
+    > = [
+        (Some(Y1_PILOT), [first, second].into_iter().collect()),
+        (Some(second_commander), [second].into_iter().collect()),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        live, want,
+        "two squads under the pilot, one under the commander"
+    );
+    assert_eq!(
+        second_commander, reds[2],
+        "the commander is the lowest id of its pair"
+    );
+    // Before the third issuer's order ran out it was there too.
+    assert_eq!(
+        arena
+            .live_orders_by_issuer(29_999)
+            .get(&Some(ObjId(77)))
+            .map(std::collections::BTreeSet::len),
+        Some(1)
+    );
+    // And at the ten minutes every order has run out.
+    assert!(arena.live_orders_by_issuer(600_000).is_empty());
+}

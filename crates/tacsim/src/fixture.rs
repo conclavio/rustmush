@@ -139,6 +139,8 @@ pub fn config() -> TacsimConfig {
         // considered here rather than silently appearing in every fixture.
         arena: crate::config::ArenaConfig::default(),
         match_: crate::config::MatchConfig::default(),
+        // 16b cut Y.2: the span and the rate, at their defaults.
+        command: crate::config::CommandConfig::default(),
         sensors: crate::config::SensorsConfig::default(),
         resolution: crate::config::ResolutionConfig::default(),
         harness: crate::config::HarnessConfig::default(),

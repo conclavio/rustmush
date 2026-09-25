@@ -1816,6 +1816,343 @@ fn blocked_causes_of(bytes: &[u8]) -> [u64; 4] {
     causes
 }
 
+// ---- 16b cut Y.2: doc 16 §2 W8, off the black box ------------------------
+
+/// **One `ordered` line, as W8's counter reads it** (16b cut Y.2): the arena
+/// millisecond it landed at, who gave it — the pilot's own tank, `None` for the
+/// LLM seam — and the squad it names, by its word (`red-1`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OrderedLine {
+    t_ms: i64,
+    issuer: Option<ObjId>,
+    squad: String,
+}
+
+/// **Every `ordered` line in a chunk** (16b cut Y.2), parsed whole: the line is
+/// rare (none on a cohort with the LLM off and no human), so a full
+/// `LedgerEvent` per line costs nothing the substring scan above does not.
+///
+/// A line that says `ordered` and does not parse **fails the run** rather than
+/// dropping out: a dropped line would read `orders=0` beside a positive
+/// `ordered_lines` and let W8's rate bound pass on nothing
+/// ([`CommandFigures::of`] checks the two counts agree as well).
+fn ordered_lines_of(bytes: &[u8]) -> Vec<OrderedLine> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .filter(|line| line.contains("\"kind\":\"ordered\""))
+        .map(|line| {
+            serde_json::from_str::<tacsim::arena::ledger::LedgerEvent>(line).unwrap_or_else(|e| {
+                panic!("W8: an `ordered` line the harness cannot read ({e}): {line}")
+            })
+        })
+        .filter_map(|event| match event.kind {
+            tacsim::arena::ledger::EventKind::Ordered { issuer, squad, .. } => Some(OrderedLine {
+                t_ms: event.t_ms,
+                issuer,
+                squad: squad.to_string(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **W8's two tape figures** (16b cut Y.2): `(orders,
+/// orders_per_commander_minute_max)`.
+///
+/// `orders` is the number of **distinct `(issuer-or-commander, t_ms)` pairs**:
+/// the arena journals one `ordered` line **per unit** an order lands on, at the
+/// pulse's `now_ms`, so counting lines would score a legal `ORDER ALL` to four
+/// pairs as eight. A line with no issuer (the LLM seam's) is filed under the
+/// commander of the squad it names, so the machines' own orders count against
+/// the commander that asked for them.
+///
+/// A pair **approximates** an order, in both directions, because the line
+/// carries the pulse's time and not the world's `issued_ms` (16b cut Y.1's
+/// note): one `ORDER` whose offers straddle a pulse on the world path is two
+/// pairs (an over-count), and two `ORDER`s from one issuer forwarded between the
+/// same two pulses — up to 5 000 ms apart at the quiet tempo — share a `t_ms`
+/// and are one pair (an under-count, which lets an overrun of the rate bound
+/// below pass unseen). Neither happens on this file's lanes: the arena lanes
+/// give no order, and the cost lane applies each order synchronously between
+/// two steps, at most one per squad a pulse and each under its own commander,
+/// so there a pair is exactly one order. The exact count on the world path needs
+/// `issued_ms` on the `ordered` line, which moves the ledger event set and is a
+/// 16c residual, not this cut's.
+///
+/// `orders_per_commander_minute_max` is the largest number of those pairs one
+/// issuer has inside any sixty **arena** seconds (`[t, t + 60 000)`). It is
+/// arena time; `ArenaRegistry::note_order_stamp` enforces the bound in world
+/// time, and the two differ by the arena's lag, which on this harness is none.
+fn orders_on_tape(
+    lines: &[OrderedLine],
+    squads: &[tacsim::deliberation::SquadRoster],
+) -> (u64, u64) {
+    let commander = |word: &str| {
+        squads
+            .iter()
+            .find(|roster| roster.id.to_string() == word)
+            .map(|roster| roster.commander)
+    };
+    let pairs: std::collections::BTreeSet<(Option<ObjId>, i64)> = lines
+        .iter()
+        .map(|line| (line.issuer.or_else(|| commander(&line.squad)), line.t_ms))
+        .collect();
+    // The set is ordered by issuer and then by time, so each issuer's stamps
+    // arrive sorted.
+    let mut per_issuer: BTreeMap<Option<ObjId>, Vec<i64>> = BTreeMap::new();
+    for (issuer, t_ms) in &pairs {
+        per_issuer.entry(*issuer).or_default().push(*t_ms);
+    }
+    let mut busiest = 0_usize;
+    for stamps in per_issuer.values() {
+        for (at, start) in stamps.iter().enumerate() {
+            let inside = stamps
+                .get(at..)
+                .unwrap_or_default()
+                .iter()
+                .take_while(|t_ms| **t_ms < start.saturating_add(60_000))
+                .count();
+            busiest = busiest.max(inside);
+        }
+    }
+    (
+        u64::try_from(pairs.len()).unwrap_or(u64::MAX),
+        u64::try_from(busiest).unwrap_or(u64::MAX),
+    )
+}
+
+/// **W8's figures for one run** (16b cut Y.2; doc 16 §2 W8, *the Compact caps
+/// span of control* and *orders per commander per minute bounded*).
+struct CommandFigures {
+    /// `[tacsim.command].max_span`, as the harness configures it.
+    max_span: u32,
+    /// `[tacsim.command].orders_per_minute`, likewise.
+    orders_per_minute: u32,
+    /// `arena.squads.len()`.
+    squads: usize,
+    /// One a squad.
+    commanders: usize,
+    /// Every `ordered` line on the tape: one per unit an order landed on.
+    ordered_lines: u64,
+    /// One per order ([`orders_on_tape`]).
+    orders: u64,
+    /// The busiest issuer's orders in any sixty arena seconds.
+    orders_per_commander_minute_max: u64,
+    /// The most squads under one issuer's live orders at the run's end
+    /// (`Arena::live_orders_by_issuer`, an arena-time figure).
+    span_max: usize,
+}
+
+impl CommandFigures {
+    /// Read off the run's arena, its configured block and its tape.
+    fn of(
+        arena: &tacsim::arena::state::Arena,
+        cfg: &tacsim::config::CommandConfig,
+        ordered_lines: u64,
+        tape: &[OrderedLine],
+    ) -> CommandFigures {
+        // Every counted line was read: the substring count and the parse agree,
+        // or W8's figures below would be off a partial tape.
+        assert_eq!(
+            u64::try_from(tape.len()).unwrap_or(u64::MAX),
+            ordered_lines,
+            "W8: every `ordered` line on the tape is read for the per-order figures"
+        );
+        let (orders, orders_per_commander_minute_max) = orders_on_tape(tape, &arena.squads);
+        let span_max = arena
+            .live_orders_by_issuer(arena.now_ms)
+            .values()
+            .map(std::collections::BTreeSet::len)
+            .max()
+            .unwrap_or(0);
+        CommandFigures {
+            max_span: cfg.max_span,
+            orders_per_minute: cfg.orders_per_minute,
+            squads: arena.squads.len(),
+            commanders: arena.squads.len(),
+            ordered_lines,
+            orders,
+            orders_per_commander_minute_max,
+            span_max,
+        }
+    }
+
+    /// The `harness_arena_command` line. `orders_per_commander_minute_max` is
+    /// counted in arena time and `span_max` read in arena time; the world
+    /// enforces both in world time.
+    fn line(&self, cohort: &str) -> String {
+        format!(
+            "harness_arena_command: cohort={cohort} max_span={} orders_per_minute={} squads={} \
+             commanders={} ordered_lines={} orders={} orders_per_commander_minute_max={} \
+             span_max={}",
+            self.max_span,
+            self.orders_per_minute,
+            self.squads,
+            self.commanders,
+            self.ordered_lines,
+            self.orders,
+            self.orders_per_commander_minute_max,
+            self.span_max
+        )
+    }
+
+    /// The report's `"command"` object — reported, and deliberately **not** in
+    /// [`DETERMINISTIC_OBJECTS`]: the committed baseline predates it, and a
+    /// later cut that scripts human orders on the cohort may promote it.
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "max_span": self.max_span,
+            "orders_per_minute": self.orders_per_minute,
+            "squads": self.squads,
+            "commanders": self.commanders,
+            "ordered_lines": self.ordered_lines,
+            "orders": self.orders,
+            "orders_per_commander_minute_max": self.orders_per_commander_minute_max,
+            "span_max": self.span_max,
+        })
+    }
+
+    /// **W8, asserted** (the CI cohort under `TACSIM_ASSERT`).
+    fn assert_bounded(&self) {
+        let span = usize::try_from(self.max_span).unwrap_or(usize::MAX);
+        assert!(
+            self.span_max <= span,
+            "W8: {} squads under one commander, over [tacsim.command].max_span {}",
+            self.span_max,
+            self.max_span
+        );
+        assert!(
+            self.orders_per_commander_minute_max <= u64::from(self.orders_per_minute),
+            "W8: {} orders from one commander in sixty arena seconds, over \
+             [tacsim.command].orders_per_minute {}",
+            self.orders_per_commander_minute_max,
+            self.orders_per_minute
+        );
+    }
+}
+
+/// **16b cut Y.2**: the `orders` counter counts one per order and never one per
+/// unit. Two lines at one arena millisecond from one issuer are one `ORDER`'s
+/// fan-out; the same issuer at another millisecond is a second; a line with no
+/// issuer counts under the commander of the squad it names, and a second such
+/// line at the same millisecond on another unit of that squad is the same one.
+#[test]
+fn y2_the_orders_counter_counts_orders_and_not_unit_lines() {
+    let squads = vec![
+        tacsim::deliberation::SquadRoster {
+            id: tacsim::deliberation::SquadId {
+                team: tacsim::arena::state::Team::Red,
+                index: 1,
+            },
+            commander: ObjId(20),
+            units: vec![ObjId(20), ObjId(21)],
+        },
+        tacsim::deliberation::SquadRoster {
+            id: tacsim::deliberation::SquadId {
+                team: tacsim::arena::state::Team::Red,
+                index: 2,
+            },
+            commander: ObjId(22),
+            units: vec![ObjId(22), ObjId(23)],
+        },
+    ];
+    // Every tape is **real ledger bytes**: `LedgerEvent` lines as the arena
+    // serialises them, one other kind between each, through `Counts::absorb` —
+    // the path the lanes take — so a change to the `ordered` wire shape fails
+    // here and not silently in W8's figures.
+    let tape = |lines: &[(i64, Option<u32>, &str)]| -> Vec<OrderedLine> {
+        let mut bytes = String::new();
+        let mut seq = 0_u64;
+        for (at, (t_ms, issuer, squad)) in lines.iter().enumerate() {
+            let unit = ObjId(100 + u32::try_from(at).unwrap_or(0));
+            for kind in [
+                tacsim::arena::ledger::EventKind::Ordered {
+                    unit,
+                    squad: (*squad).into(),
+                    issuer: issuer.map(ObjId),
+                    objective: "hold".into(),
+                    target: None,
+                    spot: None,
+                    hold_fire: false,
+                    ttl_ms: 600_000,
+                },
+                tacsim::arena::ledger::EventKind::Void,
+            ] {
+                seq += 1;
+                let event = tacsim::arena::ledger::LedgerEvent {
+                    seq,
+                    t_ms: *t_ms,
+                    kind,
+                    draws: Vec::new(),
+                    hash: 0,
+                };
+                bytes.push_str(&serde_json::to_string(&event).expect("a ledger line serialises"));
+                bytes.push('\n');
+            }
+        }
+        let mut counts = Counts::default();
+        counts.absorb(bytes.as_bytes());
+        let want = u64::try_from(lines.len()).unwrap_or(u64::MAX);
+        assert_eq!(counts.ordered_lines, want, "one `ordered` line a unit");
+        assert_eq!(
+            counts.ordered,
+            lines
+                .iter()
+                .map(|(t_ms, issuer, squad)| OrderedLine {
+                    t_ms: *t_ms,
+                    issuer: issuer.map(ObjId),
+                    squad: (*squad).to_string(),
+                })
+                .collect::<Vec<_>>(),
+            "every line read back as written"
+        );
+        counts.ordered
+    };
+    // One `ORDER` to a pair: two lines, one pulse, one order.
+    let one = tape(&[(1_000, Some(5), "red-1"), (1_000, Some(5), "red-1")]);
+    assert_eq!(orders_on_tape(&one, &squads), (1, 1));
+    // The same issuer again a pulse later: two.
+    let two = tape(&[(1_000, Some(5), "red-1"), (1_500, Some(5), "red-2")]);
+    assert_eq!(orders_on_tape(&two, &squads), (2, 2));
+    // `ORDER ALL` to both squads lands in one pulse: one.
+    let all = tape(&[
+        (2_000, Some(5), "red-1"),
+        (2_000, Some(5), "red-1"),
+        (2_000, Some(5), "red-2"),
+        (2_000, Some(5), "red-2"),
+    ]);
+    assert_eq!(orders_on_tape(&all, &squads), (1, 1));
+    // The machines' own order, both units of red-2, filed under its commander
+    // (22) — which is not the pilot, so the busiest issuer still has one.
+    let machine = tape(&[
+        (3_000, None, "red-2"),
+        (3_000, None, "red-2"),
+        (3_000, Some(5), "red-1"),
+    ]);
+    assert_eq!(orders_on_tape(&machine, &squads), (2, 1));
+    // And the same commander's own order at that millisecond is the same one.
+    let same = tape(&[(3_000, None, "red-2"), (3_000, Some(22), "red-2")]);
+    assert_eq!(orders_on_tape(&same, &squads), (1, 1));
+    // Sixty arena seconds is a half-open window: the stamp at +60 000 is the
+    // next minute's.
+    let minute = tape(&[
+        (0, Some(5), "red-1"),
+        (59_999, Some(5), "red-1"),
+        (60_000, Some(5), "red-1"),
+    ]);
+    assert_eq!(orders_on_tape(&minute, &squads), (3, 2));
+    assert_eq!(orders_on_tape(&tape(&[]), &squads), (0, 0));
+}
+
+/// **16b cut Y.2**: an `ordered` line the harness cannot read fails the run
+/// instead of dropping out of W8's figures.
+#[test]
+#[should_panic(expected = "an `ordered` line the harness cannot read")]
+fn y2_an_unreadable_ordered_line_fails_the_run() {
+    let mut counts = Counts::default();
+    counts.absorb(b"{\"seq\":1,\"t_ms\":0,\"kind\":\"ordered\",\"hash\":0}\n");
+}
+
 /// `<stem>-<suffix>.<ext>` beside the baseline's report, so the measurements do
 /// not overwrite each other's JSON: `arena` for the CI cohort,
 /// `arena-authored` for the authored reaches.
@@ -1855,6 +2192,10 @@ struct Counts {
     misses: u64,
     sections: u64,
     destroyed: u64,
+    /// **16b cut Y.2**: every `ordered` line, one per unit an order landed on.
+    ordered_lines: u64,
+    /// **16b cut Y.2**: those lines, parsed, for W8's per-order figures.
+    ordered: Vec<OrderedLine>,
 }
 
 impl Counts {
@@ -1874,6 +2215,9 @@ impl Counts {
         self.misses += occurrences(bytes, "\"kind\":\"miss\"");
         self.sections += occurrences(bytes, "\"kind\":\"section_destroyed\"");
         self.destroyed += occurrences(bytes, "\"kind\":\"unit_destroyed\"");
+        // 16b cut Y.2: the orders, off the same chunk.
+        self.ordered_lines += occurrences(bytes, "\"kind\":\"ordered\"");
+        self.ordered.extend(ordered_lines_of(bytes));
     }
 }
 
@@ -2810,6 +3154,15 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             .collect::<Vec<_>>()
             .join(" ")
     );
+    // **16b cut Y.2** (doc 16 §2 W8): the span of control and the order rate,
+    // at the harness's own `[tacsim.command]` (the defaults, as `arena_cfg` is),
+    // off the tape the ledger streamed and the reflex rows at the end. On a
+    // cohort with the LLM off and no human every figure but the two bounds and
+    // the squad count is nought, which is the truthful measurement; the
+    // enforcement itself is `tests/cockpit.rs`'s. Read after the measured loop.
+    let command_cfg = tacsim::config::CommandConfig::default();
+    let command = CommandFigures::of(&arena, &command_cfg, counts.ordered_lines, &counts.ordered);
+    println!("{}", command.line(cohort));
     println!(
         "harness_arena_perception_peak: cohort={cohort} passes={} candidates={} traces={} cell_probes={} jam_checks={} share_ops={} detected={} classified={} lost={}",
         peak.passes,
@@ -3070,6 +3423,9 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
                 ))
                 .collect::<BTreeMap<String, u32>>(),
         },
+        // 16b cut Y.2 (doc 16 §2 W8): reported, and not in the deterministic
+        // block — the committed baseline is untouched by decision.
+        "command": command.json(),
         // 16b cut U.2: the crate's reading on every platform, and Linux's own
         // beside it (`null` elsewhere).
         "memory": {
@@ -3182,6 +3538,9 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             reflex_peak.path_queries,
             knobs.max_path_queries_per_pulse
         );
+        // **16b cut Y.2** (doc 16 §2 W8): the span of control and the orders
+        // per commander per minute, bounded by `[tacsim.command]`.
+        command.assert_bounded();
     }
 }
 
@@ -4439,10 +4798,16 @@ fn tacsim_harness_llm_cost_run() {
     let mut issued = 0_u64;
     let mut refused = 0_u64;
     let mut expired = 0_u64;
+    // **16b cut Y.2**: this lane is the one that applies orders, so its tape is
+    // W8's only non-zero reading; kept as the arena lanes keep theirs.
+    let mut tape = Counts::default();
     let started = Instant::now();
     while arena.now_ms < until_ms {
         wall = wall.saturating_add(period_ms);
         let out = arena.step(wall, &[], &[]);
+        for chunk in &out.ledger_chunks {
+            tape.absorb(&chunk.bytes);
+        }
         arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
         expired = expired.saturating_add(u64::from(out.reflex.orders_expired));
         if out.ended.is_some() {
@@ -4501,6 +4866,21 @@ fn tacsim_harness_llm_cost_run() {
     let wall_s = started.elapsed().as_secs_f64();
     #[allow(clippy::cast_precision_loss)]
     let minutes = arena.now_ms as f64 / 60_000.0;
+    // Whatever is still open leaves with the tape.
+    arena.ledger.flush();
+    for chunk in arena.ledger.take_chunks() {
+        tape.absorb(&chunk.bytes);
+    }
+    // **16b cut Y.2** (doc 16 §2 W8): the same line the arena lanes print,
+    // **report-only** — this lane runs against OpenRouter when it is not mocked,
+    // and a provider's choices are not a bound this harness may fail on.
+    let command = CommandFigures::of(
+        &arena,
+        &tacsim::config::CommandConfig::default(),
+        tape.ordered_lines,
+        &tape.ordered,
+    );
+    println!("{}", command.line("cost"));
 
     // ---- the table ----
     let table = cost_table(
@@ -4546,6 +4926,8 @@ fn tacsim_harness_llm_cost_run() {
                           "orders_expired": expired,
                           "deliberate_min_ms": arena_cfg.deliberate_min_ms },
             "wall_seconds": num(wall_s),
+            // 16b cut Y.2: W8's figures, reported and never asserted here.
+            "command": command.json(),
             "columns": tacsim::deliberation::CostRow::COLUMNS,
             "table": table,
         }))

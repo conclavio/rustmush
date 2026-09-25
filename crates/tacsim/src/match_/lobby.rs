@@ -50,7 +50,7 @@ use smol_str::SmolStr;
 use crate::arena::state::{EndReason, StopReason, Team};
 use crate::arena_bridge::NOTICE_CATEGORY;
 use crate::arena_task::MatchId;
-use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
+use crate::config::{ArenaConfig, CommandConfig, MatchConfig, SensorsConfig};
 use crate::match_::centre::{self, CENTRE_ARENA, CentreRoom, PODS_PER_SIDE};
 use crate::match_::{MatchBook, MatchOutcome, MatchState, Side};
 
@@ -495,6 +495,16 @@ pub fn centre(w: &World) -> Option<&Centre> {
 pub(crate) fn configs(w: &World) -> Option<(ArenaConfig, MatchConfig, SensorsConfig)> {
     let cfg = w.module_state::<crate::TacsimStore>()?.config();
     Some((cfg.arena.clone(), cfg.match_.clone(), cfg.sensors.clone()))
+}
+
+/// The configured `[tacsim.command]` block (**16b cut Y.2**; doc 16 §2 W8):
+/// the span and the rate `ORDER` is held to, read from the one place
+/// [`configs`] reads, so the cockpit grows no second copy of where the blocks
+/// live.
+#[must_use]
+pub(crate) fn command_config(w: &World) -> Option<CommandConfig> {
+    let cfg = w.module_state::<crate::TacsimStore>()?.config();
+    Some(cfg.command.clone())
 }
 
 /// How many slots one side of **this** centre takes: the configured cap, held

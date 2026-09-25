@@ -306,6 +306,12 @@ ai_fill = true
 # least 10000 -- a few seconds would end a match over one pilot's reconnect.
 unattended_ms = 300000
 
+[tacsim.command]
+# (16b cut Y.2, doc 16 W8) the most squads one commander may hold a live ORDER on at once; 1..32
+max_span = 4
+# ORDERs one commander may give in sixty seconds; 1..600
+orders_per_minute = 12
+
 [tacsim.sensors]
 pass_ms = 1000
 # The only float; the host reads it as per mille (1.0 -> 1000). At least 1.0
