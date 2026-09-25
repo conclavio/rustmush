@@ -196,6 +196,70 @@ fn the_draw_label_set_is_pinned() {
 }
 
 // ---------------------------------------------------------------------------
+// 16b cut J.1: the early-stopping trace is the arena's
+// ---------------------------------------------------------------------------
+
+/// The source files allowed to call `mush_atlas::sight_only`, workspace-relative
+/// and sorted: the atlas, which defines it, and the arena's perception, whose
+/// `Arena::sight` is its one caller.
+const SIGHT_ONLY_FILES: [&str; 2] = [
+    "crates/mush-atlas/src/trace.rs",
+    "crates/tacsim/src/arena/perception.rs",
+];
+
+/// **`sight_only` is the arena's trace and nobody else's** (16b cut J.1; doc 16
+/// §3.2, §3.6).
+///
+/// `mush_atlas::sight_only` stops at the first blocker, which is the one
+/// exception to the atlas's O lens (its module head: *the walk never stops
+/// early … so its timing and its reads say nothing about the answer*). The
+/// exception is argued for the combat arena alone — the arena pass's cost already
+/// depends on the hidden field before any line is walked, through the index cull
+/// and the thermal cull, and no reader of the arena can time one line — and a
+/// world-side query that adopted it would reopen exactly the channel the atlas
+/// head forbids. So every `crates/*/src/**/*.rs` whose text calls `sight_only(`
+/// is collected and the set is pinned: a new caller is a reviewed diff here.
+/// (16b cut J.2 adds the arena's horizon index to it.)
+#[test]
+fn sight_only_is_the_arenas_trace_and_nobody_elses() {
+    let root = repo_root();
+    let crates = root.join("crates");
+    let Ok(entries) = fs::read_dir(&crates) else {
+        panic!("{} is not readable", crates.display());
+    };
+    let mut members: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    members.sort();
+    let mut files = Vec::new();
+    for member in members {
+        rust_files(&member.join("src"), &mut files);
+    }
+    assert!(
+        files.len() > 100,
+        "the scan found only {} source files under {}/*/src: the workspace moved, and this gate \
+         is now asserting nothing",
+        files.len(),
+        crates.display()
+    );
+    let mut callers: Vec<String> = files
+        .iter()
+        .filter(|path| fs::read_to_string(path).is_ok_and(|text| text.contains("sight_only(")))
+        .map(|path| {
+            path.strip_prefix(&root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+    callers.sort();
+    assert_eq!(
+        callers, SIGHT_ONLY_FILES,
+        "`mush_atlas::sight_only` stops at its first blocker, which the atlas's O lens allows the \
+         combat arena alone (16b cut J.1): a world-side trace keeps `trace_cells` or the walk, \
+         whose reads never depend on the answer"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 16b cut T.3 (T6): the custody markers are the only unit writes during a match
 // ---------------------------------------------------------------------------
 

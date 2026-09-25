@@ -75,8 +75,9 @@ pub use record::{
 pub use terrain::TerrainClass;
 pub use theme::{DescLength, Theme, resolve_place_theme, resolve_theme, world_theme};
 pub use trace::{
-    Blocker, CellGrid, CellTrace, Crossed, EYE_HEIGHT_CM, Eye, Hearing, Sight, Trace, beam_path,
-    direct_fire_path, hearing, indirect_fire_path, line_cells, line_of_sight, trace_cells,
+    Blocker, Bresenham, CellGrid, CellSight, CellTrace, Crossed, EYE_HEIGHT_CM, Eye, Hearing,
+    Sight, Trace, beam_path, canonical_ends, direct_fire_path, hearing, indirect_fire_path,
+    line_cells, line_height_cm, line_of_sight, sight_only, terrain_sight_rule, trace_cells,
 };
 pub use travel::{
     DEFAULT_DWELL_FLOOR_S, DEFAULT_REAL_CAP_S, End, Heading, HoldReason, JourneyId, JourneyRec,

@@ -21,7 +21,10 @@
 #   * the delta fails on any difference in the deterministic block, and on a
 #     timing figure more than 20 per cent slower on the host that blessed the
 #     file — a timing-only failure is re-run once before it is believed;
-#   * the CI job sets no TACSIM_ASSERT and fails on the delta alone.
+#   * the CI job sets no TACSIM_ASSERT and fails on the delta alone for a
+#     measurement; the sight differential (tacsim_harness_sight_differential,
+#     16b cut J.1) is a correctness lane that asserts always, so a sight
+#     mismatch fails the first step, here and in CI.
 #
 # TACSIM_BASELINE_BLESS=1 scripts/harness-weekly.sh re-blesses this platform's
 # baseline from the fresh report; an ordinary run never writes it.

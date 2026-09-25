@@ -68,14 +68,32 @@
 //! only on a fresh figure more than 20 per cent *slower*. `TACSIM_BASELINE_BLESS=1`
 //! writes the file from the fresh report instead. A report older than the test
 //! binary is refused, so a change is never judged on the last build's numbers.
-//! It is the one step that fails the CI job — which leaves the absolutes
-//! report-only, because it runs on a shared runner — while
+//! It is the one step that fails the CI job on a *measurement* — which leaves
+//! the absolutes report-only, because it runs on a shared runner; the J.1 sight
+//! differential below is a correctness lane and fails the first step on a
+//! mismatch, never on a number — while
 //! `scripts/harness-weekly.sh`, the one command the owner runs by hand, asserts
 //! the absolutes as well (D-16-19: *assert locally*).
 //!
+//! **The sight differential since 16b cut J.1** (16c N5 step 1). The arena's
+//! perception traces through `mush_atlas::sight_only`, which stops at the first
+//! blocker; `tacsim_harness_sight_differential`, on the same ignore string, walks
+//! it against `mush_atlas::trace_cells` on the shipped proving ground (the boot
+//! packs on, [`production_roster_with`]) — `TACSIM_SIGHT_ORIGINS` seeded origins
+//! (default 2,000), each against every cell within the shipped sight's sixty,
+//! both directions — and then on the harness relief with half as many origins,
+//! and asserts on every pair, whatever `TACSIM_ASSERT` says, that the two answer
+//! one sight. It is a correctness lane; its timings are printed and never
+//! asserted, and the delta does not read its JSON (`<stem>-sight.<ext>`).
+//!
 //! What it must not do (16b §9's `H` row): touch `mush-sim` or `mush-atlas` — a
 //! harness that needs a new API in the thing it measures is measuring its own
-//! change — assert by default, or run on push.
+//! change — assert by default, or run on push. The ban on asserting by default
+//! covers the thresholds — timings, budgets, bounds — and nothing else: the sight
+//! differential (16b cut J.1) is a correctness lane that asserts always, because
+//! a wrong sight is a bug on any runner; and `sight_only` is the arena's trace,
+//! built for the arena (16c N5), which the lane only checks, not an API the
+//! harness asked for.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -141,6 +159,10 @@ struct Knobs {
     /// **`TACSIM_LONG_RUN_S`** (16b cut U.2): the long-run lane's measured
     /// window, arena seconds. Default [`DEFAULT_LONG_RUN_S`].
     long_run_s: u32,
+    /// **`TACSIM_SIGHT_ORIGINS`** (16b cut J.1): how many seeded origins the
+    /// sight differential walks on the proving ground (half as many on the
+    /// relief). Default [`DEFAULT_SIGHT_ORIGINS`].
+    sight_origins: u64,
 }
 
 fn env_u64(name: &str, fallback: u64) -> u64 {
@@ -179,6 +201,7 @@ impl Knobs {
             max_frame_bytes: cfg.max_frame_bytes,
             max_output_events_per_pulse: cfg.max_output_events_per_pulse,
             long_run_s: env_u32("TACSIM_LONG_RUN_S", DEFAULT_LONG_RUN_S),
+            sight_origins: env_u64("TACSIM_SIGHT_ORIGINS", DEFAULT_SIGHT_ORIGINS),
         }
     }
 }
@@ -196,6 +219,11 @@ const DEFAULT_LONG_RUN_S: u32 = 600;
 
 /// How often the long run reads resident memory, arena seconds.
 const LONG_RUN_SAMPLE_S: i64 = 60;
+
+/// **The sight differential's origins on the proving ground** (16b cut J.1),
+/// each against every cell within [`SIGHT_REACH_CELLS`]: about 45 million
+/// ordered pairs. The relief gets half as many.
+const DEFAULT_SIGHT_ORIGINS: u64 = 2_000;
 
 /// The fixed seed, so a run with no environment at all is reproducible.
 const DEFAULT_SEED: u64 = 2_350;
@@ -527,6 +555,14 @@ fn area_pack(region_digest: &str) -> String {
 /// engaged and which has no provider at all — doc 16 §2's W7, "the harness runs
 /// with the LLM disabled".
 fn production_roster(atlas: AtlasConfig) -> Vec<Box<dyn GameModule>> {
+    production_roster_with(atlas, false)
+}
+
+/// [`production_roster`] with the game's own boot packs on or off (16b cut
+/// J.1): `boot_packs` is `content_module_with`'s second argument, and `true`
+/// puts the shipped proving ground in the world's records, which the sight
+/// differential walks. Every other lane runs with it off, as it always has.
+fn production_roster_with(atlas: AtlasConfig, boot_packs: bool) -> Vec<Box<dyn GameModule>> {
     use tacsim::composition as comp;
 
     let llm = std::sync::Arc::new(
@@ -557,7 +593,7 @@ fn production_roster(atlas: AtlasConfig) -> Vec<Box<dyn GameModule>> {
     // `[game].starter_area` off: the harness's own region is the content under
     // test, and the shipped lot would only add rooms the window must not anchor
     // on. The module itself is composed exactly as production composes it.
-    mods.push(comp::content_module(false).expect("the content module composes"));
+    mods.push(comp::content_module_with(false, boot_packs).expect("the content module composes"));
     mods
 }
 
@@ -1997,8 +2033,10 @@ impl CommandFigures {
     }
 
     /// The report's `"command"` object — reported, and deliberately **not** in
-    /// [`DETERMINISTIC_OBJECTS`]: the committed baseline predates it, and a
-    /// later cut that scripts human orders on the cohort may promote it.
+    /// [`DETERMINISTIC_OBJECTS`]: the committed baseline has stored it since the
+    /// 16b cut J.1 bless (whole-file, as every bless is), but nothing on the
+    /// cohort issues orders yet, so it is not compared until a later cut that
+    /// scripts human orders on the cohort promotes it.
     fn json(&self) -> serde_json::Value {
         serde_json::json!({
             "max_span": self.max_span,
@@ -3556,6 +3594,251 @@ fn write_report(path: &std::path::Path, report: &serde_json::Value) {
         serde_json::to_string_pretty(report).expect("the report encodes"),
     )
     .expect("the report is written");
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut J.1: the sight differential
+// ---------------------------------------------------------------------------
+
+/// **The shipped sight's reach, cells** (16b cut J.1): every cell within this
+/// Chebyshev distance of an origin is a target of the sight differential.
+const SIGHT_REACH_CELLS: i32 = 60;
+
+/// **The sight differential, on the proving ground and on the relief** (16b cut
+/// J.1; 16c N5 step 1): [`measure_sight`]. A correctness lane — its three
+/// assertions hold on every pair whatever `TACSIM_ASSERT` says — whose timings
+/// are printed and never asserted; JSON at `<stem>-sight.<ext>`, which the delta
+/// does not read.
+#[test]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+fn tacsim_harness_sight_differential() {
+    measure_sight(&Knobs::from_env());
+}
+
+/// What one ground's sweep found (16b cut J.1).
+#[derive(Default)]
+struct SightSweep {
+    origins: u64,
+    pairs: u64,
+    clear: u64,
+    partial: u64,
+    blocked: u64,
+    /// `trace_cells(a, b)` over every ordered pair — the call perception made
+    /// before the cut — timed as one pass, milliseconds.
+    walk_ms: f64,
+    /// `sight_only(a, b)` over the same pairs, timed as one pass, milliseconds.
+    sight_only_ms: f64,
+    /// The walk's `CellTrace::visited`, summed: **every cell of each line, both
+    /// endpoints included**, whatever blocked it.
+    visited_walk: u64,
+    /// `CellSight::visited`, summed: **the interior cells read up to and
+    /// including the first blocker, never an endpoint**. A different definition
+    /// from `visited_walk`'s, so the two figures are not a ratio of like things.
+    visited_sight_only: u64,
+}
+
+/// **One ground's sweep** (16b cut J.1): `origins` origins drawn off `rng` over
+/// the `width` by `height` grid, each against every cell within
+/// [`SIGHT_REACH_CELLS`] (clamped to the grid, the origin itself left out), in
+/// both directions; the origin's eye at 150 cm, and at the biped's 900 cm on
+/// every eighth origin.
+///
+/// Per origin, the walk's pass and `sight_only`'s pass over the same ordered
+/// pairs are each timed whole, then every pair is checked untimed: `sight_only`
+/// is exactly the walk from the canonical ends (each at its own height), it is
+/// seen along exactly as the walk asked from `a` is, with one attenuation when
+/// either is partial, and it read at least the walk's two endpoints fewer cells.
+fn sight_sweep(
+    grid: &dyn mush_atlas::CellGrid,
+    width: u16,
+    height: u16,
+    origins: u64,
+    rng: &mut ChaCha8Rng,
+) -> SightSweep {
+    use mush_atlas::trace::{
+        CellSight, CellTrace, EYE_HEIGHT_CM, Eye, Sight, canonical_ends, sight_only, trace_cells,
+    };
+    let seen = |sight: &Sight| match sight {
+        Sight::Clear => (0_u8, 0_u8),
+        Sight::Partial(pct) => (1, *pct),
+        Sight::BlockedBy(_) => (2, 0),
+    };
+    let mut sweep = SightSweep {
+        origins,
+        ..SightSweep::default()
+    };
+    let mut pairs: Vec<(Eye, Eye)> = Vec::new();
+    let mut walked: Vec<CellTrace> = Vec::new();
+    let mut fast: Vec<CellSight> = Vec::new();
+    for origin in 0..origins {
+        let cell = (rng.random_range(0..width), rng.random_range(0..height));
+        let from = Eye {
+            cell,
+            height_cm: if origin % 8 == 4 { 900 } else { EYE_HEIGHT_CM },
+        };
+        pairs.clear();
+        let (cx, cy) = (i32::from(cell.0), i32::from(cell.1));
+        let span = |c: i32, side: u16| {
+            (c - SIGHT_REACH_CELLS).max(0)..=(c + SIGHT_REACH_CELLS).min(i32::from(side) - 1)
+        };
+        for y in span(cy, height) {
+            for x in span(cx, width) {
+                let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+                    continue;
+                };
+                if (x, y) == cell {
+                    continue;
+                }
+                let to = Eye::standing((x, y));
+                pairs.push((from, to));
+                pairs.push((to, from));
+            }
+        }
+        walked.clear();
+        let at = Instant::now();
+        walked.extend(pairs.iter().map(|(a, b)| trace_cells(grid, *a, *b)));
+        sweep.walk_ms += at.elapsed().as_secs_f64() * 1_000.0;
+        fast.clear();
+        let at = Instant::now();
+        fast.extend(pairs.iter().map(|(a, b)| sight_only(grid, *a, *b)));
+        sweep.sight_only_ms += at.elapsed().as_secs_f64() * 1_000.0;
+        for ((a, b), (asked, quick)) in pairs.iter().zip(walked.iter().zip(fast.iter())) {
+            let (lo, hi) = if canonical_ends(a.cell, b.cell) == (a.cell, b.cell) {
+                (*a, *b)
+            } else {
+                (*b, *a)
+            };
+            let walk = trace_cells(grid, lo, hi);
+            assert_eq!(
+                quick.sight, walk.sight,
+                "sight_only and the canonical walk disagree from {a:?} to {b:?}"
+            );
+            assert_eq!(
+                seen(&quick.sight),
+                seen(&asked.sight),
+                "sight_only and the walk asked from {a:?} disagree to {b:?}: {:?} against {:?}",
+                quick.sight,
+                asked.sight
+            );
+            if matches!(quick.sight, Sight::Partial(_)) || matches!(asked.sight, Sight::Partial(_))
+            {
+                assert_eq!(walk.attenuation, asked.attenuation, "{a:?} to {b:?}");
+            }
+            assert!(
+                quick.visited + 2 <= walk.visited,
+                "{a:?} to {b:?}: sight_only read {} against the walk's {}",
+                quick.visited,
+                walk.visited
+            );
+            match quick.sight {
+                Sight::Clear => sweep.clear += 1,
+                Sight::Partial(_) => sweep.partial += 1,
+                Sight::BlockedBy(_) => sweep.blocked += 1,
+            }
+            sweep.visited_walk += u64::from(asked.visited);
+            sweep.visited_sight_only += u64::from(quick.visited);
+        }
+        sweep.pairs += u64::try_from(pairs.len()).unwrap_or(u64::MAX);
+    }
+    sweep
+}
+
+/// **The sight differential** (16b cut J.1; 16c N5 step 1, Q26's "build the
+/// cheap trace, re-measure").
+///
+/// 1. **The proving ground**: [`production_roster_with`] with the boot packs on,
+///    the atlas records off `AtlasState`, the one shipped arena through
+///    `tacsim::definitions::from_pack` — the ground `tests/sight.rs` walks — and
+///    [`sight_sweep`] at `TACSIM_SIGHT_ORIGINS` origins.
+/// 2. **The relief**: [`open_window`] at `TACSIM_SEED` and [`arena_ground`], the
+///    relief [`measure_arena`] fields, at half as many origins.
+///
+/// One `harness_sight:` line per ground and one `harness_sight_json:` line.
+fn measure_sight(knobs: &Knobs) {
+    use tacsim::arena::state::ArenaTerrain;
+    let mut rng = ChaCha8Rng::seed_from_u64(knobs.seed);
+    let mut grounds: Vec<(&'static str, SightSweep)> = Vec::new();
+
+    // ---- the proving ground ----
+    let proving = {
+        let tw = TestWorld::with_modules(production_roster_with(AtlasConfig::default(), true));
+        let records = tw
+            .world()
+            .module_state::<AtlasState>()
+            .map(|state| state.records.clone())
+            .expect("the atlas is composed");
+        let catalog = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+        let (id, def) = catalog
+            .arenas
+            .iter()
+            .next()
+            .expect("the proving ground is shipped");
+        tacsim::definitions::from_pack(id.as_str(), def, &records)
+            .expect("the arena's ground is in this world's records")
+    };
+    let terrain = &proving.terrain;
+    grounds.push((
+        "proving_ground",
+        sight_sweep(
+            terrain,
+            terrain.width(),
+            terrain.height(),
+            knobs.sight_origins,
+            &mut rng,
+        ),
+    ));
+    drop(proving);
+
+    // ---- the relief ----
+    let Window { tw, cells, .. } = open_window(knobs.seed);
+    drop(tw);
+    let (grid, _) = arena_ground(&cells);
+    let relief = ArenaTerrain::new(SIDE, SIDE, CELL_CM, grid).expect("the relief's grid");
+    grounds.push((
+        "relief",
+        sight_sweep(&relief, SIDE, SIDE, knobs.sight_origins / 2, &mut rng),
+    ));
+
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for (ground, sweep) in &grounds {
+        assert!(sweep.pairs > 0, "the {ground} sweep walked nothing");
+        // The two `visited` figures are different definitions: the walk's counts
+        // every cell of the line, both endpoints included, and `sight_only`'s the
+        // interior cells up to and including the first blocker.
+        println!(
+            "harness_sight: ground={ground} origins={} pairs={} clear={} partial={} blocked={} walk_ms={:.3} sight_only_ms={:.3} visited_walk={} visited_sight_only={}",
+            sweep.origins,
+            sweep.pairs,
+            sweep.clear,
+            sweep.partial,
+            sweep.blocked,
+            sweep.walk_ms,
+            sweep.sight_only_ms,
+            sweep.visited_walk,
+            sweep.visited_sight_only,
+        );
+        rows.push(serde_json::json!({
+            "ground": ground,
+            "origins": sweep.origins,
+            "pairs": sweep.pairs,
+            "clear": sweep.clear,
+            "partial": sweep.partial,
+            "blocked": sweep.blocked,
+            "walk_ms": sweep.walk_ms,
+            "sight_only_ms": sweep.sight_only_ms,
+            "visited_walk": sweep.visited_walk,
+            "visited_sight_only": sweep.visited_sight_only,
+        }));
+    }
+    let report = serde_json::json!({
+        "lane": "sight",
+        "seed": knobs.seed,
+        "reach_cells": SIGHT_REACH_CELLS,
+        "grounds": rows,
+    });
+    let path = arena_report_path(&knobs.json, "sight");
+    write_report(&path, &report);
+    println!("harness_sight_json: {}", path.display());
 }
 
 // ---------------------------------------------------------------------------

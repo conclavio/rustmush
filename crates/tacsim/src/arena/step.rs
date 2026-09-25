@@ -3105,7 +3105,10 @@ mod tests {
         assert_eq!(out.perception.passes, 2, "{:?}", out.perception);
         assert_eq!(out.perception.detected, 2);
         assert_eq!(out.perception.traces, 2);
-        assert!(out.perception.cell_probes >= 8);
+        // **16b cut J.1**: two 5-cell lines between cells (0,0) and (4,0) of the
+        // flat window, three interior cells each and nothing blocking — six. The
+        // walk counted the endpoints too and read ten.
+        assert_eq!(out.perception.cell_probes, 6);
         assert_eq!(out.tempo, Tempo::Alert);
         assert_eq!(arena.contacts.len(), 2);
         // The pilot of A is told about B, at the right bearing and range, and about

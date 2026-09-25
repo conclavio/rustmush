@@ -452,7 +452,9 @@ fn a_target_behind_a_wall_is_never_detected() {
     // what refused it, which is the point.
     assert_eq!(counters.candidates, 1);
     assert_eq!(counters.traces, 1);
-    assert!(counters.cell_probes >= 30);
+    // **16b cut J.1**: the line from (10,10) to (40,10) has 29 interior cells, the
+    // wall at x 25 is the fifteenth read, and the counter stops there.
+    assert_eq!(counters.cell_probes, 15);
     assert_eq!(counters.detected, 0);
     assert!(journal.is_empty());
     assert!(arena.contacts.is_empty());
@@ -2543,6 +2545,15 @@ struct Cadenced {
     /// How many pulses it took, which is the guard that the three runs really
     /// were three cadences.
     pulses: u32,
+    /// **What perception cost over the whole replay** (16b cut J.1): every
+    /// pulse's `out.perception`, absorbed. The three-cadence comparison reads
+    /// `(traces, cell_probes)` off it, because a pass runs at its own arena
+    /// timestamp against the substep boundary's positions at every cadence, so
+    /// the same lines are walked and the same cells read up to the same blocker.
+    /// Most replays here are on open ground, where every line reads to its end;
+    /// the one whose lines stop at a wall is
+    /// `j1_a_line_stopped_at_its_wall_reads_the_same_cells_at_every_cadence`.
+    perception: PerceptionCounters,
 }
 
 /// **One beat of a replay script** (16b cut Q.1; 16b cut D.4 gave it `places`):
@@ -2617,6 +2628,7 @@ fn replayed_driven(
     let mut wall = 0_i64;
     let mut next = 0_usize;
     let mut pulses = 0_u32;
+    let mut perception = PerceptionCounters::default();
     loop {
         arena.clock.pin_tempo_for_tests(Tempo::Quiet);
         let mut orders: Vec<Intent> = Vec::new();
@@ -2635,6 +2647,7 @@ fn replayed_driven(
             // A zero-length pulse, so a scripted order resolves at exactly the
             // millisecond the script names at every cadence.
             let out = arena.step(wall, &[] as &[Control], &orders);
+            perception.absorb(&out.perception);
             for chunk in &out.ledger_chunks {
                 tape.extend_from_slice(&chunk.bytes);
             }
@@ -2667,6 +2680,7 @@ fn replayed_driven(
             }
         };
         let out = arena.step(wall, &[] as &[Control], &[]);
+        perception.absorb(&out.perception);
         next_due = out.next_due_ms;
         if pulses > 0 {
             woke_at.push(arena.now_ms);
@@ -2722,6 +2736,7 @@ fn replayed_driven(
         staged,
         columns,
         pulses,
+        perception,
     };
     (replay, woke_at)
 }
@@ -2905,7 +2920,8 @@ fn one_scripted_approach_at_three_cadences_is_one_list_one_hash_and_one_column()
 
     // The guard the sibling tests carry: three cadences really are three
     // different numbers of pulses, so an equality below is a property and not a
-    // tautology.
+    // tautology — and the passes really traced (16b cut J.1).
+    assert!(first.perception.traces > 0, "{:?}", first.perception);
     let counts: Vec<u32> = runs.iter().map(|(_, run)| run.pulses).collect();
     assert!(
         counts.windows(2).all(|pair| pair.first() != pair.get(1)),
@@ -2929,6 +2945,14 @@ fn one_scripted_approach_at_three_cadences_is_one_list_one_hash_and_one_column()
         assert_eq!(
             run.columns, first.columns,
             "the designator column differs at {cadence} ms"
+        );
+        // **16b cut J.1**: the same lines walked and the same cells read, up to
+        // the same blocker — a pass runs at its own arena timestamp against the
+        // substep boundary's positions at every cadence.
+        assert_eq!(
+            (run.perception.traces, run.perception.cell_probes),
+            (first.perception.traces, first.perception.cell_probes),
+            "the traces or the cells they read differ at {cadence} ms"
         );
     }
 }
@@ -4428,7 +4452,9 @@ fn one_scripted_flicker_at_three_cadences_is_one_list_one_hash_and_one_column() 
         "the contact was never lost: {watcher:?}"
     );
 
-    // The guard: three cadences really are three different numbers of pulses.
+    // The guard: three cadences really are three different numbers of pulses,
+    // and the passes really traced (16b cut J.1).
+    assert!(first.perception.traces > 0, "{:?}", first.perception);
     let counts: Vec<u32> = runs.iter().map(|(_, run)| run.pulses).collect();
     assert!(
         counts.windows(2).all(|pair| pair.first() != pair.get(1)),
@@ -4451,6 +4477,14 @@ fn one_scripted_flicker_at_three_cadences_is_one_list_one_hash_and_one_column() 
         assert_eq!(
             run.columns, first.columns,
             "the designator column differs at {cadence} ms"
+        );
+        // **16b cut J.1**: the same lines walked and the same cells read, up to
+        // the same blocker — a pass runs at its own arena timestamp against the
+        // substep boundary's positions at every cadence.
+        assert_eq!(
+            (run.perception.traces, run.perception.cell_probes),
+            (first.perception.traces, first.perception.cell_probes),
+            "the traces or the cells they read differ at {cadence} ms"
         );
     }
 }
@@ -4524,6 +4558,12 @@ fn three_cadences(arena: impl Fn() -> Arena, script: &[Beat], until_ms: i64) -> 
             run.staged, first.staged,
             "the staged notices differ at {cadence} ms"
         );
+        // **16b cut J.1**: and the same lines walked, the same cells read.
+        assert_eq!(
+            (run.perception.traces, run.perception.cell_probes),
+            (first.perception.traces, first.perception.cell_probes),
+            "the traces or the cells they read differ at {cadence} ms"
+        );
     }
     first
 }
@@ -4586,6 +4626,75 @@ fn m2_a_return_on_the_deadline_is_cancelled_at_every_cadence() {
             .count(),
         1,
         "the return was said as a new contact: {kinds:?}"
+    );
+}
+
+/// A blue tank `EYE` never sees: seven cells south of it, behind a wall (16b
+/// cut J.1's blocked line).
+const WALLED: ObjId = ObjId(33);
+
+/// **A line stopped at its wall reads the same cells at every cadence** (16b cut
+/// J.1). The (r) fixture's flicker, with [`WALLED`] standing in `EYE`'s reach
+/// behind a wall cell: every pass traces a line that `sight_only` stops at the
+/// wall, so the one behaviour J.1 introduces — returning at the first blocker —
+/// is compared across 5,000, 1,000 and 500 ms by [`three_cadences`]'
+/// `(traces, cell_probes)` equality, which a flat fixture cannot do.
+///
+/// The counts are derived, not observed. `MARK`'s line, (10,10) to (15,10),
+/// has four interior cells and nothing on it: four probes. `WALLED`'s, (10,10)
+/// to (10,17), has six (y 11 to 16) and the wall at y 13 is the third read:
+/// three probes, where the walk that read to the end would have read six. So
+/// the replay reads fewer than four cells per trace exactly when some line
+/// stopped early — and `WALLED` is never acquired.
+#[test]
+fn j1_a_line_stopped_at_its_wall_reads_the_same_cells_at_every_cadence() {
+    let arena = || {
+        arena_with_sensors(
+            vec![
+                tank(
+                    EYE,
+                    Team::Red,
+                    centre(10, 10),
+                    Some(SensorProfile {
+                        max_range_cells: 10,
+                        classify_after_ms: 5_000,
+                        ..visual()
+                    }),
+                ),
+                tank(MARK, Team::Blue, centre(15, 10), None),
+                tank(WALLED, Team::Blue, centre(10, 17), None),
+            ],
+            &[(10, 13, cell(TerrainClass::Wall))],
+            &flicker_sensors(),
+        )
+    };
+    // The fixture's premise, on one pass before the replay: the walled line is
+    // traced and stopped at the wall — two traces, four probes and three.
+    let mut probe = arena();
+    let (counters, _) = pass(&mut probe, EYE, 1, 0);
+    assert_eq!(
+        (counters.traces, counters.cell_probes, counters.detected),
+        (2, 7, 1),
+        "{counters:?}"
+    );
+
+    let first = three_cadences(arena, &flicker_replay_script(), 25_000);
+    let traces = first.perception.traces;
+    let probes = first.perception.cell_probes;
+    assert!(traces > 0, "{:?}", first.perception);
+    assert!(
+        probes < 4 * u64::from(traces),
+        "no line stopped at its wall: {traces} traces read {probes} cells"
+    );
+    // Only `MARK` was ever acquired: the wall held at every pass.
+    let kinds = eye_contact_kinds(&first);
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| **kind == NoticeKind::Acquired)
+            .count(),
+        1,
+        "the walled tank was acquired: {kinds:?}"
     );
 }
 

@@ -60,9 +60,12 @@
 //! [`crate::arena::ledger::EventKind::Lost`]), the `contact_within_alert_range` signal A.1's
 //! clock left `false`, and [`crate::arena::step::Frame::contacts`], which cut S.2 renders.
 //!
-//! Its one dependency outside this tree is `mush_atlas::trace_cells` — the atlas's
-//! own line walk over a plain cell grid, which [`crate::arena::state::ArenaTerrain`] implements
-//! (`mush_atlas::CellGrid`). That is a *trace* type and carries no window, no
+//! Its one dependency outside this tree is the atlas's line of sight over a plain
+//! cell grid, which [`crate::arena::state::ArenaTerrain`] implements
+//! (`mush_atlas::CellGrid`): `mush_atlas::sight_only` for perception (16b cut
+//! J.1, through [`crate::arena::Arena::sight`]) and `mush_atlas::trace_cells` for
+//! the fire path (16b cut W.2), two walkers over the same seam and the same
+//! per-cell rule. Both are *trace* functions and carry no window, no
 //! record and no store, so the no-I/O gate still holds; the alternative,
 //! `mush_atlas::SurfaceComposite`, would have brought a surface reference, a room
 //! table and a feature overlay with it.

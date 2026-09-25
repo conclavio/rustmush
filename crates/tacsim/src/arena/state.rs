@@ -244,7 +244,9 @@ impl ArenaTerrain {
 /// `FeatureOverlay` in, all of them record types the contract gate exists to keep
 /// out. `mush_atlas::CellGrid` is the trace's *terrain* seam and nothing more: one
 /// cell's class and its elevation. So the arena keeps its own grid, the atlas keeps
-/// its one line walk, and `mush_atlas::trace_cells` is that walk over this.
+/// its one per-cell rule, and two walkers read this through it:
+/// `mush_atlas::sight_only` for perception (16b cut J.1, [`Arena::sight`]) and
+/// `mush_atlas::trace_cells` for the fire path (16b cut W.2).
 impl mush_atlas::CellGrid for ArenaTerrain {
     fn cell_at(&self, x: u16, y: u16) -> Option<(TerrainClass, i32)> {
         let cell = self.get(x, y)?;

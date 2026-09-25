@@ -5916,7 +5916,8 @@ fn q6_absorb_notices(
 /// **The three cadences, compared** (16b §11): one scripted log at 5,000, 1,000
 /// and 500 ms gives one event list, one per-substep hash sequence, one per-pilot
 /// notice list, one final state and (16b cut U.2) one total of jam checks and
-/// traces — with the sibling tests' differing-pulses
+/// traces (and, 16b cut J.1, of the cells those traces read) — with the sibling
+/// tests' differing-pulses
 /// guard, which is that every replay ran to exactly the same arena time **on a
 /// different number of pulses**.
 ///
@@ -5966,10 +5967,22 @@ fn q6_three_cadences(
         // memo is cleared at substep boundaries and at a pod's power and wreck,
         // all of them arena timestamps, so the scans it saves are the same at
         // every cadence — as are the traces the passes and the mesh walked.
+        // **16b cut J.1**: and the cells those traces read, now that a trace
+        // stops at its first blocker: a pass runs at its own arena timestamp
+        // against the substep boundary's positions at every cadence, so the same
+        // lines are walked and the same cells read up to the same blocker.
         assert_eq!(
-            (run.perception.jam_checks, run.perception.traces),
-            (first.perception.jam_checks, first.perception.traces),
-            "{label}: the run's jam checks or traces differ at {cadence} ms"
+            (
+                run.perception.jam_checks,
+                run.perception.traces,
+                run.perception.cell_probes
+            ),
+            (
+                first.perception.jam_checks,
+                first.perception.traces,
+                first.perception.cell_probes
+            ),
+            "{label}: the run's jam checks, traces or cells read differ at {cadence} ms"
         );
         assert_ne!(
             run.pulses, first.pulses,

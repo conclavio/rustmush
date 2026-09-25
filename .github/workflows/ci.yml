@@ -386,9 +386,11 @@ jobs:
   # delta (16b cut U.3, 16c T-37 and Q29): the second step compares the fresh
   # CI-cohort report with the committed
   # crates/tacsim/tests/harness_baseline/arena.<os>.json and is THE ONE STEP
-  # THAT FAILS THE JOB — on any difference in the deterministic block, or on a
-  # timing figure more than 20 per cent slower on the host that blessed the
-  # file. The GitHub runner never is that host, so here the delta gates the
+  # THAT FAILS THE JOB ON A MEASUREMENT — on any difference in the deterministic
+  # block, or on a timing figure more than 20 per cent slower on the host that
+  # blessed the file. (The first step fails on a correctness lane alone: the
+  # sight differential, 16b cut J.1, asserts on every pair always.) The GitHub
+  # runner never is that host, so here the delta gates the
   # deterministic block alone, and with no linux file committed it passes
   # after saying so. TACSIM_BASELINE_BLESS=1 re-blesses the file.
   #

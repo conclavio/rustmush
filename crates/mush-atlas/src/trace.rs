@@ -25,7 +25,28 @@
 //! walk over it. So the walk reads its ground through [`CellGrid`], which is
 //! *one cell's class and elevation and nothing else*;
 //! [`SurfaceComposite`] implements it, and [`trace_cells`] is the same
-//! algorithm with an empty feature overlay. There is no second line walk.
+//! algorithm with an empty feature overlay: there is no second walk for cells.
+//! The arena's early-stopping trace below ([`sight_only`], 16b cut J.1) is a
+//! second *walker* over one line, one height and one per-cell rule
+//! ([`terrain_sight_rule`]), never a second rule.
+//!
+//! # The arena's trace (16b cut J.1)
+//!
+//! There is one line walker that stops early, [`sight_only`], and it is the
+//! combat arena's alone (doc 16 §3.2, §3.6). It walks the same cells in the
+//! same order ([`Bresenham`] from the [`canonical_ends`]), at the same height
+//! at every step ([`line_height_cm`]), under the same per-cell rule
+//! ([`terrain_sight_rule`]) as the walk below, allocates nothing, and returns
+//! at the first blocker — so it answers the same [`Sight`] and reads fewer
+//! cells. That is an exception to the O lens above, taken on purpose: the
+//! arena pass's cost already depends on what the hidden field holds before any
+//! line is walked — the index cull and the thermal cull decide which lines are
+//! traced at all — and no reader of the arena can time one line (a frame
+//! carries no timing; the pass's cost is bounded per pulse and never observed
+//! per line), so the early stop adds no channel. The walk, and every world
+//! trace over it, keeps the rule above; a contract scan
+//! (`mush-contract-tests`' `arena_library.rs`) holds [`sight_only`] to the
+//! arena.
 
 use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
@@ -262,43 +283,109 @@ impl Hearing {
 /// reversed. The two directions then visit one cell set, in opposite order.
 #[must_use]
 pub fn line_cells(a: (u16, u16), b: (u16, u16)) -> Vec<(u16, u16)> {
-    if b < a {
-        let mut out = bresenham(b, a);
+    let (lo, hi) = canonical_ends(a, b);
+    let mut out: Vec<(u16, u16)> = Bresenham::new(lo, hi).collect();
+    if (lo, hi) != (a, b) {
         out.reverse();
-        return out;
-    }
-    bresenham(a, b)
-}
-
-/// The bare Bresenham walk from `a` to `b`, both included — the canonical
-/// direction [`line_cells`] draws every line in.
-fn bresenham(a: (u16, u16), b: (u16, u16)) -> Vec<(u16, u16)> {
-    let (mut x0, mut y0) = (i32::from(a.0), i32::from(a.1));
-    let (x1, y1) = (i32::from(b.0), i32::from(b.1));
-    let dx = (x1 - x0).abs();
-    let dy = -(y1 - y0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let sy = if y0 < y1 { 1 } else { -1 };
-    let mut err = dx + dy;
-    let mut out = Vec::with_capacity(usize::try_from(dx.max(-dy)).unwrap_or(0) + 1);
-    loop {
-        if let (Ok(x), Ok(y)) = (u16::try_from(x0), u16::try_from(y0)) {
-            out.push((x, y));
-        }
-        if x0 == x1 && y0 == y1 {
-            break;
-        }
-        let e2 = 2 * err;
-        if e2 >= dy {
-            err += dy;
-            x0 += sx;
-        }
-        if e2 <= dx {
-            err += dx;
-            y0 += sy;
-        }
     }
     out
+}
+
+/// **The canonical direction of a line** (16b cut M.4; 16c `B-56`): the lesser
+/// endpoint in tuple order first — `(b, a)` when `b < a`, else `(a, b)`.
+///
+/// The one place the rule [`line_cells`] states is written, so the walk and
+/// [`sight_only`] cannot draw one line two ways.
+#[must_use]
+pub fn canonical_ends(a: (u16, u16), b: (u16, u16)) -> ((u16, u16), (u16, u16)) {
+    if b < a { (b, a) } else { (a, b) }
+}
+
+/// **The bare Bresenham walk from `a` to `b`, both included, as an iterator**
+/// (16b cut J.1) — the canonical direction [`line_cells`] draws every line in,
+/// with nothing allocated: the iterator *is* the line.
+///
+/// It yields `a` first and `b` last, then `None`, and it is exactly the walk
+/// `line_cells` collected before this cut: `err = dx + dy`, `e2 = 2 × err`, a
+/// step in `x` when `e2 >= dy` and in `y` when `e2 <= dx`. It does **not**
+/// canonicalise its ends — a bare Bresenham breaks its ties toward the end it
+/// starts from — so a caller that wants one line from either end starts it
+/// from [`canonical_ends`].
+#[derive(Clone, Debug)]
+pub struct Bresenham {
+    /// The cursor, `x`.
+    x0: i32,
+    /// The cursor, `y`.
+    y0: i32,
+    /// The far end, `x`.
+    x1: i32,
+    /// The far end, `y`.
+    y1: i32,
+    /// `|x1 − x0|` at the start.
+    dx: i32,
+    /// `−|y1 − y0|` at the start.
+    dy: i32,
+    /// The step in `x`, ±1.
+    sx: i32,
+    /// The step in `y`, ±1.
+    sy: i32,
+    /// The running error term.
+    err: i32,
+    /// Whether the far end has been yielded.
+    done: bool,
+}
+
+impl Bresenham {
+    /// The line from `a` to `b`, walked from `a`.
+    #[must_use]
+    pub fn new(a: (u16, u16), b: (u16, u16)) -> Bresenham {
+        let (x0, y0) = (i32::from(a.0), i32::from(a.1));
+        let (x1, y1) = (i32::from(b.0), i32::from(b.1));
+        let dx = (x1 - x0).abs();
+        let dy = -(y1 - y0).abs();
+        Bresenham {
+            x0,
+            y0,
+            x1,
+            y1,
+            dx,
+            dy,
+            sx: if x0 < x1 { 1 } else { -1 },
+            sy: if y0 < y1 { 1 } else { -1 },
+            err: dx + dy,
+            done: false,
+        }
+    }
+}
+
+impl Iterator for Bresenham {
+    type Item = (u16, u16);
+
+    fn next(&mut self) -> Option<(u16, u16)> {
+        // A cell off the `u16` range is skipped, as the collected walk skipped
+        // it; between two `u16` ends the cursor never leaves the range, so the
+        // guard is the old one kept rather than a case that occurs.
+        while !self.done {
+            let here = (u16::try_from(self.x0), u16::try_from(self.y0));
+            if self.x0 == self.x1 && self.y0 == self.y1 {
+                self.done = true;
+            } else {
+                let e2 = 2 * self.err;
+                if e2 >= self.dy {
+                    self.err += self.dy;
+                    self.x0 += self.sx;
+                }
+                if e2 <= self.dx {
+                    self.err += self.dx;
+                    self.y0 += self.sy;
+                }
+            }
+            if let (Ok(x), Ok(y)) = here {
+                return Some((x, y));
+            }
+        }
+        None
+    }
 }
 
 /// How the line's height runs.
@@ -322,17 +409,32 @@ enum Flight {
 /// `n = 59` and `i = 29` came out at 199 cm one way and 200 cm the other, and a
 /// 200 cm ridge in that cell was a grazing tie that blocked A and not B. The
 /// arc term,
-/// `4·h·i·(n−i)/n²`, was already symmetric.
+/// `4·h·i·(n−i)/n²`, was already symmetric. The straight term is
+/// [`line_height_cm`] (16b cut J.1), which [`sight_only`] reads as well.
 fn line_height(z_from: i32, z_to: i32, i: usize, n: usize, flight: Flight) -> i32 {
-    let n = n.max(1);
-    let (i64i, i64n) = (i64::try_from(i).unwrap_or(0), i64::try_from(n).unwrap_or(1));
-    let straight = (i64::from(z_from) * (i64n - i64i) + i64::from(z_to) * i64i) / i64n;
+    let straight = line_height_cm(z_from, z_to, i, n);
     let extra = match flight {
         Flight::Straight => 0,
         // 4·h·t·(1−t), t = i/n, in integers.
-        Flight::Arc { apex_cm } => 4 * i64::from(apex_cm) * i64i * (i64n - i64i) / (i64n * i64n),
+        Flight::Arc { apex_cm } => {
+            let n = n.max(1);
+            let (i64i, i64n) = (i64::try_from(i).unwrap_or(0), i64::try_from(n).unwrap_or(1));
+            4 * i64::from(apex_cm) * i64i * (i64n - i64i) / (i64n * i64n)
+        }
     };
-    i32::try_from(straight + extra).unwrap_or(i32::MAX)
+    i32::try_from(i64::from(straight) + extra).unwrap_or(i32::MAX)
+}
+
+/// **A straight line's height at step `i` of `n`, centimetres** (16b cut J.1;
+/// the straight arm of the walk's height, 16b cut M.4): `(z_from × (n − i) +
+/// z_to × i) / n` in `i64`, `n` floored at one — the one height from either
+/// end, for the walk and for [`sight_only`] alike.
+#[must_use]
+pub fn line_height_cm(z_from: i32, z_to: i32, i: usize, n: usize) -> i32 {
+    let n = n.max(1);
+    let (i64i, i64n) = (i64::try_from(i).unwrap_or(0), i64::try_from(n).unwrap_or(1));
+    let straight = (i64::from(z_from) * (i64n - i64i) + i64::from(z_to) * i64i) / i64n;
+    i32::try_from(straight).unwrap_or(i32::MAX)
 }
 
 struct Walk<'a> {
@@ -447,41 +549,28 @@ fn walk(
         }
         // Every rule is evaluated for every cell; only the FIRST blocker is
         // kept, and nothing here returns early.
-        let mut blocker: Option<Blocker> = None;
-        let p = props(read.class);
-        let top = read.elev_cm + obstacle_height_cm(read.class);
-        match (opacity_stops, p.opacity) {
-            (true, Opacity::Opaque) => {
-                blocker = Some(Blocker::Terrain {
-                    at,
-                    class: read.class,
-                });
-            }
-            (true, Opacity::Partial(pct)) => {
-                attenuation = attenuation.saturating_add(u32::from(pct));
-                if attenuation >= 100 {
-                    blocker = Some(Blocker::Terrain {
-                        at,
-                        class: read.class,
-                    });
-                }
-            }
+        let mut blocker: Option<Blocker> = if opacity_stops {
+            // Opacity, attenuation and the ground, in that order: the one
+            // per-cell rule `sight_only` reads too (16b cut J.1).
+            terrain_sight_rule(at, read.class, read.elev_cm, z, &mut attenuation)
+        } else {
+            let top = read.elev_cm + obstacle_height_cm(read.class);
             // An arc: whatever has a top (a wall, a canopy) blocks when the
             // arc passes below it; opacity is nothing to a shell.
-            (false, _) if obstacle_height_cm(read.class) > 0 && top > z => {
-                blocker = Some(Blocker::Terrain {
+            if obstacle_height_cm(read.class) > 0 && top > z {
+                Some(Blocker::Terrain {
                     at,
                     class: read.class,
-                });
+                })
+            } else if read.elev_cm > z {
+                Some(Blocker::Elevation {
+                    at,
+                    elev_cm: read.elev_cm,
+                })
+            } else {
+                None
             }
-            _ => {}
-        }
-        if read.elev_cm > z && blocker.is_none() {
-            blocker = Some(Blocker::Elevation {
-                at,
-                elev_cm: read.elev_cm,
-            });
-        }
+        };
         if let Some(key) = read.feature_blocking
             && blocker.is_none()
         {
@@ -545,12 +634,17 @@ fn sight_of(t: &Trace) -> Sight {
 ///
 /// [`line_of_sight`] with no feature overlay and no units on the line: the same
 /// `walk`, the same opacity, attenuation and elevation rules, over a grid that
-/// is only classes and elevations. It is what the combat arena's perception pass
-/// traces with, because the arena holds a cell grid and may hold no window and no
-/// records at all (doc 16 §3.1, D-16-1/D-16-3).
+/// is only classes and elevations. It is what the combat arena's fire path
+/// traces with (16b cut W.2: the shot, the reflex's engage check and the cover
+/// readings want [`CellTrace::target_cover`] and the attenuation from the
+/// shooter's own end), because the arena holds a cell grid and may hold no
+/// window and no records at all (doc 16 §3.1, D-16-1/D-16-3). The arena's
+/// perception pass traces with [`sight_only`] since 16b cut J.1.
 ///
-/// The counters come back with the answer: doc 16 §2 W4 bounds *traces and cell
-/// probes per pulse*, and `visited` is that probe count for one trace.
+/// The counters come back with the answer. `visited` counts every cell of the
+/// line, both endpoints included, and is therefore *not* the arena's
+/// `cell_probes` (doc 16 §2 W4), which since 16b cut J.1 is
+/// [`CellSight::visited`]: the interior cells up to the first blocker.
 #[must_use]
 pub fn trace_cells(grid: &dyn CellGrid, a: Eye, b: Eye) -> CellTrace {
     let t = walk(grid, &[], &[], a, b, Flight::Straight, true);
@@ -561,6 +655,146 @@ pub fn trace_cells(grid: &dyn CellGrid, a: Eye, b: Eye) -> CellTrace {
         visited: t.visited,
         range_cells: t.range_cells,
     }
+}
+
+/// **The per-cell terrain rule of a line of sight** (16b cut J.1): what one
+/// interior cell of class `class` and ground `elev_cm` does to a line passing it
+/// at `line_cm`.
+///
+/// An [`Opacity::Opaque`] class blocks ([`Blocker::Terrain`]); an
+/// [`Opacity::Partial`] one adds its percent to `attenuation` (saturating) and
+/// blocks when the sum has reached a hundred; then, with nothing blocking yet,
+/// ground above the line blocks ([`Blocker::Elevation`]); else `None`. The order
+/// — opacity, then elevation, and the feature rule after both in the walk — is
+/// the walk's and does not move: it decides which blocker a cell names. Written
+/// once so the walk (whenever opacity stops it) and [`sight_only`] cannot read a
+/// cell two ways.
+pub fn terrain_sight_rule(
+    at: (u16, u16),
+    class: TerrainClass,
+    elev_cm: i32,
+    line_cm: i32,
+    attenuation: &mut u32,
+) -> Option<Blocker> {
+    match props(class).opacity {
+        Opacity::Opaque => return Some(Blocker::Terrain { at, class }),
+        Opacity::Partial(pct) => {
+            *attenuation = attenuation.saturating_add(u32::from(pct));
+            if *attenuation >= 100 {
+                return Some(Blocker::Terrain { at, class });
+            }
+        }
+        Opacity::Clear => {}
+    }
+    if elev_cm > line_cm {
+        return Some(Blocker::Elevation { at, elev_cm });
+    }
+    None
+}
+
+/// What [`sight_only`] found: the sight, and the interior cells it read to find
+/// it (16b cut J.1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CellSight {
+    /// Clear, attenuated or blocked — exactly the canonical walk's answer.
+    pub sight: Sight,
+    /// **Interior cells read, hit or miss, up to and including the blocking one;
+    /// never an endpoint**, so a one-cell line reads nothing. It is not
+    /// [`CellTrace::visited`], which counts every cell of the line, both
+    /// endpoints included.
+    pub visited: u32,
+}
+
+/// **The combat arena's line of sight** (16b cut J.1; doc 16 §3.2 "Line of
+/// sight", §3.6 step 2): [`trace_cells`]' answer, with no allocation, stopping at
+/// the first blocker.
+///
+/// The line is drawn from its [`canonical_ends`], each end keeping its own
+/// `height_cm`, and walked by [`Bresenham`]; the ground under the two ends is
+/// read for the line's heights and never counted; the interior cells are read in
+/// order under [`terrain_sight_rule`] at [`line_height_cm`], and the first that
+/// blocks — or leaves the grid ([`Blocker::Edge`]) — is the answer. An endpoint
+/// never blocks its own line and is never read as a cell, but **an endpoint off
+/// the grid is the edge**: the lesser one at once (with nothing read), the other
+/// only when no interior cell blocked first — which is where the walk sets it.
+///
+/// **It is exact.** For every `a`, `b` and grid — the endpoints on the grid or
+/// not — `sight_only(grid, a, b).sight == trace_cells(grid, lo, hi).sight`, where
+/// `(lo, hi)` are the canonical ends carrying their own heights: the same cells
+/// in the same order, the same height at every step ([`line_height_cm`]), the
+/// same rule per cell ([`terrain_sight_rule`]), the same `Edge` at an off-grid
+/// endpoint, the first blocker kept by both — and a walk that continues past its
+/// first blocker changes nothing it reports but `visited` and `target_cover`,
+/// neither of which this function answers. Therefore, by 16c `B-56` (16b cut
+/// M.4: a line is one line from either end), `sees(sight_only(grid, a, b).sight,
+/// k) == sees(trace_cells(grid, a, b).sight, k)` for every budget `k`, with equal
+/// attenuation. The blocker it names is the first from the *lesser* endpoint; a
+/// caller that needs the blocker from its own end uses [`trace_cells`].
+///
+/// **It is the O lens's one exception.** This is the combat arena's trace (doc
+/// 16 §3.2, §3.6) and it stops at the first blocker on purpose. The arena pass's
+/// cost already depends on what the hidden field holds before any line is walked
+/// — the index cull and the thermal cull decide which lines are traced at all —
+/// and no reader of the arena can time one line (a frame carries no timing; the
+/// pass's cost is bounded per pulse and never observed per line), so the early
+/// stop adds no channel. The walk, and every world trace over it, keeps the
+/// module head's rule, and a contract scan holds `sight_only` to the arena.
+#[must_use]
+pub fn sight_only(grid: &dyn CellGrid, a: Eye, b: Eye) -> CellSight {
+    // Each end keeps its own height: swapped, `lo` is `b`'s cell at `b`'s height.
+    let (lo, hi) = if canonical_ends(a.cell, b.cell) == (a.cell, b.cell) {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    // The walk's own `z_from` / `z_to` reads, which it does not count either.
+    // The lesser end off the grid is the walk's `Edge` at step 0, set before it
+    // skips the endpoint.
+    let Some((_, lo_elev_cm)) = grid.cell_at(lo.cell.0, lo.cell.1) else {
+        return CellSight {
+            sight: Sight::BlockedBy(Blocker::Edge),
+            visited: 0,
+        };
+    };
+    let hi_read = grid.cell_at(hi.cell.0, hi.cell.1);
+    let z_lo = lo_elev_cm + lo.height_cm;
+    let z_hi = hi_read.map_or(0, |(_, elev_cm)| elev_cm) + hi.height_cm;
+    let n = usize::from(
+        lo.cell
+            .0
+            .abs_diff(hi.cell.0)
+            .max(lo.cell.1.abs_diff(hi.cell.1)),
+    );
+    let mut attenuation = 0_u32;
+    let mut visited = 0_u32;
+    for (i, at) in Bresenham::new(lo.cell, hi.cell).enumerate() {
+        if i == 0 || i == n {
+            continue;
+        }
+        visited = visited.saturating_add(1);
+        let Some((class, elev_cm)) = grid.cell_at(at.0, at.1) else {
+            return CellSight {
+                sight: Sight::BlockedBy(Blocker::Edge),
+                visited,
+            };
+        };
+        let line_cm = line_height_cm(z_lo, z_hi, i, n);
+        if let Some(blocker) = terrain_sight_rule(at, class, elev_cm, line_cm, &mut attenuation) {
+            return CellSight {
+                sight: Sight::BlockedBy(blocker),
+                visited,
+            };
+        }
+    }
+    let sight = if hi_read.is_none() {
+        // The walk's step `n`: reached only when nothing earlier blocked.
+        Sight::BlockedBy(Blocker::Edge)
+    } else if attenuation > 0 {
+        Sight::Partial(u8::try_from(attenuation.min(99)).unwrap_or(99))
+    } else {
+        Sight::Clear
+    };
+    CellSight { sight, visited }
 }
 
 /// A direct-fire trace: the straight line, stopping at the first blocker,
@@ -974,7 +1208,9 @@ mod tests {
 
     /// **16b cut S.1: `trace_cells` is `line_of_sight`, over cells alone.**
     ///
-    /// The combat arena traces with [`trace_cells`] because it may hold no window
+    /// The combat arena's fire path traces with [`trace_cells`] (and its
+    /// perception with [`sight_only`], which answers the same [`Sight`] as the
+    /// canonical walk; the J.1 tests below) because it may hold no window
     /// and no records (doc 16 §3.1, D-16-1/D-16-3). That is only safe while the two
     /// are the *same* walk, so every terrain rule the walk has — an opaque class, a
     /// rise above the line, attenuation that reaches a hundred, the edge, the
@@ -1130,14 +1366,26 @@ mod tests {
     /// metre — the relief the tie needs, since whole-metre ground under
     /// 150 cm eyes is where the old truncation split a line by a centimetre.
     fn relief(seed: u64) -> PlainGrid {
-        let (width, height) = (64_u16, 64_u16);
+        relief_sized(seed, 64)
+    }
+
+    /// **The same relief on a `side` by `side` grid** (16b cut J.1): the slopes'
+    /// steps and the ridge's period scaled to the side — at 64 they are the M.4
+    /// relief's 8, 16 and 13-with-phase-6 exactly, so `relief` is unchanged —
+    /// and the walls, woods and bumps drawn per cell off the same generator.
+    fn relief_sized(seed: u64, side: u16) -> PlainGrid {
+        let (width, height) = (side, side);
+        let x_step = (side / 8).max(1);
+        let y_step = (side / 4).max(1);
+        let period = u16::try_from((u32::from(side) * 13 / 64).max(2)).unwrap_or(13);
+        let phase = u16::try_from(u32::from(side) * 6 / 64).unwrap_or(6) % period;
         let mut state = seed;
-        let mut cells = Vec::with_capacity(64 * 64);
+        let mut cells = Vec::with_capacity(usize::from(side) * usize::from(side));
         for y in 0..height {
             for x in 0..width {
                 // Two slopes and a ridge line, in whole metres.
-                let slope = i32::from(x / 8) + i32::from(y / 16);
-                let ridge = if x % 13 == 6 { 2 } else { 0 };
+                let slope = i32::from(x / x_step) + i32::from(y / y_step);
+                let ridge = if x % period == phase { 2 } else { 0 };
                 let class = match next(&mut state) % 200 {
                     0 => TerrainClass::Wall,
                     1..=4 => TerrainClass::WoodsLight,
@@ -1282,5 +1530,321 @@ mod tests {
         let grid = PlainGrid::of(&row);
         assert_eq!(trace_cells(&grid, low, high).sight, Sight::Clear);
         assert_eq!(trace_cells(&grid, high, low).sight, Sight::Clear);
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut J.1: `sight_only` is the canonical walk, stopped at its blocker
+    // -----------------------------------------------------------------------
+
+    /// **The three J.1 assertions for one ordered pair**, answering the sight:
+    ///
+    /// 1. `sight_only` is *exactly* the walk from the canonical ends, each end at
+    ///    its own height — blocker and all;
+    /// 2. it is seen along exactly as the walk asked from `a` is (16c `B-56`),
+    ///    and when either is partial the two attenuations are one;
+    /// 3. it reads at least the walk's two endpoints fewer cells (a one-cell
+    ///    line: none against the walk's one).
+    fn j1_agrees(grid: &dyn CellGrid, a: Eye, b: Eye) -> Sight {
+        let (lo, hi) = if canonical_ends(a.cell, b.cell) == (a.cell, b.cell) {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        let fast = sight_only(grid, a, b);
+        let walk = trace_cells(grid, lo, hi);
+        assert_eq!(
+            fast.sight, walk.sight,
+            "sight_only and the canonical walk disagree from {a:?} to {b:?}"
+        );
+        let asked = trace_cells(grid, a, b);
+        assert_eq!(
+            seen(&fast.sight),
+            seen(&asked.sight),
+            "sight_only and the walk asked from {a:?} disagree to {b:?}: {:?} against {:?}",
+            fast.sight,
+            asked.sight
+        );
+        if matches!(fast.sight, Sight::Partial(_)) || matches!(asked.sight, Sight::Partial(_)) {
+            assert_eq!(walk.attenuation, asked.attenuation, "{a:?} to {b:?}");
+            if let Sight::Partial(pct) = fast.sight {
+                assert_eq!(u32::from(pct), asked.attenuation, "{a:?} to {b:?}");
+            }
+        }
+        if a.cell == b.cell {
+            assert_eq!((fast.visited, walk.visited), (0, 1), "{a:?} to itself");
+        } else {
+            assert!(
+                fast.visited + 2 <= walk.visited,
+                "{a:?} to {b:?}: read {} against the walk's {}",
+                fast.visited,
+                walk.visited
+            );
+        }
+        fast.sight
+    }
+
+    /// Clear, partial and blocked, counted.
+    fn tally(counts: &mut [u32; 3], sight: &Sight) {
+        let slot = usize::from(seen(sight).0);
+        if let Some(count) = counts.get_mut(slot) {
+            *count += 1;
+        }
+    }
+
+    /// **`sight_only` is the canonical walk over every pair of a relief** (16b
+    /// cut J.1): every ordered pair of a 16 by 16 relief's 256 cells, a cell with
+    /// itself included, at 150 cm eyes and again with `a` at 900 cm — 131,072
+    /// comparisons — gives the walk's exact sight, is seen along as the walk
+    /// asked from `a` is, and reads two cells fewer at least.
+    ///
+    /// Every arm of [`terrain_sight_rule`] is live over it, and asserted to be:
+    /// seed `0x4a39` draws four walls, seven light and three heavy woods cells
+    /// on this side, so an opaque class, woods that reach a hundred and a rise
+    /// above the line each name the blocker of some pair.
+    #[test]
+    fn j1_sight_only_is_the_canonical_walk_over_every_pair_of_a_relief() {
+        let side = 16_u16;
+        let grid = relief_sized(0x4a39, side);
+        let opaque_cells = grid
+            .cells
+            .iter()
+            .filter(|(class, _)| props(*class).opacity == Opacity::Opaque)
+            .count();
+        assert!(opaque_cells > 0, "the relief holds no opaque cell");
+        let mut counts = [0_u32; 3];
+        // Blocked by an opaque class, by woods that reached a hundred, by a rise.
+        let mut arms = [0_u32; 3];
+        let mut compared = 0_u32;
+        for a_height in [EYE_HEIGHT_CM, 900] {
+            for ay in 0..side {
+                for ax in 0..side {
+                    for by in 0..side {
+                        for bx in 0..side {
+                            let a = Eye {
+                                cell: (ax, ay),
+                                height_cm: a_height,
+                            };
+                            let b = Eye::standing((bx, by));
+                            let sight = j1_agrees(&grid, a, b);
+                            tally(&mut counts, &sight);
+                            let arm = match sight {
+                                Sight::BlockedBy(Blocker::Terrain { class, .. })
+                                    if props(class).opacity == Opacity::Opaque =>
+                                {
+                                    Some(0)
+                                }
+                                Sight::BlockedBy(Blocker::Terrain { .. }) => Some(1),
+                                Sight::BlockedBy(Blocker::Elevation { .. }) => Some(2),
+                                _ => None,
+                            };
+                            if let Some(count) = arm.and_then(|slot| arms.get_mut(slot)) {
+                                *count += 1;
+                            }
+                            compared += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(compared, 131_072);
+        // The relief is worth testing over: all three answers, often.
+        let [clear, partial, blocked] = counts;
+        assert!(
+            clear > 2_000 && partial > 2_000 && blocked > 2_000,
+            "{clear} clear, {partial} partial, {blocked} blocked"
+        );
+        // And every arm of the per-cell rule named a blocker. Seed `0x4a39`
+        // gives 65,210 clear, 16,270 partial and 49,592 blocked, the blocked
+        // split 14,971 opaque, 98 saturated woods and 34,523 elevation: woods
+        // reach a hundred only across two heavy cells, a heavy and two light, or
+        // four light ones on one line (60 and 25 per cent), which is rare on a
+        // 16-cell side, so the bar is 50.
+        let [opaque, saturated, elevation] = arms;
+        assert!(
+            opaque > 50 && saturated > 50 && elevation > 50,
+            "{opaque} opaque, {saturated} saturated woods, {elevation} elevation"
+        );
+    }
+
+    /// **And over the M.4 relief from either end** (16b cut J.1): twenty thousand
+    /// fixed-seed pairs on the 64 by 64 relief, each asked both ways — `a` at
+    /// 900 cm on every fourth pair, so the ends' own heights travel with the
+    /// swap — every one of them the canonical walk's answer.
+    #[test]
+    fn j1_sight_only_over_the_relief_from_either_end() {
+        let grid = relief(0x4d36);
+        let mut state = 0x4a32_u64;
+        let mut blocked = 0_u32;
+        let mut open = 0_u32;
+        for pair in 0..20_000_u32 {
+            let a = Eye {
+                cell: (coord(&mut state), coord(&mut state)),
+                height_cm: if pair % 4 == 0 { 900 } else { EYE_HEIGHT_CM },
+            };
+            let b = Eye::standing((coord(&mut state), coord(&mut state)));
+            for sight in [j1_agrees(&grid, a, b), j1_agrees(&grid, b, a)] {
+                if seen(&sight).0 == 2 {
+                    blocked += 1;
+                } else {
+                    open += 1;
+                }
+            }
+        }
+        assert!(
+            blocked > 1_000 && open > 1_000,
+            "{blocked} blocked, {open} not"
+        );
+    }
+
+    /// **`sight_only` stops at the first blocker and counts what it read** (16b
+    /// cut J.1), on the S.1 rows and the M.4 tie. Every count is the interior
+    /// cells read up to and including the blocking one (or every interior cell
+    /// when nothing blocks); the endpoints are never read as cells.
+    #[test]
+    fn j1_sight_only_stops_at_the_first_blocker_and_counts_what_it_read() {
+        let a = Eye::standing((0, 0));
+        let b = Eye::standing((9, 0));
+        // (a) A wall at 5: cells 1 to 5 read, the wall the fifth.
+        let mut row = surface(10, 1, TerrainClass::Paved);
+        set(&mut row, 5, 0, TerrainClass::Wall, 0);
+        let got = sight_only(&PlainGrid::of(&row), a, b);
+        assert_eq!(
+            got,
+            CellSight {
+                sight: Sight::BlockedBy(Blocker::Terrain {
+                    at: (5, 0),
+                    class: TerrainClass::Wall
+                }),
+                visited: 5,
+            }
+        );
+        // (b) Light woods at 3 and 4: nothing blocks, all eight interior cells read.
+        let mut row = surface(10, 1, TerrainClass::Paved);
+        set(&mut row, 3, 0, TerrainClass::WoodsLight, 0);
+        set(&mut row, 4, 0, TerrainClass::WoodsLight, 0);
+        let got = sight_only(&PlainGrid::of(&row), a, b);
+        assert_eq!(
+            got,
+            CellSight {
+                sight: Sight::Partial(50),
+                visited: 8,
+            }
+        );
+        // (c) Light woods at 3 to 6: the fourth belt reaches a hundred at cell 6,
+        // cells 1 to 6 read.
+        set(&mut row, 5, 0, TerrainClass::WoodsLight, 0);
+        set(&mut row, 6, 0, TerrainClass::WoodsLight, 0);
+        let got = sight_only(&PlainGrid::of(&row), a, b);
+        assert_eq!(
+            got,
+            CellSight {
+                sight: Sight::BlockedBy(Blocker::Terrain {
+                    at: (6, 0),
+                    class: TerrainClass::WoodsLight
+                }),
+                visited: 6,
+            }
+        );
+        // (d) The M.4 tie: drawn from (0,0) whichever end asks, so the ridge at
+        // 29 is the 29th interior cell read both ways; a centimetre lower it is
+        // under the line and all 58 interior cells are read.
+        let mut row = surface(60, 1, TerrainClass::Ground);
+        set(&mut row, 59, 0, TerrainClass::Ground, 100);
+        set(&mut row, 29, 0, TerrainClass::Ground, 200);
+        let grid = PlainGrid::of(&row);
+        let low = Eye::standing((0, 0));
+        let high = Eye::standing((59, 0));
+        let ridge = CellSight {
+            sight: Sight::BlockedBy(Blocker::Elevation {
+                at: (29, 0),
+                elev_cm: 200,
+            }),
+            visited: 29,
+        };
+        assert_eq!(sight_only(&grid, low, high), ridge);
+        assert_eq!(sight_only(&grid, high, low), ridge);
+        set(&mut row, 29, 0, TerrainClass::Ground, 199);
+        let grid = PlainGrid::of(&row);
+        let open = CellSight {
+            sight: Sight::Clear,
+            visited: 58,
+        };
+        assert_eq!(sight_only(&grid, low, high), open);
+        assert_eq!(sight_only(&grid, high, low), open);
+        // (e) Off the 12-wide S.1 grid: cells 1 to 11 read and clear, cell 12 off
+        // the grid read and counted — twelve.
+        let mut s = surface(12, 12, TerrainClass::Ground);
+        set(&mut s, 6, 6, TerrainClass::Wall, 0);
+        set(&mut s, 3, 8, TerrainClass::Ground, 120);
+        set(&mut s, 4, 4, TerrainClass::WoodsLight, 0);
+        set(&mut s, 5, 5, TerrainClass::WoodsHeavy, 0);
+        set(&mut s, 8, 2, TerrainClass::WoodsLight, 0);
+        set(&mut s, 9, 1, TerrainClass::WoodsLight, 0);
+        let grid = PlainGrid::of(&s);
+        assert_eq!(
+            sight_only(&grid, Eye::standing((0, 0)), Eye::standing((30, 0))),
+            CellSight {
+                sight: Sight::BlockedBy(Blocker::Edge),
+                visited: 12,
+            }
+        );
+        // (f) An endpoint off the grid: (12, 0) is one cell past the edge. Every
+        // interior cell, 1 to 11, is read and clear, the far endpoint is never
+        // read as a cell, and the edge is the answer after the loop — both ways,
+        // because both ways draw from (0, 0). And the walk agrees: from (0, 0) it
+        // sets the edge at its last step, from (12, 0) at its first.
+        let near = Eye::standing((0, 0));
+        let off = Eye::standing((12, 0));
+        let edge = CellSight {
+            sight: Sight::BlockedBy(Blocker::Edge),
+            visited: 11,
+        };
+        assert_eq!(sight_only(&grid, near, off), edge);
+        assert_eq!(sight_only(&grid, off, near), edge);
+        assert_eq!(trace_cells(&grid, near, off).sight, edge.sight);
+        assert_eq!(trace_cells(&grid, off, near).sight, edge.sight);
+        // And the lesser end off the grid is the edge at once, nothing read.
+        assert_eq!(
+            sight_only(&grid, Eye::standing((12, 3)), Eye::standing((20, 3))),
+            CellSight {
+                sight: Sight::BlockedBy(Blocker::Edge),
+                visited: 0,
+            }
+        );
+    }
+
+    /// **The lazy line is the collected one** (16b cut J.1): `line_cells` is now
+    /// `Bresenham` collected from the canonical ends, and the iterator stops for
+    /// good after its far end.
+    #[test]
+    fn j1_the_bresenham_iterator_is_the_line_and_ends() {
+        let mut line = Bresenham::new((0, 0), (2, 1));
+        assert_eq!(line.next(), Some((0, 0)));
+        assert_eq!(line.next(), Some((1, 1)));
+        assert_eq!(line.next(), Some((2, 1)));
+        assert_eq!(line.next(), None);
+        assert_eq!(line.next(), None);
+        assert_eq!(
+            Bresenham::new((5, 5), (5, 5)).collect::<Vec<_>>(),
+            vec![(5, 5)]
+        );
+        assert_eq!(canonical_ends((3, 1), (0, 1)), ((0, 1), (3, 1)));
+        assert_eq!(canonical_ends((0, 1), (3, 1)), ((0, 1), (3, 1)));
+        let mut state = 0x4a33_u64;
+        for _ in 0..2_000 {
+            let a = (coord(&mut state), coord(&mut state));
+            let b = (coord(&mut state), coord(&mut state));
+            let (lo, hi) = canonical_ends(a, b);
+            let drawn: Vec<(u16, u16)> = Bresenham::new(lo, hi).collect();
+            let n = usize::from(lo.0.abs_diff(hi.0).max(lo.1.abs_diff(hi.1)));
+            assert_eq!(drawn.len(), n + 1, "{a:?} to {b:?}");
+            if lo == a {
+                assert_eq!(line_cells(a, b), drawn);
+            } else {
+                let mut back = drawn;
+                back.reverse();
+                assert_eq!(line_cells(a, b), back);
+            }
+        }
     }
 }

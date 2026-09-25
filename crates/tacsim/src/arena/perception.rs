@@ -69,9 +69,9 @@
 //! **Step 3 runs before step 2**, and that is the only departure from doc 16's
 //! numbering. The two are a conjunction — a candidate must pass both — so their
 //! order cannot change any answer, and the range test is integer arithmetic over
-//! one cell read while the trace walks up to ninety cells. Doc 16 §2 W4 bounds
-//! *traces and cell probes per pulse*; running the cheap half of the conjunction
-//! first is how that bound is met without weakening it.
+//! one cell read while the trace walks up to the first blocker (16b cut J.1).
+//! Doc 16 §2 W4 bounds *traces and cell probes per pulse*; running the cheap
+//! half of the conjunction first is how that bound is met without weakening it.
 //!
 //! # Why nothing here is cached and nothing here is shared
 //!
@@ -155,7 +155,7 @@
 //! `condition` is read for that at check-out.
 
 use mush_atlas::TerrainClass;
-use mush_atlas::trace::{Eye, Sight, trace_cells};
+use mush_atlas::trace::{Eye, Sight, sight_only};
 use mush_core::ObjId;
 use mush_tactics::TacticalUnit;
 use smol_str::SmolStr;
@@ -612,7 +612,9 @@ pub struct PerceptionCounters {
     pub candidates: u32,
     /// Line-of-sight traces walked — detection's and the share mesh's together.
     pub traces: u32,
-    /// Cells read by those traces, hit or miss.
+    /// Cells read by those traces, hit or miss — **since 16b cut J.1 the
+    /// interior cells up to and including the first blocker**
+    /// ([`mush_atlas::sight_only`] stops there and never reads an endpoint).
     pub cell_probes: u64,
     /// `(sharer, teammate)` pairs considered.
     pub share_ops: u32,
@@ -1077,6 +1079,34 @@ impl Arena {
             .any(|(_, held)| held.shareable(cutoff).is_some())
     }
 
+    /// **The one place the arena's perception traces** (16b cut J.1; doc 16 §3.2
+    /// "Line of sight", §3.6 step 2): detection's step 2 in `detections` and the
+    /// mesh's line in [`Arena::share_pass`], each one trace and its cells counted
+    /// on `counters` (doc 16 §2 W4).
+    ///
+    /// It walks [`sight_only`] and not [`mush_atlas::trace_cells`]: the answer is
+    /// the same [`Sight`] to the byte — the same cells in the same order, the same
+    /// height at every step and the same per-cell rule, drawn from the line's
+    /// canonical end — but with nothing allocated and nothing read past the first
+    /// blocker, and the only thing perception reads off a trace is its sight and
+    /// its cell count. The early stop is the O lens's one exception, taken because
+    /// the pass's cost already depends on the hidden field before any line is
+    /// walked (the index cull and the thermal cull decide which lines are traced
+    /// at all) and no reader of the arena can time one line; see the atlas
+    /// module's head. So [`PerceptionCounters::cell_probes`] counts the interior
+    /// cells read up to the blocker, and every outcome is what it was.
+    ///
+    /// The fire path in `damage.rs` is the arena's other trace and stays on
+    /// `trace_cells`, because its readers — the shot, the reflex's engage check
+    /// and the cover readings — want `target_cover` and the attenuation from the
+    /// shooter's own end, which `sight_only` does not answer.
+    pub fn sight(&self, from: Eye, to: Eye, counters: &mut PerceptionCounters) -> Sight {
+        let seen = sight_only(&self.definition.terrain, from, to);
+        counters.traces = counters.traces.saturating_add(1);
+        counters.cell_probes = counters.cell_probes.saturating_add(u64::from(seen.visited));
+        seen.sight
+    }
+
     /// Steps 1 to 3 of doc 16 §3.6, over one snapshot of the units and the index.
     ///
     /// `None` when the observer runs no pass at all: it is not in this match, it is
@@ -1188,13 +1218,10 @@ impl Arena {
             if range > reach_cm {
                 continue;
             }
-            // Step 2: the atlas trace over the arena's own cell grid.
-            let trace = trace_cells(&self.definition.terrain, from, to);
-            counters.traces = counters.traces.saturating_add(1);
-            counters.cell_probes = counters
-                .cell_probes
-                .saturating_add(u64::from(trace.visited));
-            if !sees(&trace.sight, attenuation) {
+            // Step 2: the atlas trace over the arena's own cell grid, through
+            // the arena's one door ([`Arena::sight`], 16b cut J.1).
+            let sight = self.sight(from, to, counters);
+            if !sees(&sight, attenuation) {
                 continue;
             }
             found.push(Detection {
@@ -1474,11 +1501,9 @@ impl Arena {
                 continue;
             };
             counters.share_ops = counters.share_ops.saturating_add(1);
-            let trace = trace_cells(&self.definition.terrain, from, to);
-            counters.traces = counters.traces.saturating_add(1);
-            counters.cell_probes = counters
-                .cell_probes
-                .saturating_add(u64::from(trace.visited));
+            // The mesh's line, through the same door as detection's (16b cut
+            // J.1), and before the mate's fold as the trace always was.
+            let sight = self.sight(from, to, counters);
             // **16b cut Q.6**: and the pods the *receiver* is standing among, with
             // its own filter against them. A link has two ends and a pod sitting on
             // either one cuts it, so the **tighter** of the two answers governs:
@@ -1496,7 +1521,7 @@ impl Arena {
             let budget = sharer_jam
                 .map_or(attenuation, |jam| jam.budget(attenuation))
                 .min(mate_jam.map_or(attenuation, |jam| jam.budget(attenuation)));
-            if !sees(&trace.sight, budget) {
+            if !sees(&sight, budget) {
                 continue;
             }
             let link_reach = sharer_reach
