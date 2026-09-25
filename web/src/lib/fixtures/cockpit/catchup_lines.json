@@ -1,0 +1,319 @@
+[
+  {
+    "callsign": "RA",
+    "catchup": {
+      "away_s": 134,
+      "cell_then": [64, 97],
+      "cell_now": [70, 101],
+      "power_then": "online",
+      "power_now": "online",
+      "wreck": false,
+      "contacts_new": ["BA", "X3"],
+      "contacts_lost": ["X2"],
+      "contacts_more": 0,
+      "sections": [
+        {
+          "id": "left_track",
+          "then": { "condition": "intact", "armour": 120, "internals": 100 },
+          "now": { "condition": "destroyed", "armour": 0, "internals": 0 }
+        },
+        {
+          "id": "hull",
+          "then": { "condition": "intact", "armour": 230, "internals": 200 },
+          "now": { "condition": "intact", "armour": 90, "internals": 200 }
+        }
+      ],
+      "sections_more": 0,
+      "rounds_spent": [
+        { "weapon": "cannon", "rounds": 3 },
+        { "weapon": "machine_gun", "rounds": 40 }
+      ],
+      "rounds_more": 0,
+      "machine": { "state": "withdraw", "goal": [2, 97], "objective": null }
+    },
+    "lines": [
+      "Back aboard RA after 2 m 14 s away.",
+      "  The machine was withdrawing toward its entry zone under no order.",
+      "  Position: cell (64, 97) then, (70, 101) now.",
+      "  Contacts: new BA, X3; lost X2.",
+      "  Sections: left_track intact then, destroyed now; hull armour 230 then, 90 now.",
+      "  Rounds spent: cannon 3, machine_gun 40.",
+      "  Power online."
+    ]
+  },
+  {
+    "callsign": "RA",
+    "catchup": {
+      "away_s": 45,
+      "cell_then": [70, 101],
+      "cell_now": [70, 101],
+      "power_then": "online",
+      "power_now": "online",
+      "wreck": false,
+      "contacts_new": [],
+      "contacts_lost": [],
+      "contacts_more": 0,
+      "sections": [],
+      "sections_more": 0,
+      "rounds_spent": [],
+      "rounds_more": 0,
+      "machine": { "state": "patrol", "goal": [70, 101], "objective": "hold" }
+    },
+    "lines": [
+      "Back aboard RA after 45 s away.",
+      "  The machine was patrolling under a hold order.",
+      "  Position: cell (70, 101), unchanged.",
+      "  Contacts: none new, none lost.",
+      "  Sections: unchanged.",
+      "  Rounds spent: none.",
+      "  Power online."
+    ]
+  },
+  {
+    "callsign": "RA",
+    "catchup": {
+      "away_s": 312,
+      "cell_then": [10, 10],
+      "cell_now": [12, 14],
+      "power_then": "online",
+      "power_now": "online",
+      "wreck": false,
+      "contacts_new": ["RB", "BA", "BB", "BC", "BD", "BE", "BF", "BG", "BH", "X1", "X2", "X3"],
+      "contacts_lost": ["X9"],
+      "contacts_more": 3,
+      "sections": [],
+      "sections_more": 0,
+      "rounds_spent": [{ "weapon": "cannon", "rounds": 1 }],
+      "rounds_more": 0,
+      "machine": { "state": "engage", "goal": [12, 15], "objective": "engage" }
+    },
+    "lines": [
+      "Back aboard RA after 5 m 12 s away.",
+      "  The machine was engaging under an engage order.",
+      "  Position: cell (10, 10) then, (12, 14) now.",
+      "  Contacts: new RB, BA, BB, BC, BD, BE, BF, BG, BH, X1, X2, X3 and 3 more; lost X9.",
+      "  Sections: unchanged.",
+      "  Rounds spent: cannon 1.",
+      "  Power online."
+    ]
+  },
+  {
+    "callsign": "RA",
+    "catchup": {
+      "away_s": 3723,
+      "cell_then": [5, 5],
+      "cell_now": [6, 5],
+      "power_then": "online",
+      "power_now": "online",
+      "wreck": false,
+      "contacts_new": [],
+      "contacts_lost": ["BA"],
+      "contacts_more": 0,
+      "sections": [
+        {
+          "id": "hull",
+          "then": { "condition": "intact", "armour": 400, "internals": 200 },
+          "now": { "condition": "intact", "armour": 300, "internals": 150 }
+        },
+        {
+          "id": "turret",
+          "then": { "condition": "intact", "armour": 350, "internals": 150 },
+          "now": { "condition": "intact", "armour": 340, "internals": 150 }
+        },
+        {
+          "id": "left_track",
+          "then": { "condition": "intact", "armour": 120, "internals": 100 },
+          "now": { "condition": "intact", "armour": 60, "internals": 100 }
+        },
+        {
+          "id": "right_track",
+          "then": { "condition": "intact", "armour": 120, "internals": 100 },
+          "now": { "condition": "intact", "armour": 110, "internals": 100 }
+        },
+        {
+          "id": "sponson_left",
+          "then": { "condition": "intact", "armour": 80, "internals": 40 },
+          "now": { "condition": "intact", "armour": 40, "internals": 40 }
+        },
+        {
+          "id": "sponson_right",
+          "then": { "condition": "intact", "armour": 80, "internals": 40 },
+          "now": { "condition": "intact", "armour": 70, "internals": 40 }
+        }
+      ],
+      "sections_more": 1,
+      "rounds_spent": [
+        { "weapon": "cannon", "rounds": 2 },
+        { "weapon": "machine_gun", "rounds": 30 },
+        { "weapon": "coax", "rounds": 10 },
+        { "weapon": "rockets", "rounds": 4 },
+        { "weapon": "mortar", "rounds": 1 },
+        { "weapon": "flamer", "rounds": 5 }
+      ],
+      "rounds_more": 1,
+      "machine": { "state": "approach", "goal": [9, 5], "objective": "advance" }
+    },
+    "lines": [
+      "Back aboard RA after 1 h 2 m 3 s away.",
+      "  The machine was closing on a contact under an advance order.",
+      "  Position: cell (5, 5) then, (6, 5) now.",
+      "  Contacts: none new; lost BA.",
+      "  Sections: hull armour 400 then, 300 now, internals 200 then, 150 now; turret armour 350 then, 340 now; left_track armour 120 then, 60 now; right_track armour 120 then, 110 now; sponson_left armour 80 then, 40 now; sponson_right armour 80 then, 70 now and 1 more.",
+      "  Rounds spent: cannon 2, machine_gun 30, coax 10, rockets 4, mortar 1, flamer 5 and 1 more.",
+      "  Power online."
+    ]
+  },
+  {
+    "callsign": "RA",
+    "catchup": {
+      "away_s": 60,
+      "cell_then": [30, 30],
+      "cell_now": [31, 30],
+      "power_then": "online",
+      "power_now": "off",
+      "wreck": true,
+      "contacts_new": [],
+      "contacts_lost": ["BA", "BB"],
+      "contacts_more": 0,
+      "sections": [
+        {
+          "id": "hull",
+          "then": { "condition": "intact", "armour": 1150, "internals": 200 },
+          "now": { "condition": "destroyed", "armour": 0, "internals": 0 }
+        }
+      ],
+      "sections_more": 0,
+      "rounds_spent": [{ "weapon": "cannon", "rounds": 6 }],
+      "rounds_more": 0,
+      "machine": { "state": "disabled", "goal": null, "objective": null }
+    },
+    "lines": [
+      "Back aboard RA after 1 m 0 s away.",
+      "  The machine was disabled under no order.",
+      "  Position: cell (30, 30) then, (31, 30) now.",
+      "  Contacts: none new; lost BA, BB.",
+      "  Sections: hull intact then, destroyed now.",
+      "  Rounds spent: cannon 6.",
+      "  Power off.",
+      "  Your tank is a wreck."
+    ]
+  },
+  {
+    "callsign": "BB",
+    "catchup": {
+      "away_s": 7,
+      "cell_then": [3, 4],
+      "cell_now": [3, 4],
+      "power_then": "off",
+      "power_now": "starting",
+      "wreck": false,
+      "contacts_new": ["X1"],
+      "contacts_lost": [],
+      "contacts_more": 0,
+      "sections": [],
+      "sections_more": 0,
+      "rounds_spent": [],
+      "rounds_more": 0,
+      "machine": null
+    },
+    "lines": [
+      "Back aboard BB after 7 s away.",
+      "  The machine had no state.",
+      "  Position: cell (3, 4), unchanged.",
+      "  Contacts: new X1; none lost.",
+      "  Sections: unchanged.",
+      "  Rounds spent: none.",
+      "  Power starting."
+    ]
+  },
+  {
+    "callsign": "RA",
+    "catchup": {
+      "away_s": 20,
+      "cell_then": [95, 63],
+      "cell_now": null,
+      "power_then": "online",
+      "power_now": "online",
+      "wreck": false,
+      "contacts_new": [],
+      "contacts_lost": [],
+      "contacts_more": 0,
+      "sections": [],
+      "sections_more": 0,
+      "rounds_spent": [],
+      "rounds_more": 0,
+      "machine": { "state": "withdraw", "goal": null, "objective": "withdraw" }
+    },
+    "lines": [
+      "Back aboard RA after 20 s away.",
+      "  The machine was withdrawing toward its entry zone under a withdraw order.",
+      "  Position: unknown.",
+      "  Contacts: none new, none lost.",
+      "  Sections: unchanged.",
+      "  Rounds spent: none.",
+      "  Power online."
+    ]
+  },
+  {
+    "callsign": "RA",
+    "catchup": {
+      "away_s": 3,
+      "cell_then": null,
+      "cell_now": [0, 12],
+      "power_then": "off",
+      "power_now": "starting",
+      "wreck": false,
+      "contacts_new": [],
+      "contacts_lost": [],
+      "contacts_more": 0,
+      "sections": [
+        {
+          "id": "turret",
+          "then": { "condition": "intact", "armour": 930, "internals": 150 },
+          "now": { "condition": "intact", "armour": 930, "internals": 100 }
+        }
+      ],
+      "sections_more": 0,
+      "rounds_spent": [],
+      "rounds_more": 0,
+      "machine": { "state": "startup", "goal": null, "objective": null }
+    },
+    "lines": [
+      "Back aboard RA after 3 s away.",
+      "  The machine was starting up under no order.",
+      "  Position: cell unknown then, (0, 12) now.",
+      "  Contacts: none new, none lost.",
+      "  Sections: turret internals 150 then, 100 now.",
+      "  Rounds spent: none.",
+      "  Power starting."
+    ]
+  },
+  {
+    "callsign": "RA",
+    "catchup": {
+      "away_s": 734,
+      "cell_then": [40, 40],
+      "cell_now": [8, 41],
+      "power_then": "online",
+      "power_now": "online",
+      "wreck": false,
+      "contacts_new": ["RB", "RC", "BA", "BB", "BC", "BD", "BE", "BF", "BG", "BH", "BI", "BJ"],
+      "contacts_lost": ["X1", "X2", "X3", "X4", "X5", "X6", "X7", "X8", "X9", "X10", "X11", "X12"],
+      "contacts_more": 3,
+      "sections": [],
+      "sections_more": 0,
+      "rounds_spent": [],
+      "rounds_more": 0,
+      "machine": { "state": "withdraw", "goal": [2, 41], "objective": "withdraw" }
+    },
+    "lines": [
+      "Back aboard RA after 12 m 14 s away.",
+      "  The machine was withdrawing toward its entry zone under a withdraw order.",
+      "  Position: cell (40, 40) then, (8, 41) now.",
+      "  Contacts: new RB, RC, BA, BB, BC, BD, BE, BF, BG, BH, BI, BJ; lost X1, X2, X3, X4, X5, X6, X7, X8, X9, X10, X11, X12; 3 more not named.",
+      "  Sections: unchanged.",
+      "  Rounds spent: none.",
+      "  Power online."
+    ]
+  }
+]

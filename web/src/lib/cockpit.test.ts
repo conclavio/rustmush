@@ -20,12 +20,14 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  catchupLines,
   cockpitView,
   cockpitViewLines,
   composeWindow,
   contactText,
   damageText,
   decodeArenaMap,
+  decodeCatchup,
   decodeCockpitFrame,
   labelledAt,
   labelPlan,
@@ -85,6 +87,8 @@ describe("the decoders", () => {
     expect(frame.scope).toBe("hostile");
     expect(frame.wreck).toBe(false);
     expect(frame.immobile).toBe(false);
+    // 16b cut Y.4: an ordinary pulse carries no catch-up report.
+    expect(frame.catchup).toBeNull();
     expect(frame.lock_designator).toBe("BA");
     // 16b cut D.4 (16c `T-20`): derived from the locked row's own plot age.
     expect(frame.lock_range_m).toBe(440);
@@ -208,6 +212,8 @@ describe("the decoders", () => {
     expect(old?.heat).toBeNull();
     expect(old?.sections[0]?.internals).toBe(0);
     expect(old?.weapons[0]?.percent).toBeNull();
+    // 16b cut Y.4: a server that predates the catch-up sends no key.
+    expect(old?.catchup).toBeNull();
     // A newer server: a field this build predates is ignored, not fatal.
     const ahead = decodeCockpitFrame({
       ...(json("cockpit_frame.json") as Record<string, unknown>),
@@ -866,5 +872,84 @@ describe("16b cut B.1", () => {
     // An own-side tank told apart keeps its mark on the name it reads now, so
     // it never reads as a hostile's identification.
     expect(pairs.map((p) => p.line)).toContain("X3 identified: RB (FRIENDLY)");
+  });
+});
+
+describe("16b cut Y.4: the catch-up report", () => {
+  type Case = { callsign: string; catchup: unknown; lines: string[] };
+
+  it("decodes every case of `catchup_lines.json` and words it as the file says", () => {
+    const cases = json("catchup_lines.json") as Case[];
+    expect(cases).toHaveLength(9);
+    for (const { callsign, catchup, lines } of cases) {
+      const decoded = decodeCatchup(catchup);
+      expect(decoded, JSON.stringify(catchup)).not.toBeNull();
+      expect(catchupLines(callsign, decoded!)).toEqual(lines);
+      // And through the real frame decoder, as it rides the wire.
+      const frame = decodeCockpitFrame({
+        ...(json("cockpit_frame.json") as Record<string, unknown>),
+        callsign,
+        catchup,
+      });
+      expect(frame?.catchup).toEqual(decoded);
+    }
+    // The full case decodes to the fixture's own figures.
+    const full = decodeCatchup(cases[0]!.catchup);
+    expect(full?.away_s).toBe(134);
+    expect(full?.cell_then).toEqual([64, 97]);
+    expect(full?.contacts_new).toEqual(["BA", "X3"]);
+    expect(full?.sections.map((s) => s.id)).toEqual(["left_track", "hull"]);
+    expect(full?.machine).toEqual({ state: "withdraw", goal: [2, 97], objective: null });
+  });
+
+  it("decodes a malformed report to null, drops a malformed entry and bounds every string", () => {
+    for (const bad of ["Back aboard", 7, null, [], undefined]) {
+      expect(decodeCatchup(bad)).toBeNull();
+    }
+    // The TUI's `catchup_words_refuse_a_malformed_report_and_bound_every_field`,
+    // case for case.
+    const hostile = decodeCatchup({
+      away_s: 61,
+      cell_then: [1, -2],
+      cell_now: ["x", 3],
+      power_now: "on\u001b[31mline",
+      wreck: "yes",
+      contacts_new: ["ABCDEFGHIJ", 3, "  "],
+      contacts_lost: [],
+      contacts_more: 0,
+      sections: [
+        {
+          id: "s".repeat(30),
+          then: { condition: "intact", armour: 9 },
+          now: { condition: "intact", armour: 4 },
+        },
+        "junk",
+      ],
+      rounds_spent: [{ weapon: "w\u0007", rounds: 2 }, { weapon: "x" }],
+      machine: { state: "a_new_state_word_x", objective: null },
+    });
+    expect(hostile).not.toBeNull();
+    expect(catchupLines("RA", hostile!)).toEqual([
+      "Back aboard RA after 1 m 1 s away.",
+      "  The machine was a new state word under no order.",
+      "  Position: unknown.",
+      "  Contacts: new ABCDEFGH; none lost.",
+      `  Sections: ${"s".repeat(24)} armour 9 then, 4 now.`,
+      "  Rounds spent: w 2.",
+      "  Power on[31mline.",
+    ]);
+    // Lists are cut to what the arena sends at most.
+    const long = decodeCatchup({
+      contacts_new: Array.from({ length: 20 }, (_, n) => `X${n + 1}`),
+      sections: Array.from({ length: 9 }, (_, n) => ({
+        id: `s${n}`,
+        then: { condition: "intact", armour: 2, internals: 1 },
+        now: { condition: "intact", armour: 1, internals: 1 },
+      })),
+      rounds_spent: Array.from({ length: 9 }, (_, n) => ({ weapon: `w${n}`, rounds: 1 })),
+    });
+    expect(long?.contacts_new).toHaveLength(12);
+    expect(long?.sections).toHaveLength(6);
+    expect(long?.rounds_spent).toHaveLength(6);
   });
 });

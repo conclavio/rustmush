@@ -704,6 +704,11 @@ impl PrePulse {
 /// held is therefore at most the bound or one pulse's notices, whichever is
 /// more. With nothing held the fresh frames keep their own order and are not
 /// copied.
+///
+/// The rule the merge keeps, since **16b cut Y.4**: *a notice, and a catch-up,
+/// is delivered at most once, and at least once unless the process is
+/// stopping*. A held frame's [`Frame::catchup`] is carried onto the fresh frame
+/// when the fresh one has none of its own.
 fn merge_held(
     held: Option<(i64, Vec<(ObjId, Frame)>)>,
     fresh: Vec<(ObjId, Frame)>,
@@ -722,6 +727,16 @@ fn merge_held(
             Some((mut older, _)) => {
                 older.notices.append(&mut frame.notices);
                 frame.notices = older.notices;
+                // **16b cut Y.4**: a held pulse's catch-up report rides the
+                // next frame exactly as its notices do. A reclaim follows a
+                // disruption, which is the very moment a world lags, and a
+                // fresh view without this would lose the report on every
+                // surface. A fresh frame that carries its own keeps it (a
+                // second reclaim inside one lag: the newer report is the one
+                // measured from the newer drop).
+                if frame.catchup.is_none() {
+                    frame.catchup = older.catchup.take();
+                }
                 true
             }
             None => false,
@@ -1633,6 +1648,64 @@ mod tests {
         let merged = merge_held(held, fresh, &mut drops);
         assert_eq!(merged[0].1.notices, vec![miss(1), miss(2)]);
         assert_eq!(merged[1].1.notices.len(), 70);
+        assert_eq!(drops, 0);
+    }
+
+    /// A catch-up report measured `away_ms` long, and nothing else.
+    fn report(away_ms: i64) -> crate::arena::catchup::Catchup {
+        crate::arena::catchup::Catchup {
+            away_ms,
+            cell_then: Some((1, 1)),
+            cell_now: Some((2, 2)),
+            power_then: crate::arena::state::Power::Online,
+            power_now: crate::arena::state::Power::Online,
+            wreck: false,
+            contacts_new: Vec::new(),
+            contacts_lost: Vec::new(),
+            contacts_more: 0,
+            sections: Vec::new(),
+            sections_more: 0,
+            rounds_spent: Vec::new(),
+            rounds_more: 0,
+            machine: None,
+        }
+    }
+
+    /// **16b cut Y.4**: a held frame's catch-up rides the fresh frame that
+    /// has none, once, beside the held notices; a fresh frame with its own
+    /// keeps its own; and a pilot with nothing held is untouched.
+    #[test]
+    fn y4_merge_held_carries_a_held_catch_up_and_keeps_a_fresh_one() {
+        let base = frames();
+        let (p0, f0) = base[0].clone();
+        let (p1, f1) = base[1].clone();
+        let mut held_frame = with(&f0, vec![miss(1)], 10);
+        held_frame.catchup = Some(report(20_000));
+        let held = Some((100, vec![(p0, held_frame)]));
+        let fresh = vec![
+            (p0, with(&f0, vec![miss(2)], 11)),
+            (p1, with(&f1, Vec::new(), 12)),
+        ];
+        let mut drops = 0;
+        let merged = merge_held(held, fresh, &mut drops);
+        assert_eq!(merged.len(), 2, "one frame a pilot");
+        assert_eq!(merged[0].1.catchup, Some(report(20_000)), "carried");
+        assert_eq!(merged[0].1.notices, vec![miss(1), miss(2)]);
+        assert_eq!(merged[0].1.pose.x_cm, 11, "the view is the newer frame's");
+        assert_eq!(merged[1].1.catchup, None);
+
+        // A fresh frame with its own keeps its own.
+        let mut held_frame = with(&f0, Vec::new(), 10);
+        held_frame.catchup = Some(report(20_000));
+        let mut fresh_frame = with(&f0, Vec::new(), 11);
+        fresh_frame.catchup = Some(report(3_000));
+        let merged = merge_held(
+            Some((100, vec![(p0, held_frame)])),
+            vec![(p0, fresh_frame)],
+            &mut drops,
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].1.catchup, Some(report(3_000)));
         assert_eq!(drops, 0);
     }
 

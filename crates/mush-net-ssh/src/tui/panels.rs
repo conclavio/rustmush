@@ -178,11 +178,32 @@ impl PanelStore {
     /// [`COCKPIT_NOTICES`]. Per-pulse frames carry only that pulse's notices,
     /// and the copy a read verb re-emits carries `notices: []`, so nothing is
     /// rung twice.
+    ///
+    /// **16b cut Y.4**: a frame's `catchup` object — a reclaim's first frame
+    /// carries one, every other `null` — rings first, one line each of
+    /// [`super::render::catchup_words`], under the frame's own callsign
+    /// (cleaned, cut to eight). A `catchup` that is not an object rings
+    /// nothing.
     pub fn push_cockpit_notices(&mut self, frame: &Value) {
         let match_id = frame.get("match").and_then(Value::as_i64);
         if match_id != self.cockpit_notices_for {
             self.cockpit_notices.clear();
             self.cockpit_notices_for = match_id;
+        }
+        // **16b cut Y.4** (doc 07 §1.3 step 5): the catch-up report a reclaim's
+        // first frame carries, before that frame's notices — it is about the
+        // time before them. Composed from the object's fields; the line
+        // client's copy is tagged as a frame's own sentence and not rung.
+        if let Some(catchup) = frame.get("catchup").filter(|v| v.is_object()) {
+            let callsign = frame
+                .get("callsign")
+                .and_then(Value::as_str)
+                .map(|raw| super::render::truncate_chars(super::render::clean(raw).trim(), 8))
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "?".to_string());
+            for line in super::render::catchup_words(&callsign, catchup) {
+                self.ring_cockpit_line(line);
+            }
         }
         let Some(notices) = frame.get("notices").and_then(Value::as_array) else {
             return;

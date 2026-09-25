@@ -279,6 +279,12 @@ thread_local! {
 /// information and would make the hash a function of which folds had been asked
 /// for by the time the record was taken.
 ///
+/// **Cut Y.4's `at_release` and `pending_catchup` are absent on `last_frames`'
+/// argument**: they are what a pilot will be told about a drop, written only by
+/// a control that names a pilot and read only by the frame builder, so folding
+/// them would make the hash a function of who was connected — and nothing that
+/// steers reads them, so they cannot move a later substep either.
+///
 /// **Cut D.2's `spent_said` is the opposite case, and it IS folded.** It persists
 /// for [`crate::arena::state::SPENT_NOTICE_MS`] across substeps and pulses and it
 /// decides what a *later* substep says, so `lost_designators`' argument is simply

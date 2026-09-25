@@ -805,6 +805,10 @@ async fn a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reco
 /// cockpit verbs still mean nothing until `BOARD` — which, once
 /// `[tacsim.match].reclaim_min_ms` (5,000 here, the default) has passed, takes
 /// the tank back where it stands, from the pod the drop left her in.
+///
+/// **16b cut Y.4**: she is under way when the line goes, and the first frame
+/// after the reclaim says what happened — `Back aboard RA after …`, a
+/// `Position:` line with two cells, `Rounds spent:` — as one block.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again() {
     let server = boot("sim-cockpit-grace", Duration::from_secs(2)).await;
@@ -819,6 +823,37 @@ async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again(
     take_off(&mut ada, &mut bo).await;
     // Power first, so the reclaimed tank can be ordered the moment it is hers.
     say(&mut ada, "STARTUP", "Startup sequence").await;
+    // **16b cut Y.4**: and under way, so the catch-up has somewhere to say
+    // the tank went — it drives on through the grace, then the machine has it.
+    wait_until(
+        STEP_TIMEOUT,
+        "power to accept the heading order",
+        async || {
+            let mark = ada.mark();
+            ada.send_line("HEADING 90").await;
+            ada.expect_one_of_after(
+                mark,
+                &[
+                    "Steering to 90",
+                    POWER_NOT_ONLINE,
+                    POWER_STARTING,
+                    COMMIT_PENDING,
+                    CONTROL_UNKNOWN,
+                ],
+            )
+            .await
+                == 0
+        },
+    )
+    .await;
+    say(&mut ada, "SPEED 20", "Making 20 kph").await;
+    // At the full order before the line goes — 555 cm/s, which `STATUS` rounds
+    // down to 19 kph — so the two-second grace is more than ten metres of road,
+    // more than a cell, and the report's two cells cannot be one.
+    wait_until(STEP_TIMEOUT, "the tank to make its 20 kph", async || {
+        kph_of(&ask(&mut ada, "STATUS", "kph").await) >= 19
+    })
+    .await;
 
     wait_until(STEP_TIMEOUT, "the cockpit billet to persist", async || {
         support::holds_a_cockpit(&server.store, red).await
@@ -859,6 +894,28 @@ async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again(
             == 0
     })
     .await;
+    // **16b cut Y.4** (doc 07 §1.3 step 5): the first frame after the reclaim
+    // brings the catch-up, one block: how long she was away, and where the
+    // tank went — two different cells, because it drove on at 20 kph through
+    // the grace (the snapshot is the `Linkdead`'s, not the `Released`'s) and
+    // the machine had it after.
+    ada.expect("Back aboard RA after").await;
+    ada.expect("Power ").await;
+    let seen = strip_ansi(&ada.seen);
+    let block = seen
+        .get(seen.find("Back aboard RA after").unwrap_or(0)..)
+        .unwrap_or_default();
+    assert!(block.contains("Rounds spent:"), "{block}");
+    let position = block
+        .lines()
+        .find(|line| line.trim_start().starts_with("Position:"))
+        .unwrap_or_default();
+    assert!(
+        position.contains("Position: cell (")
+            && position.contains(" then, (")
+            && position.ends_with(" now."),
+        "the machine drove the tank: {position:?}\n{block}"
+    );
     // The cockpit is hers again: `STATUS` reads the tank once the arena's
     // keyframe has reached her (the `Live` lands at its next pulse), and an
     // order is taken.

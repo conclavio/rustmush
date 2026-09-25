@@ -124,6 +124,7 @@ use mush_core::{ArgShape, ChannelId, CmdError, CommandSpec, Ctx, ObjId, Registry
 use mush_proto::{OutputEvent, RichText};
 use smol_str::SmolStr;
 
+use crate::arena::catchup::{Catchup, MAX_CATCHUP_CONTACTS, SectionWords};
 use crate::arena::damage;
 use crate::arena::intents::{ControlState, IntentKind};
 use crate::arena::motion::BlockedCause;
@@ -1554,6 +1555,271 @@ pub fn notice_lines(frame: &Frame) -> Vec<String> {
         .map(|notice| notice_line(frame, notice, &rows))
         .filter(|line| !line.is_empty())
         .collect()
+}
+
+/// **What the machine was doing, in the pilot's words** (16b cut Y.4), by
+/// [`crate::arena::reflex::ReflexState::as_str`]'s word. A word this build
+/// predates reads as itself with its underscores opened out, which is the
+/// panels' own fallback for a word they do not know.
+fn machine_state_words(state: &str) -> String {
+    match state {
+        "startup" => "starting up".to_owned(),
+        "patrol" => "patrolling".to_owned(),
+        "approach" => "closing on a contact".to_owned(),
+        "engage" => "engaging".to_owned(),
+        "withdraw" => "withdrawing toward its entry zone".to_owned(),
+        "disabled" => "disabled".to_owned(),
+        other => other.replace('_', " "),
+    }
+}
+
+/// **What the machine was under** (16b cut Y.4), by the standing order's
+/// objective word ([`crate::deliberation::Objective::as_str`]), or `no order`
+/// under doctrine.
+fn machine_order_words(objective: Option<&str>) -> String {
+    match objective {
+        None => "no order".to_owned(),
+        Some("hold") => "a hold order".to_owned(),
+        Some("advance") => "an advance order".to_owned(),
+        Some("engage") => "an engage order".to_owned(),
+        Some("withdraw") => "a withdraw order".to_owned(),
+        Some(other) => format!("a {} order", other.replace('_', " ")),
+    }
+}
+
+/// `(x, y)`, the way every cell on the catch-up reads.
+fn cell_words((x, y): (u16, u16)) -> String {
+    format!("({x}, {y})")
+}
+
+/// **One list clause of the catch-up's contacts line** (16b cut Y.4): `none
+/// new` / `new BA, X3` / `new BA, X3 and 3 more`.
+fn listed_clause(word: &str, names: &[String], more: u32) -> String {
+    match (names.is_empty(), more) {
+        (true, 0) => format!("none {word}"),
+        (true, more) => format!("{word} {more} more"),
+        (false, 0) => format!("{word} {}", names.join(", ")),
+        (false, more) => format!("{word} {} and {more} more", names.join(", ")),
+    }
+}
+
+/// **A list with its overflow** (16b cut Y.4): `a, b` or `a, b and 2 more`, or
+/// `none_word` when there is nothing at all.
+fn listed_or(parts: &[String], separator: &str, more: u32, none_word: &str) -> String {
+    match (parts.is_empty(), more) {
+        (true, 0) => none_word.to_owned(),
+        (true, more) => format!("{more} more"),
+        (false, 0) => parts.join(separator),
+        (false, more) => format!("{} and {more} more", parts.join(separator)),
+    }
+}
+
+/// **One section's clause of the catch-up** (16b cut Y.4): the word change when
+/// the word moved (`left_track intact then, destroyed now`), else the armour
+/// that fell and the internals that fell (`hull armour 230 then, 90 now,
+/// internals 60 then, 40 now`).
+fn section_clause(id: &str, then: &SectionWords, now: &SectionWords) -> String {
+    if then.condition != now.condition {
+        return format!("{id} {} then, {} now", then.condition, now.condition);
+    }
+    let mut clauses: Vec<String> = Vec::new();
+    if now.armour < then.armour {
+        clauses.push(format!("armour {} then, {} now", then.armour, now.armour));
+    }
+    if now.internals < then.internals {
+        clauses.push(format!(
+            "internals {} then, {} now",
+            then.internals, now.internals
+        ));
+    }
+    if clauses.is_empty() {
+        id.to_owned()
+    } else {
+        format!("{id} {}", clauses.join(", "))
+    }
+}
+
+/// **The catch-up report, as the pilot reads it** (16b cut Y.4; doc 07 §1.3
+/// step 5): one pure function of the report, and the block line mode is sent
+/// as one `Sys` line tagged [`crate::arena_bridge::NOTICE_SENTENCE_TAG`]. Both
+/// panels compose the same lines from the frame's `catchup` object
+/// (`mush_net_ssh`'s `catchup_words`, the web's `catchupLines`), and
+/// `web/src/lib/fixtures/cockpit/catchup_lines.json` pins all three.
+///
+/// ```text
+/// Back aboard RA after 2 m 14 s away.
+///   The machine was withdrawing toward its entry zone under no order.
+///   Position: cell (64, 97) then, (70, 101) now.
+///   Contacts: new BA, X3; lost X2.
+///   Sections: left_track intact then, destroyed now; hull armour 230 then, 90 now.
+///   Rounds spent: cannon 3, machine_gun 40.
+///   Power online.
+/// ```
+///
+/// Line 1's duration is `away_ms.div_euclid(1_000)` whole seconds through
+/// [`crate::match_::duration_words`] — the wire's own `away_s`, so the line
+/// client and both rings print one figure — and it says `away` and not `on
+/// doctrine`, because the count starts at the `Linkdead`, before the machine
+/// had the tank. An eighth line, `Your tank is a wreck.`, follows the power
+/// line when it is one. A capped list ends `and N more`; the contacts' one
+/// overflow count goes on the one list that is full — only a full list can
+/// have overflowed — and when both are full, which cannot tell whose it was,
+/// it is its own clause, `3 more not named`.
+///
+/// Nothing on any line names a unit, a pilot, an object number or a position
+/// of any other unit: the contacts are the platform's own designators, held now
+/// or held then (doc 16 §1, §3.6).
+#[must_use]
+pub fn catchup_lines(callsign: Designator, catchup: &Catchup) -> Vec<String> {
+    let away_s = catchup.away_ms.div_euclid(1_000);
+    let mut lines = vec![format!(
+        "Back aboard {callsign} after {} away.",
+        crate::match_::duration_words(away_s.saturating_mul(1_000))
+    )];
+    lines.push(match &catchup.machine {
+        Some(machine) => format!(
+            "  The machine was {} under {}.",
+            machine_state_words(&machine.state),
+            machine_order_words(machine.objective.as_deref())
+        ),
+        None => "  The machine had no state.".to_owned(),
+    });
+    lines.push(match (catchup.cell_then, catchup.cell_now) {
+        (_, None) => "  Position: unknown.".to_owned(),
+        (None, Some(now)) => format!("  Position: cell unknown then, {} now.", cell_words(now)),
+        (Some(then), Some(now)) if then == now => {
+            format!("  Position: cell {}, unchanged.", cell_words(now))
+        }
+        (Some(then), Some(now)) => format!(
+            "  Position: cell {} then, {} now.",
+            cell_words(then),
+            cell_words(now)
+        ),
+    });
+    let new: Vec<String> = catchup
+        .contacts_new
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let lost: Vec<String> = catchup
+        .contacts_lost
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    lines.push(contacts_line(&new, &lost, catchup.contacts_more));
+    let sections: Vec<String> = catchup
+        .sections
+        .iter()
+        .map(|(id, then, now)| section_clause(id, then, now))
+        .collect();
+    lines.push(format!(
+        "  Sections: {}.",
+        listed_or(&sections, "; ", catchup.sections_more, "unchanged")
+    ));
+    let rounds: Vec<String> = catchup
+        .rounds_spent
+        .iter()
+        .map(|(weapon, rounds)| format!("{weapon} {rounds}"))
+        .collect();
+    lines.push(format!(
+        "  Rounds spent: {}.",
+        listed_or(&rounds, ", ", catchup.rounds_more, "none")
+    ));
+    lines.push(format!("  Power {}.", catchup.power_now.as_str()));
+    if catchup.wreck {
+        lines.push("  Your tank is a wreck.".to_owned());
+    }
+    lines
+}
+
+/// **The catch-up's contacts line** (16b cut Y.4): `none new, none lost` when
+/// nothing moved, else the two clauses split by `; `.
+///
+/// The wire carries one overflow count for both lists (`contacts_more`), and
+/// only a list cut at [`MAX_CATCHUP_CONTACTS`] names can have overflowed, so
+/// the count goes after the one list that is full. When both are full the
+/// count cannot say whose it was — a platform that gained exactly twelve and
+/// lost fifteen must not read as fifteen gained — so it is said as its own
+/// clause, `3 more not named`, and so is a count beside no full list, which
+/// the arena never sends.
+fn contacts_line(new: &[String], lost: &[String], more: u32) -> String {
+    if new.is_empty() && lost.is_empty() && more == 0 {
+        return "  Contacts: none new, none lost.".to_owned();
+    }
+    let new_full = new.len() >= MAX_CATCHUP_CONTACTS;
+    let lost_full = lost.len() >= MAX_CATCHUP_CONTACTS;
+    let (new_more, lost_more, unnamed) = match (more, new_full, lost_full) {
+        (0, _, _) => (0, 0, 0),
+        (more, true, false) => (more, 0, 0),
+        (more, false, true) => (0, more, 0),
+        (more, _, _) => (0, 0, more),
+    };
+    let clauses = format!(
+        "{}; {}",
+        listed_clause("new", new, new_more),
+        listed_clause("lost", lost, lost_more)
+    );
+    if unnamed == 0 {
+        format!("  Contacts: {clauses}.")
+    } else {
+        format!("  Contacts: {clauses}; {unnamed} more not named.")
+    }
+}
+
+/// **The catch-up report on the wire** (16b cut Y.4): the `catchup` object of
+/// [`status_frame`]. Every figure is the report's own; `away_s` is
+/// `away_ms.div_euclid(1_000)`, the one integer the three renderers print.
+fn catchup_json(catchup: &Catchup) -> serde_json::Value {
+    let words = |words: &SectionWords| {
+        serde_json::json!({
+            "condition": words.condition.as_str(),
+            "armour": words.armour,
+            "internals": words.internals,
+        })
+    };
+    serde_json::json!({
+        "away_s": catchup.away_ms.div_euclid(1_000),
+        "cell_then": catchup.cell_then.map(|(x, y)| [x, y]),
+        "cell_now": catchup.cell_now.map(|(x, y)| [x, y]),
+        "power_then": catchup.power_then.as_str(),
+        "power_now": catchup.power_now.as_str(),
+        "wreck": catchup.wreck,
+        "contacts_new": catchup
+            .contacts_new
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<String>>(),
+        "contacts_lost": catchup
+            .contacts_lost
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<String>>(),
+        "contacts_more": catchup.contacts_more,
+        "sections": catchup
+            .sections
+            .iter()
+            .map(|(id, then, now)| serde_json::json!({
+                "id": id.as_str(),
+                "then": words(then),
+                "now": words(now),
+            }))
+            .collect::<Vec<serde_json::Value>>(),
+        "sections_more": catchup.sections_more,
+        "rounds_spent": catchup
+            .rounds_spent
+            .iter()
+            .map(|(weapon, rounds)| serde_json::json!({
+                "weapon": weapon.as_str(),
+                "rounds": rounds,
+            }))
+            .collect::<Vec<serde_json::Value>>(),
+        "rounds_more": catchup.rounds_more,
+        "machine": catchup.machine.as_ref().map(|machine| serde_json::json!({
+            "state": machine.state.as_str(),
+            "goal": machine.goal.map(|(x, y)| [x, y]),
+            "objective": machine.objective.as_ref().map(SmolStr::as_str),
+        })),
+    })
 }
 
 /// **The lock the platform holds**, as the frame carries it (16b cut W.1 filled
@@ -3798,6 +4064,13 @@ pub const RETAIN_LATEST: &str = "latest";
 ///
 /// **16b cut B.4** (`T-60`): this is [`status_frame_held`] with no range memory,
 /// for the fixtures and every pure reading of a lone frame.
+///
+/// **16b cut Y.4** added one top-level key, `catchup`: `null`, or on the first
+/// frame after a reclaim `{ away_s, cell_then, cell_now, power_then, power_now,
+/// wreck, contacts_new, contacts_lost, contacts_more, sections[{ id, then, now
+/// }], sections_more, rounds_spent[{ weapon, rounds }], rounds_more, machine }`
+/// ([`catchup_lines`] is its wording). [`FRAME_VERSION`] stays `1`: a field
+/// added is not a version.
 #[must_use]
 pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
     status_frame_held(match_id, frame, &BTreeMap::new())
@@ -4041,6 +4314,13 @@ pub fn status_frame_held(
             "budget_max": receiver.budget_max,
             "reach_percent": receiver.reach_permille / 10,
         })),
+        // **16b cut Y.4** (doc 07 §1.3 step 5): what happened while the pilot
+        // could not see, on the first frame after a reclaim and `null` on
+        // every other — the mirror stores it cleared, so a read verb's frame
+        // is `null` too. The pilot's own tank and the platform's own
+        // designators (`catchup_json`); both panels compose their lines from
+        // it and the line client was sent the same lines as one `Sys` block.
+        "catchup": frame.catchup.as_ref().map(catchup_json),
     })
 }
 
@@ -5788,6 +6068,184 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
 mod tests {
     use super::*;
     use crate::arena::intents::Refusal;
+
+    /// The wire's `catchup` object, as `catchup_lines.json` writes it (16b cut
+    /// Y.4) — a serde mirror, so the fixture is read as data and not as a
+    /// second copy of the builder.
+    #[derive(serde::Deserialize)]
+    struct WireWords {
+        condition: String,
+        armour: i64,
+        internals: i64,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct WireSection {
+        id: String,
+        then: WireWords,
+        now: WireWords,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct WireRounds {
+        weapon: String,
+        rounds: u32,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct WireMachine {
+        state: String,
+        goal: Option<(u16, u16)>,
+        objective: Option<String>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct WireCatchup {
+        away_s: i64,
+        cell_then: Option<(u16, u16)>,
+        cell_now: Option<(u16, u16)>,
+        power_then: Power,
+        power_now: Power,
+        wreck: bool,
+        contacts_new: Vec<String>,
+        contacts_lost: Vec<String>,
+        contacts_more: u32,
+        sections: Vec<WireSection>,
+        sections_more: u32,
+        rounds_spent: Vec<WireRounds>,
+        rounds_more: u32,
+        machine: Option<WireMachine>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct WireCase {
+        callsign: String,
+        catchup: WireCatchup,
+        lines: Vec<String>,
+    }
+
+    /// A designator as a frame prints it, read back: `X<n>`, or a team letter
+    /// and a bijective base-26 slot.
+    fn designator(word: &str) -> Designator {
+        if let Some(number) = word.strip_prefix(crate::arena::state::PROVISIONAL_PREFIX) {
+            return Designator::Provisional(number.parse().expect("a provisional number"));
+        }
+        let mut letters = word.chars();
+        let team = match letters.next() {
+            Some('R') => crate::arena::state::Team::Red,
+            Some('B') => crate::arena::state::Team::Blue,
+            other => panic!("no side is lettered {other:?}"),
+        };
+        let slot = letters.fold(0_u16, |slot, letter| {
+            slot * 26 + (u16::from(u8::try_from(letter).expect("ASCII")) - u16::from(b'A') + 1)
+        });
+        Designator::Slot { team, slot }
+    }
+
+    fn words(wire: &WireWords) -> SectionWords {
+        SectionWords {
+            condition: SmolStr::new(&wire.condition),
+            armour: wire.armour,
+            internals: wire.internals,
+        }
+    }
+
+    fn decoded(wire: &WireCatchup) -> Catchup {
+        Catchup {
+            away_ms: wire.away_s * 1_000,
+            cell_then: wire.cell_then,
+            cell_now: wire.cell_now,
+            power_then: wire.power_then,
+            power_now: wire.power_now,
+            wreck: wire.wreck,
+            contacts_new: wire.contacts_new.iter().map(|w| designator(w)).collect(),
+            contacts_lost: wire.contacts_lost.iter().map(|w| designator(w)).collect(),
+            contacts_more: wire.contacts_more,
+            sections: wire
+                .sections
+                .iter()
+                .map(|s| (SmolStr::new(&s.id), words(&s.then), words(&s.now)))
+                .collect(),
+            sections_more: wire.sections_more,
+            rounds_spent: wire
+                .rounds_spent
+                .iter()
+                .map(|r| (SmolStr::new(&r.weapon), r.rounds))
+                .collect(),
+            rounds_more: wire.rounds_more,
+            machine: wire
+                .machine
+                .as_ref()
+                .map(|m| crate::arena::catchup::MachineWords {
+                    state: SmolStr::new(&m.state),
+                    goal: m.goal,
+                    objective: m.objective.as_deref().map(SmolStr::new),
+                }),
+        }
+    }
+
+    /// **16b cut Y.4**: `catchup_lines` says every case of the committed parity
+    /// fixture word for word — the file the TUI's `catchup_words` and the web's
+    /// `catchupLines` are pinned to as well — and `catchup_json` writes each
+    /// case's object back exactly as the fixture holds it, so the fixture is
+    /// the wire's own shape.
+    #[test]
+    fn y4_catchup_lines_say_every_case_of_the_parity_fixture() {
+        let cases: Vec<WireCase> = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/catchup_lines.json"
+        ))
+        .expect("catchup_lines.json is an array of cases");
+        assert_eq!(cases.len(), 9, "the nine shapes the fixture pins");
+        let raw: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/catchup_lines.json"
+        ))
+        .expect("the same file, as values");
+        for (case, raw) in cases.iter().zip(&raw) {
+            let report = decoded(&case.catchup);
+            assert_eq!(
+                catchup_lines(designator(&case.callsign), &report),
+                case.lines,
+                "{}",
+                case.lines.first().map_or("", String::as_str)
+            );
+            assert_eq!(
+                Some(&catchup_json(&report)),
+                raw.get("catchup"),
+                "the fixture is the wire's shape"
+            );
+        }
+    }
+
+    /// **16b cut Y.4**: `away_s` is the floor of the milliseconds, on the wire
+    /// and on line 1 alike, and a negative count reads nought.
+    #[test]
+    fn y4_the_duration_is_the_wires_floor() {
+        let mut report = decoded(
+            &serde_json::from_value::<WireCatchup>(serde_json::json!({
+                "away_s": 0, "cell_then": null, "cell_now": null,
+                "power_then": "off", "power_now": "off", "wreck": false,
+                "contacts_new": [], "contacts_lost": [], "contacts_more": 0,
+                "sections": [], "sections_more": 0,
+                "rounds_spent": [], "rounds_more": 0, "machine": null
+            }))
+            .expect("a wire object"),
+        );
+        report.away_ms = 134_999;
+        let callsign = designator("RA");
+        assert_eq!(
+            catchup_lines(callsign, &report).first().map(String::as_str),
+            Some("Back aboard RA after 2 m 14 s away.")
+        );
+        assert_eq!(
+            catchup_json(&report).get("away_s"),
+            Some(&serde_json::json!(134))
+        );
+        report.away_ms = -1;
+        assert_eq!(
+            catchup_lines(callsign, &report).first().map(String::as_str),
+            Some("Back aboard RA after 0 s away.")
+        );
+    }
 
     #[test]
     fn the_cold_refusal_carries_the_arenas_own_word() {

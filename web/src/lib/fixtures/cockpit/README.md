@@ -14,6 +14,7 @@ not parity — so there is exactly one set here, and no copies to drift. Rust
 | `view_grid.txt` | the twenty map rows a line client prints of it, north-up, ONE glyph per cell (39 by 20; the line client prints each cell twice); the spot `A` is the letter at row 3 from the south, column 25, over the pond | `mush_ansi::panel::grid_lines` |
 | `web_view_model.txt` | every line the web's cockpit screen prints for that frame (16b cut Q.5), composed at 78 by 20 — so its legend line is `x BA  + RB  ? X3  A The Ford` | `web/src/lib/cockpit.ts`'s `cockpitViewLines` |
 | `notice_lines.json` | the notices ring's wording: an array of `{ "notice": <one notice object as the wire sends it>, "line": "<the ring line>" }` (16b cut B.1) | **hand-written**; no bless variable |
+| `catchup_lines.json` | the catch-up report's wording (16b cut Y.4): an array of `{ "callsign": "RA", "catchup": <the frame's catchup object as the wire sends it>, "lines": ["<one line>", …] }` | **hand-written**; no bless variable |
 
 `notice_lines.json` is the parity fixture for the two notices rings. Every
 `notice` is shaped the way `status_frame` publishes one (its `text` is the
@@ -28,6 +29,27 @@ new name), a spent hit, a friendly lock, the victim's `struck`, `struck_spent`
 and `section_lost` with their section, and a kind named `constructor` (the word
 tables are `Map`s, so an inherited key is not a word). Change a line here only
 together with both renderers.
+
+`catchup_lines.json` is the parity fixture for the catch-up report a reclaim's
+first frame carries (16b cut Y.4; doc 07 §1.3 step 5). Every `catchup` is
+shaped the way `status_frame` publishes one, and every `lines` is the block the
+server says on line mode (`tacsim::match_::cockpit::catchup_lines`, one `Sys`
+line tagged `arena-notice`) and both rings print. Three readers, one file:
+`tacsim`'s in-source `cockpit.rs` test and `tests/cockpit.rs` (which also puts
+each object on `cockpit_frame.json`'s frame and pins that `status_frame` writes
+it back exactly), the TUI's `catchup_words` (`render.rs`), and vitest through
+`decodeCatchup` and `catchupLines` (`cockpit.test.ts`). Its nine cases: the
+full report; the empty one (`none new, none lost`, `unchanged`, `none`, an
+unchanged position); a capped contact list (`and 3 more` on the `new` list,
+the one that is full); capped sections and weapons (seven of each, `and 1 more`
+on both lines, one section whose armour and internals both fell); a wreck (the
+eighth line); `machine: null`; `cell_now: null`; `cell_then: null` with a
+`cell_now` (and a section whose internals alone fell); and both contact lists
+full, where the one overflow count cannot say whose it was and is its own
+clause (`3 more not named`) rather than read as contacts gained. The condition words are
+the arena's own (`intact`, `destroyed`, `wreck`). `cockpit_frame.json` and
+`view_frame.json` carry `"catchup": null`: the scene is an ordinary pulse.
+Change a line here only together with all three renderers.
 
 The scene's platform carries the **shipped** 600 m sight (`sight_cm: 60_000`, 60
 cells at 1,000 cm), so two of its four contacts read `far` (16b cut D.1): the

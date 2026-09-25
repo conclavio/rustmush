@@ -200,7 +200,10 @@ pub(crate) fn dim_span_owned(text: &str) -> Span<'static> {
     Span::styled(clean(text), Style::default().add_modifier(Modifier::DIM))
 }
 
-fn truncate_chars(s: &str, max: usize) -> String {
+/// The first `max` characters of `s`. `pub(crate)` since 16b cut Y.4, so the
+/// notices ring cuts the catch-up's callsign the way the renderers here cut
+/// every other server string.
+pub(crate) fn truncate_chars(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
@@ -2938,6 +2941,253 @@ pub fn notice_words(notice: &Value) -> String {
     }
 }
 
+/// **The most new or lost contacts a catch-up names, each list** (16b cut
+/// Y.4) — the arena's `MAX_CATCHUP_CONTACTS`, which decides which list the one
+/// overflow count is said after (the one that is full), or that it is its own
+/// clause (both are).
+pub const MAX_CATCHUP_CONTACTS: usize = 12;
+
+/// A `[x, y]` cell of a catch-up, `None` for `null` or anything malformed —
+/// the web's `cellPair`.
+fn catchup_cell(value: &Value, key: &str) -> Option<(i64, i64)> {
+    let pair = value.get(key)?.as_array()?;
+    let x = pair.first()?.as_i64()?;
+    let y = pair.get(1)?.as_i64()?;
+    (x >= 0 && y >= 0).then_some((x, y))
+}
+
+/// A non-negative count of a catch-up, `0` for a missing or malformed one.
+fn catchup_count(value: &Value, key: &str) -> i64 {
+    notice_int(value, key).unwrap_or(0).max(0)
+}
+
+/// The strings of one list key of a catch-up, each cleaned and cut to `max`,
+/// a blank or non-string entry dropped, the list cut to `cap`.
+fn catchup_names(value: &Value, key: &str, max: usize, cap: usize) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|entry| {
+                    let text = truncate_chars(clean(entry.as_str()?).trim(), max);
+                    (!text.is_empty()).then_some(text)
+                })
+                .take(cap)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `none new` / `new BA, X3` / `new BA, X3 and 3 more` — the server's
+/// `listed_clause`.
+fn catchup_clause(word: &str, names: &[String], more: i64) -> String {
+    match (names.is_empty(), more) {
+        (true, 0) => format!("none {word}"),
+        (true, more) => format!("{word} {more} more"),
+        (false, 0) => format!("{word} {}", names.join(", ")),
+        (false, more) => format!("{word} {} and {more} more", names.join(", ")),
+    }
+}
+
+/// `a, b` or `a, b and 2 more`, or `none_word` — the server's `listed_or`.
+fn catchup_listed(parts: &[String], separator: &str, more: i64, none_word: &str) -> String {
+    match (parts.is_empty(), more) {
+        (true, 0) => none_word.to_string(),
+        (true, more) => format!("{more} more"),
+        (false, 0) => parts.join(separator),
+        (false, more) => format!("{} and {more} more", parts.join(separator)),
+    }
+}
+
+/// **The catch-up report, in the notices ring** (16b cut Y.4; doc 07 §1.3
+/// step 5): the web's `catchupLines` and the server's `catchup_lines`, line for
+/// line, composed from the frame's `catchup` object's FIELDS — the line client
+/// was sent the server's own words as one `Sys` block tagged
+/// `NOTICE_SENTENCE_TAG`, which the ring leaves out.
+///
+/// Every string is cleaned and cut exactly as the web's decoder cuts it: the
+/// callsign and each designator to 8, a section id and a weapon id to 24, the
+/// machine's state and objective and every condition and power word to 16. A
+/// list is cut to what the arena sends at most (12 contacts a list, 6 sections,
+/// 6 weapons); a malformed entry is dropped. A `catchup` that is not an object
+/// answers nothing. **Pinned against the committed
+/// `web/src/lib/fixtures/cockpit/catchup_lines.json`**.
+#[must_use]
+pub fn catchup_words(callsign: &str, catchup: &Value) -> Vec<String> {
+    if !catchup.is_object() {
+        return Vec::new();
+    }
+    let word = |value: &Value, key: &str| notice_str(value, key, 16);
+    let away_s = catchup_count(catchup, "away_s");
+    let mut lines = vec![format!(
+        "Back aboard {callsign} after {} away.",
+        duration_words(away_s)
+    )];
+    lines.push(match catchup.get("machine").filter(|m| m.is_object()) {
+        Some(machine) => {
+            let state = word(machine, "state").unwrap_or_else(|| "?".to_string());
+            let state = match state.as_str() {
+                "startup" => "starting up".to_string(),
+                "patrol" => "patrolling".to_string(),
+                "approach" => "closing on a contact".to_string(),
+                "engage" => "engaging".to_string(),
+                "withdraw" => "withdrawing toward its entry zone".to_string(),
+                "disabled" => "disabled".to_string(),
+                other => other.replace('_', " "),
+            };
+            let order = match word(machine, "objective").as_deref() {
+                None => "no order".to_string(),
+                Some("hold") => "a hold order".to_string(),
+                Some("advance") => "an advance order".to_string(),
+                Some("engage") => "an engage order".to_string(),
+                Some("withdraw") => "a withdraw order".to_string(),
+                Some(other) => format!("a {} order", other.replace('_', " ")),
+            };
+            format!("  The machine was {state} under {order}.")
+        }
+        None => "  The machine had no state.".to_string(),
+    });
+    let cell = |(x, y): (i64, i64)| format!("({x}, {y})");
+    lines.push(
+        match (
+            catchup_cell(catchup, "cell_then"),
+            catchup_cell(catchup, "cell_now"),
+        ) {
+            (_, None) => "  Position: unknown.".to_string(),
+            (None, Some(now)) => format!("  Position: cell unknown then, {} now.", cell(now)),
+            (Some(then), Some(now)) if then == now => {
+                format!("  Position: cell {}, unchanged.", cell(now))
+            }
+            (Some(then), Some(now)) => {
+                format!("  Position: cell {} then, {} now.", cell(then), cell(now))
+            }
+        },
+    );
+    let new = catchup_names(catchup, "contacts_new", 8, MAX_CATCHUP_CONTACTS);
+    let lost = catchup_names(catchup, "contacts_lost", 8, MAX_CATCHUP_CONTACTS);
+    let more = catchup_count(catchup, "contacts_more");
+    lines.push(if new.is_empty() && lost.is_empty() && more == 0 {
+        "  Contacts: none new, none lost.".to_string()
+    } else {
+        // The server's `contacts_line`: the one count goes after the one full
+        // list (only a full list can have overflowed); with both full it
+        // cannot say whose it was and is its own clause.
+        let new_full = new.len() >= MAX_CATCHUP_CONTACTS;
+        let lost_full = lost.len() >= MAX_CATCHUP_CONTACTS;
+        let (new_more, lost_more, unnamed) = match (more, new_full, lost_full) {
+            (0, _, _) => (0, 0, 0),
+            (more, true, false) => (more, 0, 0),
+            (more, false, true) => (0, more, 0),
+            (more, _, _) => (0, 0, more),
+        };
+        let clauses = format!(
+            "{}; {}",
+            catchup_clause("new", &new, new_more),
+            catchup_clause("lost", &lost, lost_more)
+        );
+        if unnamed == 0 {
+            format!("  Contacts: {clauses}.")
+        } else {
+            format!("  Contacts: {clauses}; {unnamed} more not named.")
+        }
+    });
+    let sections: Vec<String> = catchup
+        .get("sections")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|section| {
+                    let id = notice_str(section, "id", 24)?;
+                    let then = section.get("then").filter(|t| t.is_object())?;
+                    let now = section.get("now").filter(|n| n.is_object())?;
+                    let (then_word, now_word) = (word(then, "condition"), word(now, "condition"));
+                    if then_word != now_word {
+                        return Some(format!(
+                            "{id} {} then, {} now",
+                            then_word.unwrap_or_else(|| "?".to_string()),
+                            now_word.unwrap_or_else(|| "?".to_string())
+                        ));
+                    }
+                    let figure = |side: &Value, key: &str| notice_int(side, key).unwrap_or(0);
+                    let mut clauses: Vec<String> = Vec::new();
+                    let (armour_then, armour_now) = (figure(then, "armour"), figure(now, "armour"));
+                    if armour_now < armour_then {
+                        clauses.push(format!("armour {armour_then} then, {armour_now} now"));
+                    }
+                    let (inside_then, inside_now) =
+                        (figure(then, "internals"), figure(now, "internals"));
+                    if inside_now < inside_then {
+                        clauses.push(format!("internals {inside_then} then, {inside_now} now"));
+                    }
+                    Some(if clauses.is_empty() {
+                        id
+                    } else {
+                        format!("{id} {}", clauses.join(", "))
+                    })
+                })
+                .take(MAX_CATCHUP_SECTIONS)
+                .collect()
+        })
+        .unwrap_or_default();
+    lines.push(format!(
+        "  Sections: {}.",
+        catchup_listed(
+            &sections,
+            "; ",
+            catchup_count(catchup, "sections_more"),
+            "unchanged"
+        )
+    ));
+    let rounds: Vec<String> = catchup
+        .get("rounds_spent")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|row| {
+                    let weapon = notice_str(row, "weapon", 24)?;
+                    let spent = notice_int(row, "rounds")?;
+                    Some(format!("{weapon} {spent}"))
+                })
+                .take(MAX_CATCHUP_WEAPONS)
+                .collect()
+        })
+        .unwrap_or_default();
+    lines.push(format!(
+        "  Rounds spent: {}.",
+        catchup_listed(&rounds, ", ", catchup_count(catchup, "rounds_more"), "none")
+    ));
+    lines.push(format!(
+        "  Power {}.",
+        word(catchup, "power_now").unwrap_or_else(|| "?".to_string())
+    ));
+    if catchup.get("wreck").and_then(Value::as_bool) == Some(true) {
+        lines.push("  Your tank is a wreck.".to_string());
+    }
+    lines
+}
+
+/// The most changed sections a catch-up names (the arena's
+/// `MAX_CATCHUP_SECTIONS`).
+pub const MAX_CATCHUP_SECTIONS: usize = 6;
+/// The most weapons a catch-up names rounds spent for (the arena's
+/// `MAX_CATCHUP_WEAPONS`).
+pub const MAX_CATCHUP_WEAPONS: usize = 6;
+
+/// **A length in words** — the server's `duration_words` over whole seconds:
+/// `4 m 32 s`, `12 s`, `1 h 2 m 3 s`, `0 s` for nothing or less.
+fn duration_words(secs: i64) -> String {
+    let secs = secs.max(0);
+    let (hours, minutes, seconds) = (secs / 3_600, secs % 3_600 / 60, secs % 60);
+    if hours > 0 {
+        format!("{hours} h {minutes} m {seconds} s")
+    } else if minutes > 0 {
+        format!("{minutes} m {seconds} s")
+    } else {
+        format!("{seconds} s")
+    }
+}
+
 /// What the notices pane says while seated with nothing rung yet (16b cut B.3).
 pub const NOTHING_YET: &str = "Nothing yet.";
 
@@ -5228,6 +5478,70 @@ mod tests {
             let line = pair.get("line").and_then(Value::as_str).expect("a line");
             assert_eq!(notice_words(notice), line, "{notice}");
         }
+    }
+
+    /// **16b cut Y.4**: `catchup_words` IS the server's `catchup_lines` and the
+    /// web's `catchupLines`, case for case, against the one hand-written
+    /// fixture all three read — so a reclaimed pilot reads one report on every
+    /// surface.
+    #[test]
+    fn catchup_words_match_the_committed_cases() {
+        let cases: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/catchup_lines.json"
+        ))
+        .expect("catchup_lines.json is a JSON array");
+        assert_eq!(cases.len(), 9, "the nine shapes the fixture pins");
+        for case in &cases {
+            let callsign = case
+                .get("callsign")
+                .and_then(Value::as_str)
+                .expect("a callsign");
+            let catchup = case.get("catchup").expect("a catchup");
+            let lines: Vec<&str> = case
+                .get("lines")
+                .and_then(Value::as_array)
+                .expect("lines")
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+            assert_eq!(catchup_words(callsign, catchup), lines, "{catchup}");
+        }
+    }
+
+    /// **16b cut Y.4**: a `catchup` that is not an object says nothing, a
+    /// malformed entry is dropped, and every string is cleaned and cut.
+    #[test]
+    fn catchup_words_refuse_a_malformed_report_and_bound_every_field() {
+        for bad in [
+            serde_json::json!("Back aboard"),
+            serde_json::json!(7),
+            Value::Null,
+            serde_json::json!([]),
+        ] {
+            assert!(catchup_words("RA", &bad).is_empty(), "{bad}");
+        }
+        let hostile = serde_json::json!({
+            "away_s": 61, "cell_then": [1, -2], "cell_now": ["x", 3],
+            "power_now": "on\u{1b}[31mline", "wreck": "yes",
+            "contacts_new": ["ABCDEFGHIJ", 3, "  "], "contacts_lost": [],
+            "contacts_more": 0,
+            "sections": [{ "id": "s".repeat(30), "then": { "condition": "intact", "armour": 9 },
+                           "now": { "condition": "intact", "armour": 4 } }, "junk"],
+            "rounds_spent": [{ "weapon": "w\u{7}", "rounds": 2 }, { "weapon": "x" }],
+            "machine": { "state": "a_new_state_word_x", "objective": null }
+        });
+        assert_eq!(
+            catchup_words("RA", &hostile),
+            vec![
+                "Back aboard RA after 1 m 1 s away.".to_string(),
+                "  The machine was a new state word under no order.".to_string(),
+                "  Position: unknown.".to_string(),
+                "  Contacts: new ABCDEFGH; none lost.".to_string(),
+                format!("  Sections: {} armour 9 then, 4 now.", "s".repeat(24)),
+                "  Rounds spent: w 2.".to_string(),
+                "  Power on[31mline.".to_string(),
+            ]
+        );
     }
 
     /// **16b cut B.3**: the three word tables are the web's, entry for entry

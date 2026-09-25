@@ -364,6 +364,14 @@ impl Refusal {
 /// dropped pilot builds them a whole keyframe (`drop_pilot` forgot their last
 /// frame). Between those two lines the machine still holds the tank: that is
 /// the moment a caller that wants the machine's last state reads it.
+///
+/// **The catch-up report** (16b cut Y.4; doc 07 §1.3 step 5). A `Linkdead` or
+/// `Released` that names a pilot snapshots the platform
+/// (`Arena::note_sight_lost`, the first one winning); the `Live` that re-seats
+/// a dropped pilot turns the snapshot into their report between the two lines
+/// above (`Arena::settle_catchup`), reading the machine's words before its row
+/// goes, and a `Live` that re-seats nobody spends the snapshot. Both tables are
+/// views ([`crate::arena::catchup`]) and a stale control reaches neither.
 pub fn apply_control(arena: &mut Arena, c: &Control) {
     arena.epochs.raise(c.unit, c.channel, c.epoch);
     let current = arena.epochs.current(c.unit, c.channel);
@@ -395,6 +403,15 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
                 unit.desired_speed_cms = 0;
             }
         }
+    }
+    // **16b cut Y.4** (doc 07 §1.3 step 5): the moment a pilot loses sight of
+    // their tank — the line dropping, or the seat going — is the catch-up
+    // report's baseline. The first control that took their sight wins
+    // (`Arena::note_sight_lost`), so a drop's three channels take one snapshot
+    // and the `Released` that ends the grace keeps the `Linkdead`'s. A view,
+    // never hashed: the cross-tempo property is untouched.
+    if c.pilot.is_some() && matches!(c.state, ControlState::Linkdead | ControlState::Released) {
+        arena.note_sight_lost(c.unit);
     }
     // **16b cut N.1** — who flies it now (doc 16 §3.8 "Disconnects" and its §11
     // amendment; doc 07 §1.1's fallback controller).
@@ -429,7 +446,13 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
             if let Some(pilot) = c.pilot
                 && arena.unit(c.unit).is_some()
             {
-                arena.seat_pilot(pilot, c.unit, c.epoch);
+                let reseated = arena.seat_pilot(pilot, c.unit, c.epoch);
+                // **16b cut Y.4**: the catch-up report, built here and nowhere
+                // else — after the re-seat, so it is owed only to a pilot the
+                // arena had dropped, and before the controller changes, so
+                // the machine's own words are still on its row. A `Live` that
+                // re-seated nobody spends the snapshot and builds nothing.
+                arena.settle_catchup(pilot, c.unit, reseated);
             }
             if arena
                 .unit(c.unit)

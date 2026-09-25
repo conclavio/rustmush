@@ -287,6 +287,14 @@ struct Beat {
     /// pulse's phase 1 and never mid-substep. `None` on every other beat, which
     /// is what [`Beat::at`] gives.
     stop: Option<StopReason>,
+    /// **A unit struck at this beat** (16b cut Y.4), before the pulse steps:
+    /// [`wound`]'s hull hit, written straight onto the unit's M32 cells. `None`
+    /// on every beat but the Y.3/Y.4 script's `Released`. These fixture tanks
+    /// carry no gun and no sensor, so nothing in the match can land a round;
+    /// the cells a round would have written are what the catch-up report reads,
+    /// and they are folded into no state hash (the opaque unit is absent from
+    /// it, `hash.rs`'s own argument), so the write moves no hash and no event.
+    wound: Option<ObjId>,
 }
 
 impl Beat {
@@ -297,6 +305,7 @@ impl Beat {
             controls,
             intents,
             stop: None,
+            wound: None,
         }
     }
 
@@ -307,8 +316,43 @@ impl Beat {
             controls: Vec::new(),
             intents: Vec::new(),
             stop: Some(stop),
+            wound: None,
         }
     }
+}
+
+/// **The hull hit a [`Beat::wound`] writes** (16b cut Y.4): six of the front
+/// facet's ten armour and three of the hull's eight internals, through
+/// `mush_tactics::apply` — the one function every cell write goes through.
+fn wound(arena: &mut Arena, unit: ObjId) {
+    use mush_tactics::{CellAddr, CellId, UnitMutationOp};
+    let Some(state) = arena.unit_mut(unit) else {
+        return;
+    };
+    let plan = mush_tactics::UnitMutationPlan::new(
+        vec![
+            UnitMutationOp::AdjustCell {
+                addr: CellAddr::Facet {
+                    section: SectionId::new("hull").expect("a section"),
+                    facet: FacetId::new("front").expect("a facet"),
+                    cell: CellId::new("armor").expect("a cell"),
+                },
+                delta: -6,
+            },
+            UnitMutationOp::AdjustCell {
+                addr: CellAddr::Section {
+                    section: SectionId::new("hull").expect("a section"),
+                    cell: CellId::new("internals").expect("a cell"),
+                },
+                delta: -3,
+            },
+        ],
+        None,
+        None,
+    )
+    .expect("a plan");
+    let (post, _) = mush_tactics::apply(&state.unit, &plan, 0).expect("the hit applies");
+    state.unit = post;
 }
 
 /// One ledger line, normalised for comparison: its arena timestamp, its kind and
@@ -353,6 +397,9 @@ struct Replay {
     /// a reflex row once it had stepped. What a drop and a reclaim are read
     /// off: the frames stop and the machine holds the tank between them.
     pulses_seen: Vec<(i64, bool, bool)>,
+    /// **16b cut Y.4**: every catch-up report a frame carried to the mover's
+    /// pilot, with the arena time of the pulse that built it.
+    catchups: Vec<(i64, tacsim::arena::Catchup)>,
 }
 
 impl Replay {
@@ -388,6 +435,7 @@ fn replay(
     let mut substeps = 0_u32;
     let mut told: Vec<String> = Vec::new();
     let mut pulses_seen: Vec<(i64, bool, bool)> = Vec::new();
+    let mut catchups: Vec<(i64, tacsim::arena::Catchup)> = Vec::new();
     loop {
         arena.clock.pin_tempo_for_tests(pin(arena.now_ms));
         let mut controls: Vec<Control> = Vec::new();
@@ -402,6 +450,10 @@ fn replay(
             if let Some(stop) = beat.stop {
                 arena.stop(stop);
             }
+            // 16b cut Y.4: a hit, before this pulse steps.
+            if let Some(unit) = beat.wound {
+                wound(arena, unit);
+            }
             next += 1;
         }
         let started = arena.now_ms;
@@ -412,6 +464,7 @@ fn replay(
         substeps += out.substeps;
         told.extend(heard(&out.frames, MOVER_PILOT));
         pulses_seen.push(seen(arena, started, &out));
+        catchups.extend(reported(started, &out));
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
         }
@@ -444,6 +497,7 @@ fn replay(
         substeps,
         told,
         pulses_seen,
+        catchups,
     }
 }
 
@@ -455,6 +509,16 @@ fn seen(arena: &Arena, started: i64, out: &StepOutput) -> (i64, bool, bool) {
         out.frames.iter().any(|(pilot, _)| *pilot == MOVER_PILOT),
         arena.reflex.unit(MOVER).is_some(),
     )
+}
+
+/// **16b cut Y.4**: the catch-up reports one pulse's frames carried to the
+/// mover's pilot, with the pulse's start.
+fn reported(started: i64, out: &StepOutput) -> Vec<(i64, tacsim::arena::Catchup)> {
+    out.frames
+        .iter()
+        .filter(|(pilot, _)| *pilot == MOVER_PILOT)
+        .filter_map(|(_, frame)| frame.catchup.clone().map(|report| (started, report)))
+        .collect()
 }
 
 fn absorb(out: &StepOutput, bytes: &mut Vec<u8>) {
@@ -733,6 +797,7 @@ fn replay_as_the_task(
     let mut told: Vec<String> = Vec::new();
     let mut woke_at: Vec<i64> = Vec::new();
     let mut pulses_seen: Vec<(i64, bool, bool)> = Vec::new();
+    let mut catchups: Vec<(i64, tacsim::arena::Catchup)> = Vec::new();
     loop {
         arena.clock.pin_tempo_for_tests(Tempo::Quiet);
         let mut controls: Vec<Control> = Vec::new();
@@ -745,6 +810,9 @@ fn replay_as_the_task(
             intents.extend(beat.intents.iter().cloned());
             if let Some(stop) = beat.stop {
                 arena.stop(stop);
+            }
+            if let Some(unit) = beat.wound {
+                wound(arena, unit);
             }
             next += 1;
         }
@@ -759,6 +827,7 @@ fn replay_as_the_task(
         substeps += out.substeps;
         told.extend(heard(&out.frames, MOVER_PILOT));
         pulses_seen.push(seen(arena, started, &out));
+        catchups.extend(reported(started, &out));
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
         }
@@ -795,6 +864,7 @@ fn replay_as_the_task(
         substeps,
         told,
         pulses_seen,
+        catchups,
     };
     (replay, woke_at)
 }
@@ -1028,10 +1098,17 @@ fn y3_every_channel(epoch: u64, state: ControlState) -> Vec<Control> {
 ///   release the task kept (`buffer_control` holds a displaced `Released`)
 ///   landing after the reclaim's `Live`. Below the channel's current epoch (3),
 ///   it purges and changes nothing: the pilot stays seated.
+///
+/// **16b cut Y.4** strikes the mover's hull on the 40,000 ms beat, before the
+/// `Released` applies ([`Beat::wound`]): after the `Linkdead` took the catch-up
+/// snapshot and before the grace ran out, so the report lists the hull only if
+/// the baseline is the `Linkdead`'s. The write is to cells no hash folds, so
+/// Y.3's event list and hash sequence stand.
 fn y3_reclaim_script() -> Vec<Beat> {
     let mut beats = released_script();
     if let Some(beat) = beats.iter_mut().find(|beat| beat.t_ms == Y3_RELEASED_MS) {
         beat.controls = y3_every_channel(2, ControlState::Released);
+        beat.wound = Some(MOVER);
     }
     let at = beats
         .iter()
@@ -1070,6 +1147,13 @@ fn y3_reclaim_script() -> Vec<Beat> {
 /// even once the stale `Released` behind the reclaim has landed, which is the
 /// stale gate's whole job; and the other side's tank ends exactly where
 /// [`released_script`]'s run leaves it.
+///
+/// **16b cut Y.4's mandatory cross-tempo coverage** rides the same log: the
+/// catch-up report is on the reclaiming pulse's frame and no other, it counts
+/// from the `Linkdead` beat, it lists the hull struck between the `Linkdead`
+/// and the `Released`, it is one report at every cadence — and the same log
+/// with no pilot named and no hull struck is this run's hash sequence and
+/// event list, so the report folds into nothing.
 #[test]
 fn y3_a_dropped_and_reclaimed_seat_is_one_event_list_and_one_hash_sequence_at_three_cadences() {
     let quiet = |_: i64| Tempo::Quiet;
@@ -1144,7 +1228,71 @@ fn y3_a_dropped_and_reclaimed_seat_is_one_event_list_and_one_hash_sequence_at_th
                 "the reflex row at the pulse from {started} ms, at {cadence} ms"
             );
         }
+        // **16b cut Y.4**: the catch-up rides the reclaiming pulse's frame and
+        // no other — none before the `Live`, none after its first frame.
+        assert_eq!(
+            run.catchups.iter().map(|(at, _)| *at).collect::<Vec<i64>>(),
+            vec![Y3_LIVE_MS],
+            "one report, on the reclaim's own frame, at {cadence} ms"
+        );
+        assert!(
+            arena.at_release.is_empty() && arena.pending_catchup.is_empty(),
+            "the snapshot and the report are spent at {cadence} ms"
+        );
         runs.push((cadence, run));
+    }
+    // **16b cut Y.4**: the report itself, read once — the three are compared
+    // below. Counted from the `Linkdead` beat, not the `Released`; the hull
+    // struck between the two is listed; the machine's words were read before
+    // its row went.
+    let report = runs
+        .first()
+        .and_then(|(_, run)| run.catchups.first())
+        .map(|(_, report)| report.clone())
+        .expect("the reclaim's report");
+    assert_eq!(report.away_ms, Y3_LIVE_MS - Y3_LINKDEAD_MS);
+    assert_eq!(
+        report
+            .sections
+            .iter()
+            .map(|(id, then, now)| (
+                id.as_str(),
+                then.armour,
+                now.armour,
+                then.internals,
+                now.internals
+            ))
+            .collect::<Vec<_>>(),
+        vec![("hull", 10, 4, 8, 5)],
+        "the hull struck after the Linkdead's snapshot"
+    );
+    assert!(
+        report.cell_then.is_some() && report.cell_now.is_some(),
+        "{report:?}"
+    );
+    assert_eq!(
+        (report.power_then, report.power_now),
+        (Power::Online, Power::Online)
+    );
+    assert!(!report.wreck);
+    assert!(report.contacts_new.is_empty() && report.contacts_lost.is_empty());
+    assert!(
+        report.rounds_spent.is_empty(),
+        "the fixture tank carries no gun"
+    );
+    assert_eq!(
+        report.machine.as_ref().map(|words| words.state.as_str()),
+        Some("withdraw"),
+        "a released tank is the machine's in Withdraw until the reclaim"
+    );
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.catchups,
+            runs.first()
+                .map(|(_, first)| first.catchups.clone())
+                .unwrap_or_default(),
+            "the report differs at {cadence} ms"
+        );
     }
     let Some((_, first)) = runs.first() else {
         panic!("three replays");
@@ -1192,6 +1340,36 @@ fn y3_a_dropped_and_reclaimed_seat_is_one_event_list_and_one_hash_sequence_at_th
         parked_of(first),
         parked_of(&released),
         "a drop and a reclaim moved the other side's tank"
+    );
+    // **16b cut Y.4: the report is a view.** The same log with no control
+    // naming a pilot and no hull struck — which takes no snapshot, builds no
+    // report and keeps the pilot on the frame roster throughout — is Y.3's
+    // hash sequence and event list, and so is the run above.
+    let unnamed: Vec<Beat> = y3_reclaim_script()
+        .into_iter()
+        .map(|beat| Beat {
+            controls: beat
+                .controls
+                .iter()
+                .map(|control| Control {
+                    pilot: None,
+                    ..*control
+                })
+                .collect(),
+            wound: None,
+            ..beat
+        })
+        .collect();
+    let mut plain = scripted_arena();
+    let plain = replay(&mut plain, 5_000, Y3_UNTIL_MS, &unnamed, &quiet);
+    assert!(plain.catchups.is_empty(), "no pilot named, no report");
+    assert_eq!(
+        plain.hashes, first.hashes,
+        "the catch-up moved the hash sequence"
+    );
+    assert_eq!(
+        plain.events, first.events,
+        "the catch-up moved the event list"
     );
 }
 

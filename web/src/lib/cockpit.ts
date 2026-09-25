@@ -188,6 +188,46 @@ export interface CockpitReceiver {
   reach_percent: number;
 }
 
+/** One section's words on a catch-up (16b cut Y.4): the condition word, the
+ * facets' armour summed, the internals. */
+export interface CockpitSectionWords {
+  condition: string;
+  armour: number;
+  internals: number;
+}
+
+/**
+ * **The catch-up report** (16b cut Y.4; doc 07 §1.3 step 5): what happened
+ * while the pilot could not see, on the first frame after a reclaim and `null`
+ * on every other. The pilot's own tank, plus the platform's own designators for
+ * the contacts it gained and lost — nothing about a unit it never held.
+ */
+export interface CockpitCatchup {
+  /** Whole seconds, the floor of the arena's milliseconds. */
+  away_s: number;
+  cell_then: [number, number] | null;
+  cell_now: [number, number] | null;
+  power_then: string;
+  power_now: string;
+  wreck: boolean;
+  contacts_new: string[];
+  contacts_lost: string[];
+  contacts_more: number;
+  sections: { id: string; then: CockpitSectionWords; now: CockpitSectionWords }[];
+  sections_more: number;
+  rounds_spent: { weapon: string; rounds: number }[];
+  rounds_more: number;
+  machine: { state: string; goal: [number, number] | null; objective: string | null } | null;
+}
+
+/** The most new or lost contacts a catch-up names, each list (the arena's
+ * `MAX_CATCHUP_CONTACTS`). */
+export const MAX_CATCHUP_CONTACTS = 12;
+/** The most changed sections a catch-up names (`MAX_CATCHUP_SECTIONS`). */
+export const MAX_CATCHUP_SECTIONS = 6;
+/** The most weapons a catch-up names rounds spent for (`MAX_CATCHUP_WEAPONS`). */
+export const MAX_CATCHUP_WEAPONS = 6;
+
 /**
  * One `arena.cockpit` keyframe, decoded.
  *
@@ -231,6 +271,9 @@ export interface CockpitFrame {
   /** The distinct section-id lists a `condition.table` indexes (16b cut Q.2). */
   scan_tables: string[][];
   notices: CockpitNotice[];
+  /** The catch-up report (16b cut Y.4), or `null` on every frame but a
+   * reclaim's first — and from a server that does not send the key. */
+  catchup: CockpitCatchup | null;
 }
 
 /** One of the ground's named places, as `arena.map` carries it (16b cut V.1):
@@ -442,6 +485,87 @@ function decodeReceiver(raw: unknown): CockpitReceiver | null {
     : null;
 }
 
+/** A catch-up count: a whole number, never below nought. */
+function count(raw: unknown): number {
+  return Math.max(0, int(raw, 0));
+}
+
+/** The strings of one catch-up list, cleaned and cut to `max`, a blank or
+ * non-string entry dropped, the list cut to `cap`. */
+function names(raw: unknown, max: number, cap: number): string[] {
+  return (Array.isArray(raw) ? raw : [])
+    .flatMap((entry) => {
+      const name = optStr(entry, max);
+      return name === null ? [] : [name];
+    })
+    .slice(0, cap);
+}
+
+function decodeWords(raw: unknown): CockpitSectionWords | null {
+  return isObj(raw)
+    ? {
+        condition: clean(raw.condition, "?", 16),
+        armour: int(raw.armour, 0),
+        internals: int(raw.internals, 0),
+      }
+    : null;
+}
+
+/**
+ * Decode the frame's `catchup` object (16b cut Y.4); `null` for anything that
+ * is not an object. Every string is cleaned and cut the way the TUI's
+ * `catchup_words` cuts it — a designator to 8, a section or weapon id to 24,
+ * the state, the objective and every condition and power word to 16 — each list
+ * is cut to what the arena sends at most, and a malformed entry is dropped.
+ */
+export function decodeCatchup(raw: unknown): CockpitCatchup | null {
+  if (!isObj(raw)) {
+    return null;
+  }
+  const machine = isObj(raw.machine)
+    ? {
+        state: clean(raw.machine.state, "?", 16),
+        goal: cellPair(raw.machine.goal),
+        objective: optStr(raw.machine.objective, 16),
+      }
+    : null;
+  return {
+    away_s: count(raw.away_s),
+    cell_then: cellPair(raw.cell_then),
+    cell_now: cellPair(raw.cell_now),
+    power_then: clean(raw.power_then, "?", 16),
+    power_now: clean(raw.power_now, "?", 16),
+    wreck: raw.wreck === true,
+    contacts_new: names(raw.contacts_new, 8, MAX_CATCHUP_CONTACTS),
+    contacts_lost: names(raw.contacts_lost, 8, MAX_CATCHUP_CONTACTS),
+    contacts_more: count(raw.contacts_more),
+    sections: (Array.isArray(raw.sections) ? raw.sections : [])
+      .flatMap((s) => {
+        if (!isObj(s)) {
+          return [];
+        }
+        const id = optStr(s.id, 24);
+        const then = decodeWords(s.then);
+        const now = decodeWords(s.now);
+        return id === null || then === null || now === null ? [] : [{ id, then, now }];
+      })
+      .slice(0, MAX_CATCHUP_SECTIONS),
+    sections_more: count(raw.sections_more),
+    rounds_spent: (Array.isArray(raw.rounds_spent) ? raw.rounds_spent : [])
+      .flatMap((r) => {
+        if (!isObj(r)) {
+          return [];
+        }
+        const weapon = optStr(r.weapon, 24);
+        const rounds = optInt(r.rounds);
+        return weapon === null || rounds === null ? [] : [{ weapon, rounds }];
+      })
+      .slice(0, MAX_CATCHUP_WEAPONS),
+    rounds_more: count(raw.rounds_more),
+    machine,
+  };
+}
+
 function decodeTables(raw: unknown): string[][] {
   return (Array.isArray(raw) ? raw : []).map((table) =>
     (Array.isArray(table) ? table : []).map((word) => clean(word, "?", 24)),
@@ -497,6 +621,7 @@ export function decodeCockpitFrame(data: unknown): CockpitFrame | null {
       const notice = decodeNotice(n);
       return notice ? [notice] : [];
     }),
+    catchup: decodeCatchup(data.catchup),
   };
 }
 
@@ -828,6 +953,136 @@ export function noticeLine(notice: CockpitNotice): string {
 /** Every notice of one frame, as ring lines. */
 export function noticeLines(notices: readonly CockpitNotice[]): string[] {
   return notices.map(noticeLine);
+}
+
+/** The machine's state in the pilot's words (16b cut Y.4). A `Map`, for the
+ * reason `NOTICE_WORDS` is one. */
+const MACHINE_STATE_WORDS: ReadonlyMap<string, string> = new Map([
+  ["startup", "starting up"],
+  ["patrol", "patrolling"],
+  ["approach", "closing on a contact"],
+  ["engage", "engaging"],
+  ["withdraw", "withdrawing toward its entry zone"],
+  ["disabled", "disabled"],
+]);
+
+/** The standing order's objective in the pilot's words (16b cut Y.4). */
+const MACHINE_ORDER_WORDS: ReadonlyMap<string, string> = new Map([
+  ["hold", "a hold order"],
+  ["advance", "an advance order"],
+  ["engage", "an engage order"],
+  ["withdraw", "a withdraw order"],
+]);
+
+/** A length in words over whole seconds — the server's `duration_words`. */
+function durationWords(secs: number): string {
+  const s = Math.max(0, Math.trunc(secs));
+  const hours = Math.trunc(s / 3600);
+  const minutes = Math.trunc((s % 3600) / 60);
+  const seconds = s % 60;
+  if (hours > 0) {
+    return `${hours} h ${minutes} m ${seconds} s`;
+  }
+  if (minutes > 0) {
+    return `${minutes} m ${seconds} s`;
+  }
+  return `${seconds} s`;
+}
+
+/** `none new` / `new BA, X3` / `new BA, X3 and 3 more`. */
+function listedClause(word: string, list: readonly string[], more: number): string {
+  if (list.length === 0) {
+    return more === 0 ? `none ${word}` : `${word} ${more} more`;
+  }
+  return more === 0 ? `${word} ${list.join(", ")}` : `${word} ${list.join(", ")} and ${more} more`;
+}
+
+/** `a, b` or `a, b and 2 more`, or `none` when there is nothing at all. */
+function listedOr(parts: readonly string[], separator: string, more: number, none: string): string {
+  if (parts.length === 0) {
+    return more === 0 ? none : `${more} more`;
+  }
+  return more === 0 ? parts.join(separator) : `${parts.join(separator)} and ${more} more`;
+}
+
+function cellWords(cell: [number, number]): string {
+  return `(${cell[0]}, ${cell[1]})`;
+}
+
+/**
+ * **The catch-up report, as the notices ring prints it** (16b cut Y.4; doc 07
+ * §1.3 step 5): the server's `catchup_lines` and the TUI's `catchup_words`,
+ * line for line, composed from the frame's decoded `catchup` — the line client
+ * was sent the server's own words as one `Sys` block tagged
+ * `NOTICE_SENTENCE_TAG`, which `pushReply`'s caller leaves out. The contacts'
+ * one overflow count goes after the one list that is full (only a full list
+ * can have overflowed); when both are full it cannot say whose it was and is
+ * its own clause, `3 more not named`. `fixtures/cockpit/catchup_lines.json`
+ * pins all three.
+ */
+export function catchupLines(callsign: string, catchup: CockpitCatchup): string[] {
+  const lines = [`Back aboard ${callsign} after ${durationWords(catchup.away_s)} away.`];
+  const machine = catchup.machine;
+  if (machine === null) {
+    lines.push("  The machine had no state.");
+  } else {
+    const state = MACHINE_STATE_WORDS.get(machine.state) ?? opened(machine.state);
+    const order =
+      machine.objective === null
+        ? "no order"
+        : (MACHINE_ORDER_WORDS.get(machine.objective) ?? `a ${opened(machine.objective)} order`);
+    lines.push(`  The machine was ${state} under ${order}.`);
+  }
+  const then = catchup.cell_then;
+  const now = catchup.cell_now;
+  if (now === null) {
+    lines.push("  Position: unknown.");
+  } else if (then === null) {
+    lines.push(`  Position: cell unknown then, ${cellWords(now)} now.`);
+  } else if (then[0] === now[0] && then[1] === now[1]) {
+    lines.push(`  Position: cell ${cellWords(now)}, unchanged.`);
+  } else {
+    lines.push(`  Position: cell ${cellWords(then)} then, ${cellWords(now)} now.`);
+  }
+  const more = catchup.contacts_more;
+  if (catchup.contacts_new.length === 0 && catchup.contacts_lost.length === 0 && more === 0) {
+    lines.push("  Contacts: none new, none lost.");
+  } else {
+    const newFull = catchup.contacts_new.length >= MAX_CATCHUP_CONTACTS;
+    const lostFull = catchup.contacts_lost.length >= MAX_CATCHUP_CONTACTS;
+    const onNew = more > 0 && newFull && !lostFull;
+    const onLost = more > 0 && lostFull && !newFull;
+    const unnamed = more > 0 && !onNew && !onLost ? more : 0;
+    const clauses = `${listedClause("new", catchup.contacts_new, onNew ? more : 0)}; ${listedClause(
+      "lost",
+      catchup.contacts_lost,
+      onLost ? more : 0,
+    )}`;
+    lines.push(
+      unnamed === 0 ? `  Contacts: ${clauses}.` : `  Contacts: ${clauses}; ${unnamed} more not named.`,
+    );
+  }
+  const sections = catchup.sections.map(({ id, then: was, now: is }) => {
+    if (was.condition !== is.condition) {
+      return `${id} ${was.condition} then, ${is.condition} now`;
+    }
+    const clauses: string[] = [];
+    if (is.armour < was.armour) {
+      clauses.push(`armour ${was.armour} then, ${is.armour} now`);
+    }
+    if (is.internals < was.internals) {
+      clauses.push(`internals ${was.internals} then, ${is.internals} now`);
+    }
+    return clauses.length === 0 ? id : `${id} ${clauses.join(", ")}`;
+  });
+  lines.push(`  Sections: ${listedOr(sections, "; ", catchup.sections_more, "unchanged")}.`);
+  const rounds = catchup.rounds_spent.map(({ weapon, rounds: spent }) => `${weapon} ${spent}`);
+  lines.push(`  Rounds spent: ${listedOr(rounds, ", ", catchup.rounds_more, "none")}.`);
+  lines.push(`  Power ${catchup.power_now}.`);
+  if (catchup.wreck) {
+    lines.push("  Your tank is a wreck.");
+  }
+  return lines;
 }
 
 export interface ScanChip {

@@ -38,6 +38,7 @@
 
 import {
   COCKPIT_NOTICES,
+  catchupLines,
   decodeArenaMap,
   decodeCockpitFrame,
   noticeLines,
@@ -137,6 +138,14 @@ export class CockpitStore {
     this.#switchedFor = frame.match;
     if (open) {
       this.notices = [];
+    }
+    // 16b cut Y.4 (doc 07 §1.3 step 5): the catch-up report a reclaim's first
+    // frame carries, BEFORE that frame's notices — it is about the time before
+    // them. One-shot: the next frame, and every read verb's, carries `null`.
+    if (frame.catchup !== null) {
+      this.notices = [...this.notices, ...catchupLines(frame.callsign, frame.catchup)].slice(
+        -COCKPIT_NOTICES,
+      );
     }
     if (frame.notices.length > 0) {
       // Per-pulse frames carry only that pulse's notices, and the mirror a read

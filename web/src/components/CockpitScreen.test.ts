@@ -375,3 +375,19 @@ describe("CockpitScreen mounted", () => {
     expect(calls("drawImage")).toHaveLength(1);
   });
 });
+
+describe("CockpitScreen, 16b cut Y.4", () => {
+  it("shows a reclaim's catch-up block in the notices pane, before the frame's notices", async () => {
+    const m = mount();
+    const cases = JSON.parse(
+      readFileSync(resolve(process.cwd(), DIR, "catchup_lines.json"), "utf8"),
+    ) as { catchup: unknown; lines: string[] }[];
+    m.cockpit.applyFrame({ ...json("cockpit_frame.json"), catchup: cases[0]!.catchup });
+    m.cockpit.applyMap(json("arena_map.json"));
+    await tick();
+    const pane = document.querySelector('section[aria-label="notices"]');
+    const lines = [...(pane?.querySelectorAll("p.line") ?? [])].map((p) => p.textContent);
+    expect(lines[0]).toBe("Back aboard RA after 2 m 14 s away.");
+    expect(lines).toEqual([...cases[0]!.lines, "X4 new contact", "BA section destroyed: turret"]);
+  });
+});

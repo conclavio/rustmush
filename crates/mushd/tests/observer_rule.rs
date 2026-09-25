@@ -242,6 +242,12 @@ async fn boot(tag: &str) -> Server {
 /// The same composition over a named `[tacsim.sensors].designate_on_detection`
 /// (16b cut Q.1).
 async fn boot_with(tag: &str, designate: bool) -> Server {
+    boot_grace(tag, designate, SessionConfig::default().linkdead_grace).await
+}
+
+/// The same, with the session layer's link-dead grace named too (16b cut Y.4),
+/// so a test can drop a pilot past it in seconds and not minutes.
+async fn boot_grace(tag: &str, designate: bool, grace: Duration) -> Server {
     let dir = scratch_dir(tag);
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     store
@@ -317,7 +323,10 @@ async fn boot_with(tag: &str, designate: bool) -> Server {
     // The hello manifest, from the one producer `main.rs` builds it with.
     let (features, panels) = mush_server::boot::build_hello_manifest(&engine);
 
-    let sessions = Arc::new(SessionManager::with_config(SessionConfig::default()));
+    let sessions = Arc::new(SessionManager::with_config(SessionConfig {
+        linkdead_grace: grace,
+        ..SessionConfig::default()
+    }));
     let guard = Arc::new(IpGuard::new());
     let metrics = Arc::new(mush_net_web::Metrics::new());
     let handles = world_task::spawn_persist(
@@ -3697,6 +3706,8 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         sections: Vec::new(),
         heat: None,
         receiver: None,
+        // 16b cut Y.4: no reclaim here.
+        catchup: None,
     }
 }
 
@@ -3950,4 +3961,279 @@ fn e3_the_traffic_stops_one_line_names_nothing_and_places_nothing() {
     assert_eq!(notice.refusal(), None);
     assert_eq!(notice.order(), None);
     assert_eq!(notice.kind(), NoticeKind::Blocked);
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Y.4: the catch-up report is projected through the observer rule
+// ---------------------------------------------------------------------------
+
+/// The range in metres a pilot's `CONTACTS` prints for the row named `who`, if
+/// it holds one.
+fn contact_range_m(listing: &str, who: &str) -> Option<u64> {
+    let row = strip_ansi(listing)
+        .lines()
+        .find(|line| line.trim_start().starts_with(&format!("{who} ")))?
+        .to_string();
+    let words: Vec<&str> = row.split_whitespace().collect();
+    let at = words.iter().position(|word| *word == "m")?;
+    words.get(at.checked_sub(1)?)?.parse().ok()
+}
+
+/// **A reclaimed pilot's catch-up names nothing the platform never held** (16b
+/// cut Y.4; doc 16 §1, §3.6; doc 07 §1.3 step 5).
+///
+/// Ada's `RA` and Bo's `BA` are re-posed seventy cells apart on the road —
+/// outside the stock sight — with `BA` WEST of `RA`, between it and red's entry
+/// zone. Ada takes off and her line drops before either platform holds
+/// anything: the catch-up's snapshot is taken with nothing held. Past the
+/// two-second grace the machine has `RA` and withdraws it west, toward `BA`,
+/// and Bo drives east: the report must have a contact to say, and it must be
+/// one the platform legitimately holds. (A re-posing while Ada is dropped is
+/// not possible — a unit an arena holds is not spatial, which is this file's
+/// own first assertion — so the gap is closed by the two tanks driving.)
+///
+/// Ada comes back and `BOARD`s: the block says `Back aboard RA` and `Contacts:
+/// new BA; none lost.` — the platform's own designator for the tank it now
+/// holds — and the block names no tank and no object number, while nothing
+/// Ada was sent in the window names the other side's tank or its object number
+/// or carries a sixteen-digit id (her own tank's name is hers: the reclaim's
+/// own line says it). Her web client's pushed frame carries the
+/// same report as an object whose `contacts_new` is exactly that frame's own
+/// contact designators, whose `contacts_lost` is empty, and whose keys name no
+/// unit. Bo, who never dropped, never reads `Back aboard`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
+    let server = boot_grace("observer-catchup", true, Duration::from_secs(2)).await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (ada_handle, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
+
+    // `RA` where `close_the_gap` puts blue, `BA` where it puts red: seventy
+    // cells apart on the road, `BA` on `RA`'s way home.
+    for (unit, (x, y), heading) in [(red, BLUE_CELL, 270_000), (blue, RED_CELL, 90_000)] {
+        let pose = format!(
+            "{{\"x_cm\":{},\"y_cm\":{},\"heading_mdeg\":{heading}}}",
+            x * 1_000 + 500,
+            y * 1_000 + 500
+        );
+        say(
+            &mut god,
+            &format!("@spatial/place/domain #{unit}={domain},{pose}"),
+            "Placed",
+        )
+        .await;
+    }
+    take_off(&mut ada, &mut bo).await;
+    let seen = ask(&mut ada, "CONTACTS", NO_CONTACTS).await;
+    assert!(seen.contains(NO_CONTACTS), "RA holds nothing yet: {seen}");
+
+    // Ada's line drops; past the grace the machine has `RA`.
+    drop(ada);
+    drop(ada_handle);
+    support::wait_arena_pilot_out(&mut god, "RA", "Ada", "flown by doctrine").await;
+
+    // Bo drives east, the machine drives `RA` west: wait until Bo's own plot of
+    // `RA` is well inside the stock sight, so `RA`'s (the same sight, both on
+    // the road and moving) holds `BA` too.
+    drive(&mut bo, 90).await;
+    wait_until(
+        Duration::from_secs(90),
+        "the two tanks to close inside the stock sight",
+        async || {
+            let listing = ask_whole(&mut bo, "CONTACTS").await;
+            contact_range_m(&listing, "RA").is_some_and(|range| range <= 500)
+        },
+    )
+    .await;
+
+    // Ada comes back: told, and then `BOARD` once the floor has passed.
+    let (_a2, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    ada.expect("is flying on doctrine; BOARD takes it back.")
+        .await;
+    let window = ada.mark();
+    let mut web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
+    wait_until(STEP_TIMEOUT, "BOARD to take the tank back", async || {
+        let mark = ada.mark();
+        ada.send_line("BOARD").await;
+        ada.expect_one_of_after(
+            mark,
+            &[
+                "yours again where it stands",
+                "is still being handed over",
+                COMMIT_PENDING,
+                CONTROL_UNKNOWN,
+            ],
+        )
+        .await
+            == 0
+    })
+    .await;
+    ada.expect("Back aboard RA").await;
+    ada.expect("  Power ").await;
+    let sent = strip_ansi(&ada.seen[window..]);
+    // The block: its first line to its power line (and a wreck line after it).
+    let block: String = sent
+        .get(sent.find("Back aboard RA").unwrap_or(0)..)
+        .unwrap_or_default()
+        .lines()
+        .scan(false, |past_power, line| {
+            if *past_power && !line.contains("Your tank is a wreck.") {
+                return None;
+            }
+            *past_power |= line.trim_start().starts_with("Power ");
+            Some(format!("{line}\n"))
+        })
+        .collect();
+    assert!(
+        block.contains("Contacts: new BA; none lost."),
+        "the report names the one contact the platform holds:\n{block}"
+    );
+    names_nothing(&block, red, blue, "the catch-up block");
+    // Everything else Ada was sent in the window: her own tank is named — the
+    // reclaim's own line says `Red Tank 1 is yours again` — and nothing of the
+    // other side's is, nor any contact's sixteen digits.
+    for leak in [BLUE_TANK.to_string(), format!("#{blue}")] {
+        assert!(
+            !sent.contains(&leak),
+            "Ada's window leaked {leak:?}:\n{sent}"
+        );
+    }
+    no_sixteen_digit_word(&sent, "Ada's reclaim and its catch-up");
+
+    // The web half: the pushed frame's report is the frame's own scope.
+    let mut report = Value::Null;
+    let mut frame = Value::Null;
+    for _ in 0..40 {
+        frame = pushed_cockpit(&mut web).await;
+        if frame.get("catchup").is_some_and(Value::is_object) {
+            report = frame.get("catchup").cloned().unwrap_or_default();
+            break;
+        }
+    }
+    assert!(report.is_object(), "no pushed frame carried the report");
+    let mut held: Vec<String> = frame
+        .get("contacts")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("designator").and_then(Value::as_str))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut gained: Vec<String> = report
+        .get("contacts_new")
+        .and_then(Value::as_array)
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    held.sort();
+    gained.sort();
+    assert_eq!(
+        gained, held,
+        "the report's new contacts are the frame's own"
+    );
+    assert_eq!(gained, vec!["BA".to_string()]);
+    assert_eq!(
+        report.get("contacts_lost"),
+        Some(&json!([])),
+        "nothing was held to lose"
+    );
+    let mut keys: Vec<&str> = report
+        .as_object()
+        .map(|object| object.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "away_s",
+            "cell_now",
+            "cell_then",
+            "contacts_lost",
+            "contacts_more",
+            "contacts_new",
+            "machine",
+            "power_now",
+            "power_then",
+            "rounds_more",
+            "rounds_spent",
+            "sections",
+            "sections_more",
+            "wreck",
+        ],
+        "the report's keys name no unit"
+    );
+    let flat = report.to_string();
+    names_nothing(&flat, red, blue, "the pushed catch-up");
+    no_sixteen_digit_word(&flat, "the pushed catch-up");
+    for key in ["\"unit\"", "\"target\"", "\"pilot\"", "\"name\""] {
+        assert!(
+            !flat.contains(key),
+            "the pushed catch-up carried {key}: {flat}"
+        );
+    }
+
+    // No position of blue's: the report's two cells are `RA`'s own — where it
+    // stood when the line dropped (it had not moved since it was placed) and
+    // the cell the carrying frame itself puts it in — and every cell the block
+    // prints is one of those two.
+    let pair = |value: &Value, key: &str| -> Option<(u64, u64)> {
+        let cell = value.get(key)?.as_array()?;
+        Some((cell.first()?.as_u64()?, cell.get(1)?.as_u64()?))
+    };
+    let placed = (
+        u64::try_from(BLUE_CELL.0).unwrap_or(0),
+        u64::try_from(BLUE_CELL.1).unwrap_or(0),
+    );
+    assert_eq!(
+        pair(&report, "cell_then"),
+        Some(placed),
+        "the cell RA stood in at the drop: {report}"
+    );
+    let now = pair(&frame, "cell");
+    assert!(now.is_some(), "the carrying frame places RA: {frame}");
+    assert_eq!(
+        pair(&report, "cell_now"),
+        now,
+        "RA's own cell now: {report}"
+    );
+    let printed = catchup_cells(&block);
+    assert!(!printed.is_empty(), "the block prints RA's cells:\n{block}");
+    for cell in &printed {
+        assert!(
+            Some(*cell) == now || *cell == placed,
+            "the block printed a cell that is not RA's own, {cell:?}:\n{block}"
+        );
+    }
+
+    // Bo never dropped, and is never told a report. `ask_whole` reads Bo's
+    // channel up to a sentinel typed after Ada's block was sent, so anything
+    // the report's frame sent Bo is in `seen` before the assertion reads it.
+    let drained = ask_whole(&mut bo, "STATUS").await;
+    assert!(!drained.is_empty(), "Bo's channel answered");
+    let seen = strip_ansi(&bo.seen);
+    assert!(
+        !seen.contains("Back aboard"),
+        "a pilot who never dropped read a catch-up:\n{seen}"
+    );
+}
+
+/// Every `(x, y)` cell a catch-up block prints, in order.
+fn catchup_cells(block: &str) -> Vec<(u64, u64)> {
+    block
+        .split('(')
+        .skip(1)
+        .filter_map(|rest| {
+            let (inside, _) = rest.split_once(')')?;
+            let (x, y) = inside.split_once(", ")?;
+            Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+        })
+        .collect()
 }

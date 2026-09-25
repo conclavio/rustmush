@@ -984,6 +984,122 @@ fn the_jammed_wreck_s_status_is_painted_whole_at_eighty_columns() {
     }
 }
 
+/// The committed catch-up cases (16b cut Y.4), the parity fixture all three
+/// renderers read.
+const CATCHUP_LINES: &str =
+    include_str!("../../../web/src/lib/fixtures/cockpit/catchup_lines.json");
+
+/// The fixture app with one cockpit frame of `frame` applied.
+fn cockpit_app_with(frame: serde_json::Value) -> TuiApp {
+    let mut app = fixture_app();
+    app.set_manifest(TuiManifest {
+        panels: vec![
+            "wod.vitals".into(),
+            "wod.sheet".into(),
+            "mail".into(),
+            "arena.cockpit".into(),
+            "arena.map".into(),
+        ],
+        character: Some("Nick".into()),
+        room: None,
+    });
+    app.apply_event(&arena_panel("arena.map", ARENA_MAP));
+    app.apply_event(&OutputEvent::Panel {
+        feed: SmolStr::new_static("arena.cockpit"),
+        kind: PanelFrameKind::Keyframe,
+        data: frame,
+    });
+    app
+}
+
+/// **A reclaim's catch-up rings before the frame's notices** (16b cut Y.4; doc
+/// 07 §1.3 step 5): the fixture cockpit with the fixture's FULL catch-up on it
+/// rings the report's seven lines — composed from the object's fields,
+/// `catchup_words` — and then the frame's two notices. A second frame carrying
+/// `null` rings nothing of it again.
+///
+/// The golden is the same frame with its two notices taken off — a reclaim
+/// whose first pulse said nothing else — because the 80 by 24 notices pane
+/// shows the ring's TAIL, and with the notices on it the screen is
+/// `tui_cockpit_80x24.txt` byte for byte and pins nothing of the report.
+#[test]
+fn a_reclaims_catch_up_rings_before_the_frames_notices() {
+    let cases: Vec<serde_json::Value> =
+        serde_json::from_str(CATCHUP_LINES).expect("catchup_lines.json is an array");
+    let full = cases.first().expect("the full case");
+    let lines: Vec<String> = full
+        .get("lines")
+        .and_then(serde_json::Value::as_array)
+        .expect("lines")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_string)
+        .collect();
+    let mut frame = fixture(COCKPIT_FRAME);
+    frame["catchup"] = full.get("catchup").cloned().expect("a catchup object");
+    let mut app = cockpit_app_with(frame.clone());
+    let mut rung: Vec<String> = app.panels().cockpit_notices().iter().cloned().collect();
+    let mut want = lines.clone();
+    want.extend([
+        "X4 new contact".to_string(),
+        "BA section destroyed: turret".to_string(),
+    ]);
+    assert_eq!(rung, want);
+    // The next frame is the committed one, `catchup: null`: its notices only.
+    app.apply_event(&arena_panel("arena.cockpit", COCKPIT_FRAME));
+    rung = app.panels().cockpit_notices().iter().cloned().collect();
+    assert_eq!(
+        rung.iter()
+            .filter(|line| line.starts_with("Back aboard"))
+            .count(),
+        1,
+        "{rung:?}"
+    );
+
+    // The golden: the report alone in the ring, its tail in the pane.
+    frame["notices"] = serde_json::json!([]);
+    let mut app = cockpit_app_with(frame);
+    assert_eq!(
+        app.panels()
+            .cockpit_notices()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        lines
+    );
+    let text = frame_text(&mut app, 80, 24);
+    for line in text.lines() {
+        assert!(line.chars().count() <= 80, "row too wide: {line:?}");
+    }
+    assert!(text.contains("Power online."), "the report's tail:\n{text}");
+    check("tui_cockpit_80x24_catchup.txt", &text);
+}
+
+/// **A malformed catch-up rings nothing** (16b cut Y.4): a string, a number
+/// or an array where the object belongs is not a report, and the frame's own
+/// notices are all the ring gets.
+#[test]
+fn a_malformed_catch_up_rings_nothing() {
+    for bad in [
+        serde_json::json!("Back aboard RA after 1 s away."),
+        serde_json::json!(7),
+        serde_json::json!([1, 2]),
+    ] {
+        let mut frame = fixture(COCKPIT_FRAME);
+        frame["catchup"] = bad.clone();
+        let app = cockpit_app_with(frame);
+        let rung: Vec<String> = app.panels().cockpit_notices().iter().cloned().collect();
+        assert_eq!(
+            rung,
+            vec![
+                "X4 new contact".to_string(),
+                "BA section destroyed: turret".to_string()
+            ],
+            "{bad}"
+        );
+    }
+}
+
 /// The tenth tab exists only where the feed does, and the screen reads the one
 /// frame: the callsign, the lock, the sections, the weapons and the contacts,
 /// with nothing on it that the frame did not carry.

@@ -1030,6 +1030,63 @@ fn the_latest_slot_replays_the_committed_view_frame_unchanged() {
     );
 }
 
+/// **16b cut Y.4: the latest slot carries a catch-up report unchanged.** The
+/// committed `cockpit_frame.json` with the parity fixture's full `catchup`
+/// object patched in — the first frame after a reclaim — is sent as a
+/// retain-latest `Keyframe` on `arena.cockpit`, and a resume from nothing
+/// replays it with its `data` equal, value for value: the B.5 per-feed slot is
+/// shape-blind, and the new key crosses it whole.
+#[test]
+fn the_latest_slot_replays_a_frame_carrying_a_catch_up_unchanged() {
+    let mut frame: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+    ))
+    .expect("the committed fixture is JSON");
+    let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+        "../../../web/src/lib/fixtures/cockpit/catchup_lines.json"
+    ))
+    .expect("the committed catch-up cases are JSON");
+    assert_eq!(
+        frame.get("catchup"),
+        Some(&serde_json::Value::Null),
+        "the committed frame is an ordinary pulse"
+    );
+    let report = cases
+        .first()
+        .and_then(|case| case.get("catchup"))
+        .cloned()
+        .expect("the full case");
+    assert!(report.is_object());
+    frame["catchup"] = report;
+    assert_eq!(
+        frame.pointer("/schema/retain"),
+        Some(&serde_json::json!(LATEST))
+    );
+    let mgr = manager_with_ticking_clock(SessionConfig::default());
+    let (web, _rx) = web_conn(1, 64);
+    let (sess, _) = mgr.attach(web, CharKey(8), "h".into());
+    mgr.send_event_to_char(
+        CharKey(8),
+        OutputEvent::Panel {
+            feed: "arena.cockpit".into(),
+            kind: mush_proto::PanelFrameKind::Keyframe,
+            data: frame.clone(),
+        },
+    );
+    let replayed = mgr.replay_since(sess, 0).expect("never TooOld");
+    assert_eq!(replayed.len(), 1, "the one keyframe, from the slot");
+    let OutputEvent::Panel { feed, kind, data } = &replayed[0].event else {
+        panic!("the replayed event is the panel: {:?}", replayed[0].event);
+    };
+    assert_eq!(feed.as_str(), "arena.cockpit");
+    assert_eq!(*kind, mush_proto::PanelFrameKind::Keyframe);
+    assert_eq!(data, &frame, "the payload crosses the slot unchanged");
+    assert!(
+        ring_only(&mgr, sess).is_empty(),
+        "and it lives in the slot, not the ring"
+    );
+}
+
 // ---- I12 leak tripwire: the ring's non-Char writers refuse a Narrative ------
 //
 // The narrative backlog's leak proof rests on one invariant: a `Narrative`

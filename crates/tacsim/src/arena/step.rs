@@ -255,6 +255,19 @@ pub struct Frame {
     /// no side and no object number, which is what keeps it there. See
     /// [`crate::arena::perception::Receiver`] for the two declared limits.
     pub receiver: Option<crate::arena::perception::Receiver>,
+    /// **What happened while the pilot could not see** (16b cut Y.4; doc 07 §1.3
+    /// step 5), on the first frame after a reclaim and on no other — `None`
+    /// everywhere else.
+    ///
+    /// One-shot, as [`Frame::notices`] is: `Arena::frames` takes it out of
+    /// `Arena::pending_catchup` onto the frame and the copy remembered in
+    /// `last_frames` has it cleared, and the world's mirror stores it cleared
+    /// too, so `STATUS` and `VIEW` never re-say it. [`Frame::same_as`] answers
+    /// `false` whenever either side carries one, so a frame that carries it is
+    /// always sent. The pilot's own tank, plus the platform's own designators
+    /// for the contacts it held or holds — the observer rule, as
+    /// [`crate::arena::catchup`] states it.
+    pub catchup: Option<crate::arena::catchup::Catchup>,
 }
 
 /// **One facet's armour, as the pilot's own status block carries it** (16b cut
@@ -341,9 +354,15 @@ impl Frame {
     /// lagged a tempo behind would be a lie about the one thing standing between
     /// them and the next shot. A platform with no heat compares `None` to `None`
     /// and costs nothing.
+    ///
+    /// **16b cut Y.4**: a frame carrying a catch-up report is never the same as
+    /// anything ([`Frame::catchup`]) — a re-seated pilot has no remembered frame
+    /// anyway, and this pins that the report is sent.
     #[must_use]
     pub fn same_as(&self, other: &Frame, pass_ms: i64) -> bool {
-        self.unit == other.unit
+        self.catchup.is_none()
+            && other.catchup.is_none()
+            && self.unit == other.unit
             && self.team == other.team
             // 16b cut Q.1: both are surfaces a pilot reads — the callsign on
             // `STATUS`'s first line, the cell on a panel's map — so both decide
@@ -1622,6 +1641,9 @@ impl Arena {
                     // 16b cut D.4: the platform's own receiver, as its last
                     // sensor pass left it.
                     receiver: unit.receiver,
+                    // 16b cut Y.4: taken in the second pass below, which may
+                    // write the arena.
+                    catchup: None,
                 },
             ));
         }
@@ -1633,7 +1655,11 @@ impl Arena {
         // as `Frame::same_as` compares an age.
         let pass_ms = i64::from(self.sensors_cfg.pass_ms.max(1));
         let mut changed: Vec<(ObjId, Frame)> = Vec::new();
-        for (pilot, frame) in candidates {
+        for (pilot, mut frame) in candidates {
+            // **16b cut Y.4**: the catch-up report a reclaim left this pilot,
+            // once — taken here, so it rides exactly one frame, and that frame
+            // is always sent (`Frame::same_as`).
+            frame.catchup = self.pending_catchup.remove(&pilot);
             let told = !frame.notices.is_empty();
             if told
                 || self
@@ -1643,8 +1669,10 @@ impl Arena {
             {
                 // The remembered copy carries no notice: `CONTACTS` and `VIEW`
                 // re-render it, and a notice said twice is a notice said wrong.
+                // 16b cut Y.4: nor a catch-up, for the same reason.
                 let mut remembered = frame.clone();
                 remembered.notices.clear();
+                remembered.catchup = None;
                 self.last_frames.insert(pilot, remembered);
                 changed.push((pilot, frame));
             }

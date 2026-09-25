@@ -2986,6 +2986,25 @@ pub struct Arena {
     /// **The last frame each pilot was sent** (doc 16 §3.1's *latest-wins slot per
     /// pilot*), so a pulse that changed nothing a pilot can see sends nothing.
     pub last_frames: FrameSlots,
+    /// **What each platform held and was when its pilot lost sight of it** (16b
+    /// cut Y.4; doc 07 §1.3 step 5), by **unit** — the baseline of the catch-up
+    /// report ([`crate::arena::catchup`]).
+    ///
+    /// Written by `apply_control`'s `Linkdead` and `Released` arms for a control
+    /// that names a pilot, the first one winning; removed by the `Live` that
+    /// follows (consumed into [`Arena::pending_catchup`] when it re-seats a
+    /// dropped pilot, dropped when it finds the pilot never left). A **view**,
+    /// on `last_frames`' argument: it is a fact about what a pilot will be told
+    /// and not about the match, so [`crate::arena::hash::state_hash`] does not
+    /// fold it — folding it would make the hash a function of who was
+    /// connected — and nothing that steers reads it. At most one row a unit.
+    pub at_release: BTreeMap<ObjId, crate::arena::catchup::ReleaseSnapshot>,
+    /// **The catch-up report each re-seated pilot is owed** (16b cut Y.4), by
+    /// **pilot**, built at the `Live` that re-seated them and taken by
+    /// `Arena::frames` onto that pilot's next frame
+    /// ([`crate::arena::step::Frame::catchup`]) — so it is said once. A view,
+    /// for the reason [`Arena::at_release`] is.
+    pub pending_catchup: BTreeMap<ObjId, crate::arena::catchup::Catchup>,
     /// **The notices this pulse owes each platform's pilots** (16b cut S.2; doc 16
     /// §3.6: *notices fire once per transition*), keyed by the **platform** and not
     /// by the pilot, because doc 16 §3.7 puts the station on the tank and two
@@ -3537,6 +3556,9 @@ impl Arena {
             stop: None,
             now_ms: 0,
             last_frames: FrameSlots::new(),
+            // 16b cut Y.4: nobody has lost sight of anything yet.
+            at_release: BTreeMap::new(),
+            pending_catchup: BTreeMap::new(),
             pending_notices: BTreeMap::new(),
             held_losses: BTreeMap::new(),
             substep_hashes: Vec::new(),
@@ -3708,6 +3730,9 @@ impl Arena {
         let dropped = self.pilots.len() != before;
         if dropped && !self.pilots.iter().any(|seat| seat.pilot == pilot) {
             self.last_frames.remove(&pilot);
+            // 16b cut Y.4: and a catch-up report no frame carried yet — a
+            // re-seat and a drop in one pulse — is not owed to anybody.
+            self.pending_catchup.remove(&pilot);
         }
         dropped
     }

@@ -1,6 +1,7 @@
 {
   "blocked": false,
   "callsign": "RA",
+  "catchup": null,
   "cell": [
     6,
     4

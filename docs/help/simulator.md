@@ -168,6 +168,13 @@ where you still are, or from your team room, and after a few seconds the tank is
 yours again where it stands, at a new epoch, with what happened meanwhile said
 to you. `EXIT` is still final, and the side's lead does not come back with you.
 
+What happened meanwhile comes as one block, once, with the first frame after you
+take the tank back, and it opens `Back aboard RA after 2 m 14 s away.` It says
+how long you were away (counted from the moment your line dropped), what the
+machine was doing and under what order, where the tank went, the contacts it
+gained and lost, the sections that changed, the rounds it spent, and whether its
+power is up.
+
 ## The match, and afterwards
 
 While it runs, the cockpit is the whole of it: `help cockpit`.

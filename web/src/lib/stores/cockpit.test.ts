@@ -309,3 +309,26 @@ describe("CockpitStore", () => {
     expect(s.seatedOnce).toBe(false);
   });
 });
+
+describe("CockpitStore, 16b cut Y.4", () => {
+  it("rings a catch-up once, before the frame's notices, and never for a null one", () => {
+    const cases = JSON.parse(
+      readFileSync(resolve(process.cwd(), DIR, "catchup_lines.json"), "utf8"),
+    ) as { callsign: string; catchup: unknown; lines: string[] }[];
+    const full = cases[0]!;
+    const s = new CockpitStore();
+    s.applyFrame({ ...FRAME(), catchup: full.catchup });
+    expect(s.notices).toEqual([...full.lines, "X4 new contact", "BA section destroyed: turret"]);
+    // The next frame carries `null`, as every frame but the reclaim's first
+    // does: nothing of the report is rung again.
+    s.applyFrame({ ...FRAME(), notices: [] });
+    expect(s.notices).toHaveLength(full.lines.length + 2);
+    expect(s.notices.filter((line) => line.startsWith("Back aboard"))).toHaveLength(1);
+    // A malformed report rings nothing.
+    s.applyFrame({ ...FRAME(), notices: [], catchup: "Back aboard" });
+    expect(s.notices).toHaveLength(full.lines.length + 2);
+    // A frame of a NEW match empties the ring before its own report lands.
+    s.applyFrame({ ...FRAME(), match: 8, notices: [], catchup: full.catchup });
+    expect(s.notices).toEqual(full.lines);
+  });
+});

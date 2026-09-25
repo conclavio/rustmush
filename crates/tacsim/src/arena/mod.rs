@@ -163,10 +163,19 @@
 //! makes a bluff a one-way door), and `physics::move_cost`'s climb branch is not
 //! applied (it models a kerb inside one cell, and the arena's cells are 10 m).
 //!
+//! # Cut Y.4: the catch-up report
+//!
+//! [`crate::arena::catchup`] is doc 07 §1.3 step 5: a snapshot of what a
+//! platform held and was when its pilot lost sight of it, and the report a
+//! reclaim builds against it, carried once on the pilot's next frame
+//! ([`crate::arena::step::Frame::catchup`]). Both tables are views beside
+//! `last_frames` and fold into no hash.
+//!
 //! What is still not here, and whose it is: deliberation, the order type, the
 //! squad grouping and the cost run are cut N.2's, and the task, the inbox, the
 //! egress, the timer and the unwind boundary are cut T's.
 
+pub mod catchup;
 pub mod clock;
 pub mod command;
 pub mod condition;
@@ -187,6 +196,10 @@ pub mod state;
 pub mod step;
 pub mod weapons;
 
+pub use catchup::{
+    Catchup, MAX_CATCHUP_CONTACTS, MAX_CATCHUP_SECTIONS, MAX_CATCHUP_WEAPONS, MachineWords,
+    ReleaseSnapshot, SectionWords,
+};
 pub use clock::{Clock, MIN_SUBSTEP_MS, Tempo, TempoSignals, substep_ms, substeps};
 pub use command::{
     MAX_SIGNAL_CONTACTS, SignalContact, SignalReason, SquadDigest, SquadSignal, SquadWatch,

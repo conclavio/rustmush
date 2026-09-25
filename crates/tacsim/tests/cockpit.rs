@@ -1291,9 +1291,17 @@ async fn the_reads_render_the_last_frame_and_the_frame_carries_doc_16_s_shape() 
         "tempo",
         "contacts",
         "weapons",
+        // 16b cut Y.4: the catch-up report's key, `null` on every frame but a
+        // reclaim's first.
+        "catchup",
     ] {
         assert!(frame.get(key).is_some(), "the frame carries {key}: {frame}");
     }
+    assert_eq!(
+        frame.get("catchup"),
+        Some(&serde_json::Value::Null),
+        "a read verb's frame is the mirror's, which never carries a catch-up"
+    );
     assert_eq!(
         frame
             .get("contacts")
@@ -2742,6 +2750,10 @@ mod fixture {
                 },
             ],
             heat: Some(FrameHeat { heat: 40, max: 100 }),
+            // **16b cut Y.4**: the scene is an ordinary pulse, not the first
+            // frame after a reclaim, so the payload's `catchup` key is `null`.
+            // `catchup_lines.json` carries the report's own shapes.
+            catchup: None,
         }
     }
 
@@ -6902,4 +6914,473 @@ async fn y3_a_zero_floor_reclaims_in_the_drops_own_second() {
         rig.frame_for(0).await,
         "no frame after a same-second reclaim"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Y.4: the catch-up report (16c `N4`; doc 07 §1.3 step 5)
+// ---------------------------------------------------------------------------
+
+/// Every seated `arena.cockpit` keyframe the rig has sent `pilot` since `from`,
+/// in order.
+fn y4_cockpit_frames(rig: &Rig, pilot: ObjId, from: usize) -> Vec<serde_json::Value> {
+    rig.log
+        .iter()
+        .skip(from)
+        .filter_map(|(audience, event)| match event {
+            OutputEvent::Panel { feed, data, .. }
+                if feed.as_str() == tacsim::arena_bridge::FRAME_FEED
+                    && *audience == Audience::Actor(pilot)
+                    && data.get("seated").and_then(serde_json::Value::as_bool) != Some(false) =>
+            {
+                Some(data.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every `Sys` line the rig has sent `pilot` since `from`, as its plain text
+/// and its span tags.
+fn y4_sys_lines(rig: &Rig, pilot: ObjId, from: usize) -> Vec<(String, Vec<Option<String>>)> {
+    rig.log
+        .iter()
+        .skip(from)
+        .filter_map(|(audience, event)| match event {
+            OutputEvent::Sys(text) if *audience == Audience::Actor(pilot) => Some((
+                text.to_plain_text(),
+                text.spans()
+                    .iter()
+                    .map(|span| span.tag.as_deref().map(str::to_owned))
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Pump until the rig has sent `pilot` at least `want` seated cockpit frames
+/// since `from`, and answer them.
+async fn y4_frames_until(
+    rig: &mut Rig,
+    pilot: ObjId,
+    from: usize,
+    want: usize,
+) -> Vec<serde_json::Value> {
+    for _ in 0..600 {
+        rig.pump();
+        if y4_cockpit_frames(rig, pilot, from).len() >= want {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    y4_cockpit_frames(rig, pilot, from)
+}
+
+/// The mirror's own frame's catch-up for pilot `n`, read through a `Ctx` the
+/// way a verb reads it: `None` for no mirrored frame at all.
+fn y4_mirror_catchup(rig: &mut Rig, n: usize) -> Option<Option<tacsim::arena::Catchup>> {
+    let pilot = rig.pilot(n);
+    rig.with_ctx(n, |ctx| {
+        ctx.w
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.last_frame(pilot))
+            .map(|held| held.frame.catchup.clone())
+    })
+}
+
+/// **A reclaim's first frame carries the catch-up once, and the line client
+/// reads it once** (16b cut Y.4; doc 07 §1.3 step 5), over the production
+/// composition: `BOARD` past the grace, the arena's `Live`, the report built,
+/// the frame, `on_frames`' one tagged `Sys` block before the frame's notices,
+/// the mirror storing it cleared.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y4_a_reclaim_s_first_frame_carries_the_catch_up_and_says_it_once() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    rig.say(0, "startup");
+    assert!(rig.powered(0).await, "the arena brings power online");
+
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    let now = rig.now;
+    rig.tick_to(now + 5);
+    let mark = rig.log.len();
+    let said = rig.say(0, "board");
+    assert!(said.contains("is yours again where it stands"), "{said}");
+
+    // The first seated cockpit frame after the reclaim carries the report.
+    let frames = y4_frames_until(&mut rig, pilot, mark, 1).await;
+    let first = frames.first().cloned().expect("no frame after the reclaim");
+    let catchup = first.get("catchup").cloned().unwrap_or_default();
+    assert!(catchup.is_object(), "the reclaim's first frame: {first}");
+    assert!(
+        catchup
+            .get("away_s")
+            .and_then(serde_json::Value::as_i64)
+            .is_some(),
+        "{catchup}"
+    );
+    assert_eq!(
+        catchup
+            .pointer("/machine/state")
+            .and_then(serde_json::Value::as_str),
+        Some("withdraw"),
+        "a released tank is the machine's in Withdraw: {catchup}"
+    );
+
+    // The reads, at once — the tank stands still, so the mirror is still the
+    // frame that carried the report: it holds it cleared, and neither read
+    // re-says it or pushes it again.
+    y4_reads_never_resay(&mut rig, "the reclaim's own frame");
+
+    // The next frame does not carry it. An order is what makes a next frame
+    // at all.
+    let said = rig.say(0, "heading 180");
+    assert!(said.contains("Steering to 180"), "{said}");
+    let frames = y4_frames_until(&mut rig, pilot, mark, 2).await;
+    assert!(
+        frames.len() >= 2,
+        "two frames after the reclaim: {frames:?}"
+    );
+    for later in frames.iter().skip(1) {
+        assert_eq!(
+            later.get("catchup"),
+            Some(&serde_json::Value::Null),
+            "a later frame carried the report again: {later}"
+        );
+    }
+
+    // The line client: exactly one block, tagged as a frame's own sentence.
+    let sys = y4_sys_lines(&rig, pilot, mark);
+    let blocks: Vec<&(String, Vec<Option<String>>)> = sys
+        .iter()
+        .filter(|(text, _)| text.starts_with("Back aboard RA"))
+        .collect();
+    assert_eq!(blocks.len(), 1, "one block: {sys:?}");
+    let (block, tags) = blocks.first().copied().cloned().unwrap_or_default();
+    assert!(
+        tags.iter()
+            .all(|tag| tag.as_deref() == Some(tacsim::arena_bridge::NOTICE_SENTENCE_TAG)),
+        "the block is tagged as a frame's own sentence: {tags:?}"
+    );
+    assert!(
+        block.contains("\n  The machine was withdrawing toward its entry zone under no order."),
+        "{block}"
+    );
+    for line in [
+        "\n  Position: ",
+        "\n  Contacts: ",
+        "\n  Sections: ",
+        "\n  Rounds spent: ",
+        "\n  Power online.",
+    ] {
+        assert!(
+            block.contains(line),
+            "{line:?} is not in the block:\n{block}"
+        );
+    }
+
+    // **Before the frame's notice lines.** The still reclaim frame above need
+    // carry no notice at all, so the order is proven on `on_frames`' own path
+    // over a frame that carries both: the live frame, with the report the
+    // reclaim was sent and a refusal beside it.
+    use tacsim::arena::intents::Refusal;
+    use tacsim::arena::perception::{FrameNotice, RefusalDetail};
+    let mut both = rig.held_frame(0);
+    both.catchup = Some(y4_decode(&catchup));
+    both.notices = vec![FrameNotice::Refused {
+        order: smol_str::SmolStr::new("fire"),
+        refusal: Refusal::PowerNotOnline,
+        weapon: None,
+        detail: RefusalDetail::None,
+    }];
+    let notice = cockpit::notice_lines(&both);
+    assert_eq!(notice.len(), 1, "the refusal says one line: {notice:?}");
+    let pushed = rig.log.len();
+    rig.push_frame(0, both);
+    let sys = y4_sys_lines(&rig, pilot, pushed);
+    let at = sys
+        .iter()
+        .position(|(text, _)| text.starts_with("Back aboard RA"));
+    let refusal = sys
+        .iter()
+        .position(|(text, _)| Some(text) == notice.first());
+    assert!(
+        at.is_some() && refusal.is_some() && at < refusal,
+        "the block is said before the frame's notice lines: {sys:?}"
+    );
+    assert_eq!(sys.len(), 2, "the block and the one notice: {sys:?}");
+
+    // And that frame, too, is remembered without it.
+    y4_reads_never_resay(&mut rig, "a frame carrying a report and a notice");
+}
+
+/// **The mirror holds no catch-up, and `STATUS` and `VIEW` re-say none** (16b
+/// cut Y.4): read straight after a frame that carried one, so it is that
+/// frame's `remembered` copy the reads render.
+fn y4_reads_never_resay(rig: &mut Rig, after: &str) {
+    let pilot = rig.pilot(0);
+    assert_eq!(
+        y4_mirror_catchup(rig, 0),
+        Some(None),
+        "the mirror kept the report after {after}"
+    );
+    let spoken = rig.log.len();
+    for verb in ["status", "view"] {
+        let events = rig.events(0, verb);
+        let text = rig.tw.seen_by(&events, pilot).join("\n");
+        assert!(
+            !text.contains("Back aboard"),
+            "{verb} re-said the report after {after}: {text}"
+        );
+        let frame = Rig::panel(&events).expect("a read pushes its frame");
+        assert_eq!(
+            frame.get("catchup"),
+            Some(&serde_json::Value::Null),
+            "{verb}'s frame carried the report after {after}"
+        );
+    }
+    assert!(
+        !y4_sys_lines(rig, pilot, spoken)
+            .iter()
+            .any(|(text, _)| text.contains("Back aboard")),
+        "the report was said again after {after}"
+    );
+}
+
+/// **A revival inside the grace reads no catch-up, and leaves no baseline for
+/// a later drop** (16b cut Y.4): `Linkdead` then `Connected` sends a `Live`
+/// that finds the pilot still on the roster — no block, no `catchup` — and
+/// the snapshot the `Linkdead` took is spent.
+///
+/// The `Connected` waits until the arena has run a pulse after the `Linkdead`
+/// was offered: the task buffers controls until its pulse and a `Live` at a
+/// higher epoch displaces a standing `Linkdead` (`buffer_control`), so the two
+/// back to back would never reach `apply_control` as two and no snapshot would
+/// ever be taken. The rig cannot reach into the arena task, so the second half
+/// is read off the one place a surviving baseline would show: a later drop
+/// and reclaim, measured from **that** drop and not from the `Linkdead` eight
+/// arena seconds and more before it. (The arena's own
+/// `a_revival_inside_the_grace_spends_the_snapshot_and_builds_nothing` reads
+/// `at_release` directly.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y4_a_revival_inside_the_grace_reads_no_catch_up_and_leaves_no_baseline() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    rig.say(0, "startup");
+    assert!(rig.powered(0).await, "the arena brings power online");
+
+    let mark = rig.log.len();
+    rig.pump();
+    let linkdead_at = rig.staged_now_ms;
+    let out = rig.fire_conn(pilot, mush_core::ConnTransition::Linkdead);
+    rig.log.extend(out);
+    // The arena takes the `Linkdead` in a pulse of its own. The staged clock
+    // lags the arena's by at most the one arena second a `Frames` is published
+    // in whatever the frames do, so a clock two seconds on is a pulse that ran
+    // after the offer — the one that took the snapshot.
+    for _ in 0..1_000 {
+        rig.pump();
+        if rig.staged_now_ms >= linkdead_at + 2_000 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        rig.staged_now_ms >= linkdead_at + 2_000,
+        "the arena did not run a pulse after the Linkdead"
+    );
+    let out = rig.fire_conn(pilot, mush_core::ConnTransition::Connected);
+    rig.log.extend(out);
+    // The seat is the pilot's again: an order turns the tank, so frames flow.
+    let said = rig.say(0, "heading 180");
+    assert!(said.contains("Steering to 180"), "{said}");
+    // Eight arena seconds and more from the `Linkdead`, with frames flowing:
+    // a baseline that survived the revival would make the later report count
+    // from a moment at least six seconds before its drop.
+    for _ in 0..2_000 {
+        rig.pump();
+        if rig.staged_now_ms >= linkdead_at + 8_000 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        rig.staged_now_ms >= linkdead_at + 8_000,
+        "the arena did not run on"
+    );
+    let frames = y4_cockpit_frames(&rig, pilot, mark);
+    assert!(!frames.is_empty(), "the revived pilot's frames flow");
+    assert!(
+        frames
+            .iter()
+            .all(|frame| frame.get("catchup") == Some(&serde_json::Value::Null)),
+        "a revival carried a report: {frames:?}"
+    );
+    assert!(
+        !y4_sys_lines(&rig, pilot, mark)
+            .iter()
+            .any(|(text, _)| text.contains("Back aboard")),
+        "a revival was told a report"
+    );
+
+    // Now a real drop, and a reclaim: the report counts from this drop.
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    let now = rig.now;
+    rig.tick_to(now + 5);
+    let mark = rig.log.len();
+    let said = rig.say(0, "board");
+    assert!(said.contains("is yours again where it stands"), "{said}");
+    let frames = y4_frames_until(&mut rig, pilot, mark, 1).await;
+    let away_s = frames
+        .first()
+        .and_then(|frame| frame.pointer("/catchup/away_s"))
+        .and_then(serde_json::Value::as_i64)
+        .expect("the reclaim's report");
+    assert!(
+        away_s < 4,
+        "the report counted from the revived Linkdead, not from the drop: {away_s} s"
+    );
+}
+
+/// A designator as a frame prints it, read back (the fixture's names).
+fn y4_designator(word: &str) -> tacsim::arena::state::Designator {
+    use tacsim::arena::state::Designator;
+    if let Some(number) = word.strip_prefix('X') {
+        return Designator::Provisional(number.parse().expect("a provisional number"));
+    }
+    let mut letters = word.chars();
+    let team = match letters.next() {
+        Some('R') => Team::Red,
+        Some('B') => Team::Blue,
+        other => panic!("no side is lettered {other:?}"),
+    };
+    let slot = letters.fold(0_u16, |slot, letter| {
+        slot * 26 + (u16::from(u8::try_from(letter).expect("ASCII")) - u16::from(b'A') + 1)
+    });
+    Designator::Slot { team, slot }
+}
+
+/// The fixture's wire object, decoded into the arena's report.
+fn y4_decode(wire: &serde_json::Value) -> tacsim::arena::Catchup {
+    use serde_json::Value;
+    let int = |v: &Value, key: &str| v.get(key).and_then(Value::as_i64).expect("an integer");
+    let text = |v: &Value, key: &str| {
+        smol_str::SmolStr::new(v.get(key).and_then(Value::as_str).expect("a string"))
+    };
+    let cell = |v: &Value, key: &str| -> Option<(u16, u16)> {
+        let pair = v.get(key)?.as_array()?;
+        Some((
+            u16::try_from(pair.first()?.as_u64()?).ok()?,
+            u16::try_from(pair.get(1)?.as_u64()?).ok()?,
+        ))
+    };
+    let power = |v: &Value, key: &str| -> tacsim::arena::state::Power {
+        serde_json::from_value(v.get(key).cloned().unwrap_or_default()).expect("a power word")
+    };
+    let names = |key: &str| -> Vec<tacsim::arena::state::Designator> {
+        wire.get(key)
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .map(y4_designator)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let count = |key: &str| u32::try_from(int(wire, key)).expect("a count");
+    let words = |v: &Value| tacsim::arena::SectionWords {
+        condition: text(v, "condition"),
+        armour: int(v, "armour"),
+        internals: int(v, "internals"),
+    };
+    let list = |key: &str| {
+        wire.get(key)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    tacsim::arena::Catchup {
+        away_ms: int(wire, "away_s") * 1_000,
+        cell_then: cell(wire, "cell_then"),
+        cell_now: cell(wire, "cell_now"),
+        power_then: power(wire, "power_then"),
+        power_now: power(wire, "power_now"),
+        wreck: wire.get("wreck").and_then(Value::as_bool).expect("a flag"),
+        contacts_new: names("contacts_new"),
+        contacts_lost: names("contacts_lost"),
+        contacts_more: count("contacts_more"),
+        sections: list("sections")
+            .iter()
+            .map(|s| {
+                (
+                    text(s, "id"),
+                    words(s.get("then").expect("then")),
+                    words(s.get("now").expect("now")),
+                )
+            })
+            .collect(),
+        sections_more: count("sections_more"),
+        rounds_spent: list("rounds_spent")
+            .iter()
+            .map(|r| {
+                (
+                    text(r, "weapon"),
+                    u32::try_from(int(r, "rounds")).expect("rounds"),
+                )
+            })
+            .collect(),
+        rounds_more: count("rounds_more"),
+        machine: wire.get("machine").filter(|m| m.is_object()).map(|m| {
+            tacsim::arena::MachineWords {
+                state: text(m, "state"),
+                goal: cell(m, "goal"),
+                objective: m
+                    .get("objective")
+                    .and_then(Value::as_str)
+                    .map(smol_str::SmolStr::new),
+            }
+        }),
+    }
+}
+
+/// **The parity fixture is what the server sends and says** (16b cut Y.4):
+/// every case of the hand-written `catchup_lines.json`, put on the canonical
+/// scene's frame, comes out of `status_frame` as exactly the fixture's object,
+/// and `catchup_lines` says its lines — the Rust reader of the one file the TUI
+/// and the web are pinned to as well.
+#[test]
+fn y4_the_catch_up_fixture_is_the_wire_s_object_and_its_lines() {
+    let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+        "../../../web/src/lib/fixtures/cockpit/catchup_lines.json"
+    ))
+    .expect("catchup_lines.json is an array");
+    assert_eq!(cases.len(), 9);
+    for case in &cases {
+        let wire = case.get("catchup").expect("a catchup object");
+        let report = y4_decode(wire);
+        let lines: Vec<String> = case
+            .get("lines")
+            .and_then(serde_json::Value::as_array)
+            .map(|lines| {
+                lines
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let callsign = case
+            .get("callsign")
+            .and_then(serde_json::Value::as_str)
+            .map(y4_designator)
+            .expect("a callsign");
+        assert_eq!(cockpit::catchup_lines(callsign, &report), lines);
+        let mut frame = fixture::frame();
+        frame.catchup = Some(report);
+        let payload = cockpit::status_frame(fixture::MATCH, &frame);
+        assert_eq!(payload.get("catchup"), Some(wire), "the wire's own object");
+    }
 }

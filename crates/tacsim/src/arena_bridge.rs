@@ -126,6 +126,11 @@ pub const NOTICE_CATEGORY: &str = "arena";
 /// out a line carrying this tag, and the scrollback prints it as before (no
 /// renderer styles either tag). A span tag is on the wire already
 /// (`mush_proto::text::Span::tag`), so this is no protocol change.
+///
+/// **16b cut Y.4**: the catch-up block a reclaim's first frame carries
+/// ([`crate::match_::cockpit::catchup_lines`], one `Sys` line of several text
+/// lines, said before the frame's notices) carries it too, for the same reason:
+/// both rings compose it from the frame's `catchup` object.
 pub const NOTICE_SENTENCE_TAG: &str = "arena-notice";
 
 /// The payload the arena-egress re-entry carries. It is a token and not the
@@ -1628,6 +1633,14 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>, 
         // own `notices` array carries, so the line client and a panel read one
         // sentence.
         let lines = crate::match_::cockpit::notice_lines(&frame);
+        // **16b cut Y.4** (doc 07 §1.3 step 5): the catch-up report a reclaim
+        // left, as ONE block — `mush-ansi` splits a `Sys` at its line breaks and
+        // the web's line is `pre-wrap` — said before the frame's own notices,
+        // because it is about the time before them.
+        let catchup = frame
+            .catchup
+            .as_ref()
+            .map(|report| crate::match_::cockpit::catchup_lines(frame.callsign, report).join("\n"));
         // **16b cut D.1**: the hint's first two ends, read off this frame before
         // the mirror is written. `power != Off` is the arena confirming the
         // `STARTUP`; a `Refused` naming the same order is the arena clearing it,
@@ -1652,6 +1665,9 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>, 
             // said twice; the telling happens here, exactly once.
             let mut remembered = frame.clone();
             remembered.notices.clear();
+            // 16b cut Y.4: nor the catch-up, for the same reason — `STATUS` and
+            // `VIEW` must never re-say it.
+            remembered.catchup = None;
             registry.last_frames.insert(
                 pilot,
                 CockpitFrame {
@@ -1663,7 +1679,12 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>, 
         }
         // 16b cut B.1: tagged as the frame's own notices, so a panel ring that
         // takes the pilot's replies can leave these out — it composes them from
-        // the frame that follows (see `NOTICE_SENTENCE_TAG`).
+        // the frame that follows (see `NOTICE_SENTENCE_TAG`). 16b cut Y.4: the
+        // catch-up block likewise, first — both rings compose it from the
+        // frame's `catchup` object.
+        if let Some(block) = catchup {
+            ctx.out.sys_to_actor(pilot, NOTICE_SENTENCE_TAG, block);
+        }
         for line in lines {
             ctx.out.sys_to_actor(pilot, NOTICE_SENTENCE_TAG, line);
         }
