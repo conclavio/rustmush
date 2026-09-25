@@ -26,10 +26,11 @@
 #   * the lance lane (16b cut Z.1) asserts W8 alone — the span and the orders
 #     per commander per minute bounded, the tape equal to the script's orders
 #     and the opening round landed at any knob, and the span and the busiest
-#     minute equal to the squads a side only at the lane's defaults (seed 2350,
-#     TACSIM_LANCE_UNITS=24, TACSIM_LANCE_ARENA_S=120, jitter 0; off them the
-#     fight decides those two) — and prints its timing beside 12 ms and 20 ms,
-#     report-only;
+#     minute equal to the squads a side and (16b cut Z.2) at least two
+#     `order_released` lines from the script's release at the ninetieth arena
+#     second only at the lane's defaults (seed 2350, TACSIM_LANCE_UNITS=24,
+#     TACSIM_LANCE_ARENA_S=120, jitter 0; off them the fight decides those) —
+#     and prints its timing beside 12 ms and 20 ms, report-only;
 #   * the delta fails on any difference in the deterministic block, and on a
 #     timing figure more than 20 per cent slower on the host that blessed the
 #     file — a timing-only failure is re-run once before it is believed;

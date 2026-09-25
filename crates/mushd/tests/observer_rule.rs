@@ -1174,17 +1174,31 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // squad that does not exist all answer one byte-identical `No such squad.`
     // — a pilot who may not order learns nothing about the scope by naming a
     // contact, and nothing about the other side by naming its squads.
+    //
+    // **16b cut Z.2**: and so do the two squad roles and the release — a
+    // `SUPPORT` naming the other side's callsign is refused on the squad before
+    // the callsign is looked at, so it says nothing of whether `BA` flies — and
+    // no answer names a tank.
     let orders = [
         "ORDER red-1 ENGAGE BA",
         "ORDER red-1 ENGAGE ZZ",
         "ORDER blue-1 HOLD",
         "ORDER red-9 HOLD",
+        "ORDER red-1 SUPPORT BA",
+        "ORDER red-1 SCREEN 90",
+        "ORDER red-1 RELEASE",
     ];
     let mut answers: Vec<String> = Vec::new();
     for line in orders {
         let seen = ask(&mut ada, line, NO_SUCH_SQUAD).await;
+        names_nothing(&seen, red, blue, line);
         answers.push(seen.trim_start_matches(line).trim().to_owned());
     }
+    // The battery is one pilot typing fast: the session's flood bucket (ten
+    // lines a second, thirty to a burst) is what the three Z.2 lines above
+    // spent, and the later `STARTUP` / `HEADING` burst would otherwise meet
+    // `You're doing that too fast.` Half a second refills five lines.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     for (line, answer) in orders.into_iter().zip(answers.iter()) {
         assert_eq!(
             answer, NO_SUCH_SQUAD,

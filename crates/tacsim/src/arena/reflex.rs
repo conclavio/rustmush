@@ -221,6 +221,31 @@ const EXPOSURE_FLANK: u32 = 600;
 /// The rear.
 const EXPOSURE_REAR: u32 = 200;
 
+/// **Half the arc a screen covers**, millidegrees either side of its facing (16b
+/// cut Z.2; 16c N6): `Objective::Screen` locks and fires on a classified hostile
+/// whose plot bears inside this of `facing_mdeg`, and on nothing else.
+///
+/// Sixty degrees, so a 120° sector: wide enough that a tank crossing the front
+/// is met, narrow enough that a screen has a flank — a screen that saw all
+/// round would be a `Hold` that shoots, and the order would say nothing about
+/// where the squad is looking.
+pub const SCREEN_HALF_ARC_MDEG: u32 = 60_000;
+
+/// **How far a supporter may stray from its charge**, cells (16b cut Z.2; 16c
+/// N6): past this, measured to the supporter's own plot of the charge, the leash
+/// wins over the chase and the supporter drives back toward its station.
+///
+/// Fifteen, which is 150 m on the shipped ground: inside the `close` band of the
+/// stock cannon, so a supporter fights the same target its charge fights rather
+/// than one of its own a ridge away.
+pub const SUPPORT_LEASH_CELLS: u16 = 15;
+
+/// **The station a supporter keeps on its charge**, cells (16b cut Z.2; 16c N6):
+/// near, not on top. The station cell — projected back from the plot of the
+/// charge toward the supporter — is the goal until the unit stands inside this
+/// of the plot, and then it holds.
+pub const SUPPORT_STATION_CELLS: u16 = 5;
+
 // ---------------------------------------------------------------------------
 // The machine
 // ---------------------------------------------------------------------------
@@ -245,6 +270,12 @@ pub enum ReflexState {
     /// 4. **the waypoint walk** — `Arena::patrol_goal`, the arena pack's
     ///    graph, which is what `Patrol` was and still is when the three above
     ///    have nothing to say.
+    ///
+    /// **16b cut Z.2**: a machine under `Objective::Screen` stays here — parked,
+    /// faced onto the order's bearing — and fires from its tick's *stand*
+    /// without ever entering `Approach` or `Engage`, so a screening tick reads
+    /// `patrol` in the state distribution. So does a supporter holding its
+    /// station, or standing where it is because it cannot see its charge.
     Patrol,
     /// Closing on the hostile the utility score picked.
     Approach,
@@ -416,6 +447,29 @@ pub struct ReflexUnit {
     pub hunt: Option<(u16, u16)>,
 }
 
+impl ReflexUnit {
+    /// **What doctrine restores when an order stops steering** (16b cut N.2's
+    /// expiry, factored by 16b cut Z.2 so a pilot's `RELEASE` is the same
+    /// restoration and not a second one): the order, the goal, the route and the
+    /// target are dropped, so a patrol resumes the waypoint graph and an
+    /// engagement is re-chosen by the utility score.
+    ///
+    /// A `Withdraw` the **order** put the machine in is undone as well, but only
+    /// when `health_ok` — the unit's own health does not ask for one — otherwise
+    /// the machine would answer the end of an order by driving a wreck back into
+    /// the fight. So a released `Withdraw` does not keep driving to its entry
+    /// zone, and a hurt one keeps going.
+    pub fn drop_to_doctrine(&mut self, health_ok: bool) {
+        self.order = None;
+        self.goal = None;
+        self.route.clear();
+        self.target = None;
+        if self.state == ReflexState::Withdraw && health_ok {
+            self.state = ReflexState::Patrol;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Counters
 // ---------------------------------------------------------------------------
@@ -449,6 +503,9 @@ pub struct ReflexCounters {
     pub ordered: u32,
     /// **Orders that ran out** (16b cut N.2), one per unit dropped to doctrine.
     pub orders_expired: u32,
+    /// **Orders a pilot handed back** (16b cut Z.2; 16c Q44), one per unit a
+    /// `ReleaseOrder` dropped to doctrine — counted at apply, in pulse phase 2.
+    pub orders_released: u32,
     /// Ticks that ended in each state, in [`ReflexState::ALL`] order.
     pub in_state: [u32; 6],
     /// **Edges refused by the slope rule** (16b cut U.1; 16c `T-35`): every edge
@@ -474,6 +531,7 @@ impl ReflexCounters {
         self.shots = self.shots.saturating_add(other.shots);
         self.ordered = self.ordered.saturating_add(other.ordered);
         self.orders_expired = self.orders_expired.saturating_add(other.orders_expired);
+        self.orders_released = self.orders_released.saturating_add(other.orders_released);
         self.slope_refusals = self.slope_refusals.saturating_add(other.slope_refusals);
         for (mine, theirs) in self.in_state.iter_mut().zip(other.in_state.iter()) {
             *mine = mine.saturating_add(*theirs);
@@ -604,6 +662,21 @@ impl ReflexMemory {
     /// make the first order of a match the one that never lands.
     pub fn set_order(&mut self, unit: ObjId, order: StandingOrder) {
         self.units.entry(unit).or_default().order = Some(order);
+    }
+
+    /// **Drop one unit's machine to doctrine** (16b cut Z.2; 16c Q44): the
+    /// standing order, the goal, the route and the target are forgotten, and a
+    /// `Withdraw` becomes `Patrol` when `health_ok` — see
+    /// [`ReflexUnit::drop_to_doctrine`], which is the one way of doing it; the
+    /// expiry block and a pilot's `RELEASE` both come through it.
+    ///
+    /// `health_ok` is the caller's `reflex_health_permille(unit) >=
+    /// withdraw_permille`: the memory holds no arena and cannot read the hull. A
+    /// unit with no machine is left alone.
+    pub fn drop_to_doctrine(&mut self, unit: ObjId, health_ok: bool) {
+        if let Some(row) = self.units.get_mut(&unit) {
+            row.drop_to_doctrine(health_ok);
+        }
     }
 
     /// The order a unit is under, if any.
@@ -1228,20 +1301,15 @@ impl Arena {
         // score. A `Withdraw` the **order** put it in is undone as well, but only
         // when the unit's own health does not ask for one — otherwise the machine
         // would answer an expired order by driving a wreck back into the fight.
+        //
+        // **16b cut Z.2**: that restoration is `ReflexUnit::drop_to_doctrine`,
+        // the one way of dropping to doctrine, which a pilot's `RELEASE` shares.
         if let Some(standing) = row.order.as_ref()
             && standing.expired_at(t_ms)
         {
             let squad = standing.order.squad;
             let objective = standing.order.objective.as_str();
-            row.order = None;
-            row.goal = None;
-            row.route.clear();
-            row.target = None;
-            if row.state == ReflexState::Withdraw
-                && self.reflex_health_permille(id) >= memory.cfg.withdraw_permille
-            {
-                row.state = ReflexState::Patrol;
-            }
+            row.drop_to_doctrine(self.reflex_health_permille(id) >= memory.cfg.withdraw_permille);
             plan.expired = Some((squad, objective));
         }
         // The order this tick decides under, taken out of the row so the rest of
@@ -1270,6 +1338,20 @@ impl Arena {
             Some(order)
                 if matches!(order.objective, Objective::Advance { .. }) && unit.cannot_close() =>
             {
+                row.order = None;
+                plan.expired = Some((order.squad, order.objective.as_str()));
+                None
+            }
+            // **16b cut Z.2 (16c N6)**: a `Support` whose charge has left the
+            // arena, or whose charge this unit's own contact reads dead
+            // ([`Arena::contact_reads_dead`] — what the unit knows, never the
+            // charge's live wreck flag), is an order with nothing to keep station
+            // on. It ends for THIS unit through `B-41`'s route, beside AA.1's: one
+            // `order_expired` line, the squad marked, so a squad whose charge died
+            // drops to doctrine and its commander is told. A charge the unit
+            // merely cannot see is not this: it holds and fights where it stands
+            // (the leash block below).
+            Some(order) if self.support_charge_lost(id, &order) => {
                 row.order = None;
                 plan.expired = Some((order.squad, order.objective.as_str()));
                 None
@@ -1375,11 +1457,17 @@ impl Arena {
         // - `hold` and `advance` are **movement** orders: the squad does not pursue,
         //   so the target is dropped and `Approach`/`Engage` fall back to `Patrol`
         //   with the order's goal. A commander who wants the squad to fight orders
-        //   `engage`, which is the whole reason there are four objectives and not
+        //   `engage`, which is the whole reason there are four movement-and-fight
+        //   objectives (and, since 16b cut Z.2, two squad roles) and not
         //   two (an `advance` held by a machine that cannot close never reaches
         //   here: it ended above the power arms, 16b cut AA.1);
         // - `engage` changes nothing about the states and everything about the
         //   choice inside them: the utility score prefers the hinted contact.
+        //
+        // **16b cut Z.2 (16c N6)**: `screen` is a movement order in this sense —
+        // it never pursues, and its shooting is the `Patrol` arm's stand — and
+        // `support` is `engage`'s arm: the machine fights, preferring what its
+        // charge fights (`ordered_target`), under the leash below.
         if let Some(order) = order.as_ref() {
             match order.objective {
                 Objective::Withdraw => {
@@ -1394,7 +1482,7 @@ impl Arena {
                         row.last_plot = None;
                     }
                 }
-                Objective::Hold | Objective::Advance { .. } => {
+                Objective::Hold | Objective::Advance { .. } | Objective::Screen { .. } => {
                     if matches!(row.state, ReflexState::Approach | ReflexState::Engage) {
                         row.state = ReflexState::Patrol;
                         row.goal = None;
@@ -1402,7 +1490,7 @@ impl Arena {
                     }
                     row.target = None;
                 }
-                Objective::Engage { .. } => {}
+                Objective::Engage { .. } | Objective::Support { .. } => {}
             }
         }
 
@@ -1436,18 +1524,57 @@ impl Arena {
         // ---- the hostile edges ----
         //
         // 16b cut N.2: a movement order suppresses them entirely (see above), so an
-        // ordered squad walks past a contact rather than turning on it.
-        let may_pursue = !matches!(
-            order.as_ref().map(|order| order.objective),
-            Some(Objective::Hold | Objective::Advance { .. })
-        );
+        // ordered squad walks past a contact rather than turning on it. **16b cut
+        // Z.2**: so does a screen, which shoots from where it stands and never
+        // gives chase; a support pursues, under its leash.
+        //
+        // **The leash's reading, taken here** (16b cut Z.2; 16c N6): a supporter
+        // whose charge is not itself reads where its **own** contact on the
+        // charge last saw it — the plot, never the charge's live pose (doc 16
+        // §1, 16b cut F.3's rule once more). `None` is a supporter that cannot
+        // see its charge; the stand below fights for it. Read before the hostile
+        // edges so that a supporter the leash is about to override does not
+        // start a chase first: off the leash, or blind to its charge, the edges
+        // are not run at all, which is what the leash block would undo anyway —
+        // but undone on every tick it would throw the rejoining route away with
+        // the target the edge re-took.
+        let leash: Option<Option<SeenPose>> = match order.as_ref().map(|order| order.objective) {
+            Some(Objective::Support { of })
+                if of != id
+                    && matches!(
+                        row.state,
+                        ReflexState::Patrol | ReflexState::Approach | ReflexState::Engage
+                    ) =>
+            {
+                Some(
+                    self.contacts
+                        .of(id)
+                        .find(|(_, held)| held.target == of)
+                        .map(|(_, held)| held.seen_at),
+                )
+            }
+            _ => None,
+        };
+        let cell_cm = self.definition.terrain.cell_cm();
+        let leash_cm = u64::from(SUPPORT_LEASH_CELLS).saturating_mul(u64::from(cell_cm));
+        let station_cm = u64::from(SUPPORT_STATION_CELLS).saturating_mul(u64::from(cell_cm));
+        let off_leash = match leash {
+            Some(None) => true,
+            Some(Some(plot)) => plot.range_from(&unit.pose) > leash_cm,
+            None => false,
+        };
+        let may_pursue = !off_leash
+            && !matches!(
+                order.as_ref().map(|order| order.objective),
+                Some(Objective::Hold | Objective::Advance { .. } | Objective::Screen { .. })
+            );
         if may_pursue
             && matches!(
                 row.state,
                 ReflexState::Patrol | ReflexState::Approach | ReflexState::Engage
             )
         {
-            let prefer = self.ordered_target(id, order.as_ref());
+            let prefer = self.ordered_target(id, order.as_ref(), memory);
             match self.best_hostile(id, memory, health, prefer) {
                 Some(found) => {
                     if row.target != Some(found) {
@@ -1496,127 +1623,338 @@ impl Arena {
         // **16b cut E.1**: the three distances this tick fights at, computed once
         // from the unit, the doctrine and the order — see [`Ranges`] for what
         // each one is and why the doctrine band is applied after the order's cap.
-        let cell_cm = self.definition.terrain.cell_cm();
         let ranges = ranges(unit, cell_cm, &memory.cfg, order.as_ref());
         // **16b cut E.4**: the cell a `Withdraw` that stood and fought turned
         // onto. `Withdraw` clears `row.target` on entry and `withdraw_stand`
         // chooses its own candidate without writing one back, so the stand is the
-        // one plot this tick holds that `row.target` cannot name.
+        // one plot this tick holds that `row.target` cannot name. **16b cut
+        // Z.2**: a screen's stand and a blind supporter's write it the same way.
         let mut stood_cell: Option<(u16, u16)> = None;
-        match row.state {
-            ReflexState::Startup | ReflexState::Disabled => {}
-            ReflexState::Patrol => {
-                // 16b cut N.2: `advance` replaces the waypoint walk with the cell
-                // the commander named; `hold` parks where the unit stands. Both
-                // leave the waypoint the machine was walking to alone, so doctrine
-                // picks it up again at expiry rather than starting from nothing.
-                //
-                // **16b cut E.4**: but neither of the endgame's two clocks. A
-                // movement order is the head of `Patrol`'s list, and a commander
-                // who said *go there* is not answered at the order's expiry by a
-                // machine turning round for a plot it saw before the order, or
-                // finishing a crossing it had started before it: both goals are
-                // dropped on every ordered tick, and the hunt's wait restarts on
-                // each, so it is counted from the order's end and not through it
-                // (the order suppresses the hostile edges, so what the squad saw
-                // while it obeyed was never read by the clock anyway).
-                let movement = matches!(
-                    order.as_ref().map(|order| order.objective),
-                    Some(Objective::Advance { .. } | Objective::Hold)
-                );
-                if movement {
-                    row.last_plot = None;
-                    row.hunt = None;
-                    row.unheld_since_ms = Some(t_ms);
+
+        // ---- the leash (16b cut Z.2; 16c N6) ----
+        //
+        // A supporter whose charge is not itself, in `Patrol`, `Approach` or
+        // `Engage` (a hurt one in `Withdraw` goes home: the health edge outranks
+        // the order, as it does `engage`'s). Two of its three cases take the tick
+        // over and skip the state's own arm below; the third falls through.
+        let mut leashed = false;
+        // Case (a)'s two readers: blind to the charge, or past the leash with no
+        // way of closing it.
+        let stands = match leash {
+            Some(None) => true,
+            Some(Some(_)) => off_leash && unit.cannot_close(),
+            None => false,
+        };
+        match leash {
+            // (a) **A supporter that cannot see its charge holds where it stands
+            // and fights from there.** It does not go looking — the charge's
+            // position is its own plot, and it has none — and it does not stand
+            // idle: the stand below takes the best classified hostile inside
+            // `release_cm` with a line, over a full arc.
+            //
+            // **And a supporter past its leash that cannot close** (16b cut Z.2's
+            // review; the `B-76` class, as 16b cut AA.1 closed it for `Advance`):
+            // a destroyed engine, or a hull with no speed
+            // ([`UnitState::cannot_close`]), will never rejoin, so case (b)'s
+            // rejoining leg — which fires nothing — would hold it silent for the
+            // order's whole life while a hostile shot it at point blank, and being
+            // armed it would hold its side up. It takes this same stand instead:
+            // where it is, over a full arc, preferring its charge's designation
+            // (`ordered_target`) inside `release_cm`, which is what an immobile
+            // `Approach` does as well (`cannot_close` counts as arrived there).
+            //
+            // The two are one arm through `stands`, and (b) below never sees them.
+            _ if stands => {
+                leashed = true;
+                if matches!(row.state, ReflexState::Approach | ReflexState::Engage) {
+                    row.state = ReflexState::Patrol;
                 }
-                match order.as_ref().map(|order| order.objective) {
-                    Some(Objective::Advance { to }) => {
-                        if row.goal != Some(to) {
-                            row.goal = Some(to);
-                            row.route.clear();
-                        }
-                    }
-                    Some(Objective::Hold) => {
-                        row.goal = here;
-                        row.route.clear();
-                        plan.speed_cms = Some(0);
-                    }
-                    // **16b cut E.4 (16c `B-04`)**: with no movement order the
-                    // goal is the search, then the hunt, then the waypoint walk.
-                    // Each answers `true` when it has taken the goal, so the one
-                    // below it is not asked; a movement order above never reaches
-                    // here, and has just cleared both clocks' goals, so neither
-                    // survives one.
-                    _ => {
-                        if !self.search_goal(t_ms, &mut row, here, &memory.cfg)
-                            && !self.hunt_goal(id, t_ms, &mut row, here, &memory.cfg)
-                        {
-                            self.patrol_goal(id, &mut row, here);
-                        }
-                    }
+                row.target = None;
+                row.goal = here;
+                row.route.clear();
+                plan.speed_cms = Some(0);
+                row.last_plot = None;
+                row.hunt = None;
+                row.unheld_since_ms = Some(t_ms);
+                if let Some((contact, plot)) =
+                    self.stand(id, memory, health, &ranges, None, order.as_ref(), counters)
+                {
+                    stood_cell = plot.cell(&self.definition.terrain);
+                    plan.heading_mdeg = Some(plot.bearing_from(&unit.pose));
+                    self.engage_orders(id, contact, order.as_ref(), &ranges, t_ms, &mut plan);
                 }
             }
-            // **16b cut F.3**: every range, goal and heading below is read off the
-            // unit's **own contact** — the plot, where its sensors or its mesh
-            // last saw the target — and never off the target's live pose. A
-            // reflex unit drives to where it last saw something, which is what a
-            // crew does; before this cut it closed on a tank it could not see,
-            // through a wall, with perfect knowledge, for the whole time to live.
-            //
-            // `reflex_has_line` is deliberately **not** on the plot: it is the
-            // same trace the round will take, so asking it about the live target
-            // is asking "would this shot arrive", which is physics and not
-            // knowledge.
-            //
-            // **16b cut E.1** gave this arm three cases instead of two, and
-            // priced all of them off [`Ranges`]:
-            //
-            // * **inside `engage_cm` with a line** — `Engage`, and
-            //   `engage_orders` on this same tick. The first shot is therefore
-            //   fired *still rolling*: `speed 0` is an order and a stock tank
-            //   takes 7.5 s to obey it. That is deliberate — a crew with a line
-            //   shoots — and it is why the duel test asserts the **ordered**
-            //   speed at the first shot and not the actual one;
-            // * **inside `engage_cm` with no line** — the goal is the plot's own
-            //   cell (16c's Q9: *it closes on the plot*), and the tick after it
-            //   has moved the trace is taken again;
-            // * **outside `engage_cm`** — the stand-off cell, and **no trace**.
-            //   Before this cut a trace was paid at every range, including the
-            //   ones at which nothing could be shot at anyway.
-            //
-            // **16b cut AA.1 (16c `B-76`)** moved the edge the three cases are
-            // split at for one kind of machine:
-            //
-            // * **a machine that cannot close** ([`UnitState::cannot_close`]) —
-            //   the edge is `release_cm` and not `engage_cm`, so it enters
-            //   `Engage` wherever it stands inside the reach it may fire across.
-            //   Before this cut a tank whose engine was killed between the two
-            //   edges re-planned a stand-off cell it could not drive to on every
-            //   tick and never fired again, and being armed it held its side up
-            //   for the rest of the match.
-            ReflexState::Approach => {
-                if let Some((contact, target)) = row.target {
-                    let plot = self.plot_of(id, contact);
-                    let range = plot.map_or(u64::MAX, |plot| plot.range_from(&unit.pose));
-                    // **16b cut AA.1 (16c `B-76`)**: a machine that cannot close
-                    // has nowhere to close to. Its edge into `Engage` is the whole
-                    // of the reach it may fire across, `release_cm` — the same
-                    // ceiling `engage_orders` holds and the same edge `Engage`
-                    // gives the band up at, so it can neither stand outside a
-                    // range it could shoot from nor oscillate. A machine that CAN
-                    // close still stops at `engage_cm` and holds its fire through
-                    // the outer three tenths: firing on the move while closing is
-                    // not built (16b row E).
-                    let close_edge = if unit.cannot_close() {
-                        ranges.release_cm
-                    } else {
-                        ranges.engage_cm
-                    };
-                    if ranges.limit_cm != 0 && range <= close_edge.max(1) {
-                        if self.reflex_has_line(id, target, counters) {
-                            row.state = ReflexState::Engage;
-                            row.goal = None;
+            // (b) **Past the leash, the leash wins over the chase**: back to
+            // `Patrol` with the target dropped, the goal the station cell off the
+            // supporter's own plot of its charge. **A rejoining supporter fires
+            // nothing until it is back inside the leash** — the state arm, whose
+            // `engage_orders` is the only trigger it has, is skipped — which is
+            // a recorded residual of the cut (a supporter that fires while it
+            // drives is not built, as `Approach`'s is not).
+            Some(Some(plot)) if off_leash => {
+                leashed = true;
+                row.state = ReflexState::Patrol;
+                row.target = None;
+                row.last_plot = None;
+                row.hunt = None;
+                row.unheld_since_ms = Some(t_ms);
+                let goal = self.stand_off_cell(id, &plot, station_cm).or(here);
+                if row.goal != goal {
+                    row.goal = goal;
+                    row.route.clear();
+                }
+            }
+            // (c) inside the leash: the state's own arm, with the charge's
+            // designation preferred (`ordered_target`) and `Patrol`'s station.
+            // (`Some(None)` always `stands`, and is here only for the match.)
+            Some(Some(_) | None) | None => {}
+        }
+        // The charge's plot when the supporter is inside its leash, for the
+        // `Patrol` arm's station.
+        let station_on = if leashed { None } else { leash.flatten() };
+        if !leashed {
+            match row.state {
+                ReflexState::Startup | ReflexState::Disabled => {}
+                ReflexState::Patrol => {
+                    // 16b cut N.2: `advance` replaces the waypoint walk with the cell
+                    // the commander named; `hold` parks where the unit stands. Both
+                    // leave the waypoint the machine was walking to alone, so doctrine
+                    // picks it up again at expiry rather than starting from nothing.
+                    //
+                    // **16b cut E.4**: but neither of the endgame's two clocks. A
+                    // movement order is the head of `Patrol`'s list, and a commander
+                    // who said *go there* is not answered at the order's expiry by a
+                    // machine turning round for a plot it saw before the order, or
+                    // finishing a crossing it had started before it: both goals are
+                    // dropped on every ordered tick, and the hunt's wait restarts on
+                    // each, so it is counted from the order's end and not through it
+                    // (the order suppresses the hostile edges, so what the squad saw
+                    // while it obeyed was never read by the clock anyway).
+                    //
+                    // **16b cut Z.2**: a screen is a movement order in exactly this
+                    // sense, and so is a supporter keeping station on a charge it can
+                    // see — its goal is the station, not a plot of its own or the far
+                    // zone.
+                    let movement = matches!(
+                        order.as_ref().map(|order| order.objective),
+                        Some(
+                            Objective::Advance { .. } | Objective::Hold | Objective::Screen { .. }
+                        )
+                    ) || station_on.is_some();
+                    if movement {
+                        row.last_plot = None;
+                        row.hunt = None;
+                        row.unheld_since_ms = Some(t_ms);
+                    }
+                    match order.as_ref().map(|order| order.objective) {
+                        Some(Objective::Advance { to }) => {
+                            if row.goal != Some(to) {
+                                row.goal = Some(to);
+                                row.route.clear();
+                            }
+                        }
+                        Some(Objective::Hold) => {
+                            row.goal = here;
                             row.route.clear();
+                            plan.speed_cms = Some(0);
+                        }
+                        // **16b cut Z.2 (16c N6): the screen.** Parked where it
+                        // stands and faced onto the order's bearing, and the stand
+                        // takes the best classified hostile inside the arc and inside
+                        // `release_cm` with a line: turned onto it, locked, and fired
+                        // on unless the order holds fire (`engage_orders` honours
+                        // `hold_fire`). The machine never leaves `Patrol` for it and
+                        // never moves for it.
+                        Some(Objective::Screen { facing_mdeg }) => {
+                            row.goal = here;
+                            row.route.clear();
+                            plan.speed_cms = Some(0);
+                            plan.heading_mdeg = Some(facing_mdeg % 360_000);
+                            if let Some((contact, plot)) = self.stand(
+                                id,
+                                memory,
+                                health,
+                                &ranges,
+                                Some((facing_mdeg, SCREEN_HALF_ARC_MDEG)),
+                                order.as_ref(),
+                                counters,
+                            ) {
+                                stood_cell = plot.cell(&self.definition.terrain);
+                                plan.heading_mdeg = Some(plot.bearing_from(&unit.pose));
+                                self.engage_orders(
+                                    id,
+                                    contact,
+                                    order.as_ref(),
+                                    &ranges,
+                                    t_ms,
+                                    &mut plan,
+                                );
+                            }
+                        }
+                        // **16b cut Z.2 (16c N6): a supporter idle inside its leash
+                        // keeps station.** The station cell — `SUPPORT_STATION_CELLS`
+                        // back from its own plot of the charge toward itself — is the
+                        // goal until the unit stands inside that range of the plot,
+                        // and then it holds. The station is what is reached, not the
+                        // leash's edge: a hold at the first tick inside the leash
+                        // would stop the supporter there for good, because `follow`
+                        // runs only when no speed is ordered.
+                        //
+                        // One step more than the station cell: `follow` stops within
+                        // `ARRIVE_CELLS` of a goal — and brakes to do it — so a unit
+                        // that has arrived at the station cell may still stand a cell
+                        // or so outside the station range, where the station cell
+                        // would hold it for ever. Arrived there and still outside, it
+                        // closes on the plot's own cell, which `follow` brakes short
+                        // of, and the first tick inside the range holds it.
+                        Some(Objective::Support { .. }) if station_on.is_some() => {
+                            if let Some(plot) = station_on {
+                                if plot.within_cm(&unit.pose, station_cm) {
+                                    row.goal = here;
+                                    row.route.clear();
+                                    plan.speed_cms = Some(0);
+                                } else {
+                                    let station = self.stand_off_cell(id, &plot, station_cm);
+                                    let at_station = match (here, station) {
+                                        (Some(here), Some(cell)) => {
+                                            here.0.abs_diff(cell.0).max(here.1.abs_diff(cell.1))
+                                                <= ARRIVE_CELLS
+                                        }
+                                        _ => false,
+                                    };
+                                    let goal = if at_station {
+                                        plot.cell(&self.definition.terrain).or(station)
+                                    } else {
+                                        station
+                                    }
+                                    .or(here);
+                                    if row.goal != goal {
+                                        row.goal = goal;
+                                        row.route.clear();
+                                    }
+                                }
+                            }
+                        }
+                        // **16b cut E.4 (16c `B-04`)**: with no movement order the
+                        // goal is the search, then the hunt, then the waypoint walk.
+                        // Each answers `true` when it has taken the goal, so the one
+                        // below it is not asked; a movement order above never reaches
+                        // here, and has just cleared both clocks' goals, so neither
+                        // survives one.
+                        _ => {
+                            if !self.search_goal(t_ms, &mut row, here, &memory.cfg)
+                                && !self.hunt_goal(id, t_ms, &mut row, here, &memory.cfg)
+                            {
+                                self.patrol_goal(id, &mut row, here);
+                            }
+                        }
+                    }
+                }
+                // **16b cut F.3**: every range, goal and heading below is read off the
+                // unit's **own contact** — the plot, where its sensors or its mesh
+                // last saw the target — and never off the target's live pose. A
+                // reflex unit drives to where it last saw something, which is what a
+                // crew does; before this cut it closed on a tank it could not see,
+                // through a wall, with perfect knowledge, for the whole time to live.
+                //
+                // `reflex_has_line` is deliberately **not** on the plot: it is the
+                // same trace the round will take, so asking it about the live target
+                // is asking "would this shot arrive", which is physics and not
+                // knowledge.
+                //
+                // **16b cut E.1** gave this arm three cases instead of two, and
+                // priced all of them off [`Ranges`]:
+                //
+                // * **inside `engage_cm` with a line** — `Engage`, and
+                //   `engage_orders` on this same tick. The first shot is therefore
+                //   fired *still rolling*: `speed 0` is an order and a stock tank
+                //   takes 7.5 s to obey it. That is deliberate — a crew with a line
+                //   shoots — and it is why the duel test asserts the **ordered**
+                //   speed at the first shot and not the actual one;
+                // * **inside `engage_cm` with no line** — the goal is the plot's own
+                //   cell (16c's Q9: *it closes on the plot*), and the tick after it
+                //   has moved the trace is taken again;
+                // * **outside `engage_cm`** — the stand-off cell, and **no trace**.
+                //   Before this cut a trace was paid at every range, including the
+                //   ones at which nothing could be shot at anyway.
+                //
+                // **16b cut AA.1 (16c `B-76`)** moved the edge the three cases are
+                // split at for one kind of machine:
+                //
+                // * **a machine that cannot close** ([`UnitState::cannot_close`]) —
+                //   the edge is `release_cm` and not `engage_cm`, so it enters
+                //   `Engage` wherever it stands inside the reach it may fire across.
+                //   Before this cut a tank whose engine was killed between the two
+                //   edges re-planned a stand-off cell it could not drive to on every
+                //   tick and never fired again, and being armed it held its side up
+                //   for the rest of the match.
+                ReflexState::Approach => {
+                    if let Some((contact, target)) = row.target {
+                        let plot = self.plot_of(id, contact);
+                        let range = plot.map_or(u64::MAX, |plot| plot.range_from(&unit.pose));
+                        // **16b cut AA.1 (16c `B-76`)**: a machine that cannot close
+                        // has nowhere to close to. Its edge into `Engage` is the whole
+                        // of the reach it may fire across, `release_cm` — the same
+                        // ceiling `engage_orders` holds and the same edge `Engage`
+                        // gives the band up at, so it can neither stand outside a
+                        // range it could shoot from nor oscillate. A machine that CAN
+                        // close still stops at `engage_cm` and holds its fire through
+                        // the outer three tenths: firing on the move while closing is
+                        // not built (16b row E).
+                        let close_edge = if unit.cannot_close() {
+                            ranges.release_cm
+                        } else {
+                            ranges.engage_cm
+                        };
+                        if ranges.limit_cm != 0 && range <= close_edge.max(1) {
+                            if self.reflex_has_line(id, target, counters) {
+                                row.state = ReflexState::Engage;
+                                row.goal = None;
+                                row.route.clear();
+                                self.engage_orders(
+                                    id,
+                                    contact,
+                                    order.as_ref(),
+                                    &ranges,
+                                    t_ms,
+                                    &mut plan,
+                                );
+                            } else {
+                                row.goal = plot
+                                    .and_then(|plot| plot.cell(&self.definition.terrain))
+                                    .or(here);
+                            }
+                        } else {
+                            let want =
+                                stand_off_want(ranges.engage_cm, u64::from(cell_cm.max(1)), range);
+                            row.goal = plot
+                                .and_then(|plot| self.stand_off_cell(id, &plot, want))
+                                .or(here);
+                        }
+                    }
+                }
+                ReflexState::Engage => {
+                    if let Some((contact, _)) = row.target {
+                        let plot = self.plot_of(id, contact);
+                        let range = plot.map_or(u64::MAX, |plot| plot.range_from(&unit.pose));
+                        // **16b cut E.1**: the edge out is `release_cm`, the whole of
+                        // the allowed reach, and `engage_cm` is seven tenths of it —
+                        // so there is three tenths of hysteresis between closing and
+                        // holding, under every order. Before this cut both edges read
+                        // one number and neither could ever fire (16c `T-47`).
+                        if ranges.limit_cm == 0 || range > ranges.release_cm {
+                            row.state = ReflexState::Approach;
+                            let want =
+                                stand_off_want(ranges.engage_cm, u64::from(cell_cm.max(1)), range);
+                            row.goal = plot
+                                .and_then(|plot| self.stand_off_cell(id, &plot, want))
+                                .or(here);
+                        } else {
+                            // Holding the band: stop, turn onto the plot, shoot.
+                            row.goal = here;
+                            row.route.clear();
+                            plan.speed_cms = Some(0);
+                            plan.heading_mdeg = plot.map(|plot| plot.bearing_from(&unit.pose));
                             self.engage_orders(
                                 id,
                                 contact,
@@ -1625,140 +1963,104 @@ impl Arena {
                                 t_ms,
                                 &mut plan,
                             );
-                        } else {
-                            row.goal = plot
-                                .and_then(|plot| plot.cell(&self.definition.terrain))
-                                .or(here);
                         }
-                    } else {
-                        let want =
-                            stand_off_want(ranges.engage_cm, u64::from(cell_cm.max(1)), range);
-                        row.goal = plot
-                            .and_then(|plot| self.stand_off_cell(id, &plot, want))
-                            .or(here);
                     }
                 }
-            }
-            ReflexState::Engage => {
-                if let Some((contact, _)) = row.target {
-                    let plot = self.plot_of(id, contact);
-                    let range = plot.map_or(u64::MAX, |plot| plot.range_from(&unit.pose));
-                    // **16b cut E.1**: the edge out is `release_cm`, the whole of
-                    // the allowed reach, and `engage_cm` is seven tenths of it —
-                    // so there is three tenths of hysteresis between closing and
-                    // holding, under every order. Before this cut both edges read
-                    // one number and neither could ever fire (16c `T-47`).
-                    if ranges.limit_cm == 0 || range > ranges.release_cm {
-                        row.state = ReflexState::Approach;
-                        let want =
-                            stand_off_want(ranges.engage_cm, u64::from(cell_cm.max(1)), range);
-                        row.goal = plot
-                            .and_then(|plot| self.stand_off_cell(id, &plot, want))
-                            .or(here);
-                    } else {
-                        // Holding the band: stop, turn onto the plot, shoot.
-                        row.goal = here;
-                        row.route.clear();
-                        plan.speed_cms = Some(0);
-                        plan.heading_mdeg = plot.map(|plot| plot.bearing_from(&unit.pose));
-                        self.engage_orders(id, contact, order.as_ref(), &ranges, t_ms, &mut plan);
+                // **16b cut Q.7**: `Withdraw` is no longer terminal. It has two new
+                // edges inside it and one out of it, and none of them is a state flip
+                // on a live line — see [`ReflexUnit::stand_until_ms`] for why.
+                ReflexState::Withdraw => {
+                    if row.goal.is_none() {
+                        row.goal = self.entry_cell(id).or(here);
                     }
-                }
-            }
-            // **16b cut Q.7**: `Withdraw` is no longer terminal. It has two new
-            // edges inside it and one out of it, and none of them is a state flip
-            // on a live line — see [`ReflexUnit::stand_until_ms`] for why.
-            ReflexState::Withdraw => {
-                if row.goal.is_none() {
-                    row.goal = self.entry_cell(id).or(here);
-                }
-                // **16b cut E.1**: whether it is home, computed once here and
-                // read twice — the stand's ceiling is `release_cm` once it has
-                // arrived and `stand_cm` while it is still running, and the
-                // rally below asks the same question.
-                //
-                // **16b cut AA.1 (16c `B-76`)**: a machine that cannot move is
-                // home wherever it is — the argument `withdraw_stand`'s doc
-                // makes for a unit with no goal at all ("there is no home to run
-                // to, which is the arrived argument exactly") holds word for
-                // word for one that cannot reach it. Both readers take it, on
-                // purpose: the stand's ceiling is `release_cm` at any health, so
-                // a hurt immobile tank shoots back at anything with a line inside
-                // it instead of being parked in the `close` band; and the rally
-                // clock runs for it once nothing hostile is held, so it rallies
-                // once like a machine that is home and then fights to the end.
-                let arrived = unit.cannot_close()
-                    || match (here, row.goal) {
-                        (Some(here), Some(goal)) => {
-                            here.0.abs_diff(goal.0).max(here.1.abs_diff(goal.1)) <= ARRIVE_CELLS
-                        }
-                        (_, None) => true,
-                        _ => false,
-                    };
-                // (a) **cornered**. A hostile it holds, classified, inside the
-                // reach its state and its order allow it, with a line: it stops
-                // where it is, turns onto the plot and shoots — **without leaving
-                // `Withdraw` and without touching the goal or the route**, so the
-                // run home resumes from where it stopped rather than from a fresh
-                // search. A tank with nothing to fire, or one told to hold its
-                // fire, is never cornered: see [`Arena::withdraw_stand`].
-                let cornered = self.withdraw_stand(
-                    id,
-                    memory,
-                    health,
-                    arrived,
-                    &ranges,
-                    order.as_ref(),
-                    counters,
-                );
-                if let Some((contact, plot)) = cornered {
-                    stood_cell = plot.cell(&self.definition.terrain);
-                    row.stand_until_ms = Some(t_ms.saturating_add(
-                        REFLEX_STAND_TICKS.saturating_mul(i64::from(memory.cfg.decide_ms)),
-                    ));
-                    row.quiet_since_ms = None;
-                    plan.speed_cms = Some(0);
-                    plan.heading_mdeg = Some(plot.bearing_from(&unit.pose));
-                    self.engage_orders(id, contact, order.as_ref(), &ranges, t_ms, &mut plan);
-                } else if row.stand_until_ms.is_some_and(|until| t_ms < until) {
-                    // The dwell: the line has gone for the moment, and a tank
-                    // that turned its back on the last three seconds of it would
-                    // be turning round again on the next tick.
-                    row.quiet_since_ms = None;
-                    plan.speed_cms = Some(0);
-                } else {
-                    row.stand_until_ms = None;
-                    // (b) **rally**. Home (or with nowhere to go) and with nothing
-                    // hostile on the board for `rally_ms` of arena time: back to
-                    // `Patrol`, once. A unit with nothing to fire never rallies —
-                    // it has no fight to come back to.
+                    // **16b cut E.1**: whether it is home, computed once here and
+                    // read twice — the stand's ceiling is `release_cm` once it has
+                    // arrived and `stand_cm` while it is still running, and the
+                    // rally below asks the same question.
                     //
-                    // **16b cut E.2 (16c `B-40`)**: and neither does a unit a
-                    // commander has told to break off. The rally is doctrine's
-                    // own answer to "the board is quiet"; under a live
-                    // `Objective::Withdraw` the arm at the top of this function
-                    // puts the machine straight back into `Withdraw` on the very
-                    // next tick and throws its route away with it, so what the
-                    // rally bought was one lost route per `rally_ms` for the
-                    // order's whole life. The clock is not merely ignored, it is
-                    // held at `None`: see [`ReflexUnit::quiet_since_ms`]. When
-                    // the order expires the expiry block above returns a healthy
-                    // unit to `Patrol` at once, and a hurt one starts its quiet
-                    // from that tick.
-                    let ordered_home = matches!(
-                        order.as_ref().map(|order| order.objective),
-                        Some(Objective::Withdraw)
+                    // **16b cut AA.1 (16c `B-76`)**: a machine that cannot move is
+                    // home wherever it is — the argument `withdraw_stand`'s doc
+                    // makes for a unit with no goal at all ("there is no home to run
+                    // to, which is the arrived argument exactly") holds word for
+                    // word for one that cannot reach it. Both readers take it, on
+                    // purpose: the stand's ceiling is `release_cm` at any health, so
+                    // a hurt immobile tank shoots back at anything with a line inside
+                    // it instead of being parked in the `close` band; and the rally
+                    // clock runs for it once nothing hostile is held, so it rallies
+                    // once like a machine that is home and then fights to the end.
+                    let arrived = unit.cannot_close()
+                        || match (here, row.goal) {
+                            (Some(here), Some(goal)) => {
+                                here.0.abs_diff(goal.0).max(here.1.abs_diff(goal.1)) <= ARRIVE_CELLS
+                            }
+                            (_, None) => true,
+                            _ => false,
+                        };
+                    // (a) **cornered**. A hostile it holds, classified, inside the
+                    // reach its state and its order allow it, with a line: it stops
+                    // where it is, turns onto the plot and shoots — **without leaving
+                    // `Withdraw` and without touching the goal or the route**, so the
+                    // run home resumes from where it stopped rather than from a fresh
+                    // search. A tank with nothing to fire, or one told to hold its
+                    // fire, is never cornered: see [`Arena::withdraw_stand`].
+                    let cornered = self.withdraw_stand(
+                        id,
+                        memory,
+                        health,
+                        arrived,
+                        &ranges,
+                        order.as_ref(),
+                        counters,
                     );
-                    if self.holds_a_hostile(id) || !arrived || dry || ordered_home {
+                    if let Some((contact, plot)) = cornered {
+                        stood_cell = plot.cell(&self.definition.terrain);
+                        row.stand_until_ms = Some(t_ms.saturating_add(
+                            REFLEX_STAND_TICKS.saturating_mul(i64::from(memory.cfg.decide_ms)),
+                        ));
                         row.quiet_since_ms = None;
+                        plan.speed_cms = Some(0);
+                        plan.heading_mdeg = Some(plot.bearing_from(&unit.pose));
+                        self.engage_orders(id, contact, order.as_ref(), &ranges, t_ms, &mut plan);
+                    } else if row.stand_until_ms.is_some_and(|until| t_ms < until) {
+                        // The dwell: the line has gone for the moment, and a tank
+                        // that turned its back on the last three seconds of it would
+                        // be turning round again on the next tick.
+                        row.quiet_since_ms = None;
+                        plan.speed_cms = Some(0);
                     } else {
-                        let since = *row.quiet_since_ms.get_or_insert(t_ms);
-                        if t_ms.saturating_sub(since) >= i64::from(memory.cfg.rally_ms) {
-                            row.state = ReflexState::Patrol;
-                            row.rallied = true;
-                            row.goal = None;
-                            row.route.clear();
+                        row.stand_until_ms = None;
+                        // (b) **rally**. Home (or with nowhere to go) and with nothing
+                        // hostile on the board for `rally_ms` of arena time: back to
+                        // `Patrol`, once. A unit with nothing to fire never rallies —
+                        // it has no fight to come back to.
+                        //
+                        // **16b cut E.2 (16c `B-40`)**: and neither does a unit a
+                        // commander has told to break off. The rally is doctrine's
+                        // own answer to "the board is quiet"; under a live
+                        // `Objective::Withdraw` the arm at the top of this function
+                        // puts the machine straight back into `Withdraw` on the very
+                        // next tick and throws its route away with it, so what the
+                        // rally bought was one lost route per `rally_ms` for the
+                        // order's whole life. The clock is not merely ignored, it is
+                        // held at `None`: see [`ReflexUnit::quiet_since_ms`]. When
+                        // the order expires the expiry block above returns a healthy
+                        // unit to `Patrol` at once, and a hurt one starts its quiet
+                        // from that tick.
+                        let ordered_home = matches!(
+                            order.as_ref().map(|order| order.objective),
+                            Some(Objective::Withdraw)
+                        );
+                        if self.holds_a_hostile(id) || !arrived || dry || ordered_home {
                             row.quiet_since_ms = None;
+                        } else {
+                            let since = *row.quiet_since_ms.get_or_insert(t_ms);
+                            if t_ms.saturating_sub(since) >= i64::from(memory.cfg.rally_ms) {
+                                row.state = ReflexState::Patrol;
+                                row.rallied = true;
+                                row.goal = None;
+                                row.route.clear();
+                                row.quiet_since_ms = None;
+                            }
                         }
                     }
                 }
@@ -2180,6 +2482,78 @@ impl Arena {
         Some((contact, plot))
     }
 
+    /// **A stand: what a unit that will not move fights from where it is** (16b
+    /// cut Z.2; 16c N6) — a screen over its arc, and a supporter that cannot see
+    /// its charge over a full one — and the plot to turn onto.
+    ///
+    /// [`Arena::withdraw_stand`]'s shape: `None` for a platform with nothing left
+    /// to fire ([`is_dry`]); otherwise the utility score's own best classified
+    /// hostile ([`Arena::best_hostile_where`], the one candidate loop), **restricted
+    /// to** contacts whose plot lies inside `ranges.release_cm` — the ceiling
+    /// [`Arena::engage_orders`] fires out to, so a stand never turns onto a
+    /// hostile it may not shoot — and, when `sector` is `Some((facing, half))`,
+    /// whose plot bears within `half` of `facing` (modulo a full turn); then one
+    /// line trace, paid only for the one candidate. The order's own preference
+    /// ([`Arena::ordered_target`]) wins inside the restriction exactly as it does
+    /// in `Approach`.
+    ///
+    /// `hold_fire` is deliberately **not** asked here, where `withdraw_stand`
+    /// asks it: a stand does not stop a tank in front of a gun (a screen or a
+    /// blind supporter is already stopped by its order), so a screen holding fire
+    /// still turns and locks — [`Arena::engage_orders`] is what keeps the
+    /// trigger still.
+    #[allow(clippy::too_many_arguments)]
+    fn stand(
+        &self,
+        id: ObjId,
+        memory: &ReflexMemory,
+        health_permille: u32,
+        ranges: &Ranges,
+        sector: Option<(u32, u32)>,
+        order: Option<&Order>,
+        counters: &mut ReflexCounters,
+    ) -> Option<(ContactId, SeenPose)> {
+        let unit = self.unit(id)?;
+        if is_dry(unit) {
+            return None;
+        }
+        let ceiling = ranges.release_cm.max(1);
+        let prefer = self.ordered_target(id, order, memory);
+        let (contact, target) =
+            self.best_hostile_where(id, memory, health_permille, prefer, |plot| {
+                plot.within_cm(&unit.pose, ceiling)
+                    && sector.is_none_or(|(facing, half)| {
+                        arc_between(plot.bearing_from(&unit.pose), facing) <= half
+                    })
+            })?;
+        let plot = self.plot_of(id, contact)?;
+        if !self.reflex_has_line(id, target, counters) {
+            return None;
+        }
+        Some((contact, plot))
+    }
+
+    /// **Whether a `Support` order has lost its charge for this unit** (16b cut
+    /// Z.2; 16c N6): the charge has left the arena, or this unit's **own**
+    /// contact on it reads dead ([`Arena::contact_reads_dead`] — what the unit
+    /// knows, never the charge's live wreck flag). A self-charge, and every other
+    /// objective, answers `false`; so does a charge the unit merely cannot see.
+    fn support_charge_lost(&self, id: ObjId, order: &Order) -> bool {
+        let Objective::Support { of } = order.objective else {
+            return false;
+        };
+        if of == id {
+            return false;
+        }
+        if self.unit(of).is_none() {
+            return true;
+        }
+        self.contacts
+            .of(id)
+            .find(|(_, held)| held.target == of)
+            .is_some_and(|(_, held)| self.contact_reads_dead(held))
+    }
+
     /// **Whether this platform holds any live hostile at all** (16b cut Q.7) —
     /// the question `Withdraw`'s rally asks, and the widest reading of it: any
     /// classified contact of another side whose unit is not a wreck, at any range
@@ -2219,8 +2593,51 @@ impl Arena {
     /// A `match` and not `unwrap_or(self.squad_of(id)?.commander)`: that
     /// argument's `?` is eager, and would drop a pilot's hint on a unit that is in
     /// no squad before the issuer were ever looked at.
-    fn ordered_target(&self, id: ObjId, order: Option<&Order>) -> Option<ObjId> {
+    ///
+    /// # A support prefers what its charge is fighting (16b cut Z.2; 16c N6)
+    ///
+    /// Under `Objective::Support { of }` with `of` another unit, **the charge's
+    /// own designation** is asked first, before the hint: a charge under the
+    /// controller answers its machine's target, read off `memory` — the memory
+    /// `decide` holds, and **never `self.reflex`**, which `Arena::reflex_tick`
+    /// has taken out of the arena for the length of the decision and is
+    /// therefore empty here — and a charge under a pilot answers the object its
+    /// lock resolves to in the pilot's own store. A charge that designates
+    /// nothing falls through to the hint. What the supporter does with the answer
+    /// is what it does with a hint: it looks for **its own** contact on that
+    /// object, and a supporter that holds nothing on it prefers nothing (doc 16
+    /// §3.6 read through an order, again).
+    ///
+    /// A charge's designation is the side's own data-link knowledge — the same
+    /// class of fact the mesh carries between teammates — and never a live pose:
+    /// it names *which* object, and every range and bearing the supporter then
+    /// acts on is its own plot. A unit whose `of` is itself fights on doctrine
+    /// and is asked nothing here.
+    fn ordered_target(
+        &self,
+        id: ObjId,
+        order: Option<&Order>,
+        memory: &ReflexMemory,
+    ) -> Option<ObjId> {
         let order = order?;
+        if let Objective::Support { of } = order.objective
+            && of != id
+        {
+            let designated = match self.unit(of) {
+                Some(charge) if charge.controller == Controller::Reflex => memory
+                    .unit(of)
+                    .and_then(|row| row.target)
+                    .map(|(_, target)| target),
+                Some(charge) => charge
+                    .lock
+                    .and_then(|contact| self.contacts.resolve(of, contact))
+                    .map(|held| held.target),
+                None => None,
+            };
+            if designated.is_some() {
+                return designated;
+            }
+        }
         let hint = order.preferred_contact()?;
         let viewer = match order.issuer {
             Some(unit) => unit,
@@ -2274,6 +2691,22 @@ impl Arena {
         health_permille: u32,
         prefer: Option<ObjId>,
     ) -> Option<(ContactId, ObjId)> {
+        self.best_hostile_where(id, memory, health_permille, prefer, |_| true)
+    }
+
+    /// **[`Arena::best_hostile`]'s candidate loop, with a filter** (16b cut Z.2):
+    /// the same score over the same candidates, restricted to the contacts whose
+    /// plot `admit` accepts — which is how [`Arena::stand`] asks for the best
+    /// hostile inside an arc and a range without a second loop that could drift
+    /// from the first. `best_hostile` is this with a filter that admits all.
+    fn best_hostile_where(
+        &self,
+        id: ObjId,
+        memory: &ReflexMemory,
+        health_permille: u32,
+        prefer: Option<ObjId>,
+        admit: impl Fn(&SeenPose) -> bool,
+    ) -> Option<(ContactId, ObjId)> {
         let unit = self.unit(id)?;
         // **A platform with nothing to shoot with has no target.** `Approach` and
         // `Engage` are both about closing to a weapon's band, and a tank that
@@ -2313,6 +2746,10 @@ impl Arena {
             // still ranks, and the machine spends a round finding out, exactly
             // as a gunner would.
             if self.contact_reads_dead(held) {
+                continue;
+            }
+            // **16b cut Z.2**: the caller's restriction, on the plot.
+            if !admit(&held.seen_at) {
                 continue;
             }
             // **16b cut F.3**: scored off the plot — the range to where this
@@ -2608,7 +3045,8 @@ impl Arena {
     /// `order` is the standing order **this tick decided under** — already
     /// filtered by [`Arena::decide`]'s squad test — and it is here for exactly
     /// one thing: 16b cut E.2's `B-41` rule, that a failed search for the
-    /// order's own `Advance` cell ends the order for this unit. It is compared
+    /// order's own `Advance` cell ends the order for this unit — and, since 16b
+    /// cut Z.2, a failed search for a supporter's station. It is compared
     /// against rather than `row.order` so that a unit whose roster moved under
     /// the order, and which is therefore obeying nothing, drops nothing either.
     #[allow(clippy::too_many_arguments)]
@@ -2738,10 +3176,11 @@ impl Arena {
                         // machine that cannot close (16b cut AA.1), whose search
                         // to the ordered cell succeeds and never gets here.
                         //
-                        // **Only the ordered cell.** A stand-off cell under an
-                        // `Engage` order, the entry cell under a `Withdraw` and
-                        // a patrol node all fail through this same arm and drop
-                        // nothing: they fall back exactly as they did.
+                        // **Only the ordered cell** (and, since 16b cut Z.2, a
+                        // supporter's station: see below). A stand-off cell under
+                        // an `Engage` order, the entry cell under a `Withdraw`
+                        // and a patrol node all fail through this same arm and
+                        // drop nothing: they fall back exactly as they did.
                         //
                         // What it costs, stated: a commander that re-sends the
                         // same unreachable cell buys one failed search per unit
@@ -2756,6 +3195,33 @@ impl Arena {
                         if let Some(order) = order
                             && let Objective::Advance { to } = order.objective
                             && row.goal == Some(to)
+                        {
+                            row.order = None;
+                            plan.expired = Some((order.squad, order.objective.as_str()));
+                        }
+                        // **16b cut Z.2's review (16c N6; `B-41`'s lesson once
+                        // more)**: the station of a `Support` whose charge is
+                        // another unit is the order's own goal in exactly the
+                        // sense the `Advance` cell is. A supporter in `Patrol`
+                        // under one steers at nothing else — the leash's case (b)
+                        // and the `Patrol` arm's station leg are the only goals
+                        // it is given there, and both re-assert the station on
+                        // the next tick, so the fallback below would never hold
+                        // — and case (b) fires nothing while it rejoins. A
+                        // station no route reaches (the charge across ground
+                        // this hull's class refuses) would therefore be a silent
+                        // supporter and a failed search every `repath_ms` for
+                        // the order's whole life. It ends here for this unit,
+                        // through the same `plan.expired`: one `order_expired`
+                        // line naming `support`, the squad marked, the commander
+                        // told, and from the next tick the unit fights on
+                        // doctrine. Under `Approach` or `Engage` the goal is a
+                        // stand-off cell or a plot of the unit's own target,
+                        // which fall back as they always did.
+                        if let Some(order) = order
+                            && let Objective::Support { of } = order.objective
+                            && of != id
+                            && row.state == ReflexState::Patrol
                         {
                             row.order = None;
                             plan.expired = Some((order.squad, order.objective.as_str()));
@@ -3065,7 +3531,10 @@ impl Arena {
                         counters.shots = counters.shots.saturating_add(1);
                     }
                 }
-                IntentKind::Heading { .. } | IntentKind::Speed { .. } | IntentKind::Order(_) => {}
+                IntentKind::Heading { .. }
+                | IntentKind::Speed { .. }
+                | IntentKind::Order(_)
+                | IntentKind::ReleaseOrder { .. } => {}
             }
         }
     }
@@ -3167,6 +3636,14 @@ fn stopping_reach_cm(unit: &UnitState, substep_ms: i64) -> i64 {
     let next = gained.min(speed.max(i64::from(unit.desired_speed_cms)));
     next.saturating_mul(next) / brake.saturating_mul(2)
         + next.saturating_mul(substep_ms.max(0)) / 1_000
+}
+
+/// **The angle between two bearings**, millidegrees, the short way round (16b
+/// cut Z.2): `0` to `180,000`, modulo a full turn, so a screen facing 350° sees
+/// a plot at 10° as 20° off its facing and not 340°.
+fn arc_between(a_mdeg: u32, b_mdeg: u32) -> u32 {
+    let apart = (a_mdeg % 360_000).abs_diff(b_mdeg % 360_000);
+    apart.min(360_000 - apart)
 }
 
 /// **The 8-neighbour step nearest a bearing** (16b cut Q.7).
@@ -3343,6 +3820,15 @@ impl ReflexMemory {
     /// Every machine's state, keyed by unit, in unit-id order.
     pub(crate) fn rows(&self) -> impl Iterator<Item = (&ObjId, &ReflexUnit)> {
         self.units.iter()
+    }
+
+    /// **One machine's row, to write** — test builds only (16b cut Z.2's
+    /// review): an in-source test that must hand a machine a goal, a route and
+    /// a target before proving something drops them has no other door, and no
+    /// production reader may write a row from outside `decide`.
+    #[cfg(test)]
+    pub(crate) fn unit_mut(&mut self, unit: ObjId) -> Option<&mut ReflexUnit> {
+        self.units.get_mut(&unit)
     }
 }
 
@@ -4131,5 +4617,31 @@ mod tests {
             state.limits.wreck = true;
         }
         assert_eq!(arena.reflex_health_permille(ObjId(4)), 0);
+    }
+
+    /// **16b cut Z.2's review**: a screen's arc is measured the short way round.
+    /// Every screen the replays and the lance lane fly faces 090° or 270°, where
+    /// a plain difference of bearings gives the same answers; a screen facing
+    /// 000° or 350° is where the wrap decides whether a tank at 10° is met.
+    #[test]
+    fn z2_the_arc_between_two_bearings_is_the_short_way_round() {
+        for (a, b, apart) in [
+            (350_000_u32, 10_000_u32, 20_000_u32),
+            (10_000, 350_000, 20_000),
+            (0, 359_000, 1_000),
+            (359_999, 0, 1),
+            (90_000, 270_000, 180_000),
+            (90_000, 30_000, 60_000),
+            (0, 0, 0),
+            // A facing written a full turn over is the same facing.
+            (360_000, 0, 0),
+            (720_000 + 5_000, 355_000, 10_000),
+        ] {
+            assert_eq!(arc_between(a, b), apart, "{a} and {b}");
+        }
+        // The half arc admits a tank at 10° to a screen facing north, and a tank
+        // at 61° off it is outside.
+        assert!(arc_between(10_000, 0) <= SCREEN_HALF_ARC_MDEG);
+        assert!(arc_between(299_000, 0) > SCREEN_HALF_ARC_MDEG);
     }
 }

@@ -24,7 +24,7 @@
 //! [`Order::validate`] when the structured reply is parsed (so a malformed order
 //! never reaches the world task), and once by the arena when the intent is
 //! applied (so an order that was legal when it was written is still legal when it
-//! lands). The vocabulary — four objectives, three range bands — is closed and
+//! lands). The vocabulary — six objectives, three range bands — is closed and
 //! lives in Rust, which is doc 16 §7's *what stays Rust*.
 
 use mush_core::ObjId;
@@ -60,9 +60,11 @@ pub const MAX_HORIZON_MS: u32 = 600_000;
 
 /// **What a squad is being told to do** (doc 16 §6: *objective*).
 ///
-/// Four arms and no fifth: the machine has exactly four things it can be pointed
+/// Six arms and no seventh: the machine has exactly six things it can be pointed
 /// at, and an objective the reflex controller could not carry out would be an
-/// order that reads well and does nothing.
+/// order that reads well and does nothing. The last two (16b cut Z.2; 16c N6)
+/// are the squad roles — a screen and a support — and both are obeyed from state
+/// the reflex tick already holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "objective")]
 pub enum Objective {
@@ -95,6 +97,34 @@ pub enum Objective {
     },
     /// Break off toward your own entry zone and hold fire.
     Withdraw,
+    /// Hold where you stand, face `facing_mdeg`, lock and fire on a classified
+    /// hostile whose plot lies inside [`crate::arena::reflex::SCREEN_HALF_ARC_MDEG`]
+    /// of that facing and inside `release_cm`, and never move for it (16b cut
+    /// Z.2; 16c N6).
+    ///
+    /// A movement order in the reflex tick's sense: the machine stays in
+    /// `Patrol`, parked, and its tick's *stand* does the shooting — so a screening
+    /// unit reads `patrol` in the state distribution.
+    Screen {
+        /// The bearing to face, millidegrees clockwise from north, below 360,000.
+        facing_mdeg: u32,
+    },
+    /// Keep station on `of`: close to [`crate::arena::reflex::SUPPORT_STATION_CELLS`]
+    /// of your own plot of it, never chase past
+    /// [`crate::arena::reflex::SUPPORT_LEASH_CELLS`], prefer the object `of` is
+    /// fighting, and hold and fire where you stand when you cannot see it (16b
+    /// cut Z.2; 16c N6).
+    ///
+    /// **A unit whose `of` is itself fights on doctrine**, which is `Engage`'s
+    /// semantics: no leash, no stand. An order fans to every unit of a squad, the
+    /// charge included, so an LLM's `support member 1` and the lance script's
+    /// "support the commander" put the charge in the fight and the rest on
+    /// station — a self-charge that held where it stood would be an anchored
+    /// non-shooter whose supporters had nothing to prefer.
+    Support {
+        /// The charge: the friendly unit to keep station on.
+        of: ObjId,
+    },
 }
 
 impl Objective {
@@ -106,6 +136,8 @@ impl Objective {
             Objective::Advance { .. } => "advance",
             Objective::Engage { .. } => "engage",
             Objective::Withdraw => "withdraw",
+            Objective::Screen { .. } => "screen",
+            Objective::Support { .. } => "support",
         }
     }
 
@@ -117,6 +149,8 @@ impl Objective {
             Objective::Advance { .. } => 2,
             Objective::Engage { .. } => 3,
             Objective::Withdraw => 4,
+            Objective::Screen { .. } => 5,
+            Objective::Support { .. } => 6,
         }
     }
 }
@@ -286,6 +320,12 @@ pub enum OrderError {
     /// `issued_ms` is negative.
     #[error("an order may not be issued before the epoch")]
     Issued,
+    /// `Screen` named a facing at or past 360,000 millidegrees (16b cut Z.2).
+    #[error("an order may not screen a bearing past 360 degrees")]
+    Facing,
+    /// `Support` named object `#0` (16b cut Z.2).
+    #[error("an order may not support nothing")]
+    Support,
 }
 
 impl Order {
@@ -316,6 +356,13 @@ impl Order {
         {
             return Err(OrderError::OffWindow);
         }
+        match self.objective {
+            Objective::Screen { facing_mdeg } if facing_mdeg >= 360_000 => {
+                return Err(OrderError::Facing);
+            }
+            Objective::Support { of: ObjId(0) } => return Err(OrderError::Support),
+            _ => {}
+        }
         Ok(())
     }
 
@@ -327,7 +374,11 @@ impl Order {
                 Some(contact) => Some(contact),
                 None => self.target,
             },
-            Objective::Hold | Objective::Advance { .. } | Objective::Withdraw => self.target,
+            Objective::Hold
+            | Objective::Advance { .. }
+            | Objective::Withdraw
+            | Objective::Screen { .. }
+            | Objective::Support { .. } => self.target,
         }
     }
 }
@@ -414,9 +465,27 @@ mod tests {
             Objective::Advance { to: (1, 2) },
             Objective::Engage { target_hint: None },
             Objective::Withdraw,
+            Objective::Screen {
+                facing_mdeg: 90_000,
+            },
+            Objective::Support { of: ObjId(7) },
         ] {
             assert!(!objective.as_str().is_empty());
             assert!(objective.code() > 0);
+        }
+        // 16b cut Z.2: the two squad roles take codes 5 and 6 and their own words,
+        // and an order carrying either survives the world task's serde seam.
+        let screen = Objective::Screen {
+            facing_mdeg: 90_000,
+        };
+        let support = Objective::Support { of: ObjId(7) };
+        assert_eq!((screen.code(), screen.as_str()), (5, "screen"));
+        assert_eq!((support.code(), support.as_str()), (6, "support"));
+        for objective in [screen, support] {
+            let written = order(objective);
+            let text = serde_json::to_string(&written).expect("an order encodes");
+            let read: Order = serde_json::from_str(&text).expect("an order decodes");
+            assert_eq!(read, written, "{text}");
         }
         for band in [RangeBand::Close, RangeBand::Effective, RangeBand::Far] {
             assert_eq!(RangeBand::parse(band.as_str()), Some(band));
@@ -483,6 +552,28 @@ mod tests {
         assert_eq!(off.validate(Some((16, 16))), Err(OrderError::OffWindow));
         assert_eq!(off.validate(Some((17, 16))), Ok(()));
         assert_eq!(off.validate(None), Ok(()));
+        // 16b cut Z.2: a screen's facing is below a full turn, a support names
+        // something.
+        let past = order(Objective::Screen {
+            facing_mdeg: 360_000,
+        });
+        assert_eq!(past.validate(None), Err(OrderError::Facing));
+        let last = order(Objective::Screen {
+            facing_mdeg: 359_999,
+        });
+        assert_eq!(last.validate(None), Ok(()));
+        let nothing = order(Objective::Support { of: ObjId(0) });
+        assert_eq!(nothing.validate(None), Err(OrderError::Support));
+        let charge = order(Objective::Support { of: ObjId(301) });
+        assert_eq!(charge.validate(None), Ok(()));
+        assert_eq!(
+            OrderError::Facing.to_string(),
+            "an order may not screen a bearing past 360 degrees"
+        );
+        assert_eq!(
+            OrderError::Support.to_string(),
+            "an order may not support nothing"
+        );
     }
 
     #[test]

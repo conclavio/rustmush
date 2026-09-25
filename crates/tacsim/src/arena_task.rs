@@ -591,11 +591,19 @@ fn buffer_control(controls: &mut Controls, releases: &mut Releases, control: Con
 }
 
 /// The key code a continuous order coalesces under beside its unit.
+///
+/// **16b cut Z.2** (16c Q44): a `ReleaseOrder` answers `2`, `Order`'s own code.
+/// A unit has one standing-instruction slot, and the buffer coalesces per
+/// `(unit, code)` and hands continuous orders over in key order and not by
+/// `seq`, so a release under a code of its own would always apply after an
+/// `ORDER` of the same pulse whichever the pilot typed last. Under one key the
+/// higher `seq` wins across both: `HOLD` then `RELEASE` leaves no order, and
+/// `RELEASE` then `HOLD` leaves `HOLD`.
 const fn continuous_code(kind: &IntentKind) -> u8 {
     match kind {
         IntentKind::Heading { .. } => 0,
         IntentKind::Speed { .. } => 1,
-        IntentKind::Order(_) => 2,
+        IntentKind::Order(_) | IntentKind::ReleaseOrder { .. } => 2,
         IntentKind::Startup | IntentKind::Lock { .. } | IntentKind::Fire { .. } => 3,
     }
 }
@@ -1479,6 +1487,70 @@ mod tests {
                 (BLUE, IntentKind::Heading { mdeg: 30 }),
             ]
         );
+    }
+
+    /// **16b cut Z.2 (16c Q44)**: an `ORDER` and a `RELEASE` for one unit in one
+    /// pulse share `Order`'s buffer key, so through the task's own buffer the
+    /// pilot's last word is what applies: `HOLD` then `RELEASE` leaves no order
+    /// after the pulse (the release drops the order the machine already stood
+    /// under), and `RELEASE` then `HOLD` leaves `HOLD`.
+    #[test]
+    fn z2_an_order_and_a_release_in_one_pulse_apply_in_the_pilots_order() {
+        use crate::deliberation::order::{Constraints, Objective, Order, StandingOrder};
+        use crate::deliberation::squad::{SquadId, SquadRoster};
+        let squad = SquadId {
+            team: Team::Red,
+            index: 1,
+        };
+        let told = |objective| Order {
+            squad,
+            objective,
+            target: None,
+            horizon_ms: 600_000,
+            constraints: Constraints::default(),
+            ttl_ms: 600_000,
+            issued_ms: 0,
+            issuer: Some(A),
+            spot: None,
+        };
+        let hold = || IntentKind::Order(Box::new(told(Objective::Hold)));
+        let release = || IntentKind::ReleaseOrder {
+            squad,
+            issuer: Some(A),
+        };
+        for (first, second, left) in [(hold(), release(), None), (release(), hold(), Some("hold"))]
+        {
+            let mut arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+            if let Some(state) = arena.unit_mut(RED) {
+                state.controller = crate::arena::state::Controller::Reflex;
+            }
+            arena
+                .reflex
+                .adopt(RED, crate::arena::reflex::ReflexState::Patrol);
+            // The machine already stands under the squad's `Engage`.
+            arena.reflex.set_order(
+                RED,
+                StandingOrder::accepted(told(Objective::Engage { target_hint: None }), 0),
+            );
+            arena.squads = vec![SquadRoster {
+                id: squad,
+                commander: RED,
+                units: vec![RED],
+            }];
+            let mut waiting = PrePulse::default();
+            buffer_continuous(&mut waiting.continuous, order(RED, first, 1));
+            buffer_continuous(&mut waiting.continuous, order(RED, second, 2));
+            let (controls, intents) = waiting.take();
+            assert_eq!(intents.len(), 1, "one standing-instruction slot per unit");
+            let _ = arena.step(0, &controls, &intents);
+            assert_eq!(
+                arena
+                    .reflex
+                    .order(RED)
+                    .map(|standing| standing.order.objective.as_str()),
+                left
+            );
+        }
     }
 
     /// The discrete bound is per unit and refuses the NEWEST arrival; another

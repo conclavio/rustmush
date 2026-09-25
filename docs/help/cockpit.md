@@ -33,7 +33,9 @@ else — `help simulator` is how you get there.
                       fitted to it.
   ORDER <squad|ALL> <objective>
                       command your side's machines: hold, advance on a named
-                      spot, engage or withdraw. See "Commanding the machines".
+                      spot, engage, withdraw, screen a bearing or support a
+                      tank — or release them to their own doctrine. See
+                      "Commanding the machines".
 
 `EXIT` climbs out. Once the match is running that is final: see
 `help simulator`.
@@ -267,7 +269,7 @@ Name a squad in full, `ORDER red-1 HOLD`; by its number alone, `ORDER 1 HOLD`,
 which is your own side's; or every squad you may order at once,
 `ORDER ALL HOLD`.
 
-There are four orders, and the answer says what each one means:
+There are six orders and a release, and the answer says what each one means:
 
   ORDER red-1 ENGAGE BA          Ordered red-1 to engage BA: it closes and fires
                                  on BA where it can see it, else on what it
@@ -278,6 +280,14 @@ There are four orders, and the answer says what each one means:
                                  drives there and fights nothing on the way.
   ORDER red-1 WITHDRAW HOLD FIRE Ordered red-1 to withdraw, holding fire: it
                                  breaks for its entry zone and fires nothing.
+  ORDER red-1 SCREEN 90          Ordered red-1 to screen 090°: it holds where it
+                                 stands, faces 090° and fires on what comes
+                                 inside its arc without giving chase.
+  ORDER 1 SUPPORT RA             Ordered red-1 to support RA: it keeps within
+                                 150 m of RA and fires first on what RA is
+                                 fighting.
+  ORDER red-1 RELEASE            Released red-1 to doctrine: it fights on its
+                                 own reflexes until it is ordered again.
 
 Engage without a contact — `ORDER red-1 ENGAGE` — and the squad closes and fires
 on what it finds. A withdrawal without hold fire still fights anything that comes
@@ -287,6 +297,28 @@ locks but fires nothing. If you are not the lead, name the squad your pod
 pair's tank flies in, or `ORDER ALL`, and the answer names that one tank by its
 callsign: `ORDER ALL HOLD` is answered `Ordered RB to hold: …`.
 
+**A screen holds an arc and never chases.** The bearing is 0 to 359, as
+`HEADING` takes one, and the arc is 120 degrees wide, 60 either side of it: the
+squad stays where it stands, faces the bearing, and turns to fire on what comes
+inside the arc and inside its range. What is behind it, or out to a flank, it
+leaves alone, however close.
+
+**A support keeps station on one tank and shoots what that tank shoots.** Name
+any tank of your own side by its callsign — your own included. The squad keeps
+within 150 m of it, closing to about 50 m when it has nothing to fight, and
+fires first on whatever that tank is fighting; past 150 m it gives up the chase
+and drives back. A supporter that cannot see the tank it supports holds where it
+stands and fights from there. The tank named, if it is one of the squad's own,
+fights on as it would have. If the tank leaves the match or its supporters see
+it destroyed, the order ends for them there and then, and the machines go back
+to their own doctrine.
+
+**A release hands the squad back at once.** `ORDER red-1 RELEASE` ends your
+order on it now rather than in ten minutes, the machines go back to their own
+doctrine, and the squad no longer counts against the four you may hold. It is an
+order in the count of twelve a minute, and nothing may follow it — not even hold
+fire.
+
 An order **stands for ten minutes or until your next order to it**, and
 every answer ends by saying so. When it runs out the machines go back to their
 own doctrine and your side hears `Squad red-1: mind link dropped, unit on
@@ -294,7 +326,8 @@ doctrine (its hold order has run out).` Nobody else is told you gave an order:
 there is no radio line.
 
 **You may hold orders on four squads at once**: a fifth is refused until one of
-the four runs out, and a new order to a squad you already hold is not another.
+the four runs out or you release one, and a new order to a squad you already
+hold is not another.
 **You may give twelve orders a minute**, `ORDER ALL` counting as one, and the
 thirteenth is refused until the minute has passed.
 
@@ -306,13 +339,16 @@ engage, answered as one.
 An advance names one of the ground's spots, by its name or its letter, as
 `RANGE` takes one.
 
-Five refusals are the order's own. `No such squad.` is the answer for any squad
+Six refusals are the order's own. `No such squad.` is the answer for any squad
 you cannot order — the other side's, one that does not exist, or one of your own
 side's that is not yours to command — and it is one line for all three, so it
 tells you nothing about the other side. `You have no squad to order.` is `ORDER
-ALL` from a pilot with nothing under them. Three are the limits above: with your
-four squads held, any order to another is `You hold orders on 4 squad(s) already;
-wait for one to run out.`; an `ORDER ALL` that would take you past four while
+ALL` from a pilot with nothing under them. `No tank of your side flies that callsign.`
+is a support naming anything but a tank of your own side — the other side's
+callsign, an `X` number, a pod nobody flies or a word that is no callsign all
+read the same. Three are the limits above: with your four squads held, any order
+to another is `You hold orders on 4 squad(s) already; wait for one to run out, or RELEASE one.`;
+an `ORDER ALL` that would take you past four while
 you still have room for one is `ORDER ALL would put 5 squads under you; your span
 is 4. Order them one at a time.`; and the thirteenth order in a minute is `You
 have given 12 orders in the last minute; wait.` A target or a spot your panel

@@ -3265,3 +3265,110 @@ async fn y1_a_pilots_live_order_shields_the_squad_from_the_machines_commander() 
         "the machines' order is issued and its watch replaces the pilot's"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut Z.2 — the two squad roles on the LLM seam (16c N6)
+// ---------------------------------------------------------------------------
+
+/// **16b cut Z.2 (16c N6)**: the forced tool offers six objectives and the two
+/// payload fields; a scripted reply through the whole structured pipeline maps
+/// `screen` 90 to 90,000 millidegrees and `support` member 2 to the second
+/// member's own unit; a bearing of 360 and an ordinal that names no member are
+/// refused twice over (the original and the one repair) and never issued; and
+/// the `support` order the reply produced, fanned to red-1 as the bridge fans a
+/// reply out, lands one `ordered` line per unit with `objective=support`.
+#[tokio::test]
+async fn z2_a_scripted_screen_and_support_map_and_a_support_lands_on_every_unit() {
+    use tacsim::deliberation::{RefusedReason, SquadBrief, deliberate, order_tool};
+
+    let schema = order_tool().input_schema;
+    let objectives: Vec<&str> = schema
+        .pointer("/properties/objective/enum")
+        .and_then(serde_json::Value::as_array)
+        .map(|words| words.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        objectives,
+        vec!["hold", "advance", "engage", "withdraw", "screen", "support"],
+        "the tool lists six objectives"
+    );
+    for field in ["screen_bearing_deg", "support_member"] {
+        assert!(
+            schema.pointer(&format!("/properties/{field}")).is_some(),
+            "the tool carries `{field}`"
+        );
+    }
+
+    let (llm, mock) = mock_service();
+    let mut arena = field(&arena_cfg(0));
+    let mut bytes = Vec::new();
+    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, 0);
+    let signals = run(&mut arena, 2_000, &mut bytes);
+    let signal = signals
+        .iter()
+        .find(|signal| signal.squad == red_one())
+        .expect("red-1 asked");
+    let brief = SquadBrief::from_signal(1, signal, 2);
+    let second = brief
+        .members
+        .iter()
+        .find(|member| member.ordinal == 2)
+        .map(|member| ObjId(member.unit))
+        .expect("red-1 reports its second member");
+    assert_eq!(second, RED_B, "the second member is the wingman");
+
+    mock.push_response(tool_use(
+        serde_json::json!({"objective": "screen", "screen_bearing_deg": 90, "ttl_ms": 20_000}),
+        0.000_10,
+    ));
+    let screen = deliberate(&llm, &brief).await.expect("a screen");
+    assert_eq!(
+        screen.objective,
+        Objective::Screen {
+            facing_mdeg: 90_000
+        }
+    );
+    mock.push_response(tool_use(
+        serde_json::json!({"objective": "support", "support_member": 2, "ttl_ms": 20_000}),
+        0.000_10,
+    ));
+    let support = deliberate(&llm, &brief).await.expect("a support");
+    assert_eq!(support.objective, Objective::Support { of: RED_B });
+
+    for bad in [
+        serde_json::json!({"objective": "screen", "screen_bearing_deg": 360, "ttl_ms": 20_000}),
+        serde_json::json!({"objective": "support", "support_member": 9, "ttl_ms": 20_000}),
+    ] {
+        mock.push_response(tool_use(bad.clone(), 0.000_10));
+        mock.push_response(tool_use(bad.clone(), 0.000_10));
+        let error = deliberate(&llm, &brief)
+            .await
+            .expect_err("a malformed order is never issued");
+        assert_eq!(RefusedReason::of(&error), RefusedReason::Malformed, "{bad}");
+    }
+
+    // The reply's order, fanned to every unit of the squad — the charge
+    // included, whose `of` is itself and which fights on doctrine.
+    let outcomes = issue(&mut arena, &support);
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| *outcome == IntentOutcome::AppliedContinuous),
+        "{outcomes:?}"
+    );
+    let lines: Vec<LedgerEvent> = events(&mut arena, &mut bytes)
+        .into_iter()
+        .filter(|event| event.kind.as_str() == "ordered")
+        .collect();
+    assert_eq!(lines.len(), 2, "one line per unit of red-1: {lines:?}");
+    for line in &lines {
+        assert!(
+            matches!(
+                &line.kind,
+                tacsim::arena::ledger::EventKind::Ordered { objective, squad, .. }
+                    if objective == "support" && squad == "red-1"
+            ),
+            "{line:?}"
+        );
+    }
+}

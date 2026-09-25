@@ -137,6 +137,25 @@ pub enum IntentKind {
     /// It travels on [`Channel::Helm`] because it is, in the end, a route and a
     /// posture.
     Order(Box<crate::deliberation::order::Order>),
+    /// **Hand a squad back to doctrine** (16b cut Z.2; 16c Q44): drops the
+    /// unit's standing order when it was written for `squad`, through the one
+    /// helper the expiry block uses
+    /// ([`crate::arena::reflex::ReflexMemory::drop_to_doctrine`]). Continuous,
+    /// [`Channel::Helm`], word `release`; shares `Order`'s buffer key in the
+    /// arena task's pre-pulse buffer, so of an `ORDER` and a `RELEASE` in one
+    /// pulse the later `seq` is what applies.
+    ///
+    /// Like [`IntentKind::Order`] it is taken before the continuous gates (a
+    /// release to a cold or engine-killed machine lands, as an order to one
+    /// does), only a reflex unit takes one ([`Refusal::NotReflex`]), and its
+    /// refusals are never staged to a pilot.
+    ReleaseOrder {
+        /// The squad whose order is released.
+        squad: crate::deliberation::SquadId,
+        /// The tank whose pilot released it, `None` for a release nobody seated
+        /// gave.
+        issuer: Option<ObjId>,
+    },
 }
 
 impl IntentKind {
@@ -146,7 +165,10 @@ impl IntentKind {
     pub const fn is_continuous(&self) -> bool {
         matches!(
             self,
-            IntentKind::Heading { .. } | IntentKind::Speed { .. } | IntentKind::Order(_)
+            IntentKind::Heading { .. }
+                | IntentKind::Speed { .. }
+                | IntentKind::Order(_)
+                | IntentKind::ReleaseOrder { .. }
         )
     }
 
@@ -174,7 +196,8 @@ impl IntentKind {
             IntentKind::Heading { .. }
             | IntentKind::Speed { .. }
             | IntentKind::Startup
-            | IntentKind::Order(_) => Channel::Helm,
+            | IntentKind::Order(_)
+            | IntentKind::ReleaseOrder { .. } => Channel::Helm,
             IntentKind::Lock { .. } => Channel::Sensors,
             IntentKind::Fire { .. } => Channel::Fire,
         }
@@ -190,6 +213,7 @@ impl IntentKind {
             IntentKind::Lock { .. } => "lock",
             IntentKind::Fire { .. } => "fire",
             IntentKind::Order(_) => "order",
+            IntentKind::ReleaseOrder { .. } => "release",
         }
     }
 }
@@ -579,6 +603,16 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
         // orders in one burst obeys the second, and neither queues.
         return IntentOutcome::AppliedContinuous;
     }
+    // **16b cut Z.2** (16c Q44) — the release, beside the order and before the
+    // continuous gates for the order's own reason: a release to a cold tank, or
+    // to one whose engine is gone, still hands it back to doctrine.
+    if let IntentKind::ReleaseOrder { squad, issuer } = &i.kind {
+        if unit.controller != Controller::Reflex {
+            return IntentOutcome::Refused(Refusal::NotReflex);
+        }
+        release_order(arena, i.unit, *squad, *issuer);
+        return IntentOutcome::AppliedContinuous;
+    }
     if i.kind.is_continuous() {
         if unit.power != Power::Online {
             return IntentOutcome::Refused(Refusal::PowerNotOnline);
@@ -598,7 +632,8 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
             IntentKind::Startup
             | IntentKind::Lock { .. }
             | IntentKind::Fire { .. }
-            | IntentKind::Order(_) => {}
+            | IntentKind::Order(_)
+            | IntentKind::ReleaseOrder { .. } => {}
         }
         return IntentOutcome::AppliedContinuous;
     }
@@ -624,6 +659,81 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
         .or_default()
         .push_back(i.clone());
     IntentOutcome::Queued
+}
+
+/// **Apply one unit's release** (16b cut Z.2; 16c Q44), for [`apply_intent`]'s
+/// [`IntentKind::ReleaseOrder`] arm once the unit is known to be the
+/// controller's.
+///
+/// A unit under no order, or under an order written for another squad, applies
+/// nothing and journals nothing: a release names a squad, and a machine the
+/// squad's commander has not ordered is not the pilot's to hand back. Otherwise,
+/// in this order:
+///
+/// 1. the hash is asked **before** anything is written — `Arena::event_hash`'s
+///    rule, so under phase 2's `Pending` slot every `ordered` and
+///    `order_released` line of one pulse shares the phase's one hash;
+/// 2. the machine drops to doctrine through
+///    [`crate::arena::reflex::ReflexMemory::drop_to_doctrine`] — the expiry
+///    block's own restoration, so a released `Withdraw` whose health does not
+///    ask for one reads `Patrol` at once and does not keep driving to its entry
+///    zone;
+/// 3. one `order_released` line at `now_ms`;
+/// 4. **the squad is marked for its next signal only when no unit of its roster
+///    still holds an order written for it** (a wreck's leftover order does not
+///    count: a wreck is no subject of any order) — so the next signal says
+///    `OrderExpired` once the whole squad is off orders, and a wingman's release
+///    of the one machine of their pair does not hand the lead's squad to the LLM
+///    seam while the lead's order still runs on the rest of it. The read is
+///    bounded by the roster (at most `SQUAD_SIZE_MAX` units).
+fn release_order(
+    arena: &mut Arena,
+    unit: ObjId,
+    squad: crate::deliberation::SquadId,
+    issuer: Option<ObjId>,
+) {
+    if !arena
+        .reflex
+        .order(unit)
+        .is_some_and(|standing| standing.order.squad == squad)
+    {
+        return;
+    }
+    let health_ok = arena.reflex_health_permille(unit) >= arena.reflex.config().withdraw_permille;
+    let at = arena.now_ms;
+    let hash = arena.event_hash();
+    arena.reflex.drop_to_doctrine(unit, health_ok);
+    let _ = arena.ledger.append(
+        at,
+        EventKind::OrderReleased {
+            unit,
+            squad: SmolStr::new(squad.to_string()),
+            issuer,
+        },
+        Vec::new(),
+        hash,
+    );
+    let still_ordered = arena
+        .squads
+        .iter()
+        .find(|roster| roster.id == squad)
+        .is_some_and(|roster| {
+            roster.units.iter().any(|member| {
+                // A wreck is no longer the subject of any order (doc 16 §3.3):
+                // `damage` adopts it into `Disabled` with the standing order it
+                // died under and takes its ticks away, and a release refuses it
+                // as every order does — so the order a wreck still carries is
+                // not an order the squad is under.
+                arena.unit(*member).is_some_and(|state| !state.limits.wreck)
+                    && arena
+                        .reflex
+                        .order(*member)
+                        .is_some_and(|standing| standing.order.squad == squad)
+            })
+        });
+    if !still_ordered {
+        arena.note_order_expired(squad);
+    }
 }
 
 /// **Take a unit's queued discrete actions**, in the order they were queued — cut
@@ -1681,5 +1791,292 @@ mod tests {
             .find(|seat| seat.pilot == RED_PILOT)
             .map(|seat| (seat.station.as_str(), seat.epoch));
         assert_eq!(row, Some(("", 3)), "a reclaimed seat carries no station");
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut Z.2 — the release
+    // -----------------------------------------------------------------------
+
+    /// The second red machine of the Z.2 fixture.
+    const WING: ObjId = ObjId(5);
+    /// The releasing pilot's tank.
+    const LEAD: ObjId = ObjId(77);
+
+    fn z2_squad(index: u16) -> crate::deliberation::squad::SquadId {
+        crate::deliberation::squad::SquadId {
+            team: Team::Red,
+            index,
+        }
+    }
+
+    /// A ten-minute order of `objective` for squad `red-1`, from `LEAD`.
+    fn z2_order(
+        objective: crate::deliberation::order::Objective,
+    ) -> crate::deliberation::order::StandingOrder {
+        crate::deliberation::order::StandingOrder::accepted(
+            crate::deliberation::order::Order {
+                squad: z2_squad(1),
+                objective,
+                target: None,
+                horizon_ms: 600_000,
+                constraints: crate::deliberation::order::Constraints::default(),
+                ttl_ms: 600_000,
+                issued_ms: 0,
+                issuer: Some(LEAD),
+                spot: None,
+            },
+            0,
+        )
+    }
+
+    /// Two red machines in squad `red-1`, both under its `Hold`, and a blue tank a
+    /// pilot flies.
+    fn z2_arena() -> Arena {
+        let mut arena = arena_at_epoch(
+            vec![
+                tank(RED, Team::Red, pose(1_500, 1_500)),
+                tank(WING, Team::Red, pose(2_500, 1_500)),
+                tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+            ],
+            1,
+        );
+        arena.now_ms = 9_000;
+        for unit in [RED, WING] {
+            if let Some(state) = arena.unit_mut(unit) {
+                state.controller = Controller::Reflex;
+            }
+            arena.reflex.adopt(unit, ReflexState::Patrol);
+            arena
+                .reflex
+                .set_order(unit, z2_order(crate::deliberation::order::Objective::Hold));
+        }
+        arena.squads = vec![crate::deliberation::squad::SquadRoster {
+            id: z2_squad(1),
+            commander: RED,
+            units: vec![RED, WING],
+        }];
+        arena
+    }
+
+    fn z2_release(unit: ObjId, index: u16, seq: u64) -> Intent {
+        intent(
+            unit,
+            1,
+            seq,
+            IntentKind::ReleaseOrder {
+                squad: z2_squad(index),
+                issuer: Some(LEAD),
+            },
+        )
+    }
+
+    /// **16b cut Z.2 (16c Q44)**: `ReleaseOrder` is a continuous `Helm` order
+    /// with the word `release`; on a machine under that squad's order it drops
+    /// the order to doctrine and journals one `order_released` line carrying the
+    /// issuer, at `now_ms`; under another squad's order, or none, it applies
+    /// nothing and journals nothing; and on a pilot's tank it is `NotReflex`.
+    /// With two machines of one squad under its order, releasing one does not
+    /// mark the squad for its next signal and releasing the second does.
+    #[test]
+    fn z2_a_release_drops_that_squads_order_and_journals_one_line() {
+        let kind = IntentKind::ReleaseOrder {
+            squad: z2_squad(1),
+            issuer: None,
+        };
+        assert!(kind.is_continuous());
+        assert!(!kind.is_discrete());
+        assert_eq!(kind.channel_required(), Channel::Helm);
+        assert_eq!(kind.as_str(), "release");
+
+        let mut arena = z2_arena();
+        let before = arena.ledger.seq();
+        // Another squad's word: nothing.
+        assert_eq!(
+            apply_intent(&mut arena, &z2_release(RED, 2, 1), IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        assert!(
+            arena.reflex.order(RED).is_some(),
+            "red-2's release is not red-1's"
+        );
+        // The squad's own word on one machine: that one drops.
+        assert_eq!(
+            apply_intent(&mut arena, &z2_release(RED, 1, 2), IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(arena.reflex.order(RED), None);
+        assert!(
+            arena.reflex.order(WING).is_some(),
+            "the other machine is untouched"
+        );
+        assert!(
+            !arena.squads_expired.contains(&z2_squad(1)),
+            "the wingman still holds red-1's order, so the squad is not asked about"
+        );
+        // A second release to the same machine, now under no order: nothing.
+        assert_eq!(
+            apply_intent(&mut arena, &z2_release(RED, 1, 3), IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        // A pilot's tank has no machine to hand back.
+        assert_eq!(
+            apply_intent(&mut arena, &z2_release(BLUE, 1, 4), IntentSource::Seat),
+            IntentOutcome::Refused(Refusal::NotReflex)
+        );
+        let lines: Vec<crate::arena::ledger::LedgerEvent> = y1_lines(&mut arena)
+            .into_iter()
+            .filter(|event| event.seq > before)
+            .collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "one line, for the one machine dropped: {lines:?}"
+        );
+        assert_eq!(lines[0].t_ms, 9_000, "at now_ms");
+        assert!(lines[0].draws.is_empty());
+        assert_eq!(
+            lines[0].kind,
+            EventKind::OrderReleased {
+                unit: RED,
+                squad: SmolStr::new("red-1"),
+                issuer: Some(LEAD),
+            }
+        );
+        assert_eq!(lines[0].kind.as_str(), "order_released");
+        // The last machine of the squad: now the squad is off orders.
+        assert_eq!(
+            apply_intent(&mut arena, &z2_release(WING, 1, 5), IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(arena.reflex.order(WING), None);
+        assert!(
+            arena.squads_expired.contains(&z2_squad(1)),
+            "the whole squad is off orders, so its next signal asks"
+        );
+
+        // A wreck keeps the order it died under, and is refused a release; the
+        // squad is off orders once its last living machine is released.
+        let mut arena = z2_arena();
+        if let Some(state) = arena.unit_mut(WING) {
+            state.limits.wreck = true;
+        }
+        assert_eq!(
+            apply_intent(&mut arena, &z2_release(WING, 1, 1), IntentSource::Seat),
+            IntentOutcome::Refused(Refusal::Wreck)
+        );
+        assert!(
+            arena.reflex.order(WING).is_some(),
+            "the wreck's row keeps it"
+        );
+        assert_eq!(
+            apply_intent(&mut arena, &z2_release(RED, 1, 2), IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        assert!(
+            arena.squads_expired.contains(&z2_squad(1)),
+            "a wreck's leftover order is no order the squad is under"
+        );
+    }
+
+    /// Set a machine's armour and internals to their floors but one point of
+    /// internals — a hull well under any `withdraw_permille`.
+    fn z2_hurt(arena: &mut Arena, unit: ObjId) {
+        let at = |cell: &str, facet: bool| {
+            if facet {
+                mush_tactics::CellAddr::Facet {
+                    section: mush_tactics::SectionId::new("hull").expect("a section"),
+                    facet: mush_tactics::FacetId::new("front").expect("a facet"),
+                    cell: mush_tactics::CellId::new(cell).expect("a cell"),
+                }
+            } else {
+                mush_tactics::CellAddr::Section {
+                    section: mush_tactics::SectionId::new("hull").expect("a section"),
+                    cell: mush_tactics::CellId::new(cell).expect("a cell"),
+                }
+            }
+        };
+        let hurt = {
+            let state = arena.unit(unit).expect("the fixture tank");
+            let plan = mush_tactics::UnitMutationPlan::new(
+                vec![
+                    mush_tactics::UnitMutationOp::SetCell {
+                        addr: at(crate::definitions::unit::ARMOR_CELL, true),
+                        value: 0,
+                    },
+                    mush_tactics::UnitMutationOp::SetCell {
+                        addr: at(crate::definitions::unit::INTERNALS_CELL, false),
+                        value: 1,
+                    },
+                ],
+                None,
+                Some(SmolStr::new("test:hurt")),
+            )
+            .expect("a two-op plan");
+            mush_tactics::apply(&state.unit, &plan, 0)
+                .expect("the plan applies")
+                .0
+        };
+        if let Some(state) = arena.unit_mut(unit) {
+            state.unit = hurt;
+        }
+    }
+
+    /// **16b cut Z.2**: a released `Withdraw` goes through the expiry block's own
+    /// restoration (`ReflexMemory::drop_to_doctrine`) — a healthy machine reads
+    /// `Patrol` at once and does not keep driving to its entry zone, and a hurt
+    /// one (below `withdraw_permille`) stays in `Withdraw`.
+    #[test]
+    fn z2_a_released_withdraw_reads_patrol_unless_the_hull_asks_for_one() {
+        let mut arena = z2_arena();
+        z2_hurt(&mut arena, WING);
+        assert!(
+            arena.reflex_health_permille(WING) < arena.reflex.config().withdraw_permille,
+            "the fixture is hurt"
+        );
+        for unit in [RED, WING] {
+            arena.reflex.adopt(unit, ReflexState::Withdraw);
+            arena.reflex.set_order(
+                unit,
+                z2_order(crate::deliberation::order::Objective::Withdraw),
+            );
+        }
+        // A goal, a route and a target written onto the healthy machine after
+        // `adopt` (which clears the first two on its own), so the assertion
+        // below reads what the release dropped and not what was never there.
+        if let Some(row) = arena.reflex.unit_mut(RED) {
+            row.goal = Some((1, 1));
+            row.route = vec![(2, 2), (1, 1)];
+            row.target = Some((crate::arena::state::ContactId(1), BLUE));
+        }
+        assert_eq!(
+            arena
+                .reflex
+                .unit(RED)
+                .map(|row| (row.goal, row.route.len(), row.target.is_some())),
+            Some((Some((1, 1)), 2, true)),
+            "the fixture's machine is going somewhere after something"
+        );
+        for (seq, unit) in [RED, WING].into_iter().enumerate() {
+            assert_eq!(
+                apply_intent(
+                    &mut arena,
+                    &z2_release(unit, 1, u64::try_from(seq).unwrap_or(0)),
+                    IntentSource::Seat
+                ),
+                IntentOutcome::AppliedContinuous
+            );
+        }
+        let state = |arena: &Arena, unit| arena.reflex.unit(unit).map(|row| row.state);
+        assert_eq!(state(&arena, RED), Some(ReflexState::Patrol));
+        assert_eq!(
+            arena
+                .reflex
+                .unit(RED)
+                .map(|row| (row.goal, row.route.len(), row.target)),
+            Some((None, 0, None)),
+            "the goal, the route and the target go with the order"
+        );
+        assert_eq!(state(&arena, WING), Some(ReflexState::Withdraw));
+        assert_eq!(arena.reflex.order(WING), None, "the order goes either way");
     }
 }

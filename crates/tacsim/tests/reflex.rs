@@ -2849,20 +2849,50 @@ fn replay_of(
     build: fn() -> Arena,
     script: fn(&mut Arena),
 ) -> Replay {
-    let mut arena = build();
+    replay_with(
+        cadence_ms,
+        until_ms,
+        build(),
+        &|_, _| Vec::new(),
+        &mut |arena: &mut Arena| {
+            if arena.now_ms == SCRIPT_AT_MS {
+                script(arena);
+            }
+        },
+    )
+}
+
+/// **[`replay_of`], with the world's hand on the arena at more than one beat**
+/// (16b cut Z.2).
+///
+/// `beat` is asked before every pulse, with the pulse's index, and what it
+/// answers is that pulse's intent slice — applied in phase 2 at the pulse's
+/// **opening** arena millisecond, which is how the world delivers an `ORDER` or
+/// a `RELEASE`. A beat is cadence-safe when it keys on an `arena.now_ms` that is
+/// a multiple of all three cadences, or on pulse `0` for arena millisecond `0`
+/// (the first two pulses both open at `0`: the first integrates nothing).
+/// `after` runs after every pulse and keys on the pulse's **closing** arena
+/// millisecond the same way; it may also watch the arena, which is how a test
+/// samples a unit's cell pulse by pulse.
+fn replay_with(
+    cadence_ms: i64,
+    until_ms: i64,
+    mut arena: Arena,
+    beat: &dyn Fn(&Arena, u32) -> Vec<tacsim::arena::intents::Intent>,
+    after: &mut dyn FnMut(&mut Arena),
+) -> Replay {
     arena.clock.pin_tempo_for_tests(Tempo::Quiet);
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
     let mut wall = 0_i64;
     let mut pulses = 0_u32;
     loop {
-        let out = arena.step(wall, &[], &[]);
+        let intents = beat(&arena, pulses);
+        let out = arena.step(wall, &[], &intents);
         pulses = pulses.saturating_add(1);
         absorb(&out, &mut bytes);
         hashes.extend(arena.substep_hashes.iter().copied());
-        if arena.now_ms == SCRIPT_AT_MS {
-            script(&mut arena);
-        }
+        after(&mut arena);
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
         }
@@ -8852,4 +8882,1202 @@ fn y2_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_comma
     );
     // And at the ten minutes every order has run out.
     assert!(arena.live_orders_by_issuer(600_000).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Z.2 — the screen, the support and the release (16c N6, Q44)
+// ---------------------------------------------------------------------------
+
+/// Every line of `kind` in a replay's event list, decoded.
+fn z2_lines(run: &Replay, kind: &str) -> Vec<(i64, tacsim::arena::ledger::EventKind)> {
+    run.events
+        .iter()
+        .filter_map(|(t_ms, json, _)| {
+            serde_json::from_str::<tacsim::arena::ledger::EventKind>(json)
+                .ok()
+                .map(|decoded| (*t_ms, decoded))
+        })
+        .filter(|(_, decoded)| decoded.as_str() == kind)
+        .collect()
+}
+
+/// **The cross-tempo property over three replays** (16b §11: mandatory): one
+/// event list, one hash sequence and one final field, from three different
+/// numbers of pulses.
+fn z2_one_log(runs: &[Replay], what: &str) {
+    let first = runs.first().expect("three replays");
+    assert!(
+        first.hashes.len() >= 10,
+        "{what}: {} substeps",
+        first.hashes.len()
+    );
+    assert!(
+        runs.iter()
+            .map(|run| run.pulses)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]),
+        "{what}: three cadences, three different numbers of pulses"
+    );
+    for (run, cadence) in runs.iter().zip([5_000_i64, 1_000, 500]).skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "{what}: the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "{what}: the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "{what}: the field ended differently at {cadence} ms"
+        );
+    }
+}
+
+/// One order for `squad`, ten minutes long, as the world writes one.
+fn z2_order(
+    squad: tacsim::deliberation::SquadId,
+    objective: tacsim::deliberation::Objective,
+    hold_fire: bool,
+    issuer: Option<ObjId>,
+) -> tacsim::deliberation::Order {
+    tacsim::deliberation::Order {
+        squad,
+        objective,
+        target: None,
+        horizon_ms: 600_000,
+        constraints: tacsim::deliberation::Constraints {
+            hold_fire,
+            max_range_band: None,
+        },
+        ttl_ms: 600_000,
+        issued_ms: 0,
+        issuer,
+        spot: None,
+    }
+}
+
+/// `kind` for each of `units`, on each unit's own `helm` epoch — the shape the
+/// world's `send_order` gives an `ORDER` or a `RELEASE`.
+fn z2_fan(
+    arena: &Arena,
+    units: &[ObjId],
+    kind: &tacsim::arena::intents::IntentKind,
+) -> Vec<tacsim::arena::intents::Intent> {
+    units
+        .iter()
+        .zip(1_u64..)
+        .map(|(unit, seq)| tacsim::arena::intents::Intent {
+            unit: *unit,
+            channel: Channel::Helm,
+            epoch: arena.epochs.current(*unit, Channel::Helm),
+            kind: kind.clone(),
+            seq,
+        })
+        .collect()
+}
+
+/// The squad `unit` is in.
+fn z2_squad(arena: &Arena, unit: ObjId) -> tacsim::deliberation::SquadId {
+    arena
+        .squad_of(unit)
+        .map(|roster| roster.id)
+        .expect("the machine is in a squad")
+}
+
+/// A unit's cell after every pulse of a replay.
+type Z2Cells = Vec<Option<(u16, u16)>>;
+
+/// A unit's cell after every pulse of a replay, with the pulse's closing arena
+/// millisecond.
+type Z2Samples = Vec<(i64, Option<(u16, u16)>)>;
+
+/// The cell `unit` stands in.
+fn z2_cell(arena: &Arena, unit: ObjId) -> Option<(u16, u16)> {
+    arena
+        .unit(unit)
+        .and_then(|state| arena.definition.terrain.cell_of(&state.pose))
+}
+
+// ---- (a) the screen --------------------------------------------------------
+
+/// Where the crossing tank is put, and when: from 18° (outside the 30° to 150°
+/// arc of a screen facing east) through 45°, 90° and 135° (inside it) to 170°
+/// (outside again), about six cells out, one move every five seconds of arena
+/// time.
+const Z2_CROSSING: [(i64, (u16, u16)); 5] = [
+    (5_000, (10, 14)),
+    (10_000, (12, 12)),
+    (15_000, (14, 8)),
+    (20_000, (12, 4)),
+    (25_000, (9, 2)),
+];
+
+/// **A screen facing east.** The red machine at the middle of the window with a
+/// ten-cell sight (so `release_cm` is ten cells); a blue tank six cells due
+/// north of it, 30° outside the arc, that the script drives across the front;
+/// and a second blue tank parked five cells due west — at 270°, inside
+/// `release_cm` and nearer than the first — that the screen must never turn
+/// for. Both blue tanks are unarmed and nobody flies them.
+fn z2_screen_field() -> Arena {
+    let mut arena = arena_of(
+        vec![
+            with_sight(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(8, 8),
+                    vec![cannon()],
+                    Controller::Reflex,
+                ),
+                10,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(8, 14),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+            tank(
+                BLUE2,
+                Team::Blue,
+                centre(3, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[],
+    );
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, 0);
+    plant_contact(&mut arena, RED, BLUE2, Team::Blue, 0);
+    arena
+}
+
+/// One replay of the screen: `SCREEN 90` at beat 0, the crossing driven by the
+/// script, the red machine's cell sampled after every pulse.
+fn z2_screen(cadence_ms: i64) -> (Replay, Z2Cells) {
+    let arena = z2_screen_field();
+    let squad = z2_squad(&arena, RED);
+    let told = tacsim::arena::intents::IntentKind::Order(Box::new(z2_order(
+        squad,
+        tacsim::deliberation::Objective::Screen {
+            facing_mdeg: 90_000,
+        },
+        false,
+        None,
+    )));
+    let mut cells: Z2Cells = Vec::new();
+    let run = replay_with(
+        cadence_ms,
+        40_000,
+        arena,
+        &|arena, pulse| {
+            if pulse == 0 {
+                z2_fan(arena, &[RED], &told)
+            } else {
+                Vec::new()
+            }
+        },
+        &mut |arena: &mut Arena| {
+            if let Some((_, cell)) = Z2_CROSSING.iter().find(|(at, _)| *at == arena.now_ms) {
+                if let Some(state) = arena.unit_mut(BLUE) {
+                    state.pose = centre(cell.0, cell.1);
+                }
+                let at_ms = arena.now_ms;
+                plant_contact(arena, RED, BLUE, Team::Blue, at_ms);
+            }
+            cells.push(z2_cell(arena, RED));
+        },
+    );
+    (run, cells)
+}
+
+/// **16b cut Z.2 (a), 16c N6 (16b §11: mandatory)**: a screen fires on what
+/// enters its arc and never moves.
+///
+/// At 5,000, 1,000 and 500 ms one event list, one hash sequence (which now
+/// folds the facing) and one final field. The machine's cell is the same after
+/// every pulse of every replay. It locks and fires on the crossing tank only
+/// once the script has put it inside the arc (the move at 10 s, to 45°), and
+/// on nothing before; and the tank parked at 270° — inside `release_cm`, held
+/// and classified the whole time, and nearer than the crossing tank — is never
+/// locked at all.
+#[test]
+fn z2_a_screen_fires_on_what_enters_its_arc_and_never_moves() {
+    let replays: Vec<(Replay, Z2Cells)> =
+        [5_000_i64, 1_000, 500].into_iter().map(z2_screen).collect();
+    for (_, cells) in &replays {
+        assert!(!cells.is_empty());
+        assert!(
+            cells.iter().all(|cell| *cell == Some((8, 8))),
+            "the screen never moves: {cells:?}"
+        );
+    }
+    let runs: Vec<Replay> = replays.into_iter().map(|(run, _)| run).collect();
+    z2_one_log(&runs, "the screen");
+    let first = &runs[0];
+    let ordered = z2_lines(first, "ordered");
+    assert_eq!(ordered.len(), 1, "one order: {ordered:?}");
+    assert!(
+        ordered.iter().all(|(t_ms, line)| *t_ms == 0
+            && matches!(
+                line,
+                tacsim::arena::ledger::EventKind::Ordered { objective, .. } if objective == "screen"
+            )),
+        "one `screen` order at beat 0: {ordered:?}"
+    );
+    let locked = z2_lines(first, "locked");
+    assert!(!locked.is_empty(), "the screen locked something");
+    for (t_ms, line) in &locked {
+        let tacsim::arena::ledger::EventKind::Locked { unit, target, .. } = line else {
+            continue;
+        };
+        assert_eq!(*unit, RED);
+        assert_eq!(*target, BLUE, "only the crossing tank is ever locked");
+        assert!(*t_ms > 10_000, "not before it was inside the arc: {t_ms}");
+    }
+    let fired: Vec<i64> = z2_lines(first, "fired")
+        .into_iter()
+        .filter_map(|(t_ms, line)| match line {
+            tacsim::arena::ledger::EventKind::Fired { unit, target, .. } => {
+                assert_eq!(unit, RED);
+                assert_eq!(target, BLUE, "the screen fires on the crossing tank alone");
+                Some(t_ms)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        fired
+            .first()
+            .is_some_and(|t_ms| *t_ms > 10_000 && *t_ms < 15_000),
+        "the screen fires once the tank is inside its arc: {fired:?}"
+    );
+    // **16b cut Z.2's review**: and it stops once the tank has left the arc. The
+    // move at 25 s puts it at 170°; the machine's first tick after that reads
+    // the new plot, so no round is fired from a tick after it. It does not
+    // keep the last target it had, and it does not turn for the tank at 270°.
+    let decide_ms = i64::from(reflex_cfg().decide_ms);
+    assert!(
+        fired.iter().all(|t_ms| *t_ms < 25_000 + decide_ms),
+        "the screen fired on a tank outside its arc: {fired:?}"
+    );
+    // **The facing the acknowledgement promises** ("faces 090°"): with nothing
+    // inside the arc from 25 s to the end, the machine is turned back onto the
+    // order's bearing and holds it.
+    assert_eq!(
+        first
+            .finals
+            .iter()
+            .find(|row| row.0 == RED)
+            .map(|row| row.3),
+        Some(90_000),
+        "the screen faces its bearing when it has nothing to shoot"
+    );
+}
+
+// ---- (b) the support -------------------------------------------------------
+
+/// The supporter.
+const Z2_SUPPORTER: ObjId = RED2;
+/// Its charge.
+const Z2_CHARGE: ObjId = RED;
+/// The hostile the charge designates: farther from the supporter, and showing
+/// it its front.
+const Z2_DESIGNATED: ObjId = BLUE;
+/// The hostile the supporter's own score prefers: nearer, and showing its rear.
+const Z2_BETTER: ObjId = BLUE2;
+
+/// **The designation field.** Row 8: the supporter at column 6 with an
+/// eight-cell sight, its charge two cells east at column 8, and the designated
+/// tank at column 12 facing west — six cells from the supporter, front on. The
+/// better target sits at (3, 10) facing west, 3.6 cells from the supporter and
+/// rear on, and further than the charge's five-cell sight from the charge, so
+/// the charge never holds it. The supporter holds all three, classified; the
+/// charge holds the designated tank.
+///
+/// `machine` puts the charge under the controller (its row then targets the one
+/// hostile it holds); otherwise it is a pilot's tank nobody is flying,
+/// **locked** on the designated tank.
+fn z2_designation_field(machine: bool) -> Arena {
+    let mut designated = tank(
+        Z2_DESIGNATED,
+        Team::Blue,
+        centre(12, 8),
+        Vec::new(),
+        Controller::Pilot,
+    );
+    designated.pose.heading_mdeg = 270_000;
+    let mut better = tank(
+        Z2_BETTER,
+        Team::Blue,
+        centre(3, 10),
+        Vec::new(),
+        Controller::Pilot,
+    );
+    better.pose.heading_mdeg = 270_000;
+    let mut arena = arena_of(
+        vec![
+            tank(
+                Z2_CHARGE,
+                Team::Red,
+                centre(8, 8),
+                vec![cannon()],
+                if machine {
+                    Controller::Reflex
+                } else {
+                    Controller::Pilot
+                },
+            ),
+            with_sight(
+                tank(
+                    Z2_SUPPORTER,
+                    Team::Red,
+                    centre(6, 8),
+                    vec![cannon()],
+                    Controller::Reflex,
+                ),
+                8,
+            ),
+            designated,
+            better,
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[],
+    );
+    plant_contact(&mut arena, Z2_SUPPORTER, Z2_CHARGE, Team::Red, 0);
+    plant_contact(&mut arena, Z2_SUPPORTER, Z2_DESIGNATED, Team::Blue, 0);
+    plant_contact(&mut arena, Z2_SUPPORTER, Z2_BETTER, Team::Blue, 0);
+    plant_contact(&mut arena, Z2_CHARGE, Z2_DESIGNATED, Team::Blue, 0);
+    if !machine {
+        let lock = arena.contacts.id_of(Z2_CHARGE, Z2_DESIGNATED);
+        if let Some(state) = arena.unit_mut(Z2_CHARGE) {
+            state.lock = lock;
+        }
+    }
+    arena
+}
+
+/// What one designation replay read at 5 s: the supporter's target, the
+/// charge's own target and state (a machine charge's), and the charge's plot
+/// range to the designated tank.
+type Z2Read = (Option<ObjId>, Option<ObjId>, Option<ReflexState>, i64);
+
+/// One replay of the designation field under `objective`, fanned to the
+/// supporter's squad at beat 0 with the fire held, read at 5 s.
+fn z2_designation(
+    cadence_ms: i64,
+    machine: bool,
+    objective: tacsim::deliberation::Objective,
+) -> (Replay, Z2Read) {
+    let arena = z2_designation_field(machine);
+    let squad = z2_squad(&arena, Z2_SUPPORTER);
+    let units: Vec<ObjId> = arena
+        .squad_of(Z2_SUPPORTER)
+        .map(|roster| roster.units.clone())
+        .unwrap_or_default();
+    let issuer = if machine { None } else { Some(Z2_CHARGE) };
+    let told = tacsim::arena::intents::IntentKind::Order(Box::new(z2_order(
+        squad, objective, true, issuer,
+    )));
+    let mut read: Option<Z2Read> = None;
+    let run = replay_with(
+        cadence_ms,
+        10_000,
+        arena,
+        &|arena, pulse| {
+            if pulse == 0 {
+                z2_fan(arena, &units, &told)
+            } else {
+                Vec::new()
+            }
+        },
+        &mut |arena: &mut Arena| {
+            if arena.now_ms == 5_000 {
+                read = Some((
+                    target_of(arena, Z2_SUPPORTER),
+                    target_of(arena, Z2_CHARGE),
+                    state_of(arena, Z2_CHARGE),
+                    plot_range(arena, Z2_CHARGE, Z2_DESIGNATED),
+                ));
+            }
+        },
+    );
+    (run, read.expect("a pulse ended at 5 s"))
+}
+
+/// **The station field**, on a window forty-eight cells wide: the supporter at
+/// (10, 8) with a twenty-one-cell sight, its charge — a pilot's tank nobody is
+/// flying — two cells west of it, and one unarmed blue tank parked in the far
+/// corner, out of the supporter's sight wherever the replay takes it.
+fn z2_station_field() -> Arena {
+    z2_station_field_on(&[])
+}
+
+/// [`z2_station_field`] with `paint`ed cells over its uniform ground (16b cut
+/// Z.2's review: the unreachable station).
+fn z2_station_field_on(paint: &[(u16, u16, TerrainCell)]) -> Arena {
+    const WIDE: u16 = 48;
+    let mut cells = vec![ground(); usize::from(WIDE) * usize::from(SIDE)];
+    for (x, y, cell) in paint {
+        if let Some(slot) = cells.get_mut(usize::from(*y) * usize::from(WIDE) + usize::from(*x)) {
+            *slot = *cell;
+        }
+    }
+    let definition = ArenaDefinition {
+        id: SmolStr::new("tacsim.arena.reflex.wide"),
+        terrain: ArenaTerrain::new(WIDE, SIDE, CELL_CM, cells).expect("the wide window"),
+        entry_zones: vec![
+            EntryZone {
+                team: Team::Red,
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: SIDE - 1,
+            },
+            EntryZone {
+                team: Team::Blue,
+                x0: WIDE - 2,
+                y0: 0,
+                x1: WIDE - 1,
+                y1: SIDE - 1,
+            },
+        ],
+        key_spots: Vec::new(),
+        waypoints: graph(),
+    };
+    let mut arena = arena_on(
+        definition,
+        vec![
+            tank(
+                Z2_CHARGE,
+                Team::Red,
+                centre(8, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+            with_sight(
+                tank(
+                    Z2_SUPPORTER,
+                    Team::Red,
+                    centre(10, 8),
+                    vec![cannon()],
+                    Controller::Reflex,
+                ),
+                21,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(47, 15),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &arena_cfg(reflex_cfg()),
+        &[],
+    );
+    plant_contact(&mut arena, Z2_SUPPORTER, Z2_CHARGE, Team::Red, 0);
+    arena
+}
+
+/// What the station replay read at 30 s: the supporter's cell, its range to
+/// its own plot of the charge, and the speed it was ordered.
+type Z2Station = (Option<(u16, u16)>, Option<u64>, Option<i32>);
+
+/// One replay of the station field: `SUPPORT` the charge at beat 0; at 5 s the
+/// charge is moved twenty cells east; at 30 s the station is read and the
+/// charge is moved out of the supporter's sight, and nothing refreshes the
+/// supporter's hold on it, which expires; at 35 s the blue tank is put four
+/// cells north of wherever the supporter stands.
+fn z2_station(cadence_ms: i64) -> (Replay, Z2Station, Z2Samples) {
+    let arena = z2_station_field();
+    let squad = z2_squad(&arena, Z2_SUPPORTER);
+    let told = tacsim::arena::intents::IntentKind::Order(Box::new(z2_order(
+        squad,
+        tacsim::deliberation::Objective::Support { of: Z2_CHARGE },
+        false,
+        Some(Z2_CHARGE),
+    )));
+    let mut read: Option<Z2Station> = None;
+    let mut cells: Z2Samples = Vec::new();
+    let run = replay_with(
+        cadence_ms,
+        45_000,
+        arena,
+        &|arena, pulse| {
+            if pulse == 0 {
+                z2_fan(arena, &[Z2_SUPPORTER], &told)
+            } else {
+                Vec::new()
+            }
+        },
+        &mut |arena: &mut Arena| {
+            match arena.now_ms {
+                5_000 => {
+                    if let Some(state) = arena.unit_mut(Z2_CHARGE) {
+                        state.pose = centre(28, 8);
+                    }
+                }
+                30_000 => {
+                    let plot = hold_on(arena, Z2_SUPPORTER, Z2_CHARGE).map(|held| held.seen_at);
+                    read = Some((
+                        z2_cell(arena, Z2_SUPPORTER),
+                        plot.zip(arena.unit(Z2_SUPPORTER))
+                            .map(|(plot, state)| plot.range_from(&state.pose)),
+                        arena
+                            .unit(Z2_SUPPORTER)
+                            .map(|state| state.desired_speed_cms),
+                    ));
+                    if let Some(state) = arena.unit_mut(Z2_CHARGE) {
+                        state.pose = centre(0, 8);
+                    }
+                }
+                35_000 => {
+                    if let Some((x, y)) = z2_cell(arena, Z2_SUPPORTER) {
+                        if let Some(state) = arena.unit_mut(BLUE) {
+                            state.pose = centre(x, y + 4);
+                        }
+                        let at_ms = arena.now_ms;
+                        plant_contact(arena, Z2_SUPPORTER, BLUE, Team::Blue, at_ms);
+                    }
+                }
+                _ => {}
+            }
+            cells.push((arena.now_ms, z2_cell(arena, Z2_SUPPORTER)));
+        },
+    );
+    (run, read.expect("a pulse ended at 30 s"), cells)
+}
+
+/// **16b cut Z.2 (b), 16c N6 (16b §11: mandatory)**: a support prefers what its
+/// charge is fighting, keeps station on it, and fights where it stands when it
+/// cannot see it; a unit whose charge is itself fights on doctrine.
+///
+/// Every replay below is one event list, one hash sequence (which now folds the
+/// charge) and one final field at 5,000, 1,000 and 500 ms.
+///
+/// 1. **The designation, for a pilot charge and for a machine charge.** The
+///    supporter holds two classified hostiles, and its own score prefers the
+///    nearer one showing its rear (the control replay under `ENGAGE` proves
+///    it). Under `SUPPORT` its row targets the farther, front-on tank its charge
+///    is fighting: the tank a pilot's lock names, read on the pilot's own store,
+///    and the tank a machine's row targets, read off the memory the tick holds.
+///    The machine charge — whose `of` is itself — fights on doctrine: it takes
+///    that tank and closes on it as `ENGAGE` would.
+/// 2. **The station.** The charge is moved twenty cells: the supporter, past its
+///    leash, re-plans toward it and stops inside `SUPPORT_STATION_CELLS` of its
+///    own plot of the charge, ordered to a standstill.
+/// 3. **The blind stand.** The charge is moved out of the supporter's sight and
+///    its hold expires: the supporter's cell never changes again, it stays in
+///    `Patrol`, and when a hostile is put inside `release_cm` it fires on it from
+///    where it stands. The order does not end: a charge it cannot see is not a
+///    charge it has lost.
+#[test]
+fn z2_a_support_keeps_station_and_prefers_its_charges_target() {
+    use tacsim::arena::reflex::{SUPPORT_LEASH_CELLS, SUPPORT_STATION_CELLS};
+    use tacsim::deliberation::Objective;
+    let support = Objective::Support { of: Z2_CHARGE };
+
+    // 1. The control: on its own score the supporter takes the rear-on tank.
+    let (_, (own_choice, _, _, _)) =
+        z2_designation(1_000, false, Objective::Engage { target_hint: None });
+    assert_eq!(
+        own_choice,
+        Some(Z2_BETTER),
+        "the supporter's own score prefers the nearer, rear-on tank"
+    );
+    for machine in [false, true] {
+        let what = if machine {
+            "a machine charge"
+        } else {
+            "a pilot charge"
+        };
+        let replays: Vec<(Replay, Z2Read)> = [5_000_i64, 1_000, 500]
+            .into_iter()
+            .map(|cadence| z2_designation(cadence, machine, support))
+            .collect();
+        let (supporter, charge, charge_state, charge_range) = replays[0].1;
+        assert!(
+            replays.iter().all(|(_, read)| *read == replays[0].1),
+            "{what}: the reading diverged"
+        );
+        let runs: Vec<Replay> = replays.into_iter().map(|(run, _)| run).collect();
+        z2_one_log(&runs, what);
+        assert_eq!(
+            supporter,
+            Some(Z2_DESIGNATED),
+            "{what}: the supporter fights what its charge is fighting"
+        );
+        if machine {
+            // The charge's own `of` is itself: doctrine, `ENGAGE`'s semantics.
+            assert_eq!(charge, Some(Z2_DESIGNATED), "the charge fights on doctrine");
+            assert!(
+                matches!(
+                    charge_state,
+                    Some(ReflexState::Approach | ReflexState::Engage)
+                ),
+                "the charge is in the fight: {charge_state:?}"
+            );
+            assert!(
+                charge_range < 4 * i64::from(CELL_CM),
+                "the charge closed on its target as ENGAGE would: {charge_range} cm"
+            );
+        }
+    }
+
+    // 2 and 3. The station and the blind stand.
+    let replays: Vec<(Replay, Z2Station, Z2Samples)> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(z2_station)
+        .collect();
+    let (cell, range, speed) = replays[0].1;
+    assert!(
+        replays.iter().all(|(_, read, _)| *read == replays[0].1),
+        "the station reading diverged"
+    );
+    for (_, _, cells) in &replays {
+        let stood: Vec<Option<(u16, u16)>> = cells
+            .iter()
+            .filter(|(at, _)| *at >= 30_000)
+            .map(|(_, cell)| *cell)
+            .collect();
+        assert!(!stood.is_empty());
+        assert!(
+            stood.iter().all(|at| *at == cell),
+            "from the station on, the supporter never moves: {stood:?}"
+        );
+    }
+    let runs: Vec<Replay> = replays.into_iter().map(|(run, _, _)| run).collect();
+    z2_one_log(&runs, "the station");
+    assert!(
+        cell.is_some_and(|(x, _)| x >= 20),
+        "the supporter re-planned toward its charge, twenty cells east: {cell:?}"
+    );
+    const {
+        assert!(
+            SUPPORT_LEASH_CELLS > SUPPORT_STATION_CELLS,
+            "the station is inside the leash"
+        )
+    };
+    assert!(
+        range.is_some_and(|cm| cm <= u64::from(SUPPORT_STATION_CELLS) * u64::from(CELL_CM)),
+        "it stopped inside the station of its plot of the charge: {range:?}"
+    );
+    assert_eq!(speed, Some(0), "ordered to a standstill at the station");
+    let first = &runs[0];
+    let fired: Vec<i64> = z2_lines(first, "fired")
+        .into_iter()
+        .filter_map(|(t_ms, line)| match line {
+            tacsim::arena::ledger::EventKind::Fired { unit, target, .. } => {
+                assert_eq!(unit, Z2_SUPPORTER);
+                assert_eq!(target, BLUE);
+                Some(t_ms)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        fired.first().is_some_and(|t_ms| *t_ms > 35_000),
+        "the blind supporter fired from its stand, and only then: {fired:?}"
+    );
+    assert_eq!(
+        first
+            .finals
+            .iter()
+            .find(|row| row.0 == Z2_SUPPORTER)
+            .map(|row| row.5),
+        Some(ReflexState::Patrol),
+        "it fired from a stand, never leaving `Patrol`"
+    );
+    assert!(
+        z2_lines(first, "order_expired").is_empty(),
+        "a charge the supporter cannot see is not a charge it has lost"
+    );
+}
+
+/// One replay of the station field with a supporter that **cannot close** — a
+/// hull authored with no speed, which still turns in place (16b cut AA.1's
+/// shape): `SUPPORT` the charge at beat 0; at 5 s the charge is moved twenty
+/// cells east, past the leash and still inside the supporter's sight; at 10 s
+/// the blue tank is put four cells north of the supporter, with a contact.
+fn z2_immobile_support(cadence_ms: i64) -> (Replay, Z2Samples, bool) {
+    let mut arena = z2_station_field();
+    if let Some(state) = arena.unit_mut(Z2_SUPPORTER) {
+        state.mobility.max_speed_cms = 0;
+    }
+    let squad = z2_squad(&arena, Z2_SUPPORTER);
+    let told = tacsim::arena::intents::IntentKind::Order(Box::new(z2_order(
+        squad,
+        tacsim::deliberation::Objective::Support { of: Z2_CHARGE },
+        false,
+        Some(Z2_CHARGE),
+    )));
+    let mut cells: Z2Samples = Vec::new();
+    let mut ordered_at_end = false;
+    let run = replay_with(
+        cadence_ms,
+        30_000,
+        arena,
+        &|arena, pulse| {
+            if pulse == 0 {
+                z2_fan(arena, &[Z2_SUPPORTER], &told)
+            } else {
+                Vec::new()
+            }
+        },
+        &mut |arena: &mut Arena| {
+            match arena.now_ms {
+                5_000 => {
+                    if let Some(state) = arena.unit_mut(Z2_CHARGE) {
+                        state.pose = centre(30, 8);
+                    }
+                }
+                10_000 => {
+                    if let Some(state) = arena.unit_mut(BLUE) {
+                        state.pose = centre(10, 12);
+                    }
+                    let at_ms = arena.now_ms;
+                    plant_contact(arena, Z2_SUPPORTER, BLUE, Team::Blue, at_ms);
+                }
+                _ => {}
+            }
+            cells.push((arena.now_ms, z2_cell(arena, Z2_SUPPORTER)));
+            ordered_at_end = arena.reflex.order(Z2_SUPPORTER).is_some();
+        },
+    );
+    (run, cells, ordered_at_end)
+}
+
+/// **16b cut Z.2's review (16c N6; the `B-76` class, 16b §11: mandatory)**: a
+/// supporter past its leash that **cannot close** stands and fights where it
+/// is.
+///
+/// Its charge is moved twenty cells off, where the supporter still sees it: a
+/// mobile supporter would rejoin (and fire nothing while it drove), but this
+/// one never can, so the rejoining leg would have held it silent for the whole
+/// order while a hostile shot it. It takes the blind supporter's stand instead:
+/// its cell never changes, it stays in `Patrol`, it fires on the tank put four
+/// cells from it, and the order stands — at 5,000, 1,000 and 500 ms, one event
+/// list, one hash sequence and one final field.
+#[test]
+fn z2_a_supporter_that_cannot_close_fights_where_it_stands_past_its_leash() {
+    let replays: Vec<(Replay, Z2Samples, bool)> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(z2_immobile_support)
+        .collect();
+    for (_, cells, ordered) in &replays {
+        assert!(!cells.is_empty());
+        assert!(
+            cells.iter().all(|(_, cell)| *cell == Some((10, 8))),
+            "a hull with no speed never moves: {cells:?}"
+        );
+        assert!(*ordered, "the order stands: a stand is not an end");
+    }
+    let runs: Vec<Replay> = replays.into_iter().map(|(run, _, _)| run).collect();
+    z2_one_log(&runs, "the immobile supporter");
+    let first = &runs[0];
+    let fired: Vec<i64> = z2_lines(first, "fired")
+        .into_iter()
+        .filter_map(|(t_ms, line)| match line {
+            tacsim::arena::ledger::EventKind::Fired { unit, target, .. } => {
+                assert_eq!(unit, Z2_SUPPORTER);
+                assert_eq!(target, BLUE);
+                Some(t_ms)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        fired.first().is_some_and(|t_ms| *t_ms > 10_000),
+        "past its leash and unable to close, the supporter fired from where it \
+         stands: {fired:?}"
+    );
+    assert_eq!(
+        first
+            .finals
+            .iter()
+            .find(|row| row.0 == Z2_SUPPORTER)
+            .map(|row| row.5),
+        Some(ReflexState::Patrol),
+        "it fired from a stand, never leaving `Patrol`"
+    );
+    assert!(
+        z2_lines(first, "order_expired").is_empty(),
+        "a supporter that stands has not lost its charge"
+    );
+}
+
+/// Open water, which no hull crosses and every sensor sees over.
+fn z2_water() -> TerrainCell {
+    TerrainCell {
+        class: mush_atlas::TerrainClass::Water,
+        elev_cm: 0,
+        move_cost: 0,
+    }
+}
+
+/// One replay of the station field with a moat of open water three cells wide
+/// from edge to edge at columns 19 to 21: `SUPPORT` the charge at beat 0; at
+/// 5 s the charge is moved twenty cells east, across the moat, where the
+/// supporter still sees it and no route reaches its station. Answers the
+/// replay and whether the supporter still holds the order at the end.
+fn z2_moat_support(cadence_ms: i64) -> (Replay, bool) {
+    let moat: Vec<(u16, u16, TerrainCell)> = (19..=21_u16)
+        .flat_map(|x| (0..SIDE).map(move |y| (x, y, z2_water())))
+        .collect();
+    let arena = z2_station_field_on(&moat);
+    let squad = z2_squad(&arena, Z2_SUPPORTER);
+    let told = tacsim::arena::intents::IntentKind::Order(Box::new(z2_order(
+        squad,
+        tacsim::deliberation::Objective::Support { of: Z2_CHARGE },
+        false,
+        Some(Z2_CHARGE),
+    )));
+    let mut ordered_at_end = false;
+    let run = replay_with(
+        cadence_ms,
+        20_000,
+        arena,
+        &|arena, pulse| {
+            if pulse == 0 {
+                z2_fan(arena, &[Z2_SUPPORTER], &told)
+            } else {
+                Vec::new()
+            }
+        },
+        &mut |arena: &mut Arena| {
+            if arena.now_ms == 5_000
+                && let Some(state) = arena.unit_mut(Z2_CHARGE)
+            {
+                state.pose = centre(30, 8);
+            }
+            ordered_at_end = arena.reflex.order(Z2_SUPPORTER).is_some();
+        },
+    );
+    (run, ordered_at_end)
+}
+
+/// **16b cut Z.2's review (16c N6; `B-41`'s lesson, 16b §11: mandatory)**: a
+/// supporter whose station no route reaches ends its order.
+///
+/// Past its leash a supporter rejoins, and fires nothing while it does; a
+/// station across a moat it cannot cross would hold it silent for the order's
+/// whole life, paying a failed search every `repath_ms`. The failed search for
+/// the station ends the order for this unit exactly as `B-41` ends an
+/// `Advance`: one `order_expired` line naming `support` at the supporter's
+/// first tick after the charge crossed, the same arena millisecond at every
+/// cadence, and the supporter on doctrine, holding no order.
+#[test]
+fn z2_a_supporter_whose_station_no_route_reaches_ends_its_order() {
+    let replays: Vec<(Replay, bool)> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(z2_moat_support)
+        .collect();
+    for (_, ordered) in &replays {
+        assert!(!*ordered, "the supporter is on doctrine, under no order");
+    }
+    let runs: Vec<Replay> = replays.into_iter().map(|(run, _)| run).collect();
+    z2_one_log(&runs, "the unreachable station");
+    let expired = z2_lines(&runs[0], "order_expired");
+    assert_eq!(expired.len(), 1, "one line: {expired:?}");
+    let (t_ms, line) = &expired[0];
+    assert!(
+        *t_ms > 5_000 && *t_ms <= 5_000 + i64::from(reflex_cfg().decide_ms),
+        "at the supporter's first tick after its charge crossed: {t_ms}"
+    );
+    assert_eq!(
+        *line,
+        tacsim::arena::ledger::EventKind::OrderExpired {
+            unit: Z2_SUPPORTER,
+            squad: SmolStr::new("red-1"),
+            objective: SmolStr::new("support"),
+        }
+    );
+}
+
+// ---- (c) the release -------------------------------------------------------
+
+/// One red machine in the middle of the window and an unarmed blue tank in the
+/// far corner that nobody flies.
+fn z2_release_field() -> Arena {
+    arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(8, 8),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(15, 15),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[],
+    )
+}
+
+/// The releasing pilot's tank.
+const Z2_RELEASER: ObjId = ObjId(77);
+
+/// One replay of the release: a ten-minute `WITHDRAW` at beat 0; red-1's
+/// `RELEASE` at 10 s; the `WITHDRAW` again at 15 s; a `RELEASE` for red-2 at
+/// 20 s. Read at 15 s, before the second order lands.
+fn z2_release(cadence_ms: i64) -> (Replay, Option<ReflexState>) {
+    let arena = z2_release_field();
+    let squad = z2_squad(&arena, RED);
+    let other = tacsim::deliberation::SquadId {
+        team: Team::Red,
+        index: squad.index + 1,
+    };
+    let withdraw = tacsim::arena::intents::IntentKind::Order(Box::new(z2_order(
+        squad,
+        tacsim::deliberation::Objective::Withdraw,
+        false,
+        Some(Z2_RELEASER),
+    )));
+    let release = |squad| tacsim::arena::intents::IntentKind::ReleaseOrder {
+        squad,
+        issuer: Some(Z2_RELEASER),
+    };
+    let mut read: Option<Option<ReflexState>> = None;
+    let run = replay_with(
+        cadence_ms,
+        30_000,
+        arena,
+        &|arena, pulse| match (pulse, arena.now_ms) {
+            (0, _) | (_, 15_000) => z2_fan(arena, &[RED], &withdraw),
+            (_, 10_000) => z2_fan(arena, &[RED], &release(squad)),
+            (_, 20_000) => z2_fan(arena, &[RED], &release(other)),
+            _ => Vec::new(),
+        },
+        &mut |arena: &mut Arena| {
+            if arena.now_ms == 15_000 {
+                read = Some(state_of(arena, RED));
+            }
+        },
+    );
+    (run, read.expect("a pulse ended at 15 s"))
+}
+
+/// **16b cut Z.2 (c), 16c Q44 (16b §11: mandatory)**: a release ends an order at
+/// one millisecond.
+///
+/// A healthy machine under a ten-minute `WITHDRAW` is released at a
+/// pulse-aligned beat: one `order_released` line at that arena millisecond at
+/// every cadence, carrying the squad and the issuer, and the machine reads
+/// `Patrol` on the ticks after it — the expiry block's own restoration, so it
+/// does not keep driving home. A release for another squad's word, at a later
+/// beat and on a machine under red-1's order again, journals nothing and leaves
+/// the order standing.
+#[test]
+fn z2_a_release_ends_an_order_at_one_millisecond() {
+    let replays: Vec<(Replay, Option<ReflexState>)> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(z2_release)
+        .collect();
+    for (_, read) in &replays {
+        assert_eq!(
+            *read,
+            Some(ReflexState::Patrol),
+            "released, the machine is on doctrine"
+        );
+    }
+    let runs: Vec<Replay> = replays.into_iter().map(|(run, _)| run).collect();
+    z2_one_log(&runs, "the release");
+    let released = z2_lines(&runs[0], "order_released");
+    assert_eq!(
+        released,
+        vec![(
+            10_000,
+            tacsim::arena::ledger::EventKind::OrderReleased {
+                unit: RED,
+                squad: SmolStr::new("red-1"),
+                issuer: Some(Z2_RELEASER),
+            }
+        )],
+        "one line, at the beat, and none for red-2's word"
+    );
+    assert_eq!(
+        runs[0]
+            .finals
+            .iter()
+            .find(|row| row.0 == RED)
+            .map(|row| row.5),
+        Some(ReflexState::Withdraw),
+        "red-2's release left red-1's second order standing"
+    );
+    assert!(
+        z2_lines(&runs[0], "order_expired").is_empty(),
+        "a release is not an expiry"
+    );
+}
+
+// ---- (d) the charge lost ----------------------------------------------------
+
+/// A supporter and its charge — a pilot's tank nobody flies — two cells apart.
+fn z2_charge_field() -> Arena {
+    arena_of(
+        vec![
+            tank(
+                Z2_CHARGE,
+                Team::Red,
+                centre(8, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+            tank(
+                Z2_SUPPORTER,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(15, 15),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[],
+    )
+}
+
+/// How the charge is lost at 10 s, for [`z2_charge_lost`].
+#[derive(Clone, Copy, Debug)]
+enum Z2Loss {
+    /// The script takes the charge out of the arena.
+    Leaves,
+    /// The charge is wrecked and the supporter's own hold on it is marked the
+    /// way the kill line's own arm marks it (`known_dead`): a charge killed in
+    /// a fight the supporter watched, which stays in the arena as a wreck.
+    KilledInSight,
+    /// The charge is wrecked and nobody tells the supporter: its hold is not
+    /// marked and shows no destroyed section.
+    WreckedUnseen,
+}
+
+/// One replay: `SUPPORT` the charge at beat 0 (the supporter's hold on it
+/// planted, so the kill has a row to mark), the charge lost at 10 s by `loss`.
+/// Answers the replay and whether the supporter still holds the order at the
+/// end.
+fn z2_charge_lost(cadence_ms: i64, loss: Z2Loss) -> (Replay, bool) {
+    let mut arena = z2_charge_field();
+    plant_contact(&mut arena, Z2_SUPPORTER, Z2_CHARGE, Team::Red, 0);
+    let squad = z2_squad(&arena, Z2_SUPPORTER);
+    let told = tacsim::arena::intents::IntentKind::Order(Box::new(z2_order(
+        squad,
+        tacsim::deliberation::Objective::Support { of: Z2_CHARGE },
+        false,
+        None,
+    )));
+    let mut ordered_at_end = false;
+    let run = replay_with(
+        cadence_ms,
+        20_000,
+        arena,
+        &|arena, pulse| {
+            if pulse == 0 {
+                z2_fan(arena, &[Z2_SUPPORTER], &told)
+            } else {
+                Vec::new()
+            }
+        },
+        &mut |arena: &mut Arena| {
+            if arena.now_ms == 10_000 {
+                match loss {
+                    Z2Loss::Leaves => arena.units.retain(|unit| unit.id != Z2_CHARGE),
+                    Z2Loss::KilledInSight => {
+                        wreck_it(arena, Z2_CHARGE);
+                        learn_the_kill(arena, Z2_SUPPORTER, Z2_CHARGE);
+                    }
+                    Z2Loss::WreckedUnseen => wreck_it(arena, Z2_CHARGE),
+                }
+            }
+            ordered_at_end = arena.reflex.order(Z2_SUPPORTER).is_some();
+        },
+    );
+    (run, ordered_at_end)
+}
+
+/// **16b cut Z.2 (d), 16c N6 (16b §11: mandatory)**: a `SUPPORT` whose charge
+/// is lost ends for the supporter through `B-41`'s route — one `order_expired`
+/// line naming `support`, at the supporter's first tick after the loss, the
+/// same arena millisecond at every cadence — and the supporter is on doctrine,
+/// holding no order.
+///
+/// Two ways of losing it end the order: the charge **leaves** the arena, and —
+/// the way a support usually ends in a fight (16b cut Z.2's review) — the
+/// charge is **killed where the supporter watched it**, stays in the arena as a
+/// wreck, and the supporter's own hold reads it dead. The third does not: a
+/// charge wrecked where **nobody told the supporter** leaves the order standing
+/// for the whole replay, because what ends it is what the supporter knows
+/// (`contact_reads_dead`) and never the charge's live wreck flag (doc 16 §1).
+#[test]
+fn z2_a_support_whose_charge_leaves_ends_at_one_millisecond() {
+    for loss in [Z2Loss::Leaves, Z2Loss::KilledInSight] {
+        let what = format!("the charge lost ({loss:?})");
+        let replays: Vec<(Replay, bool)> = [5_000_i64, 1_000, 500]
+            .into_iter()
+            .map(|cadence| z2_charge_lost(cadence, loss))
+            .collect();
+        for (_, ordered) in &replays {
+            assert!(
+                !*ordered,
+                "{what}: the supporter is on doctrine, under no order"
+            );
+        }
+        let runs: Vec<Replay> = replays.into_iter().map(|(run, _)| run).collect();
+        z2_one_log(&runs, &what);
+        let expired = z2_lines(&runs[0], "order_expired");
+        assert_eq!(expired.len(), 1, "{what}: one line: {expired:?}");
+        let (t_ms, line) = &expired[0];
+        assert!(
+            *t_ms > 10_000 && *t_ms <= 10_000 + i64::from(reflex_cfg().decide_ms),
+            "{what}: at the supporter's first tick after the loss: {t_ms}"
+        );
+        assert_eq!(
+            *line,
+            tacsim::arena::ledger::EventKind::OrderExpired {
+                unit: Z2_SUPPORTER,
+                squad: SmolStr::new("red-1"),
+                objective: SmolStr::new("support"),
+            },
+            "{what}"
+        );
+    }
+
+    // The wreck nobody told the supporter about: no end, at any cadence.
+    let replays: Vec<(Replay, bool)> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| z2_charge_lost(cadence, Z2Loss::WreckedUnseen))
+        .collect();
+    for (_, ordered) in &replays {
+        assert!(
+            *ordered,
+            "the supporter learned of the wreck through knowledge it does not hold"
+        );
+    }
+    let runs: Vec<Replay> = replays.into_iter().map(|(run, _)| run).collect();
+    z2_one_log(&runs, "the charge wrecked unseen");
+    assert!(
+        z2_lines(&runs[0], "order_expired").is_empty(),
+        "a wreck the supporter does not know of ends nothing"
+    );
 }

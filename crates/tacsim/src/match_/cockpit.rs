@@ -31,7 +31,7 @@
 //! FIRE [<weapon>]            shoot it
 //! WEAPONSTATUS               ammunition and readiness
 //! STATUS                     callsign, power, speed, heading, scope, nearest spot, damage
-//! ORDER <squad|ALL> <what>   command your side's machines (HOLD, ADVANCE, ENGAGE, WITHDRAW)
+//! ORDER <squad|ALL> <what>   command your side's machines (HOLD, ADVANCE, ENGAGE, WITHDRAW, SCREEN, SUPPORT; RELEASE)
 //! EXIT                       climb out
 //! ```
 //!
@@ -509,18 +509,24 @@ pub enum CockpitError {
     /// **`ORDER ALL` with nothing to order** (16b cut Y.1).
     #[error("{NO_SQUAD_TO_ORDER}")]
     NoSquadToOrder,
+    /// **A `SUPPORT` callsign no tank of the pilot's side flies** (16b cut Z.2):
+    /// the other side's, a provisional, a word that is no callsign, a slot
+    /// nobody flies — one line for all four.
+    #[error("{NO_SUCH_FRIENDLY}")]
+    NoSuchFriendly,
     /// **One more squad would be past the span** (16b cut Y.2; doc 16 §2 W8,
     /// `[tacsim.command].max_span`): the pilot already holds live orders on
     /// `held` squads the order does not name, and those alone fill the span —
     /// so no squad can be ordered, one or `ALL`, until one runs out.
     ///
     /// The span holds until the world's watch on each of those squads runs out
-    /// ([`HUMAN_ORDER_TTL_MS`]): the world never learns that the arena ended
-    /// an order early (16b cut AA.1, `B-41`), and nothing hands a squad back
-    /// (16c Q44, cut Z's). So the sentence says to wait for one to run out,
-    /// which is the one thing that frees the span, and says nothing of
-    /// re-ordering one of them — a replacement frees nothing.
-    #[error("You hold orders on {held} squad(s) already; wait for one to run out.")]
+    /// ([`HUMAN_ORDER_TTL_MS`]) or the pilot hands one back: the world never
+    /// learns that the arena ended an order early (16b cut AA.1, `B-41`), and
+    /// since **16b cut Z.2** (16c Q44) `ORDER <squad> RELEASE` drops the watch
+    /// the pilot's own order put on a squad. So the sentence names the two
+    /// things that free the span, and says nothing of re-ordering one of them
+    /// — a replacement frees nothing.
+    #[error("You hold orders on {held} squad(s) already; wait for one to run out, or RELEASE one.")]
     SpanFull {
         /// Live orders on squads other than the one named.
         held: usize,
@@ -5142,7 +5148,7 @@ pub fn resolve_designator(rows: &[ContactRow], word: &str) -> Option<ContactId> 
 //
 // Doc 16 §6's deliberation had one issuer, the LLM seam, which the shipped
 // server has off. `ORDER` is the second: a pilot tells their side's machines
-// what to do with the same four objectives and the same `IntentKind::Order`
+// what to do with the same six objectives and the same `IntentKind::Order`
 // the seam sends, so the arena cannot tell the two apart except by
 // `Order::issuer` — the scope a target hint is written in. Who may order what is
 // 16c Q38's default read as the cut Y plan's decision 2: the side's **lead**
@@ -5154,9 +5160,17 @@ pub fn resolve_designator(rows: &[ContactRow], word: &str) -> Option<ContactId> 
 // squad they cannot order.
 
 /// **`ORDER`'s grammar**, said for anything [`parse_order`] cannot read (16b cut
-/// Y.1).
-pub const ORDER_USAGE: &str =
-    "Usage: ORDER <squad|ALL> HOLD | ADVANCE <spot> | ENGAGE [<contact>] | WITHDRAW [HOLD FIRE]";
+/// Y.1; the two squad roles and the release since 16b cut Z.2). About 155
+/// characters, inside the TUI notices ring's 200-character line budget.
+pub const ORDER_USAGE: &str = "Usage: ORDER <squad|ALL> HOLD | ADVANCE <spot> | ENGAGE \
+                               [<contact>] | WITHDRAW | SCREEN <bearing> | SUPPORT <callsign> \
+                               [HOLD FIRE], or ORDER <squad|ALL> RELEASE";
+
+/// **A `SUPPORT` callsign that names no tank of the pilot's own side** (16b cut
+/// Z.2; 16c N6) — the other side's callsign, a provisional `X<n>`, a word that
+/// is no callsign and a slot nobody flies, **byte for byte one sentence**, so a
+/// pilot learns nothing about the other side's roster by naming it.
+pub const NO_SUCH_FRIENDLY: &str = "No tank of your side flies that callsign.";
 
 /// **A squad the pilot may not order** (16b cut Y.1) — the other side's, one that
 /// does not exist, and the pilot's own side's beyond their authority, **byte for
@@ -5206,11 +5220,28 @@ pub enum ObjectiveWords {
     },
     /// `WITHDRAW`.
     Withdraw,
+    /// `SCREEN <bearing>` (16b cut Z.2): the bearing to face, whole degrees
+    /// clockwise from north, `0` to `359` — digits only, as `BEARING` prints
+    /// one.
+    Screen {
+        /// The bearing, degrees.
+        bearing: u32,
+    },
+    /// `SUPPORT <callsign>` (16b cut Z.2): exactly one word, as typed, resolved
+    /// against the running match's callsigns after authority.
+    Support {
+        /// The charge's callsign, as typed.
+        callsign: String,
+    },
+    /// `RELEASE` (16b cut Z.2; 16c Q44): hand the squad back to doctrine.
+    /// Nothing may follow it, `HOLD FIRE` included.
+    Release,
 }
 
 impl ObjectiveWords {
     /// The objective's wire word — `crate::deliberation::Objective::as_str`'s,
     /// so the world's watch, the ledger and the sentence name it one way.
+    /// `RELEASE` is no objective and answers the release intent's own word.
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -5218,6 +5249,9 @@ impl ObjectiveWords {
             ObjectiveWords::Advance { .. } => "advance",
             ObjectiveWords::Engage { .. } => "engage",
             ObjectiveWords::Withdraw => "withdraw",
+            ObjectiveWords::Screen { .. } => "screen",
+            ObjectiveWords::Support { .. } => "support",
+            ObjectiveWords::Release => "release",
         }
     }
 }
@@ -5241,20 +5275,26 @@ pub struct OrderWords {
 /// ORDER <squad|ALL> ADVANCE <spot>       [HOLD FIRE]
 /// ORDER <squad|ALL> ENGAGE [<contact>]   [HOLD FIRE]
 /// ORDER <squad|ALL> WITHDRAW             [HOLD FIRE]
+/// ORDER <squad|ALL> SCREEN <bearing>     [HOLD FIRE]
+/// ORDER <squad|ALL> SUPPORT <callsign>   [HOLD FIRE]
+/// ORDER <squad|ALL> RELEASE
 /// ```
 ///
 /// Whitespace-split and case-folded: the keywords and the squad word are
-/// compared lower-cased, and a spot or contact word is kept as typed (both are
-/// resolved case-insensitively later). The trailing `HOLD FIRE` is the last two
-/// words **after** the objective word, so `ORDER red-1 HOLD HOLD FIRE` holds and
-/// holds fire, and `ORDER red-1 HOLD FIRE` is usage rather than a guess.
+/// compared lower-cased, and a spot, contact or callsign word is kept as typed
+/// (all three are resolved case-insensitively later). The trailing `HOLD FIRE`
+/// is the last two words **after** the objective word, so `ORDER red-1 HOLD
+/// HOLD FIRE` holds and holds fire, and `ORDER red-1 HOLD FIRE` is usage rather
+/// than a guess.
 ///
 /// # Errors
 ///
 /// [`CockpitError::Usage`] with [`ORDER_USAGE`] for an empty argument, a squad
 /// word that is neither `ALL`, a squad id nor an ordinal, an unknown objective,
-/// `ADVANCE` with no spot, `ENGAGE` with more than one word, and any other
-/// trailing word.
+/// `ADVANCE` with no spot, `ENGAGE` with more than one word, `SCREEN` with no
+/// word, a word that is not all digits or a bearing of 360 and above (16b cut
+/// Z.2), `SUPPORT` with no word or two, `RELEASE` with anything after it
+/// (`HOLD FIRE` included), and any other trailing word.
 pub fn parse_order(rest: &str) -> Result<OrderWords, CockpitError> {
     let usage = || CockpitError::Usage(ORDER_USAGE.to_owned());
     let typed: Vec<&str> = rest.split_whitespace().collect();
@@ -5294,6 +5334,24 @@ pub fn parse_order(rest: &str) -> Result<OrderWords, CockpitError> {
             },
             _ => return Err(usage()),
         },
+        // **16b cut Z.2**: one word of digits, below a full turn.
+        "screen" => match args {
+            [one] if !one.is_empty() && one.bytes().all(|byte| byte.is_ascii_digit()) => {
+                match one.parse::<u32>() {
+                    Ok(bearing) if bearing < 360 => ObjectiveWords::Screen { bearing },
+                    _ => return Err(usage()),
+                }
+            }
+            _ => return Err(usage()),
+        },
+        "support" => match args {
+            [one] => ObjectiveWords::Support {
+                callsign: (*one).to_owned(),
+            },
+            _ => return Err(usage()),
+        },
+        // Nothing after it: a release holds no fire, because it is no order.
+        "release" if args.is_empty() && !hold_fire => ObjectiveWords::Release,
         _ => return Err(usage()),
     };
     Ok(OrderWords {
@@ -5541,6 +5599,41 @@ fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
                 to: (found.x, found.y),
             }
         }
+        // **16b cut Z.2 (16c N6)**: the bearing as typed, in millidegrees.
+        ObjectiveWords::Screen { bearing } => crate::deliberation::Objective::Screen {
+            facing_mdeg: bearing.saturating_mul(1_000),
+        },
+        // **16b cut Z.2 (16c N6)**: the charge, resolved against the running
+        // match's own callsigns to a tank whose callsign is a slot of the
+        // pilot's OWN side — the pilot's own tank included. The other side's
+        // callsign, a provisional, a word that is no callsign and a slot
+        // nobody flies are one byte-identical refusal, said after authority,
+        // so the other side's roster is never learned by naming it. The
+        // acknowledgement names the charge by its callsign as the match
+        // prints it, not as typed.
+        ObjectiveWords::Support { callsign } => {
+            let own = own_team.ok_or(CockpitError::NoSuchFriendly)?;
+            let (of, designator) = ctx
+                .w
+                .module_state::<crate::match_::MatchBook>()
+                .and_then(|book| book.get(match_id))
+                .and_then(|record| {
+                    record
+                        .callsigns
+                        .iter()
+                        .find(|(_, designator)| {
+                            matches!(designator, Designator::Slot { team, .. } if *team == own)
+                                && designator.to_string().eq_ignore_ascii_case(callsign)
+                        })
+                        .map(|(unit, designator)| (*unit, *designator))
+                })
+                .ok_or(CockpitError::NoSuchFriendly)?;
+            hint = Some(designator.to_string());
+            crate::deliberation::Objective::Support { of }
+        }
+        // **16b cut Z.2 (16c Q44)**: a release carries no order at all; it
+        // takes its own road from here (`release`).
+        ObjectiveWords::Release => return release(ctx, seat, match_id, targets),
     };
 
     // (5) The order.
@@ -5567,6 +5660,17 @@ fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
         .module_state::<ArenaRegistry>()
         .and_then(|registry| registry.arena_of(match_id))
         .map(|ground| (ground.terrain.width(), ground.terrain.height()));
+    // **16b cut Z.2**: the leash in metres off this ground's own cell, for the
+    // acknowledgement — 150 m on the shipped ground.
+    let leash_m = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .and_then(|registry| registry.arena_of(match_id))
+        .map_or(0, |ground| {
+            u32::from(crate::arena::reflex::SUPPORT_LEASH_CELLS)
+                .saturating_mul(u32::from(ground.terrain.cell_cm()))
+                / 100
+        });
     for (squad, _, _) in &targets {
         order_for(*squad)
             .validate(window)
@@ -5636,7 +5740,66 @@ fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
             .as_ref()
             .map(|(name, letter)| (name.as_str(), *letter)),
         words.hold_fire,
+        leash_m,
     );
+    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    Ok(())
+}
+
+/// **`ORDER <squad|ALL> RELEASE`** (16b cut Z.2; 16c Q44) — hand the squads the
+/// pilot may order back to doctrine, from [`order`]'s step 4, after the parse,
+/// [`require_alive`] and authority (the same set, and the same
+/// [`NO_SUCH_SQUAD`] and [`NO_SQUAD_TO_ORDER`], as every other arm).
+///
+/// Then, in this order:
+///
+/// 1. **the rate** — one stamp spent ([`ArenaRegistry::note_order_stamp`]): a
+///    release is an `ORDER`, and a pilot who could release freely could spin
+///    orders and releases past `[tacsim.command].orders_per_minute`;
+/// 2. **no span check**: a release takes no squad, it gives one back;
+/// 3. **the fan-out** — [`crate::arena_bridge::forward_release`] per squad (the
+///    seat authorised once, on the pilot's own tank), `Busy` when no unit could
+///    be offered;
+/// 4. **the watch** — [`ArenaRegistry::note_order_released`] per squad reached,
+///    which drops the world's watch on it only when this pilot's tank gave the
+///    order the watch was kept for;
+/// 5. **the acknowledgement** ([`order_ack`] with [`ObjectiveWords::Release`]),
+///    to the issuer alone.
+///
+/// A release to a squad under no order is acknowledged, and the arena applies
+/// and journals nothing: the machines are on doctrine already.
+fn release(
+    ctx: &mut Ctx<'_>,
+    seat: &Seat,
+    match_id: MatchId,
+    targets: Vec<(crate::deliberation::SquadId, Vec<ObjId>, String)>,
+) -> Result<(), CockpitError> {
+    let actor = ctx.actor;
+    let now_ms = ctx.w.now().saturating_mul(1_000);
+    let command_cfg = crate::match_::lobby::command_config(ctx.w).unwrap_or_default();
+    if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+        registry
+            .note_order_stamp(seat.unit, now_ms, command_cfg.orders_per_minute)
+            .map_err(|n| CockpitError::RateFull { n })?;
+    }
+    let mut reached: Vec<(crate::deliberation::SquadId, String)> = Vec::new();
+    for (squad, units, who) in targets {
+        let offered =
+            crate::arena_bridge::forward_release(ctx, seat.driver, seat.unit, &units, squad)?;
+        if offered > 0 {
+            reached.push((squad, who));
+        }
+    }
+    if reached.is_empty() {
+        return Err(CockpitError::Order(IntentRefusal::Busy));
+    }
+    if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+        for (squad, _) in &reached {
+            registry.note_order_released(match_id, *squad, seat.unit);
+        }
+    }
+    let who: Vec<String> = reached.into_iter().map(|(_, who)| who).collect();
+    let line = order_ack(&who, &ObjectiveWords::Release, None, None, false, 0);
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
     Ok(())
 }
@@ -5695,6 +5858,26 @@ fn span_refusal(others: usize, named: usize, max_span: u32) -> Option<CockpitErr
 /// changes nothing else (those arms fire nothing already; the constraint is still
 /// set). Every acknowledgement ends ` It stands for 10 minutes or until your next
 /// order to it.`
+///
+/// **16b cut Z.2** (16c N6, Q44): the two squad roles and the release. For a
+/// `SUPPORT`, `hint` is the charge's callsign as the match prints it and
+/// `leash_m` the leash in metres off the ground's cell (`SUPPORT_LEASH_CELLS ×
+/// cell_cm / 100`, 150 on the shipped ground); the bearing prints as `BEARING`
+/// prints one. Verbatim, with `red-1`:
+///
+/// ```text
+/// Ordered red-1 to screen 090°: it holds where it stands, faces 090° and fires on what comes inside its arc without giving chase.
+/// Ordered red-1 to screen 090°, holding fire: it holds where it stands, faces 090° and locks what comes inside its arc but fires nothing.
+/// Ordered red-1 to support RA: it keeps within 150 m of RA and fires first on what RA is fighting.
+/// Ordered red-1 to support RA, holding fire: it keeps within 150 m of RA and locks what RA is fighting but fires nothing.
+/// Released red-1 to doctrine: it fights on its own reflexes until it is ordered again.
+/// Released red-1 and red-2 to doctrine: they fight on their own reflexes until they are ordered again.
+/// ```
+///
+/// The four order lines take the ten-minute tail; the release takes none, and
+/// its sentence is true on a server whose machines' own commander may order the
+/// squad again at its next signal — which dropping the watch allows on purpose.
+/// The plural is the release's alone: the ordered lines keep Y.1's singular.
 #[must_use]
 pub fn order_ack(
     who: &[String],
@@ -5702,7 +5885,23 @@ pub fn order_ack(
     hint: Option<&str>,
     spot: Option<(&str, char)>,
     hold_fire: bool,
+    leash_m: u32,
 ) -> String {
+    if matches!(objective, ObjectiveWords::Release) {
+        let many = who.len() > 1;
+        let who = join_names(who);
+        return if many {
+            format!(
+                "Released {who} to doctrine: they fight on their own reflexes until they are \
+                 ordered again."
+            )
+        } else {
+            format!(
+                "Released {who} to doctrine: it fights on its own reflexes until it is ordered \
+                 again."
+            )
+        };
+    }
     let who = join_names(who);
     let holding = if hold_fire { ", holding fire" } else { "" };
     let said = match (objective, hold_fire) {
@@ -5737,6 +5936,30 @@ pub fn order_ack(
         (ObjectiveWords::Withdraw, true) => {
             "to withdraw, holding fire: it breaks for its entry zone and fires nothing.".to_owned()
         }
+        (ObjectiveWords::Screen { bearing }, false) => format!(
+            "to screen {bearing:03}°: it holds where it stands, faces {bearing:03}° and fires on \
+             what comes inside its arc without giving chase."
+        ),
+        (ObjectiveWords::Screen { bearing }, true) => format!(
+            "to screen {bearing:03}°, holding fire: it holds where it stands, faces {bearing:03}° \
+             and locks what comes inside its arc but fires nothing."
+        ),
+        (ObjectiveWords::Support { callsign }, false) => {
+            let charge = hint.unwrap_or(callsign);
+            format!(
+                "to support {charge}: it keeps within {leash_m} m of {charge} and fires first on \
+                 what {charge} is fighting."
+            )
+        }
+        (ObjectiveWords::Support { callsign }, true) => {
+            let charge = hint.unwrap_or(callsign);
+            format!(
+                "to support {charge}, holding fire: it keeps within {leash_m} m of {charge} and \
+                 locks what {charge} is fighting but fires nothing."
+            )
+        }
+        // Answered above: a release is no order and takes no tail.
+        (ObjectiveWords::Release, _) => String::new(),
     };
     let minutes = HUMAN_ORDER_TTL_MS / 60_000;
     format!("Ordered {who} {said} It stands for {minutes} minutes or until your next order to it.")
@@ -5925,7 +6148,7 @@ fn cockpit_command(ctx: &mut Ctx<'_>, verb: &'static str) -> Result<(), CmdError
         // 16b cut Q.2: what is left of a contact, off the reading the arena put
         // on it.
         "scan" => scan(ctx, &seat, &rest),
-        // 16b cut Y.1: the side's machines, on the four objectives.
+        // 16b cut Y.1: the side's machines, on the six objectives and the release (16b cut Z.2).
         "order" => order(ctx, &seat, &rest),
         // Not reachable: the table below registers exactly `COCKPIT_VERBS`, and
         // this arm is the closed-set proof rather than a panic.
@@ -5974,10 +6197,12 @@ fn cockpit_help(verb: &str) -> String {
             .to_owned(),
         // 16b cut Y.1: who may order what, in the help, because the refusal for
         // a squad a pilot may not order is deliberately one bare sentence.
+        // 16b cut Z.2: the two squad roles and the release.
         "order" => "ORDER <squad|ALL> <objective>  command your side's machines: HOLD, ADVANCE \
-                    <spot>, ENGAGE [<contact>] or WITHDRAW, with HOLD FIRE at the end to forbid \
-                    shooting. A side's lead orders any squad of the side; anyone else their pod \
-                    pair's tank."
+                    <spot>, ENGAGE [<contact>], WITHDRAW, SCREEN <bearing> or SUPPORT \
+                    <callsign>, with HOLD FIRE at the end to forbid shooting; RELEASE hands them \
+                    back to their own doctrine. A side's lead orders any squad of the side; \
+                    anyone else their pod pair's tank."
             .to_owned(),
         // 16b cut F.2 gave both of these more to say, and a help line that
         // undersells a surface is a pilot who never looks at it.
@@ -7327,7 +7552,7 @@ mod tests {
         assert_eq!(
             CockpitError::Usage(ORDER_USAGE.to_owned()).to_string(),
             "Usage: ORDER <squad|ALL> HOLD | ADVANCE <spot> | ENGAGE [<contact>] | WITHDRAW \
-             [HOLD FIRE]"
+             | SCREEN <bearing> | SUPPORT <callsign> [HOLD FIRE], or ORDER <squad|ALL> RELEASE"
         );
         assert_eq!(CockpitError::NoSuchSquad.to_string(), "No such squad.");
         assert_eq!(
@@ -7343,7 +7568,7 @@ mod tests {
     fn y2_the_span_and_rate_refusals_read_verbatim() {
         assert_eq!(
             CockpitError::SpanFull { held: 1 }.to_string(),
-            "You hold orders on 1 squad(s) already; wait for one to run out."
+            "You hold orders on 1 squad(s) already; wait for one to run out, or RELEASE one."
         );
         assert_eq!(
             CockpitError::SpanAll { would: 5, span: 4 }.to_string(),
@@ -7393,6 +7618,179 @@ mod tests {
         );
     }
 
+    /// **16b cut Z.2** (16c N6, Q44): `SCREEN <bearing>`, `SUPPORT <callsign>`
+    /// and `RELEASE` read with and without the `HOLD FIRE` tail where the arm
+    /// takes one; `SCREEN` with no word, a word that is not all digits, or 360
+    /// and above, `SUPPORT` with no word or two, and `RELEASE` with any tail
+    /// (`HOLD FIRE` included) are usage, verbatim; and the usage line fits the
+    /// TUI notices ring's 200-character line.
+    #[test]
+    fn z2_parse_order_reads_the_screen_the_support_and_the_release() {
+        assert_eq!(
+            parse_order("red-1 SCREEN 90"),
+            Ok(y1_words(
+                SquadWord::Id(y1_red(1)),
+                ObjectiveWords::Screen { bearing: 90 },
+                false
+            ))
+        );
+        assert_eq!(
+            parse_order("1 screen 359 hold fire"),
+            Ok(y1_words(
+                SquadWord::Ordinal(1),
+                ObjectiveWords::Screen { bearing: 359 },
+                true
+            ))
+        );
+        assert_eq!(
+            parse_order("ALL screen 000"),
+            Ok(y1_words(
+                SquadWord::All,
+                ObjectiveWords::Screen { bearing: 0 },
+                false
+            ))
+        );
+        assert_eq!(
+            parse_order("1 SUPPORT ra"),
+            Ok(y1_words(
+                SquadWord::Ordinal(1),
+                ObjectiveWords::Support {
+                    callsign: "ra".to_owned()
+                },
+                false
+            ))
+        );
+        assert_eq!(
+            parse_order("red-1 support RA HOLD FIRE"),
+            Ok(y1_words(
+                SquadWord::Id(y1_red(1)),
+                ObjectiveWords::Support {
+                    callsign: "RA".to_owned()
+                },
+                true
+            ))
+        );
+        assert_eq!(
+            parse_order("red-1 RELEASE"),
+            Ok(y1_words(
+                SquadWord::Id(y1_red(1)),
+                ObjectiveWords::Release,
+                false
+            ))
+        );
+        assert_eq!(
+            parse_order("all release"),
+            Ok(y1_words(SquadWord::All, ObjectiveWords::Release, false))
+        );
+        for bad in [
+            "red-1 SCREEN",
+            "red-1 SCREEN 360",
+            "red-1 SCREEN 1000",
+            "red-1 SCREEN east",
+            "red-1 SCREEN -90",
+            "red-1 SCREEN +90",
+            "red-1 SCREEN 90 45",
+            "red-1 SCREEN HOLD FIRE",
+            "red-1 SUPPORT",
+            "red-1 SUPPORT RA RB",
+            "red-1 SUPPORT HOLD FIRE",
+            "red-1 RELEASE HOLD FIRE",
+            "red-1 RELEASE now",
+            "red-1 RELEASE RA",
+        ] {
+            assert_eq!(
+                parse_order(bad),
+                Err(CockpitError::Usage(ORDER_USAGE.to_owned())),
+                "{bad:?}"
+            );
+        }
+        assert!(
+            ORDER_USAGE.chars().count() <= 200,
+            "the usage line wraps inside the notices ring: {}",
+            ORDER_USAGE.chars().count()
+        );
+        assert_eq!(
+            CockpitError::NoSuchFriendly.to_string(),
+            "No tank of your side flies that callsign."
+        );
+        assert_eq!(ObjectiveWords::Screen { bearing: 1 }.as_str(), "screen");
+        assert_eq!(
+            ObjectiveWords::Support {
+                callsign: String::new()
+            }
+            .as_str(),
+            "support"
+        );
+        assert_eq!(ObjectiveWords::Release.as_str(), "release");
+    }
+
+    /// **16b cut Z.2**: the four new order acknowledgements and the release's,
+    /// verbatim — the bearing printed as `BEARING` prints one, the leash in
+    /// metres, the charge by its callsign as the match prints it, the order
+    /// lines with the ten-minute tail and the release with none, singular for
+    /// one squad or a wingman and plural for several.
+    #[test]
+    fn z2_the_acknowledgements_say_what_the_roles_and_the_release_mean() {
+        const TAIL: &str = " It stands for 10 minutes or until your next order to it.";
+        let one = vec!["red-1".to_owned()];
+        let screen = ObjectiveWords::Screen { bearing: 90 };
+        let support = ObjectiveWords::Support {
+            callsign: "ra".to_owned(),
+        };
+        let cases = [
+            (
+                order_ack(&one, &screen, None, None, false, 150),
+                "Ordered red-1 to screen 090°: it holds where it stands, faces 090° and fires on \
+                 what comes inside its arc without giving chase.",
+            ),
+            (
+                order_ack(&one, &screen, None, None, true, 150),
+                "Ordered red-1 to screen 090°, holding fire: it holds where it stands, faces \
+                 090° and locks what comes inside its arc but fires nothing.",
+            ),
+            (
+                order_ack(&one, &support, Some("RA"), None, false, 150),
+                "Ordered red-1 to support RA: it keeps within 150 m of RA and fires first on \
+                 what RA is fighting.",
+            ),
+            (
+                order_ack(&one, &support, Some("RA"), None, true, 150),
+                "Ordered red-1 to support RA, holding fire: it keeps within 150 m of RA and \
+                 locks what RA is fighting but fires nothing.",
+            ),
+        ];
+        for (said, want) in cases {
+            assert_eq!(said, format!("{want}{TAIL}"));
+        }
+        assert_eq!(
+            order_ack(&one, &ObjectiveWords::Release, None, None, false, 150),
+            "Released red-1 to doctrine: it fights on its own reflexes until it is ordered again."
+        );
+        assert_eq!(
+            order_ack(
+                &["RB".to_owned()],
+                &ObjectiveWords::Release,
+                None,
+                None,
+                false,
+                0
+            ),
+            "Released RB to doctrine: it fights on its own reflexes until it is ordered again."
+        );
+        assert_eq!(
+            order_ack(
+                &["red-1".to_owned(), "red-2".to_owned()],
+                &ObjectiveWords::Release,
+                None,
+                None,
+                false,
+                0
+            ),
+            "Released red-1 and red-2 to doctrine: they fight on their own reflexes until they \
+             are ordered again."
+        );
+    }
+
     /// **16b cut Y.1**: pods are claimed in pairs.
     #[test]
     fn y1_the_pod_pair_is_odd_with_the_next_and_even_with_the_last() {
@@ -7417,7 +7815,7 @@ mod tests {
             |objective: &ObjectiveWords,
              hint: Option<&str>,
              spot: Option<(&str, char)>,
-             hold_fire: bool| order_ack(&one, objective, hint, spot, hold_fire);
+             hold_fire: bool| order_ack(&one, objective, hint, spot, hold_fire, 150);
         let hold = ObjectiveWords::Hold;
         let advance = ObjectiveWords::Advance {
             spot: "the ford".to_owned(),
@@ -7483,14 +7881,14 @@ mod tests {
         // Two and three squads for a lead, a callsign for a wingman.
         let two = vec!["red-1".to_owned(), "red-2".to_owned()];
         assert_eq!(
-            order_ack(&two, &hold, None, None, false),
+            order_ack(&two, &hold, None, None, false, 150),
             format!(
                 "Ordered red-1 and red-2 to hold: it stops where it stands and fires nothing.{TAIL}"
             )
         );
         let three = vec!["red-1".to_owned(), "red-2".to_owned(), "red-3".to_owned()];
         assert_eq!(
-            order_ack(&three, &withdraw, None, None, false),
+            order_ack(&three, &withdraw, None, None, false, 150),
             format!(
                 "Ordered red-1, red-2 and red-3 to withdraw: it breaks for its entry zone and \
                  still fights inside its bands.{TAIL}"
@@ -7498,7 +7896,7 @@ mod tests {
         );
         let wingman = vec!["RB".to_owned()];
         assert_eq!(
-            order_ack(&wingman, &engage, Some("X2"), None, false),
+            order_ack(&wingman, &engage, Some("X2"), None, false, 150),
             format!(
                 "Ordered RB to engage X2: it closes and fires on X2 where it can see it, else \
                  on what it finds.{TAIL}"
@@ -7515,8 +7913,10 @@ mod tests {
         assert_eq!(
             cockpit_help("order"),
             "ORDER <squad|ALL> <objective>  command your side's machines: HOLD, ADVANCE <spot>, \
-             ENGAGE [<contact>] or WITHDRAW, with HOLD FIRE at the end to forbid shooting. A \
-             side's lead orders any squad of the side; anyone else their pod pair's tank."
+             ENGAGE [<contact>], WITHDRAW, SCREEN <bearing> or SUPPORT <callsign>, with HOLD \
+             FIRE at the end to forbid shooting; RELEASE hands them back to their own \
+             doctrine. A side's lead orders any squad of the side; anyone else their pod pair's \
+             tank."
         );
     }
 }

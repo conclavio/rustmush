@@ -413,6 +413,27 @@ pub enum EventKind {
         /// The objective it was carrying, by its word.
         objective: SmolStr,
     },
+    /// **A squad's standing order was handed back to doctrine** (16b cut Z.2;
+    /// 16c Q44): a pilot's `ORDER <squad> RELEASE` landed on a unit whose order
+    /// was written for that squad.
+    ///
+    /// One line per **unit** the release dropped, at the arena millisecond
+    /// `crate::arena::intents::apply_intent` took it at, under phase 2's one
+    /// hash exactly as the `ordered` line is. A release to a unit under no order,
+    /// or under another squad's, journals nothing.
+    ///
+    /// It is its own kind and not an `order_expired` line on purpose: the debrief
+    /// must not say an order ran out when a pilot ended it.
+    OrderReleased {
+        /// The unit that dropped to doctrine.
+        unit: ObjId,
+        /// The squad the order was written for, rendered (`red-1`).
+        squad: SmolStr,
+        /// The tank whose pilot released it, `None` for a release nobody seated
+        /// gave.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        issuer: Option<ObjId>,
+    },
     /// A pulse absorbed more wall time than `max_catch_up_steps × period`, or the
     /// egress backed up past `ledger.max_unflushed_chunks`.
     Lagged {
@@ -455,6 +476,7 @@ impl EventKind {
             EventKind::UnitDestroyed { .. } => "unit_destroyed",
             EventKind::Ordered { .. } => "ordered",
             EventKind::OrderExpired { .. } => "order_expired",
+            EventKind::OrderReleased { .. } => "order_released",
             EventKind::Lagged { .. } => "lagged",
             EventKind::MatchEnded { .. } => "match_ended",
             EventKind::Aborted => "aborted",

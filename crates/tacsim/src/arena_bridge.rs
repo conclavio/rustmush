@@ -720,9 +720,12 @@ impl ArenaRegistry {
     /// `issuer` and has not run out at world millisecond `now_ms`.
     ///
     /// The watch is the world's own, in world time, and it runs its full time to
-    /// live: the world never learns that the arena ended an order early (16b cut
-    /// AA.1, `B-41`) and nothing in `ORDER`'s grammar hands a squad back (16c
-    /// Q44), so the span this answers holds until each order runs out.
+    /// live unless the pilot hands the squad back: the world never learns that
+    /// the arena ended an order early (16b cut AA.1, `B-41`), and **16b cut Z.2**
+    /// (16c Q44) gave `ORDER` a `RELEASE` whose
+    /// [`ArenaRegistry::note_order_released`] drops the issuer's own watch at
+    /// once. So the span this answers holds until each order runs out or is
+    /// released by the pilot who gave it.
     #[must_use]
     pub fn live_orders_of(
         &self,
@@ -741,6 +744,35 @@ impl ArenaRegistry {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// **A pilot handed `squad` back to doctrine** (16b cut Z.2; 16c Q44): the
+    /// world's watch on it is removed **only when its issuer is `releaser`** —
+    /// the tank whose pilot typed `RELEASE`.
+    ///
+    /// The watch is per squad with one issuer, and a non-lead's `RELEASE` is a
+    /// `Command::Wingman` to the one machine of their pod pair; an unconditional
+    /// removal would free the lead's span and drop the shield
+    /// (`MatchDeliberation::human_holds`) while the lead's order still ran on the
+    /// rest of the squad. Removed, [`ArenaRegistry::live_orders_of`] frees the
+    /// squad at once, `say_expired_orders` never speaks for it (the pilot ended
+    /// it; nothing ran out), and the machines' own commander may order it again
+    /// at its next signal. `human_issued` is a count of orders given and is left
+    /// alone. A plain registry write, `pub` for the integration tests.
+    pub fn note_order_released(
+        &mut self,
+        match_id: MatchId,
+        squad: crate::deliberation::SquadId,
+        releaser: ObjId,
+    ) {
+        if let Some(state) = self.deliberation.get_mut(&match_id)
+            && state
+                .orders
+                .get(&squad)
+                .is_some_and(|watch| watch.issuer == Some(releaser))
+        {
+            state.orders.remove(&squad);
+        }
     }
 
     /// **Spend one of `issuer`'s orders for this minute** (16b cut Y.2; doc 16
@@ -1342,6 +1374,41 @@ pub fn forward_order(
     let mut offered = 0_usize;
     for unit in units {
         if send_order(ctx, match_id, *unit, order.clone()).is_ok() {
+            offered = offered.saturating_add(1);
+        }
+    }
+    Ok(offered)
+}
+
+/// **Forward a pilot's `RELEASE` to every unit it names** (16b cut Z.2; 16c
+/// Q44) — [`forward_order`]'s shape exactly: the seat authorised **once, on the
+/// issuer's own tank** and the `helm` channel, then one
+/// [`IntentKind::ReleaseOrder`] `{ squad, issuer: Some(own_unit) }` per unit,
+/// stamped with that unit's own `helm` epoch through the shape [`send_order`]
+/// uses. The arena drops each unit's order only when it was written for
+/// `squad`, so a unit under another squad's order, or none, is untouched.
+///
+/// Answers how many units were offered; `Ok(0)` when every offer refused (the
+/// cockpit turns that into [`IntentRefusal::Busy`]).
+///
+/// # Errors
+///
+/// `authorise_seat`'s refusal, and nothing is offered.
+pub fn forward_release(
+    ctx: &mut Ctx<'_>,
+    actor: ObjId,
+    own_unit: ObjId,
+    units: &[ObjId],
+    squad: crate::deliberation::SquadId,
+) -> Result<usize, IntentRefusal> {
+    let match_id = authorise_seat(ctx, actor, own_unit, Channel::Helm)?;
+    let mut offered = 0_usize;
+    for unit in units {
+        let kind = IntentKind::ReleaseOrder {
+            squad,
+            issuer: Some(own_unit),
+        };
+        if offer_helm(ctx, match_id, *unit, kind).is_ok() {
             offered = offered.saturating_add(1);
         }
     }
@@ -2789,6 +2856,20 @@ pub fn send_order(
     unit: ObjId,
     order: crate::deliberation::Order,
 ) -> Result<(), IntentRefusal> {
+    offer_helm(ctx, match_id, unit, IntentKind::Order(Box::new(order)))
+}
+
+/// **Stamp and offer one squad-level `helm` intent to `unit`** — [`send_order`]'s
+/// shape, shared since 16b cut Z.2 with [`forward_release`]: the unit must be in
+/// `match_id`, the epoch is the one the world last published for the unit's
+/// `helm` channel, the seq is the registry's next, and a full or gone task is
+/// `Busy` or `Gone`.
+fn offer_helm(
+    ctx: &mut Ctx<'_>,
+    match_id: MatchId,
+    unit: ObjId,
+    kind: IntentKind,
+) -> Result<(), IntentRefusal> {
     let channel = Channel::Helm;
     let (intent, tasks) = {
         let registry = ctx
@@ -2802,7 +2883,7 @@ pub fn send_order(
             unit,
             channel,
             epoch: registry.epoch_of(unit, channel),
-            kind: IntentKind::Order(Box::new(order)),
+            kind,
             seq: registry.next_seq(),
         };
         (intent, registry.tasks.clone())

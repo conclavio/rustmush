@@ -628,14 +628,25 @@ impl Arena {
         // line of one pulse belongs to one hash — an `ORDER ALL` over four pairs
         // costs one `state_hash`, not eight. 16b cut M.3's rule (`T-23`) kept: the
         // slot is `Pending`, the first `ordered` line takes it
-        // (`Arena::event_hash`), and a pulse with no order takes nothing. Nothing
-        // else in phase 2 journals today (`stage_refusal` writes no ledger line),
-        // so nothing else observes the slot.
+        // (`Arena::event_hash`), and a pulse with no order takes nothing. **16b
+        // cut Z.2**: the `order_released` line is the other thing phase 2
+        // journals, and it takes the same slot, so the `ordered` and
+        // `order_released` lines of one pulse share one hash; nothing else here
+        // journals (`stage_refusal` writes no ledger line).
         self.action_hash = ActionHash::Pending;
         for intent in intents {
+            // **16b cut Z.2** (16c Q44): a release is counted where it lands — a
+            // unit whose standing order the release took away. A release to a
+            // unit under no order, or under another squad's, dropped nothing and
+            // counts nothing.
+            let releasing = matches!(intent.kind, IntentKind::ReleaseOrder { .. })
+                && self.reflex.order(intent.unit).is_some();
             // **16b cut M.1** (`T-82`): every order in this slice came through the
             // world's seam, so it is a seat's and counts against the rate.
             let outcome = apply_intent(self, intent, IntentSource::Seat);
+            if releasing && self.reflex.order(intent.unit).is_none() {
+                reflex.orders_released = reflex.orders_released.saturating_add(1);
+            }
             if outcome == IntentOutcome::Queued && matches!(intent.kind, IntentKind::Fire { .. }) {
                 fire_intent_queued = true;
             }
@@ -759,7 +770,8 @@ impl Arena {
                     // machine's own tick.
                     IntentKind::Heading { .. }
                     | IntentKind::Speed { .. }
-                    | IntentKind::Order(_) => {}
+                    | IntentKind::Order(_)
+                    | IntentKind::ReleaseOrder { .. } => {}
                 }
             }
         }
@@ -2266,9 +2278,12 @@ impl Arena {
     ///
     /// An [`IntentKind::Order`] is never staged whatever it was refused for: it
     /// is a commander's doctrine and not a pilot's order, and a tank's pilots are
-    /// not the audience for it.
+    /// not the audience for it. **16b cut Z.2**: nor is an
+    /// [`IntentKind::ReleaseOrder`], for the same reason — a release hands a
+    /// squad's doctrine back, and the tank it lands on is not the pilot who gave
+    /// it.
     const fn phase_two_tells(kind: &IntentKind, refusal: Refusal) -> bool {
-        if matches!(kind, IntentKind::Order(_)) {
+        if matches!(kind, IntentKind::Order(_) | IntentKind::ReleaseOrder { .. }) {
             return false;
         }
         matches!(
@@ -3478,6 +3493,36 @@ mod tests {
             &[],
             &[order(A, IntentKind::Order(Box::new(doctrine)), 1)],
         );
+        assert!(refusals(&out).is_empty(), "{:?}", refusals(&out));
+
+        // **16b cut Z.2**: and every `ReleaseOrder`, for the same reason. The
+        // world fans a lead's `RELEASE` to every unit of the squad's roster, and
+        // a roster tank that is a wreck is refused `Wreck` — one of the refusals
+        // phase 2 otherwise tells — before anything asks whether a machine
+        // flies it; that is nobody's news, so nothing is staged.
+        let mut arena = fresh();
+        arena.step(0, &[], &[]);
+        if let Some(unit) = arena.unit_mut(A) {
+            unit.limits.wreck = true;
+        }
+        let released = order(
+            A,
+            IntentKind::ReleaseOrder {
+                squad: crate::deliberation::squad::SquadId::parse("red-1").expect("a squad id"),
+                issuer: Some(A),
+            },
+            1,
+        );
+        assert_eq!(
+            crate::arena::intents::apply_intent(
+                &mut arena.clone(),
+                &released,
+                crate::arena::intents::IntentSource::Seat
+            ),
+            IntentOutcome::Refused(Refusal::Wreck),
+            "the witness is a release refused for a reason phase 2 tells elsewhere"
+        );
+        let out = arena.step(5_000, &[], &[released]);
         assert!(refusals(&out).is_empty(), "{:?}", refusals(&out));
     }
 
@@ -4724,6 +4769,64 @@ mod tests {
                 .iter()
                 .all(|event| event.hash == ordered[0].hash && event.t_ms == 4_000),
             "one phase, one moment, one hash: {ordered:?}"
+        );
+
+        // **16b cut Z.2** (16c Q44): a release takes the same slot. One pulse
+        // with a release for A and a fresh order for B journals one
+        // `order_released` and one `ordered` line under ONE hash — one more
+        // than a quiet pulse — at the pulse's opening millisecond, and counts
+        // one `orders_released`.
+        let squad = told.squad;
+        let intents = vec![
+            Intent {
+                unit: A,
+                channel: Channel::Helm,
+                epoch: arena.epochs.current(A, Channel::Helm),
+                kind: IntentKind::ReleaseOrder {
+                    squad,
+                    issuer: Some(A),
+                },
+                seq: 3,
+            },
+            Intent {
+                unit: B,
+                channel: Channel::Helm,
+                epoch: arena.epochs.current(B, Channel::Helm),
+                kind: IntentKind::Order(Box::new(told.clone())),
+                seq: 4,
+            },
+        ];
+        let before = taken();
+        let mixed = arena.step(6_000, &[], &intents);
+        let mixed_taken = taken() - before;
+        journal.absorb(&mixed);
+        assert_eq!(
+            mixed_taken,
+            u64::from(mixed.substeps) + 2,
+            "the release and the order shared phase 2's one hash"
+        );
+        assert_eq!(mixed.reflex.orders_released, 1, "one machine dropped");
+        assert_eq!(arena.reflex.order(A), None, "the release landed");
+        let log = journal.events(&mut arena);
+        let phase_two: Vec<&LedgerEvent> = log
+            .iter()
+            .filter(|event| {
+                event.t_ms == 5_000 && matches!(event.kind.as_str(), "ordered" | "order_released")
+            })
+            .collect();
+        assert_eq!(
+            phase_two
+                .iter()
+                .map(|event| event.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["order_released", "ordered"],
+            "in the pilot's order: {phase_two:?}"
+        );
+        assert!(
+            phase_two
+                .iter()
+                .all(|event| event.hash == phase_two[0].hash),
+            "one phase, one moment, one hash: {phase_two:?}"
         );
     }
 

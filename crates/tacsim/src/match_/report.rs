@@ -413,6 +413,10 @@ pub struct Fold {
     /// pilot gave one order, so a second line of the same moment and squad says
     /// nothing.
     last_order: Option<(i64, SmolStr)>,
+    /// **The pilot's last `order_released` line said** (16b cut Z.2), as
+    /// `(t_ms, squad)`, on [`Fold::last_order`]'s rule: one line per unit the
+    /// release dropped, one release given.
+    last_release: Option<(i64, SmolStr)>,
 }
 
 /// **A folded report** (16b cut V.3): what one reader is told of one match.
@@ -463,6 +467,7 @@ impl Fold {
             last_ms: 0,
             last_completed: None,
             last_order: None,
+            last_release: None,
         }
     }
 
@@ -753,6 +758,21 @@ impl Fold {
                 let holding = if *hold_fire { ", holding fire" } else { "" };
                 let _ = self.push_line(t_ms, seq, format!("ordered {squad}{holding}: {what}."));
             }
+            // **16b cut Z.2** (16c Q44): the pilot's own release, once per
+            // release, on the `ordered` line's rule — only the tank that gave it
+            // reads it.
+            EventKind::OrderReleased {
+                squad,
+                issuer: Some(issuer),
+                ..
+            } if *issuer == me => {
+                let moment = (t_ms, squad.clone());
+                if self.last_release.as_ref() == Some(&moment) {
+                    return;
+                }
+                self.last_release = Some(moment);
+                let _ = self.push_line(t_ms, seq, format!("released {squad} to doctrine."));
+            }
             // Everything else prints nothing: every other unit's detections,
             // classifications and losses, position summaries, tempo, blocked,
             // receiver, lag, startup, order expiry, impact, and every event of
@@ -1008,6 +1028,15 @@ impl Fold {
             } => format!(
                 "{word} unit={} squad={squad} objective={objective}",
                 unit(id)
+            ),
+            EventKind::OrderReleased {
+                unit: id,
+                squad,
+                issuer,
+            } => format!(
+                "{word} unit={} squad={squad} issuer={}",
+                unit(id),
+                issuer.as_ref().map_or_else(|| "-".to_owned(), unit)
             ),
             EventKind::Ordered {
                 unit: id,
@@ -3180,6 +3209,63 @@ mod tests {
             lines[8].contains("issuer=- objective=hold"),
             "the machines' commander is `-`: {}",
             lines[8]
+        );
+    }
+
+    /// **16b cut Z.2** (16c N6, Q44): the two squad roles print their own words
+    /// on the `ordered` line (the bearing and the charge do not ride the tape),
+    /// and a release reads `released red-1 to doctrine.` to the tank that gave
+    /// it — once, though the tape carries one line per unit it dropped — nothing
+    /// to the other pilot, and every field to staff, `issuer=-` for none.
+    #[test]
+    fn z2_the_releaser_reads_the_release_once_and_the_roles_by_their_words() {
+        const WING: ObjId = ObjId(301);
+        const WING2: ObjId = ObjId(302);
+        let released = |unit: ObjId, issuer: Option<ObjId>| EventKind::OrderReleased {
+            unit,
+            squad: SmolStr::new("red-1"),
+            issuer,
+        };
+        let mut tape = Tape::new();
+        tape.at(60_000, ordered(WING, Some(ME), "screen", None, None, false))
+            .at(61_000, ordered(WING, Some(ME), "support", None, None, true))
+            .at(62_000, released(WING, Some(ME)))
+            .at(62_000, released(WING2, Some(ME)))
+            .at(63_000, released(WING, Some(THEM)))
+            .at(64_000, released(WING, None));
+        let events = tape.0.clone();
+
+        let mine = fold(&events, &roster(), Reader::Pilot { unit: ME }, RULES);
+        assert_eq!(
+            mine.lines,
+            vec![
+                "  1:00  ordered red-1: screen.",
+                "  1:01  ordered red-1, holding fire: support.",
+                "  1:02  released red-1 to doctrine.",
+            ]
+        );
+
+        let theirs = fold(&events, &roster(), Reader::Pilot { unit: THEM }, RULES);
+        assert_eq!(
+            theirs.lines,
+            vec!["  1:03  released red-1 to doctrine."],
+            "the other pilot reads none of ME's release, only their own"
+        );
+
+        let staff = fold(&events, &roster(), Reader::Staff, RULES);
+        let lines: Vec<&String> = staff
+            .lines
+            .iter()
+            .filter(|line| line.contains("order_released"))
+            .collect();
+        assert_eq!(lines.len(), 4, "staff read every line: {lines:?}");
+        assert_eq!(
+            lines[0].as_str(),
+            "  1:02.000  order_released unit=#301 squad=red-1 issuer=RA(#101)"
+        );
+        assert_eq!(
+            lines[3].as_str(),
+            "  1:04.000  order_released unit=#301 squad=red-1 issuer=-"
         );
     }
 }

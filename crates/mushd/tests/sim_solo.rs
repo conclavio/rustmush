@@ -774,7 +774,9 @@ fn unwrapped(seen: &str) -> String {
 /// line with her own tank as the issuer; `WITHDRAW HOLD FIRE` is acknowledged
 /// too; `ENGAGE BA` before her platform holds `BA` is byte for byte what `LOCK
 /// ZZ` answers (here she does own the squad, so it is the contact that is
-/// refused); and the other side's squad is `No such squad.`.
+/// refused); and the other side's squad is `No such squad.`. **16b cut Z.2**:
+/// then `SCREEN 90`, `SUPPORT RA` and `RELEASE` are acknowledged verbatim, and
+/// `SUPPORT BA` is byte for byte `SUPPORT ZZ`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn y1_a_lone_pilot_orders_their_wingman() {
     let server = boot("sim-solo-order").await;
@@ -843,6 +845,39 @@ async fn y1_a_lone_pilot_orders_their_wingman() {
         "No such squad."
     );
 
+    // **16b cut Z.2 (16c N6, Q44)**: the screen, the support of her own tank,
+    // one byte-identical refusal for the other side's callsign and for a word
+    // that is no callsign, and the release — each through the front door.
+    let seen = ask(&mut ada, "ORDER red-1 SCREEN 90", "order to it.").await;
+    let seen = unwrapped(&seen);
+    assert!(
+        seen.contains(
+            "Ordered red-1 to screen 090°: it holds where it stands, faces 090° and fires on \
+             what comes inside its arc without giving chase. It stands for 10 minutes or until \
+             your next order to it."
+        ),
+        "{seen}"
+    );
+    let seen = ask(&mut ada, "ORDER red-1 SUPPORT RA", "order to it.").await;
+    let seen = unwrapped(&seen);
+    assert!(
+        seen.contains(
+            "Ordered red-1 to support RA: it keeps within 150 m of RA and fires first on what \
+             RA is fighting. It stands for 10 minutes or until your next order to it."
+        ),
+        "{seen}"
+    );
+    let mut refusals: Vec<String> = Vec::new();
+    for line in ["ORDER red-1 SUPPORT BA", "ORDER red-1 SUPPORT ZZ"] {
+        let seen = ask(&mut ada, line, "that callsign.").await;
+        refusals.push(seen.trim_start_matches(line).trim().to_owned());
+    }
+    assert_eq!(refusals[0], "No tank of your side flies that callsign.");
+    assert_eq!(
+        refusals[1], refusals[0],
+        "the other side's callsign and a word that is no callsign are one sentence"
+    );
+
     // The black box: the order that landed, with her own tank as its issuer.
     // What is in the store is what CLOSED, so the wait is on the chunk.
     let mut events = Vec::new();
@@ -873,6 +908,20 @@ async fn y1_a_lone_pilot_orders_their_wingman() {
         hold.get("unit").and_then(Value::as_u64),
         Some(u64::from(own)),
         "it landed on the machine, not on her tank: {hold}"
+    );
+
+    // **16b cut Z.2 (16c Q44)**: the release, typed only once an order is on
+    // the black box — a `RELEASE` shares an order's slot in the task's inbox,
+    // so typed in the same pulse as the orders above it would be the one word
+    // of theirs that landed, and nothing would ever be journalled.
+    let seen = ask(&mut ada, "ORDER red-1 RELEASE", "again.").await;
+    let seen = unwrapped(&seen);
+    assert!(
+        seen.contains(
+            "Released red-1 to doctrine: it fights on its own reflexes until it is ordered \
+             again."
+        ),
+        "{seen}"
     );
     no_sixteen_digit_word(&strip_ansi(&ada.seen));
 }

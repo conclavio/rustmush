@@ -1967,6 +1967,32 @@ fn ordered_lines_of(bytes: &[u8]) -> Vec<OrderedLine> {
         .collect()
 }
 
+/// **Every `order_released` line in a chunk** (16b cut Z.2's review), parsed
+/// whole as [`ordered_lines_of`] parses the `ordered` ones and for the same
+/// reason: a line that says `order_released` and does not parse fails the run
+/// rather than dropping out of the lance lane's per-side check.
+fn released_lines_of(bytes: &[u8]) -> Vec<OrderedLine> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .filter(|line| line.contains("\"kind\":\"order_released\""))
+        .map(|line| {
+            serde_json::from_str::<tacsim::arena::ledger::LedgerEvent>(line).unwrap_or_else(|e| {
+                panic!("Z.2: an `order_released` line the harness cannot read ({e}): {line}")
+            })
+        })
+        .filter_map(|event| match event.kind {
+            tacsim::arena::ledger::EventKind::OrderReleased { issuer, squad, .. } => {
+                Some(OrderedLine {
+                    t_ms: event.t_ms,
+                    issuer,
+                    squad: squad.to_string(),
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// **W8's two tape figures** (16b cut Y.2): `(orders,
 /// orders_per_commander_minute_max)`.
 ///
@@ -2312,6 +2338,14 @@ struct Counts {
     ordered_lines: u64,
     /// **16b cut Y.2**: those lines, parsed, for W8's per-order figures.
     ordered: Vec<OrderedLine>,
+    /// **16b cut Z.2**: every `order_released` line, one per unit a release
+    /// dropped to doctrine — counted as the `ordered` lines are.
+    released: u64,
+    /// **16b cut Z.2's review**: those lines, parsed — who released which
+    /// squad, and when — so the lance lane can hold each side's release to its
+    /// own commander and its own first squad rather than to a count one side
+    /// could fill alone.
+    released_lines: Vec<OrderedLine>,
 }
 
 impl Counts {
@@ -2334,6 +2368,9 @@ impl Counts {
         // 16b cut Y.2: the orders, off the same chunk.
         self.ordered_lines += occurrences(bytes, "\"kind\":\"ordered\"");
         self.ordered.extend(ordered_lines_of(bytes));
+        // 16b cut Z.2: the releases, off the same chunk.
+        self.released += occurrences(bytes, "\"kind\":\"order_released\"");
+        self.released_lines.extend(released_lines_of(bytes));
     }
 }
 
@@ -4819,7 +4856,14 @@ fn the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else() {
 /// asserted run moves this constant in the same diff and says why; if the lens
 /// then no longer clears it by 16 per cent, the lens is the owner's to move,
 /// never the builder's.
-const AUTHORED_WINDOW_P99_WORST_RECORDED_MS: f64 = 16.298;
+///
+/// **16b cut Z.2 moved it to 17.087**: the second of Z.2's asserted weekly runs
+/// read 17.087 ms per window on the authored cohort and passed the 20 ms lens
+/// (the first read 15.341). Z.2 changes nothing the cohort runs — it issues no
+/// order — so the figure is this host's noise, recorded as the worst asserted
+/// run; 20 ms still clears it by the 16 per cent spread (17.087 × 1.16 =
+/// 19.82).
+const AUTHORED_WINDOW_P99_WORST_RECORDED_MS: f64 = 17.087;
 
 /// **The lens is the cohort's own** (16b cut J.3b, moved by J.3c; 16c Q26): the
 /// CI cohort is held per window to [`ARENA_S_P99_MS`] exactly as before, the
@@ -6240,9 +6284,11 @@ async fn measure_fan_out(knobs: &Knobs) {
 // than the script holds under a live order; and that the sides fired. At the
 // lane's **defaults** (seed, `TACSIM_LANCE_UNITS`, `TACSIM_LANCE_ARENA_S`,
 // jitter nought — the field line's `at_defaults`) also the exact figures: the
-// span and the busiest commander minute each read the squads a side, and the
-// tape carries the opening round and one full minute a side — the script landed
-// and neither figure is vacuous. Off the defaults a lance may be wiped out,
+// span and the busiest commander minute each read the squads a side, at least
+// two `order_released` lines are on the tape (16b cut Z.2: each commander
+// releases its first squad at the ninetieth arena second), and the tape
+// carries the opening round and one full minute a side — the script landed and
+// no figure is vacuous. Off the defaults a lance may be wiped out,
 // reach its crossroads or take a mark a wake late, so the fight decides those
 // figures and only the bounds bind them. **Timing is report-only** (the lead's rule
 // for this cohort): the per-wake p99 is printed beside 12 ms and the per-window
@@ -6279,13 +6325,69 @@ const LANCE_ORDER_MS: u32 = 90_000;
 
 /// **The arms the script steps a squad through**, one a minute, cycling (16b cut
 /// Z.1). Every squad not being stepped is ordered `Engage` again, so every squad
-/// is under some order at all times and most of the field is fighting. Cut Z.2
-/// extends this table (`Screen`, `Support`, a release).
-const LANCE_TABLE: [tacsim::deliberation::Objective; 3] = [
-    tacsim::deliberation::Objective::Hold,
-    tacsim::deliberation::Objective::Advance { to: CROSSROADS },
-    tacsim::deliberation::Objective::Withdraw,
+/// is under some order at all times and most of the field is fighting.
+///
+/// **16b cut Z.2** extended it with the two squad roles, after `Withdraw` — so
+/// with `Engage` the script gives six arms — and made it a table of
+/// [`LanceArm`]s, because the two roles are written per squad: a screen faces
+/// the enemy's column, and a support keeps station on the squad's own commander
+/// (which fights on doctrine while the rest keep station on it). The release
+/// is not an arm: it is given once a side ([`LANCE_RELEASE_MS`]).
+const LANCE_TABLE: [LanceArm; 5] = [
+    LanceArm::Hold,
+    LanceArm::Advance,
+    LanceArm::Withdraw,
+    LanceArm::Screen,
+    LanceArm::Support,
 ];
+
+/// **One arm of [`LANCE_TABLE`]** (16b cut Z.2), resolved per squad by
+/// [`LanceArm::objective`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LanceArm {
+    /// `Objective::Hold`.
+    Hold,
+    /// `Objective::Advance` on [`CROSSROADS`].
+    Advance,
+    /// `Objective::Withdraw`.
+    Withdraw,
+    /// `Objective::Screen` toward the enemy's column: 90° for red, 270° for blue.
+    Screen,
+    /// `Objective::Support` of the squad's own commander.
+    Support,
+}
+
+impl LanceArm {
+    /// The arm, written for `roster`.
+    fn objective(
+        self,
+        roster: &tacsim::deliberation::SquadRoster,
+    ) -> tacsim::deliberation::Objective {
+        use tacsim::deliberation::Objective;
+        match self {
+            LanceArm::Hold => Objective::Hold,
+            LanceArm::Advance => Objective::Advance { to: CROSSROADS },
+            LanceArm::Withdraw => Objective::Withdraw,
+            LanceArm::Screen => Objective::Screen {
+                facing_mdeg: if roster.id.team == tacsim::arena::state::Team::Red {
+                    90_000
+                } else {
+                    270_000
+                },
+            },
+            LanceArm::Support => Objective::Support {
+                of: roster.commander,
+            },
+        }
+    }
+}
+
+/// **When each side's commander releases its first squad** (16b cut Z.2; 16c
+/// Q44): at the ninetieth arena second — arena millisecond 90,000, on the
+/// period, so a wake at jitter nought visits it — one `ReleaseOrder` a side. At
+/// the lane's defaults that falls between minute one's first mark (the first
+/// squad's new order) and its second.
+const LANCE_RELEASE_MS: i64 = 90_000;
 
 /// The lance lane's own knobs.
 struct LanceKnobs {
@@ -6304,12 +6406,13 @@ impl LanceKnobs {
     }
 }
 
-/// **One scripted order**: when it is due, which squad, and what.
+/// **One scripted order**: when it is due, which squad, and what — `None` is
+/// the squad's release (16b cut Z.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct LanceOrder {
     at_ms: i64,
     squad: tacsim::deliberation::SquadId,
-    objective: tacsim::deliberation::Objective,
+    objective: Option<tacsim::deliberation::Objective>,
 }
 
 /// **The script** (16b cut Z.1), as a list in the order it is given.
@@ -6326,9 +6429,14 @@ struct LanceOrder {
 /// squads_per_side + 1` takes [`LANCE_TABLE`]`[(m − 1) % len]` while every other
 /// squad is ordered `Engage` again. Only marks before `until_ms` are listed.
 ///
+/// **16b cut Z.2**: and at [`LANCE_RELEASE_MS`] of arena time, when the run spans it, each side's
+/// first squad is released (`objective: None`), once; the list stays in the
+/// order it is given, a release between the marks around it.
+///
 /// Three orders a minute from one commander is exactly `squads_per_side` in any
 /// sixty seconds, because the marks of consecutive minutes are the same
-/// staggers a minute apart; that is what makes W8's rate figure a real one.
+/// staggers a minute apart; that is what makes W8's rate figure a real one. A
+/// release is not an order and counts in neither figure.
 fn lance_schedule(
     squads: &[tacsim::deliberation::SquadRoster],
     start_ms: i64,
@@ -6350,7 +6458,7 @@ fn lance_schedule(
         .map(|roster| LanceOrder {
             at_ms: start_ms,
             squad: roster.id,
-            objective: Objective::Engage { target_hint: None },
+            objective: Some(Objective::Engage { target_hint: None }),
         })
         .collect();
     let anchor = start_ms
@@ -6369,7 +6477,7 @@ fn lance_schedule(
         let arm = LANCE_TABLE
             .get(usize::try_from(minute - 1).unwrap_or(0) % LANCE_TABLE.len())
             .copied()
-            .unwrap_or(Objective::Hold);
+            .unwrap_or(LanceArm::Hold);
         for ordinal in 1..=squads_per_side {
             let at_ms = base.saturating_add(
                 i64::try_from(ordinal - 1)
@@ -6386,22 +6494,37 @@ fn lance_schedule(
                 out.push(LanceOrder {
                     at_ms,
                     squad: roster.id,
-                    objective: if ordinal == stepped {
-                        arm
+                    objective: Some(if ordinal == stepped {
+                        arm.objective(roster)
                     } else {
                         Objective::Engage { target_hint: None }
-                    },
+                    }),
                 });
             }
         }
         minute += 1;
     }
+    // **16b cut Z.2**: one release a side, of its first squad, at the ninetieth
+    // arena second when the run spans it.
+    let released_at = LANCE_RELEASE_MS;
+    if released_at >= start_ms && released_at < until_ms {
+        for roster in squads.iter().filter(|roster| roster.id.index == 1) {
+            out.push(LanceOrder {
+                at_ms: released_at,
+                squad: roster.id,
+                objective: None,
+            });
+        }
+    }
+    // In the order given: stable, so a mark's own orders keep their order.
+    out.sort_by_key(|order| order.at_ms);
     out
 }
 
 /// **One scripted order as the intents phase 2 applies**: one per unit of the
 /// squad the arena still holds, at that unit's own current `helm` epoch, the
-/// side's commander as issuer.
+/// side's commander as issuer. **16b cut Z.2**: a release is one
+/// `ReleaseOrder { squad, issuer }` per unit the same way.
 fn lance_intents(
     arena: &tacsim::arena::state::Arena,
     order: &LanceOrder,
@@ -6413,16 +6536,22 @@ fn lance_intents(
     let Some(roster) = arena.squads.iter().find(|roster| roster.id == order.squad) else {
         return Vec::new();
     };
-    let told = tacsim::deliberation::Order {
-        squad: order.squad,
-        objective: order.objective,
-        target: None,
-        horizon_ms: LANCE_ORDER_MS,
-        constraints: tacsim::deliberation::Constraints::default(),
-        ttl_ms: LANCE_ORDER_MS,
-        issued_ms: 0,
-        issuer: Some(issuer),
-        spot: None,
+    let kind = match order.objective {
+        Some(objective) => IntentKind::Order(Box::new(tacsim::deliberation::Order {
+            squad: order.squad,
+            objective,
+            target: None,
+            horizon_ms: LANCE_ORDER_MS,
+            constraints: tacsim::deliberation::Constraints::default(),
+            ttl_ms: LANCE_ORDER_MS,
+            issued_ms: 0,
+            issuer: Some(issuer),
+            spot: None,
+        })),
+        None => IntentKind::ReleaseOrder {
+            squad: order.squad,
+            issuer: Some(issuer),
+        },
     };
     roster
         .units
@@ -6434,11 +6563,42 @@ fn lance_intents(
                 unit: *unit,
                 channel: Channel::Helm,
                 epoch: arena.epochs.current(*unit, Channel::Helm),
-                kind: IntentKind::Order(Box::new(told.clone())),
+                kind: kind.clone(),
                 seq: *seq,
             }
         })
         .collect()
+}
+
+/// **How many supporters' rows target their charge's target** (16b cut Z.2), as
+/// `(supporters, on_target)`: every machine under a live `Support` whose charge
+/// is another unit, and those whose own row targets the object the charge's
+/// row targets. A report figure, read once off the last wake and never
+/// asserted: whether a supporter holds its charge's target is the fight's.
+fn supporters_on_charge(arena: &tacsim::arena::state::Arena) -> (usize, usize) {
+    let mut supporters = 0_usize;
+    let mut on_target = 0_usize;
+    for (unit, row) in arena.reflex.all() {
+        let Some(standing) = row.order.as_ref() else {
+            continue;
+        };
+        let tacsim::deliberation::Objective::Support { of } = standing.order.objective else {
+            continue;
+        };
+        if of == unit || standing.expired_at(arena.now_ms) {
+            continue;
+        }
+        supporters += 1;
+        let charge = arena
+            .reflex
+            .unit(of)
+            .and_then(|charge| charge.target)
+            .map(|(_, target)| target);
+        if charge.is_some() && row.target.map(|(_, target)| target) == charge {
+            on_target += 1;
+        }
+    }
+    (supporters, on_target)
 }
 
 /// **The lance lane** (16b cut Z.1): [`measure_lance`] at `TACSIM_LANCE_UNITS`
@@ -6534,12 +6694,72 @@ fn z1_the_lance_lane_runs_small() {
         .unwrap_or_default();
     assert_eq!(stem, "harness-lance");
     assert!(report.json.exists(), "{}", report.json.display());
+
+    // **16b cut Z.2**: the smoke's ten seconds reach no release — the line
+    // says so — and the table cycles, read off the script this field would be
+    // given over seven minutes: one lance a side, so its one squad is stepped
+    // every minute through the five arms and back to the first, and released
+    // once at ninety seconds.
+    assert!(
+        report.lines.iter().any(|line| line
+            .starts_with("harness_lance_command:")
+            && line.contains(" released=0 ")),
+        "{:#?}",
+        report.lines
+    );
+    let rosters: Vec<tacsim::deliberation::SquadRoster> = [
+        (tacsim::arena::state::Team::Red, report.commanders[0]),
+        (tacsim::arena::state::Team::Blue, report.commanders[1]),
+    ]
+    .into_iter()
+    .map(|(team, commander)| tacsim::deliberation::SquadRoster {
+        id: tacsim::deliberation::SquadId { team, index: 1 },
+        commander,
+        units: vec![commander],
+    })
+    .collect();
+    let script = lance_schedule(&rosters, report.start_ms, report.start_ms + 420_000);
+    use tacsim::deliberation::Objective;
+    let red: Vec<Option<Objective>> = script
+        .iter()
+        .filter(|order| {
+            order.squad.team == tacsim::arena::state::Team::Red && order.at_ms > report.start_ms
+        })
+        .map(|order| order.objective)
+        .collect();
+    assert_eq!(
+        red,
+        vec![
+            Some(Objective::Hold),
+            None,
+            Some(Objective::Advance { to: CROSSROADS }),
+            Some(Objective::Withdraw),
+            Some(Objective::Screen {
+                facing_mdeg: 90_000
+            }),
+            Some(Objective::Support {
+                of: report.commanders[0]
+            }),
+            Some(Objective::Hold),
+        ],
+        "red's lance: the five arms in turn, the release once, and the table again"
+    );
+    assert_eq!(
+        script
+            .iter()
+            .filter(|order| order.objective.is_none())
+            .map(|order| order.squad.to_string())
+            .collect::<Vec<_>>(),
+        vec!["red-1".to_string(), "blue-1".to_string()],
+        "one release a side"
+    );
 }
 
 /// **The script's own W8 figures** (16b cut Z.1): at three squads a side over
 /// the default two minutes, one commander's orders are the opening round and
 /// one minute's three, so [`orders_on_tape`] reads four orders and three in the
-/// busiest sixty seconds — `squads_per_side` — and every squad is under an
+/// busiest sixty seconds — `squads_per_side` — and every squad but the first
+/// (16b cut Z.2: released at ninety seconds, which is no order) is under an
 /// order from the commander at the end. At five minutes, and at two squads, the
 /// busiest minute is still exactly the squads a side.
 #[test]
@@ -6570,6 +6790,7 @@ fn z1_the_lance_script_is_three_orders_a_minute_from_one_commander() {
     let tape = |schedule: &[LanceOrder]| -> Vec<OrderedLine> {
         schedule
             .iter()
+            .filter(|order| order.objective.is_some())
             .map(|order| OrderedLine {
                 t_ms: order.at_ms,
                 issuer: Some(issuer_of(order.squad.team)),
@@ -6585,7 +6806,7 @@ fn z1_the_lance_script_is_three_orders_a_minute_from_one_commander() {
         .iter()
         .filter(|order| order.squad.team == Team::Red)
         .collect();
-    let marks: Vec<(i64, u16, Objective)> = red
+    let marks: Vec<(i64, u16, Option<Objective>)> = red
         .iter()
         .map(|order| (order.at_ms - start, order.squad.index, order.objective))
         .collect();
@@ -6593,14 +6814,18 @@ fn z1_the_lance_script_is_three_orders_a_minute_from_one_commander() {
     assert_eq!(
         marks,
         vec![
-            (0, 1, engage),
-            (0, 2, engage),
-            (0, 3, engage),
-            (60_000, 1, Objective::Hold),
-            (80_000, 2, engage),
-            (100_000, 3, engage),
+            (0, 1, Some(engage)),
+            (0, 2, Some(engage)),
+            (0, 3, Some(engage)),
+            (60_000, 1, Some(Objective::Hold)),
+            // 16b cut Z.2: red-1's release, once, at the ninetieth arena
+            // second — 69.5 s into a run that starts at 20.5 s.
+            (69_500, 1, None),
+            (80_000, 2, Some(engage)),
+            (100_000, 3, Some(engage)),
         ],
-        "the opening round, then minute one: red-1 holds, the others engage again"
+        "the opening round, then minute one: red-1 holds, the others engage again, and \
+         red-1 is released between the first and second marks"
     );
     let red_tape = tape(&schedule)
         .into_iter()
@@ -6613,18 +6838,26 @@ fn z1_the_lance_script_is_three_orders_a_minute_from_one_commander() {
     // Five minutes: every arm of the table in turn, and never more than three
     // in any sixty seconds.
     let long = lance_schedule(&three, start, start + 300_000);
-    let stepped: Vec<(i64, u16, Objective)> = long
+    let stepped: Vec<(i64, u16, Option<Objective>)> = long
         .iter()
-        .filter(|order| order.squad.team == Team::Blue && order.objective != engage)
+        .filter(|order| order.squad.team == Team::Blue && order.objective != Some(engage))
         .map(|order| (order.at_ms - start, order.squad.index, order.objective))
         .collect();
     assert_eq!(
         stepped,
         vec![
-            (60_000, 1, Objective::Hold),
-            (140_000, 2, Objective::Advance { to: CROSSROADS }),
-            (220_000, 3, Objective::Withdraw),
-            (240_000, 1, Objective::Hold),
+            (60_000, 1, Some(Objective::Hold)),
+            (69_500, 1, None),
+            (140_000, 2, Some(Objective::Advance { to: CROSSROADS })),
+            (220_000, 3, Some(Objective::Withdraw)),
+            // 16b cut Z.2: the fourth arm, a screen toward red's column.
+            (
+                240_000,
+                1,
+                Some(Objective::Screen {
+                    facing_mdeg: 270_000
+                })
+            ),
         ]
     );
     assert_eq!(orders_on_tape(&tape(&long), &three).1, 3);
@@ -6890,19 +7123,23 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                     commanders[1]
                 };
                 let sent = lance_intents(arena, order, issuer, &mut seq);
-                given.extend(
-                    sent.iter()
-                        .filter(|intent| {
-                            arena
-                                .unit(intent.unit)
-                                .is_some_and(|state| !state.limits.wreck)
-                        })
-                        .map(|_| OrderedLine {
-                            t_ms: arena.now_ms,
-                            issuer: Some(issuer),
-                            squad: order.squad.to_string(),
-                        }),
-                );
+                // 16b cut Z.2: a release journals `order_released`, never an
+                // `ordered` line, so the script's side of the tape skips it.
+                if order.objective.is_some() {
+                    given.extend(
+                        sent.iter()
+                            .filter(|intent| {
+                                arena
+                                    .unit(intent.unit)
+                                    .is_some_and(|state| !state.limits.wreck)
+                            })
+                            .map(|_| OrderedLine {
+                                t_ms: arena.now_ms,
+                                issuer: Some(issuer),
+                                squad: order.squad.to_string(),
+                            }),
+                    );
+                }
                 intents.extend(sent);
                 late_max_ms = late_max_ms.max(arena.now_ms - order.at_ms);
                 next += 1;
@@ -6936,6 +7173,16 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
     let share_ops_peak = window_peak(|w| w.share_ops);
     let command_cfg = tacsim::config::CommandConfig::default();
     let command = CommandFigures::of(&arena, &command_cfg, counts.ordered_lines, &counts.ordered);
+    let (supporters, supporters_on_target) = supporters_on_charge(&arena);
+    let mut command_json = command.json();
+    if let Some(object) = command_json.as_object_mut() {
+        object.insert("released".to_string(), serde_json::json!(counts.released));
+        object.insert("supporters".to_string(), serde_json::json!(supporters));
+        object.insert(
+            "supporters_on_charges_target".to_string(),
+            serde_json::json!(supporters_on_target),
+        );
+    }
     let distribution = arena.reflex.distribution();
     let states = tacsim::arena::reflex::ReflexState::ALL
         .iter()
@@ -6961,7 +7208,15 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                 .map_or("none".to_string(), |end| format!("{:?}", end.reason)),
             next
         ),
-        command.line("harness_lance_command", cohort),
+        // 16b cut Z.2: the releases, counted as the `ordered` lines are, and a
+        // report figure — how many supporters' rows targeted their charge's
+        // target on the last wake — beside them.
+        format!(
+            "{} released={} supporters={supporters} \
+             supporters_on_charges_target={supporters_on_target}",
+            command.line("harness_lance_command", cohort),
+            counts.released
+        ),
         format!(
             "harness_lance_wakes: cohort={cohort} wakes={} p50={p50:.3} p95={p95:.3} \
              p99={p99:.3} max={max:.3} beside_ms={ARENA_S_P99_MS} (report-only)",
@@ -7038,7 +7293,7 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             "script_late_max_ms": late_max_ms,
             "at_defaults": at_defaults,
         },
-        "command": command.json(),
+        "command": command_json,
         "wakes": {
             "wakes": run.wakes.len(),
             "p50_ms": num(p50),
@@ -7185,12 +7440,59 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         // the opening round and one full minute a side — so neither W8 figure
         // passes on nothing. Off the defaults the fight decides them (see
         // `at_defaults`), and the three checks above still hold.
+        //
+        // **16b cut Z.2 — what the span equality now rests on, stated.** Each
+        // side's first squad is released at `LANCE_RELEASE_MS` (90 s) and its
+        // next mark falls after the run's end, so no LIVING machine of `red-1`
+        // or `blue-1` holds an order when the span is read. The span still
+        // reads `squads_per_side` because **a wreck keeps the order it died
+        // under** — `Arena::damage` adopts it into `Disabled` with its row,
+        // `apply_intent` refuses it a release (`Refusal::Wreck`), and
+        // `Arena::live_orders_by_issuer` counts its row — and at the defaults
+        // a machine of each first squad is wrecked under its commander's order
+        // before the release. That is pre-existing engine behaviour (a wreck is
+        // no longer the subject of any order, doc 16 §3.3, and the release's own
+        // roster read already skips wrecks), not what W8 means by a span: the
+        // cut that makes a wreck drop its order moves this equality to
+        // `squads_per_side - 1` for a released side, and must say so here.
+        //
+        // **16b cut Z.2**: and each side's release landed, **on its own first
+        // squad, from its own commander, at the mark** — a count of lines alone
+        // could be filled by one side's machines while the other's release
+        // landed on nothing.
         if at_defaults {
             assert_eq!(
                 command.span_max, squads_per_side,
                 "W8: the span read {} where the script holds {squads_per_side} squads under \
-                 one commander",
+                 one commander (a released first squad is counted through its wrecks' rows; \
+                 see above)",
                 command.span_max
+            );
+            assert!(
+                counts.released >= 2,
+                "each side's release landed on its first squad: {} `order_released` lines",
+                counts.released
+            );
+            for (commander, first) in commanders.iter().zip(["red-1", "blue-1"]) {
+                assert!(
+                    counts
+                        .released_lines
+                        .iter()
+                        .any(|line| line.issuer == Some(*commander)
+                            && line.squad == first
+                            && line.t_ms == LANCE_RELEASE_MS),
+                    "{first}'s commander {commander} released {first} at \
+                     {LANCE_RELEASE_MS} ms: {:?}",
+                    counts.released_lines
+                );
+            }
+            assert!(
+                counts.released_lines.iter().all(|line| {
+                    let side = usize::from(!line.squad.starts_with("red-"));
+                    line.issuer == commanders.get(side).copied()
+                }),
+                "every release is its own side's commander's: {:?}",
+                counts.released_lines
             );
             assert_eq!(
                 command.orders_per_commander_minute_max,

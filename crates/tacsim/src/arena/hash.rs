@@ -15,6 +15,7 @@
 //! answer does not move when the toolchain does.
 
 use crate::arena::state::Arena;
+use crate::deliberation::order::Objective;
 
 /// FNV-1a 64's offset basis.
 pub const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -111,7 +112,10 @@ thread_local! {
 ///    and the target unit's `u32` (`0` for none); then the standing order (16b
 ///    cut N.2: `[0]` alone for none, else the objective's code byte, the `i64`
 ///    expiry and the `hold_fire` byte, then — **16b cut Y.1** — the issuer's
-///    `u32`, `0` for none; the order's `spot` is deliberately not folded, since
+///    `u32`, `0` for none; then — **16b cut Z.2** — the objective's payload for
+///    the two squad roles, a `Screen`'s `facing_mdeg` as `u32` and a `Support`'s
+///    charge `of` as its `u32`, and nothing more for the other four arms; the
+///    order's `spot` is deliberately not folded, since
 ///    it steers nothing) and, from **16b cut Q.7**, the avoided cells — their count as
 ///    `u64`, then per entry the cell's two `u16` and the stop's `i64` stamp — and
 ///    `stand_until_ms`, `quiet_since_ms` (each a presence byte then an `i64`) and
@@ -545,6 +549,24 @@ pub fn state_hash(arena: &Arena) -> u64 {
                     hash,
                     &standing.order.issuer.map_or(0_u32, |id| id.0).to_le_bytes(),
                 );
+                // **16b cut Z.2** (the cut's one hash move): the two squad roles
+                // steer by their payload — the arc a screen faces, the unit a
+                // support keeps station on — so two orders that differ only
+                // there are two states. The other four arms fold nothing more:
+                // `Advance`'s cell and `Engage`'s hint reach the hash through the
+                // goal and the target they write, as they always have.
+                match standing.order.objective {
+                    Objective::Screen { facing_mdeg } => {
+                        hash = fnv1a64_update(hash, &facing_mdeg.to_le_bytes());
+                    }
+                    Objective::Support { of } => {
+                        hash = fnv1a64_update(hash, &of.0.to_le_bytes());
+                    }
+                    Objective::Hold
+                    | Objective::Advance { .. }
+                    | Objective::Engage { .. }
+                    | Objective::Withdraw => {}
+                }
             }
             None => hash = fnv1a64_update(hash, &[0_u8]),
         }

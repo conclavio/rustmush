@@ -66,7 +66,7 @@
 //!    durable pipeline's provider deliberately does **not** use it: it forces one
 //!    tool chosen from N *projected offers* and takes no repair round trip,
 //!    because a repair burns lease time (`mush-server/src/decision_llm.rs`). An
-//!    order is not a projected offer — it is a typed record with four objectives
+//!    order is not a projected offer — it is a typed record with six objectives
 //!    and two constraints — so the offer protocol would have had to be bent around
 //!    it, and the repair turn the row asks for thrown away.
 //! 2. **There is nothing for durability to preserve.** A K7 decision is durable so

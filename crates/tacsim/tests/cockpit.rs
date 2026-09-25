@@ -6369,19 +6369,19 @@ async fn y2_the_span_counts_the_other_squads_under_a_live_order_and_waits_for_on
 
     assert_eq!(
         rig.say(0, "ORDER red-1 HOLD"),
-        "You hold orders on 1 squad(s) already; wait for one to run out."
+        "You hold orders on 1 squad(s) already; wait for one to run out, or RELEASE one."
     );
     // `ALL` names the lead's one squad here, so ordering it on its own would be
     // refused too: the answer is to wait, never "one at a time".
     assert_eq!(
         rig.say(0, "ORDER ALL HOLD"),
-        "You hold orders on 1 squad(s) already; wait for one to run out."
+        "You hold orders on 1 squad(s) already; wait for one to run out, or RELEASE one."
     );
     // The span is checked before the rate stamp is spent: two refusals at a rate
     // of two a minute leave the third answering the span, not the rate.
     assert_eq!(
         rig.say(0, "ORDER red-1 HOLD"),
-        "You hold orders on 1 squad(s) already; wait for one to run out.",
+        "You hold orders on 1 squad(s) already; wait for one to run out, or RELEASE one.",
         "a span refusal spent no stamp"
     );
     let status = rig.staff("@arena/status");
@@ -7437,4 +7437,317 @@ fn y4_the_catch_up_fixture_is_the_wire_s_object_and_its_lines() {
         let payload = cockpit::status_frame(fixture::MATCH, &frame);
         assert_eq!(payload.get("catchup"), Some(wire), "the wire's own object");
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Z.2 — SCREEN, SUPPORT and RELEASE (16c N6, Q44)
+// ---------------------------------------------------------------------------
+
+/// One `order_released` line off the tape, as `(unit, squad)`, when `issuer`'s
+/// release wrote it (16b cut Z.2).
+fn z2_released_by(
+    event: &tacsim::arena::ledger::LedgerEvent,
+    issuer: ObjId,
+) -> Option<(ObjId, String)> {
+    match &event.kind {
+        tacsim::arena::ledger::EventKind::OrderReleased {
+            unit,
+            squad,
+            issuer: Some(by),
+        } if *by == issuer => Some((*unit, squad.to_string())),
+        _ => None,
+    }
+}
+
+/// The squads the world's watch says `issuer` holds a live order on now.
+fn z2_live(rig: &Rig, issuer: ObjId) -> Vec<String> {
+    let match_id = rig.centre().match_id.expect("a running match");
+    rig.tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| {
+            registry
+                .live_orders_of(match_id, issuer, rig.now.saturating_mul(1_000))
+                .into_iter()
+                .map(|squad| squad.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// **16b cut Z.2 (16c N6, Q44): the lead screens, supports and releases, and
+/// every callsign refusal is one line.**
+///
+/// `SIM AI 3` with one pilot a side: red is `RA` (the lead) and the machines
+/// `RB` and `RC` in `red-1`; red pod `D` is empty. A `RELEASE` to a squad under
+/// no order is acknowledged and journals nothing. `SCREEN 90` answers
+/// verbatim and the tape's `ordered` lines read `screen`; `SUPPORT RA` — the
+/// lead's own tank — answers with the 150 m leash; the other side's callsign,
+/// a word that is no callsign, a provisional and an empty pod's callsign are
+/// one byte-identical sentence; `RELEASE` answers verbatim, journals one
+/// `order_released` per machine and leaves the lead holding no squad. The
+/// grammar's new usage lines are `ORDER_USAGE`, and `blue-1` is `No such
+/// squad.` before any callsign is looked at.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z2_the_lead_screens_supports_and_releases_and_every_callsign_refusal_is_one_line() {
+    let mut rig = Rig::boot_with(2, y1_config());
+    rig.fly_with_ai(1, 1, 3).await;
+    let issuer = rig.tank(0);
+    let release = "Released red-1 to doctrine: it fights on its own reflexes until it is ordered \
+                   again.";
+
+    // Nothing is under an order yet: acknowledged, and nothing to journal.
+    //
+    // A release shares `Order`'s buffer slot (`continuous_code` 2), so an order
+    // typed in the same pulse would replace it before the arena saw it. The
+    // arena is let run on (the staged clock two seconds past the offer, 16b cut
+    // Y.4's wait: the clock lags the arena's by at most the one arena second a
+    // `Frames` is published in) before the next order, so the release really is
+    // applied to machines under no order — and the tape below counts what it
+    // journalled.
+    rig.pump();
+    let offered_at = rig.staged_now_ms;
+    assert_eq!(rig.say(0, "ORDER red-1 RELEASE"), release);
+    for _ in 0..1_000 {
+        rig.pump();
+        if rig.staged_now_ms >= offered_at + 2_000 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        rig.staged_now_ms >= offered_at + 2_000,
+        "the arena did not run a pulse after the release"
+    );
+
+    assert_eq!(
+        rig.say(0, "ORDER red-1 SCREEN 90"),
+        format!(
+            "Ordered red-1 to screen 090°: it holds where it stands, faces 090° and fires on \
+             what comes inside its arc without giving chase.{Y1_TAIL}"
+        )
+    );
+    let screens = |event: &tacsim::arena::ledger::LedgerEvent| {
+        y1_ordered_by(event, issuer).is_some_and(|(_, _, objective, _)| objective == "screen")
+    };
+    assert_eq!(rig.tape_count_until(screens, 2).await, 2);
+
+    assert_eq!(
+        rig.say(0, "ORDER red-1 SUPPORT ra"),
+        format!(
+            "Ordered red-1 to support RA: it keeps within 150 m of RA and fires first on what \
+             RA is fighting.{Y1_TAIL}"
+        )
+    );
+    // The other side's, nonsense, a provisional, an empty pod: one sentence.
+    for line in [
+        "ORDER red-1 SUPPORT BA",
+        "ORDER red-1 SUPPORT ZZ",
+        "ORDER red-1 SUPPORT X1",
+        "ORDER red-1 SUPPORT RD",
+    ] {
+        assert_eq!(rig.say(0, line), cockpit::NO_SUCH_FRIENDLY, "{line}");
+    }
+    // Authority first: the other side's squad is refused before the callsign.
+    assert_eq!(
+        rig.say(0, "ORDER blue-1 SUPPORT RA"),
+        cockpit::NO_SUCH_SQUAD
+    );
+    for line in [
+        "ORDER red-1 SCREEN 360",
+        "ORDER red-1 SCREEN",
+        "ORDER red-1 SCREEN east",
+        "ORDER red-1 SUPPORT",
+        "ORDER red-1 SUPPORT RA RB",
+        "ORDER red-1 RELEASE HOLD FIRE",
+    ] {
+        assert_eq!(rig.say(0, line), cockpit::ORDER_USAGE, "{line}");
+    }
+    assert_eq!(z2_live(&rig, issuer), vec!["red-1".to_string()]);
+
+    assert_eq!(rig.say(0, "ORDER red-1 RELEASE"), release);
+    assert!(
+        z2_live(&rig, issuer).is_empty(),
+        "the release gave the squad back"
+    );
+    let released =
+        |event: &tacsim::arena::ledger::LedgerEvent| z2_released_by(event, issuer).is_some();
+    assert_eq!(rig.tape_count_until(released, 2).await, 2);
+    // One more order and its two lines, so every pulse before it is on the tape.
+    rig.say(0, "ORDER red-1 HOLD");
+    let holds = |event: &tacsim::arena::ledger::LedgerEvent| {
+        y1_ordered_by(event, issuer).is_some_and(|(_, _, objective, _)| objective == "hold")
+    };
+    assert_eq!(rig.tape_count_until(holds, 2).await, 2);
+    let lines: Vec<(ObjId, String)> = rig
+        .tape
+        .iter()
+        .filter_map(|event| z2_released_by(event, issuer))
+        .collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "one line per machine of the one real release; the release to a squad under no \
+         order journalled nothing: {lines:?}"
+    );
+    assert!(lines.iter().all(|(_, squad)| squad == "red-1"));
+}
+
+/// **16b cut Z.2 (16c Q44): a release frees the releaser's own span, and only
+/// what its issuer holds.**
+///
+/// A span of one. The lead orders `red-1`, and a second squad's watch is seeded
+/// under the lead as Y.2's test seeds one. `RELEASE` of `red-1` frees `red-1`
+/// only, so a new `HOLD` is still refused with the wait sentence; a release of
+/// the seeded squad noted for another tank drops nothing, and noted for the
+/// lead's own drops it — and the same order is taken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z2_a_release_frees_the_span_it_was_given_and_nothing_else() {
+    let mut cfg = y1_config();
+    cfg.command.max_span = 1;
+    let mut rig = Rig::boot_with(2, cfg);
+    rig.fly_with_ai(1, 1, 3).await;
+    let match_id = rig.centre().match_id.expect("a running match");
+    let issuer = rig.tank(0);
+    let hold =
+        format!("Ordered red-1 to hold: it stops where it stands and fires nothing.{Y1_TAIL}");
+    assert_eq!(rig.say(0, "ORDER red-1 HOLD"), hold);
+    let second = tacsim::deliberation::SquadId {
+        team: Team::Red,
+        index: 2,
+    };
+    let expires_ms = rig.now.saturating_mul(1_000).saturating_add(600_000);
+    rig.with_ctx_mut(0, |ctx| {
+        ctx.w
+            .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+            .expect("the registry is composed")
+            .note_human_order(match_id, second, "hold".into(), issuer, expires_ms);
+    });
+    assert_eq!(
+        z2_live(&rig, issuer),
+        vec!["red-1".to_string(), "red-2".to_string()]
+    );
+
+    assert_eq!(
+        rig.say(0, "ORDER red-1 RELEASE"),
+        "Released red-1 to doctrine: it fights on its own reflexes until it is ordered again."
+    );
+    assert_eq!(
+        z2_live(&rig, issuer),
+        vec!["red-2".to_string()],
+        "the release freed red-1 alone"
+    );
+    assert_eq!(
+        rig.say(0, "ORDER red-1 HOLD"),
+        "You hold orders on 1 squad(s) already; wait for one to run out, or RELEASE one."
+    );
+
+    // A release noted for another tank leaves the watch; the issuer's own drops it.
+    let note = |rig: &mut Rig, releaser: ObjId| {
+        rig.with_ctx_mut(0, |ctx| {
+            ctx.w
+                .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+                .expect("the registry is composed")
+                .note_order_released(match_id, second, releaser);
+        });
+    };
+    note(&mut rig, ObjId(issuer.0.saturating_add(1)));
+    assert_eq!(z2_live(&rig, issuer), vec!["red-2".to_string()]);
+    note(&mut rig, issuer);
+    assert!(z2_live(&rig, issuer).is_empty());
+    assert_eq!(rig.say(0, "ORDER red-1 HOLD"), hold);
+}
+
+/// **16b cut Z.2 (16c Q44): a wingman's release is their one machine's, and
+/// the lead's order stands.**
+///
+/// The Y.1 non-lead field: red pods 2 and 4 flown by machines (`RB`, `RD`, one
+/// squad), slot 3's pilot commanding `RD`. The lead orders `red-1`; slot 3's
+/// `ORDER 1 RELEASE` answers by the wingman's callsign and journals one
+/// `order_released` line, on `RD` alone; the lead's watch — its issuer and the
+/// lead's live squads — is unchanged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z2_a_wingmans_release_is_their_one_machine_and_the_leads_order_stands() {
+    let mut rig = Rig::boot_with(3, y1_config());
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    rig.say(2, "sim team red");
+    rig.say(1, "sim leave");
+    rig.say(1, "sim team blue");
+    let said = rig.say(0, "sim ai 4");
+    assert!(!said.is_empty(), "SIM AI answers");
+    rig.say(0, "sim start");
+    for n in [0, 2] {
+        rig.walk_to(n, match_::RED_ROOM_ENTRY);
+        rig.say(n, "board");
+    }
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+    let match_id = rig.centre().match_id.expect("a running match");
+    let rd = rig
+        .record()
+        .callsigns
+        .iter()
+        .find(|(_, callsign)| callsign.to_string() == "RD")
+        .map(|(unit, _)| *unit)
+        .expect("RD is fielded");
+    let red_one = tacsim::deliberation::SquadId {
+        team: Team::Red,
+        index: 1,
+    };
+    let (lead, third) = (rig.tank(0), rig.tank(2));
+
+    assert_eq!(
+        rig.say(0, "ORDER red-1 HOLD"),
+        format!("Ordered red-1 to hold: it stops where it stands and fires nothing.{Y1_TAIL}")
+    );
+    let from_lead =
+        |event: &tacsim::arena::ledger::LedgerEvent| y1_ordered_by(event, lead).is_some();
+    assert_eq!(rig.tape_count_until(from_lead, 2).await, 2);
+
+    assert_eq!(
+        rig.say(2, "ORDER 1 RELEASE"),
+        "Released RD to doctrine: it fights on its own reflexes until it is ordered again."
+    );
+    let watch = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.order_issuer(match_id, red_one));
+    assert_eq!(watch, Some(lead), "the lead's watch stands");
+    assert_eq!(z2_live(&rig, lead), vec!["red-1".to_string()]);
+    let released =
+        |event: &tacsim::arena::ledger::LedgerEvent| z2_released_by(event, third).is_some();
+    assert_eq!(rig.tape_count_until(released, 1).await, 1);
+    // One more of the lead's, so the release's pulse is wholly on the tape.
+    rig.say(0, "ORDER red-1 HOLD");
+    assert_eq!(rig.tape_count_until(from_lead, 4).await, 4);
+    let lines: Vec<(ObjId, String)> = rig
+        .tape
+        .iter()
+        .filter_map(|event| z2_released_by(event, third))
+        .collect();
+    assert_eq!(
+        lines,
+        vec![(rd, "red-1".to_string())],
+        "one line, on the wingman alone"
+    );
+}
+
+/// **16b cut Z.2 (16c Q44): a release is an `ORDER` and spends a stamp.** At
+/// two orders a minute, two releases are taken and the third is the rate's
+/// sentence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z2_a_release_spends_a_rate_stamp() {
+    let mut rig = Rig::boot_with(2, y2_config());
+    rig.fly_with_ai(1, 1, 3).await;
+    let release =
+        "Released red-1 to doctrine: it fights on its own reflexes until it is ordered again.";
+    assert_eq!(rig.say(0, "ORDER red-1 RELEASE"), release);
+    assert_eq!(rig.say(0, "ORDER red-1 RELEASE"), release);
+    assert_eq!(
+        rig.say(0, "ORDER red-1 RELEASE"),
+        "You have given 2 orders in the last minute; wait."
+    );
 }

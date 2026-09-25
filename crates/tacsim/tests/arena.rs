@@ -3104,3 +3104,62 @@ fn the_hash_folds_the_issuer_and_not_the_spot() {
     );
     assert_eq!(under(told(None, Some("The Ford"))), machines);
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut Z.2 — the two squad roles' payloads are state
+// ---------------------------------------------------------------------------
+
+/// **16b cut Z.2** (the cut's one hash move): two arenas equal but for a
+/// standing `Screen`'s `facing_mdeg` hash differently, and so do two equal but
+/// for a `Support`'s charge `of` — the arc a screen watches and the unit a
+/// support keeps station on steer the machine, so a replay that lost either
+/// must not compare equal. The two roles are two states of their own too.
+#[test]
+fn the_hash_folds_a_screens_facing_and_a_supports_charge() {
+    let told = |objective: tacsim::deliberation::Objective| tacsim::deliberation::Order {
+        squad: tacsim::deliberation::SquadId {
+            team: Team::Red,
+            index: 1,
+        },
+        objective,
+        target: None,
+        horizon_ms: 600_000,
+        constraints: tacsim::deliberation::Constraints::default(),
+        ttl_ms: 600_000,
+        issued_ms: 0,
+        issuer: Some(ObjId(77)),
+        spot: None,
+    };
+    let under = |objective: tacsim::deliberation::Objective| {
+        let mut arena = arena_of(
+            vec![
+                tank(MOVER, Team::Red, centre(10, 10)),
+                tank(PARKED, Team::Blue, centre(30, 30)),
+            ],
+            &MatchConfig::default(),
+        );
+        arena.reflex.set_order(
+            MOVER,
+            tacsim::deliberation::StandingOrder::accepted(told(objective), 0),
+        );
+        tacsim::arena::hash::state_hash(&arena)
+    };
+    let east = under(tacsim::deliberation::Objective::Screen {
+        facing_mdeg: 90_000,
+    });
+    let west = under(tacsim::deliberation::Objective::Screen {
+        facing_mdeg: 270_000,
+    });
+    assert_ne!(east, west, "the facing is folded");
+    let on_one = under(tacsim::deliberation::Objective::Support { of: ObjId(301) });
+    let on_two = under(tacsim::deliberation::Objective::Support { of: ObjId(302) });
+    assert_ne!(on_one, on_two, "the charge is folded");
+    assert_ne!(east, on_one, "and the two roles are two states");
+    assert_eq!(
+        under(tacsim::deliberation::Objective::Screen {
+            facing_mdeg: 90_000,
+        }),
+        east,
+        "the fold is a function of the order"
+    );
+}
