@@ -73,7 +73,7 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
-use support::{STEP_TIMEOUT, Term, names_side, play_client, scratch_dir, strip_ansi};
+use support::{STEP_TIMEOUT, Term, names_side, play_client_sized, scratch_dir, strip_ansi};
 
 type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -411,7 +411,21 @@ async fn login(
     password: &str,
     character: &str,
 ) -> (russh::client::Handle<support::AcceptAll>, Term) {
-    let (handle, mut term) = play_client(addr).await;
+    login_sized(addr, account, password, character, 80, 24).await
+}
+
+/// [`login`] on a PTY of `cols` by `rows`. A witness that opens `@tui` logs in
+/// at 120 by 34, the floor (16b cut AB.1): narrower, the TUI paints one sentence
+/// and no screen at all.
+async fn login_sized(
+    addr: SocketAddr,
+    account: &str,
+    password: &str,
+    character: &str,
+    cols: u32,
+    rows: u32,
+) -> (russh::client::Handle<support::AcceptAll>, Term) {
+    let (handle, mut term) = play_client_sized(addr, cols, rows).await;
     term.expect("Welcome to the simulator.").await;
     term.send_line(&format!("connect {account} {password}"))
         .await;
@@ -3002,7 +3016,7 @@ async fn a_tui_witness_is_shown_the_tanks_and_then_nothing_about_the_two_in_the_
     let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
-    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+    let (_c, mut cy) = login_sized(server.addr, "cy", PILOT_PASSWORD, "Cy", 120, 34).await;
     let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
 
     // Into the TUI, and the alternate screen says so.
@@ -3069,9 +3083,9 @@ async fn a_tui_witness_is_shown_the_tanks_and_then_nothing_about_the_two_in_the_
 async fn the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found() {
     let server = boot("observer-cockpit").await;
     let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
-    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_a, mut ada) = login_sized(server.addr, "ada", PILOT_PASSWORD, "Ada", 120, 34).await;
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
-    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+    let (_c, mut cy) = login_sized(server.addr, "cy", PILOT_PASSWORD, "Cy", 120, 34).await;
     let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
     close_the_gap(&mut god, red, blue, domain).await;
     take_off(&mut ada, &mut bo).await;
@@ -3086,17 +3100,17 @@ async fn the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found() {
     // now and is given none later, so his answer cannot go stale.
     let opened = cy.mark();
     cy.send_line("@tui").await;
-    // The right-hand block of the tab strip carries the character's own name,
-    // and at eighty columns nothing else on the scene screen does — so this is
-    // the strip itself having painted, not some pane that mentions him.
+    // `Cy` marks the first paint after `@tui` (the strip's right-hand block
+    // and the WHO rail both carry the name at 120 columns); it is the
+    // named-tab needle below that proves the strip painted.
     cy.expect_after(opened, "Cy").await;
     let strip = squeezed(&cy.seen[opened..]);
     assert!(
-        strip.contains("89"),
+        strip.contains("8damage9unit"),
         "the ungated tabs are on the strip:\n{strip}"
     );
     assert!(
-        !strip.contains("890"),
+        !strip.contains("0cockpit"),
         "a bystander is sent no cockpit frame and earns no tenth tab:\n{strip}"
     );
     // And the digit itself is inert: nothing a cockpit pane would ever say
@@ -3186,8 +3200,9 @@ async fn the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found() {
     let leaving = ada.mark();
     ada.send_line("EXIT").await;
     ada.expect_after(leaving, "climb").await;
-    // The active tab is the one the strip names; `scene` there is the cleared
-    // frame having moved her.
+    // Every tab is named at 120 columns; `scene` after the mark is the strip
+    // re-painting the tab whose highlight the cleared frame moved, and the
+    // help overlay below is what proves which screen is active.
     ada.expect_after(leaving, "scene").await;
     ada.send_line("").await; // an empty line: back to nav
     // `0` reaches nothing now, and ONE help overlay proves both halves: its
@@ -3235,7 +3250,7 @@ async fn the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found() {
     ada.expect_after(probed, "pod.").await;
     let strip = squeezed(&ada.seen[reopened..]);
     assert!(
-        strip.contains("89") && !strip.contains("0cockpit"),
+        strip.contains("9unit") && !strip.contains("0cockpit"),
         "no tenth tab once out of the tank:\n{strip}"
     );
 }

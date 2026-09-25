@@ -1,0 +1,24 @@
+The TUI needs at least 120 columns and this terminal is 80 wide: make it larger,
+or press Ctrl-] or type @notui for line mode.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+┌input ‹nav› Enter to type─────────────────────────────────────────────────────┐
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘

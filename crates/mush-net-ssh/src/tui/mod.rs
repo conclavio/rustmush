@@ -213,9 +213,24 @@ mod tests {
         small.width = 10;
         small.height = 4;
         sess.set_caps(small);
-        // The first paint after a resize clears + reflows; must not panic.
+        // The first paint after a resize clears + reflows; must not panic. Ten
+        // columns is below the floor (16b cut AB.1), so the frame is the floor
+        // sentence, and its first row at that width is `The TUI`. The cell
+        // diff separates words with cursor moves, so each word is a token of
+        // its own: never assert the joined phrase.
         let bytes = sess.paint();
-        assert!(!bytes.is_empty());
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("TUI"), "{text:?}");
+        // One column short of the floor: the sentence names that width.
+        let mut narrow = caps();
+        narrow.width = 119;
+        narrow.height = 34;
+        sess.set_caps(narrow);
+        let bytes = sess.paint();
+        let text = String::from_utf8_lossy(&bytes);
+        for token in ["needs", "columns", "119"] {
+            assert!(text.contains(token), "{token}: {text:?}");
+        }
     }
 
     /// **16b cut B.3** (`B-66`): `@tui` opens on the room the connection was
@@ -244,7 +259,8 @@ mod tests {
         };
         let mut sess = TuiSession::new(caps(), manifest);
         assert_eq!(sess.app.exit_keys(), &[('u', "Up".to_string())]);
-        let text = frame_text(&mut sess.app, 80, 24);
+        // At the floor (16b cut AB.1): below it row 1 is the floor sentence.
+        let text = frame_text(&mut sess.app, 120, 34);
         let status = text.lines().nth(1).unwrap_or_default();
         assert!(status.starts_with("Cellar #4"), "{text}");
         assert!(!text.contains("no room yet"), "{text}");
@@ -263,7 +279,7 @@ mod tests {
             room: Some(cellar),
             ..TuiManifest::default()
         });
-        let text = frame_text(&mut app, 80, 24);
+        let text = frame_text(&mut app, 120, 34);
         assert!(
             text.lines().nth(1).unwrap_or_default().starts_with("Attic"),
             "{text}"
@@ -274,8 +290,8 @@ mod tests {
     fn frame_text_reads_the_painted_buffer() {
         let mut app = TuiApp::new(caps());
         app.apply_event(&OutputEvent::Sys(RichText::plain("hi there")));
-        let text = frame_text(&mut app, 80, 24);
-        assert_eq!(text.lines().count(), 24);
+        let text = frame_text(&mut app, 120, 34);
+        assert_eq!(text.lines().count(), 34);
         assert!(text.contains("hi there"));
         assert!(text.contains("rustmush"));
     }

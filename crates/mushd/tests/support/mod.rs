@@ -329,8 +329,21 @@ pub async fn submit_action(term: &mut Term, line: &str, expected: &str) {
     panic!("authoritative action remained pending: {transaction}");
 }
 
-/// `ssh play@addr` with a PTY + shell, landing on the welcome screen.
+/// `ssh play@addr` with a PTY + shell, landing on the welcome screen. The PTY
+/// is 80 by 24: LINE mode stays at eighty, and every expectation the mushd
+/// tests make of a line client's wrap is made at that width.
 pub async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
+    play_client_sized(addr, 80, 24).await
+}
+
+/// [`play_client`] with a PTY of `cols` by `rows` (16b cut AB.1): a session that
+/// opens `@tui` asks for at least the 120-column floor, or its screen is one
+/// sentence.
+pub async fn play_client_sized(
+    addr: SocketAddr,
+    cols: u32,
+    rows: u32,
+) -> (russh::client::Handle<AcceptAll>, Term) {
     let config = Arc::new(russh::client::Config::default());
     let mut handle = russh::client::connect(config, addr, AcceptAll)
         .await
@@ -339,7 +352,7 @@ pub async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>,
     assert!(auth.success(), "play must be accepted with no auth");
     let channel = handle.channel_open_session().await.expect("open channel");
     channel
-        .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
+        .request_pty(true, "xterm-256color", cols, rows, 0, 0, &[])
         .await
         .expect("pty");
     channel.request_shell(true).await.expect("shell");

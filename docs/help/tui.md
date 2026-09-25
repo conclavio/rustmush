@@ -33,6 +33,13 @@ never left stuck on a blank full-screen buffer.
 You need a real interactive terminal (a PTY) for `@tui`; it does nothing over
 a non-interactive pipe.
 
+The TUI is laid out for a terminal of at least 120 columns, and 160 to 180
+columns is the width it is happiest at. Narrower than that no screen is
+drawn: a short message names the floor and your terminal's own width, the
+input box stays, and the moment the window is wide enough again the screen
+you were on comes back as you left it. Line mode has no hard floor, though
+its maps and tables are drawn for 80 columns.
+
 ## Two modes: nav and input
 
 The TUI is **modal**. It starts in **nav** mode, where single keys act:
@@ -185,15 +192,17 @@ reads the scene back, and is not taken as the line you were composing.
              contacts on it — `x` hostile, `+` friendly, `?` not told apart
              yet — and the line under it says which glyph is which. On the
              left: your callsign, your power, speed and heading, your heat,
-             your scope, your lock, what is left of your tank section by
-             section, and the notices — what the arena tells you, and the
-             answer to anything you type while you are in the tank. On the
-             right: your weapons with their cycle, rounds and chance, and
-             your contacts — bearing, band, range, how old the plot is, and
-             the sections of any you have had a close look at. At 80
-             columns every pane fits side by side, and a row too long for
-             its pane wraps onto the next line; on a short terminal the
-             damage pane is the first to go, and it wants about 31 rows.
+             your scope, your lock, and what is left of your tank section by
+             section. On the right: your weapons with their cycle, rounds
+             and chance, your contacts — bearing, band, range, how old the
+             plot is, and the sections of any you have had a close look
+             at — and the notices: what the arena tells you, and the answer
+             to anything you type while you are in the tank. At the
+             120-column floor every pane fits side by side, no status,
+             weapon or contact row wraps, and the damage pane shows a
+             tank's five sections whole from 30 rows; a row longer than its
+             pane (a contact's scan) wraps onto the next line, and on a
+             shorter terminal the damage pane is the first to go.
              `c` `t` `w` `r` `b` `n` run CONTACTS, STATUS, WEAPONSTATUS,
              RANGE, BEARING and SCAN, and their answers land on the notices
              pane; `k` `f` `h` `m` open the
@@ -216,8 +225,8 @@ before/after table, with each line naming the unit it is about. Screen 9's
 contacts pane is the table `+contacts` prints, when the server publishes it
 (Enter on a row prefills `+contact <id>`); it also carries panes for things
 no server publishes yet — a grid, weapons, comms — each saying what it is
-waiting for. Those are the first panes to go when the window narrows, so a
-real pane never loses its place to an empty one. Colour and condition marks
+waiting for. Those are the first panes to go when the window is too short
+for them all, so a real pane never loses its place to an empty one. Colour and condition marks
 on both screens come from the ruleset's own judgement, never from the
 client's reading of a word.
 
@@ -227,8 +236,8 @@ as in line mode. Your own character's gauges come first, ahead of any unit
 or vehicle you are also reading, and the strip is one row: when there are
 more gauges than fit, the ones that did not fit are counted at the right
 (`+4 more`) rather than dropped in silence — screen 5 shows them all. The
-WHO rail drops out below 100 columns and the chrome below 12 rows, so a
-small window always keeps the scrollback and the box.
+chrome drops out below 12 rows, so a short window always keeps the
+scrollback and the box.
 
 Password and hidden prompts (login, chargen) open the box on their own and
 mask or hide your typing, just as in line mode. A line you were part-way

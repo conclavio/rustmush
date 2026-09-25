@@ -128,12 +128,14 @@ pub struct RenderCtx<'a> {
     /// about to paint into, and the input paths (scrolling, the highlighted
     /// row) pass `None` because they ask what the rows ARE, not how many fit.
     ///
-    /// Two renderers read it: [`render_cockpit_map_rows`], because a map is a
-    /// pane whose CONTENT is a function of its size — the window it carves out
-    /// of the arena — rather than a list the pane scrolls; and, since 16b cut
+    /// Three renderers read it: [`render_cockpit_map_rows`], because a map is
+    /// a pane whose CONTENT is a function of its size — the window it carves
+    /// out of the arena — rather than a list the pane scrolls; since 16b cut
     /// B.3, [`render_cockpit_notices_rows`], which answers the TAIL of its ring
     /// that fits, because the pane is not selectable and the newest line is the
-    /// one a pilot is waiting for.
+    /// one a pilot is waiting for; and, since 16b cut AB.1,
+    /// [`render_cockpit_damage_rows`], which packs a section's facet cells into
+    /// rows of the pane's width so no cell is split from its numbers.
     pub pane: Option<(u16, u16)>,
 }
 
@@ -2576,7 +2578,8 @@ pub fn render_cockpit_status_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows
     // `receiver` key), only while it is degraded — the frame leaves the key null
     // on a clean receiver, so the row's presence is what says "degraded". Budget
     // over the unjammed budget, then what is left of the reach:
-    // `receiver 15/40  60%`, 19 characters, so it never wraps a 22-column pane.
+    // `receiver 15/40  60%`, 19 characters (22 at three digits and 100%), so it
+    // never wraps the pane's 32 inner columns.
     // Three integers about the pilot's own machine and nothing about the source.
     if let Some(receiver) = data.get("receiver").filter(|r| r.is_object()) {
         let num = |key: &str| receiver.get(key).and_then(Value::as_i64).unwrap_or(0);
@@ -2618,21 +2621,48 @@ pub fn render_cockpit_status_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows
     PaneRows { rows }
 }
 
-/// **The damage pane** (16b cut Q.4): one row per section, in the layout
-/// `tacsim::match_::cockpit::section_lines` prints — the condition word, the
+/// **The damage pane** (16b cut Q.4): each section's condition word and
 /// internals, then each facet's armour. A pilot's own tank is outside the
 /// observer rule entirely (doc 16 §3.6), so this is the whole of it.
+///
+/// **16b cut AB.1** reads the pane's size (`ctx.pane`). Per section, one row
+/// `{id}  {condition}  {internals}/{internals_max}`, then the facet cells
+/// `{id} {armor}/{armor_max}` PACKED into rows of at most the pane's inner
+/// width — two spaces of indent, two spaces between cells, a new row when the
+/// next cell would not fit — which is the rule
+/// `tacsim::match_::cockpit::section_lines` uses at `DAMAGE_COLUMNS`, at the
+/// pane's width instead. A facet's name is therefore never split from its
+/// numbers (cut B.3 wrapped one long row per section at whatever space fell at
+/// the edge). A cell wider than the whole pane sits on a row of its own, where
+/// the pane's wrap splits it; no shipped content reaches that. A section with
+/// no facets is one row.
+///
+/// The shipped line tank at the Left column's 32 inner columns is TWELVE rows —
+/// the hull four (`hull  intact  200/200`, `  front 400/400  left 250/250`,
+/// `  right 250/250  rear 150/150`, `  top 100/100`), the turret three, each
+/// track two, the engine one — which is the pane's `min_h`, so from
+/// `COCKPIT_ROWS` every section of the stock roster is on screen. The biped
+/// (six sections of three to five facets) is nineteen: at 120 by 34 the pane's
+/// twelve inner rows show the torso, the head, the left arm and the first two
+/// rows of the right arm, with the rest below the fold; at 160 by 48 the
+/// pane's eighteen (ratatui gives the Left column's odd row to the status
+/// pane above it) show all but the last, the right leg's `  rear 180/180`.
+///
+/// With no pane size (`ctx.pane == None`, the input paths that ask what the
+/// rows ARE) the output is one row per section with its facets appended to it
+/// (`hull  intact  60/60  front 55/80`), as before the cut.
 #[must_use]
-pub fn render_cockpit_damage_rows(data: &Value, _ctx: &RenderCtx<'_>) -> PaneRows {
+pub fn render_cockpit_damage_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if !seated(data) {
         return PaneRows::default();
     }
     let Some(sections) = data.get("sections").and_then(Value::as_array) else {
         return PaneRows::default();
     };
+    let width = ctx.pane.map(|(w, _)| usize::from(w));
     let mut rows = Vec::with_capacity(sections.len());
     for section in sections {
-        let mut line = format!(
+        let head = format!(
             "{}  {}  {}/{}",
             clean(section.get("id").and_then(Value::as_str).unwrap_or("?")),
             clean(
@@ -2650,19 +2680,64 @@ pub fn render_cockpit_damage_rows(data: &Value, _ctx: &RenderCtx<'_>) -> PaneRow
                 .and_then(Value::as_i64)
                 .unwrap_or(0),
         );
-        if let Some(facets) = section.get("facets").and_then(Value::as_array) {
-            for facet in facets {
-                line.push_str(&format!(
-                    "  {} {}/{}",
-                    clean(facet.get("id").and_then(Value::as_str).unwrap_or("?")),
-                    facet.get("armor").and_then(Value::as_i64).unwrap_or(0),
-                    facet.get("armor_max").and_then(Value::as_i64).unwrap_or(0),
-                ));
+        let cells: Vec<String> = section
+            .get("facets")
+            .and_then(Value::as_array)
+            .map(|facets| {
+                facets
+                    .iter()
+                    .map(|facet| {
+                        format!(
+                            "{} {}/{}",
+                            clean(facet.get("id").and_then(Value::as_str).unwrap_or("?")),
+                            facet.get("armor").and_then(Value::as_i64).unwrap_or(0),
+                            facet.get("armor_max").and_then(Value::as_i64).unwrap_or(0),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some(width) = width else {
+            // No pane: the section's one row, its facets appended.
+            let mut line = head;
+            for cell in &cells {
+                line.push_str("  ");
+                line.push_str(cell);
             }
+            rows.push(PaneRow::plain(Line::from(Span::raw(line))));
+            continue;
+        };
+        rows.push(PaneRow::plain(Line::from(Span::raw(head))));
+        for line in pack_facet_cells(&cells, width) {
+            rows.push(PaneRow::plain(Line::from(Span::raw(line))));
         }
-        rows.push(PaneRow::plain(Line::from(Span::raw(line))));
     }
     PaneRows { rows }
+}
+
+/// A section's facet cells packed into rows of at most `width` characters (16b
+/// cut AB.1): each row starts with two spaces, two spaces join two cells, and
+/// a cell that would carry a row past `width` starts the next one. A cell too
+/// wide for any row is a row of its own. Characters are counted, not bytes, so
+/// a cleaned id with a wide letter in it is measured as the pane measures it.
+fn pack_facet_cells(cells: &[String], width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut run = String::new();
+    let mut used = 0usize;
+    for cell in cells {
+        let len = cell.chars().count();
+        if !run.is_empty() && used + 2 + len > width {
+            lines.push(std::mem::take(&mut run));
+            used = 0;
+        }
+        run.push_str("  ");
+        run.push_str(cell);
+        used += 2 + len;
+    }
+    if !run.is_empty() {
+        lines.push(run);
+    }
+    lines
 }
 
 /// **The weapons pane** (16b cut Q.4): what each weapon is, whether its cycle
@@ -3443,8 +3518,10 @@ pub fn status_line(
 /// The tab strip: `rustmush  1 scene  2 sheet  3 mail 2 …` with the active
 /// screen reversed and unread badges, then `right` flush right in `width`.
 ///
-/// Nine named tabs need about ninety-eight columns, so when the tabs alone
-/// would not fit the strip elides: every INACTIVE tab drops its name and
+/// Ten named tabs need 110 columns and nine 98, so at the 120-column floor
+/// (16b cut AB.1) every tab is named; the right-hand block is dropped beside
+/// ten tabs until 128 columns. When unread badges push the tabs alone past the
+/// width the strip elides: every INACTIVE tab drops its name and
 /// keeps its digit (and its unread badge, which is the only place unread is
 /// shown at all), and the active tab keeps its name, since answering "where
 /// am I" is what the strip is for. The right-hand block's own drop rule is
@@ -3493,10 +3570,39 @@ pub fn tab_strip(
     Line::from(spans)
 }
 
+/// **The sentence painted below the floor** (16b cut AB.1, 16c `Q-AB1`):
+/// the floor ([`FLOOR_COLS`](super::screen::FLOOR_COLS)) and the terminal's
+/// own width, `cols`, and the two ways back to a terminal that works —
+/// Ctrl-], which detaches from either mode, and `@notui`, which nav mode opens
+/// the box for below the floor. For a client that reported no size, `cols` is
+/// the 80 the session substitutes.
+#[must_use]
+pub fn floor_line(cols: u16) -> String {
+    format!(
+        "The TUI needs at least {} columns and this terminal is {cols} wide: \
+         make it larger, or press Ctrl-] or type @notui for line mode.",
+        super::screen::FLOOR_COLS
+    )
+}
+
 /// The legend: the screen's bindings in nav mode, the editing keys in
 /// input mode.
+///
+/// **16b cut AB.1**: `width` is the row it is painted on (`0` is unbounded).
+/// In nav mode, when the whole legend — the bindings in order, `Enter type`,
+/// `? help` — would run past it, whole entries are kept in order while they
+/// fit and `? help` is ALWAYS the last: the help overlay names every key the
+/// cut left off, and the input box's own title already says `Enter to type`.
+/// So the cockpit's twelve bindings (148 characters whole) read ten and
+/// `? help` at the 120-column floor instead of stopping mid-word. Input mode
+/// is four short entries and is never cut.
 #[must_use]
-pub fn legend_line(input_mode: bool, bindings: &[(char, &str)], utf8: bool) -> Line<'static> {
+pub fn legend_line(
+    input_mode: bool,
+    bindings: &[(char, &str)],
+    utf8: bool,
+    width: usize,
+) -> Line<'static> {
     let sep = if utf8 { " \u{00b7} " } else { " | " };
     let key_style = Style::default().add_modifier(Modifier::BOLD);
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -3517,13 +3623,37 @@ pub fn legend_line(input_mode: bool, bindings: &[(char, &str)], utf8: bool) -> L
         push(&mut spans, tab, "complete");
         push(&mut spans, "^P", "mode");
         push(&mut spans, "Esc", "nav");
-    } else {
-        for (k, label) in bindings {
-            push(&mut spans, &k.to_string(), label);
-        }
-        push(&mut spans, "Enter", "type");
-        push(&mut spans, "?", "help");
+        return Line::from(spans);
     }
+    let mut entries: Vec<(String, &str)> = bindings
+        .iter()
+        .map(|(k, label)| (k.to_string(), *label))
+        .collect();
+    entries.push(("Enter".to_string(), "type"));
+    let help = ("?".to_string(), "help");
+    // An entry is its key, a space and its label; every entry after the first
+    // costs the separator too.
+    let sep_w = sep.chars().count();
+    let cost = |(key, label): &(String, &str)| key.chars().count() + 1 + label.chars().count();
+    let whole = entries.iter().map(|e| cost(e) + sep_w).sum::<usize>() + cost(&help);
+    if width > 0 && whole > width {
+        // Keep whole entries while they and the `? help` after them fit.
+        let mut used = cost(&help);
+        let mut kept = 0;
+        for entry in &entries {
+            let next = used + cost(entry) + sep_w;
+            if next > width {
+                break;
+            }
+            used = next;
+            kept += 1;
+        }
+        entries.truncate(kept);
+    }
+    for (key, label) in &entries {
+        push(&mut spans, key, label);
+    }
+    push(&mut spans, &help.0, help.1);
     Line::from(spans)
 }
 
@@ -4153,9 +4283,9 @@ mod tests {
         );
         assert!(text.ends_with("Nick 12:00"));
         assert_eq!(text.chars().count(), 60);
-        let nav = legend_line(false, &[('l', "look")], false);
+        let nav = legend_line(false, &[('l', "look")], false, 0);
         assert_eq!(line_text(&nav), "l look | Enter type | ? help");
-        let input = legend_line(true, &[], false);
+        let input = legend_line(true, &[], false, 0);
         assert_eq!(
             line_text(&input),
             "Up history | Tab complete | ^P mode | Esc nav"
@@ -4818,59 +4948,266 @@ mod tests {
         );
     }
 
-    /// I8: nine named tabs need about ninety-eight columns. At eighty the
-    /// strip elides — inactive tabs keep their digit and their unread badge,
-    /// the active tab keeps its name — and at one-twenty nothing changes.
+    /// I8, re-derived for the floor (16b cut AB.1): ten named tabs take 110
+    /// columns and nine 98, so at 120 every tab is named — beside ten tabs the
+    /// right-hand block (`Nick ● 3 on 14:30`, 17) does not fit and is dropped,
+    /// beside nine it does. The strip elides only when unread badges carry the
+    /// named tabs past the width: inactive tabs keep their digit and their
+    /// badge, the active tab keeps its name. At 160 there is room for all.
     #[test]
-    fn the_tab_strip_elides_names_at_eighty_columns_and_keeps_them_at_one_twenty() {
-        let tabs: Vec<(u8, &str, usize)> = vec![
+    fn the_tab_strip_names_every_tab_at_one_twenty_and_elides_only_for_badges() {
+        let right = "Nick \u{25cf} 3 on 14:30";
+        let ten: Vec<(u8, &str, usize)> = vec![
             (1, "scene", 0),
             (2, "sheet", 0),
-            (3, "mail", 3),
-            (4, "chan", 7),
+            (3, "mail", 0),
+            (4, "chan", 0),
             (5, "rolls", 0),
             (6, "intel", 0),
             (7, "actions", 0),
             (8, "damage", 0),
             (9, "unit", 0),
+            (0, "cockpit", 0),
         ];
-        let wide = line_text(&tab_strip(&tabs, 8, "Nick \u{25cf} 3 on 14:30", 120));
-        assert!(
-            wide.contains(" 1 scene ") && wide.contains(" 9 unit "),
-            "{wide}"
-        );
-        assert!(wide.contains(" 3 mail 3 ") && wide.contains(" 4 chan 7 "));
-        assert!(wide.ends_with("Nick \u{25cf} 3 on 14:30"));
-        assert_eq!(wide.chars().count(), 120);
+        let names = [
+            " 1 scene ",
+            " 2 sheet ",
+            " 3 mail ",
+            " 4 chan ",
+            " 5 rolls ",
+            " 6 intel ",
+            " 7 actions ",
+            " 8 damage ",
+            " 9 unit ",
+            " 0 cockpit ",
+        ];
+        // Ten tabs at the floor: all named, and no room for the block.
+        let floor = line_text(&tab_strip(&ten, 0, right, 120));
+        for name in names {
+            assert!(floor.contains(name), "{name:?} at 120: {floor:?}");
+        }
+        assert!(!floor.contains("Nick"), "the block is dropped: {floor:?}");
+        assert_eq!(floor.chars().count(), 110);
 
-        let narrow = line_text(&tab_strip(&tabs, 8, "Nick \u{25cf} 3 on 14:30", 80));
-        assert!(
-            narrow.contains(" 8 damage "),
-            "the active tab keeps its name: {narrow}"
-        );
-        assert!(
-            !narrow.contains("scene") && !narrow.contains("actions"),
-            "{narrow}"
-        );
-        assert!(
-            narrow.contains(" 3 3 ") && narrow.contains(" 4 7 "),
-            "unread survives the elision: {narrow}"
-        );
-        assert!(
-            narrow.starts_with("rustmush  1   2   3 3   4 7   5   6   7   8 damage   9 "),
-            "{narrow:?}"
-        );
-        assert_eq!(narrow.chars().count(), 80);
+        // Nine (a viewer with no seat): all named, and the block fits.
+        let nine = line_text(&tab_strip(&ten[..9], 1, right, 120));
+        for name in names.iter().take(9) {
+            assert!(nine.contains(name), "{name:?} at 120: {nine:?}");
+        }
+        assert!(nine.ends_with(right), "{nine:?}");
+        assert_eq!(nine.chars().count(), 120);
 
-        // The seven-screen strip fits eighty columns, so it is untouched:
-        // the elision is what the two new tabs cost, not a new rule for
-        // everyone. (Unread badges widen it, and a strip that overflows for
-        // that reason now elides too, where before it was cut mid-tab.)
-        let plain: Vec<(u8, &str, usize)> = tabs[..7].iter().map(|&(d, n, _)| (d, n, 0)).collect();
-        let seven = line_text(&tab_strip(&plain, 1, "", 80));
+        // Unread badges past the width: the elision, badges kept. The rule is
+        // the strip's for any badge, not only the mail and channel ones the
+        // app counts today.
+        let badged: Vec<(u8, &str, usize)> = ten
+            .iter()
+            .map(|&(d, n, _)| {
+                let badge = match d {
+                    2 => 1,
+                    3 => 3,
+                    4 => 7,
+                    6 => 9,
+                    8 => 2,
+                    9 => 4,
+                    _ => 0,
+                };
+                (d, n, badge)
+            })
+            .collect();
+        let elided = line_text(&tab_strip(&badged, 0, right, 120));
         assert!(
-            seven.contains(" 1 scene ") && seven.contains(" 7 actions "),
-            "{seven}"
+            elided.contains(" 0 cockpit "),
+            "the active tab keeps its name: {elided:?}"
+        );
+        assert!(
+            !elided.contains("scene") && !elided.contains("actions"),
+            "{elided:?}"
+        );
+        assert!(
+            elided.contains(" 3 3 ") && elided.contains(" 4 7 ") && elided.contains(" 9 4 "),
+            "unread survives the elision: {elided:?}"
+        );
+        assert!(elided.ends_with(right), "{elided:?}");
+        assert_eq!(elided.chars().count(), 120);
+        // Exactly: every inactive tab keeps its digit, with or without a
+        // badge, at the same spacing, and the block is right-aligned after
+        // the padding (68 columns of tabs, 35 of padding, 17 of block).
+        assert_eq!(
+            elided,
+            format!(
+                "rustmush  1   2 1   3 3   4 7   5   6 9   7   8 2   9 4   0 cockpit {}{right}",
+                " ".repeat(35)
+            ),
+            "the elided strip"
+        );
+
+        // At 160 the ten named tabs and the block.
+        let wide = line_text(&tab_strip(&ten, 0, right, 160));
+        for name in names {
+            assert!(wide.contains(name), "{name:?} at 160: {wide:?}");
+        }
+        assert!(wide.ends_with(right), "{wide:?}");
+        assert_eq!(wide.chars().count(), 160);
+    }
+
+    /// **16b cut AB.1**: the floor sentence names the floor and the terminal's
+    /// own width, word for word.
+    #[test]
+    fn floor_line_names_the_floor_and_the_terminal() {
+        assert_eq!(
+            floor_line(80),
+            "The TUI needs at least 120 columns and this terminal is 80 wide: make it \
+             larger, or press Ctrl-] or type @notui for line mode."
+        );
+        assert_eq!(
+            floor_line(119),
+            "The TUI needs at least 120 columns and this terminal is 119 wide: make it \
+             larger, or press Ctrl-] or type @notui for line mode."
+        );
+    }
+
+    /// The shipped line tank's five sections as the frame carries them
+    /// (`crates/tacsim/content/units/line_tank.json`, undamaged): the hull's
+    /// five facets and the turret's four at three digits, one facet on each
+    /// track, none on the engine.
+    fn line_tank_sections() -> Value {
+        serde_json::json!([
+            { "id": "hull", "condition": "intact", "internals": 200, "internals_max": 200,
+              "facets": [
+                { "id": "front", "armor": 400, "armor_max": 400 },
+                { "id": "left", "armor": 250, "armor_max": 250 },
+                { "id": "right", "armor": 250, "armor_max": 250 },
+                { "id": "rear", "armor": 150, "armor_max": 150 },
+                { "id": "top", "armor": 100, "armor_max": 100 } ] },
+            { "id": "turret", "condition": "intact", "internals": 150, "internals_max": 150,
+              "facets": [
+                { "id": "front", "armor": 350, "armor_max": 350 },
+                { "id": "left", "armor": 220, "armor_max": 220 },
+                { "id": "right", "armor": 220, "armor_max": 220 },
+                { "id": "rear", "armor": 140, "armor_max": 140 } ] },
+            { "id": "left_track", "condition": "intact", "internals": 100, "internals_max": 100,
+              "facets": [ { "id": "left", "armor": 120, "armor_max": 120 } ] },
+            { "id": "right_track", "condition": "destroyed", "internals": 100, "internals_max": 100,
+              "facets": [ { "id": "right", "armor": 120, "armor_max": 120 } ] },
+            { "id": "engine", "condition": "intact", "internals": 120, "internals_max": 120,
+              "facets": [] }
+        ])
+    }
+
+    /// **16b cut AB.1**: the damage pane packs a section's facet cells into
+    /// rows of the pane's width and never splits one. The shipped line tank at
+    /// the Left column's 32 inner columns is exactly twelve rows — the pane's
+    /// `min_h` — and with no pane size (the input paths) it is one row per
+    /// section, as it was.
+    #[test]
+    fn the_damage_pane_packs_facet_cells_whole() {
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = |pane: Option<(u16, u16)>| RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane,
+        };
+        let mut frame = cockpit(serde_json::json!([5, 5]), serde_json::json!([]));
+        frame["sections"] = line_tank_sections();
+        let rows: Vec<String> = render_cockpit_damage_rows(&frame, &ctx(Some((32, 12))))
+            .rows
+            .iter()
+            .map(PaneRow::text)
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "hull  intact  200/200",
+                "  front 400/400  left 250/250",
+                "  right 250/250  rear 150/150",
+                "  top 100/100",
+                "turret  intact  150/150",
+                "  front 350/350  left 220/220",
+                "  right 220/220  rear 140/140",
+                "left_track  intact  100/100",
+                "  left 120/120",
+                // The widest condition row a shipped section prints, 31.
+                "right_track  destroyed  100/100",
+                "  right 120/120",
+                "engine  intact  120/120",
+            ]
+        );
+        for row in &rows {
+            assert!(row.chars().count() <= 32, "{row:?} wraps the pane");
+        }
+        // Every facet cell is whole on one row, and a facet row is indented.
+        for cell in [
+            "front 400/400",
+            "left 250/250",
+            "right 250/250",
+            "rear 150/150",
+            "top 100/100",
+            "front 350/350",
+            "left 220/220",
+            "right 220/220",
+            "rear 140/140",
+            "left 120/120",
+            "right 120/120",
+        ] {
+            let row = rows
+                .iter()
+                .find(|row| row.contains(cell))
+                .unwrap_or_else(|| panic!("{cell:?} is not whole on any row: {rows:?}"));
+            assert!(row.starts_with("  "), "{row:?}");
+        }
+        // The input paths: one row per section, its facets appended.
+        let flat: Vec<String> = render_cockpit_damage_rows(&frame, &ctx(None))
+            .rows
+            .iter()
+            .map(PaneRow::text)
+            .collect();
+        assert_eq!(flat.len(), 5, "{flat:?}");
+        assert_eq!(
+            flat.first().map(String::as_str),
+            Some(
+                "hull  intact  200/200  front 400/400  left 250/250  right 250/250  \
+                 rear 150/150  top 100/100"
+            )
+        );
+        assert_eq!(
+            flat.last().map(String::as_str),
+            Some("engine  intact  120/120")
+        );
+    }
+
+    /// **16b cut AB.1**: the cockpit's legend at the 120-column floor keeps
+    /// whole entries in order and ends on `? help`, instead of stopping
+    /// mid-word; from 148 columns it is whole.
+    #[test]
+    fn the_legend_keeps_whole_entries_and_help_at_the_floor() {
+        let screens = super::super::screen::builtin_screens();
+        let cockpit = screens.last().expect("the cockpit screen");
+        let bindings: Vec<(char, &str)> = cockpit.keys.iter().map(|b| (b.key, b.label)).collect();
+        assert_eq!(bindings.len(), 12);
+        let whole = "k lock \u{b7} f fire \u{b7} h heading \u{b7} m speed \u{b7} p pull \u{b7} \
+                     c contacts \u{b7} t status \u{b7} w weapons \u{b7} r range \u{b7} \
+                     b bearing \u{b7} n scan \u{b7} s scan row \u{b7} Enter type \u{b7} ? help";
+        assert_eq!(whole.chars().count(), 148);
+        let floor = line_text(&legend_line(false, &bindings, true, 120));
+        assert_eq!(
+            floor,
+            "k lock \u{b7} f fire \u{b7} h heading \u{b7} m speed \u{b7} p pull \u{b7} \
+             c contacts \u{b7} t status \u{b7} w weapons \u{b7} r range \u{b7} b bearing \
+             \u{b7} ? help"
+        );
+        assert_eq!(floor.chars().count(), 113);
+        assert_eq!(line_text(&legend_line(false, &bindings, true, 160)), whole);
+        assert_eq!(line_text(&legend_line(false, &bindings, true, 148)), whole);
+        assert_eq!(line_text(&legend_line(false, &bindings, true, 0)), whole);
+        // Input mode is never cut.
+        assert_eq!(
+            line_text(&legend_line(true, &bindings, true, 120)),
+            line_text(&legend_line(true, &[], true, 0))
         );
     }
 
@@ -5260,7 +5597,7 @@ mod tests {
         );
         assert!(
             rows.iter().all(|row| row.chars().count() <= 22),
-            "a row wraps a 22-column pane: {rows:?}"
+            "a row would wrap the pane's 32 inner columns: {rows:?}"
         );
 
         // A wreck says DESTROYED (and not IMMOBILE, though it is that too); an

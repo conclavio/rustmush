@@ -1,6 +1,8 @@
 //! Golden frames for the modal TUI (interface plan I2): the scene screen
-//! with fixture data at the three budget sizes — 80×24 (scrollback, input
-//! and the chrome), 120×34 (the whole scene screen), 160×44 (the HUD case).
+//! with fixture data at the budget sizes — 120×34, the floor every screen is
+//! laid out for (16c `Q-AB1`, 16b cut AB.1), and 160×44, the HUD case — and
+//! the cockpit at its typical 160×48 as well. Narrower than the floor a screen
+//! is one sentence and the box (`tui_floor_80x24.txt`).
 //!
 //! The frames live under `tests/golden/`; `UPDATE_GOLDEN=1 cargo test -p
 //! mush-net-ssh --test tui_golden` rewrites them, and the diff is the
@@ -10,8 +12,8 @@ use std::path::PathBuf;
 
 use mush_ansi::AnsiTheme;
 use mush_net_ssh::tui::panels::PanelStore;
-use mush_net_ssh::tui::render::{RenderCtx, render_cockpit_map_rows};
-use mush_net_ssh::tui::screen::COCKPIT_SCREEN;
+use mush_net_ssh::tui::render::{RenderCtx, floor_line, render_cockpit_map_rows};
+use mush_net_ssh::tui::screen::{COCKPIT_ROWS, COCKPIT_SCREEN};
 use mush_net_ssh::tui::{TuiApp, TuiManifest, frame_text};
 use mush_proto::{
     ClientCaps, ClientKind, ColorDepth, ExitRef, NarrativeKind, ObjRef, OutputEvent,
@@ -281,7 +283,7 @@ fn check(name: &str, actual: &str) {
 #[test]
 fn scene_screen_golden_frames() {
     let mut app = fixture_app();
-    for (w, h) in [(80u16, 24u16), (120, 34), (160, 44)] {
+    for (w, h) in [(120u16, 34u16), (160, 44)] {
         let text = frame_text(&mut app, w, h);
         assert_eq!(text.lines().count(), usize::from(h));
         for line in text.lines() {
@@ -292,6 +294,60 @@ fn scene_screen_golden_frames() {
         }
         check(&format!("tui_scene_{w}x{h}.txt"), &text);
     }
+}
+
+/// The floor sentence as a frame carries it: the rows above the input box,
+/// trimmed, the empty ones dropped, joined with single spaces.
+fn sentence_of(text: &str) -> String {
+    text.lines()
+        .take_while(|line| !line.starts_with('\u{250c}'))
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// **Below the floor, one sentence on every screen** (16b cut AB.1, 16c
+/// `Q-AB1`): the fixture app at 80 by 24 on the scene screen is the golden, and
+/// every other screen — the cockpit too, on an app seated in one — paints the
+/// same text there, because no screen is drawn at all. At 100 by 30 and 119 by
+/// 34 the sentence names that width. A terminal as wide as the floor and one
+/// row shorter than the budget paints the cockpit's panes: the floor is a
+/// width, not a height.
+#[test]
+fn the_floor_is_one_sentence_on_every_screen() {
+    let mut app = fixture_app();
+    let floor = frame_text(&mut app, 80, 24);
+    assert_eq!(floor.lines().count(), 24);
+    assert_eq!(sentence_of(&floor), floor_line(80), "{floor}");
+    check("tui_floor_80x24.txt", &floor);
+    for digit in b'2'..=b'9' {
+        app.feed_input(&[digit]);
+        assert_eq!(
+            frame_text(&mut app, 80, 24),
+            floor,
+            "screen {}",
+            digit - b'0'
+        );
+    }
+    let mut pilot = cockpit_app();
+    assert_eq!(pilot.active_screen(), COCKPIT_SCREEN);
+    assert_eq!(frame_text(&mut pilot, 80, 24), floor, "the cockpit");
+    for (w, h) in [(100u16, 30u16), (119, 34)] {
+        let text = frame_text(&mut pilot, w, h);
+        assert_eq!(sentence_of(&text), floor_line(w), "{w}x{h}:\n{text}");
+        for line in text.lines() {
+            assert!(line.chars().count() <= usize::from(w), "{line:?}");
+        }
+    }
+    let text = frame_text(&mut pilot, 120, 33);
+    for title in ["status", "damage", "weapons", "contacts", "notices"] {
+        assert!(
+            text.contains(&format!("\u{250c}{title}")),
+            "120x33: {title} is painted:\n{text}"
+        );
+    }
+    assert!(!text.contains("needs at least"), "{text}");
 }
 
 #[test]
@@ -447,14 +503,7 @@ fn the_before_after_pane_shows_both_sides_at_one_twenty() {
         text.contains("rev 4 \u{b7} gauss \u{b7} cell facet/center_torso/rear/armor 6\u{2192}1"),
         "the journal reads whole rows too:\n{text}"
     );
-    // Narrower terminals keep the same three panes; the share only ever
-    // moves columns Main was not using.
-    let narrow = frame_text(&mut app, 80, 24);
-    assert!(
-        narrow.contains("before / after") && narrow.contains("journal"),
-        "{narrow}"
-    );
-    for (w, h) in [(80u16, 24u16), (120, 34), (160, 44)] {
+    for (w, h) in [(120u16, 34u16), (160, 44)] {
         let text = frame_text(&mut app, w, h);
         for line in text.lines() {
             assert!(
@@ -556,9 +605,11 @@ fn the_vitals_strip_paints_the_character_first_and_counts_what_it_cut() {
             ]
         }),
     });
-    let text = frame_text(&mut app, 80, 24);
+    // At the floor (16b cut AB.1): the fixture's six pool cells still carry
+    // the strip past 120 columns, so the cut and its count are what is read.
+    let text = frame_text(&mut app, 120, 34);
     for line in text.lines() {
-        assert!(line.chars().count() <= 80, "row too wide: {line:?}");
+        assert!(line.chars().count() <= 120, "row too wide: {line:?}");
     }
     let strip = text
         .lines()
@@ -576,7 +627,7 @@ fn the_vitals_strip_paints_the_character_first_and_counts_what_it_cut() {
         !strip.contains("coolant"),
         "the cells past the edge are gone, not clipped mid-cell: {strip:?}"
     );
-    check("tui_vitals_two_feeds_80x24.txt", &text);
+    check("tui_vitals_two_feeds_120x34.txt", &text);
 }
 
 // ---------------------------------------------------------------------------
@@ -836,17 +887,47 @@ fn a_window_away_from_the_corner_subtracts_its_own_origin() {
     );
 }
 
+/// The Left column of a painted row: its first 34 glyphs (16b cut AB.1: the
+/// status and damage panes' column at every width from the floor).
+fn left_of(line: &str) -> String {
+    line.chars().take(34).collect()
+}
+
+/// The Right column of a painted row at `w` columns: its last
+/// `46 + (w - 116) / 2` glyphs (the column the weapons, contacts and notices
+/// panes share, with its half of the surplus).
+fn right_of(line: &str, w: u16) -> String {
+    let right = usize::from(46 + (w - 116) / 2);
+    let chars: Vec<char> = line.chars().collect();
+    let at = usize::from(w).saturating_sub(right);
+    chars.iter().skip(at).collect()
+}
+
+/// Whether some ONE painted row holds `needle` inside its Left column.
+fn left_holds(text: &str, needle: &str) -> bool {
+    text.lines().any(|line| left_of(line).contains(needle))
+}
+
+/// Whether some ONE painted row holds `needle` inside its Right column.
+fn right_holds(text: &str, needle: &str, w: u16) -> bool {
+    text.lines().any(|line| right_of(line, w).contains(needle))
+}
+
 /// The whole screen at the budget sizes, on a server that publishes the arena
 /// feeds. The FIRST cockpit frame of a match opens the screen by itself, which
 /// is what the `active_screen` assertion pins.
 ///
-/// **16b cut B.3** (`B-10`) added 100 by 30: at every size the contacts pane
-/// is painted — no pane goes for WIDTH at 80 columns — and `damage`, the first
-/// to go for HEIGHT, is drawn from 31 rows: the status pane's ten rows, the
-/// damage pane's five and the notices' three, each with its border, want 24
-/// body rows, and a 30-row terminal with the vitals gauge has 23. The notices pane is the frame's
-/// two notices composed from their fields — `X4 new contact` and `BA section
-/// destroyed: turret` — and none of the scrollback's chatter.
+/// **16b cut AB.1** (16c `Q-AB1`, superseding cut B.3's 80 by 24 and 100 by 30):
+/// the floor, 120 by 34, and the typical terminal, 160 by 48, each a golden;
+/// and 120 by 30 (`COCKPIT_ROWS`), where every pane is still painted and the
+/// legend ends on `? help`. At all three every row is on ONE line of its
+/// column: the five sections start rows of the Left column with each facet
+/// cell whole, the contact rows sit whole in the Right column (all four at the
+/// budget sizes; at 120 by 30 the contacts pane's five inner rows hold three,
+/// with X4 below the fold), and the notices pane — on the Right since the cut,
+/// under the contacts — is the frame's two notices composed from their fields
+/// and none of the scrollback's chatter. One row under `COCKPIT_ROWS` the
+/// damage pane goes first, for height.
 #[test]
 fn the_cockpit_screen_paints_at_both_budget_sizes() {
     let mut app = cockpit_app();
@@ -855,28 +936,7 @@ fn the_cockpit_screen_paints_at_both_budget_sizes() {
         COCKPIT_SCREEN,
         "the first frame of a match opens the screen"
     );
-    for (w, h) in [(80u16, 24u16), (100, 30), (120, 34)] {
-        let text = frame_text(&mut app, w, h);
-        for title in ["status", "notices", "weapons", "contacts"] {
-            assert!(
-                text.contains(&format!("\u{250c}{title}")),
-                "{w}x{h}: {title} is painted:\n{text}"
-            );
-        }
-        assert_eq!(
-            text.contains("\u{250c}damage"),
-            h > 30,
-            "{w}x{h}: damage goes for height below 31 rows:\n{text}"
-        );
-        for line in ["X4 new contact", "destroyed: turret"] {
-            assert!(text.contains(line), "{w}x{h}: the ring's {line:?}:\n{text}");
-        }
-        assert!(
-            !text.contains("Bob has connected") && !text.contains("anyone up"),
-            "{w}x{h}: the scrollback's chatter is not the notices pane:\n{text}"
-        );
-    }
-    for (w, h) in [(120u16, 34u16), (100, 30), (80, 24)] {
+    for (w, h) in [(120u16, 34u16), (120, COCKPIT_ROWS), (160, 48)] {
         let text = frame_text(&mut app, w, h);
         assert_eq!(text.lines().count(), usize::from(h));
         for line in text.lines() {
@@ -885,100 +945,232 @@ fn the_cockpit_screen_paints_at_both_budget_sizes() {
                 "{w}x{h}: row too wide: {line:?}"
             );
         }
+        for title in ["status", "damage", "weapons", "contacts", "notices"] {
+            assert!(
+                text.contains(&format!("\u{250c}{title}")),
+                "{w}x{h}: {title} is painted:\n{text}"
+            );
+        }
+        assert!(text.contains("\u{250c} map "), "{w}x{h}: the map:\n{text}");
+        // The legend ends on `? help`, never mid-word.
+        let legend = text.lines().last().unwrap_or_default();
+        assert!(legend.ends_with("? help"), "{w}x{h}: {legend:?}");
+        // The five sections, each starting a row of the Left column.
+        for section in ["engine", "hull", "left_track", "right_track", "turret"] {
+            assert!(
+                text.lines()
+                    .any(|line| left_of(line).starts_with(&format!("\u{2502}{section}  "))),
+                "{w}x{h}: {section} starts no row of the Left column:\n{text}"
+            );
+        }
+        // Every facet cell whole on one row.
+        for cell in [
+            "front 55/80",
+            "rear 30/30",
+            "left 4/24",
+            "right 0/24",
+            "top 18/20",
+        ] {
+            assert!(
+                left_holds(&text, cell),
+                "{w}x{h}: {cell:?} is split:\n{text}"
+            );
+        }
+        // Every contact row whole in the Right column. At 120 by 30 the Right
+        // column's even split (8/7/8) leaves the contacts pane five inner
+        // rows, and the fixture's contacts take six lines (BA's SCAN row
+        // wraps once at 46 columns), so the last contact, X4, is below the
+        // fold there: the pane is not focused, so nothing scrolls it into
+        // view. The rows above it are whole.
+        let x4 = "X4  unknown  030\u{b0}  far  600 m  6 s";
+        for row in [
+            "BA  blue  045\u{b0}  far  450 m  1 s",
+            "RB  red  270\u{b0}  close  100 m  0 s",
+            "X3  unknown  315\u{b0}  effective  200 m  3 s",
+            x4,
+        ] {
+            if h == COCKPIT_ROWS && row == x4 {
+                assert!(
+                    !right_holds(&text, row, w),
+                    "{w}x{h}: X4's row was expected below the fold:\n{text}"
+                );
+                continue;
+            }
+            assert!(
+                right_holds(&text, row, w),
+                "{w}x{h}: {row:?} is not whole in the Right column:\n{text}"
+            );
+        }
+        // The ring, under `┌notices` in the Right column.
+        let notices_at = text
+            .lines()
+            .position(|line| right_of(line, w).starts_with("\u{250c}notices"))
+            .unwrap_or_else(|| panic!("{w}x{h}: no notices pane on the Right:\n{text}"));
+        for line in ["X4 new contact", "BA section destroyed: turret"] {
+            assert!(
+                text.lines()
+                    .skip(notices_at)
+                    .any(|row| right_of(row, w).contains(line)),
+                "{w}x{h}: the ring's {line:?}:\n{text}"
+            );
+        }
+        assert!(
+            !text.contains("Bob has connected") && !text.contains("anyone up"),
+            "{w}x{h}: the scrollback's chatter is not the notices pane:\n{text}"
+        );
+    }
+    // One row under `COCKPIT_ROWS`: damage goes first, the rest stand.
+    let text = frame_text(&mut app, 120, 29);
+    assert!(!text.contains("\u{250c}damage"), "{text}");
+    for title in ["status", "weapons", "contacts", "notices"] {
+        assert!(
+            text.contains(&format!("\u{250c}{title}")),
+            "{title}:\n{text}"
+        );
+    }
+    assert!(text.contains("\u{250c} map "), "{text}");
+    for (w, h) in [(120u16, 34u16), (160, 48)] {
+        let text = frame_text(&mut app, w, h);
         check(&format!("tui_cockpit_{w}x{h}.txt"), &text);
     }
 }
 
-/// **The status pane is painted whole at eighty columns** (16b cut B.3,
-/// `B-10`): a jammed receiver, a wreck (so the speed line carries `DESTROYED`
-/// and wraps once in the pane's twenty columns) and a lock, at 80 by 24 — the
-/// golden. Then the FULLEST block the frame can send, at every budget size: an
-/// overheated platform (`heat 100/100  OVERHEATED`, 24 characters, wraps once)
-/// and a lock past a kilometre at 100% (`Lock BA  1440 m  100%`, 21, wraps
-/// once) on top of the rest — ten rows. The Lock is the LAST row, so it is the
-/// one a short pane would lose, and it is the one a gunner reads before
-/// `FIRE`. The golden is the review; the assertions are the proof the status
-/// pane's `min_h` is right.
+/// **The status pane is painted whole at the floor** (16b cut AB.1; cut B.3's
+/// `B-10` at eighty columns before it): a jammed receiver, a wreck (so the
+/// speed line carries `DESTROYED`) and a lock, at 120 by 34 — the golden. Then
+/// the FULLEST block the frame can send, at the floor and at 160 by 48: an
+/// overheated platform and a lock past a kilometre at 100% on top of the rest.
+/// At the Left column's 32 inner columns not one of the seven rows wraps, so
+/// each is read on ONE line of the column; the Lock is the LAST row, the one a
+/// short pane would lose and the one a gunner reads before `FIRE`. The golden
+/// is the review; the assertions are the proof the status pane's `min_w` 34
+/// and `min_h` 7 are right.
 #[test]
-fn the_jammed_wreck_s_status_is_painted_whole_at_eighty_columns() {
+fn the_jammed_wreck_s_status_is_painted_whole_at_the_floor() {
     let arena_app = |frame: serde_json::Value| {
-        let mut app = fixture_app();
-        app.set_manifest(TuiManifest {
-            panels: vec![
-                "wod.vitals".into(),
-                "wod.sheet".into(),
-                "mail".into(),
-                "arena.cockpit".into(),
-                "arena.map".into(),
-            ],
-            character: Some("Nick".into()),
-            room: None,
-        });
-        app.apply_event(&arena_panel("arena.map", ARENA_MAP));
-        app.apply_event(&OutputEvent::Panel {
-            feed: SmolStr::new_static("arena.cockpit"),
-            kind: PanelFrameKind::Keyframe,
-            data: frame,
-        });
+        let app = cockpit_app_with(frame);
         assert_eq!(app.active_screen(), COCKPIT_SCREEN);
         app
-    };
-    // The Left column is the first 22 glyphs of every body row: the status
-    // pane's words are read there and nowhere else.
-    let left = |text: &str| -> String {
-        text.lines()
-            .map(|line| line.chars().take(22).collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n")
     };
     let mut frame = fixture(COCKPIT_FRAME);
     frame["receiver"] = serde_json::json!({ "budget": 15, "budget_max": 40, "reach_percent": 60 });
     frame["wreck"] = serde_json::json!(true);
     let mut app = arena_app(frame.clone());
-    let text = frame_text(&mut app, 80, 24);
+    let text = frame_text(&mut app, 120, 34);
     for row in [
         "Callsign RA",
         "power online",
-        "DESTROYED",
+        "43 kph  heading 045\u{b0}  DESTROYED",
         "heat 40/100",
         "receiver 15/40  60%",
         "scope hostile",
         "Lock BA  440 m  62%",
     ] {
         assert!(
-            left(&text).contains(row),
-            "{row:?} is not painted at 80x24:\n{text}"
+            left_holds(&text, row),
+            "{row:?} is not whole on one row at 120x34:\n{text}"
         );
     }
     for line in text.lines() {
-        assert!(line.chars().count() <= 80, "row too wide: {line:?}");
+        assert!(line.chars().count() <= 120, "row too wide: {line:?}");
     }
-    check("tui_cockpit_80x24_jammed.txt", &text);
+    check("tui_cockpit_120x34_jammed.txt", &text);
 
-    // The fullest block: every row that can wrap does.
+    // The fullest block: every row at its longest.
     frame["heat"]["heat"] = serde_json::json!(100);
     frame["heat"]["overheated"] = serde_json::json!(true);
     frame["lock_range_m"] = serde_json::json!(1440);
     frame["lock_percent"] = serde_json::json!(100);
     let mut app = arena_app(frame);
-    for (w, h) in [(80u16, 24u16), (100, 30), (120, 34)] {
+    for (w, h) in [(120u16, 34u16), (160, 48)] {
         let text = frame_text(&mut app, w, h);
-        let column = left(&text);
         for row in [
             "Callsign RA",
             "power online",
-            "43 kph  heading 045",
-            "DESTROYED",
-            "heat 100/100",
-            "OVERHEATED",
+            "43 kph  heading 045\u{b0}  DESTROYED",
+            "heat 100/100  OVERHEATED",
             "receiver 15/40  60%",
             "scope hostile",
-            "Lock BA  1440 m",
-            "100%",
+            "Lock BA  1440 m  100%",
         ] {
             assert!(
-                column.contains(row),
-                "{w}x{h}: {row:?} is not painted in the status pane:\n{text}"
+                left_holds(&text, row),
+                "{w}x{h}: {row:?} is not whole on one row of the status pane:\n{text}"
+            );
+        }
+    }
+}
+
+/// The shipped line tank's five sections as the frame carries them
+/// (`crates/tacsim/content/units/line_tank.json`, undamaged): the hull's five
+/// facets and the turret's four at three digits, one facet on each track, none
+/// on the engine.
+fn line_tank_sections() -> serde_json::Value {
+    serde_json::json!([
+        { "id": "hull", "condition": "intact", "internals": 200, "internals_max": 200,
+          "facets": [
+            { "id": "front", "armor": 400, "armor_max": 400 },
+            { "id": "left", "armor": 250, "armor_max": 250 },
+            { "id": "right", "armor": 250, "armor_max": 250 },
+            { "id": "rear", "armor": 150, "armor_max": 150 },
+            { "id": "top", "armor": 100, "armor_max": 100 } ] },
+        { "id": "turret", "condition": "intact", "internals": 150, "internals_max": 150,
+          "facets": [
+            { "id": "front", "armor": 350, "armor_max": 350 },
+            { "id": "left", "armor": 220, "armor_max": 220 },
+            { "id": "right", "armor": 220, "armor_max": 220 },
+            { "id": "rear", "armor": 140, "armor_max": 140 } ] },
+        { "id": "left_track", "condition": "intact", "internals": 100, "internals_max": 100,
+          "facets": [ { "id": "left", "armor": 120, "armor_max": 120 } ] },
+        { "id": "right_track", "condition": "destroyed", "internals": 100, "internals_max": 100,
+          "facets": [ { "id": "right", "armor": 120, "armor_max": 120 } ] },
+        { "id": "engine", "condition": "intact", "internals": 120, "internals_max": 120,
+          "facets": [] }
+    ])
+}
+
+/// **The shipped tank's damage is whole at the floor** (16b cut AB.1; the B
+/// row's residual that at 120 by 34 the damage pane showed three of the five
+/// sections): the cockpit frame with its sections replaced by the line tank's,
+/// the stock roster's, painted at 120 by 34 and at 120 by 30 (`COCKPIT_ROWS`,
+/// Windows Terminal's default size). Every section row and every facet cell is
+/// inside the Left column, whole on one row.
+#[test]
+fn a_line_tank_s_damage_is_whole_at_the_floor() {
+    let mut frame = fixture(COCKPIT_FRAME);
+    frame["sections"] = line_tank_sections();
+    let mut app = cockpit_app_with(frame);
+    for h in [34u16, 30] {
+        let text = frame_text(&mut app, 120, h);
+        for row in [
+            "hull  intact  200/200",
+            "turret  intact  150/150",
+            "left_track  intact  100/100",
+            "right_track  destroyed  100/100",
+            "engine  intact  120/120",
+        ] {
+            assert!(
+                text.lines()
+                    .any(|line| left_of(line).starts_with(&format!("\u{2502}{row}"))),
+                "120x{h}: {row:?} starts no row of the Left column:\n{text}"
+            );
+        }
+        for cell in [
+            "front 400/400",
+            "left 250/250",
+            "right 250/250",
+            "rear 150/150",
+            "top 100/100",
+            "front 350/350",
+            "left 220/220",
+            "right 220/220",
+            "rear 140/140",
+            "left 120/120",
+            "right 120/120",
+        ] {
+            assert!(
+                left_holds(&text, cell),
+                "120x{h}: {cell:?} is not whole in the Left column:\n{text}"
             );
         }
     }
@@ -1019,9 +1211,14 @@ fn cockpit_app_with(frame: serde_json::Value) -> TuiApp {
 /// `null` rings nothing of it again.
 ///
 /// The golden is the same frame with its two notices taken off — a reclaim
-/// whose first pulse said nothing else — because the 80 by 24 notices pane
-/// shows the ring's TAIL, and with the notices on it the screen is
-/// `tui_cockpit_80x24.txt` byte for byte and pins nothing of the report.
+/// whose first pulse said nothing else — because the notices pane shows the
+/// ring's TAIL, and with the notices on it the screen is
+/// `tui_cockpit_120x34.txt` all but a few rows and pins little of the report.
+/// At the floor (16b cut AB.1) the pane is seven rows at 46 columns and the
+/// report wants nine (the machine's line and the `Sections:` line each wrap
+/// once), so the pane shows the whole lines of the tail that fit — six rows —
+/// and the first two lines are cut from the top; at 160 by 48 the pane's rows
+/// at 66 columns hold the whole report.
 #[test]
 fn a_reclaims_catch_up_rings_before_the_frames_notices() {
     let cases: Vec<serde_json::Value> =
@@ -1067,12 +1264,41 @@ fn a_reclaims_catch_up_rings_before_the_frames_notices() {
             .collect::<Vec<_>>(),
         lines
     );
-    let text = frame_text(&mut app, 80, 24);
+    let text = frame_text(&mut app, 120, 34);
     for line in text.lines() {
-        assert!(line.chars().count() <= 80, "row too wide: {line:?}");
+        assert!(line.chars().count() <= 120, "row too wide: {line:?}");
     }
-    assert!(text.contains("Power online."), "the report's tail:\n{text}");
-    check("tui_cockpit_80x24_catchup.txt", &text);
+    // The tail that fits whole lines, in the Right column: the position, the
+    // contacts, the sections (two lines at 46 columns), the rounds and the
+    // power — six of the pane's seven rows. The machine's line (two rows)
+    // does not fit above them, and the head is cut with it.
+    for shown in [
+        "  Position: cell (64, 97) then, (70, 101) now.",
+        "  Contacts: new BA, X3; lost X2.",
+        "  Sections: left_track intact then, destroyed",
+        "now; hull armour 230 then, 90 now.",
+        "  Rounds spent: cannon 3, machine_gun 40.",
+        "  Power online.",
+    ] {
+        assert!(
+            right_holds(&text, shown, 120),
+            "120x34: the report's tail, {shown:?}:\n{text}"
+        );
+    }
+    for cut in ["Back aboard RA after", "The machine was withdrawing"] {
+        assert!(
+            !text.contains(cut),
+            "120x34: {cut:?} is cut from the top:\n{text}"
+        );
+    }
+    check("tui_cockpit_120x34_catchup.txt", &text);
+    // At the typical size the whole report is on the pane.
+    let text = frame_text(&mut app, 160, 48);
+    assert!(
+        right_holds(&text, "Back aboard RA after 2 m 14 s away.", 160),
+        "160x48: the report whole:\n{text}"
+    );
+    assert!(right_holds(&text, "Power online.", 160), "{text}");
 }
 
 /// **A malformed catch-up rings nothing** (16b cut Y.4): a string, a number

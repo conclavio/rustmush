@@ -327,7 +327,14 @@ impl Term {
     }
 }
 
-async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
+/// `ssh play@addr` with a PTY of `cols` by `rows` (16b cut AB.1: a client that
+/// opens `@tui` asks for at least the 120-column floor, or it reads one
+/// sentence instead of a screen; [`login`] is the line client's 80 by 24).
+async fn play_client_sized(
+    addr: SocketAddr,
+    cols: u32,
+    rows: u32,
+) -> (russh::client::Handle<AcceptAll>, Term) {
     let config = Arc::new(russh::client::Config::default());
     let mut handle = russh::client::connect(config, addr, AcceptAll)
         .await
@@ -336,7 +343,7 @@ async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Ter
     assert!(auth.success(), "play must be accepted with no auth");
     let channel = handle.channel_open_session().await.expect("open channel");
     channel
-        .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
+        .request_pty(true, "xterm-256color", cols, rows, 0, 0, &[])
         .await
         .expect("pty");
     channel.request_shell(true).await.expect("shell");
@@ -355,7 +362,19 @@ async fn login(
     password: &str,
     character: &str,
 ) -> (russh::client::Handle<AcceptAll>, Term) {
-    let (handle, mut term) = play_client(addr).await;
+    login_sized(addr, account, password, character, 80, 24).await
+}
+
+/// [`login`] on a PTY of `cols` by `rows`.
+async fn login_sized(
+    addr: SocketAddr,
+    account: &str,
+    password: &str,
+    character: &str,
+    cols: u32,
+    rows: u32,
+) -> (russh::client::Handle<AcceptAll>, Term) {
+    let (handle, mut term) = play_client_sized(addr, cols, rows).await;
     let connected = format!("Connected as {character}");
     for _ in 0..ADMISSION_TRIES {
         let mark = term.mark();
@@ -442,6 +461,11 @@ fn no_sixteen_digit_word(seen: &str, what: &str) {
 /// `@tui`, and the cockpit screen opens itself on her own status — then the map
 /// pane composes the ground that was PULLED across the IPC boundary. Nothing on
 /// the screen names a tank, and `@notui` hands her back a working line client.
+///
+/// Ada's terminal is 120 by 34, the floor (16b cut AB.1, 16c `Q-AB1`): the
+/// floor is the size this test proves the production TUI paints the cockpit
+/// at, across the split. Narrower, the screen would be one sentence. God and
+/// Bo stay in line mode at 80 by 24.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_split_gateway_paints_the_cockpit_on_screen_zero() {
     let store = shared_store().await;
@@ -469,7 +493,7 @@ async fn the_split_gateway_paints_the_cockpit_on_screen_zero() {
     }
 
     // ---- two pilots, a team each, the match, the seats ----------------------
-    let (_a, mut ada) = login(ssh, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_a, mut ada) = login_sized(ssh, "ada", PILOT_PASSWORD, "Ada", 120, 34).await;
     let (_b, mut bo) = login(ssh, "bo", PILOT_PASSWORD, "Bo").await;
     for term in [&mut ada, &mut bo] {
         term.say("ooc", "Welcome Hall").await;
