@@ -200,11 +200,15 @@ fn the_draw_label_set_is_pinned() {
 // ---------------------------------------------------------------------------
 
 /// The source files allowed to call `mush_atlas::sight_only`, workspace-relative
-/// and sorted: the atlas, which defines it, and the arena's perception, whose
-/// `Arena::sight` is its one caller.
+/// and sorted: the atlas, which defines it, and the arena's horizon index, whose
+/// `Horizon::sight` answers with it every line it does not answer itself (an
+/// endpoint off the grid, a line past its buffer, a terrain without levels). 16b
+/// cut J.1 pinned the arena's perception here, whose `Arena::sight` was then the
+/// one caller; since 16b cut J.2 `Arena::sight` asks the terrain
+/// (`ArenaTerrain::sight`), and the index is the arena's one caller.
 const SIGHT_ONLY_FILES: [&str; 2] = [
     "crates/mush-atlas/src/trace.rs",
-    "crates/tacsim/src/arena/perception.rs",
+    "crates/tacsim/src/arena/horizon.rs",
 ];
 
 /// **`sight_only` is the arena's trace and nobody else's** (16b cut J.1; doc 16
@@ -219,7 +223,8 @@ const SIGHT_ONLY_FILES: [&str; 2] = [
 /// world-side query that adopted it would reopen exactly the channel the atlas
 /// head forbids. So every `crates/*/src/**/*.rs` whose text calls `sight_only(`
 /// is collected and the set is pinned: a new caller is a reviewed diff here.
-/// (16b cut J.2 adds the arena's horizon index to it.)
+/// (16b cut J.2 moved the arena's entry from its perception to its horizon
+/// index.)
 #[test]
 fn sight_only_is_the_arenas_trace_and_nobody_elses() {
     let root = repo_root();

@@ -1,7 +1,7 @@
 {
   "blessed": {
-    "commit": "fc904732c9af7255b860e7b6c18ae099fd82be84",
-    "date": "2026-09-25T11:25:40Z",
+    "commit": "f4625673d985a91ea18cd061fdbcf950ba5dd420",
+    "date": "2026-09-25T12:59:24Z",
     "host": {
       "cpus": 32,
       "hostname": "ALIEN18",
@@ -65,8 +65,9 @@
     "wakes_per_arena_s": 4.0
   },
   "memory": {
-    "rss_end_kib": 41804,
-    "rss_start_kib": 5084,
+    "horizon_bytes": 26112,
+    "rss_end_kib": 42532,
+    "rss_start_kib": 5056,
     "vmrss_end_kib": null,
     "vmrss_start_kib": null
   },
@@ -77,9 +78,10 @@
     "pass_ms": 1000,
     "peak_per_pulse": {
       "candidates": 753,
-      "cell_probes": 3927,
+      "cell_probes": 2817,
       "classified": 25,
       "detected": 23,
+      "horizon_probes": 2834,
       "jam_checks": 383,
       "lost": 37,
       "passes": 94,
@@ -90,9 +92,10 @@
     "share_cells": 8,
     "total": {
       "candidates": 71224,
-      "cell_probes": 341009,
+      "cell_probes": 242903,
       "classified": 654,
       "detected": 897,
+      "horizon_probes": 249689,
       "jam_checks": 34363,
       "lost": 951,
       "passes": 8652,
@@ -157,15 +160,15 @@
     ]
   },
   "setup_ms": {
-    "arena_open": 1.958,
-    "boot": 20.775,
-    "generate": 4.398,
+    "arena_open": 1.611,
+    "boot": 23.371,
+    "generate": 3.794,
     "killed_warming": 0,
-    "pack_apply": 22.15,
-    "terrain_convert": 1.077,
+    "pack_apply": 21.194,
+    "terrain_convert": 1.385,
     "warm_pulses": 47,
-    "warm_up": 49.587,
-    "window_open": 12.014
+    "warm_up": 52.501,
+    "window_open": 11.971
   },
   "slope": {
     "refusals": 877,
@@ -180,11 +183,11 @@
   },
   "tempos": [
     {
-      "max_ms": 11.78,
+      "max_ms": 9.923,
       "name": "arena_engaged",
-      "p50_ms": 2.435,
-      "p95_ms": 4.202,
-      "p99_ms": 5.994,
+      "p50_ms": 2.445,
+      "p95_ms": 3.858,
+      "p99_ms": 5.92,
       "period_ms": 500,
       "pulses": 120
     }
@@ -221,12 +224,13 @@
   },
   "what": "16b cut U.2: `Arena::step` at the harness's scale, the fielded catalog on the reflex controller, woken where the task wakes it, with the cell-probe and jam-check bounds asserted",
   "window": {
-    "cell_probes_peak": 6807,
+    "cell_probes_peak": 4858,
+    "horizon_probes_peak": 4842,
     "jam_checks_peak": 688,
-    "ms_max": 15.304,
-    "ms_p50": 4.897,
-    "ms_p95": 8.526,
-    "ms_p99": 9.636,
+    "ms_max": 12.942,
+    "ms_p50": 4.945,
+    "ms_p95": 8.376,
+    "ms_p99": 10.28,
     "share_ops_peak": 107,
     "traces_peak": 952,
     "window_ms": 500,

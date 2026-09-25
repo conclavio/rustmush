@@ -155,7 +155,7 @@
 //! `condition` is read for that at check-out.
 
 use mush_atlas::TerrainClass;
-use mush_atlas::trace::{Eye, Sight, sight_only};
+use mush_atlas::trace::{Eye, Sight};
 use mush_core::ObjId;
 use mush_tactics::TacticalUnit;
 use smol_str::SmolStr;
@@ -614,8 +614,16 @@ pub struct PerceptionCounters {
     pub traces: u32,
     /// Cells read by those traces, hit or miss — **since 16b cut J.1 the
     /// interior cells up to and including the first blocker**
-    /// ([`mush_atlas::sight_only`] stops there and never reads an endpoint).
+    /// ([`mush_atlas::sight_only`] stops there and never reads an endpoint),
+    /// and **since 16b cut J.2 only the cells the horizon index did not prove
+    /// past**: a walked run's cells up to the blocker, and the one cell a
+    /// blocked proof reads.
     pub cell_probes: u64,
+    /// **Block reads the horizon index made** (16b cut J.2): one per block
+    /// read, whichever rule settled the run it covers — proved clear, proved
+    /// blocked, descended, or walked at the finest level; the cells a walked or
+    /// blocked run reads go to `cell_probes`. Zero on a terrain without levels.
+    pub horizon_probes: u64,
     /// `(sharer, teammate)` pairs considered.
     pub share_ops: u32,
     /// **Index candidates the jammer scan looked at** (16b cut X.4), one per unit
@@ -653,6 +661,7 @@ impl PerceptionCounters {
         self.candidates = self.candidates.saturating_add(other.candidates);
         self.traces = self.traces.saturating_add(other.traces);
         self.cell_probes = self.cell_probes.saturating_add(other.cell_probes);
+        self.horizon_probes = self.horizon_probes.saturating_add(other.horizon_probes);
         self.share_ops = self.share_ops.saturating_add(other.share_ops);
         self.jam_checks = self.jam_checks.saturating_add(other.jam_checks);
         self.detected = self.detected.saturating_add(other.detected);
@@ -1084,8 +1093,8 @@ impl Arena {
     /// mesh's line in [`Arena::share_pass`], each one trace and its cells counted
     /// on `counters` (doc 16 §2 W4).
     ///
-    /// It walks [`sight_only`] and not [`mush_atlas::trace_cells`]: the answer is
-    /// the same [`Sight`] to the byte — the same cells in the same order, the same
+    /// It answers [`mush_atlas::sight_only`]'s sight and does not walk
+    /// [`mush_atlas::trace_cells`]: the answer is the same [`Sight`] to the byte — the same cells in the same order, the same
     /// height at every step and the same per-cell rule, drawn from the line's
     /// canonical end — but with nothing allocated and nothing read past the first
     /// blocker, and the only thing perception reads off a trace is its sight and
@@ -1100,10 +1109,24 @@ impl Arena {
     /// `trace_cells`, because its readers — the shot, the reflex's engage check
     /// and the cover readings — want `target_cover` and the attenuation from the
     /// shooter's own end, which `sight_only` does not answer.
+    ///
+    /// **16b cut J.2**: the trace goes through the terrain's own horizon index
+    /// ([`crate::arena::state::ArenaTerrain::sight`]), which proves a run of the
+    /// line clear without reading it, proves it blocked by reading one cell, and
+    /// walks the rest under the same per-cell rule — `sight_only`'s answer to the
+    /// byte, with fewer cells read. The cells it read go to
+    /// [`PerceptionCounters::cell_probes`] and the blocks to
+    /// [`PerceptionCounters::horizon_probes`]. The index caches terrain and
+    /// nothing observed, so doc 16 §3.2's *no cross-observer cache* still holds.
     pub fn sight(&self, from: Eye, to: Eye, counters: &mut PerceptionCounters) -> Sight {
-        let seen = sight_only(&self.definition.terrain, from, to);
+        let seen = self.definition.terrain.sight(from, to);
         counters.traces = counters.traces.saturating_add(1);
-        counters.cell_probes = counters.cell_probes.saturating_add(u64::from(seen.visited));
+        counters.cell_probes = counters
+            .cell_probes
+            .saturating_add(u64::from(seen.cell_probes));
+        counters.horizon_probes = counters
+            .horizon_probes
+            .saturating_add(u64::from(seen.horizon_probes));
         seen.sight
     }
 

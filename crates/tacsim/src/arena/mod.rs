@@ -70,6 +70,21 @@
 //! `mush_atlas::SurfaceComposite`, would have brought a surface reference, a room
 //! table and a feature overlay with it.
 //!
+//! # Cut J.2: the horizon index
+//!
+//! [`crate::arena::horizon`] is 16c N5's second step: a two-level pyramid (16-
+//! and 4-cell blocks) of each block's highest and lowest cell and whether any is
+//! opaque or partial, which proves a run of a line clear without reading it and
+//! blocked by reading one cell, and walks the rest. It is a private field of
+//! [`crate::arena::state::ArenaTerrain`], built by its one constructor and queried
+//! by [`crate::arena::state::ArenaTerrain::sight`], so a test that swaps the
+//! definition or the terrain swaps the index with it and `Arena` holds no copy.
+//! Every sight is `mush_atlas::sight_only`'s to the byte (the module head argues
+//! it); what moves is the cost — `cell_probes` down, and a new
+//! [`crate::arena::perception::PerceptionCounters::horizon_probes`]. A cache of
+//! terrain, folded into no hash, and not doc 16 §3.2's cross-observer cache:
+//! nothing observed is cached.
+//!
 //! # Cut W.1: weapons and the shot
 //!
 //! [`crate::arena::weapons`] is doc 16 §3.5's first half: the two live cells a weapon has on a
@@ -185,6 +200,7 @@ pub mod condition;
 pub mod damage;
 pub mod hash;
 pub mod heat;
+pub mod horizon;
 pub mod index;
 pub mod intents;
 pub mod ledger;
@@ -214,6 +230,7 @@ pub use damage::{
 };
 pub use hash::state_hash;
 pub use heat::{COOL_CAUSE, MILLI, SHOT_CAUSE};
+pub use horizon::{Horizon, HorizonSight};
 pub use index::{SpatialIndex, range_cm};
 pub use intents::{
     Control, ControlState, Intent, IntentKind, IntentOutcome, IntentSource, Refusal, apply_control,

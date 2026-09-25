@@ -57,6 +57,13 @@
 //! the shipped proving ground with the real egress applied one message per apply,
 //! its keyframe bytes and output events per pulse bounded.
 //!
+//! **`horizon_probes` since 16b cut J.2** (16c N5 step 2). Beside those bounds
+//! the arena lanes print the horizon index's block reads per wake, per window
+//! and in total, and its size on the memory line (`horizon_bytes`, under
+//! `T-36`'s bound); the delta compares the three counts in the deterministic
+//! block. There is **no bound** on them: the counter is what N5 asks for, and a
+//! bound would be a seventh config site for a number cut J.3 first measures.
+//!
 //! **The delta since 16b cut U.3** (16c `T-37`, Q29). A measurement that is never
 //! compared with the last one is a number nobody reads, so one more ignored test,
 //! `tacsim_harness_delta_against_the_committed_baseline`, reads the fresh CI-cohort
@@ -84,7 +91,10 @@
 //! both directions — and then on the harness relief with half as many origins,
 //! and asserts on every pair, whatever `TACSIM_ASSERT` says, that the two answer
 //! one sight. It is a correctness lane; its timings are printed and never
-//! asserted, and the delta does not read its JSON (`<stem>-sight.<ext>`).
+//! asserted, and the delta does not read its JSON (`<stem>-sight.<ext>`). Since
+//! 16b cut J.2 it runs a third column on the same pairs, the arena's own query
+//! through the terrain's horizon index, asserted `sight_only`'s exact sight and
+//! never more cells read, and prints its cells and blocks read.
 //!
 //! What it must not do (16b §9's `H` row): touch `mush-sim` or `mush-atlas` — a
 //! harness that needs a new API in the thing it measures is measuring its own
@@ -2260,15 +2270,28 @@ impl Counts {
 }
 
 /// **One measured wake** (16b cut U.1): what the step cost on the wall, the
-/// arena millisecond it ended at, and the four per-pulse counters the window
-/// fold sums.
+/// arena millisecond it ended at, and the five per-pulse counters the window
+/// fold sums (16b cut J.2 added `horizon_probes`).
 struct Wake {
     ms: f64,
     now_ms: i64,
     traces: u32,
     cell_probes: u64,
+    horizon_probes: u64,
     jam_checks: u32,
     share_ops: u32,
+}
+
+/// **One [`WINDOW_MS`] window of wakes, summed** (16b cut J.2 named the fields
+/// of what was a five-tuple): the wake milliseconds and the five counters.
+#[derive(Clone, Copy, Debug, Default)]
+struct WindowSum {
+    ms: f64,
+    traces: u64,
+    cell_probes: u64,
+    horizon_probes: u64,
+    jam_checks: u64,
+    share_ops: u64,
 }
 
 /// The window the per-window figure folds wakes into, arena milliseconds: the
@@ -2278,20 +2301,20 @@ const WINDOW_MS: i64 = 500;
 /// **The per-window figure** (16b cut U.1): every measured wake folded into
 /// [`WINDOW_MS`] windows of arena time after `start_ms` by its post-step
 /// `now_ms` — a wake ending at `t` did the work of `(t_prev, t]`, so it belongs
-/// to window `(t − start − 1) / 500` — with the wake milliseconds and the four
-/// counters summed per window. Answers the windows in order as `(ms, traces,
-/// cell_probes, jam_checks, share_ops)`.
-fn windows(wakes: &[Wake], start_ms: i64) -> Vec<(f64, u64, u64, u64, u64)> {
-    let mut folded: BTreeMap<i64, (f64, u64, u64, u64, u64)> = BTreeMap::new();
+/// to window `(t − start − 1) / 500` — with the wake milliseconds and the five
+/// counters summed per window. Answers the windows in order.
+fn windows(wakes: &[Wake], start_ms: i64) -> Vec<WindowSum> {
+    let mut folded: BTreeMap<i64, WindowSum> = BTreeMap::new();
     for wake in wakes {
         let slot = folded
             .entry((wake.now_ms - start_ms - 1).div_euclid(WINDOW_MS))
-            .or_insert((0.0, 0, 0, 0, 0));
-        slot.0 += wake.ms;
-        slot.1 += u64::from(wake.traces);
-        slot.2 += wake.cell_probes;
-        slot.3 += u64::from(wake.jam_checks);
-        slot.4 += u64::from(wake.share_ops);
+            .or_default();
+        slot.ms += wake.ms;
+        slot.traces += u64::from(wake.traces);
+        slot.cell_probes += wake.cell_probes;
+        slot.horizon_probes += wake.horizon_probes;
+        slot.jam_checks += u64::from(wake.jam_checks);
+        slot.share_ops += u64::from(wake.share_ops);
     }
     folded.into_values().collect()
 }
@@ -2687,6 +2710,7 @@ fn run_wakes(
             now_ms: arena.now_ms,
             traces: out.perception.traces,
             cell_probes: out.perception.cell_probes,
+            horizon_probes: out.perception.horizon_probes,
             jam_checks: out.perception.jam_checks,
             share_ops: out.perception.share_ops,
         });
@@ -2701,6 +2725,7 @@ fn run_wakes(
         peak.candidates = peak.candidates.max(out.perception.candidates);
         peak.traces = peak.traces.max(out.perception.traces);
         peak.cell_probes = peak.cell_probes.max(out.perception.cell_probes);
+        peak.horizon_probes = peak.horizon_probes.max(out.perception.horizon_probes);
         peak.share_ops = peak.share_ops.max(out.perception.share_ops);
         peak.jam_checks = peak.jam_checks.max(out.perception.jam_checks);
         peak.detected = peak.detected.max(out.perception.detected);
@@ -2823,13 +2848,14 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
     let window = Tempo {
         name: "arena_window",
         period_ms: u32::try_from(WINDOW_MS).unwrap_or(0),
-        ms: folded.iter().map(|(ms, ..)| *ms).collect(),
+        ms: folded.iter().map(|w| w.ms).collect(),
     };
     let (w50, w95, w99, wmax) = window.stats();
-    let window_traces_peak = folded.iter().map(|w| w.1).max().unwrap_or(0);
-    let window_cell_probes_peak = folded.iter().map(|w| w.2).max().unwrap_or(0);
-    let window_jam_checks_peak = folded.iter().map(|w| w.3).max().unwrap_or(0);
-    let window_share_ops_peak = folded.iter().map(|w| w.4).max().unwrap_or(0);
+    let window_traces_peak = folded.iter().map(|w| w.traces).max().unwrap_or(0);
+    let window_cell_probes_peak = folded.iter().map(|w| w.cell_probes).max().unwrap_or(0);
+    let window_horizon_probes_peak = folded.iter().map(|w| w.horizon_probes).max().unwrap_or(0);
+    let window_jam_checks_peak = folded.iter().map(|w| w.jam_checks).max().unwrap_or(0);
+    let window_share_ops_peak = folded.iter().map(|w| w.share_ops).max().unwrap_or(0);
     let wake_count = wakes.len();
     #[allow(clippy::cast_precision_loss)]
     let arena_s_run = (arena.now_ms - warm_end) as f64 / 1_000.0;
@@ -3038,7 +3064,7 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         tempo.period_ms
     );
     println!(
-        "harness_arena_window: cohort={cohort} window_ms={WINDOW_MS} windows={} ms_p50={w50:.3} ms_p95={w95:.3} ms_p99={w99:.3} ms_max={wmax:.3} traces_peak={window_traces_peak} cell_probes_peak={window_cell_probes_peak} jam_checks_peak={window_jam_checks_peak} share_ops_peak={window_share_ops_peak}",
+        "harness_arena_window: cohort={cohort} window_ms={WINDOW_MS} windows={} ms_p50={w50:.3} ms_p95={w95:.3} ms_p99={w99:.3} ms_max={wmax:.3} traces_peak={window_traces_peak} cell_probes_peak={window_cell_probes_peak} horizon_probes_peak={window_horizon_probes_peak} jam_checks_peak={window_jam_checks_peak} share_ops_peak={window_share_ops_peak}",
         folded.len()
     );
     // **16b cut M.2** (16c `T-05`; doc 16 §3.1 as amended, Q24): whether the
@@ -3202,11 +3228,12 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
     let command = CommandFigures::of(&arena, &command_cfg, counts.ordered_lines, &counts.ordered);
     println!("{}", command.line(cohort));
     println!(
-        "harness_arena_perception_peak: cohort={cohort} passes={} candidates={} traces={} cell_probes={} jam_checks={} share_ops={} detected={} classified={} lost={}",
+        "harness_arena_perception_peak: cohort={cohort} passes={} candidates={} traces={} cell_probes={} horizon_probes={} jam_checks={} share_ops={} detected={} classified={} lost={}",
         peak.passes,
         peak.candidates,
         peak.traces,
         peak.cell_probes,
+        peak.horizon_probes,
         peak.jam_checks,
         peak.share_ops,
         peak.detected,
@@ -3232,13 +3259,14 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         ),
     };
     println!(
-        "harness_arena_perception_total: cohort={cohort} sensor_cells={sight_cells} share_cells={mesh_cells} pass_ms={} lost_after_passes={} passes={} candidates={} traces={} cell_probes={} jam_checks={} share_ops={} detected={} classified={} lost={} contacts_at_end={} alert_range_cm={}",
+        "harness_arena_perception_total: cohort={cohort} sensor_cells={sight_cells} share_cells={mesh_cells} pass_ms={} lost_after_passes={} passes={} candidates={} traces={} cell_probes={} horizon_probes={} jam_checks={} share_ops={} detected={} classified={} lost={} contacts_at_end={} alert_range_cm={}",
         sensors_cfg.pass_ms,
         sensors_cfg.lost_after_passes,
         perception_total.passes,
         perception_total.candidates,
         perception_total.traces,
         perception_total.cell_probes,
+        perception_total.horizon_probes,
         perception_total.jam_checks,
         perception_total.share_ops,
         perception_total.detected,
@@ -3250,9 +3278,10 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
     // **16b cut U.2** (16c `T-36`): resident memory on every platform, with
     // Linux's own `VmRSS` beside it where there is one.
     println!(
-        "harness_arena_memory: cohort={cohort} rss_start_kib={} rss_end_kib={}{}",
+        "harness_arena_memory: cohort={cohort} rss_start_kib={} rss_end_kib={} horizon_bytes={}{}",
         kib_word(rss_start_kib),
         kib_word(rss_end_kib),
+        arena.definition.terrain.horizon_bytes(),
         vmrss_words(vmrss_start_kib, vmrss_end_kib)
     );
     // Whether this run asserts its thresholds: the CI cohort under
@@ -3347,6 +3376,7 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             "ms_max": num(wmax),
             "traces_peak": window_traces_peak,
             "cell_probes_peak": window_cell_probes_peak,
+            "horizon_probes_peak": window_horizon_probes_peak,
             "jam_checks_peak": window_jam_checks_peak,
             "share_ops_peak": window_share_ops_peak,
         },
@@ -3405,6 +3435,7 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
                 "candidates": peak.candidates,
                 "traces": peak.traces,
                 "cell_probes": peak.cell_probes,
+                "horizon_probes": peak.horizon_probes,
                 "jam_checks": peak.jam_checks,
                 "share_ops": peak.share_ops,
                 "detected": peak.detected,
@@ -3416,6 +3447,7 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
                 "candidates": perception_total.candidates,
                 "traces": perception_total.traces,
                 "cell_probes": perception_total.cell_probes,
+                "horizon_probes": perception_total.horizon_probes,
                 "jam_checks": perception_total.jam_checks,
                 "share_ops": perception_total.share_ops,
                 "detected": perception_total.detected,
@@ -3465,10 +3497,13 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         // block — the committed baseline is untouched by decision.
         "command": command.json(),
         // 16b cut U.2: the crate's reading on every platform, and Linux's own
-        // beside it (`null` elsewhere).
+        // beside it (`null` elsewhere). 16b cut J.2: the horizon index's bytes,
+        // reported under 16c `T-36`'s memory bound and not compared (`memory` is
+        // not a deterministic object).
         "memory": {
             "rss_start_kib": rss_start_kib,
             "rss_end_kib": rss_end_kib,
+            "horizon_bytes": arena.definition.terrain.horizon_bytes(),
             "vmrss_start_kib": vmrss_start_kib,
             "vmrss_end_kib": vmrss_end_kib,
         },
@@ -3635,6 +3670,15 @@ struct SightSweep {
     /// including the first blocker, never an endpoint**. A different definition
     /// from `visited_walk`'s, so the two figures are not a ratio of like things.
     visited_sight_only: u64,
+    /// `ArenaTerrain::sight(a, b)` over the same pairs — the arena's query through
+    /// its horizon index (16b cut J.2) — timed as one pass, milliseconds.
+    horizon_ms: f64,
+    /// `HorizonSight::cell_probes`, summed (16b cut J.2): the cells the horizon
+    /// index read — a walked run's up to the blocker, and a blocked proof's one —
+    /// on `visited_sight_only`'s definition, so the two are a ratio of like things.
+    visited_horizon: u64,
+    /// `HorizonSight::horizon_probes`, summed (16b cut J.2): the blocks it read.
+    horizon_probes: u64,
 }
 
 /// **One ground's sweep** (16b cut J.1): `origins` origins drawn off `rng` over
@@ -3648,8 +3692,13 @@ struct SightSweep {
 /// is exactly the walk from the canonical ends (each at its own height), it is
 /// seen along exactly as the walk asked from `a` is, with one attenuation when
 /// either is partial, and it read at least the walk's two endpoints fewer cells.
+///
+/// **16b cut J.2**: and a third pass, the arena's own query through the
+/// terrain's horizon index ([`tacsim::arena::state::ArenaTerrain::sight`]),
+/// timed whole and checked untimed: `sight_only`'s exact sight, and never more
+/// cells read than it.
 fn sight_sweep(
-    grid: &dyn mush_atlas::CellGrid,
+    grid: &tacsim::arena::state::ArenaTerrain,
     width: u16,
     height: u16,
     origins: u64,
@@ -3658,6 +3707,7 @@ fn sight_sweep(
     use mush_atlas::trace::{
         CellSight, CellTrace, EYE_HEIGHT_CM, Eye, Sight, canonical_ends, sight_only, trace_cells,
     };
+    use tacsim::arena::horizon::HorizonSight;
     let seen = |sight: &Sight| match sight {
         Sight::Clear => (0_u8, 0_u8),
         Sight::Partial(pct) => (1, *pct),
@@ -3670,6 +3720,7 @@ fn sight_sweep(
     let mut pairs: Vec<(Eye, Eye)> = Vec::new();
     let mut walked: Vec<CellTrace> = Vec::new();
     let mut fast: Vec<CellSight> = Vec::new();
+    let mut indexed: Vec<HorizonSight> = Vec::new();
     for origin in 0..origins {
         let cell = (rng.random_range(0..width), rng.random_range(0..height));
         let from = Eye {
@@ -3702,7 +3753,26 @@ fn sight_sweep(
         let at = Instant::now();
         fast.extend(pairs.iter().map(|(a, b)| sight_only(grid, *a, *b)));
         sweep.sight_only_ms += at.elapsed().as_secs_f64() * 1_000.0;
-        for ((a, b), (asked, quick)) in pairs.iter().zip(walked.iter().zip(fast.iter())) {
+        indexed.clear();
+        let at = Instant::now();
+        indexed.extend(pairs.iter().map(|(a, b)| grid.sight(*a, *b)));
+        sweep.horizon_ms += at.elapsed().as_secs_f64() * 1_000.0;
+        for (((a, b), (asked, quick)), through) in pairs
+            .iter()
+            .zip(walked.iter().zip(fast.iter()))
+            .zip(indexed.iter())
+        {
+            // 16b cut J.2: the index is `sight_only`, to the byte, never dearer.
+            assert_eq!(
+                through.sight, quick.sight,
+                "the horizon index and sight_only disagree from {a:?} to {b:?}"
+            );
+            assert!(
+                through.cell_probes <= quick.visited,
+                "{a:?} to {b:?}: the index read {} cells against sight_only's {}",
+                through.cell_probes,
+                quick.visited
+            );
             let (lo, hi) = if canonical_ends(a.cell, b.cell) == (a.cell, b.cell) {
                 (*a, *b)
             } else {
@@ -3737,6 +3807,8 @@ fn sight_sweep(
             }
             sweep.visited_walk += u64::from(asked.visited);
             sweep.visited_sight_only += u64::from(quick.visited);
+            sweep.visited_horizon += u64::from(through.cell_probes);
+            sweep.horizon_probes += u64::from(through.horizon_probes);
         }
         sweep.pairs += u64::try_from(pairs.len()).unwrap_or(u64::MAX);
     }
@@ -3806,7 +3878,7 @@ fn measure_sight(knobs: &Knobs) {
         // every cell of the line, both endpoints included, and `sight_only`'s the
         // interior cells up to and including the first blocker.
         println!(
-            "harness_sight: ground={ground} origins={} pairs={} clear={} partial={} blocked={} walk_ms={:.3} sight_only_ms={:.3} visited_walk={} visited_sight_only={}",
+            "harness_sight: ground={ground} origins={} pairs={} clear={} partial={} blocked={} walk_ms={:.3} sight_only_ms={:.3} visited_walk={} visited_sight_only={} visited_horizon={} horizon_probes={}",
             sweep.origins,
             sweep.pairs,
             sweep.clear,
@@ -3816,6 +3888,8 @@ fn measure_sight(knobs: &Knobs) {
             sweep.sight_only_ms,
             sweep.visited_walk,
             sweep.visited_sight_only,
+            sweep.visited_horizon,
+            sweep.horizon_probes,
         );
         rows.push(serde_json::json!({
             "ground": ground,
@@ -3828,6 +3902,9 @@ fn measure_sight(knobs: &Knobs) {
             "sight_only_ms": sweep.sight_only_ms,
             "visited_walk": sweep.visited_walk,
             "visited_sight_only": sweep.visited_sight_only,
+            "horizon_ms": sweep.horizon_ms,
+            "visited_horizon": sweep.visited_horizon,
+            "horizon_probes": sweep.horizon_probes,
         }));
     }
     let report = serde_json::json!({
@@ -3885,13 +3962,15 @@ const DETERMINISTIC_OBJECTS: [&str; 9] = [
 
 /// **The deterministic block's single fields**: the cohort's word, the wake
 /// jitter the run was driven at (a stand-in for the timer's overshoot that
-/// changes every count after it), and the four per-window counter peaks — the
-/// window's *milliseconds* are the timing block's.
-const DETERMINISTIC_LEAVES: [&str; 6] = [
+/// changes every count after it), and the five per-window counter peaks (16b
+/// cut J.2 added the horizon index's block reads) — the window's
+/// *milliseconds* are the timing block's.
+const DETERMINISTIC_LEAVES: [&str; 7] = [
     "cohort",
     "loop.jitter_ms",
     "window.traces_peak",
     "window.cell_probes_peak",
+    "window.horizon_probes_peak",
     "window.jam_checks_peak",
     "window.share_ops_peak",
 ];
@@ -4489,10 +4568,13 @@ fn the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else() {
             "substeps": { "per_wake_min": 1 },
             "counters": { "blocked_events": blocked },
             "weapons": { "fired_events": 9 },
-            "perception": { "total": { "traces": 5 }, "peak_per_pulse": { "traces": 2 } },
+            "perception": {
+                "total": { "traces": 5, "horizon_probes": 11 },
+                "peak_per_pulse": { "traces": 2, "horizon_probes": 8 },
+            },
             "window": {
                 "ms_p99": p99, "traces_peak": 3, "cell_probes_peak": 4,
-                "jam_checks_peak": 5, "share_ops_peak": 6,
+                "horizon_probes_peak": 9, "jam_checks_peak": 5, "share_ops_peak": 6,
             },
             "reflex": {
                 "total": { "ticks": 7 }, "peak_per_pulse": { "ticks": 1 },

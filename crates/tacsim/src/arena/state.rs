@@ -15,6 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use mush_atlas::TerrainClass;
+use mush_atlas::trace::Eye;
 use mush_core::ObjId;
 use mush_sim::data::Pose;
 use mush_tactics::TacticalUnit;
@@ -23,6 +24,7 @@ use sha2::{Digest as _, Sha256};
 use smol_str::SmolStr;
 
 use crate::arena::clock::Clock;
+use crate::arena::horizon::{Block, Horizon, HorizonSight};
 use crate::arena::index::SpatialIndex;
 use crate::arena::intents::Intent;
 use crate::arena::ledger::{EventKind, Ledger};
@@ -109,6 +111,26 @@ pub struct ArenaTerrain {
     height: u16,
     cell_cm: u16,
     cells: Vec<TerrainCell>,
+    /// **The horizon index over `cells`** (16b cut J.2; 16c N5 step 2): per
+    /// 16- and 4-cell block, the highest and lowest cell and whether any is
+    /// opaque or partial, which lets [`ArenaTerrain::sight`] prove a run of a
+    /// line clear without reading it and blocked by reading one cell
+    /// ([`crate::arena::horizon`]'s head has the rules and why the answer is
+    /// `sight_only`'s to the byte).
+    ///
+    /// **A cache.** It is a pure function of the cells beside it, which
+    /// [`ArenaDefinition::digest`] covers, built once with them by
+    /// [`ArenaTerrain::new`] and never written, and read by
+    /// [`ArenaTerrain::sight`] alone. It lives *here* and not on `Arena`
+    /// because the tests swap `arena.definition` and `arena.definition.terrain`
+    /// after `Arena::new`, and an index carried by the terrain cannot answer for
+    /// any grid but its own. **Not folded into
+    /// [`crate::arena::hash::state_hash`]**: folding it would fold the terrain a
+    /// second time. And it is not the *cross-observer cache* doc 16 §3.2 rules
+    /// out: nothing observed is cached — no line, no answer, no contact — the
+    /// index holds terrain, and one observer's pass still depends on nothing
+    /// another observer did.
+    horizon: Horizon,
 }
 
 impl ArenaTerrain {
@@ -130,11 +152,15 @@ impl ArenaTerrain {
             Some(expected)
                 if width != 0 && height != 0 && cell_cm != 0 && cells.len() == expected =>
             {
+                // 16b cut J.2: the index is built here, from the cells just
+                // checked, so every terrain in the tree carries its own.
+                let horizon = Horizon::build(width, height, &cells);
                 Ok(ArenaTerrain {
                     width,
                     height,
                     cell_cm,
                     cells,
+                    horizon,
                 })
             }
             _ => Err(ArenaError::TerrainShape {
@@ -232,6 +258,53 @@ impl ArenaTerrain {
     pub fn cells(&self) -> &[TerrainCell] {
         &self.cells
     }
+
+    /// **The line of sight from `from` to `to` over this terrain, through its
+    /// horizon index** (16b cut J.2; doc 16 §3.2 "Line of sight", §3.6 step 2):
+    /// the one query, and the one [`Arena::sight`] makes.
+    ///
+    /// Its `sight` is [`mush_atlas::sight_only`]'s to the byte for every pair;
+    /// its `cell_probes` are never more than `sight_only`'s `visited`, and its
+    /// `horizon_probes` are the blocks it read ([`Horizon::sight`]).
+    #[must_use]
+    pub fn sight(&self, from: Eye, to: Eye) -> HorizonSight {
+        self.horizon.sight(self, from, to)
+    }
+
+    /// The horizon index's size, bytes: its blocks, six bytes each (26,112 on
+    /// the shipped 256 by 256 window; reported under 16c `T-36`'s memory bound).
+    #[must_use]
+    pub fn horizon_bytes(&self) -> usize {
+        self.horizon.bytes()
+    }
+
+    /// The horizon index's block sides, coarse first: `[16, 4]`, or `[]` for a
+    /// terrain made [`ArenaTerrain::without_horizon`].
+    #[must_use]
+    pub fn horizon_sides(&self) -> Vec<u16> {
+        self.horizon.sides()
+    }
+
+    /// The block of the index's `level` (an index into
+    /// [`crate::arena::horizon::LEVELS`]) that covers cell `(x, y)`, or `None`
+    /// for a cell off the window or a level the index does not have — for the
+    /// fold check and the tests.
+    #[must_use]
+    pub fn horizon_block(&self, level: usize, x: u16, y: u16) -> Option<Block> {
+        self.get(x, y)?;
+        self.horizon.block(level, x, y)
+    }
+
+    /// **The same grid with no index** ([`Horizon::walk_only`]): every line is
+    /// walked by `sight_only`. For the with-and-without replays; a match never
+    /// builds one.
+    #[must_use]
+    pub fn without_horizon(self) -> ArenaTerrain {
+        ArenaTerrain {
+            horizon: Horizon::walk_only(),
+            ..self
+        }
+    }
 }
 
 /// **The arena's window is a cell grid the atlas trace can walk** (16b cut S.1;
@@ -245,8 +318,10 @@ impl ArenaTerrain {
 /// out. `mush_atlas::CellGrid` is the trace's *terrain* seam and nothing more: one
 /// cell's class and its elevation. So the arena keeps its own grid, the atlas keeps
 /// its one per-cell rule, and two walkers read this through it:
-/// `mush_atlas::sight_only` for perception (16b cut J.1, [`Arena::sight`]) and
-/// `mush_atlas::trace_cells` for the fire path (16b cut W.2).
+/// `mush_atlas::sight_only` for perception (16b cut J.1, [`Arena::sight`]; since
+/// 16b cut J.2 through [`ArenaTerrain::sight`], whose horizon index walks a run
+/// under the same per-cell rule and hands `sight_only` whatever it does not
+/// answer) and `mush_atlas::trace_cells` for the fire path (16b cut W.2).
 impl mush_atlas::CellGrid for ArenaTerrain {
     fn cell_at(&self, x: u16, y: u16) -> Option<(TerrainClass, i32)> {
         let cell = self.get(x, y)?;

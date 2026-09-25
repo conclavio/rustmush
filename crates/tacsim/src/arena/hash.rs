@@ -279,6 +279,11 @@ thread_local! {
 /// information and would make the hash a function of which folds had been asked
 /// for by the time the record was taken.
 ///
+/// **Cut J.2's horizon index is absent on the same argument, and a plainer one
+/// still**: it lives inside [`crate::arena::state::ArenaTerrain`] as a function
+/// of the cells the definition digest already covers, built with them and never
+/// written, so folding it would fold the terrain a second time.
+///
 /// **Cut Y.4's `at_release` and `pending_catchup` are absent on `last_frames`'
 /// argument**: they are what a pilot will be told about a drop, written only by
 /// a control that names a pilot and read only by the frame builder, so folding

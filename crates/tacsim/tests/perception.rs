@@ -453,8 +453,13 @@ fn a_target_behind_a_wall_is_never_detected() {
     assert_eq!(counters.candidates, 1);
     assert_eq!(counters.traces, 1);
     // **16b cut J.1**: the line from (10,10) to (40,10) has 29 interior cells, the
-    // wall at x 25 is the fifteenth read, and the counter stops there.
-    assert_eq!(counters.cell_probes, 15);
+    // wall at x 25 is the fifteenth read, and the counter stopped there.
+    // **16b cut J.2**: the horizon index reads two cells and five blocks. The
+    // 16-block over x 0..15 is proved clear; the one over x 16..31 holds the wall
+    // and is descended; its 4-blocks over 16..19 and 20..23 are proved clear; the
+    // one over 24..27 holds the wall and is walked — x 24 read clear, x 25 read as
+    // the wall. The proved runs are not read.
+    assert_eq!((counters.cell_probes, counters.horizon_probes), (2, 5));
     assert_eq!(counters.detected, 0);
     assert!(journal.is_empty());
     assert!(arena.contacts.is_empty());
@@ -2547,11 +2552,12 @@ struct Cadenced {
     pulses: u32,
     /// **What perception cost over the whole replay** (16b cut J.1): every
     /// pulse's `out.perception`, absorbed. The three-cadence comparison reads
-    /// `(traces, cell_probes)` off it, because a pass runs at its own arena
-    /// timestamp against the substep boundary's positions at every cadence, so
-    /// the same lines are walked and the same cells read up to the same blocker.
-    /// Most replays here are on open ground, where every line reads to its end;
-    /// the one whose lines stop at a wall is
+    /// `(traces, cell_probes, horizon_probes)` off it, because a pass runs at its
+    /// own arena timestamp against the substep boundary's positions at every
+    /// cadence, so the same lines are walked, the same blocks of the horizon
+    /// index read (16b cut J.2) and the same cells read up to the same blocker.
+    /// Most replays here are on open ground, where the index proves every line
+    /// clear by its blocks; the one whose lines stop at a wall is
     /// `j1_a_line_stopped_at_its_wall_reads_the_same_cells_at_every_cadence`.
     perception: PerceptionCounters,
 }
@@ -2578,15 +2584,58 @@ struct Beat {
 /// time, with the tempo pinned so the cadence under test is the cadence that
 /// runs.
 fn cadenced(cadence_ms: i64, until_ms: i64) -> Cadenced {
-    let script: Vec<Beat> = designator_script()
+    replayed(
+        designator_arena(),
+        &designator_beats(),
+        cadence_ms,
+        until_ms,
+    )
+}
+
+/// [`designator_script`] as [`Beat`]s, with no placements (16b cut J.2 split it
+/// out of [`cadenced`] for the with-and-without replay).
+fn designator_beats() -> Vec<Beat> {
+    designator_script()
         .into_iter()
         .map(|(t_ms, intents)| Beat {
             t_ms,
             intents,
             places: Vec::new(),
         })
-        .collect();
-    replayed(designator_arena(), &script, cadence_ms, until_ms)
+        .collect()
+}
+
+/// **The horizon index changes nothing but the cost** (16b cut J.2): the
+/// designator script replayed at 5,000 ms twice, the second time on the same
+/// arena with its terrain made [`ArenaTerrain::without_horizon`] before the
+/// replay, is one event list, one hash sequence, one staged story and one
+/// designator column. The index is non-vacuous here: the built run read blocks,
+/// and strictly fewer cells than the walk-only run, which reads every line by
+/// `sight_only`.
+#[test]
+fn j2_the_designator_script_is_one_replay_with_and_without_the_index() {
+    let script = designator_beats();
+    let built = replayed(designator_arena(), &script, 5_000, 35_000);
+    let mut walk_only = designator_arena();
+    walk_only.definition.terrain = walk_only.definition.terrain.clone().without_horizon();
+    let walked = replayed(walk_only, &script, 5_000, 35_000);
+    assert_eq!(built.events, walked.events, "the events differ");
+    assert_eq!(built.hashes, walked.hashes, "the hashes differ");
+    assert_eq!(built.staged, walked.staged, "the staged notices differ");
+    assert_eq!(
+        built.columns, walked.columns,
+        "the designator column differs"
+    );
+    assert!(!built.events.is_empty() && !built.columns.is_empty());
+    assert_eq!(built.perception.traces, walked.perception.traces);
+    assert_eq!(walked.perception.horizon_probes, 0);
+    assert!(
+        built.perception.horizon_probes > 0
+            && built.perception.cell_probes < walked.perception.cell_probes,
+        "the index did no work: {:?} against {:?}",
+        built.perception,
+        walked.perception
+    );
 }
 
 /// The driver itself (16b cut D.4 split it out of [`cadenced`], which is now one
@@ -2948,11 +2997,20 @@ fn one_scripted_approach_at_three_cadences_is_one_list_one_hash_and_one_column()
         );
         // **16b cut J.1**: the same lines walked and the same cells read, up to
         // the same blocker — a pass runs at its own arena timestamp against the
-        // substep boundary's positions at every cadence.
+        // substep boundary's positions at every cadence. **16b cut J.2**: and the
+        // same blocks of the horizon index, which is read-only and timestamp-free.
         assert_eq!(
-            (run.perception.traces, run.perception.cell_probes),
-            (first.perception.traces, first.perception.cell_probes),
-            "the traces or the cells they read differ at {cadence} ms"
+            (
+                run.perception.traces,
+                run.perception.cell_probes,
+                run.perception.horizon_probes
+            ),
+            (
+                first.perception.traces,
+                first.perception.cell_probes,
+                first.perception.horizon_probes
+            ),
+            "the traces, or the cells or blocks they read, differ at {cadence} ms"
         );
     }
 }
@@ -4480,11 +4538,20 @@ fn one_scripted_flicker_at_three_cadences_is_one_list_one_hash_and_one_column() 
         );
         // **16b cut J.1**: the same lines walked and the same cells read, up to
         // the same blocker — a pass runs at its own arena timestamp against the
-        // substep boundary's positions at every cadence.
+        // substep boundary's positions at every cadence. **16b cut J.2**: and the
+        // same blocks of the horizon index, which is read-only and timestamp-free.
         assert_eq!(
-            (run.perception.traces, run.perception.cell_probes),
-            (first.perception.traces, first.perception.cell_probes),
-            "the traces or the cells they read differ at {cadence} ms"
+            (
+                run.perception.traces,
+                run.perception.cell_probes,
+                run.perception.horizon_probes
+            ),
+            (
+                first.perception.traces,
+                first.perception.cell_probes,
+                first.perception.horizon_probes
+            ),
+            "the traces, or the cells or blocks they read, differ at {cadence} ms"
         );
     }
 }
@@ -4558,11 +4625,20 @@ fn three_cadences(arena: impl Fn() -> Arena, script: &[Beat], until_ms: i64) -> 
             run.staged, first.staged,
             "the staged notices differ at {cadence} ms"
         );
-        // **16b cut J.1**: and the same lines walked, the same cells read.
+        // **16b cut J.1**: and the same lines walked, the same cells read (and,
+        // **16b cut J.2**, the same blocks of the horizon index).
         assert_eq!(
-            (run.perception.traces, run.perception.cell_probes),
-            (first.perception.traces, first.perception.cell_probes),
-            "the traces or the cells they read differ at {cadence} ms"
+            (
+                run.perception.traces,
+                run.perception.cell_probes,
+                run.perception.horizon_probes
+            ),
+            (
+                first.perception.traces,
+                first.perception.cell_probes,
+                first.perception.horizon_probes
+            ),
+            "the traces, or the cells or blocks they read, differ at {cadence} ms"
         );
     }
     first
@@ -4638,14 +4714,32 @@ const WALLED: ObjId = ObjId(33);
 /// behind a wall cell: every pass traces a line that `sight_only` stops at the
 /// wall, so the one behaviour J.1 introduces — returning at the first blocker —
 /// is compared across 5,000, 1,000 and 500 ms by [`three_cadences`]'
-/// `(traces, cell_probes)` equality, which a flat fixture cannot do.
+/// `(traces, cell_probes, horizon_probes)` equality, which a flat fixture
+/// cannot do.
 ///
-/// The counts are derived, not observed. `MARK`'s line, (10,10) to (15,10),
-/// has four interior cells and nothing on it: four probes. `WALLED`'s, (10,10)
-/// to (10,17), has six (y 11 to 16) and the wall at y 13 is the third read:
-/// three probes, where the walk that read to the end would have read six. So
-/// the replay reads fewer than four cells per trace exactly when some line
-/// stopped early — and `WALLED` is never acquired.
+/// The counts are derived, not observed. Under J.1 alone (no horizon index),
+/// `MARK`'s line, (10,10) to (15,10), has four interior cells and nothing on
+/// it: four probes. `WALLED`'s, (10,10) to (10,17), has six (y 11 to 16) and the
+/// wall at y 13 is the third read: three probes, where the walk that read to the
+/// end would have read six. So under J.1 the replay read fewer than four cells
+/// per trace exactly when some line stopped early — and `WALLED` is never
+/// acquired. That reading no longer holds once the index proves clear lines
+/// without reading them (a wall-free fixture reads no cell at all), so the test
+/// no longer asserts it.
+///
+/// **16b cut J.2** moves both counts, derived the same way. The wall at (10,13)
+/// lies in the 16-block over x 0..15, y 0..15, which both lines start in, so
+/// neither is proved clear there. `MARK`'s line descends into the 4-blocks over
+/// x 8..11 and 12..15 of y 8..11, both proved clear: **no cell and three
+/// blocks**. `WALLED`'s descends into the 4-blocks over y 8..11 (proved clear)
+/// and y 12..15 (holding the wall, walked: y 12 read clear, y 13 read as the
+/// wall), and its last two cells lie in the 16-block over y 16..31, which it
+/// never reaches: **two cells and three blocks**, where the walked 4-block holds
+/// four. Only `EYE` carries a sensor and `WALLED` stands in its reach at every
+/// pass, so over the replay the cells read are exactly two per pass — the wall
+/// stopped every walled line in its walked block — and the blocks three per
+/// trace. That exact pair is what now shows the wall held: without the wall
+/// both lines are proved clear by their blocks and the replay reads no cell.
 #[test]
 fn j1_a_line_stopped_at_its_wall_reads_the_same_cells_at_every_cadence() {
     let arena = || {
@@ -4669,22 +4763,35 @@ fn j1_a_line_stopped_at_its_wall_reads_the_same_cells_at_every_cadence() {
         )
     };
     // The fixture's premise, on one pass before the replay: the walled line is
-    // traced and stopped at the wall — two traces, four probes and three.
+    // traced and stopped at the wall — two traces; under J.1 four probes and
+    // three, under **16b cut J.2** none and two, over three blocks and three.
     let mut probe = arena();
     let (counters, _) = pass(&mut probe, EYE, 1, 0);
     assert_eq!(
-        (counters.traces, counters.cell_probes, counters.detected),
-        (2, 7, 1),
+        (
+            counters.traces,
+            counters.cell_probes,
+            counters.horizon_probes,
+            counters.detected
+        ),
+        (2, 2, 6, 1),
         "{counters:?}"
     );
 
     let first = three_cadences(arena, &flicker_replay_script(), 25_000);
     let traces = first.perception.traces;
+    let passes = first.perception.passes;
     let probes = first.perception.cell_probes;
-    assert!(traces > 0, "{:?}", first.perception);
-    assert!(
-        probes < 4 * u64::from(traces),
-        "no line stopped at its wall: {traces} traces read {probes} cells"
+    assert!(traces > 0 && passes > 0, "{:?}", first.perception);
+    // **16b cut J.2**: two cells per pass (the walled line, stopped at its wall
+    // in the walked 4-block of four) and three blocks per trace. J.1's guard
+    // `probes < 4 × traces` is gone: under the index a wall-free replay reads no
+    // cell and would pass it, while this pair fails it (0 ≠ 2 × passes).
+    assert_eq!(
+        (probes, first.perception.horizon_probes),
+        (2 * u64::from(passes), 3 * u64::from(traces)),
+        "{:?}",
+        first.perception
     );
     // Only `MARK` was ever acquired: the wall held at every pass.
     let kinds = eye_contact_kinds(&first);

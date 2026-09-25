@@ -1954,6 +1954,7 @@ fn x3_the_cold_target_costs_the_pass_a_candidate_and_no_trace() {
     assert_eq!(counters.candidates, 1, "the index still offered it");
     assert_eq!(counters.traces, 0, "and the range test culled it first");
     assert_eq!(counters.cell_probes, 0);
+    assert_eq!(counters.horizon_probes, 0);
     assert_eq!(counters.detected, 0);
 
     let mut hot = watch(&catalog, content::LINE_TANK_THERMAL, MARK_CELL);
@@ -1961,7 +1962,12 @@ fn x3_the_cold_target_costs_the_pass_a_candidate_and_no_trace() {
     let counters = thermal_pass(&mut hot, RED, 1, 0);
     assert_eq!(counters.candidates, 1);
     assert_eq!(counters.traces, 1, "the same candidate, traced once");
-    assert!(counters.cell_probes > 0);
+    // 16b cut J.2: a line the horizon index proves clear reads no cell, so the
+    // look along it is a block read or a cell read, never neither.
+    assert!(
+        counters.cell_probes + counters.horizon_probes > 0,
+        "the line was looked along, by block or by cell"
+    );
     assert_eq!(counters.detected, 1);
 }
 
@@ -5971,18 +5977,23 @@ fn q6_three_cadences(
         // stops at its first blocker: a pass runs at its own arena timestamp
         // against the substep boundary's positions at every cadence, so the same
         // lines are walked and the same cells read up to the same blocker.
+        // **16b cut J.2**: and the same blocks of the horizon index, which is
+        // read-only and timestamp-free.
         assert_eq!(
             (
                 run.perception.jam_checks,
                 run.perception.traces,
-                run.perception.cell_probes
+                run.perception.cell_probes,
+                run.perception.horizon_probes
             ),
             (
                 first.perception.jam_checks,
                 first.perception.traces,
-                first.perception.cell_probes
+                first.perception.cell_probes,
+                first.perception.horizon_probes
             ),
-            "{label}: the run's jam checks, traces or cells read differ at {cadence} ms"
+            "{label}: the run's jam checks, traces, or cells or blocks read differ at \
+             {cadence} ms"
         );
         assert_ne!(
             run.pulses, first.pulses,
