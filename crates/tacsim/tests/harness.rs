@@ -41,7 +41,8 @@
 //! a seeded stand-in for the timer's overshoot, `TACSIM_WAKE_JITTER_MS` (default
 //! 0). Every wake is also folded into 500 ms windows of arena time, and the lens
 //! binds both: 12 ms per wake on both cohorts, and per window 12 ms on the CI
-//! cohort and 17.5 ms on the authored one (since 16b cut J.3b). Two runs: `tacsim_harness_arena_step` at the CI reach (sight
+//! cohort and 20 ms on the authored one (17.5 ms at 16b cut J.3b, 20 since J.3c
+//! on the owner's word). Two runs: `tacsim_harness_arena_step` at the CI reach (sight
 //! scaled 60 to `TACSIM_SENSOR_CELLS`, 24; mesh 30 to `TACSIM_SHARE_CELLS`, 8),
 //! and `tacsim_harness_arena_authored_reach` at the reaches as authored; both
 //! asserted under `TACSIM_ASSERT` since 16b cut J.3b, the authored one at its own
@@ -116,12 +117,24 @@
 //!
 //! **The authored lane asserted since 16b cut J.3b** (16c Q26, answered by the
 //! owner on 2026-09-25): the reach and the 300-unit target kept,
-//! `harness.max_share_ops_per_pulse` 768, the per-window lens 17.5 ms
-//! ([`ARENA_AUTHORED_WINDOW_P99_MS`]) and the per-wake lens 12 ms, asserted by
+//! `harness.max_share_ops_per_pulse` 768, the per-window lens 17.5 ms (20 ms
+//! since J.3c, the next paragraph) and the per-wake lens 12 ms, asserted by
 //! hand on the blessing host through `scripts/harness-weekly.sh` on every run
 //! since, and never in CI (billing-blocked, no `TACSIM_ASSERT`, no Linux
 //! baseline); the first three asserted runs read per window p99 15.339, 14.057
 //! and 14.732 ms and per wake 8.099, 7.785 and 8.150 ms.
+//!
+//! **The lens at 20 ms since 16b cut J.3c** (the owner, later on 2026-09-25:
+//! *bump the lens up to 20 to give us some headroom but keep a reasonable
+//! boundary*). The J.3b gate's own run had read 16.298 ms per window, which
+//! 17.5 held by only 7.4 per cent, so a loaded week could have missed on noise
+//! alone; 20 ms ([`ARENA_AUTHORED_WINDOW_P99_MS`]) holds the worst asserted run
+//! on record by 22.7 per cent, is the figure the 300-unit harness gate was first
+//! proposed at on 2026-09-16 (before doc 16 set the finished arena's ceiling at
+//! 25), and stays under that 25 ms `engaged_p99_ms` ceiling — the check that
+//! keeps it a boundary, as the owner asked, pinned by
+//! [`the_lens_is_the_cohorts_own`]. Nothing else moved: no bound, no baseline
+//! (the CI report's `window_p99_ms` stays 12.0), no reach, no target.
 //!
 //! What it must not do (16b §9's `H` row): touch `mush-sim` or `mush-atlas` — a
 //! harness that needs a new API in the thing it measures is measuring its own
@@ -2367,8 +2380,8 @@ fn tacsim_harness_arena_step() {
 /// second run): [`measure_arena`] at [`Reach::Authored`], JSON at
 /// `<stem>-arena-authored.<ext>`. Since 16b cut J.3b (16c Q26, the owner's
 /// answer) it asserts under `TACSIM_ASSERT` like the CI lane: per wake at the
-/// 12 ms lens ([`ARENA_S_P99_MS`]), per 500 ms window at 17.5 ms
-/// ([`ARENA_AUTHORED_WINDOW_P99_MS`]), and the same per-pulse bounds of
+/// 12 ms lens ([`ARENA_S_P99_MS`]), per 500 ms window at 20 ms
+/// ([`ARENA_AUTHORED_WINDOW_P99_MS`], 17.5 at J.3b), and the same per-pulse bounds of
 /// `[tacsim.harness]`. The delta does not read its report.
 #[test]
 #[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
@@ -2821,9 +2834,9 @@ fn run_wakes(
 ///
 /// Every measured wake is also folded into [`WINDOW_MS`] windows of arena time
 /// ([`windows`]) and the lens binds both — 12 ms per wake, and per window the
-/// cohort's own ([`window_lens_ms`], 12 ms on the CI cohort and 17.5 ms on the
-/// authored since 16b cut J.3b): a wake is at most one substep, a smaller unit
-/// than the 500 ms pulse the lens was calibrated on.
+/// cohort's own ([`window_lens_ms`], 12 ms on the CI cohort and 20 ms on the
+/// authored since 16b cut J.3c, 17.5 at J.3b): a wake is at most one substep,
+/// a smaller unit than the 500 ms pulse the lens was calibrated on.
 ///
 /// **16b cut U.2** (16c `T-36`, `T-29`) added the two per-pulse bounds the
 /// report had printed and never asserted — cell probes and jam checks, against
@@ -4681,16 +4694,16 @@ fn the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else() {
     let mut extra = report(2.0, 10, true);
     extra["weapons"]["hits"] = serde_json::json!(1);
     assert_eq!(delta(&baseline, &extra, &host).differences, 1);
-    // 16b cut J.3b: a moved lens is a threshold like any other — the authored
-    // cohort's 17.5 against a baseline at the CI cohort's 12.0 is exactly one
-    // difference, named.
-    let found = delta(&baseline, &report_at_lens(2.0, 10, true, 17.5), &host);
+    // 16b cut J.3b (the value 20.0 since J.3c): a moved lens is a threshold like
+    // any other — the authored cohort's 20.0 against a baseline at the CI
+    // cohort's 12.0 is exactly one difference, named.
+    let found = delta(&baseline, &report_at_lens(2.0, 10, true, 20.0), &host);
     assert_eq!(found.differences, 1, "{:?}", found.lines);
     assert!(
         found
             .lines
             .iter()
-            .any(|line| line == "harness_delta: thresholds.window_p99_ms baseline=12.0 now=17.5"),
+            .any(|line| line == "harness_delta: thresholds.window_p99_ms baseline=12.0 now=20.0"),
         "{:?}",
         found.lines
     );
@@ -4741,50 +4754,62 @@ fn the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else() {
     assert_eq!(iso_utc(1_790_208_000), "2026-09-24T00:00:00Z");
 }
 
-/// **The figure the authored lens was set on**, ms (16b cut J.3b; 16c Q26): the
-/// worst recorded run when the owner set the lens — the worst of cut J.3's three
-/// weekly runs (15.092, 14.997 and 14.108 ms), the figure the owner was given —
-/// over which [`ARENA_AUTHORED_WINDOW_P99_MS`] carries the harness's 16 per cent
-/// margin (15.092 × 1.16 = 17.507, taken as 17.5). It is not the worst run on
-/// record since, and does not follow later runs:
-/// J.3's fourth run read 15.807 ms and J.3b's first asserted run 15.339 ms,
-/// which the lens holds by 10.7 and 14.1 per cent — under the margin it was set
-/// with. Those runs are held by the weekly assertion itself, not by this check;
-/// whether the lens should carry the margin over them is the owner's to decide.
-/// Whoever moves the lens, or the figure it is set on, moves this constant in
-/// the same diff and says why.
-const AUTHORED_WINDOW_P99_WORST_RECORDED_MS: f64 = 15.092;
+/// **The worst asserted authored run on record**, ms per 500 ms window (16b cut
+/// J.3c; 16c Q26): the J.3b gate's own run, 16.298 ms, the highest figure the
+/// authored lane has read since it began asserting (cut J.3's three weekly runs
+/// read 15.092, 14.997 and 14.108, its fourth 15.807, J.3b's three asserted
+/// runs 15.339, 14.057 and 14.732). [`ARENA_AUTHORED_WINDOW_P99_MS`] carries
+/// the harness's recorded 16 per cent spread over it and
+/// [`the_lens_is_the_cohorts_own`] holds that it does. Whoever records a worse
+/// asserted run moves this constant in the same diff and says why; if the lens
+/// then no longer clears it by 16 per cent, the lens is the owner's to move,
+/// never the builder's.
+const AUTHORED_WINDOW_P99_WORST_RECORDED_MS: f64 = 16.298;
 
-/// **The lens is the cohort's own** (16b cut J.3b; 16c Q26): the CI cohort is
-/// held per window to [`ARENA_S_P99_MS`] exactly as before, the authored cohort
-/// to [`ARENA_AUTHORED_WINDOW_P99_MS`], which is the looser of the two, and the
-/// authored lens sits between fifteen and sixteen per cent over the figure it
-/// was set on ([`AUTHORED_WINDOW_P99_WORST_RECORDED_MS`]). It pins that the
-/// lens is never quietly set under the number it was set on, never quietly
-/// loosened past the owner's margin over it, and that the authored lens never
-/// loosens the CI cohort's.
+/// **The lens is the cohort's own** (16b cut J.3b, moved by J.3c; 16c Q26): the
+/// CI cohort is held per window to [`ARENA_S_P99_MS`] exactly as before, the
+/// authored cohort to [`ARENA_AUTHORED_WINDOW_P99_MS`], which is the looser of
+/// the two; the authored lens is the owner's figure, 20 ms, holds the worst
+/// asserted run on record ([`AUTHORED_WINDOW_P99_WORST_RECORDED_MS`]) by the
+/// harness's 16 per cent spread, and stays under the 25 ms `engaged_p99_ms`
+/// ceiling doc 16 sets for the finished arena — the check that keeps it a
+/// boundary, as the owner asked. It pins that the lens is never quietly moved
+/// off the owner's figure, never sits inside the noise over a run it has
+/// already read, never reaches the ceiling, and never loosens the CI cohort's.
 #[test]
 fn the_lens_is_the_cohorts_own() {
     let ci = window_lens_ms(Reach::Ci);
     let authored = window_lens_ms(Reach::Authored);
-    assert_eq!(ci, ARENA_S_P99_MS, "the CI cohort's window lens is 12 ms");
+    assert_eq!(
+        ci, ARENA_S_P99_MS,
+        "the CI cohort's window lens is the lens"
+    );
+    assert_eq!(
+        ci, 12.0,
+        "the CI cohort's window lens is 12 ms (16b cut S.1); tightening it is a review's call"
+    );
     assert_eq!(
         authored, ARENA_AUTHORED_WINDOW_P99_MS,
         "the authored cohort's window lens is its own constant"
+    );
+    assert_eq!(
+        authored, 20.0,
+        "the authored lens is the owner's figure of 2026-09-25 (16c Q26); only the owner moves it"
     );
     assert!(
         authored > ci,
         "the authored lens {authored} is the looser of the two, over {ci}"
     );
     assert!(
-        authored >= AUTHORED_WINDOW_P99_WORST_RECORDED_MS * 1.15,
-        "the authored lens {authored} ms holds the figure it was set on, \
-         {AUTHORED_WINDOW_P99_WORST_RECORDED_MS} ms, by at least fifteen per cent"
+        authored >= AUTHORED_WINDOW_P99_WORST_RECORDED_MS * 1.16,
+        "the authored lens {authored} ms sits inside the harness's 16 per cent spread over the \
+         worst asserted run on record, {AUTHORED_WINDOW_P99_WORST_RECORDED_MS} ms: the owner's to move"
     );
+    let ceiling = f64::from(tacsim::config::HarnessConfig::default().engaged_p99_ms);
     assert!(
-        authored <= AUTHORED_WINDOW_P99_WORST_RECORDED_MS * 1.16,
-        "the authored lens {authored} ms is past the owner's 16 per cent margin over \
-         {AUTHORED_WINDOW_P99_WORST_RECORDED_MS} ms (16c Q26, 2026-09-25); only the owner moves it"
+        authored < ceiling,
+        "the authored lens {authored} ms reaches doc 16's {ceiling} ms engaged_p99_ms ceiling: no \
+         longer a boundary"
     );
 }
 
@@ -4998,26 +5023,32 @@ const ARENA_P99_MS: f64 = 5.0;
 /// [`ARENA_AUTHORED_WINDOW_P99_MS`] per window and this constant per wake.
 const ARENA_S_P99_MS: f64 = 12.0;
 
-/// **The authored cohort's per-window lens** (16b cut J.3b; 16c Q26, answered
-/// by the owner on 2026-09-25): 17.5 ms per 500 ms window of arena time at the
-/// shipped 60-cell sight and 30-cell mesh, 300 units, 24 pilots.
+/// **The authored cohort's per-window lens** (16b cut J.3b, moved by J.3c; 16c
+/// Q26, answered by the owner on 2026-09-25): 20 ms per 500 ms window of arena
+/// time at the shipped 60-cell sight and 30-cell mesh, 300 units, 24 pilots.
 ///
 /// **Where it came from.** Cut J.3 measured the authored cohort three times
 /// after the cheap trace and the horizon index: per window p99 15.092, 14.997
 /// and 14.108 ms, against the 12 ms lens that the CI cohort is asserted on. The
 /// owner chose to keep the reach and the 300-unit target and to set this lens
 /// with the harness's own margin over the worst of the three: 15.092 × 1.16 =
-/// 17.507, given to the owner as 17.5 and taken as 17.5. A run 16.0 per cent
-/// slower than that worst run would miss it by seven microseconds, inside the
-/// harness's resolution; a run 15.9 per cent slower holds it. (J.3's fourth
-/// run, its final gate and not one of the three, read 15.807 ms, which this
-/// lens holds by 10.7 per cent.)
+/// 17.507, taken as 17.5 by J.3b. J.3b's own gate then read 16.298 ms, which
+/// 17.5 held by only 7.4 per cent — inside the spread two runs of one tree have
+/// shown — and the owner moved it the same day: *bump the lens up to 20 to give
+/// us some headroom but keep a reasonable boundary*. Twenty holds 16.298 by
+/// 22.7 per cent, is the figure the 300-unit harness gate was first proposed at
+/// on 2026-09-16 (before doc 16 set the finished arena's ceiling at 25), and
+/// stays under that 25 ms `harness.engaged_p99_ms` ceiling, the check that keeps
+/// it a boundary as the owner asked; [`the_lens_is_the_cohorts_own`] pins all
+/// three and only the owner moves it.
 ///
 /// **What it binds.** The per-window figure of [`Reach::Authored`] alone. The
 /// per-wake lens is [`ARENA_S_P99_MS`] for both cohorts (the authored per-wake
-/// p99 of 8.156 ms holds 12 with a third to spare), and the CI cohort's window
-/// stays on [`ARENA_S_P99_MS`]: this constant loosens nothing there.
-const ARENA_AUTHORED_WINDOW_P99_MS: f64 = 17.5;
+/// p99 of 8.377 ms at worst holds 12 by 43 per cent), and the CI cohort's
+/// window stays on [`ARENA_S_P99_MS`]: this constant loosens nothing there, and
+/// the CI report's `thresholds.window_p99_ms` stays 12.0, so the committed
+/// baseline does not move with it.
+const ARENA_AUTHORED_WINDOW_P99_MS: f64 = 20.0;
 
 /// **The per-window lens a cohort is held to** (16b cut J.3b): the CI cohort
 /// [`ARENA_S_P99_MS`], the authored cohort [`ARENA_AUTHORED_WINDOW_P99_MS`].
