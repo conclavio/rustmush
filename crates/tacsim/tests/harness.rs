@@ -96,6 +96,21 @@
 //! through the terrain's horizon index, asserted `sight_only`'s exact sight and
 //! never more cells read, and prints its cells and blocks read.
 //!
+//! **The authored lane after 16b cut J.3** (16c `T-34`, Q26, N5). With the
+//! early-stopping trace and the horizon index in, the authored cohort was
+//! measured three times through `scripts/harness-weekly.sh` on the blessing host
+//! (Windows, release, `TACSIM_ASSERT=1`): per wake p99 7.699 to 8.156 ms, per
+//! window p99 14.108 to 15.092 ms, against the 12 ms lens — and against 10.3 ms,
+//! the lens over 1.16 (12.0 / 1.16, so a figure 16 per cent slower still holds
+//! 12; 16 per cent is what two runs of one tree have differed by), which is the
+//! margin a weekly assertion needs. The per-wake peaks are 2,994 traces
+//! (bound 4,000), 19,858 cell probes (32,000), 1,124 jam checks (2,048) and 452
+//! share operations (256). The window is over, so the authored lane stays
+//! **report-only pending the owner's Q26**: the 600 m sight, the bounds, the
+//! 300-unit target, or N5's step 3, the work budget. The CI cohort is asserted
+//! as before; a run of its lane at other sight knobs is a sizing run of another
+//! field, and skips the CI cohort's warm-up wreck check ([`open_field`]).
+//!
 //! What it must not do (16b §9's `H` row): touch `mush-sim` or `mush-atlas` — a
 //! harness that needs a new API in the thing it measures is measuring its own
 //! change — assert by default, or run on push. The ban on asserting by default
@@ -2582,6 +2597,15 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
     // so a wreck there is a regression — a machine firing during warm-up, a
     // check-out with broken armour — and it fails the run exactly as a cold tank
     // did before the cut.
+    //
+    // **At the default knobs only** (16b cut J.3). The CI cohort IS the default
+    // knobs — the delta refuses any other run as a different run — and a sight
+    // knob run through this lane (`TACSIM_SENSOR_CELLS`, `TACSIM_SHARE_CELLS`)
+    // is a sizing run of another field: at 60 and 30
+    // [`scale_to_ci`] is the identity and fields the authored reaches exactly,
+    // whose warm-up kills one unit as the U.1 record says. `killed_warming` is
+    // printed on `harness_arena_setup_ms` for every run, so nothing is hidden;
+    // at the defaults this is byte-for-byte U.1's assertion.
     let cold: Vec<(ObjId, Power)> = arena
         .units
         .iter()
@@ -2594,7 +2618,7 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
         "{} units never came online: the reflex controller did not start the field up: {cold:?}",
         cold.len()
     );
-    if reach == Reach::Ci {
+    if reach == Reach::Ci && sensor_cells() == SENSOR_CELLS && share_cells() == SHARE_CELLS {
         let wrecked: Vec<ObjId> = arena
             .units
             .iter()
