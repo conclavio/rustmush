@@ -2573,6 +2573,13 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
     // a bearing, not a side, not a weapon.
     let seen = ask(&mut bo, "CONTACTS", "bearing").await;
     names_nothing(&seen, red, blue, "the target's `CONTACTS`");
+    // The shooter's magazine counts a round when it leaves the barrel; the
+    // target is told when it lands, a flight and a frame later, pushed on its
+    // own channel. So the notice is waited for (`expect_after` reads the channel
+    // until it arrives) and never read once — a read that races the impact
+    // fails only under load, when the other servers of this binary slow the
+    // world between the two.
+    bo.expect_after(target_mark, "Hit on the ").await;
     let target = strip_ansi(&bo.seen[target_mark..]);
     assert!(
         target.contains("Hit on the "),
@@ -2672,6 +2679,12 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
     // (`left_track` against `left_leg`), so a section word on an unidentified
     // blip is identification by gunfire, which doc 16 §2 W5 prices at
     // `classify_after_ms` of looking.
+    //
+    // The impact the target was told of above tells the shooter too, on the
+    // shooter's own channel, which nothing orders against the target's: waited
+    // for as the target's was. The shooter is never sent `Hit on the `, so the
+    // first `Hit on ` in the transcript is the shooter's own sentence.
+    ada.expect("Hit on ").await;
     let gunner = strip_ansi(&ada.seen);
     let outcomes: Vec<&str> = gunner
         .lines()
@@ -4001,6 +4014,16 @@ fn contact_range_m(listing: &str, who: &str) -> Option<u64> {
 /// same report as an object whose `contacts_new` is exactly that frame's own
 /// contact designators, whose `contacts_lost` is empty, and whose keys name no
 /// unit. Bo, who never dropped, never reads `Back aboard`.
+///
+/// The report's two cells are `RA`'s own: `cell_then` is where it was placed,
+/// exactly, and `cell_now` is where it stood when the `Live` re-seated Ada —
+/// pulse phase 1, before that pulse's motion, which is what makes the report
+/// one figure at every cadence (`tacsim/tests/arena.rs`'s Y.3 cross-tempo
+/// test). The carrying frame is built after the motion, and after any pulse a
+/// lagging world held (`merge_held`), and `RA` is still under way — the machine
+/// was withdrawing it — so the frame's own cell may be further along; the two
+/// are held to within what the tank can drive between the `BOARD` and the
+/// frame's arrival, and never to one cell.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
     let server = boot_grace("observer-catchup", true, Duration::from_secs(2)).await;
@@ -4053,22 +4076,31 @@ async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
         .await;
     let window = ada.mark();
     let mut web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
+    // The earliest `BOARD` that may have re-seated her: every attempt but one
+    // refused as `still being handed over`, which sends the arena nothing.
+    let mut boarded: Option<std::time::Instant> = None;
     wait_until(STEP_TIMEOUT, "BOARD to take the tank back", async || {
         let mark = ada.mark();
+        let sent = std::time::Instant::now();
         ada.send_line("BOARD").await;
-        ada.expect_one_of_after(
-            mark,
-            &[
-                "yours again where it stands",
-                "is still being handed over",
-                COMMIT_PENDING,
-                CONTROL_UNKNOWN,
-            ],
-        )
-        .await
-            == 0
+        let answer = ada
+            .expect_one_of_after(
+                mark,
+                &[
+                    "yours again where it stands",
+                    "is still being handed over",
+                    COMMIT_PENDING,
+                    CONTROL_UNKNOWN,
+                ],
+            )
+            .await;
+        if answer != 1 {
+            boarded.get_or_insert(sent);
+        }
+        answer == 0
     })
     .await;
+    let boarded = boarded.expect("the BOARD that re-seated Ada");
     ada.expect("Back aboard RA").await;
     ada.expect("  Power ").await;
     let sent = strip_ansi(&ada.seen[window..]);
@@ -4182,8 +4214,9 @@ async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
 
     // No position of blue's: the report's two cells are `RA`'s own — where it
     // stood when the line dropped (it had not moved since it was placed) and
-    // the cell the carrying frame itself puts it in — and every cell the block
+    // where it stood when the reclaim re-seated Ada — and every cell the block
     // prints is one of those two.
+    let travelled = boarded.elapsed();
     let pair = |value: &Value, key: &str| -> Option<(u64, u64)> {
         let cell = value.get(key)?.as_array()?;
         Some((cell.first()?.as_u64()?, cell.get(1)?.as_u64()?))
@@ -4197,19 +4230,30 @@ async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
         Some(placed),
         "the cell RA stood in at the drop: {report}"
     );
-    let now = pair(&frame, "cell");
-    assert!(now.is_some(), "the carrying frame places RA: {frame}");
-    assert_eq!(
-        pair(&report, "cell_now"),
-        now,
-        "RA's own cell now: {report}"
+    let framed = pair(&frame, "cell");
+    assert!(framed.is_some(), "the carrying frame places RA: {frame}");
+    let reseated = pair(&report, "cell_now");
+    assert!(reseated.is_some(), "the report places RA now: {report}");
+    // The report's cell is taken in the reclaiming pulse's phase 1 and the
+    // frame's after its motion, so the two are one tank's track: no further
+    // apart than `RA` can drive from the `BOARD` to the frame's arrival, plus
+    // two pulses' capped integration (the one the `Live` landed in reaches back
+    // before it, and its wall reading may precede the `BOARD` by a drain).
+    let reach = reclaim_reach_cells(travelled);
+    let apart = framed
+        .zip(reseated)
+        .map(|((fx, fy), (rx, ry))| fx.abs_diff(rx).max(fy.abs_diff(ry)));
+    assert!(
+        apart.is_some_and(|cells| cells <= reach),
+        "RA's own cell now is {apart:?} cells from the carrying frame's, more than the {reach} \
+         it could drive in {travelled:?}: {report}\n{frame}"
     );
     let printed = catchup_cells(&block);
     assert!(!printed.is_empty(), "the block prints RA's cells:\n{block}");
     for cell in &printed {
         assert!(
-            Some(*cell) == now || *cell == placed,
-            "the block printed a cell that is not RA's own, {cell:?}:\n{block}"
+            Some(*cell) == reseated || *cell == placed,
+            "the block printed a cell that is not the report's own, {cell:?}:\n{block}"
         );
     }
 
@@ -4223,6 +4267,55 @@ async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
         !seen.contains("Back aboard"),
         "a pilot who never dropped read a catch-up:\n{seen}"
     );
+}
+
+/// **How many cells a tank can move between a reclaim and its report's frame**
+/// (16b cut Y.4), `travelled` being the wall time from the `BOARD` to the
+/// frame's arrival.
+///
+/// Arena time never runs ahead of the wall (`tacsim::arena::clock::Clock::advance`
+/// clamps a pulse's integration to `max_catch_up_steps × period`), so the tank's travel
+/// is at most its content's top speed over `travelled` plus two capped pulses:
+/// the reclaiming pulse's own integration reaches back before the `Live`, and
+/// its wall reading may precede the `BOARD` by the drain that followed it. A
+/// move of `d` centimetres crosses at most `d / cell + 1` cell boundaries on
+/// either axis.
+fn reclaim_reach_cells(travelled: Duration) -> u64 {
+    /// The greatest `max_speed_cms` anywhere in a definition.
+    fn top(value: &Value) -> u64 {
+        match value {
+            Value::Object(map) => map
+                .iter()
+                .map(|(key, value)| {
+                    if key == "max_speed_cms" {
+                        value.as_u64().unwrap_or(0)
+                    } else {
+                        top(value)
+                    }
+                })
+                .max()
+                .unwrap_or(0),
+            Value::Array(items) => items.iter().map(top).max().unwrap_or(0),
+            _ => 0,
+        }
+    }
+    // Both witnesses are line tanks: the stock one and `observer_packs`' copy.
+    let tank: Value = serde_json::from_str(tacsim::definitions::content::LINE_TANK_JSON)
+        .expect("the line tank's definition");
+    let speed_cms = top(&tank);
+    assert!(speed_cms > 0, "the line tank declares a top speed");
+    let arena = tacsim_config(true).arena;
+    let longest_ms = arena
+        .tempo
+        .quiet_ms
+        .max(arena.tempo.alert_ms)
+        .max(arena.tempo.engaged_ms);
+    let pulse_cap_ms = u64::from(longest_ms) * u64::from(arena.max_catch_up_steps.max(1));
+    let wall_ms = u64::try_from(travelled.as_millis()).unwrap_or(u64::MAX);
+    let arena_ms = wall_ms.saturating_add(pulse_cap_ms.saturating_mul(2));
+    // The window's cell, as this file places units: `x * 1_000 + 500`.
+    let travel_cm = speed_cms.saturating_mul(arena_ms) / 1_000;
+    travel_cm / 1_000 + 1
 }
 
 /// Every `(x, y)` cell a catch-up block prints, in order.

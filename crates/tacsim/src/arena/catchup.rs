@@ -23,6 +23,21 @@
 //! answering `true`) consumes it into a [`Catchup`], which `Arena::frames` puts
 //! on that pilot's next frame once ([`crate::arena::step::Frame::catchup`]).
 //!
+//! # "Now" is the re-seat, not the frame
+//!
+//! Every `_now` figure of a [`Catchup`] — the cell, the power, the wreck, the
+//! contacts, the sections, the rounds — is read where `apply_control`'s `Live`
+//! arm builds it: pulse phase 1, **before** that pulse's motion. The frame that
+//! carries the report is built after the motion (and, on a lagging world, after
+//! whatever pulses `merge_held` folded in), so a tank still under way at the
+//! reclaim — the machine was withdrawing it — can stand a cell further on in
+//! the carrying frame than in its report. That is deliberate: the re-seat is a
+//! world-scripted beat at one arena millisecond, so the report is one set of
+//! figures at every cadence (16b cut Y.4's cross-tempo assertion), where the
+//! carrying frame's own cell is a function of the pulse length. The report says
+//! what happened up to the moment the pilot had the tank back; the frame
+//! beside it says where the tank is now.
+//!
 //! # Two views, and why neither is hashed
 //!
 //! [`crate::arena::state::Arena::at_release`] and
@@ -132,18 +147,20 @@ pub struct Catchup {
     pub away_ms: i64,
     /// The cell at the snapshot.
     pub cell_then: Option<(u16, u16)>,
-    /// The cell now.
+    /// The cell at the re-seat — before the reclaiming pulse's motion, so a
+    /// tank under way may read a cell further on in the carrying frame (see
+    /// the module's "Now is the re-seat").
     pub cell_now: Option<(u16, u16)>,
     /// Power at the snapshot.
     pub power_then: Power,
-    /// Power now.
+    /// Power at the re-seat.
     pub power_now: Power,
-    /// The tank is a wreck now.
+    /// The tank is a wreck at the re-seat.
     pub wreck: bool,
-    /// Contacts held now and not then, sorted by designator, at most
+    /// Contacts held at the re-seat and not then, sorted by designator, at most
     /// [`MAX_CATCHUP_CONTACTS`].
     pub contacts_new: Vec<Designator>,
-    /// Contacts held then and not now, named as they read then, sorted by
+    /// Contacts held then and not at the re-seat, named as they read then, sorted by
     /// designator, at most [`MAX_CATCHUP_CONTACTS`].
     pub contacts_lost: Vec<Designator>,
     /// How many contacts the two caps left out, both lists together.
