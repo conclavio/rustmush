@@ -596,8 +596,8 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
 
 ## 4. Execution order
 
-Thirteen serial cuts and a tail. Ledger letters used before this document: R G P H A T C K S W N X F Q;
-the twelve below use the rest of the alphabet, and the review cut AA (after E) opens the second series.
+Fourteen serial cuts and a tail. Ledger letters used before this document: R G P H A T C K S W N X F Q;
+the twelve below use the rest of the alphabet, and the review cut AA (after E) opens the second series, and the owner's ruling cut AB (after Y) follows it.
 Each cut is a functional boundary of roughly cut F's size: three to five sub-cuts of 1.5k to 3k lines
 with their tests. 16b §0's build discipline applies unchanged: the workspace green at every sub-cut, the
 gates re-blessed in the commit that moves them, a reviewer that did not write the cut, one commit and one
@@ -791,6 +791,24 @@ dropped boards again, takes the tank back where it is, and reads what happened.
 Depends on E, V.1. Gateway: yes (`catchup` on the clients). Packs: none. Hash: moves (`Order.issuer`).
 Assumes N3's and N4's defaults. Size: large.
 
+### Cut AB: the 120-column floor
+
+**When it lands.** The TUI is laid out for a terminal of at least 120 columns and says so below that,
+instead of contorting: the status pane wide enough that the speed row and `DESTROYED` never wrap, the
+damage pane drawn whole at 120 by 34 with every section, the contacts pane unwrapped; the goldens, the
+fixtures, the help and doc 16 move with it, and `B-10`'s eighty-column layout is superseded.
+
+- **AB.1 The layout.** The TUI's minimum is 120 columns (`Q-AB1`): the pane widths, the wrap rules
+  and the height rule of cut B.3 re-derived for that floor; below it, one sentence naming the floor
+  on every screen; the 120 by 34 damage pane residual of the B row closed; the TUI goldens re-blessed
+  once; the help and the two sizing comments made true.
+
+The owner's ruling of 2026-09-24: the minimum viable width is 120; 160 to 180 is typical; 240 and more
+is reasonable. The line client's `VIEW` window (39 cells, two columns each) and the web are unaffected;
+`SIM HISTORY`'s rows stay as V.2 built them. Depends on B.3, Y.4 (the last change to the panels).
+Gateway: yes (the TUI). Packs: none. Hash: no. Size: small, one sub-cut. Named from the second series.
+
+
 ### Cut J: the authored reach fits the pulse
 
 **When it lands.** The harness at 60 and 30 on the shipped-shape cohort has an honest p99 and trace
@@ -908,6 +926,7 @@ debts, plus the four feature choices that change the most.
 | Q44 | Should `ORDER <squad> RELEASE` hand a squad back to doctrine and free the span (N3, W8)? | Not in Y: the four arms as N3 lists them, and the span holds until the world's watch expires, since the world never learns an early arena end. Cut Z decides. | Y, Z |
 | Q-U1 | Should the arena task pass the SCHEDULED wall to `step`, so arena time is exactly the substep lattice with a late wake carried as lag? (raised by cut U's plan, not assumed) | No for now: arena time stays wall time, the wake targets are lattice points in absolute arena time, the task's deadline is anchored to its base, and the overshoot's cost is measured by `TACSIM_WAKE_JITTER_MS` (3 ms: 81 short substeps in 120 wakes). | U, open |
 | Q-U2 | The arena-to-session events-per-pulse bound: the shipped opening burst is 288 in one pulse at 24 pilots (24 keyframes plus eleven contact-notice lines per pilot at the acquisition pass) against the planned 256. Keep 512 on the measurement, coalesce a pilot's notices into one `Sys` event, or bound per pilot? | 512 on the measurement (built at U.2); the burst is client-facing text and untouched. | U, open |
+| Q-AB1 | What is the narrowest terminal a client surface is laid out for? (raised when `SIM HISTORY`'s rows ran 82 to 88 columns) | Answered by the owner on 2026-09-24: 120 columns is the minimum viable width, 160 to 180 typical, 240 and more reasonable; no client surface is built to 80 again. | AB |
 
 ---
 
