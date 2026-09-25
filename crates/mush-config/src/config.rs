@@ -110,7 +110,7 @@
 //! | `[tacsim.harness].engaged_p99_ms` | `25` | the per-pulse p99 ceiling in `Engaged` tempo |
 //! | `[tacsim.harness].max_traces_per_pulse` | `4000` | line-of-sight traces one pulse may make |
 //! | `[tacsim.harness].max_path_queries_per_pulse` | `64` | path queries one pulse may make |
-//! | `[tacsim.harness].max_share_ops_per_pulse` | `256` | **16b cut S.1** (doc 16 §2 W6): contact-share operations one pulse may make — one `(sharer, teammate)` pair each |
+//! | `[tacsim.harness].max_share_ops_per_pulse` | `768` | **16b cut S.1** (doc 16 §2 W6): contact-share operations one pulse may make — one `(sharer, teammate)` pair each; 768 since 16b cut J.3b, on the authored lane's measured per-wake peak of 452 at 300 units and the 30-cell mesh (16c Q26, the owner's answer); 256 was S.1's figure from the CI cohort's reduced mesh |
 //! | `[tacsim.harness].max_ledger_bytes` | `67108864` | 64 MiB the streamed ledger must stay under over an hour of arena time |
 //! | `[tacsim.harness].max_cell_probes_per_pulse` | `32000` | **16b cut U.2** (doc 16 §2 W4): cells one pulse's line-of-sight traces may read — detection's and the mesh's together |
 //! | `[tacsim.harness].max_jam_checks_per_pulse` | `2048` | **16b cut U.2** (doc 16 §9 item 4): index candidates one pulse's jammer scans may look at |
@@ -1448,7 +1448,9 @@ pub struct TacsimHarnessCfg {
     /// considered — its range test and its line of sight — so the bound is on the
     /// fan-out of the comms mesh, not on how many contacts a pair carries. Like
     /// every key here it is a threshold the harness asserts and never a throttle
-    /// the arena applies.
+    /// the arena applies. 768 since 16b cut J.3b, on the authored lane's measured
+    /// per-wake peak of 452 at 300 units and the 30-cell mesh (16c Q26, the
+    /// owner's answer); 256 was S.1's figure from the CI cohort's reduced mesh.
     pub max_share_ops_per_pulse: u32,
     /// The most bytes the streamed ledger may reach over the harness's hour of
     /// arena time (64 MiB) — the proof that resident memory stays flat because
@@ -1486,7 +1488,8 @@ impl Default for TacsimHarnessCfg {
             engaged_p99_ms: 25,
             max_traces_per_pulse: 4_000,
             max_path_queries_per_pulse: 64,
-            max_share_ops_per_pulse: 256,
+            // 16b cut J.3b (16c Q26): the authored lane's 452 peak.
+            max_share_ops_per_pulse: 768,
             // 64 MiB.
             max_ledger_bytes: 67_108_864,
             // 16b cut U.2: the five bounds.
@@ -2662,7 +2665,8 @@ scene_turn_dedline_secs = 30
                 h.max_path_queries_per_pulse,
                 h.max_share_ops_per_pulse
             ),
-            (4_000, 64, 256)
+            (4_000, 64, 768),
+            "max_share_ops_per_pulse is 768 since 16b cut J.3b (16c Q26)"
         );
         assert_eq!(h.max_ledger_bytes, 67_108_864, "64 MiB");
         // 16b cut U.2: the five bounds.

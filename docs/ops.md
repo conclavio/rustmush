@@ -1208,8 +1208,11 @@ verbatim (a test holds them equal); only the environment differs.
 **What asserts where.**
 
 - **The script** exports `TACSIM_ASSERT=1`, so every lane asserts its absolutes
-  (the 12 ms lens, the per-pulse bounds of `[tacsim.harness]`, the memory growth,
-  the frame bytes) — D-16-19's *assert locally*, on a box that is not shared.
+  (the 12 ms lens per wake on both cohorts and per window on the CI cohort, the
+  17.5 ms per-window lens on the authored cohort (16b cut J.3b, 16c Q26), the
+  per-pulse bounds of `[tacsim.harness]` (share operations 768 since the same
+  cut), the memory growth, the frame bytes) — D-16-19's *assert locally*, on a
+  box that is not shared.
 - **The delta** (`tacsim_harness_delta_against_the_committed_baseline`) reads the
   fresh `harness-arena.json` and `crates/tacsim/tests/harness_baseline/arena.<os>.json`.
   It fails on **any** difference in the deterministic block (the world, the

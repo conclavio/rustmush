@@ -734,6 +734,11 @@ pub struct HarnessConfig {
     /// asserts**, never a throttle the arena applies: an engine that stopped
     /// sharing halfway through a pulse would make the outcome a function of the
     /// tempo, which is exactly what D-16-2 forbids.
+    ///
+    /// 768 since 16b cut J.3b, on the authored lane's measured per-wake peak of
+    /// 452 at 300 units and the 30-cell mesh (16c Q26, the owner's answer); 256
+    /// was S.1's figure from the CI cohort's reduced mesh. The figure is three
+    /// halves of the peak, 678, rounded up to the next multiple of 256.
     pub max_share_ops_per_pulse: u32,
     /// The most bytes the streamed ledger may reach over the harness's hour of
     /// arena time (64 MiB) — the proof that memory stays flat because the ledger
@@ -789,7 +794,9 @@ impl Default for HarnessConfig {
             engaged_p99_ms: 25,
             max_traces_per_pulse: 4_000,
             max_path_queries_per_pulse: 64,
-            max_share_ops_per_pulse: 256,
+            // 16b cut J.3b (16c Q26): the authored lane's 452 peak, three halves
+            // of it rounded up to the next multiple of 256.
+            max_share_ops_per_pulse: 768,
             // 64 MiB.
             max_ledger_bytes: 67_108_864,
             // 16b cut U.2: the five bounds 16c `T-36` and `T-29` asked for.

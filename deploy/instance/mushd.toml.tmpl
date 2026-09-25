@@ -345,7 +345,8 @@ fighting = 24
 engaged_p99_ms = 25
 max_traces_per_pulse = 4000
 max_path_queries_per_pulse = 64
-max_share_ops_per_pulse = 256
+# (16b cut S.1; 768 since 16b cut J.3b) contact-share operations one pulse may make, one (sharer, teammate) pair each; sized on the authored lane's measured 452 peak (16c Q26)
+max_share_ops_per_pulse = 768
 max_ledger_bytes = 67108864
 # (16b cut U.2) cells one pulse's line-of-sight traces may read; the harness asserts it, the arena never throttles on it
 max_cell_probes_per_pulse = 32000

@@ -39,11 +39,13 @@
 //! stepped at `StepOutput::next_due_ms` — the substep lattice in absolute arena
 //! time — for `TACSIM_ARENA_S` arena seconds (default 30) after the warm-up, plus
 //! a seeded stand-in for the timer's overshoot, `TACSIM_WAKE_JITTER_MS` (default
-//! 0). Every wake is also folded into 500 ms windows of arena time, and the 12 ms
-//! lens binds both. Two runs: `tacsim_harness_arena_step` at the CI reach (sight
+//! 0). Every wake is also folded into 500 ms windows of arena time, and the lens
+//! binds both: 12 ms per wake on both cohorts, and per window 12 ms on the CI
+//! cohort and 17.5 ms on the authored one (since 16b cut J.3b). Two runs: `tacsim_harness_arena_step` at the CI reach (sight
 //! scaled 60 to `TACSIM_SENSOR_CELLS`, 24; mesh 30 to `TACSIM_SHARE_CELLS`, 8),
-//! asserted under `TACSIM_ASSERT`, and `tacsim_harness_arena_authored_reach` at
-//! the reaches as authored, report-only. The terrain's move costs are still the
+//! and `tacsim_harness_arena_authored_reach` at the reaches as authored; both
+//! asserted under `TACSIM_ASSERT` since 16b cut J.3b, the authored one at its own
+//! per-window lens ([`window_lens_ms`]). The terrain's move costs are still the
 //! harness's own one table (`harness_move_cost`): 16c `B-58`'s per-locomotion
 //! cost layer is not built.
 //!
@@ -105,11 +107,21 @@
 //! 12; 16 per cent is what two runs of one tree have differed by), which is the
 //! margin a weekly assertion needs. The per-wake peaks are 2,994 traces
 //! (bound 4,000), 19,858 cell probes (32,000), 1,124 jam checks (2,048) and 452
-//! share operations (256). The window is over, so the authored lane stays
-//! **report-only pending the owner's Q26**: the 600 m sight, the bounds, the
-//! 300-unit target, or N5's step 3, the work budget. The CI cohort is asserted
-//! as before; a run of its lane at other sight knobs is a sizing run of another
-//! field, and skips the CI cohort's warm-up wreck check ([`open_field`]).
+//! share operations (256). The window was over, so the authored lane stayed
+//! **report-only pending the owner's Q26** (the 600 m sight, the bounds, the
+//! 300-unit target, or N5's step 3, the work budget) until the owner answered
+//! it, as the next paragraph says. The CI cohort is asserted as before; a run of
+//! its lane at other sight knobs is a sizing run of another field, and skips the
+//! CI cohort's warm-up wreck check ([`open_field`]).
+//!
+//! **The authored lane asserted since 16b cut J.3b** (16c Q26, answered by the
+//! owner on 2026-09-25): the reach and the 300-unit target kept,
+//! `harness.max_share_ops_per_pulse` 768, the per-window lens 17.5 ms
+//! ([`ARENA_AUTHORED_WINDOW_P99_MS`]) and the per-wake lens 12 ms, asserted by
+//! hand on the blessing host through `scripts/harness-weekly.sh` on every run
+//! since, and never in CI (billing-blocked, no `TACSIM_ASSERT`, no Linux
+//! baseline); the first three asserted runs read per window p99 15.339, 14.057
+//! and 14.732 ms and per wake 8.099, 7.785 and 8.150 ms.
 //!
 //! What it must not do (16b §9's `H` row): touch `mush-sim` or `mush-atlas` — a
 //! harness that needs a new API in the thing it measures is measuring its own
@@ -1349,10 +1361,14 @@ fn harness_move_cost(class: TerrainClass) -> u16 {
 enum Reach {
     /// **The CI cohort**: every sight scaled by [`sensor_cells`] over the
     /// authored visual's 60 cells and every 30-cell mesh cut to [`share_cells`]
-    /// — the field the lens and the per-pulse bounds are asserted on.
+    /// — the field the 12 ms lens and the per-pulse bounds were sized on. Both
+    /// cohorts assert under `TACSIM_ASSERT` since 16b cut J.3b; this one per
+    /// window at [`ARENA_S_P99_MS`].
     Ci,
-    /// **The authored reaches**, exactly as the catalog fields them: report-only
-    /// until cut J's `Q26` settles the bound they are measured against.
+    /// **The authored reaches**, exactly as the catalog fields them: asserted
+    /// under `TACSIM_ASSERT` since 16b cut J.3b (16c Q26), against its own
+    /// per-window lens ([`ARENA_AUTHORED_WINDOW_P99_MS`]) and the per-wake lens
+    /// and per-pulse bounds the CI cohort is held to.
     Authored,
 }
 
@@ -1457,8 +1473,11 @@ const SENSOR_CELLS: u16 = 24;
 /// 16b §9 pins `comms.share_range_cells` at 30 and the shipped sights author 30;
 /// this is 8, and the reason is the arithmetic [`sensor_cells`] records: doc 16
 /// §3.6 step 5's mesh is one operation per `(sharer, teammate)` pair inside the
-/// reach, `harness.max_share_ops_per_pulse` is 256, and at this density the
-/// authored 30 is about 2,400 operations and 2,400 further traces a second.
+/// reach, `harness.max_share_ops_per_pulse` was 256 when this was set, and at
+/// this density the authored 30 is about 2,400 operations and 2,400 further
+/// traces a second. The bound is 768 since 16b cut J.3b (16c Q26), on the
+/// authored lane's measured per-wake peak of 452 at the 30-cell mesh; this
+/// cohort's reduced mesh is unchanged, and its peak is a small fraction of it.
 fn share_cells() -> u16 {
     u16::try_from(env_u64("TACSIM_SHARE_CELLS", u64::from(SHARE_CELLS))).unwrap_or(SHARE_CELLS)
 }
@@ -2075,7 +2094,8 @@ impl CommandFigures {
         })
     }
 
-    /// **W8, asserted** (the CI cohort under `TACSIM_ASSERT`).
+    /// **W8, asserted** (both cohorts under `TACSIM_ASSERT` since 16b cut J.3b;
+    /// the CI cohort alone before it).
     fn assert_bounded(&self) {
         let span = usize::try_from(self.max_span).unwrap_or(usize::MAX);
         assert!(
@@ -2345,9 +2365,11 @@ fn tacsim_harness_arena_step() {
 
 /// **The same measurement at the authored reaches** (16b cut U.1; 16c `T-34`'s
 /// second run): [`measure_arena`] at [`Reach::Authored`], JSON at
-/// `<stem>-arena-authored.<ext>`. Report-only whatever `TACSIM_ASSERT` says —
-/// the bound the authored reach is measured against is cut J's `Q26` — so it
-/// asserts only that the arena it timed was loaded.
+/// `<stem>-arena-authored.<ext>`. Since 16b cut J.3b (16c Q26, the owner's
+/// answer) it asserts under `TACSIM_ASSERT` like the CI lane: per wake at the
+/// 12 ms lens ([`ARENA_S_P99_MS`]), per 500 ms window at 17.5 ms
+/// ([`ARENA_AUTHORED_WINDOW_P99_MS`]), and the same per-pulse bounds of
+/// `[tacsim.harness]`. The delta does not read its report.
 #[test]
 #[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
 fn tacsim_harness_arena_authored_reach() {
@@ -2798,8 +2820,10 @@ fn run_wakes(
 /// the report.
 ///
 /// Every measured wake is also folded into [`WINDOW_MS`] windows of arena time
-/// ([`windows`]) and the 12 ms lens binds both: a wake is at most one substep,
-/// a smaller unit than the 500 ms pulse the lens was calibrated on.
+/// ([`windows`]) and the lens binds both — 12 ms per wake, and per window the
+/// cohort's own ([`window_lens_ms`], 12 ms on the CI cohort and 17.5 ms on the
+/// authored since 16b cut J.3b): a wake is at most one substep, a smaller unit
+/// than the 500 ms pulse the lens was calibrated on.
 ///
 /// **16b cut U.2** (16c `T-36`, `T-29`) added the two per-pulse bounds the
 /// report had printed and never asserted — cell probes and jam checks, against
@@ -3308,16 +3332,18 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         arena.definition.terrain.horizon_bytes(),
         vmrss_words(vmrss_start_kib, vmrss_end_kib)
     );
-    // Whether this run asserts its thresholds: the CI cohort under
-    // `TACSIM_ASSERT`, and the authored reaches never.
-    let asserting = knobs.assert && reach == Reach::Ci;
+    // Whether this run asserts its thresholds: under `TACSIM_ASSERT`, both
+    // cohorts since 16b cut J.3b (the authored lane at its own per-window lens,
+    // `window_lens_ms`).
+    let asserting = knobs.assert;
     let lens = if asserting {
         "per-wake-and-per-window"
     } else {
         "report-only"
     };
     println!(
-        "harness_arena_thresholds: cohort={cohort} assert={asserting} lens={lens} cut_a_p99_ms={ARENA_P99_MS} cut_s_p99_ms={ARENA_S_P99_MS} engaged_p99_ms={} max_traces_per_pulse={} max_share_ops_per_pulse={} max_path_queries_per_pulse={} max_cell_probes_per_pulse={} max_jam_checks_per_pulse={} max_ledger_bytes={}",
+        "harness_arena_thresholds: cohort={cohort} assert={asserting} lens={lens} cut_a_p99_ms={ARENA_P99_MS} cut_s_p99_ms={ARENA_S_P99_MS} window_p99_ms={} engaged_p99_ms={} max_traces_per_pulse={} max_share_ops_per_pulse={} max_path_queries_per_pulse={} max_cell_probes_per_pulse={} max_jam_checks_per_pulse={} max_ledger_bytes={}",
+        window_lens_ms(reach),
         knobs.engaged_p99_ms,
         knobs.max_traces_per_pulse,
         knobs.max_share_ops_per_pulse,
@@ -3536,6 +3562,8 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             "lens": lens,
             "cut_a_p99_ms": ARENA_P99_MS,
             "cut_s_p99_ms": ARENA_S_P99_MS,
+            // 16b cut J.3b: the per-window lens this cohort is held to.
+            "window_p99_ms": window_lens_ms(reach),
             "engaged_p99_ms": knobs.engaged_p99_ms,
             "max_traces_per_pulse": knobs.max_traces_per_pulse,
             "max_share_ops_per_pulse": knobs.max_share_ops_per_pulse,
@@ -3566,15 +3594,18 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             "per-wake p99 {p99:.3} ms is past harness.engaged_p99_ms {}",
             knobs.engaged_p99_ms
         );
-        // **The lens, per wake and per window** (see [`ARENA_S_P99_MS`]).
+        // **The lens, per wake and per window** (see [`ARENA_S_P99_MS`]): per wake
+        // the 12 ms lens on both cohorts, per window the cohort's own
+        // (`window_lens_ms`; 16b cut J.3b).
         assert!(
             p99 <= ARENA_S_P99_MS,
             "per-wake p99 {p99:.3} ms is past the {ARENA_S_P99_MS} ms lens"
         );
+        let window_lens = window_lens_ms(reach);
         assert!(
-            w99 <= ARENA_S_P99_MS,
+            w99 <= window_lens,
             "per-window p99 {w99:.3} ms (500 ms windows of arena time) is past the \
-             {ARENA_S_P99_MS} ms lens"
+             {window_lens} ms lens of the {cohort} cohort"
         );
         assert!(
             counts.bytes <= knobs.max_ledger_bytes,
@@ -3584,14 +3615,20 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         );
         // 16b cut S.1, doc 16 §2 W4 and W6: the two per-pulse perception bounds,
         // asserted against the **worst** wake of the run — the wake is the pulse
-        // production runs (16b cut U.1).
+        // production runs (16b cut U.1). The reach each message names is the
+        // cohort's own: the CI knobs, or the authored 60 and 30 (16b cut J.3b,
+        // since the authored lane asserts too).
+        let (sight_cells, mesh_cells) = match reach {
+            Reach::Ci => (u32::from(sensor_cells()), share_cells()),
+            Reach::Authored => (AUTHORED_SIGHT_CELLS, AUTHORED_SHARE_CELLS),
+        };
         assert!(
             peak.traces <= knobs.max_traces_per_pulse,
             "traces in one wake {} is past harness.max_traces_per_pulse {} at \
              sensor_cells={} (doc 16 §2 W1: sensor ranges are short and bounded)",
             peak.traces,
             knobs.max_traces_per_pulse,
-            sensor_cells()
+            sight_cells
         );
         // **16b cut U.2** (16c `T-36`; doc 16 §2 W4 names probes beside traces):
         // the cells those traces read, in the same shape.
@@ -3601,7 +3638,7 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
              sensor_cells={} (doc 16 §2 W4: traces and cell probes per pulse)",
             peak.cell_probes,
             knobs.max_cell_probes_per_pulse,
-            sensor_cells()
+            sight_cells
         );
         // **16b cut U.2** (16c `T-29`; doc 16 §9 item 4): the jammer scans, one
         // per unit between two clears of the memo since U.2 — the substep's two
@@ -3621,7 +3658,7 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
              share_cells={} (doc 16 §2 W6)",
             peak.share_ops,
             knobs.max_share_ops_per_pulse,
-            share_cells()
+            mesh_cells
         );
         // **16b cut N.1**, doc 16 §1 A2's last per-pulse bound: *path queries per
         // pulse under their bound*. The arena's own budget is per `decide_ms`
@@ -4584,7 +4621,9 @@ fn the_weekly_script_runs_the_ci_jobs_two_lines_verbatim() {
 #[test]
 fn the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else() {
     let host = serde_json::json!({ "os": "testos", "cpus": 8, "hostname": "box" });
-    let report = |p99: f64, blocked: u64, asserting: bool| {
+    // 16b cut J.3b: the fake report carries `thresholds.window_p99_ms`, the
+    // per-window lens a cohort is held to; `report` is the CI cohort's 12.0.
+    let report_at_lens = |p99: f64, blocked: u64, asserting: bool, window_lens: f64| {
         serde_json::json!({
             "cohort": "ci",
             "world": { "units": 300, "pulses": 600 },
@@ -4609,10 +4648,13 @@ fn the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else() {
             "thresholds": {
                 "assert": asserting,
                 "lens": if asserting { "per-wake-and-per-window" } else { "report-only" },
+                "window_p99_ms": window_lens,
                 "engaged_p99_ms": 25,
             },
         })
     };
+    let report =
+        |p99: f64, blocked: u64, asserting: bool| report_at_lens(p99, blocked, asserting, 12.0);
     let mut baseline = report(2.0, 10, true);
     baseline["blessed"] = serde_json::json!({ "host": host.clone() });
 
@@ -4639,6 +4681,19 @@ fn the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else() {
     let mut extra = report(2.0, 10, true);
     extra["weapons"]["hits"] = serde_json::json!(1);
     assert_eq!(delta(&baseline, &extra, &host).differences, 1);
+    // 16b cut J.3b: a moved lens is a threshold like any other — the authored
+    // cohort's 17.5 against a baseline at the CI cohort's 12.0 is exactly one
+    // difference, named.
+    let found = delta(&baseline, &report_at_lens(2.0, 10, true, 17.5), &host);
+    assert_eq!(found.differences, 1, "{:?}", found.lines);
+    assert!(
+        found
+            .lines
+            .iter()
+            .any(|line| line == "harness_delta: thresholds.window_p99_ms baseline=12.0 now=17.5"),
+        "{:?}",
+        found.lines
+    );
     // A quarter slower on the blessing host fails: the p99 and the window p99.
     let found = delta(&baseline, &report(2.5, 10, true), &host);
     assert_eq!(found.slower.len(), 2, "{:?}", found.lines);
@@ -4684,6 +4739,53 @@ fn the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else() {
     );
     assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
     assert_eq!(iso_utc(1_790_208_000), "2026-09-24T00:00:00Z");
+}
+
+/// **The figure the authored lens was set on**, ms (16b cut J.3b; 16c Q26): the
+/// worst recorded run when the owner set the lens — the worst of cut J.3's three
+/// weekly runs (15.092, 14.997 and 14.108 ms), the figure the owner was given —
+/// over which [`ARENA_AUTHORED_WINDOW_P99_MS`] carries the harness's 16 per cent
+/// margin (15.092 × 1.16 = 17.507, taken as 17.5). It is not the worst run on
+/// record since, and does not follow later runs:
+/// J.3's fourth run read 15.807 ms and J.3b's first asserted run 15.339 ms,
+/// which the lens holds by 10.7 and 14.1 per cent — under the margin it was set
+/// with. Those runs are held by the weekly assertion itself, not by this check;
+/// whether the lens should carry the margin over them is the owner's to decide.
+/// Whoever moves the lens, or the figure it is set on, moves this constant in
+/// the same diff and says why.
+const AUTHORED_WINDOW_P99_WORST_RECORDED_MS: f64 = 15.092;
+
+/// **The lens is the cohort's own** (16b cut J.3b; 16c Q26): the CI cohort is
+/// held per window to [`ARENA_S_P99_MS`] exactly as before, the authored cohort
+/// to [`ARENA_AUTHORED_WINDOW_P99_MS`], which is the looser of the two, and the
+/// authored lens sits between fifteen and sixteen per cent over the figure it
+/// was set on ([`AUTHORED_WINDOW_P99_WORST_RECORDED_MS`]). It pins that the
+/// lens is never quietly set under the number it was set on, never quietly
+/// loosened past the owner's margin over it, and that the authored lens never
+/// loosens the CI cohort's.
+#[test]
+fn the_lens_is_the_cohorts_own() {
+    let ci = window_lens_ms(Reach::Ci);
+    let authored = window_lens_ms(Reach::Authored);
+    assert_eq!(ci, ARENA_S_P99_MS, "the CI cohort's window lens is 12 ms");
+    assert_eq!(
+        authored, ARENA_AUTHORED_WINDOW_P99_MS,
+        "the authored cohort's window lens is its own constant"
+    );
+    assert!(
+        authored > ci,
+        "the authored lens {authored} is the looser of the two, over {ci}"
+    );
+    assert!(
+        authored >= AUTHORED_WINDOW_P99_WORST_RECORDED_MS * 1.15,
+        "the authored lens {authored} ms holds the figure it was set on, \
+         {AUTHORED_WINDOW_P99_WORST_RECORDED_MS} ms, by at least fifteen per cent"
+    );
+    assert!(
+        authored <= AUTHORED_WINDOW_P99_WORST_RECORDED_MS * 1.16,
+        "the authored lens {authored} ms is past the owner's 16 per cent margin over \
+         {AUTHORED_WINDOW_P99_WORST_RECORDED_MS} ms (16c Q26, 2026-09-25); only the owner moves it"
+    );
 }
 
 /// **The long run** (16b cut U.2; 16c `T-36`: *a long-run mode with an RSS
@@ -4860,8 +4962,10 @@ fn measure_long_run(knobs: &Knobs) {
 /// is measured. Reported, never asserted: the arena it bounded had no sight.
 const ARENA_P99_MS: f64 = 5.0;
 
-/// **The lens**: 12 ms, asserted under `TACSIM_ASSERT=1` in release on the CI
-/// cohort ([`Reach::Ci`]), **per wake and per 500 ms window** of arena time.
+/// **The lens**: 12 ms, asserted under `TACSIM_ASSERT=1` in release — **the
+/// per-wake lens for both cohorts, and the CI cohort's per-window lens** (per
+/// 500 ms window of arena time); the authored cohort's per-window lens is
+/// [`ARENA_AUTHORED_WINDOW_P99_MS`] since 16b cut J.3b.
 ///
 /// **Where it came from.** 16b cut S.1 set it when the sensor pass was built, as
 /// under half the 25 ms `harness.engaged_p99_ms` doc 16 allows the *finished*
@@ -4883,14 +4987,46 @@ const ARENA_P99_MS: f64 = 5.0;
 /// per-window one keeps the number meaning what it meant. The per-pulse counter
 /// bounds (`max_traces_per_pulse` and its siblings) are asserted per wake.
 ///
-/// **At the authored reaches** ([`Reach::Authored`]) the measurement is
-/// report-only. Cut S.2 recorded p99 23.3 ms and 13,133 traces in the peak pulse
+/// **At the authored reaches** ([`Reach::Authored`]) the measurement was
+/// report-only until 16b cut J.3b. Cut S.2 recorded p99 23.3 ms and 13,133 traces in the peak pulse
 /// there, and cut N.1 26.4 ms and 13,278 traces with the controller on the field,
 /// against `harness.max_traces_per_pulse` of 4,000: the owner's choice between a
 /// shorter authored reach and larger bounds is unchanged in kind, and the two
 /// runs beside each other are what it is made on. [`ARENA_P99_MS`] stays in the
-/// report as the record of what the arena cost before the passes ran.
+/// report as the record of what the arena cost before the passes ran. Since 16b
+/// cut J.3b the authored cohort asserts too, against
+/// [`ARENA_AUTHORED_WINDOW_P99_MS`] per window and this constant per wake.
 const ARENA_S_P99_MS: f64 = 12.0;
+
+/// **The authored cohort's per-window lens** (16b cut J.3b; 16c Q26, answered
+/// by the owner on 2026-09-25): 17.5 ms per 500 ms window of arena time at the
+/// shipped 60-cell sight and 30-cell mesh, 300 units, 24 pilots.
+///
+/// **Where it came from.** Cut J.3 measured the authored cohort three times
+/// after the cheap trace and the horizon index: per window p99 15.092, 14.997
+/// and 14.108 ms, against the 12 ms lens that the CI cohort is asserted on. The
+/// owner chose to keep the reach and the 300-unit target and to set this lens
+/// with the harness's own margin over the worst of the three: 15.092 × 1.16 =
+/// 17.507, given to the owner as 17.5 and taken as 17.5. A run 16.0 per cent
+/// slower than that worst run would miss it by seven microseconds, inside the
+/// harness's resolution; a run 15.9 per cent slower holds it. (J.3's fourth
+/// run, its final gate and not one of the three, read 15.807 ms, which this
+/// lens holds by 10.7 per cent.)
+///
+/// **What it binds.** The per-window figure of [`Reach::Authored`] alone. The
+/// per-wake lens is [`ARENA_S_P99_MS`] for both cohorts (the authored per-wake
+/// p99 of 8.156 ms holds 12 with a third to spare), and the CI cohort's window
+/// stays on [`ARENA_S_P99_MS`]: this constant loosens nothing there.
+const ARENA_AUTHORED_WINDOW_P99_MS: f64 = 17.5;
+
+/// **The per-window lens a cohort is held to** (16b cut J.3b): the CI cohort
+/// [`ARENA_S_P99_MS`], the authored cohort [`ARENA_AUTHORED_WINDOW_P99_MS`].
+const fn window_lens_ms(reach: Reach) -> f64 {
+    match reach {
+        Reach::Ci => ARENA_S_P99_MS,
+        Reach::Authored => ARENA_AUTHORED_WINDOW_P99_MS,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The cost run (16b cut N.2, N3; doc 16 §6 "The cost run"; 16a Q9b)

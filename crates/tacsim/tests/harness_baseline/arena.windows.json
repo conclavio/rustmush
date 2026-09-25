@@ -1,7 +1,7 @@
 {
   "blessed": {
-    "commit": "f4625673d985a91ea18cd061fdbcf950ba5dd420",
-    "date": "2026-09-25T12:59:24Z",
+    "commit": "eb1702aabbb7dd3d7b593a5ac4b1bc0594d6a61d",
+    "date": "2026-09-25T17:11:47Z",
     "host": {
       "cpus": 32,
       "hostname": "ALIEN18",
@@ -66,8 +66,8 @@
   },
   "memory": {
     "horizon_bytes": 26112,
-    "rss_end_kib": 42532,
-    "rss_start_kib": 5056,
+    "rss_end_kib": 44016,
+    "rss_start_kib": 21656,
     "vmrss_end_kib": null,
     "vmrss_start_kib": null
   },
@@ -160,15 +160,15 @@
     ]
   },
   "setup_ms": {
-    "arena_open": 1.611,
-    "boot": 23.371,
-    "generate": 3.794,
+    "arena_open": 1.579,
+    "boot": 19.788,
+    "generate": 3.676,
     "killed_warming": 0,
-    "pack_apply": 21.194,
-    "terrain_convert": 1.385,
+    "pack_apply": 20.71,
+    "terrain_convert": 1.328,
     "warm_pulses": 47,
-    "warm_up": 52.501,
-    "window_open": 11.971
+    "warm_up": 55.581,
+    "window_open": 12.259
   },
   "slope": {
     "refusals": 877,
@@ -183,11 +183,11 @@
   },
   "tempos": [
     {
-      "max_ms": 9.923,
+      "max_ms": 10.978,
       "name": "arena_engaged",
-      "p50_ms": 2.445,
-      "p95_ms": 3.858,
-      "p99_ms": 5.92,
+      "p50_ms": 2.541,
+      "p95_ms": 3.943,
+      "p99_ms": 5.397,
       "period_ms": 500,
       "pulses": 120
     }
@@ -202,8 +202,9 @@
     "max_jam_checks_per_pulse": 2048,
     "max_ledger_bytes": 67108864,
     "max_path_queries_per_pulse": 64,
-    "max_share_ops_per_pulse": 256,
-    "max_traces_per_pulse": 4000
+    "max_share_ops_per_pulse": 768,
+    "max_traces_per_pulse": 4000,
+    "window_p99_ms": 12.0
   },
   "weapons": {
     "armed_units": 245,
@@ -227,10 +228,10 @@
     "cell_probes_peak": 4858,
     "horizon_probes_peak": 4842,
     "jam_checks_peak": 688,
-    "ms_max": 12.942,
-    "ms_p50": 4.945,
-    "ms_p95": 8.376,
-    "ms_p99": 10.28,
+    "ms_max": 13.944,
+    "ms_p50": 5.165,
+    "ms_p95": 7.73,
+    "ms_p99": 9.735,
     "share_ops_peak": 107,
     "traces_peak": 952,
     "window_ms": 500,

@@ -18,6 +18,8 @@
 # What asserts where:
 #   * this script exports TACSIM_ASSERT=1, so every lane asserts its absolutes
 #     (D-16-19: assert locally — this box is not a shared runner);
+#   * the authored-reach lane asserts too since 16b cut J.3b (16c Q26): 12 ms
+#     per wake, 17.5 ms per 500 ms window, the same per-pulse bounds;
 #   * the delta fails on any difference in the deterministic block, and on a
 #     timing figure more than 20 per cent slower on the host that blessed the
 #     file — a timing-only failure is re-run once before it is believed;
