@@ -1131,6 +1131,11 @@ pub struct Pilot {
     /// The character in the seat.
     pub pilot: ObjId,
     /// The station's owner-local id.
+    ///
+    /// **Unknown to the arena after check-out** (16b cut Y.3): every channel's
+    /// epoch arrives by its own `Control`, so `station` is read by nothing but
+    /// [`Arena::new`] (which raises the epoch table off it); a seat re-added by
+    /// [`Arena::seat_pilot`] on a reclaim carries the empty string.
     pub station: SmolStr,
     /// The authority epoch the seat was granted under.
     pub epoch: u64,
@@ -3705,6 +3710,39 @@ impl Arena {
             self.last_frames.remove(&pilot);
         }
         dropped
+    }
+
+    /// **Put one pilot back on the frame roster** (16b cut Y.3; 16c `N4`; doc 07
+    /// §1.3 "Reclaiming control") — the undo of [`Arena::drop_pilot`], called by
+    /// `apply_control` on a `Live` that names a pilot, before the tank is handed
+    /// back to `Controller::Pilot`.
+    ///
+    /// Pushes `Pilot { unit, pilot, station: "", epoch }` when no `(pilot,
+    /// unit)` row exists: the station is unknown to the arena after check-out
+    /// (see [`Pilot::station`]). `drop_pilot` forgot the pilot's last frame with
+    /// the row, so the next `Arena::frames` sends a whole keyframe, which is what
+    /// a pilot back in the pod needs. Like `drop_pilot`, the roster is not folded
+    /// into [`crate::arena::hash::state_hash`], so this is invisible to the
+    /// cross-tempo property.
+    ///
+    /// Idempotent. Answers whether a row was added — `true` exactly when this
+    /// `Live` re-seated a pilot the arena had dropped (a reclaim past the grace),
+    /// and `false` for a revival inside it or a pilot who never left.
+    pub fn seat_pilot(&mut self, pilot: ObjId, unit: ObjId, epoch: u64) -> bool {
+        if self
+            .pilots
+            .iter()
+            .any(|seat| seat.pilot == pilot && seat.unit == unit)
+        {
+            return false;
+        }
+        self.pilots.push(Pilot {
+            unit,
+            pilot,
+            station: SmolStr::new_static(""),
+            epoch,
+        });
+        true
     }
 
     /// **The hash one discrete action's ledger line carries** (16b cut W.1):

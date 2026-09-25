@@ -1370,6 +1370,13 @@ pub fn forward_order(
 /// standing identically. `None` is a control the world cannot attribute and
 /// changes none of them.
 ///
+/// **16b cut Y.3**: none of the three is final any more by itself. A drop (the
+/// grace, a `QUIT`) is told to the slot before its `Released` arrives here
+/// (`SeatFacts::disconnected` → `lobby::slot_dropped`), and `BOARD` in the
+/// running match undoes all three for that pilot: `ArenaRegistry::bind_pilot`,
+/// `reseat` (the arena re-adds the roster row on the `Live`) and
+/// `lobby::slot_reclaimed`. An `EXIT` stays one-way.
+///
 /// # Errors
 ///
 /// [`ControlRefusal`]: no such match, or a task that will not take it.
@@ -1464,6 +1471,24 @@ fn control_all_channels(ctx: &mut Ctx<'_>, unit: ObjId, state: ControlState, pil
             tracing::debug!(%unit, channel = channel.as_str(), %error, "arena control not delivered");
         }
     }
+}
+
+/// **Put a reclaimed pilot back in their tank's seat, at the arena** (16b cut
+/// Y.3; 16c `N4`; doc 07 §1.3 "Reclaiming control", step 2).
+///
+/// One `Control { Live }` per channel naming the pilot, each at a **new** epoch
+/// — exactly what a revival inside the grace sends (`SeatFacts::revived`), so
+/// nothing queued under the dropped line or by the machine's tenure survives
+/// the reclaim. The arena, at its next pulse's phase 1, puts the pilot back on
+/// its frame roster (`Arena::seat_pilot`) and hands the tank from the reflex
+/// controller to `Controller::Pilot`; a `Released` that reaches it after this
+/// `Live` is below the epoch it raised and changes nothing (`apply_control`'s
+/// stale gate), so the race is settled by the epoch table and not by arrival.
+///
+/// `BOARD` in a running match calls this after `ArenaRegistry::bind_pilot`, so
+/// the frames the arena then sends find a seated pilot.
+pub(crate) fn reseat(ctx: &mut Ctx<'_>, unit: ObjId, pilot: ObjId) {
+    control_all_channels(ctx, unit, ControlState::Live, pilot);
 }
 
 // ---------------------------------------------------------------------------
@@ -2027,6 +2052,12 @@ fn notify_staff(ctx: &mut Ctx<'_>, text: String) {
 /// | the grace expires | `Control { Released }` | zeroes its desired speed and idles |
 /// | a clean connect | `Control { Live }` | (a seat that was never released) |
 ///
+/// **16b cut Y.3** added the fifth fact, which is not a hook: past the grace the
+/// tank is the reflex controller's and the board reads `flown by doctrine`; a
+/// reconnect is told so, and `BOARD` in the running match sends
+/// `Control { Live }` at a new epoch through [`reseat`] — the same message a
+/// revival inside the grace sends, from the verb rather than the kernel.
+///
 /// Every one of them goes out as an **epoch raise**, so the arena purges whatever
 /// that seat had queued: a pilot whose line drops mid-burst does not fire the
 /// shot they had queued a moment before, and a pilot who comes back does not
@@ -2049,9 +2080,30 @@ impl SeatFacts {
 }
 
 impl mush_core::EventHook for SeatFacts {
+    /// A clean connect: a seat that was never released is `Live` again.
+    ///
+    /// **16b cut Y.3 (16c `N4`)**: a pilot with **no** seat whose slot in the
+    /// running match was taken by a drop is told one line — their own tank is
+    /// flying on doctrine and `BOARD` takes it back — because before this cut a
+    /// reconnecting pilot past the grace was told nothing at all. The tank is
+    /// the pilot's own, which they may always be told about (doc 16 §1); what
+    /// it did while they were gone is not said here.
     fn connected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
         if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
             control_all_channels(ctx, unit, ControlState::Live, actor);
+            return;
+        }
+        let dropped = crate::match_::lobby::centre(ctx.w)
+            .filter(|centre| centre.state == crate::match_::MatchState::Running)
+            .and_then(|centre| centre.slot_of_pilot(actor))
+            .filter(|slot| slot.is_dropped())
+            .and_then(|slot| slot.unit);
+        if let Some(tank) = dropped {
+            let line = format!(
+                "{} is flying on doctrine; BOARD takes it back.",
+                mush_core::output::display_name(ctx.w, tank)
+            );
+            ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
         }
     }
 
@@ -2085,8 +2137,27 @@ impl mush_core::EventHook for SeatFacts {
         }
     }
 
+    /// The grace ran out, or the pilot quit: the seat is released and the tank
+    /// goes to the reflex controller.
+    ///
+    /// **16b cut Y.3 (16c `N4`)**: and it is a **drop**, which the pilot may take
+    /// back (`BOARD` in the running match; doc 07 §1.3). A clean `QUIT` reaches
+    /// this hook too and is a drop like the grace running out — `EXIT` is the
+    /// one one-way route. So the slot is told the route here, through
+    /// `lobby::slot_dropped`, and in this order:
+    ///
+    /// 1. **inside the seated arm** — after an `EXIT` the registry binding is
+    ///    gone and this arm never runs, so an `EXIT` followed by a `QUIT` marks
+    ///    nothing and the leave stays final;
+    /// 2. **before** the `Released`, because [`send_control`] marks the slot
+    ///    `left` (`lobby::slot_left`), and `slot_dropped` writes only on a slot
+    ///    not yet `left`: the slot has to know the route before it is marked.
+    ///
+    /// [`send_control`]'s signature and every caller are untouched.
     fn disconnected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
         if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
+            let now_ms = ctx.w.now().saturating_mul(1_000);
+            crate::match_::lobby::slot_dropped(ctx, actor, now_ms);
             control_all_channels(ctx, unit, ControlState::Released, actor);
         }
     }

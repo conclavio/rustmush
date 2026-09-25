@@ -426,6 +426,22 @@ pub enum CockpitError {
     /// The pilot is in the pod already.
     #[error("You are already in your pod.")]
     AlreadyAboard,
+    /// **`BOARD` too soon after a drop** (16b cut Y.3; 16c `N4`): the tank went
+    /// to the reflex controller less than `[tacsim.match].reclaim_min_ms` ago.
+    #[error("{unit} is still being handed over; try again in {secs} second(s).")]
+    HandingOver {
+        /// The pod's tank, by name — the pilot's own.
+        unit: String,
+        /// Seconds left, rounded up.
+        secs: i64,
+    },
+    /// **`BOARD` after an `EXIT` in a running match** (16b cut Y.3; doc 16 §11's
+    /// N.1 amendment): a deliberate leave is one-way, whatever came before it.
+    #[error("You left {unit} for the rest of the match; it cannot be taken back.")]
+    LeftForGood {
+        /// The pod's tank, by name — the pilot's own.
+        unit: String,
+    },
     /// The tank's station could not be written.
     #[error("That pod's tank has no cockpit: {0}")]
     Station(String),
@@ -1684,8 +1700,22 @@ pub fn board(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
         return Err(CockpitError::OutsideTeamRoom);
     };
     // Every refusal, read out of the centre in one borrow.
-    let (match_id, pod, index) = {
-        let centre = lobby::centre(ctx.w).ok_or(CockpitError::Unavailable)?;
+    //
+    // **16b cut Y.3** (16c `N4`): the state arm is a match on the centre's
+    // state, the slot and the match record's state, because `BOARD` now means a
+    // second thing in a running match — a dropped pilot taking their tank back
+    // (doc 07 §1.3). `Boarding` is the path it always was, byte for byte.
+    let reclaim_min_ms = lobby::configs(ctx.w).map_or_else(
+        || crate::config::MatchConfig::default().reclaim_min_ms,
+        |(_, m, _)| m.reclaim_min_ms,
+    );
+    let now_ms = ctx.w.now().saturating_mul(1_000);
+    let (match_id, pod, index, reclaim) = {
+        let book = ctx
+            .w
+            .module_state::<crate::match_::MatchBook>()
+            .ok_or(CockpitError::Unavailable)?;
+        let centre = book.centre();
         // The slot before the state, deliberately: somebody with no slot at all
         // is told the thing they can act on ("claim one"), not the thing they
         // cannot (what the centre happens to be doing).
@@ -1693,28 +1723,80 @@ pub fn board(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
             .slot_of_pilot(actor)
             .cloned()
             .ok_or(SimError::NoSlot)?;
-        if centre.state != MatchState::Boarding {
-            return Err(SimError::WrongState {
-                state: centre.state.as_str(),
+        let record = centre
+            .match_id
+            .and_then(|match_id| book.get(match_id))
+            .map(|record| record.state);
+        // The pod's tank, by name, for the three `Running` sentences: the
+        // pilot's own, which they may always be told about (doc 16 §1).
+        let tank_name = || {
+            slot.pod
+                .and_then(|pod| centre::tank_of(ctx.w, pod))
+                .or(slot.unit)
+                .map(|tank| display_name(ctx.w, tank))
+                .unwrap_or_default()
+        };
+        let reclaim = match (centre.state, record) {
+            (MatchState::Boarding, _) => {
+                if slot.team != team {
+                    return Err(CockpitError::WrongRoom {
+                        team: slot.team.as_str(),
+                    });
+                }
+                if slot.is_seated() {
+                    return Err(CockpitError::AlreadyAboard);
+                }
+                false
             }
-            .into());
-        }
-        if slot.team != team {
-            return Err(CockpitError::WrongRoom {
-                team: slot.team.as_str(),
-            });
-        }
-        if slot.is_seated() {
-            return Err(CockpitError::AlreadyAboard);
-        }
+            // A stop is already in flight (`unattended_deadline`, `SIM ABORT`):
+            // the centre is still `Running` until `Ended` arrives, and a pilot
+            // who took the tank back now would read *yours again* and then the
+            // end. The record's word is the true one.
+            (MatchState::Running, Some(MatchState::Stopping)) => {
+                return Err(SimError::WrongState {
+                    state: MatchState::Stopping.as_str(),
+                }
+                .into());
+            }
+            (MatchState::Running, _) if slot.is_dropped() => {
+                let since = slot
+                    .dropped_at_ms
+                    .map_or(0, |dropped| now_ms.saturating_sub(dropped));
+                let wait_ms = i64::from(reclaim_min_ms).saturating_sub(since);
+                if wait_ms > 0 {
+                    return Err(CockpitError::HandingOver {
+                        unit: tank_name(),
+                        // Rounded up: a pilot counts in seconds, and "0" would
+                        // be a lie with a millisecond still to go.
+                        secs: wait_ms.saturating_add(999) / 1_000,
+                    });
+                }
+                true
+            }
+            // Out of the cockpit and not by a drop: an `EXIT`, which is one-way
+            // (doc 16 §11's N.1 amendment), whatever came before it.
+            (MatchState::Running, _) if slot.left => {
+                return Err(CockpitError::LeftForGood { unit: tank_name() });
+            }
+            (MatchState::Running, _) => return Err(CockpitError::AlreadyAboard),
+            (state, _) => {
+                return Err(SimError::WrongState {
+                    state: state.as_str(),
+                }
+                .into());
+            }
+        };
         let pod = slot.pod.ok_or(SimError::WrongState {
             state: centre.state.as_str(),
         })?;
         let match_id = centre.match_id.ok_or(SimError::WrongState {
             state: centre.state.as_str(),
         })?;
-        (match_id, pod, slot.index)
+        (match_id, pod, slot.index, reclaim.then_some(slot.team))
     };
+    if let Some(side) = reclaim {
+        return reclaim_seat(ctx, match_id, pod, side, index);
+    }
     let tank = centre::tank_of(ctx.w, pod).ok_or(SimError::NoUnit {
         team: team.as_str(),
         index,
@@ -1815,6 +1897,133 @@ pub fn board(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
     Ok(())
 }
 
+/// **`BOARD` in a running match: take a dropped tank back** (16b cut Y.3; 16c
+/// `N4`; doc 07 §1.3 "Reclaiming control"; doc 16 §3.8 "Disconnects").
+///
+/// [`board`] reaches this for a pilot whose slot [`lobby::Slot::is_dropped`] —
+/// the linkdead grace ran out, or they quit — once
+/// `[tacsim.match].reclaim_min_ms` has passed since the drop, with the record
+/// still `Running`. It is F.1's seat path made **idempotent against what the
+/// drop left behind**: the body still in the pod, the cockpit billet still this
+/// actor's on the tank, the focus relinquished and the registry binding gone.
+///
+/// 0. **the room**: the body is inside its own pod — where a drop leaves it —
+///    or standing in the slot's team room, where a restart's boot sweep or an
+///    `@arena/reset` would have put it; anywhere else is
+///    [`CockpitError::OutsideTeamRoom`];
+/// 1. **the station**, declared exactly as [`board`] declares it (idempotent);
+/// 2. **the body**, placed in the pod only when it is not already there — and
+///    remembered, because only a body this verb moved is put back out;
+/// 3. **the seat**, activated exactly as [`board`] activates it: the billet is
+///    still this actor's, and the activation re-takes it and claims the focus.
+///    On a refusal the body goes back out if step 2 moved it, and the pilot
+///    reads [`CockpitError::Seat`];
+/// 4. the actor's links, restated;
+/// 5. **the arena**: the registry binds the pilot again and
+///    [`crate::arena_bridge::reseat`] sends `Control { Live }` on every channel
+///    at a **new** epoch, exactly as a revival inside the grace does (doc 07
+///    §1.3 step 2) — the arena puts them back on its frame roster and takes the
+///    tank from the reflex controller at its next pulse, where it stands;
+/// 6. **the centre**: [`lobby::slot_reclaimed`] — the slot back in its cockpit,
+///    the unattended clock cleared, the leads resettled (the heir keeps the
+///    lead: 16c Q42's default);
+/// 7. **the lines**: to the pilot that the tank is theirs again where it stands
+///    — the last thing this verb says to them before the pod's interior (16b cut
+///    Y.4 appends what happened meanwhile after it) — and to the team room, only
+///    when step 2 moved the body, that they climbed back in.
+///
+/// No confirmation step (16c's default: the tank comes back where it is), and
+/// no `slot_seated`: that is `Boarding`'s trigger, and the match is running.
+fn reclaim_seat(
+    ctx: &mut Ctx<'_>,
+    match_id: MatchId,
+    pod: ObjId,
+    team: crate::arena::state::Team,
+    index: u8,
+) -> Result<(), CockpitError> {
+    let actor = ctx.actor;
+    // (0) The room: the pilot's own pod, or their side's team room.
+    let in_pod = pod_of_body(ctx.w, actor) == Some(pod);
+    let in_team_room = pod_of_body(ctx.w, actor).is_none()
+        && centre::where_in_centre(ctx.w, actor) == Some(CentreRoom::Team(team));
+    if !in_pod && !in_team_room {
+        return Err(CockpitError::OutsideTeamRoom);
+    }
+    let tank = centre::tank_of(ctx.w, pod).ok_or(SimError::NoUnit {
+        team: team.as_str(),
+        index,
+    })?;
+    let station = station_id().ok_or(CockpitError::Unavailable)?;
+    let room = ctx.w.get(pod).and_then(|object| object.location);
+
+    // (1) The station, as `board` declares it.
+    mush_sim::declare_station(
+        ctx,
+        tank,
+        &station,
+        STATION_ROLE,
+        &cockpit_channels(),
+        Some(pod),
+        STATION_PRIORITY,
+    )
+    .map_err(|error| CockpitError::Station(error.to_string()))?;
+
+    // (2) The body, only when it is not in the pod already.
+    let moved = !in_pod;
+    if moved {
+        mush_sim::place_interior(ctx, actor, pod, None)
+            .map_err(|error| CockpitError::Hatch(error.to_string()))?;
+    }
+
+    // (3) The seat. The billet is still this actor's after a drop, and the
+    // activation re-takes it; a body this verb moved goes back out on a refusal,
+    // and one it found in the pod stays where the drop left it.
+    if let Err(error) = mush_sim::request_seat_activation(
+        ctx,
+        &mush_sim::SeatRequest::Activate {
+            unit: tank,
+            station: station.clone(),
+            npc: actor,
+            granted: cockpit_channels(),
+            fallback: None,
+        },
+    ) {
+        if moved && let Some(room) = room {
+            put_out(ctx, actor, room);
+        }
+        return Err(CockpitError::Seat(error.to_string()));
+    }
+    // (4) As `board`: the idempotent restatement.
+    mush_sim::links::refresh_actor_links(ctx.w, actor);
+
+    // (5) The arena: bound again, then `Live` at a new epoch on every channel.
+    if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+        registry.bind_pilot(actor, match_id, tank);
+    }
+    crate::arena_bridge::reseat(ctx, tank, actor);
+
+    // (6) The centre.
+    lobby::slot_reclaimed(ctx, match_id, actor, tank)?;
+
+    // (7) The lines.
+    let pilot_line = format!(
+        "You climb back into {}: {} is yours again where it stands.",
+        display_name(ctx.w, pod),
+        display_name(ctx.w, tank)
+    );
+    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, pilot_line);
+    if moved && let Some(room) = room {
+        let room_line = format!(
+            "{} climbs back into {}.",
+            display_name(ctx.w, actor),
+            display_name(ctx.w, pod)
+        );
+        tell_room(ctx, room, Vec::new(), room_line);
+    }
+    ctx.show_room(actor, pod);
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // K2: `EXIT`
 // ---------------------------------------------------------------------------
@@ -1862,6 +2071,14 @@ pub fn exit(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
     // crate lets a cockpit seat go.
     for unit in &seats {
         hand_seat_back(ctx, *unit, &station, actor, true);
+    }
+    // **16b cut Y.3**: and the leave is final, whatever came before it. A pilot
+    // who dropped, reconnected inside the pod and typed `EXIT` still held the
+    // billet (so the loop above handed it back), but their slot was already
+    // `left` and `slot_left` changed nothing — the drop's stamp would have
+    // survived and the sentence below, *you cannot take it back*, been false.
+    if running {
+        lobby::slot_exited(ctx, actor);
     }
     // (3) The body. The pod is an unanchored interior space, so there is no
     // domain to `egress` onto: the placement is released where it stands and the
@@ -5521,9 +5738,13 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: BOARD_VERB.into(),
             shape: ArgShape::Raw,
+            // 16b cut Y.3: and the reclaim. The reconnect line tells a dropped
+            // pilot "BOARD takes it back", so the help they read next says the
+            // same (doc 07 §1.3).
             help: "BOARD               climb into the pod your simulator slot holds and take its \
                    tank's cockpit. In a team room, once the match is boarding; EXIT gets you out \
-                   again."
+                   again. In a running match, a pilot whose line dropped types BOARD again, from \
+                   the pod or the team room, to take the tank back where it stands."
                 .into(),
             ..CommandSpec::default()
         },
@@ -5536,7 +5757,9 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             // 16b cut F.1: and the sentence that was missing — doc 16 §11's N.1
             // amendment is that a released seat cannot be retaken, and a pilot
             // who reads the help before typing the word deserves to know it.
-            help: "EXIT                climb out of the pod you are in: the seat, its control \
+            // Cut Y.3 narrowed that to this verb: a dropped line can be
+            // reclaimed, an `EXIT` cannot, even after a drop.
+            help: "EXIT               climb out of the pod you are in: the seat, its control \
                    lease and your focus are released, and a match still boarding stops waiting \
                    for you. Once the match is RUNNING this is final: the tank goes to its \
                    autopilot for the rest of the match and you cannot board again."

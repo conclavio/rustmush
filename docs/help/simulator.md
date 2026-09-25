@@ -159,8 +159,14 @@ window runs out and the unseated slots are dropped. Everyone in the centre reads
 
 **`EXIT` once the match is running is final.** The seat, its control lease and
 your focus are released, the tank goes to its autopilot for the rest of the
-match, and you cannot board again. Losing your connection does the same thing
-once the link-dead grace runs out.
+match, and you cannot board again.
+
+Losing your connection past the link-dead grace, or quitting, is not final. Your
+tank goes to its autopilot and the board reads `flown by doctrine` beside your
+slot. When you come back you are told so; type `BOARD` again, from your pod,
+where you still are, or from your team room, and after a few seconds the tank is
+yours again where it stands, at a new epoch, with what happened meanwhile said
+to you. `EXIT` is still final, and the side's lead does not come back with you.
 
 ## The match, and afterwards
 

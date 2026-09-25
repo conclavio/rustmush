@@ -3224,7 +3224,9 @@ async fn the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found() {
 /// room of the centre **including the pods**, so it was the one surface on which
 /// a seated pilot could read the other side's standing: `, pod Blue Pod 1,
 /// seated` before, `, left` the moment the human on `BA` dropped and a machine
-/// took the tank. No sensor of theirs told them any of it.
+/// took the tank. No sensor of theirs told them any of it. Since cut Y.3 a drop
+/// reads `flown by doctrine` on the full board and an `EXIT` `left`; the test
+/// drops `BA`'s line and then climbs out, and the other side reads neither.
 ///
 /// Over the real front door, from inside the pod, because that is where a pilot
 /// types it and because the reader is the whole of the rule.
@@ -3258,15 +3260,39 @@ async fn the_board_withholds_the_other_sides_standing_from_a_seated_pilot() {
     // The callsign and the pilot's name stay: both were public through the whole
     // of `Selection` and neither can change while the match runs.
     assert!(blue.contains("(BA)") && blue.contains("Bo"), "{board}");
-    for word in [", pod ", ", seated", ", left"] {
+    // **16b cut Y.3**: and not the drop's word either — a dropped pilot's
+    // row reads `flown by doctrine` on the full board, which is as much the
+    // other side's standing as `left` is.
+    for word in [", pod ", ", seated", ", left", "doctrine"] {
         assert!(
             !blue.contains(word),
             "a seated pilot read `{word}` about the other side: {board}"
         );
     }
 
-    // Bo climbs out, which mid-match is final and is exactly the fact `B-01` is
+    // **16b cut Y.3**: Bo's line drops — a clean `QUIT` is a drop, reclaimable,
+    // and the machine flies BA meanwhile. Staff read `flown by doctrine`; Ada's
+    // board does not move by one byte and carries neither word.
+    bo.send_line("QUIT").await;
+    support::wait_arena_pilot_out(&mut god, "BA", "Bo", "flown by doctrine").await;
+    let dropped = strip_ansi(&ask(&mut ada, "SIM STATUS", "blue:").await);
+    assert_eq!(
+        row(&dropped, "blue:"),
+        blue,
+        "the other side's row moved when its pilot dropped:\n{dropped}"
+    );
+    for word in ["left", "doctrine"] {
+        assert!(
+            !row(&dropped, "blue:").contains(word),
+            "a seated pilot read `{word}` about the other side's drop:\n{dropped}"
+        );
+    }
+
+    // Bo comes back to the pod the drop left him in and climbs out, which
+    // mid-match is final (even after a drop) and is exactly the fact `B-01` is
     // about. Ada's board does not move by one byte; staff read the truth.
+    let (_b2, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    bo.expect("BOARD takes it back.").await;
     say(&mut bo, "EXIT", "climb").await;
     let after = strip_ansi(&ask(&mut ada, "SIM STATUS", "blue:").await);
     assert_eq!(
@@ -3274,9 +3300,17 @@ async fn the_board_withholds_the_other_sides_standing_from_a_seated_pilot() {
         blue,
         "the other side's row moved when its pilot left:\n{after}"
     );
+    for word in ["left", "doctrine"] {
+        assert!(
+            !row(&after, "blue:").contains(word),
+            "a seated pilot read `{word}` about the other side mid-match:\n{after}"
+        );
+    }
+    // The `EXIT` after the drop is the one-way route, so staff read `left`
+    // and no longer the drop's word.
     let staff = strip_ansi(&ask(&mut god, "@arena/status", "blue:").await);
     assert!(
-        row(&staff, "blue:").contains(", left"),
+        row(&staff, "blue:").contains(", left") && !row(&staff, "blue:").contains("doctrine"),
         "staff were refused the whole board: {staff}"
     );
 }

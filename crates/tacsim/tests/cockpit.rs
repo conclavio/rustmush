@@ -1850,6 +1850,12 @@ async fn exit_mid_match_takes_the_pilot_off_the_frame_roster_and_off_the_binding
         !said.contains("back at your station"),
         "a reconnect reclaimed a seat that was given up: {said}"
     );
+    // **16b cut Y.3**: nor is an `EXIT` a drop, so the reconnect does not
+    // offer `BOARD` a tank the pilot left for good.
+    assert!(
+        !said.contains("flying on doctrine"),
+        "a reconnect after an EXIT offered the tank back: {said}"
+    );
     // And the centre says so: the slot is `left`, not `seated`. Read by the
     // ex-pilot themselves, whose own side this is — **16b cut D.1** reduced every
     // OTHER side's rows while a match runs, so the blue row below is read off the
@@ -1879,19 +1885,20 @@ async fn exit_mid_match_takes_the_pilot_off_the_frame_roster_and_off_the_binding
     );
 }
 
-/// **A pilot who QUITs is `left` too, and not `seated`** (16b cut F.1; doc 16
-/// §3.8's "Disconnects").
+/// **A pilot who QUITs is out of the cockpit too, and not `seated`** (16b cut
+/// F.1; doc 16 §3.8's "Disconnects") — **and since 16b cut Y.3 the board says
+/// the machine is flying it for them**.
 ///
 /// `EXIT` is the route a reviewer thinks of and the rarest one in a playtest.
 /// `SeatFacts::disconnected` — a clean `QUIT`, and the linkdead grace running out
-/// — sends the **same** `Control { Released }` naming the same pilot, and since
-/// this cut it does everything `EXIT` does to their standing: the arena drops
-/// them from its frame roster, the registry drops the binding, and a relogin
-/// takes nothing back. So `SIM STATUS` must not go on calling them `seated`
-/// either, and the flag is written where the release is decided rather than in
-/// one verb.
+/// — sends the **same** `Control { Released }` naming the same pilot: the arena
+/// drops them from its frame roster and the registry drops the binding. So `SIM
+/// STATUS` must not go on calling them `seated` either, and the flag is written
+/// where the release is decided rather than in one verb. Cut Y.3 split the
+/// word: a drop can be taken back (`BOARD`), so the row reads `flown by
+/// doctrine` rather than F.1's `left`, which is now an `EXIT`'s alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_pilot_whose_session_ends_mid_match_is_left_on_the_board_too() {
+async fn a_pilot_whose_session_ends_mid_match_reads_as_flown_by_doctrine() {
     let mut rig = Rig::boot(2);
     rig.fly().await;
     let pilot = rig.pilot(0);
@@ -1924,12 +1931,20 @@ async fn a_pilot_whose_session_ends_mid_match_is_left_on_the_board_too() {
         .unwrap_or_default()
         .to_owned();
     assert!(
-        red_row.contains(", left"),
-        "SIM STATUS calls a pilot who quit mid-match seated: {staff}"
+        red_row.contains(", flown by doctrine"),
+        "SIM STATUS does not say the machine flies a quit pilot's tank: {staff}"
     );
     assert!(
-        !red_row.contains(", seated"),
-        "SIM STATUS calls a pilot who quit mid-match seated: {staff}"
+        !red_row.contains(", seated") && !red_row.contains(", left"),
+        "SIM STATUS calls a pilot who quit mid-match seated, or gone for good: {staff}"
+    );
+    // 16b cut Y.3: `left` keeps its meaning — out of the cockpit, by any
+    // route — and the drop's own stamp is what makes the slot reclaimable.
+    assert!(
+        rig.centre()
+            .slot_of_pilot(pilot)
+            .is_some_and(|slot| slot.left && slot.dropped_at_ms.is_some()),
+        "a drop marks the slot left AND dropped"
     );
     let said = rig.say(1, "sim status");
     assert!(
@@ -6396,4 +6411,495 @@ async fn y2_the_rate_refuses_the_third_order_in_a_minute_and_a_new_match_starts_
     );
     assert_eq!(rig.say(0, "ORDER red-1 HOLD"), hold);
     assert_eq!(rig.say(0, "ORDER red-1 HOLD"), full);
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Y.3: the reclaim (16c `N4`; doc 07 §1.3 "Reclaiming control")
+// ---------------------------------------------------------------------------
+
+/// The red row of the staff board — the whole row whoever is flying.
+fn y3_red_row(rig: &Rig) -> String {
+    tacsim::match_::status_lines(rig.tw.world(), BoardReader::Staff)
+        .into_iter()
+        .find(|line| line.trim_start().starts_with("red:"))
+        .unwrap_or_default()
+}
+
+/// The registry's seat for a pilot, if it holds one.
+fn y3_seat_of(rig: &Rig, pilot: ObjId) -> Option<(tacsim::arena_task::MatchId, ObjId)> {
+    rig.tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.seat_of_pilot(pilot))
+}
+
+/// The account a pilot's slot is held by.
+fn y3_account(rig: &Rig, pilot: ObjId) -> AccountId {
+    rig.centre()
+        .slot_of_pilot(pilot)
+        .map(|slot| slot.account)
+        .expect("the pilot holds a slot")
+}
+
+/// **A dropped pilot is told the machine has their tank, and `BOARD` takes it
+/// back where it stands, at a new epoch** (16b cut Y.3; 16c `N4`; doc 07 §1.3).
+///
+/// The drop is `fire_conn(Disconnected)`, which runs `SeatFacts::disconnected`
+/// and mush-sim's own hook exactly as production does: the board reads `flown
+/// by doctrine`, nobody is flying and the registry has no seat. The reconnect
+/// says so in one line; a `BOARD` inside `reclaim_min_ms` is told to wait; past
+/// it, a `BOARD` from inside the pod the drop left the pilot in takes the tank
+/// back — bound again, every channel's epoch raised, a frame, a `HEADING`
+/// taken — and a second `BOARD` is `AlreadyAboard`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y3_a_dropped_pilot_is_told_and_boards_again_from_the_pod() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    let tank = rig.tank(0);
+    let pod = rig.pod(0).expect("a locked pod");
+    let match_id = rig.centre().match_id.expect("a running match");
+    rig.say(0, "startup");
+    assert!(rig.powered(0).await, "the arena brings power online");
+
+    // The drop.
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    let row = y3_red_row(&rig);
+    assert!(row.contains(", flown by doctrine"), "{row}");
+    assert!(
+        !row.contains(", seated") && !row.contains(", left"),
+        "{row}"
+    );
+    assert!(
+        cockpit::flying(rig.tw.world(), pilot).is_none(),
+        "the dropped pilot is still flying"
+    );
+    assert_eq!(y3_seat_of(&rig, pilot), None, "the registry kept the seat");
+    assert_eq!(
+        rig.location(0),
+        Some(pod),
+        "a drop leaves the body in the pod"
+    );
+    // The observer rule (doc 16 §1, §5; 16b cut D.1): the other side's pilot
+    // reads red's row reduced — nothing about who is flying it.
+    let theirs = rig.say(1, "sim status");
+    let red_to_blue = theirs
+        .lines()
+        .find(|line| line.trim_start().starts_with("red:"))
+        .unwrap_or_default();
+    assert!(
+        !red_to_blue.contains("doctrine") && !red_to_blue.contains("left"),
+        "the other side read the drop: {theirs}"
+    );
+
+    // The reconnect: one line, and no reclaim of its own.
+    let events = rig.fire_conn(pilot, mush_core::ConnTransition::Connected);
+    let said = rig.tw.seen_by(&events, pilot).join("\n");
+    assert!(
+        said.contains(&format!(
+            "{} is flying on doctrine; BOARD takes it back.",
+            mush_core::output::display_name(rig.tw.world(), tank)
+        )),
+        "{said}"
+    );
+    assert!(!said.contains("back at your station"), "{said}");
+
+    // Too soon.
+    let said = rig.say(0, "board");
+    assert!(
+        said.contains(&format!(
+            "{} is still being handed over; try again in 5 second(s).",
+            mush_core::output::display_name(rig.tw.world(), tank)
+        )),
+        "{said}"
+    );
+    assert_eq!(
+        y3_seat_of(&rig, pilot),
+        None,
+        "a refused BOARD bound nothing"
+    );
+
+    // Past the floor, from inside the pod.
+    let before: Vec<u64> = Channel::ALL.iter().map(|c| rig.epoch(tank, *c)).collect();
+    let now = rig.now;
+    rig.tick_to(now + 5);
+    let events = rig.events(0, "board");
+    let said = rig.tw.seen_by(&events, pilot).join("\n");
+    assert!(
+        said.contains(&format!(
+            "You climb back into {}: {} is yours again where it stands.",
+            mush_core::output::display_name(rig.tw.world(), pod),
+            mush_core::output::display_name(rig.tw.world(), tank)
+        )),
+        "{said}"
+    );
+    assert_eq!(y3_seat_of(&rig, pilot), Some((match_id, tank)));
+    let after: Vec<u64> = Channel::ALL.iter().map(|c| rig.epoch(tank, *c)).collect();
+    for (was, now) in before.iter().zip(&after) {
+        assert!(
+            now > was,
+            "the reclaim is a NEW epoch: {before:?} -> {after:?}"
+        );
+    }
+    assert!(
+        cockpit::flying(rig.tw.world(), pilot).is_some(),
+        "the reclaim did not give the focus back"
+    );
+    assert!(
+        rig.centre()
+            .slot_of_pilot(pilot)
+            .is_some_and(|slot| !slot.left && slot.dropped_at_ms.is_none() && slot.is_seated()),
+        "the slot is back in its cockpit"
+    );
+    assert!(y3_red_row(&rig).contains(", seated"));
+    // The arena speaks to the pilot again, and takes an order.
+    assert!(rig.frame_for(0).await, "no frame after the reclaim");
+    assert!(rig.powered(0).await, "the tank came back where it stands");
+    let said = rig.say(0, "heading 90");
+    assert!(said.contains("Steering to 90"), "{said}");
+
+    // And a second `BOARD` is the seated pilot's.
+    let said = rig.say(0, "board");
+    assert!(said.contains("You are already in your pod."), "{said}");
+}
+
+/// **`EXIT` is one-way whatever came before it** (16b cut Y.3; doc 16 §11's N.1
+/// amendment), both ways round: a drop, a reconnect in the pod and an `EXIT`;
+/// and an `EXIT` and then a `QUIT`. Either way `BOARD` is refused for the rest of
+/// the match, and the slot carries no drop stamp.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y3_an_exit_is_final_before_or_after_a_drop() {
+    let left_for_good = |rig: &Rig, n: usize| {
+        format!(
+            "You left {} for the rest of the match; it cannot be taken back.",
+            mush_core::output::display_name(rig.tw.world(), rig.tank(n))
+        )
+    };
+    // (a) drop -> reconnect -> EXIT -> BOARD from the team room.
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    rig.fire_conn(pilot, mush_core::ConnTransition::Connected);
+    let said = rig.say(0, "exit");
+    assert!(said.contains("you cannot take it back"), "{said}");
+    assert!(
+        rig.centre()
+            .slot_of_pilot(pilot)
+            .is_some_and(|slot| slot.left && slot.dropped_at_ms.is_none()),
+        "the EXIT did not make the leave final"
+    );
+    assert!(y3_red_row(&rig).contains(", left"), "{}", y3_red_row(&rig));
+    let now = rig.now;
+    rig.tick_to(now + 10);
+    let said = rig.say(0, "board");
+    assert!(said.contains(&left_for_good(&rig, 0)), "{said}");
+    assert_eq!(y3_seat_of(&rig, pilot), None);
+
+    // (b) EXIT -> QUIT -> BOARD.
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    let said = rig.say(0, "exit");
+    assert!(said.contains("you cannot take it back"), "{said}");
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    assert!(
+        rig.centre()
+            .slot_of_pilot(pilot)
+            .is_some_and(|slot| slot.left && slot.dropped_at_ms.is_none()),
+        "a QUIT after an EXIT turned it into a drop"
+    );
+    // And the reconnect after it is silent: nothing to take back.
+    let events = rig.fire_conn(pilot, mush_core::ConnTransition::Connected);
+    let said = rig.tw.seen_by(&events, pilot).join("\n");
+    assert!(
+        !said.contains("flying on doctrine") && !said.contains("back at your station"),
+        "a reconnect after an EXIT and a QUIT offered the tank back: {said}"
+    );
+    let now = rig.now;
+    rig.tick_to(now + 10);
+    let said = rig.say(0, "board");
+    assert!(said.contains(&left_for_good(&rig, 0)), "{said}");
+}
+
+/// **A reclaimed lead does not take the side back** (16b cut Y.3; 16c Q42's
+/// default): the red lead drops, the heir leads, the lead reclaims and the heir
+/// still leads — and the heir's `SIM CONCEDE` is accepted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y3_a_reclaimed_lead_leaves_the_heir_leading() {
+    let mut rig = Rig::boot_with(3, y1_config());
+    rig.fly_with_ai(2, 1, 2).await;
+    let (lead, heir) = (rig.pilot(0), rig.pilot(1));
+    let (lead_account, heir_account) = (y3_account(&rig, lead), y3_account(&rig, heir));
+    assert!(rig.centre().leads_side(Team::Red, lead_account));
+
+    rig.fire_conn(lead, mush_core::ConnTransition::Disconnected);
+    assert!(
+        rig.centre().leads_side(Team::Red, heir_account),
+        "the heir did not take the lead"
+    );
+    let now = rig.now;
+    rig.tick_to(now + 5);
+    let said = rig.say(0, "board");
+    assert!(said.contains("is yours again where it stands"), "{said}");
+    assert!(
+        rig.centre().leads_side(Team::Red, heir_account),
+        "the reclaimed pilot took the lead back"
+    );
+    assert!(!rig.centre().leads_side(Team::Red, lead_account));
+    let said = rig.say(1, "sim concede");
+    assert!(
+        said.contains("Pilot1 concedes for the red side."),
+        "the heir's concede was refused: {said}"
+    );
+}
+
+/// **A reclaim clears the unattended clock** (16b cut Y.3; 16b cut D.3's
+/// `B-33`): a lone pilot of an AI-filled match drops, the clock starts, they
+/// reclaim, the clock and its warning are cleared — and the interval passing
+/// ends nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y3_a_reclaim_clears_the_unattended_clock() {
+    let mut cfg = y1_config();
+    cfg.match_.unattended_ms = 10_000;
+    let mut rig = Rig::boot_with(1, cfg);
+    rig.fly_with_ai(1, 0, 1).await;
+    let pilot = rig.pilot(0);
+    let account = y3_account(&rig, pilot);
+    assert_eq!(rig.centre().unattended_since_ms, None);
+    assert!(rig.centre().leads_side(Team::Red, account));
+
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    assert!(
+        rig.centre().unattended_since_ms.is_some(),
+        "the lone pilot's drop did not start the clock"
+    );
+    // Every red claimant has left its tank, so red has no lead at all
+    // (`resettle_leads` on the drop) ...
+    assert!(
+        !rig.centre()
+            .leads
+            .iter()
+            .any(|(side, _)| *side == Team::Red),
+        "a side whose only pilot dropped kept a lead"
+    );
+    let now = rig.now;
+    rig.tick_to(now + 5);
+    let said = rig.say(0, "board");
+    assert!(said.contains("is yours again where it stands"), "{said}");
+    assert_eq!(rig.centre().unattended_since_ms, None, "the clock survived");
+    assert!(!rig.centre().unattended_warned);
+    // ... and the first who comes back leads it again: the reclaim's own
+    // `resettle_leads` (Q42's default keeps a recorded heir; there is none).
+    assert!(
+        rig.centre().leads_side(Team::Red, account),
+        "the lone pilot came back and leads nothing"
+    );
+    // Past the interval the match runs on: no stop was asked for.
+    let now = rig.now;
+    rig.tick_to(now + 30);
+    assert_eq!(rig.state(), MatchState::Running);
+    assert_eq!(
+        rig.record().state,
+        MatchState::Running,
+        "the unattended stop was sent under a pilot who came back"
+    );
+    // And the side's word is the reclaimed pilot's again: in a match nobody
+    // else can end, their concede is accepted.
+    let said = rig.say(0, "sim concede");
+    assert!(
+        said.contains("Pilot0 concedes for the red side."),
+        "the reclaimed lone pilot's concede was refused: {said}"
+    );
+}
+
+/// **A dropped pilot stood in the team room reclaims from there** (16b cut
+/// Y.3): the boot sweep's shape — the placement released and the body moved —
+/// and the team room is told the pilot climbed back in. The reclaim's own room
+/// check comes first: `board`'s top gate lets any team room through, and from
+/// the OTHER side's room the reclaim is refused, binds nothing and moves nobody.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y3_a_dropped_pilot_in_the_team_room_boards_back_in_and_the_room_hears_it() {
+    let mut rig = Rig::boot(3);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    let pod = rig.pod(0).expect("a locked pod");
+    // A bystander in the red room, who holds no slot.
+    rig.walk_to(2, match_::RED_ROOM_ENTRY);
+    let bystander = rig.pilot(2);
+    let team_room =
+        match_::centre_object(rig.tw.world(), match_::RED_ROOM_ENTRY).expect("the red room");
+    let their_room =
+        match_::centre_object(rig.tw.world(), match_::BLUE_ROOM_ENTRY).expect("the blue room");
+
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    rig.with_ctx_mut(0, |ctx| {
+        mush_sim::unplace(ctx, pilot, "test").expect("the pod placement releases");
+        ctx.w
+            .move_to(pilot, their_room)
+            .expect("the body walks into the other side's team room");
+    });
+    assert_eq!(rig.location(0), Some(their_room));
+
+    // Past the floor, from the wrong team room: refused, as `Boarding` refuses it.
+    let now = rig.now;
+    rig.tick_to(now + 5);
+    let said = rig.say(0, "board");
+    assert!(said.contains(cockpit::OUTSIDE_TEAM_ROOM), "{said}");
+    assert_eq!(
+        y3_seat_of(&rig, pilot),
+        None,
+        "a reclaim from the other side's room bound the pilot"
+    );
+    assert_eq!(
+        rig.location(0),
+        Some(their_room),
+        "a refused reclaim moved the body"
+    );
+    assert!(
+        rig.centre()
+            .slot_of_pilot(pilot)
+            .is_some_and(|slot| slot.is_dropped()),
+        "a refused reclaim touched the slot"
+    );
+
+    // Into their own team room, and the reclaim goes through.
+    rig.with_ctx_mut(0, |ctx| {
+        ctx.w
+            .move_to(pilot, team_room)
+            .expect("the body walks into the team room");
+    });
+    assert_eq!(rig.location(0), Some(team_room));
+    let events = rig.events(0, "board");
+    let said = rig.tw.seen_by(&events, pilot).join("\n");
+    assert!(said.contains("is yours again where it stands"), "{said}");
+    assert_eq!(rig.location(0), Some(pod), "the body is back in the pod");
+    let heard = rig.tw.seen_by(&events, bystander).join("\n");
+    assert!(
+        heard.contains(&format!(
+            "Pilot0 climbs back into {}.",
+            mush_core::output::display_name(rig.tw.world(), pod)
+        )),
+        "the team room was not told: {heard}"
+    );
+    assert!(
+        cockpit::flying(rig.tw.world(), pilot).is_some(),
+        "the reclaim from the team room did not seat the pilot"
+    );
+}
+
+/// **A reclaim into a match already stopping is refused** (16b cut Y.3): a `SIM
+/// ABORT` parks the record in `Stopping` while the centre is still `Running`
+/// until the arena answers, and `BOARD` says the centre is stopping.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y3_a_reclaim_while_the_stop_is_in_flight_is_refused() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    let now = rig.now;
+    rig.tick_to(now + 5);
+    rig.say(1, "sim abort");
+    assert_eq!(
+        rig.record().state,
+        MatchState::Stopping,
+        "the stop is in flight"
+    );
+    assert_eq!(rig.state(), MatchState::Running, "the centre has not heard");
+    let said = rig.say(0, "board");
+    assert!(
+        said.contains(
+            "The simulator centre is stopping; that is not something you can do to it now."
+        ),
+        "{said}"
+    );
+    assert_eq!(
+        y3_seat_of(&rig, pilot),
+        None,
+        "the refused reclaim bound nothing"
+    );
+}
+
+/// **`BOARD` reads `[tacsim.match].reclaim_min_ms` and counts the wait up**
+/// (16b cut Y.3): at 2,500 ms a `BOARD` in the drop's own second has 2.5 s to
+/// go and says three, two seconds later it has half a second and says one —
+/// never "0" — and a second after that the tank is back. Every other reclaim
+/// test runs at the default 5,000, a whole number of world seconds, so this is
+/// the one that would see the field ignored or the wait rounded down. The
+/// reclaim is from the pod the drop left the pilot in, so the body does not
+/// move and the red room hears nothing of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y3_the_reclaim_floor_is_the_configured_one_rounded_up() {
+    let mut cfg = config();
+    cfg.match_.reclaim_min_ms = 2_500;
+    let mut rig = Rig::boot_with(3, cfg);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    let tank = rig.tank(0);
+    // A bystander in the red room, who holds no slot.
+    rig.walk_to(2, match_::RED_ROOM_ENTRY);
+    let bystander = rig.pilot(2);
+    let wait = |rig: &Rig, secs: i64| {
+        format!(
+            "{} is still being handed over; try again in {secs} second(s).",
+            mush_core::output::display_name(rig.tw.world(), tank)
+        )
+    };
+
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    let dropped = rig.now;
+    let said = rig.say(0, "board");
+    assert!(said.contains(&wait(&rig, 3)), "{said}");
+    rig.tick_to(dropped + 2);
+    let said = rig.say(0, "board");
+    assert!(said.contains(&wait(&rig, 1)), "{said}");
+    assert_eq!(
+        y3_seat_of(&rig, pilot),
+        None,
+        "a refused BOARD bound nothing"
+    );
+    rig.tick_to(dropped + 3);
+    let events = rig.events(0, "board");
+    let said = rig.tw.seen_by(&events, pilot).join("\n");
+    assert!(said.contains("is yours again where it stands"), "{said}");
+    assert!(
+        cockpit::flying(rig.tw.world(), pilot).is_some(),
+        "the reclaim did not seat the pilot"
+    );
+    let heard = rig.tw.seen_by(&events, bystander).join("\n");
+    assert!(
+        !heard.contains("climbs back into"),
+        "a reclaim from inside the pod was announced to the room: {heard}"
+    );
+}
+
+/// **`reclaim_min_ms = 0` reclaims in the drop's own second** (16b cut Y.3):
+/// the `Released` and the reclaim's `Live` reach the arena task back to back,
+/// through the real composition, and the task's buffer applies them in epoch
+/// order — the pilot is on the frame roster again and the arena speaks to them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn y3_a_zero_floor_reclaims_in_the_drops_own_second() {
+    let mut cfg = config();
+    cfg.match_.reclaim_min_ms = 0;
+    let mut rig = Rig::boot_with(2, cfg);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    let tank = rig.tank(0);
+    let match_id = rig.centre().match_id.expect("a running match");
+
+    let dropped = rig.now;
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    let said = rig.say(0, "board");
+    assert_eq!(rig.now, dropped, "the same world second as the drop");
+    assert!(said.contains("is yours again where it stands"), "{said}");
+    assert_eq!(y3_seat_of(&rig, pilot), Some((match_id, tank)));
+    assert!(
+        y3_red_row(&rig).contains(", seated"),
+        "{}",
+        y3_red_row(&rig)
+    );
+    assert!(
+        rig.frame_for(0).await,
+        "no frame after a same-second reclaim"
+    );
 }

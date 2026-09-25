@@ -345,14 +345,38 @@ impl Refusal {
 /// A `Control` for a unit this arena does not hold raises the table and nothing
 /// else: the table is keyed on `(unit, channel)` and an epoch for an absent unit
 /// is inert, which is cheaper than deciding whether the world is confused.
+///
+/// **The stale gate** (16b cut Y.3; 16c `N4`; doc 07 §1.3). A `Control` whose
+/// epoch is **below** the channel's current one runs the purge (which then
+/// removes nothing it would not have) and **applies no seat state and no
+/// controller change**. That is what settles a reclaim racing a release by the
+/// epoch table rather than by arrival: a pilot who dropped and `BOARD`s again is
+/// sent `Live` at a new epoch, and a `Released` from the drop that reaches the
+/// arena after it — a pulse late, or displaced in the task's buffer — is below
+/// that epoch and cannot take the pilot back off the roster or hand the tank
+/// back to the machine; a `Live` behind a newer `Released` cannot re-seat one
+/// either. **Equal epochs still apply** — K4's revival inside the grace is a
+/// `Live` that may land at the `Linkdead`'s own epoch and must clear it.
+///
+/// **The roster re-add** (16b cut Y.3). A `Live` that names a pilot puts them
+/// back on the frame roster ([`Arena::seat_pilot`], idempotent) **before** the
+/// controller is handed back to `Controller::Pilot`, so the pulse that reseats a
+/// dropped pilot builds them a whole keyframe (`drop_pilot` forgot their last
+/// frame). Between those two lines the machine still holds the tank: that is
+/// the moment a caller that wants the machine's last state reads it.
 pub fn apply_control(arena: &mut Arena, c: &Control) {
     arena.epochs.raise(c.unit, c.channel, c.epoch);
     let current = arena.epochs.current(c.unit, c.channel);
+    let stale = c.epoch < current;
     if let Some(queue) = arena.pending.get_mut(&c.unit) {
         queue.retain(|queued| !(queued.channel == c.channel && queued.epoch < current));
         if queue.is_empty() {
             arena.pending.remove(&c.unit);
         }
+    }
+    // **16b cut Y.3**: a stale control has purged, and that is all it does.
+    if stale {
+        return;
     }
     {
         let Some(unit) = arena.unit_mut(c.unit) else {
@@ -379,8 +403,9 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
     // station, or the linkdead grace run out. The tank goes to the reflex
     // controller in `Withdraw` and drives itself home, which is what K4's "the
     // tank idles" was standing in for until this cut existed. `Live` is the seat a
-    // pilot's again — a reclaim inside the grace, or a fresh activation — and takes
-    // it back, forgetting the machine. `Linkdead` changes nothing.
+    // pilot's again — a reclaim inside the grace, a fresh activation, or (16b cut
+    // Y.3) a dropped pilot's `BOARD` past it — and takes it back, forgetting the
+    // machine. `Linkdead` changes nothing.
     match c.state {
         ControlState::Released => {
             // **16b cut F.1**: the seat is gone, so the arena stops building that
@@ -396,6 +421,16 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
             arena.set_controller(c.unit, Controller::Reflex, ReflexState::Withdraw);
         }
         ControlState::Live => {
+            // **16b cut Y.3**: a `Live` naming a pilot is that pilot in the seat,
+            // so they are on the frame roster — back on it after a reclaim, where
+            // `drop_pilot` took them off at the `Released`, and a no-op for a
+            // revival inside the grace or a pilot who never left. Before the
+            // controller changes: the machine's state is still readable here.
+            if let Some(pilot) = c.pilot
+                && arena.unit(c.unit).is_some()
+            {
+                arena.seat_pilot(pilot, c.unit, c.epoch);
+            }
             if arena
                 .unit(c.unit)
                 .is_some_and(|unit| unit.controller != Controller::Pilot)
@@ -1474,5 +1509,154 @@ mod tests {
             "a refused order journals nothing"
         );
         assert!(y1_lines(&mut arena).is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut Y.3: the stale gate and the roster re-add
+    // -----------------------------------------------------------------------
+
+    /// `RED`'s seated pilot, as [`arena_at_epoch`] hands the roster over.
+    const RED_PILOT: ObjId = ObjId(1_000);
+
+    /// One control per channel for `RED`, naming its pilot.
+    fn y3_every_channel(epoch: u64, state: ControlState) -> Vec<Control> {
+        Channel::ALL
+            .iter()
+            .map(|channel| Control {
+                unit: RED,
+                channel: *channel,
+                epoch,
+                state,
+                pilot: Some(RED_PILOT),
+            })
+            .collect()
+    }
+
+    /// Whether `RED_PILOT` is on `RED`'s frame roster, and how many times.
+    fn y3_rows(arena: &Arena) -> usize {
+        arena
+            .pilots
+            .iter()
+            .filter(|seat| seat.pilot == RED_PILOT && seat.unit == RED)
+            .count()
+    }
+
+    /// **A drop and a reclaim in one pulse seat the pilot, in either order**
+    /// (16b cut Y.3; doc 07 §1.3): `Released(2)` then `Live(3)` drops and
+    /// re-seats; `Live(3)` then `Released(2)` finds the release stale and it
+    /// changes nothing. Either way the pilot ends on the roster and the tank is
+    /// theirs, not the machine's.
+    #[test]
+    fn y3_a_release_and_a_newer_live_in_one_step_seat_the_pilot_in_either_order() {
+        let released = y3_every_channel(2, ControlState::Released);
+        let live = y3_every_channel(3, ControlState::Live);
+        let orders: [Vec<Control>; 2] = [
+            released.iter().chain(live.iter()).copied().collect(),
+            live.iter().chain(released.iter()).copied().collect(),
+        ];
+        for (n, controls) in orders.iter().enumerate() {
+            let mut arena = two_tanks(1);
+            arena.step(0, controls, &[]);
+            assert_eq!(y3_rows(&arena), 1, "order {n}: the pilot is not seated");
+            assert_eq!(
+                arena.unit(RED).map(|unit| unit.controller),
+                Some(Controller::Pilot),
+                "order {n}: the machine kept the tank"
+            );
+            assert!(
+                arena.reflex.unit(RED).is_none(),
+                "order {n}: the machine's row survived the reclaim"
+            );
+            for channel in Channel::ALL {
+                assert_eq!(arena.epochs.current(RED, channel), 3, "order {n}");
+            }
+        }
+    }
+
+    /// **A stale `Released` cannot unseat the pilot a newer `Live` seated**
+    /// (16b cut Y.3): the release arrives a pulse after the reclaim, below the
+    /// epoch the reclaim raised, and purges whatever is queued below the current
+    /// epoch — and does nothing else.
+    #[test]
+    fn y3_a_stale_release_after_a_live_leaves_the_pilot_seated_and_still_purges() {
+        let mut arena = two_tanks(1);
+        // The drop, then the reclaim in the next pulse: off the roster and back.
+        arena.step(0, &y3_every_channel(2, ControlState::Released), &[]);
+        assert_eq!(y3_rows(&arena), 0, "the release took the pilot off");
+        assert_eq!(
+            arena.unit(RED).map(|unit| unit.controller),
+            Some(Controller::Reflex)
+        );
+        arena.step(1_000, &y3_every_channel(3, ControlState::Live), &[]);
+        assert_eq!(y3_rows(&arena), 1, "the reclaim put the pilot back");
+        // An order below the current epoch, sitting in the queue — what the
+        // purge exists to remove.
+        arena
+            .pending
+            .entry(RED)
+            .or_default()
+            .push_back(intent(RED, 2, 50, IntentKind::Startup));
+        // The drop's `Released`, late.
+        apply_control(
+            &mut arena,
+            &Control {
+                unit: RED,
+                channel: Channel::Helm,
+                epoch: 2,
+                state: ControlState::Released,
+                pilot: Some(RED_PILOT),
+            },
+        );
+        assert_eq!(y3_rows(&arena), 1, "a stale release unseated the pilot");
+        assert_eq!(
+            arena.unit(RED).map(|unit| unit.controller),
+            Some(Controller::Pilot),
+            "a stale release handed the tank back to the machine"
+        );
+        assert!(arena.reflex.unit(RED).is_none());
+        assert!(
+            !arena.pending.contains_key(&RED),
+            "the purge below the current epoch still ran"
+        );
+        assert_eq!(arena.epochs.current(RED, Channel::Helm), 3);
+        // And a stale `Live` behind a newer `Released` cannot re-seat one.
+        arena.step(2_000, &y3_every_channel(4, ControlState::Released), &[]);
+        assert_eq!(y3_rows(&arena), 0);
+        arena.step(3_000, &y3_every_channel(3, ControlState::Live), &[]);
+        assert_eq!(y3_rows(&arena), 0, "a stale live re-seated the pilot");
+        assert_eq!(
+            arena.unit(RED).map(|unit| unit.controller),
+            Some(Controller::Reflex)
+        );
+    }
+
+    /// **K4's revival at the `Linkdead`'s own epoch still clears it** (16b cut
+    /// Y.3): the stale gate is `<`, never `<=`.
+    #[test]
+    fn y3_a_live_at_the_linkdead_epoch_still_clears_it() {
+        let mut arena = two_tanks(1);
+        arena.step(0, &y3_every_channel(2, ControlState::Linkdead), &[]);
+        assert_eq!(arena.unit(RED).map(|unit| unit.linkdead), Some(true));
+        arena.step(1_000, &y3_every_channel(2, ControlState::Live), &[]);
+        assert_eq!(arena.unit(RED).map(|unit| unit.linkdead), Some(false));
+        assert_eq!(y3_rows(&arena), 1, "a revival adds no second row");
+    }
+
+    /// **`seat_pilot` is idempotent** (16b cut Y.3), and answers whether it
+    /// added a row.
+    #[test]
+    fn y3_seat_pilot_twice_adds_one_row() {
+        let mut arena = two_tanks(1);
+        assert!(!arena.seat_pilot(RED_PILOT, RED, 1), "already seated");
+        assert!(arena.drop_pilot(RED_PILOT, RED));
+        assert!(arena.seat_pilot(RED_PILOT, RED, 3));
+        assert!(!arena.seat_pilot(RED_PILOT, RED, 3));
+        assert_eq!(y3_rows(&arena), 1);
+        let row = arena
+            .pilots
+            .iter()
+            .find(|seat| seat.pilot == RED_PILOT)
+            .map(|seat| (seat.station.as_str(), seat.epoch));
+        assert_eq!(row, Some(("", 3)), "a reclaimed seat carries no station");
     }
 }

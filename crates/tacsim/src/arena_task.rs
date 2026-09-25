@@ -1405,6 +1405,42 @@ mod tests {
         assert!(waiting.controls.is_empty() && waiting.releases.is_empty());
     }
 
+    /// **16b cut Y.3**: the drop's `Released(2, A)` reaching the buffer after
+    /// the reclaim's `Live(3, A)` is kept, and the pulse takes it first — so the
+    /// arena drops A and then re-seats A, and the tank ends A's whichever order
+    /// the two left the world in.
+    #[test]
+    fn y3_a_late_release_behind_a_reclaim_is_kept_and_taken_first() {
+        let mut waiting = PrePulse::default();
+        buffer_control(
+            &mut waiting.controls,
+            &mut waiting.releases,
+            control(3, ControlState::Live, Some(A)),
+        );
+        buffer_control(
+            &mut waiting.controls,
+            &mut waiting.releases,
+            control(2, ControlState::Released, Some(A)),
+        );
+        assert_eq!(
+            waiting.releases.get(&(RED, Channel::Helm, A)),
+            Some(&control(2, ControlState::Released, Some(A)))
+        );
+        let (controls, intents) = waiting.take();
+        assert!(intents.is_empty());
+        assert_eq!(
+            controls
+                .iter()
+                .map(|c| (c.epoch, c.state, c.pilot))
+                .collect::<Vec<_>>(),
+            vec![
+                (2, ControlState::Released, Some(A)),
+                (3, ControlState::Live, Some(A)),
+            ],
+            "the release first, then the reclaim"
+        );
+    }
+
     /// Two headings and two speeds for one unit coalesce to the last of each by
     /// `seq`; an older one arriving late does not win.
     #[test]

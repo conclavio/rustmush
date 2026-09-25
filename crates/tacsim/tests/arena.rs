@@ -348,6 +348,11 @@ struct Replay {
     /// what the three cadences must also agree on now that the `blocked` line and
     /// the pilot's `Held:` fire on one edge.
     told: Vec<String>,
+    /// **16b cut Y.3**: one row per pulse — the arena time the pulse started
+    /// at, whether it built the mover's pilot a frame, and whether the mover had
+    /// a reflex row once it had stepped. What a drop and a reclaim are read
+    /// off: the frames stop and the machine holds the tank between them.
+    pulses_seen: Vec<(i64, bool, bool)>,
 }
 
 impl Replay {
@@ -382,6 +387,7 @@ fn replay(
     let mut pulses = 0_u32;
     let mut substeps = 0_u32;
     let mut told: Vec<String> = Vec::new();
+    let mut pulses_seen: Vec<(i64, bool, bool)> = Vec::new();
     loop {
         arena.clock.pin_tempo_for_tests(pin(arena.now_ms));
         let mut controls: Vec<Control> = Vec::new();
@@ -398,12 +404,14 @@ fn replay(
             }
             next += 1;
         }
+        let started = arena.now_ms;
         let out = arena.step(wall, &controls, &intents);
         absorb(&out, &mut bytes);
         hashes.extend(arena.substep_hashes.iter().copied());
         pulses += 1;
         substeps += out.substeps;
         told.extend(heard(&out.frames, MOVER_PILOT));
+        pulses_seen.push(seen(arena, started, &out));
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
         }
@@ -435,7 +443,18 @@ fn replay(
         pulses,
         substeps,
         told,
+        pulses_seen,
     }
+}
+
+/// One [`Replay::pulses_seen`] row: the pulse's start, whether the mover's
+/// pilot was built a frame, and whether the mover is the machine's now.
+fn seen(arena: &Arena, started: i64, out: &StepOutput) -> (i64, bool, bool) {
+    (
+        started,
+        out.frames.iter().any(|(pilot, _)| *pilot == MOVER_PILOT),
+        arena.reflex.unit(MOVER).is_some(),
+    )
 }
 
 fn absorb(out: &StepOutput, bytes: &mut Vec<u8>) {
@@ -713,6 +732,7 @@ fn replay_as_the_task(
     let mut substeps = 0_u32;
     let mut told: Vec<String> = Vec::new();
     let mut woke_at: Vec<i64> = Vec::new();
+    let mut pulses_seen: Vec<(i64, bool, bool)> = Vec::new();
     loop {
         arena.clock.pin_tempo_for_tests(Tempo::Quiet);
         let mut controls: Vec<Control> = Vec::new();
@@ -731,12 +751,14 @@ fn replay_as_the_task(
         if pulses > 0 {
             woke_at.push(arena.now_ms);
         }
+        let started = arena.now_ms;
         let out = arena.step(wall, &controls, &intents);
         absorb(&out, &mut bytes);
         hashes.extend(arena.substep_hashes.iter().copied());
         pulses += 1;
         substeps += out.substeps;
         told.extend(heard(&out.frames, MOVER_PILOT));
+        pulses_seen.push(seen(arena, started, &out));
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
         }
@@ -772,6 +794,7 @@ fn replay_as_the_task(
         pulses,
         substeps,
         told,
+        pulses_seen,
     };
     (replay, woke_at)
 }
@@ -953,6 +976,222 @@ fn a_released_seat_mid_run_is_one_event_list_at_three_cadences_and_moves_nobody_
         parked_of(first),
         parked_of(&linkdead),
         "releasing one seat moved the other side's tank"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (a3) a dropped seat, reclaimed: 16b cut Y.3
+// ---------------------------------------------------------------------------
+
+/// The arena time of [`y3_reclaim_script`]'s linkdead onset.
+const Y3_LINKDEAD_MS: i64 = 35_000;
+/// ... of its release (the grace run out): [`released_script`]'s own beat.
+const Y3_RELEASED_MS: i64 = 40_000;
+/// ... of the reclaim.
+const Y3_LIVE_MS: i64 = 55_000;
+/// ... of the drop's `Released` again, arriving behind the reclaim: stale.
+const Y3_STALE_MS: i64 = 60_000;
+/// ... and where the replay stops.
+const Y3_UNTIL_MS: i64 = 65_000;
+
+/// One control per channel for the mover, naming its pilot.
+fn y3_every_channel(epoch: u64, state: ControlState) -> Vec<Control> {
+    Channel::ALL
+        .iter()
+        .map(|channel| Control {
+            unit: MOVER,
+            channel: *channel,
+            epoch,
+            state,
+            pilot: Some(MOVER_PILOT),
+        })
+        .collect()
+}
+
+/// **[`released_script`] as a drop and a reclaim** (16b cut Y.3; 16c `N4`; doc
+/// 07 §1.3): the whole of doc 16 §3.8's "Disconnects" in one log, every beat a
+/// multiple of 5,000 ms.
+///
+/// - 35,000 ms: **`Linkdead` at epoch 2** on every channel, naming the pilot —
+///   the line dropped and the grace is running. (16b cut Y.4 takes its catch-up
+///   snapshot on this beat; it is scripted here so Y.4 adds assertions and no
+///   beats.)
+/// - 40,000 ms: `released_script`'s `Released`, now on every channel **at epoch
+///   2** — the grace ran out. Not epoch 1 as `released_script` has it: that
+///   would be below the `Linkdead`'s epoch, and `apply_control`'s stale gate
+///   would make it change nothing. At the `Linkdead`'s own epoch it applies
+///   (equal epochs do).
+/// - 55,000 ms: **`Live` at epoch 3** on every channel, naming the pilot — the
+///   pilot's `BOARD` past the grace (`arena_bridge::reseat`).
+/// - 60,000 ms: the drop's **`Released` at epoch 2 again**, every channel,
+///   naming the pilot — the race `apply_control`'s stale gate settles: a
+///   release the task kept (`buffer_control` holds a displaced `Released`)
+///   landing after the reclaim's `Live`. Below the channel's current epoch (3),
+///   it purges and changes nothing: the pilot stays seated.
+fn y3_reclaim_script() -> Vec<Beat> {
+    let mut beats = released_script();
+    if let Some(beat) = beats.iter_mut().find(|beat| beat.t_ms == Y3_RELEASED_MS) {
+        beat.controls = y3_every_channel(2, ControlState::Released);
+    }
+    let at = beats
+        .iter()
+        .position(|beat| beat.t_ms > Y3_LINKDEAD_MS)
+        .unwrap_or(beats.len());
+    beats.insert(
+        at,
+        Beat::at(
+            Y3_LINKDEAD_MS,
+            y3_every_channel(2, ControlState::Linkdead),
+            Vec::new(),
+        ),
+    );
+    beats.push(Beat::at(
+        Y3_LIVE_MS,
+        y3_every_channel(3, ControlState::Live),
+        Vec::new(),
+    ));
+    beats.push(Beat::at(
+        Y3_STALE_MS,
+        y3_every_channel(2, ControlState::Released),
+        Vec::new(),
+    ));
+    beats
+}
+
+/// **16b cut Y.3's mandatory cross-tempo test** (16b §11; doc 16 §3.1 "Rate
+/// independence", D-16-2): a drop and a reclaim are one event list and one
+/// per-substep hash sequence at 5,000, 1,000 and 500 ms.
+///
+/// Y.3 changed arena behaviour twice — `apply_control`'s stale gate and
+/// `Arena::seat_pilot` on a `Live` that names a pilot — and both happen in
+/// phase 1 off a message the world sends. So: the three replays agree; the
+/// pilot's frames stop at the `Released` and resume at the `Live` (with a whole
+/// keyframe); the machine holds the tank between the two and not after — not
+/// even once the stale `Released` behind the reclaim has landed, which is the
+/// stale gate's whole job; and the other side's tank ends exactly where
+/// [`released_script`]'s run leaves it.
+#[test]
+fn y3_a_dropped_and_reclaimed_seat_is_one_event_list_and_one_hash_sequence_at_three_cadences() {
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = scripted_arena();
+        let run = replay(
+            &mut arena,
+            cadence,
+            Y3_UNTIL_MS,
+            &y3_reclaim_script(),
+            &quiet,
+        );
+        assert_eq!(
+            arena.now_ms, Y3_UNTIL_MS,
+            "cadence {cadence} ran to a different time"
+        );
+        // The pilot is back on the roster, once, and the tank is theirs.
+        assert_eq!(
+            arena
+                .pilots
+                .iter()
+                .filter(|seat| seat.pilot == MOVER_PILOT && seat.unit == MOVER)
+                .count(),
+            1,
+            "the reclaimed pilot is not on the frame roster once at {cadence} ms"
+        );
+        assert_eq!(
+            arena.unit(MOVER).map(|unit| unit.controller),
+            Some(tacsim::arena::state::Controller::Pilot),
+            "the machine kept the tank at {cadence} ms"
+        );
+        assert!(
+            arena.unit(MOVER).is_some_and(|unit| !unit.linkdead),
+            "the reclaim left the seat linkdead at {cadence} ms"
+        );
+        // The frames stop after the `Released` and resume after the `Live`.
+        let framed = |from: i64, to: i64| {
+            run.pulses_seen
+                .iter()
+                .filter(|(started, framed, _)| *framed && (from..to).contains(started))
+                .count()
+        };
+        assert!(
+            framed(0, Y3_RELEASED_MS) > 0,
+            "no frame before the drop at {cadence} ms"
+        );
+        assert_eq!(
+            framed(Y3_RELEASED_MS, Y3_LIVE_MS),
+            0,
+            "a frame was built for a dropped pilot at {cadence} ms"
+        );
+        assert!(
+            run.pulses_seen
+                .iter()
+                .any(|(started, framed, _)| *framed && *started == Y3_LIVE_MS),
+            "the reclaiming pulse sent no frame at {cadence} ms"
+        );
+        // The stale `Released` did not unseat the reclaimed pilot: the frames
+        // go on after it landed.
+        assert!(
+            framed(Y3_STALE_MS, Y3_UNTIL_MS) > 0,
+            "the stale release behind the reclaim stopped the frames at {cadence} ms"
+        );
+        // The machine's row: absent before the drop, present from the
+        // `Released` to the `Live`, gone from the `Live` on — the stale
+        // `Released` at 60,000 ms included.
+        for (started, _, machine) in &run.pulses_seen {
+            let want = (Y3_RELEASED_MS..Y3_LIVE_MS).contains(started);
+            assert_eq!(
+                *machine, want,
+                "the reflex row at the pulse from {started} ms, at {cadence} ms"
+            );
+        }
+        runs.push((cadence, run));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events,
+            first.events,
+            "the event list differs at {cadence} ms: {:?} against {:?}",
+            run.kinds(),
+            first.kinds()
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the final state differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.told, first.told,
+            "the pilot was told something different at {cadence} ms"
+        );
+        assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
+    // **No other unit's outcome moved**: the parked tank ends where the
+    // released run (F.1's) leaves it.
+    let mut reference = scripted_arena();
+    let released = replay(
+        &mut reference,
+        1_000,
+        Y3_UNTIL_MS,
+        &released_script(),
+        &quiet,
+    );
+    let parked_of = |run: &Replay| {
+        run.finals
+            .iter()
+            .find(|(id, ..)| *id == PARKED)
+            .copied()
+            .expect("the parked tank")
+    };
+    assert_eq!(
+        parked_of(first),
+        parked_of(&released),
+        "a drop and a reclaim moved the other side's tank"
     );
 }
 

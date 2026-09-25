@@ -74,19 +74,39 @@ pub struct Slot {
     pub pod: Option<ObjId>,
     /// The unit seated in it, once cut K.2's `BOARD` reports one.
     pub unit: Option<ObjId>,
-    /// **Whether this pilot is out of their cockpit for good** (16b cut F.1).
+    /// **Whether this pilot is out of their cockpit, by any route** (16b cut
+    /// F.1; the meaning since 16b cut Y.3).
     ///
-    /// A seat given up during `Running` is one-way (doc 16 §11's N.1 amendment):
-    /// the tank goes to the reflex controller and the seat cannot be retaken. The
-    /// slot stays on the board because the result record names its pilot, but
-    /// `SIM STATUS` said `seated` about somebody standing in the team room, which
-    /// is the one fact a spectator most wants right.
+    /// A seat given up during `Running` hands the tank to the reflex controller.
+    /// The slot stays on the board because the result record names its pilot,
+    /// but `SIM STATUS` said `seated` about somebody standing in the team room,
+    /// which is the one fact a spectator most wants right.
     ///
     /// Written by `slot_left`, from the one place every route to a
     /// `Control { Released }` passes through — `EXIT`, a `QUIT` and the linkdead
     /// grace running out all reach it, and the last two reach it more often in a
-    /// playtest than the first.
+    /// playtest than the first. **16b cut Y.3** tells the routes apart with
+    /// [`Slot::dropped_at_ms`] beside this: a drop can be taken back
+    /// (`slot_reclaimed`, which is the one writer of `false` mid-match), an
+    /// `EXIT` cannot.
     pub left: bool,
+    /// **When a drop took this seat**, in world milliseconds (16b cut Y.3; 16c
+    /// `N4`; doc 07 §1.3 "Reclaiming control").
+    ///
+    /// A drop is the linkdead grace running out, or a `QUIT` — both reach
+    /// `SeatFacts::disconnected` in `arena_bridge`, which writes this through
+    /// `slot_dropped` a moment before its `Released` marks the slot
+    /// [`Slot::left`]. `Some` is what makes the slot **reclaimable**: `BOARD` in
+    /// the running match takes the tank back once
+    /// `[tacsim.match].reclaim_min_ms` has passed since this moment.
+    ///
+    /// **An `EXIT` never leaves it set** (doc 16 §11's N.1 amendment: a
+    /// deliberate leave is one-way, whatever came before it). `slot_dropped`
+    /// writes only on a slot still seated and not `left`, so an `EXIT` followed
+    /// by a `QUIT` marks nothing; and `EXIT` itself clears it through
+    /// `slot_exited`, so a pilot who dropped, reconnected inside their pod and
+    /// climbed out has left for good, which is what `EXIT` tells them.
+    pub dropped_at_ms: Option<i64>,
     /// **The unit type this pilot has chosen to field** (16b cut Q.8), as the
     /// definition's canonical id, or `None` for the pod's own authored type.
     ///
@@ -106,6 +126,15 @@ impl Slot {
     #[must_use]
     pub const fn is_seated(&self) -> bool {
         self.unit.is_some()
+    }
+
+    /// **Whether this slot's pilot dropped and may take the tank back** (16b cut
+    /// Y.3): out of the cockpit ([`Slot::left`]) by a drop
+    /// ([`Slot::dropped_at_ms`]) and not by an `EXIT`. The board reads it as
+    /// `flown by doctrine`.
+    #[must_use]
+    pub const fn is_dropped(&self) -> bool {
+        self.left && self.dropped_at_ms.is_some()
     }
 }
 
@@ -164,10 +193,11 @@ pub struct Centre {
     /// A centre with **no slots** — a staff `@arena/start`, which `adopt` binds
     /// — is never stamped: there was nobody to leave.
     ///
-    /// **Nothing un-stamps it today**, because `EXIT` is one-way (doc 16 §11's
-    /// N.1 amendment). Cut Y's reclaim (`N4`) is the first thing that will put a
-    /// pilot back in a seat mid-match, and it **must clear this field** when it
-    /// does, or the match it just gave back would end under the returning pilot.
+    /// **16b cut Y.3's reclaim un-stamps it** (`N4`): `slot_reclaimed` puts a
+    /// dropped pilot back in their seat mid-match and clears this with the
+    /// warning below (`Centre::clear_unattended`), or the match it just gave
+    /// back would end under the returning pilot. An `EXIT` is still one-way
+    /// (doc 16 §11's N.1 amendment), so nothing else un-stamps it.
     pub unattended_since_ms: Option<i64>,
     /// Whether the unattended stop has already been logged as undeliverable (16b
     /// cut D.3, `B-33`), so a lagging match warns once and not once a second.
@@ -743,6 +773,7 @@ pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
             pod: None,
             unit: None,
             left: false,
+            dropped_at_ms: None,
             unit_type: None,
         });
         if !centre.leads.iter().any(|(side, _)| *side == team) {
@@ -1587,7 +1618,12 @@ pub fn slot_vacated(ctx: &mut Ctx<'_>, match_id: MatchId, pilot: ObjId) -> Resul
     Ok(())
 }
 
-/// **Mark one pilot's slot as out of its cockpit for good** (16b cut F.1).
+/// **Mark one pilot's slot as out of its cockpit** (16b cut F.1).
+///
+/// **16b cut Y.3**: *for good* only by an `EXIT`. A drop reaches this line too,
+/// but [`slot_dropped`] has stamped [`Slot::dropped_at_ms`] a moment before, so
+/// the slot reads `flown by doctrine` and [`slot_reclaimed`] can put the pilot
+/// back; this function is unchanged and still knows no route.
 ///
 /// [`Slot::left`] is what stops `SIM STATUS` calling somebody standing in the
 /// team room `seated`, and it belongs **where the release is decided**, not in
@@ -1642,6 +1678,126 @@ pub(crate) fn slot_left(ctx: &mut Ctx<'_>, pilot: ObjId) -> bool {
         centre.unattended_since_ms = Some(now_ms);
     }
     moved
+}
+
+/// **Record that a drop, and not an `EXIT`, is taking one pilot's seat** (16b
+/// cut Y.3; 16c `N4`; doc 07 §1.3 "Reclaiming control").
+///
+/// Called by `arena_bridge`'s `SeatFacts::disconnected` — the linkdead grace
+/// running out, or a clean `QUIT` — **before** its `Released` reaches
+/// `send_control`, which marks the slot [`Slot::left`] through [`slot_left`]:
+/// the slot has to know the route before it is marked, because `slot_left` is
+/// one line for every route and knows none of them.
+///
+/// Writes [`Slot::dropped_at_ms`] on the pilot's slot during `Running`, and
+/// **only on a slot still seated and not yet `left`**: a slot already out of its
+/// cockpit — by an `EXIT` — is never turned into a drop. (An `EXIT` also takes
+/// the registry binding with it, so the hook's seated arm never runs after one;
+/// the guard is the second lock on the same door.) Nothing else moves here: the
+/// succession and the unattended stamp are `slot_left`'s, a moment later.
+///
+/// Answers whether it wrote.
+pub(crate) fn slot_dropped(ctx: &mut Ctx<'_>, pilot: ObjId, now_ms: i64) -> bool {
+    let Some(book) = ctx.w.module_state_mut::<MatchBook>() else {
+        return false;
+    };
+    let centre = book.centre_mut();
+    if centre.state != MatchState::Running {
+        return false;
+    }
+    match centre.slots.iter_mut().find(|slot| slot.pilot == pilot) {
+        Some(slot) if !slot.left && slot.is_seated() => {
+            slot.dropped_at_ms = Some(now_ms);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// **Make one pilot's leave final** (16b cut Y.3; doc 16 §11's N.1 amendment).
+///
+/// `EXIT` during `Running` calls this after it has handed the seat back. A
+/// pilot who dropped (their slot [`Slot::is_dropped`]), reconnected inside the
+/// pod the drop left them in and typed `EXIT` still holds the billet, so `EXIT`
+/// finds it and hands it back — but the `Released` that sends reaches
+/// [`slot_left`] on a slot already `left`, which changes nothing, and the drop's
+/// stamp would survive: the `EXIT` sentence *you cannot take it back* would be
+/// false and a `BOARD` would take the tank back anyway. So `EXIT` clears the
+/// stamp here, and a deliberate leave is one-way whatever came before it.
+///
+/// Answers whether it cleared anything.
+pub(crate) fn slot_exited(ctx: &mut Ctx<'_>, pilot: ObjId) -> bool {
+    let Some(book) = ctx.w.module_state_mut::<MatchBook>() else {
+        return false;
+    };
+    let centre = book.centre_mut();
+    if centre.state != MatchState::Running {
+        return false;
+    }
+    centre
+        .slots
+        .iter_mut()
+        .find(|slot| slot.pilot == pilot)
+        .and_then(|slot| slot.dropped_at_ms.take())
+        .is_some()
+}
+
+/// **Give a dropped pilot their seat back** (16b cut Y.3; 16c `N4`; doc 07 §1.3
+/// "Reclaiming control") — the centre's half of a `BOARD` in a running match.
+///
+/// The slot is back in its cockpit: [`Slot::left`] `false`, [`Slot::dropped_at_ms`]
+/// `None`, [`Slot::unit`] the tank. Then two things the drop set in motion are
+/// undone:
+///
+/// - **the unattended clock** — a drop that left nobody aboard stamped
+///   [`Centre::unattended_since_ms`], and the match just given back must not end
+///   under the pilot who took it. The stamp and its once-per-match warning go
+///   together, through the one helper that keeps them from drifting;
+/// - **the leads**, resettled over the slots as they now stand. The recorded
+///   heir keeps the lead (it is checked first), so a reclaimed pilot does **not**
+///   take the side back — 16c's owner question Q42 at its default; a side whose
+///   every claimant had left had no entry, and the first to come back leads it.
+///
+/// # Errors
+///
+/// [`SimError::WrongState`] unless the centre is `Running` on `match_id` **and**
+/// the match book's record for it is `Running` too: `unattended_deadline` and
+/// `SIM ABORT` park the record in `Stopping` while the centre is still `Running`,
+/// and a pilot who took the tank back then would read *yours again* and, a
+/// moment later, the end. [`SimError::NoSlot`] when the pilot holds no slot.
+pub(crate) fn slot_reclaimed(
+    ctx: &mut Ctx<'_>,
+    match_id: MatchId,
+    pilot: ObjId,
+    unit: ObjId,
+) -> Result<(), SimError> {
+    let book = ctx
+        .w
+        .module_state_mut::<MatchBook>()
+        .ok_or(SimError::Unavailable)?;
+    let record = book.get(match_id).map(|record| record.state);
+    let centre = book.centre_mut();
+    if centre.state != MatchState::Running || centre.match_id != Some(match_id) {
+        return Err(SimError::WrongState {
+            state: centre.state.as_str(),
+        });
+    }
+    // The centre is running this match; the record says whether a stop is
+    // already in flight, and its word is the one the pilot reads.
+    if record != Some(MatchState::Running) {
+        return Err(SimError::WrongState {
+            state: record.unwrap_or(centre.state).as_str(),
+        });
+    }
+    let Some(slot) = centre.slots.iter_mut().find(|slot| slot.pilot == pilot) else {
+        return Err(SimError::NoSlot);
+    };
+    slot.left = false;
+    slot.dropped_at_ms = None;
+    slot.unit = Some(unit);
+    centre.clear_unattended();
+    centre.resettle_leads();
+    Ok(())
 }
 
 /// Everything [`run`] needs once it has decided the match can be attempted.
@@ -2533,10 +2689,10 @@ pub enum BoardReader {
 /// `Stopping`, and only for a [`BoardReader::Player`], the reader's **own** side
 /// — the team of their slot — prints in full and every other side prints
 /// **reduced**: `{index} ({callsign}): {pilot name}` and nothing else. No pod, no
-/// `, seated`, no `, left`, no `[type]`. A player holding no slot reads both
-/// sides reduced. [`BoardReader::Staff`], and every other state — `Idle`,
-/// `Selection`, `Boarding` and the three terminal states — get the whole board
-/// exactly as before; `Boarding`'s `seated` is lobby knowledge, because there is
+/// `, seated`, no `, left`, no `, flown by doctrine` (16b cut Y.3), no `[type]`.
+/// A player holding no slot reads both sides reduced. [`BoardReader::Staff`],
+/// and every other state — `Idle`, `Selection`, `Boarding` and the three
+/// terminal states — get the whole board exactly as before; `Boarding`'s `seated` is lobby knowledge, because there is
 /// no arena yet and nothing has detected anything.
 ///
 /// Nothing in this crate writes `Stopping` to a **centre** — that state lives on
@@ -2639,8 +2795,12 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
                 None => String::new(),
             };
             // 16b cut F.1: `left` outranks `seated` — the slot still carries the
-            // unit it was seated on, and the pilot is not in it.
-            let seated = if slot.left {
+            // unit it was seated on, and the pilot is not in it. **16b cut Y.3**:
+            // and a drop is said apart from an `EXIT`, because a dropped pilot
+            // can take the tank back and the machine is only holding it for them.
+            let seated = if slot.is_dropped() {
+                ", flown by doctrine"
+            } else if slot.left {
                 ", left"
             } else if slot.is_seated() {
                 ", seated"
@@ -2839,6 +2999,7 @@ mod tests {
             pod: None,
             unit: None,
             left: false,
+            dropped_at_ms: None,
             unit_type: None,
         }
     }

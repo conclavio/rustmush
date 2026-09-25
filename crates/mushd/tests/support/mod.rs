@@ -54,14 +54,27 @@ pub async fn holds_a_cockpit(store: &Arc<dyn mush_store::ObjectStore>, unit: u32
         .is_some_and(|value| value.pointer("/seats/cockpit").is_some())
 }
 
-/// Wait for the staff board to acknowledge a pilot's released arena binding.
-/// This is written by the same control release that makes a reconnect unable
-/// to reclaim the cockpit and hands the tank to its reflex controller.
+/// Wait for the staff board to acknowledge a pilot's arena binding released by
+/// an `EXIT` — the slot's row ending `, left`, which since 16b cut Y.3 is a
+/// deliberate leave's alone (a drop reads `, flown by doctrine`; see
+/// [`wait_arena_pilot_out`]).
 pub async fn wait_arena_pilot_left(term: &mut Term, callsign: &str, pilot: &str) {
+    wait_arena_pilot_out(term, callsign, pilot, "left").await;
+}
+
+/// **Wait for the staff board to say `word` about one pilot's slot** (16b cut
+/// Y.3): the row `({callsign}): {pilot}, …` ending `, {word}`.
+///
+/// `word` is the board's own: `flown by doctrine` for a drop (the linkdead
+/// grace run out, or a `QUIT`: the tank is the reflex controller's and `BOARD`
+/// takes it back), `left` for an `EXIT` (one-way), `seated` for a pilot in the
+/// cockpit — so the same wait reads a reclaim landing, too.
+pub async fn wait_arena_pilot_out(term: &mut Term, callsign: &str, pilot: &str, word: &str) {
     let slot = format!("({callsign}): {pilot},");
+    let tail = format!(", {word}");
     wait_until(
         STEP_TIMEOUT,
-        "the pilot's arena seat to release",
+        "the pilot's slot to read as the board's word",
         async || {
             let mark = term.mark();
             term.send_line("@arena/status").await;
@@ -86,7 +99,7 @@ pub async fn wait_arena_pilot_left(term: &mut Term, callsign: &str, pilot: &str)
                     line.starts_with("red:") || line.starts_with("blue:")
                 })
                 .flat_map(|line| line.split("; "))
-                .any(|entry| entry.contains(&slot) && entry.trim_end().ends_with(", left"))
+                .any(|entry| entry.contains(&slot) && entry.trim_end().ends_with(tail.as_str()))
         },
     )
     .await;

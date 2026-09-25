@@ -520,6 +520,19 @@ pub struct MatchConfig {
     /// match with no slots at all — a staff `@arena/start` — is never unattended,
     /// because there was nobody to leave.
     pub unattended_ms: u32,
+    /// **How long after a drop a pilot must wait before `BOARD` takes the tank
+    /// back** (16b cut Y.3; 16c `N4`; doc 07 §1.3 "Reclaiming control"), in
+    /// **world** milliseconds.
+    ///
+    /// A drop — the linkdead grace running out, or a `QUIT` — hands the tank
+    /// to the reflex controller with a `Control { Released }`; the reclaim is a
+    /// `Control { Live }` at a newer epoch. The floor does two things: it
+    /// closes flapping (a line that drops and comes back every second does not
+    /// hand the tank to the machine and back every second), and it gives the
+    /// arena its pulse to process the `Released` before the `Live` arrives —
+    /// which the epoch table would settle anyway (`apply_control`'s stale
+    /// gate), but a pilot should not be the one who finds out.
+    pub reclaim_min_ms: u32,
 }
 
 impl Default for MatchConfig {
@@ -535,6 +548,9 @@ impl Default for MatchConfig {
             // has not ended their own match, short enough that a centre is not
             // held for the hour `max_duration_ms` would take.
             unattended_ms: 300_000,
+            // Five seconds: one `Quiet` pulse, so the arena has processed the
+            // `Released` before the `Live` is sent.
+            reclaim_min_ms: 5_000,
         }
     }
 }
@@ -1034,6 +1050,15 @@ impl MatchConfig {
                 self.unattended_ms
             ));
         }
+        // **16b cut Y.3**: zero is legal (a reclaim at once, the epoch table
+        // settling the race); ten minutes is past any reason to keep a pilot
+        // from their own tank.
+        between(
+            "[tacsim.match].reclaim_min_ms",
+            0,
+            600_000,
+            u64::from(self.reclaim_min_ms),
+        )?;
         Ok(())
     }
 }

@@ -500,7 +500,7 @@ async fn past_the_grace_the_reflex_controller_drives_the_tank_home() {
     // The line goes, for good.
     drop(ada);
     drop(ada_handle);
-    support::wait_arena_pilot_left(&mut god, "RA", "Ada").await;
+    support::wait_arena_pilot_out(&mut god, "RA", "Ada", "flown by doctrine").await;
     // The controller's movement is recorded in the final ledger. Give it six
     // seconds on its own clock, independent of the session-reaper schedule.
     support::wait_arena_seconds(&mut god, 6).await;

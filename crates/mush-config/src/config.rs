@@ -94,6 +94,7 @@
 //! | `[tacsim.match].max_slots_per_side` | `12` | pilot slots one side may claim (doc 16 §1's 12 v 12) |
 //! | `[tacsim.match].ai_fill` | `false` | **16b cut N.1** (doc 16 §6): whether `SIM START` also fields the tanks of the pods nobody claimed, under the reflex controller. Off by default because doc 16 §1's A1 is a two-tank story |
 //! | `[tacsim.match].unattended_ms` | `300000` | **16b cut D.3** (`B-33`): world milliseconds a running match every pilot has left runs on before the lobby ends it `unattended`; `0` is off, and anything else is at least `10000` |
+//! | `[tacsim.match].reclaim_min_ms` | `5000` | **16b cut Y.3** (16c `N4`; doc 07 §1.3): world milliseconds after a dropped line (the linkdead grace run out, or a `QUIT`) before `BOARD` takes the tank back from the reflex controller; `0` to `600000` |
 //! | `[tacsim.command].max_span` | `4` | **16b cut Y.2** (doc 16 §2 W8): the most squads one commander may hold a live `ORDER` on at once; `1` to `32`, held at the world |
 //! | `[tacsim.command].orders_per_minute` | `12` | **16b cut Y.2** (W8's human trigger): the most `ORDER`s one commander may give in sixty world seconds; `1` to `600` |
 //! | `[tacsim.sensors].pass_ms` | `1000` | **16b cut G** (doc 16 §3.6): arena milliseconds between one unit's sensor passes |
@@ -1272,6 +1273,16 @@ pub struct TacsimMatchCfg {
     /// A staff `@arena/start` match has no slots and is therefore never
     /// unattended; a destroyed pilot who stays in the pod is attending.
     pub unattended_ms: u32,
+    /// **How long after a dropped line a pilot waits before `BOARD` takes the
+    /// tank back** (**16b cut Y.3**; 16c `N4`; doc 07 §1.3 "Reclaiming
+    /// control"), in world milliseconds; `0` to `600000`.
+    ///
+    /// A drop — the linkdead grace running out, or a `QUIT` — hands the tank to
+    /// the reflex controller and the board reads `flown by doctrine`; `BOARD`
+    /// in the running match takes it back, where it stands, at a new epoch.
+    /// This floor closes flapping and gives the arena a pulse to process the
+    /// release before the reclaim. `EXIT` is still one-way whatever this says.
+    pub reclaim_min_ms: u32,
 }
 
 impl Default for TacsimMatchCfg {
@@ -1285,6 +1296,8 @@ impl Default for TacsimMatchCfg {
             ai_fill: false,
             // 16b cut D.3: five minutes.
             unattended_ms: 300_000,
+            // 16b cut Y.3: five seconds.
+            reclaim_min_ms: 5_000,
         }
     }
 }
@@ -2616,6 +2629,9 @@ scene_turn_dedline_secs = 30
             (10_000, 120_000, 3_600_000, 12),
             "[tacsim.match]"
         );
+        // 16b cut Y.3 (16c `N4`): five seconds before a dropped pilot's `BOARD`
+        // takes the tank back.
+        assert_eq!(m.reclaim_min_ms, 5_000, "[tacsim.match].reclaim_min_ms");
 
         // 16b cut Y.2 (doc 16 W8): the span and the rate, at the figures the
         // help quotes.

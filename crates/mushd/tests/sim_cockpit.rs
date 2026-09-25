@@ -14,8 +14,9 @@
 //!    ledger at or after her seat's release, and nothing refuses after the `EXIT`;
 //! 3. a pilot whose line drops mid-match keeps their tank's heading and speed,
 //!    reclaims the seat on reconnect inside the grace (a fresh `HEADING` is
-//!    taken), and — past the grace — finds the seat gone (16b cut N.1 is what the
-//!    *tank* does next: `sim_reflex.rs`);
+//!    taken), and — past the grace — finds the machine flying it (16b cut N.1 is
+//!    what the *tank* does next: `sim_reflex.rs`), is told so, and takes it back
+//!    with `BOARD` once the reclaim floor has passed (16b cut Y.3);
 //! 4. `HEADING` before `STARTUP` is refused with the cold tank's own word;
 //! 5. `VIEW` prints the arena window as a map with the platform on it;
 //! 6. every cockpit verb outside a cockpit, and `BOARD` outside a team room,
@@ -793,8 +794,19 @@ async fn a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reco
     say(&mut ada, "HEADING 180", "Steering to 180").await;
 }
 
+/// **Past the grace the machine flies the tank until the pilot boards again**
+/// (16b cut Y.3; 16c `N4`; doc 07 §1.3 "Reclaiming control"; doc 16 §3.8).
+///
+/// Until cut Y.3 this was `past_the_grace_the_seat_is_released_and_the_pilot_
+/// cannot_reclaim_it`: the seat went with the session and a reconnecting pilot
+/// was told nothing. Now the release past the grace is a **drop**: the staff
+/// board reads `flown by doctrine`, the reconnect is told so in one line (and
+/// not K4's `back at your station`, which is a revival inside the grace), the
+/// cockpit verbs still mean nothing until `BOARD` — which, once
+/// `[tacsim.match].reclaim_min_ms` (5,000 here, the default) has passed, takes
+/// the tank back where it stands, from the pod the drop left her in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn past_the_grace_the_seat_is_released_and_the_pilot_cannot_reclaim_it() {
+async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again() {
     let server = boot("sim-cockpit-grace", Duration::from_secs(2)).await;
     let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     open_the_centre(&mut god, "Simulator Lobby").await;
@@ -805,6 +817,8 @@ async fn past_the_grace_the_seat_is_released_and_the_pilot_cannot_reclaim_it() {
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
     let (ada_handle, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
     take_off(&mut ada, &mut bo).await;
+    // Power first, so the reclaimed tank can be ordered the moment it is hers.
+    say(&mut ada, "STARTUP", "Startup sequence").await;
 
     wait_until(STEP_TIMEOUT, "the cockpit billet to persist", async || {
         support::holds_a_cockpit(&server.store, red).await
@@ -812,30 +826,76 @@ async fn past_the_grace_the_seat_is_released_and_the_pilot_cannot_reclaim_it() {
     .await;
     drop(ada);
     drop(ada_handle);
-    support::wait_arena_pilot_left(&mut god, "RA", "Ada").await;
+    // Past the two-second grace: the machine has the tank, and the board says so.
+    support::wait_arena_pilot_out(&mut god, "RA", "Ada", "flown by doctrine").await;
 
-    // The seat went with the session: the pilot comes back to a cockpit that is
-    // not theirs any more — no reclaim line, and the verbs mean nothing — and
-    // the match runs on without her.
+    // The reconnect is told, in one line — and it is not a revival.
     let (_a2, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
-    let seen = ask(&mut ada, "STATUS", OUTSIDE_COCKPIT).await;
-    assert!(seen.contains(OUTSIDE_COCKPIT), "{seen}");
+    ada.expect("is flying on doctrine; BOARD takes it back.")
+        .await;
     assert!(
         !ada.seen.contains("back at your station"),
-        "past the grace there is nothing to reclaim: {}",
+        "past the grace a reconnect is not a revival: {}",
         strip_ansi(&ada.seen)
     );
-    let seen = ask(&mut god, "@arena/status", "match 1").await;
-    assert!(
-        seen.contains("running"),
-        "the match runs on without her: {seen}"
-    );
-    // **16b cut N.1 amended what happens to the tank** (doc 16 §3.8 and its §11
-    // amendment): K4's "and the tank idles" was standing in for doc 07 §1.1's
-    // fallback controller until it existed, and the released seat now hands the
-    // tank to the reflex controller in `Withdraw`. What this test is about — the
-    // seat is gone and there is nothing to reclaim — is unchanged; what the tank
-    // does with itself afterwards is `crates/mushd/tests/sim_reflex.rs`'s.
+    // Nothing is hers until she boards.
+    let seen = ask(&mut ada, "STATUS", OUTSIDE_COCKPIT).await;
+    assert!(seen.contains(OUTSIDE_COCKPIT), "{seen}");
+
+    // `BOARD`, from the pod: told to wait until the floor passes, then hers.
+    wait_until(STEP_TIMEOUT, "BOARD to take the tank back", async || {
+        let mark = ada.mark();
+        ada.send_line("BOARD").await;
+        ada.expect_one_of_after(
+            mark,
+            &[
+                "yours again where it stands",
+                "is still being handed over",
+                COMMIT_PENDING,
+                CONTROL_UNKNOWN,
+            ],
+        )
+        .await
+            == 0
+    })
+    .await;
+    // The cockpit is hers again: `STATUS` reads the tank once the arena's
+    // keyframe has reached her (the `Live` lands at its next pulse), and an
+    // order is taken.
+    wait_until(
+        STEP_TIMEOUT,
+        "STATUS to read the reclaimed tank",
+        async || {
+            let mark = ada.mark();
+            pump(&mut ada, "STATUS", &["power", OUTSIDE_COCKPIT]).await;
+            let seen = strip_ansi(&ada.seen[mark..]);
+            seen.contains("heading") && !seen.contains(OUTSIDE_COCKPIT)
+        },
+    )
+    .await;
+    wait_until(
+        STEP_TIMEOUT,
+        "the reclaimed seat to take a heading",
+        async || {
+            let mark = ada.mark();
+            ada.send_line("HEADING 180").await;
+            ada.expect_one_of_after(
+                mark,
+                &[
+                    "Steering to 180",
+                    POWER_NOT_ONLINE,
+                    POWER_STARTING,
+                    COMMIT_PENDING,
+                    CONTROL_UNKNOWN,
+                ],
+            )
+            .await
+                == 0
+        },
+    )
+    .await;
+    // And the staff board has her seated again.
+    support::wait_arena_pilot_out(&mut god, "RA", "Ada", "seated").await;
 }
 
 // ---------------------------------------------------------------------------

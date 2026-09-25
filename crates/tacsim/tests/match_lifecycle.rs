@@ -2908,6 +2908,7 @@ async fn d3_the_ai_floor_is_clamped_to_the_pods_a_side_has() {
             pod: None,
             unit: None,
             left: false,
+            dropped_at_ms: None,
             unit_type: None,
         });
     }

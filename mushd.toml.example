@@ -306,10 +306,12 @@ max_slots_per_side = 12            # ceiling 1..12; current centre clamps to its
 # raises both sides together. OFF, both sides still need a pilot of their own.
 ai_fill = false
 # (16b cut D.3) how long a RUNNING match every pilot has left runs on before the
-# lobby ends it `unattended`. A released seat is one-way (doc 16 section 11, N.1),
-# so nobody is left who can abort one; 0 turns it off, and anything else is at
-# least 10000 -- a few seconds would end a match over one pilot's reconnect.
+# lobby ends it `unattended`. An EXIT is one-way (doc 16 section 11, N.1) and a
+# dropped pilot may never come back, so nobody may be left who can abort one; 0
+# turns it off, and anything else is at least 10000 -- a few seconds would end a
+# match over one pilot's reconnect. A reclaim (16b cut Y.3) clears the clock.
 unattended_ms = 300000
+reclaim_min_ms = 5000              # (16b cut Y.3) ms after a dropped line before BOARD takes the tank back; 0 to 600000
 
 [tacsim.command]                   # (16b cut Y.2, doc 16 W8) the span of control and the order rate, held at the world
 max_span = 4                       # (16b cut Y.2, doc 16 W8) the most squads one commander may hold a live ORDER on at once; 1..32

@@ -341,6 +341,9 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             ai_fill: cfg.match_.ai_fill,
             // 16b cut D.3 (`B-33`): how long a match every pilot has left runs on.
             unattended_ms: cfg.match_.unattended_ms,
+            // 16b cut Y.3 (16c `N4`): how long after a drop `BOARD` takes the
+            // tank back.
+            reclaim_min_ms: cfg.match_.reclaim_min_ms,
         },
         // 16b cut Y.2 (doc 16 W8): the span of control and the order rate,
         // mapped straight across and checked below with the rest.
@@ -994,6 +997,7 @@ mod tests {
              max_slots_per_side = 4\n\
              ai_fill = true\n\
              unattended_ms = 45000\n\
+             reclaim_min_ms = 2500\n\
              [tacsim.command]\n\
              max_span = 2\n\
              orders_per_minute = 30\n\
@@ -1079,6 +1083,8 @@ mod tests {
                 ai_fill: true,
                 // 16b cut D.3 (`B-33`): the unattended end's own key.
                 unattended_ms: 45_000,
+                // 16b cut Y.3 (16c `N4`): the reclaim floor's own key.
+                reclaim_min_ms: 2_500,
             }
         );
         // 16b cut Y.2 (doc 16 W8): the span and the rate, mapped straight across.
@@ -1409,6 +1415,13 @@ mod tests {
                 "[tacsim.match].unattended_ms",
                 "9999",
             ),
+            // 16b cut Y.3 (16c `N4`): ten minutes is the reclaim floor's ceiling.
+            (
+                "[tacsim.match]",
+                "reclaim_min_ms = 600001\n",
+                "[tacsim.match].reclaim_min_ms",
+                "600001",
+            ),
             // 16b cut E.4 (`B-04`): both new doctrine clocks are off-or-a-band,
             // and a value inside the band that is shorter than one decision is
             // the one an operator actually reaches for.
@@ -1475,6 +1488,14 @@ mod tests {
             assert!(
                 tacsim_config(&cfg).is_ok(),
                 "{body:?} should boot: 0 is off and 10000 is the floor"
+            );
+        }
+        // **16b cut Y.3**: and both ends of the reclaim floor's band.
+        for body in ["reclaim_min_ms = 0\n", "reclaim_min_ms = 600000\n"] {
+            let cfg = tacsim_cfg(&format!("[tacsim.match]\n{body}"));
+            assert!(
+                tacsim_config(&cfg).is_ok(),
+                "{body:?} should boot: 0 and 600000 are the band's two edges"
             );
         }
         // **16b cut E.4**: and both ends of each new clock's own band. `0` is the
