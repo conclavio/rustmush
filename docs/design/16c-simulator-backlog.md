@@ -337,7 +337,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
   staff the whole). Does the fog lift after an OOC match (default: no). History depth (default: 20).
   A panel feed (default: line text only).
 
-### N3. `ORDER`: commanding the AI wingmen, and W8's knob
+### N3. `ORDER`: commanding the AI wingmen, and W8's knob — landed Y.1 and Y.2
 
 - **Pitch.** `ORDER red-1 ENGAGE BA`, `ORDER ALL HOLD`, `ORDER red-2 WITHDRAW`, `ORDER red-1 ADVANCE The
   Ford`: one pilot and three machines become a lance.
@@ -363,7 +363,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
   (default 4). Does a human order outrank a live LLM order (default: yes, latest-wins). A radio line
   (default: no).
 
-### N4. The reclaim
+### N4. The reclaim — landed Y.3 and Y.4
 
 - **Pitch.** A pilot whose link drops past the grace takes the tank back from the machine, with a report
   of what happened while they were gone.
@@ -778,6 +778,8 @@ Depends on D (the notice and frame shapes), M (`T-07`'s seed and draw are in the
 
 ### Cut Y: command the machines, and come back to your tank
 
+Landed 2026-09-24 at `2bfa61db`; see 16b section 9, row Y. Built as the four sub-cuts below, each committed and pushed on its own green gate (Y.1 `bdcde6eb`, Y.2 `5e2f6793`, Y.3 `19aed6cd`, Y.4 `47879f39`), then the full sweep with one repair (`2bfa61db`, test code and doc comments only: the observer test's claim that the catch-up's cell equals the carrying frame's corrected to the re-seat's cell within a speed bound, and the shooting test made to wait for its impact notices). The corrections to this section's sketches are recorded in the Y row's design note: a non-lead orders the one machine in their pod pair rather than "their own squad" (`squads_of` makes a four-pod side one squad); the seat is authorised once on the issuer's own tank and the order offered per unit, since `forward_intent` checks focus on the ordered unit; the span is concurrency read off the world's `OrderWatch.issuer` with a per-minute rate beside it, both enforced at the world and never in the arena; the drop is told to the slot by the disconnect hook and `EXIT` clears it; the reclaim needed a stale-control gate and the roster re-add; the catch-up baseline is taken at the first `Linkdead` rather than the `Released`, and the report is carried through a held pulse. Q42, Q43 and Q44 are recorded in section 5, each built on its default. Deferred: `FOLLOW` as a fifth arm and `ORDER <squad> RELEASE` (Q44, cut Z), doc 07 §1.3's heat changes and actions taken in the report, the split of `contacts_more` into two wire fields, `issued_ms` on the `ordered` line for an exact per-order harness count, and `B-81` (the billet that survives a drop, which the reclaim now relies on); every one is in the Y row's residuals.
+
 **When it lands.** A pilot orders their side's squads from the cockpit under W8's span; a pilot who
 dropped boards again, takes the tank back where it is, and reads what happened.
 
@@ -897,10 +899,13 @@ debts, plus the four feature choices that change the most.
 | Q35 | Validate the arena's config blocks when `[tacsim].enabled` is off? | Yes, always; see §6. | none |
 | Q36 | May `STATUS` print the arena's global tempo word? | No: the pilot's own alert state; the cadence stays in the frame. | D |
 | Q37 | What may a player read of a finished match (N2), and is a replay public (N9)? | The report is the player's own projection; the replay of an OOC match is objective and public. | V, I |
-| Q38 | Who may `ORDER`, and how wide is the span (N3)? | The side's lead, and any pilot their own squad; 4 squads per commander. | Y |
+| Q38 | Who may `ORDER`, and how wide is the span (N3)? | The side's lead, and any pilot their own squad; 4 squads per commander. Built on this default (Y.1, Y.2), "their own squad" read as the one machine in their pod pair, since a four-pod side is one squad. | Y |
 | Q39 | Six a side or twelve (N7)? | Six first. | Z |
 | Q40 | Durability's cadence, and do OOC matches resume (N16)? | Every 5,000 ms plus tail replay; yes. | tail |
 | Q41 | Does the watchdog void the pulse that finished the match? | Yes: void, and every unit restored (doc 16 §3.1); the forced void is not journalled, the black box keeps the arena's own end. Built on this default (AA.3); reversed by reverting the terminal arm of `Task::pulse` alone. | AA |
+| Q42 | Does a reclaimed pilot take the side's lead back (N4)? | No: succession is one-way and the heir keeps it; a side whose every claimant had left gives the lead to the first who comes back. Built on this default (Y.3). | Y |
+| Q43 | May a non-lead's order to their wingman replace the lead's live order on that unit (N3)? | Yes, latest-wins per unit, and nobody is told; a per-unit watch or an issuer set is a later cut's if a word should be said. Built on this default (Y.1). | Y |
+| Q44 | Should `ORDER <squad> RELEASE` hand a squad back to doctrine and free the span (N3, W8)? | Not in Y: the four arms as N3 lists them, and the span holds until the world's watch expires, since the world never learns an early arena end. Cut Z decides. | Y, Z |
 | Q-U1 | Should the arena task pass the SCHEDULED wall to `step`, so arena time is exactly the substep lattice with a late wake carried as lag? (raised by cut U's plan, not assumed) | No for now: arena time stays wall time, the wake targets are lattice points in absolute arena time, the task's deadline is anchored to its base, and the overshoot's cost is measured by `TACSIM_WAKE_JITTER_MS` (3 ms: 81 short substeps in 120 wakes). | U, open |
 | Q-U2 | The arena-to-session events-per-pulse bound: the shipped opening burst is 288 in one pulse at 24 pilots (24 keyframes plus eleven contact-notice lines per pilot at the acquisition pass) against the planned 256. Keep 512 on the measurement, coalesce a pilot's notices into one `Sys` event, or bound per pilot? | 512 on the measurement (built at U.2); the burst is client-facing text and untouched. | U, open |
 
