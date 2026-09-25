@@ -375,8 +375,9 @@ jobs:
   # It composes the production composition root in a memory-store test world,
   # generates a relief from TACSIM_SEED, applies it through the atlas's pack
   # route, and measures the ground pulse, `Arena::step` on the fielded catalog
-  # at the CI reach and at the authored reach, a long run and a 24-pilot
-  # fan-out (`harness_*:` lines in the log, `harness*.json` uploaded). Every
+  # at the CI reach and at the authored reach, a long run, a 24-pilot
+  # fan-out and the 12 v 12 lance lane (`tacsim_harness_lance`, 16b cut Z.1)
+  # (`harness_*:` lines in the log, `harness*.json` uploaded). Every
   # test is `#[ignore]`; this job is the only CI job that runs them, on demand
   # or weekly, never on push, and no Redis is involved.
   #

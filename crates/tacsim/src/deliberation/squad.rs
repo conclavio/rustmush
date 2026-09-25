@@ -9,12 +9,24 @@
 //!
 //! # The grouping
 //!
-//! A side's reflex units, in unit-id order, cut into [`SQUAD_SIZE`]-unit squads —
-//! **pod pairs**, because the arena's pods are claimed in pairs and two tanks that
-//! start beside each other are two tanks that fight together. A side with fewer
-//! than [`MIN_UNITS_TO_SPLIT`] reflex units gets **one** squad instead, because
-//! splitting three tanks into two squads doubles the cost of commanding them and
-//! buys nothing.
+//! A side's reflex units, in unit-id order, **dealt** into squads of at most
+//! `[tacsim.arena].squad_size` units (16b cut Z.1, 16c N6: *lances*; four by
+//! default, [`SQUAD_SIZE_MAX`] at most): `ceil(n / size)` squads whose sizes differ
+//! by at most one, the larger ones first, each a run of consecutive ids. Twelve
+//! machines a side is an opponent only in squads of four; a side of at most `size`
+//! machines is one squad by the formula, with no special case.
+//!
+//! **Dealt, not chunked**, because `SIM AI 6` with one human puts five machines on
+//! red, and chunking by four would make a four and a one — a lone tank with a
+//! commander of its own, asking for orders as often as the whole lance beside it.
+//! Dealing makes a three and a two. Past [`MAX_SQUADS_PER_SIDE`] squads of `size` a
+//! side stops dealing and fills the cap with full squads; the rest fly doctrine
+//! (16b cut N.2's cap, unchanged in meaning).
+//!
+//! Both callers read the size from the [`crate::config::ArenaConfig`] each
+//! already holds — the match record's grouping at `crate::match_::start` and the
+//! arena's own at `Arena::new` — so the two groupings of one match are one function
+//! of one data and cannot drift.
 //!
 //! The **commander** is the lowest unit id in the squad. Not a role, not a
 //! capability, not a station: it is the unit whose contact set the trigger reads
@@ -36,17 +48,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::arena::state::Team;
 
-/// How many units one squad holds — a pod pair.
-pub const SQUAD_SIZE: usize = 2;
-
-/// Below this many reflex units a side is one squad rather than several.
-pub const MIN_UNITS_TO_SPLIT: usize = 4;
+/// **The most `[tacsim.arena].squad_size` may be** (16b cut Z.1, 16c N6), and
+/// the clamp [`squads_of`] reads a size through.
+///
+/// Sixteen, because a squad is one commander's contact set and one order: past
+/// sixteen machines an order stops being about a squad and starts being about a
+/// side, which is the lead's job and not one prompt's.
+pub const SQUAD_SIZE_MAX: u32 = 16;
 
 /// The most squads one side may have, so a field of three hundred cannot produce
 /// a hundred and fifty commanders asking at once.
 ///
-/// At [`SQUAD_SIZE`] two that is sixty-four tanks a side under command; the rest
-/// fly doctrine, which is what they would have done before this cut existed.
+/// At the shipped `squad_size` of four that is a hundred and twenty-eight tanks a
+/// side under command; the rest fly doctrine, which is what they would have done
+/// before cut N.2 existed.
 pub const MAX_SQUADS_PER_SIDE: usize = 32;
 
 /// **Which squad** — a side and an ordinal, rendered `red-1`.
@@ -128,10 +143,23 @@ impl SquadRoster {
 /// order that arrives *after* a seat was taken, which is a race the arena settles,
 /// and grouping a seated tank here would only guarantee that race happened.
 ///
+/// `size` is `[tacsim.arena].squad_size` (16b cut Z.1), read through
+/// `clamp(1, SQUAD_SIZE_MAX)` so a caller holding an unvalidated config still gets
+/// squads. Per side, with `n` reflex units, in this order:
+///
+/// 1. `n == 0`: no squad;
+/// 2. `n <= MAX_SQUADS_PER_SIDE × size`: `ceil(n / size)` squads, dealt — squad
+///    `k` takes `n / squads + 1` units while `k < n % squads` and `n / squads`
+///    after, consecutive in id order — so at size four one to four machines are
+///    one squad, five are a three and a two, six two threes, twelve three fours;
+/// 3. otherwise: [`MAX_SQUADS_PER_SIDE`] squads of exactly `size`, and the rest in
+///    no squad.
+///
 /// The answer is deterministic — one pass in unit-id order per side — so two boots
 /// of the same match produce the same squads and the same commanders.
 #[must_use]
-pub fn squads_of(units: &[(ObjId, Team, bool)]) -> Vec<SquadRoster> {
+pub fn squads_of(units: &[(ObjId, Team, bool)], size: u32) -> Vec<SquadRoster> {
+    let size = usize::try_from(size.clamp(1, SQUAD_SIZE_MAX)).unwrap_or(1);
     let mut out = Vec::new();
     for team in Team::ALL {
         let mut side: Vec<ObjId> = units
@@ -141,21 +169,27 @@ pub fn squads_of(units: &[(ObjId, Team, bool)]) -> Vec<SquadRoster> {
             .collect();
         side.sort_unstable();
         side.dedup();
-        if side.is_empty() {
+        let n = side.len();
+        if n == 0 {
             continue;
         }
-        // Doc 16 §6 read the way the pods are claimed: pairs, unless there are too
-        // few units for a pair to mean anything.
-        let size = if side.len() < MIN_UNITS_TO_SPLIT {
-            side.len()
+        // **16b cut Z.1**: deal, don't chunk. Inside the cap every squad is `base`
+        // or `base + 1` units and the larger come first; past it every squad is a
+        // full `size` and the cap decides where the command stops.
+        let (squads, base, extra) = if n <= MAX_SQUADS_PER_SIDE.saturating_mul(size) {
+            let squads = n.div_ceil(size);
+            (squads, n / squads, n % squads)
         } else {
-            SQUAD_SIZE
+            (MAX_SQUADS_PER_SIDE, size, 0)
         };
-        for (at, chunk) in side.chunks(size.max(1)).enumerate() {
-            if at >= MAX_SQUADS_PER_SIDE {
+        let mut from = 0_usize;
+        for at in 0..squads {
+            let take = if at < extra { base + 1 } else { base };
+            let Some(dealt) = side.get(from..from.saturating_add(take)) else {
                 break;
-            }
-            let Some(commander) = chunk.first().copied() else {
+            };
+            from = from.saturating_add(take);
+            let Some(commander) = dealt.first().copied() else {
                 continue;
             };
             let Ok(index) = u16::try_from(at + 1) else {
@@ -164,7 +198,7 @@ pub fn squads_of(units: &[(ObjId, Team, bool)]) -> Vec<SquadRoster> {
             out.push(SquadRoster {
                 id: SquadId { team, index },
                 commander,
-                units: chunk.to_vec(),
+                units: dealt.to_vec(),
             });
         }
     }
@@ -192,42 +226,84 @@ mod tests {
         assert_eq!(SquadId::parse("blue-x"), None);
     }
 
+    /// The sizes of one side's squads, in ordinal order.
+    fn sizes(squads: &[SquadRoster]) -> Vec<usize> {
+        squads.iter().map(|squad| squad.units.len()).collect()
+    }
+
+    /// `n` red machines with ids `10..10 + n`.
+    fn side_of(n: u32) -> Vec<(ObjId, Team, bool)> {
+        (0..n).map(|at| reflex(10 + at, Team::Red)).collect()
+    }
+
+    /// **16b cut Z.1 (16c N6): a side is dealt, not chunked.** Rewrites cut N.2's
+    /// `a_small_side_is_one_squad_and_a_large_one_is_pairs`, which pinned three
+    /// machines as one squad and four as two pairs; at the shipped size of four,
+    /// four machines are one lance, and the size-two half of the table is where
+    /// the old pairs still live.
     #[test]
-    fn a_small_side_is_one_squad_and_a_large_one_is_pairs() {
-        let three = squads_of(&[
-            reflex(9, Team::Red),
-            reflex(4, Team::Red),
-            reflex(6, Team::Red),
-        ]);
+    fn z1_a_side_is_dealt_into_squads_whose_sizes_differ_by_at_most_one() {
+        let three = squads_of(
+            &[
+                reflex(9, Team::Red),
+                reflex(4, Team::Red),
+                reflex(6, Team::Red),
+            ],
+            4,
+        );
         assert_eq!(three.len(), 1, "three tanks is one squad");
         assert_eq!(three[0].commander, ObjId(4), "the lowest id commands");
         assert_eq!(three[0].units, vec![ObjId(4), ObjId(6), ObjId(9)]);
         assert_eq!(three[0].id.to_string(), "red-1");
 
-        let four = squads_of(&[
-            reflex(9, Team::Red),
-            reflex(4, Team::Red),
-            reflex(6, Team::Red),
-            reflex(11, Team::Red),
-        ]);
-        assert_eq!(four.len(), 2, "four tanks is two pod pairs");
-        assert_eq!(four[0].units, vec![ObjId(4), ObjId(6)]);
-        assert_eq!(four[1].units, vec![ObjId(9), ObjId(11)]);
-        assert_eq!(four[1].commander, ObjId(9));
-        assert_eq!(four[1].id.to_string(), "red-2");
+        // The worked table at the shipped size.
+        for (n, want) in [
+            (1, vec![1]),
+            (3, vec![3]),
+            (4, vec![4]),
+            (5, vec![3, 2]),
+            (6, vec![3, 3]),
+            (8, vec![4, 4]),
+            (12, vec![4, 4, 4]),
+        ] {
+            assert_eq!(sizes(&squads_of(&side_of(n), 4)), want, "{n} at size 4");
+        }
+        // And at two, where cut N.2's pod pairs were.
+        for (n, want) in [(3, vec![2, 1]), (4, vec![2, 2]), (5, vec![2, 2, 1])] {
+            assert_eq!(sizes(&squads_of(&side_of(n), 2)), want, "{n} at size 2");
+        }
+
+        // Five on red is a three and a two, consecutive in id order, each
+        // commanded by its own lowest id -- never a four and a one.
+        let five = squads_of(&side_of(5), 4);
+        assert_eq!(five[0].units, vec![ObjId(10), ObjId(11), ObjId(12)]);
+        assert_eq!(five[1].units, vec![ObjId(13), ObjId(14)]);
+        assert_eq!(
+            (five[0].commander, five[1].commander),
+            (ObjId(10), ObjId(13))
+        );
+        assert_eq!(five[1].id.to_string(), "red-2");
+
+        // A size nobody validated is read through the clamp, not refused.
+        assert_eq!(sizes(&squads_of(&side_of(3), 0)), vec![1, 1, 1]);
+        assert_eq!(sizes(&squads_of(&side_of(20), 99)), vec![10, 10]);
     }
 
     #[test]
     fn the_sides_are_grouped_apart_and_pilots_are_skipped() {
-        let mixed = squads_of(&[
-            reflex(4, Team::Red),
-            reflex(5, Team::Red),
-            (ObjId(6), Team::Red, false),
-            reflex(7, Team::Blue),
-            reflex(8, Team::Blue),
-            reflex(9, Team::Blue),
-            reflex(10, Team::Blue),
-        ]);
+        // Size two, so blue's four are two squads and the ordinals are per side.
+        let mixed = squads_of(
+            &[
+                reflex(4, Team::Red),
+                reflex(5, Team::Red),
+                (ObjId(6), Team::Red, false),
+                reflex(7, Team::Blue),
+                reflex(8, Team::Blue),
+                reflex(9, Team::Blue),
+                reflex(10, Team::Blue),
+            ],
+            2,
+        );
         assert_eq!(mixed.len(), 3);
         assert_eq!(mixed[0].id.team, Team::Red);
         assert!(!mixed[0].holds(ObjId(6)), "a seated tank takes no order");
@@ -235,25 +311,102 @@ mod tests {
         assert_eq!(mixed[2].id.to_string(), "blue-2");
         assert!(mixed[2].holds(ObjId(9)));
         assert_eq!(mixed[2].team(), Team::Blue);
+
+        // **16b cut Z.1**: at the shipped size the pilot's tank is still skipped
+        // (red's two machines are one squad of two, not three), and each side is
+        // its own `red-1` / `blue-1`.
+        let lances = squads_of(
+            &[
+                reflex(4, Team::Red),
+                (ObjId(5), Team::Red, false),
+                reflex(6, Team::Red),
+                reflex(7, Team::Blue),
+                reflex(8, Team::Blue),
+                reflex(9, Team::Blue),
+                reflex(10, Team::Blue),
+                reflex(11, Team::Blue),
+            ],
+            4,
+        );
+        assert_eq!(sizes(&lances), vec![2, 3, 2]);
+        assert_eq!(lances[0].units, vec![ObjId(4), ObjId(6)]);
+        assert_eq!(lances[1].id.to_string(), "blue-1");
+        assert_eq!(lances[2].id.to_string(), "blue-2");
+        assert_eq!(lances[2].commander, ObjId(10));
     }
 
     #[test]
     fn the_side_is_capped_so_a_field_of_three_hundred_has_a_bounded_command() {
         let many: Vec<(ObjId, Team, bool)> =
             (0..300).map(|n| reflex(100_000 + n, Team::Red)).collect();
-        let squads = squads_of(&many);
+        let squads = squads_of(&many, 4);
         assert_eq!(squads.len(), MAX_SQUADS_PER_SIDE);
         assert_eq!(squads[0].commander, ObjId(100_000));
-        assert_eq!(
-            squads[MAX_SQUADS_PER_SIDE - 1].units.len(),
-            SQUAD_SIZE,
-            "every squad inside the cap is a full pair"
+        assert!(
+            squads.iter().all(|squad| squad.units.len() == 4),
+            "every squad inside the cap is a full lance"
         );
+        assert_eq!(
+            squads[MAX_SQUADS_PER_SIDE - 1].units.last(),
+            Some(&ObjId(100_127))
+        );
+        assert!(
+            squads.iter().all(|squad| !squad.holds(ObjId(100_128))),
+            "the hundred and twenty-ninth machine flies doctrine"
+        );
+        // And 150 a side (the CI cohort) deals into more than the cap, so it is
+        // still 32 squads of four.
+        let cohort: Vec<(ObjId, Team, bool)> =
+            (0..150).map(|n| reflex(200_000 + n, Team::Blue)).collect();
+        assert_eq!(sizes(&squads_of(&cohort, 4)), vec![4; MAX_SQUADS_PER_SIDE]);
+    }
+
+    /// **16b cut Z.1: the dealing rule, over every side size and every legal
+    /// squad size** -- exhaustive rather than sampled, because the space is 3,200
+    /// cases and each is a sort of at most two hundred ids.
+    #[test]
+    fn z1_every_squad_is_at_most_size_and_the_sizes_differ_by_at_most_one() {
+        for n in 1..=200_u32 {
+            let side = side_of(n);
+            let ids: Vec<ObjId> = side.iter().map(|(unit, _, _)| *unit).collect();
+            for size in 1..=SQUAD_SIZE_MAX {
+                let squads = squads_of(&side, size);
+                let cap = usize::try_from(size).unwrap_or(1);
+                let lens = sizes(&squads);
+                assert!(
+                    lens.iter().all(|len| *len >= 1 && *len <= cap),
+                    "n {n} size {size}: {lens:?}"
+                );
+                let low = lens.iter().min().copied().unwrap_or(0);
+                let high = lens.iter().max().copied().unwrap_or(0);
+                assert!(high - low <= 1, "n {n} size {size}: {lens:?}");
+                assert!(squads.len() <= MAX_SQUADS_PER_SIDE);
+                let mut seen: Vec<ObjId> = squads
+                    .iter()
+                    .flat_map(|squad| squad.units.iter().copied())
+                    .collect();
+                let dealt = seen.len();
+                seen.sort_unstable();
+                seen.dedup();
+                assert_eq!(seen.len(), dealt, "n {n} size {size}: a unit twice");
+                for squad in &squads {
+                    assert_eq!(squad.units.first(), Some(&squad.commander));
+                }
+                let n_units = usize::try_from(n).unwrap_or(0);
+                if n_units <= MAX_SQUADS_PER_SIDE * cap {
+                    assert_eq!(
+                        seen, ids,
+                        "n {n} size {size}: inside the cap every unit is dealt once"
+                    );
+                    assert_eq!(squads.len(), n_units.div_ceil(cap));
+                }
+            }
+        }
     }
 
     #[test]
     fn an_empty_field_has_no_squads() {
-        assert!(squads_of(&[]).is_empty());
-        assert!(squads_of(&[(ObjId(4), Team::Red, false)]).is_empty());
+        assert!(squads_of(&[], 4).is_empty());
+        assert!(squads_of(&[(ObjId(4), Team::Red, false)], 4).is_empty());
     }
 }

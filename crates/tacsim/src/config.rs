@@ -217,6 +217,22 @@ pub struct ArenaConfig {
     /// Zero is legal and means "no floor": every trigger asks. Nothing but a
     /// deliberate test should use it, and the cost run says why.
     pub deliberate_min_ms: u32,
+    /// **How many machines one squad holds at most** (16b cut Z.1; 16c N6,
+    /// *lances*; doc 16 §6 "Deliberation": *requested per squad or commander*).
+    ///
+    /// A side's reflex units are **dealt** into `ceil(n / squad_size)` squads
+    /// whose sizes differ by at most one, consecutive in unit-id order, so five
+    /// machines at four are a three and a two and never a four and a one; past
+    /// `MAX_SQUADS_PER_SIDE` full squads the rest fly doctrine
+    /// ([`crate::deliberation::squads_of`] is the whole rule). **Both** callers
+    /// of `squads_of` read it from here — the match record's grouping at
+    /// check-out and `Arena::new`'s own — so the two groupings of one match are
+    /// one function of one data.
+    ///
+    /// Four, because twelve machines a side is an opponent only in lances of
+    /// four; `1..=`[`crate::deliberation::SQUAD_SIZE_MAX`] by
+    /// [`ArenaConfig::validate`].
+    pub squad_size: u32,
     /// The match ledger's cadence and its two hard bounds.
     pub ledger: LedgerConfig,
     /// **The reflex controller's cadence, paths and doctrine** (16b cut N.1).
@@ -231,6 +247,7 @@ impl Default for ArenaConfig {
             occupied_stop_ms: 2_000,
             intents: IntentsConfig::default(),
             deliberate_min_ms: 30_000,
+            squad_size: 4,
             ledger: LedgerConfig::default(),
             reflex: ReflexConfig::default(),
         }
@@ -915,6 +932,14 @@ impl ArenaConfig {
             60_000,
             u64::from(self.occupied_stop_ms),
         )?;
+        // **16b cut Z.1** (16c N6): a squad of none commands nothing, and a squad
+        // past sixteen is a side and not a squad.
+        between(
+            "[tacsim.arena].squad_size",
+            1,
+            u64::from(crate::deliberation::SQUAD_SIZE_MAX),
+            u64::from(self.squad_size),
+        )?;
         at_least(
             "[tacsim.arena.intents].max_pending_per_unit",
             1,
@@ -1256,7 +1281,39 @@ pub struct LoadedPack {
 
 #[cfg(test)]
 mod tests {
-    use super::CommandConfig;
+    use super::{ArenaConfig, CommandConfig};
+
+    /// **16b cut Z.1** (16c N6): `[tacsim.arena].squad_size` ships at four, takes
+    /// both edges of `1..=16`, and refuses either side of them in Q.7's sentence.
+    #[test]
+    fn z1_the_squad_size_validates_by_name() {
+        assert_eq!(ArenaConfig::default().squad_size, 4);
+        assert_eq!(ArenaConfig::default().validate(), Ok(()));
+        for legal in [1, 16] {
+            assert_eq!(
+                ArenaConfig {
+                    squad_size: legal,
+                    ..ArenaConfig::default()
+                }
+                .validate(),
+                Ok(()),
+                "{legal} is legal"
+            );
+        }
+        for (value, sentence) in [
+            (0, "[tacsim.arena].squad_size must be 1 to 16 (it is 0)"),
+            (17, "[tacsim.arena].squad_size must be 1 to 16 (it is 17)"),
+        ] {
+            assert_eq!(
+                ArenaConfig {
+                    squad_size: value,
+                    ..ArenaConfig::default()
+                }
+                .validate(),
+                Err(sentence.to_string())
+            );
+        }
+    }
 
     /// **16b cut Y.2**: `[tacsim.command]` passes at its shipped values and
     /// refuses each edge past its band in Q.7's sentence, naming the key and the

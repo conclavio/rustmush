@@ -27,10 +27,20 @@
 //!
 //! A signal carries **counts, bands and opaque contact ids** — the same things
 //! `CONTACTS` prints for a pilot (doc 16 §3.6 "What a pilot sees"). It never
-//! carries a target's object id, a pose, or anything about a unit the commander
-//! does not hold. That is not politeness: the signal becomes the prompt a model
-//! reads, and doc 16 §3.6's observer rule does not stop being true because the
-//! observer is a provider.
+//! carries a target's object id, a target's pose, or anything about an *other*
+//! unit the commander does not hold. That is not politeness: the signal becomes
+//! the prompt a model reads, and doc 16 §3.6's observer rule does not stop being
+//! true because the observer is a provider.
+//!
+//! **The one other thing it carries is the squad itself** (16b cut Z.1, 16c N6;
+//! [`SignalMember`]): each member of a reported squad as it knows itself — its
+//! reflex state, its health, and its range and bearing from the commander, read
+//! off its own pose whether or not the commander holds it as a contact. That is
+//! the squad's own knowledge relayed to its commander (doc 16 §3.6 read for
+//! machines: a squad acts on what its own units hold), never the other side's.
+//! A member's object id rides the signal for the reply's sake and is never
+//! printed: the prompt names a member by its ordinal
+//! ([`crate::deliberation::request::user_prompt`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,6 +86,37 @@ pub struct SignalContact {
     /// Range from the commander, centimetres. The *world* turns this into one of
     /// the cockpit's four band words before it reaches a prompt.
     pub range_cm: u64,
+}
+
+/// **One member of a reported squad, as its own facts** (16b cut Z.1, 16c N6).
+///
+/// The squad's picture is the union of what its units hold **of themselves** —
+/// doc 16 §3.6 read for machines: a squad acts on what its own units hold, and a
+/// unit always holds its own state, its own hull and its own place. So a member
+/// row is never a contact, never a plot and never anything about the other side;
+/// it is the commander's own squadmate as that squadmate knows itself. The range
+/// and bearing are from the commander's pose to the member's own pose, which is
+/// the squad's radio net and not a sensor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SignalMember {
+    /// The member's object id. It rides the seam so a later order may name a
+    /// member (cut Z.2's `support_member`) and **never reaches a prompt**, as
+    /// [`SquadSignal::commander`] does not.
+    pub unit: ObjId,
+    /// `1` for the commander, then roster order.
+    pub ordinal: u16,
+    /// The reflex controller's state, [`ReflexState::Startup`] while the
+    /// controller has no row for it yet.
+    pub state: ReflexState,
+    /// Its health, per mille of its authored totals (`reflex_health_permille`,
+    /// the number the squad's mean is taken over).
+    pub health_permille: u32,
+    /// Centimetres from the commander's pose to this member's own; `0` for the
+    /// commander.
+    pub range_cm: u64,
+    /// Millidegrees clockwise from north, from the commander to this member; `0`
+    /// for the commander.
+    pub bearing_mdeg: u32,
 }
 
 /// **Why this squad is being reported** (doc 16 §6).
@@ -165,6 +206,10 @@ pub struct SquadSignal {
     pub cell: Option<(u16, u16)>,
     /// The window's `(columns, rows)`, so an `advance` order can be bounded.
     pub window: (u16, u16),
+    /// **The squad's own units, as their own facts** (16b cut Z.1, 16c N6): one
+    /// row per roster unit the arena still holds, in roster order, the commander
+    /// first at ordinal `1`. Filled only for a squad that is being reported.
+    pub members: Vec<SignalMember>,
 }
 
 /// What the arena remembers about one squad between signals.
@@ -313,6 +358,41 @@ impl Arena {
                     health_count = health_count.saturating_add(1);
                 }
             }
+            // **16b cut Z.1** (16c N6): the squad's own picture — every roster
+            // unit the arena still holds, as it knows itself. Built here, beside
+            // the contact list, so a squad that is not being reported allocates
+            // nothing for it. A member's own pose is read directly: it is the
+            // member's own knowledge, relayed over the squad's net, and no
+            // sensor of either side is consulted.
+            let mut members: Vec<SignalMember> = Vec::with_capacity(squad.units.len());
+            for unit in &squad.units {
+                let Some(member) = self.unit(*unit) else {
+                    continue;
+                };
+                let Ok(ordinal) = u16::try_from(members.len().saturating_add(1)) else {
+                    break;
+                };
+                let (range_cm, bearing_mdeg) = if *unit == squad.commander {
+                    (0, 0)
+                } else {
+                    let own = crate::arena::state::SeenPose::of(member);
+                    (
+                        own.range_from(&commander.pose),
+                        own.bearing_from(&commander.pose),
+                    )
+                };
+                members.push(SignalMember {
+                    unit: *unit,
+                    ordinal,
+                    state: self
+                        .reflex
+                        .unit(*unit)
+                        .map_or(ReflexState::Startup, |machine| machine.state),
+                    health_permille: self.reflex_health_permille(*unit),
+                    range_cm,
+                    bearing_mdeg,
+                });
+            }
             out.push(SquadSignal {
                 squad: squad.id,
                 commander: squad.commander,
@@ -337,6 +417,7 @@ impl Arena {
                 states,
                 cell: self.definition.terrain.cell_of(&commander.pose),
                 window,
+                members,
             });
         }
         self.squad_watch = watch;

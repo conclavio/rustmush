@@ -3196,8 +3196,9 @@ pub struct Arena {
     /// **The squads this match's reflex units are commanded in** (16b cut N.2;
     /// doc 16 §6 "Deliberation": *per squad or commander rather than per unit*),
     /// derived at check-out by [`crate::deliberation::squads_of`] — the same
-    /// function, over the same `(unit, team, controller)` triples, that files them
-    /// on the match record, so the two groupings cannot drift.
+    /// function, over the same `(unit, team, controller)` triples and the same
+    /// `[tacsim.arena].squad_size` (16b cut Z.1), that files them on the match
+    /// record, so the two groupings cannot drift.
     ///
     /// Empty for a match with no AI at all: an arena with no squads reports no
     /// signals and accepts no order, which is exactly what doc 16 §1's two-tank
@@ -3649,12 +3650,14 @@ impl Arena {
             jam_fold: BTreeMap::new(),
             // **16b cut N.2**: the squads are *derived* from the check-out, by the
             // same `squads_of` the match record files them with — a side's reflex
-            // units in pod pairs, lowest id commanding. Derived rather than handed
-            // over because two groupings of one match would be two answers to
-            // "which squad is that order for", and because it means the harness and
-            // every fixture get the same grouping the production lobby does without
-            // a second argument to thread.
-            squads: crate::deliberation::squad::squads_of(&squad_input),
+            // units dealt into squads of at most `[tacsim.arena].squad_size` (16b
+            // cut Z.1), lowest id commanding. Derived rather than handed over
+            // because two groupings of one match would be two answers to "which
+            // squad is that order for", and because it means the harness and every
+            // fixture get the same grouping the production lobby does: the size
+            // is read off the same `ArenaConfig` the match record's call reads, so
+            // the two are one function of one data.
+            squads: crate::deliberation::squad::squads_of(&squad_input, arena_cfg.squad_size),
             squad_watch: crate::arena::command::SquadWatchTable::new(),
             squads_expired: crate::arena::command::ExpiredSquads::new(),
         };

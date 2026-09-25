@@ -856,8 +856,10 @@ before a crash is re-discovered, re-leased and finished after it (K7.4).
 
 ### Squad deliberation (16b cut N.2): the combat arena's commander
 
-A running match's AI tanks are grouped into **squads** — a side's reflex units in
-pod pairs, the lowest object id commanding — and one squad may hold one
+A running match's AI tanks are grouped into **squads** — a side's reflex units
+dealt, in object-id order, into squads of at most `[tacsim.arena].squad_size`
+(default 4, `1` to `16`; 16b cut Z.1) whose sizes differ by at most one, the
+lowest object id of each commanding — and one squad may hold one
 **standing order**: an objective (`hold`, `advance`, `engage`, `withdraw`), an
 optional target, two constraints (`hold_fire`, `max_range_band`) and a time to
 live. It is asked for per squad, never per unit.
@@ -1200,8 +1202,9 @@ scripts/harness-weekly.sh
 ```
 
 It runs every ignored harness lane in release — the ground pulse, the arena at
-the CI reach and at the authored reach, the ten-minute long run and the 24-pilot
-fan-out — and then the **delta** against the committed baseline, and stops
+the CI reach and at the authored reach, the ten-minute long run, the 24-pilot
+fan-out and the lance lane — and then the **delta** against the committed
+baseline, and stops
 non-zero at the first failure. The two `cargo test` lines are the CI job's,
 verbatim (a test holds them equal); only the environment differs.
 
@@ -1227,6 +1230,29 @@ verbatim (a test holds them equal); only the environment differs.
   is the one step that fails the job. The runner is never the blessing host, so
   on CI the delta gates the deterministic block alone.
 
+**The lance lane** (`tacsim_harness_lance`, 16b cut Z.1; 16c N6). Twelve
+machines a side — `TACSIM_LANCE_UNITS` (default 24) units of the fielded
+catalog — on the shipped proving ground at the authored reach, fifty-four cells
+apart astride the crossroads, dealt into lances of four, each side under a
+scripted commander that is its own lowest unit: every squad ordered to engage at
+the warm-up's end, then one squad a minute stepped through hold, advance and
+withdraw while the others engage again, three orders a minute a side, for
+`TACSIM_LANCE_ARENA_S` (default 120) arena seconds. Under `TACSIM_ASSERT` it
+asserts, at any knob, W8 — the span of control and the orders per commander per
+minute — within `[tacsim.command]`, that the ledger's `ordered` lines are
+exactly the orders the script gave, that the opening round landed on every
+standing unit, that the span never exceeds what the script holds, and that the
+sides fired. **Only at the lane's defaults** (`TACSIM_SEED` 2350,
+`TACSIM_LANCE_UNITS` 24, `TACSIM_LANCE_ARENA_S` 120, `TACSIM_WAKE_JITTER_MS` 0;
+the field line prints `at_defaults`) does it also assert the span and the
+busiest commander minute **equal** to the squads a side and the opening round
+plus one full minute a side on the tape: off them a lance can be wiped out,
+reach its crossroads or take a mark a wake late, and the fight decides those
+figures. Its timing is **report-only**: the
+per-wake p99 is printed beside 12 ms and the per-window p99 beside 20 ms, the
+authored lane's lenses, and nothing is asserted about either. It writes
+`harness-lance.json`, which the delta does not read.
+
 **Blessing.** `TACSIM_BASELINE_BLESS=1 scripts/harness-weekly.sh` rewrites this
 platform's `arena.<os>.json` from the fresh report, with a `blessed` stanza (the
 commit, the date, the host), and then compares against what it wrote. Commit
@@ -1244,14 +1270,16 @@ deterministic difference is never noise: it means the arena did something
 different at the default knobs.
 
 The reports land at the repository root: `harness.json` (the ground pulse),
-`harness-arena.json`, `harness-arena-authored.json`, `harness-arena-long.json`
-and `harness-fan-out.json`. The delta reads `harness-arena.json` alone, so the
+`harness-arena.json`, `harness-arena-authored.json`, `harness-arena-long.json`,
+`harness-fan-out.json` and `harness-lance.json`. The delta reads
+`harness-arena.json` alone, so the
 knobs that move it are the arena's: `TACSIM_UNITS`, `TACSIM_ARENA_S`,
 `TACSIM_FIGHTING`, `TACSIM_SEED`, `TACSIM_SENSOR_CELLS`, `TACSIM_SHARE_CELLS`
 and `TACSIM_WAKE_JITTER_MS` — expect the delta to fail on the deterministic
 block when you set any of them, because it is a different run.
-`TACSIM_LONG_RUN_S` sizes the long run and `TACSIM_PULSES` the ground-pulse
-lane; neither reaches the file the delta reads.
+`TACSIM_LONG_RUN_S` sizes the long run, `TACSIM_PULSES` the ground-pulse lane
+and `TACSIM_LANCE_UNITS` and `TACSIM_LANCE_ARENA_S` the lance lane; none of them
+reaches the file the delta reads.
 
 The delta refuses a `harness-arena.json` older than the test binary that reads
 it, naming the script: a report left by an earlier build is not this tree's.

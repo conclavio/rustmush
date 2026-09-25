@@ -538,12 +538,16 @@ fn issue(arena: &mut Arena, order: &Order) -> Vec<IntentOutcome> {
 
 #[test]
 fn the_arena_and_the_grouping_agree_on_who_commands() {
-    let arena = field(&arena_cfg(30_000));
-    let by_hand = squads_of(&[
-        (RED_A, Team::Red, true),
-        (RED_B, Team::Red, true),
-        (BLUE, Team::Blue, true),
-    ]);
+    let cfg = arena_cfg(30_000);
+    let arena = field(&cfg);
+    let by_hand = squads_of(
+        &[
+            (RED_A, Team::Red, true),
+            (RED_B, Team::Red, true),
+            (BLUE, Team::Blue, true),
+        ],
+        cfg.squad_size,
+    );
     assert_eq!(
         arena.squads, by_hand,
         "`Arena::new` derives the squads with the same function the match record files them with"
@@ -556,6 +560,501 @@ fn the_arena_and_the_grouping_agree_on_who_commands() {
         arena.squad_of(RED_B).map(|roster| roster.id),
         Some(red_one())
     );
+
+    // **16b cut Z.1** (16c N6): five machines on red at the shipped size — what
+    // `SIM AI 6` with one human fields — are a three and a two, each commanded
+    // by the lowest id of its own run, never a four and a one.
+    assert_eq!(cfg.squad_size, 4, "the shipped lance");
+    let lance = field_of(&cfg, &five_and_two());
+    let by_hand = squads_of(
+        &lance
+            .units
+            .iter()
+            .map(|unit| (unit.id, unit.team, true))
+            .collect::<Vec<_>>(),
+        cfg.squad_size,
+    );
+    assert_eq!(lance.squads, by_hand);
+    let shape: Vec<(String, ObjId, Vec<ObjId>)> = lance
+        .squads
+        .iter()
+        .map(|roster| {
+            (
+                roster.id.to_string(),
+                roster.commander,
+                roster.units.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            (
+                "red-1".to_string(),
+                ObjId(20),
+                vec![ObjId(20), ObjId(21), ObjId(22)]
+            ),
+            ("red-2".to_string(), ObjId(23), vec![ObjId(23), ObjId(24)]),
+            ("blue-1".to_string(), ObjId(30), vec![ObjId(30), ObjId(31)]),
+        ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Z.1 — the squad's own picture, and a lance of five at three cadences
+// (16c N6; doc 16 §3.6 read for machines, §6 "Deliberation")
+// ---------------------------------------------------------------------------
+
+/// An arena over the plain window with `units` (id, team, cell), every one on the
+/// reflex controller at the wide scope — [`field_placed`]'s shape for any number
+/// of tanks.
+fn field_of(cfg: &ArenaConfig, units: &[(ObjId, Team, (u16, u16))]) -> Arena {
+    let mut arena = Arena::new(
+        CustodyOut {
+            definition: definition(),
+            units: units
+                .iter()
+                .map(|(id, team, (x, y))| tank(*id, *team, centre(*x, *y), Controller::Reflex))
+                .collect(),
+            pilots: Vec::new(),
+            resolution: tacsim::match_::stock_resolution(),
+            seed: SEED,
+        },
+        cfg,
+        &match_cfg(),
+        &SensorsConfig::default(),
+    )
+    .expect("the test arena");
+    arena.clock.pin_tempo_for_tests(Tempo::Engaged);
+    arena
+}
+
+/// Five machines on red down column 2 and two on blue in column 13: at the
+/// shipped size red is `red-1` (`#20`–`#22`) and `red-2` (`#23`, `#24`).
+fn five_and_two() -> Vec<(ObjId, Team, (u16, u16))> {
+    vec![
+        (ObjId(20), Team::Red, (2, 6)),
+        (ObjId(21), Team::Red, (2, 7)),
+        (ObjId(22), Team::Red, (2, 8)),
+        (ObjId(23), Team::Red, (2, 9)),
+        (ObjId(24), Team::Red, (2, 10)),
+        (ObjId(30), Team::Blue, (13, 7)),
+        (ObjId(31), Team::Blue, (13, 9)),
+    ]
+}
+
+/// **16b cut Z.1: a reported squad's signal carries its own members.**
+///
+/// `red-1` is `#4` at (2, 8), `#6` taken out of the arena before the first pulse
+/// (a unit that left the match stays on the roster; the arena skips it), `#7`
+/// three cells east at (5, 8) and hurt, and `#8` one cell south at (2, 9). The
+/// opening signal reads `#4` at ordinal 1 with `0`/`0`, then `#7` and `#8` at
+/// ordinals 2 and 3 in roster order, each with its own health and its own place
+/// from the commander, and the brief bands each in the word a pilot's own
+/// `CONTACTS` row would use at that range.
+#[test]
+fn z1_a_reported_squad_carries_its_members_in_roster_order() {
+    const GONE: ObjId = ObjId(6);
+    const EAST: ObjId = ObjId(7);
+    const SOUTH: ObjId = ObjId(8);
+    let cfg = arena_cfg(30_000);
+    let mut arena = field_of(
+        &cfg,
+        &[
+            (RED_A, Team::Red, (2, 8)),
+            (GONE, Team::Red, (2, 10)),
+            (EAST, Team::Red, (5, 8)),
+            (SOUTH, Team::Red, (2, 9)),
+            (BLUE, Team::Blue, (13, 8)),
+        ],
+    );
+    assert_eq!(
+        arena.squads.first().map(|roster| roster.units.clone()),
+        Some(vec![RED_A, GONE, EAST, SOUTH]),
+        "four machines are one lance"
+    );
+    arena.units.retain(|unit| unit.id != GONE);
+    hurt_to_withdraw(&mut arena, EAST);
+    let hurt = arena.reflex_health_permille(EAST);
+    assert!(hurt < 1_000, "the hurt member reads its own hull: {hurt}");
+    let whole = arena.reflex_health_permille(SOUTH);
+
+    // One pulse, the opening one, so the states the signal carries are the
+    // states the controller holds as it is read.
+    let signals = arena.step(0, &[], &[]).deliberation;
+    let signal = signals
+        .iter()
+        .find(|signal| signal.squad == red_one())
+        .expect("red-1 is reported on the opening pulse");
+    let rows: Vec<(ObjId, u16, u32)> = signal
+        .members
+        .iter()
+        .map(|member| (member.unit, member.ordinal, member.health_permille))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![(RED_A, 1, 1_000), (EAST, 2, hurt), (SOUTH, 3, whole)],
+        "roster order, the commander first, a unit the arena no longer holds absent"
+    );
+    let lead = &signal.members[0];
+    assert_eq!((lead.range_cm, lead.bearing_mdeg), (0, 0));
+    let east = &signal.members[1];
+    assert_eq!(east.range_cm, 3 * u64::from(CELL_CM), "three cells east");
+    assert_eq!(east.bearing_mdeg, 90_000);
+    let south = &signal.members[2];
+    assert_eq!(south.range_cm, u64::from(CELL_CM));
+    // The state each member holds of itself, `Startup` until its controller
+    // has a row.
+    for member in &signal.members {
+        assert_eq!(
+            member.state,
+            state_of(&arena, member.unit).unwrap_or(ReflexState::Startup),
+            "{:?}",
+            member.unit
+        );
+    }
+
+    // The brief: the pilot's band word, `here` for the commander, and the
+    // object ids on the seam but never in the prompt.
+    let brief = tacsim::deliberation::SquadBrief::from_signal(1, signal, 3);
+    assert_eq!(brief.members.len(), 3);
+    assert_eq!(brief.members[0].band, "here");
+    assert_eq!(
+        brief.members[1].band,
+        tacsim::match_::cockpit::contact_band(east.range_cm, &signal.bands_cm, signal.sight_cm)
+    );
+    assert_eq!(
+        brief.members[2].band,
+        tacsim::match_::cockpit::contact_band(south.range_cm, &signal.bands_cm, signal.sight_cm)
+    );
+    assert_eq!(brief.members[1].bearing_deg, 90);
+    assert_eq!(brief.members[1].unit, EAST.0);
+    let prompt = tacsim::deliberation::request::user_prompt(&brief);
+    // The opening pulse is before `startup_ms`: every machine is still starting,
+    // and the prompt says so in the controller's own word.
+    assert!(
+        prompt.contains("member 1 (commander): state startup, health 1000\n"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains(&format!(
+            "member 2: state startup, health {hurt}, {}, bearing 90\n",
+            brief.members[1].band
+        )),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("member 4"), "{prompt}");
+}
+
+/// **16b cut Z.1: each member's state is its own machine's, read as the signal
+/// is taken.**
+///
+/// The opening pulse above is before `startup_ms`, where every machine reads
+/// `Startup` and a signal that wrote `Startup` for everyone — or the
+/// commander's own state for every member — would pass. So this one steps the
+/// same lance, at a zero floor so every change of the commander's contact set
+/// is reported, pulse by pulse past `startup_ms + decide_ms`, and reads the
+/// first `red-1` signal after it against the controller at that very pulse:
+/// the hurt `#7` has withdrawn, the commander has not, and nobody is starting.
+#[test]
+fn z1_a_later_signal_reads_each_members_own_state() {
+    const EAST: ObjId = ObjId(7);
+    const SOUTH: ObjId = ObjId(8);
+    let cfg = arena_cfg(0);
+    let mut arena = field_of(
+        &cfg,
+        &[
+            (RED_A, Team::Red, (2, 8)),
+            (EAST, Team::Red, (5, 8)),
+            (SOUTH, Team::Red, (2, 9)),
+            (BLUE, Team::Blue, (13, 8)),
+        ],
+    );
+    hurt_to_withdraw(&mut arena, EAST);
+    let settled = i64::from(match_cfg().startup_ms)
+        .saturating_add(i64::from(cfg.reflex.decide_ms))
+        .saturating_add(500);
+    let mut wall = arena.now_ms;
+    let mut read = None;
+    while arena.now_ms < 20_000 {
+        let out = arena.step(wall, &[], &[]);
+        wall += 500;
+        if let Some(signal) = out
+            .deliberation
+            .into_iter()
+            .find(|signal| signal.squad == red_one() && signal.at_ms >= settled)
+        {
+            // The controller's states at the pulse the signal was taken at.
+            let held: Vec<Option<ReflexState>> = signal
+                .members
+                .iter()
+                .map(|member| state_of(&arena, member.unit))
+                .collect();
+            read = Some((signal, held));
+            break;
+        }
+        assert!(
+            out.ended.is_none(),
+            "the lance fought to the end unreported"
+        );
+    }
+    let (signal, held) = read.expect("red-1 is reported again once its commander's contacts move");
+    let states: Vec<(ObjId, ReflexState)> = signal
+        .members
+        .iter()
+        .map(|member| (member.unit, member.state))
+        .collect();
+    assert_eq!(
+        held,
+        states
+            .iter()
+            .map(|(_, state)| Some(*state))
+            .collect::<Vec<_>>(),
+        "each member's state is its own machine's: {states:?}"
+    );
+    assert_eq!(
+        states.iter().map(|(unit, _)| *unit).collect::<Vec<_>>(),
+        vec![RED_A, EAST, SOUTH]
+    );
+    assert_eq!(
+        states[1].1,
+        ReflexState::Withdraw,
+        "the hurt member has withdrawn: {states:?}"
+    );
+    assert!(
+        states[0].1 != ReflexState::Withdraw && states[0].1 != ReflexState::Startup,
+        "the commander is whole and running, so its state is not the hurt member's: {states:?}"
+    );
+    assert!(
+        states
+            .iter()
+            .all(|(_, state)| *state != ReflexState::Startup),
+        "nobody is still starting past startup_ms + decide_ms: {states:?}"
+    );
+    let brief = tacsim::deliberation::SquadBrief::from_signal(1, &signal, 3);
+    let prompt = tacsim::deliberation::request::user_prompt(&brief);
+    assert!(
+        prompt.contains(&format!(
+            "member 2: state withdraw, health {}, {}, bearing {}\n",
+            brief.members[1].health_permille, brief.members[1].band, brief.members[1].bearing_deg
+        )),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains(&format!(
+            "member 1 (commander): state {}, health ",
+            states[0].1.as_str()
+        )),
+        "{prompt}"
+    );
+}
+
+// The cross-tempo property for the grouping (16b §11): one scripted log over a
+// five-machine side at 5,000, 1,000 and 500 ms. The squads are fixed at
+// `Arena::new`, so the roster is compared as a guard that nothing about the
+// cadence reaches the grouping; the signals are compared on the **opening** pulse
+// only — arena millisecond 0, where every cadence coincides and every squad reads
+// `NoOrder`. The later signal lists are not compared, on purpose:
+// `take_deliberation_signals` runs once at the end of each pulse and `SquadWatch`
+// is a view the hash excludes, so a `ContactsChanged` lands at a different
+// millisecond at each cadence by design.
+
+/// One lance replay.
+struct LanceReplay {
+    events: Vec<(i64, String, u64)>,
+    hashes: Vec<u64>,
+    finals: Vec<OrderedFinal>,
+    roster: Vec<(String, ObjId, Vec<ObjId>)>,
+    opening: Vec<tacsim::arena::command::SquadSignal>,
+}
+
+fn replay_lance(cadence_ms: i64, until_ms: i64) -> LanceReplay {
+    let cfg = ArenaConfig {
+        squad_size: 4,
+        ..arena_cfg(30_000)
+    };
+    let mut arena = field_of(&cfg, &five_and_two());
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    let red_two = SquadId {
+        team: Team::Red,
+        index: 2,
+    };
+    // The script: `red-1` holds where it stands for twenty seconds and `red-2`
+    // advances on the crossing for ten, both on the opening pulse.
+    let hold = order(Objective::Hold, 20_000);
+    let advance = Order {
+        squad: red_two,
+        ..order(Objective::Advance { to: (9, 3) }, 10_000)
+    };
+    let mut burst: Vec<Intent> = Vec::new();
+    for told in [&hold, &advance] {
+        for unit in arena
+            .squads
+            .iter()
+            .filter(|roster| roster.id == told.squad)
+            .flat_map(|roster| roster.units.clone())
+        {
+            burst.push(Intent {
+                unit,
+                channel: Channel::Helm,
+                epoch: 0,
+                kind: IntentKind::Order(Box::new(told.clone())),
+                seq: burst.len() as u64,
+            });
+        }
+    }
+    assert_eq!(burst.len(), 5, "every red machine is ordered");
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut opening = Vec::new();
+    let mut wall = 0_i64;
+    let mut first = true;
+    loop {
+        let out = if first {
+            arena.step(wall, &[], &burst)
+        } else {
+            arena.step(wall, &[], &[])
+        };
+        if first {
+            assert_eq!(arena.now_ms, 0, "the opening pulse is arena millisecond 0");
+            opening = out.deliberation.clone();
+            first = false;
+        }
+        absorb(&out, &mut bytes);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    let events = events(&mut arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    let finals = arena
+        .units
+        .iter()
+        .map(|unit| {
+            let row = arena.reflex.unit(unit.id);
+            (
+                unit.id,
+                unit.pose.x_cm,
+                unit.pose.y_cm,
+                unit.pose.heading_mdeg,
+                unit.speed_cms,
+                row.map_or(ReflexState::Startup, |row| row.state),
+                row.and_then(|row| row.goal),
+                row.is_some_and(|row| row.order.is_some()),
+            )
+        })
+        .collect();
+    let roster = arena
+        .squads
+        .iter()
+        .map(|roster| {
+            (
+                roster.id.to_string(),
+                roster.commander,
+                roster.units.clone(),
+            )
+        })
+        .collect();
+    LanceReplay {
+        events,
+        hashes,
+        finals,
+        roster,
+        opening,
+    }
+}
+
+#[test]
+fn z1_a_lance_of_five_is_one_grouping_at_three_cadences() {
+    let cadences = [5_000_i64, 1_000, 500];
+    let runs: Vec<LanceReplay> = cadences
+        .into_iter()
+        .map(|cadence| replay_lance(cadence, 30_000))
+        .collect();
+    let first = runs.first().expect("three replays");
+
+    // Worth comparing before it is compared: the grouping is the dealt one, the
+    // opening pulse reported every squad with its members, both orders landed
+    // and ran out, and the sides fought.
+    assert_eq!(
+        first
+            .roster
+            .iter()
+            .map(|(id, commander, units)| (id.as_str(), *commander, units.len()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("red-1", ObjId(20), 3),
+            ("red-2", ObjId(23), 2),
+            ("blue-1", ObjId(30), 2)
+        ]
+    );
+    assert_eq!(first.opening.len(), 3, "every squad asks at millisecond 0");
+    for signal in &first.opening {
+        assert_eq!(signal.reason, tacsim::arena::command::SignalReason::NoOrder);
+        assert_eq!(signal.at_ms, 0);
+        assert_eq!(
+            signal.members.first().map(|member| member.unit),
+            Some(signal.commander)
+        );
+    }
+    assert_eq!(
+        first
+            .opening
+            .iter()
+            .map(|signal| signal.members.len())
+            .collect::<Vec<_>>(),
+        vec![3, 2, 2]
+    );
+    let kinds: Vec<&str> = first
+        .events
+        .iter()
+        .map(|(_, kind, _)| kind.as_str())
+        .collect();
+    for want in ["startup", "order_expired", "fired"] {
+        assert!(
+            kinds.iter().any(|kind| kind.contains(want)),
+            "the replay never journalled a {want}: {kinds:?}"
+        );
+    }
+    assert!(
+        first.finals.iter().all(|row| !row.7),
+        "every order had run out by the end"
+    );
+    assert!(first.hashes.len() >= 50, "{} substeps", first.hashes.len());
+
+    for (at, run) in runs.iter().enumerate().skip(1) {
+        let cadence = cadences.get(at).copied().unwrap_or(0);
+        assert_eq!(
+            run.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the field ended differently at {cadence} ms"
+        );
+        assert_eq!(
+            run.roster, first.roster,
+            "the roster differed at {cadence} ms"
+        );
+        assert_eq!(
+            run.opening, first.opening,
+            "the opening pulse's signals differed at {cadence} ms"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2635,6 +3134,8 @@ fn y1_signal(roster: &tacsim::deliberation::SquadRoster) -> tacsim::arena::comma
         states: [0; 6],
         cell: None,
         window: (16, 16),
+        // 16b cut Z.1: the members ride the signal; the world never reads them.
+        members: Vec::new(),
     }
 }
 

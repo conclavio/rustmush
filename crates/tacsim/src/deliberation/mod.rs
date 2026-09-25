@@ -20,7 +20,8 @@
 //!    imported *into* the arena, carried as an [`crate::arena::intents::Intent`]
 //!    and obeyed until its time to live runs out in arena milliseconds.
 //! 2. **[`crate::deliberation::squad`]** — the grouping the order is written for: a side's reflex units
-//!    in pod pairs, each with the lowest-id unit as its commander.
+//!    dealt into squads of at most `[tacsim.arena].squad_size` (16b cut Z.1), each with the
+//!    lowest-id unit as its commander.
 //! 3. **[`crate::deliberation::request`]** — one structured call whose forced tool's arguments are an
 //!    order.
 //! 4. **[`crate::deliberation::cost`]** — the table the owner's cost run prints, read off `mush-llm`'s
@@ -99,8 +100,8 @@ pub use order::{
     Constraints, MAX_TTL_MS, MIN_TTL_MS, MIND_LINK_DROPPED, Objective, Order, OrderError,
     RangeBand, StandingOrder,
 };
-pub use request::{RefusedReason, SquadBrief, deliberate, order_tool};
-pub use squad::{SQUAD_SIZE, SquadId, SquadRoster, squads_of};
+pub use request::{BriefMember, RefusedReason, SquadBrief, deliberate, order_tool};
+pub use squad::{SQUAD_SIZE_MAX, SquadId, SquadRoster, squads_of};
 
 /// The most deliberation requests that may be in flight for one match at once.
 ///
@@ -264,6 +265,25 @@ mod tests {
             // 16b cut E.2 (16c `T-56`).
             default_ttl_ms: 30_000,
             contacts: Vec::new(),
+            // 16b cut Z.1: the squad's own units, as they cross the seam.
+            members: vec![
+                BriefMember {
+                    unit: 4,
+                    ordinal: 1,
+                    state: "patrol".to_string(),
+                    health_permille: 1_000,
+                    band: "here".to_string(),
+                    bearing_deg: 0,
+                },
+                BriefMember {
+                    unit: 5,
+                    ordinal: 2,
+                    state: "patrol".to_string(),
+                    health_permille: 1_000,
+                    band: "close".to_string(),
+                    bearing_deg: 270,
+                },
+            ],
         };
         let job = DeliberationJob::Deliberate {
             brief: brief.clone(),
@@ -335,6 +355,7 @@ mod tests {
             // 16b cut E.2 (16c `T-56`).
             default_ttl_ms: 30_000,
             contacts: Vec::new(),
+            members: Vec::new(),
         };
         let job = DeliberationJob::Deliberate { brief };
         let payload = serde_json::to_string(&job).expect("a job");

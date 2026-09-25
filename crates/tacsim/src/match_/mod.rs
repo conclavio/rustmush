@@ -781,7 +781,9 @@ pub fn start(
         folds: BTreeMap::new(),
         unparsed: 0,
         // 16b cut N.2: the same grouping `Arena::new` derives, from the same
-        // triples — a side's reflex units in pod pairs, lowest id commanding.
+        // triples and the same `[tacsim.arena].squad_size` (16b cut Z.1) — a
+        // side's reflex units dealt into squads, lowest id commanding. One
+        // function of one data, so the record and the arena cannot disagree.
         squads: crate::deliberation::squads_of(
             &custody_units
                 .iter()
@@ -793,6 +795,7 @@ pub fn start(
                     )
                 })
                 .collect::<Vec<_>>(),
+            arena_cfg.squad_size,
         ),
     };
     {

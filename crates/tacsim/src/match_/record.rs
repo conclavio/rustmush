@@ -305,7 +305,8 @@ pub struct MatchRecord {
     /// "Deliberation": *requested per squad or commander rather than per unit*).
     ///
     /// Derived at check-out by `crate::deliberation::squads_of` from the same
-    /// `(unit, team, controller)` triples the `CustodyOut` carries, so the record's
+    /// `(unit, team, controller)` triples the `CustodyOut` carries and the same
+    /// `[tacsim.arena].squad_size` (16b cut Z.1), so the record's
     /// grouping and the arena's are the same function of the same data and cannot
     /// disagree. It is on the record and not only in the arena because the world is
     /// what fans an order out to a squad's units and what says the sentence when one

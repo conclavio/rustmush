@@ -10,8 +10,10 @@
 #
 # (or `bash scripts/harness-weekly.sh` where a checkout lost the executable bit).
 #
-# It runs every ignored lane of crates/tacsim/tests/harness.rs in release, then
-# the delta against the committed crates/tacsim/tests/harness_baseline/
+# It runs every ignored lane of crates/tacsim/tests/harness.rs in release —
+# the lance lane (tacsim_harness_lance, 16b cut Z.1: twelve machines a side in
+# lances of four under a scripted commander on the proving ground) among them —
+# then the delta against the committed crates/tacsim/tests/harness_baseline/
 # arena.<os>.json, and stops non-zero at the first failure. The reports land at
 # the workspace root as harness*.json.
 #
@@ -21,6 +23,13 @@
 #   * the authored-reach lane asserts too since 16b cut J.3b (16c Q26): 12 ms
 #     per wake, 20 ms per 500 ms window (17.5 at J.3b, 20 since J.3c), the same
 #     per-pulse bounds;
+#   * the lance lane (16b cut Z.1) asserts W8 alone — the span and the orders
+#     per commander per minute bounded, the tape equal to the script's orders
+#     and the opening round landed at any knob, and the span and the busiest
+#     minute equal to the squads a side only at the lane's defaults (seed 2350,
+#     TACSIM_LANCE_UNITS=24, TACSIM_LANCE_ARENA_S=120, jitter 0; off them the
+#     fight decides those two) — and prints its timing beside 12 ms and 20 ms,
+#     report-only;
 #   * the delta fails on any difference in the deterministic block, and on a
 #     timing figure more than 20 per cent slower on the host that blessed the
 #     file — a timing-only failure is re-run once before it is believed;

@@ -304,6 +304,9 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             // 16b cut N.2: the floor under one squad's deliberation requests, in
             // arena milliseconds.
             deliberate_min_ms: cfg.arena.deliberate_min_ms,
+            // 16b cut Z.1 (16c N6): the most machines one squad holds, read by
+            // both `squads_of` callers.
+            squad_size: cfg.arena.squad_size,
             ledger: tacsim::config::LedgerConfig {
                 summary_ms: cfg.arena.ledger.summary_ms,
                 max_bytes: cfg.arena.ledger.max_bytes,
@@ -961,6 +964,7 @@ mod tests {
              max_catch_up_steps = 2\n\
              occupied_stop_ms = 1500\n\
              deliberate_min_ms = 12000\n\
+             squad_size = 3\n\
              [tacsim.arena.tempo]\n\
              quiet_ms = 4000\n\
              alert_ms = 900\n\
@@ -1044,6 +1048,8 @@ mod tests {
                 // 16b cut E.3: the traffic hold's horizon.
                 occupied_stop_ms: 1_500,
                 deliberate_min_ms: 12_000,
+                // 16b cut Z.1: the squad size, off its default of four.
+                squad_size: 3,
                 intents: tacsim::config::IntentsConfig {
                     max_pending_per_unit: 3
                 },
@@ -1221,6 +1227,19 @@ mod tests {
                 "occupied_stop_ms = 60001\n",
                 "[tacsim.arena].occupied_stop_ms",
                 "60001",
+            ),
+            // 16b cut Z.1 (16c N6): a squad of none, and one past sixteen.
+            (
+                "[tacsim.arena]",
+                "squad_size = 0\n",
+                "[tacsim.arena].squad_size",
+                "0",
+            ),
+            (
+                "[tacsim.arena]",
+                "squad_size = 17\n",
+                "[tacsim.arena].squad_size",
+                "17",
             ),
             (
                 "[tacsim.arena.intents]",

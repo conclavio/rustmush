@@ -5739,7 +5739,9 @@ fn y1_config() -> TacsimConfig {
 /// refusal is one line.
 ///
 /// `SIM AI 3` with one pilot a side fields two machines on each, in one squad
-/// (`red-1`, `blue-1`). The red lead's `ORDER red-1 HOLD` acknowledges in the
+/// (`red-1`, `blue-1`): a side of at most `[tacsim.arena].squad_size` machines —
+/// four at the shipped value — is one squad by 16b cut Z.1's dealing. The red
+/// lead's `ORDER red-1 HOLD` acknowledges in the
 /// doctrine's words and `@arena/status` counts it; the ordinal and `ALL` reach
 /// the same squad; `blue-1` (the other side's), `red-9` (nothing) and `2` (the
 /// own side's second squad, which does not exist) all answer one byte-identical
@@ -5814,6 +5816,57 @@ async fn y1_the_lead_orders_the_sides_machines_and_every_squad_refusal_is_one_li
     assert!(
         status.contains("  orders: 4 by pilots, 0 by the machines"),
         "every order that reached a squad is counted, and no refusal is: {status}"
+    );
+}
+
+/// **16b cut Z.1 (16c N6): the squad size reaches the lobby's grouping.**
+///
+/// The Y.1 lead test's field at `[tacsim.arena].squad_size = 1`: `SIM AI 3` with
+/// one pilot a side puts two machines on each, and at one machine a squad they
+/// are `red-1` and `red-2`, so the lead's `ORDER ALL HOLD` names both squads in
+/// one acknowledgement and the tape carries two `ordered` lines, one per squad —
+/// the record's grouping and the arena's read the same key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z1_a_squad_size_of_one_makes_the_leads_all_two_squads() {
+    let mut cfg = y1_config();
+    cfg.arena.squad_size = 1;
+    let mut rig = Rig::boot_with(2, cfg);
+    rig.fly_with_ai(1, 1, 3).await;
+    let squads: Vec<String> = rig
+        .record()
+        .squads
+        .iter()
+        .map(|roster| roster.id.to_string())
+        .collect();
+    assert_eq!(
+        squads,
+        vec!["red-1", "red-2", "blue-1", "blue-2"],
+        "one machine a squad"
+    );
+
+    let said = rig.say(0, "ORDER ALL HOLD");
+    assert_eq!(
+        said,
+        format!(
+            "Ordered red-1 and red-2 to hold: it stops where it stands and fires nothing.{Y1_TAIL}"
+        )
+    );
+    let issuer = rig.tank(0);
+    let holds = |event: &tacsim::arena::ledger::LedgerEvent| {
+        y1_ordered_by(event, issuer).is_some_and(|(_, _, objective, _)| objective == "hold")
+    };
+    assert_eq!(rig.tape_count_until(holds, 2).await, 2);
+    let mut reached: Vec<String> = rig
+        .tape
+        .iter()
+        .filter_map(|event| y1_ordered_by(event, issuer))
+        .map(|(_, squad, _, _)| squad)
+        .collect();
+    reached.sort();
+    assert_eq!(
+        reached,
+        vec!["red-1".to_string(), "red-2".to_string()],
+        "two ordered lines, one per squad"
     );
 }
 
@@ -6273,8 +6326,9 @@ fn y2_config() -> TacsimConfig {
 
 /// **16b cut Y.2 (doc 16 §2 W8): the span is read off the world's own watch.**
 ///
-/// The shipped centre's four pods a side can never make two squads
-/// (`MIN_UNITS_TO_SPLIT` is four), so the lead's second squad is a live watch
+/// The shipped centre's four pods a side can never make two squads (a side of
+/// at most `[tacsim.arena].squad_size` machines — four — is one squad; 16b cut
+/// Z.1), so the lead's second squad is a live watch
 /// seeded on the registry — which is where the span is read, and the only
 /// place. With a span of one and that watch standing, `ORDER red-1 HOLD` and
 /// `ORDER ALL HOLD` (which names the lead's one squad, so one at a time would

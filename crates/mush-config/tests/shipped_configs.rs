@@ -366,6 +366,12 @@ fn the_template_declares_every_section_the_deployed_boxes_lack() {
 
 /// Live boot-read numbers must be written even when they equal the defaults.
 /// Parsing alone cannot distinguish an omitted knob from an intentional value.
+///
+/// **16b cut Z.1** (16c N6) put `[tacsim.arena].squad_size` on this list: its
+/// default is the shipped four, so the parsed-value assertion in
+/// `q7_the_rendered_instances_field_machines_and_the_example_does_not` reads
+/// four whether or not either file writes the key, and only the raw table can
+/// tell an operator's written lance from a compiled-in one.
 #[test]
 fn live_ground_sky_and_path_keys_are_explicit_in_every_shipped_config() {
     let mut configs = vec![(
@@ -382,6 +388,7 @@ fn live_ground_sky_and_path_keys_are_explicit_in_every_shipped_config() {
             ("tacsim.time.ephemeris.epoch", 0),
             ("tacsim.time.ephemeris.rate", 0),
             ("atlas.path_max_cells", 4096),
+            ("tacsim.arena.squad_size", 4),
         ] {
             let mut found = Some(&raw);
             for key in path.split('.') {
@@ -723,6 +730,14 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
             cfg.tacsim.arena.reflex.hunt_after_ms, 90_000,
             "{env_file}: 16b cut E.4's hunt"
         );
+        // **16b cut Z.1** (16c N6): and the lance, written down for the same
+        // reason — a box on pairs would be twice the commanders for the same field.
+        // The default is four too, so this reads the parsed value only; that the
+        // key is *written* is `live_ground_sky_and_path_keys_are_explicit_…`'s.
+        assert_eq!(
+            cfg.tacsim.arena.squad_size, 4,
+            "{env_file}: 16b cut Z.1's squad size"
+        );
     }
     let example = Config::load(&root.join("mushd.toml.example"))
         .unwrap_or_else(|e| panic!("mushd.toml.example does not parse: {e}"));
@@ -735,6 +750,7 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
     assert_eq!(example.tacsim.arena.occupied_stop_ms, 2_000);
     assert_eq!(example.tacsim.arena.reflex.search_ms, 60_000);
     assert_eq!(example.tacsim.arena.reflex.hunt_after_ms, 90_000);
+    assert_eq!(example.tacsim.arena.squad_size, 4);
 }
 
 /// **16b cut D.3 (`B-33`): every shipped configuration writes the unattended

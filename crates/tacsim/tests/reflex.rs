@@ -8741,8 +8741,11 @@ fn y2_hold(
 /// the LLM seam's — under the squad commander of the unit it steers, drops an
 /// expired one, and answers empty for an arena with no orders at all.
 ///
-/// Four red machines are two squads of pairs (`MIN_UNITS_TO_SPLIT` is four);
-/// the seated red tank is the pilot who orders both, and is in no squad.
+/// Four red machines are two squads of pairs — pinned to `squad_size: 2`
+/// through this test's own arena config (16b cut Z.1): at the shipped lance of
+/// four they would be one squad, and what this test proves needs one issuer over
+/// two squads beside a commander over one of them. The seated red tank is the
+/// pilot who orders both, and is in no squad.
 #[test]
 fn y2_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_commander() {
     let reds = [ObjId(20), ObjId(21), ObjId(22), ObjId(23)];
@@ -8773,7 +8776,11 @@ fn y2_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_comma
         Vec::new(),
         Controller::Pilot,
     ));
-    let mut arena = arena_of(units, &[], &arena_cfg(reflex_cfg()), &[Y1_PILOT, BLUE]);
+    let pairs = ArenaConfig {
+        squad_size: 2,
+        ..arena_cfg(reflex_cfg())
+    };
+    let mut arena = arena_of(units, &[], &pairs, &[Y1_PILOT, BLUE]);
     assert!(
         arena.live_orders_by_issuer(0).is_empty(),
         "no order, no commander"

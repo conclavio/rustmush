@@ -261,10 +261,11 @@ their own doctrine. `ORDER` tells them what to do instead.
 **Who may order what.** Your side's lead — the pilot who may `SIM START` and
 `SIM CONCEDE` — orders any squad of your side. Anyone else orders one tank: the
 one in their pod pair (pod 1 with pod 2, 3 with 4), when a machine is flying it.
-Your side's machines are grouped into squads, red-1 first: fewer than four
-machines are one squad, and four or more go in pairs. Name a squad in full,
-`ORDER red-1 HOLD`; by its number alone, `ORDER 1 HOLD`, which is your own
-side's; or every squad you may order at once, `ORDER ALL HOLD`.
+Your side's machines are grouped into squads, red-1 first: up to four machines
+are one squad, and more are dealt out evenly, so five make a three and a two.
+Name a squad in full, `ORDER red-1 HOLD`; by its number alone, `ORDER 1 HOLD`,
+which is your own side's; or every squad you may order at once,
+`ORDER ALL HOLD`.
 
 There are four orders, and the answer says what each one means:
 

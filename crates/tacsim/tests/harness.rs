@@ -136,6 +136,24 @@
 //! [`the_lens_is_the_cohorts_own`]. Nothing else moved: no bound, no baseline
 //! (the CI report's `window_p99_ms` stays 12.0), no reach, no target.
 //!
+//! **The lance lane since 16b cut Z.1** (16c N6, *lances*). One more ignored
+//! lane, `tacsim_harness_lance`: `TACSIM_LANCE_UNITS` (24) units of the fielded
+//! catalog, twelve a side on the **shipped proving ground** at the authored
+//! reach, fifty-four cells apart astride the crossroads, dealt into lances of
+//! four by `[tacsim.arena].squad_size`, under a scripted commander a side that
+//! is its own lowest unit, for `TACSIM_LANCE_ARENA_S` (120) arena seconds
+//! through the same wake loop ([`run_wakes`], which since Z.1 steps a
+//! [`Stepper`] and hands each wake's phase 2 a script's intents). Under
+//! `TACSIM_ASSERT` it asserts W8 — the span and the orders per commander per
+//! minute — against `[tacsim.command]`, the tape against the script and the
+//! opening round at any knob, **and**, at the lane's own defaults only, the span
+//! and the busiest minute equal to the squads a side (off them the fight decides
+//! those two figures); its timing is **report-only**, printed beside the
+//! authored lane's 12 ms per wake and 20 ms per window. Its JSON
+//! (`<stem>-lance.<ext>`) is outside the delta. `z1_the_lance_lane_runs_small`,
+//! un-ignored, runs it at one lance a side for ten arena seconds with the
+//! any-knob checks asserted.
+//!
 //! What it must not do (16b §9's `H` row): touch `mush-sim` or `mush-atlas` — a
 //! harness that needs a new API in the thing it measures is measuring its own
 //! change — assert by default, or run on push. The ban on asserting by default
@@ -2070,12 +2088,14 @@ impl CommandFigures {
         }
     }
 
-    /// The `harness_arena_command` line. `orders_per_commander_minute_max` is
-    /// counted in arena time and `span_max` read in arena time; the world
-    /// enforces both in world time.
-    fn line(&self, cohort: &str) -> String {
+    /// The `<prefix>` line — `harness_arena_command` on the two arena lanes,
+    /// `harness_lance_command` on the lance lane (16b cut Z.1 gave it the prefix
+    /// as an argument; the arena lanes' line is byte-identical).
+    /// `orders_per_commander_minute_max` is counted in arena time and `span_max`
+    /// read in arena time; the world enforces both in world time.
+    fn line(&self, prefix: &str, cohort: &str) -> String {
         format!(
-            "harness_arena_command: cohort={cohort} max_span={} orders_per_minute={} squads={} \
+            "{prefix}: cohort={cohort} max_span={} orders_per_minute={} squads={} \
              commanders={} ordered_lines={} orders={} orders_per_commander_minute_max={} \
              span_max={}",
             self.max_span,
@@ -2432,13 +2452,32 @@ impl WakeClock {
     }
 }
 
+/// **What [`run_wakes`] steps** (16b cut Z.1 factored it out of [`Field`]): the
+/// arena, the lattice it is woken on, the streamed ledger's count and the wake
+/// clock. [`Field`] holds one for the relief lanes; the lance lane
+/// ([`measure_lance`]) has no relief and builds one of its own, so the two
+/// kinds of field go through one loop and one warm-up ([`warm_up`]).
+struct Stepper {
+    arena: tacsim::arena::state::Arena,
+    /// The cohort's substep, the lattice `next_due_ms` answers on.
+    substep: u32,
+    /// The streamed ledger, counted as it goes — the warm-up's included.
+    counts: Counts,
+    clock: WakeClock,
+    /// The wall the next wake is at.
+    wall: i64,
+    /// The slope refusals over the whole run, the warm-up included.
+    slope_refusals: u64,
+}
+
 /// **An arena fielded, opened and warmed up** — everything the measurement lanes
 /// share before their measured window (16b cut U.2 factored it out of
 /// [`measure_arena`], so the 30-second lane and the long run have one body and
 /// differ only in their window and their sampling).
 struct Field {
     cohort: &'static str,
-    arena: tacsim::arena::state::Arena,
+    /// The arena and what steps it (16b cut Z.1: [`Stepper`]).
+    stepper: Stepper,
     arena_cfg: tacsim::config::ArenaConfig,
     sensors_cfg: tacsim::config::SensorsConfig,
     class_counts: BTreeMap<&'static str, u64>,
@@ -2451,19 +2490,10 @@ struct Field {
     seated: u32,
     /// Units of each [`COHORT_ENTRIES`] row, in that order.
     fielded: [u32; 6],
-    /// The cohort's substep, the lattice `next_due_ms` answers on.
-    substep: u32,
     slope_45: usize,
     slope_70: usize,
     /// Every unit's magazines as checked out.
     ammo_at_start: BTreeMap<ObjId, u64>,
-    /// The streamed ledger, counted as it goes — the warm-up's included.
-    counts: Counts,
-    clock: WakeClock,
-    /// The wall the next wake is at.
-    wall: i64,
-    /// The slope refusals over the whole run, the warm-up included.
-    slope_refusals: u64,
     generate_ms: f64,
     boot_ms: f64,
     apply_ms: f64,
@@ -2596,34 +2626,25 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
         })
         .collect();
 
-    let mut counts = Counts::default();
-    let mut clock = WakeClock::new(knobs);
-    // The slope refusals over the whole run, the warm-up included: the
-    // controller plans its first routes there.
-    let mut slope_refusals = 0_u64;
+    let mut stepper = Stepper {
+        arena,
+        substep,
+        counts: Counts::default(),
+        clock: WakeClock::new(knobs),
+        wall: 0,
+        // The slope refusals over the whole run, the warm-up included: the
+        // controller plans its first routes there.
+        slope_refusals: 0,
+    };
 
     // ---- the warm-up: the controller starts them up ----
     let warm_at = Instant::now();
-    let out = arena.step(0, &[], &[]);
-    for chunk in &out.ledger_chunks {
-        counts.absorb(&chunk.bytes);
-    }
-    let mut wall = clock.next(out.next_due_ms);
-    let mut warm_pulses = 1_u32;
     let warm_until = i64::from(match_cfg.startup_ms)
         .saturating_add(i64::from(arena_cfg.reflex.decide_ms))
         .saturating_add(period_ms);
-    while arena.now_ms < warm_until {
-        let out = arena.step(wall, &[], &[]);
-        slope_refusals += u64::from(out.reflex.slope_refusals);
-        for chunk in &out.ledger_chunks {
-            counts.absorb(&chunk.bytes);
-        }
-        arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
-        wall = clock.next(out.next_due_ms);
-        warm_pulses += 1;
-    }
+    let warm_pulses = warm_up(&mut stepper, warm_until);
     let warm_ms = warm_at.elapsed().as_secs_f64() * 1_000.0;
+    let arena = &stepper.arena;
     // A unit killed before its own startup completed is a wreck and not a cold
     // tank (16b cut U.1: at the authored reaches the first units online can
     // already see, and shoot at, the last ones still starting). That excuse is
@@ -2669,7 +2690,7 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
     let warm_end = arena.now_ms;
     Field {
         cohort: reach.word(),
-        arena,
+        stepper,
         arena_cfg,
         sensors_cfg,
         class_counts,
@@ -2681,14 +2702,9 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
         placed,
         seated,
         fielded,
-        substep,
         slope_45,
         slope_70,
         ammo_at_start,
-        counts,
-        clock,
-        wall,
-        slope_refusals,
         generate_ms,
         boot_ms,
         apply_ms,
@@ -2700,6 +2716,31 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
         killed_warming,
         warm_end,
     }
+}
+
+/// **The warm-up** (16b cut U.1; one body since 16b cut Z.1): the opening pulse
+/// at wall nought, then a wake at every `next_due_ms` until arena time reaches
+/// `warm_until`, every chunk counted and acknowledged as [`run_wakes`] does.
+/// Answers how many pulses it took.
+fn warm_up(stepper: &mut Stepper, warm_until: i64) -> u32 {
+    let arena = &mut stepper.arena;
+    let out = arena.step(0, &[], &[]);
+    for chunk in &out.ledger_chunks {
+        stepper.counts.absorb(&chunk.bytes);
+    }
+    stepper.wall = stepper.clock.next(out.next_due_ms);
+    let mut warm_pulses = 1_u32;
+    while arena.now_ms < warm_until {
+        let out = arena.step(stepper.wall, &[], &[]);
+        stepper.slope_refusals += u64::from(out.reflex.slope_refusals);
+        for chunk in &out.ledger_chunks {
+            stepper.counts.absorb(&chunk.bytes);
+        }
+        arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
+        stepper.wall = stepper.clock.next(out.next_due_ms);
+        warm_pulses += 1;
+    }
+    warm_pulses
 }
 
 /// **What one measured window of wakes produced** (16b cut U.2): the per-wake
@@ -2729,17 +2770,26 @@ struct Run {
 /// step, the first at `wall = 0` — plus [`WakeClock`]'s seeded overshoot
 /// (default nought), so the record can say what the overshoot's remainder
 /// substeps cost. `next_due_ms` is on the substep lattice, so a wake is at most
-/// one substep. No scripted order and no scripted fire: what steers, closes,
-/// locks and fires is the reflex controller alone.
+/// one substep. On the relief lanes there is no scripted order and no scripted
+/// fire: what steers, closes, locks and fires is the reflex controller alone,
+/// and `script` answers nothing.
+///
+/// **The script** (16b cut Z.1, the lance lane's commanders): before every wake
+/// `script` is handed the arena at the arena millisecond that wake's phase 2
+/// runs at (`now_ms`, where the previous pulse ended), and whatever intents it
+/// answers are that wake's `intents` — applied inside `Arena::step`'s own phase
+/// 2, through `apply_intent` as a seat's, so each `ordered` line carries the
+/// phase's one hash exactly as a pilot's `ORDER` does.
 ///
 /// Whatever the ledger is still holding leaves with the measurement, counted.
 fn run_wakes(
-    field: &mut Field,
+    stepper: &mut Stepper,
     until_ms: i64,
+    mut script: impl FnMut(&tacsim::arena::state::Arena) -> Vec<tacsim::arena::intents::Intent>,
     mut sample: impl FnMut(&tacsim::arena::state::Arena),
 ) -> Run {
     use tacsim::arena::perception::PerceptionCounters;
-    let substep_ms = i64::from(field.substep);
+    let substep_ms = i64::from(stepper.substep);
     let mut run = Run {
         wakes: Vec::new(),
         substeps: Vec::new(),
@@ -2758,11 +2808,12 @@ fn run_wakes(
         reflex_total: tacsim::arena::reflex::ReflexCounters::default(),
         reflex_peak: tacsim::arena::reflex::ReflexCounters::default(),
     };
-    let arena = &mut field.arena;
+    let arena = &mut stepper.arena;
     while arena.now_ms < until_ms {
         let before = arena.now_ms;
+        let intents = script(arena);
         let at = Instant::now();
-        let out = arena.step(field.wall, &[], &[]);
+        let out = arena.step(stepper.wall, &[], &intents);
         let ms = at.elapsed().as_secs_f64() * 1_000.0;
         run.wakes.push(Wake {
             ms,
@@ -2777,7 +2828,7 @@ fn run_wakes(
         // lattice cuts, and a phase-4 drain's zero-length one.
         let full = u32::try_from((arena.now_ms - before) / substep_ms.max(1)).unwrap_or(0);
         run.short_substeps += u64::from(out.substeps.saturating_sub(full));
-        field.slope_refusals += u64::from(out.reflex.slope_refusals);
+        stepper.slope_refusals += u64::from(out.reflex.slope_refusals);
         run.perception_total.absorb(&out.perception);
         let peak = &mut run.peak;
         peak.passes = peak.passes.max(out.perception.passes);
@@ -2808,7 +2859,7 @@ fn run_wakes(
             run.lagged_pulses += 1;
         }
         for chunk in &out.ledger_chunks {
-            field.counts.absorb(&chunk.bytes);
+            stepper.counts.absorb(&chunk.bytes);
         }
         // The world half's acknowledgement (doc 16 §3.1's ack-gated egress), so the
         // bounded ring is measured draining as it would in production.
@@ -2818,12 +2869,12 @@ fn run_wakes(
             run.ended = Some(end);
             break;
         }
-        field.wall = field.clock.next(out.next_due_ms);
+        stepper.wall = stepper.clock.next(out.next_due_ms);
     }
     // Whatever is still open leaves with the measurement.
     arena.ledger.flush();
     for chunk in arena.ledger.take_chunks() {
-        field.counts.absorb(&chunk.bytes);
+        stepper.counts.absorb(&chunk.bytes);
     }
     run
 }
@@ -2850,13 +2901,20 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
     let until_ms = field
         .warm_end
         .saturating_add(i64::from(knobs.arena_s) * 1_000);
-    let run = run_wakes(&mut field, until_ms, |_| {});
+    let run = run_wakes(&mut field.stepper, until_ms, |_| Vec::new(), |_| {});
     let rss_end_kib = resident_kib();
     let vmrss_end_kib = vmrss_kib();
 
     let Field {
         cohort,
-        arena,
+        stepper:
+            Stepper {
+                arena,
+                substep,
+                counts,
+                slope_refusals,
+                ..
+            },
         arena_cfg,
         sensors_cfg,
         class_counts,
@@ -2868,12 +2926,9 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         placed,
         seated,
         fielded,
-        substep,
         slope_45,
         slope_70,
         ammo_at_start,
-        counts,
-        slope_refusals,
         generate_ms,
         boot_ms,
         apply_ms,
@@ -3287,7 +3342,7 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
     // enforcement itself is `tests/cockpit.rs`'s. Read after the measured loop.
     let command_cfg = tacsim::config::CommandConfig::default();
     let command = CommandFigures::of(&arena, &command_cfg, counts.ordered_lines, &counts.ordered);
-    println!("{}", command.line(cohort));
+    println!("{}", command.line("harness_arena_command", cohort));
     println!(
         "harness_arena_perception_peak: cohort={cohort} passes={} candidates={} traces={} cell_probes={} horizon_probes={} jam_checks={} share_ops={} detected={} classified={} lost={}",
         peak.passes,
@@ -4844,16 +4899,21 @@ fn measure_long_run(knobs: &Knobs) {
     let mut samples: Vec<(i64, Option<u64>)> = vec![(0, rss_start_kib)];
     let mut next_mark = warm_end.saturating_add(LONG_RUN_SAMPLE_S * 1_000);
     let started = Instant::now();
-    let run = run_wakes(&mut field, until_ms, |arena| {
-        while arena.now_ms >= next_mark {
-            samples.push(((next_mark - warm_end) / 1_000, resident_kib()));
-            next_mark = next_mark.saturating_add(LONG_RUN_SAMPLE_S * 1_000);
-        }
-    });
+    let run = run_wakes(
+        &mut field.stepper,
+        until_ms,
+        |_| Vec::new(),
+        |arena| {
+            while arena.now_ms >= next_mark {
+                samples.push(((next_mark - warm_end) / 1_000, resident_kib()));
+                next_mark = next_mark.saturating_add(LONG_RUN_SAMPLE_S * 1_000);
+            }
+        },
+    );
     let wall_s = started.elapsed().as_secs_f64();
     let rss_end_kib = resident_kib();
     let vmrss_end_kib = vmrss_kib();
-    let arena = &field.arena;
+    let arena = &field.stepper.arena;
     #[allow(clippy::cast_precision_loss)]
     let arena_s = (arena.now_ms - warm_end) as f64 / 1_000.0;
     let rss_growth_kib: Option<i64> = match (rss_start_kib, rss_end_kib) {
@@ -4882,7 +4942,7 @@ fn measure_long_run(knobs: &Knobs) {
     let cohort = field.cohort;
     assert!(wakes > 0, "the long run woke the arena no times at all");
     assert!(
-        field.counts.bytes > 0,
+        field.stepper.counts.bytes > 0,
         "the ledger streamed nothing: the long run measured an idle arena"
     );
     println!(
@@ -4891,8 +4951,8 @@ fn measure_long_run(knobs: &Knobs) {
         kib_word(rss_end_kib),
         rss_growth_kib.map_or("absent".to_string(), |kib| kib.to_string()),
         kib_word(rss_peak_kib),
-        field.counts.bytes,
-        field.counts.chunks,
+        field.stepper.counts.bytes,
+        field.stepper.counts.chunks,
         arena.contacts.len(),
         arena.due.len(),
         arena.held_losses.len(),
@@ -4933,8 +4993,8 @@ fn measure_long_run(knobs: &Knobs) {
                 .collect::<Vec<_>>(),
         },
         "ledger": {
-            "bytes": field.counts.bytes,
-            "chunks": field.counts.chunks,
+            "bytes": field.stepper.counts.bytes,
+            "chunks": field.stepper.counts.chunks,
         },
         "at_end": {
             "contacts": arena.contacts.len(),
@@ -4972,9 +5032,9 @@ fn measure_long_run(knobs: &Knobs) {
             );
         }
         assert!(
-            field.counts.bytes <= knobs.max_ledger_bytes,
+            field.stepper.counts.bytes <= knobs.max_ledger_bytes,
             "ledger bytes {} over the long run is past harness.max_ledger_bytes {}",
-            field.counts.bytes,
+            field.stepper.counts.bytes,
             knobs.max_ledger_bytes
         );
     }
@@ -5117,9 +5177,9 @@ struct CostKnobs {
 }
 
 /// Cost-run defaults. Twenty-four units is the owner's own "12 v 12 fighting"
-/// (`combat-scale-targets`), which at `SQUAD_SIZE` two is twelve squads under
-/// command — enough for a per-squad table and far short of what 300 units would
-/// spend.
+/// (`combat-scale-targets`), which at the shipped `[tacsim.arena].squad_size`
+/// of four (16b cut Z.1) is six squads under command — enough for a per-squad
+/// table and far short of what 300 units would spend.
 const COST_UNITS: u32 = 24;
 /// Five minutes, as 16b §8's cut N row asks.
 const COST_MINUTES: f64 = 5.0;
@@ -5436,7 +5496,7 @@ fn tacsim_harness_llm_cost_run() {
         tape.ordered_lines,
         &tape.ordered,
     );
-    println!("{}", command.line("cost"));
+    println!("{}", command.line("harness_arena_command", "cost"));
 
     // ---- the table ----
     let table = cost_table(
@@ -6142,5 +6202,1020 @@ async fn measure_fan_out(knobs: &Knobs) {
              harness.max_output_events_per_pulse {}",
             knobs.max_output_events_per_pulse
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The lance lane (16b cut Z.1; 16c N6: *lances*; doc 16 §2 W8, §6)
+// ---------------------------------------------------------------------------
+//
+// **What this is.** The arena lanes above field three hundred machines nobody
+// commands; the fan-out lane twenty-four pilots who never meet. Neither is the
+// owner's "12 v 12 fighting" (`combat-scale-targets`) under command, which is
+// what 16c N6 is for. This lane is: twenty-four units of the fielded catalog,
+// twelve a side on the **shipped proving ground** at the **authored** reach,
+// dealt into lances of four by `[tacsim.arena].squad_size`, with a scripted
+// commander a side giving real orders through the arena's own phase 2.
+//
+// **The field.** Red musters on column 102 heading east and blue on column 156
+// heading west, rows 97, 95, 99, 93, 101, … (the fan-out lane's alternation) —
+// fifty-four cells apart astride the crossroads at (129, 97), inside the
+// authored sight's sixty, so the two sides hold each other from the first
+// sensor passes and most of the run is a fight. Seventy cells, the plan's first
+// figure, is past the authored sight and would have measured an approach.
+//
+// **The commanders.** Each side's commander is its own lowest unit id — which
+// is also its `red-1` / `blue-1` commander — and every order of that side names
+// it as `issuer`, so `Arena::live_orders_by_issuer` files the side's squads
+// under one issuer and W8's span is a real figure (an `issuer: None` order is
+// filed under each squad's own commander and reads a span of one whatever the
+// script does). The script ([`lance_schedule`]) is a table ([`LANCE_TABLE`]) so
+// cut Z.2 can extend it with `Screen`, `Support` and a release.
+//
+// **What it asserts**, under `TACSIM_ASSERT` only. At **any** knob: W8's two
+// bounds against `[tacsim.command]`; that the tape's `ordered` lines are exactly
+// the orders the script gave (one a unit not already a wreck, at the millisecond
+// phase 2 applied it, under the side's commander); that the opening round landed
+// on every standing unit of every squad; that the span never reads more squads
+// than the script holds under a live order; and that the sides fired. At the
+// lane's **defaults** (seed, `TACSIM_LANCE_UNITS`, `TACSIM_LANCE_ARENA_S`,
+// jitter nought — the field line's `at_defaults`) also the exact figures: the
+// span and the busiest commander minute each read the squads a side, and the
+// tape carries the opening round and one full minute a side — the script landed
+// and neither figure is vacuous. Off the defaults a lance may be wiped out,
+// reach its crossroads or take a mark a wake late, so the fight decides those
+// figures and only the bounds bind them. **Timing is report-only** (the lead's rule
+// for this cohort): the per-wake p99 is printed beside 12 ms and the per-window
+// p99 beside 20 ms, the authored lane's lenses, and nothing is asserted about
+// either. Its JSON (`<stem>-lance.<ext>`) is not read by the delta.
+
+/// `TACSIM_LANCE_UNITS`' default: twelve a side.
+const DEFAULT_LANCE_UNITS: u32 = 24;
+
+/// `TACSIM_LANCE_ARENA_S`' default: two arena minutes after the warm-up — the
+/// opening round and one full minute of the script.
+const DEFAULT_LANCE_ARENA_S: u32 = 120;
+
+/// Red's muster column, heading east.
+const LANCE_RED_COLUMN: u16 = 102;
+
+/// Blue's muster column, heading west.
+const LANCE_BLUE_COLUMN: u16 = 156;
+
+/// The muster's first row — the east-west road — and the axis of the
+/// alternation.
+const LANCE_ROW: i64 = 97;
+
+/// The crossroads (`content/arenas/proving_ground.json`'s key spot and
+/// waypoint `xroads`), which the script's `Advance` names.
+const CROSSROADS: (u16, u16) = (129, 97);
+
+/// One script minute, arena milliseconds.
+const LANCE_MINUTE_MS: i64 = 60_000;
+
+/// Every scripted order's time to live and horizon: longer than a minute, so a
+/// squad ordered once a minute is never between orders.
+const LANCE_ORDER_MS: u32 = 90_000;
+
+/// **The arms the script steps a squad through**, one a minute, cycling (16b cut
+/// Z.1). Every squad not being stepped is ordered `Engage` again, so every squad
+/// is under some order at all times and most of the field is fighting. Cut Z.2
+/// extends this table (`Screen`, `Support`, a release).
+const LANCE_TABLE: [tacsim::deliberation::Objective; 3] = [
+    tacsim::deliberation::Objective::Hold,
+    tacsim::deliberation::Objective::Advance { to: CROSSROADS },
+    tacsim::deliberation::Objective::Withdraw,
+];
+
+/// The lance lane's own knobs.
+struct LanceKnobs {
+    /// `TACSIM_LANCE_UNITS`, even: half a side each.
+    units: u32,
+    /// `TACSIM_LANCE_ARENA_S`: arena seconds measured after the warm-up.
+    arena_s: u32,
+}
+
+impl LanceKnobs {
+    fn from_env() -> LanceKnobs {
+        LanceKnobs {
+            units: env_u32("TACSIM_LANCE_UNITS", DEFAULT_LANCE_UNITS),
+            arena_s: env_u32("TACSIM_LANCE_ARENA_S", DEFAULT_LANCE_ARENA_S),
+        }
+    }
+}
+
+/// **One scripted order**: when it is due, which squad, and what.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LanceOrder {
+    at_ms: i64,
+    squad: tacsim::deliberation::SquadId,
+    objective: tacsim::deliberation::Objective,
+}
+
+/// **The script** (16b cut Z.1), as a list in the order it is given.
+///
+/// At `start_ms` (the warm-up's end) every squad of both sides is ordered
+/// `Engage`. Then in minute `m` (1, 2, …, starting `m` minutes after
+/// `start_ms` rounded up to the 500 ms engaged period) each side's squads are
+/// ordered one at a time, ordinal `k` at `k − 1` staggers into the minute —
+/// twenty seconds at three squads a side, the stagger `60 s / squads` rounded
+/// down to the period — so every mark is a multiple of the period in absolute
+/// arena time, which a wake at jitter nought always visits
+/// (`Arena::next_due_ms`), and a mark's order lands at the mark exactly. The
+/// squad whose ordinal is `(m − 1) %
+/// squads_per_side + 1` takes [`LANCE_TABLE`]`[(m − 1) % len]` while every other
+/// squad is ordered `Engage` again. Only marks before `until_ms` are listed.
+///
+/// Three orders a minute from one commander is exactly `squads_per_side` in any
+/// sixty seconds, because the marks of consecutive minutes are the same
+/// staggers a minute apart; that is what makes W8's rate figure a real one.
+fn lance_schedule(
+    squads: &[tacsim::deliberation::SquadRoster],
+    start_ms: i64,
+    until_ms: i64,
+) -> Vec<LanceOrder> {
+    use tacsim::arena::state::Team;
+    use tacsim::deliberation::Objective;
+    let per_side = |team: Team| {
+        squads
+            .iter()
+            .filter(|roster| roster.id.team == team)
+            .count()
+    };
+    let squads_per_side = per_side(Team::Red).max(per_side(Team::Blue)).max(1);
+    let stagger =
+        (LANCE_MINUTE_MS / i64::try_from(squads_per_side).unwrap_or(1)) / WINDOW_MS * WINDOW_MS;
+    let mut out: Vec<LanceOrder> = squads
+        .iter()
+        .map(|roster| LanceOrder {
+            at_ms: start_ms,
+            squad: roster.id,
+            objective: Objective::Engage { target_hint: None },
+        })
+        .collect();
+    let anchor = start_ms
+        .div_euclid(WINDOW_MS)
+        .saturating_add(i64::from(start_ms.rem_euclid(WINDOW_MS) != 0))
+        * WINDOW_MS;
+    let mut minute = 1_i64;
+    loop {
+        let base = anchor.saturating_add(minute.saturating_mul(LANCE_MINUTE_MS));
+        if base >= until_ms {
+            break;
+        }
+        let stepped = usize::try_from((minute - 1) % i64::try_from(squads_per_side).unwrap_or(1))
+            .unwrap_or(0)
+            + 1;
+        let arm = LANCE_TABLE
+            .get(usize::try_from(minute - 1).unwrap_or(0) % LANCE_TABLE.len())
+            .copied()
+            .unwrap_or(Objective::Hold);
+        for ordinal in 1..=squads_per_side {
+            let at_ms = base.saturating_add(
+                i64::try_from(ordinal - 1)
+                    .unwrap_or(0)
+                    .saturating_mul(stagger),
+            );
+            if at_ms >= until_ms {
+                break;
+            }
+            for roster in squads
+                .iter()
+                .filter(|roster| usize::from(roster.id.index) == ordinal)
+            {
+                out.push(LanceOrder {
+                    at_ms,
+                    squad: roster.id,
+                    objective: if ordinal == stepped {
+                        arm
+                    } else {
+                        Objective::Engage { target_hint: None }
+                    },
+                });
+            }
+        }
+        minute += 1;
+    }
+    out
+}
+
+/// **One scripted order as the intents phase 2 applies**: one per unit of the
+/// squad the arena still holds, at that unit's own current `helm` epoch, the
+/// side's commander as issuer.
+fn lance_intents(
+    arena: &tacsim::arena::state::Arena,
+    order: &LanceOrder,
+    issuer: ObjId,
+    seq: &mut u64,
+) -> Vec<tacsim::arena::intents::Intent> {
+    use tacsim::arena::intents::{Intent, IntentKind};
+    use tacsim::arena::state::Channel;
+    let Some(roster) = arena.squads.iter().find(|roster| roster.id == order.squad) else {
+        return Vec::new();
+    };
+    let told = tacsim::deliberation::Order {
+        squad: order.squad,
+        objective: order.objective,
+        target: None,
+        horizon_ms: LANCE_ORDER_MS,
+        constraints: tacsim::deliberation::Constraints::default(),
+        ttl_ms: LANCE_ORDER_MS,
+        issued_ms: 0,
+        issuer: Some(issuer),
+        spot: None,
+    };
+    roster
+        .units
+        .iter()
+        .filter(|unit| arena.unit(**unit).is_some())
+        .map(|unit| {
+            *seq += 1;
+            Intent {
+                unit: *unit,
+                channel: Channel::Helm,
+                epoch: arena.epochs.current(*unit, Channel::Helm),
+                kind: IntentKind::Order(Box::new(told.clone())),
+                seq: *seq,
+            }
+        })
+        .collect()
+}
+
+/// **The lance lane** (16b cut Z.1): [`measure_lance`] at `TACSIM_LANCE_UNITS`
+/// (24) for `TACSIM_LANCE_ARENA_S` (120) arena seconds, JSON at
+/// `<stem>-lance.<ext>`; W8 asserted under `TACSIM_ASSERT`, and equal to the
+/// squads a side at the lane's defaults; timing report-only.
+#[test]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+fn tacsim_harness_lance() {
+    measure_lance(&Knobs::from_env(), &LanceKnobs::from_env());
+}
+
+/// **The lance lane, small and un-ignored** (16b cut Z.1): eight units — one
+/// lance a side — for ten arena seconds on the default seed at jitter nought,
+/// its JSON under the system temp directory. It proves the lane runs: the
+/// lines print, the opening round landed on both squads under their own
+/// commanders, and the report is the `-lance` sibling. It asserts whatever
+/// `TACSIM_ASSERT` says, so the lane's any-knob checks — W8's bounds, the tape
+/// is the script, the opening round on every standing unit, the span inside
+/// what the script holds, the sides fired — run on every `cargo test`; its
+/// knobs are off the lane's defaults, so the exact figures do not (and timing
+/// is never asserted). It boots the production roster with the proving ground
+/// once, which is most of its cost.
+#[test]
+fn z1_the_lance_lane_runs_small() {
+    let mut knobs = Knobs::from_env();
+    // Asserting whatever `TACSIM_ASSERT` says, on the default seed at jitter
+    // nought, so the run is the same one on every machine.
+    knobs.assert = true;
+    knobs.seed = DEFAULT_SEED;
+    knobs.jitter_ms = 0;
+    knobs.json = std::env::temp_dir()
+        .join("tacsim-lance-smoke")
+        .join("harness.json")
+        .to_string_lossy()
+        .to_string();
+    let report = measure_lance(
+        &knobs,
+        &LanceKnobs {
+            units: 8,
+            arena_s: 10,
+        },
+    );
+    for prefix in [
+        "harness_lance_field:",
+        "harness_lance_command:",
+        "harness_lance_wakes:",
+        "harness_lance_window:",
+        "harness_lance_reflex_states:",
+        "harness_lance_weapons:",
+        "harness_lance_perception_total:",
+        "harness_lance_thresholds:",
+        "harness_lance_json:",
+    ] {
+        assert!(
+            report
+                .lines
+                .iter()
+                .any(|line| line.starts_with(prefix) && line.contains("cohort=lance")),
+            "no `{prefix}` line: {:#?}",
+            report.lines
+        );
+    }
+    assert_eq!(
+        report.squads_per_side, 1,
+        "four machines a side are one lance"
+    );
+    // The opening round: both squads, at the warm-up's end, each under its own
+    // side's commander, one line a unit.
+    let opening: Vec<(String, Option<ObjId>)> = report
+        .ordered
+        .iter()
+        .filter(|line| line.t_ms == report.start_ms)
+        .map(|line| (line.squad.clone(), line.issuer))
+        .collect();
+    for (squad, commander) in [
+        ("red-1", report.commanders[0]),
+        ("blue-1", report.commanders[1]),
+    ] {
+        assert_eq!(
+            opening
+                .iter()
+                .filter(|(word, issuer)| word == squad && *issuer == Some(commander))
+                .count(),
+            4,
+            "the opening round landed on every unit of {squad}: {opening:?}"
+        );
+    }
+    let stem = report
+        .json
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_default();
+    assert_eq!(stem, "harness-lance");
+    assert!(report.json.exists(), "{}", report.json.display());
+}
+
+/// **The script's own W8 figures** (16b cut Z.1): at three squads a side over
+/// the default two minutes, one commander's orders are the opening round and
+/// one minute's three, so [`orders_on_tape`] reads four orders and three in the
+/// busiest sixty seconds — `squads_per_side` — and every squad is under an
+/// order from the commander at the end. At five minutes, and at two squads, the
+/// busiest minute is still exactly the squads a side.
+#[test]
+fn z1_the_lance_script_is_three_orders_a_minute_from_one_commander() {
+    use tacsim::arena::state::Team;
+    use tacsim::deliberation::{Objective, SquadId, SquadRoster};
+    let rosters = |per_side: u16| -> Vec<SquadRoster> {
+        let mut out = Vec::new();
+        for (team, first) in [(Team::Red, 100_u32), (Team::Blue, 200)] {
+            for index in 1..=per_side {
+                let commander = ObjId(first + u32::from(index) * 4);
+                out.push(SquadRoster {
+                    id: SquadId { team, index },
+                    commander,
+                    units: (0..4).map(|n| ObjId(commander.0 + n)).collect(),
+                });
+            }
+        }
+        out
+    };
+    let issuer_of = |team: Team| {
+        if team == Team::Red {
+            ObjId(104)
+        } else {
+            ObjId(204)
+        }
+    };
+    let tape = |schedule: &[LanceOrder]| -> Vec<OrderedLine> {
+        schedule
+            .iter()
+            .map(|order| OrderedLine {
+                t_ms: order.at_ms,
+                issuer: Some(issuer_of(order.squad.team)),
+                squad: order.squad.to_string(),
+            })
+            .collect()
+    };
+    let start = 20_500_i64;
+
+    let three = rosters(3);
+    let schedule = lance_schedule(&three, start, start + 120_000);
+    let red: Vec<&LanceOrder> = schedule
+        .iter()
+        .filter(|order| order.squad.team == Team::Red)
+        .collect();
+    let marks: Vec<(i64, u16, Objective)> = red
+        .iter()
+        .map(|order| (order.at_ms - start, order.squad.index, order.objective))
+        .collect();
+    let engage = Objective::Engage { target_hint: None };
+    assert_eq!(
+        marks,
+        vec![
+            (0, 1, engage),
+            (0, 2, engage),
+            (0, 3, engage),
+            (60_000, 1, Objective::Hold),
+            (80_000, 2, engage),
+            (100_000, 3, engage),
+        ],
+        "the opening round, then minute one: red-1 holds, the others engage again"
+    );
+    let red_tape = tape(&schedule)
+        .into_iter()
+        .filter(|line| line.squad.starts_with("red"))
+        .collect::<Vec<_>>();
+    assert_eq!(orders_on_tape(&red_tape, &three), (4, 3));
+    // Both sides: eight orders, the busiest commander still three.
+    assert_eq!(orders_on_tape(&tape(&schedule), &three), (8, 3));
+
+    // Five minutes: every arm of the table in turn, and never more than three
+    // in any sixty seconds.
+    let long = lance_schedule(&three, start, start + 300_000);
+    let stepped: Vec<(i64, u16, Objective)> = long
+        .iter()
+        .filter(|order| order.squad.team == Team::Blue && order.objective != engage)
+        .map(|order| (order.at_ms - start, order.squad.index, order.objective))
+        .collect();
+    assert_eq!(
+        stepped,
+        vec![
+            (60_000, 1, Objective::Hold),
+            (140_000, 2, Objective::Advance { to: CROSSROADS }),
+            (220_000, 3, Objective::Withdraw),
+            (240_000, 1, Objective::Hold),
+        ]
+    );
+    assert_eq!(orders_on_tape(&tape(&long), &three).1, 3);
+
+    // A warm-up that ends off the period: the opening round at its end, the
+    // minutes counted from the next multiple of the period.
+    let off = lance_schedule(&three, start - 250, start + 120_000);
+    assert_eq!(off.first().map(|order| order.at_ms), Some(start - 250));
+    assert!(
+        off.iter()
+            .skip(6)
+            .all(|order| order.at_ms.rem_euclid(WINDOW_MS) == 0),
+        "every minute's mark is on the period"
+    );
+    assert_eq!(orders_on_tape(&tape(&off), &three), (8, 3));
+
+    // Two squads a side: thirty-second staggers, two a minute.
+    let two = rosters(2);
+    let paired = lance_schedule(&two, start, start + 300_000);
+    assert!(
+        paired
+            .iter()
+            .any(|order| order.at_ms == start + 90_000 && order.squad.index == 2)
+    );
+    assert_eq!(orders_on_tape(&tape(&paired), &two).1, 2);
+}
+
+/// What [`measure_lance`] answers, for the smoke and the lane.
+struct LanceReport {
+    /// Every `harness_lance_*` line, as printed.
+    lines: Vec<String>,
+    /// The JSON's path.
+    json: std::path::PathBuf,
+    /// Arena time at the end of the warm-up: the opening round's millisecond.
+    start_ms: i64,
+    /// The squads each side was dealt.
+    squads_per_side: usize,
+    /// Red's commander and blue's.
+    commanders: [ObjId; 2],
+    /// Every `ordered` line on the tape.
+    ordered: Vec<OrderedLine>,
+}
+
+/// **The lance measurement** (16b cut Z.1; 16c N6).
+///
+/// 1. The production roster ([`fan_out_roster`]) with the boot packs on, the
+///    fielded catalog off it and the shipped proving ground through
+///    `tacsim::match_::definition_for` — the `ArenaDefinition` the lobby opens.
+/// 2. `lance.units` units built through `tacsim::match_::custody_unit` by the
+///    CI cohort's rule (`COHORT[(n / 2) % 8]`, team `n % 2`) at the authored
+///    reach, every one on the reflex controller, no pilot and no seat, mustered
+///    on [`LANCE_RED_COLUMN`] and [`LANCE_BLUE_COLUMN`].
+/// 3. The arena at the default `[tacsim.arena]` (`squad_size` four), the tempo
+///    pinned `Engaged`, warmed up as the relief lanes are ([`warm_up`]).
+/// 4. [`run_wakes`] for `lance.arena_s` arena seconds with the script handing
+///    each wake's phase 2 the orders due at it.
+/// 5. The lines, the JSON, and — under `TACSIM_ASSERT` — W8.
+#[allow(clippy::too_many_lines)]
+fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
+    use tacsim::arena::clock::Tempo as ArenaTempo;
+    use tacsim::arena::state::{Arena, Controller, CustodyOut, Power, Team};
+    use tacsim::config::{ArenaConfig, MatchConfig};
+
+    assert!(
+        lance.units >= 2 && lance.units.is_multiple_of(2),
+        "TACSIM_LANCE_UNITS is even and at least two: {}",
+        lance.units
+    );
+    let per_side = lance.units / 2;
+
+    // ---- (1) the world, the catalog and the ground ----
+    let boot_at = Instant::now();
+    let tw = TestWorld::with_modules(fan_out_roster());
+    let boot_ms = boot_at.elapsed().as_secs_f64() * 1_000.0;
+    let catalog = fielded_catalog(&tw);
+    let definition = tacsim::match_::definition_for(
+        tw.world(),
+        &smol_str::SmolStr::new(tacsim::match_::PROVING_GROUND),
+    )
+    .expect("the proving ground's ground builds")
+    .expect("the proving ground is defined");
+    drop(tw);
+
+    // ---- (2) the units ----
+    let mut units = Vec::new();
+    for n in 0..lance.units {
+        let id = ObjId(100_000 + n);
+        let team = if n % 2 == 0 { Team::Red } else { Team::Blue };
+        let entry = COHORT
+            .get(usize::try_from(n / 2).unwrap_or(0) % COHORT.len())
+            .copied()
+            .unwrap_or(content::LINE_TANK);
+        let key = CanonicalId::new(entry).expect("a canonical entry id");
+        let spec = catalog.specs.get(&key).expect("the cohort entry's spec");
+        let binding = catalog
+            .bindings
+            .get(&key)
+            .expect("the cohort entry's binding");
+        let cells = tacsim::definitions::unit::to_tactical_unit(spec, binding, id)
+            .expect("the cohort entry builds a unit");
+        // The fan-out lane's alternation: slot one on row 97, then two rows
+        // either side of it — 95, 99, 93, 101, … — a clear row between each pair.
+        let slot = i64::from(n / 2);
+        let row = LANCE_ROW + if slot % 2 == 1 { -1 } else { 1 } * 2 * ((slot + 1) / 2);
+        let (column, heading_mdeg) = if team == Team::Red {
+            (LANCE_RED_COLUMN, 90_000)
+        } else {
+            (LANCE_BLUE_COLUMN, 270_000)
+        };
+        let pose = mush_sim::data::Pose {
+            x_cm: i64::from(column) * i64::from(CELL_CM) + i64::from(CELL_CM) / 2,
+            y_cm: row * i64::from(CELL_CM) + i64::from(CELL_CM) / 2,
+            // `Arena::new` sets z off the cell (16b cut X.6).
+            z_cm: 0,
+            heading_mdeg,
+            posture: mush_sim::data::passive_rules_value(serde_json::json!({}))
+                .expect("an empty posture"),
+        };
+        units.push(tacsim::match_::custody_unit(
+            &catalog,
+            cells,
+            id,
+            team,
+            pose,
+            1,
+            Controller::Reflex,
+            0,
+        ));
+    }
+
+    // ---- (3) the arena ----
+    let arena_cfg = ArenaConfig {
+        squad_size: 4,
+        ..ArenaConfig::default()
+    };
+    let match_cfg = MatchConfig::default();
+    let sensors_cfg = tacsim::config::SensorsConfig::default();
+    let mut arena = Arena::new(
+        CustodyOut {
+            definition,
+            units,
+            pilots: Vec::new(),
+            resolution: tacsim::match_::resolution_for(&catalog),
+            seed: knobs.seed,
+        },
+        &arena_cfg,
+        &match_cfg,
+        &sensors_cfg,
+    )
+    .expect("the lance arena opens on the proving ground");
+    arena.clock.pin_tempo_for_tests(ArenaTempo::Engaged);
+    let substep =
+        tacsim::arena::clock::substep_ms(&arena_cfg.tempo, arena.cell_cm(), arena.max_speed_cms());
+    let squads = arena.squads.clone();
+    let squads_on = |team: Team| {
+        squads
+            .iter()
+            .filter(|roster| roster.id.team == team)
+            .count()
+    };
+    let squads_per_side = squads_on(Team::Red);
+    assert_eq!(
+        squads_per_side,
+        squads_on(Team::Blue),
+        "the two sides are dealt alike"
+    );
+    // Each side's commander: its own lowest unit, which is its first squad's.
+    let lowest = |team: Team| {
+        squads
+            .iter()
+            .filter(|roster| roster.id.team == team)
+            .map(|roster| roster.commander)
+            .min()
+            .expect("every side has a squad")
+    };
+    let commanders = [lowest(Team::Red), lowest(Team::Blue)];
+    let mut stepper = Stepper {
+        arena,
+        substep,
+        counts: Counts::default(),
+        clock: WakeClock::new(knobs),
+        wall: 0,
+        slope_refusals: 0,
+    };
+    let warm_at = Instant::now();
+    let warm_until = i64::from(match_cfg.startup_ms)
+        .saturating_add(i64::from(arena_cfg.reflex.decide_ms))
+        .saturating_add(i64::from(arena_cfg.tempo.engaged_ms));
+    let warm_pulses = warm_up(&mut stepper, warm_until);
+    let warm_ms = warm_at.elapsed().as_secs_f64() * 1_000.0;
+    let cold: Vec<(ObjId, Power)> = stepper
+        .arena
+        .units
+        .iter()
+        .filter(|unit| unit.power != Power::Online && !unit.limits.wreck)
+        .map(|unit| (unit.id, unit.power))
+        .collect();
+    assert!(
+        cold.is_empty(),
+        "{} units never came online on the proving ground: {cold:?}",
+        cold.len()
+    );
+    let killed_warming = stepper
+        .arena
+        .units
+        .iter()
+        .filter(|unit| unit.limits.wreck)
+        .count();
+    let start_ms = stepper.arena.now_ms;
+    let until_ms = start_ms.saturating_add(i64::from(lance.arena_s) * 1_000);
+    // Each squad's units still standing when the opening round is given: what
+    // that round must land on, one `ordered` line a unit.
+    let standing_at_start: Vec<usize> = squads
+        .iter()
+        .map(|roster| {
+            roster
+                .units
+                .iter()
+                .filter(|unit| {
+                    stepper
+                        .arena
+                        .unit(**unit)
+                        .is_some_and(|state| !state.limits.wreck)
+                })
+                .count()
+        })
+        .collect();
+    // The figures the equalities below were set from hold at the lane's own
+    // defaults, where the run is one deterministic fight; at another seed, length,
+    // size or jitter a lance may be wiped out, reach its crossroads, or take a mark
+    // a wake late, and the span and the busiest minute are then whatever that
+    // fight made them (bounded by W8 and by the script, never equal by rule).
+    let at_defaults = knobs.seed == DEFAULT_SEED
+        && knobs.jitter_ms == 0
+        && lance.units == DEFAULT_LANCE_UNITS
+        && lance.arena_s == DEFAULT_LANCE_ARENA_S;
+
+    // ---- (4) the run, with the script ----
+    let schedule = lance_schedule(&squads, start_ms, until_ms);
+    let mut next = 0_usize;
+    let mut seq = 0_u64;
+    // How late, in arena milliseconds, the latest scripted order landed after
+    // its mark: nought at jitter nought, where every mark is a wake.
+    let mut late_max_ms = 0_i64;
+    // **What the script gave, as the tape should carry it**: one line for every
+    // unit an order went to that was not already a wreck, at the millisecond
+    // phase 2 applied it (`apply_intent` journals every order to a held,
+    // unwrecked reflex unit at its current epoch, and refuses a wreck before
+    // journalling). This is the script's side of the ledger, so the ledger's
+    // own tape can be held to it at any knob.
+    let mut given: Vec<OrderedLine> = Vec::new();
+    let run = run_wakes(
+        &mut stepper,
+        until_ms,
+        |arena| {
+            let mut intents = Vec::new();
+            while let Some(order) = schedule.get(next)
+                && order.at_ms <= arena.now_ms
+            {
+                let issuer = if order.squad.team == Team::Red {
+                    commanders[0]
+                } else {
+                    commanders[1]
+                };
+                let sent = lance_intents(arena, order, issuer, &mut seq);
+                given.extend(
+                    sent.iter()
+                        .filter(|intent| {
+                            arena
+                                .unit(intent.unit)
+                                .is_some_and(|state| !state.limits.wreck)
+                        })
+                        .map(|_| OrderedLine {
+                            t_ms: arena.now_ms,
+                            issuer: Some(issuer),
+                            squad: order.squad.to_string(),
+                        }),
+                );
+                intents.extend(sent);
+                late_max_ms = late_max_ms.max(arena.now_ms - order.at_ms);
+                next += 1;
+            }
+            intents
+        },
+        |_| {},
+    );
+    let Stepper { arena, counts, .. } = stepper;
+
+    // ---- (5) the report ----
+    let cohort = "lance";
+    let tempo = Tempo {
+        name: "lance_engaged",
+        period_ms: arena_cfg.tempo.engaged_ms,
+        ms: run.wakes.iter().map(|wake| wake.ms).collect(),
+    };
+    let (p50, p95, p99, max) = tempo.stats();
+    let folded = windows(&run.wakes, start_ms);
+    let (_, _, w99, wmax) = Tempo {
+        name: "lance_window",
+        period_ms: u32::try_from(WINDOW_MS).unwrap_or(0),
+        ms: folded.iter().map(|w| w.ms).collect(),
+    }
+    .stats();
+    let window_peak = |pick: fn(&WindowSum) -> u64| folded.iter().map(pick).max().unwrap_or(0);
+    let traces_peak = window_peak(|w| w.traces);
+    let cell_probes_peak = window_peak(|w| w.cell_probes);
+    let horizon_probes_peak = window_peak(|w| w.horizon_probes);
+    let jam_checks_peak = window_peak(|w| w.jam_checks);
+    let share_ops_peak = window_peak(|w| w.share_ops);
+    let command_cfg = tacsim::config::CommandConfig::default();
+    let command = CommandFigures::of(&arena, &command_cfg, counts.ordered_lines, &counts.ordered);
+    let distribution = arena.reflex.distribution();
+    let states = tacsim::arena::reflex::ReflexState::ALL
+        .iter()
+        .enumerate()
+        .map(|(at, state)| (state.as_str(), distribution.get(at).copied().unwrap_or(0)))
+        .collect::<Vec<_>>();
+    let perception = &run.perception_total;
+    let asserting = knobs.assert;
+    let window_lens = window_lens_ms(Reach::Authored);
+
+    let mut lines = vec![
+        format!(
+            "harness_lance_field: cohort={cohort} units={} per_side={per_side} \
+             squads_per_side={squads_per_side} squad_size={} red_column={LANCE_RED_COLUMN} \
+             blue_column={LANCE_BLUE_COLUMN} killed_warming={killed_warming} \
+             warm_pulses={warm_pulses} warm_ms={warm_ms:.1} boot_ms={boot_ms:.1} \
+             substep_ms={substep} arena_ms={} ended={} script_orders={} \
+             script_late_max_ms={late_max_ms} at_defaults={at_defaults}",
+            lance.units,
+            arena_cfg.squad_size,
+            arena.now_ms,
+            run.ended
+                .map_or("none".to_string(), |end| format!("{:?}", end.reason)),
+            next
+        ),
+        command.line("harness_lance_command", cohort),
+        format!(
+            "harness_lance_wakes: cohort={cohort} wakes={} p50={p50:.3} p95={p95:.3} \
+             p99={p99:.3} max={max:.3} beside_ms={ARENA_S_P99_MS} (report-only)",
+            run.wakes.len()
+        ),
+        format!(
+            "harness_lance_window: cohort={cohort} window_ms={WINDOW_MS} windows={} \
+             ms_p99={w99:.3} ms_max={wmax:.3} traces_peak={traces_peak} \
+             cell_probes_peak={cell_probes_peak} horizon_probes_peak={horizon_probes_peak} \
+             jam_checks_peak={jam_checks_peak} share_ops_peak={share_ops_peak} \
+             beside_ms={window_lens} (report-only)",
+            folded.len()
+        ),
+        format!(
+            "harness_lance_reflex_states: cohort={cohort} {}",
+            states
+                .iter()
+                .map(|(word, count)| format!("{word}={count}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+        format!(
+            "harness_lance_weapons: cohort={cohort} fired={} impacts={} sections_destroyed={} \
+             units_destroyed={}",
+            counts.fired, counts.impacts, counts.sections, counts.destroyed
+        ),
+        format!(
+            "harness_lance_perception_total: cohort={cohort} passes={} candidates={} traces={} \
+             cell_probes={} horizon_probes={} jam_checks={} share_ops={} detected={} \
+             classified={} lost={}",
+            perception.passes,
+            perception.candidates,
+            perception.traces,
+            perception.cell_probes,
+            perception.horizon_probes,
+            perception.jam_checks,
+            perception.share_ops,
+            perception.detected,
+            perception.classified,
+            perception.lost
+        ),
+        format!(
+            "harness_lance_thresholds: cohort={cohort} assert={asserting} lens=authored \
+             cut_a_p99_ms={ARENA_P99_MS} cut_s_p99_ms={ARENA_S_P99_MS} \
+             window_p99_ms={window_lens} (report-only for timing) engaged_p99_ms={} \
+             max_traces_per_pulse={} max_share_ops_per_pulse={} max_path_queries_per_pulse={} \
+             max_cell_probes_per_pulse={} max_jam_checks_per_pulse={} max_ledger_bytes={}",
+            knobs.engaged_p99_ms,
+            knobs.max_traces_per_pulse,
+            knobs.max_share_ops_per_pulse,
+            knobs.max_path_queries_per_pulse,
+            knobs.max_cell_probes_per_pulse,
+            knobs.max_jam_checks_per_pulse,
+            knobs.max_ledger_bytes
+        ),
+    ];
+
+    let report = serde_json::json!({
+        "what": "16b cut Z.1: twelve machines a side in lances of four on the proving ground, a scripted commander a side",
+        "cohort": cohort,
+        "field": {
+            "units": lance.units,
+            "per_side": per_side,
+            "squads_per_side": squads_per_side,
+            "squad_size": arena_cfg.squad_size,
+            "red_column": LANCE_RED_COLUMN,
+            "blue_column": LANCE_BLUE_COLUMN,
+            "killed_warming": killed_warming,
+            "warm_pulses": warm_pulses,
+            "substep_ms": substep,
+            "arena_ms": arena.now_ms,
+            "seed": knobs.seed,
+            "script_orders": next,
+            "script_late_max_ms": late_max_ms,
+            "at_defaults": at_defaults,
+        },
+        "command": command.json(),
+        "wakes": {
+            "wakes": run.wakes.len(),
+            "p50_ms": num(p50),
+            "p95_ms": num(p95),
+            "p99_ms": num(p99),
+            "max_ms": num(max),
+        },
+        "window": {
+            "window_ms": WINDOW_MS,
+            "windows": folded.len(),
+            "ms_p99": num(w99),
+            "ms_max": num(wmax),
+            "traces_peak": traces_peak,
+            "cell_probes_peak": cell_probes_peak,
+            "horizon_probes_peak": horizon_probes_peak,
+            "jam_checks_peak": jam_checks_peak,
+            "share_ops_peak": share_ops_peak,
+        },
+        "reflex_states": states
+            .iter()
+            .map(|(word, count)| ((*word).to_string(), *count))
+            .collect::<BTreeMap<String, u32>>(),
+        "weapons": {
+            "fired": counts.fired,
+            "impacts": counts.impacts,
+            "sections_destroyed": counts.sections,
+            "units_destroyed": counts.destroyed,
+        },
+        "perception_total": {
+            "passes": perception.passes,
+            "candidates": perception.candidates,
+            "traces": perception.traces,
+            "cell_probes": perception.cell_probes,
+            "horizon_probes": perception.horizon_probes,
+            "jam_checks": perception.jam_checks,
+            "share_ops": perception.share_ops,
+            "detected": perception.detected,
+            "classified": perception.classified,
+            "lost": perception.lost,
+        },
+        "thresholds": {
+            "assert": asserting,
+            "lens": "authored",
+            "timing": "report-only",
+            "cut_a_p99_ms": ARENA_P99_MS,
+            "cut_s_p99_ms": ARENA_S_P99_MS,
+            "window_p99_ms": window_lens,
+            "engaged_p99_ms": knobs.engaged_p99_ms,
+            "max_traces_per_pulse": knobs.max_traces_per_pulse,
+            "max_share_ops_per_pulse": knobs.max_share_ops_per_pulse,
+            "max_path_queries_per_pulse": knobs.max_path_queries_per_pulse,
+            "max_cell_probes_per_pulse": knobs.max_cell_probes_per_pulse,
+            "max_jam_checks_per_pulse": knobs.max_jam_checks_per_pulse,
+            "max_ledger_bytes": knobs.max_ledger_bytes,
+        },
+    });
+    let path = arena_report_path(&knobs.json, "lance");
+    write_report(&path, &report);
+    lines.push(format!(
+        "harness_lance_json: cohort={cohort} {}",
+        path.display()
+    ));
+    for line in &lines {
+        println!("{line}");
+    }
+
+    if asserting {
+        // **W8** (doc 16 §2): both bounds of `[tacsim.command]`, as the arena
+        // lanes assert them — at any knob.
+        command.assert_bounded();
+        // **The tape is the script**, at any knob: every order the script gave
+        // landed once on every unit of its squad that was not already a wreck,
+        // at the millisecond phase 2 applied it, under its side's commander,
+        // and nothing else was ordered. W8's two tape figures are read off this
+        // tape, so they are the script's own.
+        let sorted = |lines: &[OrderedLine]| {
+            let mut keyed: Vec<(i64, String, Option<ObjId>)> = lines
+                .iter()
+                .map(|line| (line.t_ms, line.squad.clone(), line.issuer))
+                .collect();
+            keyed.sort();
+            keyed
+        };
+        assert_eq!(
+            sorted(&counts.ordered),
+            sorted(&given),
+            "W8: the `ordered` lines on the tape are not the orders the script gave"
+        );
+        // **The opening round**, at any knob: at the warm-up's end every squad
+        // was ordered, on every unit still standing, under its side's commander
+        // (`orders_on_tape` files a side's whole opening round as one order, so
+        // the order count cannot see it; the lines can).
+        for (roster, standing) in squads.iter().zip(&standing_at_start) {
+            let commander = if roster.id.team == Team::Red {
+                commanders[0]
+            } else {
+                commanders[1]
+            };
+            let word = roster.id.to_string();
+            let landed = counts
+                .ordered
+                .iter()
+                .filter(|line| {
+                    line.t_ms == start_ms && line.squad == word && line.issuer == Some(commander)
+                })
+                .count();
+            assert_eq!(
+                landed, *standing,
+                "W8: the opening round landed on {landed} of {word}'s {standing} standing units"
+            );
+        }
+        assert!(
+            standing_at_start.iter().any(|standing| *standing > 0),
+            "W8: no squad had a unit standing for the opening round"
+        );
+        // **The span never reads a squad the script is not holding**, at any
+        // knob: an order can be ended early (a wreck, an `Advance` that
+        // arrived) but never lengthened, so a commander's span is at most the
+        // squads it gave an order within `LANCE_ORDER_MS` of the end.
+        let mut live_given: BTreeMap<Option<ObjId>, std::collections::BTreeSet<String>> =
+            BTreeMap::new();
+        for line in &given {
+            if line.t_ms.saturating_add(i64::from(LANCE_ORDER_MS)) > arena.now_ms {
+                live_given
+                    .entry(line.issuer)
+                    .or_default()
+                    .insert(line.squad.clone());
+            }
+        }
+        let span_bound = live_given
+            .values()
+            .map(std::collections::BTreeSet::len)
+            .max()
+            .unwrap_or(0);
+        assert!(
+            command.span_max <= span_bound,
+            "W8: the span read {} where the script holds at most {span_bound} squads under \
+             one commander",
+            command.span_max
+        );
+        // **At the lane's defaults, the exact figures** (the brief's equalities):
+        // one commander holds a live order on every squad of its side, gave
+        // exactly that many in its busiest sixty seconds, and the tape carries
+        // the opening round and one full minute a side — so neither W8 figure
+        // passes on nothing. Off the defaults the fight decides them (see
+        // `at_defaults`), and the three checks above still hold.
+        if at_defaults {
+            assert_eq!(
+                command.span_max, squads_per_side,
+                "W8: the span read {} where the script holds {squads_per_side} squads under \
+                 one commander",
+                command.span_max
+            );
+            assert_eq!(
+                command.orders_per_commander_minute_max,
+                u64::try_from(squads_per_side).unwrap_or(u64::MAX),
+                "W8: the busiest commander minute read {} where the script gives \
+                 {squads_per_side}",
+                command.orders_per_commander_minute_max
+            );
+            assert_eq!(
+                command.orders,
+                2 * (1 + u64::try_from(squads_per_side).unwrap_or(u64::MAX)),
+                "W8: {} orders on the tape where the script gives the opening round and one \
+                 minute's {squads_per_side} a side",
+                command.orders
+            );
+        }
+        assert!(counts.fired > 0, "the lances never fired");
+    }
+
+    LanceReport {
+        lines,
+        json: path,
+        start_ms,
+        squads_per_side,
+        commanders,
+        ordered: counts.ordered,
     }
 }

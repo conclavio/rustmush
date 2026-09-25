@@ -71,6 +71,7 @@
 //! | `[tacsim.arena].max_catch_up_steps` | `4` | periods of wall time one pulse may absorb before the arena records `lagged` and skips the idle time |
 //! | `[tacsim.arena].occupied_stop_ms` | `2000` | **16b cut E.3** (doc 16 §3.4 step 4): arena milliseconds a unit holds against another unit in its way, keeping its speed, before it stops and says so; `0` stops it at once. Ground, the window's edge and a slope are untouched |
 //! | `[tacsim.arena].deliberate_min_ms` | `30000` | **16b cut N.2** (doc 16 §6): the least ARENA time between two deliberation requests for one squad — the floor under the event-driven trigger |
+//! | `[tacsim.arena].squad_size` | `4` | 16b cut Z.1 (16c N6): the most machines one squad holds; a side's machines are dealt into `ceil(n / size)` squads of sizes differing by at most one |
 //! | `[tacsim.arena.intents].max_pending_per_unit` | `8` | **16b cut M.1** (`T-82`): discrete orders one seat may give a unit per arena second; also the size, per unit, of the world side's inbox and pre-pulse buffer |
 //! | `[tacsim.arena.ledger].summary_ms` | `5000` | arena milliseconds between `position_summary` ledger events (doc 16 §4) |
 //! | `[tacsim.arena.ledger].max_bytes` | `67108864` | 64 MiB: at 90% summaries stop, at 100% the match is stopped with `Timeout` |
@@ -971,6 +972,15 @@ pub struct TacsimArenaCfg {
     /// pass. It is enforced inside the pulse, in arena time, so the same scripted
     /// match makes the same number of requests at every tempo (D-16-2).
     pub deliberate_min_ms: u32,
+    /// **The most machines one squad holds** (**16b cut Z.1**; 16c N6, *lances*;
+    /// doc 16 §6 "Deliberation").
+    ///
+    /// A side's reflex units are dealt, in unit-id order, into `ceil(n / size)`
+    /// squads whose sizes differ by at most one, so five machines at four are a
+    /// three and a two and never a four and a one. Both groupings of a match —
+    /// the record's and the arena's — read it, so they cannot disagree. `1` to
+    /// `16`, refused by name outside it.
+    pub squad_size: u32,
     /// `[tacsim.arena.intents]` — the per-unit intent inbox bound.
     pub intents: TacsimIntentsCfg,
     /// `[tacsim.arena.ledger]` — the match ledger's summary cadence and its two
@@ -988,6 +998,7 @@ impl Default for TacsimArenaCfg {
             max_catch_up_steps: 4,
             occupied_stop_ms: 2_000,
             deliberate_min_ms: 30_000,
+            squad_size: 4,
             intents: TacsimIntentsCfg::default(),
             ledger: TacsimLedgerCfg::default(),
             reflex: TacsimReflexCfg::default(),
@@ -2610,6 +2621,8 @@ scene_turn_dedline_secs = 30
         assert_eq!(arena.max_catch_up_steps, 4);
         // 16b cut E.3: two seconds of holding against traffic before the stop.
         assert_eq!(arena.occupied_stop_ms, 2_000);
+        // 16b cut Z.1 (16c N6): lances of four.
+        assert_eq!(arena.squad_size, 4);
         assert_eq!(arena.intents.max_pending_per_unit, 8);
         assert_eq!(
             (
@@ -2691,6 +2704,7 @@ scene_turn_dedline_secs = 30
             "[tacsim.arena]\n\
              max_catch_up_steps = 2\n\
              occupied_stop_ms = 1500\n\
+             squad_size = 3\n\
              [tacsim.arena.tempo]\n\
              quiet_ms = 4000\n\
              alert_ms = 900\n\
@@ -2737,6 +2751,8 @@ scene_turn_dedline_secs = 30
         assert_eq!(arena.max_catch_up_steps, 2);
         // 16b cut E.3: the traffic hold's horizon, written out like the rest.
         assert_eq!(arena.occupied_stop_ms, 1_500);
+        // 16b cut Z.1: the squad size, written out like the rest.
+        assert_eq!(arena.squad_size, 3);
         assert_eq!(
             (
                 arena.tempo.quiet_ms,

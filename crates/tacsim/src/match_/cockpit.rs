@@ -5320,8 +5320,9 @@ pub const fn pair(slot: u8) -> u8 {
 /// [`crate::match_::MatchBook`].
 ///
 /// **Why the wingman and not "the squad holding my pair".** A pilot's tank is in
-/// no squad, and `crate::deliberation::squads_of` cuts a side's *machines* in
-/// unit-id order, with a side of fewer than four machines always **one** squad —
+/// no squad, and `crate::deliberation::squads_of` deals a side's *machines* in
+/// unit-id order into squads of at most `[tacsim.arena].squad_size` (four; 16b
+/// cut Z.1), so a side of up to four machines is always **one** squad —
 /// so on a four-pod side "my pair's squad" would hand any pilot whose pair is a
 /// machine every machine of the side, and let them silently undo the lead's
 /// orders (latest-wins, no radio line). So a non-lead orders exactly one unit:

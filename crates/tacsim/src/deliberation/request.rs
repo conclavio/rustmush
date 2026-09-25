@@ -14,9 +14,14 @@
 //!
 //! A [`SquadBrief`] is built from a [`crate::arena::command::SquadSignal`], and a
 //! signal carries counts, bands and **opaque contact ids** — the same things
-//! `CONTACTS` prints for a pilot. So the prompt has no object id, no pose of
-//! anything but the commander's own cell, and nothing at all about a unit the
-//! commander does not hold. Doc 16 §3.6's observer rule does not stop being true
+//! `CONTACTS` prints for a pilot — **and the squad's own members** (16b cut Z.1,
+//! 16c N6; [`BriefMember`]): each one's reflex state, its health, and its band and
+//! bearing from the commander, as the member knows itself and whether or not the
+//! commander holds it as a contact. So the prompt has no object id (a member is
+//! named by its ordinal), no pose of anything but the commander's own cell and
+//! its own squadmates' band and bearing from it, and nothing at all about a unit
+//! of the other side, or outside the squad, that the commander does not hold.
+//! Doc 16 §3.6's observer rule does not stop being true
 //! because the observer is a provider, and H2a's injection posture is the same
 //! argument read once more: **the order vocabulary is the security boundary, not
 //! the prompt.** A fully jailbroken model can emit four objectives, two
@@ -68,7 +73,10 @@ pub const REPAIR_HINT: &str = "`objective` must be one of hold, advance, engage,
 ///
 /// It is a plain record and it is what crosses the world task's async seam, so it
 /// is `Serialize` — the payload `Effect::ModuleAsync` carries. Every field is
-/// already public to a pilot of that squad.
+/// either already public to a pilot of that squad or the squad's own knowledge
+/// of itself relayed to its commander ([`SquadBrief::members`], 16b cut Z.1);
+/// the object ids it carries ([`SquadBrief::commander`], [`BriefMember::unit`])
+/// ride the seam and are never printed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SquadBrief {
@@ -106,6 +114,36 @@ pub struct SquadBrief {
     pub default_ttl_ms: u32,
     /// What the commander holds, nearest first.
     pub contacts: Vec<BriefContact>,
+    /// **The squad's own units, as their own facts** (16b cut Z.1, 16c N6),
+    /// commander first, from [`crate::arena::command::SquadSignal::members`].
+    pub members: Vec<BriefMember>,
+}
+
+/// **One member of the squad, as the prompt names it** (16b cut Z.1, 16c N6).
+///
+/// Everything here is the member's knowledge of itself, relayed to its
+/// commander: a state, a hull and a place relative to the commander in the
+/// pilot's own band word. The prompt names a member by its `ordinal` alone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BriefMember {
+    /// The member's object id. It rides the seam — cut Z.2's `support_member`
+    /// is written against it — and, as [`SquadBrief::commander`], it is **never
+    /// printed**: [`user_prompt`] names a member by its ordinal.
+    pub unit: u32,
+    /// `1` for the commander, then roster order.
+    pub ordinal: u16,
+    /// The reflex state's wire word (`ReflexState::as_str`).
+    pub state: String,
+    /// Its health, per mille of its authored totals.
+    pub health_permille: u32,
+    /// Where it stands from the commander, in the pilot's own band word
+    /// (`contact_band` over the commander's bands and sight); `here` for the
+    /// commander itself.
+    pub band: String,
+    /// Bearing from the commander, degrees clockwise from north; `0` for the
+    /// commander.
+    pub bearing_deg: u32,
 }
 
 /// One contact, as the prompt names it.
@@ -160,6 +198,29 @@ impl SquadBrief {
                 bearing_deg: contact.bearing_mdeg / 1_000,
             })
             .collect();
+        // **16b cut Z.1** (16c N6): the squad's own units, banded the way the
+        // contacts are so a commander reads one vocabulary for both.
+        let members = signal
+            .members
+            .iter()
+            .map(|member| BriefMember {
+                unit: member.unit.0,
+                ordinal: member.ordinal,
+                state: member.state.as_str().to_string(),
+                health_permille: member.health_permille,
+                band: if member.unit == signal.commander {
+                    "here".to_string()
+                } else {
+                    crate::match_::cockpit::contact_band(
+                        member.range_cm,
+                        &signal.bands_cm,
+                        signal.sight_cm,
+                    )
+                    .to_string()
+                },
+                bearing_deg: member.bearing_mdeg / 1_000,
+            })
+            .collect();
         SquadBrief {
             squad: signal.squad,
             match_id,
@@ -179,6 +240,7 @@ impl SquadBrief {
             // its own floor and the world does not.
             default_ttl_ms: signal.default_ttl_ms,
             contacts,
+            members,
         }
     }
 
@@ -405,6 +467,28 @@ pub fn user_prompt(brief: &SquadBrief) -> String {
         "units: {}  mean_health_permille: {}",
         brief.units, brief.health_permille
     );
+    // **16b cut Z.1** (16c N6): one line per member, by ordinal — never by
+    // object id. The commander's line has no band and no bearing: it is where
+    // the others are measured from.
+    for member in &brief.members {
+        if member.unit == brief.commander {
+            let _ = writeln!(
+                out,
+                "member {} (commander): state {}, health {}",
+                member.ordinal, member.state, member.health_permille
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "member {}: state {}, health {}, {}, bearing {}",
+                member.ordinal,
+                member.state,
+                member.health_permille,
+                member.band,
+                member.bearing_deg
+            );
+        }
+    }
     if !brief.states.is_empty() {
         let states: Vec<String> = brief
             .states
@@ -496,7 +580,8 @@ pub fn reason_of(brief: &SquadBrief) -> SignalReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::command::{SignalContact, SquadDigest};
+    use crate::arena::command::{SignalContact, SignalMember, SquadDigest};
+    use crate::arena::reflex::ReflexState;
     use crate::arena::state::Team;
     use mush_core::ObjId;
 
@@ -541,6 +626,29 @@ mod tests {
             states: [0, 2, 0, 0, 0, 0],
             cell: Some((3, 4)),
             window: (16, 16),
+            // 16b cut Z.1: the commander and one member. Neither is at 1000
+            // health, so no member line can print the digits
+            // `e2_t56_the_default_time_to_live_never_reaches_the_prompt` and the
+            // commander-id test look for; the member's id is one no other number
+            // in the brief could equal.
+            members: vec![
+                SignalMember {
+                    unit: ObjId(4),
+                    ordinal: 1,
+                    state: ReflexState::Engage,
+                    health_permille: 850,
+                    range_cm: 0,
+                    bearing_mdeg: 0,
+                },
+                SignalMember {
+                    unit: ObjId(987_654),
+                    ordinal: 2,
+                    state: ReflexState::Patrol,
+                    health_permille: 850,
+                    range_cm: 1_000,
+                    bearing_mdeg: 270_000,
+                },
+            ],
         }
     }
 
@@ -602,6 +710,63 @@ mod tests {
         // And the brief gained no key: the model reads the word, not the sight.
         let prompt = user_prompt(&brief);
         assert!(!prompt.contains("60000"), "{prompt}");
+    }
+
+    /// **16b cut Z.1 (16c N6): a member is banded in the pilot's word.** The
+    /// member 1,000 cm from its commander, against a 12,000 cm limit, is in the
+    /// inner third — `close`, exactly what `CONTACTS` would call a contact there
+    /// — and the commander itself is `here`.
+    #[test]
+    fn z1_from_signal_gives_each_member_the_pilots_band_word() {
+        let brief = brief();
+        assert_eq!(brief.members.len(), 2);
+        let (lead, wing) = (&brief.members[0], &brief.members[1]);
+        assert_eq!(
+            (
+                lead.unit,
+                lead.ordinal,
+                lead.state.as_str(),
+                lead.band.as_str()
+            ),
+            (4, 1, "engage", "here")
+        );
+        assert_eq!((lead.health_permille, lead.bearing_deg), (850, 0));
+        assert_eq!(
+            (wing.unit, wing.ordinal, wing.state.as_str()),
+            (987_654, 2, "patrol")
+        );
+        assert_eq!(
+            wing.band,
+            crate::match_::cockpit::contact_band(1_000, &[6_000, 12_000], 12_000)
+        );
+        assert_eq!(wing.band, "close");
+        assert_eq!((wing.health_permille, wing.bearing_deg), (850, 270));
+        // The far edge moves the word as it moves a contact's.
+        let mut far = signal();
+        far.members[1].range_cm = 9_000;
+        assert_eq!(SquadBrief::from_signal(7, &far, 2).members[1].band, "far");
+    }
+
+    /// **16b cut Z.1: the prompt prints one line per member, verbatim, and never
+    /// a member's object number.**
+    #[test]
+    fn z1_the_prompt_prints_a_member_line_per_member_and_no_object_number() {
+        let prompt = user_prompt(&brief());
+        assert!(
+            prompt.contains(
+                "units: 2  mean_health_permille: 900\n\
+                 member 1 (commander): state engage, health 850\n\
+                 member 2: state patrol, health 850, close, bearing 270\n"
+            ),
+            "{prompt}"
+        );
+        assert_eq!(prompt.matches("member ").count(), 2, "{prompt}");
+        assert!(!prompt.contains("987654"), "{prompt}");
+        assert!(!prompt.contains("987_654"), "{prompt}");
+        // The member lines sit before the contacts block.
+        let members_at = prompt.find("member 1").unwrap_or(usize::MAX);
+        let contacts_at = prompt.find("contacts (nearest first)").unwrap_or(0);
+        assert!(members_at < contacts_at, "{prompt}");
     }
 
     #[test]
@@ -753,10 +918,22 @@ mod tests {
         let mut long = brief();
         long.default_ttl_ms = MAX_TTL_MS;
         assert_eq!(user_prompt(&short), user_prompt(&long));
+        // 16b cut Z.1: the prompt now prints member healths, so the digits a
+        // short default would print are looked for as the ceiling's distinctive
+        // decimal and as an odd default no other field of the brief can equal —
+        // never as `1000`, which a healthy member's line would print.
         assert!(
-            !user_prompt(&short).contains("1000"),
+            !user_prompt(&long).contains(&MAX_TTL_MS.to_string()),
             "{}",
-            user_prompt(&short)
+            user_prompt(&long)
+        );
+        let mut odd = brief();
+        odd.default_ttl_ms = 29_417;
+        assert_eq!(user_prompt(&odd), user_prompt(&short));
+        assert!(
+            !user_prompt(&odd).contains("29417"),
+            "{}",
+            user_prompt(&odd)
         );
         // And the forced tool still requires it, so only the JSON-in-text
         // fallback can leave it out.
