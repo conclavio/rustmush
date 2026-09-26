@@ -39,7 +39,9 @@ text and says where it landed in its id cell. After the owner-supplied external 
 added, all P2, each confirmed and narrowed by two lenses reading `c3852a0c`; the reviewer's probes were not
 re-run), 86 debts unchanged, and a thirteenth cut, AA, placed after E and before B. Cut L's source review
 at `8366b3fe` adds `B-81` (P2), bringing the total to 81 bugs (0 P0, 14 P1, 67 P2); no runtime probe
-was run for that finding. Cut E's record
+was run for that finding. The 2026-09-26 dev1 deploy recon adds `B-82` (P1, the split's world task never
+holds the LLM service; read at `50397c1b` and seen live in dev1's journal), bringing the total to 82 bugs (0 P0,
+15 P1, 67 P2), and the owner's fix cut AC is placed after I. Cut E's record
 (2026-09-22) closed ten bugs (`B-04`, `B-05`, `B-39` to `B-46`) and six debts (`T-32`, `T-46`, `T-47`,
 `T-55`, `T-56`, `T-81`) outright and one debt (`T-42`) in part; it added no row, its residuals being listed
 in 16b section 9, row E, and its deferrals in section 4's cut E entry. Cut AA's record (2026-09-22) closed
@@ -86,6 +88,7 @@ byte-identical `No such contact.`
 | B-12 — room details landed D.5; details on items stay open | Every pack-authored room detail (about 36 keywords in 29 blocks) is written to `atlas:detail:<kw>` while `look <keyword>` reads `detail:<kw>`, so none can be read. The Welcome Hall's sign, which tells a new player how to reach the simulator, answers `NoMatch`. Multi-word keywords are stored with underscores, so the namespace alone is not the whole fix. | `mush-atlas/src/apply.rs:1034-1042`; `mush-core/src/commands/look.rs:70-84`; `mush-atlas/src/module.rs:55-56`, `:308` | `look` tries `detail:` and then each detail prefix a module registered at composition, with spaces folded to underscores; the atlas registers `atlas:detail:`. A test that reads a shipped detail through `look`. | S–M | verified |
 | B-13 — landed B.5 | A line that arrives while another command's commit is in flight is refused with `The world is committing another action; please retry in a moment.` Four web lines sent in one burst lost three. `must_defer_behind_commit` covers four connection messages and no command, by design (head-of-line blocking); every test rig in the tree retries the string and a player has no such loop. Bursts of cockpit verbs inside a match were all served, so the committing commands (moves, claims) open the window. | `mush-server/src/world_task.rs:954-956`, `:979`, `:1030-1040`, `:1093-1099` | Measure how often a command meets the window; then a bounded per-session defer queue (depth 4, 250 ms) replayed after the receipt, refusing only on timeout and in a player's words. | M | verified, live |
 | B-14 — landed B.4 | Attaching a second connection to a character prints the whole room on the first connection too: the attach dispatches a real `look` as the actor, and its output goes to every connection of that actor. A pilot who opens the browser cockpit beside an SSH window gets a room description in the fight's scrollback. | `mush-gateway/src/bridge_common.rs:955-962` (the per-connection half at `:930-938` is correct) | Address the attach-time room view to the attaching connection only, the way `SessionInfo` already is. | S | verified, live |
+| B-82 | On the split, production shape (`mush-gateway` supervising `mush-server`) the world task is never handed the LLM service the boot built: every tacsim deliberation logs `WARN tacsim Effect::ModuleAsync: no LlmService on this world task; the squad stays on doctrine` and every NPC turn `npc Effect::ModuleAsync dropped: no LlmService on this world task`, so LLM commanders and NPC minds never fire in production, while `llm service built enabled=true providers=2 routes=12` is logged a few lines earlier by the same boot. The all-in-one `mushd` (the local rig) sets the handle, so no test and no local play meets it. Live on dev1 since the fork (M16b, `89a05672`), on every deliberation from 2026-09-21; found in the 2026-09-26 deploy recon. | `mush-server/src/lib.rs:334-346` (`ServerDeps::in_memory()`, then store, guard, staff, quarantine_spool and outbox_adapters overwritten; `llm` left `None`; `metrics` the throwaway registry) against `mushd/src/main.rs:429-440` (`llm: Some(Arc::clone(&booted.llm))`); `mush-server/src/world_task.rs:1810`, `:9951`, `:9982`, `:10048` | One production `ServerDeps` constructor shared by both binaries (WS04's rule: the split delegates, never transcribes), carrying the booted `llm` and the one metrics registry the sink and the world loop share; a parity test in `mush-server/tests/boot_parity.rs` that the split's deps carry the handle; a split-shape proof over the two-process rig with `[llm]` on and the mock provider that a tacsim deliberation reaches a provider and the WARN never prints. | S | Verified by reading at `50397c1b`; live on dev1. Cut AC. |
 
 ### 1.2 P2
 
@@ -275,6 +278,7 @@ Every row is S unless it says otherwise, and verified unless it says otherwise.
 | T-73 — landed L.1 | A fresh store has no scripted first staff login; `reset-instance.sh` stages nothing; no binary emits an argon2id hash. Two manual routes exist. M. | `deploy/README.md:384-402`; `scripts/reset-instance.sh:207-210`; `mush-config/src/accounts.rs:98-163` | `--bootstrap-staff <account>`, refused once any account exists, and `--staff` on the reset script. |
 | T-74 — landed L.1 | The operator log says nothing when a match starts, logs `pre-auth timeout` for connections that already closed, and prints an INFO audit line per disabled deliberation. | `mush-net-ssh/src/server.rs:1398-1418`; `tacsim:arena_bridge.rs:1495` | INFO at `SIM START` and at `Running`; cancel the watchdog on close; DEBUG for the disabled outcome. |
 | T-85 — landed L.1 | A first-boot pack that apply refuses is one `tracing::error!` line and the world comes up without the lot: a production boot with a bad shipped pack is not a boot failure, and a test sees a missing room four frames from the cause (found by cut D's sweep, when D.5's new exit check refused a `mush-housing` fixture). | `mush-content/src/module.rs:127-129`; `mush-testkit` | Fail the boot, or at least fail `TestWorld` loudly, on a refused first-boot pack; an owner-visible choice for production. |
+| T-88 (from the 2026-09-26 deploy review) | The IC clock is hard-coded in the instance template (`[game].ic_ratio = 1`, `ic_epoch = "2020-01-01 00:00"`) and not an instance-env value, so an operator's edit to a rendered `mushd.toml` (dev1 carries `ic_ratio = 4`, `ic_epoch = "2026-09-22 00:00"` since 2026-09-22, never yet read by a boot) is silently reverted by the next `deploy.sh` render, and because the timeline is seeded from `[game]` only on an empty store, a wipe after that render freezes the template's clock into the new world; nothing but the config sets the epoch. S. | `deploy/instance/mushd.toml.tmpl:143-144`; `deploy/instance/render.sh`; `mush-server/src/timeline.rs:29-30` | `IC_RATIO` and `IC_EPOCH` as instance-env values rendered into the template (the example at 1 and 2020-01-01, dev1 at 4 and 2026-09-22 00:00 as the owner set it by hand), the completeness check and the provisioning smoke covering them. Cut AC.2. |
 
 ### 2.7 Documents
 
@@ -598,7 +602,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
 ## 4. Execution order
 
 Fourteen serial cuts and a tail. Ledger letters used before this document: R G P H A T C K S W N X F Q;
-the twelve below use the rest of the alphabet, and the review cut AA (after E) opens the second series, and the owner's ruling cut AB (after Y) follows it.
+the twelve below use the rest of the alphabet, and the review cut AA (after E) opens the second series, the owner's ruling cut AB (after Y) follows it, and the owner's fix cut AC (after I, before the 2026-09-26 dev1 redeploy) follows that.
 Each cut is a functional boundary of roughly cut F's size: three to five sub-cuts of 1.5k to 3k lines
 with their tests. 16b §0's build discipline applies unchanged: the workspace green at every sub-cut, the
 gates re-blessed in the commit that moves them, a reviewer that did not write the cut, one commit and one
@@ -859,6 +863,31 @@ and watch the field.
 
 Depends on V, U. Gateway: yes. Packs: none. Hash: I.3 moves it. Assumes N9's and N10's defaults.
 Size: large.
+
+### Cut AC: the mind reaches the split
+
+**When it lands.** On the production shape the world task holds the LLM service the boot built, so a
+squad's commander asks its provider and an NPC's turn runs, exactly as on the all-in-one; the two
+binaries build their world-task dependencies through one constructor and a parity test holds them to it.
+
+- **AC.1 The handle.** `B-82`: one production `ServerDeps` constructor shared by `mush-server` and
+  `mushd` (the booted `llm`, the staff queue, the store, the guard, the spool, the adapters, the one
+  metrics registry the sink and the world loop share); the split half calls it where it built
+  `in_memory()` and overwrote five fields; a parity test that the split's deps carry the handle and the
+  registry; a split-shape proof over the two-process rig with `[llm]` on and the mock provider that a
+  tacsim deliberation reaches a provider and `no LlmService on this world task` never prints; the
+  `ServerDeps::in_memory` doc made true (the tests' and the compat path's, never production's).
+- **AC.2 The clock in the env.** `T-88`: `IC_RATIO` and `IC_EPOCH` as instance-env values the template renders into
+  `[game].ic_ratio` and `[game].ic_epoch` (the example at 1 and `2020-01-01 00:00`, `deploy/dev1/instance.env` at 4 and
+  `2026-09-22 00:00`, the values the owner set by hand on the box on 2026-09-22), the render's completeness
+  check and the provisioning smoke covering both, the deploy README's redeploy section saying the clock
+  is the env's; no code path changes.
+
+The owner's ruling of 2026-09-26: a quick cut after I to fix the LLM service bug before the dev1
+redeploy (found in that deploy's recon: dev1 has logged the WARN on every deliberation since 09-21; the
+same recon's review found the clock edit the redeploy would revert). Depends on nothing in I. Gateway:
+no (the server half alone; a reload takes it). Packs: none. Hash: no. Size: small, two sub-cuts. Named
+from the second series.
 
 ### Cut O: more reasons to fight and more to do
 
