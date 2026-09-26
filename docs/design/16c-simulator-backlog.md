@@ -405,7 +405,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
   (default: build steps 1 and 2, re-measure, and only then choose; if still over, step 3 keeps both).
   RAM per arena for the pyramid (default: accepted; `T-36`'s memory bound covers it).
 
-### N6. Lances
+### N6. Lances — landed Z.1 and Z.2
 
 - **Pitch.** Squads of four with two more mechanical orders, so that twelve machines a side is an
   opponent and not twenty-four duellists.
@@ -421,7 +421,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
 - **Owner's choices.** Lance size (default 4). Whether these are the right two (default: ship them and
   watch them fight). May an LLM command in a match with humans (default: yes, doctrine is the fallback).
 
-### N7. Six a side
+### N7. Six a side — landed Z.3
 
 - **Pitch.** The cap is content: eight pods and eight tanks. Raise the centre toward the size the engine
   carries.
@@ -438,7 +438,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
 - **Owner's choices.** Six or twelve (default: six first; twelve is one more bump once the fan-out has a
   number). New rooms (default: no).
 
-### N8. A side channel
+### N8. A side channel — landed Z.4
 
 - **Pitch.** Each side's pilots share a channel for the match, aliased by callsign.
 - **Grounding.** `mush_comsys::api::force_join` and `force_leave` are public
@@ -831,6 +831,8 @@ Depends on U, `B-56`. Gateway: no. Packs: none unless J.3 shortens a reach. Assu
 
 ### Cut Z: lances and six a side
 
+Landed 2026-09-25 at `b0f6504c`; see 16b section 9, row Z. Built as the four sub-cuts below, each committed and pushed on its own green gate (Z.1 `de08f2b2`, Z.2 `599a5001`, Z.3 `c75267b8`, Z.4 `b0f6504c`), then the full sweep green on its first round with no repair; N6, N7 and N8 landed at their defaults, `Q39` built on (six a side), `Q44` decided (`RELEASE` built in Z.2). Two of this section's assumptions were found false and corrected in the Z row's design note: the arena pack was a boot pack and not a shelf entry, so Z.3 shelves the game's two packs and a live world takes them by hand with the centre idle, and a version-only pack bump plans as a no-op, so the staff-lobby latch stays at 4 on a live world. Deferred: a bare `FOLLOW` arm, a comsys panel republish on a forced join or leave, the cockpit notices ring carrying the pilot's own net, the TUI channel backlog's comtitle, a relatch or re-make step for a version-only bump or a lost stock tank, a per-issuer order watch, a knob for the support leash, and twelve a side (Q39's second half); every one is in the Z row's residuals.
+
 **When it lands.** Six pilots or machines a side take the field in lances of four that screen and
 support, and each side talks on its own channel by callsign.
 
@@ -925,12 +927,12 @@ debts, plus the four feature choices that change the most.
 | Q36 | May `STATUS` print the arena's global tempo word? | No: the pilot's own alert state; the cadence stays in the frame. | D |
 | Q37 | What may a player read of a finished match (N2), and is a replay public (N9)? | The report is the player's own projection; the replay of an OOC match is objective and public. | V, I |
 | Q38 | Who may `ORDER`, and how wide is the span (N3)? | The side's lead, and any pilot their own squad; 4 squads per commander. Built on this default (Y.1, Y.2), "their own squad" read as the one machine in their pod pair, since a four-pod side is one squad. | Y |
-| Q39 | Six a side or twelve (N7)? | Six first. | Z |
+| Q39 | Six a side or twelve (N7)? | Six first. Built on this default (Z.3); twelve is one more pack bump once the fan-out lane has an engaged number. | Z |
 | Q40 | Durability's cadence, and do OOC matches resume (N16)? | Every 5,000 ms plus tail replay; yes. | tail |
 | Q41 | Does the watchdog void the pulse that finished the match? | Yes: void, and every unit restored (doc 16 §3.1); the forced void is not journalled, the black box keeps the arena's own end. Built on this default (AA.3); reversed by reverting the terminal arm of `Task::pulse` alone. | AA |
 | Q42 | Does a reclaimed pilot take the side's lead back (N4)? | No: succession is one-way and the heir keeps it; a side whose every claimant had left gives the lead to the first who comes back. Built on this default (Y.3). | Y |
 | Q43 | May a non-lead's order to their wingman replace the lead's live order on that unit (N3)? | Yes, latest-wins per unit, and nobody is told; a per-unit watch or an issuer set is a later cut's if a word should be said. Built on this default (Y.1). | Y |
-| Q44 | Should `ORDER <squad> RELEASE` hand a squad back to doctrine and free the span (N3, W8)? | Not in Y: the four arms as N3 lists them, and the span holds until the world's watch expires, since the world never learns an early arena end. Cut Z decides. | Y, Z |
+| Q44 | Should `ORDER <squad> RELEASE` hand a squad back to doctrine and free the span (N3, W8)? | Not in Y: the four arms as N3 lists them, and the span holds until the world's watch expires, since the world never learns an early arena end. Cut Z decides. Decided and built (Z.2): `RELEASE` drops the unit to doctrine at once and the issuer's own watch with it, freeing the span. | Y, Z |
 | Q-U1 | Should the arena task pass the SCHEDULED wall to `step`, so arena time is exactly the substep lattice with a late wake carried as lag? (raised by cut U's plan, not assumed) | No for now: arena time stays wall time, the wake targets are lattice points in absolute arena time, the task's deadline is anchored to its base, and the overshoot's cost is measured by `TACSIM_WAKE_JITTER_MS` (3 ms: 81 short substeps in 120 wakes). | U, open |
 | Q-U2 | The arena-to-session events-per-pulse bound: the shipped opening burst is 288 in one pulse at 24 pilots (24 keyframes plus eleven contact-notice lines per pilot at the acquisition pass) against the planned 256. Keep 512 on the measurement, coalesce a pilot's notices into one `Sys` event, or bound per pilot? | 512 on the measurement (built at U.2); the burst is client-facing text and untouched. | U, open |
 | Q-AB1 | What is the narrowest terminal a client surface is laid out for? (raised when `SIM HISTORY`'s rows ran 82 to 88 columns) | Answered by the owner on 2026-09-24: 120 columns is the minimum viable width, 160 to 180 typical, 240 and more reasonable; no client surface is built to 80 again. | AB |
