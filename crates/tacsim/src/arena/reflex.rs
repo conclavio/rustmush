@@ -679,6 +679,26 @@ impl ReflexMemory {
         }
     }
 
+    /// **Forget where one machine was going, and not why** (16b cut I.3; 16c
+    /// N10): a staff `@arena/place` moved the unit, so the route it was
+    /// following starts somewhere it no longer stands.
+    ///
+    /// Clears the row's `goal`, `route` and `searched_ms` — the last so the next
+    /// tick searches at once rather than waiting out `repath_ms`, as a stop
+    /// against an occupied cell does ([`Arena::note_blocked`]) — and keeps
+    /// everything that is a decision rather than a path: the state, the standing
+    /// order, `waypoint` and `from_waypoint`, the target and the avoid list. A
+    /// placed machine therefore re-derives its goal from its state and its order
+    /// at its next tick, from where it now stands. A unit with no machine is left
+    /// alone.
+    pub fn forget_route(&mut self, unit: ObjId) {
+        if let Some(row) = self.units.get_mut(&unit) {
+            row.goal = None;
+            row.route.clear();
+            row.searched_ms = None;
+        }
+    }
+
     /// The order a unit is under, if any.
     #[must_use]
     pub fn order(&self, unit: ObjId) -> Option<&StandingOrder> {
@@ -3535,6 +3555,8 @@ impl Arena {
                 | IntentKind::Speed { .. }
                 | IntentKind::Order(_)
                 | IntentKind::ReleaseOrder { .. } => {}
+                // 16b cut I.3: a staff act; a machine never issues one.
+                IntentKind::Place { .. } => {}
             }
         }
     }
@@ -4643,5 +4665,61 @@ mod tests {
         // at 61° off it is outside.
         assert!(arc_between(10_000, 0) <= SCREEN_HALF_ARC_MDEG);
         assert!(arc_between(299_000, 0) > SCREEN_HALF_ARC_MDEG);
+    }
+
+    /// **16b cut I.3**: a placed machine forgets where it was going and not why
+    /// — the goal, the route and the search stamp go; the state, the standing
+    /// order, the waypoints, the target and the avoid list stay.
+    #[test]
+    fn i3_forget_route_keeps_the_decision_and_drops_the_path() {
+        use crate::deliberation::order::{Constraints, Objective, Order, StandingOrder};
+        let unit = ObjId(4);
+        let mut arena = arena_of(vec![tank(unit, Team::Red, pose(1_500, 1_500))]);
+        arena.reflex.adopt(unit, ReflexState::Approach);
+        arena.reflex.set_order(
+            unit,
+            StandingOrder::accepted(
+                Order {
+                    squad: crate::deliberation::squad::SquadId {
+                        team: Team::Red,
+                        index: 1,
+                    },
+                    objective: Objective::Advance { to: (6, 6) },
+                    target: None,
+                    horizon_ms: 600_000,
+                    constraints: Constraints::default(),
+                    ttl_ms: 600_000,
+                    issued_ms: 0,
+                    issuer: None,
+                    spot: None,
+                },
+                0,
+            ),
+        );
+        let target = (ContactId(0x0123_4567_89ab_cdef), ObjId(9));
+        if let Some(row) = arena.reflex.unit_mut(unit) {
+            row.goal = Some((6, 6));
+            row.route = vec![(2, 2), (3, 3)];
+            row.searched_ms = Some(4_000);
+            row.waypoint = Some(1);
+            row.from_waypoint = Some(0);
+            row.target = Some(target);
+            row.avoid = vec![((2, 1), 3_000)];
+        }
+        let order_before = arena.reflex.order(unit).cloned();
+        arena.reflex.forget_route(unit);
+        let row = arena.reflex.unit(unit).expect("the machine");
+        assert_eq!(row.goal, None);
+        assert!(row.route.is_empty());
+        assert_eq!(row.searched_ms, None, "the next tick searches at once");
+        assert_eq!(row.state, ReflexState::Approach);
+        assert_eq!(arena.reflex.order(unit).cloned(), order_before);
+        assert!(order_before.is_some());
+        assert_eq!((row.waypoint, row.from_waypoint), (Some(1), Some(0)));
+        assert_eq!(row.target, Some(target));
+        assert_eq!(row.avoid, vec![((2, 1), 3_000)]);
+        // A unit with no machine is left alone.
+        arena.reflex.forget_route(ObjId(99));
+        assert!(arena.reflex.unit(ObjId(99)).is_none());
     }
 }

@@ -16,6 +16,8 @@
 //! | `@arena/release <unit>` | **16b cut D.3**: clear one unit's stranded `deployed` marker and free its seat |
 //! | `@arena/pose <callsign>=<x> <y>[ <heading>]` | **16b cut U.4**: the cell a centre slot's unit opens the next match on (`=off`, or bare to list) |
 //! | `@arena/report [<match>] [<chunk>]` | **16b cut V.3**: one page of a match's tape, for staff ([`crate::match_::report::request_page`]) |
+//! | `@arena/tempo <match>=<period_ms>` | **16b cut I.3**: floor a running match's wake interval (`=off` lifts it, bare reads it) |
+//! | `@arena/place <unit>=<x>,<y>` | **16b cut I.3**: put a unit of a running match on a cell, as its own seat |
 //! | `@arena/fault <match>` | **test builds only** — arm a panic inside the next `step` |
 //!
 //! `@arena/start` is deliberately the whole of `Selection → Boarding → Running`
@@ -47,11 +49,12 @@ use super::{MatchBook, Side, allocate_id};
 
 /// The switches cut T.3 adds to `@arena`, in help order (16b cut K.1 adds
 /// `reset`; 16b cut D.3 adds `release`; 16b cut U.4 adds `pose`; 16b cut V.3
-/// adds `report`).
+/// adds `report`; 16b cut I.3 adds `tempo` and `place`).
 #[must_use]
 pub fn register_switches() -> Vec<SmolStr> {
     let mut switches: Vec<SmolStr> = [
-        "status", "start", "intent", "abort", "reset", "release", "pose", "report",
+        "status", "start", "intent", "abort", "reset", "release", "pose", "report", "tempo",
+        "place",
     ]
     .iter()
     .copied()
@@ -189,6 +192,38 @@ pub fn intent(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .filter(|rhs| !rhs.is_empty())
         .ok_or(ArenaVerbError::Usage(USAGE))?;
     let kind = parse_kind(rhs).ok_or(ArenaVerbError::Usage(USAGE))?;
+    let match_id = offer_as_seat(
+        ctx,
+        unit,
+        kind,
+        "That unit already has as many orders queued as it may.",
+        |_, _| Ok(()),
+    )?;
+    let actor = ctx.actor;
+    ctx.out.sys_to_actor(
+        actor,
+        crate::arena_bridge::NOTICE_CATEGORY,
+        format!("Ordered #{} on match {match_id}.", unit.0),
+    );
+    Ok(())
+}
+
+/// **One order, stamped as the unit's own seat and offered to its match** —
+/// the shared body of `@arena/intent` and (16b cut I.3) `@arena/place`.
+///
+/// The unit must be bound to a running match (`That unit is not in a running
+/// match.`); `check` then runs against the registry with the match's id, which
+/// is where a switch makes the refusals the world can make honestly; the order
+/// is stamped with the epoch the world published
+/// ([`ArenaRegistry::stamp_intent`]) and offered. A refused offer answers `busy`
+/// while the task is live and `That match has ended.` after. Answers the match.
+fn offer_as_seat(
+    ctx: &mut Ctx<'_>,
+    unit: ObjId,
+    kind: IntentKind,
+    busy: &'static str,
+    check: impl FnOnce(&ArenaRegistry, MatchId) -> Result<(), CmdError>,
+) -> Result<MatchId, CmdError> {
     let channel = kind.channel_required();
     let (match_id, intent, tasks) = {
         let registry = ctx
@@ -198,24 +233,269 @@ pub fn intent(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let match_id = registry
             .match_of_unit(unit)
             .ok_or_else(|| CmdError::msg("That unit is not in a running match."))?;
+        check(registry, match_id)?;
         let intent = registry.stamp_intent(unit, channel, kind);
         (match_id, intent, registry.tasks().clone())
     };
     match tasks.offer(match_id, ArenaMsg::Intent(intent)) {
-        Ok(()) => {
-            let actor = ctx.actor;
-            ctx.out.sys_to_actor(
-                actor,
-                crate::arena_bridge::NOTICE_CATEGORY,
-                format!("Ordered #{} on match {match_id}.", unit.0),
-            );
-            Ok(())
-        }
-        Err(_) if tasks.is_live(match_id) => Err(CmdError::msg(
-            "That unit already has as many orders queued as it may.",
-        )),
+        Ok(()) => Ok(match_id),
+        Err(_) if tasks.is_live(match_id) => Err(CmdError::msg(busy)),
         Err(_) => Err(CmdError::msg("That match has ended.")),
     }
+}
+
+/// `@arena/place`'s usage, after the `Usage: ` prefix.
+const PLACE_USAGE: &str = "@arena/place <unit>=<x>,<y>";
+
+/// The sentence a refused offer of a staff lever answers while its match's task
+/// is live (16b cut I.3).
+const BUSY: &str = "That match is busy; try again in a moment.";
+
+/// **`@arena/place <unit>=<x>,<y>`** — **16b cut I.3** (16c N10): put a unit of
+/// a running match on an arena cell, as the unit's own seat.
+///
+/// The world refuses what it can refuse honestly, against the ground the
+/// registry holds for the match ([`ArenaRegistry::arena_of`]): a cell off the
+/// window and a cell that is impassable or has no way out, in `@arena/pose`'s
+/// own sentences. Those refusals, and a refused offer, **reach no tape** — the
+/// arena never received the place. Nor does a match the book no longer holds
+/// `running` take one (`Match N is stopping.`, as `@arena/tempo` says it): a
+/// `Stop` is already on its way, and a place sent after it would reach a task
+/// that steps no more. Occupancy and a round in flight are the arena's to judge
+/// at the moment it resolves the place; the order rides the intent path as an
+/// [`IntentKind::Place`] on `helm`, and **every place the arena receives is
+/// journalled** — `placed`, or `place_refused` with the reason, `stopped` for
+/// one that reaches the pulse a `Stop` ends the match in — while nothing is
+/// ever said to a pilot. The one place that leaves no line is one queued in the
+/// pulse whose own substep ends the match (a kill or the duration bound): no
+/// line follows `match_ended` (16b cut W.2). The reply is the staffer's alone.
+///
+/// A staff surface, so it names object ids (doc 16 §5's observer rule is about
+/// pilots).
+///
+/// # Errors
+///
+/// One sentence per refusal, in the order they are asked.
+pub fn place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let unit = parse_unit(ctx.args.lhs().trim()).ok_or(ArenaVerbError::Usage(PLACE_USAGE))?;
+    let (x, y) = ctx
+        .args
+        .rhs()
+        .and_then(parse_cell)
+        .ok_or(ArenaVerbError::Usage(PLACE_USAGE))?;
+    // The book's word on the unit's match, read before the registry is borrowed
+    // (a match opened with no lifecycle record around it has none, and runs
+    // exactly while its task does).
+    let booked = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .and_then(|registry| registry.match_of_unit(unit))
+        .and_then(|match_id| {
+            ctx.w
+                .module_state::<MatchBook>()
+                .and_then(|book| book.get(match_id))
+                .map(|record| (match_id, record.state))
+        });
+    offer_as_seat(
+        ctx,
+        unit,
+        IntentKind::Place { x, y },
+        BUSY,
+        |registry, match_id| {
+            if let Some((booked_id, state)) = booked
+                && booked_id == match_id
+                && state != super::MatchState::Running
+            {
+                return Err(ArenaVerbError::WrongState {
+                    match_id: match_id.0,
+                    state: state.as_str(),
+                }
+                .into());
+            }
+            let Some(ground) = registry.arena_of(match_id) else {
+                return Err(CmdError::msg("That unit is not in a running match."));
+            };
+            if ground.terrain.get(x, y).is_none() {
+                return Err(CmdError::msg(format!(
+                    "Cell ({x}, {y}) is off the arena window."
+                )));
+            }
+            if !ground.terrain.has_way_out(x, y) {
+                return Err(CmdError::msg(format!(
+                    "Cell ({x}, {y}) is impassable, or has no way out."
+                )));
+            }
+            Ok(())
+        },
+    )?;
+    let actor = ctx.actor;
+    ctx.out.sys_to_actor(
+        actor,
+        crate::arena_bridge::NOTICE_CATEGORY,
+        format!(
+            "Placing #{} at cell ({x}, {y}): the arena answers at its next pulse and the tape \
+             records it.",
+            unit.0
+        ),
+    );
+    Ok(())
+}
+
+/// One arena cell, `<x>,<y>` or `<x> <y>` (16b cut I.3).
+fn parse_cell(rhs: &str) -> Option<(u16, u16)> {
+    let words: Vec<&str> = rhs
+        .split([',', ' ', '\t'])
+        .map(str::trim)
+        .filter(|word| !word.is_empty())
+        .collect();
+    match words.as_slice() {
+        [x, y] => Some((x.parse().ok()?, y.parse().ok()?)),
+        _ => None,
+    }
+}
+
+/// `@arena/tempo`'s usage, after the `Usage: ` prefix.
+const TEMPO_USAGE: &str = "@arena/tempo <match>=<period_ms> | <match>=off | <match>";
+
+/// **`@arena/tempo`** — **16b cut I.3** (16c N10): a floor under a running
+/// match's wake interval. Three forms:
+///
+/// * `@arena/tempo <match>=<period_ms>` — the task wakes once per
+///   `max(period, floor)` of wall time and each wake moves at most
+///   `max_catch_up_steps` periods of the adaptive tempo's own (the clamp stays
+///   the tempo's), which is slow motion when the floor is longer than that. A
+///   floor is `tempo.engaged_ms` to [`crate::arena::clock::MAX_TEMPO_FLOOR_MS`]
+///   in whole multiples of `engaged_ms`, so every figure the reply prints is
+///   exactly what an on-time wake does.
+/// * `@arena/tempo <match>=off` — the match runs at its own tempo again.
+/// * `@arena/tempo <match>` — what stands.
+///
+/// **Never a pause** (16c §6): every wake moves arena time, and the tempo never
+/// decides an outcome, so a floor under it cannot either; it is not hashed and
+/// the arena records each change on the tape (`tempo_floor`). Pilots' orders wait
+/// for the next wake. The floor is said to nobody but the caller, and
+/// [`crate::arena_bridge::MatchMirror::tempo_floor_ms`] is written only after the
+/// task took the message, so `@arena/status` never claims a floor the arena does
+/// not have. Only a `running` match takes one.
+///
+/// # Errors
+///
+/// One sentence per refusal: the usage, the bounds, `There is no match N.`,
+/// `Match N is <state>.`, and a busy match.
+pub fn tempo(ctx: &mut Ctx<'_>, arena_cfg: &crate::config::ArenaConfig) -> Result<(), CmdError> {
+    let match_id = MatchId(
+        ctx.args
+            .lhs()
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| ArenaVerbError::Usage(TEMPO_USAGE))?,
+    );
+    let engaged = arena_cfg.tempo.engaged_ms;
+    let ceiling = crate::arena::clock::MAX_TEMPO_FLOOR_MS;
+    // `None` is the bare read; `Some(None)` the lift; `Some(Some(ms))` a floor.
+    let asked: Option<Option<u32>> = match ctx.args.rhs().map(str::trim) {
+        None | Some("") => None,
+        Some(word) if word.eq_ignore_ascii_case("off") => Some(None),
+        Some(word) => {
+            let ms = word
+                .parse::<u32>()
+                .map_err(|_| ArenaVerbError::Usage(TEMPO_USAGE))?;
+            if engaged == 0 || ms < engaged || ms > ceiling || ms % engaged != 0 {
+                return Err(CmdError::msg(format!(
+                    "A tempo floor is {engaged} to {ceiling} ms in steps of {engaged}, or off."
+                )));
+            }
+            Some(Some(ms))
+        }
+    };
+    // The match, and its state: only a running match has a wake to floor.
+    let state = ctx
+        .w
+        .module_state::<MatchBook>()
+        .and_then(|book| book.get(match_id))
+        .map(|record| record.state);
+    let live = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .is_some_and(|registry| registry.tasks().is_live(match_id));
+    match state {
+        Some(super::MatchState::Running) => {}
+        Some(state) => {
+            return Err(ArenaVerbError::WrongState {
+                match_id: match_id.0,
+                state: state.as_str(),
+            }
+            .into());
+        }
+        // A match opened straight through `open_match`, with no lifecycle
+        // record around it, is running exactly while its task is.
+        None if live => {}
+        None => return Err(ArenaVerbError::NoMatch(match_id.0).into()),
+    }
+    let actor = ctx.actor;
+    let Some(floor) = asked else {
+        let standing = ctx
+            .w
+            .module_state::<ArenaRegistry>()
+            .and_then(|registry| registry.mirror(match_id))
+            .and_then(|mirror| mirror.tempo_floor_ms);
+        let line = match standing {
+            Some(floor_ms) => floor_line(match_id, floor_ms, arena_cfg),
+            None => format!("Match {match_id} has no tempo floor."),
+        };
+        ctx.out
+            .sys_to_actor(actor, crate::arena_bridge::NOTICE_CATEGORY, line);
+        return Ok(());
+    };
+    let tasks = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+        .ok_or(ArenaVerbError::Unavailable)?;
+    if tasks
+        .offer(match_id, ArenaMsg::TempoFloor { period_ms: floor })
+        .is_err()
+    {
+        return Err(CmdError::msg(if tasks.is_live(match_id) {
+            BUSY
+        } else {
+            "That match has ended."
+        }));
+    }
+    // Only now, with the message in the task's inbox, does the mirror say so.
+    if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+        registry.note_tempo_floor(match_id, floor);
+    }
+    let line = match floor {
+        Some(floor_ms) => floor_line(match_id, floor_ms, arena_cfg),
+        None => format!("Match {match_id} runs at its own tempo again."),
+    };
+    ctx.out
+        .sys_to_actor(actor, crate::arena_bridge::NOTICE_CATEGORY, line);
+    Ok(())
+}
+
+/// **What a floor does at each tempo**, as `@arena/tempo` says it (16b cut
+/// I.3): per tempo, the wake is `max(period, floor)` of wall time and an
+/// on-time wake moves `min(max_catch_up_steps × period, wake)` of arena time —
+/// exact, because a floor is a whole multiple of the engaged period.
+fn floor_line(match_id: MatchId, floor_ms: u32, arena_cfg: &crate::config::ArenaConfig) -> String {
+    use crate::arena::clock::Tempo;
+    let steps = arena_cfg.max_catch_up_steps.max(1);
+    let at = |tempo: Tempo| -> (u32, u32) {
+        let period = tempo.period_ms(&arena_cfg.tempo);
+        let wake = period.max(floor_ms);
+        (period.saturating_mul(steps).min(wake), wake)
+    };
+    let (engaged_moves, engaged_wake) = at(Tempo::Engaged);
+    let (alert_moves, alert_wake) = at(Tempo::Alert);
+    let (quiet_moves, quiet_wake) = at(Tempo::Quiet);
+    format!(
+        "Match {match_id} under a floor of {floor_ms} ms: engaged {engaged_moves} ms of arena \
+         time a wake every {engaged_wake} ms, alert {alert_moves} every {alert_wake}, quiet \
+         {quiet_moves} every {quiet_wake}; orders wait for the next wake. @arena/tempo \
+         {match_id}=off lifts it."
+    )
 }
 
 /// `@arena/abort [<match>]` — stop a match; with no argument, the only one
@@ -875,6 +1155,12 @@ pub fn arena_command(
         // staff gate has already run; no centre gate applies.
         let args = ctx.args.raw().to_owned();
         super::report::request_page(ctx, &args)
+    } else if ctx.switches.has("tempo") {
+        // 16b cut I.3 (16c N10): the floor under the wake interval.
+        tempo(ctx, arena_cfg)
+    } else if ctx.switches.has("place") {
+        // 16b cut I.3 (16c N10): a unit moved by staff, as its own seat.
+        place(ctx)
     } else if cfg!(any(test, feature = "fault-injection")) && ctx.switches.has("fault") {
         #[cfg(any(test, feature = "fault-injection"))]
         {
@@ -909,6 +1195,40 @@ mod tests {
         assert_eq!(parse_kind(""), None);
     }
 
+    /// **16b cut I.3**: a cell is two whole numbers, by a comma or a space.
+    #[test]
+    fn i3_a_place_cell_is_two_numbers_by_a_comma_or_a_space() {
+        assert_eq!(parse_cell("120,97"), Some((120, 97)));
+        assert_eq!(parse_cell("120, 97"), Some((120, 97)));
+        assert_eq!(parse_cell(" 120 97 "), Some((120, 97)));
+        assert_eq!(parse_cell("120"), None);
+        assert_eq!(parse_cell("120,97,3"), None);
+        assert_eq!(parse_cell("-1,4"), None);
+        assert_eq!(parse_cell("a,b"), None);
+        assert_eq!(parse_cell(""), None);
+    }
+
+    /// **16b cut I.3**: the floor's reply is exact at the shipped tempo table —
+    /// a 5,000 ms floor is slow motion at `Engaged` and `Alert` and nothing at
+    /// `Quiet`.
+    #[test]
+    fn i3_the_floor_reply_says_all_three_tempos() {
+        let cfg = crate::config::ArenaConfig::default();
+        assert_eq!(
+            floor_line(MatchId(12), 5_000, &cfg),
+            "Match 12 under a floor of 5000 ms: engaged 2000 ms of arena time a wake every 5000 \
+             ms, alert 4000 every 5000, quiet 5000 every 5000; orders wait for the next wake. \
+             @arena/tempo 12=off lifts it."
+        );
+        // A floor under a tempo's own period coarsens nothing there.
+        assert_eq!(
+            floor_line(MatchId(3), 500, &cfg),
+            "Match 3 under a floor of 500 ms: engaged 500 ms of arena time a wake every 500 ms, \
+             alert 1000 every 1000, quiet 5000 every 5000; orders wait for the next wake. \
+             @arena/tempo 3=off lifts it."
+        );
+    }
+
     #[test]
     fn unit_lists_are_dbrefs_and_nothing_else() {
         assert_eq!(
@@ -927,6 +1247,17 @@ mod tests {
         assert!(switches.iter().any(|switch| switch == "abort"));
         // 16b cut V.3: the staff page of the tape.
         assert!(switches.iter().any(|switch| switch == "report"));
+        // 16b cut I.3: the two referee's levers, after it, in help order.
+        let order: Vec<&str> = switches.iter().map(SmolStr::as_str).collect();
+        assert_eq!(
+            order.get(..10),
+            Some(
+                &[
+                    "status", "start", "intent", "abort", "reset", "release", "pose", "report",
+                    "tempo", "place"
+                ][..]
+            )
+        );
         assert_eq!(
             switches.iter().any(|switch| switch == "fault"),
             cfg!(any(test, feature = "fault-injection"))

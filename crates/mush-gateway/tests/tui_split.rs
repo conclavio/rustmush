@@ -92,6 +92,9 @@ fn test_config(tag: &str) -> Config {
     cfg.tacsim.arena.tempo.quiet_ms = 100;
     cfg.tacsim.arena.tempo.alert_ms = 100;
     cfg.tacsim.arena.tempo.engaged_ms = 100;
+    // 16b cut I.3: the validation refuses a substep longer than the engaged
+    // period, as the story twin's comment says.
+    cfg.tacsim.arena.tempo.substep_max_ms = 100;
     cfg.tacsim.arena.ledger.summary_ms = 1_000;
     cfg.tacsim.match_.startup_ms = 300;
     cfg.tacsim.match_.board_timeout_ms = 120_000;

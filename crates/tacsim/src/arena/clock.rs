@@ -21,6 +21,57 @@
 //! **The tempo decides nothing.** That is the whole point of D-16-2, and it is
 //! why this file holds no state a resolution could read: nothing in it is an
 //! input to motion, perception or damage.
+//!
+//! # The staff floor (16b cut I.3; 16c N10)
+//!
+//! `@arena/tempo` sets a **floor under the wake interval**: while it stands the
+//! task wakes once per `max(period, floor)` of **wall** time
+//! ([`Clock::wake_period_ms`]), and each wake still integrates at most
+//! `max_catch_up_steps × period` of the **adaptive** tempo's own period — the
+//! clamp in [`Clock::advance`] is untouched. A floor longer than that clamp is
+//! slow motion (a 5,000 ms floor at `Engaged` moves 2,000 ms of arena time a
+//! wake); a floor at or under a tempo's clamp only coarsens its wakes. It is
+//! never a pause: every on-time wake moves arena time, and the rate independence
+//! of doc 16 §3.1 is what makes a slowed match the same match (the tempo never
+//! decides an outcome, so neither does a floor under it).
+//!
+//! Three rules keep it that way, and each has its reason:
+//!
+//! 1. **Lag is lateness past the floor.** A floored wake is late on purpose, so
+//!    [`Clock::advance`] flags `elapsed − floor_then > cap`, where `floor_then`
+//!    is the floor in force when the interval **began** (the floor at the
+//!    previous wake, written on every reading including the first). A slowed
+//!    match journals no `lagged`, and neither does the first pulse after a lift,
+//!    whose interval began under the floor.
+//! 2. **Every floored pulse ends on the substep lattice.** Under a floor the arena
+//!    is behind the wall on purpose, and `Arena::next_due_ms`'s lattice rule — a
+//!    wake target that is an absolute lattice point in arena time — cannot pull a
+//!    wake back onto the lattice, because the wake is a wall interval. So
+//!    `Arena::step` quantises the pulse's `dt` down to the lattice
+//!    (`floor_to(now + dt, substep) − now`, possibly zero) for as long as a floor
+//!    stands or stood at the previous wake ([`Clock::floored_now_or_then`]), and
+//!    the timer's overshoot is discarded exactly as the clamp discards its excess.
+//!    Without that, the pull-in pulse on a set and every wake below the clamp
+//!    would add the OS overshoot to arena time and never return to the lattice,
+//!    and due events would be applied against positions that depend on the wall
+//!    moment staff typed the verb (D-16-2; 16b cut U.1). A quantised pulse of
+//!    no time past the opening still runs the phase-4 drain, so a beam it fires
+//!    lands at the millisecond it was fired, as in a pulse that ran a substep
+//!    (`Arena::step`'s drain).
+//! 3. **A floor is a multiple of `tempo.engaged_ms`**, from `engaged_ms` to
+//!    [`MAX_TEMPO_FLOOR_MS`] (the verb refuses anything else), and `engaged_ms`
+//!    is a multiple of the substep for every shipped configuration (16b cut M.2,
+//!    16c Q24) — so every on-time floored wake moves exactly `min(cap, floor)` of
+//!    arena time and the verb's figures are exactly true. What no configuration
+//!    may do is make the substep LONGER than `engaged_ms`:
+//!    `ArenaConfig::validate` refuses `substep_max_ms > engaged_ms`, since a
+//!    wake that moves less than one substep would be cut back to nothing by
+//!    rule 2 on every wake, and a floor would then be the pause it must never
+//!    be. With that, every on-time floored wake moves at least one substep.
+//!
+//! The floor is a **view** of the wake cadence: `state_hash` folds none of it.
+//! Its one ledger line, `tempo_floor`, journalled once per change
+//! (`Clock::take_floor_change`), moves the ledger's sequence like every line.
 
 use crate::config::{ArenaConfig, TempoConfig};
 use serde::{Deserialize, Serialize};
@@ -30,6 +81,11 @@ use serde::{Deserialize, Serialize};
 /// It bounds the work one pulse can be subdivided into, and it is a floor rather
 /// than advice because a zero-length substep cannot terminate.
 pub const MIN_SUBSTEP_MS: u32 = 50;
+
+/// **The longest tempo floor staff may set**, milliseconds (16b cut I.3; 16c
+/// N10): ten seconds, because pilots' orders wait for the next wake under a
+/// floor, and a longer wait is a pause by another name.
+pub const MAX_TEMPO_FLOOR_MS: u32 = 10_000;
 
 /// The adaptive pulse rate (doc 16 §3.1's tempo table, D-16-2).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -160,6 +216,18 @@ pub struct Clock {
     /// Set only by [`Clock::pin_tempo_for_tests`]; while it is set,
     /// [`Clock::evaluate`] records signals and changes nothing.
     pinned: Option<Tempo>,
+    /// **The staff floor under the wake interval** (16b cut I.3), milliseconds,
+    /// or `None`. Written by [`Clock::set_floor`] and nothing else.
+    floor_ms: Option<u32>,
+    /// **The floor that was in force at the previous wake** (16b cut I.3): what
+    /// [`Clock::advance`] measures the interval it closes against, written by it
+    /// on every reading, the first included — so a floor set before the first
+    /// pulse is the floor the second pulse is measured against, and the first
+    /// pulse after a lift is still measured against the lifted floor.
+    floor_at_last_wake: Option<u32>,
+    /// **Whether the floor changed since the last `tempo_floor` line** (16b cut
+    /// I.3), taken by [`Clock::take_floor_change`].
+    floor_changed: bool,
 }
 
 impl Clock {
@@ -186,6 +254,58 @@ impl Clock {
     #[must_use]
     pub const fn lagged(&self) -> bool {
         self.lagged
+    }
+
+    /// **Set or lift the staff floor** (16b cut I.3; this module's head),
+    /// milliseconds; `None` lifts it. The arena task applies it on arrival of an
+    /// `ArenaMsg::TempoFloor`: it is not an input to `step`.
+    ///
+    /// A change is remembered for one `tempo_floor` line only when the value
+    /// differs, so setting the floor that already stands journals nothing. The
+    /// bounds are the verb's (`engaged_ms` to [`MAX_TEMPO_FLOOR_MS`] in steps of
+    /// `engaged_ms`); the clock takes what it is given.
+    pub fn set_floor(&mut self, floor_ms: Option<u32>) {
+        if self.floor_ms != floor_ms {
+            self.floor_ms = floor_ms;
+            self.floor_changed = true;
+        }
+    }
+
+    /// The staff floor standing now, milliseconds (16b cut I.3).
+    #[must_use]
+    pub const fn floor_ms(&self) -> Option<u32> {
+        self.floor_ms
+    }
+
+    /// **The floor's change, once** (16b cut I.3): `Some(new value)` the first
+    /// time it is asked after [`Clock::set_floor`] changed the floor, and `None`
+    /// until the next change — what pulse phase 5 turns into one `tempo_floor`
+    /// line.
+    pub(crate) fn take_floor_change(&mut self) -> Option<Option<u32>> {
+        if !self.floor_changed {
+            return None;
+        }
+        self.floor_changed = false;
+        Some(self.floor_ms)
+    }
+
+    /// **Whether this pulse is quantised to the substep lattice** (16b cut I.3):
+    /// a floor stands now, or stood at the previous wake. `Arena::step` reads it
+    /// **before** [`Clock::advance`] overwrites the previous wake's floor, so the
+    /// first pulse after a lift — whose interval began under the floor and whose
+    /// `dt` carries a floored wake's overshoot — is quantised too.
+    #[must_use]
+    pub const fn floored_now_or_then(&self) -> bool {
+        self.floor_ms.is_some() || self.floor_at_last_wake.is_some()
+    }
+
+    /// **The wall interval the task wakes on** (16b cut I.3):
+    /// `max(period, floor)` for the current tempo, the period alone with no
+    /// floor. Under a floor `Arena::next_due_ms` answers the wall reading plus
+    /// this; the catch-up clamp in [`Clock::advance`] stays on the period.
+    #[must_use]
+    pub fn wake_period_ms(&self, cfg: &TempoConfig) -> u32 {
+        self.tempo.period_ms(cfg).max(self.floor_ms.unwrap_or(0))
     }
 
     /// **Hold the tempo at `tempo`** — the one lever a determinism test needs
@@ -277,10 +397,21 @@ impl Clock {
     ///
     /// A configured `max_catch_up_steps` of zero is read as one: a zero clamp
     /// would stop arena time outright, which is not a lag policy.
+    ///
+    /// **16b cut I.3**: the clamp stays on the adaptive tempo's own period, and
+    /// lag is lateness past the staff floor that was in force when the interval
+    /// **began** — `elapsed − floor_at_last_wake > cap` — so a slowed match is
+    /// not lagging, and neither is the first pulse after a lift. The floor in
+    /// force now becomes the previous wake's floor on every reading, the first
+    /// one included, so a floor set before the opening pulse is what the second
+    /// pulse is measured against. Quantising a floored pulse's `dt` to the
+    /// substep lattice is `Arena::step`'s (this module's head says why).
     pub fn advance(&mut self, wall_now_ms: i64, cfg: &ArenaConfig) -> (u32, bool) {
         let period = self.tempo.period_ms(&cfg.tempo);
         let steps = cfg.max_catch_up_steps.max(1);
         let cap = period.saturating_mul(steps);
+        let floor_then = self.floor_at_last_wake;
+        self.floor_at_last_wake = self.floor_ms;
         let Some(previous) = self.last_wall_ms else {
             self.last_wall_ms = Some(wall_now_ms);
             self.lagged = false;
@@ -289,7 +420,7 @@ impl Clock {
         self.last_wall_ms = Some(wall_now_ms);
         let elapsed = wall_now_ms.saturating_sub(previous).max(0);
         let dt = u32::try_from(elapsed).unwrap_or(u32::MAX).min(cap);
-        let lagged = elapsed > i64::from(cap);
+        let lagged = elapsed.saturating_sub(i64::from(floor_then.unwrap_or(0))) > i64::from(cap);
         self.lagged = lagged;
         (dt, lagged)
     }
@@ -588,6 +719,126 @@ mod tests {
         let mut clock = Clock::new();
         assert_eq!(clock.advance(0, &cfg), (0, false));
         assert_eq!(clock.advance(100_000, &cfg), (5_000, true));
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut I.3 — the staff floor
+    // -----------------------------------------------------------------------
+
+    /// **16b cut I.3**: the wake interval is `max(period, floor)` for the
+    /// current tempo, and the period alone without a floor.
+    #[test]
+    fn i3_the_wake_period_is_the_period_or_the_floor_whichever_is_longer() {
+        let cfg = TempoConfig::default();
+        let mut clock = Clock::new();
+        assert_eq!(clock.floor_ms(), None);
+        assert_eq!(clock.wake_period_ms(&cfg), 5_000, "Quiet, no floor");
+        clock.pin_tempo_for_tests(Tempo::Engaged);
+        assert_eq!(clock.wake_period_ms(&cfg), 500, "Engaged, no floor");
+        clock.set_floor(Some(5_000));
+        assert_eq!(clock.floor_ms(), Some(5_000));
+        assert_eq!(clock.wake_period_ms(&cfg), 5_000, "Engaged under 5,000");
+        clock.pin_tempo_for_tests(Tempo::Quiet);
+        clock.set_floor(Some(1_000));
+        assert_eq!(
+            clock.wake_period_ms(&cfg),
+            5_000,
+            "a floor under the period coarsens nothing"
+        );
+        clock.set_floor(Some(MAX_TEMPO_FLOOR_MS));
+        assert_eq!(clock.wake_period_ms(&cfg), 10_000);
+        clock.set_floor(None);
+        assert_eq!(clock.wake_period_ms(&cfg), 5_000);
+    }
+
+    /// **16b cut I.3**: lag is lateness past the floor in force when the
+    /// interval began — `floor + cap` is not lag and `floor + cap + 1` is;
+    /// without a floor `cap + 1` is, as it always was.
+    #[test]
+    fn i3_lag_is_measured_past_the_floor_the_interval_began_under() {
+        let cfg = ArenaConfig::default();
+        let mut clock = Clock::new();
+        clock.pin_tempo_for_tests(Tempo::Engaged);
+        clock.set_floor(Some(5_000));
+        assert_eq!(clock.advance(0, &cfg), (0, false));
+        // Engaged: a 2,000 ms clamp. 5,000 + 2,000 is not lag.
+        assert_eq!(clock.advance(7_000, &cfg), (2_000, false));
+        // 5,000 + 2,000 + 1 is.
+        assert_eq!(clock.advance(14_001, &cfg), (2_000, true));
+        assert!(clock.lagged());
+        // An on-time floored wake is 5,000 ms and never lag.
+        assert_eq!(clock.advance(19_001, &cfg), (2_000, false));
+        // Without a floor, the clamp alone, as before this cut: the lift is
+        // measured against the floor it began under, and the next interval is
+        // not.
+        clock.set_floor(None);
+        assert_eq!(
+            clock.advance(26_001, &cfg),
+            (2_000, false),
+            "the first interval after a lift began under the floor"
+        );
+        assert_eq!(clock.advance(28_002, &cfg), (2_000, true), "2,001 is lag");
+        assert_eq!(clock.advance(30_002, &cfg), (2_000, false));
+    }
+
+    /// **16b cut I.3**: a floor set before the first reading is what the second
+    /// interval is measured against — the first reading's early return records
+    /// it too.
+    #[test]
+    fn i3_a_floor_set_before_the_first_reading_measures_the_second_interval() {
+        let cfg = ArenaConfig::default();
+        let mut clock = Clock::new();
+        clock.pin_tempo_for_tests(Tempo::Engaged);
+        clock.set_floor(Some(5_000));
+        assert_eq!(clock.advance(1_000_000, &cfg), (0, false));
+        assert_eq!(
+            clock.advance(1_005_000, &cfg),
+            (2_000, false),
+            "a slowed match is not lagging"
+        );
+        assert!(!clock.lagged());
+    }
+
+    /// **16b cut I.3**: `set_floor` is idempotent, and `take_floor_change`
+    /// answers once per change.
+    #[test]
+    fn i3_a_floor_change_is_taken_once_and_a_repeat_is_no_change() {
+        let mut clock = Clock::new();
+        assert_eq!(clock.take_floor_change(), None);
+        clock.set_floor(None);
+        assert_eq!(clock.take_floor_change(), None, "no floor to no floor");
+        clock.set_floor(Some(5_000));
+        clock.set_floor(Some(5_000));
+        assert_eq!(clock.take_floor_change(), Some(Some(5_000)));
+        assert_eq!(clock.take_floor_change(), None, "once");
+        clock.set_floor(Some(5_000));
+        assert_eq!(clock.take_floor_change(), None, "the same floor again");
+        // Two changes before a take are one line with the newest value.
+        clock.set_floor(Some(1_000));
+        clock.set_floor(Some(2_000));
+        assert_eq!(clock.take_floor_change(), Some(Some(2_000)));
+        clock.set_floor(None);
+        assert_eq!(clock.take_floor_change(), Some(None), "the lift");
+        assert_eq!(clock.take_floor_change(), None);
+    }
+
+    /// **16b cut I.3**: a pulse is quantised while a floor stands and on the
+    /// one pulse after a lift, and not after that.
+    #[test]
+    fn i3_the_quantisation_runs_under_a_floor_and_one_pulse_past_it() {
+        let cfg = ArenaConfig::default();
+        let mut clock = Clock::new();
+        assert!(!clock.floored_now_or_then());
+        clock.set_floor(Some(1_000));
+        assert!(clock.floored_now_or_then());
+        clock.advance(0, &cfg);
+        clock.set_floor(None);
+        assert!(
+            clock.floored_now_or_then(),
+            "the interval after a lift began under the floor"
+        );
+        clock.advance(1_000, &cfg);
+        assert!(!clock.floored_now_or_then());
     }
 
     #[test]

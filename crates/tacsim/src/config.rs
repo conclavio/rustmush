@@ -438,6 +438,8 @@ pub struct TempoConfig {
     /// 50 ms, so one substep's travel — the motion carry (16b cut Q.6)
     /// included, because the carry is added *inside* that one division — is at
     /// most `cell_cm - 1`, and no unit advances more than one cell in a substep.
+    /// At most `engaged_ms` ([`ArenaConfig::validate`], 16b cut I.3), so a staff
+    /// tempo floor always moves arena time.
     pub substep_max_ms: u32,
     /// Milliseconds one pulse may take before the watchdog voids the match.
     pub stall_ms: u32,
@@ -901,6 +903,19 @@ impl ArenaConfig {
             floor,
             u64::from(self.tempo.substep_max_ms),
         )?;
+        // **16b cut I.3** (16c N10): a substep no longer than the engaged
+        // period. A staff floor is a multiple of `engaged_ms` and every floored
+        // pulse is cut back to the substep lattice
+        // (`crate::arena::clock`'s head, rule 2), so a substep longer than the
+        // shortest wake would cut every floored wake back to nothing and a
+        // floor would stop arena time — the pause it must never be. Under this
+        // rule every on-time floored wake moves at least one substep.
+        if self.tempo.substep_max_ms > self.tempo.engaged_ms {
+            return Err(format!(
+                "[tacsim.arena.tempo] must have substep_max_ms <= engaged_ms (they are {}, {})",
+                self.tempo.substep_max_ms, self.tempo.engaged_ms
+            ));
+        }
         at_least(
             "[tacsim.arena.tempo].alert_hold_ms",
             1,
@@ -1313,6 +1328,35 @@ mod tests {
                 Err(sentence.to_string())
             );
         }
+    }
+
+    /// **16b cut I.3** (16c N10): the substep may be as long as the engaged
+    /// period and no longer, or a staff floor — a multiple of `engaged_ms`, every
+    /// floored pulse cut back to the substep lattice — could stop arena time.
+    #[test]
+    fn i3_the_substep_is_no_longer_than_the_engaged_period() {
+        let with = |substep_max_ms: u32, engaged_ms: u32| {
+            let mut cfg = ArenaConfig::default();
+            cfg.tempo.substep_max_ms = substep_max_ms;
+            cfg.tempo.engaged_ms = engaged_ms;
+            cfg.validate()
+        };
+        assert_eq!(with(250, 500), Ok(()), "the shipped pair");
+        assert_eq!(with(500, 500), Ok(()), "equal is legal");
+        assert_eq!(
+            with(501, 500),
+            Err(
+                "[tacsim.arena.tempo] must have substep_max_ms <= engaged_ms (they are 501, 500)"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            with(250, 100),
+            Err(
+                "[tacsim.arena.tempo] must have substep_max_ms <= engaged_ms (they are 250, 100)"
+                    .to_string()
+            )
+        );
     }
 
     /// **16b cut Y.2**: `[tacsim.command]` passes at its shipped values and

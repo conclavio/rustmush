@@ -8830,3 +8830,462 @@ async fn i1_a_foreign_ground_is_refused_and_built_at_most_once() {
     );
     assert_eq!(i1_book(&rig, match_::MatchBook::ground_count), 0);
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut I.3 — `@arena/tempo` and `@arena/place` (16c N10)
+// ---------------------------------------------------------------------------
+
+/// [`config`] with every tempo at 500 ms — the shipped `engaged_ms`, so the
+/// floor's bounds read `500 to 10000 ms in steps of 500` and every wake of a
+/// 5,000 ms floor moves exactly `4 × 500` = 2,000 ms of arena time, whatever
+/// tempo the match is in (a Rig match is not reliably `Engaged`, and this makes
+/// the three tempos one).
+fn i3_config() -> TacsimConfig {
+    let mut cfg = config();
+    cfg.arena.tempo.quiet_ms = 500;
+    cfg.arena.tempo.alert_ms = 500;
+    cfg.arena.tempo.engaged_ms = 500;
+    cfg
+}
+
+/// The running match's id.
+fn i3_match(rig: &Rig) -> u64 {
+    rig.centre().match_id.expect("a running match").0
+}
+
+/// The registry's mirror of `match_id`'s staff floor.
+fn i3_mirrored_floor(rig: &Rig, match_id: u64) -> Option<u32> {
+    rig.tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.mirror(tacsim::arena_task::MatchId(match_id)))
+        .and_then(|mirror| mirror.tempo_floor_ms)
+}
+
+/// The arena clock the rig has seen at `at` of tokio time, after pumping.
+async fn i3_clock_at(rig: &mut Rig, at: tokio::time::Instant) -> i64 {
+    tokio::time::sleep_until(at).await;
+    rig.pump();
+    rig.staged_now_ms
+}
+
+/// **16b cut I.3**: `@arena/tempo` sets, reads and lifts a floor, answers each
+/// refusal in its own sentence, writes the mirror only after the task took the
+/// message, and `@arena/status` prints the floor on a line of its own while
+/// one stands.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn i3_arena_tempo_sets_reads_lifts_and_refuses() {
+    let mut rig = Rig::boot_with(2, i3_config());
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let id = i3_match(&rig);
+
+    // The refusals, verbatim.
+    let usage = "Usage: @arena/tempo <match>=<period_ms> | <match>=off | <match>";
+    assert_eq!(rig.staff("@arena/tempo"), usage);
+    assert_eq!(rig.staff(&format!("@arena/tempo {id}=fast")), usage);
+    let bounds = "A tempo floor is 500 to 10000 ms in steps of 500, or off.";
+    for wrong in ["750", "0", "250", "10500", "20000"] {
+        assert_eq!(
+            rig.staff(&format!("@arena/tempo {id}={wrong}")),
+            bounds,
+            "{wrong}"
+        );
+    }
+    assert_eq!(rig.staff("@arena/tempo 99=5000"), "There is no match 99.");
+
+    // The bare read, with nothing standing, and a status with no floor line.
+    assert_eq!(
+        rig.staff(&format!("@arena/tempo {id}")),
+        format!("Match {id} has no tempo floor.")
+    );
+    assert!(!rig.staff("@arena/status").contains("tempo floor"));
+
+    // A refused offer leaves the mirror as it was: fill the task's inbox to its
+    // reserve (this runtime has not yielded, so the task has drained nothing).
+    let tasks = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+        .expect("the registry");
+    let tank = rig.tank(0);
+    let mut seq = 1_000_000_u64;
+    while tasks
+        .offer(
+            tacsim::arena_task::MatchId(id),
+            tacsim::arena_task::ArenaMsg::Intent(tacsim::arena::intents::Intent {
+                unit: tank,
+                channel: Channel::Helm,
+                epoch: rig.epoch(tank, Channel::Helm),
+                kind: tacsim::arena::intents::IntentKind::Speed { cms: 0 },
+                seq,
+            }),
+        )
+        .is_ok()
+    {
+        seq += 1;
+        assert!(seq < 1_010_000, "the inbox never filled");
+    }
+    assert_eq!(
+        rig.staff(&format!("@arena/tempo {id}=5000")),
+        "That match is busy; try again in a moment."
+    );
+    assert_eq!(
+        i3_mirrored_floor(&rig, id),
+        None,
+        "a refused offer wrote the mirror"
+    );
+    assert!(!rig.staff("@arena/status").contains("tempo floor"));
+    // Let the task drain its inbox.
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    rig.pump();
+
+    // The set, and what it says: every tempo is 500 ms here, so all three
+    // tempos move 2,000 ms of arena time a 5,000 ms wake.
+    let floored = format!(
+        "Match {id} under a floor of 5000 ms: engaged 2000 ms of arena time a wake every 5000 \
+         ms, alert 2000 every 5000, quiet 2000 every 5000; orders wait for the next wake. \
+         @arena/tempo {id}=off lifts it."
+    );
+    assert_eq!(rig.staff(&format!("@arena/tempo {id}=5000")), floored);
+    assert_eq!(i3_mirrored_floor(&rig, id), Some(5_000));
+    assert_eq!(
+        rig.staff(&format!("@arena/tempo {id}")),
+        floored,
+        "the read"
+    );
+    let status = rig.staff("@arena/status");
+    assert!(status.contains("\n  tempo floor: 5000 ms"), "{status}");
+    // The match row itself is untouched: `mushd`'s support still parses it.
+    let row = status
+        .lines()
+        .find(|line| line.starts_with(&format!("match {id}:")))
+        .unwrap_or_else(|| panic!("the match row: {status}"));
+    assert!(row.contains(", clock "), "{row}");
+
+    // The lift.
+    assert_eq!(
+        rig.staff(&format!("@arena/tempo {id}=OFF")),
+        format!("Match {id} runs at its own tempo again.")
+    );
+    assert_eq!(i3_mirrored_floor(&rig, id), None);
+    assert_eq!(
+        rig.staff(&format!("@arena/tempo {id}")),
+        format!("Match {id} has no tempo floor.")
+    );
+    assert!(!rig.staff("@arena/status").contains("tempo floor"));
+
+    // A match that is stopping has no wake to floor, nor one that has ended.
+    rig.staff(&format!("@arena/abort {id}"));
+    assert_eq!(
+        rig.staff(&format!("@arena/tempo {id}=5000")),
+        format!("Match {id} is stopping.")
+    );
+    for _ in 0..400 {
+        rig.pump();
+        if rig.state() == MatchState::Aborted {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(rig.state(), MatchState::Aborted, "the check-in lands");
+    assert_eq!(
+        rig.staff(&format!("@arena/tempo {id}")),
+        format!("Match {id} is aborted.")
+    );
+    // Nobody but the caller heard of any of it.
+    for n in 0..2 {
+        let heard = rig.tw.seen_by(&rig.log, rig.pilot(n)).join("\n");
+        assert!(
+            !heard.contains("floor") && !heard.contains("tempo"),
+            "pilot {n} was told: {heard}"
+        );
+    }
+}
+
+/// **16b cut I.3**: under a 5,000 ms floor the task wakes every 5,000 ms of
+/// tokio time and each wake moves 2,000 ms of arena time; the set, a lift and
+/// an abort each take effect within a millisecond (the deadline pull-in); and
+/// nothing lags — no `Lagged` notice, no `lagged` line. The tape carries the
+/// three changes.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn i3_a_floor_slows_the_task_and_a_lift_and_an_abort_are_prompt() {
+    use tokio::time::{Duration, Instant};
+    let mut rig = Rig::boot_with(2, i3_config());
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let id = i3_match(&rig);
+    tokio::time::sleep(Duration::from_millis(3_000)).await;
+    rig.pump();
+
+    // The set, and its pull-in pulse a millisecond later.
+    let t0 = Instant::now();
+    assert!(
+        rig.staff(&format!("@arena/tempo {id}=5000"))
+            .contains("under a floor of 5000 ms")
+    );
+    let pulled = i3_clock_at(&mut rig, t0 + Duration::from_millis(3)).await;
+    // Nothing moves until the floor's first wake, a whole floor later.
+    let before = i3_clock_at(&mut rig, t0 + Duration::from_millis(4_999)).await;
+    assert_eq!(before, pulled, "the task woke inside the floor");
+    let first = i3_clock_at(&mut rig, t0 + Duration::from_millis(5_003)).await;
+    assert!(first > before, "no wake at the floor");
+    let still = i3_clock_at(&mut rig, t0 + Duration::from_millis(9_999)).await;
+    assert_eq!(still, first, "the task woke inside the floor");
+    let second = i3_clock_at(&mut rig, t0 + Duration::from_millis(10_003)).await;
+    assert_eq!(second - first, 2_000, "one wake, the clamp of arena time");
+    let third = i3_clock_at(&mut rig, t0 + Duration::from_millis(15_003)).await;
+    assert_eq!(third - second, 2_000);
+
+    // The lift, two seconds after the last floored wake: its pull-in pulse
+    // runs within a millisecond and moves the arena — and is not lag, though
+    // its interval began two seconds of wall ago under the floor.
+    let t1 = t0 + Duration::from_millis(17_003);
+    tokio::time::sleep_until(t1).await;
+    rig.pump();
+    assert_eq!(rig.staged_now_ms, third, "nothing woke before the lift");
+    assert_eq!(
+        rig.staff(&format!("@arena/tempo {id}=off")),
+        format!("Match {id} runs at its own tempo again.")
+    );
+    let lifted = i3_clock_at(&mut rig, t1 + Duration::from_millis(2)).await;
+    assert_eq!(
+        lifted - third,
+        2_000,
+        "the lift's pulse, within a millisecond"
+    );
+    // And it runs at its own 500 ms again: in five seconds of wall it moves as
+    // many of arena time (the rig sees the clock a whole arena second at a
+    // time), where a floored match would have moved two.
+    let running = i3_clock_at(&mut rig, t1 + Duration::from_millis(5_000)).await;
+    assert!(running - lifted >= 4_000, "{running} after {lifted}");
+
+    // A floor again, and an abort under it: the record parks within a
+    // millisecond rather than a floor later.
+    assert!(
+        rig.staff(&format!("@arena/tempo {id}=10000"))
+            .contains("under a floor of 10000 ms")
+    );
+    let t2 = Instant::now();
+    tokio::time::sleep_until(t2 + Duration::from_millis(5)).await;
+    rig.pump();
+    let t3 = Instant::now();
+    rig.staff(&format!("@arena/abort {id}"));
+    tokio::time::sleep_until(t3 + Duration::from_millis(2)).await;
+    rig.pump();
+    assert_eq!(
+        rig.state(),
+        MatchState::Aborted,
+        "the abort waited out the floor"
+    );
+
+    // Nothing lagged.
+    let lag_notices = rig
+        .tw
+        .seen_by(&rig.log, GOD)
+        .into_iter()
+        .filter(|line| line.contains("is lagging"))
+        .count();
+    assert_eq!(lag_notices, 0, "a slowed match raised a Lagged notice");
+    assert!(
+        !rig.tape.iter().any(|event| event.kind.as_str() == "lagged"),
+        "a slowed match journalled lag"
+    );
+    let floors: Vec<Option<u32>> = rig
+        .tape
+        .iter()
+        .filter_map(|event| match event.kind {
+            tacsim::arena::ledger::EventKind::TempoFloor { period_ms } => Some(period_ms),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(floors, vec![Some(5_000), None, Some(10_000)]);
+}
+
+/// A passable cell with a way out within three cells of `near`, held by nobody
+/// in `taken` — where a place is accepted.
+fn i3_open_cell(rig: &Rig, near: (u16, u16), taken: &[(u16, u16)]) -> (u16, u16) {
+    let registry = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .expect("the registry");
+    let ground = registry
+        .arena_of(tacsim::arena_task::MatchId(i3_match(rig)))
+        .expect("the running match's ground");
+    for dy in -3_i32..=3 {
+        for dx in -3_i32..=3 {
+            let (Ok(x), Ok(y)) = (
+                u16::try_from(i32::from(near.0) + dx),
+                u16::try_from(i32::from(near.1) + dy),
+            ) else {
+                continue;
+            };
+            if (x, y) != near && !taken.contains(&(x, y)) && ground.terrain.has_way_out(x, y) {
+                return (x, y);
+            }
+        }
+    }
+    panic!("no open cell near {near:?}");
+}
+
+/// **16b cut I.3**: `@arena/place` moves a piloted tank — the pilot's next
+/// frame stands on the placed cell and carries no notice — and the tape says
+/// `placed`; a place the arena refuses is `place_refused` on the tape and
+/// nothing at all to the pilot; the world's own refusals answer in
+/// `@arena/pose`'s and `@arena/intent`'s sentences and reach no tape.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn i3_arena_place_moves_a_tank_says_nothing_and_the_tape_records_it() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    assert!(rig.frame_for(1).await, "the arena sends the other a frame");
+    let tank = rig.tank(0);
+    let other = rig
+        .held_frame(1)
+        .cell
+        .expect("the other tank is on the window");
+    let from = rig.held_frame(0).cell.expect("the tank is on the window");
+    let to = i3_open_cell(&rig, from, &[other]);
+
+    // The world's refusals, verbatim, and the usage.
+    assert_eq!(
+        rig.staff(&format!("@arena/place #{}=1", tank.0)),
+        "Usage: @arena/place <unit>=<x>,<y>"
+    );
+    assert_eq!(
+        rig.staff(&format!("@arena/place #{}=9999,5", tank.0)),
+        "Cell (9999, 5) is off the arena window."
+    );
+    let ground = {
+        let registry = rig
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .expect("the registry");
+        registry
+            .arena_of(tacsim::arena_task::MatchId(i3_match(&rig)))
+            .expect("the ground")
+            .terrain
+            .clone()
+    };
+    let walled = (0..ground.height())
+        .flat_map(|y| (0..ground.width()).map(move |x| (x, y)))
+        .find(|(x, y)| !ground.has_way_out(*x, *y))
+        .expect("the proving ground has a cell no tank may stand on");
+    assert_eq!(
+        rig.staff(&format!(
+            "@arena/place #{}={} {}",
+            tank.0, walled.0, walled.1
+        )),
+        format!(
+            "Cell ({}, {}) is impassable, or has no way out.",
+            walled.0, walled.1
+        )
+    );
+    assert_eq!(
+        rig.staff(&format!("@arena/place #{}=3,3", rig.pilot(0).0)),
+        "That unit is not in a running match."
+    );
+
+    // The place.
+    let heard_from = rig.log.len();
+    assert_eq!(
+        rig.staff(&format!("@arena/place #{}={},{}", tank.0, to.0, to.1)),
+        format!(
+            "Placing #{} at cell ({}, {}): the arena answers at its next pulse and the tape \
+             records it.",
+            tank.0, to.0, to.1
+        )
+    );
+    let mut moved = None;
+    for _ in 0..400 {
+        rig.pump();
+        if let Some(frame) = rig.frame(0).filter(|frame| frame.cell == Some(to)) {
+            moved = Some(frame);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let moved = moved.expect("the pilot's frame never reached the placed cell");
+    assert!(
+        moved.notices.is_empty(),
+        "the place was said: {:?}",
+        moved.notices
+    );
+    assert!(
+        rig.tape_until(|event| event.kind.as_str() == "placed")
+            .await,
+        "the tape never carried the place"
+    );
+
+    // A place the arena refuses: onto the other tank.
+    assert!(
+        rig.staff(&format!("@arena/place #{}={},{}", tank.0, other.0, other.1))
+            .starts_with("Placing")
+    );
+    assert!(
+        rig.tape_until(|event| event.kind.as_str() == "place_refused")
+            .await,
+        "the tape never carried the refusal"
+    );
+    let refused = rig
+        .tape
+        .iter()
+        .find(|event| event.kind.as_str() == "place_refused")
+        .map(|event| event.kind.clone());
+    assert_eq!(
+        refused,
+        Some(tacsim::arena::ledger::EventKind::PlaceRefused {
+            unit: tank,
+            x: other.0,
+            y: other.1,
+            reason: smol_str::SmolStr::new_static("occupied"),
+        })
+    );
+    assert_eq!(
+        rig.frame(0).and_then(|frame| frame.cell),
+        Some(to),
+        "the refused place moved the tank"
+    );
+
+    // The pilot heard nothing of either: no line, no notice, no refusal.
+    let since = rig.log.get(heard_from..).unwrap_or_default().to_vec();
+    let heard = rig.tw.seen_by(&since, rig.pilot(0)).join("\n");
+    for word in ["place", "Placing", "in_flight", "refused", "occupied"] {
+        assert!(!heard.contains(word), "the pilot heard `{word}`: {heard}");
+    }
+    for (_, event) in &since {
+        if let OutputEvent::Panel { feed, data, .. } = event
+            && feed.as_str() == tacsim::arena_bridge::FRAME_FEED
+        {
+            let notices = data
+                .get("notices")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len);
+            assert_eq!(notices, 0, "a cockpit frame carried a notice: {data}");
+        }
+    }
+    // Exactly the two places the arena received are on the tape: the world's
+    // refusals never reached it.
+    assert_eq!(
+        rig.tape
+            .iter()
+            .filter(|event| matches!(event.kind.as_str(), "placed" | "place_refused"))
+            .count(),
+        2
+    );
+
+    // A match that is stopping takes no place (the fixer's R2): its `Stop` is
+    // already on the way, and the world says so rather than promising a line
+    // on a tape the arena may already have closed. The unit is still bound
+    // until the check-in, so this is the book's word and not the intent
+    // sentence.
+    let id = i3_match(&rig);
+    rig.staff(&format!("@arena/abort {id}"));
+    assert_eq!(
+        rig.staff(&format!("@arena/place #{}={},{}", tank.0, from.0, from.1)),
+        format!("Match {id} is stopping.")
+    );
+}

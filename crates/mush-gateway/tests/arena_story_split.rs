@@ -152,6 +152,9 @@ fn test_config(tag: &str) -> Config {
     cfg.tacsim.arena.tempo.quiet_ms = 100;
     cfg.tacsim.arena.tempo.alert_ms = 100;
     cfg.tacsim.arena.tempo.engaged_ms = 100;
+    // **16b cut I.3**: the validation refuses a substep longer than the engaged
+    // period (a staff tempo floor could stop arena time under one).
+    cfg.tacsim.arena.tempo.substep_max_ms = 100;
     // **16b cut Q.7**: this is the one arena test that boots through the host's
     // own `[tacsim]` mapping rather than building a `TacsimConfig` by hand, so it
     // is the one that meets the value validation — and the floor under

@@ -178,6 +178,18 @@ thread_local! {
 /// (One cell of it is, since 16b cut M.3: the `heat` cell, item 1.18, because it
 /// gates a refusal and moves every substep — see cut M.3's extensions below.)
 ///
+/// **The staff tempo floor is not in it either** (16b cut I.3; 16c N10). It is
+/// a view of how often the task wakes — `crate::arena::clock::Clock`'s
+/// `floor_ms` and the floor at the previous wake — and the tempo decides no
+/// outcome (D-16-2), so neither does a floor under it; every floored pulse is
+/// quantised to the substep lattice so the positions a due event is applied
+/// against never depend on it. **But its `tempo_floor` line moves the ledger's
+/// sequence, item 11, and so every hash after it**, exactly as every line does:
+/// a floored run hash-equals another run floored at the same arena moment, and
+/// never an unfloored one. A staff `@arena/place` adds no hashed field either:
+/// it moves a pose, which items 1.2 to 1.4 already fold, and its `placed` or
+/// `place_refused` line moves item 11 like any other.
+///
 /// **Why the machines are in it** (16b cut N.1). The controller writes no ledger
 /// event of its own — what leaves it is the orders a pilot's verbs would have
 /// staged, and those journal what they always did — so a replay whose machine

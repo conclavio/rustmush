@@ -17,6 +17,7 @@
 //! world -> task   ArenaMsg::Control     this (unit, channel) is now at this epoch
 //! world -> task   ArenaMsg::Stop        abort, timeout or void
 //! world -> task   ArenaMsg::LedgerAck   every chunk up to this sequence is durable
+//! world -> task   ArenaMsg::TempoFloor  staff floor the wake interval, or lift it (I.3)
 //! task  -> world  ArenaOut::Ledger      one closed chunk of the match's black box
 //! task  -> world  ArenaOut::Frames      the pilots whose view changed, and the arena's clock
 //! task  -> world  ArenaOut::Lagged      the clock or the egress is behind
@@ -25,8 +26,9 @@
 //! ```
 //!
 //! `Deliberate` is doc 16 §3.1's eighth conceptual seam message. The table
-//! includes `LedgerAck` and `Lagged` reliability signals, while custody out
-//! is a spawn argument: it lists all nine runtime enum variants.
+//! includes `LedgerAck` and `Lagged` reliability signals and **16b cut I.3**'s
+//! `TempoFloor`, staff bookkeeping applied on arrival, while custody out is a
+//! spawn argument: it lists all ten runtime enum variants.
 //! [`crate::arena_task::ArenaOut::Deliberate`] explains its report-only contract.
 //!
 //! `CustodyOut` is the argument to [`crate::arena_task::spawn_arena`] rather than a message — a
@@ -43,8 +45,16 @@
 //! task early but does not step it**: it is buffered and drained at the next
 //! pulse (§3.1 phases 1 and 2). That is what makes a laggy pilot harmless and a
 //! fast one no faster — the tempo decides how often `step` runs, and nothing
-//! else does. It is also why an abort is honoured within one period rather than
-//! instantly; the immediate lever is the stop signal, which ends the task.
+//! else does.
+//!
+//! **Two messages pull the deadline in** (16b cut I.3): a `Stop` and a
+//! `TempoFloor` set the next wake to a millisecond from now, since the loop
+//! otherwise recomputes its deadline only after a pulse — under a 10,000 ms
+//! floor an abort, a set or a lift would wait out the old wake. The pulled-in
+//! pulse is an ordinary pulse: a stop is honoured at its phase 1 before any time
+//! moves, and a floored pulse is quantised to the substep lattice by
+//! `Arena::step`, so it is rate-independent by construction. The immediate lever
+//! is still the stop signal, which ends the task with no result.
 //!
 //! # What waits for the pulse (16b cut M.1, `B-50`, `T-11`)
 //!
@@ -62,11 +72,12 @@
 //!   `intents.max_pending_per_unit + 1`, the newest arrival refused when that
 //!   unit's buffer is full (`buffer_discrete`) — so one pilot's pasted burst
 //!   can neither drop an earlier `LOCK` of their own while its `FIRE` survives
-//!   nor drop another pilot's order at all.
+//!   nor drop another pilot's order at all. **16b cut I.3**: a staff `Place` is
+//!   the exception — kept past the bound and counted in nobody's.
 //!
-//! The inbox itself keeps `reserve` slots an intent may never take, so a
-//! `Control`, a `Stop` or a `LedgerAck` always fits
-//! ([`crate::arena_task::ArenaHandle::offer`]).
+//! The inbox itself keeps `reserve` slots an intent (and, 16b cut I.3, a
+//! `TempoFloor`) may never take, so a `Control`, a `Stop` or a `LedgerAck`
+//! always fits ([`crate::arena_task::ArenaHandle::offer`]).
 //!
 //! # Failure
 //!
@@ -136,6 +147,16 @@ pub enum ArenaMsg {
     LedgerAck {
         /// The highest durable chunk sequence.
         upto_chunk_seq: u64,
+    },
+    /// **Set or lift the staff tempo floor** (16b cut I.3; 16c N10:
+    /// `@arena/tempo`): `Some(ms)` floors the wake interval at `ms` of wall
+    /// time, `None` lifts it. Seam bookkeeping and not an input to `step`: it is
+    /// applied on arrival (`Clock::set_floor`), as a `LedgerAck` is, and it pulls
+    /// the task's deadline in to a millisecond away so the set or the lift takes
+    /// effect at once rather than after the old wake. The bounds are the verb's.
+    TempoFloor {
+        /// The floor, milliseconds; `None` lifts it.
+        period_ms: Option<u32>,
     },
 }
 
@@ -347,8 +368,15 @@ impl ArenaHandle {
     /// through the same `Err`. A `Control`, a `Stop` and a `LedgerAck` may use
     /// the whole channel, so an `EXIT` behind a pasted burst of orders always
     /// fits.
+    ///
+    /// **16b cut I.3**: an [`ArenaMsg::TempoFloor`] is held to the same rule as
+    /// an intent. The reserve is sized for one control per channel per unit, a
+    /// stop and an ack, and a staffer repeating `@arena/tempo` must not be able
+    /// to take the slot an `EXIT` needs; a refused floor is the verb's `busy`.
     pub fn offer(&self, msg: ArenaMsg) -> Result<(), ArenaMsg> {
-        if matches!(msg, ArenaMsg::Intent(_)) && self.inbox.capacity() <= self.reserve {
+        if matches!(msg, ArenaMsg::Intent(_) | ArenaMsg::TempoFloor { .. })
+            && self.inbox.capacity() <= self.reserve
+        {
             return Err(msg);
         }
         self.inbox.try_send(msg).map_err(|error| match error {
@@ -604,7 +632,12 @@ const fn continuous_code(kind: &IntentKind) -> u8 {
         IntentKind::Heading { .. } => 0,
         IntentKind::Speed { .. } => 1,
         IntentKind::Order(_) | IntentKind::ReleaseOrder { .. } => 2,
-        IntentKind::Startup | IntentKind::Lock { .. } | IntentKind::Fire { .. } => 3,
+        // Discrete (16b cut I.3: a staff `Place` among them); never buffered
+        // under a continuous key.
+        IntentKind::Startup
+        | IntentKind::Lock { .. }
+        | IntentKind::Fire { .. }
+        | IntentKind::Place { .. } => 3,
     }
 }
 
@@ -632,6 +665,18 @@ fn buffer_continuous(map: &mut Continuous, intent: Intent) {
 /// pushed, one `warn` naming the unit and the kind — and never an older one, so
 /// a `LOCK` cannot be dropped while the `FIRE` that needs it survives, and no
 /// other unit's orders are touched. Answers whether it was kept.
+///
+/// **16b cut I.3: a staff `Place` is pushed past the bound and never refused.**
+/// The kind is tested before the bound on purpose: the bound is sized for a
+/// pilot's burst (one above their rate, so the arena itself can say
+/// `queue_full`), and a place is not a pilot's order — refusing it here would
+/// drop a staff act because the pilot was busy, and the arena journals every
+/// place it receives, so a place dropped here would be the one that leaves no
+/// line. Nor does a place count toward the bound a pilot's later order meets,
+/// for the same reason the arena's rate does not count it: a pilot's order
+/// dropped because staff placed the tank would be a tell. Places are bounded by
+/// the world instead — one staff verb is one message — and by the inbox, which
+/// holds a place to the reserve rule of an intent.
 fn buffer_discrete(
     map: &mut Discrete,
     intent: Intent,
@@ -639,7 +684,15 @@ fn buffer_discrete(
     match_id: MatchId,
 ) -> bool {
     let queue = map.entry(intent.unit).or_default();
-    if queue.len() >= per_unit_bound.max(1) {
+    if matches!(intent.kind, IntentKind::Place { .. }) {
+        queue.push(intent);
+        return true;
+    }
+    let pilots = queue
+        .iter()
+        .filter(|held| !matches!(held.kind, IntentKind::Place { .. }))
+        .count();
+    if pilots >= per_unit_bound.max(1) {
         tracing::warn!(
             %match_id,
             unit = %intent.unit,
@@ -852,12 +905,28 @@ async fn arena_loop(mut task: Task) {
                     }
                     // A `Stop` is recorded now and honoured by the next pulse's
                     // phase 1, which is the library's own rule — it never lands
-                    // in the middle of a substep.
-                    Some(ArenaMsg::Stop(reason)) => task.arena.stop(reason),
+                    // in the middle of a substep. **16b cut I.3**: and that pulse
+                    // is pulled in to a millisecond away, so an abort under a
+                    // ten-second floor is not ten seconds late (this module's
+                    // head).
+                    Some(ArenaMsg::Stop(reason)) => {
+                        task.arena.stop(reason);
+                        due = pulled_in(due);
+                    }
                     // An acknowledgement is not an input to `step`: it only
                     // lowers the egress's depth, so it applies on arrival.
                     Some(ArenaMsg::LedgerAck { upto_chunk_seq }) => {
                         task.arena.ledger.mark_flushed(upto_chunk_seq);
+                    }
+                    // **16b cut I.3** (16c N10): nor is a staff floor. It is
+                    // applied on arrival, and the deadline is pulled in so the
+                    // set or the lift takes effect at the next millisecond: the
+                    // loop otherwise recomputes `due` only after a pulse, and the
+                    // old wake may be a Quiet period or a floor away. The pulled
+                    // pulse is quantised to the lattice like every floored one.
+                    Some(ArenaMsg::TempoFloor { period_ms }) => {
+                        task.arena.clock.set_floor(period_ms);
+                        due = pulled_in(due);
                     }
                     // Every sender is gone: the world has forgotten this match
                     // and nothing can ever drive it again. End silently, for the
@@ -1285,6 +1354,13 @@ impl Task {
 fn deadline(base: Instant, next_due_ms: i64) -> Instant {
     let at = base + Duration::from_millis(u64::try_from(next_due_ms).unwrap_or(0));
     at.max(Instant::now() + Duration::from_millis(1))
+}
+
+/// **A deadline pulled in to a millisecond from now** (16b cut I.3), or the one
+/// already standing when it is sooner — what a `Stop` and a `TempoFloor` do to
+/// the loop's next wake. A millisecond and not nought, for [`deadline`]'s reason.
+fn pulled_in(due: Instant) -> Instant {
+    due.min(Instant::now() + Duration::from_millis(1))
 }
 
 /// Milliseconds since the task's monotonic base, saturating.
@@ -1817,6 +1893,125 @@ mod tests {
         assert!(held.is_none());
         forget_held_pilot(&mut held, p0);
         assert!(held.is_none());
+    }
+
+    /// **16b cut I.3**: a `TempoFloor` is refused at the reserve exactly as an
+    /// intent is, and a control, a stop and an ack still fit behind both.
+    #[test]
+    fn i3_offer_holds_a_tempo_floor_to_the_intent_reserve() {
+        let (inbox, _rx) = mpsc::channel(5);
+        let (stop, _stop_rx) = watch::channel(false);
+        let handle = ArenaHandle {
+            match_id: MatchId(7),
+            inbox,
+            reserve: 3,
+            stop,
+            reported: Arc::new(AtomicBool::new(false)),
+        };
+        assert!(
+            handle
+                .offer(ArenaMsg::TempoFloor {
+                    period_ms: Some(5_000)
+                })
+                .is_ok(),
+            "room above the reserve"
+        );
+        assert!(
+            handle
+                .offer(ArenaMsg::Intent(order(RED, IntentKind::Startup, 1)))
+                .is_ok()
+        );
+        // Three slots left, all reserve: neither an intent nor a floor.
+        assert!(matches!(
+            handle.offer(ArenaMsg::TempoFloor { period_ms: None }),
+            Err(ArenaMsg::TempoFloor { period_ms: None })
+        ));
+        assert!(
+            handle
+                .offer(ArenaMsg::Intent(order(RED, IntentKind::Startup, 2)))
+                .is_err()
+        );
+        assert!(
+            handle
+                .offer(ArenaMsg::Control(control(2, ControlState::Live, None)))
+                .is_ok()
+        );
+        assert!(handle.offer(ArenaMsg::Stop(StopReason::Abort)).is_ok());
+        assert!(
+            handle
+                .offer(ArenaMsg::LedgerAck { upto_chunk_seq: 0 })
+                .is_ok()
+        );
+    }
+
+    /// **16b cut I.3**: a staff `Place` is buffered past the per-unit bound and
+    /// never refused, and it takes none of the bound a pilot's order meets.
+    #[test]
+    fn i3_a_place_is_kept_past_the_bound_and_counts_against_nobody() {
+        let mut waiting = PrePulse::default();
+        let place = |seq| order(RED, IntentKind::Place { x: 3, y: 4 }, seq);
+        // The pilot's two of a bound of two.
+        assert!(buffer_discrete(
+            &mut waiting.discrete,
+            order(RED, IntentKind::Startup, 1),
+            2,
+            MatchId(1)
+        ));
+        assert!(buffer_discrete(
+            &mut waiting.discrete,
+            order(RED, IntentKind::Startup, 2),
+            2,
+            MatchId(1)
+        ));
+        // A place past the bound is kept.
+        assert!(buffer_discrete(
+            &mut waiting.discrete,
+            place(3),
+            2,
+            MatchId(1)
+        ));
+        assert!(buffer_discrete(
+            &mut waiting.discrete,
+            place(4),
+            2,
+            MatchId(1)
+        ));
+        // And the pilot's third is refused by the pilot's own count, not by the
+        // places: a unit whose buffer holds only places still takes the pilot's
+        // orders up to the bound.
+        assert!(!buffer_discrete(
+            &mut waiting.discrete,
+            order(RED, IntentKind::Startup, 5),
+            2,
+            MatchId(1)
+        ));
+        assert!(buffer_discrete(
+            &mut waiting.discrete,
+            order(BLUE, IntentKind::Place { x: 1, y: 1 }, 6),
+            1,
+            MatchId(1)
+        ));
+        assert!(buffer_discrete(
+            &mut waiting.discrete,
+            order(BLUE, IntentKind::Startup, 7),
+            1,
+            MatchId(1)
+        ));
+        let (_, intents) = waiting.take();
+        assert_eq!(
+            intents
+                .iter()
+                .map(|intent| (intent.unit, intent.kind.as_str(), intent.seq))
+                .collect::<Vec<_>>(),
+            vec![
+                (RED, "startup", 1),
+                (RED, "startup", 2),
+                (RED, "place", 3),
+                (RED, "place", 4),
+                (BLUE, "place", 6),
+                (BLUE, "startup", 7),
+            ]
+        );
     }
 
     #[test]

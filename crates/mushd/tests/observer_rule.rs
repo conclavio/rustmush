@@ -4804,3 +4804,254 @@ async fn i2_the_replay_screen_shows_both_sides_and_a_refusal_opens_nothing() {
 
     say(&mut ada, "SIM ABORT", "aborts match").await;
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut I.3 — a staff place is told to nobody (16c N10)
+// ---------------------------------------------------------------------------
+
+/// **`@arena/place`, over the first cell of `cells` the world takes** (16b cut
+/// I.3): the world refuses a cell off the window or with no way out in its own
+/// sentence, and the arena's refusals are on the tape, so the first answer
+/// `Placing` is the cell. Answers it.
+async fn i3_place(god: &mut Term, unit: u32, cells: &[(u16, u16)]) -> (u16, u16) {
+    for (x, y) in cells {
+        for _ in 0..RETRY_BUDGET {
+            let mark = god.mark();
+            god.send_line(&format!("@arena/place #{unit}={x},{y}"))
+                .await;
+            match god
+                .expect_one_of_after(
+                    mark,
+                    &[
+                        "Placing",
+                        "impassable, or has no way out",
+                        "off the arena window",
+                        COMMIT_PENDING,
+                    ],
+                )
+                .await
+            {
+                0 => return (*x, *y),
+                3 => tokio::time::sleep(Duration::from_millis(200)).await,
+                _ => break,
+            }
+        }
+    }
+    panic!("the world took none of {cells:?}");
+}
+
+/// The running match's id, off `@arena/status`'s `match N:` row.
+async fn i3_match_id(god: &mut Term) -> u64 {
+    let status = ask(god, "@arena/status", "ledger writes awaiting").await;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("match ")?.split(':').next()?.parse().ok())
+        .unwrap_or_else(|| panic!("no match row in:\n{status}"))
+}
+
+/// What a place must never be to a pilot.
+fn i3_says_no_place(seen: &str, red: u32, blue: u32, what: &str) {
+    names_nothing(seen, red, blue, what);
+    for leak in ["place", "Placing", "in_flight"] {
+        assert!(!seen.contains(leak), "{what} carried {leak:?}:\n{seen}");
+    }
+}
+
+/// **16b cut I.3: a staff place is journalled always and announced never** (16c
+/// N10; doc 16 §1, §5), over the real composition and real SSH.
+///
+/// God moves Bo's tank while the match runs. Everything Ada and Bo are sent
+/// from before the place to the end of the test names neither tank, and says
+/// neither `place`, `Placing` nor `in_flight`. Ada held Bo as a classified
+/// contact before the place, and every `CONTACTS` after it answers that same
+/// designator or none (the loss path, if the new cell is out of reach): a place
+/// mints no new name — ids and designators are drawn once per viewer and target
+/// for the match.
+///
+/// Then the refusal. Under a 5,000 ms floor pilots' orders wait for the next
+/// wake, so Ada's `FIRE` at Bo and God's place of Bo's tank, sent back to back,
+/// land in one pulse, and phase 4 resolves Ada's shot first (her tank's id is
+/// the lower): the round is in flight when the place resolves, and the tape
+/// says `place_refused` with `in_flight` — while Bo's stream carries no
+/// `in_flight`, no `refused` and no `place`: a refusal naming a round in flight
+/// would tell the target of an impact its own sensors never saw.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn i3_a_place_is_told_to_nobody_and_its_refusal_leaks_no_round() {
+    let server = boot("observer-place").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+
+    let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
+    assert!(
+        red < blue,
+        "phase 4 drains in unit-id order; this test needs the shooter's id below the target's \
+         ({red} against {blue})"
+    );
+    close_to_muzzle_range(&mut god, red, blue, domain).await;
+    take_off(&mut ada, &mut bo).await;
+    power_up(&mut ada).await;
+    let id = i3_match_id(&mut god).await;
+
+    // Ada holds Bo, told apart.
+    let mut contact = String::new();
+    wait_until(STEP_TIMEOUT, "Ada to tell Bo's tank apart", async || {
+        contact = first_contact(&mut ada).await;
+        !contact.starts_with('X')
+    })
+    .await;
+    let ada_mark = ada.mark();
+    let bo_mark = bo.mark();
+
+    // ---- the place ------------------------------------------------------
+    let placed = i3_place(&mut god, blue, &[(96, 97), (96, 98), (96, 96), (97, 97)]).await;
+    // A few sensor passes: the contact is the same designator, or gone.
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(1_000)).await;
+        let mark = ada.mark();
+        ada.send_line("CONTACTS").await;
+        if ada
+            .expect_one_of_after(
+                mark,
+                &["(rel ", NO_CONTACTS, COMMIT_PENDING, CONTROL_UNKNOWN],
+            )
+            .await
+            == 0
+        {
+            let listing = strip_ansi(&ada.seen[mark..]);
+            assert_eq!(
+                designator_of(&listing).as_deref(),
+                Some(contact.as_str()),
+                "the place renamed the contact:\n{listing}"
+            );
+        }
+    }
+
+    // ---- a place under a round in flight ---------------------------------
+    assert!(
+        ask(
+            &mut god,
+            &format!("@arena/tempo {id}=5000"),
+            "under a floor"
+        )
+        .await
+        .contains("under a floor of 5000 ms")
+    );
+    say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
+    wait_until(
+        STEP_TIMEOUT,
+        "the cockpit to publish the lock",
+        async || {
+            ask_whole(&mut ada, "WEAPONSTATUS")
+                .await
+                .contains("Locked on")
+        },
+    )
+    .await;
+    // Back to back: both wait in the task's buffer for the same wake.
+    let fire_mark = ada.mark();
+    let god_mark = god.mark();
+    ada.send_line("FIRE").await;
+    // Back onto the cell it stood on before the first place: passable, with a
+    // way out, and empty now.
+    god.send_line(&format!(
+        "@arena/place #{blue}={}, {}",
+        BLUE_MUZZLE.0, BLUE_MUZZLE.1
+    ))
+    .await;
+    assert_eq!(
+        ada.expect_one_of_after(fire_mark, &["Firing cannon", "refused", COMMIT_PENDING])
+            .await,
+        0,
+        "the shot was not taken: {}",
+        strip_ansi(&ada.seen[fire_mark..])
+    );
+    assert_eq!(
+        god.expect_one_of_after(
+            god_mark,
+            &["Placing", "impassable", "off the arena", COMMIT_PENDING]
+        )
+        .await,
+        0,
+        "the second place was not sent: {}",
+        strip_ansi(&god.seen[god_mark..])
+    );
+    // The round leaves the barrel at the next wake, a floor away at most.
+    wait_until(STEP_TIMEOUT, "the round to leave the barrel", async || {
+        ask_whole(&mut ada, "WEAPONSTATUS")
+            .await
+            .contains("39 of 40 round(s)")
+    })
+    .await;
+    say(
+        &mut god,
+        &format!("@arena/tempo {id}=off"),
+        "its own tempo again",
+    )
+    .await;
+    // A second for the lifted match to deliver whatever the impact tells Bo.
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+
+    // ---- what the two pilots were sent ------------------------------------
+    let ada_seen = strip_ansi(&ada.seen[ada_mark..]);
+    i3_says_no_place(&ada_seen, red, blue, "Ada's transcript after the place");
+    let bo_seen = strip_ansi(&bo.seen[bo_mark..]);
+    i3_says_no_place(&bo_seen, red, blue, "Bo's transcript after the place");
+    assert!(
+        !bo_seen.contains("refused"),
+        "the target was told of a refusal:\n{bo_seen}"
+    );
+    no_sixteen_digit_word(&ada_seen, "Ada's transcript after the place");
+    no_sixteen_digit_word(&bo_seen, "Bo's transcript after the place");
+
+    // ---- the tape --------------------------------------------------------
+    say(&mut god, &format!("@arena/abort {id}"), "is stopping").await;
+    let mut events = Vec::new();
+    wait_until(STEP_TIMEOUT, "both places to reach the tape", async || {
+        events = ledger_events(&server.store, id).await;
+        events
+            .iter()
+            .any(|event| event.get("kind").and_then(Value::as_str) == Some("place_refused"))
+    })
+    .await;
+    let places: Vec<&Value> = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.get("kind").and_then(Value::as_str),
+                Some("placed" | "place_refused")
+            )
+        })
+        .collect();
+    assert_eq!(places.len(), 2, "{places:?}");
+    assert_eq!(
+        places[0].get("kind").and_then(Value::as_str),
+        Some("placed")
+    );
+    assert_eq!(
+        places[0].get("unit").and_then(Value::as_u64),
+        Some(u64::from(blue))
+    );
+    assert_eq!(
+        (
+            places[0].get("x").and_then(Value::as_u64),
+            places[0].get("y").and_then(Value::as_u64)
+        ),
+        (Some(u64::from(placed.0)), Some(u64::from(placed.1)))
+    );
+    assert_eq!(
+        places[1].get("kind").and_then(Value::as_str),
+        Some("place_refused")
+    );
+    assert_eq!(
+        places[1].get("reason").and_then(Value::as_str),
+        Some("in_flight"),
+        "{:?}",
+        places[1]
+    );
+    let floors = events
+        .iter()
+        .filter(|event| event.get("kind").and_then(Value::as_str) == Some("tempo_floor"))
+        .count();
+    assert_eq!(floors, 2, "the set and the lift are on the tape");
+}

@@ -66,7 +66,7 @@
 //! | `[tacsim.arena.tempo].alert_hold_ms` | `30000` | milliseconds with no `Alert` trigger before the arena falls back to `Quiet` |
 //! | `[tacsim.arena.tempo].engaged_hold_ms` | `10000` | milliseconds since the last shot, impact or in-range pair before `Engaged` is left |
 //! | `[tacsim.arena.tempo].alert_range_cm` | `0` | the held-contact range that raises `Alert`, centimetres; **`0` is derived** at match start as the lesser of twice the longest weapon range in the match and the window's own diagonal (**16b cut E.1**) |
-//! | `[tacsim.arena.tempo].substep_max_ms` | `250` | the longest substep a pulse is cut into (doc 16 §3.1 rate independence) |
+//! | `[tacsim.arena.tempo].substep_max_ms` | `250` | the longest substep a pulse is cut into (doc 16 §3.1 rate independence); at most `engaged_ms` (**16b cut I.3**: a staff tempo floor must always move arena time) |
 //! | `[tacsim.arena.tempo].stall_ms` | `2000` | milliseconds one pulse may take before the watchdog voids the match |
 //! | `[tacsim.arena].max_catch_up_steps` | `4` | periods of wall time one pulse may absorb before the arena records `lagged` and skips the idle time |
 //! | `[tacsim.arena].occupied_stop_ms` | `2000` | **16b cut E.3** (doc 16 §3.4 step 4): arena milliseconds a unit holds against another unit in its way, keeping its speed, before it stops and says so; `0` stops it at once. Ground, the window's edge and a slope are untouched |

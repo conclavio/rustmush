@@ -497,6 +497,14 @@ pub struct MatchMirror {
     pub frames_sent: u64,
     /// Set once, when the arena reports the end.
     pub end: Option<MatchEnd>,
+    /// **The staff tempo floor this match's task was sent** (16b cut I.3; 16c
+    /// N10), milliseconds, or `None`. Written by `@arena/tempo`
+    /// ([`ArenaRegistry::note_tempo_floor`]) **only after the task took the
+    /// message**, so `@arena/status` never claims a floor the arena does not
+    /// have; gone with the mirror when the match is untracked. What the arena
+    /// itself holds is `Clock::floor_ms`; this is the world's copy of the last
+    /// set it delivered.
+    pub tempo_floor_ms: Option<u32>,
 }
 
 /// **The last frame one pilot was sent** (16b cut K.2, K3).
@@ -900,6 +908,16 @@ impl ArenaRegistry {
     #[must_use]
     pub fn mirror(&self, match_id: MatchId) -> Option<&MatchMirror> {
         self.matches.get(&match_id)
+    }
+
+    /// **Record the staff tempo floor a match's task accepted** (16b cut I.3):
+    /// [`MatchMirror::tempo_floor_ms`], written by `@arena/tempo` after a
+    /// successful offer and never before. A match this registry does not track
+    /// is left alone.
+    pub fn note_tempo_floor(&mut self, match_id: MatchId, floor_ms: Option<u32>) {
+        if let Some(mirror) = self.matches.get_mut(&match_id) {
+            mirror.tempo_floor_ms = floor_ms;
+        }
     }
 
     /// Every tracked match, in id order.
@@ -2413,6 +2431,11 @@ fn status_rows(ctx: &Ctx<'_>) -> Vec<String> {
         rows.push(format!(
             "  orders: {human} by pilots, {machine} by the machines"
         ));
+        // **16b cut I.3**: the staff floor, on a line of its own for the same
+        // reason, and only while one stands.
+        if let Some(floor_ms) = mirror.tempo_floor_ms {
+            rows.push(format!("  tempo floor: {floor_ms} ms"));
+        }
     }
     if !rows.is_empty() {
         rows.push(format!(
@@ -2698,7 +2721,20 @@ pub fn register(
                    under a header with the seed and every unit's pilot, at most 200 lines a \
                    page; its `Next:` goes on from the chunk the page was cut short in. Bare, \
                    the newest match the centre remembers; a running or older match's tape is \
-                   read too. A read."
+                   read too. A read.\n\
+                   @arena/tempo <match>=<period_ms> | <match>=off | <match>   (staff) floor \
+                   the wake interval of a running match, in steps of the engaged period up \
+                   to 10 s: the arena wakes once per floor of wall time and moves at most \
+                   its catch-up clamp of its own tempo per wake, which is slow motion when \
+                   the floor is longer; pilots' orders wait for the next wake. Never a \
+                   pause, not hashed, recorded on the tape. `=off` lifts it; bare reads it.\n\
+                   @arena/place <unit>=<x>,<y>         (staff) put a unit of a running match \
+                   on an arena cell. The world refuses at once, and never on the tape, a \
+                   match that is not running and a cell off the window or on impassable \
+                   ground; the arena, at its next pulse, refuses an occupied cell or a round \
+                   in flight to or from the unit, and every place it receives is on the \
+                   tape, placed or place_refused, unless the match ends in that pulse. Its \
+                   pilot is told nothing; other pilots' sensors find it where it now is."
                 .into(),
             ..CommandSpec::default()
         },

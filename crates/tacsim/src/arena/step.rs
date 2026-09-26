@@ -612,7 +612,7 @@ impl Arena {
             apply_control(self, control);
         }
         if let Some(stop) = self.stop {
-            return self.stopped(wall_now_ms, stop);
+            return self.stopped(wall_now_ms, stop, intents);
         }
 
         // ---- phase 2: orders ----
@@ -631,8 +631,9 @@ impl Arena {
         // (`Arena::event_hash`), and a pulse with no order takes nothing. **16b
         // cut Z.2**: the `order_released` line is the other thing phase 2
         // journals, and it takes the same slot, so the `ordered` and
-        // `order_released` lines of one pulse share one hash; nothing else here
-        // journals (`stage_refusal` writes no ledger line).
+        // `order_released` lines of one pulse share one hash. **16b cut I.3**: so
+        // does the `place_refused` line of a staff place this phase refuses;
+        // nothing else here journals (`stage_refusal` writes no ledger line).
         self.action_hash = ActionHash::Pending;
         for intent in intents {
             // **16b cut Z.2** (16c Q44): a release is counted where it lands — a
@@ -650,6 +651,28 @@ impl Arena {
             if outcome == IntentOutcome::Queued && matches!(intent.kind, IntentKind::Fire { .. }) {
                 fire_intent_queued = true;
             }
+            // **16b cut I.3** (16c N10: *journalled always, announced never*):
+            // a staff `Place` refused here — `unknown`, `epoch` or `channel`, the
+            // three gates it meets — still leaves its line, under phase 2's one
+            // hash like the `ordered` lines, so every `Place` the arena receives
+            // is on the tape by one rule. Nothing is staged:
+            // `Arena::phase_two_tells` answers `false` for a place.
+            if let (IntentOutcome::Refused(refusal), IntentKind::Place { x, y }) =
+                (outcome, &intent.kind)
+            {
+                let hash = self.event_hash();
+                let at = self.now_ms;
+                let _ = self.journal(
+                    at,
+                    EventKind::PlaceRefused {
+                        unit: intent.unit,
+                        x: *x,
+                        y: *y,
+                        reason: SmolStr::new_static(refusal.as_str()),
+                    },
+                    hash,
+                );
+            }
             if let IntentOutcome::Refused(refusal) = outcome
                 && Arena::phase_two_tells(&intent.kind, refusal)
             {
@@ -666,7 +689,34 @@ impl Arena {
         self.action_hash = ActionHash::Outside;
 
         // ---- phase 3: time, in substeps ----
+        //
+        // **16b cut I.3** (16c N10; `crate::arena::clock`'s head): whether this
+        // pulse is quantised is read BEFORE `advance` overwrites the previous
+        // wake's floor, so the first pulse after a lift is quantised too.
+        let floored = self.clock.floored_now_or_then();
         let (dt_ms, clock_lagged) = self.clock.advance(wall_now_ms, &self.arena_cfg);
+        // **16b cut I.3, the lattice.** Under a staff floor the task wakes on a
+        // WALL interval (`Arena::next_due_ms`), because the arena is behind the
+        // wall on purpose and a lattice target in arena time cannot be reached
+        // by a wake that is. So the pulse itself is cut back to the substep
+        // lattice: `dt` becomes the greatest lattice point at or below
+        // `now + dt`, less `now` — which may be ZERO, a wake that came inside a
+        // substep being a pulse of no time (the scripted drivers deliver every
+        // beat in one). The excess is discarded as the clamp discards its excess.
+        // Without it, the pull-in pulse on a set and every wake below the clamp
+        // would add the OS timer's overshoot to arena time and never return to
+        // the lattice, so due events would be applied against positions that
+        // depend on the wall moment staff typed the verb (D-16-2; 16b cut U.1).
+        // A floor is a multiple of `engaged_ms`, which is a multiple of the
+        // substep for every shipped configuration (16b cut M.2, 16c Q24), so an
+        // on-time floored wake moves exactly `min(cap, floor)` and loses nothing.
+        let dt_ms = if floored {
+            let lattice = self.substep_len_ms();
+            let end = floor_to(self.now_ms.saturating_add(i64::from(dt_ms)), lattice);
+            u32::try_from(end.saturating_sub(self.now_ms).max(0)).unwrap_or(dt_ms)
+        } else {
+            dt_ms
+        };
         let length = u32::try_from(self.substep_len_ms()).unwrap_or(u32::MAX);
         let pieces = substeps(dt_ms, length);
         // **16b cut M.2** (16c `T-10`): what ran, counted as it runs — the loop
@@ -737,6 +787,15 @@ impl Arena {
                 // `Starting` hint matches on that accessor's answer.
                 let word = order.kind.as_str();
                 match order.kind {
+                    // **16b cut I.3** (16c N10): the staff place, resolved at the
+                    // pulse's end under the phase's one hash like every action
+                    // here. `resolve_place` journals its own outcome, `placed` or
+                    // `place_refused`, and nothing is ever staged to a pilot —
+                    // a refusal naming a round in flight would tell the pilot of
+                    // an impact their sensors never saw.
+                    IntentKind::Place { x, y } => {
+                        let _ = self.resolve_place(id, x, y, at_ms);
+                    }
                     // Doc 16 §3.3 "Startup".
                     IntentKind::Startup => {
                         if let Err(refusal) = resolve_startup(self, id, at_ms) {
@@ -806,15 +865,36 @@ impl Arena {
         // the due loop pops what phase 4 scheduled, elimination settles, one hash
         // is recorded).
         //
-        // **The drain runs only on a pulse that ran a substep.** Under the
-        // scripted zero-`dt` drivers a beat's pulse runs none, so there the drain
-        // never runs: a beam fired on a beat still lands in the next pulse's
-        // first substep, the same at every cadence, which is why those replays
-        // agree and why they do not prove the drain. It is proved on a driver
-        // whose pulse ends on the beat, the production shape
+        // **The drain runs only on a pulse that ran a substep** — or, since 16b
+        // cut I.3, on a floored one (below). Under the scripted zero-`dt`
+        // drivers, which are unfloored, a beat's pulse runs none, so there the
+        // drain never runs: a beam fired on a beat still lands in the next
+        // pulse's first substep, the same at every cadence, which is why those
+        // replays agree and why they do not prove the drain. It is proved on a
+        // driver whose pulse ends on the beat, the production shape
         // (`tests/extensions.rs`'s beam replay and `tests/weapons.rs`'s
         // `a_beam_is_scheduled_at_now`).
-        if ran > 0 && self.ended.is_none() && self.due.peek_due(self.now_ms).is_some() {
+        //
+        // **16b cut I.3: and on a quantised pulse of no time, past the opening.**
+        // Under a staff floor a production pulse can run no substep — the
+        // pull-in on a set, a lift or an abort, or any wake inside a substep,
+        // cut back to the lattice point it started on. A beam `FIRE` such a
+        // pulse resolves at `now_ms` would otherwise wait out the floor and land
+        // in the next wake's first substep, against positions a substep later
+        // than the same `FIRE` resolved at the same millisecond by a pulse that
+        // ran one: the outcome would turn on the wall moment staff typed the
+        // verb, which is what the quantisation exists to exclude. The rule above
+        // holds for it by induction: once arena time has moved (`now_ms > 0`),
+        // the pulse before this one either ran a substep ending at `now_ms` or
+        // was itself a floored pulse of no time and drained — an unfloored
+        // production pulse always runs one, `arena_task`'s `deadline` giving it
+        // at least a millisecond — so anything due now was scheduled by this
+        // phase 4. At `now_ms == 0` nothing has run and the `t = 0` events are
+        // the next substep's, exactly as after the opening pulse, so a floored
+        // pulse of no time there drains nothing (`tests/weapons.rs`'s
+        // `i3_a_beam_fired_in_a_floored_pulse_of_no_time_lands_in_it`).
+        let drains = ran > 0 || (floored && self.now_ms > 0);
+        if drains && self.ended.is_none() && self.due.peek_due(self.now_ms).is_some() {
             ledger_full |= self.substep(0, &mut perception, &mut reflex);
             ran = ran.saturating_add(1);
         }
@@ -868,6 +948,15 @@ impl Arena {
         let hash = state_hash(self);
         if let Some((from, to)) = changed {
             ledger_full |= !self.journal(self.now_ms, EventKind::Tempo { from, to }, hash);
+        }
+        // **16b cut I.3** (16c N10): a staff floor set or lifted since the last
+        // pulse, once per change, beside the `tempo` line and under the same
+        // hash. The floor is a view of the wake cadence and no hash folds it;
+        // this line moves the ledger's sequence like every line (`hash.rs` item
+        // 11). Not on a match a substep already ended: nothing is journalled
+        // after `match_ended` (16b cut W.2), and the change is left untaken.
+        if !over && let Some(period_ms) = self.clock.take_floor_change() {
+            ledger_full |= !self.journal(self.now_ms, EventKind::TempoFloor { period_ms }, hash);
         }
         // One notice per pulse whichever half is behind: the clock absorbed more
         // wall time than the clamp allows (doc 16 §3.1 "Clock and lag"), or the
@@ -1516,8 +1605,30 @@ impl Arena {
     /// as a timeout does, because both are matches that ran to a conclusion and
     /// whose cells the world commits. A concede names the side that did **not**
     /// give up, so the reader of the black box does not have to invert anything.
-    fn stopped(&mut self, wall_now_ms: i64, stop: StopReason) -> StepOutput {
+    ///
+    /// **16b cut I.3** (16c N10: *journalled always, announced never*): a staff
+    /// `Place` among the stopping pulse's `intents` — one the task buffered
+    /// before the `Stop` arrived — reaches no phase 2 and no phase 4, so it is
+    /// answered here, `place_refused` with the reason `stopped`, BEFORE the stop's
+    /// own line (nothing follows `match_ended`, 16b cut W.2) and under the same
+    /// hash, the stop pulse's one moment. Every other order in the pulse is
+    /// dropped silently as it always was: the match is over and nobody is told.
+    fn stopped(&mut self, wall_now_ms: i64, stop: StopReason, intents: &[Intent]) -> StepOutput {
         let hash = state_hash(self);
+        for intent in intents {
+            if let IntentKind::Place { x, y } = intent.kind {
+                let _ = self.journal(
+                    self.now_ms,
+                    EventKind::PlaceRefused {
+                        unit: intent.unit,
+                        x,
+                        y,
+                        reason: SmolStr::new_static(PLACE_STOPPED),
+                    },
+                    hash,
+                );
+            }
+        }
         let (kind, reason) = match stop {
             StopReason::Abort => (EventKind::Aborted, EndReason::Abort),
             StopReason::Timeout => (
@@ -2282,8 +2393,15 @@ impl Arena {
     /// [`IntentKind::ReleaseOrder`], for the same reason — a release hands a
     /// squad's doctrine back, and the tank it lands on is not the pilot who gave
     /// it.
+    ///
+    /// **16b cut I.3**: nor is an [`IntentKind::Place`] — a staff act the pilot
+    /// is told nothing of (16c N10: *journalled always, announced never*); its
+    /// phase-2 refusal is a `place_refused` line on the tape instead.
     const fn phase_two_tells(kind: &IntentKind, refusal: Refusal) -> bool {
-        if matches!(kind, IntentKind::Order(_) | IntentKind::ReleaseOrder { .. }) {
+        if matches!(
+            kind,
+            IntentKind::Order(_) | IntentKind::ReleaseOrder { .. } | IntentKind::Place { .. }
+        ) {
             return false;
         }
         matches!(
@@ -2356,6 +2474,157 @@ impl Arena {
                 detail,
             },
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The staff place (16b cut I.3; 16c N10)
+    // -----------------------------------------------------------------------
+    //
+    // Every `Place` the arena receives leaves one line: `place_refused` at
+    // phase 2 (`unknown`, `epoch`, `channel`), `placed` or `place_refused` here
+    // at phase 4, or `place_refused` with `stopped` in the pulse a `Stop` ends
+    // the match in (`Arena::stopped`). The one exception is a place queued at
+    // phase 2 of the pulse whose own substep ends the match — a kill or the
+    // duration bound — which phase 4 never drains, because no line may follow
+    // `match_ended` (16b cut W.2).
+
+    /// **Put one unit on a cell, for staff** (16b cut I.3; 16c N10): the
+    /// phase-4 resolution of an [`IntentKind::Place`], at the pulse's end and
+    /// under phase 4's one hash like every action there.
+    ///
+    /// The tests, in this order, the first that fails naming the reason:
+    ///
+    /// 1. the unit exists — else `unknown`. Unreachable past phase 2's own gate,
+    ///    and journalled all the same, so *every `Place` the arena receives
+    ///    leaves a line* holds by one rule;
+    /// 2. the cell is on the window, passable and has a way out
+    ///    ([`crate::arena::state::ArenaTerrain::has_way_out`], the rule an
+    ///    opening cell is held to) — else `impassable`;
+    /// 3. nobody else stands in it ([`crate::arena::index::SpatialIndex::occupant`]
+    ///    is empty or the unit itself) — else `occupied`: doc 16 §3.4 step 5's
+    ///    one unit per cell;
+    /// 4. **no round is in flight to or from the unit** — no [`Arena::shots`]
+    ///    row whose `target` or `shooter` it is — else `in_flight`. An impact
+    ///    traces its line from the SHOOTER's pose when the round arrives
+    ///    (`damage::resolve_impact`) and teaches its machine `no line` on a
+    ///    blocked one, so a placed shooter would decide its own round's outcome,
+    ///    and a placed target would dodge (or meet) a round aimed elsewhere.
+    ///
+    /// On success the pose goes to the cell's centre at the cell's `elev_cm`,
+    /// heading kept; speed, desired speed and the motion carries go to nought;
+    /// the hold, the traffic hold, `blocked` and `grade_pct` are cleared; the
+    /// index moves the unit (rebuilt whole when it stood off the window); and a
+    /// machine forgets its route ([`crate::arena::reflex::ReflexMemory::forget_route`])
+    /// so it re-plans at its next tick. **No contact is dropped**: a contact id
+    /// and its designator are drawn once per (viewer, target) for the whole
+    /// match (`draw_contact_id`, `DesignatorBook::assign`), so a drop could mint
+    /// no new name, and the loss path is split between the sensor pass and the
+    /// staging scan; every other platform's contact on the unit is left as it
+    /// is, and the next sensor pass moves the track to where the unit now is —
+    /// which is the truth of that sensor. Then one `placed` line, `from_x` and
+    /// `from_y` `u16::MAX` for a unit that stood off the window.
+    ///
+    /// **Every outcome is journalled and none is staged** (16c N10: *journalled
+    /// always, announced never*): the pilot's next frame carries the new cell
+    /// and nothing says why. The hash is asked before anything is written,
+    /// `Arena::event_hash`'s rule.
+    ///
+    /// # Errors
+    ///
+    /// The reason word, after its `place_refused` line is journalled.
+    pub(crate) fn resolve_place(
+        &mut self,
+        unit: ObjId,
+        x: u16,
+        y: u16,
+        at_ms: i64,
+    ) -> Result<(), SmolStr> {
+        let refused = self.place_refusal(unit, x, y);
+        let hash = self.event_hash();
+        if let Some(reason) = refused {
+            let reason = SmolStr::new_static(reason);
+            let _ = self.journal(
+                at_ms,
+                EventKind::PlaceRefused {
+                    unit,
+                    x,
+                    y,
+                    reason: reason.clone(),
+                },
+                hash,
+            );
+            return Err(reason);
+        }
+        let terrain = &self.definition.terrain;
+        let cell_cm = i64::from(terrain.cell_cm());
+        let elev_cm = terrain.get(x, y).map_or(0, |cell| i32::from(cell.elev_cm));
+        let from = self
+            .unit(unit)
+            .and_then(|state| self.definition.terrain.cell_of(&state.pose));
+        if let Some(state) = self.unit_mut(unit) {
+            state.pose.x_cm = i64::from(x)
+                .saturating_mul(cell_cm)
+                .saturating_add(cell_cm / 2);
+            state.pose.y_cm = i64::from(y)
+                .saturating_mul(cell_cm)
+                .saturating_add(cell_cm / 2);
+            state.pose.z_cm = elev_cm;
+            state.speed_cms = 0;
+            state.desired_speed_cms = 0;
+            state.carry = crate::arena::state::MotionCarry::default();
+            state.held = None;
+            state.occupied_hold = None;
+            state.blocked = false;
+            state.grade_pct = 0;
+        }
+        match from {
+            Some(from) => self.index.move_unit(unit, from, (x, y)),
+            None => self.index.rebuild(&self.definition.terrain, &self.units),
+        }
+        self.reflex.forget_route(unit);
+        let (from_x, from_y) = from.unwrap_or((u16::MAX, u16::MAX));
+        let _ = self.journal(
+            at_ms,
+            EventKind::Placed {
+                unit,
+                x,
+                y,
+                from_x,
+                from_y,
+            },
+            hash,
+        );
+        Ok(())
+    }
+
+    /// **Why a place would be refused**, or `None` (16b cut I.3): the four
+    /// tests of [`Arena::resolve_place`], in its order, as their wire words.
+    fn place_refusal(&self, unit: ObjId, x: u16, y: u16) -> Option<&'static str> {
+        if self.unit(unit).is_none() {
+            return Some("unknown");
+        }
+        let terrain = &self.definition.terrain;
+        let passable = terrain
+            .get(x, y)
+            .is_some_and(crate::arena::state::TerrainCell::passable);
+        if !passable || !terrain.has_way_out(x, y) {
+            return Some("impassable");
+        }
+        if self
+            .index
+            .occupant(x, y)
+            .is_some_and(|holder| holder != unit)
+        {
+            return Some("occupied");
+        }
+        if self
+            .shots
+            .values()
+            .any(|shot| shot.target == unit || shot.shooter == unit)
+        {
+            return Some("in_flight");
+        }
+        None
     }
 
     /// Put one notice in the platform's queue for this pulse.
@@ -2665,7 +2934,22 @@ impl Arena {
     /// The lattice is the **current** [`Arena::substep_len_ms`], which is
     /// constant on the shipped content and can lengthen mid-match elsewhere (see
     /// there); the partition inside a pulse is still cut from that pulse's start.
+    ///
+    /// **16b cut I.3: under a staff floor the answer is a WALL interval** —
+    /// `wall_now_ms + max(period, floor)` ([`crate::arena::clock::Clock::wake_period_ms`]),
+    /// the due-event branch not consulted. A floored arena is behind the wall on
+    /// purpose, so the rule above — `wall + (target − now)` with the target in
+    /// arena time — would wake the task after 5,000, then 3,000, then 1,000 wall
+    /// ms as the arena caught up with lattice points it can only reach a clamp
+    /// at a time. The due events are still applied at their own timestamps,
+    /// inside the catch-up substeps, as always; and the lattice is kept by
+    /// [`Arena::step`] quantising every floored pulse instead (see there). With
+    /// no floor the rule is unchanged.
     fn next_due_ms(&self, wall_now_ms: i64) -> i64 {
+        if self.clock.floor_ms().is_some() {
+            return wall_now_ms
+                .saturating_add(i64::from(self.clock.wake_period_ms(&self.arena_cfg.tempo)));
+        }
         let now = self.now_ms;
         let period = i64::from(self.clock.tempo().period_ms(&self.arena_cfg.tempo));
         let substep = self.substep_len_ms();
@@ -2689,6 +2973,23 @@ fn ceil_to(t: i64, m: i64) -> i64 {
         return t;
     }
     t.saturating_add(m - 1).div_euclid(m).saturating_mul(m)
+}
+
+/// **The reason word of a staff place that reached the pulse a `Stop` ends the
+/// match in** (16b cut I.3): `place_refused` with `stopped`, journalled by
+/// [`Arena::stopped`] before the stop's own line.
+const PLACE_STOPPED: &str = "stopped";
+
+/// **`t` rounded down to a multiple of `m`** (16b cut I.3), [`ceil_to`]'s other
+/// half: the greatest multiple of `m` at or below `t`. An `m` of nought or below
+/// answers `t`, so a degenerate substep quantises nothing rather than stopping
+/// time. Integer arithmetic only; [`Arena::step`] calls it with `t` the arena
+/// millisecond a floored pulse would end at.
+fn floor_to(t: i64, m: i64) -> i64 {
+    if m <= 0 {
+        return t;
+    }
+    t.div_euclid(m).saturating_mul(m)
 }
 
 /// The remembered frames, as [`Arena`] holds them — a type alias so the field's
@@ -4947,5 +5248,567 @@ mod tests {
         };
         assert!(!locked(u2_row(600)).same_as(&locked(u2_row(700)), 1_000));
         assert!(locked(u2_row(100)).same_as(&locked(u2_row(600)), 1_000));
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut I.3 — the staff floor and the staff place (16c N10)
+    // -----------------------------------------------------------------------
+
+    /// **16b cut I.3**: under a floor the task's wake is a WALL interval,
+    /// `wall + max(period, floor)`, and no due event is consulted; without one
+    /// the lattice rule stands.
+    #[test]
+    fn i3_next_due_under_a_floor_is_the_wall_plus_the_wake_period() {
+        const WALL: i64 = 1_000_000;
+        let mut arena = at_now_with(1_000, Some(1_003));
+        assert_eq!(arena.next_due_ms(WALL), WALL + 250, "the lattice rule");
+        arena.clock.set_floor(Some(5_000));
+        assert_eq!(
+            arena.next_due_ms(WALL),
+            WALL + 5_000,
+            "the due event 3 ms ahead is not consulted"
+        );
+        // Off the lattice, it is still a wall interval: nothing pulls it back.
+        let mut late = at_now_with(1_253, Some(1_500));
+        late.clock.set_floor(Some(5_000));
+        assert_eq!(late.next_due_ms(WALL), WALL + 5_000);
+        // `max(period, floor)`: a floor under the tempo's period is the period.
+        arena.clock.set_floor(Some(1_000));
+        assert_eq!(arena.next_due_ms(WALL), WALL + 5_000, "Quiet is 5,000");
+        arena.clock.pin_tempo_for_tests(Tempo::Engaged);
+        assert_eq!(arena.next_due_ms(WALL), WALL + 1_000, "Engaged under 1,000");
+        arena.clock.set_floor(None);
+        assert_eq!(
+            arena.next_due_ms(WALL),
+            WALL + 250,
+            "lifted: the lattice again"
+        );
+    }
+
+    /// **16b cut I.3, the quantisation**: a floored pulse from an off-lattice
+    /// `now` ends on the lattice.
+    #[test]
+    fn i3_a_floored_pulse_from_off_the_lattice_ends_on_it() {
+        let mut arena = arena();
+        arena.step(0, &[], &[]);
+        // Unfloored, a late wake ends off the lattice, as it always has.
+        arena.step(253, &[], &[]);
+        assert_eq!(arena.now_ms, 253);
+        arena.clock.set_floor(Some(5_000));
+        let out = arena.step(5_253, &[], &[]);
+        assert_eq!(
+            arena.now_ms, 5_250,
+            "the overshoot past the lattice is discarded"
+        );
+        assert_eq!(arena.now_ms % arena.substep_len_ms(), 0);
+        assert!(!out.lagged);
+    }
+
+    /// **16b cut I.3**: an on-lattice pulse whose wall interval is the floor
+    /// plus a seven-millisecond overshoot moves exactly `min(cap, floor)` —
+    /// 2,000 at `Engaged`, 5,000 at `Quiet` — and is not lag.
+    #[test]
+    fn i3_an_on_time_floored_wake_moves_the_clamp_or_the_floor_and_no_more() {
+        for (tempo, moves) in [(Tempo::Engaged, 2_000_i64), (Tempo::Quiet, 5_000)] {
+            let mut arena = arena();
+            arena.clock.pin_tempo_for_tests(tempo);
+            arena.clock.set_floor(Some(5_000));
+            arena.step(0, &[], &[]);
+            let out = arena.step(5_007, &[], &[]);
+            assert_eq!(arena.now_ms, moves, "{tempo:?}");
+            assert!(!out.lagged, "{tempo:?}: a slowed match is not lagging");
+            let out = arena.step(10_014, &[], &[]);
+            assert_eq!(arena.now_ms, 2 * moves, "{tempo:?}");
+            assert!(!out.lagged);
+        }
+    }
+
+    /// **16b cut I.3**: a wake inside a substep is a pulse of no time — no
+    /// substep, no arena millisecond — and the pulse after a lift is still
+    /// quantised, the one after that not.
+    #[test]
+    fn i3_a_wake_inside_a_substep_is_a_zero_dt_pulse_and_a_lift_is_quantised_once() {
+        let mut arena = arena();
+        arena.clock.set_floor(Some(1_000));
+        arena.step(0, &[], &[]);
+        let out = arena.step(137, &[], &[]);
+        assert_eq!((arena.now_ms, out.substeps), (0, 0));
+        let out = arena.step(1_140, &[], &[]);
+        assert_eq!(arena.now_ms, 1_000, "1,003 of wall is 1,000 of arena");
+        assert_eq!(out.substeps, 4);
+        arena.clock.set_floor(None);
+        arena.step(2_151, &[], &[]);
+        assert_eq!(
+            arena.now_ms, 2_000,
+            "the interval after a lift began under the floor"
+        );
+        arena.step(3_154, &[], &[]);
+        assert_eq!(arena.now_ms, 3_003, "and the one after it is not quantised");
+    }
+
+    /// Every `tempo_floor` line in `log`, as `(t_ms, period_ms, hash)`.
+    fn i3_floor_lines(log: &[LedgerEvent]) -> Vec<(i64, Option<u32>, u64)> {
+        log.iter()
+            .filter_map(|event| match event.kind {
+                EventKind::TempoFloor { period_ms } => Some((event.t_ms, period_ms, event.hash)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// **16b cut I.3**: the floor is journalled once per change, at the pulse's
+    /// end, under phase 5's one hash — the `tempo` line of the same pulse
+    /// carries the same — and a repeat, or a pulse with no change, journals
+    /// nothing.
+    #[test]
+    fn i3_the_tempo_floor_line_is_one_a_change_under_the_phase_five_hash() {
+        let mut arena = arena();
+        let mut journal = Log::default();
+        journal.absorb(&arena.step(0, &[], &[]));
+        let fire = Intent {
+            unit: A,
+            channel: Channel::Fire,
+            epoch: 1,
+            kind: IntentKind::Fire {
+                weapon: SmolStr::new("cannon"),
+            },
+            seq: 2,
+        };
+        arena.clock.set_floor(Some(5_000));
+        journal.absorb(&arena.step(5_000, &[], &[fire]));
+        journal.absorb(&arena.step(10_000, &[], &[]));
+        arena.clock.set_floor(Some(5_000));
+        journal.absorb(&arena.step(15_000, &[], &[]));
+        arena.clock.set_floor(None);
+        journal.absorb(&arena.step(20_000, &[], &[]));
+        // The fire intent put the arena in `Alert` at 5,000, whose clamp is
+        // 4,000: every later 5,000 ms wake moved 4,000 of arena time, so the
+        // lift's pulse ended at 17,000.
+        assert_eq!(arena.now_ms, 17_000);
+        let log = journal.events(&mut arena);
+        let floors = i3_floor_lines(&log);
+        assert_eq!(
+            floors
+                .iter()
+                .map(|(t_ms, period, _)| (*t_ms, *period))
+                .collect::<Vec<_>>(),
+            vec![(5_000, Some(5_000)), (17_000, None)],
+            "one line a change, the repeat none: {log:?}"
+        );
+        assert!(
+            !log.iter().any(|event| event.kind.as_str() == "lagged"),
+            "a slowed match is not lagging"
+        );
+        let tempo_hash = log
+            .iter()
+            .find(|event| matches!(event.kind, EventKind::Tempo { .. }))
+            .map(|event| (event.t_ms, event.hash));
+        assert_eq!(
+            tempo_hash,
+            floors.first().map(|(t_ms, _, hash)| (*t_ms, *hash)),
+            "the tempo line and the floor line of one pulse share phase 5's hash"
+        );
+    }
+
+    /// **16b cut I.3**: never on an ended match — neither on a stop, nor on a
+    /// pulse whose substep ended the match.
+    #[test]
+    fn i3_no_tempo_floor_line_is_journalled_on_an_ended_match() {
+        let mut stopped = arena();
+        let mut journal = Log::default();
+        journal.absorb(&stopped.step(0, &[], &[]));
+        stopped.stop(StopReason::Abort);
+        stopped.clock.set_floor(Some(5_000));
+        journal.absorb(&stopped.step(5_000, &[], &[]));
+        let log = journal.events(&mut stopped);
+        assert!(i3_floor_lines(&log).is_empty(), "{log:?}");
+
+        let mut timed = Arena::new(
+            crate::arena::test_support::custody(
+                vec![tank(A, Team::Red, pose(3_500, 3_500))],
+                Vec::new(),
+            ),
+            &ArenaConfig::default(),
+            &MatchConfig {
+                max_duration_ms: 3_000,
+                ..MatchConfig::default()
+            },
+            &crate::config::SensorsConfig::default(),
+        )
+        .expect("a three-second match");
+        let mut journal = Log::default();
+        journal.absorb(&timed.step(0, &[], &[]));
+        journal.absorb(&timed.step(2_000, &[], &[]));
+        timed.clock.set_floor(Some(5_000));
+        let out = timed.step(7_000, &[], &[]);
+        journal.absorb(&out);
+        assert_eq!(out.ended.map(|end| end.t_ms), Some(3_000));
+        let log = journal.events(&mut timed);
+        assert!(i3_floor_lines(&log).is_empty(), "{log:?}");
+    }
+
+    // -- the place ------------------------------------------------------------
+
+    const I3_B: ObjId = ObjId(9);
+
+    /// Two tanks at epoch 1 — `A` at cell (3, 3), `B` at (5, 5) — over a window
+    /// whose cell (6, 2) stands 120 cm high, (1, 6) is impassable and (7, 0) is a
+    /// passable cell walled in on both of its window sides.
+    fn i3_pair() -> Arena {
+        use crate::arena::state::{ArenaTerrain, TerrainCell};
+        let mut arena = arena_at_epoch(
+            vec![
+                tank(A, Team::Red, pose(3_500, 3_500)),
+                tank(I3_B, Team::Blue, pose(5_500, 5_500)),
+            ],
+            1,
+        );
+        let ground = crate::arena::test_support::ground();
+        let wall = TerrainCell {
+            move_cost: 0,
+            ..ground
+        };
+        let mut cells = vec![ground; 64];
+        let mut paint = |x: usize, y: usize, cell: TerrainCell| {
+            if let Some(slot) = cells.get_mut(y * 8 + x) {
+                *slot = cell;
+            }
+        };
+        paint(
+            6,
+            2,
+            TerrainCell {
+                elev_cm: 120,
+                ..ground
+            },
+        );
+        paint(1, 6, wall);
+        paint(6, 0, wall);
+        paint(7, 1, wall);
+        arena.definition.terrain = ArenaTerrain::new(8, 8, 1_000, cells).expect("the window");
+        arena
+    }
+
+    /// A staff place of `unit` on `(x, y)` at epoch 1, as `@arena/place` stamps
+    /// it.
+    fn i3_place(unit: ObjId, x: u16, y: u16, seq: u64) -> Intent {
+        order(unit, IntentKind::Place { x, y }, seq)
+    }
+
+    /// Every `placed` and `place_refused` line in `log`.
+    fn i3_place_lines(log: &[LedgerEvent]) -> Vec<LedgerEvent> {
+        log.iter()
+            .filter(|event| matches!(event.kind.as_str(), "placed" | "place_refused"))
+            .cloned()
+            .collect()
+    }
+
+    /// **16b cut I.3**: an accepted place puts the pose on the cell's centre at
+    /// its `elev_cm`, heading kept; zeroes the speed, the desired speed and the
+    /// carries; clears the hold, the traffic hold, `blocked` and `grade_pct`;
+    /// moves the index; leaves another platform's contact on the unit as it was;
+    /// and journals `placed` under phase 4's one hash, which the same pulse's
+    /// `startup` line shares. Nothing is staged.
+    #[test]
+    fn i3_a_place_moves_the_unit_and_journals_placed_under_the_phase_four_hash() {
+        let mut arena = i3_pair();
+        let mut journal = Log::default();
+        journal.absorb(&arena.step(0, &[], &[]));
+        // B holds A as a classified contact.
+        let contact = crate::arena::rng::draw_contact_id(arena.seed, I3_B, A);
+        arena.contacts.insert(
+            I3_B,
+            contact,
+            crate::arena::state::ShadowContact::sighted(
+                A,
+                Classification::Classified { team: Team::Red },
+                0,
+                crate::arena::state::SeenPose::default(),
+            ),
+        );
+        let before = arena.contacts.get(I3_B, contact).cloned();
+        if let Some(unit) = arena.unit_mut(A) {
+            unit.pose.heading_mdeg = 45_000;
+            unit.speed_cms = 300;
+            unit.desired_speed_cms = 500;
+            unit.carry.east = 7;
+            unit.carry.turn = 3;
+            unit.held = Some(crate::arena::motion::Held {
+                x: 3,
+                y: 4,
+                cause: crate::arena::motion::BlockedCause::Occupied,
+            });
+            unit.occupied_hold = Some(crate::arena::state::OccupiedHold {
+                cell: (3, 4),
+                since_ms: 0,
+            });
+            unit.blocked = true;
+            unit.grade_pct = 12;
+        }
+        let startup = order(I3_B, IntentKind::Startup, 2);
+        let out = arena.step(0, &[], &[i3_place(A, 6, 2, 1), startup]);
+        journal.absorb(&out);
+        let unit = arena.unit(A).expect("A");
+        assert_eq!(
+            (unit.pose.x_cm, unit.pose.y_cm, unit.pose.z_cm),
+            (6_500, 2_500, 120)
+        );
+        assert_eq!(unit.pose.heading_mdeg, 45_000, "the heading is kept");
+        assert_eq!((unit.speed_cms, unit.desired_speed_cms), (0, 0));
+        assert_eq!(unit.carry, crate::arena::state::MotionCarry::default());
+        assert!(unit.held.is_none() && unit.occupied_hold.is_none() && !unit.blocked);
+        assert_eq!(unit.grade_pct, 0);
+        assert_eq!(arena.index.occupant(6, 2), Some(A));
+        assert_eq!(arena.index.occupant(3, 3), None);
+        assert_eq!(arena.index.cell_of_unit(A), Some((6, 2)));
+        assert_eq!(
+            arena.contacts.get(I3_B, contact).cloned(),
+            before,
+            "the other platform's contact is untouched: same id, same class, same plot"
+        );
+        assert!(told(&out).is_empty(), "nothing is said to the pilot");
+        let log = journal.events(&mut arena);
+        let placed = i3_place_lines(&log);
+        assert_eq!(
+            placed.iter().map(|event| &event.kind).collect::<Vec<_>>(),
+            vec![&EventKind::Placed {
+                unit: A,
+                x: 6,
+                y: 2,
+                from_x: 3,
+                from_y: 3,
+            }]
+        );
+        let startup_hash = log
+            .iter()
+            .find(|event| matches!(event.kind, EventKind::Startup { unit } if unit == I3_B))
+            .map(|event| event.hash);
+        assert_eq!(
+            placed.first().map(|event| event.hash),
+            startup_hash,
+            "one phase-4 hash"
+        );
+    }
+
+    /// **16b cut I.3**: each refusal journals `place_refused` with its word and
+    /// moves nothing — off the window, impassable, no way out, occupied — and
+    /// none is said to anybody.
+    #[test]
+    fn i3_a_refused_place_journals_its_word_and_moves_nothing() {
+        for (x, y, word) in [
+            (8_u16, 0_u16, "impassable"),
+            (1, 6, "impassable"),
+            (7, 0, "impassable"),
+            (5, 5, "occupied"),
+        ] {
+            let mut arena = i3_pair();
+            let mut journal = Log::default();
+            journal.absorb(&arena.step(0, &[], &[]));
+            let out = arena.step(0, &[], &[i3_place(A, x, y, 1)]);
+            journal.absorb(&out);
+            assert!(told(&out).is_empty(), "({x}, {y}) was said");
+            let unit = arena.unit(A).expect("A");
+            assert_eq!((unit.pose.x_cm, unit.pose.y_cm), (3_500, 3_500));
+            assert_eq!(arena.index.occupant(3, 3), Some(A));
+            let log = journal.events(&mut arena);
+            assert_eq!(
+                i3_place_lines(&log)
+                    .into_iter()
+                    .map(|event| event.kind)
+                    .collect::<Vec<_>>(),
+                vec![EventKind::PlaceRefused {
+                    unit: A,
+                    x,
+                    y,
+                    reason: SmolStr::new_static(word),
+                }],
+                "({x}, {y})"
+            );
+        }
+    }
+
+    /// **16b cut I.3**: a round in flight refuses a place at EITHER end of it —
+    /// the target, and the shooter, whose pose the impact traces its line from.
+    #[test]
+    fn i3_a_round_in_flight_refuses_a_place_of_its_target_and_its_shooter() {
+        let mut arena = m2_pair(60_000);
+        let (_, seq, _) = m2_fire(&mut arena);
+        assert!(arena.shot(seq).is_some(), "the round is in flight");
+        for unit in [ObjId(9), A] {
+            let before = arena
+                .unit(unit)
+                .map(|state| (state.pose.x_cm, state.pose.y_cm));
+            assert_eq!(
+                arena.resolve_place(unit, 2, 6, arena.now_ms),
+                Err(SmolStr::new_static("in_flight")),
+                "#{}",
+                unit.0
+            );
+            assert_eq!(
+                arena
+                    .unit(unit)
+                    .map(|state| (state.pose.x_cm, state.pose.y_cm)),
+                before
+            );
+        }
+        let mut journal = Log::default();
+        let log = journal.events(&mut arena);
+        assert_eq!(
+            i3_place_lines(&log)
+                .iter()
+                .map(|event| event.kind.clone())
+                .collect::<Vec<_>>(),
+            [ObjId(9), A]
+                .into_iter()
+                .map(|unit| EventKind::PlaceRefused {
+                    unit,
+                    x: 2,
+                    y: 6,
+                    reason: SmolStr::new_static("in_flight"),
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// **16b cut I.3**: the three gates a place skips — a wreck is placed, a
+    /// linkdead unit is placed, and a place spends none of the seat's eight a
+    /// second (a unit at its bound is still placed, and its count is untouched).
+    #[test]
+    fn i3_a_place_skips_the_wreck_the_linkdead_and_the_rate_gates() {
+        type Setup = fn(&mut crate::arena::state::UnitState);
+        let max = crate::config::ArenaConfig::default()
+            .intents
+            .max_pending_per_unit;
+        let cases: [(&str, Setup); 3] = [
+            ("wreck", |unit| unit.limits.wreck = true),
+            ("linkdead", |unit| unit.linkdead = true),
+            ("rate", |unit| {
+                unit.orders_window_s = 0;
+                unit.orders_in_window = crate::config::ArenaConfig::default()
+                    .intents
+                    .max_pending_per_unit;
+            }),
+        ];
+        for (case, setup) in cases {
+            let mut arena = i3_pair();
+            arena.step(0, &[], &[]);
+            if let Some(unit) = arena.unit_mut(A) {
+                setup(unit);
+            }
+            let out = arena.step(0, &[], &[i3_place(A, 2, 6, 1)]);
+            assert!(told(&out).is_empty(), "{case}");
+            let unit = arena.unit(A).expect("A");
+            assert_eq!(
+                (unit.pose.x_cm, unit.pose.y_cm),
+                (2_500, 6_500),
+                "{case}: the unit was not placed"
+            );
+            if case == "rate" {
+                assert_eq!(
+                    unit.orders_in_window, max,
+                    "a place spends none of the pilot's orders"
+                );
+            }
+        }
+        // And a pilot's order after a place in the same second is counted from
+        // nought, as if the place had never been.
+        let mut arena = i3_pair();
+        arena.step(0, &[], &[]);
+        arena.step(0, &[], &[i3_place(A, 2, 6, 1)]);
+        assert_eq!(arena.unit(A).map(|unit| unit.orders_in_window), Some(0));
+    }
+
+    /// **16b cut I.3**: a place refused at phase 2 — a stale epoch here — still
+    /// journals `place_refused` with the phase's word under phase 2's hash, and
+    /// stages nothing; nor does a phase-4 refusal.
+    #[test]
+    fn i3_a_stale_place_journals_epoch_and_no_place_is_ever_said() {
+        let mut arena = i3_pair();
+        let mut journal = Log::default();
+        journal.absorb(&arena.step(0, &[], &[]));
+        let stale = Intent {
+            epoch: 0,
+            ..i3_place(A, 2, 6, 1)
+        };
+        let wrong_channel = Intent {
+            channel: Channel::Fire,
+            ..i3_place(A, 2, 6, 2)
+        };
+        let out = arena.step(0, &[], &[stale, wrong_channel, i3_place(A, 5, 5, 3)]);
+        journal.absorb(&out);
+        assert!(
+            refusals(&out).is_empty(),
+            "a place is never a Refused notice"
+        );
+        assert!(told(&out).is_empty());
+        let log = journal.events(&mut arena);
+        let lines = i3_place_lines(&log);
+        assert_eq!(
+            lines
+                .iter()
+                .map(|event| match &event.kind {
+                    EventKind::PlaceRefused { reason, .. } => reason.to_string(),
+                    other => other.as_str().to_owned(),
+                })
+                .collect::<Vec<_>>(),
+            vec!["epoch", "channel", "occupied"]
+        );
+        // The two phase-2 lines share phase 2's hash; the phase-4 line has its own.
+        let hashes: Vec<u64> = lines.iter().map(|event| event.hash).collect();
+        assert_eq!(hashes.first(), hashes.get(1));
+        assert_eq!(arena.unit(A).map(|unit| unit.pose.x_cm), Some(3_500));
+    }
+
+    /// **16b cut I.3**: a place that reaches the pulse a `Stop` ends the match in
+    /// — one the task buffered before the `Stop` arrived — never meets phase 2
+    /// or phase 4, and still leaves its line: `place_refused` with `stopped`,
+    /// just before the stop's own `aborted` line, at the same millisecond and
+    /// under the same hash. The unit is not moved, and nothing is said.
+    #[test]
+    fn i3_a_place_in_the_stopping_pulse_is_refused_stopped_before_the_stop_line() {
+        let mut arena = i3_pair();
+        let mut journal = Log::default();
+        journal.absorb(&arena.step(0, &[], &[]));
+        journal.absorb(&arena.step(500, &[], &[]));
+        arena.stop(StopReason::Abort);
+        let out = arena.step(
+            700,
+            &[],
+            &[
+                order(A, IntentKind::Startup, 1),
+                i3_place(A, 2, 6, 2),
+                i3_place(I3_B, 6, 6, 3),
+            ],
+        );
+        journal.absorb(&out);
+        assert_eq!(out.ended.map(|end| end.reason), Some(EndReason::Abort));
+        assert!(refusals(&out).is_empty());
+        assert!(told(&out).is_empty());
+        let log = journal.events(&mut arena);
+        let tail: Vec<(String, i64, u64)> = log
+            .iter()
+            .skip(log.len().saturating_sub(3))
+            .map(|event| {
+                let word = match &event.kind {
+                    EventKind::PlaceRefused { unit, reason, .. } => format!("{unit}:{reason}"),
+                    other => other.as_str().to_owned(),
+                };
+                (word, event.t_ms, event.hash)
+            })
+            .collect();
+        let at = arena.now_ms;
+        let hash = tail.last().map_or(0, |line| line.2);
+        assert_eq!(
+            tail,
+            vec![
+                (format!("{A}:stopped"), at, hash),
+                (format!("{I3_B}:stopped"), at, hash),
+                ("aborted".to_owned(), at, hash),
+            ],
+            "the two places, then the stop, one moment and one hash"
+        );
+        assert_eq!(i3_place_lines(&log).len(), 2, "and nothing else of a place");
+        assert_eq!(arena.unit(A).map(|unit| unit.pose.x_cm), Some(3_500));
+        assert_eq!(arena.unit(I3_B).map(|unit| unit.pose.x_cm), Some(5_500));
     }
 }

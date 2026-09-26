@@ -72,6 +72,33 @@ The simulator's black box (SIM_ADMIN or Royalty):
                     the page was cut short in, so following it skips
                     nothing. A pilot's own debrief is SIM REPORT (help
                     simulator), which never carries any of this.
+  @arena/tempo <match>=<period_ms>|off
+                    Floor the wake interval of a running match, in steps
+                    of 500 ms up to 10 s: the arena wakes once per period
+                    of wall time and moves at most max_catch_up_steps
+                    periods of its own tempo per wake, which is slow
+                    motion when the floor is longer than that. Pilots'
+                    orders wait for the next wake. Never a pause, not
+                    hashed, recorded on the tape (tempo_floor). "=off"
+                    lifts it; "@arena/tempo 12" reads it, and
+                    @arena/status shows "tempo floor: 5000 ms" while one
+                    stands. Nobody but you is told.
+  @arena/place <unit>=<x>,<y>
+                    Put a unit of a running match on an arena cell, as
+                    the unit's own seat. The world refuses at once, and
+                    never on the tape, a match that is not running
+                    ("Match 12 is stopping.") and a cell off the window
+                    or on impassable ground. The arena, at its next
+                    pulse, refuses an occupied cell or a round in flight
+                    to or from the unit, and every place it receives is
+                    on the tape: placed, or place_refused with the
+                    reason (stopped when an abort or another stop ended
+                    the match in that pulse). Only a place in the very
+                    pulse a kill or the time limit ends the match leaves
+                    no line. A wreck and a linkdead pilot's tank are
+                    placed like any other. Its pilot is told nothing,
+                    and every other pilot's sensors simply find it where
+                    it now is.
 
 Powers: BOOT, EXAMINE_ALL, TEL_ANYWHERE, TEL_ANYTHING, CHOWN_ANY,
 COMSYS_ADMIN, BUILDER_LLM, SEE_HIDDEN, FACTION_ADMIN, SIM_ADMIN. Wizards

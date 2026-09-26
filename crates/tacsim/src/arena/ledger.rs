@@ -52,7 +52,9 @@ pub const CHUNK_BYTES: usize = 16 * 1024;
 /// [`EventKind::Detected`], [`EventKind::Classified`] and [`EventKind::Lost`],
 /// which is what A.1's three placeholders were reserved for; **16b cut W.1** fills
 /// [`EventKind::Locked`], [`EventKind::Fired`], [`EventKind::Impact`] and
-/// [`EventKind::Miss`]. The rest are the
+/// [`EventKind::Miss`]; **16b cut I.3** adds the staff levers' three kinds,
+/// [`EventKind::TempoFloor`], [`EventKind::Placed`] and
+/// [`EventKind::PlaceRefused`] (twenty-eight kinds). The rest are the
 /// kinds doc 16 §4 names and later cuts give fields to; they are declared here so
 /// that the kind vocabulary is fixed in one reviewed diff and a later cut adds
 /// fields rather than a new event stream. **They still serialise**: an internally
@@ -434,6 +436,49 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         issuer: Option<ObjId>,
     },
+    /// **Staff set or lifted a tempo floor** (16b cut I.3; 16c N10:
+    /// `@arena/tempo`): one line per change, at the pulse's end, beside the
+    /// `tempo` line and under the same phase-5 hash.
+    ///
+    /// The floor is a view of the wake cadence and no hash folds it; this line
+    /// moves the ledger's sequence like every line, which is why a floored run is
+    /// only ever compared with another floored run.
+    TempoFloor {
+        /// The floor now standing, milliseconds; `None` (`null`) for a lift.
+        period_ms: Option<u32>,
+    },
+    /// **Staff put a unit on a cell** (16b cut I.3; 16c N10: `@arena/place`),
+    /// at the arena millisecond phase 4 resolved it, under phase 4's one hash.
+    /// Never said to anybody: the pilot's next frame carries the new cell.
+    Placed {
+        /// The unit placed.
+        unit: ObjId,
+        /// The column it stands in now.
+        x: u16,
+        /// The row.
+        y: u16,
+        /// The column it stood in, `u16::MAX` when it stood off the window.
+        from_x: u16,
+        /// The row it stood in, `u16::MAX` likewise.
+        from_y: u16,
+    },
+    /// **A staff place the arena refused** (16b cut I.3): every `Place` the
+    /// arena receives leaves a line, this or [`EventKind::Placed`]. Journalled
+    /// under phase 2's hash for the three gates it meets there and under phase
+    /// 4's for the entry test; never staged to a pilot, because a refusal naming
+    /// a round in flight would tell of an impact their sensors never saw.
+    PlaceRefused {
+        /// The unit named.
+        unit: ObjId,
+        /// The column asked for.
+        x: u16,
+        /// The row asked for.
+        y: u16,
+        /// Why: `impassable`, `occupied` or `in_flight` from the entry test, or
+        /// phase 2's `unknown`, `epoch` or `channel`
+        /// ([`crate::arena::intents::Refusal::as_str`]).
+        reason: SmolStr,
+    },
     /// A pulse absorbed more wall time than `max_catch_up_steps × period`, or the
     /// egress backed up past `ledger.max_unflushed_chunks`.
     Lagged {
@@ -477,6 +522,9 @@ impl EventKind {
             EventKind::Ordered { .. } => "ordered",
             EventKind::OrderExpired { .. } => "order_expired",
             EventKind::OrderReleased { .. } => "order_released",
+            EventKind::TempoFloor { .. } => "tempo_floor",
+            EventKind::Placed { .. } => "placed",
+            EventKind::PlaceRefused { .. } => "place_refused",
             EventKind::Lagged { .. } => "lagged",
             EventKind::MatchEnded { .. } => "match_ended",
             EventKind::Aborted => "aborted",
@@ -1034,6 +1082,24 @@ mod tests {
             EventKind::UnitDestroyed {
                 unit: ObjId(9),
                 by: Some(ObjId(4)),
+            },
+            // 16b cut I.3: the two staff levers, a set and a lift.
+            EventKind::TempoFloor {
+                period_ms: Some(5_000),
+            },
+            EventKind::TempoFloor { period_ms: None },
+            EventKind::Placed {
+                unit: ObjId(9),
+                x: 12,
+                y: 7,
+                from_x: u16::MAX,
+                from_y: u16::MAX,
+            },
+            EventKind::PlaceRefused {
+                unit: ObjId(9),
+                x: 12,
+                y: 7,
+                reason: SmolStr::new_static("in_flight"),
             },
             EventKind::Lagged { dt_ms: 20_000 },
             EventKind::MatchEnded {

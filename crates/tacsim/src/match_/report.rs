@@ -776,7 +776,9 @@ impl Fold {
             // Everything else prints nothing: every other unit's detections,
             // classifications and losses, position summaries, tempo, blocked,
             // receiver, lag, startup, order expiry, impact, and every event of
-            // any other unit.
+            // any other unit — and (16b cut I.3) the staff levers' `tempo_floor`,
+            // `placed` and `place_refused`, even about the pilot's own tank: a
+            // place is journalled always and announced never (16c N10).
             _ => {}
         }
     }
@@ -1055,6 +1057,32 @@ impl Fold {
                 target.map_or_else(|| "-".to_owned(), |contact| contact.to_string()),
                 spot.as_ref().map_or("-", SmolStr::as_str)
             ),
+            // **16b cut I.3** (16c N10): the two staff levers, as staff read
+            // them. The pilot's fold prints none of the three.
+            EventKind::TempoFloor {
+                period_ms: Some(period_ms),
+            } => format!("{word} period_ms={period_ms}"),
+            EventKind::TempoFloor { period_ms: None } => format!("{word} lifted"),
+            EventKind::Placed {
+                unit: id,
+                x,
+                y,
+                from_x,
+                from_y,
+            } => {
+                let from = if (*from_x, *from_y) == (u16::MAX, u16::MAX) {
+                    "off the window".to_owned()
+                } else {
+                    format!("({from_x}, {from_y})")
+                };
+                format!("{word} unit={} ({x}, {y}) from {from}", unit(id))
+            }
+            EventKind::PlaceRefused {
+                unit: id,
+                x,
+                y,
+                reason,
+            } => format!("{word} unit={} ({x}, {y}): {reason}", unit(id)),
             EventKind::Lagged { dt_ms } => format!("{word} dt_ms={dt_ms}"),
             EventKind::MatchEnded { reason } => {
                 let winner = match reason {
@@ -2514,6 +2542,68 @@ mod tests {
             bare.lines.first().map(String::as_str),
             Some("  0:04.000  power_online unit=#101")
         );
+    }
+
+    /// **16b cut I.3** (16c N10): the staff fold spells the two levers' three
+    /// lines, and the pilot's fold prints none of them — not even a place of the
+    /// pilot's own tank, which is journalled always and announced never.
+    #[test]
+    fn i3_the_staff_read_the_levers_and_the_pilot_reads_nothing_of_them() {
+        let mut tape = Tape::new();
+        tape.at(
+            1_000,
+            EventKind::TempoFloor {
+                period_ms: Some(5_000),
+            },
+        )
+        .at(
+            2_000,
+            EventKind::Placed {
+                unit: ME,
+                x: 120,
+                y: 97,
+                from_x: 118,
+                from_y: 97,
+            },
+        )
+        .at(
+            3_000,
+            EventKind::Placed {
+                unit: ObjId(301),
+                x: 4,
+                y: 5,
+                from_x: u16::MAX,
+                from_y: u16::MAX,
+            },
+        )
+        .at(
+            4_000,
+            EventKind::PlaceRefused {
+                unit: ObjId(301),
+                x: 120,
+                y: 97,
+                reason: SmolStr::new_static("in_flight"),
+            },
+        )
+        .at(5_000, EventKind::TempoFloor { period_ms: None });
+        let staff = fold(&tape.0, &roster(), Reader::Staff, RULES);
+        assert_eq!(
+            staff.lines,
+            vec![
+                "  0:01.000  tempo_floor period_ms=5000",
+                "  0:02.000  placed unit=RA(#101) (120, 97) from (118, 97)",
+                "  0:03.000  placed unit=#301 (4, 5) from off the window",
+                "  0:04.000  place_refused unit=#301 (120, 97): in_flight",
+                "  0:05.000  tempo_floor lifted",
+            ]
+        );
+        let pilot = fold(&tape.0, &roster(), Reader::Pilot { unit: ME }, RULES);
+        for line in every_line(&pilot) {
+            for word in ["tempo_floor", "placed", "place", "in_flight", "floor"] {
+                assert!(!line.contains(word), "{word} reached the pilot: {line}");
+            }
+        }
+        assert!(pilot.lines.is_empty(), "{:?}", pilot.lines);
     }
 
     /// **16b cut V.3**: a seq that is not the last plus one is a gap, and so is

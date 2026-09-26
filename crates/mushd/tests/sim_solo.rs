@@ -327,8 +327,10 @@ fn dbref_of(listing: &str, name: &str) -> u32 {
 }
 
 /// Put staff and the one pilot in the simulator lobby, and park the two tanks
-/// in sight of each other on the muster road.
-async fn open_the_centre(god: &mut Term) {
+/// in sight of each other on the muster road. Answers the two tanks' dbrefs,
+/// red then blue (16b cut I.3: `@find` omits a unit an arena holds, so they are
+/// read here, before the match).
+async fn open_the_centre(god: &mut Term) -> (u32, u32) {
     let listing = ask(god, "@find Simulator Lobby", "END OF LIST").await;
     let lobby = dbref_of(&listing, "Simulator Lobby");
     say(god, &format!("@teleport #{}=#{lobby}", ADA.0), "Teleported").await;
@@ -341,12 +343,14 @@ async fn open_the_centre(god: &mut Term) {
 
     let listing = ask(god, "@find Proving Ground", "END OF LIST").await;
     let ground = dbref_of(&listing, "Proving Ground");
+    let mut tanks = Vec::new();
     for (name, x_cm, heading) in [
         ("Red Tank 1", RED_X_CM, EAST_MDEG),
         ("Blue Tank 1", BLUE_X_CM, WEST_MDEG),
     ] {
         let listing = ask(god, &format!("@find {name}"), "END OF LIST").await;
         let tank = dbref_of(&listing, name);
+        tanks.push(tank);
         say(
             god,
             &format!(
@@ -356,6 +360,10 @@ async fn open_the_centre(god: &mut Term) {
             "Placed",
         )
         .await;
+    }
+    match tanks.as_slice() {
+        [red, blue] => (*red, *blue),
+        _ => panic!("two tanks"),
     }
 }
 
@@ -924,4 +932,114 @@ async fn y1_a_lone_pilot_orders_their_wingman() {
         "{seen}"
     );
     no_sixteen_digit_word(&strip_ansi(&ada.seen));
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut I.3 — staff moves the machine (16c N10)
+// ---------------------------------------------------------------------------
+
+/// **16b cut I.3: `@arena/place` of the machine's tank, over SSH**, and the tape
+/// records it.
+///
+/// A lone pilot's match; staff move the machine a few cells up the road, as the
+/// unit's own seat, the moment the match is running — before the machine can
+/// have a round in the air. The world answers `Placing`; the pilot is told
+/// nothing; and once the match is over the black box the world wrote carries one
+/// `placed` line naming the machine's tank and the cell.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn i3_staff_place_the_machine_and_the_tape_records_it() {
+    let server = boot("sim-solo-place").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_red, blue) = open_the_centre(&mut god).await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+    let ada_mark = ada.mark();
+
+    // The machine stands at cell (120, 97); the first cell up the road the
+    // world takes is where it goes.
+    let mut placed = None;
+    'cells: for (x, y) in [(124_u16, 97_u16), (124, 98), (124, 96), (123, 97)] {
+        for _ in 0..RETRY_BUDGET {
+            let mark = god.mark();
+            god.send_line(&format!("@arena/place #{blue}={x},{y}"))
+                .await;
+            match god
+                .expect_one_of_after(
+                    mark,
+                    &[
+                        "Placing",
+                        "impassable, or has no way out",
+                        "off the arena window",
+                        COMMIT_PENDING,
+                    ],
+                )
+                .await
+            {
+                0 => {
+                    placed = Some((x, y));
+                    break 'cells;
+                }
+                3 => tokio::time::sleep(Duration::from_millis(200)).await,
+                _ => break,
+            }
+        }
+    }
+    let placed = placed.expect("the world took one of the cells");
+    // The session wraps the reply at eighty columns, so it is read flat.
+    let said = strip_ansi(&god.seen)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        said.contains(&format!(
+            "Placing #{blue} at cell ({}, {}): the arena answers at its next pulse and the tape \
+             records it.",
+            placed.0, placed.1
+        )),
+        "{said}"
+    );
+    // Two seconds of ARENA time — read off `@arena/status`, never a wall sleep —
+    // so pulses have run since the place was offered and it resolved, then the
+    // end, so the tape's tail lands. (A place still buffered at the abort would
+    // be `place_refused` with `stopped`, which the assertion below would name.)
+    support::wait_arena_seconds(&mut god, 2).await;
+    ada.send_line("SIM ABORT").await;
+    let mut events = Vec::new();
+    wait_until(STEP_TIMEOUT, "the place to reach the tape", async || {
+        events = ledger_events(&server.store, 1).await;
+        count(&events, "placed") + count(&events, "place_refused") > 0
+    })
+    .await;
+    let line = events
+        .iter()
+        .find(|event| event.get("kind").and_then(Value::as_str) == Some("placed"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the place was refused: {:?}",
+                events.iter().find(
+                    |event| event.get("kind").and_then(Value::as_str) == Some("place_refused")
+                )
+            )
+        });
+    assert_eq!(
+        line.get("unit").and_then(Value::as_u64),
+        Some(u64::from(blue))
+    );
+    assert_eq!(
+        (
+            line.get("x").and_then(Value::as_u64),
+            line.get("y").and_then(Value::as_u64)
+        ),
+        (Some(u64::from(placed.0)), Some(u64::from(placed.1)))
+    );
+    assert_eq!(count(&events, "placed"), 1);
+    // And the pilot heard nothing of it.
+    let heard = strip_ansi(&ada.seen[ada_mark..]);
+    for word in ["Placing", "place"] {
+        assert!(!heard.contains(word), "the pilot heard `{word}`: {heard}");
+    }
 }

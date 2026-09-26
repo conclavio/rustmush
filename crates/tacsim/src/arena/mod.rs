@@ -219,7 +219,9 @@ pub use catchup::{
     Catchup, MAX_CATCHUP_CONTACTS, MAX_CATCHUP_SECTIONS, MAX_CATCHUP_WEAPONS, MachineWords,
     ReleaseSnapshot, SectionWords,
 };
-pub use clock::{Clock, MIN_SUBSTEP_MS, Tempo, TempoSignals, substep_ms, substeps};
+pub use clock::{
+    Clock, MAX_TEMPO_FLOOR_MS, MIN_SUBSTEP_MS, Tempo, TempoSignals, substep_ms, substeps,
+};
 pub use command::{
     MAX_SIGNAL_CONTACTS, SignalContact, SignalReason, SquadDigest, SquadSignal, SquadWatch,
 };

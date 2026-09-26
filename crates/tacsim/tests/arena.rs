@@ -28,7 +28,11 @@
 //! - **(g4)** 16b cut M.3: one stop against a bank is one `blocked` line with its
 //!   cause and one `Held:` line however the pulse is cut and however the tank
 //!   turns against it, a second obstacle in the same cell is a second stop, and
-//!   reversing off the bank clears the condition inside the cell.
+//!   reversing off the bank clears the condition inside the cell;
+//! - **(a1b)** 16b cut I.3's staff floor: one script at three floors is one
+//!   event list and one hash sequence bar the one `tempo_floor` line's period, a
+//!   jittered floored run is the clean one, and the task's own wakes under a
+//!   floor are the floor apart in wall time and the clamp apart in arena time.
 //!
 //! # Why the tempo is pinned, and pinned to `Quiet`
 //!
@@ -427,9 +431,32 @@ fn replay(
     script: &[Beat],
     pin: &dyn Fn(i64) -> Tempo,
 ) -> Replay {
+    replay_on(
+        arena,
+        &mut (0_i64..).map(|pulse| pulse.saturating_mul(cadence_ms)),
+        until_ms,
+        script,
+        pin,
+    )
+}
+
+/// **The same driver over any sequence of wall readings** (16b cut I.3): the
+/// opening pulse at the first, and one pulse at each after it, until arena
+/// time reaches `until_ms` or the readings run out. [`replay`] is this over
+/// `0, cadence, 2 × cadence, …`; the floor's jittered run hands it odd
+/// overshoots and an extra wake.
+fn replay_on(
+    arena: &mut Arena,
+    walls: &mut dyn Iterator<Item = i64>,
+    until_ms: i64,
+    script: &[Beat],
+    pin: &dyn Fn(i64) -> Tempo,
+) -> Replay {
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
-    let mut wall = 0_i64;
+    let Some(mut wall) = walls.next() else {
+        panic!("a replay needs at least its opening wall reading");
+    };
     let mut next = 0_usize;
     let mut pulses = 0_u32;
     let mut substeps = 0_u32;
@@ -468,7 +495,10 @@ fn replay(
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
         }
-        wall += cadence_ms;
+        let Some(reading) = walls.next() else {
+            break;
+        };
+        wall = reading;
     }
     arena.ledger.flush();
     for chunk in arena.ledger.take_chunks() {
@@ -787,7 +817,26 @@ fn replay_as_the_task(
     until_ms: i64,
     script: &[Beat],
 ) -> (Replay, Vec<i64>) {
+    let (replay, woke_at, _) = replay_as_the_task_floored(arena, period_ms, until_ms, script, None);
+    (replay, woke_at)
+}
+
+/// **[`replay_as_the_task`] under a staff floor** (16b cut I.3): `floor` is set
+/// on the clock before the opening pulse, as an `ArenaMsg::TempoFloor` that
+/// arrived before the task's first wake would set it, and the third answer is
+/// every WALL reading the task woke at, the opening pulse's included — under a
+/// floor `next_due_ms` answers a wall interval, and the gaps between these are
+/// what that is asserted on.
+fn replay_as_the_task_floored(
+    arena: &mut Arena,
+    period_ms: u32,
+    until_ms: i64,
+    script: &[Beat],
+    floor: Option<u32>,
+) -> (Replay, Vec<i64>, Vec<i64>) {
     arena.arena_cfg.tempo.quiet_ms = period_ms;
+    arena.clock.set_floor(floor);
+    let mut walls: Vec<i64> = Vec::new();
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
     let mut wall = 0_i64;
@@ -819,6 +868,7 @@ fn replay_as_the_task(
         if pulses > 0 {
             woke_at.push(arena.now_ms);
         }
+        walls.push(wall);
         let started = arena.now_ms;
         let out = arena.step(wall, &controls, &intents);
         absorb(&out, &mut bytes);
@@ -866,7 +916,7 @@ fn replay_as_the_task(
         pulses_seen,
         catchups,
     };
-    (replay, woke_at)
+    (replay, woke_at, walls)
 }
 
 /// **16b cut U.1's mandatory cross-tempo test** (16b §11; doc 16 §3.1 "Rate
@@ -947,6 +997,272 @@ fn the_task_s_own_wakes_at_three_periods_are_the_fixed_cadence_replay() {
         "a task driver ran the fixed replay's pulses: {pulse_counts:?} against {}",
         fixed.pulses
     );
+}
+
+// ---------------------------------------------------------------------------
+// (a1b) the staff floor: 16b cut I.3 (16c N10)
+// ---------------------------------------------------------------------------
+
+/// **The floor's own script** (16b cut I.3): every beat on the 2,000 ms
+/// lattice, so it lands at one arena millisecond whether a floored wake moves
+/// 2,000, 1,000 or 500 ms of arena time. The mover starts up cold at 0, drives
+/// north into the parked tank from 10,000, turns east at 24,000, and its seat is
+/// `Released` at 40,000 — which hands it to the reflex controller, so the
+/// machine's ticks and searches run under the floor too.
+fn floor_script() -> Vec<Beat> {
+    vec![
+        Beat::at(0, Vec::new(), vec![intent(MOVER, IntentKind::Startup, 1)]),
+        Beat::at(
+            10_000,
+            Vec::new(),
+            vec![
+                intent(MOVER, IntentKind::Heading { mdeg: 0 }, 2),
+                intent(MOVER, IntentKind::Speed { cms: 1_000 }, 3),
+            ],
+        ),
+        Beat::at(
+            24_000,
+            Vec::new(),
+            vec![intent(MOVER, IntentKind::Heading { mdeg: 90_000 }, 4)],
+        ),
+        Beat::at(
+            40_000,
+            vec![Control {
+                unit: MOVER,
+                channel: Channel::Helm,
+                epoch: 1,
+                state: ControlState::Released,
+                pilot: Some(MOVER_PILOT),
+            }],
+            Vec::new(),
+        ),
+    ]
+}
+
+/// A replay's events with the one `tempo_floor` line's `period_ms` struck out,
+/// and that line's arena time and period — what three runs at three floors are
+/// compared on.
+fn floor_normalised(run: &Replay) -> (Vec<Line>, Vec<(i64, String)>) {
+    let mut floors: Vec<(i64, String)> = Vec::new();
+    let events = run
+        .events
+        .iter()
+        .map(|(t_ms, kind, draws, hash)| {
+            if kind.contains("\"kind\":\"tempo_floor\"") {
+                floors.push((*t_ms, kind.clone()));
+                (*t_ms, "tempo_floor".to_owned(), draws.clone(), *hash)
+            } else {
+                (*t_ms, kind.clone(), draws.clone(), *hash)
+            }
+        })
+        .collect();
+    (events, floors)
+}
+
+/// **16b cut I.3's mandatory cross-tempo test, the floor** (16b §11; doc 16
+/// §3.1 "Rate independence", D-16-2; 16c N10): one scripted log at three
+/// FLOORS — 5,000, 1,000 and 500 ms, each with the driver's cadence equal to it
+/// and the tempo pinned `Engaged` (a 2,000 ms clamp, so the 5,000 ms floor is
+/// slow motion at 2,000 ms of arena time a wake) — is one event list, one
+/// per-substep hash sequence and one final state, with exactly one `tempo_floor`
+/// line at `t_ms` 0 in each (its `period_ms` the one difference) and no `lagged`
+/// line anywhere: a slowed match is not a lagging one.
+///
+/// Floored runs are compared with each other and never with an unfloored one:
+/// the floor is not hashed, but its line moves the ledger's sequence, which
+/// every later hash folds (`hash.rs` item 11).
+#[test]
+fn i3_a_tempo_floor_moves_no_outcome_at_three_floors() {
+    let engaged = |_: i64| Tempo::Engaged;
+    let mut runs: Vec<(u32, Replay)> = Vec::new();
+    for floor in [5_000_u32, 1_000, 500] {
+        let mut arena = scripted_arena();
+        arena.clock.set_floor(Some(floor));
+        let run = replay(
+            &mut arena,
+            i64::from(floor),
+            60_000,
+            &floor_script(),
+            &engaged,
+        );
+        assert_eq!(
+            arena.now_ms, 60_000,
+            "floor {floor} ran to a different time"
+        );
+        // Every pulse moved `min(2,000, floor)` of arena time, on the lattice.
+        let moved = i64::from(floor.min(2_000));
+        assert!(
+            run.pulses_seen
+                .iter()
+                .all(|(started, ..)| started % moved == 0),
+            "floor {floor}: {:?}",
+            run.pulses_seen
+        );
+        runs.push((floor, run));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+    // Worth comparing: the tank started, drove into the parked tank, turned,
+    // and was handed to the machine.
+    assert_eq!(first.count("\"startup\""), 1, "{:?}", first.kinds());
+    assert!(first.count("\"blocked\"") >= 1, "{:?}", first.kinds());
+    assert!(
+        first.pulses_seen.iter().any(|(_, _, machine)| *machine),
+        "the released seat never reached the machine"
+    );
+    let (first_events, _) = floor_normalised(first);
+    for (floor, run) in &runs {
+        let (events, floors) = floor_normalised(run);
+        assert_eq!(
+            floors,
+            vec![(
+                0,
+                format!("{{\"kind\":\"tempo_floor\",\"period_ms\":{floor}}}")
+            )],
+            "floor {floor}: one line, at the opening pulse"
+        );
+        assert_eq!(run.count("\"lagged\""), 0, "floor {floor} journalled lag");
+        assert_eq!(
+            events, first_events,
+            "the event list differs at a {floor} ms floor"
+        );
+        assert_eq!(
+            run.hashes,
+            first.hashes,
+            "the per-substep hash sequence differs at a {floor} ms floor ({} against {})",
+            run.hashes.len(),
+            first.hashes.len()
+        );
+        assert_eq!(run.finals, first.finals, "floor {floor}: the finals");
+        assert_eq!(run.told, first.told, "floor {floor}: the pilot's notices");
+    }
+    // And the floors really did differ: a 5,000 ms floor takes thirty wakes to
+    // the minute, a 500 ms one a hundred and twenty.
+    let pulses: Vec<u32> = runs.iter().map(|(_, run)| run.pulses).collect();
+    assert_eq!(pulses, vec![31, 61, 121]);
+}
+
+/// **16b cut I.3: a jittered floor is the same match** (16c N10; the plan's
+/// review F-R3/A-R1). The OS timer is never on time, so the driver's wall is
+/// advanced by the floor plus an odd overshoot every wake — 3, 7, 1, 9, 5 ms in
+/// turn — and one extra wake lands at wall 253 right after the floor was set,
+/// the shape a `TempoFloor`'s pull-in has when staff type the verb at an odd
+/// moment. Against the clean run at the same 1,000 ms floor: one event list, one
+/// per-substep hash sequence, one final state — and every pulse of the jittered
+/// run starts on the 250 ms substep lattice, the extra wake's included (it moves
+/// the arena exactly one substep, 250, and the next regular wake takes it back
+/// to the 1,000 grid). Without the quantisation every overshoot would be arena
+/// time, and the beats would land off their millisecond.
+#[test]
+fn i3_a_jittered_floor_is_the_same_match() {
+    let engaged = |_: i64| Tempo::Engaged;
+    let mut clean_arena = scripted_arena();
+    clean_arena.clock.set_floor(Some(1_000));
+    let clean = replay(&mut clean_arena, 1_000, 60_000, &floor_script(), &engaged);
+
+    let overshoots = [3_i64, 7, 1, 9, 5];
+    let mut walls: Vec<i64> = vec![0, 253];
+    let mut regular = 0_i64;
+    for wake in 0..200_usize {
+        regular += 1_000 + overshoots[wake % overshoots.len()];
+        walls.push(regular);
+    }
+    let mut jittered_arena = scripted_arena();
+    jittered_arena.clock.set_floor(Some(1_000));
+    let jittered = replay_on(
+        &mut jittered_arena,
+        &mut walls.into_iter(),
+        60_000,
+        &floor_script(),
+        &engaged,
+    );
+    assert_eq!(jittered_arena.now_ms, 60_000);
+    let off: Vec<i64> = jittered
+        .pulses_seen
+        .iter()
+        .map(|(started, ..)| *started)
+        .filter(|started| started % 250 != 0)
+        .collect();
+    assert!(off.is_empty(), "pulses started off the lattice: {off:?}");
+    assert!(
+        jittered
+            .pulses_seen
+            .iter()
+            .any(|(started, ..)| *started == 250),
+        "the extra wake did not move the arena one substep"
+    );
+    assert_eq!(jittered.count("\"lagged\""), 0);
+    assert_eq!(
+        jittered.events,
+        clean.events,
+        "the event list differs: {:?} against {:?}",
+        jittered.kinds(),
+        clean.kinds()
+    );
+    assert_eq!(
+        jittered.hashes,
+        clean.hashes,
+        "the per-substep hash sequence differs ({} against {})",
+        jittered.hashes.len(),
+        clean.hashes.len()
+    );
+    assert_eq!(jittered.finals, clean.finals);
+    assert_eq!(jittered.told, clean.told);
+    assert_eq!(jittered.pulses, clean.pulses + 1, "one extra wake");
+}
+
+/// **16b cut I.3: the task's own wakes under a floor** (16c N10). The task
+/// driver, with the `Quiet` period at 500 ms (a 2,000 ms clamp) and a 5,000 ms
+/// floor set before the opening pulse: `next_due_ms` answers a wall interval,
+/// so every wake is exactly 5,000 wall ms after the last, and every wake moves
+/// exactly 2,000 ms of arena time — slow motion at two fifths, on the lattice
+/// throughout, with no `lagged` line. And it is the same match the fixed-cadence
+/// driver played at a 5,000 ms floor: one event list bar the hash column (the
+/// hash folds the tempo byte, and this driver pins `Quiet` where that one pins
+/// `Engaged`) and one final state.
+#[test]
+fn i3_the_task_s_own_wakes_under_a_floor_are_the_floor_apart() {
+    let (run, woke_at, walls) = {
+        let mut arena = scripted_arena();
+        let answer =
+            replay_as_the_task_floored(&mut arena, 500, 60_000, &floor_script(), Some(5_000));
+        assert_eq!(arena.now_ms, 60_000);
+        answer
+    };
+    let gaps: Vec<i64> = walls.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    assert!(
+        !gaps.is_empty() && gaps.iter().all(|gap| *gap == 5_000),
+        "the wake gaps: {gaps:?}"
+    );
+    // `woke_at` is the arena time each wake after the opening pulse STARTED at
+    // (the first is 0, the opening pulse having integrated nothing); the last
+    // wake ended at 60,000.
+    let mut arena_steps: Vec<i64> = woke_at.clone();
+    arena_steps.push(60_000);
+    let moves: Vec<i64> = arena_steps
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .collect();
+    assert!(
+        moves.iter().all(|moved| *moved == 2_000),
+        "the arena moved {moves:?} a wake"
+    );
+    assert_eq!(run.count("\"lagged\""), 0);
+
+    let mut fixed_arena = scripted_arena();
+    fixed_arena.clock.set_floor(Some(5_000));
+    let engaged = |_: i64| Tempo::Engaged;
+    let fixed = replay(&mut fixed_arena, 5_000, 60_000, &floor_script(), &engaged);
+    let bare = |replay: &Replay| -> Vec<Bare> {
+        replay
+            .events
+            .iter()
+            .map(|(t_ms, kind, draws, _)| (*t_ms, kind.clone(), draws.clone()))
+            .collect()
+    };
+    assert_eq!(bare(&run), bare(&fixed));
+    assert_eq!(run.finals, fixed.finals);
 }
 
 // ---------------------------------------------------------------------------

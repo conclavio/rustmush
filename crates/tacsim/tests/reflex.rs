@@ -10081,3 +10081,109 @@ fn z2_a_support_whose_charge_leaves_ends_at_one_millisecond() {
         "a wreck the supporter does not know of ends nothing"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut I.3 — a placed machine re-plans (16c N10)
+// ---------------------------------------------------------------------------
+
+/// **16b cut I.3**: a machine under `Advance`, placed twenty cells aside by
+/// staff, searches again at its next tick — `path_queries` moves within one
+/// `decide_ms` of the place — and still reaches its goal from where it now
+/// stands. `Arena::resolve_place` clears the machine's goal, route and search
+/// stamp and keeps its order, so the next tick re-derives the goal from the
+/// order and plans from the new cell.
+///
+/// On a window of its own, 32 cells square, because the fixture window is
+/// sixteen and twenty cells aside does not fit in it.
+#[test]
+fn i3_a_placed_machine_re_plans() {
+    const WIDE: u16 = 32;
+    let definition = ArenaDefinition {
+        id: SmolStr::new("tacsim.arena.reflex.wide"),
+        terrain: ArenaTerrain::uniform(WIDE, WIDE, CELL_CM, ground()).expect("the wide window"),
+        entry_zones: vec![
+            EntryZone {
+                team: Team::Red,
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: WIDE - 1,
+            },
+            EntryZone {
+                team: Team::Blue,
+                x0: WIDE - 2,
+                y0: 0,
+                x1: WIDE - 1,
+                y1: WIDE - 1,
+            },
+        ],
+        key_spots: Vec::new(),
+        waypoints: graph(),
+    };
+    let mut arena = arena_on(
+        definition,
+        vec![tank(
+            RED,
+            Team::Red,
+            centre(2, 3),
+            Vec::new(),
+            Controller::Reflex,
+        )],
+        &arena_cfg(reflex_cfg()),
+        &[],
+    );
+    let goal = (28_u16, 3_u16);
+    e4_advance(&mut arena, RED, goal, 600_000);
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 8_000, &mut bytes);
+    let row = arena.reflex.unit(RED).expect("the machine");
+    assert_eq!(row.goal, Some(goal), "under way to the ordered cell");
+    assert!(!row.route.is_empty(), "with a route");
+    let (x, y) = arena.index.cell_of_unit(RED).expect("on the window");
+    assert!(x > 2, "it has moved off its start: {x}");
+    // Twenty cells aside, as the unit's own seat on `helm` would carry it.
+    let aside = (x, y + 20);
+    let epoch = arena.epochs.current(RED, Channel::Helm);
+    let out = arena.step(
+        arena.now_ms,
+        &[],
+        &[tacsim::arena::intents::Intent {
+            unit: RED,
+            channel: Channel::Helm,
+            epoch,
+            kind: tacsim::arena::intents::IntentKind::Place {
+                x: aside.0,
+                y: aside.1,
+            },
+            seq: 1,
+        }],
+    );
+    absorb(&out, &mut bytes);
+    assert_eq!(arena.index.cell_of_unit(RED), Some(aside), "placed");
+    let row = arena.reflex.unit(RED).expect("the machine");
+    assert!(row.goal.is_none() && row.route.is_empty() && row.searched_ms.is_none());
+    assert!(row.order.is_some(), "the order stands");
+    // Its next tick searches again.
+    let tick = arena.now_ms + 500;
+    let next = run(&mut arena, tick, &mut bytes);
+    assert!(
+        next.path_queries >= 1,
+        "no search within one decide tick of the place"
+    );
+    assert_eq!(
+        arena.reflex.unit(RED).and_then(|row| row.goal),
+        Some(goal),
+        "the goal is the order's again"
+    );
+    // And it gets there.
+    let until = arena.now_ms + 60_000;
+    run(&mut arena, until, &mut bytes);
+    let (x, y) = arena.index.cell_of_unit(RED).expect("on the window");
+    assert!(
+        x.abs_diff(goal.0).max(y.abs_diff(goal.1)) <= tacsim::arena::reflex::ARRIVE_CELLS,
+        "the placed machine never reached {goal:?}: it stands at ({x}, {y})"
+    );
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "placed"), 1);
+    assert_eq!(count(&log, "place_refused"), 0);
+}

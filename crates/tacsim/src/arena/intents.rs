@@ -37,8 +37,13 @@
 //!   and read by that machine's next tick, so an order changes *what the
 //!   controller decides* and never what the physics does.
 //!
+//! - **[`IntentKind::Place`]** (16b cut I.3) is a staff act that rides the same
+//!   path: discrete, resolved in phase 4, and exempt from the three gates that
+//!   exist for a pilot's orders (the wreck, `Linkdead` and the seat's rate).
+//!
 //! A refusal is always one of the named [`Refusal`] words, never a silent drop:
-//! cut K's cockpit turns each into a line a pilot can act on.
+//! cut K's cockpit turns each into a line a pilot can act on (a place's is a
+//! `place_refused` line on the tape instead, and is never said).
 
 use mush_core::ObjId;
 use smol_str::SmolStr;
@@ -156,6 +161,25 @@ pub enum IntentKind {
         /// gave.
         issuer: Option<ObjId>,
     },
+    /// **Put the unit on a cell, for staff** (16b cut I.3; 16c N10:
+    /// `@arena/place`). Discrete, [`Channel::Helm`], word `place`; stamped as
+    /// the unit's own seat exactly as `@arena/intent` is, and resolved in pulse
+    /// phase 4 by `Arena::resolve_place`, which re-runs the cell entry test,
+    /// refuses a unit with a round in flight to or from it, and journals every
+    /// outcome (`placed` or `place_refused`) while staging nothing.
+    ///
+    /// **It skips three gates a pilot's discrete order meets** in
+    /// [`apply_intent`] — the wreck, `Linkdead` and the seat's rate — and the
+    /// arena task's per-unit pre-pulse bound never refuses it: a wreck blocking
+    /// the ford and a linkdead pilot's wedged tank are the stuck units staff most
+    /// want to move, and a staff act must not spend one of the pilot's eight a
+    /// second, whose refused eighth would be a tell.
+    Place {
+        /// The column.
+        x: u16,
+        /// The row.
+        y: u16,
+    },
 }
 
 impl IntentKind {
@@ -179,11 +203,18 @@ impl IntentKind {
     /// per-seat rate in [`apply_intent`] counts and the arena task's pre-pulse
     /// buffer bounds per unit. Spelt out rather than derived as
     /// `!is_continuous()` so a new kind has to say which it is.
+    ///
+    /// **16b cut I.3**: a staff [`IntentKind::Place`] is discrete too — it
+    /// queues for phase 4 — but it is neither counted by the rate nor bounded
+    /// by the task's buffer (see the kind).
     #[must_use]
     pub const fn is_discrete(&self) -> bool {
         matches!(
             self,
-            IntentKind::Startup | IntentKind::Lock { .. } | IntentKind::Fire { .. }
+            IntentKind::Startup
+                | IntentKind::Lock { .. }
+                | IntentKind::Fire { .. }
+                | IntentKind::Place { .. }
         )
     }
 
@@ -197,7 +228,8 @@ impl IntentKind {
             | IntentKind::Speed { .. }
             | IntentKind::Startup
             | IntentKind::Order(_)
-            | IntentKind::ReleaseOrder { .. } => Channel::Helm,
+            | IntentKind::ReleaseOrder { .. }
+            | IntentKind::Place { .. } => Channel::Helm,
             IntentKind::Lock { .. } => Channel::Sensors,
             IntentKind::Fire { .. } => Channel::Fire,
         }
@@ -214,6 +246,7 @@ impl IntentKind {
             IntentKind::Fire { .. } => "fire",
             IntentKind::Order(_) => "order",
             IntentKind::ReleaseOrder { .. } => "release",
+            IntentKind::Place { .. } => "place",
         }
     }
 }
@@ -552,7 +585,10 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
     let Some(unit) = arena.unit_mut(i.unit) else {
         return IntentOutcome::Refused(Refusal::Unknown);
     };
-    if unit.limits.wreck {
+    // **16b cut I.3**: a staff place is the one order a wreck still takes — a
+    // wreck blocking the ford is exactly the stuck unit staff most want to move.
+    let place = matches!(i.kind, IntentKind::Place { .. });
+    if unit.limits.wreck && !place {
         return IntentOutcome::Refused(Refusal::Wreck);
     }
     // **16b cut N.2** — the squad's standing order (doc 16 §6 "Deliberation").
@@ -633,16 +669,24 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
             | IntentKind::Lock { .. }
             | IntentKind::Fire { .. }
             | IntentKind::Order(_)
-            | IntentKind::ReleaseOrder { .. } => {}
+            | IntentKind::ReleaseOrder { .. }
+            | IntentKind::Place { .. } => {}
         }
         return IntentOutcome::AppliedContinuous;
     }
-    if unit.linkdead {
+    // **16b cut I.3**: nor does a linkdead seat refuse a staff place — a
+    // linkdead pilot's wedged tank is the other stuck unit staff reach for, and
+    // nobody is at the seat to have given the order anyway.
+    if unit.linkdead && !place {
         return IntentOutcome::Refused(Refusal::Linkdead);
     }
     // **16b cut M.1** (`T-82`): the rate, in arena seconds, on a seat's orders
     // only — see this function's head for why the machine is not counted.
-    if source == IntentSource::Seat {
+    // **16b cut I.3**: and never on a staff place, which arrives stamped as the
+    // seat's own but is not the pilot's: it must not spend one of the pilot's
+    // `max_pending_per_unit` a second, whose refused next order would tell the
+    // pilot something happened.
+    if source == IntentSource::Seat && !place {
         let window = now_ms.div_euclid(1_000);
         if unit.orders_window_s != window {
             unit.orders_window_s = window;
@@ -875,6 +919,69 @@ mod tests {
             .channel_required(),
             Channel::Fire
         );
+        // 16b cut I.3: the staff place, the eighth kind — discrete, on helm.
+        let place = IntentKind::Place { x: 3, y: 4 };
+        assert!(place.is_discrete() && !place.is_continuous());
+        assert_eq!(place.channel_required(), Channel::Helm);
+        assert_eq!(place.as_str(), "place");
+    }
+
+    /// **16b cut I.3**: a place is queued for phase 4 past the three gates a
+    /// pilot's discrete order meets — a wreck, a linkdead seat, and the seat's
+    /// rate — and still meets the unit, epoch and channel gates.
+    #[test]
+    fn i3_a_place_is_queued_past_the_wreck_the_linkdead_and_the_rate() {
+        let place = |seq| intent(RED, 1, seq, IntentKind::Place { x: 2, y: 2 });
+        let mut arena = two_tanks(1);
+        if let Some(unit) = arena.unit_mut(RED) {
+            unit.limits.wreck = true;
+            unit.linkdead = true;
+            unit.orders_in_window = arena_cfg_bound();
+        }
+        assert_eq!(
+            apply_intent(&mut arena, &place(1), IntentSource::Seat),
+            IntentOutcome::Queued
+        );
+        assert_eq!(
+            arena.unit(RED).map(|unit| unit.orders_in_window),
+            Some(arena_cfg_bound()),
+            "the rate was not spent"
+        );
+        // The three gates it does meet.
+        assert_eq!(
+            apply_intent(
+                &mut arena,
+                &intent(ObjId(77), 1, 2, IntentKind::Place { x: 2, y: 2 }),
+                IntentSource::Seat
+            ),
+            IntentOutcome::Refused(Refusal::Unknown)
+        );
+        assert_eq!(
+            apply_intent(
+                &mut arena,
+                &intent(RED, 0, 3, IntentKind::Place { x: 2, y: 2 }),
+                IntentSource::Seat
+            ),
+            IntentOutcome::Refused(Refusal::Epoch)
+        );
+        assert_eq!(
+            apply_intent(
+                &mut arena,
+                &Intent {
+                    channel: Channel::Sensors,
+                    ..place(4)
+                },
+                IntentSource::Seat
+            ),
+            IntentOutcome::Refused(Refusal::Channel)
+        );
+    }
+
+    /// `intents.max_pending_per_unit` as the default configuration sets it.
+    fn arena_cfg_bound() -> u32 {
+        crate::config::ArenaConfig::default()
+            .intents
+            .max_pending_per_unit
     }
 
     #[test]

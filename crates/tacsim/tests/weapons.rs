@@ -24,7 +24,13 @@
 //!   fired plus rounds left equals the load;
 //! - **(j)** **a lock taken on a provisional number survives the rename** (16b cut
 //!   Q.6, the owner's ruling of 2026-09-20): `X1` becomes `BA` and the lock, the
-//!   contact id and the target are the same three things they were.
+//!   contact id and the target are the same three things they were;
+//! - **(k)** **16b cut I.3's two cross-tempo tests for the staff place**: a place
+//!   at a beat is one `placed` line and one pose at three cadences, and a place
+//!   with a round in flight to or from the unit is one `place_refused` line with
+//!   `in_flight` that moves nothing and leaves the round where it falls; and a
+//!   beam fired in a floored pulse of no time lands in that pulse, as it does
+//!   in one that ran a substep (the phase-4 drain under a staff floor).
 //!
 //! # Two places a test reaches into the arena's own state, and why
 //!
@@ -1433,6 +1439,335 @@ fn ammunition_is_conserved_across_a_scripted_run() {
     assert_eq!(
         cells.get(&SmolStr::new("cannon")).copied(),
         Some(load.saturating_sub(spent))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (k) The staff place at a beat (16b cut I.3; 16c N10)
+// ---------------------------------------------------------------------------
+
+/// A staff place of `unit` on `(x, y)`, stamped as the unit's own seat on
+/// `helm` at the seated epoch — what `@arena/place` sends.
+fn place(unit: ObjId, x: u16, y: u16, seq: u64) -> Intent {
+    intent(unit, IntentKind::Place { x, y }, seq)
+}
+
+/// Every `placed` and `place_refused` line of a replay, as `(t_ms, kind)`.
+fn place_lines(run: &Replay) -> Vec<(i64, String)> {
+    run.events
+        .iter()
+        .filter(|(_, kind, _, _)| {
+            kind.contains("\"kind\":\"placed\"") || kind.contains("\"kind\":\"place_refused\"")
+        })
+        .map(|(t_ms, kind, _, _)| (*t_ms, kind.clone()))
+        .collect()
+}
+
+/// **16b cut I.3's mandatory cross-tempo test, the place** (16b §11; D-16-2):
+/// a scripted `Place` of the target at a beat is one `placed` line at the
+/// beat's own millisecond and one pose — the cell's centre — at 5,000, 1,000
+/// and 500 ms, with one event list and one per-substep hash sequence. The red
+/// tank then locks and fires on the moved tank from its own sensor's next track
+/// of it, and that is the same at every cadence too: the place moved the unit,
+/// the next pass moved the track, and the contact kept its id.
+#[test]
+fn i3_a_place_at_a_beat_is_one_line_and_one_pose_at_three_cadences() {
+    let contact = contact_of(RED, BLUE);
+    let script = vec![
+        Beat {
+            t_ms: 0,
+            intents: vec![intent(RED, IntentKind::Startup, 1)],
+        },
+        Beat {
+            t_ms: 10_000,
+            intents: vec![place(BLUE, 8, 11, 2)],
+        },
+        Beat {
+            t_ms: 15_000,
+            intents: vec![
+                intent(RED, IntentKind::Lock { contact }, 3),
+                intent(
+                    RED,
+                    IntentKind::Fire {
+                        weapon: SmolStr::new("cannon"),
+                    },
+                    4,
+                ),
+            ],
+        },
+    ];
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = scripted_arena();
+        let run = replay(&mut arena, cadence, 25_000, &script);
+        assert_eq!(
+            arena
+                .unit(BLUE)
+                .map(|state| (state.pose.x_cm, state.pose.y_cm)),
+            Some((8_500, 11_500)),
+            "cadence {cadence}: the pose is the cell's centre"
+        );
+        assert_eq!(arena.index.occupant(8, 11), Some(BLUE));
+        assert!(
+            arena.contacts.get(RED, contact).is_some(),
+            "cadence {cadence}: the red tank still holds the blue one under its id"
+        );
+        runs.push((cadence, run));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+    assert_eq!(
+        place_lines(first),
+        vec![(
+            10_000,
+            "{\"kind\":\"placed\",\"unit\":9,\"x\":8,\"y\":11,\"from_x\":9,\"from_y\":8}"
+                .to_owned()
+        )]
+    );
+    assert_eq!(first.shots, 1, "the moved tank was shot at");
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "the event list differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes,
+            first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms ({} against {})",
+            run.hashes.len(),
+            first.hashes.len()
+        );
+        assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
+}
+
+/// **16b cut I.3's second cross-tempo test: a round in flight refuses a place
+/// at either end of it** (16c N10; the plan's review A-R3), at 5,000, 1,000 and
+/// 500 ms, in two cases — the TARGET placed, and the SHOOTER placed, whose pose
+/// the impact traces its line from.
+///
+/// `FIRE` and the place share ONE beat on purpose. A beat is delivered in the
+/// first pulse at or after its `t_ms`, and the cannon's round is in the air for
+/// under thirty milliseconds at four cells, so a place scripted even a hundred
+/// milliseconds after the shot reaches the arena at the next pulse — 15,000 at a
+/// 5,000 ms cadence, 10,500 at 500 — after the impact at every cadence, and
+/// there is nothing in flight to refuse it. In one beat, phase 4 drains the
+/// shooter's `LOCK` and `FIRE` first (the shooter's id is below the target's,
+/// and a unit's own queue is in the order it was given), so the round is in
+/// `shots` when the place resolves.
+///
+/// Each case: one `place_refused` line with `in_flight` at the beat's
+/// millisecond, the placed unit's pose untouched, the shot's `fired`, `impact`
+/// and `miss` exactly where they fall with no place at all, and one event list
+/// and one hash sequence across the three cadences.
+#[test]
+fn i3_a_place_under_a_round_in_flight_is_refused_at_three_cadences() {
+    let contact = contact_of(RED, BLUE);
+    let shot = |extra: Option<Intent>| -> Vec<Beat> {
+        let mut intents = vec![
+            intent(RED, IntentKind::Lock { contact }, 2),
+            intent(
+                RED,
+                IntentKind::Fire {
+                    weapon: SmolStr::new("cannon"),
+                },
+                3,
+            ),
+        ];
+        intents.extend(extra);
+        vec![
+            Beat {
+                t_ms: 0,
+                intents: vec![intent(RED, IntentKind::Startup, 1)],
+            },
+            Beat {
+                t_ms: 10_000,
+                intents,
+            },
+        ]
+    };
+    // What the shot does with no place at all: its lines, without their hash
+    // (a `place_refused` line moves the ledger's sequence, which every later
+    // hash folds).
+    let shot_lines = |run: &Replay| -> Vec<(i64, String)> {
+        run.events
+            .iter()
+            .filter(|(_, kind, _, _)| {
+                ["fired", "impact", "miss", "hit"]
+                    .iter()
+                    .any(|word| kind.contains(&format!("\"kind\":\"{word}\"")))
+            })
+            .map(|(t_ms, kind, _, _)| (*t_ms, kind.clone()))
+            .collect()
+    };
+    let baseline = {
+        let mut arena = scripted_arena();
+        replay(&mut arena, 1_000, 20_000, &shot(None))
+    };
+    assert_eq!(baseline.shots, 1);
+    let unplaced = shot_lines(&baseline);
+    assert!(
+        unplaced
+            .iter()
+            .any(|(_, kind)| kind.contains("\"kind\":\"impact\"")),
+        "the round arrived: {unplaced:?}"
+    );
+    for (who, cell, home) in [
+        (BLUE, (9_u16, 12_u16), (9_500_i64, 8_500_i64)),
+        (RED, (5, 12), (5_500, 8_500)),
+    ] {
+        let script = shot(Some(place(who, cell.0, cell.1, 4)));
+        let mut runs: Vec<(i64, Replay)> = Vec::new();
+        for cadence in [5_000_i64, 1_000, 500] {
+            let mut arena = scripted_arena();
+            let run = replay(&mut arena, cadence, 20_000, &script);
+            assert_eq!(
+                arena
+                    .unit(who)
+                    .map(|state| (state.pose.x_cm, state.pose.y_cm)),
+                Some(home),
+                "#{} moved at {cadence} ms",
+                who.0
+            );
+            assert!(
+                run.refusals.is_empty(),
+                "a place is never said: {:?}",
+                run.refusals
+            );
+            runs.push((cadence, run));
+        }
+        let Some((_, first)) = runs.first() else {
+            panic!("three replays");
+        };
+        assert_eq!(
+            place_lines(first),
+            vec![(
+                10_000,
+                format!(
+                    "{{\"kind\":\"place_refused\",\"unit\":{},\"x\":{},\"y\":{},\"reason\":\"in_flight\"}}",
+                    who.0, cell.0, cell.1
+                )
+            )],
+            "#{}",
+            who.0
+        );
+        assert_eq!(
+            shot_lines(first),
+            unplaced,
+            "#{}: the round fell where it falls with no place",
+            who.0
+        );
+        for (cadence, run) in runs.iter().skip(1) {
+            assert_eq!(
+                run.events, first.events,
+                "#{}: the event list differs at {cadence} ms",
+                who.0
+            );
+            assert_eq!(
+                run.hashes, first.hashes,
+                "#{}: the per-substep hash sequence differs at {cadence} ms",
+                who.0
+            );
+        }
+    }
+}
+
+/// **16b cut I.3: a beam fired in a floored pulse of no time lands in it**, as
+/// the same `FIRE` at the same arena millisecond does in a pulse that ran a
+/// substep.
+///
+/// Under a staff floor a production pulse can run no substep at all — the
+/// deadline pulled in on a set, a lift or an abort, or any wake inside a
+/// substep, cut back to the lattice point it began on — and the phase-4 drain
+/// used to run only on a pulse that ran one. A beam `FIRE` resolved in such a
+/// pulse then waited out the floor and landed in the next wake's first substep,
+/// against positions a substep later: the outcome turned on the wall moment
+/// staff typed the verb. Two runs under one 1,000 ms floor, the red tank firing
+/// its laser at arena 1,500 both times: once in the pulse that reaches 1,500,
+/// once in a pulse of no time a hundred wall milliseconds after it. The round
+/// is resolved before the pulse returns in both, its `impact` at the `fired`
+/// millisecond, and every line of the two tapes but the tempo's own is the same.
+#[test]
+fn i3_a_beam_fired_in_a_floored_pulse_of_no_time_lands_in_it() {
+    let beam = WeaponSummary {
+        id: SmolStr::new("laser"),
+        muzzle_speed_cms: 0,
+        ..cannon()
+    };
+    let contact = contact_of(RED, BLUE);
+    let fire = [
+        intent(RED, IntentKind::Lock { contact }, 3),
+        intent(
+            RED,
+            IntentKind::Fire {
+                weapon: SmolStr::new("laser"),
+            },
+            4,
+        ),
+    ];
+    let mut tapes = Vec::new();
+    for no_time in [false, true] {
+        let mut arena = arena_of(
+            vec![
+                scout(RED, Team::Red, centre(5, 8), vec![beam.clone()]),
+                scout(BLUE, Team::Blue, centre(9, 8), Vec::new()),
+            ],
+            &[],
+            &match_cfg(),
+        );
+        let mut bytes: Vec<u8> = Vec::new();
+        let wall = warm(&mut arena, &mut bytes);
+        assert_eq!(arena.now_ms, 1_000);
+        arena.clock.set_floor(Some(1_000));
+        if no_time {
+            pulse(&mut arena, wall + 500, &[], &mut bytes);
+            assert_eq!(arena.now_ms, 1_500, "the floored wake ends on the lattice");
+            let out = pulse(&mut arena, wall + 600, &fire, &mut bytes);
+            assert_eq!(arena.now_ms, 1_500, "a wake inside a substep moves no time");
+            assert_eq!(out.substeps, 1, "the phase-4 drain, and nothing else");
+        } else {
+            let out = pulse(&mut arena, wall + 500, &fire, &mut bytes);
+            assert_eq!(arena.now_ms, 1_500);
+            assert_eq!(out.substeps, 3, "two substeps and the phase-4 drain");
+        }
+        assert!(
+            arena.shot(1).is_none(),
+            "no_time {no_time}: the beam was left in flight past its pulse"
+        );
+        let log = events(&mut arena, &mut bytes);
+        let fired = log
+            .iter()
+            .find(|event| matches!(event.kind, EventKind::Fired { shot_seq: 1, .. }))
+            .map(|event| event.t_ms);
+        let impact = log
+            .iter()
+            .find(|event| matches!(event.kind, EventKind::Impact { shot_seq: 1, .. }))
+            .map(|event| event.t_ms);
+        assert_eq!(fired, Some(1_500), "no_time {no_time}");
+        assert_eq!(
+            impact, fired,
+            "no_time {no_time}: a beam has no flight time"
+        );
+        assert_eq!(count(&log, "lagged"), 0, "no_time {no_time}");
+        // Each line as it reads, less its place in the ledger and the hash
+        // that place moves (`hash.rs` item 11): the tempo lines fall in a
+        // different order in the two runs.
+        let tape: Vec<LedgerEvent> = log
+            .into_iter()
+            .filter(|event| !matches!(event.kind.as_str(), "tempo" | "tempo_floor"))
+            .map(|event| LedgerEvent {
+                seq: 0,
+                hash: 0,
+                ..event
+            })
+            .collect();
+        tapes.push(tape);
+    }
+    assert_eq!(
+        tapes.first(),
+        tapes.get(1),
+        "the pulse the beam was fired in decided its outcome"
     );
 }
 

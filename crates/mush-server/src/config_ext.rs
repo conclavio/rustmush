@@ -1197,6 +1197,14 @@ mod tests {
                 "[tacsim.arena.tempo].substep_max_ms",
                 "10",
             ),
+            // 16b cut I.3: a substep longer than the engaged period, under
+            // which a staff tempo floor could stop arena time.
+            (
+                "[tacsim.arena.tempo]",
+                "substep_max_ms = 600\n",
+                "[tacsim.arena.tempo]",
+                "600",
+            ),
             (
                 "[tacsim.arena.tempo]",
                 "alert_hold_ms = 0\n",

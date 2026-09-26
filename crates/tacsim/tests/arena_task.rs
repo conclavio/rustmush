@@ -1889,6 +1889,16 @@ async fn m1_an_inbox_full_of_orders_still_takes_a_control_a_stop_and_an_ack() {
     }
     // `max_pending_per_unit × units`: the reserve is not an intent's.
     assert_eq!(taken, 16);
+    // 16b cut I.3: nor a staff tempo floor's — a repeated `@arena/tempo` must
+    // not take the slot an `EXIT` needs.
+    assert!(
+        handle
+            .offer(ArenaMsg::TempoFloor {
+                period_ms: Some(5_000)
+            })
+            .is_err(),
+        "a tempo floor took the reserve"
+    );
     assert!(
         handle
             .offer(ArenaMsg::Control(Control {
