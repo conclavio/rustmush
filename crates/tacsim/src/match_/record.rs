@@ -339,6 +339,14 @@ pub struct MatchRecord {
     /// **Tape lines the world could not parse** (16b cut V.3), counted by
     /// `on_chunk` as it hands each chunk's events to the folds.
     pub unparsed: u32,
+    /// **The replay fold** (16b cut I.1; 16c N9, Q37): one per match, both
+    /// sides, built by [`crate::match_::start`] beside [`MatchRecord::folds`]
+    /// from the check-out poses and the arena's callsigns; fed every event of
+    /// every chunk by `crate::arena_bridge`'s `on_chunk`; taken off the record
+    /// and finished exactly once by [`crate::match_::finish`], which writes one
+    /// `tacsim:replay:<match>` document ([`write_replay`]). `None` before
+    /// `Running`.
+    pub replay: Option<crate::match_::replay::ReplayFold>,
 }
 
 /// The four integers of a pose (doc 16 §3.2), without the opaque posture.
@@ -464,6 +472,11 @@ pub fn result_key(match_id: MatchId) -> SmolStr {
 /// this same action ([`write_report`], called first by
 /// [`crate::match_::finish`]), in id order — what [`HistoryRow::reports`] reads
 /// and what the ring's eviction deletes.
+///
+/// **16b cut I.1: `"replay"`.** Whether a `tacsim:replay:<match>` document
+/// rode this same batch ([`write_replay`], called by [`crate::match_::finish`]
+/// before this) — what [`HistoryRow::replay`] reads, what `SIM REPLAY` asks
+/// before it looks for one, and what the ring's eviction deletes.
 #[allow(clippy::too_many_arguments)]
 pub fn write_result(
     ctx: &mut Ctx<'_>,
@@ -474,6 +487,7 @@ pub fn write_result(
     units: &[UnitResult],
     chunks: u64,
     reports: &[ObjId],
+    replay: bool,
 ) {
     let record = ctx
         .w
@@ -491,6 +505,7 @@ pub fn write_result(
         ended_ms,
         chunks,
         reports,
+        replay,
     );
     remember_and_push(ctx, match_id, value);
 }
@@ -522,6 +537,25 @@ pub fn write_report(
     );
 }
 
+/// **Write one match's replay document** (16b cut I.1; 16c N9, Q37) at
+/// [`crate::match_::replay::replay_key`], through the module's own namespace on
+/// the ordinary module-op lane, exactly as [`write_report`] writes —
+/// [`crate::match_::finish`] calls it once, before `record::write_result`, so
+/// the result can say it exists and both ride one batch.
+///
+/// The shape is [`crate::match_::replay::Replay::to_document`]'s: both sides as
+/// the arena recorded them, by callsign — never an object number, a pilot, a
+/// contact id, a draw, a seed or a `z`.
+pub fn write_replay(ctx: &mut Ctx<'_>, match_id: MatchId, replay: &crate::match_::replay::Replay) {
+    crate::store::push_op(
+        ctx.out,
+        mush_core::ModuleWrite::JsonSet {
+            key: crate::match_::replay::replay_key(match_id),
+            value: replay.to_document(),
+        },
+    );
+}
+
 /// **The one tail both result writers share** (16b cut V.2): remember the
 /// document on the ring, push it, and delete the report documents of the row the
 /// ring let go.
@@ -529,6 +563,11 @@ pub fn write_report(
 /// The deletes ride the same outbox as the result, so the report documents are
 /// bounded by the ring whichever writer evicted the row: a restart abort that
 /// pushes the twenty-first row out is an eviction too.
+///
+/// **16b cut I.1**: and its replay document, when its row says one was written
+/// ([`HistoryRow::replay`]), deleted in the same write beside the reports — and
+/// the book's RAM copy, every cursor on it and any ground no remembered replay
+/// names any more ([`crate::match_::MatchBook::forget_replay`]).
 fn remember_and_push(ctx: &mut Ctx<'_>, match_id: MatchId, value: serde_json::Value) {
     let evicted = HistoryRow::from_document(&value).and_then(|row| {
         ctx.w
@@ -551,6 +590,17 @@ fn remember_and_push(ctx: &mut Ctx<'_>, match_id: MatchId, value: serde_json::Va
                 },
             );
         }
+        if evicted.replay {
+            crate::store::push_op(
+                ctx.out,
+                mush_core::ModuleWrite::Del {
+                    key: crate::match_::replay::replay_key(evicted.id),
+                },
+            );
+        }
+        if let Some(book) = ctx.w.module_state_mut::<super::MatchBook>() {
+            book.forget_replay(evicted.id);
+        }
     }
 }
 
@@ -559,7 +609,8 @@ fn remember_and_push(ctx: &mut Ctx<'_>, match_id: MatchId, value: serde_json::Va
 /// without a world). `record` is the match's own record when the book still
 /// holds it; `ended_ms` is the world's clock in milliseconds; `chunks` is the
 /// tape's chunk count (16b cut V.2); `reports` the units a report document was
-/// written for (16b cut V.3).
+/// written for (16b cut V.3); `replay` whether a replay document was (16b cut
+/// I.1).
 #[allow(clippy::too_many_arguments)]
 fn result_document(
     record: Option<&MatchRecord>,
@@ -571,6 +622,7 @@ fn result_document(
     ended_ms: i64,
     chunks: u64,
     reports: &[ObjId],
+    replay: bool,
 ) -> serde_json::Value {
     let (teams, arena, arena_digest, started_ms, log_id, seed) = match record {
         Some(record) => (
@@ -634,6 +686,8 @@ fn result_document(
         "arena_ms": end.t_ms,
         // 16b cut V.3: the units whose report documents rode this same batch.
         "reports": reports.iter().map(|unit| unit.0).collect::<Vec<u32>>(),
+        // 16b cut I.1: whether this match's replay document rode it too.
+        "replay": replay,
     })
 }
 
@@ -690,6 +744,9 @@ fn restart_abort_document(match_id: MatchId, units: &[ObjId], ended_ms: i64) -> 
         "arena_ms": 0,
         // 16b cut V.3: there was no fold to finish, so no report was written.
         "reports": [],
+        // 16b cut I.1: and no replay either — the process that folded one is
+        // gone, and a restart has nothing to watch.
+        "replay": false,
     })
 }
 
@@ -810,6 +867,10 @@ pub struct HistoryRow {
     /// The units a report document was written for (16b cut V.3 writes the key;
     /// absent reads empty).
     pub reports: Vec<ObjId>,
+    /// **Whether a replay document was written with it** (16b cut I.1; absent
+    /// reads `false`, which is every result written before the cut — and what
+    /// `SIM REPLAY` answers `recorded before replays existed` for).
+    pub replay: bool,
 }
 
 impl HistoryRow {
@@ -826,8 +887,9 @@ impl HistoryRow {
     ///   when none does (a restart abort's `"teams": []`); its pilot is the first
     ///   `teams[].pilots[]` row whose `unit` is it;
     /// - `named` is true when every unit row carried a non-empty `callsign`;
-    /// - `ledger.chunks` absent reads `0`, `reports` absent reads empty, and every
-    ///   other absent word or number reads empty or `0`.
+    /// - `ledger.chunks` absent reads `0`, `reports` absent reads empty,
+    ///   `replay` absent reads `false` (16b cut I.1), and every other absent
+    ///   word or number reads empty or `0`.
     #[must_use]
     pub fn from_document(value: &serde_json::Value) -> Option<HistoryRow> {
         use serde_json::Value;
@@ -937,6 +999,10 @@ impl HistoryRow {
                 .and_then(Value::as_array)
                 .map(|reports| reports.iter().filter_map(object).collect())
                 .unwrap_or_default(),
+            replay: value
+                .get("replay")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         })
     }
 
@@ -1161,6 +1227,7 @@ mod tests {
             callsigns: BTreeMap::new(),
             folds: BTreeMap::new(),
             unparsed: 0,
+            replay: None,
         };
         let end = MatchEnd {
             reason: EndReason::Timeout,
@@ -1176,6 +1243,7 @@ mod tests {
             5_000,
             0,
             &[],
+            false,
         );
         assert_eq!(
             written["seed"],
@@ -1196,6 +1264,7 @@ mod tests {
             5_000,
             0,
             &[],
+            false,
         );
         assert_eq!(orphan["seed"], serde_json::json!(0));
         // The restart result: no arena drew anything.
@@ -1298,6 +1367,7 @@ mod tests {
             ]),
             folds: BTreeMap::new(),
             unparsed: 0,
+            replay: None,
         }
     }
 
@@ -1346,6 +1416,7 @@ mod tests {
             1_790_258_520_000,
             42,
             &[],
+            false,
         )
     }
 
@@ -1529,6 +1600,7 @@ mod tests {
             units: Vec::new(),
             named: true,
             reports: Vec::new(),
+            replay: false,
         }
     }
 
@@ -1830,14 +1902,26 @@ mod tests {
             1_790_258_520_000,
             42,
             &[ObjId(101), ObjId(201)],
+            true,
         );
         assert_eq!(written["reports"], serde_json::json!([101, 201]));
+        // 16b cut I.1: and the replay flag, read back; a restart writes none.
+        assert_eq!(written["replay"], serde_json::json!(true));
+        assert_eq!(
+            HistoryRow::from_document(&written).map(|row| row.replay),
+            Some(true)
+        );
         assert_eq!(
             HistoryRow::from_document(&written).map(|row| row.reports),
             Some(vec![ObjId(101), ObjId(201)])
         );
         let restart = restart_abort_document(MatchId(13), &[ObjId(101)], 5_000);
         assert_eq!(restart["reports"], serde_json::json!([]));
+        assert_eq!(restart["replay"], serde_json::json!(false));
+        assert_eq!(
+            HistoryRow::from_document(&restart).map(|row| row.replay),
+            Some(false)
+        );
         assert_eq!(
             HistoryRow::from_document(&restart).map(|row| row.reports),
             Some(Vec::new())

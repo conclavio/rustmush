@@ -19,6 +19,8 @@
 //!    the team room — and during `Boarding` it un-seats the slot;
 //! 7. the kernel's new linkdead hook reaches the arena as a raised epoch.
 
+mod support;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -2411,16 +2413,13 @@ async fn view_follows_its_panel_with_the_line_about_what_the_window_could_not_fi
 mod fixture {
     use std::path::PathBuf;
 
-    use mush_atlas::TerrainClass;
     use mush_core::ObjId;
     use mush_sim::data::Pose;
     use smol_str::SmolStr;
     use tacsim::arena::clock::Tempo;
     use tacsim::arena::condition::{Condition, ConditionBand};
     use tacsim::arena::perception::{FrameCondition, FrameContact, FrameNotice, Named, NoticeKind};
-    use tacsim::arena::state::{
-        ArenaTerrain, Classification, ContactId, Designator, KeySpot, Power, Team, TerrainCell,
-    };
+    use tacsim::arena::state::{Classification, ContactId, Designator, Power, Team};
     use tacsim::arena::step::{Frame, FrameFacet, FrameHeat, FrameSection};
     use tacsim::arena::weapons::{FrameBand, FrameWeapon};
     use tacsim::arena_task::MatchId;
@@ -2432,13 +2431,11 @@ mod fixture {
     /// The one match id the fixtures are stamped with.
     pub const MATCH: MatchId = MatchId(7);
 
-    /// The synthetic ground's id, as the payloads' `surface` carries it.
-    pub const SURFACE: &str = "fixture_yard";
-
-    /// The ground is 96 by 64 cells of ten metres.
-    pub const WIDTH: u16 = 96;
-    /// As [`WIDTH`], up the ground.
-    pub const HEIGHT: u16 = 64;
+    /// **16b cut I.1** moved the yard — its id, its size, its terrain and its
+    /// three spots — into `support::yard`, because `tests/replay.rs` blesses the
+    /// replay fixture set over the same ground. Re-exported here so every
+    /// `fixture::terrain()` below reads as it did.
+    pub use crate::support::yard::{HEIGHT, SURFACE, WIDTH, spots, terrain};
 
     /// The pilot's own unit.
     const UNIT: ObjId = ObjId(101);
@@ -2453,52 +2450,6 @@ mod fixture {
     const FRIEND: ContactId = ContactId(0x2222_2222_2222_2222);
     const ON_A_ROOF: ContactId = ContactId(0x3333_3333_3333_3333);
     const OFF_WINDOW: ContactId = ContactId(0x4444_4444_4444_4444);
-
-    /// The fixture ground: five terrain classes, a building block and a pond.
-    ///
-    /// NOT the shipped proving ground. A fixture built on shipped content would
-    /// move whenever the content did, and what these files pin is the *shape* of
-    /// a payload, not the ground the game happens to ship.
-    #[must_use]
-    pub fn terrain() -> ArenaTerrain {
-        let cell = |class: TerrainClass, move_cost: u16| TerrainCell {
-            class,
-            elev_cm: 0,
-            move_cost,
-        };
-        let mut cells =
-            vec![cell(TerrainClass::Grass, 120); usize::from(WIDTH) * usize::from(HEIGHT)];
-        let mut put = |x: u16, y: u16, what: TerrainCell| {
-            let index = usize::from(y) * usize::from(WIDTH) + usize::from(x);
-            if let Some(slot) = cells.get_mut(index) {
-                *slot = what;
-            }
-        };
-        // An east-west road across the whole ground, ten cells up.
-        for x in 0..WIDTH {
-            put(x, 10, cell(TerrainClass::Road, 60));
-        }
-        // A pond north-east of the muster corner, inside the window.
-        for y in 2..6 {
-            for x in 20..30 {
-                put(x, y, cell(TerrainClass::Water, 0));
-            }
-        }
-        // A building, inside the window, with a contact standing on it.
-        for y in 6..9 {
-            for x in 12..16 {
-                put(x, y, cell(TerrainClass::Wall, 0));
-            }
-        }
-        // Woods well north of the window: on the map, off the view — which is
-        // what makes the two legends differ.
-        for y in 20..30 {
-            for x in 40..60 {
-                put(x, y, cell(TerrainClass::WoodsLight, 200));
-            }
-        }
-        ArenaTerrain::new(WIDTH, HEIGHT, 1_000, cells).expect("the fixture grid is 96 by 64")
-    }
 
     /// The opaque posture blob every `Pose` carries, empty.
     fn posture() -> mush_sim::RulesValue {
@@ -2755,32 +2706,6 @@ mod fixture {
             // `catchup_lines.json` carries the report's own shapes.
             catchup: None,
         }
-    }
-
-    /// **The scene's three named spots** (16b cut V.1), each exercising one
-    /// rule of the window:
-    ///
-    /// * `A` The Ford at (25, 3) — inside the window, on the pond: a letter drawn
-    ///   over water, named in every legend;
-    /// * `B` The Roof at (14, 7) — inside the window and under contact `X3`: the
-    ///   spot goes down first and `X3`'s `?` overwrites it, so `B` is in the
-    ///   window's `units` (placed, then covered) and named in no legend, because
-    ///   the contact owns the cell;
-    /// * `C` The Woods at (50, 25) — off the 39 by 20 window and inside the woods,
-    ///   so `VIEW`'s off-window line names it, and it is on the map (and on the
-    ///   web's default whole-arena view) but not in the window.
-    #[must_use]
-    pub fn spots() -> Vec<KeySpot> {
-        let spot = |name: &str, x: u16, y: u16| KeySpot {
-            name: SmolStr::new(name),
-            x,
-            y,
-        };
-        vec![
-            spot("The Ford", 25, 3),
-            spot("The Roof", 14, 7),
-            spot("The Woods", 50, 25),
-        ]
     }
 
     /// The three payloads of the one scene, through the three pure builders.
@@ -8265,4 +8190,643 @@ async fn z4_a_pilot_who_dropped_and_never_reclaimed_is_taken_off_at_the_check_in
     assert!(z4_members(&rig, Team::Blue).is_empty());
     assert_eq!(z4_count(&rig, pilot, RED_REMOVED), 1);
     assert_eq!(z4_count(&rig, rig.pilot(1), BLUE_REMOVED), 1);
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut I.1 — the replay fold and `SIM REPLAY` in line mode (16c N9, Q37)
+// ---------------------------------------------------------------------------
+
+/// The pilot index [`i1_finished`] boots as the bystander: in the lobby, no slot.
+const I1_BYSTANDER: usize = 2;
+
+/// **A finished match** (16b cut I.1): pilots 0 and 1 fly, the arena runs long
+/// enough for several keyframes at the rig's 100 ms summaries, and a real `SIM
+/// ABORT` ends it through the arena's own `Ended`. Answers the match id.
+async fn i1_finished(rig: &mut Rig) -> tacsim::arena_task::MatchId {
+    rig.fly().await;
+    let match_id = rig.centre().match_id.expect("a running match");
+    // Several summaries' worth of arena time. The tape reaches the world a
+    // closed chunk at a time (16 KiB), and the task sends every chunk it still
+    // holds before its `Ended`, so the clock is what is waited on here.
+    let start_ms = rig.staged_now_ms;
+    for _ in 0..600 {
+        rig.pump();
+        if rig.staged_now_ms >= start_ms + 700 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        rig.staged_now_ms >= start_ms + 700,
+        "the arena clock reached only {} ms",
+        rig.staged_now_ms
+    );
+    rig.say(0, "sim abort");
+    for _ in 0..400 {
+        if rig.state() == MatchState::Aborted {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+    }
+    assert_eq!(rig.state(), MatchState::Aborted, "the check-in lands");
+    match_id
+}
+
+/// A read of the match book.
+fn i1_book<T>(rig: &Rig, read: impl FnOnce(&match_::MatchBook) -> T) -> T {
+    read(
+        rig.tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .expect("the match book"),
+    )
+}
+
+/// A match's record, as the book still holds it after its check-in.
+fn i1_record(rig: &Rig, match_id: tacsim::arena_task::MatchId) -> match_::MatchRecord {
+    i1_book(rig, |book| book.get(match_id).cloned()).expect("the book holds the record")
+}
+
+/// The replay the ring holds for `match_id`.
+fn i1_replay(rig: &Rig, match_id: tacsim::arena_task::MatchId) -> Arc<match_::replay::Replay> {
+    i1_book(rig, |book| book.replay(match_id)).expect("the ring holds the replay")
+}
+
+/// Every `arena.replay` panel in `events`.
+fn i1_windows(events: &[(Audience, OutputEvent)]) -> Vec<serde_json::Value> {
+    events
+        .iter()
+        .filter_map(|(_, event)| match event {
+            OutputEvent::Panel { feed, data, .. } if feed.as_str() == "arena.replay" => {
+                Some(data.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// `SIM REPLAY <rest>` as pilot `n`: `(the lines they read, the windows pushed)`.
+fn i1_replay_as(rig: &mut Rig, n: usize, rest: &str) -> (String, Vec<serde_json::Value>) {
+    let actor = rig.pilot(n);
+    let events = rig.events_of(actor, &format!("sim replay {rest}"));
+    (
+        rig.tw.seen_by(&events, actor).join("\n"),
+        i1_windows(&events),
+    )
+}
+
+/// The window corner `replay_window` clamps to around a cell (39 by 20 on the
+/// shipped 256 by 256 ground).
+fn i1_corner(cell: (u16, u16)) -> serde_json::Value {
+    let x0 = cell.0.saturating_sub(19).min(256 - 39);
+    let y0 = cell.1.saturating_sub(10).min(256 - 20);
+    serde_json::json!([x0, y0])
+}
+
+/// A roster entry's cell at one keyframe.
+fn i1_cell_at(replay: &match_::replay::Replay, index: usize, at: u16) -> (u16, u16) {
+    replay
+        .keyframes
+        .get(index)
+        .and_then(|keyframe| keyframe.units.get(usize::from(at)))
+        .copied()
+        .flatten()
+        .map(|unit| (unit.x, unit.y))
+        .expect("the unit is in the keyframe")
+}
+
+/// **`SIM REPLAY` in line mode** (16b cut I.1; 16c N9, Q37): the check-in
+/// writes the document and holds it on the ring with its ground; a bystander
+/// with no slot is shown the header, ONE `grid` panel on `arena.replay` that
+/// carries `retain: latest` and `you: null`, and `Next:`; `next`, `prev`,
+/// `last`, a time and a callsign step and centre it; a pilot who flew is centred
+/// on their own tank; the two queries answer by the actor's cursor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn i1_sim_replay_prints_steps_centres_and_the_queries_read_the_cursor() {
+    let mut rig = Rig::boot(3);
+    let match_id = i1_finished(&mut rig).await;
+    let id = match_id.0;
+
+    // The check-in's writes: the replay document, then the result that says so.
+    let writes: Vec<(String, serde_json::Value)> = rig
+        .tw
+        .take_module_ops()
+        .into_iter()
+        .filter(|op| op.ns == tacsim::NS)
+        .filter_map(|op| match op.op {
+            mush_core::ModuleWrite::JsonSet { key, value } => Some((key.to_string(), value)),
+            _ => None,
+        })
+        .collect();
+    let at = |key: &str| writes.iter().position(|(held, _)| held == key);
+    let replay_at = at(&format!("tacsim:replay:{id}")).expect("the check-in wrote the replay");
+    let result_at = at(&format!("tacsim:match:{id}")).expect("the check-in wrote the result");
+    assert!(
+        replay_at < result_at,
+        "the replay rides the result's batch, first"
+    );
+    let (_, result) = writes.get(result_at).expect("the result");
+    assert_eq!(result["replay"], serde_json::json!(true));
+    let replay = i1_replay(&rig, match_id);
+    let (_, document) = writes.get(replay_at).expect("the replay");
+    println!("i1 replay document: {document}");
+    assert_eq!(
+        document,
+        &replay.to_document(),
+        "the ring holds what was written"
+    );
+    assert!(
+        replay.keyframes.len() >= 5,
+        "{} keyframes",
+        replay.keyframes.len()
+    );
+    assert_eq!(
+        replay.keyframes.first().map(|keyframe| keyframe.t_ms),
+        Some(0)
+    );
+    // **`start`'s seeding, against the arena's own record** (the fixer's T5):
+    // the rig's tanks stand idle, so keyframe 0 — the check-out poses `start`
+    // captured before the custody crossed the seam — is exactly where the
+    // arena's first position summary (keyframe 1) finds them.
+    assert_eq!(
+        replay
+            .keyframes
+            .first()
+            .map(|keyframe| keyframe.units.clone()),
+        replay
+            .keyframes
+            .get(1)
+            .map(|keyframe| keyframe.units.clone()),
+        "keyframe 0 is the opening the arena's own first summary confirms"
+    );
+    assert!(
+        replay
+            .keyframes
+            .first()
+            .is_some_and(|keyframe| keyframe.units.iter().all(Option::is_some)),
+        "every unit is in keyframe 0"
+    );
+    // And the roster: every unit the record names, once, each on the side its
+    // slot callsign says (`RA` red, `BA` blue) — not the side `start` read.
+    let callsigns: Vec<(String, &str)> = replay
+        .roster
+        .iter()
+        .map(|unit| (unit.callsign.to_string(), unit.team.as_str()))
+        .collect();
+    assert_eq!(
+        callsigns,
+        vec![("RA".to_owned(), "red"), ("BA".to_owned(), "blue")],
+        "the roster in unit-id order, each on its own side"
+    );
+    assert_eq!(
+        replay.roster.len(),
+        i1_record(&rig, match_id).callsigns.len()
+    );
+    assert_eq!(replay.reason.as_str(), "abort");
+    // The ground, held under the digest, before `untrack` dropped it.
+    let digest = i1_record(&rig, match_id).arena_definition_digest;
+    assert_eq!(replay.arena_digest, digest);
+    assert!(i1_book(&rig, |book| book.ground(&digest).is_some()));
+    assert_eq!(i1_book(&rig, match_::MatchBook::ground_count), 1);
+
+    // Before anybody types it: no replay open.
+    let bystander = rig.pilot(I1_BYSTANDER);
+    let asked = rig.query(bystander, "arena.replay");
+    assert_eq!(asked["available"], serde_json::json!(false));
+    assert_eq!(
+        asked["reason"],
+        serde_json::json!("You have no replay open; type SIM REPLAY <match>.")
+    );
+    assert_eq!(
+        rig.query(bystander, "arena.map")["seated"],
+        serde_json::json!(false)
+    );
+
+    // A bare `SIM REPLAY <id>` by the bystander: keyframe 0, around the first
+    // roster entry.
+    let first = replay.roster.first().expect("a roster").callsign.clone();
+    let (said, windows) = i1_replay_as(&mut rig, I1_BYSTANDER, &id.to_string());
+    let header = format!(
+        "Replay of match {id} at 0:00, keyframe 1 of {} ({}, aborted): both sides as the arena \
+         recorded them every 100 ms, around {first}.",
+        replay.keyframes.len(),
+        match_::duration_words(replay.end_ms)
+    );
+    assert!(said.lines().any(|line| line == header), "{said}");
+    assert!(
+        said.lines()
+            .any(|line| line == format!("Next: SIM REPLAY {id} next")),
+        "{said}"
+    );
+    assert_eq!(windows.len(), 1, "one panel: {windows:?}");
+    let window = windows.first().expect("the window");
+    assert_eq!(window["schema"]["shape"], serde_json::json!("grid"));
+    assert_eq!(window["schema"]["retain"], serde_json::json!("latest"));
+    assert_eq!(window["you"], serde_json::Value::Null);
+    assert_eq!(window["match"], serde_json::json!(id));
+    assert_eq!(window["keyframe"]["index"], serde_json::json!(0));
+    assert_eq!(window["origin_cell"], i1_corner(i1_cell_at(&replay, 0, 0)));
+    let cursor = i1_book(&rig, |book| book.replay_cursor(bystander)).expect("a cursor");
+    assert_eq!(
+        (cursor.match_id, cursor.index, cursor.focus),
+        (match_id, 0, 0)
+    );
+
+    // The queries now answer the replay and its ground to this actor.
+    let asked = rig.query(bystander, "arena.replay");
+    assert_eq!(asked["schema"]["shape"], serde_json::json!("replay"));
+    assert_eq!(asked["record"], serde_json::json!("tacsim.replay"));
+    assert_eq!(asked["match"], serde_json::json!(id));
+    assert_eq!(asked["keyframes"], replay.to_document()["keyframes"]);
+    let map = rig.query(bystander, "arena.map");
+    assert_eq!(map["match"], serde_json::json!(id));
+    assert_eq!(map["schema"]["shape"], serde_json::json!("terrain"));
+    // …and nothing to a pilot who typed nothing.
+    let blue = rig.pilot(1);
+    assert_eq!(
+        rig.query(blue, "arena.replay")["reason"],
+        serde_json::json!("You have no replay open; type SIM REPLAY <match>.")
+    );
+    assert_eq!(
+        rig.query(blue, "arena.map")["seated"],
+        serde_json::json!(false)
+    );
+    // …and the centre's own sentence to somebody outside it.
+    let wanderer = rig.tw.spawn_player("Wanderer");
+    let asked = rig.query(wanderer, "arena.replay");
+    assert_eq!(asked["available"], serde_json::json!(false));
+    assert_eq!(asked["reason"], serde_json::json!(match_::OUTSIDE_CENTRE));
+
+    // `next`, `prev`, `last`, a time: the cursor steps.
+    let (said, windows) = i1_replay_as(&mut rig, I1_BYSTANDER, &format!("{id} next"));
+    assert!(said.contains(", keyframe 2 of "), "{said}");
+    assert_eq!(
+        windows.first().map(|w| w["keyframe"]["index"].clone()),
+        Some(serde_json::json!(1))
+    );
+    let (said, _) = i1_replay_as(&mut rig, I1_BYSTANDER, &format!("#{id} prev"));
+    assert!(said.contains(", keyframe 1 of "), "{said}");
+    let last = replay.keyframes.len() - 1;
+    let (said, windows) = i1_replay_as(&mut rig, I1_BYSTANDER, &format!("{id} last"));
+    assert!(
+        said.contains(&format!(", keyframe {} of {}", last + 1, last + 1)),
+        "{said}"
+    );
+    assert!(
+        !said.contains("Next:"),
+        "the last keyframe owes no Next: {said}"
+    );
+    assert_eq!(
+        windows.first().map(|w| w["keyframe"]["index"].clone()),
+        Some(serde_json::json!(last))
+    );
+    // The end of the tape: refused, and the cursor stays where it was.
+    let (said, windows) = i1_replay_as(&mut rig, I1_BYSTANDER, &format!("{id} next"));
+    assert_eq!(said, format!("That is the last keyframe of match {id}."));
+    assert!(windows.is_empty());
+    assert_eq!(
+        i1_book(&rig, |book| book.replay_cursor(bystander)).map(|cursor| cursor.index),
+        Some(last)
+    );
+    let (said, _) = i1_replay_as(&mut rig, I1_BYSTANDER, &format!("{id} 0:00"));
+    assert!(
+        said.contains(", keyframe 1 of "),
+        "a time: the first keyframe at or after it: {said}"
+    );
+    let (said, _) = i1_replay_as(&mut rig, I1_BYSTANDER, &format!("{id} prev"));
+    assert_eq!(said, format!("That is the first keyframe of match {id}."));
+    assert!(i1_book(&rig, |book| book.replay_cursor(bystander)).is_some());
+    // A time past the tape: the last keyframe.
+    let (said, _) = i1_replay_as(&mut rig, I1_BYSTANDER, &format!("{id} 59:59"));
+    assert!(
+        said.contains(&format!(", keyframe {} of", last + 1)),
+        "{said}"
+    );
+
+    // A callsign centres the window on that unit.
+    let (other, other_at) = replay
+        .roster
+        .iter()
+        .enumerate()
+        .skip(1)
+        .map(|(at, unit)| (unit.callsign.to_string(), u16::try_from(at).unwrap_or(0)))
+        .next()
+        .expect("a second roster entry");
+    let (said, windows) = i1_replay_as(
+        &mut rig,
+        I1_BYSTANDER,
+        &format!("{id} first {}", other.to_ascii_lowercase()),
+    );
+    assert!(said.contains(&format!(", around {other}.")), "{said}");
+    let window = windows.first().expect("the window");
+    assert_eq!(
+        window["origin_cell"],
+        i1_corner(i1_cell_at(&replay, 0, other_at))
+    );
+    assert_eq!(window["you"], serde_json::Value::Null);
+    // …and the focus sticks with the cursor through a step.
+    let (said, _) = i1_replay_as(&mut rig, I1_BYSTANDER, &format!("{id} next"));
+    assert!(said.contains(&format!(", around {other}.")), "{said}");
+
+    // A pilot who flew is centred on their own tank.
+    let record = i1_record(&rig, match_id);
+    let flown = record
+        .teams
+        .iter()
+        .flat_map(|roster| roster.pilots.iter())
+        .find(|(pilot, _)| *pilot == rig.pilot(0))
+        .map(|(_, unit)| *unit)
+        .expect("pilot 0 flew a tank");
+    let own = record.callsign_word(flown);
+    let (said, _) = i1_replay_as(&mut rig, 0, &id.to_string());
+    assert!(said.contains(&format!(", around {own}.")), "{said}");
+
+    // The refusals, verbatim.
+    let (said, _) = i1_replay_as(&mut rig, I1_BYSTANDER, &format!("{id} zz"));
+    assert_eq!(said, format!("No unit of match {id} flew as ZZ."));
+    assert_eq!(
+        i1_book(&rig, |book| book.replay_cursor(bystander)),
+        None,
+        "a refused SIM REPLAY drops the cursor"
+    );
+    assert_eq!(
+        rig.query(bystander, "arena.replay")["reason"],
+        serde_json::json!("You have no replay open; type SIM REPLAY <match>.")
+    );
+    assert_eq!(
+        rig.query(bystander, "arena.map")["seated"],
+        serde_json::json!(false)
+    );
+    let (said, _) = i1_replay_as(&mut rig, I1_BYSTANDER, "");
+    assert_eq!(
+        said,
+        "Usage: SIM REPLAY <match> [<m:ss> | next | prev] [<callsign>]"
+    );
+    let (said, _) = i1_replay_as(&mut rig, I1_BYSTANDER, &format!("{id} 0:01 0:02"));
+    assert_eq!(
+        said,
+        "Usage: SIM REPLAY <match> [<m:ss> | next | prev] [<callsign>]"
+    );
+    // A forgotten id drops the cursor too.
+    i1_replay_as(&mut rig, I1_BYSTANDER, &id.to_string());
+    assert!(i1_book(&rig, |book| book.replay_cursor(bystander)).is_some());
+    let (said, _) = i1_replay_as(&mut rig, I1_BYSTANDER, "99");
+    assert_eq!(
+        said,
+        "The centre remembers its last 20 matches; match 99 is not one of them."
+    );
+    assert_eq!(i1_book(&rig, |book| book.replay_cursor(bystander)), None);
+    assert_eq!(
+        rig.query(bystander, "arena.map")["seated"],
+        serde_json::json!(false)
+    );
+
+    // A restart-abort row: the restart sentence.
+    rig.with_ctx_mut(0, |ctx| {
+        match_::write_restart_abort(ctx, tacsim::arena_task::MatchId(id + 50), &[ObjId(500)]);
+    });
+    let (said, _) = i1_replay_as(&mut rig, I1_BYSTANDER, &(id + 50).to_string());
+    assert_eq!(
+        said,
+        format!(
+            "The server restarted during match {}; there is no replay of it.",
+            id + 50
+        )
+    );
+    // A row written before replays existed: the before-replays sentence.
+    let mut old = i1_book(&rig, |book| book.remembered(match_id).cloned()).expect("the row");
+    old.id = tacsim::arena_task::MatchId(id + 40);
+    old.replay = false;
+    rig.tw
+        .world_mut()
+        .module_state_mut::<match_::MatchBook>()
+        .expect("the book")
+        .remember(old);
+    let (said, _) = i1_replay_as(&mut rig, I1_BYSTANDER, &(id + 40).to_string());
+    assert_eq!(
+        said,
+        format!(
+            "Match {} was recorded before replays existed; there is nothing to watch of it.",
+            id + 40
+        )
+    );
+
+    // A second match RUNNING: its one refusal, and the cursor dropped by it.
+    i1_replay_as(&mut rig, I1_BYSTANDER, &id.to_string());
+    assert!(i1_book(&rig, |book| book.replay_cursor(bystander)).is_some());
+    rig.staff("@arena/reset");
+    rig.walk_to(0, match_::LOBBY_ENTRY);
+    rig.walk_to(1, match_::LOBBY_ENTRY);
+    rig.fly().await;
+    let running = rig.centre().match_id.expect("the second match");
+    let (said, windows) = i1_replay_as(&mut rig, I1_BYSTANDER, &running.0.to_string());
+    assert_eq!(said, format!("Match {} is still running.", running.0));
+    assert!(windows.is_empty());
+    assert_eq!(i1_book(&rig, |book| book.replay_cursor(bystander)), None);
+    assert_eq!(
+        rig.query(bystander, "arena.replay")["reason"],
+        serde_json::json!("You have no replay open; type SIM REPLAY <match>.")
+    );
+    assert_eq!(
+        rig.query(bystander, "arena.map")["seated"],
+        serde_json::json!(false)
+    );
+    // A seated pilot still reads their own match's map, whatever else is open.
+    assert_eq!(
+        rig.query(rig.pilot(0), "arena.map")["match"],
+        serde_json::json!(running.0)
+    );
+}
+
+/// The `tacsim` writes one `write_restart_abort` pushes, as `(set|del, key)`,
+/// through a real `Ctx` on the rig's own world — `match_lifecycle.rs`'s
+/// `restart_abort_writes`, which an integration test cannot import.
+fn i1_restart_abort(rig: &mut Rig, match_id: u64) -> Vec<(&'static str, String)> {
+    let mut out = mush_core::Outbox::new();
+    let engine = rig.tw.engine_mut();
+    let mut ctx = mush_core::Ctx {
+        w: &mut engine.world,
+        actor: GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &engine.registry,
+        module: Some(smol_str::SmolStr::new(tacsim::NS)),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    match_::write_restart_abort(
+        &mut ctx,
+        tacsim::arena_task::MatchId(match_id),
+        &[ObjId(500)],
+    );
+    out.take_deferred()
+        .into_iter()
+        .filter_map(|deferred| match deferred {
+            mush_core::Deferred::Persist(op) => Some(op),
+            _ => None,
+        })
+        .filter_map(|op| match op.op {
+            mush_core::ModuleWrite::JsonSet { key, .. } => Some(("set", key.to_string())),
+            mush_core::ModuleWrite::Del { key } => Some(("del", key.to_string())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **The ring bounds the replays and their grounds** (16b cut I.1): two
+/// remembered matches on one ground hold ONE ground; the eviction of their
+/// rows deletes each replay document in the same write, forgets the replay and
+/// every cursor on it, and drops the ground once no remembered replay names it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn i1_the_ring_evicts_replays_cursors_and_grounds() {
+    let mut rig = Rig::boot(3);
+    let first = i1_finished(&mut rig).await;
+    rig.staff("@arena/reset");
+    rig.walk_to(0, match_::LOBBY_ENTRY);
+    rig.walk_to(1, match_::LOBBY_ENTRY);
+    let second = i1_finished(&mut rig).await;
+    assert!(i1_book(&rig, |book| book.replay(first).is_some()
+        && book.replay(second).is_some()));
+    assert_eq!(
+        i1_book(&rig, match_::MatchBook::ground_count),
+        1,
+        "two matches on one ground hold one copy of it"
+    );
+    let bystander = rig.pilot(I1_BYSTANDER);
+    i1_replay_as(&mut rig, I1_BYSTANDER, &first.0.to_string());
+    i1_replay_as(&mut rig, 0, &first.0.to_string());
+    assert!(i1_book(&rig, |book| book.replay_cursor(bystander)).is_some());
+
+    // Eighteen newer results fill the ring; the nineteenth pushes `first` out.
+    let base = second.0 + 100;
+    for n in 0..18 {
+        let writes = i1_restart_abort(&mut rig, base + n);
+        assert!(writes.iter().all(|(what, _)| *what == "set"), "{writes:?}");
+    }
+    assert!(
+        i1_book(&rig, |book| book.replay(first).is_some()),
+        "twenty rows, both held"
+    );
+    let writes = i1_restart_abort(&mut rig, base + 18);
+    assert!(
+        writes.contains(&("del", format!("tacsim:replay:{}", first.0))),
+        "the eviction deleted the replay document in the same write: {writes:?}"
+    );
+    assert!(i1_book(&rig, |book| book.replay(first).is_none()));
+    assert_eq!(i1_book(&rig, |book| book.replay_cursor(bystander)), None);
+    assert_eq!(i1_book(&rig, |book| book.replay_cursor(rig.pilot(0))), None);
+    assert_eq!(
+        i1_book(&rig, match_::MatchBook::ground_count),
+        1,
+        "the second match still names the ground"
+    );
+    let (said, _) = i1_replay_as(&mut rig, I1_BYSTANDER, &first.0.to_string());
+    assert_eq!(
+        said,
+        format!(
+            "The centre remembers its last 20 matches; match {} is not one of them.",
+            first.0
+        )
+    );
+    // And the next pushes `second` out: no replay names the ground any more.
+    let writes = i1_restart_abort(&mut rig, base + 19);
+    assert!(writes.contains(&("del", format!("tacsim:replay:{}", second.0))));
+    assert!(i1_book(&rig, |book| book.replay(second).is_none()));
+    assert_eq!(i1_book(&rig, match_::MatchBook::ground_count), 0);
+}
+
+/// **A replay on a ground that is not the one loaded** (16b cut I.1): a replay
+/// hand-edited on the book to name a foreign digest, its ground not held,
+/// answers the ground sentence; the build is tried once and remembered in the
+/// mismatch set, so a second ask answers the same without building again; and
+/// the replay's own ground, dropped as a boot drops it, is built back by the
+/// first `SIM REPLAY` and makes the map answerable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn i1_a_foreign_ground_is_refused_and_built_at_most_once() {
+    let mut rig = Rig::boot(3);
+    let match_id = i1_finished(&mut rig).await;
+    let id = match_id.0;
+    let replay = i1_replay(&rig, match_id);
+    let digest = replay.arena_digest.clone();
+
+    // As after a boot: the ground is not held until somebody asks.
+    {
+        let book = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<match_::MatchBook>()
+            .expect("the book");
+        book.drop_ground(&digest);
+    }
+    assert_eq!(i1_book(&rig, match_::MatchBook::ground_count), 0);
+    let bystander = rig.pilot(I1_BYSTANDER);
+    let (said, windows) = i1_replay_as(&mut rig, I1_BYSTANDER, &id.to_string());
+    assert!(said.contains("both sides"), "{said}");
+    assert_eq!(windows.len(), 1);
+    assert!(
+        i1_book(&rig, |book| book.ground(&digest).is_some()),
+        "built once, kept"
+    );
+    assert_eq!(
+        rig.query(bystander, "arena.map")["match"],
+        serde_json::json!(id)
+    );
+
+    // A foreign digest: the ground loaded is not the ground it names.
+    let foreign = "0".repeat(64);
+    {
+        let mut edited = (*replay).clone();
+        edited.arena_digest.clone_from(&foreign);
+        let book = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<match_::MatchBook>()
+            .expect("the book");
+        book.hold_replay(match_id, Arc::new(edited));
+        book.drop_ground(&digest);
+    }
+    let sentence = format!("The ground of match {id} is not the ground loaded on this server.");
+    let (said, windows) = i1_replay_as(&mut rig, I1_BYSTANDER, &id.to_string());
+    assert_eq!(said, sentence);
+    assert!(windows.is_empty());
+    assert!(i1_book(&rig, |book| book.ground_mismatched(&foreign)));
+    assert_eq!(i1_book(&rig, |book| book.replay_cursor(bystander)), None);
+    assert_eq!(
+        i1_book(&rig, match_::MatchBook::ground_count),
+        0,
+        "a mismatch keeps nothing"
+    );
+    // Asked again: the mismatch set answers, and nothing is built.
+    let (said, _) = i1_replay_as(&mut rig, I1_BYSTANDER, &id.to_string());
+    assert_eq!(said, sentence);
+    assert_eq!(i1_book(&rig, match_::MatchBook::ground_count), 0);
+    assert_eq!(
+        rig.query(bystander, "arena.map")["seated"],
+        serde_json::json!(false)
+    );
+
+    // **The mark alone refuses** (the fixer's T2): the replay put back under
+    // its REAL digest — whose build would succeed, as the first half proved —
+    // with that digest marked mismatched and its ground not held. Only the
+    // mismatch set's short-circuit can answer the ground sentence here; a
+    // build would find the loaded ground equal and keep it.
+    {
+        let book = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<match_::MatchBook>()
+            .expect("the book");
+        book.hold_replay(match_id, Arc::clone(&replay));
+        book.drop_ground(&digest);
+        book.mark_ground_mismatch(&digest);
+    }
+    let (said, windows) = i1_replay_as(&mut rig, I1_BYSTANDER, &id.to_string());
+    assert_eq!(said, sentence, "a marked digest is never built again");
+    assert!(windows.is_empty());
+    assert!(
+        i1_book(&rig, |book| book.ground(&digest).is_none()),
+        "nothing was built under the marked digest"
+    );
+    assert_eq!(i1_book(&rig, match_::MatchBook::ground_count), 0);
 }

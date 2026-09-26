@@ -1354,6 +1354,127 @@ fn v3_a_result_from_before_reports_existed_is_refused_without_a_read() {
 }
 
 // ---------------------------------------------------------------------------
+// 16b cut I.1 — the boot holds the replays the ring remembers
+// ---------------------------------------------------------------------------
+
+/// **The boot holds the replays the ring remembers, and no others** (16b cut
+/// I.1; the fixer's T3): twenty-one results that each say `replay: true` fill
+/// the ring with the newest twenty; of the replay documents left beside them,
+/// match 21's is held (read, not written: no ground is built at boot), match
+/// 1's is not (the ring forgot the match), an orphan's is not (the ring never
+/// had it), and a document under match 20's key that says it is match 19's is
+/// skipped — so match 20 answers the before-replays sentence. The first `SIM
+/// REPLAY 21` after the boot then builds the ground once (`ground_for`), on
+/// the production path, and prints the replay.
+#[test]
+fn i1_the_boot_holds_the_replays_the_ring_remembers_and_no_others() {
+    use tacsim::arena_task::MatchId;
+    use tacsim::match_::replay::{Replay, replay_key};
+
+    let mut rig = Rig::boot(1);
+    let pilot = rig.pilot(0);
+    let ground = match_::definition_for(
+        rig.tw.world(),
+        &smol_str::SmolStr::new(match_::CENTRE_ARENA),
+    )
+    .expect("the ground builds")
+    .expect("the centre's ground is loaded");
+    let digest = tacsim::arena_bridge::digest_text(&ground.digest());
+    let replay_document = |id: u64| {
+        serde_json::json!({
+            "record": "tacsim.replay",
+            "record_version": 1,
+            "match": id,
+            "arena": match_::CENTRE_ARENA,
+            "arena_digest": digest,
+            "cell_cm": 1_000,
+            "width": 256,
+            "height": 256,
+            "summary_ms": 5_000,
+            "end_ms": 7_000,
+            "outcome": "red",
+            "reason": "elimination",
+            "roster": [{ "callsign": "RA", "team": "red" }, { "callsign": "BA", "team": "blue" }],
+            "keyframes": [
+                [0, [[6, 97, 90], [249, 97, 270]]],
+                [5_000, [[8, 97, 90], [249, 97, 270]]],
+            ],
+            "shots": [[6_000, 1, 0, "miss"]],
+            "destroyed": [[6_500, 1]],
+            "truncated": false,
+            "cut": [],
+        })
+    };
+    let mut seeded: Vec<(smol_str::SmolStr, serde_json::Value)> = (1..=21_u64)
+        .map(|id| {
+            let unit = 500 + u32::try_from(id).expect("a small id") * 2;
+            let mut result = finished_result(id, pilot, unit);
+            result["replay"] = serde_json::json!(true);
+            (match_::result_key(MatchId(id)), result)
+        })
+        .collect();
+    seeded.push((replay_key(MatchId(21)), replay_document(21)));
+    seeded.push((replay_key(MatchId(1)), replay_document(1)));
+    seeded.push((replay_key(MatchId(99)), replay_document(99)));
+    seeded.push((replay_key(MatchId(20)), replay_document(19)));
+    rig.reboot_with(seeded);
+
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .expect("the match book");
+        assert!(book.remembered(MatchId(20)).is_some_and(|row| row.replay));
+        assert_eq!(
+            book.replay(MatchId(21)).as_deref(),
+            Replay::from_document(&replay_document(21)).as_ref(),
+            "the remembered match's replay, read"
+        );
+        for (id, why) in [
+            (1, "the ring forgot the match"),
+            (99, "the ring never had the match"),
+            (20, "its document names another match"),
+            (19, "a document under another match's key"),
+        ] {
+            assert!(
+                book.replay(MatchId(id)).is_none(),
+                "match {id} held a replay although {why}"
+            );
+        }
+        assert_eq!(book.ground_count(), 0, "the boot builds no ground");
+    }
+
+    // The first `SIM REPLAY` after the boot builds the ground, once, and
+    // prints the replay the boot read.
+    let said = rig.say(0, "sim replay 21");
+    assert!(
+        said.starts_with(
+            "Replay of match 21 at 0:00, keyframe 1 of 2 (7 s, red won (blue eliminated)): both \
+             sides as the arena recorded them every 5 s, around RA."
+        ),
+        "{said}"
+    );
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .expect("the match book");
+        assert!(book.ground(&digest).is_some(), "built by `SIM REPLAY`");
+        assert_eq!(book.ground_count(), 1);
+    }
+    // Match 20's row says it has a replay, and the boot held none.
+    let said = rig.say(0, "sim replay 20");
+    assert!(
+        said.contains(
+            "Match 20 was recorded before replays existed; there is nothing to watch of it."
+        ),
+        "{said}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 16b cut Z.4 (16c N8): the side nets are made at boot, once
 // ---------------------------------------------------------------------------
 

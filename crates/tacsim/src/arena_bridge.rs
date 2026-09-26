@@ -109,6 +109,20 @@ pub const FRAME_FEED: &str = "arena.cockpit";
 /// payload builders share one schema shape and it costs nothing.
 pub const MAP_FEED: &str = "arena.map";
 
+/// **The panel feed a replay goes out on** (16b cut I.1; 16c N9, Q37).
+///
+/// Two things ride it. `SIM REPLAY` **pushes** one keyframe's window to the
+/// actor who typed it — a `grid` the line client prints as it prints `VIEW`'s
+/// (`crate::match_::replay::replay_window`), carrying `schema.retain =
+/// "latest"` so stepping never pushes the scene out of a reconnect's window. And
+/// the query handler [`register`] installs **answers** the whole replay
+/// document the actor's replay cursor names
+/// (`crate::match_::replay::replay_answer`), under a `replay` shape a line
+/// client prints nothing for. Registered as a feed so it is in the client
+/// manifest and a `PanelSubscribe` routes to that handler; after `arena.map`
+/// in the manifest order `mush-server`'s boot-parity test pins.
+pub const REPLAY_FEED: &str = "arena.replay";
+
 /// The notice category every arena notice carries — every arena line but the
 /// per-pulse notice sentences, which carry [`NOTICE_SENTENCE_TAG`].
 pub const NOTICE_CATEGORY: &str = "arena";
@@ -1823,6 +1837,21 @@ pub fn clear_cockpit(ctx: &mut Ctx<'_>, pilot: ObjId) {
     );
 }
 
+/// **The ground one tracked match is fought over, as the registry's own
+/// `Arc`** (16b cut I.1): a clone of the one pointer check-out took (16b cut
+/// K.2), so [`crate::match_::finish`] can keep the ground for the match's
+/// replay after [`ArenaRegistry::untrack`] drops the registry's row — without
+/// rebuilding sixty-five thousand cells and a horizon index. `None` for a match
+/// the registry does not track.
+#[must_use]
+pub fn ground_of(
+    w: &mush_core::World,
+    match_id: MatchId,
+) -> Option<Arc<crate::arena::state::ArenaDefinition>> {
+    w.module_state::<ArenaRegistry>()
+        .and_then(|registry| registry.arenas.get(&match_id).cloned())
+}
+
 /// The ledger log id one match streams into: `log:match.<id>` is
 /// `chunk_key("match.<id>", n)`, so the log id itself is `match.<id>`.
 #[must_use]
@@ -1856,6 +1885,10 @@ fn on_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64, bytes: &[u8]) {
         {
             for fold in record.folds.values_mut() {
                 fold.lost_chunk();
+            }
+            // **16b cut I.1**: and the replay says it is not whole.
+            if let Some(replay) = record.replay.as_mut() {
+                replay.lost_chunk();
             }
         }
         lose_chunk(ctx, match_id, seq);
@@ -1902,6 +1935,14 @@ fn on_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64, bytes: &[u8]) {
                 fold.absorb(event);
             }
         }
+        // **16b cut I.1 (16c N9, Q37)**: and the replay fold, after them — the
+        // same events in the same order, of which it reads only the objective
+        // record (positions, shots, wrecks, the end).
+        if let Some(replay) = record.replay.as_mut() {
+            for event in &events {
+                replay.absorb(event);
+            }
+        }
     }
     let value = serde_json::json!({
         "chunk": seq,
@@ -1924,6 +1965,12 @@ fn on_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64, bytes: &[u8]) {
                 if let Some(mirror) = registry.matches.get_mut(&match_id) {
                     mirror.chunks_lost = mirror.chunks_lost.saturating_add(1);
                 }
+                // **16b cut I.1**: the replay fold has already absorbed this
+                // chunk's events above and is left as it is. The replay is a
+                // picture of what passed the world, not of what the store kept:
+                // the arena journalled these lines and the match happened as they
+                // say, so a page the log refused is not a gap in what anybody can
+                // be shown.
                 let tasks = registry.tasks.clone();
                 // Acknowledge it anyway: the chunk is lost to the log, and
                 // holding the arena's egress open for a page that will never be
@@ -2408,6 +2455,17 @@ fn seated_ground(
 /// path would slice it — `{ "window": [x0, y0, w, h] }` in cells — and the
 /// payload's `origin_cell` is in it for exactly that: a renderer written against
 /// that key keeps working when the map stops starting at the arena's corner.
+///
+/// **16b cut I.1 gave it an order**, because a query carries no parameters and
+/// can only be keyed on who asks: (1) a seated pilot is answered their own
+/// match's map, as before; (2) a watcher, the watched match's ground (16b cut
+/// I.4); (3) an actor whose replay cursor names a finished match the ring
+/// remembers with a replay, **and whose ground the book holds**, that ground
+/// under that match's id; (4) everybody else the unseated pair. It only
+/// reads: a ground not yet built after a boot is built by `SIM REPLAY`
+/// (`crate::match_::replay::ground_for`), so the first `SIM REPLAY` of a
+/// remembered match after a boot is what makes its map answerable. The map is
+/// still pulled and never pushed.
 struct MapQuery;
 
 impl mush_core::QueryHandler for MapQuery {
@@ -2418,17 +2476,28 @@ impl mush_core::QueryHandler for MapQuery {
         _params: &serde_json::Value,
     ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
         let data = match seated_ground(w, actor) {
-            // 16b cut V.1: the ground's named spots ride the map, because they
-            // are surveyed ground exactly as the terrain is.
+            // (1) 16b cut V.1: the ground's named spots ride the map, because
+            // they are surveyed ground exactly as the terrain is.
             Some((match_id, ground)) => crate::match_::cockpit::map_frame(
                 match_id,
                 ground.id.as_str(),
                 &ground.terrain,
                 &ground.key_spots,
             ),
-            // Nothing about any match: not its id, not its ground, not whether
-            // one is running at all.
-            None => crate::match_::cockpit::map_unseated(),
+            // (2) I.4: a watcher → the watched match's ground
+            // (3) 16b cut I.1: the finished match the actor's replay cursor
+            // names, drawn on the ground it was fought on.
+            None => match crate::match_::replay::cursor_ground(w, actor) {
+                Some((match_id, ground)) => crate::match_::cockpit::map_frame(
+                    match_id,
+                    ground.id.as_str(),
+                    &ground.terrain,
+                    &ground.key_spots,
+                ),
+                // (4) Nothing about any match: not its id, not its ground, not
+                // whether one is running at all.
+                None => crate::match_::cockpit::map_unseated(),
+            },
         };
         Ok(mush_proto::OutputEvent::Panel {
             feed: SmolStr::new_static(MAP_FEED),
@@ -2482,6 +2551,34 @@ impl mush_core::QueryHandler for CockpitQuery {
     }
 }
 
+/// **`arena.replay`'s handler** (16b cut I.1; 16c N9, Q37): the whole replay
+/// document of the finished match the asker's replay cursor names, or
+/// `available: false` with the sentence that says why not
+/// ([`crate::match_::replay::replay_answer`]).
+///
+/// **It takes no parameters**, and cannot: `Query::PanelSubscribe` carries a
+/// feed and nothing else, and the web bridge forwards the feed alone. So the
+/// match is the one the asker last opened with `SIM REPLAY` — which is also why
+/// a refused `SIM REPLAY` drops the cursor, so this never answers an earlier
+/// match's document by accident. The answer's shape is `replay`, not `grid`:
+/// a line client prints nothing for it.
+struct ReplayQuery;
+
+impl mush_core::QueryHandler for ReplayQuery {
+    fn query(
+        &self,
+        w: &mush_core::World,
+        actor: ObjId,
+        _params: &serde_json::Value,
+    ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
+        Ok(mush_proto::OutputEvent::Panel {
+            feed: SmolStr::new_static(REPLAY_FEED),
+            kind: mush_proto::PanelFrameKind::Keyframe,
+            data: crate::match_::replay::replay_answer(w, actor),
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -2512,7 +2609,12 @@ pub fn register(
     // the query handler below. The order of these two registrations is the order
     // `mush-server`'s boot-parity test pins the manifest in.
     drop(reg.panel_feed(MAP_FEED)?);
+    // **16b cut I.1**: the replay feed after it, its handle dropped as the
+    // map's is — `SIM REPLAY` pushes its grid through the ordinary output path,
+    // exactly as `VIEW` pushes its own — and the manifest order moves with it.
+    drop(reg.panel_feed(REPLAY_FEED)?);
     reg.query_handler(MAP_FEED, Arc::new(MapQuery))?;
+    reg.query_handler(REPLAY_FEED, Arc::new(ReplayQuery))?;
     reg.query_handler(FRAME_FEED, Arc::new(CockpitQuery))?;
     reg.async_completion(Arc::new(ArenaEgress))?;
     // **16b cut V.3 (16c N2)**: the tacsim module's FIRST store-read completion,

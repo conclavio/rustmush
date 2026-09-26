@@ -1010,3 +1010,88 @@ async fn z3_a_side_takes_six_claims_and_the_fill_is_one_to_six() {
     }
     assert!(status.contains("AI fill: each side fields 6;"), "{status}");
 }
+
+// ---------------------------------------------------------------------------
+// (7) 16b cut I.1 — `SIM REPLAY`, over the real front door
+// ---------------------------------------------------------------------------
+
+/// **A finished match replays to both its pilots and to a bystander** (16b cut
+/// I.1; 16c N9, Q37), over SSH.
+///
+/// Ada flies red and Bo blue; Cy holds no slot and stays in the lobby. Once the
+/// arena clock has moved (so the tape holds keyframes after the opening), Ada
+/// concedes and the match checks in. Then each of the three reads `SIM REPLAY
+/// 1`: the header says `both sides`, and the reply names both callsigns (the one
+/// the window is centred on in the header, the other on the off-window line —
+/// the two tanks muster 2.4 km apart, far past a 39 by 20 window). `SIM REPLAY 1
+/// next` moves the keyframe, and a match the centre never ran is the remembers
+/// sentence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn i1_a_finished_match_replays_to_both_pilots_and_a_bystander() {
+    let server = boot("sim-lobby-i1-replay").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut bo, "blue", "Blue Room").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+
+    // A running match has no replay: its one answer.
+    say(&mut cy, "SIM REPLAY 1", "Match 1 is still running.").await;
+
+    // Let the arena clock run past a second, so the tape holds keyframes after
+    // the opening at the 100 ms summaries this lens runs.
+    wait_until(
+        STEP_TIMEOUT,
+        "the arena clock to pass a second",
+        async || {
+            let staff = ask(&mut god, "@arena/status", "ledger writes awaiting").await;
+            support::arena_clock_seconds(&staff).is_some_and(|seconds| seconds >= 1)
+        },
+    )
+    .await;
+    say(&mut ada, "SIM CONCEDE", "concedes for the red side").await;
+    bo.expect("Its units are checked in.").await;
+
+    for (who, term) in [("Ada", &mut ada), ("Bo", &mut bo), ("Cy", &mut cy)] {
+        // The last line of the reply, so the whole of it has arrived.
+        let said = one_line(&ask(term, "SIM REPLAY 1", "Next: SIM REPLAY 1 next").await);
+        assert!(
+            said.contains("both sides as the arena recorded them every 100 ms"),
+            "{who}: {said}"
+        );
+        assert!(
+            said.contains("Replay of match 1 at 0:00, keyframe 1 of "),
+            "{who}: {said}"
+        );
+        assert!(said.contains("blue won (red conceded)"), "{who}: {said}");
+        for callsign in ["RA", "BA"] {
+            assert!(
+                said.split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|word| word == callsign),
+                "{who}'s replay does not name {callsign}: {said}"
+            );
+        }
+    }
+    // A pilot's own replay is centred on their own tank.
+    let said = one_line(&ask(&mut bo, "SIM REPLAY 1", "Next: SIM REPLAY 1 next").await);
+    assert!(said.contains(", around BA."), "{said}");
+
+    // `next` moves the keyframe.
+    say(&mut cy, "SIM REPLAY 1 next", ", keyframe 2 of ").await;
+    // A match the centre never ran.
+    say(
+        &mut cy,
+        "SIM REPLAY 9",
+        "The centre remembers its last 20 matches; match 9 is not one of them.",
+    )
+    .await;
+}

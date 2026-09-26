@@ -1,0 +1,131 @@
+{
+  "arena": "fixture_yard",
+  "arena_digest": "53356e9382bea2be91e7342f5c725d7c251afcf1b4f4b4079d0034bf64634dd5",
+  "cell_cm": 1000,
+  "cut": [],
+  "destroyed": [
+    [
+      7000,
+      3
+    ]
+  ],
+  "end_ms": 10000,
+  "height": 64,
+  "keyframes": [
+    [
+      0,
+      [
+        [
+          4,
+          4,
+          90
+        ],
+        [
+          2,
+          7,
+          90
+        ],
+        [
+          40,
+          14,
+          270
+        ],
+        [
+          16,
+          7,
+          270
+        ]
+      ]
+    ],
+    [
+      5000,
+      [
+        [
+          6,
+          4,
+          90
+        ],
+        [
+          2,
+          9,
+          0
+        ],
+        [
+          36,
+          14,
+          270
+        ],
+        [
+          14,
+          7,
+          225
+        ]
+      ]
+    ],
+    [
+      10000,
+      [
+        [
+          9,
+          4,
+          90
+        ],
+        [
+          2,
+          11,
+          0
+        ],
+        [
+          33,
+          14,
+          270
+        ],
+        [
+          14,
+          7,
+          225
+        ]
+      ]
+    ]
+  ],
+  "match": 7,
+  "outcome": "abort",
+  "reason": "abort",
+  "record": "tacsim.replay",
+  "record_version": 1,
+  "roster": [
+    {
+      "callsign": "RA",
+      "team": "red"
+    },
+    {
+      "callsign": "RB",
+      "team": "red"
+    },
+    {
+      "callsign": "BA",
+      "team": "blue"
+    },
+    {
+      "callsign": "BB",
+      "team": "blue"
+    }
+  ],
+  "shots": [
+    [
+      6000,
+      0,
+      2,
+      "hit"
+    ],
+    [
+      8000,
+      2,
+      0,
+      "miss"
+    ]
+  ],
+  "summary_ms": 5000,
+  "truncated": false,
+  "width": 96
+}

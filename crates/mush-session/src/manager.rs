@@ -258,9 +258,12 @@ struct SessEntry {
     /// replaces the slot's entry — one map write, no scan — and
     /// [`SessionManager::replay_since`] merges the slot with the ring by seq.
     /// Bounded by the number of marked feeds that reach a session through
-    /// delivery — one today, `arena.cockpit` (`arena.map` carries the marker
-    /// but is only ever a conn-scoped query reply, never recorded) — never by
-    /// traffic.
+    /// delivery — two today, `arena.cockpit` (the live frame and `VIEW`'s grid)
+    /// and, since 16b cut I.1, `arena.replay` (the grid `SIM REPLAY` pushes, one
+    /// keyframe at a time, so stepping never pushes the scene out of a
+    /// reconnect's window); `arena.map` carries the marker but is only ever a
+    /// conn-scoped query reply, never recorded, and `arena.replay`'s
+    /// whole-document query answer carries none — never by traffic.
     latest: HashMap<SmolStr, (u64, Arc<Envelope>)>,
     /// Structured presentation awaiting exact client acknowledgement,
     /// oldest first. Durable action status remains the long-horizon recovery

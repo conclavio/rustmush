@@ -1633,6 +1633,7 @@ fn empty_row(id: MatchId) -> HistoryRow {
         units: Vec::new(),
         named: false,
         reports: Vec::new(),
+        replay: false,
     }
 }
 

@@ -47,6 +47,10 @@ the same thing this topic does, in fewer words.
                       callsign on the ones you flew.
   SIM REPORT [match]  your own debrief of a match you flew: the newest one
                       bare, or the match number SIM HISTORY printed.
+  SIM REPLAY <match>  watch a finished match the centre remembers, both sides,
+                      one keyframe at a time: the match number, then next, prev
+                      or a time like 1:30, and a callsign to centre the window
+                      on.
 
 A slot belongs to your **account**, not to your character, so an alt cannot take
 a second one. All of these work in the lobby, the two team rooms and the pods,
@@ -235,6 +239,21 @@ after the match.
 
 A match older than the last twenty has no report, and neither has one the server
 restarted during, or one played before the debrief existed.
+
+`SIM REPLAY 2` watches match 2 back, and it is public: anybody in the centre may
+watch any finished match it remembers, whether they flew in it or not. Where the
+report is your own cockpit's story, the replay is the arena's — every unit of
+both sides where the arena recorded it every 5 s, drawn on the ground as `VIEW`
+draws it (`o` red, `*` blue, `%` a wreck), with the shots fired and the tanks
+wrecked since the keyframe before; the last keyframe runs on to the end of the
+match, so it shows the shot and the wreck that ended it. It names every unit by
+its callsign and nobody by name, and it reads nothing anybody's sensors saw.
+`SIM REPLAY 2 next` and `prev` step through it, `SIM REPLAY 2 1:30` jumps to a
+moment, and a callsign (`SIM REPLAY 2 BA`) centres the window on that tank. A
+very long or very busy match is kept only in part, and every step of its replay
+says which part. A running match
+has no replay — `Match 3 is still running.` — and neither has one the server
+restarted during, or one played before replays existed.
 
 The next `SIM TEAM` clears the board, puts every tank back at spec, back at
 muster and back to their own types, and opens selection again.

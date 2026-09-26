@@ -12,6 +12,7 @@
 //! SIM CONCEDE             give the match up for your side (its lead, while it runs)
 //! SIM HISTORY             the centre's last twenty matches, newest first
 //! SIM REPORT [<match>]    your own debrief of a match you flew
+//! SIM REPLAY <match> …    watch a finished match back, both sides, a keyframe at a time
 //! ```
 //!
 //! # Why one verb and not five
@@ -105,12 +106,16 @@ pub enum Selector {
     /// **`SIM REPORT [<match>]`** (16b cut V.3; 16c N2, Q37): the actor's own
     /// debrief of one match they flew — [`crate::match_::report::request`].
     Report,
+    /// **`SIM REPLAY <match> [<m:ss> | next | prev] [<callsign>]`** (16b cut
+    /// I.1; 16c N9, Q37): one keyframe of a finished match the centre
+    /// remembers, both sides — [`crate::match_::replay::request`].
+    Replay,
 }
 
 impl Selector {
-    /// The ten words, in help order (16b cut V.2 added `history`, ninth; 16b
-    /// cut V.3 `report`, tenth).
-    pub const ALL: [(Selector, &'static str); 10] = [
+    /// The eleven words, in help order (16b cut V.2 added `history`, ninth;
+    /// 16b cut V.3 `report`, tenth; 16b cut I.1 `replay`, eleventh).
+    pub const ALL: [(Selector, &'static str); 11] = [
         (Selector::Team, "team"),
         (Selector::Leave, "leave"),
         (Selector::Start, "start"),
@@ -121,6 +126,7 @@ impl Selector {
         (Selector::Unit, "unit"),
         (Selector::History, "history"),
         (Selector::Report, "report"),
+        (Selector::Replay, "replay"),
     ];
 
     /// One word, however it was spelled.
@@ -168,8 +174,8 @@ fn selector_of(ctx: &Ctx<'_>) -> Option<(Selector, String)> {
     Selector::parse(head).map(|selector| (selector, rest.to_owned()))
 }
 
-/// `SIM <team|leave|start|abort|concede|status|ai|unit|history|report>` — the
-/// whole lobby (doc 16 §3.7).
+/// `SIM <team|leave|start|abort|concede|status|ai|unit|history|report|replay>`
+/// — the whole lobby (doc 16 §3.7).
 ///
 /// # Errors
 ///
@@ -177,7 +183,8 @@ fn selector_of(ctx: &Ctx<'_>) -> Option<(Selector, String)> {
 pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "SIM TEAM red|blue | SIM LEAVE | SIM START | SIM ABORT | SIM CONCEDE | \
                          SIM STATUS | SIM AI [n] | SIM UNIT [type] | SIM HISTORY | \
-                         SIM REPORT [match]";
+                         SIM REPORT [match] | SIM REPLAY <match> [<m:ss> | next | prev] \
+                         [<callsign>]";
     // **Where before what** (16b cut F.4 residual). The deleted gate answered
     // every spelling of the verb outside the centre with the one
     // [`crate::match_::OUTSIDE_CENTRE`] line, and taking it away put the parser
@@ -274,6 +281,14 @@ pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         // (`report::ReportRead`); one in flight per actor. It writes no document
         // and mutates nothing but the book's pending-read row.
         Selector::Report => crate::match_::report::request(ctx, &rest),
+        // **16b cut I.1 (16c N9, Q37)**: the eleventh selector, and no eleventh
+        // verb. A synchronous read of the book's RAM — the replay and the ground
+        // it was fought on are held beside the ring — that writes no document
+        // and mutates nothing but the actor's replay cursor (and, once after a
+        // boot, the ground it builds). **No pilot gate**: the replay of a
+        // finished OOC match is public (Q37), so the centre gate at the top of
+        // this function is the only one.
+        Selector::Replay => crate::match_::replay::request(ctx, &rest),
     }
 }
 
@@ -434,6 +449,9 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    your shots and what became of each, the hits on your own tank, what you \
                    destroyed, and the public outcome — told as your own sensors told it, so a \
                    target they had not told apart stays a contact.\n\
+                   SIM REPLAY <match>  watch a finished match the centre remembers, both sides, \
+                   one keyframe at a time: the match number, then next, prev or a time like \
+                   1:30, and a callsign to centre the window on.\n\
                    The switch spelling (SIM/STATUS) is the same command. All of it works in \
                    the simulator lobby, the two team rooms and the pods; anywhere else every \
                    spelling of SIM answers only where the simulator is."
@@ -460,8 +478,9 @@ mod tests {
         let switches = register_switches();
         // 16b cut Q.7 made it six: `ai` joined the five. 16b cut Q.8 made it
         // seven with `unit`, 16b cut D.3 eight with `concede`, 16b cut V.2
-        // nine with `history`, and 16b cut V.3 ten with `report`.
-        assert_eq!(switches.len(), 10);
+        // nine with `history`, 16b cut V.3 ten with `report`, and 16b cut I.1
+        // eleven with `replay`.
+        assert_eq!(switches.len(), 11);
         for (selector, name) in Selector::ALL {
             assert!(switches.iter().any(|switch| switch == name), "{name}");
             assert_eq!(Selector::parse(name), Some(selector));

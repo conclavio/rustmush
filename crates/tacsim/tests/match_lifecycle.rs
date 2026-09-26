@@ -4578,6 +4578,7 @@ async fn v2_a_row_the_ring_evicts_has_its_report_documents_deleted_in_the_same_w
         units: Vec::new(),
         named: true,
         reports,
+        replay: false,
     };
     {
         let book = rig

@@ -301,6 +301,10 @@ fn expected_panels() -> Vec<&'static str> {
     // that it reaches the client manifest and so that a `PanelSubscribe` routes
     // to its query handler.
     panels.push("arena.map");
+    // 16b cut I.1: the replay feed, registered right after the terrain feed.
+    // `SIM REPLAY` pushes its grid on it and its query answers the replay the
+    // asker's cursor names.
+    panels.push("arena.replay");
     panels.push("who");
     panels.push("legal.actions");
     panels

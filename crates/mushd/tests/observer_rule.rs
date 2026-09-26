@@ -4416,3 +4416,185 @@ async fn z4_a_net_line_names_the_callsign_the_speaker_and_the_words_and_reaches_
     assert_eq!(line, "[RedNet] RA Ada: contact east");
     names_nothing(&ada_seen, red, blue, "red's own net line");
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut I.1 — the replay: public, both sides, and nobody by name (16c N9, Q37)
+// ---------------------------------------------------------------------------
+
+/// The replay feed, spelled out for the reason [`MAP_FEED`] is.
+const REPLAY_FEED: &str = "arena.replay";
+
+/// **The replay column** (16b cut I.1; 16c N9, Q37).
+///
+/// A running match has no replay, and its one refusal must say nothing else:
+/// while match 1 RUNS, `SIM REPLAY 1` from both its pilots, the bystander and the
+/// staffer answers `Match 1 is still running.` and nothing that names a tank,
+/// a callsign or a contact id. The witnesses are walked into the Simulator Lobby
+/// first — `seat_the_witnesses` leaves Cy and God in the muster room, where
+/// every spelling of `SIM` answers only where the simulator is.
+///
+/// After the match, the replay is **public and objective**: Cy, who flew
+/// nothing, reads both callsigns and `both sides` — and no object mark, no
+/// pilot's name and no sixteen-digit word, because the replay names every tank
+/// by the callsign the arena gave it and reads nothing any sensor saw. Over
+/// Cy's web socket the `arena.replay` query answers the whole document to the
+/// same standard; over Ada's — seated in match 2 and having typed no `SIM
+/// REPLAY` — it answers `available: false`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn i1_a_replay_is_public_names_nobody_and_a_running_match_has_none() {
+    let server = boot("observer-replay").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+    let (red, blue, _muster, _domain) = seat_the_witnesses(&mut god).await;
+    let listing = ask(&mut god, "@find Simulator Lobby", "END OF LIST").await;
+    let lobby = dbref_of(&listing, "Simulator Lobby");
+    say(
+        &mut god,
+        &format!("@teleport #{}=#{lobby}", CY.0),
+        "Teleported",
+    )
+    .await;
+    say(
+        &mut god,
+        &format!("@teleport #{}=#{lobby}", GOD.0),
+        "Simulator Lobby",
+    )
+    .await;
+
+    take_off(&mut ada, &mut bo).await;
+
+    // (1) While match 1 runs: the one refusal, from every seat, and nothing else.
+    for (who, term) in [
+        ("Ada", &mut ada),
+        ("Bo", &mut bo),
+        ("Cy", &mut cy),
+        ("God", &mut god),
+    ] {
+        // The answer from the line's own echo — its FIRST `SIM REPLAY 1`, so
+        // a leaked reply's own `Next: SIM REPLAY 1 next` can never become the
+        // cut point and hide what came before it — to the sentinel's `Huh?`: a
+        // witness that has read nothing yet is handed its whole transcript,
+        // whose earlier lines (`once both sides have a pilot`) are not the
+        // answer.
+        let whole = ask_whole(term, "SIM REPLAY 1").await;
+        let answer = whole
+            .split_once("SIM REPLAY 1")
+            .map_or_else(|| whole.clone(), |(_, answer)| answer.to_owned());
+        let seen = answer
+            .rsplit_once(HUH)
+            .map_or_else(|| answer.clone(), |(before, _)| before.to_owned());
+        assert!(
+            seen.contains("Match 1 is still running."),
+            "{who} was not told the match is running:\n{seen}"
+        );
+        for leak in [
+            "Replay of",
+            "keyframe",
+            "both sides",
+            "Off the window",
+            "Shots since",
+            "Wrecked since",
+            "Next:",
+        ] {
+            assert!(!seen.contains(leak), "{who} was told {leak:?}:\n{seen}");
+        }
+        for callsign in ["RA", "BA"] {
+            assert!(
+                !words_of(&seen).contains(&callsign),
+                "{who}'s refusal named {callsign}:\n{seen}"
+            );
+        }
+        names_nothing(&seen, red, blue, &format!("{who}'s refused `SIM REPLAY`"));
+        no_sixteen_digit_word(&seen, &format!("{who}'s refused `SIM REPLAY`"));
+    }
+
+    // Let the arena clock move, so the tape holds keyframes after the opening.
+    wait_until(
+        STEP_TIMEOUT,
+        "the arena clock to pass a second",
+        async || {
+            let staff = ask(&mut god, "@arena/status", "ledger writes awaiting").await;
+            support::arena_clock_seconds(&staff).is_some_and(|seconds| seconds >= 1)
+        },
+    )
+    .await;
+    say(&mut ada, "SIM ABORT", "aborts match").await;
+    cy.expect("Its units are checked in.").await;
+
+    // (2) After it: public, both sides, nobody by name.
+    let seen = ask(&mut cy, "SIM REPLAY 1", "Next: SIM REPLAY 1 next").await;
+    let flat = seen.split_whitespace().collect::<Vec<&str>>().join(" ");
+    assert!(
+        flat.contains("both sides as the arena recorded them"),
+        "{flat}"
+    );
+    for callsign in ["RA", "BA"] {
+        assert!(
+            words_of(&seen).contains(&callsign),
+            "Cy's replay does not name {callsign}:\n{seen}"
+        );
+    }
+    // No object mark: the printed grid may draw a wall as `#`, so the mark is
+    // `#` before a digit.
+    assert!(
+        !seen.as_bytes().windows(2).any(|pair| {
+            pair.first() == Some(&b'#') && pair.get(1).is_some_and(u8::is_ascii_digit)
+        }),
+        "Cy's replay carried an object mark:\n{seen}"
+    );
+    for name in ["Ada", "Bo"] {
+        assert!(
+            !words_of(&seen).contains(&name),
+            "Cy's replay named {name}:\n{seen}"
+        );
+    }
+    names_nothing(&seen, red, blue, "Cy's `SIM REPLAY 1`");
+    no_sixteen_digit_word(&seen, "Cy's `SIM REPLAY 1`");
+
+    // Over Cy's web socket: the whole document, to the same standard.
+    let mut cy_web = web_session(&server, "cy", PILOT_PASSWORD, "Cy").await;
+    let document = panel_query(&mut cy_web, 701, REPLAY_FEED).await;
+    assert_eq!(
+        document.pointer("/schema/shape").and_then(Value::as_str),
+        Some("replay"),
+        "{document}"
+    );
+    assert_eq!(document.get("match").and_then(Value::as_u64), Some(1));
+    let whole = document.to_string();
+    for callsign in ["\"RA\"", "\"BA\""] {
+        assert!(
+            whole.contains(callsign),
+            "the document lacks {callsign}: {whole}"
+        );
+    }
+    for leak in ["#", "Ada", "\"Bo\"", "seed", "draw"] {
+        assert!(
+            !whole.contains(leak),
+            "the document carried {leak:?}: {whole}"
+        );
+    }
+    names_nothing(&whole, red, blue, "the `arena.replay` document");
+    no_sixteen_digit_word(&whole, "the `arena.replay` document");
+
+    // (3) Ada, seated in match 2 and having typed no `SIM REPLAY`: nothing.
+    for pilot in [ADA, BO] {
+        say(
+            &mut god,
+            &format!("@teleport #{}=#{lobby}", pilot.0),
+            "Teleported",
+        )
+        .await;
+    }
+    take_off(&mut ada, &mut bo).await;
+    let mut ada_web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
+    let answer = panel_query(&mut ada_web, 702, REPLAY_FEED).await;
+    assert_eq!(answer.get("available"), Some(&json!(false)), "{answer}");
+    assert_eq!(
+        answer.get("reason").and_then(Value::as_str),
+        Some("You have no replay open; type SIM REPLAY <match>."),
+        "{answer}"
+    );
+    say(&mut ada, "SIM ABORT", "aborts match").await;
+}

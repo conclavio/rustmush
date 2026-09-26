@@ -1286,6 +1286,104 @@ fn the_cockpit_frame_and_the_arena_map_print_nothing_on_a_line_client() {
     }
 }
 
+/// **16b cut I.1 (16c N9)**: `SIM REPLAY`'s pushed grid prints as `VIEW`'s
+/// does, and the `arena.replay` query's document prints nothing.
+///
+/// The window is `web/src/lib/fixtures/replay/replay_window.json`, which
+/// `crates/tacsim/tests/replay.rs` blesses (keyframe 1 of a hand-built replay on
+/// the cockpit fixtures' yard): a `grid` of 39 by 20 cells, two columns a cell,
+/// `you: null` — so the footer names the window and no platform — with `RA` at
+/// (6, 4) drawn `o`, `BA` at (36, 14) drawn `*`, and `BB` standing on The Roof
+/// at (14, 7) drawn `*` over the spot `B` it covers. The document is
+/// `replay.json` under the query's own `replay` shape, which is not `grid`: a
+/// line client that somehow received one prints not one byte. No golden file is
+/// blessed here; 16b cut I.2 blesses `replay_grid.txt` from this print.
+#[test]
+fn i1_the_replay_window_prints_as_view_does_and_the_document_prints_nothing() {
+    let window = fixture_panel(
+        "arena.replay",
+        include_str!("../../../web/src/lib/fixtures/replay/replay_window.json"),
+    );
+    let page = rendered_str(&window, ColorDepth::None, 80);
+    let lines: Vec<&str> = page.trim_end_matches("\r\n").split("\r\n").collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some("Replay of match 7 at 0:05 (fixture_yard, 1000 cm cells)"),
+        "{page}"
+    );
+    assert_eq!(
+        lines.last().copied(),
+        Some("x 0..38  y 0..19  of 96x64  (10 m a cell, north up)"),
+        "a replay is nobody's platform, so the footer names no `you at`: {page}"
+    );
+    let footer = lines
+        .iter()
+        .rposition(|line| line.starts_with("x 0.."))
+        .expect("a footer");
+    let printed: Vec<&str> = lines
+        .iter()
+        .skip(footer.saturating_sub(20))
+        .take(20)
+        .copied()
+        .collect();
+    assert_eq!(printed.len(), 20, "twenty rows: {page}");
+    let grid: Vec<Vec<char>> = printed
+        .iter()
+        .map(|row| {
+            let glyphs: Vec<char> = row.chars().collect();
+            assert_eq!(glyphs.len(), 78, "seventy-eight columns: {row:?}");
+            glyphs
+                .chunks(2)
+                .filter_map(|pair| pair.first().copied())
+                .collect()
+        })
+        .collect();
+    let at = |x: usize, y: usize| {
+        grid.get(19_usize.saturating_sub(y))
+            .and_then(|row| row.get(x))
+            .copied()
+    };
+    assert_eq!(at(6, 4), Some('o'), "RA");
+    assert_eq!(at(2, 9), Some('o'), "RB");
+    assert_eq!(at(36, 14), Some('*'), "BA");
+    assert_eq!(at(14, 7), Some('*'), "BB, over the spot it covers");
+    assert_eq!(at(25, 3), Some('A'), "The Ford");
+    let head = lines
+        .iter()
+        .take(footer.saturating_sub(20))
+        .copied()
+        .collect::<Vec<&str>>()
+        .join(" ");
+    assert!(head.contains("o red") && head.contains("* blue"), "{head}");
+    assert!(
+        !head.contains("The Roof"),
+        "a covered spot is named nowhere: {head}"
+    );
+
+    let document = fixture_panel(
+        "arena.replay",
+        include_str!("../../../web/src/lib/fixtures/replay/replay.json"),
+    );
+    let OutputEvent::Panel {
+        feed,
+        kind,
+        mut data,
+    } = document
+    else {
+        unreachable!("fixture_panel builds a panel");
+    };
+    data["schema"] = serde_json::json!({ "id": "arena.replay", "version": 1, "shape": "replay" });
+    let answer = OutputEvent::Panel { feed, kind, data };
+    for depth in [ColorDepth::None, ColorDepth::TrueColor] {
+        for width in [0_u16, 40, 80, 200] {
+            assert!(
+                rendered(&answer, depth, width).is_empty(),
+                "the replay document printed something at {depth:?}/{width}"
+            );
+        }
+    }
+}
+
 /// Look-back I3-C36: a room field carrying a newline used to forge a second
 /// fact row. `LineWriter::write` splits an embedded newline with `end_line()`
 /// at indent 0 — flush left, exactly where a fact LABEL sits — and room

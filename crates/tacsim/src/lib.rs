@@ -581,7 +581,19 @@ impl GameModule for TacsimRuleset {
 fn boot_matches(ctx: &mut ModuleCtx<'_>, kv: &[(smol_str::SmolStr, serde_json::Value)]) {
     let mut high_water = 0_u64;
     let mut remembered: Vec<match_::HistoryRow> = Vec::new();
+    let mut replays: Vec<match_::replay::Replay> = Vec::new();
     for (key, value) in kv {
+        // **16b cut I.1 (16c N9)**: every replay document is a boot document
+        // too. A document whose own `match` disagrees with its key is not the
+        // replay this key holds, and is left out.
+        if let Some(id) = match_::replay::replay_id_of_key(key.as_str()) {
+            if let Some(replay) =
+                match_::replay::Replay::from_document(value).filter(|replay| replay.match_id == id)
+            {
+                replays.push(replay);
+            }
+            continue;
+        }
         if key.as_str() == match_::SEQ_KEY {
             high_water = high_water.max(match_::seq_from_document(value));
         } else if let Some(id) = match_::match_id_of_key(key.as_str()) {
@@ -604,6 +616,18 @@ fn boot_matches(ctx: &mut ModuleCtx<'_>, kv: &[(smol_str::SmolStr, serde_json::V
         // stale boot document of the same id would be, and the pin belongs here.
         for row in remembered {
             let _ = book.remember(row);
+        }
+        // **16b cut I.1**: AFTER the ring is filled, the replays of the matches
+        // it remembers and no others — a document the ring has no row for is
+        // one an eviction's delete has not reached yet, and holding it would
+        // hold RAM the ring no longer bounds. No ground is built here: a
+        // ground is sixty-five thousand cells and a horizon index, and the
+        // first `SIM REPLAY` of each distinct digest builds it once
+        // (`match_::replay::ground_for`).
+        for replay in replays {
+            if book.remembered(replay.match_id).is_some() {
+                book.hold_replay(replay.match_id, std::sync::Arc::new(replay));
+            }
         }
     }
 

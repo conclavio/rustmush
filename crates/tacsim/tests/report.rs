@@ -112,8 +112,26 @@ fn history_row(
         "ended_ms": 1_790_258_520_000_i64,
         "arena_ms": arena.now_ms,
         "reports": [loser.0, winner.0],
+        // 16b cut I.1: the replay document rode the result's batch too.
+        "replay": true,
     });
-    HistoryRow::from_document(&document).expect("a result-document-shaped row reads")
+    let row = HistoryRow::from_document(&document).expect("a result-document-shaped row reads");
+    assert!(
+        row.replay,
+        "16b cut I.1: `HistoryRow.replay` reads the flag"
+    );
+    // And a result written before the cut, with no flag at all, reads `false`.
+    let mut before = document;
+    before
+        .as_object_mut()
+        .expect("a result document is an object")
+        .remove("replay");
+    assert_eq!(
+        HistoryRow::from_document(&before).map(|row| row.replay),
+        Some(false),
+        "an absent flag is a result written before replays existed"
+    );
+    row
 }
 
 /// The seconds a pilot line is stamped at (`  m:ss  …`), or `None`.

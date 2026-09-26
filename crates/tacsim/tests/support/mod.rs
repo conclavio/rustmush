@@ -41,6 +41,9 @@
 
 #![allow(dead_code)]
 
+/// **16b cut I.1**: the fixture yard both fixture blessers draw on.
+pub mod yard;
+
 use mush_core::ObjId;
 use mush_sim::data::Pose;
 use mush_tactics::{CellAddr, TacticalUnit, UnitMutationOp, UnitMutationPlan};

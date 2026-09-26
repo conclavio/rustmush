@@ -433,6 +433,17 @@ point at a route that has nothing to take. The lobby then seats the slots before
 the missing one a side; a reset instance is the repair until a later version
 ships.
 
+**Replays (16b cut I.1).** Every match that ends writes one more document in its
+result's own batch, `tacsim:replay:<match>` — both sides' positions every 5 s,
+the shots and the wrecks, at most 256 KiB — and the result says `"replay": true`.
+It is kept for as long as the centre remembers the match (its last twenty) and
+deleted with the row, so the store holds at most twenty of them; a boot reads
+them back with the result documents. No pack and no config key. Every result
+row written before this commit answers `SIM REPLAY` with `recorded before
+replays existed`, and a reload or restart aborts a running match as `restart`,
+which writes no replay. Web clients see the `arena.replay` feed in their hello
+only after a gateway restart, and draw it only after 16b cut I.2.
+
 ### The first staff login
 
 Stop the instance, then run the current `mush-server` (or all-in-one `mushd`)

@@ -4350,7 +4350,11 @@ pub fn status_frame_held(
 /// shape means by `rows` and what [`map_frame`] and [`view_window`] both publish.
 /// One glyph per terrain class, from the atlas's own table, so the arena's map
 /// and the atlas's map read alike.
-fn terrain_rows(
+///
+/// **16b cut I.1** made it `pub(crate)`: a replay's window
+/// (`crate::match_::replay::replay_window`) draws its ground with this same
+/// builder rather than a copy of it.
+pub(crate) fn terrain_rows(
     terrain: &ArenaTerrain,
     origin: (u16, u16),
     size: (u16, u16),

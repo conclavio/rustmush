@@ -58,6 +58,10 @@ pub mod lobby;
 /// channels made at boot, joined at the check-out and left with the seat.
 pub(crate) mod net;
 mod record;
+// 16b cut I.1: the replay — the pure fold from the tape to one objective
+// picture of both sides, the replay documents, `SIM REPLAY` and the two queries'
+// reads. Documented by its own module doc, as `report` is.
+pub mod replay;
 // 16b cut V.3: the debrief — the pure fold from the tape to one reader's report,
 // the report documents, `SIM REPORT`, `@arena/report` and the module's store-read
 // completion. Documented by its own module doc (an outer doc here would move its
@@ -99,14 +103,15 @@ pub use net::{BLUE_NET, RED_NET, net_name};
 pub use record::{
     HISTORY_DEPTH, HistoryRow, HistoryUnit, MatchOutcome, MatchRecord, MatchState, NO_HISTORY,
     PoseNumbers, TeamRoster, UnitOutcome, UnitResult, arena_label, civil_utc, duration_words,
-    end_words, history_lines, match_id_of_key, outcome_words, report_key, result_key, write_report,
-    write_restart_abort,
+    end_words, history_lines, match_id_of_key, outcome_words, report_key, result_key, write_replay,
+    write_report, write_restart_abort,
 };
 pub use reset::{RESET_CAUSE, ResetReport, reset_stock_tanks, spec_plan};
 pub use sim::{SIM_VERB, Selector, sim_command};
 pub use verbs::{ArenaVerbError, arena_command, register_switches, state_word};
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 
 use mush_core::{Ctx, ObjId};
 use smol_str::SmolStr;
@@ -204,6 +209,29 @@ pub struct MatchBook {
     /// [`report::ReportRead`]. RAM, like the rest of the book: a read is a view,
     /// and one lost to a restart is asked again.
     pending_reads: BTreeMap<ObjId, report::PendingRead>,
+    /// **16b cut I.1 (16c N9, Q37)** — the replay of every remembered match
+    /// that has one, by id: held by [`finish`] beside its document, filled at
+    /// boot from the `tacsim:replay:<match>` documents whose match the ring
+    /// remembers, and forgotten with the ring's row
+    /// ([`MatchBook::forget_replay`]). At most [`HISTORY_DEPTH`] of at most
+    /// [`replay::REPLAY_MAX_BYTES`] each.
+    replays: BTreeMap<MatchId, Arc<replay::Replay>>,
+    /// **16b cut I.1** — the ground each remembered replay was fought on,
+    /// **keyed by arena digest**, so twenty lobby matches on one proving ground
+    /// hold one copy. [`finish`] takes the registry's `Arc` before `untrack`
+    /// drops it (`crate::arena_bridge::ground_of`); after a boot
+    /// `replay::ground_for` builds one once per digest. A ground no remembered
+    /// replay names is dropped with the last replay that did.
+    grounds: BTreeMap<String, Arc<crate::arena::state::ArenaDefinition>>,
+    /// **16b cut I.1** — the digests whose ground `replay::ground_for` built and
+    /// found to be a different ground (a pack changed since the match), so it
+    /// is built once and never again. Pruned with the grounds.
+    ground_mismatch: BTreeSet<String>,
+    /// **16b cut I.1** — each actor's replay cursor
+    /// ([`replay::ReplayCursor`]): what `SIM REPLAY` writes and what the
+    /// `arena.replay` and `arena.map` queries read for that actor. RAM, never
+    /// persisted.
+    replay_cursors: BTreeMap<ObjId, replay::ReplayCursor>,
 }
 
 /// **One opening cell staff chose for a centre slot** (16b cut U.4, 16c `T-52`;
@@ -448,6 +476,92 @@ impl MatchBook {
     #[must_use]
     pub fn remembered(&self, id: MatchId) -> Option<&HistoryRow> {
         self.history.iter().find(|row| row.id == id)
+    }
+
+    /// **The replay of a remembered match** (16b cut I.1), if the ring holds
+    /// one for it.
+    #[must_use]
+    pub fn replay(&self, id: MatchId) -> Option<Arc<replay::Replay>> {
+        self.replays.get(&id).cloned()
+    }
+
+    /// **The ground held under an arena digest** (16b cut I.1), if any. A
+    /// read: a ground not yet built after a boot is built by `SIM REPLAY`
+    /// (`replay::ground_for`), never here.
+    #[must_use]
+    pub fn ground(&self, digest: &str) -> Option<Arc<crate::arena::state::ArenaDefinition>> {
+        self.grounds.get(digest).cloned()
+    }
+
+    /// How many grounds the book holds (16b cut I.1): one per distinct arena
+    /// digest a remembered replay names.
+    #[must_use]
+    pub fn ground_count(&self) -> usize {
+        self.grounds.len()
+    }
+
+    /// Whether a digest's ground was built and found not to match (16b cut
+    /// I.1), so it will not be built again.
+    #[must_use]
+    pub fn ground_mismatched(&self, digest: &str) -> bool {
+        self.ground_mismatch.contains(digest)
+    }
+
+    /// **One actor's replay cursor** (16b cut I.1), if they have a replay
+    /// open.
+    #[must_use]
+    pub fn replay_cursor(&self, actor: ObjId) -> Option<replay::ReplayCursor> {
+        self.replay_cursors.get(&actor).copied()
+    }
+
+    /// **Hold one match's replay on the ring** (16b cut I.1), replacing any
+    /// held under that id — what [`finish`] and the boot do. `pub` so an
+    /// integration test can hand-edit one, as [`MatchBook::remember`] is.
+    pub fn hold_replay(&mut self, id: MatchId, replay: Arc<replay::Replay>) {
+        self.replays.insert(id, replay);
+    }
+
+    /// **Hold a ground under its digest** (16b cut I.1), keeping the first one
+    /// held: twenty matches on one ground share one copy.
+    pub fn hold_ground(
+        &mut self,
+        digest: String,
+        ground: Arc<crate::arena::state::ArenaDefinition>,
+    ) {
+        self.grounds.entry(digest).or_insert(ground);
+    }
+
+    /// **Drop the ground held under a digest** (16b cut I.1) — for a test that
+    /// stands in for a boot, after which no ground is held until `SIM REPLAY`
+    /// asks for one.
+    pub fn drop_ground(&mut self, digest: &str) {
+        self.grounds.remove(digest);
+    }
+
+    /// **Mark a digest's ground as known not to match** (16b cut I.1), as
+    /// `replay::ground_for` does after the one build that found a different
+    /// ground — for a test that proves a marked digest is never built again:
+    /// marked under a replay's REAL digest, whose build would succeed, only the
+    /// mark can refuse it.
+    pub fn mark_ground_mismatch(&mut self, digest: &str) {
+        self.ground_mismatch.insert(digest.to_owned());
+    }
+
+    /// **Forget one match's replay** (16b cut I.1): the entry, every cursor on
+    /// it, and any ground (or mismatch mark) no remembered replay names any
+    /// more. Called by the ring's eviction, in the same action that deletes the
+    /// replay document.
+    pub fn forget_replay(&mut self, id: MatchId) {
+        self.replays.remove(&id);
+        self.replay_cursors
+            .retain(|_, cursor| cursor.match_id != id);
+        let named: BTreeSet<String> = self
+            .replays
+            .values()
+            .map(|replay| replay.arena_digest.clone())
+            .collect();
+        self.grounds.retain(|digest, _| named.contains(digest));
+        self.ground_mismatch.retain(|digest| named.contains(digest));
     }
 
     /// Which match holds `unit`, as the book knows it (the registry's binding is
@@ -785,6 +899,8 @@ pub fn start(
         // 16b cut V.3: built beside the callsigns, which they name units by.
         folds: BTreeMap::new(),
         unparsed: 0,
+        // 16b cut I.1: built beside the folds, once the callsigns are known.
+        replay: None,
         // 16b cut N.2: the same grouping `Arena::new` derives, from the same
         // triples and the same `[tacsim.arena].squad_size` (16b cut Z.1) — a
         // side's reflex units dealt into squads, lowest id commanding. One
@@ -858,6 +974,20 @@ pub fn start(
         .map(|unit| (unit.id, report::OwnTank::from_custody(unit)))
         .collect();
 
+    // **16b cut I.1 (16c N9)**: the replay's keyframe 0 — every unit's
+    // check-out pose on the ground's cell grid — read off the custody before it
+    // goes over, for the same reason `own_tanks` is: `CustodyOut` takes both the
+    // units and the definition below.
+    let opening = ReplayOpening {
+        poses: custody_units
+            .iter()
+            .map(|unit| (unit.id, unit.pose.clone()))
+            .collect(),
+        cell_cm: definition.terrain.cell_cm(),
+        width: definition.terrain.width(),
+        height: definition.terrain.height(),
+    };
+
     // (4) Open. (5) And undo (3) if it refuses.
     let resolution = arena_def::resolution_for(&catalog);
     let custody = CustodyOut {
@@ -913,8 +1043,45 @@ pub fn start(
                 (unit, fold)
             })
             .collect();
+        // **16b cut I.1 (16c N9, Q37)**: one replay fold for the match — both
+        // sides, every unit the arena named, in unit-id order — seeded with the
+        // opening captured above and fed the tape by `on_chunk` beside the
+        // debrief folds. A staff `@arena/start` match gets one too: it is this
+        // same function.
+        let roster: Vec<(ObjId, crate::arena::state::Designator, Team)> = record
+            .callsigns
+            .iter()
+            .filter_map(|(unit, designator)| {
+                record.team_of(*unit).map(|team| (*unit, *designator, team))
+            })
+            .collect();
+        record.replay = Some(replay::ReplayFold::new(
+            match_id,
+            &record.arena,
+            &record.arena_definition_digest,
+            opening.cell_cm,
+            opening.width,
+            opening.height,
+            arena_cfg.ledger.summary_ms,
+            &roster,
+            &opening.poses,
+        ));
     }
     Ok(match_id)
+}
+
+/// **The replay's opening** (16b cut I.1): every unit's check-out pose and the
+/// ground's cell grid, captured in [`start`] before the custody crosses the
+/// seam.
+struct ReplayOpening {
+    /// `(unit, pose)` in check-out order.
+    poses: Vec<(ObjId, mush_sim::data::Pose)>,
+    /// The side of one cell, centimetres.
+    cell_cm: u16,
+    /// The window's columns.
+    width: u16,
+    /// The window's rows.
+    height: u16,
 }
 
 /// Undo a partial check-out and leave the match `Aborted`.
@@ -1215,14 +1382,17 @@ pub fn finish(
     // **16b cut V.3**: the debrief folds come off the BOOK's record here, before
     // the clone, so each is finished exactly once and the copy below does not
     // carry them.
-    let Some((record, folds)) = ctx
+    let Some((record, folds, replay_fold)) = ctx
         .w
         .module_state_mut::<MatchBook>()
         .and_then(|book| book.get_mut(match_id))
         .filter(|record| record.state.is_live())
         .map(|record| {
             let folds = std::mem::take(&mut record.folds);
-            (record.clone(), folds)
+            // **16b cut I.1**: and the replay fold, beside them and for the
+            // same reason.
+            let replay_fold = record.replay.take();
+            (record.clone(), folds, replay_fold)
         })
     else {
         return false;
@@ -1371,6 +1541,17 @@ pub fn finish(
         .module_state::<ArenaRegistry>()
         .map(|registry| registry.pilots_of(match_id))
         .unwrap_or_default();
+    // **16b cut I.1**: the ground the replay was fought on, taken out of the
+    // registry BEFORE `untrack` drops its `Arc` (16b cut K.2) and held on the
+    // book under the arena's digest — so every lobby match on one proving
+    // ground shares one copy, and a replay is drawn without rebuilding the
+    // ground. Only a match that has a replay to draw keeps one.
+    if replay_fold.is_some()
+        && let Some(ground) = crate::arena_bridge::ground_of(ctx.w, match_id)
+        && let Some(book) = ctx.w.module_state_mut::<MatchBook>()
+    {
+        book.hold_ground(record.arena_definition_digest.clone(), ground);
+    }
     // **16b cut V.2**: the mirror `untrack` hands back is kept for its chunk
     // count, which the result document carries as `ledger.chunks`. By now the
     // world has appended the whole tape: the task sends every queued chunk
@@ -1427,6 +1608,22 @@ pub fn finish(
         );
         reports.push(unit);
     }
+    // **16b cut I.1 (16c N9, Q37)**: the replay — one `tacsim:replay:<match>`
+    // document in this same action, before the result, which says it exists —
+    // and then the ring's copy in RAM. By now every chunk has passed `on_chunk`,
+    // so the fold has seen the whole tape the world holds. A void end still
+    // writes the replay it folded: the tape says `void`, and so does the replay.
+    let replay_written = match replay_fold {
+        Some(fold) => {
+            let replay = fold.finish(outcome, record::reason_word(end.reason));
+            record::write_replay(ctx, match_id, &replay);
+            if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+                book.hold_replay(match_id, Arc::new(replay));
+            }
+            true
+        }
+        None => false,
+    };
     record::write_result(
         ctx,
         match_id,
@@ -1436,6 +1633,7 @@ pub fn finish(
         &results,
         chunks,
         &reports,
+        replay_written,
     );
     // 16b cut K.1: and the lobby's own half of the release — the pods and the
     // slots — in this same authoritative action, with the centre left in its
