@@ -1791,6 +1791,10 @@ impl WorldHandle {
 /// The server-side dependencies the world task drives besides the engine:
 /// the store (staff ops, bgsave), the IP guard (siteban mirror), and the
 /// staff-command queue shared with the registry handlers.
+///
+/// Production builds it through [`ServerDeps::production`], the one constructor
+/// both binaries call; [`ServerDeps::in_memory`] is the tests' and the compat
+/// path's.
 pub struct ServerDeps {
     /// The persistence backend.
     pub store: Arc<dyn ObjectStore>,
@@ -1798,12 +1802,16 @@ pub struct ServerDeps {
     pub guard: Arc<IpGuard>,
     /// The queue `register_server_commands` handlers push into.
     pub staff: Arc<StaffQueue>,
-    /// The M7 LLM service handle. Present in the real server (built from
-    /// `[llm]` config); `EffectDispatcher` uses it to run a module's deferred
-    /// [`Effect::ModuleAsync`] (worldgen `@gen`) off the world loop and
-    /// re-enter as [`WorldCommand::ModuleAsyncDone`]. `None` for the compat
-    /// [`ServerDeps::in_memory`] and lightweight tests that boot no LLM-driven module — such
-    /// an effect is then logged and dropped, never a panic. The M8 NPC module
+    /// The M7 LLM service handle. Present on every production world task
+    /// (through [`ServerDeps::production`], the booted engine's own service);
+    /// `EffectDispatcher` uses it to run a module's deferred
+    /// [`Effect::ModuleAsync`] (worldgen `@gen`, an NPC turn, `@weather/generate`,
+    /// a tacsim squad's deliberation) off the world loop and re-enter as
+    /// [`WorldCommand::ModuleAsyncDone`]. `None` only for
+    /// [`ServerDeps::in_memory`] and the rigs that boot no LLM-driven module —
+    /// such an effect is then logged and, for worldgen, npc and weather,
+    /// dropped; a tacsim deliberation re-enters an `unavailable` refusal (the
+    /// squad stays on doctrine); never a panic. The M8 NPC module
     /// shares this same handle (its off-loop turn is driven from `EffectDispatcher`);
     /// its on-loop ability execution goes through the module's grounding adapter,
     /// not this struct.
@@ -1826,9 +1834,46 @@ pub struct ServerDeps {
 }
 
 impl ServerDeps {
-    /// Throwaway deps for tests and the compat [`ServerDeps::in_memory`]: fresh in-memory
-    /// store, fresh guard, fresh (never-populated) staff queue, no LLM, a
-    /// throwaway metrics registry, and an explicit in-memory quarantine spool.
+    /// The production dependencies of the world task: what BOTH binaries hand
+    /// `spawn_persist_with_gateway_production` (the split, `mush_server::serve`)
+    /// and `spawn_persist_with_decision_workers` (the all-in-one, `mushd::main`).
+    /// `staff` and `llm` are the booted engine's own — the queue the registry
+    /// handlers push into and the service the modules were composed with — so
+    /// neither can be an orphan; `metrics` is the ONE registry the caller's
+    /// ingress stamps too (the `SocketSink` and the writer on the split, the SSH
+    /// and web listeners on the all-in-one). 16b cut AC.1 (16c `B-82`): the split
+    /// half used to build these from `in_memory()` and overwrite five fields,
+    /// leaving `llm` `None`, so on dev1 every LLM-backed `Effect::ModuleAsync` met
+    /// no service — worldgen, npc and weather dropped, a squad's deliberation
+    /// refused back to doctrine — while the all-in-one ran them.
+    #[must_use]
+    pub fn production(
+        booted: &crate::boot::BootedEngine,
+        store: Arc<dyn ObjectStore>,
+        guard: Arc<IpGuard>,
+        metrics: Arc<Metrics>,
+        quarantine_spool: crate::quarantine::QuarantineSpool,
+        outbox_adapters: Vec<Arc<dyn crate::durable_outbox::DurableOutboxAdapter>>,
+    ) -> ServerDeps {
+        ServerDeps {
+            store,
+            guard,
+            staff: Arc::clone(&booted.staff),
+            llm: Some(Arc::clone(&booted.llm)),
+            metrics,
+            quarantine_spool,
+            outbox_adapters,
+        }
+    }
+
+    /// Throwaway deps for the tests and for `mushd::world_task::spawn`'s compat
+    /// path: a fresh in-memory store, a fresh guard, a never-populated staff
+    /// queue, NO LLM service, a throwaway metrics registry and an in-memory
+    /// quarantine spool. Never production's: both binaries build theirs with
+    /// [`ServerDeps::production`], and a production world task whose `llm` is
+    /// `None` is the 16c `B-82` defect (every LLM-backed `Effect::ModuleAsync`
+    /// met no service: worldgen, npc and weather dropped, a squad's deliberation
+    /// refused back to doctrine).
     #[must_use]
     pub fn in_memory() -> ServerDeps {
         ServerDeps {
@@ -14466,6 +14511,241 @@ mod tests {
             )?;
             Ok(())
         }
+    }
+
+    /// 16b cut AC.1 (16c `B-82`): a probe that stands where the tacsim module
+    /// stands on the effect dispatcher. Its `name()` is `tacsim::store::NS`, the
+    /// name the dispatcher's tacsim arm matches AND the name
+    /// `mush_core::apply_async_completion` routes the re-entry by; no real
+    /// tacsim module is composed in this rig, so the name is free.
+    struct DeliberationProbeModule {
+        /// The re-entered completion payload, once it arrives.
+        reply: Arc<Mutex<Option<String>>>,
+    }
+
+    struct DeliberationProbeCompletion(Arc<Mutex<Option<String>>>);
+
+    impl AsyncCompletion for DeliberationProbeCompletion {
+        fn on_complete(&self, _ctx: &mut Ctx<'_>, _correlation: u64, payload: &str) {
+            *self.0.lock().expect("the probe's reply slot") = Some(payload.to_string());
+        }
+    }
+
+    impl GameModule for DeliberationProbeModule {
+        fn name(&self) -> &'static str {
+            tacsim::store::NS
+        }
+
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), mush_core::ModError> {
+            reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+            reg.command(
+                CommandSpec {
+                    name: "probe-deliberate".into(),
+                    shape: ArgShape::None,
+                    help: "test-only tacsim deliberation effect".into(),
+                    ..CommandSpec::default()
+                },
+                Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                    let payload =
+                        serde_json::to_string(&tacsim::deliberation::DeliberationJob::Deliberate {
+                            brief: probe_squad_brief(),
+                        })
+                        .expect("a brief encodes");
+                    ctx.out.defer(Deferred::Effect(Effect::ModuleAsync {
+                        module: SmolStr::new_static(tacsim::store::NS),
+                        actor: GOD,
+                        correlation: 1,
+                        payload,
+                    }));
+                    Ok(())
+                }),
+            )?;
+            reg.async_completion(Arc::new(DeliberationProbeCompletion(Arc::clone(
+                &self.reply,
+            ))))?;
+            Ok(())
+        }
+    }
+
+    /// The `SquadBrief` of `tacsim::deliberation`'s own round-trip test
+    /// (`a_job_and_a_reply_round_trip_their_wire_forms`), copied: every field
+    /// is public, and `contacts` stays empty so the un-re-exported
+    /// `BriefContact` is never named.
+    fn probe_squad_brief() -> tacsim::deliberation::SquadBrief {
+        use tacsim::deliberation::{BriefMember, SquadBrief, SquadId};
+        SquadBrief {
+            squad: SquadId {
+                team: tacsim::arena::state::Team::Red,
+                index: 1,
+            },
+            match_id: 7,
+            commander: 4,
+            reason: "no_order".to_string(),
+            units: 2,
+            health_permille: 1_000,
+            states: vec![("patrol".to_string(), 2)],
+            cell: Some((1, 1)),
+            window: (16, 16),
+            default_ttl_ms: 30_000,
+            contacts: Vec::new(),
+            members: vec![
+                BriefMember {
+                    unit: 4,
+                    ordinal: 1,
+                    state: "patrol".to_string(),
+                    health_permille: 1_000,
+                    band: "here".to_string(),
+                    bearing_deg: 0,
+                },
+                BriefMember {
+                    unit: 5,
+                    ordinal: 2,
+                    state: "patrol".to_string(),
+                    health_permille: 1_000,
+                    band: "close".to_string(),
+                    bearing_deg: 270,
+                },
+            ],
+        }
+    }
+
+    /// `deliberation.rs`'s `mock_service` shape: a tool-calling
+    /// `MockProvider` named `openrouter` (where route derivation sends every
+    /// non-`anthropic/` model) behind the `tacsim_deliberate` route.
+    fn probe_mock_service() -> (Arc<LlmService>, Arc<mush_llm::MockProvider>) {
+        let mock = Arc::new(mush_llm::MockProvider::new("openrouter").with_caps(
+            mush_llm::ProviderCaps {
+                tool_calling: true,
+                forced_tool_choice: true,
+                ..mush_llm::ProviderCaps::default()
+            },
+        ));
+        let provider: Arc<dyn mush_llm::LlmProvider> = mock.clone();
+        let llm = Arc::new(
+            LlmService::builder()
+                .provider("openrouter", provider)
+                .route(
+                    "tacsim_deliberate",
+                    mush_llm::RouteConfig {
+                        model: "z-ai/glm-5.3-flash".to_string(),
+                        max_tokens: 512,
+                        timeout_s: 30,
+                        reasoning: None,
+                        reasoning_max_tokens: None,
+                    },
+                )
+                .global_enabled(true)
+                .build(),
+        );
+        (llm, mock)
+    }
+
+    /// Spawn a world with the deliberation probe over `llm`, raise one tacsim
+    /// `Effect::ModuleAsync`, wait for its re-entry, shut the world down, and
+    /// return the re-entered reply.
+    async fn probe_deliberation_reply(
+        llm: Option<Arc<LlmService>>,
+    ) -> tacsim::deliberation::DeliberationReply {
+        let reply = Arc::new(Mutex::new(None));
+        let engine = Engine::with_modules(
+            World::new_minimal(),
+            base_registry(),
+            vec![Box::new(DeliberationProbeModule {
+                reply: Arc::clone(&reply),
+            })],
+        )
+        .expect("the deliberation probe composes");
+        let recorder = Arc::new(RecordingGateway::default());
+        let handles = spawn_persist_with_gateway(
+            engine,
+            ServerDeps {
+                llm,
+                ..ServerDeps::in_memory()
+            },
+            move |_| -> Gateway { recorder },
+        );
+        assert!(
+            handles
+                .handle
+                .inbound(Inbound::Cmd {
+                    conn: 1,
+                    actor: GOD,
+                    line: "probe-deliberate".into(),
+                })
+                .await
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let payload = loop {
+            if let Some(payload) = reply.lock().expect("the probe's reply slot").clone() {
+                break payload;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the dispatcher must run the deliberation against `deps.llm` and re-enter \
+                 its reply (or re-enter the refusal when there is none)"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert!(
+            handles
+                .handle
+                .inbound(Inbound::Control(ControlMsg::Shutdown))
+                .await
+        );
+        handles.world_join.await.unwrap();
+        handles.writer_join.await.unwrap();
+        handles.outbox_join.await.unwrap();
+        serde_json::from_str(&payload).expect("the re-entered payload is a DeliberationReply")
+    }
+
+    /// **The effect dispatcher runs a squad's deliberation against `deps.llm`,
+    /// and refuses it without one** (16b cut AC.1, 16c `B-82`).
+    ///
+    /// The split half used to hand the world task no service, so on dev1 every
+    /// deliberation took the second branch below. With the service, the mock's
+    /// default empty answer never parses — `structured.rs` makes the original
+    /// attempt and one repair, then refuses by name — so the proof that the
+    /// call LEFT the world task is a `malformed` refusal after exactly two
+    /// calls (read after the re-entry, so the count is exact). Without it, the
+    /// dispatcher re-enters `unavailable_reply` and nothing is called. This is
+    /// the cheap pin; `mush-gateway`'s `two_process_llm.rs` is the expensive
+    /// form of it on the production shape.
+    #[tokio::test]
+    async fn a_tacsim_module_async_effect_runs_against_the_service_and_is_refused_without_it() {
+        use tacsim::deliberation::{DeliberationReply, RefusedReason};
+
+        let (llm, mock) = probe_mock_service();
+
+        // The control first: the same world with no service is the B-82 shape.
+        match probe_deliberation_reply(None).await {
+            DeliberationReply::Refused { reason, .. } => assert_eq!(
+                reason,
+                RefusedReason::Unavailable.as_str(),
+                "a world task with no service re-enters `unavailable_reply`"
+            ),
+            other => panic!("a world with no service cannot make an order: {other:?}"),
+        }
+        assert_eq!(
+            mock.call_count(),
+            0,
+            "this world was never handed the service, so nothing was called; the \
+             observed thing is the refusal"
+        );
+
+        // The same world over the service.
+        match probe_deliberation_reply(Some(Arc::clone(&llm))).await {
+            DeliberationReply::Refused { reason, .. } => assert_eq!(
+                reason,
+                RefusedReason::Malformed.as_str(),
+                "the mock's empty answer never parses, so the service's refusal is `malformed`"
+            ),
+            other => panic!("the empty answer cannot make an order: {other:?}"),
+        }
+        assert_eq!(
+            mock.call_count(),
+            2,
+            "the original attempt plus one repair: the deliberation reached the provider"
+        );
     }
 
     struct ProbeInputContext(Arc<GateProbeCounts>);

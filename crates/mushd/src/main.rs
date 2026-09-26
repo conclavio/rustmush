@@ -424,22 +424,24 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     let controls = Arc::new(mushd::controls::GatewayControls::default());
 
     // The single-writer world task + its store writer.
+    //
+    // 16b cut AC.1 (16c B-82): the world task's dependencies through the one
+    // production constructor the split calls too. E0 quarantine spool: a
+    // separate durable failure domain under the data dir for confirmed-poison
+    // ledger seals. Programme D5: the on-call Discord DM adapter, when the bot
+    // is configured (a REST-only client of its own, beside the gateway's).
+    let deps = ServerDeps::production(
+        &booted,
+        Arc::clone(&store),
+        Arc::clone(&guard),
+        Arc::clone(&metrics),
+        quarantine_spool,
+        mushd::discord_dm::adapters_from_config(&config),
+    );
     let handles = world_task::spawn_persist_with_decision_workers(
         booted.engine,
         Arc::clone(&sessions),
-        ServerDeps {
-            store: Arc::clone(&store),
-            guard: Arc::clone(&guard),
-            staff: booted.staff,
-            llm: Some(Arc::clone(&booted.llm)),
-            metrics: Arc::clone(&metrics),
-            // E0 quarantine spool: a separate durable failure domain under the
-            // data dir for confirmed-poison ledger seals.
-            quarantine_spool,
-            // Programme D5: the on-call Discord DM adapter, when the bot is
-            // configured (a REST-only client of its own, beside the gateway's).
-            outbox_adapters: mushd::discord_dm::adapters_from_config(&config),
-        },
+        deps,
         booted.decision_workers,
         Arc::clone(&controls),
     )?;

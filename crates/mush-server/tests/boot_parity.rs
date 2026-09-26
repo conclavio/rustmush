@@ -66,6 +66,7 @@
 //! | `[game].max_characters` | `build_engine` -> `@newchar` | `the_engine_knobs_reach_the_booted_world` |
 //! | `[offers].key_dir`, `[server].data_dir` (decision keys) | `build_engine` key rings | `the_engine_knobs_reach_the_booted_world` |
 //! | `[tacsim.economy].housing` / `.market` / `.reserved_rooms` | `game_modules` -> `server_modules_with` | `modules.rs`'s `lb_e5cc231_…`, `tests/market_issuer.rs` |
+//! | `[llm]` (the service handle) | `build_engine` -> `ServerDeps::production` (both roots) | `the_production_deps_carry_the_booted_mind_and_one_registry` |
 //!
 //! A knob added to `mush-config` and never wired into `boot.rs` leaves a row
 //! missing from this table — a documented, greppable gap rather than a silent
@@ -1157,4 +1158,112 @@ fn the_composition_root_is_stated_once_across_the_fork() {
             "`{needle}`'s one home is the shared root"
         );
     }
+}
+
+// ---- 9: the world task's dependencies (16b cut AC.1) -------------------------
+
+/// The one production constructor hands the world task the booted engine's own
+/// LLM service, the booted staff queue and the caller's metrics registry — the
+/// three identities 16c `B-82` was about.
+///
+/// The split half used to build its deps as throwaway in-memory ones and
+/// overwrite five fields, never `llm`, so every LLM-backed
+/// `Effect::ModuleAsync` on the production shape met no service while the
+/// all-in-one, which hand-built the struct with the service in it, ran them.
+/// (The `metrics` identity cannot fail on its own — it is the constructor's
+/// argument — which is why the next case pins the one registry at the source.)
+#[tokio::test]
+async fn the_production_deps_carry_the_booted_mind_and_one_registry() {
+    let fx = boot_fixture("deps", |_| {}).await;
+    let metrics = Arc::new(mush_config::metrics::Metrics::new());
+    let deps = mush_server::world_task::ServerDeps::production(
+        &fx.booted,
+        Arc::new(InMemoryStore::new()),
+        Arc::new(mush_config::ipguard::IpGuard::new()),
+        Arc::clone(&metrics),
+        QuarantineSpool::in_memory(),
+        Vec::new(),
+    );
+    assert!(
+        Arc::ptr_eq(
+            deps.llm
+                .as_ref()
+                .expect("production always carries the booted service"),
+            &fx.booted.llm
+        ),
+        "the world task's effect dispatcher must run against the service the \
+         modules were composed with: 16c B-82"
+    );
+    assert!(
+        Arc::ptr_eq(&deps.staff, &fx.booted.staff),
+        "the world loop must drain the booted staff queue, or `@boot` enqueues \
+         onto an orphan"
+    );
+    assert!(
+        Arc::ptr_eq(&deps.metrics, &metrics),
+        "one registry for the sink and the world loop"
+    );
+    assert!(
+        deps.outbox_adapters.is_empty(),
+        "the constructor adds no outbox adapter the caller did not hand it"
+    );
+}
+
+/// Both binaries build their world task's deps through
+/// `ServerDeps::production`, neither hand-builds the struct nor starts from the
+/// throwaway in-memory deps, and the split root makes ONE metrics registry.
+///
+/// Plain `str::matches`, so comments count — deliberately: neither root may
+/// spell the needles even in prose, which is what keeps this tripwire a count
+/// and not a parser. 16c `B-82` was the two roots transcribing one struct and
+/// disagreeing by omission (the split half never set `llm`); a hand-built
+/// struct on either side, or a second registry, is that bug coming back the
+/// same way. The registry count reads only the production half of `lib.rs`
+/// (the text before its first `#[cfg(test)]`, the split
+/// `world_task.rs`'s `e7c2_b1_both_ingresses_call_one_five_step_function`
+/// makes): its test module legitimately builds registries of its own.
+#[test]
+fn both_binaries_build_their_deps_through_the_production_constructor() {
+    const ROOTS: [(&str, &str); 2] = [
+        (
+            "crates/mush-server/src/lib.rs",
+            include_str!("../src/lib.rs"),
+        ),
+        (
+            "crates/mushd/src/main.rs",
+            include_str!("../../mushd/src/main.rs"),
+        ),
+    ];
+    for (name, src) in ROOTS {
+        assert_eq!(
+            src.matches("ServerDeps::production(").count(),
+            1,
+            "{name} must build its world task's deps through \
+             `ServerDeps::production` exactly once (16b cut AC.1): a root that \
+             builds them any other way is 16c B-82 coming back by omission"
+        );
+        assert_eq!(
+            src.matches("ServerDeps::in_memory()").count(),
+            0,
+            "{name} must not start production's deps from the throwaway \
+             in-memory ones: overwriting fields one by one is how the split half \
+             lost its LLM service (16c B-82)"
+        );
+        assert_eq!(
+            src.matches("ServerDeps {").count(),
+            0,
+            "{name} must not hand-build `ServerDeps`: a hand-built struct on \
+             either side is 16c B-82 coming back by omission"
+        );
+    }
+    let production_half = ROOTS[0].1.split("#[cfg(test)]").next().unwrap_or("");
+    assert_eq!(
+        production_half.matches("Metrics::new()").count(),
+        1,
+        "crates/mush-server/src/lib.rs's production half must make exactly one \
+         metrics registry — the one the `SocketSink`, the writer, the reader, the \
+         archive pass and the world loop share (16b cut AC.1, 16c B-82); a second \
+         is two registries by accident, the shape the old code only avoided by \
+         chance"
+    );
 }

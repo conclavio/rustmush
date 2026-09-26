@@ -290,15 +290,10 @@ pub async fn serve_classified(
             (opened.store, opened.archive)
         }
     };
-    let boot::BootedEngine {
-        engine,
-        staff,
-        llm,
-        decision_workers,
-        archive_namespaces,
-    } = boot::build_engine(&config, &store, &quarantine_spool).await?;
+    let booted = boot::build_engine(&config, &store, &quarantine_spool).await?;
     let offer_routes = Arc::new(
-        engine
+        booted
+            .engine
             .registry
             .action_providers()
             .ok_or_else(|| "legal-action provider registry is unavailable".to_owned())?
@@ -312,7 +307,7 @@ pub async fn serve_classified(
     // the boot [`ToGateway::Hello`] so the split gateway can build the web
     // client's `hello` frame with the SAME features/panels the all-in-one
     // advertises.
-    let (features, panels) = boot::build_hello_manifest(&engine);
+    let (features, panels) = boot::build_hello_manifest(&booted.engine);
 
     // The server -> gateway boundary: every `ToGateway` the world loop (and the
     // request handlers) produce is queued here and drained to the socket by the
@@ -331,25 +326,37 @@ pub async fn serve_classified(
     let (to_gw_tx, to_gw_rx) = mpsc::channel::<ToGateway>(to_gw_cap);
 
     let guard = Arc::new(IpGuard::new());
-    let mut deps = ServerDeps::in_memory();
-    deps.store = Arc::clone(&store);
-    deps.guard = Arc::clone(&guard);
-    // The world loop must drain the SAME staff queue the registry handlers push
-    // into (matching `mushd::main`), or `@boot`/`@siteban`/... would be enqueued
-    // to an orphan queue and never execute.
-    deps.staff = staff;
-    // Unified quarantine spool: a separate failure domain from the store,
-    // under the configured data dir. Confirmed poison seals and complete K3
-    // bundles are fsynced here before the writer enters its integrity halt.
-    deps.quarantine_spool = quarantine_spool;
-    // Programme D5: the on-call Discord DM adapter, when the bot is configured.
-    deps.outbox_adapters = crate::discord_dm::adapters_from_config(&config);
+    // The one metrics registry of this process (PLAN "Observability"): the
+    // `SocketSink`, the writer and reader loops, the archive pass and the world
+    // loop all stamp it, and `@stats` reads it back. It used to be the throwaway
+    // registry the in-memory deps made, shared by accident; now it is made here
+    // and shared on purpose (a parity test counts this line: one registry).
+    let metrics = Arc::new(Metrics::new());
+    // 16b cut AC.1 (16c B-82): the world task's dependencies through the ONE
+    // production constructor `mushd::main` calls too — the booted staff queue
+    // (matching the registry handlers), the booted LLM service (what the effect
+    // dispatcher runs `Effect::ModuleAsync` against), the unified quarantine spool
+    // (a separate failure domain from the store, under the configured data dir:
+    // confirmed poison seals and complete K3 bundles are fsynced here before the
+    // writer enters its integrity halt), and programme D5's on-call Discord DM
+    // adapter when the bot is configured.
+    let deps = ServerDeps::production(
+        &booted,
+        Arc::clone(&store),
+        Arc::clone(&guard),
+        Arc::clone(&metrics),
+        quarantine_spool,
+        crate::discord_dm::adapters_from_config(&config),
+    );
+    let boot::BootedEngine {
+        engine,
+        decision_workers,
+        archive_namespaces,
+        ..
+    } = booted;
 
-    // Cloned out BEFORE `deps` is moved into the world spawn: the writer task and
-    // the [`SocketSink`] stamp shed/timeout/high-water onto the SAME registry the
-    // world loop reads for `@stats` (never a second registry). `teardown` is the
-    // one-shot the [`SocketSink`] notifies on overflow and the writer waits on.
-    let metrics = Arc::clone(&deps.metrics);
+    // `teardown` is the one-shot the [`SocketSink`] notifies on overflow and the
+    // writer waits on.
     let teardown = Arc::new(Notify::new());
     let sink = SocketSink::new(
         to_gw_tx.clone(),
@@ -383,10 +390,14 @@ pub async fn serve_classified(
     // over the same LLM service the modules were composed with, and the worker
     // limit (`[llm].decision_workers`) comes from the same reading of `[llm]`
     // that built it — this function no longer re-parses the stanza to find it.
+    // The provider registry and the effect dispatcher are fed from ONE field on
+    // purpose (16c B-82 was these two fed from two places): the same read
+    // `mushd::world_task::spawn_persist_with_decision_workers` makes.
+    let deps_llm = deps.llm.clone();
     let handles = world_task::spawn_persist_with_gateway_production(
         engine,
         deps,
-        Some(Arc::clone(&llm)),
+        deps_llm,
         decision_workers,
         move |_weak_inbound| {
             // The forked server never polices (it owns no connection buffers), so it

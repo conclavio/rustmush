@@ -176,7 +176,18 @@ full restart, because SIGHUP restarts only the server child and the gateway
 process would keep running the old binary. Set `GATEWAY_RESTART=1` on the
 deploy line (`ssh … 'GATEWAY_RESTART=1 bash …/deploy/dev1-split/deploy.sh'`) and
 connections drop once. Everything else stays a `reload`
-([`dev1-split/README.md`](dev1-split/README.md) has the table).
+([`dev1-split/README.md`](dev1-split/README.md) has the table). 16b cut AC.1 —
+the split's world task holding the LLM service, so a squad's commander asks its
+provider on the split as it did on the all-in-one (16c `B-82`) — is a
+`mush-server` change and one of the `reload` cases; the one file it adds under
+`crates/mush-gateway` is a test the gateway binary never compiles, so the table's
+`crates/mush-gateway` row does not apply to it. It turns on every LLM-backed
+effect the split used to drop or refuse, not only deliberation: the OOC area's
+NPCs (Sharon in the Welcome Hall, where `ooc` lands everyone, and Aaron on the
+bus) answer and summarise through the provider, and staff `@gen` and
+`@weather/generate` call it too. From that deploy all of them spend inside the
+template's one shared `[llm.budgets] global` cap, and only `worldgen_room` and
+`npc_dialogue_major` have a per-feature cap of their own.
 
 **What a full restart does to a web player.** Every SSH and web connection
 drops once, and every in-progress *session* — the attach, the scrollback ring,
