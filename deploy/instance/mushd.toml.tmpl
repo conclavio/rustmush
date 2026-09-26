@@ -140,8 +140,17 @@ guild_id_env = "DISCORD_GUILD_ID"
 [game]
 linkdead_grace_s = 300
 max_characters = 3
-ic_ratio = 1
-ic_epoch = "2020-01-01 00:00"
+# The IC clock: IC seconds per real second, and the IC date and time the clock
+# reads at unix 0 — today's IC date is that epoch plus the ratio times the
+# seconds since 1970, so the ratio moves today's date too. Read at boot and
+# SEEDED into the world timeline only on an EMPTY store — the first boot writes
+# generation one from these two and persisted truth wins from then on — so an
+# edit here changes nothing on a standing world until the store is wiped.
+# Nothing but this config sets the epoch. Both are the instance's (16b cut
+# AC.2); the quotes are the template's, so IC_EPOCH in instance.env carries the
+# bare YYYY-MM-DD HH:MM.
+ic_ratio = __IC_RATIO__
+ic_epoch = "__IC_EPOCH__"
 # The shipped starter area (the lot off Limbo) at a world's FIRST boot only;
 # static content, no LLM call. A retired pack stays retired across restarts.
 starter_area = true

@@ -103,6 +103,14 @@ struct ShippedInstance {
     log_format: &'static str,
     /// The onboarding shape this box chose.
     onboarding: Onboarding,
+    /// The IC seconds per real second this box renders into `[game].ic_ratio`.
+    /// A clock a box is free to choose belongs beside the box, not in a rule
+    /// applied to every box; 16b cut AC.2 made it a key so the render stops
+    /// reverting it.
+    ic_ratio: u32,
+    /// The IC date and time at unix 0 this box renders into `[game].ic_epoch`,
+    /// as the parsed config carries it — the quotes are the template's.
+    ic_epoch: &'static str,
 }
 
 /// The shipped parameterisations. 16b cut R-b: one game — the Shadowrun env left
@@ -115,11 +123,17 @@ const SHIPPED: &[ShippedInstance] = &[
         env: "deploy/instance/instance.env.example",
         log_format: "json",
         onboarding: Onboarding::Gated,
+        ic_ratio: 1,
+        ic_epoch: "2020-01-01 00:00",
     },
     ShippedInstance {
         env: "deploy/dev1/instance.env",
         log_format: "pretty",
         onboarding: Onboarding::Open,
+        // The values the owner set by hand on the box on 2026-09-22 (16c T-88);
+        // at rate 4 from this epoch at unix 0, the fresh world reads the 2250s.
+        ic_ratio: 4,
+        ic_epoch: "2026-09-22 00:00",
     },
 ];
 
@@ -680,6 +694,51 @@ fn every_template_placeholder_is_a_shipped_instance_env_key() {
         assert!(
             unused.is_empty(),
             "{env_file} declares keys the template never uses: {unused:?}"
+        );
+    }
+}
+
+/// **16b cut AC.2 (16c T-88): each shipped instance renders the IC clock it
+/// chose.**
+///
+/// The template used to write `ic_ratio = 1` and `ic_epoch = "2020-01-01 00:00"`
+/// as literals, so an operator's edit to a rendered `mushd.toml` was reverted by
+/// the next deploy's render — and because the world timeline is seeded from
+/// `[game]` only on an EMPTY store, a wipe after such a render froze the
+/// template's clock into the new world. Now `IC_RATIO` and `IC_EPOCH` are
+/// instance keys: this pins that each env's own values reach the PARSED config,
+/// that the epoch parses (a hard boot error otherwise), and that the rendered
+/// lines are exactly `ic_ratio = N` and `ic_epoch = "…"` — the value the env's,
+/// the quotes the template's. `every_template_placeholder_is_a_shipped_instance_env_key`
+/// covers the two tokens by construction; this is the pin on the values.
+#[test]
+fn t88_the_shipped_instances_render_the_clock_they_chose() {
+    for instance in SHIPPED {
+        let env_file = instance.env;
+        let (text, cfg) = rendered_instance(instance);
+        assert_eq!(
+            cfg.game.ic_ratio, instance.ic_ratio,
+            "{env_file}: IC_RATIO does not reach [game].ic_ratio"
+        );
+        assert_eq!(
+            cfg.game.ic_epoch, instance.ic_epoch,
+            "{env_file}: IC_EPOCH does not reach [game].ic_epoch"
+        );
+        assert!(
+            cfg.game.game_clock().is_ok(),
+            "{env_file}: the rendered epoch must parse: an unquoted render would not \
+             even be a TOML string"
+        );
+        let ratio_line = format!("ic_ratio = {}", instance.ic_ratio);
+        assert!(
+            text.lines().any(|l| l == ratio_line),
+            "{env_file}: the render has no line {ratio_line:?} (IC_RATIO)"
+        );
+        let epoch_line = format!("ic_epoch = \"{}\"", instance.ic_epoch);
+        assert!(
+            text.lines().any(|l| l == epoch_line),
+            "{env_file}: the render has no line {epoch_line:?} (IC_EPOCH carries the \
+             bare value; the quotes are the template's)"
         );
     }
 }

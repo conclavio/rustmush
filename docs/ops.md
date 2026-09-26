@@ -617,9 +617,22 @@ ic_epoch = "2075-03-21 06:00"   # the IC datetime the clock reads at OOC unix 0 
 
 IC time is a **pure function of real wall-clock time**: it survives restarts
 and is *not* reset to `ic_epoch` at each boot (the epoch only fixes the
-calendar's offset). A malformed `ic_epoch` is a hard boot error. Players read
-the clock with `time` / `@time`; modules and scripts read it through the API.
-The server logs `game clock installed` with the ratio and epoch at boot.
+calendar's offset). A malformed `ic_epoch` is a hard boot error. On a rendered
+instance both keys come from `IC_RATIO` and `IC_EPOCH` in its `instance.env`
+(16b cut AC.2); the world timeline is seeded from them only on an empty store,
+persisted truth wins after that, and a hand edit of the rendered `mushd.toml`
+is reverted by the next deploy. Players read the clock with `time` / `@time`;
+modules and scripts read it through the API. The server logs
+`world timeline installed` with the generation and the IC rate at boot
+(generation `1` at the configured rate on a fresh store; a higher generation
+means persisted truth, not the config, is what runs). That line does not show
+the epoch, and generation `1` at the configured rate is not proof the config
+runs: a boot whose persisted first generation differs from `[game]` in rate OR
+epoch also warns
+`persisted world timeline overrides changed [game] clock configuration`, and
+that warning is the sign the store, not the config, holds the clock. After a
+wipe, read the date the fresh world came up with through `time` (or
+`@tacsim/time show` for the generation and its rate).
 
 **Weather.** The weather module ticks a deterministic per-zone state machine
 (a Coarse module tick, default every 300s of real time) and persists one cell

@@ -221,7 +221,17 @@ shipped template and preflights it with both halves before it touches the unit,
 then `reload`s the already-running gateway — the hot restart that holds every
 SSH and web connection. `systemctl reload dev1mush-gateway` on its own is the
 faster form when nothing in the config or the template moved
-([`dev1-split/README.md`](dev1-split/README.md)).
+([`dev1-split/README.md`](dev1-split/README.md)). The IC clock is the instance
+env's too (`IC_RATIO` and `IC_EPOCH` render `[game].ic_ratio` and `ic_epoch`,
+16b cut AC.2), so a hand edit of the rendered `mushd.toml` does not survive a
+deploy — change the env. On dev1 that is the committed
+[`dev1/instance.env`](dev1/instance.env), not the installed
+`/opt/rustmush/dev1/instance.env`: the deploy rewrites the installed copy from
+the committed one every time, so an edit made on the box is reverted the same
+way. The world timeline is seeded from those two only on an empty store, and
+`scripts/reset-instance.sh` restarts on the rendered `mushd.toml` it finds
+without re-rendering, so to change the clock of a world you are about to wipe:
+edit the env, run the deploy (which re-renders), THEN wipe.
 
 Do **not** reach for `systemctl restart dev1mush` here. That is the ALL-IN-ONE
 unit, which the split deploy disabled but left installed: starting it puts a

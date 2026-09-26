@@ -19,7 +19,7 @@
 //! instance and asserts the world it composed is the one the `instance.env`
 //! asked for.
 //!
-//! The four claims:
+//! The five claims:
 //!
 //! 1. both shipped envs render through the deploy's own rule — the `sed` loop
 //!    documented at `deploy/instance/mushd.toml.tmpl:14-40` and in
@@ -36,7 +36,13 @@
 //!    as an ENABLED `[tacsim]` block on the loaded config (which is where that
 //!    key is decided — see the boot case), and the one game sheet comes out the
 //!    other end as `pilot` in the `hello` manifest the gateway sends a web
-//!    client, with the TacSim module composed into it.
+//!    client, with the TacSim module composed into it;
+//! 5. and the rendered `[game]` clock is what an empty store's timeline is
+//!    seeded from (16b cut AC.2, 16c T-88): `IC_RATIO` and `IC_EPOCH`, overridden
+//!    in the boot case to values that are nobody's default, arrive as generation
+//!    one at that rate with that epoch as the reading at unix 0 — so the clock a
+//!    wiped box comes up with is the env's, and a hand edit of the rendered file
+//!    is not, because the next deploy re-renders it.
 //!
 //! # `RULESET=` is gone (16b cut R-b)
 //!
@@ -348,6 +354,15 @@ async fn the_rendered_instance_boots_and_advertises_its_layers() {
             ("DATA_DIR", toml_path(&data)),
             ("BUILD_DIR", toml_path(&dir.join("build"))),
             ("TLS_DIR", toml_path(&dir.join("tls"))),
+            // 16b cut AC.2 (16c T-88): the IC clock, at values that equal no
+            // `GameCfg` default, no literal the template used to carry and no
+            // shipped env — the reference env's `1` / `2020-01-01 00:00` are all
+            // three, so an assertion at those would pass whether or not the
+            // render works. Against the old literal-carrying template the
+            // assertion below reads 1 for 3; against an env with no clock keys
+            // this line panics: "has no IC_RATIO line to override".
+            ("IC_RATIO", "3".to_string()),
+            ("IC_EPOCH", "2031-01-01 00:00".to_string()),
         ],
     );
 
@@ -355,6 +370,16 @@ async fn the_rendered_instance_boots_and_advertises_its_layers() {
     assert_eq!(
         cfg.server.data_dir, data,
         "the path overrides go through the same substitution as every other key"
+    );
+    assert_eq!(
+        cfg.game.ic_ratio, 3,
+        "IC_RATIO renders [game].ic_ratio through the same substitution as every \
+         other key (16c T-88)"
+    );
+    assert_eq!(
+        cfg.game.ic_epoch, "2031-01-01 00:00",
+        "IC_EPOCH renders [game].ic_epoch as a quoted TOML string; the quotes are \
+         the template's"
     );
     // `TACSIM_ENABLED=true`, asserted where the key is actually decided. The
     // manifest cannot carry this claim (see the doc above); the typed block is
@@ -392,6 +417,27 @@ async fn the_rendered_instance_boots_and_advertises_its_layers() {
     let booted = boot::build_engine(&cfg, &opened.store, &spool)
         .await
         .expect("the rendered instance boots its world");
+
+    // The rendered clock is what an EMPTY store's timeline is seeded from
+    // (`timeline::load_or_seed_world_timeline` -> `WorldTimeline::from_game_clock`):
+    // generation one, anchored at unix 0 with the epoch as its IC reading there,
+    // advancing at the env's ratio. The store is fresh, so persisted truth has
+    // nothing to win with.
+    let epoch = booted.engine.world.world_timeline().current();
+    assert_eq!(epoch.generation, 1);
+    assert_eq!(
+        epoch.rate, 3,
+        "the rendered clock seeds generation one on an empty store (16c T-88): the \
+         value a wiped box comes up with is the env's"
+    );
+    assert_eq!(
+        epoch.ic_anchor,
+        mush_core::clock::CivilDate::parse("2031-01-01 00:00")
+            .expect("a parsable epoch")
+            .to_ic_seconds(),
+        "the epoch is the IC reading at unix 0 (from_game_clock's shape)"
+    );
+    assert_eq!(epoch.real_anchor, 0);
 
     // The nightly pass is scheduled, and its handle comes back to be bound into
     // a shutdown tail rather than detached.
