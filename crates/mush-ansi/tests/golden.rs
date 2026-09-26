@@ -1384,6 +1384,133 @@ fn i1_the_replay_window_prints_as_view_does_and_the_document_prints_nothing() {
     }
 }
 
+/// **16b cut I.2 (16c N9)**: the replay window's print, whole, and its twenty
+/// map rows pinned PER CELL as `web/src/lib/fixtures/replay/replay_grid.txt` —
+/// the byte target the TUI's replay map (at a 39 by 22 pane) and the web's
+/// `composeReplayWindow` (at 39 by 20 cells) both have to equal, as
+/// `view_grid.txt` is the cockpit's.
+///
+/// The print is `replay_window.json` (keyframe 1 of `replay.json`, focus `RA`):
+/// the title line, the legend, twenty rows of seventy-eight columns — each cell
+/// one glyph printed twice — and the footer, which names the window in arena
+/// cells and no platform. The file holds the rows halved, one glyph a cell.
+/// The document (`replay.json` under its own `replay` shape) prints nothing.
+/// Re-bless with `TACSIM_BLESS=1 cargo test -p mush-ansi --test golden`.
+#[test]
+fn i2_the_replay_window_prints_whole_and_pins_the_replay_grid() {
+    let window = fixture_panel(
+        "arena.replay",
+        include_str!("../../../web/src/lib/fixtures/replay/replay_window.json"),
+    );
+    let page = rendered_str(&window, ColorDepth::None, 80);
+    let lines: Vec<&str> = page.trim_end_matches("\r\n").split("\r\n").collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some("Replay of match 7 at 0:05 (fixture_yard, 1000 cm cells)"),
+        "{page}"
+    );
+    let footer = lines
+        .iter()
+        .rposition(|line| line.starts_with("x 0.."))
+        .expect("a footer");
+    assert_eq!(
+        lines.get(footer).copied(),
+        Some("x 0..38  y 0..19  of 96x64  (10 m a cell, north up)"),
+        "{page}"
+    );
+    assert_eq!(
+        footer + 1,
+        lines.len(),
+        "the footer is the last line: {page}"
+    );
+    // The head between the title and the rows is the legend and nothing else:
+    // the terrain classes, the two sides' glyphs and the spot that owns its
+    // cell — never the covered `B`, never a callsign, never a wreck (none is
+    // recorded by 0:05).
+    let head = lines
+        .iter()
+        .skip(1)
+        .take(footer.saturating_sub(21))
+        .copied()
+        .collect::<Vec<&str>>()
+        .join(" ");
+    assert!(head.starts_with("legend: "), "{head}");
+    for word in [
+        "grass",
+        "water",
+        "wall",
+        "road",
+        "o red",
+        "* blue",
+        "A The Ford",
+    ] {
+        assert!(head.contains(word), "the legend lacks {word:?}: {head}");
+    }
+    for word in ["The Roof", "wreck", "RA", "BA", "RB", "BB", "you"] {
+        assert!(!head.contains(word), "the legend names {word:?}: {head}");
+    }
+    let printed: Vec<&str> = lines
+        .iter()
+        .skip(footer.saturating_sub(20))
+        .take(20)
+        .copied()
+        .collect();
+    assert_eq!(printed.len(), 20, "twenty rows: {page}");
+    let mut grid = String::new();
+    for row in &printed {
+        let glyphs: Vec<char> = row.chars().collect();
+        assert_eq!(glyphs.len(), 78, "seventy-eight columns: {row:?}");
+        for pair in glyphs.chunks(2) {
+            assert_eq!(
+                pair.first(),
+                pair.get(1),
+                "each cell is one glyph printed twice: {row:?}"
+            );
+            grid.extend(pair.first());
+        }
+        grid.push('\n');
+    }
+    for row in grid.lines() {
+        assert_eq!(row.chars().count(), 39, "thirty-nine cells: {row:?}");
+    }
+
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../web/src/lib/fixtures/replay/replay_grid.txt");
+    if std::env::var("TACSIM_BLESS").is_ok() {
+        std::fs::write(&path, &grid).expect("the fixture is writable");
+    } else {
+        assert_eq!(
+            include_str!("../../../web/src/lib/fixtures/replay/replay_grid.txt"),
+            grid,
+            "web/src/lib/fixtures/replay/replay_grid.txt is out of date; re-bless with \
+             `TACSIM_BLESS=1 cargo test -p mush-ansi --test golden`"
+        );
+    }
+
+    // The document prints NOTHING, at any depth and width.
+    let OutputEvent::Panel {
+        feed,
+        kind,
+        mut data,
+    } = fixture_panel(
+        "arena.replay",
+        include_str!("../../../web/src/lib/fixtures/replay/replay.json"),
+    )
+    else {
+        unreachable!("fixture_panel builds a panel");
+    };
+    data["schema"] = serde_json::json!({ "id": "arena.replay", "version": 1, "shape": "replay" });
+    let answer = OutputEvent::Panel { feed, kind, data };
+    for depth in [ColorDepth::None, ColorDepth::TrueColor] {
+        for width in [0_u16, 40, 80, 200] {
+            assert!(
+                rendered(&answer, depth, width).is_empty(),
+                "the replay document printed something at {depth:?}/{width}"
+            );
+        }
+    }
+}
+
 /// Look-back I3-C36: a room field carrying a newline used to forge a second
 /// fact row. `LineWriter::write` splits an embedded newline with `end_line()`
 /// at indent 0 — flush left, exactly where a fact LABEL sits — and room

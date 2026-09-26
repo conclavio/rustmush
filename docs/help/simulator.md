@@ -255,6 +255,15 @@ says which part. A running match
 has no replay — `Match 3 is still running.` — and neither has one the server
 restarted during, or one played before replays existed.
 
+On the TUI and on the web, `SIM REPLAY` opens the replay on screen 0 as well,
+the cockpit's screen, which you have while it is open even out of a tank: the
+ground with both sides on it, what happened by then, and every tank where it
+stood. The TUI steps from keyframe to keyframe (`,` and `.`) and draws only
+what the arena recorded. The web has a scrubber and plays at the arena's own
+speed, and between two keyframes it draws each tank on the straight line
+between them — and says so under the map: `Between keyframes 19 and 20: drawn,
+not recorded.` On both, `u` moves the focus to the next tank and `x` closes.
+
 The next `SIM TEAM` clears the board, puts every tank back at spec, back at
 muster and back to their own types, and opens selection again.
 

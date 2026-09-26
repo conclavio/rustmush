@@ -78,8 +78,18 @@ export type ScanBand = "green" | "yellow" | "red" | "destroyed" | "unknown";
 
 /** What a marker is, which is the whole of what the canvas colours it by.
  * `spot` (16b cut V.1) is one of the ground's named places — surveyed ground,
- * never a unit. */
-export type MarkerKind = "you" | "unknown" | "friendly" | "hostile" | "spot";
+ * never a unit. `red`, `blue` and `wreck` (16b cut I.2) are a replay's units —
+ * both sides of a finished match, drawn by `composeReplayWindow` and never by
+ * the cockpit's own `composeWindow`. */
+export type MarkerKind =
+  | "you"
+  | "unknown"
+  | "friendly"
+  | "hostile"
+  | "spot"
+  | "red"
+  | "blue"
+  | "wreck";
 
 export interface CockpitCondition {
   /** The index into the frame's `scan_tables`. */
@@ -695,6 +705,49 @@ export function contactKind(contact: CockpitContact): MarkerKind {
 }
 
 /**
+ * **The ground under one window** (16b cut I.2 factored it out of
+ * `composeWindow`, which the replay's `composeReplayWindow` shares it with):
+ * `h` rows of exactly `w` glyphs, row `0` the window's SOUTH row, expanded out
+ * of the map's run-length `rows` and padded with spaces.
+ *
+ * Only the rows the window shows are expanded: a shipped arena is 256 by 256
+ * and a viewport of it has no business paying for the other sixty thousand
+ * cells on every redraw (the TUI's `mush_ansi::window_rows` makes the same
+ * trade for the same reason).
+ */
+export function windowGround(
+  map: ArenaMap,
+  x0: number,
+  y0: number,
+  w: number,
+  h: number,
+): string[][] {
+  const width = Math.max(0, Math.trunc(map.width));
+  const height = Math.max(0, Math.trunc(map.height));
+  const south: string[][] = [];
+  for (let y = y0; y < y0 + h; y += 1) {
+    const row: string[] = new Array<string>(w).fill(" ");
+    const runs = y < height ? map.rows[y] : undefined;
+    if (runs) {
+      let col = 0;
+      for (const [glyph, n] of runs) {
+        if (col >= width) {
+          break;
+        }
+        const g = glyph.charAt(0) || " ";
+        const end = Math.min(col + n, width);
+        for (let c = Math.max(col, x0); c < Math.min(end, x0 + w); c += 1) {
+          row[c - x0] = g;
+        }
+        col = end;
+      }
+    }
+    south.push(row);
+  }
+  return south;
+}
+
+/**
  * **The map composition** (16b cut Q.5; doc 16 §5), the rule the TUI's
  * `render_cockpit_map_rows` and the server's `view_window` both run, differing
  * only in the SIZE asked for:
@@ -738,31 +791,7 @@ export function composeWindow(
   const [cx, cy] = frame.cell ?? [Math.floor(width / 2), Math.floor(height / 2)];
   const x0 = Math.min(Math.max(cx - Math.floor(w / 2), 0), width - w);
   const y0 = Math.min(Math.max(cy - Math.floor(h / 2), 0), height - h);
-
-  // Only the rows the window shows are expanded: a shipped arena is 256 by 256
-  // and a viewport of it has no business paying for the other sixty thousand
-  // cells on every redraw (the TUI's `mush_ansi::window_rows` makes the same
-  // trade for the same reason).
-  const south: string[][] = [];
-  for (let y = y0; y < y0 + h; y += 1) {
-    const row: string[] = new Array<string>(w).fill(" ");
-    const runs = y < height ? map.rows[y] : undefined;
-    if (runs) {
-      let col = 0;
-      for (const [glyph, n] of runs) {
-        if (col >= width) {
-          break;
-        }
-        const g = glyph.charAt(0) || " ";
-        const end = Math.min(col + n, width);
-        for (let c = Math.max(col, x0); c < Math.min(end, x0 + w); c += 1) {
-          row[c - x0] = g;
-        }
-        col = end;
-      }
-    }
-    south.push(row);
-  }
+  const south = windowGround(map, x0, y0, w, h);
 
   // The ground alone, taken before a single marker goes down (north-up).
   const terrain: string[] = [];

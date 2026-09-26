@@ -24,6 +24,7 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use super::panels::{ARENA_MAP_FEED, ChanMsg, PanelStore, rich_plain};
+use super::replay::{self, Picture};
 use super::sheet::{Glyphs, SheetRow, sheet_rows};
 
 /// The speaker gutter's width (plan §7).
@@ -56,7 +57,7 @@ pub struct PaneRow {
 }
 
 impl PaneRow {
-    fn plain(line: Line<'static>) -> PaneRow {
+    pub(super) fn plain(line: Line<'static>) -> PaneRow {
         PaneRow {
             line,
             prefill: None,
@@ -91,7 +92,7 @@ pub struct PaneRows {
 }
 
 impl PaneRows {
-    fn one(text: &str) -> PaneRows {
+    pub(super) fn one(text: &str) -> PaneRows {
         PaneRows {
             rows: vec![PaneRow::plain(Line::from(dim_span_owned(text)))],
         }
@@ -137,6 +138,13 @@ pub struct RenderCtx<'a> {
     /// [`render_cockpit_damage_rows`], which packs a section's facet cells into
     /// rows of the pane's width so no cell is split from its numbers.
     pub pane: Option<(u16, u16)>,
+    /// **The replay open on screen 0** (16b cut I.2), where one is:
+    /// `super::app::TuiApp` fills it from its own state for every pane it
+    /// renders. The cockpit's renderers read it when the held `arena.cockpit`
+    /// frame is not seated: with a picture here AND the store holding the
+    /// replay document of its match, each draws its pane of the replay
+    /// ([`super::replay`]); otherwise its existing empty state.
+    pub picture: Option<&'a Picture>,
 }
 
 impl RenderCtx<'_> {
@@ -2167,18 +2175,18 @@ pub const COCKPIT_MAP_FALLBACK: (u16, u16) = (78, 20);
 /// pane renders exactly its area — a pilot standing on the arena's south edge
 /// is drawn on the window's LAST row, and a pane that overran by two would clip
 /// the one marker the screen exists to show.
-const MAP_CHROME_ROWS: u16 = 2;
+pub(super) const MAP_CHROME_ROWS: u16 = 2;
 
 /// Whether a cockpit or map frame is one for a seated pilot.
 ///
 /// `seated` is present ONLY on the cleared frame, so its absence is the normal
 /// case and `false` is the one that empties the screen.
-fn seated(data: &Value) -> bool {
+pub(super) fn seated(data: &Value) -> bool {
     data.get("seated").and_then(Value::as_bool) != Some(false)
 }
 
 /// A `u64`-ish field as a `usize`, `0` when it is missing or malformed.
-fn cell_num(data: &Value, key: &str) -> usize {
+pub(super) fn cell_num(data: &Value, key: &str) -> usize {
     data.get(key)
         .and_then(Value::as_u64)
         .and_then(|n| usize::try_from(n).ok())
@@ -2186,7 +2194,7 @@ fn cell_num(data: &Value, key: &str) -> usize {
 }
 
 /// An `[x, y]` arena cell, `None` for a null or malformed one.
-fn cell_pair(v: Option<&Value>) -> Option<(usize, usize)> {
+pub(super) fn cell_pair(v: Option<&Value>) -> Option<(usize, usize)> {
     let arr = v?.as_array()?;
     let x = usize::try_from(arr.first()?.as_u64()?).ok()?;
     let y = usize::try_from(arr.get(1)?.as_u64()?).ok()?;
@@ -2222,7 +2230,7 @@ fn contact_glyph(contact: &Value) -> char {
 /// pushes every column after it one to the right, and the pane borders stop
 /// lining up for the rest of the frame. A line client can wear that; a
 /// full-screen one cannot.
-fn degree(utf8: bool) -> &'static str {
+pub(super) fn degree(utf8: bool) -> &'static str {
     if utf8 { "\u{b0}" } else { "" }
 }
 
@@ -2318,6 +2326,10 @@ fn designator_of(contact: &Value) -> String {
 #[must_use]
 pub fn render_cockpit_map_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if !seated(data) {
+        // 16b cut I.2: no seat, and a replay open — its map.
+        if let Some(rows) = replay::map_rows(ctx) {
+            return rows;
+        }
         return PaneRows::one(NOT_IN_A_COCKPIT);
     }
     let Some(map) = ctx
@@ -2449,7 +2461,7 @@ pub fn render_cockpit_map_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
 /// order, while they fit, and says how many it left off (`x BA  + RB  3
 /// more`); every contact is still a row of the contacts pane. With no pane (the
 /// input paths) it is whole.
-fn fit_legend(entries: &[String], width: Option<usize>) -> String {
+pub(super) fn fit_legend(entries: &[String], width: Option<usize>) -> String {
     let whole = entries.join("  ");
     let Some(width) = width else {
         return whole;
@@ -2476,7 +2488,7 @@ fn fit_legend(entries: &[String], width: Option<usize>) -> String {
 /// WINDOW cell it landed on (16b cut B.3: the legend's owner map is keyed on
 /// it). A cell south or west of the window's origin, or past its far corner, is
 /// not drawn — it is still listed in the contacts pane.
-fn put_marker(
+pub(super) fn put_marker(
     grid: &mut [Vec<char>],
     origin: (usize, usize),
     cell: (usize, usize),
@@ -2509,7 +2521,7 @@ enum MapOwner {
 /// The one character of a one-character string (a spot's `letter`), or `None`
 /// for an empty or a longer one — or a control character, which a grid cell
 /// must never be painted with (server text is cleaned on this surface).
-fn one_char(text: &str) -> Option<char> {
+pub(super) fn one_char(text: &str) -> Option<char> {
     let mut chars = text.chars();
     match (chars.next(), chars.next()) {
         (Some(one), None) if !one.is_control() => Some(one),
@@ -2522,7 +2534,8 @@ fn one_char(text: &str) -> Option<char> {
 #[must_use]
 pub fn render_cockpit_status_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if !seated(data) {
-        return PaneRows::default();
+        // 16b cut I.2: no seat, and a replay open — what it is.
+        return replay::status_rows(ctx).unwrap_or_default();
     }
     let system = ctx.tag("system");
     let mut rows = vec![PaneRow::plain(Line::from(Span::styled(
@@ -2654,7 +2667,8 @@ pub fn render_cockpit_status_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows
 #[must_use]
 pub fn render_cockpit_damage_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if !seated(data) {
-        return PaneRows::default();
+        // 16b cut I.2: no seat, and a replay open — the wrecks so far.
+        return replay::damage_rows(ctx).unwrap_or_default();
     }
     let Some(sections) = data.get("sections").and_then(Value::as_array) else {
         return PaneRows::default();
@@ -2744,9 +2758,10 @@ fn pack_facet_cells(cells: &[String], width: usize) -> Vec<String> {
 /// has finished, what it has left, and its OWN chance against the lock (16b cut
 /// F.2's item 4) where a lock gives one.
 #[must_use]
-pub fn render_cockpit_weapons_rows(data: &Value, _ctx: &RenderCtx<'_>) -> PaneRows {
+pub fn render_cockpit_weapons_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if !seated(data) {
-        return PaneRows::default();
+        // 16b cut I.2: no seat, and a replay open — the shots of this step.
+        return replay::weapons_rows(ctx).unwrap_or_default();
     }
     let Some(weapons) = data.get("weapons").and_then(Value::as_array) else {
         return PaneRows::default();
@@ -2797,7 +2812,8 @@ pub fn render_cockpit_weapons_rows(data: &Value, _ctx: &RenderCtx<'_>) -> PaneRo
 #[must_use]
 pub fn render_cockpit_contacts_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if !seated(data) {
-        return PaneRows::default();
+        // 16b cut I.2: no seat, and a replay open — every roster unit.
+        return replay::contacts_rows(ctx).unwrap_or_default();
     }
     let Some(contacts) = data.get("contacts").and_then(Value::as_array) else {
         return PaneRows::default();
@@ -3885,6 +3901,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         let data = serde_json::json!({
             "folder": "inbox",
@@ -3940,6 +3957,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         let list = serde_json::json!({
             "schema": { "id": "jobs", "version": 1, "shape": "list",
@@ -4050,6 +4068,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         let rows: Vec<Value> = (0..300)
             .map(|i| serde_json::json!({ "id": i, "title": format!("row {i}") }))
@@ -4105,6 +4124,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         let view = serde_json::json!({
             "schema": { "id": "actions", "version": 1, "shape": "list",
@@ -4371,6 +4391,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         let data = f1();
 
@@ -4483,6 +4504,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         let unringed = RenderCtx {
             store: &empty,
@@ -4539,6 +4561,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         let journal = texts(&render_unit_journal_rows(&Value::Null, &ctx));
         assert_eq!(journal.len(), 6, "{journal:?}");
@@ -4586,6 +4609,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         let before = texts(&render_unit_delta_rows(&Value::Null, &ctx));
         assert_eq!(before[0], "#7 rev 4  gauss");
@@ -4606,6 +4630,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         let after = texts(&render_unit_delta_rows(&f1(), &ctx));
         assert_eq!(after[0], "rev 4  gauss", "the subject is held: no prefix");
@@ -4645,6 +4670,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         let data = f1();
 
@@ -4739,6 +4765,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         assert_eq!(
             texts(&render_unit_sections_compact_rows(&f1(), &ctx)).len(),
@@ -4810,6 +4837,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         let view = |truncated: Option<bool>| {
             let mut v = serde_json::json!({
@@ -4848,6 +4876,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         let mut cut = f1();
         cut["capabilities"] = serde_json::json!([
@@ -4896,6 +4925,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         // The elision marker is an ordinary ring row: it keeps its delta's
         // object, revision and cause, and it sits LAST within its own delta,
@@ -5111,6 +5141,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane,
+            picture: None,
         };
         let mut frame = cockpit(serde_json::json!([5, 5]), serde_json::json!([]));
         frame["sections"] = line_tank_sections();
@@ -5270,6 +5301,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: Some(pane),
+            picture: None,
         };
         render_cockpit_map_rows(frame, &ctx)
             .rows
@@ -5409,6 +5441,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         for render in [
             render_cockpit_status_rows,
@@ -5437,6 +5470,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         let mut frame = cockpit(
             serde_json::json!([5, 5]),
@@ -5570,6 +5604,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: None,
+            picture: None,
         };
         let status = |frame: &Value| -> Vec<String> {
             render_cockpit_status_rows(frame, &ctx)
@@ -5655,6 +5690,7 @@ mod tests {
             store: &store,
             selected_channel: None,
             pane: Some((20, 12)),
+            picture: None,
         };
         let frame = cockpit(
             serde_json::json!([20, 15]),
@@ -5972,6 +6008,7 @@ mod tests {
                 store,
                 selected_channel: None,
                 pane,
+                picture: None,
             };
             render_cockpit_notices_rows(data, &ctx)
                 .rows

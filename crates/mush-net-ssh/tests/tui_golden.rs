@@ -12,7 +12,10 @@ use std::path::PathBuf;
 
 use mush_ansi::AnsiTheme;
 use mush_net_ssh::tui::panels::PanelStore;
-use mush_net_ssh::tui::render::{RenderCtx, floor_line, render_cockpit_map_rows};
+use mush_net_ssh::tui::render::{
+    PaneRow, RenderCtx, floor_line, render_cockpit_map_rows, render_cockpit_status_rows,
+};
+use mush_net_ssh::tui::replay::Picture;
 use mush_net_ssh::tui::screen::{COCKPIT_ROWS, COCKPIT_SCREEN};
 use mush_net_ssh::tui::{TuiApp, TuiManifest, frame_text};
 use mush_proto::{
@@ -671,6 +674,7 @@ fn map_ctx<'a>(theme: &'a AnsiTheme, store: &'a PanelStore, pane: (u16, u16)) ->
         store,
         selected_channel: None,
         pane: Some(pane),
+        picture: None,
     }
 }
 
@@ -1378,4 +1382,331 @@ fn the_cockpit_screen_reads_the_frame_and_nothing_else() {
             "the cockpit leaked {leak:?}:\n{text}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut I.2 — the replay on screen 0 (16c N9, Q37)
+// ---------------------------------------------------------------------------
+//
+// One replay, read by every renderer: `web/src/lib/fixtures/replay/`, whose two
+// JSON files 16b cut I.1's blesser writes (`crates/tacsim/tests/replay.rs`) and
+// whose `replay_grid.txt` `mush-ansi`'s golden blesses from the line client's
+// print of the window. The replay is match 7 on the cockpit fixtures' yard:
+// four tanks — RA and RB red, BA and BB blue — three keyframes at 0, 5,000 and
+// 10,000 ms, BB wrecked at 7,000 on The Roof, two shots.
+
+/// The grid `SIM REPLAY 7` pushes at keyframe 1 (focus RA).
+const REPLAY_WINDOW: &str = include_str!("../../../web/src/lib/fixtures/replay/replay_window.json");
+/// The whole replay document.
+const REPLAY_DOCUMENT: &str = include_str!("../../../web/src/lib/fixtures/replay/replay.json");
+/// The twenty map rows a line client prints of the window, one glyph a cell.
+const REPLAY_GRID: &str = include_str!("../../../web/src/lib/fixtures/replay/replay_grid.txt");
+
+/// The document as the `arena.replay` query answers it: under its own shape.
+fn replay_answer() -> serde_json::Value {
+    let mut data = fixture(REPLAY_DOCUMENT);
+    data["schema"] = serde_json::json!({ "id": "arena.replay", "version": 1, "shape": "replay" });
+    data
+}
+
+/// The fixture app with a replay of match 7 open on screen 0: no seat, the
+/// grid pushed, the document and the ground held, at keyframe 1.
+fn replay_app() -> TuiApp {
+    let mut app = fixture_app();
+    app.set_manifest(TuiManifest {
+        panels: vec![
+            "wod.vitals".into(),
+            "wod.sheet".into(),
+            "mail".into(),
+            "arena.cockpit".into(),
+            "arena.map".into(),
+            "arena.replay".into(),
+        ],
+        character: Some("Nick".into()),
+        room: None,
+    });
+    app.apply_event(&arena_panel("arena.replay", REPLAY_WINDOW));
+    // The cockpit ask screen 0 makes is answered the cleared frame.
+    app.apply_event(&OutputEvent::Panel {
+        feed: SmolStr::new_static("arena.cockpit"),
+        kind: PanelFrameKind::Keyframe,
+        data: serde_json::json!({
+            "schema": { "id": "arena.cockpit", "version": 1, "retain": "latest" },
+            "seated": false
+        }),
+    });
+    app.apply_event(&OutputEvent::Panel {
+        feed: SmolStr::new_static("arena.replay"),
+        kind: PanelFrameKind::Keyframe,
+        data: replay_answer(),
+    });
+    app.apply_event(&arena_panel("arena.map", ARENA_MAP));
+    app
+}
+
+/// **The parity** (16b cut I.2; doc 16 §5): the TUI's replay map at a 39 by 22
+/// pane over `arena_map.json` and `replay.json` at keyframe 1, focus RA, IS the
+/// grid the line client prints of `replay_window.json`, one glyph a cell — and
+/// the web's `composeReplayWindow` is held to the same file. A difference is a
+/// compositor defect, never a golden to re-bless.
+#[test]
+fn i2_the_replay_map_composes_the_committed_grid() {
+    let mut store = store_with_the_ground();
+    store.apply_panel(
+        &SmolStr::new_static("arena.replay"),
+        PanelFrameKind::Keyframe,
+        &replay_answer(),
+        0,
+    );
+    let theme = AnsiTheme::default();
+    let picture = Picture {
+        match_id: 7,
+        at: 1,
+        focus: 0,
+        live: false,
+    };
+    let ctx = RenderCtx {
+        picture: Some(&picture),
+        ..map_ctx(&theme, &store, (39, 22))
+    };
+    // A cleared cockpit frame: the replay is what an unseated screen 0 draws.
+    let rows = render_cockpit_map_rows(&serde_json::json!({ "seated": false }), &ctx);
+    assert_eq!(rows.rows.len(), 22, "one head, twenty rows, one legend");
+    assert_eq!(
+        rows.rows.first().map(PaneRow::text).as_deref(),
+        Some("Replay 7 \u{2014} 0:05 (2/3)")
+    );
+    let grid: String = rows
+        .rows
+        .iter()
+        .skip(1)
+        .take(20)
+        .map(|row| format!("{}\n", row.text()))
+        .collect();
+    let expected = REPLAY_GRID.replace("\r\n", "\n");
+    if grid != expected {
+        for (i, (want, got)) in expected.lines().zip(grid.lines()).enumerate() {
+            assert_eq!(
+                want, got,
+                "row {i} (north-up) differs; that is a compositor defect, not a golden"
+            );
+        }
+        panic!("the composed grid and replay_grid.txt differ in length:\n{grid}");
+    }
+    // The owner rule: BB stands on The Roof and owns its cell, so `B` is named
+    // nowhere; every unit is named in roster order, then the spot it left.
+    let legend = rows.rows.last().map(PaneRow::text).unwrap_or_default();
+    assert_eq!(legend, "o RA  o RB  * BA  * BB  A The Ford", "{legend:?}");
+
+    // The last keyframe of a whole replay answers to the end (10,000 ms here),
+    // so BB — wrecked at 7,000 — is drawn `%` and named `% BB`, still owning
+    // the spot's cell; no heading row wraps.
+    let last = Picture { at: 2, ..picture };
+    let ctx = RenderCtx {
+        picture: Some(&last),
+        ..map_ctx(&theme, &store, (39, 22))
+    };
+    let rows = render_cockpit_map_rows(&serde_json::json!({ "seated": false }), &ctx);
+    let from_south =
+        |y: usize| -> String { rows.rows.get(20 - y).map(PaneRow::text).unwrap_or_default() };
+    assert_eq!(from_south(7).chars().nth(14), Some('%'), "BB's wreck");
+    assert_eq!(from_south(4).chars().nth(9), Some('o'), "RA at (9, 4)");
+    let legend = rows.rows.last().map(PaneRow::text).unwrap_or_default();
+    assert_eq!(legend, "o RA  o RB  * BA  % BB  A The Ford", "{legend:?}");
+    // Without UTF-8 the heading's dash degrades.
+    let ascii = RenderCtx {
+        utf8: false,
+        picture: Some(&last),
+        ..map_ctx(&theme, &store, (39, 22))
+    };
+    let rows = render_cockpit_map_rows(&serde_json::json!({ "seated": false }), &ascii);
+    assert_eq!(
+        rows.rows.first().map(PaneRow::text).as_deref(),
+        Some("Replay 7 - 0:10 (3/3)")
+    );
+}
+
+/// **The status pane of a CUT replay** (16b cut I.2): the `Cut:` lines are
+/// rendered by `render_cockpit_status_rows` itself, not typed out — one per
+/// `cut` word in the document's order, with the clocks read off the document
+/// (the last keyframe's for `keyframes`, the last shot's for `shots`, the
+/// roster's length for `roster`), a `truncated` document naming no cause read
+/// as cut at its keyframes, and none at all for a whole one. Every line, at a
+/// four-digit match id, the longest outcome words, an eight-letter focus and
+/// an hour-long clock, sits inside the Left pane's 32 columns, so none wraps
+/// at the floor.
+#[test]
+fn i2_the_status_pane_words_every_cut_inside_the_left_pane() {
+    let theme = AnsiTheme::default();
+    let picture = Picture {
+        match_id: 9999,
+        at: 2,
+        focus: 0,
+        live: false,
+    };
+    let status = |doc: serde_json::Value| -> Vec<String> {
+        let mut store = store_with_the_ground();
+        store.apply_panel(
+            &SmolStr::new_static("arena.replay"),
+            PanelFrameKind::Keyframe,
+            &doc,
+            0,
+        );
+        let ctx = RenderCtx {
+            picture: Some(&picture),
+            ..map_ctx(&theme, &store, (32, 12))
+        };
+        render_cockpit_status_rows(&serde_json::json!({ "seated": false }), &ctx)
+            .rows
+            .iter()
+            .map(PaneRow::text)
+            .collect()
+    };
+    let mut doc = replay_answer();
+    doc["match"] = serde_json::json!(9999);
+    doc["outcome"] = serde_json::json!("blue");
+    doc["reason"] = serde_json::json!("elimination");
+    doc["roster"][0]["callsign"] = serde_json::json!("ABCDEFGH");
+    doc["keyframes"][2][0] = serde_json::json!(3_680_000);
+    doc["end_ms"] = serde_json::json!(3_690_000);
+    doc["shots"][1][0] = serde_json::json!(3_599_000);
+    doc["truncated"] = serde_json::json!(true);
+    doc["cut"] = serde_json::json!(["roster", "keyframes", "shots", "page"]);
+    let head = [
+        "Match 9999  blue won (red elim.)",
+        "Keyframe 3/3  61:20 of 61:30",
+        "Focus ABCDEFGH  (u next)",
+        "Arena positions, every 5 s.",
+        "Both sides shown: match over.",
+    ];
+    let cut = status(doc.clone());
+    let mut want: Vec<String> = head.iter().map(ToString::to_string).collect();
+    want.extend(
+        [
+            "Cut: first 4 units kept.",
+            "Cut: first 61:20 kept.",
+            "Cut: shots to 59:59 kept.",
+            "Cut: a page of tape lost.",
+        ]
+        .map(String::from),
+    );
+    assert_eq!(cut, want);
+    for line in &cut {
+        assert!(
+            line.chars().count() <= 32,
+            "{line:?} wraps in the Left pane"
+        );
+    }
+    // Truncated, naming no cause: cut at the keyframes, one line.
+    doc["cut"] = serde_json::json!([]);
+    let unnamed = status(doc.clone());
+    assert_eq!(unnamed.len(), head.len() + 1, "{unnamed:?}");
+    assert_eq!(
+        unnamed.last().map(String::as_str),
+        Some("Cut: first 61:20 kept.")
+    );
+    // Whole: no `Cut:` line at all.
+    doc["truncated"] = serde_json::json!(false);
+    let whole = status(doc);
+    assert_eq!(whole, head.map(String::from).to_vec());
+}
+
+/// **The picture on screen 0 at the budget sizes** (16b cut I.2): the layout is
+/// the cockpit's — the same six panes in the same columns — and every row is
+/// within the width, exactly `h` rows; at 120 the legend is the picture's five
+/// entries whole and `Enter type` and `? help` after them; no status sentence
+/// wraps in the Left column; both sides are shown and the screen says so, and
+/// nothing names a pilot or an object. The goldens are the review.
+#[test]
+fn i2_the_replay_screen_paints_at_both_budget_sizes() {
+    let mut app = replay_app();
+    assert_eq!(
+        app.active_screen(),
+        COCKPIT_SCREEN,
+        "the grid opened screen 0"
+    );
+    for (w, h) in [(120u16, 34u16), (160, 48)] {
+        let text = frame_text(&mut app, w, h);
+        assert_eq!(text.lines().count(), usize::from(h));
+        for line in text.lines() {
+            assert!(
+                line.chars().count() <= usize::from(w),
+                "{w}x{h}: row too wide: {line:?}"
+            );
+        }
+        // The cockpit's layout: the same panes, the same columns.
+        for title in ["status", "damage", "weapons", "contacts", "notices"] {
+            assert!(
+                text.contains(&format!("\u{250c}{title}")),
+                "{w}x{h}: {title} is painted:\n{text}"
+            );
+        }
+        assert!(text.contains("\u{250c} map "), "{w}x{h}: the map:\n{text}");
+        assert!(text.contains("0 cockpit"), "{w}x{h}: the tab:\n{text}");
+        // Every status sentence whole on ONE row of the Left column.
+        for sentence in [
+            "Match 7  aborted",
+            "Keyframe 2/3  0:05 of 0:10",
+            "Focus RA  (u next)",
+            "Arena positions, every 5 s.",
+            "Both sides shown: match over.",
+        ] {
+            assert!(
+                left_holds(&text, sentence),
+                "{w}x{h}: {sentence:?} is not whole in the Left column:\n{text}"
+            );
+        }
+        // The map pane's own heading and legend. At the floor the map is 36
+        // cells across and BA, at (36, 14), is off it; at 160 it is drawn.
+        assert!(text.contains("Replay 7 \u{2014} 0:05 (2/3)"), "{text}");
+        let legend = if w == 120 {
+            "o RA  o RB  * BB  A The Ford"
+        } else {
+            "o RA  o RB  * BA  * BB  A The Ford"
+        };
+        assert!(text.contains(legend), "{w}x{h}: {legend:?}:\n{text}");
+        // Both sides' callsigns in the contacts pane, whole, in roster order.
+        for row in [
+            "RA   red   (6, 4)  090\u{b0}",
+            "RB   red   (2, 9)  000\u{b0}",
+            "BA   blue  (36, 14)  270\u{b0}",
+            "BB   blue  (14, 7)  225\u{b0}",
+        ] {
+            assert!(
+                right_holds(&text, row, w),
+                "{w}x{h}: {row:?} is not whole in the Right column:\n{text}"
+            );
+        }
+        // Keyframe 1 is after the first keyframe and before any shot or wreck.
+        assert!(left_holds(&text, "Nothing yet."), "{text}");
+        // The picture's legend, whole, then `Enter type` and `? help`.
+        let legend = text.lines().last().unwrap_or_default();
+        assert_eq!(
+            legend,
+            ", prev \u{b7} . next \u{b7} u focus \u{b7} x close \u{b7} p pull \u{b7} Enter type \u{b7} ? help",
+            "{w}x{h}"
+        );
+        // Nothing names a pilot or an object.
+        for leak in ["Nick", "#5", "#7", "Callsign", "lock"] {
+            assert!(
+                !text
+                    .lines()
+                    .skip(2)
+                    .any(|line| line.contains(leak) && !line.contains("Mireille")),
+                "{w}x{h}: the replay screen names {leak:?}:\n{text}"
+            );
+        }
+        check(&format!("tui_replay_{w}x{h}.txt"), &text);
+    }
+    // Stepped to the end: the shots and the wreck, newest first.
+    app.feed_input(b".");
+    let text = frame_text(&mut app, 120, 34);
+    assert!(left_holds(&text, "0:07  BB wrecked"), "{text}");
+    assert!(right_holds(&text, "0:08  BA at RA: miss", 120), "{text}");
+    assert!(right_holds(&text, "0:06  RA at BA: hit", 120), "{text}");
+    let miss = text.find("0:08  BA at RA: miss").unwrap_or(usize::MAX);
+    let hit = text.find("0:06  RA at BA: hit").unwrap_or(0);
+    assert!(miss < hit, "newest first:\n{text}");
+    assert!(right_holds(&text, "BB   blue  wreck", 120), "{text}");
+    assert!(left_holds(&text, "Keyframe 3/3  0:10 of 0:10"), "{text}");
 }

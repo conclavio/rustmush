@@ -4598,3 +4598,209 @@ async fn i1_a_replay_is_public_names_nobody_and_a_running_match_has_none() {
     );
     say(&mut ada, "SIM ABORT", "aborts match").await;
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut I.2 — the replay on screen 0 (16c N9, Q37)
+// ---------------------------------------------------------------------------
+
+/// **A whole TUI frame, squeezed** (16b cut I.2). The TUI paints only the
+/// cells that change, so a needle read off an ordinary paint can lose a letter
+/// that happened to be on screen at that cell already; a resize clears and
+/// repaints every cell. This resizes the PTY to `cols` by 34 — callers
+/// alternate the width, at or over the 120-column floor, so every call IS a
+/// resize — and answers the frame, squeezed, once its last row (the legend:
+/// `? help` in nav mode, `Esc nav` in the box) has arrived.
+async fn tui_frame(term: &mut Term, cols: u32) -> String {
+    let mark = term.mark();
+    term.resize(cols, 34).await;
+    term.expect_one_of_after(mark, &["help", "Escnav"]).await;
+    squeezed(&term.seen[mark..])
+}
+
+/// **The replay column on the full-screen surface and the web** (16b cut I.2;
+/// 16c N9, Q37).
+///
+/// Cy, who flew nothing, walked into the Simulator Lobby as I.1's column walks
+/// him, in `@tui` at 120 by 34: after match 1 ends he types `SIM REPLAY 1` and
+/// screen 0 opens by itself with the replay on it — `RA` and `BA` by callsign,
+/// `Both sides shown`, the picture's own legend. `tui_names_nothing` is NOT the
+/// lens here: the replay names both tanks by callsign on purpose; what it must
+/// never carry is an object mark (the room's own dbref on the status line is
+/// the one `#` and a digit on the frame) or a pilot's name. Over his web socket
+/// the parameter-less `arena.map` answers the ground of match 1 — the cursor's
+/// clause.
+///
+/// Then `x` closes the picture, and during match 2 his `SIM REPLAY 2` is
+/// refused: screen 0 does not open, the refusal lands on the scene screen, and
+/// — because a refusal drops the cursor — the web socket's `arena.replay`
+/// answers `available: false` with the no-cursor sentence (never match 1's
+/// document by accident) and `arena.map` the unseated pair.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn i2_the_replay_screen_shows_both_sides_and_a_refusal_opens_nothing() {
+    let server = boot("observer-replay-screen").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login_sized(server.addr, "cy", PILOT_PASSWORD, "Cy", 120, 34).await;
+    let (red, blue, _muster, _domain) = seat_the_witnesses(&mut god).await;
+    let listing = ask(&mut god, "@find Simulator Lobby", "END OF LIST").await;
+    let lobby = dbref_of(&listing, "Simulator Lobby");
+    say(
+        &mut god,
+        &format!("@teleport #{}=#{lobby}", CY.0),
+        "Teleported",
+    )
+    .await;
+
+    // Match 1, fought for a second of arena time and aborted.
+    take_off(&mut ada, &mut bo).await;
+    wait_until(
+        STEP_TIMEOUT,
+        "the arena clock to pass a second",
+        async || {
+            let staff = ask(&mut god, "@arena/status", "ledger writes awaiting").await;
+            support::arena_clock_seconds(&staff).is_some_and(|seconds| seconds >= 1)
+        },
+    )
+    .await;
+    say(&mut ada, "SIM ABORT", "aborts match").await;
+    cy.expect("Its units are checked in.").await;
+
+    // Into the TUI, the box opened once (see `tui_ask`), and the replay asked.
+    let opened = cy.mark();
+    cy.send_line("@tui").await;
+    cy.expect_after(opened, "Cy").await;
+    cy.send_line("").await;
+    cy.send_line("SIM REPLAY 1").await;
+    // Whole frames until screen 0 has opened and the document and the ground
+    // have both landed on it.
+    let mut cols = 120;
+    let mut frame = String::new();
+    wait_until(
+        STEP_TIMEOUT,
+        "the replay's document and ground to be drawn",
+        async || {
+            cols = if cols == 121 { 122 } else { 121 };
+            frame = tui_frame(&mut cy, cols).await;
+            frame.contains("Bothsidesshown") && frame.contains("Replay1\u{2014}")
+        },
+    )
+    .await;
+    assert!(
+        frame.contains("Bothsidesshown:matchover."),
+        "the status pane says both sides:\n{frame}"
+    );
+    for row in ["RAred", "BAblue"] {
+        assert!(
+            frame.contains(row),
+            "the contacts pane names {row:?} by callsign:\n{frame}"
+        );
+    }
+    // The box is open (the line was submitted from it): back to nav, and the
+    // legend is the picture's own five, whole. Read in a retry like every other
+    // frame here: the Enter's own diff paint can race the window change's whole
+    // one, and a diff carries the legend without the tab strip.
+    let legend = ",prev\u{b7}.next\u{b7}ufocus\u{b7}xclose\u{b7}ppull\u{b7}Entertype\u{b7}?help";
+    cy.send_line("").await;
+    wait_until(
+        STEP_TIMEOUT,
+        "a whole frame with the picture's legend",
+        async || {
+            cols = if cols == 121 { 122 } else { 121 };
+            frame = tui_frame(&mut cy, cols).await;
+            frame.contains(legend) && frame.contains("0cockpit")
+        },
+    )
+    .await;
+    assert!(frame.contains(legend), "the picture's legend:\n{frame}");
+    assert!(
+        frame.contains("0cockpit"),
+        "screen 0's tab stands:\n{frame}"
+    );
+    // No object mark but the room's own dbref on the status line, and no pilot.
+    let marks = frame.replace(&format!("#{lobby}"), "");
+    assert!(
+        !marks.as_bytes().windows(2).any(|pair| {
+            pair.first() == Some(&b'#') && pair.get(1).is_some_and(u8::is_ascii_digit)
+        }),
+        "the replay screen carried an object mark:\n{frame}"
+    );
+    // The frame is read squeezed, so `Bo` is looked for with the status pane's
+    // `Both` taken out. (The raw transcript is no lens here: it holds screen
+    // 1's paints too, whose WHO rail lists everybody connected.)
+    let named = frame.replace("Both", "");
+    for pilot in ["Ada", "Bo"] {
+        assert!(
+            !named.contains(pilot),
+            "the replay screen named {pilot}:\n{frame}"
+        );
+    }
+    for number in [red, blue] {
+        assert!(
+            !frame.contains(&format!("#{number}")),
+            "the replay screen carried a tank's object number:\n{frame}"
+        );
+    }
+
+    // Over Cy's web socket: the parameter-less ground ask answers match 1's.
+    let mut cy_web = web_session(&server, "cy", PILOT_PASSWORD, "Cy").await;
+    let map = panel_query(&mut cy_web, 801, MAP_FEED).await;
+    assert_eq!(map.get("match").and_then(Value::as_u64), Some(1), "{map}");
+    assert_ne!(map.get("seated"), Some(&json!(false)), "{map}");
+
+    // `x` closes the picture (the Return after it opens the box on the scene).
+    cy.send_line("x").await;
+
+    // Match 2: a running match has no replay, and the refusal opens nothing.
+    for pilot in [ADA, BO] {
+        say(
+            &mut god,
+            &format!("@teleport #{}=#{lobby}", pilot.0),
+            "Teleported",
+        )
+        .await;
+    }
+    take_off(&mut ada, &mut bo).await;
+    cy.send_line("SIM REPLAY 2").await;
+    wait_until(
+        STEP_TIMEOUT,
+        "the refusal to land on the scene",
+        async || {
+            cols = if cols == 121 { 122 } else { 121 };
+            tui_frame(&mut cy, cols)
+                .await
+                .contains("Match2isstillrunning.")
+        },
+    )
+    .await;
+    // Which screen: the help overlay's first line names it whole, read off a
+    // whole frame.
+    cy.send_line("").await; // back to nav
+    cy.send_line("?").await; // help; the Return is swallowed while it is up
+    let mut help = String::new();
+    wait_until(STEP_TIMEOUT, "the help overlay to be drawn", async || {
+        cols = if cols == 121 { 122 } else { 121 };
+        help = tui_frame(&mut cy, cols).await;
+        help.contains("scenescreen") || help.contains("cockpitscreen")
+    })
+    .await;
+    assert!(
+        help.contains("scenescreen") && !help.contains("cockpitscreen"),
+        "the refused `SIM REPLAY 2` opened screen 0:\n{help}"
+    );
+    cy.send_line("?").await;
+
+    // And the refusal dropped the cursor: no document of match 1 by accident,
+    // and no ground.
+    let answer = panel_query(&mut cy_web, 802, REPLAY_FEED).await;
+    assert_eq!(answer.get("available"), Some(&json!(false)), "{answer}");
+    assert_eq!(
+        answer.get("reason").and_then(Value::as_str),
+        Some("You have no replay open; type SIM REPLAY <match>."),
+        "{answer}"
+    );
+    let map = panel_query(&mut cy_web, 803, MAP_FEED).await;
+    assert_eq!(map, unseated(MAP_FEED), "{map}");
+
+    say(&mut ada, "SIM ABORT", "aborts match").await;
+}

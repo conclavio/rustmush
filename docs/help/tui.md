@@ -215,6 +215,20 @@ reads the scene back, and is not taken as the line you were composing.
              frame, and the screen opens itself then; the tab goes when you
              leave the tank, and if you were on it you are put back on the
              scene screen.
+             After a match, `SIM REPLAY <match>` opens the replay on this
+             screen, and the tab with it: the ground with both sides drawn
+             on it (`o` red, `*` blue, `%` a wreck), one keyframe at a time.
+             The left says which match and how it ended, which keyframe,
+             whose tank the map is centred on and that both sides are shown;
+             the damage pane lists the tanks wrecked so far, the weapons
+             pane the shots fired since the keyframe before, and the
+             contacts pane every tank of both sides where it stood. `,` and
+             `.` step back and on, `u` moves the map to the next tank (Enter
+             on a row of the contacts pane moves it to that one), `x`
+             closes, and `p` pulls the replay again. Positions are the
+             arena's own, every 5 s, and the TUI draws nothing between them.
+             Sitting in a tank closes the replay; a replay never opens over
+             a cockpit you are flying.
 
 The two tactical screens are always in the tab strip, and they are honest
 when there is nothing to show: with no station and no unit of your own they

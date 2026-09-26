@@ -20,14 +20,16 @@ const full: GateInput = {
   panels: ["comsys", "mail", "wod.sheet", "wod.roll", "legal.actions", "worldgen.draft", "llm.dashboard"],
   features: ["mail", "channels"],
   cockpitSeated: false,
+  pictureOpen: false,
 };
-const bare: GateInput = { panels: [], features: [], cockpitSeated: false };
+const bare: GateInput = { panels: [], features: [], cockpitSeated: false, pictureOpen: false };
 /** A server that also publishes the arena's cockpit feed (16b cut Q.5), seen by
  * a pilot a frame has seated (16b cut B.3). */
 const arena: GateInput = {
   panels: [...full.panels, "arena.cockpit"],
   features: full.features,
   cockpitSeated: true,
+  pictureOpen: false,
 };
 /** The same server seen by a bystander, or by a pilot after the cleared frame. */
 const unseated: GateInput = { ...arena, cockpitSeated: false };
@@ -174,6 +176,64 @@ describe("ScreensStore", () => {
     );
   });
 
+  it("the cockpit tab stands for a replay with no seat, and its keys are the replay's (16b cut I.2)", () => {
+    const s = new ScreensStore();
+    // A replay open on an arena server that publishes the replay feed: the tab
+    // with no seat, on 0, and the digit reaches it.
+    const replaying: GateInput = {
+      ...unseated,
+      panels: [...unseated.panels, "arena.replay"],
+      pictureOpen: true,
+    };
+    expect(s.available(replaying).some((d) => d.id === "cockpit")).toBe(true);
+    expect(s.switchDigit(0, replaying)).toBe(true);
+    expect(s.activeDef(replaying).id).toBe("cockpit");
+    // Its binding table is the replay's five, and the cockpit's twelve are not
+    // dispatched under it…
+    expect(s.activeKeys(replaying).map((b) => `${b.key} ${b.label}`)).toEqual([
+      ", prev",
+      ". next",
+      "u focus",
+      "x close",
+      "p pull",
+    ]);
+    expect(s.binding("k", replaying)).toBeNull();
+    expect(s.binding(",", replaying)?.action).toEqual({ kind: "local", action: "picturePrev" });
+    expect([...s.bindingKeys(replaying)].sort()).toEqual([",", ".", "p", "u", "x"]);
+    // …nor the replay's under a seat, where the table is the cockpit's own.
+    expect(s.binding(",", arena)).toBeNull();
+    expect(s.binding("k", arena)?.label).toBe("lock");
+    // No replay feed in the manifest, or no picture: no tab for a bystander.
+    expect(s.available({ ...replaying, panels: unseated.panels }).some((d) => d.id === "cockpit")).toBe(
+      false,
+    );
+    expect(s.available({ ...replaying, pictureOpen: false }).some((d) => d.id === "cockpit")).toBe(
+      false,
+    );
+    // The second table is held to every rule the first is: a `run` of `sim`
+    // or a mutating verb, a global key, a key bound twice.
+    const cockpit = BUILTIN_SCREENS.find((d) => d.id === "cockpit")!;
+    const withAlt = (extra: ScreenDef["keys"][number]): ScreenDef => ({
+      ...cockpit,
+      altKeys: [...(cockpit.altKeys ?? []), extra],
+    });
+    expect(validateScreens([withAlt({ key: "r", label: "r", action: { kind: "run", cmd: "SIM REPLAY 7 next" } })])).toContain(
+      "sim is never a bare key",
+    );
+    expect(validateScreens([withAlt({ key: "f", label: "f", action: { kind: "run", cmd: "fire BA" } })])).toContain(
+      "not a read-only verb",
+    );
+    expect(validateScreens([withAlt({ key: "g", label: "g", action: { kind: "local", action: "pictureNext" } })])).toContain(
+      "global key",
+    );
+    expect(validateScreens([withAlt({ key: ",", label: "again", action: { kind: "local", action: "picturePrev" } })])).toContain(
+      "bound twice",
+    );
+    expect(validateScreens(BUILTIN_SCREENS)).toBeNull();
+    // Only the cockpit has a second table.
+    expect(BUILTIN_SCREENS.filter((d) => d.altKeys !== undefined).map((d) => d.id)).toEqual(["cockpit"]);
+  });
+
   it("the cockpit's `p` pulls, right after `m`, and the table still validates (16b cut B.2)", () => {
     // `g` would have been refused: it is the pane-jump key both clients take
     // before any binding. `p` is on neither reserved list, and it sits right
@@ -209,6 +269,7 @@ describe("registerViewScreen (interface plan I9)", () => {
       panels: [...full.panels, "jobs.view"],
       features: full.features,
       cockpitSeated: false,
+      pictureOpen: false,
     };
     expect(s.registerViewScreen("jobs.view")).toBeNull();
     const def = s.available(withView).find((d) => d.id === "view:jobs.view");

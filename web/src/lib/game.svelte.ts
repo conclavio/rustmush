@@ -35,6 +35,7 @@ import {
 } from "./render";
 import { isOwnRoll } from "./roll";
 import { ARENA_MAP_FEED, COCKPIT_FEED, decodeArenaMap, isNoticeSentence } from "./cockpit";
+import { REPLAY_FEED, decodeReplayGrid } from "./replay";
 import { exitKeys, type NavIntent } from "./keys";
 import { paletteEntries, type PaletteEntry } from "./palette";
 import { storageDel, storageGet, storageGetJson, storageSet, storageSetJson } from "./storage";
@@ -43,6 +44,7 @@ import { CockpitStore, MAP_ASK_MS } from "./stores/cockpit.svelte";
 import { CommandsStore } from "./stores/commands.svelte";
 import { LegalActionsStore } from "./stores/actions.svelte";
 import { GenericViewStore, isViewFeed } from "./stores/genericview.svelte";
+import { ReplayStore } from "./stores/replay.svelte";
 import { RequestStore } from "./stores/requests.svelte";
 import { NotificationStore } from "./stores/notifications.svelte";
 import { LlmDashboardStore } from "./stores/llm.svelte";
@@ -98,6 +100,7 @@ type PendingReq =
   | { kind: "contacts" }
   | { kind: "cockpit" }
   | { kind: "arena.map" }
+  | { kind: "arena.replay" }
   | { kind: "scenes" };
 
 const HELP_LINES = [
@@ -222,6 +225,8 @@ export class GameApp {
   vitals = new VitalsStore();
   map = new MapStore();
   cockpit = new CockpitStore();
+  /** A finished match open on screen 0 (16b cut I.2). */
+  replay = new ReplayStore();
   presence = new PresenceStore();
   genericViews = new GenericViewStore();
   requests = new RequestStore();
@@ -314,6 +319,12 @@ export class GameApp {
         // ask, so a blip neither drags the pilot back nor pulls the ground
         // twice. Unseated now, so the heal stops until the answer re-seats it.
         this.cockpit.clearForRehydrate();
+        // And the replay's seq marks (16b cut I.2): they are the old attach's
+        // numbers, and this one counts from 1 again, so a dismissal keyed on
+        // them would refuse a fresh `SIM REPLAY` of the same match until the
+        // new seqs caught up. An open picture stays open; the hello pass has
+        // re-asked it.
+        this.replay.beginSegment();
         this.#armMapHeal();
         // The server's request registry is RAM-only (I10, D-I-22), so a full
         // re-attach means any pending request is gone server-side and its id
@@ -461,6 +472,7 @@ export class GameApp {
     this.commands.clear();
     this.vitals.clear();
     this.cockpit.clear();
+    this.replay.clear(); // 16b cut I.2: nothing open, nothing dismissed
     this.#armMapHeal(); // unseated: stops the heal (16b cut B.2)
     this.genericViews.clear();
     this.requests.clear();
@@ -573,7 +585,10 @@ export class GameApp {
     c.on("weather", (env) => {
       this.scrollback.push("ev-weather", [renderRich(env.d.text)], env.ts);
     });
-    c.on("panel", (env) => this.#routePanel(env.d, null));
+    // The envelope seq rides along for `arena.replay` (16b cut I.2): a grid
+    // replayed out of the resume ring keeps the seq it was first sent with,
+    // which is how a dismissed replay tells it from a fresh `SIM REPLAY`.
+    c.on("panel", (env) => this.#routePanel(env.d, null, env.seq));
     c.on("view", (env) => this.#routeView(env.d, null));
     c.on("reply", (env) => {
       const pending = this.#pending.get(env.d.id);
@@ -658,9 +673,11 @@ export class GameApp {
     ) {
       this.#screenRefused(UNIT_SCREEN.def.label, this.screens.registerFeedScreen(UNIT_SCREEN));
     }
+    let mapAsked = false;
     for (const { pending, q } of hydrationQueries(this.session)) {
       const sent = this.#req(pending, q);
       if (sent && pending.kind === "arena.map") {
+        mapAsked = true;
         // The hello pass pulls the arena's ground (16b cut Q.5), and that ask
         // ARMS the cockpit store's latch: the first frame to arrive would
         // otherwise find it unarmed and pull the whole terrain a second time,
@@ -670,6 +687,20 @@ export class GameApp {
     }
     if (this.session.hasPanel("legal.actions")) {
       this.#requestLegalActions();
+    }
+    // **16b cut I.2**: an open replay is re-hydrated here — the world behind
+    // this hello may be a new one, so the held document and ground are dropped
+    // and asked again, the document ONCE (its `available: false` answer, if
+    // the cursor died with the old world, then closes the picture).
+    if (this.replay.open) {
+      this.replay.clearForRehydrate();
+      // The pass's own ground ask above answers an unseated viewer with the
+      // replay's ground (the cursor's clause of `arena.map`): it is this ask,
+      // and one whole terrain is enough on a socket that has just reopened.
+      if (mapAsked) {
+        this.replay.noteMapAsked(Date.now());
+      }
+      this.#askReplay();
     }
   }
 
@@ -794,6 +825,13 @@ export class GameApp {
           // unwired propagation layer is not scrollback clutter.
           return;
         }
+        if (pending?.kind === "arena.replay") {
+          // A refusal or a throttle line answering the document ask (16b cut
+          // I.2): the ask is answered, and nothing is printed for asking. It is
+          // not re-asked — `p` asks again.
+          this.replay.docAsked = false;
+          return;
+        }
         if (pending?.kind === "cockpit" || pending?.kind === "arena.map") {
           // A refusal to either arena feed (16b cut Q.5): the cockpit screen
           // renders `Not in a cockpit.` / `Waiting for the arena map...` on
@@ -814,6 +852,7 @@ export class GameApp {
   #routePanel(
     d: { feed: string; kind: string; data: unknown },
     pending: PendingReq | null,
+    seq = 0,
   ): void {
     if (d.feed === "narrative") {
       // A narrative backlog page (interface plan I12): older room lines this
@@ -901,8 +940,16 @@ export class GameApp {
           this.#req({ kind: "cockpit" }, { t: "panel_subscribe", d: { feed: COCKPIT_FEED } });
         }
         this.cockpit.applyMap(d.data);
+        // 16b cut I.2: an open replay's ground (another match's is dropped).
+        this.replay.applyMap(d.data);
         // The ground that lands stops the heal; one that is dropped does not.
         this.#armMapHeal();
+      }
+    } else if (d.feed === REPLAY_FEED) {
+      // A finished match (16b cut I.2; 16c N9): the pushed grid opens it, the
+      // pulled document fills it, `available: false` closes it.
+      if (d.kind === "keyframe") {
+        this.#followTheReplay(d.data, seq);
       }
     } else if (d.feed === MAP_FEED) {
       // The tactical map (S4): a keyframe replaces the whole grid; a delta
@@ -948,7 +995,13 @@ export class GameApp {
    * line, and there is nothing left to wait for.
    */
   #followTheCockpit(data: unknown): void {
-    if (this.cockpit.applyFrame(data)) {
+    const open = this.cockpit.applyFrame(data);
+    // 16b cut I.2: a seat closes a replay (and dismisses its match) before the
+    // cockpit opens — a pilot flying a match is shown the match.
+    if (this.cockpit.seated && this.replay.open) {
+      this.replay.close();
+    }
+    if (open) {
       this.screens.switchTo("cockpit", this.gate);
     }
     if (this.cockpit.needsMap(Date.now())) {
@@ -958,6 +1011,44 @@ export class GameApp {
       );
     }
     this.#armMapHeal();
+  }
+
+  /**
+   * **What one `arena.replay` keyframe asks of this client** (16b cut I.2; 16c
+   * N9). A `grid` — what `SIM REPLAY` pushes — opens a replay of its match on
+   * screen 0, once per match (`ReplayStore.applyGrid`, which also keeps a
+   * dismissed match shut against a grid replayed out of the resume ring, by
+   * `seq`), unless this viewer is SEATED: a pilot keeps the cockpit and the
+   * grid opens nothing. Anything else on the feed is the document or
+   * `available: false` (`applyDocument`, which closes the picture on the
+   * latter). Then the asks the picture is owed.
+   */
+  #followTheReplay(data: unknown, seq: number): void {
+    if (decodeReplayGrid(data) !== null) {
+      if (this.cockpit.seated) {
+        return;
+      }
+      if (this.replay.applyGrid(data, seq)) {
+        this.screens.switchTo("cockpit", this.gate);
+      }
+    } else {
+      this.replay.applyDocument(data);
+    }
+    this.#askReplay();
+    this.#armMapHeal();
+  }
+
+  /** **The asks an open replay is owed** (16b cut I.2): the document ONCE, and
+   * the ground under its `MAP_ASK_MS` latch. Both are empty `panel_subscribe`s
+   * — no params: the query is keyed on the asker's replay cursor, and a
+   * subscribe has nowhere to put a match. */
+  #askReplay(): void {
+    if (this.replay.needsDocument(Date.now())) {
+      this.#req({ kind: "arena.replay" }, { t: "panel_subscribe", d: { feed: REPLAY_FEED } });
+    }
+    if (this.replay.needsMap(Date.now())) {
+      this.#req({ kind: "arena.map" }, { t: "panel_subscribe", d: { feed: ARENA_MAP_FEED } });
+    }
   }
 
   /**
@@ -980,10 +1071,15 @@ export class GameApp {
    * for the rest of the session — the very case it is here to heal.
    */
   #armMapHeal(): void {
-    if (this.cockpit.seated && !this.cockpit.holdsTheGround) {
+    // 16b cut I.2: an open replay's dark ground is healed on the same timer,
+    // through its own store's latch — and ONLY its ground: the document is
+    // never asked on a timer.
+    const replayDark = this.replay.open && !this.cockpit.seated && !this.replay.holdsTheGround;
+    if ((this.cockpit.seated && !this.cockpit.holdsTheGround) || replayDark) {
       if (this.#mapHealTimer === null) {
         this.#mapHealTimer = setInterval(() => {
-          if (this.cockpit.needsMap(Date.now())) {
+          const now = Date.now();
+          if (this.cockpit.needsMap(now) || (!this.cockpit.seated && this.replay.needsMap(now))) {
             this.#req({ kind: "arena.map" }, { t: "panel_subscribe", d: { feed: ARENA_MAP_FEED } });
           }
         }, MAP_ASK_MS);
@@ -1131,7 +1227,15 @@ export class GameApp {
       panels: this.session.panels,
       features: this.session.features,
       cockpitSeated: this.cockpit.seatedOnce,
+      pictureOpen: this.pictureShown,
     };
+  }
+
+  /** **Whether screen 0 draws the replay** (16b cut I.2): a replay is open and
+   * no seat is held. `Game.svelte` mounts `ReplayScreen` on it, and the
+   * cockpit's second key table is the one dispatched. */
+  get pictureShown(): boolean {
+    return this.replay.open && !this.cockpit.seated;
   }
 
   /** Act on a nav intent from the key model; `true` when it was consumed. */
@@ -1221,8 +1325,33 @@ export class GameApp {
   }
 
   /** A screen's local action. */
-  localAction(action: "refresh" | "clear" | "who" | "toggle"): void {
+  localAction(
+    action:
+      | "refresh"
+      | "clear"
+      | "who"
+      | "toggle"
+      | "picturePrev"
+      | "pictureNext"
+      | "pictureFocus"
+      | "pictureClose",
+  ): void {
     switch (action) {
+      // 16b cut I.2: the picture's four keys, over the document the client
+      // holds — nothing is sent.
+      case "picturePrev":
+        this.replay.stepKeyframe(-1);
+        return;
+      case "pictureNext":
+        this.replay.stepKeyframe(1);
+        return;
+      case "pictureFocus":
+        this.replay.nextFocus();
+        return;
+      case "pictureClose":
+        this.replay.close();
+        this.#armMapHeal();
+        return;
       case "clear":
         this.scrollback.clear();
         return;
@@ -1247,6 +1376,14 @@ export class GameApp {
             { kind: "view", feed: viewFeed },
             { t: "panel_subscribe", d: { feed: viewFeed } },
           );
+          return;
+        }
+        if (this.screens.active === "cockpit" && this.pictureShown) {
+          // `p` on the replay (16b cut I.2): the document again — never while
+          // an ask is still outstanding (`REPLAY_ASK_MS`) — and the ground
+          // while it is dark, under its latch.
+          this.replay.pull(Date.now());
+          this.#askReplay();
           return;
         }
         switch (this.screens.active) {

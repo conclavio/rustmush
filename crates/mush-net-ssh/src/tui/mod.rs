@@ -23,6 +23,7 @@ mod backend;
 pub mod keys;
 pub mod panels;
 pub mod render;
+pub mod replay;
 pub mod screen;
 pub mod sheet;
 

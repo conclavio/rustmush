@@ -17,6 +17,7 @@
   import ChannelTabs from "./ChannelTabs.svelte";
   import ChannelView from "./ChannelView.svelte";
   import CockpitScreen from "./CockpitScreen.svelte";
+  import ReplayScreen from "./ReplayScreen.svelte";
   import CommandPalette from "./CommandPalette.svelte";
   import Composer from "./Composer.svelte";
   import GenericViewScreen from "./GenericViewScreen.svelte";
@@ -63,6 +64,9 @@
   const gate = $derived(app.gate);
   const screens = $derived(app.screens.available(gate));
   const active = $derived(app.screens.activeDef(gate));
+  // 16b cut I.2: the active binding table — the replay's own on screen 0 while
+  // a replay is drawn there — for the legend and the help.
+  const activeKeys = $derived(app.screens.activeKeys(gate));
 
   const statusLabel = $derived(
     (
@@ -207,6 +211,10 @@
           <LlmPanel {app} />
         {:else if active.id === "unit"}
           <UnitScreen {app} />
+        {:else if active.id === "cockpit" && app.pictureShown}
+          <!-- 16b cut I.2: a finished match on screen 0 — a replay is open
+               and no seat is held. A seat closes the replay. -->
+          <ReplayScreen {app} />
         {:else if active.id === "cockpit"}
           <CockpitScreen {app} />
         {:else if active.viewFeed}
@@ -233,7 +241,7 @@
         {#if app.screens.inputFocused}
           <span class="muted">Enter sends · Esc leaves the box, keeping the draft · Alt+key is the nav key · ^K palette</span>
         {:else}
-          {#each active.keys as b (b.key)}
+          {#each activeKeys as b (b.key)}
             <button type="button" class="chip" onclick={() => app.runBinding(b.key)}>
               <kbd>{b.key}</kbd>
               {b.label}
@@ -282,7 +290,7 @@
           <dt>/</dt><dd>the command palette (^K from anywhere)</dd>
           <dt>Esc</dt><dd>leave the box, keeping the draft</dd>
           <dt>Alt+key</dt><dd>the key's nav action from inside the box</dd>
-          {#each active.keys as b (b.key)}
+          {#each activeKeys as b (b.key)}
             <dt>{b.key}</dt><dd>{b.label}</dd>
           {/each}
           {#if active.exitsAreKeys && app.screens.exits.size > 0}

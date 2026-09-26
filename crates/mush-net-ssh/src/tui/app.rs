@@ -23,7 +23,7 @@
 //! mutating command (D-I-18): `Run` bindings are held to the read-only list
 //! by [`validate_screens`], and the exit walk is the one carve-out.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mush_ansi::AnsiTheme;
@@ -40,16 +40,19 @@ use serde_json::Value;
 
 use super::keys::{Key, KeyParser};
 use super::panels::{
-    ARENA_MAP_FEED, COCKPIT_FEED, ChanMsg, NOTICE_SENTENCE_TAG, PanelOutcome, PanelStore, UNIT_FEED,
+    ARENA_MAP_FEED, COCKPIT_FEED, ChanMsg, NOTICE_SENTENCE_TAG, PanelOutcome, PanelStore,
+    REPLAY_FEED, UNIT_FEED,
 };
 use super::render::{
     Entry, GUTTER_W, PaneRows, RenderCtx, dim_span_owned, floor_line, legend_line,
     render_backlog_rows, render_channels_rows, render_event, render_rolls_rows, render_sheet_rows,
     render_vitals_rows, render_who_rail, status_line, tab_strip, vitals_line, wrap_spans,
 };
+use super::replay::{Document, Picture, REPLAY_DOCUMENT_SHAPE, REPLAY_GRID_SHAPE};
 use super::screen::{
-    BorderRole, COCKPIT_SCREEN, FLOOR_COLS, GLOBAL_KEYS, JUMP_KEYS, KeyAction, LocalAction,
-    PaneContent, PaneId, PaneSlot, PaneSpec, Screen, ScreenId, builtin_screens, validate_screens,
+    BorderRole, COCKPIT_SCREEN, FLOOR_COLS, GLOBAL_KEYS, JUMP_KEYS, KeyAction, KeyBinding,
+    LocalAction, PaneContent, PaneId, PaneSlot, PaneSpec, Screen, ScreenId, builtin_screens,
+    validate_screens,
 };
 use crate::line::LineBuffer;
 
@@ -103,6 +106,16 @@ const MAX_OPEN_REQUESTS_PER_SUBJECT: usize = 32;
 /// same latch, so a stationary pilot whose answer was dropped is not waiting
 /// for the first thing to move.
 pub const MAP_HEAL_LATCH_S: i64 = 2;
+/// **Seconds an `arena.replay` document ask stays outstanding** (16b cut
+/// I.2). The document is up to 256 KiB (`MAP_MAX_BYTES`), so nothing asks it
+/// again while one ask is in flight — `p` included, or a viewer pressing it on
+/// a slow link would queue one copy per press. But the bridge drops a
+/// throttled query in silence (the `BACKLOG_LATCH_S` precedent), so the
+/// outstanding mark has to AGE rather than latch, or a dropped ask would leave
+/// the picture on `Waiting for the replay...` until a hello. Ten seconds is
+/// `mush-net-web`'s send timeout: an answer that has not landed by then on a
+/// healthy link is not coming.
+pub const REPLAY_ASK_LATCH_S: i64 = 10;
 
 /// Nav or input (D-I-17).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -331,6 +344,37 @@ pub struct TuiApp {
     /// cleared one — the gate on the tenth tab, described on
     /// [`Self::screen_available`].
     cockpit_seat: bool,
+    /// **The replay open on screen 0** (16b cut I.2), if any: opened by a
+    /// `grid` keyframe on `arena.replay` (what `SIM REPLAY` pushes) while no
+    /// seat is held, closed by `x`, by an `available: false` answer and by a
+    /// seated frame. While it is open the cockpit screen exists without a seat
+    /// ([`Self::screen_available`]) and draws its second layout.
+    picture: Option<Picture>,
+    /// **The matches whose picture this viewer closed** (16b cut I.2): `x`, an
+    /// `available: false` answer and a seated frame mark the match here, and
+    /// any grid of it clears the mark. It is kept for parity with the web's
+    /// store and GATES NOTHING over SSH: the web keys the mark on the envelope
+    /// seq so a grid replayed out of the resume ring does not re-open a closed
+    /// picture, but the resume ring replays to web sockets only and an SSH sink
+    /// carries no seq, so every grid this app is handed is a fresh push, which
+    /// re-opens its match whatever the mark says. A late document or map of a
+    /// closed match is dropped because no picture is open
+    /// ([`Self::follow_the_replay`]), not because of this mark.
+    dismissed: BTreeSet<i64>,
+    /// **When the outstanding `arena.replay` ask went out** (16b cut I.2), or
+    /// `None` when none is: set when the document is asked for, cleared by any
+    /// answer on the feed (the document or `available: false`), by a close and
+    /// by a re-hydrate, and presumed lost after [`REPLAY_ASK_LATCH_S`]
+    /// ([`Self::replay_ask_outstanding`]). The document is up to 256 KiB
+    /// (`MAP_MAX_BYTES`) and is NEVER asked on a timer: once when the picture
+    /// opens, again on a hello's re-hydrate and on `p`, and NOTHING — `p`
+    /// included — asks while an ask is outstanding.
+    replay_asked_at: Option<i64>,
+    /// The match the cockpit screen has already been switched to for a
+    /// PICTURE (16b cut I.2) — [`Self::cockpit_switched`]'s once-per-match rule,
+    /// applied to the replay's match id. A close clears it, so a later `SIM
+    /// REPLAY` of the same match opens the screen again.
+    picture_switched: Option<i64>,
 }
 
 fn system_clock() -> i64 {
@@ -401,6 +445,10 @@ impl TuiApp {
             map_asked_for: None,
             cockpit_switched: None,
             cockpit_seat: false,
+            picture: None,
+            dismissed: BTreeSet::new(),
+            replay_asked_at: None,
+            picture_switched: None,
         })
     }
 
@@ -444,14 +492,68 @@ impl TuiApp {
     /// frame to the cleared one (16c Q21, 16b cut B.3): the tab goes with the
     /// seat, and a pilot standing on it is moved to the first screen — the web
     /// client's tab keeps the same hours.
+    ///
+    /// **16b cut I.2**: an open replay is the cockpit screen's other reason to
+    /// exist — `(manifest empty or carries arena.cockpit) AND (a seat OR a
+    /// picture)`. The picture is opened only by the grid `SIM REPLAY` pushes to
+    /// the one viewer who typed it, so a bystander still has no tab.
     fn screen_available(&self, screen: &Screen) -> bool {
         match screen.gate {
             None => true,
             Some(feed) => {
                 (self.manifest.panels.is_empty() || manifest_has(&self.manifest, feed))
-                    && (feed != COCKPIT_FEED || self.cockpit_seat)
+                    && (feed != COCKPIT_FEED || self.cockpit_seat || self.picture.is_some())
             }
         }
+    }
+
+    /// **Whether screen 0 draws the picture** (16b cut I.2): the cockpit
+    /// screen is showing and a replay is open. A seated frame closes the
+    /// picture, so a picture is never drawn over a seat.
+    fn picture_layout(&self) -> bool {
+        self.active == COCKPIT_SCREEN && self.picture.is_some()
+    }
+
+    /// **The active screen's binding table** (16b cut I.2): the second table
+    /// ([`Screen::alt_keys`]) while the picture is the layout, the screen's own
+    /// otherwise — drawn in the legend and the help, and the one dispatched.
+    fn keys(&self) -> &[KeyBinding] {
+        let screen = self.screen();
+        match screen.alt_keys.as_deref() {
+            Some(alt) if self.picture_layout() => alt,
+            _ => &screen.keys,
+        }
+    }
+
+    /// The replay open on screen 0, if any (16b cut I.2).
+    #[must_use]
+    pub fn picture(&self) -> Option<Picture> {
+        self.picture
+    }
+
+    /// Whether this viewer closed the picture of `match_id` and no grid of it
+    /// has arrived since (16b cut I.2) — bookkeeping for parity with the web;
+    /// over SSH it gates nothing (see the `dismissed` field).
+    #[must_use]
+    pub fn dismissed(&self, match_id: i64) -> bool {
+        self.dismissed.contains(&match_id)
+    }
+
+    /// **Whether an `arena.replay` document ask is still outstanding at
+    /// `now`** (16b cut I.2): one went out less than [`REPLAY_ASK_LATCH_S`]
+    /// ago and nothing has answered it. Past the latch it is presumed dropped
+    /// (a throttled query gets no reply), so `p` may ask again.
+    fn replay_ask_outstanding(&self, now: i64) -> bool {
+        self.replay_asked_at
+            .is_some_and(|at| (0..REPLAY_ASK_LATCH_S).contains(&now.saturating_sub(at)))
+    }
+
+    /// The held replay document of `match_id`, if the store holds that one.
+    fn replay_document(&self, match_id: i64) -> Option<Document<'_>> {
+        self.panels
+            .get(REPLAY_FEED)
+            .and_then(Document::of)
+            .filter(|doc| doc.match_id() == match_id)
     }
 
     /// The screens this server has, in table order.
@@ -768,10 +870,11 @@ impl TuiApp {
             // (or switching back to it) never re-pulls it; when none is held,
             // this IS the self-heal's ask and `follow_the_cockpit` arms the
             // latch on it.
+            // 16b cut I.2: the open picture's ground counts the same way.
             .filter(|(n, _)| {
                 n != ARENA_MAP_FEED
                     || !self
-                        .cockpit_match()
+                        .ground_match()
                         .is_some_and(|m| self.holds_the_ground(m))
             })
             .collect();
@@ -838,7 +941,14 @@ impl TuiApp {
     ///   it first (`PanelStore::push_cockpit_notices`).
     /// * **A cleared frame** (`seated: false`, the last one a pilot gets)
     ///   drops the map, the ring and the tab, and re-arms both latches, so the
-    ///   next match starts clean.
+    ///   next match starts clean — **except** (16b cut I.2) what an open
+    ///   picture still reads: the ground of the replay's match and the latch
+    ///   armed for it stay, and so does the tab (the picture is its other
+    ///   reason). A replay viewer is answered the cleared frame by the cockpit
+    ///   ask screen 0's `on_enter` makes, so this is the ordinary case.
+    /// * **A seated frame closes an open picture** (16b cut I.2) before
+    ///   anything else, and the cockpit opens as it always has: a pilot flying
+    ///   a match is shown the match, not a replay.
     fn follow_the_cockpit(&mut self, frame: &Value, now: i64) -> Vec<(String, Value)> {
         let mut queries = Vec::new();
         let seated = frame.get("seated").and_then(Value::as_bool) != Some(false);
@@ -851,16 +961,28 @@ impl TuiApp {
             // 16c Q21): the flag clears, and a pilot standing on screen 0 is
             // moved to the first screen — the scene, where the sentence that
             // said why (`You climb out…`) has landed. Nothing of the seat
-            // stays: the ground, the ring and both latches go too.
-            self.panels.forget(ARENA_MAP_FEED);
+            // stays: the ground, the ring and both latches go too — but the
+            // ground an open picture is drawn on, and its latch, are the
+            // picture's and not the seat's (16b cut I.2).
+            let picture_match = self.picture.map(|p| p.match_id);
+            if !picture_match.is_some_and(|m| self.holds_the_ground(m)) {
+                self.panels.forget(ARENA_MAP_FEED);
+            }
             self.panels.clear_cockpit_notices();
-            self.map_asked_at = None;
-            self.map_asked_for = None;
+            if picture_match.is_none() || self.map_asked_for != picture_match {
+                self.map_asked_at = None;
+                self.map_asked_for = None;
+            }
             self.cockpit_switched = None;
             self.cockpit_seat = false;
             self.leave_a_screen_this_server_does_not_have();
             return queries;
         };
+        // 16b cut I.2: a seat closes a picture — the replay's feeds and flags
+        // go, and its match is marked dismissed, before the seat takes over.
+        if self.picture.is_some() {
+            self.close_picture();
+        }
         // The ring first (16b cut B.3): the frame's own notices, composed from
         // their fields, and a new match's frame empties it before they land.
         self.panels.push_cockpit_notices(frame);
@@ -923,9 +1045,16 @@ impl TuiApp {
     /// path arms — so the two paths together never ask more than once per
     /// [`MAP_HEAL_LATCH_S`], and a held map is never asked for (the ground
     /// does not move, and a map costs up to 256 KiB and a flood token).
+    ///
+    /// **16b cut I.2**: an open picture's ground is healed on the same terms
+    /// (`ground_match`) — and ONLY its ground. The replay document is
+    /// never asked here: it is up to 256 KiB, and a timer that re-asked it
+    /// would queue copies on a slow socket until `mush-net-web`'s send timeout
+    /// closed it. The document is asked when the picture opens, on a hello's
+    /// re-hydrate (the `Hello` arm of [`Self::apply_event`]) and on `p`.
     #[must_use]
     pub fn heal_queries(&mut self, now: i64) -> Vec<(String, Value)> {
-        let Some(match_id) = self.cockpit_match() else {
+        let Some(match_id) = self.ground_match() else {
             return Vec::new();
         };
         if self.holds_the_ground(match_id) || !self.map_ask_due(match_id, now) {
@@ -944,7 +1073,7 @@ impl TuiApp {
     /// sent — the `p` key, a switch onto screen 0, a hello — is an ask like
     /// any other, and the frame path and the timer must count it.
     fn note_map_ask(&mut self, queries: &[(String, Value)], now: i64) {
-        if let Some(match_id) = self.cockpit_match()
+        if let Some(match_id) = self.ground_match()
             && queries.iter().any(|(n, _)| n == ARENA_MAP_FEED)
         {
             self.map_asked_at = Some(now);
@@ -973,6 +1102,179 @@ impl TuiApp {
             return None;
         }
         frame.get("match").and_then(Value::as_i64)
+    }
+
+    /// **The match whose ground screen 0 needs** (16b cut I.2): the held
+    /// seated frame's, else the open picture's. The two never stand together —
+    /// a seated frame closes the picture — so one latch serves both.
+    fn ground_match(&self) -> Option<i64> {
+        self.cockpit_match()
+            .or_else(|| self.picture.map(|p| p.match_id))
+    }
+
+    /// **What one `arena.replay` keyframe asks of the client** (16b cut I.2;
+    /// 16c N9) — the trigger, the document and the close, in one place. It is
+    /// called INSTEAD of the store's generic keyframe path, because the feed
+    /// carries two shapes in one slot and the app decides which to keep:
+    ///
+    /// * **A `grid`** — what `SIM REPLAY` pushes — opens a replay of its
+    ///   `match` and clears that match's `dismissed` mark (it is a fresh push:
+    ///   see the `dismissed` field). A SEATED pilot keeps the cockpit: the grid
+    ///   is stored and opens nothing. A grid of the match already open, whose
+    ///   document is held, is not stored — the document stays in the slot, and
+    ///   the picture stays on the keyframe the viewer stepped to. A grid of
+    ///   another match replaces the picture: it opens at the grid's own
+    ///   keyframe, focused on the roster's first unit, and a held map of
+    ///   another match is dropped. Screen 0 opens itself once per match id (the
+    ///   rule [`Self::follow_the_cockpit`] keeps for a seat), and the document
+    ///   is asked ONCE and the ground under the map latch
+    ///   ([`Self::picture_asks`]).
+    /// * **The document** (`shape: "replay"`) of the open picture's match
+    ///   replaces the grid in the slot; one of any other match — or with no
+    ///   picture open — is dropped, not drawn. Either way the outstanding ask
+    ///   is answered.
+    /// * **`available: false`** — the viewer left the centre, typed a refused
+    ///   `SIM REPLAY`, or the server half restarted and the cursor is gone —
+    ///   CLOSES the picture and marks its match dismissed: the picture ends
+    ///   rather than asking again.
+    fn follow_the_replay(
+        &mut self,
+        feed: &mush_proto::SmolStr,
+        data: &Value,
+        now: i64,
+    ) -> Vec<(String, Value)> {
+        let shape = data.pointer("/schema/shape").and_then(Value::as_str);
+        let match_id = data.get("match").and_then(Value::as_i64);
+        match shape {
+            Some(REPLAY_GRID_SHAPE) => {
+                let Some(match_id) = match_id else {
+                    return Vec::new();
+                };
+                self.dismissed.remove(&match_id);
+                if self.cockpit_seat {
+                    // A seated pilot keeps the cockpit (16b cut I.2): the grid is
+                    // stored, and never opens the replay.
+                    self.panels
+                        .apply_panel(feed, PanelFrameKind::Keyframe, data, now);
+                    return Vec::new();
+                }
+                let open = self.picture.is_some_and(|p| p.match_id == match_id);
+                if open && self.replay_document(match_id).is_some() {
+                    return Vec::new();
+                }
+                if !open {
+                    let at = data
+                        .pointer("/keyframe/index")
+                        .and_then(Value::as_u64)
+                        .and_then(|at| usize::try_from(at).ok())
+                        .unwrap_or(0);
+                    if !self.holds_the_ground(match_id) {
+                        self.panels.forget(ARENA_MAP_FEED);
+                    }
+                    self.picture = Some(Picture {
+                        match_id,
+                        at,
+                        focus: 0,
+                        live: false,
+                    });
+                    self.replay_asked_at = None;
+                }
+                self.panels
+                    .apply_panel(feed, PanelFrameKind::Keyframe, data, now);
+                let mut queries = Vec::new();
+                if self.picture_switched != Some(match_id) {
+                    self.picture_switched = Some(match_id);
+                    queries.extend(self.open_the_cockpit_screen());
+                }
+                let asks = self.picture_asks(&queries, now);
+                queries.extend(asks);
+                queries
+            }
+            Some(REPLAY_DOCUMENT_SHAPE) => {
+                // Any answer on the feed answers the outstanding ask.
+                self.replay_asked_at = None;
+                if data.get("available").and_then(Value::as_bool) == Some(false) {
+                    if self.picture.is_some() {
+                        self.close_picture();
+                        self.leave_a_screen_this_server_does_not_have();
+                    }
+                    return Vec::new();
+                }
+                let Some(picture) = self.picture.filter(|p| Some(p.match_id) == match_id) else {
+                    return Vec::new();
+                };
+                self.panels
+                    .apply_panel(feed, PanelFrameKind::Keyframe, data, now);
+                // The step and the focus stay inside the document now held.
+                let (count, roster) = self
+                    .replay_document(picture.match_id)
+                    .map_or((0, 0), |doc| (doc.keyframe_count(), doc.roster().len()));
+                if let Some(p) = self.picture.as_mut() {
+                    p.at = p.at.min(count.saturating_sub(1));
+                    if usize::from(p.focus) >= roster {
+                        p.focus = 0;
+                    }
+                }
+                Vec::new()
+            }
+            // A shape this client predates: kept as any keyframe is.
+            _ => {
+                self.panels
+                    .apply_panel(feed, PanelFrameKind::Keyframe, data, now);
+                Vec::new()
+            }
+        }
+    }
+
+    /// **The asks an open picture is owed** (16b cut I.2): the document ONCE —
+    /// when it is not held and no ask is outstanding — and the ground under the
+    /// cockpit's own map latch ([`Self::map_ask_due`], keyed by match) until it
+    /// is held. `already` is what the caller is sending anyway (the screen's
+    /// own `on_enter`): a map ask there IS this one, and arms the latch.
+    fn picture_asks(&mut self, already: &[(String, Value)], now: i64) -> Vec<(String, Value)> {
+        let Some(picture) = self.picture else {
+            return Vec::new();
+        };
+        let empty = || Value::Object(serde_json::Map::new());
+        let mut queries = Vec::new();
+        if !self.replay_ask_outstanding(now) && self.replay_document(picture.match_id).is_none() {
+            self.replay_asked_at = Some(now);
+            queries.push((REPLAY_FEED.to_string(), empty()));
+        }
+        if !self.holds_the_ground(picture.match_id) {
+            let sent = already.iter().any(|(n, _)| n == ARENA_MAP_FEED);
+            if sent || self.map_ask_due(picture.match_id, now) {
+                self.map_asked_at = Some(now);
+                self.map_asked_for = Some(picture.match_id);
+                if !sent {
+                    queries.push((ARENA_MAP_FEED.to_string(), empty()));
+                }
+            }
+        }
+        queries
+    }
+
+    /// **Close the picture** (16b cut I.2): `x`, an `available: false` answer or
+    /// a seated frame. Its match is marked dismissed, both feeds are forgotten
+    /// (the ground only when it is the picture's — a seat's own map is the
+    /// seat's), the ask flag and a map latch armed for it are cleared, and the
+    /// once-per-match switch is re-armed so a later `SIM REPLAY` opens screen 0
+    /// again. The caller moves the viewer off screen 0 where that is right.
+    fn close_picture(&mut self) {
+        let Some(picture) = self.picture.take() else {
+            return;
+        };
+        self.dismissed.insert(picture.match_id);
+        self.panels.forget(REPLAY_FEED);
+        if self.holds_the_ground(picture.match_id) {
+            self.panels.forget(ARENA_MAP_FEED);
+        }
+        if self.map_asked_for == Some(picture.match_id) {
+            self.map_asked_at = None;
+            self.map_asked_for = None;
+        }
+        self.replay_asked_at = None;
+        self.picture_switched = None;
     }
 
     /// Switch to the cockpit screen, answering its hydration queries. Nothing
@@ -1052,6 +1354,14 @@ impl TuiApp {
                     self.apply_narrative_backlog(data);
                     return queries;
                 }
+                // **16b cut I.2**: an `arena.replay` keyframe is the picture's
+                // trigger, its document or its close — two shapes in one slot,
+                // so the app decides what the store keeps (`follow_the_replay`).
+                if feed.as_str() == REPLAY_FEED && *kind == PanelFrameKind::Keyframe {
+                    let asks = self.follow_the_replay(feed, data, now);
+                    queries.extend(asks);
+                    return queries;
+                }
                 match self.panels.apply_panel(feed, *kind, data, now) {
                     PanelOutcome::NeedsResync(f) => {
                         queries.push((f.to_string(), Value::Object(serde_json::Map::new())));
@@ -1088,6 +1398,19 @@ impl TuiApp {
                             COCKPIT_FEED.to_string(),
                             Value::Object(serde_json::Map::new()),
                         ));
+                    }
+                    // **16b cut I.2**: with a picture open and no seat, a map
+                    // that is not the picture's ground — another match's, or the
+                    // unseated answer — is dropped rather than drawn; the latch,
+                    // untouched, bounds the re-ask.
+                    ARENA_MAP_FEED
+                        if *kind == PanelFrameKind::Keyframe
+                            && self.cockpit_match().is_none()
+                            && self.picture.is_some_and(|p| {
+                                data.get("match").and_then(Value::as_i64) != Some(p.match_id)
+                            }) =>
+                    {
+                        self.panels.forget(ARENA_MAP_FEED);
                     }
                     _ => {}
                 }
@@ -1261,6 +1584,19 @@ impl TuiApp {
                     self.manifest.panels.is_empty() || manifest_has(&self.manifest, COCKPIT_FEED);
                 if cockpit_published && self.active != COCKPIT_SCREEN {
                     queries.push((COCKPIT_FEED.to_string(), empty()));
+                }
+                // **16b cut I.2**: the re-hydrate of an open picture. The world
+                // behind the hello may be a new one, so the held document is not
+                // trusted: it is forgotten with its outstanding ask, and asked
+                // once more — the one place besides the open and `p` that asks
+                // it — and the ground under its latch. An `available: false`
+                // answer (the cursor died with the old world) then closes the
+                // picture instead of asking again.
+                if self.picture.is_some() {
+                    self.panels.forget(REPLAY_FEED);
+                    self.replay_asked_at = None;
+                    let asks = self.picture_asks(&queries, now);
+                    queries.extend(asks);
                 }
             }
             OutputEvent::SessionInfo { character, .. } => {
@@ -1609,6 +1945,7 @@ impl TuiApp {
     fn nav_key(&mut self, key: Key, r: &mut InputResult) {
         match key {
             Key::Char(c @ '0'..='9') => self.switch_screen(c as u8 - b'0', r),
+            Key::Enter if self.focus_the_picture_row() => {}
             Key::Enter => self.enter_input(None),
             Key::Char(c @ ('"' | ':' | ';' | '\\')) => self.enter_input(Some(c.to_string())),
             Key::Char('/') => {
@@ -1659,7 +1996,9 @@ impl TuiApp {
             r.submit.push(name.clone());
             return;
         }
-        let Some(binding) = self.screen().binding(c).copied() else {
+        // 16b cut I.2: the active TABLE — the picture's own while it is the
+        // layout — so neither table's keys act under the other's legend.
+        let Some(binding) = self.keys().iter().find(|b| b.key == c).copied() else {
             r.redraw = false;
             return;
         };
@@ -1674,8 +2013,88 @@ impl TuiApp {
         }
     }
 
+    /// **`Enter` on the picture's contacts pane** (16b cut I.2): the
+    /// highlighted row's unit becomes the focus — a client action; nothing is
+    /// prefilled and nothing sent. Answers whether it acted, so `Enter` opens
+    /// the box everywhere else.
+    fn focus_the_picture_row(&mut self) -> bool {
+        if !self.picture_layout()
+            || self
+                .screen()
+                .panes
+                .get(self.focus)
+                .is_none_or(|p| p.id != PaneId("contacts"))
+        {
+            return false;
+        }
+        let Some(key) = self.selected_row_key() else {
+            return false;
+        };
+        let Some(unit) = self
+            .picture
+            .and_then(|p| self.replay_document(p.match_id))
+            .and_then(|doc| doc.roster_index(&key))
+        else {
+            return false;
+        };
+        if let Some(p) = self.picture.as_mut() {
+            p.focus = unit;
+        }
+        true
+    }
+
     fn local_action(&mut self, action: LocalAction, r: &mut InputResult) {
         match action {
+            // **16b cut I.2**: `p` on the picture — the document asked again,
+            // whatever is held (the one explicit pull, and the recovery from an
+            // answer the bridge dropped in silence) but NEVER while an ask is
+            // outstanding ([`REPLAY_ASK_LATCH_S`]: a key pressed five times on a
+            // slow link asks once), and the ground while it is dark.
+            LocalAction::Refresh if self.picture_layout() => {
+                let now = self.now();
+                if let Some(picture) = self.picture {
+                    let empty = || Value::Object(serde_json::Map::new());
+                    if !self.replay_ask_outstanding(now) {
+                        self.replay_asked_at = Some(now);
+                        r.queries.push((REPLAY_FEED.to_string(), empty()));
+                    }
+                    if !self.holds_the_ground(picture.match_id) {
+                        self.map_asked_at = Some(now);
+                        self.map_asked_for = Some(picture.match_id);
+                        r.queries.push((ARENA_MAP_FEED.to_string(), empty()));
+                    }
+                }
+            }
+            LocalAction::PicturePrev => {
+                if let Some(p) = self.picture.as_mut() {
+                    p.at = p.at.saturating_sub(1);
+                }
+            }
+            LocalAction::PictureNext => {
+                let count = self
+                    .picture
+                    .and_then(|p| self.replay_document(p.match_id))
+                    .map_or(0, |doc| doc.keyframe_count());
+                if let Some(p) = self.picture.as_mut() {
+                    p.at = p.at.saturating_add(1).min(count.saturating_sub(1));
+                }
+            }
+            LocalAction::PictureFocus => {
+                let roster = self
+                    .picture
+                    .and_then(|p| self.replay_document(p.match_id))
+                    .map_or(0, |doc| doc.roster().len());
+                if let Some(p) = self.picture.as_mut()
+                    && roster > 0
+                {
+                    let next = usize::from(p.focus).saturating_add(1) % roster;
+                    p.focus = u16::try_from(next).unwrap_or(0);
+                }
+            }
+            LocalAction::PictureClose => {
+                self.close_picture();
+                self.leave_a_screen_this_server_does_not_have();
+            }
             LocalAction::Refresh => {
                 // On the cockpit screen this is `p`, pull (16b cut B.2): its
                 // `on_enter` already carries both arena feeds and already drops
@@ -2403,6 +2822,7 @@ impl TuiApp {
             store: &self.panels,
             selected_channel: None,
             pane: None,
+            picture: self.picture.as_ref(),
         }
     }
 
@@ -2441,6 +2861,13 @@ impl TuiApp {
                     // arrived), so hand them the empty frame rather than a
                     // spinner that never stops.
                     None if feed.ends_with(".unit") => render(&Value::Null, &ctx),
+                    // 16b cut I.2: with a picture open and no cockpit frame held
+                    // (a viewer who never sat and whose `arena.cockpit` answer
+                    // has not landed), the cockpit's renderers are handed an
+                    // unseated frame, which is what draws the replay.
+                    None if feed == COCKPIT_FEED && self.picture.is_some() => {
+                        render(&serde_json::json!({ "seated": false }), &ctx)
+                    }
                     // A module feed this server does not publish at all (the
                     // contacts table on a server without the propagation
                     // layer) is declared-empty, not loading: nothing will ever
@@ -2745,12 +3172,7 @@ impl TuiApp {
     }
 
     fn draw_legend(&self, frame: &mut Frame<'_>, area: Rect) {
-        let bindings: Vec<(char, &str)> = self
-            .screen()
-            .keys
-            .iter()
-            .map(|b| (b.key, b.label))
-            .collect();
+        let bindings: Vec<(char, &str)> = self.keys().iter().map(|b| (b.key, b.label)).collect();
         frame.render_widget(
             Paragraph::new(legend_line(
                 self.mode == Mode::Input,
@@ -3148,7 +3570,7 @@ impl TuiApp {
             Line::from("In the box: Alt+key = the nav key   Esc keeps the draft   Enter stays"),
             Line::from(""),
         ];
-        for b in &self.screen().keys {
+        for b in self.keys() {
             lines.push(Line::from(format!("{}  {}", b.key, b.label)));
         }
         if self.screen().exits_are_keys && !self.exit_keys.is_empty() {
@@ -6860,5 +7282,416 @@ mod tests {
         app.apply_event(&cockpit_cleared());
         app.apply_event(&OutputEvent::Sys(RichText::plain("You climb out.")));
         assert!(app.panels().cockpit_notices().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut I.2 — the replay on screen 0 (16c N9, Q37)
+    // -----------------------------------------------------------------------
+
+    /// The grid `SIM REPLAY 7` pushes at keyframe 1, as I.1's blesser wrote it.
+    const REPLAY_WINDOW_FIXTURE: &str =
+        include_str!("../../../../web/src/lib/fixtures/replay/replay_window.json");
+    /// The replay document of match 7, as `Replay::to_document` writes it.
+    const REPLAY_FIXTURE: &str =
+        include_str!("../../../../web/src/lib/fixtures/replay/replay.json");
+
+    /// The pushed grid, bare — the trigger.
+    fn replay_grid() -> OutputEvent {
+        arena_keyframe(REPLAY_FEED, arena_json(REPLAY_WINDOW_FIXTURE))
+    }
+
+    /// The `arena.replay` query's answer: the document under its own shape.
+    fn replay_document() -> OutputEvent {
+        let mut data = arena_json(REPLAY_FIXTURE);
+        data["schema"] = serde_json::json!({ "id": REPLAY_FEED, "version": 1, "shape": "replay" });
+        OutputEvent::Reply {
+            id: 0,
+            event: Box::new(arena_keyframe(REPLAY_FEED, data)),
+        }
+    }
+
+    /// The query's refusal: no cursor, say.
+    fn replay_unavailable() -> OutputEvent {
+        arena_keyframe(
+            REPLAY_FEED,
+            serde_json::json!({
+                "schema": { "id": REPLAY_FEED, "version": 1, "shape": "replay" },
+                "available": false,
+                "reason": "You have no replay open; type SIM REPLAY <match>."
+            }),
+        )
+    }
+
+    /// The ground match 7 was fought on.
+    fn replay_ground() -> OutputEvent {
+        arena_keyframe(ARENA_MAP_FEED, arena_json(ARENA_MAP_FIXTURE))
+    }
+
+    fn count(queries: &[(String, Value)], feed: &str) -> usize {
+        queries.iter().filter(|(n, _)| n == feed).count()
+    }
+
+    /// The clock the picture's ask test drives (one test touches it).
+    static PICTURE_CLOCK: AtomicI64 = AtomicI64::new(0);
+
+    fn picture_clock() -> i64 {
+        PICTURE_CLOCK.load(Ordering::Relaxed)
+    }
+
+    /// **The trigger and the asks** (16b cut I.2): the grid opens screen 0 for
+    /// a viewer with no seat — the tab appears, and `0` reaches it — at the
+    /// grid's own keyframe, focused on the roster's first unit; the document
+    /// is asked ONCE and the ground under the cockpit's latch. Nothing asks the
+    /// document again while that ask is outstanding (another grid, the timer,
+    /// `p` until [`REPLAY_ASK_LATCH_S`] has passed), the timer heals the ground
+    /// alone, and the document is asked again only on `p` and on a hello's
+    /// re-hydrate. Screen 0 opens itself once per match: a viewer who walked
+    /// to screen 1 stays there when another grid of the match arrives.
+    #[test]
+    fn i2_the_grid_opens_screen_zero_and_the_document_is_asked_once() {
+        PICTURE_CLOCK.store(100, Ordering::Relaxed);
+        let mut app = TuiApp::new(caps());
+        app.set_clock(picture_clock);
+        app.set_manifest(arena_manifest());
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(!text.contains("0 cockpit"), "no picture, no tab:\n{text}");
+
+        let q = app.apply_event(&replay_grid());
+        assert_eq!(
+            app.active_screen(),
+            COCKPIT_SCREEN,
+            "the grid opens screen 0"
+        );
+        assert_eq!(
+            app.picture(),
+            Some(Picture {
+                match_id: 7,
+                at: 1,
+                focus: 0,
+                live: false
+            })
+        );
+        assert_eq!(count(&q, REPLAY_FEED), 1, "the document, once: {q:?}");
+        assert_eq!(count(&q, ARENA_MAP_FEED), 1, "the ground, once: {q:?}");
+        for (_, args) in &q {
+            assert_eq!(args, &serde_json::json!({}), "every ask is `{{}}`: {q:?}");
+        }
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(text.contains("0 cockpit"), "the tab, with no seat:\n{text}");
+        assert!(text.contains(WAITING_FOR), "{text}");
+        app.feed_input(b"1");
+        assert_eq!(app.active_screen(), ScreenId(1));
+        // **Once per match**: a walk away is not undone by the next grid of the
+        // same match — here before its document has landed, the one path that
+        // reaches the switch again (a `SIM REPLAY 7 next` typed early, say).
+        let q = app.apply_event(&replay_grid());
+        assert_eq!(
+            app.active_screen(),
+            ScreenId(1),
+            "a second grid of match 7 does not drag the viewer back"
+        );
+        assert_eq!(count(&q, REPLAY_FEED), 0, "still outstanding: {q:?}");
+        app.feed_input(b"0");
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN, "`0` switches to it");
+
+        // Outstanding: another grid of the match and the timer ask nothing of
+        // the document, and the timer heals the ground on its latch alone.
+        let q = app.apply_event(&replay_grid());
+        assert_eq!(count(&q, REPLAY_FEED), 0, "{q:?}");
+        assert!(app.heal_queries(100 + MAP_HEAL_LATCH_S - 1).is_empty());
+        let q = app.heal_queries(100 + MAP_HEAL_LATCH_S);
+        assert_eq!(q, vec![(ARENA_MAP_FEED.to_string(), serde_json::json!({}))]);
+
+        // The document lands; the timer never asks it, even for ever.
+        app.apply_event(&replay_document());
+        for later in [3, 30, 3000] {
+            let q = app.heal_queries(100 + later * MAP_HEAL_LATCH_S);
+            assert_eq!(count(&q, REPLAY_FEED), 0, "{q:?}");
+        }
+        // A grid of the open match does not push the document out of the slot,
+        // nor drag a viewer who walked away back to screen 0.
+        app.feed_input(b"1");
+        app.apply_event(&replay_grid());
+        assert!(app.replay_document(7).is_some(), "the document is kept");
+        assert_eq!(app.active_screen(), ScreenId(1), "once per match");
+        app.feed_input(b"0");
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+        assert!(
+            app.heal_queries(100_000)
+                .iter()
+                .all(|(n, _)| n != REPLAY_FEED)
+        );
+
+        // `p` asks the document again, and the ground while it is dark…
+        PICTURE_CLOCK.store(200, Ordering::Relaxed);
+        let r = app.feed_input(b"p");
+        assert_eq!(count(&r.queries, REPLAY_FEED), 1, "{:?}", r.queries);
+        assert_eq!(count(&r.queries, ARENA_MAP_FEED), 1, "{:?}", r.queries);
+        assert_eq!(count(&r.queries, COCKPIT_FEED), 0, "{:?}", r.queries);
+        // …but never while that ask is outstanding: `p` pressed again before
+        // the answer asks nothing of the document, up to the latch…
+        for press in [200, 200 + REPLAY_ASK_LATCH_S - 1] {
+            PICTURE_CLOCK.store(press, Ordering::Relaxed);
+            let r = app.feed_input(b"p");
+            assert_eq!(count(&r.queries, REPLAY_FEED), 0, "{:?}", r.queries);
+        }
+        // …past which the ask is presumed dropped (a throttled query gets no
+        // reply) and `p` asks once more.
+        PICTURE_CLOCK.store(200 + REPLAY_ASK_LATCH_S, Ordering::Relaxed);
+        let r = app.feed_input(b"p");
+        assert_eq!(count(&r.queries, REPLAY_FEED), 1, "{:?}", r.queries);
+        let r = app.feed_input(b"p");
+        assert_eq!(count(&r.queries, REPLAY_FEED), 0, "{:?}", r.queries);
+        // …and, the ground held, the document alone once the answer landed.
+        app.apply_event(&replay_ground());
+        app.apply_event(&replay_document());
+        let r = app.feed_input(b"p");
+        assert_eq!(
+            r.queries,
+            vec![(REPLAY_FEED.to_string(), serde_json::json!({}))]
+        );
+        app.apply_event(&replay_document());
+
+        // A hello's re-hydrate: the held document is not trusted, and is asked
+        // once more — then nothing again while that ask is outstanding.
+        let q = app.apply_event(&OutputEvent::Hello {
+            proto: 1,
+            server: "rustmush test".into(),
+            features: vec![],
+            panels: arena_manifest().panels,
+        });
+        assert_eq!(count(&q, REPLAY_FEED), 1, "{q:?}");
+        assert!(app.replay_document(7).is_none(), "the old one is dropped");
+        assert_eq!(
+            app.active_screen(),
+            COCKPIT_SCREEN,
+            "the picture stays open"
+        );
+        assert!(
+            app.heal_queries(300_000)
+                .iter()
+                .all(|(n, _)| n != REPLAY_FEED)
+        );
+        let q = app.apply_event(&replay_grid());
+        assert_eq!(count(&q, REPLAY_FEED), 0, "{q:?}");
+    }
+
+    /// What the map pane says while the document is on its way.
+    const WAITING_FOR: &str = "Waiting for the replay";
+
+    /// An app with the picture of match 7 open, its document and its ground
+    /// held.
+    fn picture_app() -> TuiApp {
+        let mut app = arena_app();
+        app.apply_event(&replay_grid());
+        app.apply_event(&replay_document());
+        app.apply_event(&replay_ground());
+        app
+    }
+
+    /// **The picture's keys** (16b cut I.2): `,` and `.` step and stop at the
+    /// ends, `u` walks the roster and wraps, `x` closes — both feeds forgotten,
+    /// the match dismissed, the viewer back on the scene, the tab gone. The
+    /// cockpit's own keys are not dispatched under the picture's legend, and
+    /// the picture's are not under a seat's.
+    #[test]
+    fn i2_the_picture_steps_focuses_and_closes_on_its_own_keys() {
+        let mut app = picture_app();
+        let at = |app: &TuiApp| app.picture().map(|p| (p.at, p.focus));
+        assert_eq!(at(&app), Some((1, 0)));
+        app.feed_input(b".");
+        assert_eq!(at(&app), Some((2, 0)));
+        app.feed_input(b".");
+        assert_eq!(at(&app), Some((2, 0)), "the last keyframe is the last");
+        app.feed_input(b",,,");
+        assert_eq!(at(&app), Some((0, 0)), "and the first the first");
+        app.feed_input(b"u");
+        assert_eq!(at(&app), Some((0, 1)));
+        app.feed_input(b"uuu");
+        assert_eq!(at(&app), Some((0, 0)), "four units: the focus wraps");
+        // The cockpit's `k` (lock) and `c` (a read verb) do nothing here.
+        let r = app.feed_input(b"k");
+        assert_eq!(
+            app.mode(),
+            Mode::Nav,
+            "no `lock ` prefill under the picture"
+        );
+        assert!(r.submit.is_empty() && r.queries.is_empty());
+        let r = app.feed_input(b"c");
+        assert!(r.submit.is_empty(), "no `contacts` under the picture");
+
+        let r = app.feed_input(b"x");
+        assert!(
+            r.submit.is_empty() && r.queries.is_empty(),
+            "`x` sends nothing"
+        );
+        assert_eq!(app.picture(), None);
+        assert!(app.dismissed(7));
+        assert_eq!(app.active_screen(), ScreenId(1), "back on the scene");
+        assert!(app.panels().get(REPLAY_FEED).is_none());
+        assert!(app.panels().get(ARENA_MAP_FEED).is_none());
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(!text.contains("0 cockpit"), "the tab went:\n{text}");
+        app.feed_input(b"0");
+        assert_eq!(app.active_screen(), ScreenId(1), "and `0` is inert");
+
+        // Seated, the picture's keys are nobody's: the cockpit's own table binds
+        // none of the four, so each is an UNBOUND key — `screen_key` clears the
+        // redraw for exactly that, and for nothing a table dispatched.
+        let mut seated = arena_app();
+        seated.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        assert_eq!(seated.active_screen(), COCKPIT_SCREEN);
+        for key in [b",", b".", b"u", b"x"] {
+            let r = seated.feed_input(key);
+            assert!(!r.redraw, "{key:?} was dispatched under a seat");
+            assert!(r.submit.is_empty() && r.queries.is_empty(), "{key:?}");
+        }
+        assert_eq!(seated.picture(), None);
+        assert_eq!(seated.active_screen(), COCKPIT_SCREEN, "`x` closed nothing");
+        let text = super::super::frame_text(&mut seated, 120, 34);
+        assert!(
+            !text.contains(", prev") && !text.contains("x close"),
+            "the seat's legend is the cockpit's:\n{text}"
+        );
+        seated.feed_input(b"k");
+        assert_eq!(
+            seated.mode(),
+            Mode::Input,
+            "the seat's `k` prefills `lock `"
+        );
+        assert_eq!(seated.input_text(), "lock ");
+    }
+
+    /// **A seat wins** (16b cut I.2): a seated pilot who types `SIM REPLAY`
+    /// keeps the cockpit (the grid is stored and opens nothing), and a seated
+    /// frame arriving while a replay is open closes the replay and opens the
+    /// cockpit.
+    #[test]
+    fn i2_a_seat_keeps_the_cockpit_and_closes_an_open_picture() {
+        let mut seated = arena_app();
+        seated.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        seated.feed_input(b"1");
+        let q = seated.apply_event(&replay_grid());
+        assert!(q.is_empty(), "{q:?}");
+        assert_eq!(seated.picture(), None);
+        assert_eq!(seated.active_screen(), ScreenId(1), "nothing opened");
+        assert!(
+            seated.panels().get(REPLAY_FEED).is_some(),
+            "the grid is stored"
+        );
+
+        let mut app = picture_app();
+        app.feed_input(b"1");
+        let mut frame = arena_json(COCKPIT_FIXTURE);
+        frame["match"] = serde_json::json!(8);
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, frame));
+        assert_eq!(app.picture(), None, "the seat closed the replay");
+        assert!(app.dismissed(7));
+        assert!(app.panels().get(REPLAY_FEED).is_none());
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN, "the cockpit opened");
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(
+            text.contains("Callsign RA"),
+            "the cockpit, not the replay:\n{text}"
+        );
+        assert!(!text.contains("Both sides shown"), "{text}");
+    }
+
+    /// **A cleared cockpit keeps an open replay** (16b cut I.2): the viewer's
+    /// own `arena.cockpit` ask — screen 0's `on_enter` — is answered the
+    /// cleared frame, which used to drop the ground unconditionally. Now the
+    /// picture, its tab and its ground stay; a map of ANOTHER match, arriving
+    /// while the picture is open, is dropped rather than drawn.
+    #[test]
+    fn i2_a_cleared_cockpit_keeps_the_replay_and_its_ground() {
+        let mut app = picture_app();
+        app.apply_event(&cockpit_cleared());
+        assert!(app.picture().is_some());
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+        assert!(app.holds_the_ground(7), "the picture's ground stayed");
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(text.contains("Both sides shown"), "{text}");
+
+        let mut other = arena_json(ARENA_MAP_FIXTURE);
+        other["match"] = serde_json::json!(9);
+        app.apply_event(&arena_keyframe(ARENA_MAP_FEED, other));
+        assert!(
+            app.panels().get(ARENA_MAP_FEED).is_none(),
+            "another match's ground is dropped"
+        );
+        // …and a cleared frame with the picture's ground NOT held forgets
+        // whatever map there is, as before.
+        let mut bare = arena_app();
+        bare.apply_event(&replay_ground());
+        bare.apply_event(&cockpit_cleared());
+        assert!(bare.panels().get(ARENA_MAP_FEED).is_none());
+    }
+
+    /// **`available: false` closes the picture** (16b cut I.2): the viewer left
+    /// the centre, or a server-half restart took the cursor — the picture ends
+    /// and its match is dismissed, instead of a re-ask.
+    #[test]
+    fn i2_an_unavailable_answer_closes_the_picture_and_dismisses_the_match() {
+        let mut app = picture_app();
+        let q = app.apply_event(&replay_unavailable());
+        assert!(q.is_empty(), "no re-ask: {q:?}");
+        assert_eq!(app.picture(), None);
+        assert!(app.dismissed(7));
+        assert_eq!(app.active_screen(), ScreenId(1));
+        assert!(app.panels().get(REPLAY_FEED).is_none());
+        // With nothing open it is nothing at all.
+        let mut idle = arena_app();
+        idle.apply_event(&replay_unavailable());
+        assert_eq!(idle.picture(), None);
+        assert!(!idle.dismissed(7));
+    }
+
+    /// **A closed picture stays closed** (16b cut I.2) until a grid of its
+    /// match arrives: a late document or ground of it is dropped and opens
+    /// nothing — because no picture is open, NOT because of the `dismissed`
+    /// mark, which gates nothing over SSH (no grid is ever replayed to an SSH
+    /// sink, so every grid is a fresh push; the web pins the replayed-grid half
+    /// on the envelope seq) — and a fresh `SIM REPLAY`'s grid clears the mark,
+    /// opens the screen again and asks again.
+    #[test]
+    fn i2_a_dismissed_match_reopens_only_on_a_fresh_grid() {
+        let mut app = picture_app();
+        app.feed_input(b"x");
+        assert!(app.dismissed(7));
+        let q = app.apply_event(&replay_document());
+        assert!(q.is_empty());
+        assert_eq!(app.picture(), None, "a late document opens nothing");
+        assert!(app.panels().get(REPLAY_FEED).is_none(), "and is not kept");
+        app.apply_event(&replay_ground());
+        assert_eq!(app.picture(), None);
+        assert_eq!(app.active_screen(), ScreenId(1));
+
+        let q = app.apply_event(&replay_grid());
+        assert!(!app.dismissed(7), "a fresh grid clears the mark");
+        assert_eq!(app.picture().map(|p| p.match_id), Some(7));
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN, "and opens screen 0");
+        assert_eq!(count(&q, REPLAY_FEED), 1, "{q:?}");
+    }
+
+    /// **`Enter` on a contacts row moves the focus** (16b cut I.2) — a client
+    /// action: the box does not open and nothing is sent.
+    #[test]
+    fn i2_enter_on_a_contacts_row_moves_the_focus() {
+        let mut app = picture_app();
+        // Focus order: map, status, damage, weapons, contacts, notices.
+        app.feed_input(b"\t\t\t\t");
+        assert_eq!(app.focused_pane(), Some(PaneId("contacts")));
+        // The rows: RA, RB, BA, BB — down twice is BA.
+        app.feed_input(b"\x1b[B\x1b[B");
+        let r = app.feed_input(b"\r");
+        assert_eq!(app.mode(), Mode::Nav, "the box stays shut");
+        assert!(r.submit.is_empty() && r.queries.is_empty());
+        assert_eq!(app.picture().map(|p| p.focus), Some(2), "BA is the focus");
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(text.contains("Focus BA"), "{text}");
+        // Off the contacts pane `Enter` opens the box as ever.
+        app.feed_input(b"\t");
+        app.feed_input(b"\r");
+        assert_eq!(app.mode(), Mode::Input);
     }
 }

@@ -231,6 +231,19 @@ pub enum LocalAction {
     Backlog,
     /// Empty the scrollback ring.
     ClearScrollback,
+    /// **The picture's `,`** (16b cut I.2): one keyframe back, stopping at the
+    /// first. A client step over the replay document the app holds — nothing
+    /// is sent.
+    PicturePrev,
+    /// **The picture's `.`** (16b cut I.2): one keyframe on, stopping at the
+    /// last.
+    PictureNext,
+    /// **The picture's `u`** (16b cut I.2): the focus to the next roster unit,
+    /// wrapping — the unit the map window is centred on.
+    PictureFocus,
+    /// **The picture's `x`** (16b cut I.2): close the replay, forget both
+    /// feeds and mark the match dismissed.
+    PictureClose,
 }
 
 /// What a bound key does (D-I-18).
@@ -298,6 +311,19 @@ pub struct Screen {
     /// digit is inert otherwise, so a server with no arena never grows a tenth
     /// tab and a bystander on one never sees a cockpit they do not sit in.
     pub gate: Option<&'static str>,
+    /// **A second binding table, for the screen's second layout** (16b cut
+    /// I.2): `None` on every screen but the cockpit, whose picture layout — a
+    /// finished match's replay drawn on screen 0 while no seat is held — steps
+    /// with its own five keys.
+    ///
+    /// Why a second table rather than five more entries: the cockpit's ten
+    /// bindings already fill the legend at the 120-column floor
+    /// (`render::legend_line` keeps whole entries from the front), so a key
+    /// appended to [`Self::keys`] would never be seen. `TuiApp` draws this
+    /// table in the legend and dispatches it INSTEAD of `keys` while the
+    /// picture is the layout; [`validate_screens`] holds it to every rule the
+    /// first table is held to.
+    pub alt_keys: Option<Vec<KeyBinding>>,
 }
 
 impl Screen {
@@ -305,6 +331,15 @@ impl Screen {
     #[must_use]
     pub fn binding(&self, key: char) -> Option<&KeyBinding> {
         self.keys.iter().find(|b| b.key == key)
+    }
+
+    /// The binding for `key` in the second table (16b cut I.2), if the screen
+    /// has one.
+    #[must_use]
+    pub fn alt_binding(&self, key: char) -> Option<&KeyBinding> {
+        self.alt_keys
+            .as_deref()
+            .and_then(|keys| keys.iter().find(|b| b.key == key))
     }
 
     /// The pane named `id`.
@@ -425,6 +460,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             // own width: Main takes the surplus, as it always has.
             right_shares_surplus: false,
             gate: None,
+            alt_keys: None,
         },
         Screen {
             id: ScreenId(2),
@@ -449,6 +485,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             on_enter: vec![],
             right_shares_surplus: false,
             gate: None,
+            alt_keys: None,
         },
         Screen {
             id: ScreenId(3),
@@ -488,6 +525,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             on_enter: vec![("mail.list", Value::Object(serde_json::Map::new()))],
             right_shares_surplus: false,
             gate: None,
+            alt_keys: None,
         },
         Screen {
             id: ScreenId(4),
@@ -541,6 +579,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             on_enter: vec![("comsys.state", Value::Object(serde_json::Map::new()))],
             right_shares_surplus: false,
             gate: None,
+            alt_keys: None,
         },
         Screen {
             id: ScreenId(5),
@@ -584,6 +623,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             on_enter: vec![],
             right_shares_surplus: false,
             gate: None,
+            alt_keys: None,
         },
         Screen {
             id: ScreenId(6),
@@ -611,6 +651,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             on_enter: vec![("intel.list", Value::Object(serde_json::Map::new()))],
             right_shares_surplus: false,
             gate: None,
+            alt_keys: None,
         },
         Screen {
             id: ScreenId(7),
@@ -645,6 +686,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             on_enter: vec![("legal.actions", Value::Object(serde_json::Map::new()))],
             right_shares_surplus: false,
             gate: None,
+            alt_keys: None,
         },
         // 8 damage — the after-action report (interface plan I8): the unit as
         // the ruleset judged it, the newest `@unit/damage` before/after table
@@ -721,6 +763,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             // is one short line per part, does not need.
             right_shares_surplus: true,
             gate: None,
+            alt_keys: None,
         },
         // 9 unit — the unit at a glance. Four panes read the feed; the other
         // three are declared placeholders naming the projection each waits on
@@ -853,6 +896,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             // section map is one short line per section.
             right_shares_surplus: true,
             gate: None,
+            alt_keys: None,
         },
         // 0 cockpit — doc 16 §5's full-screen surface (16b cut Q.4): the map
         // the pilot is flying over, what the platform is doing, what is left of
@@ -1116,6 +1160,41 @@ pub fn builtin_screens() -> Vec<Screen> {
             // AB.1). The Left column never shares the surplus.
             right_shares_surplus: true,
             gate: Some(COCKPIT_FEED),
+            // **16b cut I.2** (16c N9): the picture's own table — a finished
+            // match's replay on this screen while no seat is held. Every entry
+            // is `Local`: stepping is a client action over the document the app
+            // holds, never a `Run` (and `sim` never rides a bare key at all), so
+            // a replay viewer's keys send nothing but `p`'s two reads. `u` is a
+            // reserved exit letter only on the scene screen.
+            alt_keys: Some(vec![
+                KeyBinding {
+                    key: ',',
+                    label: "prev",
+                    action: KeyAction::Local(LocalAction::PicturePrev),
+                },
+                KeyBinding {
+                    key: '.',
+                    label: "next",
+                    action: KeyAction::Local(LocalAction::PictureNext),
+                },
+                KeyBinding {
+                    key: 'u',
+                    label: "focus",
+                    action: KeyAction::Local(LocalAction::PictureFocus),
+                },
+                KeyBinding {
+                    key: 'x',
+                    label: "close",
+                    action: KeyAction::Local(LocalAction::PictureClose),
+                },
+                // `p`, pull, as on the cockpit's own table: the document asked
+                // again and the ground while it is dark.
+                KeyBinding {
+                    key: 'p',
+                    label: "pull",
+                    action: KeyAction::Local(LocalAction::Refresh),
+                },
+            ]),
         },
     ]
 }
@@ -1159,35 +1238,59 @@ pub fn validate_screens(screens: &[Screen]) -> Result<(), String> {
                 ));
             }
         }
-        let mut keys: Vec<char> = Vec::new();
-        for b in &s.keys {
-            if GLOBAL_KEYS.contains(&b.key) || JUMP_KEYS.contains(&b.key) {
+        // Both tables (16b cut I.2): the second is held to every rule the
+        // first is, each table on its own — a key may mean one thing in the
+        // cockpit's layout and another in the picture's, never two things in
+        // one.
+        validate_table(s, &s.keys)?;
+        if let Some(alt) = &s.alt_keys {
+            validate_table(s, alt)?;
+        }
+    }
+    Ok(())
+}
+
+/// One binding table of `s` against the probe's key rules (see
+/// [`validate_screens`]).
+fn validate_table(s: &Screen, table: &[KeyBinding]) -> Result<(), String> {
+    let mut keys: Vec<char> = Vec::new();
+    for b in table {
+        if GLOBAL_KEYS.contains(&b.key) || JUMP_KEYS.contains(&b.key) {
+            return Err(format!(
+                "screen {}: {:?} rebinds a global key",
+                s.name, b.key
+            ));
+        }
+        if s.exits_are_keys && RESERVED_EXIT_KEYS.contains(&b.key) {
+            return Err(format!(
+                "screen {}: {:?} is reserved for exits",
+                s.name, b.key
+            ));
+        }
+        if keys.contains(&b.key) {
+            return Err(format!("screen {}: {:?} bound twice", s.name, b.key));
+        }
+        keys.push(b.key);
+        if let KeyAction::Run(cmd) = b.action {
+            let verb = cmd.split_whitespace().next().unwrap_or("");
+            // **16b cut I.2**: `sim` is never a bare key, whatever the list
+            // says — a `SIM` selector boards, starts, releases and aborts, and
+            // the replay steps on the client. Named here so no edit of the
+            // allowlist can make it one.
+            if verb.eq_ignore_ascii_case("sim") {
                 return Err(format!(
-                    "screen {}: {:?} rebinds a global key",
+                    "screen {}: {:?} runs {cmd:?}; `sim` is never a bare key",
                     s.name, b.key
                 ));
             }
-            if s.exits_are_keys && RESERVED_EXIT_KEYS.contains(&b.key) {
+            if !RUN_ALLOWLIST
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(verb))
+            {
                 return Err(format!(
-                    "screen {}: {:?} is reserved for exits",
+                    "screen {}: {:?} runs {cmd:?}, not a read-only verb",
                     s.name, b.key
                 ));
-            }
-            if keys.contains(&b.key) {
-                return Err(format!("screen {}: {:?} bound twice", s.name, b.key));
-            }
-            keys.push(b.key);
-            if let KeyAction::Run(cmd) = b.action {
-                let verb = cmd.split_whitespace().next().unwrap_or("");
-                if !RUN_ALLOWLIST
-                    .iter()
-                    .any(|allowed| allowed.eq_ignore_ascii_case(verb))
-                {
-                    return Err(format!(
-                        "screen {}: {:?} runs {cmd:?}, not a read-only verb",
-                        s.name, b.key
-                    ));
-                }
             }
         }
     }
@@ -1494,6 +1597,105 @@ mod tests {
         // 16b cut B.3 (`B-63`): `v` ran a `VIEW` whose grid this screen never
         // showed, so it is gone.
         assert!(cockpit.binding('v').is_none(), "{order:?}");
+        // **16b cut I.2**: the picture's second table — five local actions in
+        // this order, none of them a `Run` — and no other screen has one. The
+        // first table above is unchanged by it.
+        let alt: Vec<(char, &str, KeyAction)> = cockpit
+            .alt_keys
+            .as_deref()
+            .expect("the cockpit carries the picture's table")
+            .iter()
+            .map(|b| (b.key, b.label, b.action))
+            .collect();
+        assert_eq!(
+            alt,
+            vec![
+                (',', "prev", KeyAction::Local(LocalAction::PicturePrev)),
+                ('.', "next", KeyAction::Local(LocalAction::PictureNext)),
+                ('u', "focus", KeyAction::Local(LocalAction::PictureFocus)),
+                ('x', "close", KeyAction::Local(LocalAction::PictureClose)),
+                ('p', "pull", KeyAction::Local(LocalAction::Refresh)),
+            ]
+        );
+        assert!(
+            screens
+                .iter()
+                .filter(|s| s.id != COCKPIT_SCREEN)
+                .all(|s| s.alt_keys.is_none()),
+            "only the cockpit has a second layout"
+        );
+        assert_eq!(
+            cockpit.alt_binding('x').map(|b| b.label),
+            Some("close"),
+            "the second table answers its own keys"
+        );
+        assert!(cockpit.alt_binding('k').is_none(), "and not the first's");
+    }
+
+    /// **16b cut I.2**: the probe reads the second table too — a mutating
+    /// `Run`, a `sim` `Run`, a global key or a key bound twice there fails the
+    /// screen exactly as it would in the first — and a key the first table
+    /// binds may be bound again in the second.
+    #[test]
+    fn i2_the_probe_holds_the_picture_table_to_every_rule() {
+        let alt_with = |binding: KeyBinding| {
+            let mut screens = builtin_screens();
+            if let Some(cockpit) = screens.iter_mut().find(|s| s.id == COCKPIT_SCREEN)
+                && let Some(alt) = cockpit.alt_keys.as_mut()
+            {
+                alt.push(binding);
+            }
+            validate_screens(&screens)
+        };
+        let err = alt_with(KeyBinding {
+            key: 'f',
+            label: "fire",
+            action: KeyAction::Run("fire BA"),
+        })
+        .unwrap_err();
+        assert!(err.contains("not a read-only verb"), "{err}");
+        let err = alt_with(KeyBinding {
+            key: 'r',
+            label: "replay",
+            action: KeyAction::Run("SIM REPLAY 7 next"),
+        })
+        .unwrap_err();
+        assert!(err.contains("`sim` is never a bare key"), "{err}");
+        let err = alt_with(KeyBinding {
+            key: 'g',
+            label: "go",
+            action: KeyAction::Local(LocalAction::PictureNext),
+        })
+        .unwrap_err();
+        assert!(err.contains("global key"), "{err}");
+        let err = alt_with(KeyBinding {
+            key: ',',
+            label: "again",
+            action: KeyAction::Local(LocalAction::PicturePrev),
+        })
+        .unwrap_err();
+        assert!(err.contains("bound twice"), "{err}");
+        // `k` is the first table's `lock`; the second may take it.
+        assert!(
+            alt_with(KeyBinding {
+                key: 'k',
+                label: "keep",
+                action: KeyAction::Local(LocalAction::PictureFocus),
+            })
+            .is_ok()
+        );
+        // And `sim` is refused in the FIRST table too, allowlist or not.
+        let mut screens = builtin_screens();
+        screens[0].keys.push(KeyBinding {
+            key: 'z',
+            label: "sim",
+            action: KeyAction::Run("sim status"),
+        });
+        assert!(
+            validate_screens(&screens)
+                .unwrap_err()
+                .contains("`sim` is never a bare key")
+        );
     }
 
     /// The id range moved with the tenth screen: `0` is a digit now and `10`

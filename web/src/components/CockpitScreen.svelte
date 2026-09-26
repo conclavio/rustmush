@@ -51,6 +51,12 @@
     friendly: "#4fa86a",
     hostile: "#e05a5a",
     spot: "#d8c8a0",
+    // 16b cut I.2: a replay's kinds, which `composeWindow` never produces —
+    // named here only because the record is total over `MarkerKind`; the
+    // replay screen paints them (`ReplayScreen.svelte`).
+    red: "#e05a5a",
+    blue: "#4f7fd1",
+    wreck: "#777",
   };
 
   /** The viewport, in arena cells; `+`/`−` step through `COCKPIT_ZOOM_CELLS`. */

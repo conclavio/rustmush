@@ -1,0 +1,10 @@
+Replay of match 7 — aborted — both sides are shown: this match is over.
+Keyframe 2 of 3 (0:05): the arena's own positions.
+0:05 of 0:10
+o RA  o RB  * BA  * BB  A The Ford
+RA   red   (6, 4)  090°
+RB   red   (2, 9)  000°
+BA   blue  (36, 14)  270°
+BB   blue  (14, 7)  225°
+No shots yet.
+No wrecks yet.

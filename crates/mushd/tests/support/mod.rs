@@ -260,6 +260,18 @@ impl Term {
         self.channel.data(&bytes[..]).await.expect("send line");
     }
 
+    /// Resize the PTY to `cols` by `rows` — the SSH window-change a terminal
+    /// sends when its window is resized (16b cut I.2). In `@tui` the server
+    /// clears and repaints every cell at the new size, which is how a test
+    /// reads a WHOLE frame: an ordinary paint writes only the cells that
+    /// changed.
+    pub async fn resize(&mut self, cols: u32, rows: u32) {
+        self.channel
+            .window_change(cols, rows, 0, 0)
+            .await
+            .expect("window change");
+    }
+
     /// Await the channel closing (server-side boot/quit), collecting any
     /// final output into `seen` on the way.
     pub async fn expect_close(&mut self) {

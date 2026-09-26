@@ -20,6 +20,7 @@ import { cockpitView, cockpitViewLines, composeWindow, NOTICE_SENTENCE_TAG } fro
 import { GameApp, type ComposerHandle } from "./game.svelte";
 import type { Envelope, OutputEvent, Query, ViewEnvelope } from "./proto";
 import { MAP_ASK_MS } from "./stores/cockpit.svelte";
+import { REPLAY_ASK_MS } from "./stores/replay.svelte";
 import { UNIT_RESYNC_MS } from "./stores/unit.svelte";
 import { CLOSE_TOKEN_COOLOFF, type WebSocketLike } from "./ws";
 
@@ -1943,5 +1944,243 @@ describe("the attach look (16b cut B.4, B-14)", () => {
     expect(replied.app.roomView?.name).toBe("Hall");
     expect(replied.app.screens.exits.get("n")).toBe("north");
     expect(lineTexts(replied.app).some((line) => line.includes("Hall"))).toBe(true);
+  });
+});
+
+// The replay on the web (16b cut I.2; 16c N9, Q37): the pushed grid opens it on
+// screen 0, the document is asked ONCE, the ground under the latch, and the
+// four keys step, focus and close it over the document the client holds.
+describe("the replay on screen 0 (16b cut I.2)", () => {
+  const COCKPIT_FEED = "arena.cockpit";
+  const ARENA_MAP_FEED = "arena.map";
+  const REPLAY_FEED = "arena.replay";
+  const PANELS = [COCKPIT_FEED, ARENA_MAP_FEED, REPLAY_FEED];
+
+  const fixture = (dir: string, name: string): Record<string, unknown> =>
+    JSON.parse(readFileSync(resolve(process.cwd(), `src/lib/fixtures/${dir}`, name), "utf8")) as Record<
+      string,
+      unknown
+    >;
+  const grid = (): Record<string, unknown> => fixture("replay", "replay_window.json");
+  const doc = (): Record<string, unknown> => ({
+    schema: { id: REPLAY_FEED, version: 1, shape: "replay" },
+    ...fixture("replay", "replay.json"),
+  });
+  const ground = (): Record<string, unknown> => fixture("cockpit", "arena_map.json");
+  const cleared = (): Record<string, unknown> => ({
+    schema: { id: COCKPIT_FEED, version: 1, retain: "latest" },
+    seated: false,
+  });
+  const hasTab = (app: GameApp): boolean => app.screens.available(app.gate).some((d) => d.id === "cockpit");
+  /** The feeds asked since `from`, in order. */
+  const asked = (ws: FakeSocket, from: number): (string | null)[] => ws.reqs().slice(from).map(feedOf);
+  const lastAsk = (ws: FakeSocket, feed: string): ReqFrame =>
+    ws.reqs().filter((r) => feedOf(r) === feed).at(-1)!;
+
+  /** A viewer with no seat, the replay of match 7 open, its document and its
+   * ground answered. */
+  function opened(): { app: GameApp; ws: FakeSocket } {
+    const { app, ws } = boot(PANELS);
+    ws.deliver(panel(5, REPLAY_FEED, "keyframe", grid()));
+    ws.deliver(reply(6, lastAsk(ws, REPLAY_FEED).id, panelEvent(REPLAY_FEED, "keyframe", doc())));
+    ws.deliver(reply(7, lastAsk(ws, ARENA_MAP_FEED).id, panelEvent(ARENA_MAP_FEED, "keyframe", ground())));
+    return { app, ws };
+  }
+
+  it("a grid opens screen 0 with no seat, asks the document once and the ground, both as `{}`", () => {
+    const { app, ws } = boot(PANELS);
+    expect(hasTab(app)).toBe(false);
+    const before = ws.reqs().length;
+    ws.deliver(panel(5, REPLAY_FEED, "keyframe", grid()));
+    expect(app.replay.open).toBe(true);
+    expect(app.pictureShown).toBe(true);
+    expect(app.gate.pictureOpen).toBe(true);
+    expect(hasTab(app)).toBe(true);
+    expect(app.screens.activeDef(app.gate).id).toBe("cockpit");
+    expect(asked(ws, before)).toEqual([REPLAY_FEED, ARENA_MAP_FEED]);
+    for (const r of ws.reqs().slice(before)) {
+      // No params: there is nowhere to put them.
+      expect(r.q).toEqual({ t: "panel_subscribe", d: { feed: feedOf(r) } });
+    }
+    // Outstanding: a second grid of the match asks nothing again.
+    ws.deliver(panel(6, REPLAY_FEED, "keyframe", grid()));
+    expect(asked(ws, before)).toEqual([REPLAY_FEED, ARENA_MAP_FEED]);
+    // The document lands on the keyframe the grid showed.
+    ws.deliver(reply(7, lastAsk(ws, REPLAY_FEED).id, panelEvent(REPLAY_FEED, "keyframe", doc())));
+    expect(app.replay.doc?.match).toBe(7);
+    expect(app.replay.cursorMs).toBe(5000);
+    // A walk away is not undone by the next grid of the same match.
+    app.screens.switchTo("scene", app.gate);
+    ws.deliver(panel(8, REPLAY_FEED, "keyframe", grid()));
+    expect(app.screens.active).toBe("scene");
+    expect(app.screens.switchDigit(0, app.gate)).toBe(true);
+  });
+
+  it("the four keys step, focus and close through the screen's second table, and send nothing", () => {
+    const { app, ws } = opened();
+    const before = ws.reqs().length;
+    const sent = ws.sentJson().length;
+    expect(app.screens.activeKeys(app.gate).map((b) => b.key)).toEqual([",", ".", "u", "x", "p"]);
+    expect(app.runBinding(".")).toBe(true);
+    expect(app.replay.cursorMs).toBe(10000);
+    expect(app.runBinding(",")).toBe(true);
+    expect(app.replay.cursorMs).toBe(5000);
+    expect(app.runBinding("u")).toBe(true);
+    expect(app.replay.focus).toBe(1);
+    // The cockpit's own keys are not dispatched under the replay.
+    expect(app.runBinding("k")).toBe(false);
+    expect(app.runBinding("c")).toBe(false);
+    expect(ws.sentJson().length).toBe(sent);
+    // `p` asks the document again (the ground is held, so it alone).
+    expect(app.runBinding("p")).toBe(true);
+    expect(asked(ws, before)).toEqual([REPLAY_FEED]);
+    // `x` closes: dismissed, the tab gone, the scene in front.
+    expect(app.runBinding("x")).toBe(true);
+    expect(app.replay.open).toBe(false);
+    expect(app.replay.dismissed.has(7)).toBe(true);
+    expect(hasTab(app)).toBe(false);
+    expect(app.screens.activeDef(app.gate).id).toBe("scene");
+  });
+
+  it("a replayed grid of a dismissed match does not re-open it; a fresh one does", () => {
+    const { app, ws } = opened();
+    app.runBinding("x");
+    // The resume ring replays the retained grid with the seq it first had.
+    ws.deliver(panel(5, REPLAY_FEED, "keyframe", grid()));
+    expect(app.replay.open).toBe(false);
+    // A fresh `SIM REPLAY 7` — a newer seq — opens it again and asks again.
+    const before = ws.reqs().length;
+    ws.deliver(panel(30, REPLAY_FEED, "keyframe", grid()));
+    expect(app.replay.open).toBe(true);
+    expect(app.screens.activeDef(app.gate).id).toBe("cockpit");
+    expect(asked(ws, before)).toContain(REPLAY_FEED);
+  });
+
+  it("a fresh attach's low seqs still reopen a match closed before the seam", () => {
+    const { app, ws } = boot(PANELS);
+    ws.deliver(panel(5000, REPLAY_FEED, "keyframe", grid()));
+    app.runBinding("x");
+    expect(app.replay.dismissed.has(7)).toBe(true);
+    // The gap outgrows the ring: a new socket, its hello, then the full
+    // rehydrate — whose seqs count from 1 again.
+    ws.drop();
+    vi.advanceTimersByTime(500); // the first backoff window, `random: () => 1`
+    const next = openHello(PANELS);
+    next.deliver(env(0, { t: "resumed", d: { replayed: false } }));
+    expect(app.replay.dismissed.size).toBe(0);
+    // `SIM REPLAY 7` typed on the new attach: its grid at seq 40 opens it.
+    const before = next.reqs().length;
+    next.deliver(panel(40, REPLAY_FEED, "keyframe", grid()));
+    expect(app.replay.open).toBe(true);
+    expect(app.screens.activeDef(app.gate).id).toBe("cockpit");
+    expect(asked(next, before)).toContain(REPLAY_FEED);
+  });
+
+  it("`p` does not re-ask the document while an ask is outstanding", () => {
+    vi.setSystemTime(new Date(100_000));
+    const { app, ws } = boot(PANELS);
+    ws.deliver(panel(5, REPLAY_FEED, "keyframe", grid()));
+    const count = (): number => ws.reqs().filter((r) => feedOf(r) === REPLAY_FEED).length;
+    expect(count()).toBe(1);
+    for (let i = 0; i < 5; i += 1) {
+      app.runBinding("p");
+    }
+    expect(count()).toBe(1);
+    // No answer by the latch: presumed dropped, and `p` asks once more.
+    vi.advanceTimersByTime(REPLAY_ASK_MS);
+    app.runBinding("p");
+    app.runBinding("p");
+    expect(count()).toBe(2);
+  });
+
+  it("`available: false` closes the picture and dismisses the match, and asks nothing", () => {
+    const { app, ws } = opened();
+    const before = ws.reqs().length;
+    app.runBinding("p");
+    ws.deliver(
+      reply(
+        9,
+        lastAsk(ws, REPLAY_FEED).id,
+        panelEvent(REPLAY_FEED, "keyframe", {
+          schema: { id: REPLAY_FEED, version: 1, shape: "replay" },
+          available: false,
+          reason: "You have no replay open; type SIM REPLAY <match>.",
+        }),
+      ),
+    );
+    expect(app.replay.open).toBe(false);
+    expect(app.replay.dismissed.has(7)).toBe(true);
+    expect(asked(ws, before)).toEqual([REPLAY_FEED]);
+    expect(app.screens.activeDef(app.gate).id).toBe("scene");
+  });
+
+  it("a seated pilot keeps the cockpit, and a seat closes an open replay", () => {
+    const seated = boot(PANELS);
+    seated.ws.deliver(panel(3, COCKPIT_FEED, "keyframe", fixture("cockpit", "cockpit_frame.json")));
+    const before = seated.ws.reqs().length;
+    seated.ws.deliver(panel(4, REPLAY_FEED, "keyframe", grid()));
+    expect(seated.app.replay.open).toBe(false);
+    expect(asked(seated.ws, before)).toEqual([]);
+
+    const { app, ws } = opened();
+    ws.deliver(panel(20, COCKPIT_FEED, "keyframe", { ...fixture("cockpit", "cockpit_frame.json"), match: 8 }));
+    expect(app.replay.open).toBe(false);
+    expect(app.replay.dismissed.has(7)).toBe(true);
+    expect(app.pictureShown).toBe(false);
+    expect(app.screens.activeDef(app.gate).id).toBe("cockpit");
+  });
+
+  it("a cleared cockpit keeps an open replay and its ground", () => {
+    const { app, ws } = opened();
+    ws.deliver(panel(20, COCKPIT_FEED, "keyframe", cleared()));
+    expect(app.replay.open).toBe(true);
+    expect(app.replay.holdsTheGround).toBe(true);
+    expect(app.pictureShown).toBe(true);
+    expect(hasTab(app)).toBe(true);
+  });
+
+  it("the hello pass re-asks an open replay's document and ground, once", () => {
+    const { app, ws } = opened();
+    const before = ws.reqs().length;
+    ws.deliver(hello(PANELS));
+    // The hydrate list: the hello pass — whose ground ask is the replay's too,
+    // so the terrain is pulled once — then the replay's document.
+    expect(asked(ws, before)).toEqual([null, null, COCKPIT_FEED, ARENA_MAP_FEED, REPLAY_FEED]);
+    expect(app.replay.open).toBe(true);
+    expect(app.replay.doc).toBeNull();
+    // Outstanding: a grid of the match asks the document nothing more.
+    ws.deliver(panel(40, REPLAY_FEED, "keyframe", grid()));
+    expect(ws.reqs().slice(before).filter((r) => feedOf(r) === REPLAY_FEED)).toHaveLength(1);
+  });
+
+  it("heals a dark ground on the timer, and never asks the document on it", () => {
+    const at = (ms: number) => vi.setSystemTime(new Date(ms));
+    at(100_000);
+    const { ws } = boot(PANELS);
+    ws.deliver(panel(5, REPLAY_FEED, "keyframe", grid()));
+    const count = (feed: string): number => ws.reqs().filter((r) => feedOf(r) === feed).length;
+    const maps = count(ARENA_MAP_FEED);
+    expect(count(REPLAY_FEED)).toBe(1);
+    vi.advanceTimersByTime(MAP_ASK_MS);
+    expect(count(ARENA_MAP_FEED)).toBe(maps + 1);
+    vi.advanceTimersByTime(10 * MAP_ASK_MS);
+    expect(count(REPLAY_FEED)).toBe(1);
+    ws.deliver(reply(9, lastAsk(ws, ARENA_MAP_FEED).id, panelEvent(ARENA_MAP_FEED, "keyframe", ground())));
+    const held = count(ARENA_MAP_FEED);
+    vi.advanceTimersByTime(10 * MAP_ASK_MS);
+    expect(count(ARENA_MAP_FEED)).toBe(held);
+  });
+
+  it("ReplayScreen.svelte touches nothing on the app but the replay", () => {
+    const src = readFileSync(resolve(process.cwd(), "src/components/ReplayScreen.svelte"), "utf8");
+    const reached = new Set([...src.matchAll(/\bapp\.(\w+)/g)].map((m) => m[1]));
+    expect([...reached].sort()).toEqual(["replay"]);
+    for (const send of ["app.submit", "app.runBinding", "app.client", "app.act("]) {
+      expect(src, `ReplayScreen calls ${send}`).not.toContain(send);
+    }
+    // And the shell mounts it on screen 0 only while a replay is drawn there.
+    const game = readFileSync(resolve(process.cwd(), "src/components/Game.svelte"), "utf8");
+    expect(game).toContain('{:else if active.id === "cockpit" && app.pictureShown}');
+    expect(game.indexOf("<ReplayScreen {app} />")).toBeLessThan(game.indexOf("<CockpitScreen {app} />"));
   });
 });

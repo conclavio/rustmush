@@ -14,12 +14,26 @@
 // the scene screen and not the cockpit.
 
 import { COCKPIT_FEED } from "../cockpit";
+import { REPLAY_FEED } from "../replay";
 import { GLOBAL_KEYS, JUMP_KEYS, RESERVED_EXIT_KEYS } from "../keys";
 
 /** What a bound key does (D-I-18). `toggle` flips the active screen's own
- * layout where it has two (interface cut I8, D-I8-4). */
+ * layout where it has two (interface cut I8, D-I8-4). The four `picture*`
+ * actions (16b cut I.2) step, focus and close the replay on screen 0 — client
+ * actions over the document the client holds; nothing is sent. */
 export type KeyAction =
-  | { kind: "local"; action: "refresh" | "clear" | "who" | "toggle" }
+  | {
+      kind: "local";
+      action:
+        | "refresh"
+        | "clear"
+        | "who"
+        | "toggle"
+        | "picturePrev"
+        | "pictureNext"
+        | "pictureFocus"
+        | "pictureClose";
+    }
   | { kind: "prefill"; line: string }
   | { kind: "run"; cmd: string };
 
@@ -38,6 +52,10 @@ export interface GateInput {
    * kept across a full rehydrate (`CockpitStore.seatedOnce`). The cockpit's
    * tab is gated on it, as the TUI's is on `cockpit_seat`. */
   cockpitSeated: boolean;
+  /** **Whether a replay is drawn on screen 0** (16b cut I.2): one is open and
+   * no seat is held (`GameApp.pictureShown`). The cockpit's tab exists for it
+   * too, and its second key table is the active one. */
+  pictureOpen: boolean;
 }
 
 export interface ScreenDef {
@@ -53,6 +71,12 @@ export interface ScreenDef {
   /** A `.view` feed this screen renders generically (interface plan I9);
    * `undefined` for a built-in or bespoke screen. */
   viewFeed?: string;
+  /** **The second layout's own bindings** (16b cut I.2): the cockpit's replay
+   * steps with its own table, drawn and dispatched INSTEAD of `keys` while
+   * `GateInput.pictureOpen` — because the cockpit's own keys already fill the
+   * TUI's legend at the 120-column floor, and the two clients keep one table.
+   * `undefined` on every other screen. */
+  altKeys?: KeyBinding[];
 }
 
 /**
@@ -218,7 +242,21 @@ export const BUILTIN_SCREENS: readonly ScreenDef[] = [
       { key: "n", label: "scan the lock", action: { kind: "run", cmd: "scan" } },
     ],
     exitsAreKeys: false,
-    gate: (g) => hasPanel(g, COCKPIT_FEED) && g.cockpitSeated,
+    // **16b cut I.2**: a seat, OR a replay open on this screen — which only the
+    // viewer who typed `SIM REPLAY` is ever pushed, so a bystander still has no
+    // tab. The TUI's `screen_available` reads the same.
+    gate: (g) =>
+      hasPanel(g, COCKPIT_FEED) &&
+      (g.cockpitSeated || (g.pictureOpen && hasPanel(g, REPLAY_FEED))),
+    // The replay's own table (16b cut I.2), the TUI's five: every one a client
+    // action, and `p` the pull — the document again, and the ground while dark.
+    altKeys: [
+      { key: ",", label: "prev", action: { kind: "local", action: "picturePrev" } },
+      { key: ".", label: "next", action: { kind: "local", action: "pictureNext" } },
+      { key: "u", label: "focus", action: { kind: "local", action: "pictureFocus" } },
+      { key: "x", label: "close", action: { kind: "local", action: "pictureClose" } },
+      { key: "p", label: "pull", action: { kind: "local", action: "refresh" } },
+    ],
   },
 ];
 
@@ -294,23 +332,39 @@ export function validateScreens(defs: readonly ScreenDef[]): string | null {
       return `screen ${s.id}: digit ${s.digit} used twice`;
     }
     digits.add(s.digit);
-    const keys = new Set<string>();
-    for (const b of s.keys) {
-      if (GLOBAL_KEYS.has(b.key) || JUMP_KEYS.has(b.key)) {
-        return `screen ${s.id}: ${b.key} rebinds a global key`;
+    // Both tables (16b cut I.2), each held to every rule on its own.
+    for (const table of [s.keys, s.altKeys ?? []]) {
+      const err = validateTable(s, table);
+      if (err !== null) {
+        return err;
       }
-      if (s.exitsAreKeys && RESERVED_EXIT_KEYS.includes(b.key)) {
-        return `screen ${s.id}: ${b.key} is reserved for exits`;
+    }
+  }
+  return null;
+}
+
+/** One binding table of `s` against the probe's key rules. */
+function validateTable(s: ScreenDef, table: readonly KeyBinding[]): string | null {
+  const keys = new Set<string>();
+  for (const b of table) {
+    if (GLOBAL_KEYS.has(b.key) || JUMP_KEYS.has(b.key)) {
+      return `screen ${s.id}: ${b.key} rebinds a global key`;
+    }
+    if (s.exitsAreKeys && RESERVED_EXIT_KEYS.includes(b.key)) {
+      return `screen ${s.id}: ${b.key} is reserved for exits`;
+    }
+    if (keys.has(b.key)) {
+      return `screen ${s.id}: ${b.key} bound twice`;
+    }
+    keys.add(b.key);
+    if (b.action.kind === "run") {
+      const verb = b.action.cmd.split(/\s+/)[0] ?? "";
+      // 16b cut I.2: `sim` is never a bare key, whatever the list says.
+      if (verb.toLowerCase() === "sim") {
+        return `screen ${s.id}: ${b.key} runs ${b.action.cmd}; sim is never a bare key`;
       }
-      if (keys.has(b.key)) {
-        return `screen ${s.id}: ${b.key} bound twice`;
-      }
-      keys.add(b.key);
-      if (b.action.kind === "run") {
-        const verb = b.action.cmd.split(/\s+/)[0] ?? "";
-        if (!RUN_ALLOWLIST.some((a) => a.toLowerCase() === verb.toLowerCase())) {
-          return `screen ${s.id}: ${b.key} runs ${b.action.cmd}, not a read-only verb`;
-        }
+      if (!RUN_ALLOWLIST.some((a) => a.toLowerCase() === verb.toLowerCase())) {
+        return `screen ${s.id}: ${b.key} runs ${b.action.cmd}, not a read-only verb`;
       }
     }
   }
@@ -411,14 +465,22 @@ export class ScreensStore {
     return def ? this.switchTo(def.id, gate) : false;
   }
 
+  /** **The active screen's binding table** (16b cut I.2): the second table
+   * while the replay is drawn on screen 0, the screen's own otherwise — what
+   * the legend and the help print and the key model dispatches. */
+  activeKeys(gate: GateInput): KeyBinding[] {
+    const def = this.activeDef(gate);
+    return def.altKeys !== undefined && gate.pictureOpen ? def.altKeys : def.keys;
+  }
+
   /** The active screen's binding keys, for the key model. */
   bindingKeys(gate: GateInput): Set<string> {
-    return new Set(this.activeDef(gate).keys.map((b) => b.key));
+    return new Set(this.activeKeys(gate).map((b) => b.key));
   }
 
   /** The active screen's binding for `key`. */
   binding(key: string, gate: GateInput): KeyBinding | null {
-    return this.activeDef(gate).keys.find((b) => b.key === key) ?? null;
+    return this.activeKeys(gate).find((b) => b.key === key) ?? null;
   }
 
   /** The exit keys the key model should honour on the active screen. */

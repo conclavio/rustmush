@@ -442,7 +442,9 @@ them back with the result documents. No pack and no config key. Every result
 row written before this commit answers `SIM REPLAY` with `recorded before
 replays existed`, and a reload or restart aborts a running match as `restart`,
 which writes no replay. Web clients see the `arena.replay` feed in their hello
-only after a gateway restart, and draw it only after 16b cut I.2.
+only after a gateway restart, and draw it only after 16b cut I.2. From 16b cut
+I.2's commit screen 0 carries the replay on the TUI and the web, a
+gateway-half change: the fresh `web/dist` and `GATEWAY_RESTART=1`.
 
 ### The first staff login
 

@@ -56,6 +56,14 @@ pub const COCKPIT_FEED: &str = "arena.cockpit";
 /// resumed client holds none and must re-ask (see
 /// [`super::app::MAP_HEAL_LATCH_S`]).
 pub const ARENA_MAP_FEED: &str = "arena.map";
+/// **A finished match's replay** (16b cut I.1 named it, `tacsim::arena_bridge::
+/// REPLAY_FEED`; 16b cut I.2 reads it): `SIM REPLAY` PUSHES one keyframe
+/// window on it (`schema.shape == "grid"`, the line client's picture), which is
+/// what opens the replay on screen 0, and the parameter-less query answers the
+/// WHOLE replay document of the match the asker's cursor names (`schema.shape
+/// == "replay"`), or `available: false` with a sentence. See
+/// [`super::replay`].
+pub const REPLAY_FEED: &str = "arena.replay";
 /// How long a resync request stays latched before another delta may ask
 /// again. The SSH bridge drops a throttled query silently (no reply, not
 /// even an error), so a latch cleared only by the replacement keyframe is
