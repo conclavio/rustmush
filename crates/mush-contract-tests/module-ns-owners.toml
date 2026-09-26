@@ -311,7 +311,7 @@ governs. It exists because a plan cannot do it — tacsim::match_::reset's own \
 spec_plan says a plan can move a cell and cannot invent one, and changing a \
 tank's type changes its sections, cells, components and capabilities — and it \
 has exactly two callers, both tacsim's and both about the simulator centre's \
-eight stock tanks: `SIM START` fitting the type a pilot chose with `SIM UNIT`, \
+twelve stock tanks: `SIM START` fitting the type a pilot chose with `SIM UNIT`, \
 and the return to Idle putting the pod's authored type back. It refuses a \
 deployed unit and an object holding no unit, checks every reference at its \
 exact digest exactly as create_unit does, encodes before it mutates, and \

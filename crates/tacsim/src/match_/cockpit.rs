@@ -5362,7 +5362,8 @@ pub fn parse_order(rest: &str) -> Result<OrderWords, CockpitError> {
 }
 
 /// **A slot's pod pair** (16b cut Y.1; the cut Y plan's decision 2): pods are
-/// claimed in pairs, `1↔2`, `3↔4` — odd `n` with `n + 1`, even `n` with `n − 1`.
+/// claimed in pairs, `1↔2`, `3↔4`, `5↔6` (16b cut Z.3's six a side) — odd `n`
+/// with `n + 1`, even `n` with `n − 1`.
 /// Saturating at both ends: `0`, which no slot is, pairs with itself.
 #[must_use]
 pub const fn pair(slot: u8) -> u8 {
@@ -5381,7 +5382,7 @@ pub const fn pair(slot: u8) -> u8 {
 /// no squad, and `crate::deliberation::squads_of` deals a side's *machines* in
 /// unit-id order into squads of at most `[tacsim.arena].squad_size` (four; 16b
 /// cut Z.1), so a side of up to four machines is always **one** squad —
-/// so on a four-pod side "my pair's squad" would hand any pilot whose pair is a
+/// so on a side of four machines or fewer "my pair's squad" would hand any pilot whose pair is a
 /// machine every machine of the side, and let them silently undo the lead's
 /// orders (latest-wins, no radio line). So a non-lead orders exactly one unit:
 /// their pod pair's, addressed by the word of the squad that holds it (the
@@ -6015,7 +6016,7 @@ impl mush_core::CommandGate for CockpitGate {
         //
         // **The verb test comes first**, because `check` runs on EVERY dispatched
         // line (twice on the alias path) while `where_in_centre` resolves the
-        // content latch up to eleven times — three rooms and then all eight pods.
+        // content latch up to fifteen times — three rooms and then all twelve pods.
         // A gate asked about `look` must cost what it always cost: two string
         // compares and an eleven-element scan, and no world read at all.
         let ours = verb.eq_ignore_ascii_case(BOARD_VERB)
@@ -6071,7 +6072,7 @@ impl mush_core::CommandGate for CockpitGate {
 /// belongs to no simulator at all, and of a pilot in a centre whose match ended
 /// an hour ago. All three were told to wait for a match nobody is going to start.
 /// Two facts are asked for now: the centre is really **`Boarding`**, and the
-/// billet is on a **roster tank of that centre** — the eight objects the pods
+/// billet is on a **roster tank of that centre** — the objects the twelve pods
 /// resolve to, which is the same ladder [`eject_all`] walks.
 fn waiting_to_start(w: &World, actor: ObjId) -> &'static str {
     if !lobby::centre(w).is_some_and(|centre| centre.state == MatchState::Boarding) {

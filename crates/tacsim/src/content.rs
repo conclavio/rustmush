@@ -420,22 +420,86 @@ impl EntryApplier for RouteApplier {
 ///    place anybody walks to;
 /// 2. one **passive domain** on it, through `mush_sim::open_passive_domain`, so
 ///    the units in it have poses;
-/// 3. the **eight tanks** of doc 16 §3.3, each a Thing with a `TacticalUnit`
-///    record built from the arena's own `unit` schema through
-///    `mush_tactics::create_unit` — the function behind `@unit/create` — placed
-///    at the cell the pack authors.
+/// 3. the **stock tanks** of doc 16 §3.3 — twelve, six a side, since 16b cut
+///    Z.3 — each a Thing with a `TacticalUnit` record built from the arena's own
+///    `unit` schema through `mush_tactics::create_unit` — the function behind
+///    `@unit/create` — placed at the cell the pack authors.
 ///
 /// The atlas references are checked **here**, at apply, which is the one place
 /// they can be: a pack verifies with no world, and an atlas record exists only
 /// once the pack that makes it has been applied. A missing region or tile
 /// refuses naming the entry and makes nothing.
 ///
-/// Re-applying a later version reuses the room and the domain and matches each
-/// tank by its authored name, so a second boot creates no ninth; the latch
-/// itself is what makes a second boot of the *same* version not re-enter at all.
+/// Re-applying a later version reuses the room and the domain and **adopts each
+/// standing tank by the roster** ([`crate::match_::ArenaRoster`], the
+/// `tacsim:arena:<entry>` document this applier writes), so a re-apply creates
+/// no thirteenth; the latch itself is what makes a second boot of the *same*
+/// version not re-enter at all.
+///
+/// # A standing world (16b cut Z.3)
+///
+/// Z.3 shelved this pack, and its version 3 is the first a world with a match
+/// history takes by hand (`@atlas/pack plan` and `apply`). Two habits of the
+/// first-boot applier were wrong for that, and both are fixed here:
+///
+/// * **It adopted by name.** [`crate::match_::centre`]'s own head calls a name
+///   match "the one thing a lifecycle must not do": a staffer who renamed "Red
+///   Tank 3" would have had a thirteenth tank made beside it and an orphan left
+///   on the muster. The roster's object for a slot id is adopted first, while it
+///   still exists; the name is the fallback only for a slot the roster does not
+///   name at all (a first apply, a slot a new version adds, a world applied
+///   before the roster existed), and never picks an object the roster already
+///   names for another slot.
+/// * **It re-placed a tank under custody.** Every tank is re-`place`d on its
+///   authored cell, and `mush_sim::place` does not ask
+///   `mush_sim::refuse_if_deployed`, so an apply during a match would have
+///   moved checked-out tanks under the arena's custody. The apply now
+///   **refuses, before any write**, while any roster tank carries a `deployed`
+///   marker: `"<entry>: a match is running; apply with the centre idle"`.
+///
+/// A tank this applier creates on a standing world is owned as the roster's
+/// are — by the owner of the first authored slot's standing tank, else by the
+/// applying actor as at a first boot — so a hand apply's Red Tank 5 has Red Tank
+/// 1's owner and not the staffer who typed the verb. Nothing in the lifecycle
+/// reads that owner (the reset, `@arena/reset`, the pods' seats and the sweep
+/// all resolve a tank by its slot), so this is bookkeeping kept consistent and
+/// not a gate.
 struct ArenaApplier;
 
 impl ArenaApplier {
+    /// The standing roster document's slots for arena entry `id`, as it was
+    /// last written (16b cut Z.3): `tanks[].id` → the object that slot named,
+    /// whether or not that object still exists. Empty on a world that never
+    /// applied the arena, or one that applied it before the roster existed.
+    fn named_slots(w: &mush_core::World, id: &CanonicalId) -> BTreeMap<String, ObjId> {
+        w.module_state::<TacsimStore>()
+            .and_then(|store| store.arena_roster(id))
+            .map(|roster| {
+                roster
+                    .units
+                    .iter()
+                    .map(|(slot, object)| (slot.clone(), ObjId(*object)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// **Refuse while a match holds a roster tank** (16b cut Z.3): the apply
+    /// re-places every tank on its authored cell, and `mush_sim::place` does
+    /// not ask `mush_sim::refuse_if_deployed`, so an apply during a match would
+    /// move checked-out tanks under the arena's custody.
+    fn refuse_while_deployed(w: &mush_core::World, id: &CanonicalId) -> Result<(), String> {
+        let running = ArenaApplier::named_slots(w, id)
+            .values()
+            .any(|object| w.get(*object).is_some() && mush_sim::deployed::is_deployed(w, *object));
+        if running {
+            return Err(format!(
+                "{id}: a match is running; apply with the centre idle"
+            ));
+        }
+        Ok(())
+    }
+
     fn put(
         ctx: &mut Ctx<'_>,
         id: &CanonicalId,
@@ -444,6 +508,18 @@ impl ArenaApplier {
     ) -> Result<Option<ObjId>, String> {
         let def: crate::definitions::ArenaDef = entry.decode().map_err(|e| format!("{id}: {e}"))?;
         def.check(id.as_str()).map_err(|e| e.to_string())?;
+        // (0) 16b cut Z.3: the standing roster, read before any write — the
+        // guard refuses on it (again: `check` already did, before the apply
+        // touched anything) and the adoption in (3) starts from it. Only slots
+        // whose object still exists count as standing: a roster row naming a
+        // destroyed tank adopts nothing and guards nothing.
+        let named_slots = ArenaApplier::named_slots(ctx.w, id);
+        let standing_roster: BTreeMap<&str, ObjId> = named_slots
+            .iter()
+            .filter(|(_, object)| ctx.w.get(**object).is_some())
+            .map(|(slot, object)| (slot.as_str(), *object))
+            .collect();
+        ArenaApplier::refuse_while_deployed(ctx.w, id)?;
         // (1) The ground. `from_pack` is the reader `@arena/start` uses, so an
         // arena that applies is an arena that starts.
         {
@@ -468,6 +544,14 @@ impl ArenaApplier {
         }
         // (2) The muster room and its domain.
         let owner = ctx.actor;
+        // 16b cut Z.3: a tank made on a standing world is owned as the roster's
+        // are — the first authored slot's standing tank's owner.
+        let tank_owner = def
+            .tanks
+            .iter()
+            .find_map(|tank| standing_roster.get(tank.id.as_str()))
+            .and_then(|object| ctx.w.get(*object))
+            .map_or(owner, |object| object.owner);
         let room = match existing.filter(|room| ctx.w.get(*room).is_some()) {
             Some(room) => room,
             None => ctx
@@ -493,11 +577,18 @@ impl ArenaApplier {
             .into_iter()
             .filter_map(|(obj, _)| ctx.w.get(obj).map(|object| (object.name.to_string(), obj)))
             .collect();
-        // 16b cut K.1: what this apply made, slot id to object. The name match
-        // below is what makes a **re-apply** idempotent; this is what makes a
-        // running match's slot identity survive a rename, and it is written
-        // once, at the end, out of the ids the pack itself fixes.
+        // 16b cut K.1: what this apply made, slot id to object. **16b cut Z.3**:
+        // the roster it read in (0) is what makes a **re-apply** idempotent, with
+        // the name match below as the fallback for a slot the roster does not
+        // name; this is what makes a running match's slot identity survive a
+        // rename, and it is written once, at the end, out of the ids the pack
+        // itself fixes.
         let mut roster: Vec<(CanonicalId, ObjId)> = Vec::with_capacity(def.tanks.len());
+        // Every object the roster names, for any slot: a name match never takes
+        // one of these, or a tank renamed to another slot's name would be flown
+        // by two pods at once.
+        let mut spoken_for: std::collections::BTreeSet<ObjId> =
+            standing_roster.values().copied().collect();
         for tank in &def.tanks {
             let spec = {
                 let slot = ctx
@@ -510,13 +601,29 @@ impl ArenaApplier {
                     .map(|binding| binding.spec.clone())
                     .ok_or_else(|| format!("{id}: no unit schema `{}` is loaded", tank.unit))?
             };
-            let object = match standing.get(&tank.name) {
-                Some(object) => *object,
+            // The roster first, for every slot it names (a named slot whose
+            // object is gone is made again, never matched by name); the name
+            // only for a slot it does not name, and never onto an object the
+            // roster names for another slot.
+            let adopted = if named_slots.contains_key(tank.id.as_str()) {
+                standing_roster.get(tank.id.as_str()).copied()
+            } else {
+                standing
+                    .get(&tank.name)
+                    .copied()
+                    .filter(|object| !spoken_for.contains(object))
+            };
+            let object = match adopted {
+                Some(object) => {
+                    spoken_for.insert(object);
+                    object
+                }
                 None => {
                     let object = ctx
                         .w
-                        .create(ObjKind::Thing, &tank.name, owner, Some(room))
+                        .create(ObjKind::Thing, &tank.name, tank_owner, Some(room))
                         .map_err(|e| format!("{id}: {e}"))?;
+                    spoken_for.insert(object);
                     mush_tactics::module::create_unit(ctx, object, &spec)
                         .map_err(|e| format!("{id}: {}: {e}", tank.id))?;
                     object
@@ -543,6 +650,24 @@ impl ArenaApplier {
 impl EntryApplier for ArenaApplier {
     fn kinds(&self) -> Vec<CanonicalId> {
         kind("arena").into_iter().collect()
+    }
+
+    /// **16b cut Z.3**: the custody guard, here as well as in `put`, because
+    /// here is before the apply writes anything at all. A refusal from `put`
+    /// would latch the new version honestly with an anomaly — the one write a
+    /// refused hand apply must not make, since the operator's next step is to
+    /// wait for the match and plan again. The answer cannot change while the
+    /// apply runs (it is one world-task transaction, and nothing in it checks a
+    /// unit out), so reading it before the first write is reading it at the
+    /// write.
+    fn check(
+        &self,
+        ctx: &Ctx<'_>,
+        _pack: &Pack,
+        id: &CanonicalId,
+        _entry: &RawEntry,
+    ) -> Result<(), String> {
+        ArenaApplier::refuse_while_deployed(ctx.w, id)
     }
 
     fn phase(&self) -> u8 {

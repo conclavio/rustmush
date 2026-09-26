@@ -341,17 +341,297 @@ pub fn production_roster() -> Vec<Box<dyn mush_core::GameModule>> {
     mods
 }
 
-/// A world with the game's own content applied and the eight stock tanks
-/// standing on the proving ground.
+/// A world with the game's own content applied and the twelve stock tanks
+/// (six a side since 16b cut Z.3) standing on the proving ground.
 #[must_use]
 pub fn booted_world() -> TestWorld {
     let tw = TestWorld::with_modules(production_roster());
-    let tanks = tacsim::match_::centre_readiness(tw.world()).1;
+    let tanks = tacsim::match_::centre_readiness(tw.world()).tanks;
     assert_eq!(
-        tanks, 8,
-        "the shipped content did not field its eight stock tanks; the rig has nothing to compose"
+        tanks,
+        2 * usize::from(tacsim::match_::PODS_PER_SIDE),
+        "the shipped content did not field its twelve stock tanks; the rig has nothing to compose"
     );
     tw
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Z.3 — a world standing at the arena's version 2
+// ---------------------------------------------------------------------------
+
+/// The digest `tacsim.pack.proving_ground@2` shipped with (16b cut F.4), as
+/// `tests/content.rs` pinned it until cut Z.3.
+pub const ARENA_V2_DIGEST: &str =
+    "0ecc97a0922b2fef3d18fd2b510c2a17cdef1613de10ee56b9fce99520924160";
+
+/// The four slots the arena's version 3 added (16b cut Z.3), in authored order.
+pub const Z3_TANKS: [&str; 4] = ["red_5", "red_6", "blue_5", "blue_6"];
+
+/// The arena entry's `note` as version 2 carried it, verbatim. Version 3 had
+/// to say the same in fewer words to make room for its own sentence under the
+/// note's 1,024-byte bound, so this is the one string of version 2 that cannot
+/// be derived from version 3.
+const ARENA_V2_NOTE: &str = "D-16-5 fixes the window: 256 by 256 cells at 1,000 cm, 2.56 km \
+    square. The region is offset to 20,000 m so the arena's frame cannot touch the shipped \
+    lot's or the harness's. The entry zones are sixteen cells deep on each short side, 160 m \
+    of ground behind a tank at its start. The four key spots are where the ground decides \
+    something: the ford, the crossroads, the two compounds. The waypoint graph is the two \
+    roads and four spurs, the smallest graph on which Patrol makes a route that is not a \
+    straight line. VERSION 2 (16b cut F.4) moves the muster onto the ford. Version 1 mustered \
+    on rows 118 to 130, which the river cuts at columns 62 to 66, so a tank pointed at the \
+    enemy stopped at deep water 550 m out. The ford is rows 92 to 102: all eight slots stand \
+    in it, slot 1 on the east-west road at row 97 and the rest at 95, 99 and 93, a clear cell \
+    between each pair, so every tank can drive straight across. The muster nodes moved to row \
+    105. The columns and the entry zones are unchanged.";
+
+/// **Version 2 of the arena pack** (16b cut Z.3), rebuilt from the shipped
+/// version 3 by taking its four tanks back out and putting version 2's note
+/// back ([`ARENA_V2_NOTE`]), the version set to 2 and the digest re-derived —
+/// and then **held to version 2's own pinned digest**, so the fixture is
+/// version 2 in everything the digest covers and not merely something like it.
+/// (`mush-atlas`'s `tests/interior.rs` builds its OOC fixtures the same way.)
+#[must_use]
+pub fn arena_pack_v2() -> String {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(tacsim::definitions::content::PROVING_GROUND_JSON)
+            .expect("the arena pack is json");
+    let def = &mut doc["entries"][PROVING_GROUND]["def"];
+    let tanks = def["tanks"]
+        .as_array_mut()
+        .expect("the arena authors tanks");
+    let before = tanks.len();
+    tanks.retain(|tank| !Z3_TANKS.iter().any(|id| tank["id"] == *id));
+    assert_eq!(
+        tanks.len() + Z3_TANKS.len(),
+        before,
+        "version 3 authors the four"
+    );
+    assert!(
+        def["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("VERSION 3 (16b cut Z.3)")),
+        "version 3's note carries its own sentence"
+    );
+    def["note"] = serde_json::Value::from(ARENA_V2_NOTE);
+    doc["manifest"]["version"] = serde_json::Value::from(2);
+    doc["manifest"]["digest"] = serde_json::Value::from("0".repeat(64));
+    let unsigned = serde_json::to_string(&doc).expect("json");
+    let digest = mush_content::parse_pack(&unsigned)
+        .expect("version 2 parses")
+        .computed_digest()
+        .expect("digests")
+        .to_hex();
+    assert_eq!(
+        digest, ARENA_V2_DIGEST,
+        "the rebuilt fixture is not version 2: version 3 changed more than the four tanks and \
+         the note"
+    );
+    doc["manifest"]["digest"] = serde_json::Value::from(digest);
+    serde_json::to_string(&doc).expect("json")
+}
+
+/// **The production roster with a hand-built content module** (16b cut Z.3):
+/// every module `mush_server::boot` composes — the atlas among them, so the
+/// `@atlas/pack` shelf is production's own, with the game's two packs on it —
+/// but the content module composed here, with the production appliers (the
+/// atlas's, the NPC host's and this crate's) and `boot` as its boot packs.
+///
+/// [`tacsim::composition::content_module_with`] compiles the shipped packs in,
+/// so a world that booted an **older** arena cannot be made through it; this is
+/// the one seam that differs, and it differs only in which bytes boot. The
+/// character sheet is left out, as `tests/match_lifecycle.rs` leaves it out.
+#[must_use]
+pub fn roster_booting(
+    cfg: tacsim::TacsimConfig,
+    boot: Vec<mush_content::Pack>,
+) -> Vec<Box<dyn mush_core::GameModule>> {
+    use tacsim::composition as comp;
+
+    let llm = std::sync::Arc::new(
+        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
+            .expect("a disabled LLM service composes"),
+    );
+    let onboarding = mush_core::OnboardingConfig::default();
+    let game = tacsim::GameEconomyConfig::default();
+    let mut mods = comp::server_modules_with(
+        mush_weather::WeatherConfig::default(),
+        mush_economy::EconomyConfig::default(),
+        mush_atlas::AtlasConfig::default(),
+        &onboarding,
+        &game,
+        comp::recovery_policy(&cfg.recovery),
+    );
+    mods.push(comp::worldgen_module_with(
+        std::sync::Arc::clone(&llm),
+        mush_worldgen::WorldgenConfig::default(),
+    ));
+    mods.push(comp::npc_module_with(
+        comp::npc_agent_adapter(),
+        &mush_config::config::NpcCfg::default(),
+    ));
+    mods.push(comp::tacsim_module(cfg));
+    let mut appliers = mush_content::Appliers::new();
+    mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
+    mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
+    tacsim::register_appliers(&mut appliers).expect("tacsim appliers");
+    mods.push(Box::new(
+        mush_content::ContentModule::new()
+            .with_appliers(appliers)
+            .with_boot_packs(boot),
+    ));
+    mods
+}
+
+/// The boot packs of a world that **took the OOC pack's version 7 and not the
+/// arena's version 3** (16b cut Z.3): the shipped starter area (twelve pods),
+/// the arena's ground, and [`arena_pack_v2`] (eight tanks). `starter_area`
+/// false leaves the lot out, for a rig that needs only the arena.
+#[must_use]
+pub fn boot_packs_at_arena_v2(starter_area: bool) -> Vec<mush_content::Pack> {
+    let mut packs = if starter_area {
+        mush_atlas::starter::packs().expect("the starter packs load")
+    } else {
+        Vec::new()
+    };
+    let mut game = tacsim::definitions::content::boot_packs().expect("the game packs load");
+    let arena = game.pop().expect("the arena pack boots last");
+    assert_eq!(
+        arena.manifest().id().as_str(),
+        tacsim::definitions::content::PROVING_GROUND_PACK
+    );
+    packs.extend(game);
+    packs.push(mush_content::load_pack(&arena_pack_v2()).expect("version 2 verifies"));
+    packs
+}
+
+/// The digest `neighborhood.ooc_area@6` shipped with (16b cut D.5), as
+/// `mush-atlas`'s `tests/starter.rs` pinned it until cut Z.3.
+pub const OOC_V6_DIGEST: &str = "64f6cf88104b80c4bf9af2b013ec2cba089cf2e664f827a72f29184a9cc54691";
+
+/// The digest `neighborhood.staff_lobby@4` shipped with (16b cut D.5).
+pub const STAFF_LOBBY_V4_DIGEST: &str =
+    "8d791c31a7c81c794cb78529b2735e0c1ab360aea92aa8d03c3d571388056796";
+
+/// The four pods the OOC pack's version 7 added (16b cut Z.3).
+pub const Z3_PODS: [&str; 4] = [
+    "item.red_pod_5",
+    "item.red_pod_6",
+    "item.blue_pod_5",
+    "item.blue_pod_6",
+];
+
+/// Re-sign `doc` and hold it to `pinned`: the fixture is that version in
+/// everything the digest covers, or it is not built at all.
+fn signed_as(mut doc: serde_json::Value, pinned: &str, what: &str) -> String {
+    doc["manifest"]["digest"] = serde_json::Value::from("0".repeat(64));
+    let unsigned = serde_json::to_string(&doc).expect("json");
+    let digest = mush_content::parse_pack(&unsigned)
+        .expect("the fixture parses")
+        .computed_digest()
+        .expect("digests")
+        .to_hex();
+    assert_eq!(
+        digest, pinned,
+        "the rebuilt fixture is not {what}: a later version changed more than the fixture undoes"
+    );
+    doc["manifest"]["digest"] = serde_json::Value::from(digest);
+    serde_json::to_string(&doc).expect("json")
+}
+
+/// **Version 6 of the OOC pack** (16b cut Z.3): the shipped version 7 with its
+/// four pods taken back out and the three strings it rewrote put back, held to
+/// version 6's own pinned digest — `mush-atlas`'s `tests/interior.rs` builds
+/// the same fixture, and an integration test cannot import another one.
+#[must_use]
+pub fn ooc_pack_v6() -> String {
+    let mut text = mush_atlas::starter::OOC_AREA_JSON.to_owned();
+    for (shipped, old) in [
+        (
+            "a red and a blue room of six pods each",
+            "a red and a blue room of four pods each",
+        ),
+        (
+            "Six pods in a row under a red stripe",
+            "Four pods in a row under a red stripe",
+        ),
+        (
+            "Six pods under a blue stripe",
+            "Four pods under a blue stripe",
+        ),
+    ] {
+        assert!(text.contains(shipped), "{shipped:?}: the fixture is stale");
+        text = text.replace(shipped, old);
+    }
+    let mut doc: serde_json::Value = serde_json::from_str(&text).expect("the pack is json");
+    let entries = doc["entries"].as_object_mut().expect("entries");
+    for id in Z3_PODS {
+        assert!(entries.remove(id).is_some(), "{id} is in the shipped pack");
+    }
+    doc["manifest"]["version"] = serde_json::Value::from(6);
+    signed_as(doc, OOC_V6_DIGEST, "the OOC pack's version 6")
+}
+
+/// **Version 4 of the staff lobby** (16b cut Z.3): the shipped version 5 at
+/// version 4 requiring `ooc_area@6`, which is all version 5 changed, held to
+/// version 4's pinned digest. A world at `ooc_area@6` cannot boot the shipped
+/// staff lobby, whose `requires` names version 7.
+#[must_use]
+pub fn staff_lobby_pack_v4() -> String {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(mush_atlas::starter::STAFF_LOBBY_JSON).expect("the pack is json");
+    doc["manifest"]["version"] = serde_json::Value::from(4);
+    for required in doc["manifest"]["requires"]
+        .as_array_mut()
+        .expect("the staff lobby requires packs")
+    {
+        if required["id"] == mush_atlas::starter::OOC_AREA_PACK {
+            required["version"] = serde_json::Value::from(6);
+        }
+    }
+    signed_as(doc, STAFF_LOBBY_V4_DIGEST, "the staff lobby's version 4")
+}
+
+/// The boot packs of a world that **took neither Z.3 pack's new OOC version**
+/// (16b cut Z.3): the region, [`ooc_pack_v6`] (eight pods),
+/// [`staff_lobby_pack_v4`], the arena's ground, and the arena at version 3
+/// (twelve tanks) or, with `arena_v2`, at [`arena_pack_v2`] (eight tanks) —
+/// the second being dev1's world before the packs are taken, the first a
+/// staffer who took the arena pack and not the OOC pack.
+#[must_use]
+pub fn boot_packs_at_ooc_v6(arena_v2: bool) -> Vec<mush_content::Pack> {
+    let mut packs = vec![
+        mush_content::load_pack(mush_atlas::starter::REGION_JSON).expect("the region loads"),
+        mush_content::load_pack(&ooc_pack_v6()).expect("version 6 verifies"),
+        mush_content::load_pack(&staff_lobby_pack_v4()).expect("version 4 verifies"),
+    ];
+    let mut game = tacsim::definitions::content::boot_packs().expect("the game packs load");
+    if arena_v2 {
+        let arena = game.pop().expect("the arena pack boots last");
+        assert_eq!(
+            arena.manifest().id().as_str(),
+            tacsim::definitions::content::PROVING_GROUND_PACK
+        );
+        game.push(mush_content::load_pack(&arena_pack_v2()).expect("version 2 verifies"));
+    }
+    packs.extend(game);
+    packs
+}
+
+/// Plan and apply one shelved pack as `actor`, through the `@atlas/pack`
+/// verbs: `(what plan said, what apply said)`. Panics when the plan prints no
+/// fingerprint, with what it did print.
+pub fn take_from_shelf(tw: &mut TestWorld, actor: ObjId, pack: &str) -> (String, String) {
+    let events = tw.run(actor, &format!("@atlas/pack plan {pack}"));
+    let planned = tw.seen_by(&events, actor).join("\n");
+    let fingerprint = planned
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("fingerprint "))
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no fingerprint in:\n{planned}"))
+        .to_string();
+    let events = tw.run(actor, &format!("@atlas/pack apply {fingerprint}"));
+    let applied = tw.seen_by(&events, actor).join("\n");
+    (planned, applied)
 }
 
 /// **The shipped-scale arena**: the authored proving ground, fielding the tanks
@@ -570,4 +850,46 @@ pub fn unit_of_event(event: &LedgerEvent) -> Option<ObjId> {
         .and_then(|value| value.get("unit").and_then(serde_json::Value::as_u64))
         .and_then(|id| u32::try_from(id).ok())
         .map(ObjId)
+}
+
+/// Run `f` with a `Ctx` on `tw`'s world as God, under this crate's module name —
+/// the shape `tests/reset.rs`'s rig uses for a staffer's direct write.
+pub fn with_ctx<T>(tw: &mut TestWorld, f: impl FnOnce(&mut mush_core::Ctx<'_>) -> T) -> T {
+    let mut out = mush_core::Outbox::new();
+    let engine = tw.engine_mut();
+    let mut ctx = mush_core::Ctx {
+        w: &mut engine.world,
+        actor: mush_core::GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &engine.registry,
+        module: Some(SmolStr::new(tacsim::NS)),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    f(&mut ctx)
+}
+
+/// The cell centre, pose-wise, that the proving ground authors for one slot id
+/// — the applier's own arithmetic (`cell × cell_cm + cell_cm / 2`).
+#[must_use]
+pub fn authored_pose_of(slot: &str) -> (i64, i64, u32) {
+    let catalog = tacsim::definitions::Catalog::build_game(&[], tacsim::NS)
+        .expect("the shipped content binds");
+    let arena = catalog
+        .arenas
+        .values()
+        .next()
+        .expect("the proving ground is shipped");
+    let tank = arena
+        .tanks
+        .iter()
+        .find(|tank| tank.id.as_str() == slot)
+        .unwrap_or_else(|| panic!("`{slot}` is authored"));
+    let cell = i64::from(arena.cell_cm);
+    (
+        i64::from(tank.x) * cell + cell / 2,
+        i64::from(tank.y) * cell + cell / 2,
+        tank.heading_mdeg,
+    )
 }

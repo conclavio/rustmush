@@ -3,7 +3,7 @@
 //! items 1 and 2; 16b §9's cut Q row).
 //!
 //! Cuts X.1 to X.5 built five extension units and no player could fly one: the
-//! pods are bound to the arena pack's eight `line_tank` slots and the extension
+//! pods are bound to the arena pack's `line_tank` slots and the extension
 //! content only tests ever loaded. This is the lens for the cut that fielded
 //! them, end to end and over the production composition `sim_rematch.rs` boots:
 //!

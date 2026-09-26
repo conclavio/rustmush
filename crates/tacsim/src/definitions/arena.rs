@@ -4,7 +4,7 @@
 //! The arena entry names ground the **atlas** owns and lays the match's own
 //! furniture over it: the window's corner and side, the two team entry zones,
 //! the named key spots, the waypoint graph cut N's reflex controller patrols,
-//! and the eight stock tanks the applier makes.
+//! and the stock tanks the applier makes (twelve since 16b cut Z.3).
 //!
 //! # It names records, not cells
 //!

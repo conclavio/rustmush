@@ -47,7 +47,7 @@
 //!
 //! A *definition* pack is verified and registered and applies nothing: there is
 //! no world state in a weapon. The last two **instantiate** — the region's tiles
-//! and the arena's room, domain and eight tanks — so they go through
+//! and the arena's room, domain and twelve tanks — so they go through
 //! `mush_content`'s latch as boot packs, in that order, exactly as the lot's
 //! three starter packs do.
 //!

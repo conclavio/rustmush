@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "neighborhood.ooc_area",
-    "version": 6,
+    "version": 7,
     "kind": "neighborhood",
-    "digest": "64f6cf88104b80c4bf9af2b013ec2cba089cf2e664f827a72f29184a9cc54691",
+    "digest": "23698d37280a67a033cfd6c5e801c058475a529f2f756f59ec145b27545c9418",
     "requires": [
       {
         "id": "region.limbo",
@@ -12,7 +12,7 @@
     ]
   },
   "brief": {
-    "prose": "The OOC Area: a hall by the south gate where newcomers arrive from Limbo, three short tutorial rooms (moving, talking, building), a lounge with the notice board, the simulator centre in the annexe east of the hall (a lobby with the team selector, and a red and a blue room of four pods each), and the bus stop outside where the studio tour departs. Public, no secrets, one player-built games room allowed.",
+    "prose": "The OOC Area: a hall by the south gate where newcomers arrive from Limbo, three short tutorial rooms (moving, talking, building), a lounge with the notice board, the simulator centre in the annexe east of the hall (a lobby with the team selector, and a red and a blue room of six pods each), and the bus stop outside where the studio tour departs. Public, no secrets, one player-built games room allowed.",
     "origin": "Most of the cast's names and a few of their lines are an homage to a 2004 film about a high school (doc 06 §15): the quotations are short, nothing else is imported, and the setting is a film lot that never names it.",
     "answers": {
       "q.public_role": "arrival, tutorial and the simulator centre",
@@ -355,7 +355,7 @@
             ]
           ]
         },
-        "desc": "Four pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south.",
+        "desc": "Six pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south.",
         "flags": [
           "sheltered"
         ],
@@ -382,7 +382,7 @@
             ]
           ]
         },
-        "desc": "Four pods under a blue stripe, hatches open on empty seats — the Red Room's mirror, down to the crooked paint. The lobby is back north.",
+        "desc": "Six pods under a blue stripe, hatches open on empty seats — the Red Room's mirror, down to the crooked paint. The lobby is back north.",
         "flags": [
           "sheltered"
         ],
@@ -709,6 +709,54 @@
         "name": "Blue Pod 4",
         "room": "room.sim_blue",
         "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a panel, and BLUE 4 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.",
+        "details": {
+          "panel": "The size of a place mat. Dark until the match starts, and then it is the tank: STATUS, VIEW, CONTACTS, and the orders that answer them."
+        },
+        "interior": true
+      }
+    },
+    "item.red_pod_5": {
+      "kind": "item",
+      "def": {
+        "name": "Red Pod 5",
+        "room": "room.sim_red",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a panel, and RED 5 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.",
+        "details": {
+          "panel": "The size of a place mat. Dark until the match starts, and then it is the tank: STATUS, VIEW, CONTACTS, and the orders that answer them."
+        },
+        "interior": true
+      }
+    },
+    "item.red_pod_6": {
+      "kind": "item",
+      "def": {
+        "name": "Red Pod 6",
+        "room": "room.sim_red",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a panel, and RED 6 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.",
+        "details": {
+          "panel": "The size of a place mat. Dark until the match starts, and then it is the tank: STATUS, VIEW, CONTACTS, and the orders that answer them."
+        },
+        "interior": true
+      }
+    },
+    "item.blue_pod_5": {
+      "kind": "item",
+      "def": {
+        "name": "Blue Pod 5",
+        "room": "room.sim_blue",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a panel, and BLUE 5 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.",
+        "details": {
+          "panel": "The size of a place mat. Dark until the match starts, and then it is the tank: STATUS, VIEW, CONTACTS, and the orders that answer them."
+        },
+        "interior": true
+      }
+    },
+    "item.blue_pod_6": {
+      "kind": "item",
+      "def": {
+        "name": "Blue Pod 6",
+        "room": "room.sim_blue",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a panel, and BLUE 6 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.",
         "details": {
           "panel": "The size of a place mat. Dark until the match starts, and then it is the tank: STATUS, VIEW, CONTACTS, and the orders that answer them."
         },

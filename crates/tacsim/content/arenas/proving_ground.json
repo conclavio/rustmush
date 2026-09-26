@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.proving_ground",
-    "version": 2,
+    "version": 3,
     "kind": "campaign_seed",
-    "digest": "0ecc97a0922b2fef3d18fd2b510c2a17cdef1613de10ee56b9fce99520924160",
+    "digest": "b75b98fd6d1669499384ea3fbf3ac54adaf06f90d0e34625094e9449c1a91c83",
     "requires": []
   },
   "entries": {
@@ -93,9 +93,13 @@
           { "id": "blue_1", "name": "Blue Tank 1", "team": "blue", "x": 249, "y": 97, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
           { "id": "blue_2", "name": "Blue Tank 2", "team": "blue", "x": 249, "y": 95, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
           { "id": "blue_3", "name": "Blue Tank 3", "team": "blue", "x": 249, "y": 99, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
-          { "id": "blue_4", "name": "Blue Tank 4", "team": "blue", "x": 249, "y": 93, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" }
+          { "id": "blue_4", "name": "Blue Tank 4", "team": "blue", "x": 249, "y": 93, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
+          { "id": "red_5", "name": "Red Tank 5", "team": "red", "x": 6, "y": 101, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "red_6", "name": "Red Tank 6", "team": "red", "x": 4, "y": 94, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_5", "name": "Blue Tank 5", "team": "blue", "x": 249, "y": 101, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_6", "name": "Blue Tank 6", "team": "blue", "x": 251, "y": 94, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" }
         ],
-        "note": "D-16-5 fixes the window: 256 by 256 cells at 1,000 cm, 2.56 km square. The region is offset to 20,000 m so the arena's frame cannot touch the shipped lot's or the harness's. The entry zones are sixteen cells deep on each short side, 160 m of ground behind a tank at its start. The four key spots are where the ground decides something: the ford, the crossroads, the two compounds. The waypoint graph is the two roads and four spurs, the smallest graph on which Patrol makes a route that is not a straight line. VERSION 2 (16b cut F.4) moves the muster onto the ford. Version 1 mustered on rows 118 to 130, which the river cuts at columns 62 to 66, so a tank pointed at the enemy stopped at deep water 550 m out. The ford is rows 92 to 102: all eight slots stand in it, slot 1 on the east-west road at row 97 and the rest at 95, 99 and 93, a clear cell between each pair, so every tank can drive straight across. The muster nodes moved to row 105. The columns and the entry zones are unchanged."
+        "note": "D-16-5 fixes the window: 256 by 256 cells at 1,000 cm, 2.56 km square, offset to 20,000 m so its frame cannot touch the lot's or the harness's. The entry zones are sixteen cells deep on each short side. The key spots are where the ground decides something: the ford, the crossroads, the two compounds. The waypoint graph is the two roads and four spurs, the smallest on which Patrol's route is not a straight line. VERSION 2 (16b cut F.4) moves the muster onto the ford: version 1 mustered on rows 118 to 130, and the river (columns 62 to 66) stopped a tank at deep water 550 m out. The ford is rows 92 to 102; slot 1 stands on the east-west road at row 97 and slots 2 to 4 at 95, 99 and 93, so every tank drives straight across. The muster nodes moved to row 105. VERSION 3 (16b cut Z.3) adds slots 5 and 6 a side: row 101 in the muster column and row 94 one column behind it, both inside the ford's rows 92 to 102, a clear cell from every other slot and on no other slot's straight road east or west."
       }
     }
   }

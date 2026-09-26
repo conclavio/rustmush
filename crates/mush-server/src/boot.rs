@@ -349,7 +349,7 @@ pub fn game_modules(
     }
     // 16b cut C.2 (C3): with the layer on, the game's own two boot packs ride
     // beside the lot's — the proving ground's ground, then the arena whose
-    // applier makes its muster, its domain and the eight stock tanks.
+    // applier makes its muster, its domain and the twelve stock tanks.
     mods.push(modules::content_module_with(
         config.game.starter_area,
         tacsim_enabled,
@@ -541,11 +541,30 @@ pub async fn build_engine(
     // game's boot packs, and both of those land inside the module boot pass
     // above. An operator who reads one line at boot never has to discover a
     // half-applied centre from a player's `SIM START`.
+    //
+    // **16b cut Z.3** counts the pods as well as the tanks, both against the
+    // twelve this binary can seat. A standing world takes the Z.3 packs by hand,
+    // and until it does it has eight of each and the lobby fields four a side
+    // (`tacsim::match_::fieldable_per_side`): that world is **partly** ready, a
+    // warning and not an error, because the centre works on what it has, and the
+    // line names the route rather than calling it whole.
     if config.tacsim.enabled {
-        let (rooms, tanks) = tacsim::match_::centre_readiness(&engine.world);
-        if rooms && tanks > 0 {
+        let ready = tacsim::match_::centre_readiness(&engine.world);
+        let whole = tacsim::match_::CentreReadiness::WHOLE;
+        // The choice and the words are `CentreReadiness::warning`'s, pinned
+        // there; this block only picks the level and the fields.
+        if let Some(warning) = ready.warning() {
+            if ready.rooms {
+                tracing::warn!("{warning}");
+            } else {
+                tracing::warn!(roster_tanks = ready.tanks, "{warning}");
+            }
+        } else {
+            let roster_tanks = format!("{} of {whole}", ready.tanks);
+            let pods = format!("{} of {whole}", ready.pods);
             tracing::info!(
-                roster_tanks = tanks,
+                %roster_tanks,
+                %pods,
                 "simulator centre ready: the arena is applied and its tanks are standing"
             );
             let configured = config.tacsim.match_.max_slots_per_side;
@@ -557,19 +576,6 @@ pub async fn build_engine(
                     "simulator slots clamped to the centre's available pods"
                 );
             }
-        } else if rooms {
-            tracing::warn!(
-                "simulator centre NOT ready: its rooms and pods are here but the arena's roster \
-                 is empty, so `SIM START` will refuse. A world seeded before the arena pack \
-                 existed needs the pack applied or the store reset (deploy/README.md)."
-            );
-        } else {
-            tracing::warn!(
-                roster_tanks = tanks,
-                "simulator centre NOT ready: this world has no centre rooms. An existing world \
-                 latched `neighborhood.ooc_area` below the shipped version; take the upgrade with \
-                 `@atlas/pack plan` and `@atlas/pack apply` (deploy/README.md)."
-            );
         }
     }
     // J5: the namespaces the nightly archive pass walks — every composed

@@ -64,6 +64,16 @@ const ADA: ObjId = ObjId(2);
 const BO: ObjId = ObjId(3);
 const CY: ObjId = ObjId(4);
 
+/// **16b cut Z.3**: four more pilots, for the one test that fills a side of six
+/// and needs a seventh account to be refused. Created after the three, so the
+/// three keep their ids on every boot.
+const MORE_PILOTS: [(ObjId, &str); 4] = [
+    (ObjId(5), "Dee"),
+    (ObjId(6), "Eli"),
+    (ObjId(7), "Fay"),
+    (ObjId(8), "Gus"),
+];
+
 /// The boarding window this lens runs at — doc 16 ships two minutes.
 const BOARD_MS: u32 = 3_000;
 
@@ -127,6 +137,11 @@ async fn boot(tag: &str) -> Server {
 
 /// The same server, with `[tacsim.match].ai_fill` on or off (16b cut D.1).
 async fn boot_with(tag: &str, ai_fill: bool) -> Server {
+    boot_with_pilots(tag, ai_fill, &[]).await
+}
+
+/// The same server with `more` pilot accounts beside the three (16b cut Z.3).
+async fn boot_with_pilots(tag: &str, ai_fill: bool, more: &[(ObjId, &str)]) -> Server {
     let dir = scratch_dir(tag);
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     store
@@ -151,7 +166,10 @@ async fn boot_with(tag: &str, ai_fill: bool) -> Server {
     // is a shortcut, not a requirement: since 16b cut F.4 the map learns of a
     // character as the world makes it, so the front door does this too (see
     // `crates/mushd/tests/front_door.rs`).
-    for (id, name) in [(ADA, "Ada"), (BO, "Bo"), (CY, "Cy")] {
+    for (id, name) in [(ADA, "Ada"), (BO, "Bo"), (CY, "Cy")]
+        .into_iter()
+        .chain(more.iter().copied())
+    {
         let made = world
             .create(ObjKind::Player, name, GOD, Some(LIMBO))
             .expect("a pilot");
@@ -924,4 +942,71 @@ async fn d3_sim_abort_is_refused_in_selection_and_the_board_drops_the_doubled_wo
         !status.contains("— abort"),
         "the board said the same thing twice: {status}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// (5) 16b cut Z.3 — six a side
+// ---------------------------------------------------------------------------
+
+/// **A side takes six claims, and the fill is one to six** (16b cut Z.3; 16c
+/// N7), over the real front door and the production composition.
+///
+/// Six accounts claim red slots 1 to 6 and the seventh is refused with the
+/// side-full sentence; the lead's `SIM AI 7` is refused with the range sentence
+/// and `SIM AI 6` is taken; and the board lists all six red slots by index and
+/// callsign.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn z3_a_side_takes_six_claims_and_the_fill_is_one_to_six() {
+    let server = boot_with_pilots("sim-lobby-z3-six", true, &MORE_PILOTS).await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let lobby = open_the_centre(&mut god).await;
+    for (pilot, _) in MORE_PILOTS {
+        say(
+            &mut god,
+            &format!("@teleport #{}=#{lobby}", pilot.0),
+            "Teleported",
+        )
+        .await;
+    }
+
+    let mut pilots = Vec::new();
+    for name in ["Ada", "Bo", "Cy", "Dee", "Eli", "Fay", "Gus"] {
+        let (handle, term) = login(server.addr, &name.to_lowercase(), PILOT_PASSWORD, name).await;
+        pilots.push((handle, term, name));
+    }
+    for (slot, (_, term, name)) in pilots.iter_mut().take(6).enumerate() {
+        say(
+            term,
+            "SIM TEAM red",
+            &format!("{name} takes red slot {}", slot + 1),
+        )
+        .await;
+    }
+    let (_, gus, _) = pilots.last_mut().expect("seven pilots");
+    say(
+        gus,
+        "SIM TEAM red",
+        "The red side is full: it takes 6 pilot(s).",
+    )
+    .await;
+    say(gus, "SIM TEAM blue", "Gus takes blue slot 1").await;
+
+    let (_, ada, _) = pilots.first_mut().expect("seven pilots");
+    say(ada, "SIM AI 7", "AI fill is 1 to 6 a side.").await;
+    say(ada, "SIM AI 6", "AI fill set to 6 a side.").await;
+
+    let status = ask(ada, "SIM STATUS", "AI fill: each side fields").await;
+    let status = one_line(&status);
+    for row in [
+        "1 (RA): Ada",
+        "2 (RB): Bo",
+        "3 (RC): Cy",
+        "4 (RD): Dee",
+        "5 (RE): Eli",
+        "6 (RF): Fay",
+        "1 (BA): Gus",
+    ] {
+        assert!(status.contains(row), "{row}: {status}");
+    }
+    assert!(status.contains("AI fill: each side fields 6;"), "{status}");
 }

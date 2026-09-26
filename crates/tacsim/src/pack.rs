@@ -253,7 +253,7 @@ impl PackEntry {
     }
 
     /// Whether this entry instantiates a world object when a seed pack applies.
-    /// **16b cut C.2** — an `arena` entry instantiates the eight stock tanks and
+    /// **16b cut C.2** — an `arena` entry instantiates the stock tanks and
     /// the room their domain is hosted on, but it is **not** counted here: the
     /// seed-object cap is [`MAX_SEED_OBJECTS`] against a *one entry, one object*
     /// rule the latch's `placed` map enforces, and an arena's tanks are found by
@@ -1110,7 +1110,7 @@ impl RulesPack {
             // 16b cut C.2 puts the six new kinds on the same axis. A unit, a
             // weapon, its ammunition, a sensor and a resolution table are rules
             // that are re-pinned and diffed; an `arena` **instantiates** — its
-            // applier makes the room, the domain and the eight stock tanks of
+            // applier makes the room, the domain and the stock tanks of
             // doc 16 §3.3, and re-running it would duplicate them exactly as
             // re-running a mine would — so it belongs on the seed side.
             let misplaced = matches!(

@@ -5651,7 +5651,7 @@ fn mock_order_response() -> mush_llm::CompletionResponse {
 // and the per-pulse counts are exact rather than a function of how many pulses
 // the host's timing let one drain absorb.
 //
-// 16c's sketch said "boards N real sessions"; the lobby has eight pods, so the
+// 16c's sketch said "boards N real sessions"; the lobby has twelve pods, so the
 // twenty-four pilots are seated through the **staff** path instead. The unit,
 // its placement, its seat and the match go through production verbs —
 // `@unit/create`, `@behavior/add`, `@spatial/place/domain`, `@spatial/station`,

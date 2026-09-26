@@ -30,7 +30,7 @@
 //! which is the one funnel for that transition since cut F.1 — and at **boot**,
 //! where the centre is `Idle` by construction because the match book is RAM. A
 //! player's `SIM TEAM` on a terminal centre goes through the same funnel, so two
-//! players rematch with no staff and still get eight tanks at spec.
+//! players rematch with no staff and still get every tank at spec.
 //!
 //! The boot call is made **inside the boot pass** (`crate::boot_matches`), not on
 //! a later tick, and that is load-bearing rather than tidy: this pass rewrites
@@ -83,7 +83,7 @@
 //! # And the type, before the plan (16b cut Q.8)
 //!
 //! `SIM UNIT` lets a pilot field a biped or a laser tank out of one of these
-//! eight pods, which means a roster tank can be standing here as something its
+//! pods, which means a roster tank can be standing here as something its
 //! pack did not author — and a plan cannot turn a biped back into a tank, for
 //! the reason above. So `reset_one` asks one question before the diff: is the
 //! held unit's schema the **authored** one? If it is not, the tank is
@@ -288,7 +288,7 @@ fn reset_one(ctx: &mut Ctx<'_>, object: ObjId, schema: &SmolStr) -> Result<(bool
     }
     // `to_tactical_unit` is `TacticalUnit::from_spec` over the binding's exact
     // registry identity — the same call the arena pack's applier makes when it
-    // creates one of these eight, which is what "equal to a fresh instantiation"
+    // creates one of these stock tanks, which is what "equal to a fresh instantiation"
     // means here, and which is why this function's own doc comment has named cut
     // K's reset as a caller since C.2 and had none until now.
     let pristine = to_tactical_unit(&spec, &binding, object)
@@ -392,7 +392,7 @@ pub fn spec_plan(
 /// Put one tank back on the cell its pack authors. Answers whether it moved.
 ///
 /// The domain is the one the tank is standing in, which is the arena's own
-/// passive domain — the applier opened it on the muster room and placed all eight
+/// passive domain — the applier opened it on the muster room and placed every tank
 /// there, and nothing since moves a tank between domains. A tank that is not
 /// placed at all is placed back on the roster's own muster domain, which is how a
 /// unit whose placement a fault dropped comes home.

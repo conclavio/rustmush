@@ -74,9 +74,10 @@ pub use arena_def::{
 pub(crate) use centre::record_roster;
 pub use centre::{
     ArenaRoster, BLUE_ROOM_ENTRY, CENTRE_ARENA, CENTRE_PACK, CentreRoom, LOBBY_ENTRY, POD_ENTRIES,
-    PODS_PER_SIDE, RED_ROOM_ENTRY, ROSTER_PREFIX, centre_object, centre_rooms, pod_object,
-    pod_slot, readiness as centre_readiness, room_role, roster_from_document, roster_id_of_key,
-    roster_key, slot_id, slot_object, tank_for_slot, tank_of, where_in_centre,
+    PODS_PER_SIDE, RED_ROOM_ENTRY, ROSTER_PREFIX, Readiness as CentreReadiness, centre_object,
+    centre_rooms, fieldable_per_side, pod_object, pod_slot, readiness as centre_readiness,
+    room_role, roster_from_document, roster_id_of_key, roster_key, slot_id, slot_object,
+    tank_for_slot, tank_of, where_in_centre,
 };
 pub use cockpit::{
     BOARD_VERB, COCKPIT_VERBS, CockpitError, CockpitGate, EXIT_VERB, EjectReport, NO_LOCK,

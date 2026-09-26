@@ -22,7 +22,13 @@ use std::path::{Path, PathBuf};
 
 use mush_atlas::TerrainClass;
 use mush_atlas::cells::base64_encode;
+use mush_core::ObjId;
+use mush_testkit::TestWorld;
+use tacsim::arena::state::Team;
 use tacsim::definitions::{Catalog, ResourceTable, content};
+use tacsim::match_::{PODS_PER_SIDE, PROVING_GROUND as PROVING_GROUND_ARENA};
+
+mod support;
 
 // ---------------------------------------------------------------------------
 // The map
@@ -357,7 +363,7 @@ const DIGESTS: [(&str, &str); 9] = [
     ),
     (
         "tacsim.pack.proving_ground",
-        "0ecc97a0922b2fef3d18fd2b510c2a17cdef1613de10ee56b9fce99520924160",
+        "b75b98fd6d1669499384ea3fbf3ac54adaf06f90d0e34625094e9449c1a91c83",
     ),
     (
         "tacsim.proving_ground",
@@ -906,14 +912,22 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
 /// The first pass of this cut fixed that for slot 1 alone: rows 97, 93, 101 and
 /// 89 put slot 4 of each side back outside the ford band (92 to 102) and into
 /// the same trap, and only slot 1's run was asserted. The ford is eleven rows
-/// wide and the muster needs four, so **all eight** slots stand in it now, and
+/// wide and the muster needed four, so **all eight** of version 2's slots stood in it, and
 /// the run asserted below is **every** slot's.
+///
+/// **16b cut Z.3** adds slots 5 and 6 a side (the arena pack's version 3): row
+/// 101 in the muster column and row 94 one column behind it. Six rows a side do
+/// not fit the ford one clear row apart in one column, so the spacing rule below
+/// is the one it always stood for — a tank pulling away has a clear cell beside
+/// it — read as **a clear cell between any two slots of a side** (no two within
+/// one cell of each other in either axis), and no two slots of a side share a
+/// row, so every straight run east or west is one slot's own.
 ///
 /// Every assertion below is read off the pack's own data rather than written
 /// down twice, and every slot is found by the id the roster keys on
-/// (`red_1` … `blue_4`) rather than by where it happens to sit in the array, so
-/// the next person who edits the map cannot put a muster back behind the river
-/// without this failing.
+/// (`red_1` … `blue_6`, walked over `1..=PODS_PER_SIDE`) rather than by where it
+/// happens to sit in the array, so the next person who edits the map cannot put
+/// a muster back behind the river without this failing.
 #[test]
 fn the_muster_stands_on_the_road_and_the_run_at_the_enemy_reaches_the_ford() {
     let catalog = Catalog::build_game(&[], "tacsim").expect("the shipped content binds");
@@ -976,7 +990,7 @@ fn the_muster_stands_on_the_road_and_the_run_at_the_enemy_reaches_the_ford() {
             .find(|tank| tank.id.as_str() == id)
             .unwrap_or_else(|| panic!("`{id}` is not in the roster"))
     };
-    for index in 1..=4_u8 {
+    for index in 1..=PODS_PER_SIDE {
         let red = slot(&format!("red_{index}"));
         let blue = slot(&format!("blue_{index}"));
         assert_eq!(
@@ -1010,19 +1024,29 @@ fn the_muster_stands_on_the_road_and_the_run_at_the_enemy_reaches_the_ford() {
         red_one.y
     );
 
-    // And no two slots of a side are on the same or an adjacent row, so a tank
-    // pulling away has a clear cell beside it.
+    // And a tank pulling away has a clear cell beside it: no two slots of a side
+    // within one cell of each other in either axis (16b cut Z.3 put slot 6 one
+    // column behind the others, so this is read over cells and not rows alone),
+    // and no two on one row, so no slot stands on another's straight run.
     for team in ["red", "blue"] {
-        let mut rows: Vec<u16> = (1..=4_u8)
-            .map(|index| slot(&format!("{team}_{index}")).y)
+        let cells: Vec<(u8, u16, u16)> = (1..=PODS_PER_SIDE)
+            .map(|index| {
+                let tank = slot(&format!("{team}_{index}"));
+                (index, tank.x, tank.y)
+            })
             .collect();
-        rows.sort_unstable();
-        for pair in rows.windows(2) {
-            let (lower, upper) = (pair[0], pair[1]);
-            assert!(
-                upper.saturating_sub(lower) >= 2,
-                "the {team} muster puts rows {lower} and {upper} side by side"
-            );
+        for (i, (a, ax, ay)) in cells.iter().enumerate() {
+            for (b, bx, by) in cells.iter().skip(i + 1) {
+                assert!(
+                    ax.abs_diff(*bx) >= 2 || ay.abs_diff(*by) >= 2,
+                    "the {team} muster puts slots {a} ({ax},{ay}) and {b} ({bx},{by}) side by \
+                     side"
+                );
+                assert_ne!(
+                    ay, by,
+                    "{team} slots {a} and {b} share row {ay}, so one stands on the other's run"
+                );
+            }
         }
     }
 
@@ -1295,4 +1319,305 @@ fn m4_the_five_tank_packs_are_version_two_and_the_biped_is_not_moved() {
         1,
         "the biped is not re-versioned"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Z.3 — six a side, and the applier on a standing world
+// ---------------------------------------------------------------------------
+
+/// **The arena's version 3 fields six a side, in the authored order** (16b cut
+/// Z.3): twelve tanks, red 1 to 6 then blue 1 to 6 as a side's slot order reads
+/// them, the four new ones on the cells the note names, every opening cell
+/// passable with a way out (16b cut M.4's rule, read off the authored class grid
+/// the same way `ArenaTerrain::has_way_out` reads the built one), and inside
+/// the arena's unit bound.
+#[test]
+fn z3_the_arena_fields_six_a_side_in_the_authored_order() {
+    let pack = tacsim::pack::load_pack(content::PROVING_GROUND_JSON).expect("the arena verifies");
+    assert_eq!(pack.manifest().version(), 3, "16b cut Z.3's version");
+    let catalog = Catalog::build_game(&[], "tacsim").expect("the shipped content binds");
+    let arena = catalog
+        .arenas
+        .values()
+        .next()
+        .expect("the proving ground is shipped");
+    assert_eq!(arena.tanks.len(), 12);
+    assert!(arena.tanks.len() <= tacsim::definitions::arena::MAX_ARENA_UNITS);
+    for (team, word) in [(Team::Red, "red"), (Team::Blue, "blue")] {
+        let side: Vec<&str> = arena
+            .tanks
+            .iter()
+            .filter(|tank| tank.team == team)
+            .map(|tank| tank.id.as_str())
+            .collect();
+        let want: Vec<String> = (1..=PODS_PER_SIDE)
+            .map(|index| format!("{word}_{index}"))
+            .collect();
+        assert_eq!(side, want, "slot n of a side is its n-th authored tank");
+    }
+    let cell = |id: &str| {
+        arena
+            .tanks
+            .iter()
+            .find(|tank| tank.id.as_str() == id)
+            .map(|tank| (tank.name.as_str(), tank.x, tank.y, tank.heading_mdeg))
+            .unwrap_or_else(|| panic!("`{id}` is authored"))
+    };
+    assert_eq!(cell("red_5"), ("Red Tank 5", 6, 101, 90_000));
+    assert_eq!(cell("red_6"), ("Red Tank 6", 4, 94, 90_000));
+    assert_eq!(cell("blue_5"), ("Blue Tank 5", 249, 101, 270_000));
+    assert_eq!(cell("blue_6"), ("Blue Tank 6", 251, 94, 270_000));
+
+    let table = mush_atlas::physics::LocomotionTable::shipped();
+    let passable = |x: u16, y: u16| table.passable(class_at(x, y).label(), "tracked", &[]);
+    for tank in &arena.tanks {
+        let (x, y) = (tank.x, tank.y);
+        let out = [
+            x.checked_sub(1).map(|x| (x, y)),
+            x.checked_add(1).filter(|x| *x < SIDE).map(|x| (x, y)),
+            y.checked_sub(1).map(|y| (x, y)),
+            y.checked_add(1).filter(|y| *y < SIDE).map(|y| (x, y)),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|(x, y)| passable(x, y));
+        assert!(
+            passable(x, y) && out,
+            "`{}` opens on {x},{y}, which is not a passable cell with a way out",
+            tank.id
+        );
+    }
+}
+
+/// Every object in the world that carries a tactical unit — on a world whose
+/// only units are the arena's stock tanks, the count "no thirteenth" is about.
+fn units_in(tw: &TestWorld) -> Vec<ObjId> {
+    tw.world()
+        .iter()
+        .filter(|object| !object.flags.contains(mush_core::Flags::GOING))
+        .filter(|object| mush_tactics::module::unit_of(tw.world(), object.id).is_some())
+        .map(|object| object.id)
+        .collect()
+}
+
+/// The arena pack's latched version on `tw`.
+fn arena_latch(tw: &TestWorld) -> Option<u32> {
+    tw.world()
+        .module_state::<mush_content::ContentState>()
+        .expect("content")
+        .latches
+        .applied(&mush_core::CanonicalId::new(content::PROVING_GROUND_PACK).expect("an id"))
+        .map(mush_content::Applied::version)
+}
+
+/// A world that booted the arena's version 2 (and no lot: this is the arena's
+/// business alone).
+fn world_at_arena_v2() -> TestWorld {
+    let cfg = tacsim::TacsimConfig {
+        enabled: true,
+        ..tacsim::TacsimConfig::default()
+    };
+    let tw = TestWorld::with_modules(support::roster_booting(
+        cfg,
+        support::boot_packs_at_arena_v2(false),
+    ));
+    assert_eq!(arena_latch(&tw), Some(2));
+    assert_eq!(units_in(&tw).len(), 8, "version 2 made eight tanks");
+    tw
+}
+
+/// **A renamed stock tank is adopted by the roster, and no thirteenth is
+/// made** (16b cut Z.3). Before this cut the applier adopted by name, so a
+/// staffer's renamed Red Tank 3 would have had a new Red Tank 3 made beside it
+/// and the old one left an orphan on the muster. And the name is never a way to
+/// reach a tank the roster already names: a tank renamed to a *new* slot's name
+/// is not taken for that slot.
+#[test]
+fn z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made() {
+    let mut tw = world_at_arena_v2();
+    let red_one = tacsim::match_::tank_for_slot(tw.world(), Team::Red, 1).expect("red 1");
+    let red_two = tacsim::match_::tank_for_slot(tw.world(), Team::Red, 2).expect("red 2");
+    let red_three = tacsim::match_::tank_for_slot(tw.world(), Team::Red, 3).expect("red 3");
+    let before: Vec<(Team, u8, ObjId)> = Team::ALL
+        .into_iter()
+        .flat_map(|team| (1..=4_u8).map(move |index| (team, index)))
+        .map(|(team, index)| {
+            let tank = tacsim::match_::tank_for_slot(tw.world(), team, index).expect("a slot");
+            (team, index, tank)
+        })
+        .collect();
+    // The stock tanks belong to somebody other than the staffer who will type
+    // the verb: the boot made them as God and the apply below runs as God, so
+    // without this the owner rule could not be told from `ctx.actor`.
+    let keeper = tw.spawn_player("Keeper");
+    for (_, _, tank) in &before {
+        tw.world_mut()
+            .chown(*tank, keeper)
+            .expect("staff hands the stock tanks over");
+    }
+    tw.world_mut()
+        .set_name(red_three, "Old Faithful")
+        .expect("staff renames a tank");
+    tw.world_mut()
+        .set_name(red_two, "Red Tank 5")
+        .expect("and another, to the name a new slot authors");
+    // Off its cell, too: the apply puts every tank back on its authored cell.
+    let (domain, held) = mush_sim::pose_of(tw.world(), red_one).expect("placed");
+    let elsewhere = mush_sim::data::Pose {
+        x_cm: held.x_cm + 40_000,
+        ..held.clone()
+    };
+    support::with_ctx(&mut tw, |ctx| {
+        mush_sim::place(ctx, red_one, domain, elsewhere).expect("staff moves a tank");
+    });
+
+    let (planned, applied) =
+        support::take_from_shelf(&mut tw, mush_core::GOD, content::PROVING_GROUND_PACK);
+    assert!(
+        planned.contains("0 create, 1 update, 0 retire"),
+        "the arena entry is one update:\n{planned}"
+    );
+    assert!(
+        applied.contains("Applied tacsim.pack.proving_ground@3"),
+        "{applied}"
+    );
+    assert!(!applied.contains("STOPPED"), "{applied}");
+    assert_eq!(arena_latch(&tw), Some(3));
+    // Every write the applier made under the atlas's identity was taken: the
+    // roster document, the four units' documents and the placements all go
+    // through `ctx.out`, which no namespace census refuses.
+    assert_eq!(
+        tw.world().refused_namespace_writes(),
+        Vec::new(),
+        "the hand apply wrote across a namespace it may not"
+    );
+
+    // Twelve units, not thirteen: the renamed ones were adopted, by the roster.
+    assert_eq!(units_in(&tw).len(), 12, "four made, and no more");
+    for (team, index, tank) in &before {
+        assert_eq!(
+            tacsim::match_::tank_for_slot(tw.world(), *team, *index),
+            Some(*tank),
+            "{} slot {index} kept its object",
+            team.as_str()
+        );
+    }
+    assert_eq!(
+        tw.world()
+            .get(red_three)
+            .map(|object| object.name.to_string()),
+        Some("Old Faithful".to_owned()),
+        "the applier adopts; it does not rename"
+    );
+    let red_five = tacsim::match_::tank_for_slot(tw.world(), Team::Red, 5).expect("red 5");
+    assert_ne!(
+        red_five, red_two,
+        "a tank the roster names for slot 2 is not taken for slot 5 by its new name"
+    );
+    // Every one of the twelve on its authored cell, and the roster names them.
+    let arena = mush_core::CanonicalId::new(PROVING_GROUND_ARENA).expect("a canonical id");
+    let roster = tw
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .and_then(|store| store.arena_roster(&arena).cloned())
+        .expect("the roster is written");
+    assert_eq!(roster.units.len(), 12, "{:?}", roster.units);
+    for team in Team::ALL {
+        for index in 1..=PODS_PER_SIDE {
+            let slot = format!("{}_{index}", team.as_str());
+            let tank = tacsim::match_::tank_for_slot(tw.world(), team, index)
+                .unwrap_or_else(|| panic!("{slot} resolves"));
+            assert_eq!(roster.unit(&slot), Some(tank));
+            let (_, pose) = mush_sim::pose_of(tw.world(), tank).expect("placed");
+            assert_eq!(
+                (pose.x_cm, pose.y_cm, pose.heading_mdeg),
+                support::authored_pose_of(&slot),
+                "{slot} stands on its authored cell"
+            );
+        }
+    }
+    // Made as the roster's are: owned as Red Tank 1 is, and not by the staffer
+    // who typed the verb.
+    let owner = |tank: ObjId| tw.world().get(tank).map(|object| object.owner);
+    assert_eq!(
+        owner(red_one),
+        Some(keeper),
+        "adoption leaves the owner alone"
+    );
+    for (team, index) in [
+        (Team::Red, 5),
+        (Team::Red, 6),
+        (Team::Blue, 5),
+        (Team::Blue, 6),
+    ] {
+        let made = tacsim::match_::tank_for_slot(tw.world(), team, index).expect("made");
+        assert_eq!(
+            owner(made),
+            Some(keeper),
+            "{} slot {index} is owned as the roster's tanks are",
+            team.as_str()
+        );
+        assert_ne!(owner(made), Some(mush_core::GOD), "not by the applier");
+    }
+}
+
+/// **A match holding a roster tank refuses the apply, and writes nothing**
+/// (16b cut Z.3): the apply re-places every tank and `mush_sim::place` does
+/// not refuse a deployed one, so the applier refuses first — in its
+/// before-any-write check, so the latch does not move and nothing is made.
+#[test]
+fn z3_a_deployed_roster_tank_refuses_the_apply_and_writes_nothing() {
+    let mut tw = world_at_arena_v2();
+    let blue_two = tacsim::match_::tank_for_slot(tw.world(), Team::Blue, 2).expect("blue 2");
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        blue_two,
+        mush_sim::deployed::DeployedMark::new(7, PROVING_GROUND_ARENA),
+    );
+    let census = |tw: &TestWorld| -> Vec<(u32, String, Option<ObjId>)> {
+        tw.world()
+            .iter()
+            .map(|object| (object.id.0, object.name.to_string(), object.location))
+            .collect()
+    };
+    let before = census(&tw);
+
+    let events = tw.run(
+        mush_core::GOD,
+        &format!("@atlas/pack plan {}", content::PROVING_GROUND_PACK),
+    );
+    let planned = tw.seen_by(&events, mush_core::GOD).join("\n");
+    let fingerprint = planned
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("fingerprint "))
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("the plan is readable while a match runs:\n{planned}"))
+        .to_owned();
+    let events = tw.run(mush_core::GOD, &format!("@atlas/pack apply {fingerprint}"));
+    let refused = tw.seen_by(&events, mush_core::GOD).join("\n");
+    assert!(
+        refused.contains(
+            "tacsim.arena.proving_ground: a match is running; apply with the centre idle"
+        ),
+        "{refused}"
+    );
+    assert!(!refused.contains("Applied"), "{refused}");
+
+    assert_eq!(arena_latch(&tw), Some(2), "the latch did not move");
+    assert_eq!(census(&tw), before, "nothing was made, renamed or moved");
+    assert_eq!(units_in(&tw).len(), 8);
+    assert_eq!(
+        tacsim::match_::tank_for_slot(tw.world(), Team::Red, 5),
+        None
+    );
+
+    // With the centre idle again the same plan applies.
+    mush_sim::deployed::clear(tw.world_mut(), blue_two);
+    let (_, applied) =
+        support::take_from_shelf(&mut tw, mush_core::GOD, content::PROVING_GROUND_PACK);
+    assert!(
+        applied.contains("Applied tacsim.pack.proving_ground@3"),
+        "{applied}"
+    );
+    assert_eq!(units_in(&tw).len(), 12);
 }

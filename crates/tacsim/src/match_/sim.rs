@@ -408,7 +408,7 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::Raw,
             switches: register_switches(),
             help: "SIM TEAM red|blue   claim one pilot slot on a side. One slot per account, \
-                   four a side.\n\
+                   six a side.\n\
                    SIM LEAVE           give your slot up; the last one to leave closes the \
                    match.\n\
                    SIM START           lock the pods and open boarding. A side's lead, or \

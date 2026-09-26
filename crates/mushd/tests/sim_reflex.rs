@@ -17,8 +17,9 @@
 //!    §3.8's amendment: K4's "the tank idles" was standing in for this until the
 //!    controller existed.
 //! 2. **The lobby's AI fill, and the size 16b cut Q.7 gave it.** With
-//!    `[tacsim.match].ai_fill` on, `SIM AI 4` fields all eight pods: the six
-//!    nobody claimed arrive at the check-out with no seated pilot, which is what
+//!    `[tacsim.match].ai_fill` on, `SIM AI 4` fields eight units — four a side
+//!    of the centre's six pods since 16b cut Z.3: the six machines nobody
+//!    claimed arrive at the check-out with no seated pilot, which is what
 //!    makes them the controller's, and they start themselves up without anybody
 //!    typing `STARTUP`. Cut N.1 did that for every match; cut Q.7 made it the
 //!    size somebody asked for, and the **default** is the larger side's claimed
@@ -548,7 +549,7 @@ async fn past_the_grace_the_reflex_controller_drives_the_tank_home() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn with_ai_fill_on_sim_ai_four_fields_all_eight_pods() {
+async fn with_ai_fill_on_sim_ai_four_fields_four_a_side() {
     let server = boot("sim-reflex-fill", Duration::from_secs(120), true).await;
     let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     open_the_centre(&mut god).await;
@@ -561,7 +562,7 @@ async fn with_ai_fill_on_sim_ai_four_fields_all_eight_pods() {
     // `SIM AI 4` is how somebody asks for what N.1 always did.
     take_off_sized(&mut ada, &mut bo, Some(4)).await;
 
-    // The six pods nobody claimed went over with the two that were claimed, and
+    // The six pods the fill took went over with the two that were claimed, and
     // the check-out made them the controller's because they arrived with no seated
     // pilot. Nobody typed `STARTUP` for them.
     support::wait_arena_seconds(&mut god, 3).await;
@@ -582,7 +583,7 @@ async fn with_ai_fill_on_sim_ai_four_fields_all_eight_pods() {
     assert_eq!(
         units_in_summary(&events),
         8,
-        "`SIM AI 4` should field all eight pods with `ai_fill` on: {:?}",
+        "`SIM AI 4` should field eight units, four a side, with `ai_fill` on: {:?}",
         events
             .iter()
             .filter_map(|event| event.get("kind").and_then(Value::as_str))
@@ -621,7 +622,7 @@ async fn with_ai_fill_on_the_default_size_is_the_larger_side() {
     // Bo's walk can be answered with, and leave Bo in the lobby for `BOARD` to
     // fail on sixty seconds later. The description cannot be said by anybody
     // else's movement.
-    say(&mut bo, "red", "Four pods in a row under a red stripe").await;
+    say(&mut bo, "red", "Six pods in a row under a red stripe").await;
     say(&mut ada, "BOARD", "climb into").await;
     say(&mut bo, "BOARD", "climb into").await;
     ada.expect("Good hunting").await;

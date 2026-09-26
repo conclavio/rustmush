@@ -5524,7 +5524,7 @@ fn a_follower_at_the_ford_is_held_and_journals_nothing() {
 /// the causeway, the lowest id at the rear, the head free to move.
 ///
 /// Two seconds of hold covers a release that travels rearward one substep per
-/// unit, and six is inside the shipped roster's four a side either way. Nothing
+/// unit, and six is inside the shipped roster's twelve either way. Nothing
 /// is stopped, nothing is journalled and nobody learns a teammate's transient
 /// cell.
 #[test]

@@ -19,11 +19,11 @@ const PINNED: [(&str, &str); 3] = [
     ),
     (
         OOC_AREA_PACK,
-        "64f6cf88104b80c4bf9af2b013ec2cba089cf2e664f827a72f29184a9cc54691",
+        "23698d37280a67a033cfd6c5e801c058475a529f2f756f59ec145b27545c9418",
     ),
     (
         STAFF_LOBBY_PACK,
-        "8d791c31a7c81c794cb78529b2735e0c1ab360aea92aa8d03c3d571388056796",
+        "dacbc7af257e6eececdbd28218945ede03a9114d2274a7031f5ecabcdc938adf",
     ),
 ];
 

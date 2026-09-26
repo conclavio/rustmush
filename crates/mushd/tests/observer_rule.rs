@@ -2965,11 +2965,11 @@ fn damaged_facet(listing: &str) -> bool {
 /// **The last tank of the muster's contents list, as the TUI leaves it.**
 ///
 /// The TUI paints cells, so it writes each word of a line at its own cursor
-/// position and the spaces between them are never sent: `Blue Tank 4,` arrives as
-/// `BlueTank4,` once the escape sequences are stripped. Every assertion about TUI
+/// position and the spaces between them are never sent: `Blue Tank 6` arrives as
+/// `BlueTank6` once the escape sequences are stripped. Every assertion about TUI
 /// text therefore runs against [`squeezed`] output, and this is the needle that
 /// says a room render has finished arriving.
-const TUI_LAST_TANK: &str = "BlueTank4";
+const TUI_LAST_TANK: &str = "BlueTank6";
 
 /// TUI text with every space taken out — see [`TUI_LAST_TANK`]. A name assertion
 /// made against the un-squeezed text would be **vacuous**, because `Red Tank 1`
@@ -3043,7 +3043,7 @@ async fn a_tui_witness_is_shown_the_tanks_and_then_nothing_about_the_two_in_the_
     // The input box, opened once (see `tui_ask`).
     cy.send_line("").await;
 
-    // The control: the TUI shows the bystander all eight tanks.
+    // The control: the TUI shows the bystander all twelve tanks.
     let seen = tui_ask(&mut cy, "look").await;
     assert!(
         seen.contains("RedTank1") && seen.contains("BlueTank1"),
@@ -3562,7 +3562,7 @@ fn every_was_is_a_held_designator(payload: &Value, held: &[&str], what: &str) {
 /// else** (doc 16 §1, §5).
 ///
 /// A concede and an unattended end are said to the **whole centre** — the three
-/// rooms and the eight pods — so they reach a seated pilot in the middle of a
+/// rooms and the twelve pods — so they reach a seated pilot in the middle of a
 /// fight, which is exactly where a leak would matter. Both are built from three
 /// things and no others: a character's display name, a side word, and the match
 /// id. Every one of those is already public — the name and the side through the

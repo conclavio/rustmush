@@ -153,8 +153,8 @@ starter_area = true                # (S1) apply the shipped starter area — the
 # still register and answer "TacSim is not enabled on this server."
 #
 # 16b cut F.4: this one key is also what instantiates the SIMULATOR. The
-# simulator centre's rooms and its eight pods come with the starter area and are
-# there either way, but the proving ground, its domain and the eight stock tanks
+# simulator centre's rooms and its twelve pods come with the starter area and are
+# there either way, but the proving ground, its domain and the twelve stock tanks
 # are the game's own boot packs and ride on this flag alone — so with it false
 # the pods are a set with nothing behind them, and SIM says so rather than
 # letting two players claim slots in a centre that cannot start. Turn it on and
@@ -298,7 +298,7 @@ hunt_after_ms = 90000
 startup_ms = 10000                 # ms STARTUP takes to carry a unit's power from starting to online; until then motion and fire refuse
 board_timeout_ms = 120000          # ms Boarding waits for every claimed slot to be seated before unseated slots are dropped (an empty side aborts)
 max_duration_ms = 3600000          # one hour: the longest a match runs before it ends as a timeout
-max_slots_per_side = 12            # ceiling 1..12; current centre clamps to its four pods a side and logs it at boot
+max_slots_per_side = 12            # ceiling 1..12; current centre clamps to its six pods a side and logs it at boot
 # (16b cut N.1, sized by Q.7) whether SIM START tops each side up to a size with
 # the tanks of the pods nobody claimed, under the reflex controller. With it ON
 # one pilot alone in the centre can start a match: each side fields the larger

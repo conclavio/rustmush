@@ -2753,7 +2753,7 @@ pub fn create_unit(ctx: &mut Ctx<'_>, obj: ObjId, spec: &UnitSpec) -> Result<Tac
 /// the RAM row.
 ///
 /// Its **only two callers** are in the game crate, and both are about the
-/// simulator centre's eight stock tanks:
+/// simulator centre's stock tanks:
 ///
 /// 1. `tacsim::match_::lobby::start`, when a pilot has chosen a unit type for
 ///    their slot with `SIM UNIT`, applied before the pods lock;

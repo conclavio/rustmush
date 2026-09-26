@@ -5,7 +5,7 @@
 //! | pack | what |
 //! |---|---|
 //! | `region.limbo` | the lot: the region, its locality, the tour connection and checkpoints, the shared lore |
-//! | `neighborhood.ooc_area` | the OOC hall, three tutorial rooms, the lounge, the simulator centre (lobby, red room, blue room and their eight pods), the bus stop, the bus, Sharon and Aaron |
+//! | `neighborhood.ooc_area` | the OOC hall, three tutorial rooms, the lounge, the simulator centre (lobby, red room, blue room and their twelve pods), the bus stop, the bus, Sharon and Aaron |
 //! | `neighborhood.staff_lobby` | the forecourt, the lobby building, the shop, the backlot, the coffee shop, the writers' room, and the cast |
 //!
 //! Seventeen lot rooms, the bus interior, and Limbo. No LLM is involved in making any

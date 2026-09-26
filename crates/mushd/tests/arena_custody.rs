@@ -23,7 +23,7 @@
 //!
 //! The two tanks this lens drives are still **its own** objects (`#3` and `#4`,
 //! created before the world task spawns, so their ids are stable) rather than
-//! the arena pack's eight: what is under test is custody of a unit the lens can
+//! the arena pack's stock tanks: what is under test is custody of a unit the lens can
 //! read in the store before and after, and naming a pack-made object would put
 //! the applier's own bookkeeping between the assertion and the property.
 //!

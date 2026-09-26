@@ -20,7 +20,7 @@ the same thing this topic does, in fewer words.
 ## Claiming a slot
 
   SIM TEAM red|blue   claim one pilot slot on a side. One slot per account,
-                      four a side. Whoever claims a side first leads it; if
+                      six a side. Whoever claims a side first leads it; if
                       they give the slot up, are dropped at boarding, or leave
                       their tank once the match is running, the next who
                       claimed leads.
@@ -113,7 +113,7 @@ are flown by the simulator itself, and **one pilot is enough to start a match**.
 Each side fields as many units as the larger side has claimed slots — so alone
 you get a one against one, and two of you on red get two machines on blue. `SIM
 AI 3` asks for a bigger game; it cannot go below what a side has already
-claimed, or above the four pods a side — and if more pilots claim afterwards the
+claimed, or above the six pods a side — and if more pilots claim afterwards the
 number follows them up, because both sides always field the same count. The
 board says which it is:
 
@@ -234,7 +234,7 @@ after the match.
 A match older than the last twenty has no report, and neither has one the server
 restarted during, or one played before the debrief existed.
 
-The next `SIM TEAM` clears the board, puts all eight tanks back at spec, back at
+The next `SIM TEAM` clears the board, puts every tank back at spec, back at
 muster and back to their own types, and opens selection again.
 
 ## When there is no simulator

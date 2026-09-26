@@ -3,8 +3,8 @@
 //! stock tanks are persistent objects", §3.7, §3.8).
 //!
 //! The rig is `crates/tacsim/tests/cockpit.rs`'s: the production composition root
-//! with the starter area (the centre's three rooms and eight pods) and the game's
-//! own boot packs (the arena, its ground and its eight tanks) applied, and every
+//! with the starter area (the centre's three rooms and twelve pods) and the game's
+//! own boot packs (the arena, its ground and its twelve tanks) applied, and every
 //! move made through the real command table against the real gate.
 //!
 //! What it proves, one test each:

@@ -134,6 +134,20 @@ fn boot_world_stays_minimal_and_the_starter_makes_the_lot() {
         assert_eq!(latch.anomaly(), None, "{id} applied whole");
         assert!(!latch.is_retired());
     }
+    // 16b cut Z.3: a fresh world lands the shipped versions — the OOC area at 7
+    // with its twelve pods, and the staff lobby at 5, which is what requires it.
+    let version = |id: &str| {
+        content
+            .latches
+            .applied(&CanonicalId::new(id).expect("id"))
+            .map(mush_content::Applied::version)
+    };
+    assert_eq!(version(starter::OOC_AREA_PACK), Some(7));
+    assert_eq!(version(starter::STAFF_LOBBY_PACK), Some(5));
+    let pods = live(&tw)
+        .filter(|o| o.kind == ObjKind::Thing && o.name.contains(" Pod "))
+        .count();
+    assert_eq!(pods, 12, "six pods in each team room");
     let atlas = tw.world().module_state::<AtlasState>().expect("atlas");
     assert_eq!(atlas.records.regions.len(), 1);
     assert_eq!(atlas.records.neighborhoods.len(), 2);

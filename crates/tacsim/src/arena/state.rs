@@ -3510,7 +3510,7 @@ impl Arena {
         // this is what makes it true to begin with — the alternative is a cell whose
         // occupancy has two answers, which every later reader of the index would
         // have to carry a rule for. **16b cut A.2 added this check**; cut T's
-        // check-out is its caller and places the eight tanks on eight cells.
+        // check-out is its caller and places every tank it checks out on a cell of its own.
         let mut cells: Vec<((u16, u16), ObjId)> = states
             .iter()
             .filter_map(|state| {

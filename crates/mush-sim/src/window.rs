@@ -182,7 +182,7 @@ pub fn open_window(ctx: &mut Ctx<'_>, open: OpenWindow) -> Result<DomainId, Stri
 /// A passive domain is a metric frame with no window composite and no clock: an
 /// object placed in it has a [`Pose`] and therefore a position, which is all the
 /// arena's check-out needs of a world placement. Cut C's proving-ground applier
-/// opens one on the room it makes, so the eight stock tanks are *placed* objects
+/// opens one on the room it makes, so the stock tanks are *placed* objects
 /// on a fresh world and `@arena/start` has something to take custody of.
 ///
 /// The host gains `sim.domain` if it lacks it, exactly as [`open_window`] does.

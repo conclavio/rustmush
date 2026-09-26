@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "neighborhood.staff_lobby",
-    "version": 4,
+    "version": 5,
     "kind": "neighborhood",
-    "digest": "8d791c31a7c81c794cb78529b2735e0c1ab360aea92aa8d03c3d571388056796",
+    "digest": "dacbc7af257e6eececdbd28218945ede03a9114d2274a7031f5ecabcdc938adf",
     "requires": [
       {
         "id": "region.limbo",
@@ -11,7 +11,7 @@
       },
       {
         "id": "neighborhood.ooc_area",
-        "version": 6
+        "version": 7
       }
     ]
   },

@@ -624,25 +624,26 @@ async fn the_boot_says_whether_the_simulator_is_there() {
         "and then whether the centre is whole: {said}"
     );
     assert!(
-        said.contains("roster_tanks=8"),
-        "doc 16 §3.3's eight stock tanks, counted: {said}"
+        said.contains("roster_tanks=12 of 12 pods=12 of 12"),
+        "doc 16 §3.3's stock tanks and the centre's pods, both counted against the twelve \
+         16b cut Z.3 seats: {said}"
     );
     assert!(
-        !said.contains("NOT ready"),
+        !said.contains("NOT ready") && !said.contains("partly ready"),
         "a whole centre must not warn: {said}"
     );
     assert_eq!(
         said.matches("simulator slots clamped").count(),
         1,
-        "the default ceiling exceeds the four pods and must warn once: {said}"
+        "the default ceiling exceeds the six pods and must warn once: {said}"
     );
     assert!(said.contains("configured_slots_per_side=12"), "{said}");
-    assert!(said.contains("available_pods_per_side=4"), "{said}");
+    assert!(said.contains("available_pods_per_side=6"), "{said}");
     drop(fx);
 
     let (said, fx) = boot_saying("tacsim-log-no-clamp", |cfg| {
         enable_tacsim(cfg);
-        cfg.tacsim.match_.max_slots_per_side = 4;
+        cfg.tacsim.match_.max_slots_per_side = 6;
     })
     .await;
     assert!(!said.contains("simulator slots clamped"), "{said}");

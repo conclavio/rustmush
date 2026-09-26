@@ -292,8 +292,8 @@ takes it from `TACSIM_ENABLED` in `instance.env`, which both
 `mushd.toml.example` ships it `false`, which is the documented default.
 
 What the key decides is the *arena*, not the rooms. The centre's lobby, its two
-team rooms and its eight pods come with the starter area (`[game].starter_area`)
-and are in the world either way. The proving ground, its domain and the eight
+team rooms and its twelve pods come with the starter area (`[game].starter_area`)
+and are in the world either way. The proving ground, its domain and the twelve
 stock tanks are the game's own boot packs and ride on this flag alone — so with
 it off the pods have nothing behind them, `SIM` refuses out loud, and no match
 can start. Turning it on drags in nothing else: no seed pack (`[tacsim].seeds`
@@ -306,11 +306,13 @@ The boot log says which it got, every time, and then whether the centre is ready
 
 ```
 tacsim enabled: the simulator's arena and its stock tanks apply at boot
-simulator centre ready: the arena is applied and its tanks are standing roster_tanks=8
+simulator centre ready: the arena is applied and its tanks are standing roster_tanks=12 of 12 pods=12 of 12
 ```
 
 A `tacsim disabled (...)` line, or a `simulator centre NOT ready` warning, is the
-thing to grep for before anyone connects. Note that `[tacsim]` is
+thing to grep for before anyone connects. A `simulator centre partly ready`
+warning is a world that has not taken the six-a-side packs yet (below): it plays
+four a side until it does. Note that `[tacsim]` is
 `deny_unknown_fields` but a mistyped section **header** is not a key: `[tac_sim]`
 parses clean and boots the layer off, and that negative log line is the only
 symptom.
@@ -364,22 +366,72 @@ exits and loses nothing else. The Welcome Hall's sign and every other
 pack-authored room detail become readable with `look <keyword>` on an
 un-upgraded world too, because that half is code and not content.
 
-### The arena pack is not on the shelf
+### The arena pack is on the shelf
 
-`tacsim.pack.proving_ground` and `tacsim.proving_ground` are boot packs and are
-deliberately **not** on the `@atlas/pack` shelf: doc 16 §3.3's tanks are created
-once, by the centre's content, and the latch is what makes a second boot make no
-ninth tank. `@atlas/pack list` shows them under "Latched, not on the shelf" and
-no verb applies them. If a world has the centre's rooms but an empty roster, the
-repair is the config plus a restart, or a reset instance — not a staff command.
+`tacsim.pack.proving_ground` and `tacsim.proving_ground` are boot packs **and**,
+since 16b cut Z.3, on the `@atlas/pack` shelf beside the starter packs. The boot
+pass is unchanged: a first boot applies them, and the latch is what makes a
+second boot make no thirteenth tank. The shelf is how a standing world takes a
+newer version by hand, and Z.3 is the first to ship one.
 
-A standing tank is adopted by **name** when the arena entry is applied, so a
-re-apply never makes a second Red Tank 1; it re-places the tank it finds on the
-cell the pack authors. And since 16b cut F.1 the boot pass resets every roster
-tank to its spec and to its authored cell on **every** boot, reading the slot out
-of the compiled definition rather than out of the latch — so a shipped change to
-the muster (16b cut F.4 moved it onto the ford road) reaches an existing world at
-its next restart with no pack upgrade at all.
+When the arena entry is applied, each standing tank is adopted by the arena's
+**roster** (the slot it was made for), not by its name, so a tank staff renamed
+is still the one its pod flies and no second one is made; the name is only
+consulted for a slot the roster has never held. Every tank is re-placed on the
+cell the pack authors, which is why the apply **refuses while a match is
+running** — `tacsim.arena.proving_ground: a match is running; apply with the
+centre idle` — and writes nothing until the centre is idle. And since 16b cut
+F.1 the boot pass resets every roster tank to its spec and to its authored cell
+on **every** boot, reading the slot out of the compiled definition rather than
+out of the latch — so a shipped change to the muster (16b cut F.4 moved it onto
+the ford road) reaches an existing world at its next restart with no pack
+upgrade at all.
+
+**Six a side: `ooc_area` 6 → 7, `staff_lobby` 4 → 5 and the arena 2 → 3 (16b cut
+Z.3).** The server half takes the new binary as any server-half deploy does; no
+gateway restart is needed for this cut. Until the packs are taken the centre is
+**four a side exactly as before**: the lobby's cap follows the pods and tanks
+that exist on both sides, so `SIM TEAM` hands out no fifth slot, `SIM AI 5` is
+refused, and the boot log reads
+
+```
+simulator centre partly ready: 8 of 12 pods, 8 of 12 tanks; the lobby fields the smaller count a side; take the packs by hand (deploy/README.md)
+```
+
+Then, **with the centre idle** (`@arena/status` reads it; the applier refuses
+while a match runs, because it re-places every tank), staff take **two** packs
+by hand, in this order:
+
+```
+@atlas/pack plan neighborhood.ooc_area
+@atlas/pack apply <fingerprint>
+@atlas/pack plan tacsim.pack.proving_ground
+@atlas/pack apply <fingerprint>
+```
+
+The first creates four pods in the team rooms and updates the two rooms' text in
+place; nobody is moved and no exit is remade. The second adopts the eight
+standing tanks by the roster, re-places them on their authored cells, creates
+Red Tank 5, Red Tank 6, Blue Tank 5 and Blue Tank 6 at theirs, and rewrites the
+roster document. After it the lobby seats six a side — a side lead's `SIM AI 6`
+is accepted where it was refused (`AI fill is 1 to 4 a side.`) — and the next
+boot logs `simulator centre ready: ... roster_tanks=12 of 12 pods=12 of 12`.
+`@atlas/pack plan neighborhood.staff_lobby` reads
+` Nothing to do.` on a live world (its only change is the version a fresh boot's
+`requires` needs), so its latch stays at 4 and every boot logs one info line
+saying a newer version is available; that line is harmless. A world that skips
+both keeps four pods a side and loses nothing else. `@atlas/pack retire` is
+still not the way to start again.
+
+The shelf takes a **newer** version and nothing else: on a world whose arena is
+already at the shipped version, `@atlas/pack plan tacsim.pack.proving_ground`
+reads ` Nothing to do.` and `@atlas/pack apply` refuses `is applied at this
+version`. So it does not re-make a stock tank that was destroyed or
+`@unit/remove`d on such a world, and the `partly ready` warning and the
+`SIM START` refusal (`The simulator has no unit for ...`) that follow such a loss
+point at a route that has nothing to take. The lobby then seats the slots before
+the missing one a side; a reset instance is the repair until a later version
+ships.
 
 ### The first staff login
 

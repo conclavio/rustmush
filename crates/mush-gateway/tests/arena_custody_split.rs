@@ -14,7 +14,7 @@
 //! It drives the **production composition** — `mush_server::serve_with_store`,
 //! exactly as the deployed binary does — so it cannot swap a module in. 16b cut
 //! C.2 is what made that enough: the composition now carries doc 16 §3.3's stock
-//! tank in its unit catalog and puts the arena's ground and its eight tanks in
+//! tank in its unit catalog and puts the arena's ground and its twelve tanks in
 //! the world at a first boot, so this file runs the **whole round trip** on the
 //! units the content made, beside the half that is a property of the *split*:
 //!
@@ -109,7 +109,7 @@ fn test_config(tag: &str) -> Config {
     cfg.ipc.listen = "127.0.0.1:0".to_string();
     cfg.ipc.exit_on_abandoned_supervision = false;
     // 16b cut C.2: the layer on, which is what puts the game's own boot packs
-    // in the content module — the proving ground's ground and its eight stock
+    // in the content module — the proving ground's ground and its twelve stock
     // tanks. It is the one knob this file sets beyond the split rig's own,
     // because without it there is no arena for a match to be fought on.
     cfg.tacsim.enabled = true;
@@ -428,7 +428,7 @@ impl Term {
     /// Wait for whichever of `needles` arrives first, answering its index.
     /// Run one line, wait for `needle`, and hand back everything the world said
     /// since — the one place this lens has to *read* an answer rather than
-    /// assert on it, because the arena's eight tanks are made by a content pack
+    /// assert on it, because the arena's twelve tanks are made by a content pack
     /// and their dbrefs are the pack's to choose (16b cut C.2).
     async fn ask(&mut self, line: &str, needle: &str) -> String {
         let mark = self.mark();
@@ -604,7 +604,7 @@ async fn the_arena_surface_survives_the_split_and_a_server_restart() {
 
     // --- (2b) the whole round trip, on the units the content made ---------
     //
-    // 16b cut C.2 put doc 16 §3.3's eight stock tanks in the world at a first
+    // 16b cut C.2 put doc 16 §3.3's stock tanks in the world at a first
     // boot, so the split twin no longer has to invent a unit to have a match:
     // it finds two of the arena's own and fights on the ground the same pack
     // authored. This is the half the `mushd` twin proves about the *store*,

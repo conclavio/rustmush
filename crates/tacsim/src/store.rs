@@ -169,7 +169,7 @@ pub struct TacsimStore {
     /// slot id to object.
     ///
     /// Persisted, unlike `loaded` and `definitions` beside it, because it is
-    /// **not** a function of the pack files: eight tanks are authored inside one
+    /// **not** a function of the pack files: every tank is authored inside one
     /// arena entry, so the content latch — one entry, one object — remembers only
     /// the muster room, and which object is slot `red_3` is a fact about *this*
     /// world that only the apply that made it knows.

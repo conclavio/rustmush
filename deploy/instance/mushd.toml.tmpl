@@ -176,7 +176,7 @@ hydration_strikes_to_zero = 3
 # digest-mismatched pack is a HARD BOOT ERROR NAMING THE FILE.
 #
 # 16b cut F.4: `enabled` is also what instantiates the SIMULATOR — the proving
-# ground, its domain and the eight stock tanks are the game's boot packs and ride
+# ground, its domain and the twelve stock tanks are the game's boot packs and ride
 # on this flag. Off, the centre's rooms and pods are still there (starter area)
 # and SIM refuses out loud; on, matches can run. The boot log says which.
 #
@@ -295,8 +295,9 @@ hunt_after_ms = 90000
 startup_ms = 10000
 board_timeout_ms = 120000
 max_duration_ms = 3600000
-# Configured ceiling (1..12); the current centre has four pods per side and
-# clamps this to four. Boot logs the clamp beside simulator-centre readiness.
+# Configured ceiling (1..12); the current centre has six pods per side and
+# clamps this to six (to four on a world that has not taken the 16b cut Z.3
+# packs; deploy/README.md). Boot logs the clamp beside simulator-centre readiness.
 max_slots_per_side = 12
 # 16b cut N.1, sized by Q.7: ON here, because one player alone on a dev box has
 # nobody to fight. Each side fields the larger side's claimed slots (never fewer

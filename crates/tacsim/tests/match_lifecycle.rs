@@ -39,6 +39,8 @@ use tacsim::TacsimConfig;
 use tacsim::arena::state::Team;
 use tacsim::match_::{self, MatchState};
 
+mod support;
+
 // ---------------------------------------------------------------------------
 // The rig
 // ---------------------------------------------------------------------------
@@ -60,7 +62,7 @@ fn config() -> TacsimConfig {
 
 /// The production roster, composed exactly as `mush_server::boot` composes it,
 /// with the starter area on (the centre is in the OOC pack) and the game's own
-/// boot packs on (the arena, its ground and its eight tanks).
+/// boot packs on (the arena, its ground and its twelve tanks).
 ///
 /// The character sheet is left out for the same reason
 /// `crates/tacsim/tests/definitions.rs` leaves it out of its reboot roster: it
@@ -501,16 +503,16 @@ async fn one_account_takes_one_slot_and_a_taken_slot_is_not_taken_twice() {
     assert!(said.contains("already hold red slot 1"), "{said}");
     assert_eq!(rig.centre().slots.len(), 3, "and nothing was written");
 
-    // The fourth pod is the last one; a fifth claim on that side is refused by
-    // the pods that exist, not by the configured 12.
-    let mut rig = Rig::boot(5);
-    for n in 0..4 {
+    // The sixth pod is the last one (16b cut Z.3); a seventh claim on that side
+    // is refused by the pods that exist, not by the configured 12.
+    let mut rig = Rig::boot(7);
+    for n in 0..6 {
         rig.say(n, "sim team red");
     }
-    let said = rig.say(4, "sim team red");
+    let said = rig.say(6, "sim team red");
     assert!(said.contains("red side is full"), "{said}");
-    assert!(said.contains("4 pilot(s)"), "{said}");
-    assert_eq!(rig.centre().side_len(Team::Red), 4);
+    assert!(said.contains("6 pilot(s)"), "{said}");
+    assert_eq!(rig.centre().side_len(Team::Red), 6);
 }
 
 // ---------------------------------------------------------------------------
@@ -1045,7 +1047,7 @@ async fn every_pod_resolves_to_its_own_tank_by_id_and_never_by_name() {
             assert_eq!(match_::pod_slot(rig.tw.world(), pod), Some((team, index)));
             let tank = match_::tank_of(rig.tw.world(), pod)
                 .unwrap_or_else(|| panic!("{} pod {index}'s tank", team.as_str()));
-            assert!(!seen.contains(&tank), "eight pods, eight distinct tanks");
+            assert!(!seen.contains(&tank), "twelve pods, twelve distinct tanks");
             seen.push(tank);
             // The shipped pack names them so; the resolution above used the
             // slot id, so a rename here changes the label and nothing else.
@@ -1065,7 +1067,7 @@ async fn every_pod_resolves_to_its_own_tank_by_id_and_never_by_name() {
             assert_eq!(name, expected);
         }
     }
-    assert_eq!(seen.len(), 8);
+    assert_eq!(seen.len(), 12);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1241,13 +1243,13 @@ async fn q7_the_default_fill_is_the_larger_side_and_sim_ai_sets_it() {
     let mut rig = fill_rig(3);
     rig.say(0, "sim team red");
     assert_eq!(
-        tacsim::match_::ai_side_size(&rig.centre(), &fill_config().match_),
+        tacsim::match_::ai_side_size(rig.tw.world(), &rig.centre(), &fill_config().match_),
         1,
         "one pilot alone is a one against one"
     );
     rig.say(1, "sim team red");
     assert_eq!(
-        tacsim::match_::ai_side_size(&rig.centre(), &fill_config().match_),
+        tacsim::match_::ai_side_size(rig.tw.world(), &rig.centre(), &fill_config().match_),
         2,
         "two friends on red get two machines on blue"
     );
@@ -1289,7 +1291,7 @@ async fn q7_a_claim_after_sim_ai_raises_the_fill_rather_than_splitting_the_sides
     rig.say(1, "sim team red");
     rig.say(2, "sim team red");
     assert_eq!(
-        tacsim::match_::ai_side_size(&rig.centre(), &fill_config().match_),
+        tacsim::match_::ai_side_size(rig.tw.world(), &rig.centre(), &fill_config().match_),
         3,
         "the three that turned up are what both sides field"
     );
@@ -1372,11 +1374,11 @@ async fn q7_sim_ai_refuses_by_the_sentence_for_each_reason() {
         said.contains("Only a side's lead or staff can set the AI fill."),
         "{said}"
     );
-    // Out of range, both ends: the centre has four pods a side.
+    // Out of range, both ends: the centre has six pods a side (16b cut Z.3).
     let said = rig.say(0, "sim ai 0");
-    assert!(said.contains("AI fill is 1 to 4 a side."), "{said}");
-    let said = rig.say(0, "sim ai 5");
-    assert!(said.contains("AI fill is 1 to 4 a side."), "{said}");
+    assert!(said.contains("AI fill is 1 to 6 a side."), "{said}");
+    let said = rig.say(0, "sim ai 7");
+    assert!(said.contains("AI fill is 1 to 6 a side."), "{said}");
     // And never below what a side already holds.
     let said = rig.say(0, "sim ai 1");
     assert!(
@@ -1711,7 +1713,7 @@ async fn q8_a_clean_boots_reset_is_still_silent() {
 /// cut Q.8, fixer; doc 16 §1, §5).
 ///
 /// `SIM STATUS` is the one selector that answers in every state, and the `SIM`
-/// gate admits the eight pods as well as the three rooms — so an ungated bracket
+/// gate admits the twelve pods as well as the three rooms — so an ungated bracket
 /// would let a seated pilot read the chassis of the contact their own sight
 /// still renders `X1`, which is the single fact Q.1's provisional designators
 /// and Q.2's classification clock exist to withhold. During `Selection` there is
@@ -2896,6 +2898,9 @@ async fn d3_the_last_leave_returns_the_centre_to_its_default() {
 /// **`T-51`: the fill's floor is held inside the pods that exist.**
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn d3_the_ai_floor_is_clamped_to_the_pods_a_side_has() {
+    // 16b cut Z.3: the size is read against a world, whose pods and tanks are
+    // what `slots_per_side` clamps to; this one is whole, six a side.
+    let rig = Rig::boot(0);
     let mut centre = tacsim::match_::Centre::default();
     assert_eq!(match_::largest_side(&centre), 1, "never zero");
     let cfg = tacsim::config::MatchConfig::default();
@@ -2918,7 +2923,7 @@ async fn d3_the_ai_floor_is_clamped_to_the_pods_a_side_has() {
         "the floor ran past the pods that exist"
     );
     assert_eq!(
-        match_::ai_side_size(&centre, &cfg),
+        match_::ai_side_size(rig.tw.world(), &centre, &cfg),
         match_::PODS_PER_SIDE,
         "and so did the size it is a floor under"
     );
@@ -4976,5 +4981,317 @@ async fn v3_sim_report_refuses_in_order_and_both_reads_complete_through_the_modu
     assert!(
         !page.contains("Next: "),
         "the tape ended inside this page: {page}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Z.3 — six a side
+// ---------------------------------------------------------------------------
+
+/// **Twelve pilots claim six a side, start, and board all twelve pods** (16b
+/// cut Z.3; 16c N7): the thirteenth is refused by the pods that exist, every
+/// pod locks to its own slot's tank, the board lists slots 5 and 6 by their
+/// callsigns, and the last seat fires `Running`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z3_twelve_pilots_claim_six_a_side_start_and_board() {
+    let mut rig = Rig::boot(13);
+    for n in 0..6 {
+        let said = rig.say(n, "sim team red");
+        assert!(!said.contains("full"), "{said}");
+    }
+    for n in 6..12 {
+        let said = rig.say(n, "sim team blue");
+        assert!(!said.contains("full"), "{said}");
+    }
+    let said = rig.say(12, "sim team red");
+    assert!(
+        said.contains("The red side is full: it takes 6 pilot(s)."),
+        "{said}"
+    );
+    let centre = rig.centre();
+    assert_eq!(centre.side_len(Team::Red), 6);
+    assert_eq!(centre.side_len(Team::Blue), 6);
+    let board = rig.say(0, "sim status");
+    for needle in [
+        "5 (RE): Pilot4",
+        "6 (RF): Pilot5",
+        "5 (BE): Pilot10",
+        "6 (BF): Pilot11",
+    ] {
+        assert!(board.contains(needle), "{needle}: {board}");
+    }
+
+    let said = rig.say(0, "sim start");
+    assert!(said.contains("boarding"), "{said}");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    let mut pods: Vec<ObjId> = Vec::new();
+    let mut tanks: Vec<ObjId> = Vec::new();
+    for n in 0..12 {
+        let pod = rig.pod(n).expect("every claimed slot locks its pod");
+        let (team, index) = match_::pod_slot(rig.tw.world(), pod).expect("a centre pod");
+        let tank = match_::tank_of(rig.tw.world(), pod).expect("every pod has its tank");
+        assert_eq!(
+            match_::tank_for_slot(rig.tw.world(), team, index),
+            Some(tank)
+        );
+        assert!(!pods.contains(&pod) && !tanks.contains(&tank));
+        pods.push(pod);
+        tanks.push(tank);
+    }
+    for n in 0..11 {
+        assert!(!rig.seat(n), "pilot {n} is not the last to sit");
+    }
+    assert!(rig.seat(11), "the twelfth seat fires the match");
+    assert_eq!(rig.state(), MatchState::Running);
+    rig.staff("@arena/abort");
+}
+
+/// **The reset walks all twelve tanks, and its report names them** (16b cut
+/// Z.3): with every roster tank carrying a stale marker the reset writes nothing
+/// and says one row per tank, which is the reset reading the roster's twelve
+/// slots and not a count of four a side.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z3_the_reset_walks_twelve_tanks() {
+    let mut rig = Rig::boot(0);
+    let mut tanks: Vec<ObjId> = Vec::new();
+    for team in Team::ALL {
+        for index in 1..=match_::PODS_PER_SIDE {
+            let tank = match_::tank_for_slot(rig.tw.world(), team, index).expect("a slot tank");
+            mush_sim::deployed::mark(
+                rig.tw.world_mut(),
+                tank,
+                mush_sim::DeployedMark::new(99, "tacsim.arena.proving_ground"),
+            );
+            tanks.push(tank);
+        }
+    }
+    assert_eq!(tanks.len(), 12);
+    let said = rig.staff("@arena/reset");
+    assert!(
+        said.contains("The simulator centre is idle, but not clean:"),
+        "{said}"
+    );
+    for tank in &tanks {
+        assert!(
+            said.contains(&format!(
+                "#{} is still deployed and was left alone; `@arena/abort` its match first.",
+                tank.0
+            )),
+            "#{}: {said}",
+            tank.0
+        );
+    }
+    for tank in tanks {
+        mush_sim::deployed::clear(rig.tw.world_mut(), tank);
+    }
+}
+
+/// A rig booted at the arena's **version 2** with the OOC pack's **version 7**
+/// (16b cut Z.3): twelve pods, eight tanks, the fill on.
+fn arena_v2_rig(pilots: usize) -> Rig {
+    Rig::boot_on(
+        pilots,
+        support::roster_booting(fill_config(), support::boot_packs_at_arena_v2(true)),
+    )
+}
+
+/// **A world holding twelve pods and the version-2 arena stays four a side,
+/// and takes version 3 from the shelf** (16b cut Z.3; 16c N7).
+///
+/// Until the arena is taken the lobby's cap follows what exists — four a side,
+/// `SIM AI 5` refused — and never hands out a slot whose tank is not there.
+/// Then staff plan and apply `tacsim.pack.proving_ground` from the
+/// `@atlas/pack` shelf with the centre idle: four tanks made, the eight kept by
+/// object id, all twelve on their authored cells, the roster naming twelve
+/// slots, and the lobby six a side.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z3_a_version_two_arena_is_four_a_side_until_it_takes_version_three() {
+    let mut rig = arena_v2_rig(1);
+    let ready = match_::centre_readiness(rig.tw.world());
+    assert!(ready.rooms);
+    assert_eq!((ready.pods, ready.tanks), (12, 8));
+    assert_eq!(match_::fieldable_per_side(rig.tw.world()), 4);
+    assert_eq!(
+        match_::slots_per_side(rig.tw.world(), &fill_config().match_),
+        4,
+        "the configured 12 is held down to the tanks that exist"
+    );
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim ai 5");
+    assert!(said.contains("AI fill is 1 to 4 a side."), "{said}");
+    let said = rig.say(0, "sim ai 4");
+    assert!(said.contains("AI fill set to 4 a side."), "{said}");
+    rig.say(0, "sim leave");
+    assert_eq!(rig.state(), MatchState::Idle);
+
+    let before: Vec<(Team, u8, ObjId)> = Team::ALL
+        .into_iter()
+        .flat_map(|team| (1..=4_u8).map(move |index| (team, index)))
+        .map(|(team, index)| {
+            let tank = match_::tank_for_slot(rig.tw.world(), team, index).expect("a v2 slot");
+            (team, index, tank)
+        })
+        .collect();
+    let (planned, applied) =
+        support::take_from_shelf(&mut rig.tw, GOD, "tacsim.pack.proving_ground");
+    assert!(
+        planned.contains("Plan for tacsim.pack.proving_ground@3: 0 create, 1 update, 0 retire"),
+        "{planned}"
+    );
+    assert!(
+        applied.contains("Applied tacsim.pack.proving_ground@3"),
+        "{applied}"
+    );
+    assert!(!applied.contains("STOPPED"), "{applied}");
+    assert_eq!(
+        rig.tw.world().refused_namespace_writes(),
+        Vec::new(),
+        "the hand apply wrote across a namespace it may not"
+    );
+
+    for (team, index, tank) in &before {
+        assert_eq!(
+            match_::tank_for_slot(rig.tw.world(), *team, *index),
+            Some(*tank),
+            "{} slot {index} kept its object id",
+            team.as_str()
+        );
+    }
+    let arena = mush_core::CanonicalId::new(match_::CENTRE_ARENA).expect("an id");
+    let roster = rig
+        .tw
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .and_then(|store| store.arena_roster(&arena).cloned())
+        .expect("the roster is written");
+    assert_eq!(roster.units.len(), 12, "{:?}", roster.units);
+    let mut made: Vec<ObjId> = Vec::new();
+    for team in Team::ALL {
+        for index in 1..=match_::PODS_PER_SIDE {
+            let slot = format!("{}_{index}", team.as_str());
+            let tank = match_::tank_for_slot(rig.tw.world(), team, index)
+                .unwrap_or_else(|| panic!("{slot} resolves"));
+            assert!(!made.contains(&tank), "{slot} is its own tank");
+            made.push(tank);
+            let (_, pose) = mush_sim::pose_of(rig.tw.world(), tank).expect("placed");
+            assert_eq!(
+                (pose.x_cm, pose.y_cm, pose.heading_mdeg),
+                support::authored_pose_of(&slot),
+                "{slot} stands on its authored cell"
+            );
+        }
+    }
+    for (name, team, index) in [
+        ("Red Tank 5", Team::Red, 5),
+        ("Red Tank 6", Team::Red, 6),
+        ("Blue Tank 5", Team::Blue, 5),
+        ("Blue Tank 6", Team::Blue, 6),
+    ] {
+        let tank = match_::tank_for_slot(rig.tw.world(), team, index).expect("made");
+        assert_eq!(
+            rig.tw
+                .world()
+                .get(tank)
+                .map(|object| object.name.to_string()),
+            Some(name.to_owned())
+        );
+    }
+
+    // And the lobby is six a side.
+    let ready = match_::centre_readiness(rig.tw.world());
+    assert!(ready.is_whole(), "{ready:?}");
+    assert_eq!(
+        match_::slots_per_side(rig.tw.world(), &fill_config().match_),
+        6
+    );
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim ai 6");
+    assert!(said.contains("AI fill set to 6 a side."), "{said}");
+
+    // A second plan is nothing to do: the latch is at the shipped version.
+    let said = rig.staff("@atlas/pack plan tacsim.pack.proving_ground");
+    assert!(said.contains(" Nothing to do."), "{said}");
+}
+
+/// **Eight pods hold the lobby at four a side whatever the tanks say** (16b cut
+/// Z.3; 16c N7): the pod half of [`match_::fieldable_per_side`].
+///
+/// A world still at `ooc_area@6` has eight pods. With the version-3 arena it
+/// has twelve tanks (a staffer who took the arena pack and not the OOC pack),
+/// and a cap that read the tanks alone would hand out slot 5 — and then every
+/// `SIM START` would refuse, because the pod lookup runs before the unit check.
+/// So the fifth claim is refused, `SIM AI 5` is refused, and four a side starts
+/// and boards on pods 1 to 4. And dev1's world before the packs are taken
+/// (eight pods, eight tanks) reads the same four.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z3_eight_pods_field_four_a_side_even_beside_twelve_tanks() {
+    let mut rig = Rig::boot_on(
+        5,
+        support::roster_booting(fill_config(), support::boot_packs_at_ooc_v6(false)),
+    );
+    let ready = match_::centre_readiness(rig.tw.world());
+    assert!(ready.rooms);
+    assert_eq!((ready.pods, ready.tanks), (8, 12), "{ready:?}");
+    assert!(!ready.is_whole());
+    assert_eq!(match_::fieldable_per_side(rig.tw.world()), 4);
+    assert_eq!(
+        match_::slots_per_side(rig.tw.world(), &fill_config().match_),
+        4,
+        "the configured 12 is held down to the pods that exist"
+    );
+    for n in 0..4 {
+        let said = rig.say(n, "sim team red");
+        assert!(!said.contains("full"), "{said}");
+    }
+    let said = rig.say(4, "sim team red");
+    assert!(
+        said.contains("The red side is full: it takes 4 pilot(s)."),
+        "{said}"
+    );
+    let said = rig.say(0, "sim ai 5");
+    assert!(said.contains("AI fill is 1 to 4 a side."), "{said}");
+    let said = rig.say(0, "sim ai 4");
+    assert!(said.contains("AI fill set to 4 a side."), "{said}");
+    let said = rig.say(0, "sim start");
+    assert!(said.contains("boarding"), "{said}");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    for n in 0..4 {
+        let pod = rig.pod(n).expect("every claimed slot locks its pod");
+        let (team, index) = match_::pod_slot(rig.tw.world(), pod).expect("a centre pod");
+        assert!(team == Team::Red && index <= 4, "{team:?} {index}");
+        assert!(match_::tank_of(rig.tw.world(), pod).is_some());
+    }
+    rig.staff("@arena/abort");
+
+    // Eight pods and the version-2 arena's eight tanks: the same four.
+    let before = Rig::boot_on(
+        0,
+        support::roster_booting(fill_config(), support::boot_packs_at_ooc_v6(true)),
+    );
+    let ready = match_::centre_readiness(before.tw.world());
+    assert_eq!((ready.pods, ready.tanks), (8, 8), "{ready:?}");
+    assert_eq!(match_::fieldable_per_side(before.tw.world()), 4);
+}
+
+/// **The game's two packs are on the shelf of a production composition** (16b
+/// cut Z.3): `@atlas/pack plan` answers a plan for each — a no-op on a fresh
+/// world — and never `is not on the shelf`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z3_the_arena_pack_is_on_the_shelf() {
+    let mut rig = Rig::boot(0);
+    for pack in ["tacsim.pack.proving_ground", "tacsim.proving_ground"] {
+        let said = rig.staff(&format!("@atlas/pack plan {pack}"));
+        assert!(!said.contains("is not on the shelf"), "{pack}: {said}");
+        assert!(
+            said.contains(&format!("Plan for {pack}@")),
+            "{pack}: {said}"
+        );
+        assert!(said.contains(" Nothing to do."), "{pack}: {said}");
+    }
+    let said = rig.staff("@atlas/pack list");
+    assert!(said.contains("tacsim.pack.proving_ground"), "{said}");
+    assert!(
+        !said.contains("tacsim.pack.proving_ground (not on the shelf)"),
+        "{said}"
     );
 }

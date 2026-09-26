@@ -6326,11 +6326,16 @@ fn y2_config() -> TacsimConfig {
 
 /// **16b cut Y.2 (doc 16 §2 W8): the span is read off the world's own watch.**
 ///
-/// The shipped centre's four pods a side can never make two squads (a side of
-/// at most `[tacsim.arena].squad_size` machines — four — is one squad; 16b cut
-/// Z.1), so the lead's second squad is a live watch
-/// seeded on the registry — which is where the span is read, and the only
-/// place. With a span of one and that watch standing, `ORDER red-1 HOLD` and
+/// This field is two a side, which is one squad a side (a side of at most
+/// `[tacsim.arena].squad_size` machines — four — is one squad; 16b cut Z.1), so
+/// the lead's second squad is a live watch seeded on the registry — which is
+/// where the span is read, and the only place. (Since 16b cut Z.3's six a side
+/// the centre can make two squads for real — five machines deal as three and
+/// two — and
+/// [`z3_one_pilot_and_six_a_side_make_two_squads_and_the_span_refuses_all`]
+/// reaches the `ORDER ALL` span sentence that way, end to end, with no seeded
+/// watch. This test keeps the seeded one because it is the only way to hold a
+/// *live* order on a squad the pilot did not order through the verb.) With a span of one and that watch standing, `ORDER red-1 HOLD` and
 /// `ORDER ALL HOLD` (which names the lead's one squad, so one at a time would
 /// not pass either) are each refused with the wait sentence and reach no unit;
 /// a third refusal at a rate of two a minute still answers the span, so a span
@@ -7749,5 +7754,84 @@ async fn z2_a_release_spends_a_rate_stamp() {
     assert_eq!(
         rig.say(0, "ORDER red-1 RELEASE"),
         "You have given 2 orders in the last minute; wait."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Z.3 — six a side makes two squads
+// ---------------------------------------------------------------------------
+
+/// **Pods pair 1↔2, 3↔4 and 5↔6** (16b cut Z.3's six a side): the wingman rule
+/// reaches the new pair, and nothing pairs across it.
+#[test]
+fn z3_slot_five_pairs_with_six() {
+    assert_eq!(cockpit::pair(5), 6);
+    assert_eq!(cockpit::pair(6), 5);
+    for slot in 1..=match_::PODS_PER_SIDE {
+        let other = cockpit::pair(slot);
+        assert!((1..=match_::PODS_PER_SIDE).contains(&other), "{slot}");
+        assert_eq!(cockpit::pair(other), slot, "{slot} and {other} are a pair");
+        assert_eq!(
+            (slot - 1) / 2,
+            (other - 1) / 2,
+            "{slot} pairs inside its two"
+        );
+    }
+}
+
+/// **One pilot and `SIM AI 6` make two squads of machines, and the span
+/// refuses `ORDER ALL` over them** (16b cut Z.3; the cut Y plan's decision 2
+/// reached end to end).
+///
+/// With six pods a side the fill fields five machines beside the one pilot on
+/// red — dealt `red-1` (three) and `red-2` (two) by 16b cut Z.1 — and six on
+/// blue, `blue-1` and `blue-2`, three each. The lead's `ORDER ALL HOLD` names
+/// both of its squads in one acknowledgement; and on a server whose
+/// `[tacsim.command].max_span` is one, the same line is refused with the
+/// `ORDER ALL` span sentence, verbatim — the refusal Y.2 could only reach
+/// through a seeded watch while the centre had four pods a side.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z3_one_pilot_and_six_a_side_make_two_squads_and_the_span_refuses_all() {
+    let mut rig = Rig::boot_with(1, y1_config());
+    rig.fly_with_ai(1, 0, 6).await;
+    let record = rig.record();
+    let squads: Vec<(String, usize)> = record
+        .squads
+        .iter()
+        .map(|roster| (roster.id.to_string(), roster.units.len()))
+        .collect();
+    assert_eq!(
+        squads,
+        vec![
+            ("red-1".to_owned(), 3),
+            ("red-2".to_owned(), 2),
+            ("blue-1".to_owned(), 3),
+            ("blue-2".to_owned(), 3),
+        ],
+        "five machines on red deal three and two; six on blue, three and three"
+    );
+    // The fill walked pods 5 and 6 on both sides.
+    let centre = rig.centre();
+    assert_eq!(centre.slots.len(), 1, "one claimed slot");
+    let said = rig.say(0, "ORDER ALL HOLD");
+    assert_eq!(
+        said,
+        format!(
+            "Ordered red-1 and red-2 to hold: it stops where it stands and fires nothing.{Y1_TAIL}"
+        )
+    );
+
+    let mut cfg = y1_config();
+    cfg.command.max_span = 1;
+    let mut rig = Rig::boot_with(1, cfg);
+    rig.fly_with_ai(1, 0, 6).await;
+    assert_eq!(
+        rig.say(0, "ORDER ALL HOLD"),
+        "ORDER ALL would put 2 squads under you; your span is 1. Order them one at a time."
+    );
+    // One at a time does pass.
+    assert_eq!(
+        rig.say(0, "ORDER red-2 HOLD"),
+        format!("Ordered red-2 to hold: it stops where it stands and fires nothing.{Y1_TAIL}")
     );
 }

@@ -678,16 +678,32 @@ fn tactics_catalog() -> mush_tactics::UnitCatalog {
 /// operator's packs, and the shipped starter packs on the shelf whatever
 /// `[game].starter_area` says — the shelf is what staff plan and apply from, and
 /// listing a pack applies nothing.
+///
+/// **16b cut Z.3** shelves the game's own two boot packs after them
+/// ([`crate::definitions::content::boot_packs`]: the proving ground's ground,
+/// then the arena), on the same rule and whatever `[tacsim].enabled` says. A
+/// standing world has latched both at a first boot, and the shelf is the one way
+/// it takes a newer version by hand — which Z.3's version 3 of the arena, with
+/// its tanks 5 and 6, is the first to need. Shelving applies nothing: the boot
+/// pass is unchanged, and `@atlas/pack plan` on an arena this world has never
+/// latched plans a first apply that staff may read and decline.
 #[must_use]
 pub fn atlas_module(cfg: mush_atlas::AtlasConfig) -> Box<dyn GameModule> {
-    let starter = mush_atlas::starter::packs().unwrap_or_else(|error| {
+    let mut shelf = mush_atlas::starter::packs().unwrap_or_else(|error| {
         // The shipped packs are digest-pinned in `mush-atlas`'s own tests; this
         // cannot fail on a tree that passed them, and a shelf without them is the
         // honest degradation if it ever did.
         tracing::error!(%error, "atlas: the shipped starter packs did not load");
         Vec::new()
     });
-    Box::new(mush_atlas::AtlasModule::with_config(cfg).with_shelf(starter))
+    match crate::definitions::content::boot_packs() {
+        Ok(game) => shelf.extend(game),
+        // Pinned in `crates/tacsim/tests/content.rs`, so the same argument: a
+        // shelf without them is the honest degradation, and the boot pass (which
+        // loads the same bytes) says so again in its own words.
+        Err(error) => tracing::error!(%error, "atlas: the game's boot packs did not load"),
+    }
+    Box::new(mush_atlas::AtlasModule::with_config(cfg).with_shelf(shelf))
 }
 
 /// The **content module** (S1, 14-spatial-implementation-plan §3.1): the pack latch,
@@ -718,18 +734,26 @@ pub fn content_module(starter_area: bool) -> Result<Box<dyn GameModule>, String>
 ///
 /// `game_content` is `[tacsim].enabled`: `true` appends the two packs that
 /// instantiate the proving ground — the atlas region carrying its ground, then
-/// the arena entry whose applier makes the muster room, its domain and the eight
+/// the arena entry whose applier makes the muster room, its domain and the twelve
 /// stock tanks — **after** the lot's three, since the latch applies boot packs in
 /// order and the arena's own `requires` is empty by design (it names atlas
 /// records, and the latch resolves `requires` against content latches only, so
 /// an atlas dependency expressed there would be unsatisfiable from the tacsim
 /// side; the applier checks the records instead and refuses naming the entry).
 ///
-/// They are boot packs and not a shelf entry because doc 16 §3.3's tanks are
-/// *persistent objects created once by the centre's content* — first-boot
-/// instantiation is exactly what `mush_content`'s latch is, and it is what makes
-/// "a second boot creates no ninth" a property of the latch rather than of the
-/// applier's own bookkeeping.
+/// They are boot packs **and** shelf entries (**16b cut Z.3**; the shelf is
+/// [`atlas_module`]'s). Boot packs, because doc 16 §3.3's tanks are *persistent
+/// objects created once by the centre's content* — first-boot instantiation is
+/// exactly what `mush_content`'s latch is, and it is what makes "a second boot
+/// creates no thirteenth" a property of the latch rather than of the applier's
+/// own bookkeeping; the boot pass is unchanged, so a first boot applies and a
+/// latched world logs the one line saying a newer version is available. Shelf
+/// entries, because that line is all a boot pass will ever do for a standing
+/// world, and a pack whose new version adds tanks has to reach one: staff take
+/// it with `@atlas/pack plan` and `@atlas/pack apply`, with the centre idle
+/// (`deploy/README.md`), and the arena's applier refuses while a match holds a
+/// roster tank. Z.3's version 3, which adds slots 5 and 6 a side, is the first
+/// version that needs it.
 ///
 /// # Errors
 ///

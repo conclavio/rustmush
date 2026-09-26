@@ -323,7 +323,7 @@ pub enum SimError {
     /// **The layer composed but is switched off** (16b cut F.4).
     ///
     /// The centre's rooms and pods come with the starter area, so they are here
-    /// whatever `[tacsim].enabled` says — but the arena, its domain and the eight
+    /// whatever `[tacsim].enabled` says — but the arena, its domain and the
     /// stock tanks are the game's own boot packs and ride on that flag. Before
     /// this variant, two players could claim slots in such a centre and only
     /// `SIM START` refused, with advice ("staff must re-apply the arena") that
@@ -481,17 +481,34 @@ pub enum SimError {
     },
     /// The centre's arena, or one of its units, is not in this world.
     ///
-    /// **16b cut F.4 made the advice performable.** It used to say "staff must
-    /// re-apply the arena", and no staff verb can: the arena pack is a boot pack
-    /// and is deliberately not on the `@atlas/pack` shelf (doc 16 §3.3's tanks
-    /// are created once, by the centre's content, and the latch is what makes a
-    /// second boot make no ninth tank). The layer-off case now refuses earlier
-    /// with [`SimError::LayerOff`], so what is left here is K.1 deviation (1) —
-    /// a world that applied the arena before its roster existed, or one whose
-    /// tanks have since been destroyed — and the only repair is at boot.
+    /// **16b cut F.4 made the advice performable**, and **16b cut Z.3 made it
+    /// true again.** F.4 said the arena was applied at boot and no verb could
+    /// re-apply it, which was so while the arena pack was a boot pack and not on
+    /// the `@atlas/pack` shelf. Z.3 shelves the game's two boot packs beside the
+    /// starter packs — the latch is still what makes a second boot make no
+    /// thirteenth tank, and the shelf is how a standing world takes a newer
+    /// version by hand — so staff can re-apply the arena, with the centre idle
+    /// (the applier refuses while a roster tank is under a match's custody).
+    ///
+    /// The layer-off case refuses earlier with [`SimError::LayerOff`], and since
+    /// Z.3 the lobby's cap ([`slots_per_side`]) is the slots whose pod *and*
+    /// tank exist on both sides, so a claim above the first missing tank is
+    /// refused as a full side. Three paths still reach this refusal: the cap's
+    /// floor of one, which leaves slot 1 claimable on a world whose pods stand
+    /// and whose roster is empty; a tank destroyed or `@unit/remove`d under a
+    /// slot that was already claimed; and K.1 deviation (1), a world that
+    /// applied the arena before its roster existed.
+    ///
+    /// **The route in the sentence repairs only a world whose arena latch is
+    /// behind the shipped version** (or one that never applied it): the shelf
+    /// takes a *newer* version, and on a world already at the shipped one the
+    /// plan is ` Nothing to do.` and the apply refuses `is applied at this
+    /// version`. It does not re-make a stock tank lost on a current world; that
+    /// has no verb yet, and `deploy/README.md` says so.
     #[error(
-        "The simulator has no unit for {team} slot {index}. The arena is applied at boot and no \
-         verb re-applies it; staff should read the server's boot log."
+        "The simulator has no unit for {team} slot {index}. Staff apply the arena pack with \
+         @atlas/pack plan tacsim.pack.proving_ground and @atlas/pack apply, while the centre is \
+         idle."
     )]
     NoUnit {
         /// Which side.
@@ -538,12 +555,26 @@ pub(crate) fn command_config(w: &World) -> Option<CommandConfig> {
 }
 
 /// How many slots one side of **this** centre takes: the configured cap, held
-/// down to the pods that exist (doc 16 §3.7 authors four a side).
+/// down to the pods that exist — `min(configured, PODS_PER_SIDE, fieldable)`,
+/// never below one.
+///
+/// **16b cut Z.3 made the doc true.** It used to clamp to the compile-time
+/// [`PODS_PER_SIDE`] alone, which was the same number as the pods in every
+/// world while both were four. Z.3 moves the constant to six and ships the two
+/// packs that make pods and tanks 5 and 6 — which a standing world takes by
+/// hand — so the constant is now what the binary can seat and
+/// [`centre::fieldable_per_side`] is what this world can: every pod and every
+/// tank, on both sides, slot by slot. Without it a Z.3 binary on an un-migrated
+/// world handed out slot 5 and every `SIM START` then refused with
+/// [`SimError::NoCentre`], since the pod lookup runs before the unit check.
+/// [`largest_side`]'s floor and [`ai_side_size`] follow through this cap.
 #[must_use]
-pub fn slots_per_side(match_cfg: &MatchConfig) -> u8 {
+pub fn slots_per_side(w: &World, match_cfg: &MatchConfig) -> u8 {
     u8::try_from(match_cfg.max_slots_per_side)
         .unwrap_or(PODS_PER_SIDE)
-        .clamp(1, PODS_PER_SIDE)
+        .min(PODS_PER_SIDE)
+        .min(centre::fieldable_per_side(w))
+        .max(1)
 }
 
 /// **The claimed slots of the larger side** (16b cut Q.7), never below one.
@@ -587,8 +618,8 @@ pub fn largest_side(centre: &Centre) -> u8 {
 /// is [`Centre::ai_side_size`]'s own rule: a fill that let one side ask for more
 /// machines than the other would be the lobby choosing who wins.
 #[must_use]
-pub fn ai_side_size(centre: &Centre, match_cfg: &MatchConfig) -> u8 {
-    let cap = slots_per_side(match_cfg);
+pub fn ai_side_size(w: &World, centre: &Centre, match_cfg: &MatchConfig) -> u8 {
+    let cap = slots_per_side(w, match_cfg);
     centre
         .ai_side_size
         .unwrap_or(0)
@@ -697,7 +728,7 @@ pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
     in_centre(ctx.w, actor)?;
     let account = account_of(ctx.w, actor)?;
     let (_, match_cfg, _) = configs(ctx.w).ok_or(SimError::Unavailable)?;
-    let cap = slots_per_side(&match_cfg);
+    let cap = slots_per_side(ctx.w, &match_cfg);
     // **16b cut F.1**: the first claim on a **terminal** centre clears the board.
     //
     // The K row's deviation 3 keeps the outcome on the centre after a check-in so
@@ -1351,7 +1382,7 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
 /// refused above.
 fn fit_fielded_units(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     let (_, match_cfg, _) = configs(ctx.w).ok_or(SimError::Unavailable)?;
-    let per_side = slots_per_side(&match_cfg);
+    let per_side = slots_per_side(ctx.w, &match_cfg);
     // Every pod of the centre in board order, each with the claim on it if there
     // is one — read in one borrow, because everything below needs `ctx` mutably.
     // A claimed slot whose index is outside the configured count (an operator
@@ -1906,7 +1937,7 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
         if match_cfg.ai_fill && !centre.slots.iter().any(Slot::is_seated) {
             return Err(SimError::NobodyPlaying);
         }
-        let fill_to = ai_side_size(centre, &match_cfg);
+        let fill_to = ai_side_size(ctx.w, centre, &match_cfg);
         for team in Team::ALL {
             // **16b cut Q.1**: the pod index travels with the unit. It is the
             // only place in the tree that knows which slot fielded which tank, so
@@ -1948,7 +1979,7 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
             //
             // Off by default, and `crate::config::MatchConfig::ai_fill` says why.
             if match_cfg.ai_fill {
-                for index in 1..=slots_per_side(&match_cfg) {
+                for index in 1..=slots_per_side(ctx.w, &match_cfg) {
                     if units.len() >= usize::from(fill_to) {
                         break;
                     }
@@ -2136,7 +2167,7 @@ pub fn ai(ctx: &mut Ctx<'_>, size: Option<u8>) -> Result<(), SimError> {
     if !match_cfg.ai_fill {
         return Err(SimError::AiOff);
     }
-    let cap = slots_per_side(&match_cfg);
+    let cap = slots_per_side(ctx.w, &match_cfg);
     // **16b cut D.1**: the bare read answers anybody standing in the centre, in
     // any state, lead or not. It is one number about the server's own settings —
     // the same number the board's own `AI fill:` line prints to everyone in the
@@ -2144,7 +2175,7 @@ pub fn ai(ctx: &mut Ctx<'_>, size: Option<u8>) -> Result<(), SimError> {
     // a question that they could not start a match.
     let Some(size) = size else {
         let centre = centre(ctx.w).ok_or(SimError::Unavailable)?;
-        let effective = ai_side_size(centre, &match_cfg);
+        let effective = ai_side_size(ctx.w, centre, &match_cfg);
         ctx.out.sys_to_actor(
             actor,
             NOTICE_CATEGORY,
@@ -2821,7 +2852,7 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
             // row a stock lobby renders is byte for byte the one Q.1 wrote.
             //
             // **And only during `Selection`** (16b cut Q.8, fixer). The board is
-            // read from the lobby, the two team rooms AND the eight pods, and
+            // read from the lobby, the two team rooms AND the pods, and
             // `SIM STATUS` is the one selector that answers in every state — so
             // an unbracketed rule here would hand a seated pilot mid-match the
             // chassis of the contact their own sight still renders `X1`, which
@@ -2869,7 +2900,7 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
     {
         rows.push(format!(
             "  AI fill: each side fields {}; machines take the unclaimed pods.",
-            ai_side_size(centre, &match_cfg)
+            ai_side_size(w, centre, &match_cfg)
         ));
     }
     if let Some(deadline) = centre.board_deadline_ms {
@@ -2939,8 +2970,9 @@ pub fn clock_text(now_ms: i64) -> String {
 // Output
 // ---------------------------------------------------------------------------
 
-/// Say one line everywhere in the centre: its three rooms **and its eight
-/// pods**.
+/// Say one line everywhere in the centre: its three rooms **and its pods**
+/// (twelve since 16b cut Z.3; every one of [`centre::POD_ENTRIES`] this world
+/// has).
 ///
 /// The centre is three rooms and one conversation: a pilot in the red room has
 /// to hear that blue started, and a pilot in the lobby has to hear that boarding
@@ -3024,23 +3056,46 @@ mod tests {
 
     #[test]
     fn the_cap_is_the_configured_one_held_down_to_the_pods_that_exist() {
+        // 16b cut Z.3: the pods that exist are the ones **this world** has, pod
+        // and tank on both sides, and not the binary's constant.
+        let whole = centre::tests::whole_centre();
+        let old = centre::tests::twelve_pods_and_eight_tanks();
         let cfg = MatchConfig::default();
         assert_eq!(cfg.max_slots_per_side, 12, "doc 16 section 1's 12 v 12");
+        assert_eq!(PODS_PER_SIDE, 6);
         assert_eq!(
-            slots_per_side(&cfg),
+            slots_per_side(whole.world(), &cfg),
             PODS_PER_SIDE,
-            "but the centre has four pods a side"
+            "but the centre has six pods a side"
+        );
+        assert_eq!(
+            slots_per_side(old.world(), &cfg),
+            4,
+            "and a world that has not taken the arena's version 3 has four tanks a side"
         );
         let two = MatchConfig {
             max_slots_per_side: 2,
             ..MatchConfig::default()
         };
-        assert_eq!(slots_per_side(&two), 2);
+        assert_eq!(slots_per_side(whole.world(), &two), 2);
+        assert_eq!(slots_per_side(old.world(), &two), 2);
+        let five = MatchConfig {
+            max_slots_per_side: 5,
+            ..MatchConfig::default()
+        };
+        assert_eq!(slots_per_side(whole.world(), &five), 5);
+        assert_eq!(slots_per_side(old.world(), &five), 4);
         let none = MatchConfig {
             max_slots_per_side: 0,
             ..MatchConfig::default()
         };
-        assert_eq!(slots_per_side(&none), 1, "never zero");
+        assert_eq!(slots_per_side(whole.world(), &none), 1, "never zero");
+        let bare = mush_testkit::TestWorld::new();
+        assert_eq!(
+            slots_per_side(bare.world(), &cfg),
+            1,
+            "never zero, even with no centre"
+        );
     }
 
     #[test]

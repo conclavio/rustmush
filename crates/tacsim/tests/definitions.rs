@@ -9,8 +9,8 @@
 //! 3. `from_pack` yields the 256 by 256 window, and its impassable cells are
 //!    exactly the cells whose class the shipped `tracked` locomotion row prices
 //!    impassable;
-//! 4. on a fresh world with `[tacsim].enabled` the eight stock tanks exist after
-//!    boot, and a second boot creates no ninth;
+//! 4. on a fresh world with `[tacsim].enabled` the twelve stock tanks exist after
+//!    boot, and a second boot creates no thirteenth;
 //! 5. the ten commodity families are instruments after boot, beside the credit.
 
 use std::collections::{BTreeMap, HashMap};
@@ -46,7 +46,7 @@ fn production_roster() -> Vec<Box<dyn mush_core::GameModule>> {
 /// driven twice in one process with the sheet composed: it registers the
 /// `pilot.chargen` job payload handler, and `mush_jobs` refuses a second
 /// registration of one handler. That is a property of rebooting a `TestWorld`
-/// in place, not of this cut, and the sheet has nothing to do with the eight
+/// in place, not of this cut, and the sheet has nothing to do with the stock
 /// tanks — so the reboot is asserted on the half of the roster that makes them.
 fn reboot_roster() -> Vec<Box<dyn mush_core::GameModule>> {
     roster(false)
@@ -605,7 +605,7 @@ fn a_filled_ecm_hook_refuses() {
 #[test]
 fn an_arena_in_a_rules_pack_and_a_unit_in_a_seed_pack_both_refuse() {
     // Doc 16 §4's axis: a rules definition is re-pinned and diffed; an `arena`
-    // instantiates, so re-running it would duplicate its eight tanks.
+    // instantiates, so re-running it would duplicate its tanks.
     let arena_in_rules = tampered(
         content::PROVING_GROUND_JSON,
         "\"kind\": \"campaign_seed\"",
@@ -798,12 +798,13 @@ fn an_arena_whose_ground_is_missing_refuses_rather_than_falling_back() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_fresh_boot_makes_the_eight_tanks_and_a_second_makes_no_ninth() {
+fn a_fresh_boot_makes_the_twelve_tanks_and_a_second_makes_no_thirteenth() {
     let mut tw = TestWorld::with_modules(reboot_roster());
     let red = objects_named(&tw, "Red Tank ");
     let blue = objects_named(&tw, "Blue Tank ");
-    assert_eq!(red.len(), 4, "four red tanks after a first boot");
-    assert_eq!(blue.len(), 4, "four blue tanks after a first boot");
+    // 16b cut Z.3: six a side, the arena pack's version 3.
+    assert_eq!(red.len(), 6, "six red tanks after a first boot");
+    assert_eq!(blue.len(), 6, "six blue tanks after a first boot");
 
     // Each is a tactical unit, placed, at the cell its pack authors.
     for unit in red.iter().chain(blue.iter()) {
@@ -819,8 +820,12 @@ fn a_fresh_boot_makes_the_eight_tanks_and_a_second_makes_no_ninth() {
 
     let kv = fold_all(&mut tw);
     reboot(&mut tw, &kv);
-    assert_eq!(objects_named(&tw, "Red Tank ").len(), 4, "no ninth tank");
-    assert_eq!(objects_named(&tw, "Blue Tank ").len(), 4);
+    assert_eq!(
+        objects_named(&tw, "Red Tank ").len(),
+        6,
+        "no thirteenth tank"
+    );
+    assert_eq!(objects_named(&tw, "Blue Tank ").len(), 6);
 }
 
 #[test]

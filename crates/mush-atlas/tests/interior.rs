@@ -9,7 +9,7 @@
 //!
 //! The upgrade half drives the pack's own latch: a world already at
 //! `ooc_area@3` takes the shipped version as an update that adds the simulator
-//! lobby, the red and blue rooms, their exits, the selector and the eight pods
+//! lobby, the red and blue rooms, their exits, the selector and the twelve pods
 //! and moves nothing that was already standing; a fresh world lands all of it at
 //! once.
 //!
@@ -21,6 +21,12 @@
 //! on real objects, so the upgrade has to *update* them in place — which is the
 //! one thing a create-only upgrade never proves, and a room `detail:` attribute
 //! (the sign) is a different kind of update from an item's `desc`.
+//!
+//! **16b cut Z.3** adds the third, and it is the first to do both at once on a
+//! world with a match history: version 7 creates pods 5 and 6 of each team room
+//! and rewrites the two rooms' text to say six, and a world standing at version
+//! 6 takes it from the shelf with its eight pods, and whoever is sitting in one,
+//! untouched.
 
 use std::collections::BTreeMap;
 
@@ -34,21 +40,36 @@ use mush_sim::{SimulationModule, SpatialParent, SpatialState};
 use mush_testkit::TestWorld;
 use serde_json::Value;
 
-/// The eight pods, as C.2 references them: entry id and the object name.
-const PODS: [(&str, &str); 8] = [
+/// The twelve pods, as C.2 references them: entry id and the object name (16b
+/// cut Z.3 added pods 5 and 6 of each side, in `tacsim::match_::POD_ENTRIES`'s
+/// order).
+const PODS: [(&str, &str); 12] = [
     ("item.red_pod_1", "Red Pod 1"),
     ("item.red_pod_2", "Red Pod 2"),
     ("item.red_pod_3", "Red Pod 3"),
     ("item.red_pod_4", "Red Pod 4"),
+    ("item.red_pod_5", "Red Pod 5"),
+    ("item.red_pod_6", "Red Pod 6"),
     ("item.blue_pod_1", "Blue Pod 1"),
     ("item.blue_pod_2", "Blue Pod 2"),
     ("item.blue_pod_3", "Blue Pod 3"),
     ("item.blue_pod_4", "Blue Pod 4"),
+    ("item.blue_pod_5", "Blue Pod 5"),
+    ("item.blue_pod_6", "Blue Pod 6"),
 ];
 
-/// The fifteen entries version 4 added to version 3, and the shipped pack still
-/// carries: three rooms, three exit rows (six exit objects) and nine items.
-const ADDED: [&str; 15] = [
+/// The four pods version 7 (16b cut Z.3) added to version 6.
+const Z3_PODS: [&str; 4] = [
+    "item.red_pod_5",
+    "item.red_pod_6",
+    "item.blue_pod_5",
+    "item.blue_pod_6",
+];
+
+/// The nineteen entries the shipped pack carries that version 3 did not: the
+/// fifteen version 4 added — three rooms, three exit rows (six exit objects) and
+/// nine items — and the four pods version 7 added, thirteen items in all.
+const ADDED: [&str; 19] = [
     "room.simulator_lobby",
     "room.sim_red",
     "room.sim_blue",
@@ -60,14 +81,19 @@ const ADDED: [&str; 15] = [
     "item.red_pod_2",
     "item.red_pod_3",
     "item.red_pod_4",
+    "item.red_pod_5",
+    "item.red_pod_6",
     "item.blue_pod_1",
     "item.blue_pod_2",
     "item.blue_pod_3",
     "item.blue_pod_4",
+    "item.blue_pod_5",
+    "item.blue_pod_6",
 ];
 
 /// The version of `neighborhood.ooc_area` this tree ships. Read off the pack so
-/// the fixtures below cannot drift from it (16b cut F.4 moved it 4 -> 5).
+/// the fixtures below cannot drift from it (16b cut F.4 moved it 4 -> 5, Z.3
+/// 6 -> 7).
 fn shipped_version() -> u32 {
     parse_pack(starter::OOC_AREA_JSON)
         .expect("the shipped pack parses")
@@ -77,8 +103,9 @@ fn shipped_version() -> u32 {
 
 /// The same number as a constant, for the fixtures that build a neighbouring
 /// version. Asserted against [`shipped_version`] by
-/// [`the_fixtures_track_the_shipped_version`]. (16b cut D.5 moved it 5 -> 6.)
-const SHIPPED_VERSION: u32 = 6;
+/// [`the_fixtures_track_the_shipped_version`]. (16b cut D.5 moved it 5 -> 6,
+/// and 16b cut Z.3 6 -> 7.)
+const SHIPPED_VERSION: u32 = 7;
 
 fn cid(s: &str) -> CanonicalId {
     CanonicalId::new(s).expect("a canonical id")
@@ -129,8 +156,8 @@ fn lot() -> TestWorld {
     lot_shelving(shipped())
 }
 
-/// **One version past the shipped one**: nothing but the eight pods repainted,
-/// so the latch plans eight *updates* and `create_item` meets a pod that already
+/// **One version past the shipped one**: nothing but the twelve pods repainted,
+/// so the latch plans twelve *updates* and `create_item` meets a pod that already
 /// exists, is already an interior space, and already holds a pilot.
 fn ooc_repainted() -> String {
     let mut doc: Value = serde_json::from_str(starter::OOC_AREA_JSON).expect("the pack is json");
@@ -300,7 +327,7 @@ fn a_pod_is_an_interior_a_character_can_be_placed_into_and_a_plain_item_is_not()
         "the refusal left the pilot where they were"
     );
 
-    // All eight pods, and re-applying the pack disturbs none of it.
+    // All twelve pods, and re-applying the pack disturbs none of it.
     for (_, name) in PODS {
         let pod = named(&tw, ObjKind::Thing, name);
         assert!(state(&tw).spaces.contains_key(&pod), "{name} is a space");
@@ -311,8 +338,8 @@ fn a_pod_is_an_interior_a_character_can_be_placed_into_and_a_plain_item_is_not()
     let before = census(&tw);
     let (planned, applied) = replan(&mut tw, starter::OOC_AREA_PACK);
     assert!(
-        planned.contains("0 create, 8 update, 0 retire"),
-        "the eight pods are updates, so the applier really meets them again:\n{planned}"
+        planned.contains("0 create, 12 update, 0 retire"),
+        "the twelve pods are updates, so the applier really meets them again:\n{planned}"
     );
     assert!(
         applied.contains("Applied neighborhood.ooc_area"),
@@ -367,7 +394,7 @@ fn the_shipped_version_lands_whole_on_a_fresh_world() {
     assert!(leads(lobby, red) && leads(red, lobby), "lobby <-> red");
     assert!(leads(lobby, blue) && leads(blue, lobby), "lobby <-> blue");
 
-    // The selector in the lobby; four pods a side, every one an interior space.
+    // The selector in the lobby; six pods a side, every one an interior space.
     assert_eq!(
         tw.world()
             .get(named(&tw, ObjKind::Thing, "Simulator Selector"))
@@ -426,7 +453,7 @@ fn the_shipped_version_upgrades_a_world_at_version_three_and_moves_nothing() {
 
     let (planned, applied) = replan(&mut tw, starter::OOC_AREA_PACK);
     assert!(
-        planned.contains("15 create, 1 update, 0 retire"),
+        planned.contains("19 create, 1 update, 0 retire"),
         "the upgrade creates the simulator centre, updates only the neighborhood          (its raised room budget), and retires nothing:
 {planned}"
     );
@@ -436,7 +463,7 @@ fn the_shipped_version_upgrades_a_world_at_version_three_and_moves_nothing() {
     );
     assert!(!applied.contains("STOPPED"), "{applied}");
 
-    // The three rooms, their six exit objects, the selector and the eight pods.
+    // The three rooms, their six exit objects, the selector and the twelve pods.
     let lobby = named(&tw, ObjKind::Room, "Simulator Lobby");
     let red = named(&tw, ObjKind::Room, "Red Room");
     let blue = named(&tw, ObjKind::Room, "Blue Room");
@@ -454,7 +481,7 @@ fn the_shipped_version_upgrades_a_world_at_version_three_and_moves_nothing() {
         .filter(|(id, _)| !before.contains_key(id))
         .map(|(_, (_, name, _))| name.as_str())
         .collect();
-    assert_eq!(fresh.len(), 18, "3 rooms, 6 exits, 9 items: {fresh:?}");
+    assert_eq!(fresh.len(), 22, "3 rooms, 6 exits, 13 items: {fresh:?}");
 
     // Nothing that was already standing moved, was renamed, or was replaced.
     for (id, was) in &before {
@@ -553,13 +580,19 @@ const V4_TEXTS: [(&str, &str); 10] = [
 /// **Version 4 of the OOC pack**: the shipped bytes with the eleven strings cut
 /// F.4 rewrote put back, the version set to 4 and the digest re-derived.
 ///
+/// **16b cut Z.3**: and with version 7's four pods taken back out and the three
+/// strings it rewrote put back ([`Z3_PODS`], [`V6_TEXTS`]), so the fixture has
+/// version 4's eight pods and its "four pods" rooms, and the upgrade under test
+/// creates the four a real version-4 world would. It is not held to a digest:
+/// cut D.5's alias change cannot be authored back into a pack (see the test).
+///
 /// The version is the literal 4 and not `SHIPPED_VERSION - 1`: what this fixture
 /// carries is version 4's *text*, and the shipped version has moved past 5 (16b
 /// cut D.5). The upgrade under test is therefore 4 to the shipped version, which
 /// is what a world left standing since cut C.1 would really take.
 fn ooc_v4() -> String {
     let mut text = starter::OOC_AREA_JSON.to_string();
-    for (shipped, old) in V4_TEXTS {
+    for (shipped, old) in V6_TEXTS.into_iter().chain(V4_TEXTS) {
         assert!(
             text.contains(shipped),
             "the shipped pack no longer carries {shipped:?}; this fixture is stale"
@@ -567,6 +600,11 @@ fn ooc_v4() -> String {
         text = text.replace(shipped, old);
     }
     let mut doc: Value = serde_json::from_str(&text).expect("the pack is json");
+    if let Some(entries) = doc["entries"].as_object_mut() {
+        for id in Z3_PODS {
+            assert!(entries.remove(id).is_some(), "{id} is in the shipped pack");
+        }
+    }
     doc["manifest"]["version"] = Value::from(4);
     doc["manifest"]["digest"] = Value::String("0".repeat(64));
     let unsigned = serde_json::to_string(&doc).expect("json");
@@ -631,8 +669,9 @@ fn the_fixtures_track_the_shipped_version() {
     );
 }
 
-/// **The upgrade off version 4 rewrites what is standing and creates nothing**
-/// (16b cut F.4; still true at cut D.5's version 6, which only edits strings).
+/// **The upgrade off version 4 rewrites what is standing and creates only the
+/// four pods version 7 added** (16b cut F.4 created nothing; cut D.5's version 6
+/// only edited strings; 16b cut Z.3's version 7 adds pods 5 and 6 a side).
 #[test]
 fn the_shipped_version_corrects_the_centres_texts_on_a_world_at_version_four() {
     let region = starter::SOURCES
@@ -694,9 +733,13 @@ fn the_shipped_version_corrects_the_centres_texts_on_a_world_at_version_four() {
 
     let (planned, applied) = replan(&mut tw, starter::OOC_AREA_PACK);
     assert!(
-        planned.contains("0 create,"),
-        "the upgrade off version 4 adds no entry; it rewrites what is here:\n{planned}"
+        planned.contains("4 create,"),
+        "the upgrade off version 4 adds version 7's four pods and nothing else; it rewrites \
+         what is here:\n{planned}"
     );
+    for id in Z3_PODS {
+        assert!(planned.contains(id), "{id} is planned:\n{planned}");
+    }
     assert!(planned.contains("0 retire"), "{planned}");
     assert!(
         applied.contains("Applied neighborhood.ooc_area"),
@@ -704,7 +747,7 @@ fn the_shipped_version_corrects_the_centres_texts_on_a_world_at_version_four() {
     );
     assert!(!applied.contains("STOPPED"), "{applied}");
 
-    // Every one of the eight pods now says what boarding really is, and none of
+    // Every one of the twelve pods now says what boarding really is, and none of
     // them says the feature is missing.
     for (_, name) in PODS {
         let pod = named(&tw, ObjKind::Thing, name);
@@ -772,8 +815,9 @@ fn the_shipped_version_corrects_the_centres_texts_on_a_world_at_version_four() {
     assert_eq!(exits_after, exits_before, "an exit was gained or lost");
     assert_eq!(
         after.values().filter(|row| !is_exit(row)).count(),
-        before.values().filter(|row| !is_exit(row)).count(),
-        "the upgrade created or retired a room, an item or a character"
+        before.values().filter(|row| !is_exit(row)).count() + Z3_PODS.len(),
+        "the upgrade created something besides the four pods, or retired a room, an item \
+         or a character"
     );
     assert_eq!(tw.world().get(alice).and_then(|o| o.location), Some(lobby));
 
@@ -818,5 +862,270 @@ fn a_fresh_world_gets_the_corrected_texts_at_first_boot() {
             .applied(&cid(starter::OOC_AREA_PACK))
             .map(mush_content::Applied::version),
         Some(SHIPPED_VERSION)
+    );
+}
+
+// ---- Z.3: the pack from version 6 to version 7 -------------------------------
+
+/// The digest `neighborhood.ooc_area@6` shipped with (16b cut D.5), as
+/// `tests/starter.rs` pinned it until cut Z.3.
+const V6_DIGEST: &str = "64f6cf88104b80c4bf9af2b013ec2cba089cf2e664f827a72f29184a9cc54691";
+
+/// The three strings version 7 rewrote, as version 6 carried them:
+/// `(shipped, version 6)`.
+const V6_TEXTS: [(&str, &str); 3] = [
+    (
+        "a red and a blue room of six pods each",
+        "a red and a blue room of four pods each",
+    ),
+    (
+        "Six pods in a row under a red stripe",
+        "Four pods in a row under a red stripe",
+    ),
+    (
+        "Six pods under a blue stripe",
+        "Four pods under a blue stripe",
+    ),
+];
+
+/// **Version 6 of the OOC pack** (16b cut Z.3): the shipped bytes with the four
+/// pods version 7 added taken back out and the three strings it rewrote put
+/// back, the version set to 6 and the digest re-derived.
+///
+/// Built from the shipped bytes for the reason [`ooc_v3`] is, and then **held to
+/// version 6's own pinned digest**: the fixture is not "something like version
+/// 6", it is version 6, byte for byte in everything the digest covers — so if a
+/// later version touches anything else, this fixture stops being constructible
+/// and says so here rather than proving an upgrade no world ever took.
+fn ooc_v6() -> String {
+    let mut text = starter::OOC_AREA_JSON.to_string();
+    for (shipped, old) in V6_TEXTS {
+        assert!(
+            text.contains(shipped),
+            "the shipped pack no longer carries {shipped:?}; this fixture is stale"
+        );
+        text = text.replace(shipped, old);
+    }
+    let mut doc: Value = serde_json::from_str(&text).expect("the pack is json");
+    if let Some(entries) = doc["entries"].as_object_mut() {
+        for id in Z3_PODS {
+            assert!(entries.remove(id).is_some(), "{id} is in the shipped pack");
+        }
+    }
+    doc["manifest"]["version"] = Value::from(6);
+    doc["manifest"]["digest"] = Value::String("0".repeat(64));
+    let unsigned = serde_json::to_string(&doc).expect("json");
+    let digest = parse_pack(&unsigned)
+        .expect("version 6 parses")
+        .computed_digest()
+        .expect("digests")
+        .to_hex();
+    assert_eq!(
+        digest, V6_DIGEST,
+        "the rebuilt fixture is not version 6: version 7 changed more than the four pods and \
+         the three strings"
+    );
+    doc["manifest"]["digest"] = Value::String(digest);
+    serde_json::to_string(&doc).expect("json")
+}
+
+/// **A world standing at version 6 takes version 7 from the shelf** (16b cut
+/// Z.3; 16c N7): four pods created, the two team rooms' text updated in place,
+/// nothing retired, nothing remade — the eight pods keep their object ids, and a
+/// pilot sitting in one is still sitting in it.
+#[test]
+fn z3_a_world_at_version_six_takes_version_seven_from_the_shelf() {
+    let region = starter::SOURCES
+        .first()
+        .map(|(_, j)| (*j).to_string())
+        .expect("the region pack");
+    let mut tw = TestWorld::with_modules(modules(vec![region, ooc_v6()], shipped()));
+
+    let content = tw.world().module_state::<ContentState>().expect("content");
+    assert_eq!(
+        content
+            .latches
+            .applied(&cid(starter::OOC_AREA_PACK))
+            .map(mush_content::Applied::version),
+        Some(6),
+        "the world stands at version 6"
+    );
+    // Eight pods, and not the four version 7 adds.
+    let mut eight: BTreeMap<&str, ObjId> = BTreeMap::new();
+    for (id, name) in PODS {
+        if Z3_PODS.contains(&id) {
+            assert!(find(&tw, ObjKind::Thing, name).is_none(), "{name} at 6");
+        } else {
+            eight.insert(name, named(&tw, ObjKind::Thing, name));
+        }
+    }
+    assert_eq!(eight.len(), 8);
+    let red = named(&tw, ObjKind::Room, "Red Room");
+    let blue = named(&tw, ObjKind::Room, "Blue Room");
+    assert!(desc_of(&tw, red).contains("Four pods in a row"));
+
+    // A pilot sits in Red Pod 1 while staff take the upgrade.
+    let alice = tw.spawn_player("Alice");
+    participant(&mut tw, alice);
+    let pod_one = named(&tw, ObjKind::Thing, "Red Pod 1");
+    let said = say(
+        &mut tw,
+        &format!("@spatial/place/interior #{}=#{}", alice.0, pod_one.0),
+    );
+    assert!(said.contains("Placed Alice"), "{said}");
+    let before = census(&tw);
+
+    let (planned, applied) = replan(&mut tw, starter::OOC_AREA_PACK);
+    assert!(
+        planned.contains("4 create, 2 update, 0 retire"),
+        "version 7 creates the four pods and updates the two team rooms' text, and nothing \
+         else:\n{planned}"
+    );
+    for id in Z3_PODS {
+        assert!(planned.contains(id), "{id} is planned:\n{planned}");
+    }
+    assert!(
+        applied.contains("Applied neighborhood.ooc_area@7"),
+        "{applied}"
+    );
+    assert!(!applied.contains("STOPPED"), "{applied}");
+
+    // Twelve pods, six in each team room, every one an interior space.
+    for (_, name) in PODS {
+        let pod = named(&tw, ObjKind::Thing, name);
+        let room = if name.starts_with("Red") { red } else { blue };
+        assert_eq!(
+            tw.world().get(pod).and_then(|o| o.location),
+            Some(room),
+            "{name} stands in its team room"
+        );
+        assert!(state(&tw).spaces.contains_key(&pod), "{name} is a space");
+        assert!(
+            tw.world()
+                .has_behavior(pod, &BehaviorId::new("sim.interior").expect("id")),
+            "{name} carries sim.interior"
+        );
+    }
+    // The eight kept their object ids, and so did everything else standing.
+    for (name, id) in &eight {
+        assert_eq!(named(&tw, ObjKind::Thing, name), *id, "{name} was remade");
+    }
+    let after = census(&tw);
+    for (id, was) in &before {
+        assert_eq!(after.get(id), Some(was), "object #{id} moved or changed");
+    }
+    assert_eq!(
+        after.len(),
+        before.len() + 4,
+        "exactly the four pods are new"
+    );
+    // The two rooms say six, in place.
+    assert!(
+        desc_of(&tw, red).contains("Six pods in a row under a red stripe"),
+        "{}",
+        desc_of(&tw, red)
+    );
+    assert!(
+        desc_of(&tw, blue).contains("Six pods under a blue stripe"),
+        "{}",
+        desc_of(&tw, blue)
+    );
+    // And the pilot is still in Red Pod 1.
+    assert_eq!(
+        tw.world().get(alice).and_then(|o| o.location),
+        Some(pod_one)
+    );
+    assert!(
+        matches!(state(&tw).parent_of(alice), SpatialParent::Interior { space, .. } if space == pod_one)
+    );
+
+    let content = tw.world().module_state::<ContentState>().expect("content");
+    let latch = content
+        .latches
+        .applied(&cid(starter::OOC_AREA_PACK))
+        .expect("latched");
+    assert_eq!(latch.version(), SHIPPED_VERSION);
+    assert_eq!(latch.anomaly(), None);
+    for id in Z3_PODS {
+        assert!(latch.entries().contains_key(&cid(id)), "{id} is latched");
+    }
+}
+
+/// The digest `neighborhood.staff_lobby@4` shipped with (16b cut D.5).
+const STAFF_LOBBY_V4_DIGEST: &str =
+    "8d791c31a7c81c794cb78529b2735e0c1ab360aea92aa8d03c3d571388056796";
+
+/// **Version 4 of the staff lobby**: the shipped bytes at version 4 requiring
+/// `ooc_area@6`, which is all version 5 changed — held to version 4's pinned
+/// digest for the reason [`ooc_v6`] is.
+fn staff_lobby_v4() -> String {
+    let mut doc: Value = serde_json::from_str(starter::STAFF_LOBBY_JSON).expect("the pack is json");
+    doc["manifest"]["version"] = Value::from(4);
+    let requires = doc["manifest"]["requires"]
+        .as_array_mut()
+        .expect("the staff lobby requires packs");
+    for required in requires.iter_mut() {
+        if required["id"] == starter::OOC_AREA_PACK {
+            required["version"] = Value::from(6);
+        }
+    }
+    doc["manifest"]["digest"] = Value::String("0".repeat(64));
+    let unsigned = serde_json::to_string(&doc).expect("json");
+    let digest = parse_pack(&unsigned)
+        .expect("version 4 parses")
+        .computed_digest()
+        .expect("digests")
+        .to_hex();
+    assert_eq!(
+        digest, STAFF_LOBBY_V4_DIGEST,
+        "the rebuilt fixture is not the staff lobby's version 4"
+    );
+    doc["manifest"]["digest"] = Value::String(digest);
+    serde_json::to_string(&doc).expect("json")
+}
+
+/// **On a live world the staff lobby's version 5 is nothing to do** (16b cut
+/// Z.3): its one change is the `requires` a fresh boot needs beside
+/// `ooc_area@7`, so a world standing at 6 and 4 that takes the OOC pack by hand
+/// plans the staff lobby as a no-op, `apply` refuses it, and the latch stays at 4
+/// — the one info line a later boot logs about it is harmless, which is what
+/// `deploy/README.md` tells the operator.
+#[test]
+fn z3_the_staff_lobby_is_nothing_to_do_on_a_world_that_took_version_seven() {
+    let mut boot = shipped();
+    boot[1] = ooc_v6();
+    boot[2] = staff_lobby_v4();
+    let mut tw = TestWorld::with_modules(modules(boot, shipped()));
+    let version_of = |tw: &TestWorld, pack: &str| {
+        tw.world()
+            .module_state::<ContentState>()
+            .expect("content")
+            .latches
+            .applied(&cid(pack))
+            .map(mush_content::Applied::version)
+    };
+    assert_eq!(version_of(&tw, starter::OOC_AREA_PACK), Some(6));
+    assert_eq!(version_of(&tw, starter::STAFF_LOBBY_PACK), Some(4));
+
+    let (_, applied) = replan(&mut tw, starter::OOC_AREA_PACK);
+    assert!(
+        applied.contains("Applied neighborhood.ooc_area@7"),
+        "{applied}"
+    );
+
+    let planned = say(
+        &mut tw,
+        &format!("@atlas/pack plan {}", starter::STAFF_LOBBY_PACK),
+    );
+    assert!(
+        planned.contains("0 create, 0 update, 0 retire"),
+        "{planned}"
+    );
+    assert!(planned.contains(" Nothing to do."), "{planned}");
+    assert!(!planned.contains("fingerprint "), "{planned}");
+    assert_eq!(
+        version_of(&tw, starter::STAFF_LOBBY_PACK),
+        Some(4),
+        "the live latch stays at 4"
     );
 }
