@@ -451,7 +451,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
 - **Owner's choices.** Jammed by ECM (default: no, revisit for IC play). Alias (default: callsign). A
   cross-side channel (default: no).
 
-### N9. Replay
+### N9. Replay — landed I.1 and I.2
 
 - **Pitch.** Watch a finished match from its black box.
 - **Grounding.** `PositionSummary` names every unit every `ledger.summary_ms` (`arena:ledger.rs:103-106`)
@@ -465,7 +465,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
   back at spec and it is practice, and this is deliberately the opposite of N2's default, because a
   replay is sat down to and a report is handed over). `ledger.summary_ms` (default: leave 5,000).
 
-### N10. The referee's levers
+### N10. The referee's levers — landed I.3 and I.4
 
 - **Pitch.** Staff can start, drive, abort and reset a match and can see nothing while it runs.
 - **Grounding.** Five switches (`tacsim:match_/verbs.rs:48-58`); `MatchMirror` holds tempo, time and
@@ -847,6 +847,8 @@ and N8's defaults. Size: large.
 
 ### Cut I: replay and the referee
 
+Landed 2026-09-26 at `affcea72`; see 16b section 9, row I. Built as the four sub-cuts below, each committed and pushed on its own green gate (I.1 `baa0cf54`, I.2 `8faf886b`, I.3 `24a91080`, I.4 `affcea72`), then the full sweep green on its first round with no repair; N9 and N10 landed at their defaults, `Q37`'s replay half built (objective and public), one owner question added (`Q-I1`, the line printer's grid budget, default assumed). Two of this section's assumptions were corrected in the I row's design note: the replay is folded as the tape passes the world and held on the ring in RAM beside its ground (a panel query cannot read the store, so N9's "over N2's reader" is not the reader), and `@arena/place`'s refusal is any round in flight to OR from the unit, journalled and never announced. Deferred: a scrubber on the TUI (it steps), a live picture on the line client (the observer payload has no shape), announcing a place to its pilot or dropping other platforms' contacts on it, a replay past the byte budget (a twenty-four-unit staff hour keeps about fifty-six minutes), the pull-in of the task's deadline only when a floor actually changes, a pilot-refusal test of the two staff switches, the TUI's live-picture guard on `available: false`, and every residual in the I row's deviations cell.
+
 **When it lands.** Anyone can watch a finished match; staff can slow a running one, move a stuck unit
 and watch the field.
 
@@ -938,6 +940,7 @@ debts, plus the four feature choices that change the most.
 | Q-AB1 | What is the narrowest terminal a client surface is laid out for? (raised when `SIM HISTORY`'s rows ran 82 to 88 columns) | Answered by the owner on 2026-09-24: 120 columns is the minimum viable width, 160 to 180 typical, 240 and more reasonable; no client surface is built to 80 again. | AB |
 | Q-AB2 | Should the TUI also floor on HEIGHT (blank every screen under some row count), or keep B.3's rule that a short terminal drops panes in the screen's declared order? (raised by cut AB's reviews, not assumed) | No row floor; width alone. Under 30 rows the cockpit's damage pane goes first as B.3 built it, under 12 rows every screen drops its chrome and keeps the scrollback and the box; `COCKPIT_ROWS` 30 is a documented derivation `draw` never reads. Built at AB.1. | AB, open |
 | Q-AB3 | Does the notices pane ride the Right column (weapons, contacts, notices) or the Left as B.3 built it? | The Right, as AB.1 built it: seven inner rows at 120 by 34 and twelve at 160 by 48 instead of two on the Left under the 12-row damage pane, and the cockpit whole from 120 by 30 with the Left column status over damage. The owner may put it back on the Left (two rows at 120 by 34, four at 120 by 36) in a later cut. | AB, open |
+| Q-I1 | Does the line printer's one grid budget (78 by 20 printed columns; `VIEW` and `SIM REPLAY` at 39 by 20 cells, two printed columns a cell) fall under the 120-column ruling (`Q-AB1`)? (raised by cut I's plan, not assumed) | No: the ruling names client surfaces built new, and the printer is the line client's, which AB left at 78 by 20; `SIM REPLAY` shares `VIEW`'s window. If overruled, the printer's budget moves to a 59 by 20 window in a small follow-up and `VIEW` moves with it. | I, open |
 
 ---
 
