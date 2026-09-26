@@ -5055,3 +5055,191 @@ async fn i3_a_place_is_told_to_nobody_and_its_refusal_leaks_no_round() {
         .count();
     assert_eq!(floors, 2, "the set and the lift are on the tape");
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut I.4 — `@arena/watch`: a staff surface, and nobody else's (16c N10)
+// ---------------------------------------------------------------------------
+
+/// The staff picture's feed, spelled out for the reason [`MAP_FEED`] is.
+const OBSERVER_FEED: &str = "arena.observer";
+
+/// The next envelope on this socket, the app-level keepalive answered on the
+/// way (a watch may run longer than `ping_interval_ms` with the test sending
+/// nothing, and an unanswered ping closes the socket).
+async fn web_next(ws: &mut Ws) -> Envelope {
+    loop {
+        let env = recv_env(ws).await;
+        if let OutputEvent::Ping { nonce } = &env.event {
+            let pong = ClientCommand::Pong { nonce: *nonce };
+            ws.send(Message::Text(
+                serde_json::to_string(&pong).expect("a pong encodes").into(),
+            ))
+            .await
+            .expect("the socket takes a pong");
+            continue;
+        }
+        return env;
+    }
+}
+
+/// Every envelope up to and including the first whose text carries `needle`.
+async fn web_until(ws: &mut Ws, needle: &str) -> Vec<Envelope> {
+    let mut seen = Vec::new();
+    for _ in 0..4_000 {
+        let env = web_next(ws).await;
+        let done = text_of(&env.event).contains(needle);
+        seen.push(env);
+        if done {
+            return seen;
+        }
+    }
+    panic!("no envelope carried {needle:?}")
+}
+
+/// The `arena.observer` payload an event carries, bare or inside a reply.
+fn observer_payload(event: &OutputEvent) -> Option<Value> {
+    match event {
+        OutputEvent::Panel { feed, data, .. } if feed.as_str() == OBSERVER_FEED => {
+            Some(data.clone())
+        }
+        OutputEvent::Reply { event, .. } => observer_payload(event),
+        _ => None,
+    }
+}
+
+/// **16b cut I.4: the staff picture reaches the staffer who asked for it and
+/// nobody else, on any surface** (16c N10; doc 16 §1, §5), over the real
+/// composition, real SSH and real web sockets.
+///
+/// God watches match 1 from his web session: its `arena.observer` keyframes
+/// name both tanks and both object numbers — a staff surface, asserted so. For
+/// ten arena seconds of them, Ada's web socket (a pilot of the match), fenced
+/// by a sentinel line sent after them, receives NO `arena.observer` envelope;
+/// Cy's `arena.observer` query (a bystander) answers `watching: false`; God's
+/// own SSH line client, watching in parallel (the same character), prints no
+/// line naming a tank, a callsign or a row of the feed — the payload has no
+/// shape; and Ada's `@arena/watch 1` is `Permission denied.`. After `@arena/watch
+/// off` God's web socket is sent `watching: false` and — fenced by a second
+/// sentinel two arena seconds later — nothing more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn i4_a_watch_reaches_the_staffer_who_asked_and_no_one_else() {
+    let server = boot("observer-watch").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (red, blue, _muster, _domain) = seat_the_witnesses(&mut god).await;
+    take_off(&mut ada, &mut bo).await;
+    let id = i3_match_id(&mut god).await;
+    let mut god_web = web_session(&server, "boss", GM_PASSWORD, "God").await;
+    let mut ada_web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
+    let mut cy_web = web_session(&server, "cy", PILOT_PASSWORD, "Cy").await;
+
+    // A pilot is not staff.
+    ask(
+        &mut ada,
+        &format!("@arena/watch {id}"),
+        "Permission denied.",
+    )
+    .await;
+
+    // ---- the watch, from God's web session --------------------------------
+    let god_mark = god.mark();
+    send_web(&mut god_web, &format!("@arena/watch {id}")).await;
+    let mut replied = false;
+    let mut pictures: Vec<Value> = Vec::new();
+    for _ in 0..4_000 {
+        let env = web_next(&mut god_web).await;
+        if text_of(&env.event).contains(&format!("You are watching match {id}:")) {
+            replied = true;
+        }
+        if let Some(data) = observer_payload(&env.event)
+            && data.get("units").is_some()
+        {
+            pictures.push(data);
+        }
+        let first = pictures.first().and_then(|p| p["now_ms"].as_i64());
+        let last = pictures.last().and_then(|p| p["now_ms"].as_i64());
+        if replied && first.zip(last).is_some_and(|(f, l)| l >= f + 10_000) {
+            break;
+        }
+    }
+    assert!(replied, "the watch was not answered");
+    assert!(
+        pictures.len() >= 5,
+        "ten arena seconds brought {} pictures",
+        pictures.len()
+    );
+    let picture = pictures.last().cloned().expect("a picture");
+    assert_eq!(picture["match"], json!(id), "{picture}");
+    let rows = picture["units"].as_array().cloned().unwrap_or_default();
+    for (callsign, tank) in [("RA", red), ("BA", blue)] {
+        assert!(
+            rows.iter()
+                .any(|row| row[0] == json!(callsign) && row[5] == json!(tank)),
+            "the staff picture names {callsign} as #{tank}: {picture}"
+        );
+    }
+
+    // ---- Ada's web socket, fenced: no `arena.observer` envelope ----------
+    send_web(&mut ada_web, &format!("say {WEB_SENTINEL}")).await;
+    let ada_saw = web_until(&mut ada_web, WEB_SENTINEL).await;
+    assert!(ada_saw.len() > 1, "the fence read nothing");
+    for env in &ada_saw {
+        assert!(
+            observer_payload(&env.event).is_none(),
+            "a pilot was sent the staff picture: {:?}",
+            env.event
+        );
+    }
+
+    // ---- Cy, a bystander: nothing to watch -------------------------------
+    assert_eq!(
+        panel_query(&mut cy_web, 901, OBSERVER_FEED).await,
+        json!({
+            "schema": { "id": "arena.observer", "version": 1, "retain": "latest" },
+            "watching": false,
+        })
+    );
+
+    // ---- God's SSH line client, watching in parallel: none of the feed ----
+    ask_whole(&mut god, SENTINEL).await;
+    let god_seen = strip_ansi(&god.seen[god_mark..]);
+    assert!(
+        god_seen.contains(&format!("You are watching match {id}:")),
+        "the line client reads the reply:\n{god_seen}"
+    );
+    names_nothing(&god_seen, red, blue, "God's line client while watching");
+    for leak in ["\"units\"", "now_ms", "in_flight", "(live)", "Watching"] {
+        assert!(
+            !god_seen.contains(leak),
+            "God's line client printed {leak:?} of the feed:\n{god_seen}"
+        );
+    }
+    for callsign in ["RA", "BA"] {
+        assert!(
+            !words_of(&god_seen).contains(&callsign),
+            "God's line client named {callsign}:\n{god_seen}"
+        );
+    }
+
+    // ---- off: `watching: false`, and nothing more -------------------------
+    send_web(&mut god_web, "@arena/watch off").await;
+    let off = web_until(&mut god_web, &format!("You stop watching match {id}.")).await;
+    assert!(
+        off.iter()
+            .filter_map(|env| observer_payload(&env.event))
+            .any(|data| data.get("watching") == Some(&json!(false))),
+        "the cleared picture did not arrive"
+    );
+    support::wait_arena_seconds(&mut god, 2).await;
+    send_web(&mut god_web, &format!("say {WEB_SENTINEL}")).await;
+    let after = web_until(&mut god_web, WEB_SENTINEL).await;
+    for env in &after {
+        assert!(
+            observer_payload(&env.event).is_none(),
+            "the watcher was sent the feed after `off`: {:?}",
+            env.event
+        );
+    }
+    say(&mut god, &format!("@arena/abort {id}"), "is stopping").await;
+}

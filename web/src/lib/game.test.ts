@@ -20,7 +20,7 @@ import { cockpitView, cockpitViewLines, composeWindow, NOTICE_SENTENCE_TAG } fro
 import { GameApp, type ComposerHandle } from "./game.svelte";
 import type { Envelope, OutputEvent, Query, ViewEnvelope } from "./proto";
 import { MAP_ASK_MS } from "./stores/cockpit.svelte";
-import { REPLAY_ASK_MS } from "./stores/replay.svelte";
+import { LIVE_STALE_MS, REPLAY_ASK_MS } from "./stores/replay.svelte";
 import { UNIT_RESYNC_MS } from "./stores/unit.svelte";
 import { CLOSE_TOKEN_COOLOFF, type WebSocketLike } from "./ws";
 
@@ -2182,5 +2182,141 @@ describe("the replay on screen 0 (16b cut I.2)", () => {
     const game = readFileSync(resolve(process.cwd(), "src/components/Game.svelte"), "utf8");
     expect(game).toContain('{:else if active.id === "cockpit" && app.pictureShown}');
     expect(game.indexOf("<ReplayScreen {app} />")).toBeLessThan(game.indexOf("<CockpitScreen {app} />"));
+  });
+});
+
+// The live picture on the web (16b cut I.4; 16c N10): a staffer's `@arena/watch`
+// pushes the field on `arena.observer`; the first picture opens it LIVE on
+// screen 0, closing an open replay; nothing steps it and only the server closes
+// it; the hello pass re-asks it.
+describe("the live picture on screen 0 (16b cut I.4)", () => {
+  const COCKPIT_FEED = "arena.cockpit";
+  const ARENA_MAP_FEED = "arena.map";
+  const REPLAY_FEED = "arena.replay";
+  const OBSERVER_FEED = "arena.observer";
+  const PANELS = [COCKPIT_FEED, ARENA_MAP_FEED, REPLAY_FEED, OBSERVER_FEED];
+
+  const fixture = (dir: string, name: string): Record<string, unknown> =>
+    JSON.parse(readFileSync(resolve(process.cwd(), `src/lib/fixtures/${dir}`, name), "utf8")) as Record<
+      string,
+      unknown
+    >;
+  const live = (match = 7): Record<string, unknown> => ({
+    schema: { id: OBSERVER_FEED, version: 1, retain: "latest" },
+    match,
+    now_ms: 90_000,
+    clock: "1:30",
+    tempo: "engaged",
+    floor_ms: null,
+    cell_cm: 1_000,
+    width: 96,
+    height: 64,
+    in_flight: 2,
+    units: [
+      ["RA", "R", 6, 4, 90, 301, "pm"],
+      ["BA", "B", 20, 14, 270, 302, "ph"],
+    ],
+  });
+  const cleared = (): Record<string, unknown> => ({
+    schema: { id: OBSERVER_FEED, version: 1, retain: "latest" },
+    watching: false,
+  });
+  const hasTab = (app: GameApp): boolean => app.screens.available(app.gate).some((d) => d.id === "cockpit");
+  const asked = (ws: FakeSocket, from: number): (string | null)[] => ws.reqs().slice(from).map(feedOf);
+
+  it("a picture opens screen 0 live, asks the ground and never a document", () => {
+    const { app, ws } = boot(PANELS);
+    const before = ws.reqs().length;
+    ws.deliver(panel(5, OBSERVER_FEED, "keyframe", live()));
+    expect(app.replay.open).toBe(true);
+    expect(app.replay.live).toBe(true);
+    expect(app.pictureShown).toBe(true);
+    expect(app.gate.pictureLive).toBe(true);
+    expect(hasTab(app)).toBe(true);
+    expect(app.screens.activeDef(app.gate).id).toBe("cockpit");
+    expect(asked(ws, before)).toEqual([ARENA_MAP_FEED]);
+    // A later picture asks nothing.
+    ws.deliver(panel(6, OBSERVER_FEED, "keyframe", live()));
+    expect(asked(ws, before)).toEqual([ARENA_MAP_FEED]);
+  });
+
+  it("its table is `u` and `p` alone: `x`, `,` and `.` do nothing; `p` asks the picture", () => {
+    const { app, ws } = boot(PANELS);
+    ws.deliver(panel(5, OBSERVER_FEED, "keyframe", live()));
+    expect(app.screens.activeKeys(app.gate).map((b) => b.key)).toEqual(["u", "p"]);
+    for (const key of ["x", ",", "."]) {
+      expect(app.runBinding(key)).toBe(false);
+    }
+    expect(app.replay.open).toBe(true);
+    expect(app.runBinding("u")).toBe(true);
+    expect(app.replay.focus).toBe(1);
+    const before = ws.reqs().length;
+    expect(app.runBinding("p")).toBe(true);
+    expect(asked(ws, before)).toEqual([OBSERVER_FEED]);
+  });
+
+  it("`watching: false` closes it and dismisses the match; the scene is in front", () => {
+    const { app, ws } = boot(PANELS);
+    ws.deliver(panel(5, OBSERVER_FEED, "keyframe", live()));
+    ws.deliver(panel(6, OBSERVER_FEED, "keyframe", cleared()));
+    expect(app.replay.open).toBe(false);
+    expect(app.replay.dismissed.has(7)).toBe(true);
+    expect(hasTab(app)).toBe(false);
+    expect(app.screens.activeDef(app.gate).id).toBe("scene");
+  });
+
+  it("a live picture closes an open replay", () => {
+    const { app, ws } = boot(PANELS);
+    ws.deliver(panel(5, REPLAY_FEED, "keyframe", fixture("replay", "replay_window.json")));
+    expect(app.replay.live).toBe(false);
+    ws.deliver(panel(6, OBSERVER_FEED, "keyframe", live(12)));
+    expect(app.replay).toMatchObject({ open: true, live: true, match: 12 });
+    expect(app.replay.dismissed.has(7)).toBe(true);
+  });
+
+  it("a picture gone quiet is re-asked on the heal's tick, with no hello; its `watching: false` stops the tick", () => {
+    // A web socket rides a server-half restart with NO hello, so nothing but
+    // the timer notices the pictures stopped (I4-R1). The heal runs while the
+    // picture is open, ground held or not, and asks through the store's latch.
+    const at = (ms: number) => vi.setSystemTime(new Date(ms));
+    at(100_000);
+    const { app, ws } = boot(PANELS);
+    const idle = vi.getTimerCount();
+    ws.deliver(panel(5, OBSERVER_FEED, "keyframe", live()));
+    ws.deliver(panel(6, ARENA_MAP_FEED, "keyframe", fixture("cockpit", "arena_map.json")));
+    expect(app.replay.holdsTheGround).toBe(true);
+    expect(vi.getTimerCount()).toBe(idle + 1);
+    const observerAsks = (): number => ws.reqs().filter((r) => feedOf(r) === OBSERVER_FEED).length;
+    // A healthy `Quiet` watch: a picture every five seconds is never asked for.
+    for (let n = 0; n < 4; n += 1) {
+      vi.advanceTimersByTime(5_000);
+      ws.deliver(panel(7 + n, OBSERVER_FEED, "keyframe", live()));
+    }
+    expect(observerAsks()).toBe(0);
+    // Then nothing: the first tick past `LIVE_STALE_MS` asks, once.
+    vi.advanceTimersByTime(LIVE_STALE_MS - 1);
+    expect(observerAsks()).toBe(0);
+    vi.advanceTimersByTime(MAP_ASK_MS);
+    expect(observerAsks()).toBe(1);
+    vi.advanceTimersByTime(LIVE_STALE_MS - MAP_ASK_MS);
+    expect(observerAsks()).toBe(1);
+    const ask = ws.reqs().filter((r) => feedOf(r) === OBSERVER_FEED).at(-1)!;
+    ws.deliver(reply(12, ask.id, panelEvent(OBSERVER_FEED, "keyframe", cleared())));
+    expect(app.replay.open).toBe(false);
+    expect(vi.getTimerCount()).toBe(idle);
+  });
+
+  it("the hello pass re-asks an open live picture; its `watching: false` closes it", () => {
+    const { app, ws } = boot(PANELS);
+    ws.deliver(panel(5, OBSERVER_FEED, "keyframe", live()));
+    const before = ws.reqs().length;
+    ws.deliver(hello(PANELS));
+    const feeds = asked(ws, before);
+    expect(feeds.filter((f) => f === OBSERVER_FEED)).toHaveLength(1);
+    expect(feeds).not.toContain(REPLAY_FEED);
+    expect(app.replay.open).toBe(true);
+    const ask = ws.reqs().filter((r) => feedOf(r) === OBSERVER_FEED).at(-1)!;
+    ws.deliver(reply(9, ask.id, panelEvent(OBSERVER_FEED, "keyframe", cleared())));
+    expect(app.replay.open).toBe(false);
   });
 });

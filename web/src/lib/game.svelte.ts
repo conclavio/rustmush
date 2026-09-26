@@ -35,7 +35,7 @@ import {
 } from "./render";
 import { isOwnRoll } from "./roll";
 import { ARENA_MAP_FEED, COCKPIT_FEED, decodeArenaMap, isNoticeSentence } from "./cockpit";
-import { REPLAY_FEED, decodeReplayGrid } from "./replay";
+import { OBSERVER_FEED, REPLAY_FEED, decodeReplayGrid } from "./replay";
 import { exitKeys, type NavIntent } from "./keys";
 import { paletteEntries, type PaletteEntry } from "./palette";
 import { storageDel, storageGet, storageGetJson, storageSet, storageSetJson } from "./storage";
@@ -101,6 +101,7 @@ type PendingReq =
   | { kind: "cockpit" }
   | { kind: "arena.map" }
   | { kind: "arena.replay" }
+  | { kind: "arena.observer" }
   | { kind: "scenes" };
 
 const HELP_LINES = [
@@ -691,7 +692,9 @@ export class GameApp {
     // **16b cut I.2**: an open replay is re-hydrated here — the world behind
     // this hello may be a new one, so the held document and ground are dropped
     // and asked again, the document ONCE (its `available: false` answer, if
-    // the cursor died with the old world, then closes the picture).
+    // the cursor died with the old world, then closes the picture). **16b cut
+    // I.4**: a live picture keeps its last picture and re-asks `arena.observer`
+    // — its `watching: false`, after a server-half restart, closes it.
     if (this.replay.open) {
       this.replay.clearForRehydrate();
       // The pass's own ground ask above answers an unseated viewer with the
@@ -832,6 +835,12 @@ export class GameApp {
           this.replay.docAsked = false;
           return;
         }
+        if (pending?.kind === "arena.observer") {
+          // A refusal or a throttle line answering a live picture's re-ask
+          // (16b cut I.4): nothing is printed for asking; the next pushed
+          // picture, or `p`, is the recovery.
+          return;
+        }
         if (pending?.kind === "cockpit" || pending?.kind === "arena.map") {
           // A refusal to either arena feed (16b cut Q.5): the cockpit screen
           // renders `Not in a cockpit.` / `Waiting for the arena map...` on
@@ -951,6 +960,13 @@ export class GameApp {
       if (d.kind === "keyframe") {
         this.#followTheReplay(d.data, seq);
       }
+    } else if (d.feed === OBSERVER_FEED) {
+      // A running match's staff picture (16b cut I.4; 16c N10): the first
+      // pushed picture opens it live, each later one replaces it, `watching:
+      // false` closes it.
+      if (d.kind === "keyframe") {
+        this.#followTheObserver(d.data, seq);
+      }
     } else if (d.feed === MAP_FEED) {
       // The tactical map (S4): a keyframe replaces the whole grid; a delta
       // moves the units on it and says what happened.
@@ -1038,13 +1054,37 @@ export class GameApp {
     this.#armMapHeal();
   }
 
+  /**
+   * **What one `arena.observer` keyframe asks of this client** (16b cut I.4;
+   * 16c N10). A picture opens a LIVE picture of its match on screen 0 once per
+   * match (`ReplayStore.applyObserver`, which closes an open replay and keeps a
+   * dismissed match shut against a picture replayed out of the resume ring, by
+   * `seq`), unless this viewer is SEATED — a watcher is never a pilot, so that
+   * is defensive. `watching: false` closes a live picture. Then the ground.
+   */
+  #followTheObserver(data: unknown, seq: number): void {
+    if (this.cockpit.seated) {
+      return;
+    }
+    if (this.replay.applyObserver(data, seq, Date.now())) {
+      this.screens.switchTo("cockpit", this.gate);
+    }
+    this.#askReplay();
+    this.#armMapHeal();
+  }
+
   /** **The asks an open replay is owed** (16b cut I.2): the document ONCE, and
    * the ground under its `MAP_ASK_MS` latch. Both are empty `panel_subscribe`s
    * — no params: the query is keyed on the asker's replay cursor, and a
-   * subscribe has nowhere to put a match. */
+   * subscribe has nowhere to put a match. **16b cut I.4**: a live picture is
+   * asked no document; the hello pass and `p` owe it one `arena.observer`, and
+   * so does a picture gone `LIVE_STALE_MS` quiet (the heal below). */
   #askReplay(): void {
     if (this.replay.needsDocument(Date.now())) {
       this.#req({ kind: "arena.replay" }, { t: "panel_subscribe", d: { feed: REPLAY_FEED } });
+    }
+    if (this.replay.needsObserver(Date.now())) {
+      this.#req({ kind: "arena.observer" }, { t: "panel_subscribe", d: { feed: OBSERVER_FEED } });
     }
     if (this.replay.needsMap(Date.now())) {
       this.#req({ kind: "arena.map" }, { t: "panel_subscribe", d: { feed: ARENA_MAP_FEED } });
@@ -1075,12 +1115,21 @@ export class GameApp {
     // through its own store's latch — and ONLY its ground: the document is
     // never asked on a timer.
     const replayDark = this.replay.open && !this.cockpit.seated && !this.replay.holdsTheGround;
-    if ((this.cockpit.seated && !this.cockpit.holdsTheGround) || replayDark) {
+    // 16b cut I.4: and a live picture runs it for as long as it is open, ground
+    // held or not: a web socket rides a server-half restart with no hello, so
+    // the tick is what notices a picture gone `LIVE_STALE_MS` quiet and asks
+    // `arena.observer` (`needsObserver` latches it) — whose `watching: false`
+    // closes the picture, and the timer with it.
+    const liveOpen = this.replay.open && this.replay.live && !this.cockpit.seated;
+    if ((this.cockpit.seated && !this.cockpit.holdsTheGround) || replayDark || liveOpen) {
       if (this.#mapHealTimer === null) {
         this.#mapHealTimer = setInterval(() => {
           const now = Date.now();
           if (this.cockpit.needsMap(now) || (!this.cockpit.seated && this.replay.needsMap(now))) {
             this.#req({ kind: "arena.map" }, { t: "panel_subscribe", d: { feed: ARENA_MAP_FEED } });
+          }
+          if (!this.cockpit.seated && this.replay.needsObserver(now)) {
+            this.#req({ kind: "arena.observer" }, { t: "panel_subscribe", d: { feed: OBSERVER_FEED } });
           }
         }, MAP_ASK_MS);
       }
@@ -1228,6 +1277,9 @@ export class GameApp {
       features: this.session.features,
       cockpitSeated: this.cockpit.seatedOnce,
       pictureOpen: this.pictureShown,
+      // 16b cut I.4: a live picture's table is the replay's without `,` `.`
+      // and `x`.
+      pictureLive: this.pictureShown && this.replay.live,
     };
   }
 
@@ -1349,6 +1401,11 @@ export class GameApp {
         this.replay.nextFocus();
         return;
       case "pictureClose":
+        // 16b cut I.4: only the server closes a live picture (the live table
+        // does not bind `x`; this guards a caller that dispatches it anyway).
+        if (this.replay.live) {
+          return;
+        }
         this.replay.close();
         this.#armMapHeal();
         return;
@@ -1381,7 +1438,8 @@ export class GameApp {
         if (this.screens.active === "cockpit" && this.pictureShown) {
           // `p` on the replay (16b cut I.2): the document again — never while
           // an ask is still outstanding (`REPLAY_ASK_MS`) — and the ground
-          // while it is dark, under its latch.
+          // while it is dark, under its latch. 16b cut I.4: on a live picture,
+          // `arena.observer` again.
           this.replay.pull(Date.now());
           this.#askReplay();
           return;

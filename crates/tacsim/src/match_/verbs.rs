@@ -18,6 +18,7 @@
 //! | `@arena/report [<match>] [<chunk>]` | **16b cut V.3**: one page of a match's tape, for staff ([`crate::match_::report::request_page`]) |
 //! | `@arena/tempo <match>=<period_ms>` | **16b cut I.3**: floor a running match's wake interval (`=off` lifts it, bare reads it) |
 //! | `@arena/place <unit>=<x>,<y>` | **16b cut I.3**: put a unit of a running match on a cell, as its own seat |
+//! | `@arena/watch <match>` | **16b cut I.4**: watch a running match's whole field on `arena.observer` (`off` stops it, bare reads it) |
 //! | `@arena/fault <match>` | **test builds only** — arm a panic inside the next `step` |
 //!
 //! `@arena/start` is deliberately the whole of `Selection → Boarding → Running`
@@ -49,12 +50,13 @@ use super::{MatchBook, Side, allocate_id};
 
 /// The switches cut T.3 adds to `@arena`, in help order (16b cut K.1 adds
 /// `reset`; 16b cut D.3 adds `release`; 16b cut U.4 adds `pose`; 16b cut V.3
-/// adds `report`; 16b cut I.3 adds `tempo` and `place`).
+/// adds `report`; 16b cut I.3 adds `tempo` and `place`; 16b cut I.4 adds
+/// `watch`).
 #[must_use]
 pub fn register_switches() -> Vec<SmolStr> {
     let mut switches: Vec<SmolStr> = [
         "status", "start", "intent", "abort", "reset", "release", "pose", "report", "tempo",
-        "place",
+        "place", "watch",
     ]
     .iter()
     .copied()
@@ -495,6 +497,61 @@ fn floor_line(match_id: MatchId, floor_ms: u32, arena_cfg: &crate::config::Arena
          time a wake every {engaged_wake} ms, alert {alert_moves} every {alert_wake}, quiet \
          {quiet_moves} every {quiet_wake}; orders wait for the next wake. @arena/tempo \
          {match_id}=off lifts it."
+    )
+}
+
+/// `@arena/watch`'s usage, after the `Usage: ` prefix.
+const WATCH_USAGE: &str = "@arena/watch <match> | off";
+
+/// **`@arena/watch`** — **16b cut I.4** (16c N10): the referee's third lever,
+/// the field of a running match on the staffer's panel. Three forms:
+///
+/// * `@arena/watch <match>` — [`crate::arena_bridge::watch`]'s checks and
+///   binding; the staffer's panel is sent the match's whole field on
+///   `arena.observer` at most once an arena second, and screen 0 of the TUI
+///   and the web draws it. The line client prints none of it (it has no
+///   shape), and the reply says so.
+/// * `@arena/watch off` — [`crate::arena_bridge::unwatch`].
+/// * `@arena/watch` — what the staffer watches.
+///
+/// # Errors
+///
+/// The usage line, and [`crate::arena_bridge::watch`]'s refusals.
+pub fn watch(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    if ctx.args.rhs().is_some() {
+        return Err(ArenaVerbError::Usage(WATCH_USAGE).into());
+    }
+    let word = ctx.args.lhs().trim().to_owned();
+    let line = if word.is_empty() {
+        match crate::arena_bridge::watching(ctx.w, actor) {
+            Some(match_id) => watching_line(match_id),
+            None => "You are watching nothing.".to_owned(),
+        }
+    } else if word.eq_ignore_ascii_case("off") {
+        match crate::arena_bridge::unwatch(ctx, actor) {
+            Some(match_id) => format!("You stop watching match {match_id}."),
+            None => "You are watching nothing.".to_owned(),
+        }
+    } else {
+        let match_id = MatchId(
+            word.parse::<u64>()
+                .map_err(|_| ArenaVerbError::Usage(WATCH_USAGE))?,
+        );
+        crate::arena_bridge::watch(ctx, actor, match_id)?;
+        watching_line(match_id)
+    };
+    ctx.out
+        .sys_to_actor(actor, crate::arena_bridge::NOTICE_CATEGORY, line);
+    Ok(())
+}
+
+/// What a watching staffer is told, on the watch and on the bare read.
+fn watching_line(match_id: MatchId) -> String {
+    format!(
+        "You are watching match {match_id}: its picture reaches your panel at most once an \
+         arena second on arena.observer, and screen 0 draws it; the line client prints none \
+         of it. @arena/watch off stops it."
     )
 }
 
@@ -1161,6 +1218,9 @@ pub fn arena_command(
     } else if ctx.switches.has("place") {
         // 16b cut I.3 (16c N10): a unit moved by staff, as its own seat.
         place(ctx)
+    } else if ctx.switches.has("watch") {
+        // 16b cut I.4 (16c N10): the field of a running match, on the panel.
+        watch(ctx)
     } else if cfg!(any(test, feature = "fault-injection")) && ctx.switches.has("fault") {
         #[cfg(any(test, feature = "fault-injection"))]
         {
@@ -1229,6 +1289,17 @@ mod tests {
         );
     }
 
+    /// **16b cut I.4**: the watching reply, verbatim.
+    #[test]
+    fn i4_the_watching_reply_says_where_the_picture_goes() {
+        assert_eq!(
+            watching_line(MatchId(12)),
+            "You are watching match 12: its picture reaches your panel at most once an arena \
+             second on arena.observer, and screen 0 draws it; the line client prints none of \
+             it. @arena/watch off stops it."
+        );
+    }
+
     #[test]
     fn unit_lists_are_dbrefs_and_nothing_else() {
         assert_eq!(
@@ -1247,14 +1318,15 @@ mod tests {
         assert!(switches.iter().any(|switch| switch == "abort"));
         // 16b cut V.3: the staff page of the tape.
         assert!(switches.iter().any(|switch| switch == "report"));
-        // 16b cut I.3: the two referee's levers, after it, in help order.
+        // 16b cut I.3: the two referee's levers, after it, in help order;
+        // 16b cut I.4: and the third, `watch`, after them.
         let order: Vec<&str> = switches.iter().map(SmolStr::as_str).collect();
         assert_eq!(
-            order.get(..10),
+            order.get(..11),
             Some(
                 &[
                     "status", "start", "intent", "abort", "reset", "release", "pose", "report",
-                    "tempo", "place"
+                    "tempo", "place", "watch"
                 ][..]
             )
         );

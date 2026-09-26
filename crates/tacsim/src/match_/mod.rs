@@ -57,6 +57,10 @@ pub mod lobby;
 /// 16b cut Z.4 (16c `N8`): **the side nets** — `RedNet` and `BlueNet`, comsys
 /// channels made at boot, joined at the check-out and left with the seat.
 pub(crate) mod net;
+// 16b cut I.4: the staff picture's payload, `arena.observer` — deliberately
+// its own module and never the cockpit's, which builds only what a pilot is
+// sent. Documented by its own module doc.
+pub mod observer;
 mod record;
 // 16b cut I.1: the replay — the pure fold from the tape to one objective
 // picture of both sides, the replay documents, `SIM REPLAY` and the two queries'
@@ -512,6 +516,12 @@ impl MatchBook {
     #[must_use]
     pub fn replay_cursor(&self, actor: ObjId) -> Option<replay::ReplayCursor> {
         self.replay_cursors.get(&actor).copied()
+    }
+
+    /// **Drop one actor's replay cursor** (16b cut I.4): a watch closes the
+    /// actor's replay, one picture at a time. Answers whether one went.
+    pub fn drop_replay_cursor(&mut self, actor: ObjId) -> bool {
+        self.replay_cursors.remove(&actor).is_some()
     }
 
     /// **Hold one match's replay on the ring** (16b cut I.1), replacing any
@@ -1541,6 +1551,21 @@ pub fn finish(
         .module_state::<ArenaRegistry>()
         .map(|registry| registry.pilots_of(match_id))
         .unwrap_or_default();
+    // **16b cut I.4**: and every staffer watching it, read and unbound BEFORE
+    // `untrack` — which has no `Ctx` and cannot send — and each sent the
+    // cleared picture after it, exactly as the orphans are sent a cleared
+    // cockpit. No `Watch { on: false }` is offered: the task is ending.
+    let watchers: Vec<ObjId> = ctx
+        .w
+        .module_state_mut::<ArenaRegistry>()
+        .map(|registry| {
+            let watchers = registry.watchers_of(match_id);
+            for watcher in &watchers {
+                registry.unbind_watcher(*watcher);
+            }
+            watchers
+        })
+        .unwrap_or_default();
     // **16b cut I.1**: the ground the replay was fought on, taken out of the
     // registry BEFORE `untrack` drops its `Arc` (16b cut K.2) and held on the
     // book under the arena's digest — so every lobby match on one proving
@@ -1564,6 +1589,9 @@ pub fn finish(
         .map_or(0, |mirror| mirror.chunks_appended);
     for pilot in orphans {
         crate::arena_bridge::clear_cockpit(ctx, pilot);
+    }
+    for watcher in watchers {
+        crate::arena_bridge::clear_observer(ctx, watcher);
     }
     if let Some(tasks) = ctx
         .w

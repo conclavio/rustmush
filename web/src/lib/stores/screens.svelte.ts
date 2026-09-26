@@ -56,6 +56,10 @@ export interface GateInput {
    * no seat is held (`GameApp.pictureShown`). The cockpit's tab exists for it
    * too, and its second key table is the active one. */
   pictureOpen: boolean;
+  /** **Whether that picture is a LIVE one** (16b cut I.4): the picture's own
+   * table then leaves `,` `.` and `x` out — nothing steps a live picture and
+   * only the server closes it. Absent reads `false`. */
+  pictureLive?: boolean;
 }
 
 export interface ScreenDef {
@@ -470,7 +474,13 @@ export class ScreensStore {
    * the legend and the help print and the key model dispatches. */
   activeKeys(gate: GateInput): KeyBinding[] {
     const def = this.activeDef(gate);
-    return def.altKeys !== undefined && gate.pictureOpen ? def.altKeys : def.keys;
+    if (def.altKeys !== undefined && gate.pictureOpen) {
+      // 16b cut I.4: a live picture's table is `u` and `p` alone.
+      return gate.pictureLive === true
+        ? def.altKeys.filter((b) => ![",", ".", "x"].includes(b.key))
+        : def.altKeys;
+    }
+    return def.keys;
   }
 
   /** The active screen's binding keys, for the key model. */

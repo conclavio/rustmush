@@ -229,6 +229,10 @@ reads the scene back, and is not taken as the line you were composing.
              arena's own, every 5 s, and the TUI draws nothing between them.
              Sitting in a tank closes the replay; a replay never opens over
              a cockpit you are flying.
+             Staff who `@arena/watch` a running match see it live on the
+             same screen (`Watching 12 - 1:30 (live)`), every tank with its
+             object number, at most once an arena second; only `u` and `p`
+             work there, and it closes when the watch ends.
 
 The two tactical screens are always in the tab strip, and they are honest
 when there is nothing to show: with no station and no unit of your own they

@@ -64,6 +64,12 @@ pub const ARENA_MAP_FEED: &str = "arena.map";
 /// == "replay"`), or `available: false` with a sentence. See
 /// [`super::replay`].
 pub const REPLAY_FEED: &str = "arena.replay";
+/// **A running match's staff picture** (16b cut I.4; `tacsim::arena_bridge::
+/// OBSERVER_FEED`): PUSHED to a watcher at most once an arena second while
+/// `@arena/watch` holds, and answered by the parameter-less query to a
+/// watcher who re-asks; `watching: false` ends it. The first picture opens a
+/// LIVE picture on screen 0 (see [`super::replay`]).
+pub const OBSERVER_FEED: &str = "arena.observer";
 /// How long a resync request stays latched before another delta may ask
 /// again. The SSH bridge drops a throttled query silently (no reply, not
 /// even an error), so a latch cleared only by the replacement keyframe is

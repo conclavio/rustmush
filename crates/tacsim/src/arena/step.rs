@@ -477,6 +477,16 @@ pub struct StepOutput {
     /// [`crate::arena::intents::IntentKind::Order`]; the arena waits for neither
     /// and is told nothing if the world drops it.
     pub deliberation: Vec<crate::arena::command::SquadSignal>,
+    /// **The staff picture of the field** (16b cut I.4; 16c N10), built in
+    /// phase 5 while [`crate::arena::state::Arena::watched`] is set, **at most
+    /// once per pulse and at most once an arena second** — and on the pulse the
+    /// match ended, so a watcher sees the end. `None` otherwise, on the ended
+    /// early return and on a stopped pulse.
+    ///
+    /// A type of its own ([`crate::arena::observer::Observer`]) and never part
+    /// of [`StepOutput::frames`]: it names every unit, and a pilot's frame names
+    /// only what their platform holds (doc 16 §1).
+    pub observer: Option<crate::arena::observer::Observer>,
 }
 
 // ---------------------------------------------------------------------------
@@ -591,6 +601,7 @@ impl Arena {
                 perception: PerceptionCounters::default(),
                 reflex: ReflexCounters::default(),
                 deliberation: Vec::new(),
+                observer: None,
             };
         }
         self.substep_hashes.clear();
@@ -1040,6 +1051,22 @@ impl Arena {
         }
         let tempo = self.clock.tempo();
         let frames = self.frames(tempo);
+        // **16b cut I.4** (16c N10): the staff picture, after the pilots' frames
+        // and from the same committed state, while anybody watches — at most
+        // once per pulse and at most once an arena second, and on the pulse the
+        // match ended whatever second it is, so a watcher sees the end. The gate
+        // is a view (`Arena::watched`, `Arena::last_observer_s`) that no hash
+        // folds and nothing that steers reads, so a watched match is the same
+        // match at every tempo; the one cost is this `bool` read on a pulse
+        // nobody watches.
+        let observer = if self.watched
+            && (self.last_observer_s != Some(self.now_ms.div_euclid(1_000)) || ended.is_some())
+        {
+            self.last_observer_s = Some(self.now_ms.div_euclid(1_000));
+            Some(self.observer())
+        } else {
+            None
+        };
         StepOutput {
             ledger_chunks: self.ledger.take_chunks(),
             frames,
@@ -1059,6 +1086,7 @@ impl Arena {
             } else {
                 self.take_deliberation_signals()
             },
+            observer,
         }
     }
 
@@ -1668,6 +1696,10 @@ impl Arena {
             perception: PerceptionCounters::default(),
             reflex: ReflexCounters::default(),
             deliberation: Vec::new(),
+            // 16b cut I.4: a stopped pulse sends no pilot a frame and no
+            // watcher a picture either; the world's `finish` clears every
+            // watcher when the check-in lands.
+            observer: None,
         }
     }
 

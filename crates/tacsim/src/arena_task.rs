@@ -18,17 +18,20 @@
 //! world -> task   ArenaMsg::Stop        abort, timeout or void
 //! world -> task   ArenaMsg::LedgerAck   every chunk up to this sequence is durable
 //! world -> task   ArenaMsg::TempoFloor  staff floor the wake interval, or lift it (I.3)
+//! world -> task   ArenaMsg::Watch       somebody is watching, or nobody is any more (I.4)
 //! task  -> world  ArenaOut::Ledger      one closed chunk of the match's black box
-//! task  -> world  ArenaOut::Frames      the pilots whose view changed, and the arena's clock
+//! task  -> world  ArenaOut::Frames      the pilots whose view changed, the arena's clock,
+//!                                       and the staff picture while watched (I.4)
 //! task  -> world  ArenaOut::Lagged      the clock or the egress is behind
 //! task  -> world  ArenaOut::Deliberate  the squads with something new to decide (N.2)
 //! task  -> world  ArenaOut::Ended       the match is over, with its ledger digest
 //! ```
 //!
 //! `Deliberate` is doc 16 §3.1's eighth conceptual seam message. The table
-//! includes `LedgerAck` and `Lagged` reliability signals and **16b cut I.3**'s
-//! `TempoFloor`, staff bookkeeping applied on arrival, while custody out is a
-//! spawn argument: it lists all ten runtime enum variants.
+//! includes `LedgerAck` and `Lagged` reliability signals, **16b cut I.3**'s
+//! `TempoFloor` and **16b cut I.4**'s `Watch`, staff bookkeeping applied on
+//! arrival, while custody out is a spawn argument: it lists all eleven runtime
+//! enum variants.
 //! [`crate::arena_task::ArenaOut::Deliberate`] explains its report-only contract.
 //!
 //! `CustodyOut` is the argument to [`crate::arena_task::spawn_arena`] rather than a message — a
@@ -76,8 +79,9 @@
 //!   the exception — kept past the bound and counted in nobody's.
 //!
 //! The inbox itself keeps `reserve` slots an intent (and, 16b cut I.3, a
-//! `TempoFloor`) may never take, so a `Control`, a `Stop` or a `LedgerAck`
-//! always fits ([`crate::arena_task::ArenaHandle::offer`]).
+//! `TempoFloor`; 16b cut I.4, a `Watch`) may never take, so a `Control`, a
+//! `Stop` or a `LedgerAck` always fits
+//! ([`crate::arena_task::ArenaHandle::offer`]).
 //!
 //! # Failure
 //!
@@ -108,6 +112,7 @@ use tokio::time::Instant;
 use crate::arena::damage::UnitReturn;
 use crate::arena::intents::{Control, ControlState, Intent, IntentKind};
 use crate::arena::ledger::LedgerChunk;
+use crate::arena::observer::Observer;
 use crate::arena::state::{
     Arena, ArenaError, Channel, CustodyOut, Designator, EndReason, MatchEnd, StopReason,
 };
@@ -157,6 +162,18 @@ pub enum ArenaMsg {
     TempoFloor {
         /// The floor, milliseconds; `None` lifts it.
         period_ms: Option<u32>,
+    },
+    /// **Somebody is watching this match, or nobody is any more** (16b cut
+    /// I.4; 16c N10: `@arena/watch`). Seam bookkeeping and not an input to
+    /// `step`, applied on arrival as a `TempoFloor` is (`apply_watch`): it
+    /// sets `Arena::watched`, and a `true` clears `Arena::last_observer_s` so
+    /// the next pulse builds a picture for the new watcher at once. Held to
+    /// the intent reserve at [`ArenaHandle::offer`]. The world sends `true` for
+    /// a match's first watcher and `false` when its last one goes; who the
+    /// watchers are is the world's and never crosses.
+    Watch {
+        /// Whether anybody is watching.
+        on: bool,
     },
 }
 
@@ -239,6 +256,15 @@ pub enum ArenaOut {
         /// **The arena's own `now_ms` after the step that produced this
         /// message** (16b cut D.1). Monotonic within a match.
         now_ms: i64,
+        /// **The staff picture** (16b cut I.4), when the pulse built one — at
+        /// most once per pulse and at most once an arena second, while the
+        /// match is watched ([`crate::arena::step::StepOutput::observer`]).
+        /// A message that carries one is sent even with no frame and inside
+        /// a second the clock already carried; one the full egress refused is
+        /// held, the newer picture replacing the older (`Task::held_observer`),
+        /// and sent by `Task::end` with the held frames. The world publishes it
+        /// on `arena.observer` to the match's watchers and to no pilot.
+        observer: Option<Observer>,
     },
     /// The clock absorbed more wall time than the clamp allows, or the egress
     /// is backing up past half of `ledger.max_unflushed_chunks`.
@@ -373,9 +399,12 @@ impl ArenaHandle {
     /// an intent. The reserve is sized for one control per channel per unit, a
     /// stop and an ack, and a staffer repeating `@arena/tempo` must not be able
     /// to take the slot an `EXIT` needs; a refused floor is the verb's `busy`.
+    /// **16b cut I.4**: and so is an [`ArenaMsg::Watch`], for the same reason.
     pub fn offer(&self, msg: ArenaMsg) -> Result<(), ArenaMsg> {
-        if matches!(msg, ArenaMsg::Intent(_) | ArenaMsg::TempoFloor { .. })
-            && self.inbox.capacity() <= self.reserve
+        if matches!(
+            msg,
+            ArenaMsg::Intent(_) | ArenaMsg::TempoFloor { .. } | ArenaMsg::Watch { .. }
+        ) && self.inbox.capacity() <= self.reserve
         {
             return Err(msg);
         }
@@ -485,6 +514,7 @@ pub fn spawn_arena(
         stall,
         last_clock_s: None,
         held_frames: None,
+        held_observer: None,
         held_notice_drops: 0,
         reported: Arc::clone(&reported),
     }));
@@ -557,6 +587,13 @@ struct Task {
     /// `held_notice_drops`); a frame the world takes when it is built is never
     /// cut.
     held_frames: Option<(i64, Vec<(ObjId, Frame)>)>,
+    /// **The staff picture the world could not take** (16b cut I.4), or
+    /// `None`. A picture is the whole field at one moment, so a newer one
+    /// replaces a held one outright: `Task::publish` sends the pulse's own
+    /// picture when it built one and the held one otherwise, and holds again
+    /// whatever a full egress refused; `Task::end` sends it with the held
+    /// frames.
+    held_observer: Option<Observer>,
     /// How many held notices were dropped past [`MAX_HELD_NOTICES`] this match;
     /// the first drop is warned of, once.
     held_notice_drops: u64,
@@ -817,6 +854,25 @@ fn merge_held(
         .collect()
 }
 
+/// **The staff picture a `Frames` carries** (16b cut I.4): the pulse's own
+/// when it built one, else the one a full egress refused before — a picture is
+/// the whole field at one moment, so the newer replaces the older outright and
+/// nothing is merged.
+fn newer_observer(held: Option<Observer>, fresh: Option<Observer>) -> Option<Observer> {
+    fresh.or(held)
+}
+
+/// **Apply an [`ArenaMsg::Watch`]** (16b cut I.4) to the arena the task owns:
+/// `Arena::watched` takes `on`, and a `true` clears `Arena::last_observer_s`, so
+/// the next pulse builds a picture for the new watcher whatever second it falls
+/// in. Not an input to `step`, and never a pulse of its own.
+fn apply_watch(arena: &mut Arena, on: bool) {
+    arena.watched = on;
+    if on {
+        arena.last_observer_s = None;
+    }
+}
+
 /// **Take a released pilot out of the held frames** (16b cut M.1, `B-77`): a
 /// `Control { Released, pilot: Some(p) }` buffered means the world has let `p`
 /// go, and nothing held for them is sent afterwards. An emptied hold is `None`.
@@ -928,6 +984,11 @@ async fn arena_loop(mut task: Task) {
                         task.arena.clock.set_floor(period_ms);
                         due = pulled_in(due);
                     }
+                    // **16b cut I.4** (16c N10): nor is a watch. The next
+                    // pulse, whenever it falls, builds the picture; the
+                    // deadline is left alone, because a picture is a view and
+                    // the arena's cadence is not the watcher's to move.
+                    Some(ArenaMsg::Watch { on }) => apply_watch(&mut task.arena, on),
                     // Every sender is gone: the world has forgotten this match
                     // and nothing can ever drive it again. End silently, for the
                     // same reason the stop signal does.
@@ -1077,6 +1138,7 @@ impl Task {
             frames,
             lagged,
             deliberation,
+            observer,
             ..
         } = out;
         for chunk in ledger_chunks {
@@ -1092,23 +1154,34 @@ impl Task {
         // pulse rate. See [`ArenaOut::Frames`].
         let now_ms = self.arena.now_ms;
         let second = now_ms.div_euclid(1_000);
-        if !frames.is_empty() || self.last_clock_s != Some(second) {
+        // **16b cut I.4**: the pulse's own staff picture, else the one a full
+        // egress refused last time — the newer always wins, and a held picture
+        // older than the pulse's is simply dropped.
+        let observer = newer_observer(self.held_observer.take(), observer);
+        if !frames.is_empty() || self.last_clock_s != Some(second) || observer.is_some() {
             self.last_clock_s = Some(second);
             // Never awaited: the world task must not be waited on by a pulse. A
             // full egress keeps the message here instead, and the next pulse
             // merges into it (see `Task::held_frames`); `end` is the one place
             // that waits. An empty message is only the clock, which the next
             // pulse's supersedes, so it is not worth holding; a closed egress is
-            // a world that has gone.
-            if let Err(TrySendError::Full(ArenaOut::Frames { frames, now_ms, .. })) =
-                self.egress.try_send(ArenaOut::Frames {
-                    match_id: self.match_id,
-                    frames,
-                    now_ms,
-                })
-                && !frames.is_empty()
-            {
-                self.held_frames = Some((now_ms, frames));
+            // a world that has gone. **16b cut I.4**: a refused picture is held
+            // on its own (`Task::held_observer`), frames or none.
+            if let Err(TrySendError::Full(ArenaOut::Frames {
+                frames,
+                now_ms,
+                observer,
+                ..
+            })) = self.egress.try_send(ArenaOut::Frames {
+                match_id: self.match_id,
+                frames,
+                now_ms,
+                observer,
+            }) {
+                if !frames.is_empty() {
+                    self.held_frames = Some((now_ms, frames));
+                }
+                self.held_observer = observer;
             }
         }
         if lagged {
@@ -1185,11 +1258,17 @@ impl Task {
                 return;
             }
         }
-        if let Some((now_ms, frames)) = self.held_frames.take() {
+        // **16b cut I.4**: a held staff picture rides the held frames, or goes
+        // on its own when no frame was held.
+        let held_observer = self.held_observer.take();
+        let held_frames = self.held_frames.take();
+        if held_frames.is_some() || held_observer.is_some() {
+            let (now_ms, frames) = held_frames.unwrap_or((self.arena.now_ms, Vec::new()));
             let held = ArenaOut::Frames {
                 match_id: self.match_id,
                 frames,
                 now_ms,
+                observer: held_observer,
             };
             match self.send_waiting(held).await {
                 Drain::Drained => {}
@@ -1921,10 +2000,15 @@ mod tests {
                 .offer(ArenaMsg::Intent(order(RED, IntentKind::Startup, 1)))
                 .is_ok()
         );
-        // Three slots left, all reserve: neither an intent nor a floor.
+        // Three slots left, all reserve: neither an intent nor a floor —
+        // nor, 16b cut I.4, a watch.
         assert!(matches!(
             handle.offer(ArenaMsg::TempoFloor { period_ms: None }),
             Err(ArenaMsg::TempoFloor { period_ms: None })
+        ));
+        assert!(matches!(
+            handle.offer(ArenaMsg::Watch { on: true }),
+            Err(ArenaMsg::Watch { on: true })
         ));
         assert!(
             handle
@@ -2012,6 +2096,125 @@ mod tests {
                 (BLUE, "startup", 7),
             ]
         );
+    }
+
+    /// **16b cut I.4**: a `Watch { on: true }` sets `watched` and clears the
+    /// picture's second, so the next pulse builds one for the new watcher; a
+    /// `Watch { on: false }` clears `watched` and leaves the second alone.
+    #[test]
+    fn i4_a_watch_clears_the_pictures_second() {
+        let mut arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+        arena.last_observer_s = Some(4);
+        apply_watch(&mut arena, true);
+        assert!(arena.watched);
+        assert_eq!(arena.last_observer_s, None);
+        arena.last_observer_s = Some(5);
+        apply_watch(&mut arena, false);
+        assert!(!arena.watched);
+        assert_eq!(arena.last_observer_s, Some(5));
+        assert_eq!(newer_observer(None, None), None);
+    }
+
+    /// **16b cut I.4**: a picture a full egress refused is held, a newer
+    /// picture replaces it (the older is never sent), a pulse with no picture
+    /// of its own sends the held one — even with no frame and inside a second
+    /// the clock already carried — and `Task::end` sends a picture still held
+    /// before `Ended`.
+    #[tokio::test]
+    async fn i4_the_held_picture_is_replaced_by_the_newer_and_sent_at_the_end() {
+        let arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+        let (egress, mut world) = mpsc::channel(1);
+        let (_inbox_tx, inbox) = mpsc::channel(4);
+        let (_stop_tx, stop) = watch::channel(false);
+        let mut task = Task {
+            match_id: MatchId(9),
+            arena,
+            inbox,
+            egress,
+            stop,
+            backlog: VecDeque::new(),
+            backlog_bound: 8,
+            per_unit_bound: 4,
+            stall: Duration::from_secs(60),
+            last_clock_s: None,
+            held_frames: None,
+            held_observer: None,
+            held_notice_drops: 0,
+            reported: Arc::new(AtomicBool::new(false)),
+        };
+        let picture = |now_ms: i64| {
+            let mut observer = task_picture();
+            observer.now_ms = now_ms;
+            observer
+        };
+        let pulse = |observer: Option<Observer>| StepOutput {
+            ledger_chunks: Vec::new(),
+            frames: Vec::new(),
+            tempo: crate::arena::clock::Tempo::Quiet,
+            next_due_ms: 0,
+            lagged: false,
+            ended: None,
+            substeps: 0,
+            perception: crate::arena::perception::PerceptionCounters::default(),
+            reflex: crate::arena::reflex::ReflexCounters::default(),
+            deliberation: Vec::new(),
+            observer,
+        };
+        // The first message (the clock of second 0) fills the egress.
+        task.publish(pulse(None)).await;
+        // A picture now finds it full: held.
+        task.publish(pulse(Some(picture(1_000)))).await;
+        assert_eq!(task.held_observer.as_ref().map(|o| o.now_ms), Some(1_000));
+        // A newer one, still full: the newer is held and the older gone.
+        task.publish(pulse(Some(picture(2_000)))).await;
+        assert_eq!(task.held_observer.as_ref().map(|o| o.now_ms), Some(2_000));
+        assert!(task.held_frames.is_none(), "no frame was ever held");
+        // The world takes the clock; a pulse with no picture of its own, in a
+        // second the clock already carried, sends the held one.
+        assert!(matches!(
+            world.recv().await,
+            Some(ArenaOut::Frames { observer: None, .. })
+        ));
+        task.publish(pulse(None)).await;
+        assert!(task.held_observer.is_none());
+        match world.recv().await {
+            Some(ArenaOut::Frames {
+                frames, observer, ..
+            }) => {
+                assert!(frames.is_empty());
+                assert_eq!(observer.map(|o| o.now_ms), Some(2_000), "the newer");
+            }
+            other => panic!("the held picture: {other:?}"),
+        }
+        // Held again, then the end sends it before `Ended`.
+        task.publish(pulse(None)).await; // nothing: same second, no picture
+        task.publish(pulse(Some(picture(3_000)))).await; // sent, fills
+        task.publish(pulse(Some(picture(4_000)))).await; // held
+        assert_eq!(task.held_observer.as_ref().map(|o| o.now_ms), Some(4_000));
+        let ender = tokio::spawn(async move {
+            task.end(MatchEnd {
+                reason: EndReason::Abort,
+                t_ms: 4_000,
+            })
+            .await;
+        });
+        let mut seen: Vec<Option<i64>> = Vec::new();
+        loop {
+            match world.recv().await {
+                Some(ArenaOut::Frames { observer, .. }) => {
+                    seen.push(observer.map(|o| o.now_ms));
+                }
+                Some(ArenaOut::Ended { .. }) | None => break,
+                Some(_) => {}
+            }
+        }
+        ender.await.expect("the end joins");
+        assert_eq!(seen, vec![Some(3_000), Some(4_000)]);
+    }
+
+    /// A one-unit picture, for the held-picture test.
+    fn task_picture() -> Observer {
+        arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1).observer()
     }
 
     #[test]

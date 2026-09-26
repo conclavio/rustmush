@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { MAP_ASK_MS } from "./cockpit.svelte";
-import { REPLAY_ASK_MS, ReplayStore } from "./replay.svelte";
+import { LIVE_STALE_MS, REPLAY_ASK_MS, ReplayStore } from "./replay.svelte";
 
 const read = (dir: string, name: string): Record<string, unknown> =>
   JSON.parse(readFileSync(resolve(process.cwd(), dir, name), "utf8")) as Record<string, unknown>;
@@ -208,5 +208,129 @@ describe("ReplayStore", () => {
     expect(s.cursorMs).toBe(10_000);
     s.stepKeyframe(1);
     expect(s.cursorMs).toBe(10_000); // on the last, `next` has nowhere to go
+  });
+});
+
+// The live picture (16b cut I.4; 16c N10): the same store in LIVE mode.
+describe("ReplayStore, live", () => {
+  const live = (match = 7, now_ms = 90_000): Record<string, unknown> => ({
+    ...({
+  schema: { id: "arena.observer", version: 1, retain: "latest" },
+  match: 7,
+  now_ms: 90_000,
+  clock: "1:30",
+  tempo: "engaged",
+  floor_ms: 5_000,
+  cell_cm: 1_000,
+  width: 96,
+  height: 64,
+  in_flight: 2,
+  units: [
+    ["RA", "R", 6, 4, 90, 301, "pm"],
+    ["RB", "R", null, null, 0, 303, "s"],
+    ["BA", "B", 20, 14, 270, 302, "ph"],
+    ["BB", "B", 14, 7, 225, 304, "w"],
+  ],
+}),
+    match,
+    now_ms,
+  });
+  const cleared = { schema: { id: "arena.observer", version: 1, retain: "latest" }, watching: false };
+
+  it("opens live on a picture, asks no document, and a later picture replaces it", () => {
+    const s = new ReplayStore();
+    expect(s.applyObserver(live(), 5, 0)).toBe(true);
+    expect(s).toMatchObject({ open: true, live: true, match: 7, focus: 0, cursorMs: 90_000 });
+    expect(s.doc?.roster.map((u) => u.callsign)).toEqual(["RA", "RB", "BA", "BB"]);
+    expect(s.needsDocument(0)).toBe(false);
+    expect(s.needsMap(0)).toBe(true);
+    expect(s.applyObserver(live(7, 91_000), 6, 0)).toBe(false);
+    expect(s.cursorMs).toBe(91_000);
+    expect(s.observer?.now_ms).toBe(91_000);
+    // An answer on the replay feed is not a live picture's to take.
+    s.applyDocument(doc());
+    expect(s.doc?.keyframes).toHaveLength(1);
+  });
+
+  it("nothing steps or scrubs it; `u` walks its units; `p` owes one `arena.observer` ask", () => {
+    const s = new ReplayStore();
+    s.applyObserver(live(), 5, 0);
+    s.stepKeyframe(1);
+    s.stepKeyframe(-1);
+    s.seek(0);
+    expect(s.cursorMs).toBe(90_000);
+    s.nextFocus();
+    expect(s.focus).toBe(1);
+    expect(s.needsObserver(0)).toBe(false);
+    s.pull(0);
+    expect(s.needsObserver(0)).toBe(true);
+    expect(s.needsObserver(0)).toBe(false);
+    expect(s.needsDocument(0)).toBe(false);
+  });
+
+  it("closes an open replay: the picture replaced, the replay's match dismissed", () => {
+    const s = new ReplayStore();
+    s.applyGrid(grid(), 10);
+    s.applyDocument(doc());
+    s.applyMap(ground());
+    expect(s.applyObserver(live(12), 11, 0)).toBe(true);
+    expect(s).toMatchObject({ open: true, live: true, match: 12, map: null });
+    expect(s.dismissed.has(7)).toBe(true);
+    // The same match's ground is kept.
+    const t = new ReplayStore();
+    t.applyObserver(live(7), 1, 0);
+    t.applyMap(ground());
+    expect(t.holdsTheGround).toBe(true);
+    t.applyObserver(live(7, 91_000), 2, 0);
+    expect(t.holdsTheGround).toBe(true);
+  });
+
+  it("`watching: false` closes it and dismisses the match; a replay is left alone", () => {
+    const s = new ReplayStore();
+    s.applyObserver(live(), 5, 0);
+    s.applyObserver(cleared, 6, 0);
+    expect(s).toMatchObject({ open: false, live: false, match: null, observer: null });
+    expect(s.dismissed.has(7)).toBe(true);
+    // A picture replayed out of the resume ring does not re-open it; a new
+    // watch — a newer seq — does.
+    expect(s.applyObserver(live(), 5, 0)).toBe(false);
+    expect(s.open).toBe(false);
+    expect(s.applyObserver(live(), 9, 0)).toBe(true);
+    expect(s.dismissed.has(7)).toBe(false);
+
+    const r = new ReplayStore();
+    r.applyGrid(grid(), 10);
+    r.applyObserver(cleared, 11, 0);
+    expect(r).toMatchObject({ open: true, live: false, match: 7 });
+  });
+
+  it("a picture gone `LIVE_STALE_MS` quiet is owed one ask, latched; a healthy `Quiet` watch never is", () => {
+    const s = new ReplayStore();
+    s.applyObserver(live(), 5, 100_000);
+    expect(s.needsObserver(100_000 + LIVE_STALE_MS - 1)).toBe(false);
+    // A picture every five seconds (`Quiet`) or ten (the longest floor).
+    s.applyObserver(live(7, 95_000), 6, 105_000);
+    expect(s.needsObserver(115_000)).toBe(false);
+    s.applyObserver(live(7, 105_000), 7, 115_000);
+    expect(s.needsObserver(115_000 + LIVE_STALE_MS - 1)).toBe(false);
+    // Then nothing: a server half restarted under a socket with no hello.
+    expect(s.needsObserver(115_000 + LIVE_STALE_MS)).toBe(true);
+    expect(s.needsObserver(115_000 + LIVE_STALE_MS + 2_000)).toBe(false);
+    expect(s.needsObserver(115_000 + 2 * LIVE_STALE_MS)).toBe(true);
+    // Its `watching: false` closes it, and a closed picture is owed nothing.
+    s.applyObserver(cleared, 8, 150_000);
+    expect(s.needsObserver(200_000)).toBe(false);
+  });
+
+  it("a re-hydrate keeps the picture, drops the ground and owes one `arena.observer` ask", () => {
+    const s = new ReplayStore();
+    s.applyObserver(live(), 5, 0);
+    s.applyMap(ground());
+    s.clearForRehydrate();
+    expect(s.open && s.live).toBe(true);
+    expect(s.doc).not.toBeNull();
+    expect(s.map).toBeNull();
+    expect(s.needsObserver(0)).toBe(true);
+    expect(s.needsDocument(0)).toBe(false);
   });
 });

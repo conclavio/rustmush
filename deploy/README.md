@@ -444,7 +444,11 @@ replays existed`, and a reload or restart aborts a running match as `restart`,
 which writes no replay. Web clients see the `arena.replay` feed in their hello
 only after a gateway restart, and draw it only after 16b cut I.2. From 16b cut
 I.2's commit screen 0 carries the replay on the TUI and the web, a
-gateway-half change: the fresh `web/dist` and `GATEWAY_RESTART=1`.
+gateway-half change: the fresh `web/dist` and `GATEWAY_RESTART=1`. From 16b cut
+I.4's commit a staffer's `@arena/watch` draws a running match live on that same
+screen over the new `arena.observer` feed, again a gateway-half change (the
+fresh `web/dist` and `GATEWAY_RESTART=1`, which is what puts the feed in the web
+hello), with no pack and no config key.
 
 ### The first staff login
 

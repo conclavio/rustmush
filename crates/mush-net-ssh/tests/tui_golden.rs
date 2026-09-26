@@ -1710,3 +1710,127 @@ fn i2_the_replay_screen_paints_at_both_budget_sizes() {
     assert!(right_holds(&text, "BB   blue  wreck", 120), "{text}");
     assert!(left_holds(&text, "Keyframe 3/3  0:10 of 0:10"), "{text}");
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut I.4 — the live picture on screen 0 (16c N10)
+// ---------------------------------------------------------------------------
+
+/// A staff picture of match 7 on the cockpit fixtures' yard, as
+/// `tacsim::match_::observer::observer_frame` builds one: four tanks, BA held,
+/// BB a wreck on The Roof, RB starting and off the window, a 5,000 ms floor.
+fn live_picture() -> serde_json::Value {
+    serde_json::json!({
+        "schema": { "id": "arena.observer", "version": 1, "retain": "latest" },
+        "match": 7, "now_ms": 90_000, "clock": "1:30", "tempo": "engaged",
+        "floor_ms": 5_000, "cell_cm": 1_000, "width": 96, "height": 64,
+        "in_flight": 2,
+        "units": [
+            ["RA", "R", 6, 4, 90, 301, "pm"],
+            ["RB", "R", null, null, 0, 303, "s"],
+            ["BA", "B", 20, 14, 270, 302, "ph"],
+            ["BB", "B", 14, 7, 225, 304, "w"],
+        ],
+    })
+}
+
+/// The fixture app watching match 7: the first picture pushed, the cockpit ask
+/// screen 0 makes answered the cleared frame, the ground held.
+fn watch_app() -> TuiApp {
+    let mut app = fixture_app();
+    app.set_manifest(TuiManifest {
+        panels: vec![
+            "wod.vitals".into(),
+            "wod.sheet".into(),
+            "mail".into(),
+            "arena.cockpit".into(),
+            "arena.map".into(),
+            "arena.replay".into(),
+            "arena.observer".into(),
+        ],
+        character: Some("Nick".into()),
+        room: None,
+    });
+    app.apply_event(&OutputEvent::Panel {
+        feed: SmolStr::new_static("arena.observer"),
+        kind: PanelFrameKind::Keyframe,
+        data: live_picture(),
+    });
+    app.apply_event(&OutputEvent::Panel {
+        feed: SmolStr::new_static("arena.cockpit"),
+        kind: PanelFrameKind::Keyframe,
+        data: serde_json::json!({
+            "schema": { "id": "arena.cockpit", "version": 1, "retain": "latest" },
+            "seated": false
+        }),
+    });
+    app.apply_event(&arena_panel("arena.map", ARENA_MAP));
+    app
+}
+
+/// **The live picture at the floor** (16b cut I.4; 16c N10): the replay's
+/// layout — the same six panes in the same columns — drawn from the pushed
+/// picture: `Watching 7 — 1:30 (live)` over the units as a replay draws them
+/// (RB, with no cell, not drawn), the four status sentences each whole in the
+/// Left column, `Nothing yet.` for damage and weapons, and every unit's row
+/// with its object number (a staff surface) and its words, one line each (a
+/// realistic row's width is pinned in `tui::replay`'s own tests). **The legend is
+/// the live table's: `u` and `p` alone** — `,` `.` and `x` are omitted,
+/// because nothing steps a live picture and only the server closes it. The
+/// golden is the review.
+#[test]
+fn i4_the_live_picture_paints_at_the_floor() {
+    let mut app = watch_app();
+    assert_eq!(
+        app.active_screen(),
+        COCKPIT_SCREEN,
+        "the picture opened screen 0"
+    );
+    let (w, h) = (120u16, 34u16);
+    let text = frame_text(&mut app, w, h);
+    assert_eq!(text.lines().count(), usize::from(h));
+    for line in text.lines() {
+        assert!(
+            line.chars().count() <= usize::from(w),
+            "row too wide: {line:?}"
+        );
+    }
+    for title in ["status", "damage", "weapons", "contacts", "notices"] {
+        assert!(
+            text.contains(&format!("\u{250c}{title}")),
+            "{title} is painted:\n{text}"
+        );
+    }
+    assert!(text.contains("Watching 7 \u{2014} 1:30 (live)"), "{text}");
+    for sentence in [
+        "Match 7  engaged  floor 5000",
+        "Live, at most once a second.",
+        "In flight: 2",
+        "@arena/watch off stops it.",
+    ] {
+        assert!(
+            left_holds(&text, sentence),
+            "{sentence:?} is not whole in the Left column:\n{text}"
+        );
+    }
+    assert!(left_holds(&text, "Nothing yet."), "{text}");
+    for row in [
+        "RA   red   (6, 4) 090\u{b0} #301 machine",
+        "RB   red   off the window #303 pilot starting",
+        "BA   blue  (20, 14) 270\u{b0} #302 pilot held",
+        "BB   blue  (14, 7) 225\u{b0} #304 pilot wreck",
+    ] {
+        assert!(
+            right_holds(&text, row, w),
+            "{row:?} is not whole in the Right column:\n{text}"
+        );
+    }
+    // The units as a replay draws them: RB has no cell and is not drawn.
+    assert!(text.contains("o RA  * BA  % BB"), "{text}");
+    assert!(!text.contains("o RB"), "{text}");
+    let legend = text.lines().last().unwrap_or_default();
+    assert_eq!(
+        legend, "u focus \u{b7} p pull \u{b7} Enter type \u{b7} ? help",
+        "the live table's legend"
+    );
+    check("tui_watch_120x34.txt", &text);
+}

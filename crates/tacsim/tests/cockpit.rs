@@ -124,6 +124,10 @@ struct Rig {
     /// every closed chunk [`Rig::pump`] has staged, in order — the `ordered`
     /// lines an `ORDER` journals are read here.
     tape: Vec<tacsim::arena::ledger::LedgerEvent>,
+    /// **The arena time of every staff picture a staged `Frames` carried**
+    /// (16b cut I.4), recorded by [`Rig::pump`] — what "afterwards the staged
+    /// frames carry no picture" is read off.
+    pictures: Vec<i64>,
 }
 
 impl Rig {
@@ -164,6 +168,7 @@ impl Rig {
             log: Vec::new(),
             staged_now_ms: 0,
             tape: Vec::new(),
+            pictures: Vec::new(),
         };
         // **The control-lease mirror.** `request_seat_activation` fails closed on
         // an unread one (`SeatError::ControlUnknown`), and the mirror is
@@ -197,6 +202,14 @@ impl Rig {
                             tacsim::arena_task::ArenaOut::Frames { now_ms, .. } => Some(*now_ms),
                             _ => None,
                         };
+                        // 16b cut I.4: the staff picture, as each message carries it.
+                        if let tacsim::arena_task::ArenaOut::Frames {
+                            observer: Some(picture),
+                            ..
+                        } = &message
+                        {
+                            self.pictures.push(picture.now_ms);
+                        }
                         // 16b cut Y.1: the tape, as each closed chunk carries it.
                         if let tacsim::arena_task::ArenaOut::Ledger { chunk, .. } = &message {
                             self.tape.extend(
@@ -282,6 +295,8 @@ impl Rig {
                 match_id,
                 frames: vec![(pilot, frame)],
                 now_ms: 0,
+                // 16b cut I.4: a pilot's frame, and no staff picture.
+                observer: None,
             }),
             "the egress staging table took the frame"
         );
@@ -9288,4 +9303,520 @@ async fn i3_arena_place_moves_a_tank_says_nothing_and_the_tape_records_it() {
         rig.staff(&format!("@arena/place #{}={},{}", tank.0, from.0, from.1)),
         format!("Match {id} is stopping.")
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut I.4 — `@arena/watch` and the staff picture (16c N10)
+// ---------------------------------------------------------------------------
+
+/// `@arena/watch`'s refusal for anybody who flies or is about to, verbatim.
+const I4_FLYING: &str = "You are flying, or about to; EXIT and leave your slot before you watch.";
+
+/// What a watching staffer is told, verbatim.
+fn i4_watching(id: u64) -> String {
+    format!(
+        "You are watching match {id}: its picture reaches your panel at most once an arena \
+         second on arena.observer, and screen 0 draws it; the line client prints none of it. \
+         @arena/watch off stops it."
+    )
+}
+
+/// Give a character `SIM_ADMIN`.
+fn i4_make_staff(rig: &mut Rig, who: ObjId) {
+    let object = rig
+        .tw
+        .world_mut()
+        .get_mut(who)
+        .expect("the character exists");
+    object.powers |= mush_core::Powers::SIM_ADMIN;
+}
+
+/// A new staffer with no account, no slot and no seat.
+fn i4_staffer(rig: &mut Rig, name: &str) -> ObjId {
+    let staffer = rig.tw.spawn_player(name);
+    i4_make_staff(rig, staffer);
+    staffer
+}
+
+/// One line as `who`, and what `who` read.
+fn i4_as(rig: &mut Rig, who: ObjId, line: &str) -> String {
+    let events = rig.events_of(who, line);
+    rig.tw.seen_by(&events, who).join("\n")
+}
+
+/// Every `arena.observer` panel in `rig.log` from `from`, with its audience.
+fn i4_pictures(rig: &Rig, from: usize) -> Vec<(Audience, serde_json::Value)> {
+    rig.log
+        .get(from..)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|(audience, event)| match event {
+            OutputEvent::Panel { feed, data, .. }
+                if feed.as_str() == tacsim::arena_bridge::OBSERVER_FEED =>
+            {
+                Some((audience.clone(), data.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `who` was sent a cleared picture in `pictures`.
+fn i4_cleared(pictures: &[(Audience, serde_json::Value)], who: ObjId) -> bool {
+    pictures.iter().any(|(audience, data)| {
+        *audience == Audience::Actor(who) && data["watching"] == serde_json::json!(false)
+    })
+}
+
+/// Pump for `arena_ms` of arena time.
+async fn i4_run_for(rig: &mut Rig, arena_ms: i64) {
+    let start = rig.staged_now_ms;
+    for _ in 0..2_000 {
+        rig.pump();
+        if rig.staged_now_ms >= start + arena_ms {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!(
+        "the arena clock reached only {} ms of {arena_ms}",
+        rig.staged_now_ms - start
+    );
+}
+
+/// The registry's answer to "what does `who` watch".
+fn i4_watching_of(rig: &Rig, who: ObjId) -> Option<u64> {
+    rig.tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.watching(who))
+        .map(|match_id| match_id.0)
+}
+
+/// **16b cut I.4**: `@arena/watch <match>` binds God and his panel is sent the
+/// field at most once an arena second, naming both tanks by callsign and object
+/// number (a staff surface); no pilot is sent any of it; the query and the map
+/// answer the watcher; `off` sends the cleared picture and afterwards the
+/// arena's `Frames` carry no picture at all. Every reply verbatim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn i4_arena_watch_sends_the_field_at_most_once_an_arena_second_and_off_ends_it() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let id = rig.centre().match_id.expect("a running match").0;
+
+    assert_eq!(rig.staff("@arena/watch"), "You are watching nothing.");
+    assert_eq!(rig.staff("@arena/watch off"), "You are watching nothing.");
+    assert_eq!(
+        rig.staff("@arena/watch twelve"),
+        "Usage: @arena/watch <match> | off"
+    );
+    assert_eq!(
+        rig.staff(&format!("@arena/watch {id}=1")),
+        "Usage: @arena/watch <match> | off"
+    );
+    assert_eq!(rig.staff("@arena/watch 99"), "There is no match 99.");
+    // A pilot is not staff, and the verb's own gate says so first.
+    assert_eq!(
+        rig.say(1, &format!("@arena/watch {id}")),
+        "Permission denied."
+    );
+
+    let from = rig.log.len();
+    assert_eq!(rig.staff(&format!("@arena/watch {id}")), i4_watching(id));
+    assert_eq!(rig.staff("@arena/watch"), i4_watching(id), "the bare read");
+    // Watching again is not a second watch.
+    assert_eq!(rig.staff(&format!("@arena/watch {id}")), i4_watching(id));
+    i4_run_for(&mut rig, 3_500).await;
+
+    let pictures = i4_pictures(&rig, from);
+    assert!(
+        pictures
+            .iter()
+            .all(|(audience, _)| *audience == Audience::Actor(GOD)),
+        "a picture went to somebody else: {pictures:?}"
+    );
+    let seconds: Vec<i64> = pictures
+        .iter()
+        .filter_map(|(_, data)| data["now_ms"].as_i64())
+        .map(|now_ms| now_ms.div_euclid(1_000))
+        .collect();
+    assert!(seconds.len() >= 3, "{seconds:?}");
+    assert!(
+        seconds.windows(2).all(|pair| pair[0] < pair[1]),
+        "two pictures in one arena second: {seconds:?}"
+    );
+    let (_, picture) = pictures.last().cloned().expect("a picture");
+    assert_eq!(picture["schema"]["id"], serde_json::json!("arena.observer"));
+    assert_eq!(picture["match"], serde_json::json!(id));
+    let rows = picture["units"].as_array().cloned().unwrap_or_default();
+    for (callsign, tank) in [("RA", rig.tank(0)), ("BA", rig.tank(1))] {
+        assert!(
+            rows.iter()
+                .any(|row| row[0] == serde_json::json!(callsign)
+                    && row[5] == serde_json::json!(tank.0)),
+            "the picture names {callsign} as #{}: {picture}",
+            tank.0
+        );
+    }
+    // Nobody but the watcher heard a word of it: no pilot line, no pilot panel.
+    for n in 0..2 {
+        let heard = rig.tw.seen_by(&rig.log, rig.pilot(n)).join("\n");
+        assert!(!heard.contains("watching"), "pilot {n}: {heard}");
+    }
+
+    // The query answers the watcher the picture and a pilot nothing; the map
+    // answers the watcher the watched ground.
+    let asked = rig.query(GOD, "arena.observer");
+    assert_eq!(asked["match"], serde_json::json!(id), "{asked}");
+    assert!(asked["units"].is_array());
+    assert_eq!(
+        rig.query(rig.pilot(0), "arena.observer"),
+        match_::observer::observer_cleared()
+    );
+    assert_eq!(
+        rig.query(GOD, "arena.map")["match"],
+        serde_json::json!(id),
+        "the watcher's map is the watched ground"
+    );
+
+    // `off`: the cleared picture, and then no picture leaves the arena at all.
+    let from = rig.log.len();
+    // The testkit prints the cleared keyframe as `[panel arena.observer]`; the
+    // sentence is the reply.
+    let said = rig.staff("@arena/watch off");
+    let lines: Vec<&str> = said
+        .lines()
+        .filter(|line| !line.starts_with("[panel "))
+        .collect();
+    assert_eq!(
+        lines,
+        vec![format!("You stop watching match {id}.")],
+        "{said}"
+    );
+    assert!(i4_cleared(&i4_pictures(&rig, from), GOD));
+    assert_eq!(rig.staff("@arena/watch"), "You are watching nothing.");
+    assert_eq!(
+        rig.query(GOD, "arena.observer"),
+        match_::observer::observer_cleared()
+    );
+    assert_eq!(
+        rig.query(GOD, "arena.map")["seated"],
+        serde_json::json!(false)
+    );
+    // A pulse already staged before the task heard the `Watch` may still carry
+    // one; after an arena second none does.
+    i4_run_for(&mut rig, 1_000).await;
+    let settled = rig.pictures.len();
+    let after = rig.log.len();
+    i4_run_for(&mut rig, 3_000).await;
+    assert_eq!(
+        rig.pictures.len(),
+        settled,
+        "the arena still builds a picture nobody watches"
+    );
+    assert!(
+        i4_pictures(&rig, after).is_empty(),
+        "a picture was sent after off"
+    );
+}
+
+/// **16b cut I.4**: `@arena/watch` refuses anybody who flies or is about to —
+/// a slot holder who has not boarded, a seated pilot, an `EXIT`ed pilot whose
+/// slot is kept, and another character of a flying pilot's account — in one
+/// sentence, before it even reads the match; a staffer with no slot and no
+/// seat watches.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn i4_arena_watch_refuses_anybody_who_flies_or_is_about_to() {
+    let mut rig = Rig::boot(3);
+    for n in 0..3 {
+        let pilot = rig.pilot(n);
+        i4_make_staff(&mut rig, pilot);
+    }
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    // Boarding: a slot, no seat — and no running match either, which is
+    // refused later than the slot.
+    assert_eq!(rig.state(), MatchState::Boarding);
+    assert_eq!(rig.say(0, "@arena/watch 1"), I4_FLYING);
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+    let id = rig.centre().match_id.expect("a running match").0;
+
+    // Seated.
+    assert_eq!(rig.say(0, &format!("@arena/watch {id}")), I4_FLYING);
+    // `EXIT`ed: the seat is gone and the slot is kept.
+    rig.say(1, "exit");
+    assert!(
+        rig.centre().slot_of_pilot(rig.pilot(1)).is_some(),
+        "an EXIT keeps the slot"
+    );
+    assert_eq!(rig.say(1, &format!("@arena/watch {id}")), I4_FLYING);
+    // Another character of pilot 0's account.
+    let alt = rig.tw.spawn_player("Alt0");
+    i4_make_staff(&mut rig, alt);
+    let mut map = Accounts::default();
+    for (n, pilot) in rig.pilots.iter().enumerate() {
+        map.0.insert(
+            *pilot,
+            AccountId::mint(&format!("account-{n}"), n as i64).expect("an account id"),
+        );
+    }
+    map.0.insert(
+        alt,
+        AccountId::mint("account-0", 0).expect("pilot 0's account"),
+    );
+    *rig.tw
+        .world_mut()
+        .module_state_mut::<mush_sim::AccountOracle>()
+        .expect("the simulation is composed") = mush_sim::AccountOracle::new(Arc::new(map));
+    assert_eq!(
+        i4_as(&mut rig, alt, &format!("@arena/watch {id}")),
+        I4_FLYING
+    );
+    assert_eq!(i4_watching_of(&rig, alt), None);
+
+    // A staffer with no slot, no seat and an account of their own watches.
+    assert_eq!(rig.say(2, &format!("@arena/watch {id}")), i4_watching(id));
+    assert_eq!(i4_watching_of(&rig, rig.pilot(2)), Some(id));
+}
+
+/// **16b cut I.4**: eight staffers watch; a ninth is refused; and every picture
+/// — the one a pulse builds, told apart by its `now_ms` — is sent to exactly the
+/// eight, once each: never more than eight events for a pulse, and none of the
+/// eight skipped. Counted per picture and not per `Rig::pump` drain: the fan-out
+/// runs at the drain, so a test thread stalled past an arena second hands one
+/// drain two pictures, sixteen events, and no pulse the more for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn i4_eight_watch_a_ninth_is_refused_and_no_pulse_sends_more_than_eight() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let id = rig.centre().match_id.expect("a running match").0;
+    let staffers: Vec<ObjId> = (0..9)
+        .map(|n| i4_staffer(&mut rig, &format!("Staffer{n}")))
+        .collect();
+    for staffer in staffers.iter().take(8) {
+        assert_eq!(
+            i4_as(&mut rig, *staffer, &format!("@arena/watch {id}")),
+            i4_watching(id)
+        );
+    }
+    let ninth = *staffers.last().expect("nine");
+    assert_eq!(
+        i4_as(&mut rig, ninth, &format!("@arena/watch {id}")),
+        format!("Match {id} already has 8 watchers.")
+    );
+    assert_eq!(i4_watching_of(&rig, ninth), None);
+    // A watcher asking again is not a ninth.
+    assert_eq!(
+        i4_as(&mut rig, staffers[0], &format!("@arena/watch {id}")),
+        i4_watching(id)
+    );
+
+    let from = rig.log.len();
+    i4_run_for(&mut rig, 3_000).await;
+    let eight: std::collections::BTreeSet<ObjId> = staffers.iter().take(8).copied().collect();
+    let mut by_picture: std::collections::BTreeMap<i64, Vec<ObjId>> =
+        std::collections::BTreeMap::new();
+    for (audience, data) in i4_pictures(&rig, from) {
+        let Audience::Actor(watcher) = audience else {
+            panic!("a picture went to {audience:?}, not to one watcher");
+        };
+        let now_ms = data["now_ms"]
+            .as_i64()
+            .expect("a picture, not a cleared frame");
+        by_picture.entry(now_ms).or_default().push(watcher);
+    }
+    assert!(
+        by_picture.len() >= 2,
+        "{} pictures in three arena seconds",
+        by_picture.len()
+    );
+    for (now_ms, audiences) in &by_picture {
+        assert_eq!(
+            audiences.len(),
+            8,
+            "the picture at {now_ms} ms was sent {} times",
+            audiences.len()
+        );
+        let reached: std::collections::BTreeSet<ObjId> = audiences.iter().copied().collect();
+        assert_eq!(reached, eight, "the picture at {now_ms} ms");
+    }
+    // Nobody but the eight was ever sent one.
+    for (audience, _) in i4_pictures(&rig, 0) {
+        assert!(
+            matches!(audience, Audience::Actor(who) if eight.contains(&who)),
+            "{audience:?}"
+        );
+    }
+}
+
+/// **16b cut I.4**: a watch ends with its watcher's connection, with the
+/// staffer's power (at the next picture — the query already answers nothing),
+/// and with the match (`finish` unbinds every watcher and sends each the
+/// cleared picture — two are still bound when it runs, so neither the first
+/// nor the last alone passes).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn i4_a_disconnect_a_lost_power_and_the_end_of_the_match_each_end_a_watch() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let id = rig.centre().match_id.expect("a running match").0;
+    let gone = i4_staffer(&mut rig, "Gone");
+    let demoted = i4_staffer(&mut rig, "Demoted");
+    let stays = i4_staffer(&mut rig, "Stays");
+    let also = i4_staffer(&mut rig, "Also");
+    for staffer in [gone, demoted, stays, also] {
+        assert_eq!(
+            i4_as(&mut rig, staffer, &format!("@arena/watch {id}")),
+            i4_watching(id)
+        );
+    }
+    i4_run_for(&mut rig, 1_100).await;
+
+    // A disconnect.
+    let said = rig.fire_conn(gone, mush_core::ConnTransition::Disconnected);
+    let cleared = said.iter().any(|(audience, event)| {
+        *audience == Audience::Actor(gone)
+            && matches!(event, OutputEvent::Panel { feed, data, .. }
+                if feed.as_str() == "arena.observer"
+                    && data["watching"] == serde_json::json!(false))
+    });
+    assert!(cleared, "the disconnect cleared the panel: {said:?}");
+    assert_eq!(i4_watching_of(&rig, gone), None);
+
+    // A lost power: the query answers nothing at once; the next picture
+    // unwatches with the cleared frame.
+    rig.tw
+        .world_mut()
+        .get_mut(demoted)
+        .expect("the staffer")
+        .powers = mush_core::Powers::empty();
+    assert_eq!(
+        rig.query(demoted, "arena.observer"),
+        match_::observer::observer_cleared()
+    );
+    assert_eq!(
+        rig.query(demoted, "arena.map")["seated"],
+        serde_json::json!(false)
+    );
+    let from = rig.log.len();
+    i4_run_for(&mut rig, 1_100).await;
+    let since = i4_pictures(&rig, from);
+    assert!(i4_cleared(&since, demoted), "{since:?}");
+    assert!(
+        !since
+            .iter()
+            .any(|(audience, data)| *audience == Audience::Actor(demoted)
+                && data.get("units").is_some()),
+        "a demoted staffer was sent a picture"
+    );
+    assert_eq!(i4_watching_of(&rig, demoted), None);
+    for watcher in [stays, also] {
+        assert_eq!(i4_watching_of(&rig, watcher), Some(id));
+        assert!(
+            since
+                .iter()
+                .any(|(audience, data)| *audience == Audience::Actor(watcher)
+                    && data.get("units").is_some()),
+            "the remaining watchers still see the field"
+        );
+    }
+
+    // The end of the match.
+    let from = rig.log.len();
+    rig.staff(&format!("@arena/abort {id}"));
+    for _ in 0..400 {
+        if rig.state() == MatchState::Aborted {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+    }
+    assert_eq!(rig.state(), MatchState::Aborted, "the check-in lands");
+    let since = i4_pictures(&rig, from);
+    for watcher in [stays, also] {
+        assert!(i4_cleared(&since, watcher), "{watcher:?}: {since:?}");
+        let cleared_at = since
+            .iter()
+            .rposition(|(audience, _)| *audience == Audience::Actor(watcher))
+            .expect("the watcher's last event");
+        assert_eq!(
+            since
+                .get(cleared_at)
+                .map(|(_, data)| data["watching"].clone()),
+            Some(serde_json::json!(false)),
+            "the cleared picture is the last thing {watcher:?} was sent"
+        );
+        assert_eq!(i4_watching_of(&rig, watcher), None);
+    }
+    let empty = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.watchers_of(tacsim::arena_task::MatchId(id)));
+    assert_eq!(empty, Some(Vec::new()));
+    assert_eq!(
+        i4_as(&mut rig, stays, "@arena/watch"),
+        "You are watching nothing."
+    );
+}
+
+/// **16b cut I.4**: a watch closes the staffer's replay (the cursor goes),
+/// `SIM REPLAY` refuses a watcher, and the map answers the watched ground.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn i4_a_watch_closes_the_replay_and_sim_replay_refuses_a_watcher() {
+    let mut rig = Rig::boot(3);
+    let finished = i1_finished(&mut rig).await;
+    let bystander = rig.pilot(I1_BYSTANDER);
+    let _ = i1_replay_as(&mut rig, I1_BYSTANDER, &finished.0.to_string());
+    assert!(i1_book(&rig, |book| book.replay_cursor(bystander)).is_some());
+
+    // A second match.
+    rig.staff("@arena/reset");
+    rig.walk_to(0, match_::LOBBY_ENTRY);
+    rig.walk_to(1, match_::LOBBY_ENTRY);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let id = rig.centre().match_id.expect("a running match").0;
+    assert_ne!(id, finished.0);
+
+    i4_make_staff(&mut rig, bystander);
+    assert_eq!(
+        rig.say(I1_BYSTANDER, &format!("@arena/watch {id}")),
+        i4_watching(id)
+    );
+    assert_eq!(
+        i1_book(&rig, |book| book.replay_cursor(bystander)),
+        None,
+        "a watch closes the replay"
+    );
+    let (said, windows) = i1_replay_as(&mut rig, I1_BYSTANDER, &finished.0.to_string());
+    assert_eq!(
+        said,
+        format!("You are watching match {id}; @arena/watch off first.")
+    );
+    assert!(windows.is_empty());
+    assert_eq!(i1_book(&rig, |book| book.replay_cursor(bystander)), None);
+    assert_eq!(
+        rig.query(bystander, "arena.map")["match"],
+        serde_json::json!(id),
+        "the watcher's map is the watched ground, not the replay's"
+    );
+    i4_run_for(&mut rig, 1_100).await;
+    let asked = rig.query(bystander, "arena.observer");
+    assert_eq!(asked["match"], serde_json::json!(id), "{asked}");
+    // And after `off`, `SIM REPLAY` is the replay again.
+    rig.say(I1_BYSTANDER, "@arena/watch off");
+    let (said, windows) = i1_replay_as(&mut rig, I1_BYSTANDER, &finished.0.to_string());
+    assert!(
+        said.contains(&format!("Replay of match {}", finished.0)),
+        "{said}"
+    );
+    assert_eq!(windows.len(), 1);
 }

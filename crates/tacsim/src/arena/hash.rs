@@ -306,6 +306,14 @@ thread_local! {
 /// them would make the hash a function of who was connected — and nothing that
 /// steers reads them, so they cannot move a later substep either.
 ///
+/// **Cut I.4's `watched` and `last_observer_s` are absent beside
+/// `last_frames`**: a fact about who is watching and not about the match. They
+/// gate the staff picture phase 5 builds at most once an arena second, are
+/// written only by the task's `Watch` and by that gate, and are read by nothing
+/// that steers, so folding them would make the hash a function of whether a
+/// staffer was looking — and a watched match must hash-equal an unwatched one
+/// (`crates/tacsim/tests/arena.rs`, `i4_a_watched_match_is_the_same_match`).
+///
 /// **Cut D.2's `spent_said` is the opposite case, and it IS folded.** It persists
 /// for [`crate::arena::state::SPENT_NOTICE_MS`] across substeps and pulses and it
 /// decides what a *later* substep says, so `lost_designators`' argument is simply

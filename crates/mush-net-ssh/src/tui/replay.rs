@@ -41,6 +41,38 @@
 //! answers for everything to `end_ms` — the arena writes no summary at the end,
 //! so the killing shot of an elimination falls after the last keyframe and this
 //! is where it is shown.
+//!
+//! # The live picture (16b cut I.4)
+//!
+//! `@arena/watch <match>` makes a staffer a watcher of a RUNNING match, and the
+//! world pushes them the whole field on `arena.observer` at most once an arena
+//! second (`tacsim::match_::observer::observer_frame`). The first such keyframe
+//! opens a **live** picture on this same layout (`Picture::live`), closing a
+//! replay that was open; each later one replaces what is drawn. The panes read
+//! the pushed picture ([`Live`]) instead of a document:
+//!
+//! * **map** — the units as a replay draws them (`o` red, `*` blue, `%` a
+//!   wreck; a unit with no cell is not drawn), headed `Watching 12 — 1:30
+//!   (live)`, centred on the focus unit;
+//! * **status** — `Match 12  engaged  floor 5000` (`floor` only while a staff
+//!   floor stands), `Live, at most once a second.`, `In flight: 2` and
+//!   `@arena/watch off stops it.`, each at or under 32 columns;
+//! * **damage** and **weapons** — `Nothing yet.`;
+//! * **contacts** — `RA   red   (120, 97) 090° #301 machine wreck`, the
+//!   object number on purpose (a staff surface), `pilot` for a pilot's tank,
+//!   then the FIRST of `wreck`, `held` and `starting` that applies; one space
+//!   between fields and one state word so a realistic row — a three-digit
+//!   cell, a four-digit object number, `wreck` or `held` — is whole in the
+//!   46-column contacts pane at the 120-column floor, and a row wider still
+//!   (`starting`, for the ten seconds of a start-up) is cut at the pane's edge
+//!   with an ellipsis rather than wrapped: one line a unit, always.
+//!
+//! **Nothing steps and nothing closes it but the server**: `,` `.` and `x` are
+//! not in the live picture's key table (the picture is what watching is, and a
+//! local close would be undone by the next keyframe a second later); `u` moves
+//! the focus and `p` pulls. `watching: false` — the watch ended, the match
+//! ended, or a server-half restart forgot it — closes the picture and marks the
+//! match dismissed.
 
 use std::collections::HashMap;
 
@@ -48,7 +80,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use super::panels::{ARENA_MAP_FEED, REPLAY_FEED};
+use super::panels::{ARENA_MAP_FEED, OBSERVER_FEED, REPLAY_FEED};
 use super::render::{
     COCKPIT_MAP_FALLBACK, MAP_CHROME_ROWS, NOTHING_YET, PaneRow, PaneRows, RenderCtx,
     WAITING_FOR_THE_MAP, cell_num, cell_pair, clean, degree, dim_span_owned, fit_legend, one_char,
@@ -88,6 +120,16 @@ pub const RED_GLYPH: char = 'o';
 pub const BLUE_GLYPH: char = '*';
 /// A wreck's marker, whichever side it was (16b cut I.1's `WRECK_GLYPH`).
 pub const WRECK_GLYPH: char = '%';
+
+/// What the map pane says while a live picture is open and no picture of its
+/// match is held (16b cut I.4) — a moment after a re-hydrate forgot it.
+pub const WAITING_FOR_THE_PICTURE: &str = "Waiting for the picture...";
+
+/// The live status pane's second sentence (16b cut I.4).
+pub const LIVE_CADENCE: &str = "Live, at most once a second.";
+
+/// The live status pane's last sentence (16b cut I.4).
+pub const LIVE_STOP: &str = "@arena/watch off stops it.";
 
 /// **How a match ended, in the status pane's words** (16b cut I.2): the rows
 /// of `tacsim::match_::record::outcome_table` — an outcome word and a reason
@@ -347,6 +389,193 @@ impl<'a> Document<'a> {
     }
 }
 
+/// **One unit of a live picture** (16b cut I.4): a positional row of the
+/// `arena.observer` payload, `[callsign, team letter, x | null, y | null,
+/// heading, object number, flags]`, read totally — a malformed row reads what it
+/// can and `?` for a callsign.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveUnit {
+    /// The callsign, cleaned and cut to eight characters.
+    pub callsign: String,
+    /// Whether it is blue (`B`); anything else reads red.
+    pub blue: bool,
+    /// Its cell, or `None` off the window.
+    pub cell: Option<(usize, usize)>,
+    /// Its heading, whole degrees.
+    pub heading: u64,
+    /// Its object number.
+    pub id: u64,
+    /// The flags, `w p s m h` in order.
+    pub flags: String,
+}
+
+impl LiveUnit {
+    /// `red` or `blue`.
+    #[must_use]
+    pub fn side(&self) -> &'static str {
+        if self.blue { "blue" } else { "red" }
+    }
+
+    /// Whether it is a wreck (`w`).
+    #[must_use]
+    pub fn wreck(&self) -> bool {
+        self.flags.contains('w')
+    }
+
+    /// The marker it is drawn as: `%` a wreck, else its side's.
+    #[must_use]
+    pub fn glyph(&self) -> char {
+        if self.wreck() {
+            WRECK_GLYPH
+        } else if self.blue {
+            BLUE_GLYPH
+        } else {
+            RED_GLYPH
+        }
+    }
+
+    /// The contacts row's words after the object number: `machine` or
+    /// `pilot`, then the FIRST of `wreck`, `held` and `starting` that applies
+    /// — one state word, in that order of weight: a wreck is no subject of any
+    /// order, so its hold and its power say nothing more, and a tank held
+    /// against another is one already moving under power. One word keeps the
+    /// row inside the contacts pane at the 120-column floor (see the live
+    /// contacts pane's renderer, `live_contacts_rows`).
+    #[must_use]
+    pub fn words(&self) -> String {
+        let controller = if self.flags.contains('m') {
+            "machine"
+        } else {
+            "pilot"
+        };
+        [('w', "wreck"), ('h', "held"), ('s', "starting")]
+            .into_iter()
+            .find(|(flag, _)| self.flags.contains(*flag))
+            .map_or_else(
+                || controller.to_string(),
+                |(_, state)| format!("{controller} {state}"),
+            )
+    }
+}
+
+/// **A read of one `arena.observer` picture** (16b cut I.4), total over what
+/// the wire might carry. `watching: false` and a payload with no match are not
+/// a picture.
+#[derive(Clone, Copy, Debug)]
+pub struct Live<'a> {
+    doc: &'a Value,
+    match_id: i64,
+}
+
+impl<'a> Live<'a> {
+    /// The picture in `value`, or `None` for anything else.
+    #[must_use]
+    pub fn of(value: &'a Value) -> Option<Live<'a>> {
+        if value.get("watching").and_then(Value::as_bool) == Some(false) {
+            return None;
+        }
+        let match_id = value.get("match").and_then(Value::as_i64)?;
+        Some(Live {
+            doc: value,
+            match_id,
+        })
+    }
+
+    /// The match it is a picture of.
+    #[must_use]
+    pub fn match_id(&self) -> i64 {
+        self.match_id
+    }
+
+    /// The arena millisecond it was taken at.
+    #[must_use]
+    pub fn now_ms(&self) -> i64 {
+        self.doc.get("now_ms").and_then(Value::as_i64).unwrap_or(0)
+    }
+
+    /// The tempo word, cleaned and cut.
+    #[must_use]
+    pub fn tempo(&self) -> String {
+        truncate_chars(
+            &clean(self.doc.get("tempo").and_then(Value::as_str).unwrap_or("?")),
+            8,
+        )
+    }
+
+    /// The staff tempo floor, milliseconds, while one stands.
+    #[must_use]
+    pub fn floor_ms(&self) -> Option<u64> {
+        self.doc.get("floor_ms").and_then(Value::as_u64)
+    }
+
+    /// Rounds in flight.
+    #[must_use]
+    pub fn in_flight(&self) -> u64 {
+        self.doc
+            .get("in_flight")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    }
+
+    /// Every unit, in the payload's (unit-id) order.
+    #[must_use]
+    pub fn units(&self) -> Vec<LiveUnit> {
+        self.doc
+            .get("units")
+            .and_then(Value::as_array)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .map(|row| {
+                let at = |i: usize| row.get(i);
+                let num = |i: usize| at(i).and_then(Value::as_u64);
+                let cell = match (num(2), num(3)) {
+                    (Some(x), Some(y)) => usize::try_from(x).ok().zip(usize::try_from(y).ok()),
+                    _ => None,
+                };
+                LiveUnit {
+                    callsign: truncate_chars(
+                        &clean(at(0).and_then(Value::as_str).unwrap_or("?")),
+                        8,
+                    ),
+                    blue: at(1).and_then(Value::as_str) == Some("B"),
+                    cell,
+                    heading: num(4).unwrap_or(0) % 360,
+                    id: num(5).unwrap_or(0),
+                    flags: truncate_chars(&clean(at(6).and_then(Value::as_str).unwrap_or("")), 8),
+                }
+            })
+            .collect()
+    }
+
+    /// The index of `callsign` among the units, exactly as [`Self::units`]
+    /// prints it.
+    #[must_use]
+    pub fn unit_index(&self, callsign: &str) -> Option<u16> {
+        self.units()
+            .iter()
+            .position(|unit| unit.callsign == callsign)
+            .and_then(|at| u16::try_from(at).ok())
+    }
+}
+
+/// **The live picture held for the open live picture's match** (16b cut I.4),
+/// the condition every live pane is drawn on.
+#[must_use]
+pub fn held_live<'a>(ctx: &RenderCtx<'a>) -> Option<(&'a Picture, Live<'a>)> {
+    let picture = ctx.picture.filter(|picture| picture.live)?;
+    let live = ctx
+        .store
+        .get(OBSERVER_FEED)
+        .and_then(Live::of)
+        .filter(|live| live.match_id() == picture.match_id)?;
+    Some((picture, live))
+}
+
+/// Whether the open picture is a live one.
+fn is_live(ctx: &RenderCtx<'_>) -> bool {
+    ctx.picture.is_some_and(|picture| picture.live)
+}
+
 /// The keyframe the panes draw: the picture's own, clamped to the document.
 fn at_of(picture: &Picture, doc: &Document<'_>) -> usize {
     picture.at.min(doc.keyframe_count().saturating_sub(1))
@@ -379,6 +608,10 @@ fn shot_words(word: &str) -> &str {
         _ => "?",
     }
 }
+
+/// One unit as the picture's map draws it: its marker, its callsign, and its
+/// cell (`None`: not drawn).
+type MapUnit = (char, String, Option<(usize, usize)>);
 
 /// Who wrote a replay map cell last: a spot by its index in the map's
 /// `spots`, or a roster unit by its roster index.
@@ -419,17 +652,94 @@ enum Owner {
 #[must_use]
 pub fn map_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
     let picture = ctx.picture?;
+    if picture.live {
+        return Some(live_map_rows(ctx, picture));
+    }
     let Some((_, doc)) = held(ctx) else {
         return Some(PaneRows::one(WAITING_FOR_THE_REPLAY));
     };
-    let Some(map) = ctx.store.get(ARENA_MAP_FEED).filter(|map| {
-        seated(map) && map.get("match").and_then(Value::as_i64) == Some(picture.match_id)
-    }) else {
+    let Some(map) = ground_of(ctx, picture) else {
         return Some(PaneRows::one(WAITING_FOR_THE_MAP));
     };
     let at = at_of(picture, &doc);
     let horizon = doc.horizon(at);
-    let roster = doc.roster();
+    let units: Vec<MapUnit> = doc
+        .roster()
+        .iter()
+        .enumerate()
+        .map(|(index, unit)| {
+            let glyph = if doc.wrecked_by(index, horizon) {
+                WRECK_GLYPH
+            } else {
+                unit.glyph()
+            };
+            (
+                glyph,
+                unit.callsign.clone(),
+                doc.slot(at, index).map(|(x, y, _)| (x, y)),
+            )
+        })
+        .collect();
+    let focus = doc
+        .slot(at, usize::from(picture.focus))
+        .map(|(x, y, _)| (x, y));
+    let sep = if ctx.utf8 { "\u{2014}" } else { "-" };
+    let heading = format!(
+        "Replay {} {sep} {} ({}/{})",
+        picture.match_id,
+        clock_text(doc.keyframe_t(at)),
+        at.saturating_add(1),
+        doc.keyframe_count()
+    );
+    Some(compose_map(ctx, map, &heading, focus, &units))
+}
+
+/// **The map pane of a live picture** (16b cut I.4): [`compose_map`] over the
+/// held picture's units — `o` red, `*` blue, `%` a wreck, a unit with no cell
+/// not drawn — centred on the focus unit and headed `Watching 12 — 1:30
+/// (live)`.
+fn live_map_rows(ctx: &RenderCtx<'_>, picture: &Picture) -> PaneRows {
+    let Some((_, live)) = held_live(ctx) else {
+        return PaneRows::one(WAITING_FOR_THE_PICTURE);
+    };
+    let Some(map) = ground_of(ctx, picture) else {
+        return PaneRows::one(WAITING_FOR_THE_MAP);
+    };
+    let units: Vec<MapUnit> = live
+        .units()
+        .into_iter()
+        .map(|unit| (unit.glyph(), unit.callsign.clone(), unit.cell))
+        .collect();
+    let focus = units
+        .get(usize::from(picture.focus))
+        .and_then(|(_, _, cell)| *cell);
+    let sep = if ctx.utf8 { "\u{2014}" } else { "-" };
+    let heading = format!(
+        "Watching {} {sep} {} (live)",
+        picture.match_id,
+        clock_text(live.now_ms())
+    );
+    compose_map(ctx, map, &heading, focus, &units)
+}
+
+/// The pulled ground of the picture's match, when the store holds it.
+fn ground_of<'a>(ctx: &RenderCtx<'a>, picture: &Picture) -> Option<&'a Value> {
+    ctx.store.get(ARENA_MAP_FEED).filter(|map| {
+        seated(map) && map.get("match").and_then(Value::as_i64) == Some(picture.match_id)
+    })
+}
+
+/// **The picture's map, composed** (16b cut I.2; shared with 16b cut I.4's
+/// live picture): the window on `focus`, the terrain, the spots, then `units`
+/// — `(marker, callsign, cell)` in drawing order, a unit with no cell not
+/// drawn — the heading, and the owner-rule legend. See [`map_rows`].
+fn compose_map(
+    ctx: &RenderCtx<'_>,
+    map: &Value,
+    heading_text: &str,
+    focus: Option<(usize, usize)>,
+    units: &[MapUnit],
+) -> PaneRows {
     let width = cell_num(map, "width");
     let height = cell_num(map, "height");
     let empty = Vec::new();
@@ -440,9 +750,6 @@ pub fn map_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
         Some((w, h)) => (w, h.max(1), false, false),
         None => (COCKPIT_MAP_FALLBACK.0, COCKPIT_MAP_FALLBACK.1, true, true),
     };
-    let focus = doc
-        .slot(at, usize::from(picture.focus))
-        .map(|(x, y, _)| (x, y));
     let (x0, y0, w, h) = mush_ansi::viewport(
         width,
         height,
@@ -478,24 +785,22 @@ pub fn map_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
         }
     }
     let mut landed: Vec<(usize, char, (usize, usize))> = Vec::new();
-    for (index, unit) in roster.iter().enumerate() {
-        let Some((x, y, _)) = doc.slot(at, index) else {
+    for (index, (glyph, _, cell)) in units.iter().enumerate() {
+        let Some(cell) = *cell else {
             continue;
         };
-        let glyph = if doc.wrecked_by(index, horizon) {
-            WRECK_GLYPH
-        } else {
-            unit.glyph()
-        };
-        if let Some(cell_at) = put_marker(&mut grid, (x0, y0), (x, y), glyph) {
+        if let Some(cell_at) = put_marker(&mut grid, (x0, y0), cell, *glyph) {
             owner.insert(cell_at, Owner::Unit(index));
-            landed.push((index, glyph, cell_at));
+            landed.push((index, *glyph, cell_at));
         }
     }
     let mut legend: Vec<String> = landed
         .iter()
         .filter(|(index, _, cell_at)| owner.get(cell_at) == Some(&Owner::Unit(*index)))
-        .map(|(index, glyph, _)| format!("{glyph} {}", callsign_of(&roster, *index)))
+        .map(|(index, glyph, _)| {
+            let callsign = units.get(*index).map_or("?", |(_, name, _)| name.as_str());
+            format!("{glyph} {callsign}")
+        })
         .collect();
     legend.extend(
         spots_landed
@@ -505,15 +810,8 @@ pub fn map_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
     );
     let mut out = Vec::with_capacity(h + 2);
     if heading {
-        let sep = if ctx.utf8 { "\u{2014}" } else { "-" };
         out.push(PaneRow::plain(Line::from(Span::styled(
-            format!(
-                "Replay {} {sep} {} ({}/{})",
-                picture.match_id,
-                clock_text(doc.keyframe_t(at)),
-                at.saturating_add(1),
-                doc.keyframe_count()
-            ),
+            heading_text.to_string(),
             Style::default().add_modifier(Modifier::BOLD),
         ))));
     }
@@ -527,7 +825,7 @@ pub fn map_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
             &legend, width,
         )))));
     }
-    Some(PaneRows { rows: out })
+    PaneRows { rows: out }
 }
 
 /// **The status pane of a replay** (16b cut I.2): what match, which keyframe,
@@ -550,6 +848,9 @@ pub fn map_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
 /// held.
 #[must_use]
 pub fn status_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
+    if is_live(ctx) {
+        return live_status_rows(ctx);
+    }
     let (picture, doc) = held(ctx)?;
     let at = at_of(picture, &doc);
     let roster = doc.roster();
@@ -604,6 +905,38 @@ pub fn status_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
     Some(PaneRows { rows })
 }
 
+/// **The status pane of a live picture** (16b cut I.4), four sentences at or
+/// under the Left pane's 32 columns:
+///
+/// ```text
+/// Match 12  engaged  floor 5000
+/// Live, at most once a second.
+/// In flight: 2
+/// @arena/watch off stops it.
+/// ```
+///
+/// `floor` only while a staff floor stands. `None` when no picture of the live
+/// match is held.
+fn live_status_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
+    let (picture, live) = held_live(ctx)?;
+    let mut head = format!("Match {}  {}", picture.match_id, live.tempo());
+    if let Some(floor) = live.floor_ms() {
+        head.push_str(&format!("  floor {floor}"));
+    }
+    let mut rows = vec![PaneRow::plain(Line::from(Span::styled(
+        head,
+        Style::default().add_modifier(Modifier::BOLD),
+    )))];
+    for line in [
+        LIVE_CADENCE.to_string(),
+        format!("In flight: {}", live.in_flight()),
+        LIVE_STOP.to_string(),
+    ] {
+        rows.push(PaneRow::plain(Line::from(Span::raw(line))));
+    }
+    Some(PaneRows { rows })
+}
+
 /// `Cut: first 61:20 kept.` — the replay holds its keyframes to the last one's
 /// time.
 fn first_kept(doc: &Document<'_>) -> String {
@@ -616,6 +949,10 @@ fn first_kept(doc: &Document<'_>) -> String {
 /// there is none. `None` when no picture's document is held.
 #[must_use]
 pub fn damage_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
+    // 16b cut I.4: a live picture carries no damage.
+    if is_live(ctx) {
+        return held_live(ctx).map(|_| PaneRows::one(NOTHING_YET));
+    }
     let (picture, doc) = held(ctx)?;
     let horizon = doc.horizon(at_of(picture, &doc));
     let roster = doc.roster();
@@ -649,6 +986,10 @@ pub fn damage_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
 /// held.
 #[must_use]
 pub fn weapons_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
+    // 16b cut I.4: nor any shot but the count in flight.
+    if is_live(ctx) {
+        return held_live(ctx).map(|_| PaneRows::one(NOTHING_YET));
+    }
     let (picture, doc) = held(ctx)?;
     let at = at_of(picture, &doc);
     let horizon = doc.horizon(at);
@@ -695,6 +1036,9 @@ pub fn weapons_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
 /// no picture's document is held.
 #[must_use]
 pub fn contacts_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
+    if is_live(ctx) {
+        return live_contacts_rows(ctx);
+    }
     let (picture, doc) = held(ctx)?;
     let at = at_of(picture, &doc);
     let horizon = doc.horizon(at);
@@ -730,9 +1074,220 @@ pub fn contacts_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
     Some(PaneRows { rows })
 }
 
+/// **The contacts pane of a live picture** (16b cut I.4): every unit, in the
+/// picture's order —
+///
+/// ```text
+/// RA   red   (120, 97) 090° #1234 machine wreck
+/// BA   blue  off the window #302 pilot held
+/// ```
+///
+/// — its cell and heading (or `off the window`), its object number (a staff
+/// surface), `machine` or `pilot`, then one state word ([`LiveUnit::words`]).
+/// **One line a unit at the 120-column floor** (the owner's width ruling): the
+/// contacts pane is 46 columns inside there, and with one space between fields
+/// and one state word a row of a three-digit cell and a four-digit object
+/// number is whole as `machine`, `pilot`, `wreck` or `held`; a row wider than
+/// the pane it is drawn into — `starting` on such a row, which lasts the
+/// `startup_ms` of a start-up (ten seconds by default), or a five-digit number
+/// — is cut at the pane's edge with an ellipsis instead of wrapping, which
+/// would spend two lines on it and halve the units the pane shows. Where the pane's width is not known (the input paths ask
+/// what the rows ARE) the row is whole. Every row is selectable with the
+/// callsign as its key and no prefill: `Enter` moves the focus. `None` when no
+/// picture is held.
+fn live_contacts_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
+    let (_, live) = held_live(ctx)?;
+    let width = ctx.pane.map(|(width, _)| usize::from(width));
+    let rows = live
+        .units()
+        .into_iter()
+        .map(|unit| {
+            let place = match unit.cell {
+                Some((x, y)) => format!("({x}, {y}) {:03}{}", unit.heading, degree(ctx.utf8)),
+                None => "off the window".to_string(),
+            };
+            let head = format!("{:<4} ", unit.callsign);
+            let mut rest = format!("{:<5} {place} #{} {}", unit.side(), unit.id, unit.words());
+            if let Some(width) = width {
+                let room = width.saturating_sub(head.chars().count());
+                if rest.chars().count() > room {
+                    let ellipsis = if ctx.utf8 { "\u{2026}" } else { "..." };
+                    let keep = room.saturating_sub(ellipsis.chars().count());
+                    rest = format!("{}{ellipsis}", truncate_chars(&rest, keep));
+                }
+            }
+            PaneRow {
+                line: Line::from(vec![
+                    Span::styled(head, Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(rest),
+                ]),
+                prefill: None,
+                row_key: Some(unit.callsign.clone()),
+                selectable: true,
+            }
+        })
+        .collect();
+    Some(PaneRows { rows })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **16b cut I.4**: a live picture's rows read totally — a null cell is off
+    /// the window — and the flags make the controller word and the one state
+    /// word that weighs most. (What the panes print is pinned as rendered below.)
+    #[test]
+    fn i4_a_live_picture_reads_its_rows_and_its_words() {
+        let data = serde_json::json!({
+            "schema": { "id": "arena.observer", "version": 1, "retain": "latest" },
+            "match": 12, "now_ms": 90_000, "tempo": "engaged", "floor_ms": null,
+            "in_flight": 2,
+            "units": [["RA", "R", 120, 97, 90, 301, "pm"], ["BA", "B", null, null, 270, 302, "wsh"]],
+        });
+        let live = Live::of(&data).expect("a picture");
+        assert_eq!(live.match_id(), 12);
+        let units = live.units();
+        assert_eq!(units.len(), 2);
+        assert_eq!(units[0].cell, Some((120, 97)));
+        assert_eq!(units[0].glyph(), RED_GLYPH);
+        assert_eq!(units[0].words(), "machine");
+        assert_eq!(units[1].cell, None);
+        assert_eq!(units[1].glyph(), WRECK_GLYPH);
+        assert_eq!(units[1].words(), "pilot wreck");
+        assert_eq!(live.unit_index("BA"), Some(1));
+        assert!(Live::of(&serde_json::json!({ "watching": false })).is_none());
+        // One state word, the first that applies in the order of weight.
+        let words = |flags: &str| {
+            LiveUnit {
+                callsign: "RA".into(),
+                blue: false,
+                cell: None,
+                heading: 0,
+                id: 1,
+                flags: flags.into(),
+            }
+            .words()
+        };
+        assert_eq!(words(""), "pilot");
+        assert_eq!(words("m"), "machine");
+        assert_eq!(words("sm"), "machine starting");
+        assert_eq!(words("phm"), "machine held");
+        assert_eq!(words("wsh"), "pilot wreck");
+    }
+
+    /// The live panes as `TuiApp::draw_pane` renders them, into a pane of
+    /// `pane` columns: every row's text.
+    fn live_pane_text(
+        data: &Value,
+        render: fn(&RenderCtx<'_>) -> Option<PaneRows>,
+        pane: Option<(u16, u16)>,
+    ) -> Vec<String> {
+        let theme = mush_ansi::AnsiTheme::classic();
+        let mut store = super::super::panels::PanelStore::new();
+        store.apply_panel(
+            &mush_proto::SmolStr::new_static(OBSERVER_FEED),
+            mush_proto::PanelFrameKind::Keyframe,
+            data,
+            0,
+        );
+        let picture = Picture {
+            match_id: data["match"].as_i64().unwrap_or(0),
+            at: 0,
+            focus: 0,
+            live: true,
+        };
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: mush_proto::ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane,
+            picture: Some(&picture),
+        };
+        render(&ctx)
+            .expect("the live picture is held")
+            .rows
+            .iter()
+            .map(|row| {
+                row.line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// **16b cut I.4 (`T3`)**: the status pane AS RENDERED, at the widest head
+    /// it can print — a four-digit match, the longest tempo word, a ten-second
+    /// floor, a `u32` of rounds in flight — is four sentences, each inside the
+    /// Left pane's 32 columns.
+    #[test]
+    fn i4_the_live_status_rows_fit_the_left_pane_at_their_widest() {
+        let data = serde_json::json!({
+            "schema": { "id": "arena.observer", "version": 1, "retain": "latest" },
+            "match": 9999, "now_ms": 3_600_000, "tempo": "engaged", "floor_ms": 10_000,
+            "in_flight": u32::MAX, "units": [],
+        });
+        let rows = live_pane_text(&data, status_rows, Some((32, 20)));
+        assert_eq!(
+            rows,
+            [
+                "Match 9999  engaged  floor 10000".to_string(),
+                LIVE_CADENCE.to_string(),
+                format!("In flight: {}", u32::MAX),
+                LIVE_STOP.to_string(),
+            ]
+        );
+        for row in &rows {
+            assert!(row.chars().count() <= 32, "{row:?}");
+        }
+    }
+
+    /// **16b cut I.4 (`R3`)**: a contacts row of realistic figures — the 256-cell
+    /// ground's three-digit cells, a four-digit object number — is WHOLE in the
+    /// 46 columns the contacts pane has at the 120-column floor as `wreck`,
+    /// `held` or no state word; a wider one (`starting` there, or a five-digit
+    /// number) is cut at the pane's edge with an ellipsis and never wraps; where
+    /// the width is not known the row is whole.
+    #[test]
+    fn i4_a_live_contacts_row_is_one_line_in_the_pane_at_the_floor() {
+        let data = serde_json::json!({
+            "schema": { "id": "arena.observer", "version": 1, "retain": "latest" },
+            "match": 12, "now_ms": 90_000, "tempo": "engaged", "floor_ms": null,
+            "in_flight": 0,
+            "units": [
+                ["RA", "R", 255, 255, 359, 1234, "sm"],
+                ["RB", "R", 255, 255, 90, 1235, "pwm"],
+                ["BA", "B", 255, 199, 270, 9876, "phm"],
+                ["BB", "B", null, null, 0, 9877, "s"],
+                ["BC", "B", 255, 255, 359, 12_345, "s"],
+                ["BD", "B", 255, 255, 359, 1236, "pm"],
+            ],
+        });
+        let rows = live_pane_text(&data, contacts_rows, Some((46, 20)));
+        assert_eq!(
+            rows,
+            [
+                "RA   red   (255, 255) 359\u{b0} #1234 machine star\u{2026}",
+                "RB   red   (255, 255) 090\u{b0} #1235 machine wreck",
+                "BA   blue  (255, 199) 270\u{b0} #9876 machine held",
+                "BB   blue  off the window #9877 pilot starting",
+                "BC   blue  (255, 255) 359\u{b0} #12345 pilot start\u{2026}",
+                "BD   blue  (255, 255) 359\u{b0} #1236 machine",
+            ]
+        );
+        for row in &rows {
+            assert!(row.chars().count() <= 46, "{row:?}");
+        }
+        let whole = live_pane_text(&data, contacts_rows, None);
+        assert_eq!(
+            whole.get(4).map(String::as_str),
+            Some("BC   blue  (255, 255) 359\u{b0} #12345 pilot starting")
+        );
+    }
 
     /// Every status sentence the table can print, at the longest match id a
     /// four-digit centre reaches, sits inside the Left pane's 32 columns.

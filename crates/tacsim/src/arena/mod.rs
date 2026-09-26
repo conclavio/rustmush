@@ -189,6 +189,16 @@
 //! ([`crate::arena::step::Frame::catchup`]). Both tables are views beside
 //! `last_frames` and fold into no hash.
 //!
+//! # Cut I.4: the staff picture
+//!
+//! [`crate::arena::observer`] is 16c N10's third lever: [`crate::arena::observer::Observer`], the
+//! whole field as staff see it — objective, every unit by object number — built
+//! by [`crate::arena::state::Arena::observer`] and handed out by phase 5 on
+//! [`crate::arena::step::StepOutput::observer`] at most once per pulse and at
+//! most once an arena second while [`crate::arena::state::Arena::watched`] is
+//! set. It is a type distinct from a pilot's [`crate::arena::step::Frame`] with no path into one
+//! (doc 16 §1), and the two fields that gate it are views no hash folds.
+//!
 //! What is still not here, and whose it is: deliberation, the order type, the
 //! squad grouping and the cost run are cut N.2's, and the task, the inbox, the
 //! egress, the timer and the unwind boundary are cut T's.
@@ -205,6 +215,7 @@ pub mod index;
 pub mod intents;
 pub mod ledger;
 pub mod motion;
+pub mod observer;
 pub mod path;
 pub mod perception;
 pub mod reflex;
@@ -240,6 +251,7 @@ pub use intents::{
 };
 pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, LedgerFull};
 pub use motion::{Held, MotionOutcome, cos_fx, integrate, sin_fx};
+pub use observer::{Observer, ObserverUnit};
 pub use path::{PathFailure, PathResult, PathScratch, min_move_cost, path_with};
 pub use perception::{
     FULL_SIGNATURE_PERMILLE, FrameCondition, FrameContact, Named, PerceptionCounters,

@@ -37,10 +37,33 @@
 //
 // Nothing here reads a clock of its own: `needsMap`, `needsDocument` and `pull`
 // are given one.
+//
+// **The live picture (16b cut I.4; 16c N10)** rides the same store in LIVE
+// mode (`live`, `applyObserver`): a staffer's `@arena/watch` pushes the whole
+// field on `arena.observer` at most once an arena second, and the first
+// picture opens the store live — **closing an open replay** (the picture is
+// replaced and the replay's document and ground are forgotten). The picture
+// is held as a one-keyframe document (`liveAsReplay`) so the screen draws it
+// as it draws a keyframe; it is never asked for as a document (`needsDocument`
+// is `false` live) — every picture is pushed — and `observerOwed` is what the
+// hello pass and `p` re-ask `arena.observer` on, beside the staleness heal
+// (`LIVE_STALE_MS`, `needsObserver`) that catches a server-half restart a web
+// socket rides with no hello. Nothing steps it
+// (`stepKeyframe` and `seek` do nothing live) and only the server closes it:
+// `watching: false` closes it and dismisses the match (I.2's rule for
+// `available: false`, applied), under the same seq rule a grid is held to.
 
 import type { ArenaMap } from "../cockpit";
 import { decodeArenaMap } from "../cockpit";
-import { decodeReplay, decodeReplayGrid, type Replay } from "../replay";
+import {
+  decodeObserver,
+  decodeReplay,
+  decodeReplayGrid,
+  isObserverCleared,
+  liveAsReplay,
+  type ObserverPicture,
+  type Replay,
+} from "../replay";
 import { MAP_ASK_MS } from "./cockpit.svelte";
 
 /**
@@ -51,6 +74,20 @@ import { MAP_ASK_MS } from "./cockpit.svelte";
  * an answer that has not landed by then is not coming on this socket.
  */
 export const REPLAY_ASK_MS = 10_000;
+
+/**
+ * **How long a live picture may go without a keyframe before the heal asks
+ * `arena.observer` again** (16b cut I.4), ms — and the least time between two
+ * such asks: the TUI's `LIVE_STALE_S`. The world pushes a picture at most once
+ * an arena second but only once a pulse — every `quiet_ms` (5,000 by default)
+ * at `Quiet`, as seldom as `MAX_TEMPO_FLOOR_MS` (10,000) under a staff floor —
+ * so fifteen seconds is above every healthy gap, and a quiet that long means a
+ * lagging match or a server half that restarted and forgot the watch. A web
+ * socket rides such a restart with NO hello, so without this the last picture
+ * would stay up under the live label until `p`; the answer is the picture
+ * again, or `watching: false`, which closes it.
+ */
+export const LIVE_STALE_MS = 15_000;
 
 export class ReplayStore {
   /** Whether a replay is open. */
@@ -69,6 +106,14 @@ export class ReplayStore {
   playing = $state(false);
   /** Whether this is a live picture (16b cut I.4's); `false` for a replay. */
   live = $state(false);
+  /** The live picture, while `live` (16b cut I.4). */
+  observer = $state<ObserverPicture | null>(null);
+  /** The live picture is owed an `arena.observer` ask (the hello pass, `p`). */
+  observerOwed = false;
+  /** When the last live picture landed, and when the last `arena.observer`
+   * ask went out — what the staleness heal measures `LIVE_STALE_MS` from. */
+  #observerSeenAt: number | null = null;
+  #observerAskedAt: number | null = null;
   /** The matches this viewer closed; see the header. */
   dismissed = new Set<number>();
   /** An `arena.replay` ask is outstanding. */
@@ -137,6 +182,83 @@ export class ReplayStore {
   }
 
   /**
+   * **Apply one `arena.observer` keyframe** (16b cut I.4), seq `seq`. Answers
+   * whether it OPENED a live picture — `true` once per match opened, so the
+   * caller switches the screen exactly then.
+   *
+   * `watching: false` closes a LIVE picture and dismisses its match (a replay
+   * is left alone). A picture of a match whose dismissal saw a seq at or above
+   * this one is a replay of the resume ring and opens nothing; a newer one
+   * clears the mark. A picture of the live match already open replaces what is
+   * drawn; any other opens it live, closing whatever was open — a replay
+   * included — and keeping a held ground only when it is the same match's.
+   */
+  applyObserver(data: unknown, seq: number, now: number): boolean {
+    if (isObserverCleared(data)) {
+      if (this.open && this.live) {
+        this.close();
+      }
+      return false;
+    }
+    const pic = decodeObserver(data);
+    if (pic === null) {
+      return false;
+    }
+    const seen = this.#dismissedAt.get(pic.match);
+    if (seen !== undefined && seq > seen) {
+      this.dismissed.delete(pic.match);
+      this.#dismissedAt.delete(pic.match);
+    }
+    this.#gridSeq.set(pic.match, Math.max(seq, this.#gridSeq.get(pic.match) ?? seq));
+    if (this.dismissed.has(pic.match)) {
+      return false;
+    }
+    const already = this.open && this.live && this.match === pic.match;
+    if (!already) {
+      const keepMap = this.map !== null && this.map.match === pic.match;
+      const map = keepMap ? this.map : null;
+      if (this.open) {
+        this.close();
+      }
+      this.open = true;
+      this.live = true;
+      this.match = pic.match;
+      this.map = map;
+      this.focus = 0;
+      this.playing = false;
+      this.docAsked = false;
+      this.#docAskedAt = null;
+      this.#docOwed = false;
+      this.#openAt = null;
+    }
+    this.observer = pic;
+    this.#observerSeenAt = now;
+    this.doc = liveAsReplay(pic);
+    this.cursorMs = pic.now_ms;
+    if (this.focus >= pic.units.length) {
+      this.focus = 0;
+    }
+    return !already;
+  }
+
+  /** Whether the live picture is owed an `arena.observer` ask at `now` — the
+   * hello pass's or `p`'s debt, or the staleness heal's: no picture and no ask
+   * for `LIVE_STALE_MS` — and, when it is, takes the debt and stamps the ask,
+   * so a caller asks exactly as often as this answers `true`. */
+  needsObserver(now: number): boolean {
+    if (!this.open || !this.live) {
+      return false;
+    }
+    const aged = (at: number | null): boolean => at === null || now - at >= LIVE_STALE_MS || now < at;
+    if (!this.observerOwed && !(aged(this.#observerSeenAt) && aged(this.#observerAskedAt))) {
+      return false;
+    }
+    this.observerOwed = false;
+    this.#observerAskedAt = now;
+    return true;
+  }
+
+  /**
    * Apply one `arena.replay` document answer. `available: false` closes the
    * picture and dismisses the match; the document of the open match is held
    * (the cursor on the keyframe the grid showed, the focus inside the
@@ -145,6 +267,11 @@ export class ReplayStore {
    */
   applyDocument(data: unknown): void {
     this.docAsked = false;
+    // 16b cut I.4: a live picture has no document; an answer on the replay
+    // feed is not its to take.
+    if (this.live) {
+      return;
+    }
     if (typeof data === "object" && data !== null && (data as Record<string, unknown>).available === false) {
       if (this.open) {
         this.close();
@@ -185,7 +312,7 @@ export class ReplayStore {
    * `pull`, and never while an ask is outstanding (see `docOutstanding`).
    */
   needsDocument(now: number): boolean {
-    if (!this.open || !this.#docOwed || this.docOutstanding(now)) {
+    if (!this.open || this.live || !this.#docOwed || this.docOutstanding(now)) {
       return false;
     }
     this.#docOwed = false;
@@ -232,6 +359,11 @@ export class ReplayStore {
    * `now`, which `p` does not duplicate (the ground while dark goes through
    * `needsMap`'s latch). */
   pull(now: number): void {
+    // 16b cut I.4: a live picture's pull is the picture itself.
+    if (this.open && this.live) {
+      this.observerOwed = true;
+      return;
+    }
     if (this.open && !this.docOutstanding(now)) {
       this.#docOwed = true;
     }
@@ -242,7 +374,8 @@ export class ReplayStore {
   stepKeyframe(delta: number): void {
     const doc = this.doc;
     this.playing = false;
-    if (doc === null || doc.keyframes.length === 0) {
+    // 16b cut I.4: nothing steps a live picture.
+    if (doc === null || doc.keyframes.length === 0 || this.live) {
       return;
     }
     const times = doc.keyframes.map((kf) => kf.t_ms);
@@ -261,6 +394,10 @@ export class ReplayStore {
 
   /** Move the cursor (the scrubber), clamped to the replay. */
   seek(ms: number): void {
+    // 16b cut I.4: nor scrubs one.
+    if (this.live) {
+      return;
+    }
     this.cursorMs = Math.min(Math.max(0, Math.trunc(ms)), this.endMs);
   }
 
@@ -293,6 +430,12 @@ export class ReplayStore {
     this.#openAt = null;
     this.#mapAskedAt = null;
     this.#mapAskedFor = null;
+    // 16b cut I.4: and the live picture.
+    this.live = false;
+    this.observer = null;
+    this.observerOwed = false;
+    this.#observerSeenAt = null;
+    this.#observerAskedAt = null;
   }
 
   /** **A re-hydrate** (the hello pass): the picture stays open on its match,
@@ -300,6 +443,16 @@ export class ReplayStore {
    * again. */
   clearForRehydrate(): void {
     if (!this.open) {
+      return;
+    }
+    if (this.live) {
+      // 16b cut I.4: a live picture keeps drawing its last picture and is
+      // owed a re-ask of `arena.observer` — the picture again, or `watching:
+      // false` (a server-half restart forgot the watch), which closes it.
+      this.map = null;
+      this.observerOwed = true;
+      this.#mapAskedAt = null;
+      this.#mapAskedFor = null;
       return;
     }
     this.doc = null;

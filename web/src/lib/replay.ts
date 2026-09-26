@@ -27,6 +27,15 @@
 // print of the window) — the byte target this file's `composeReplayWindow` and
 // the TUI's replay map both equal at 39 by 20 cells — and
 // `replay_view_model.txt`, this file's own golden (`REPLAY_BLESS=1`).
+//
+// **The live picture (16b cut I.4; 16c N10).** `@arena/watch <match>` makes a
+// staffer a watcher of a RUNNING match, and the world pushes them its whole
+// field on `arena.observer` at most once an arena second. `decodeObserver`
+// reads one; `liveAsReplay` turns it into a one-keyframe `Replay` so the same
+// `frameAt` and `composeReplayWindow` draw it (units as a replay draws them:
+// `o` red, `*` blue, `%` a wreck, a unit with no cell not drawn); `liveView`
+// words it. A live picture is objective and a STAFF surface: its rows name
+// object numbers on purpose.
 
 import {
   windowGround,
@@ -47,6 +56,16 @@ export const WRECK_GLYPH = "%";
 
 /** What the screen says while the document is on its way. */
 export const WAITING_FOR_THE_REPLAY = "Waiting for the replay...";
+
+/** The staff picture's feed (16b cut I.4's `arena_bridge::OBSERVER_FEED`). */
+export const OBSERVER_FEED = "arena.observer";
+
+/** The label under a live picture's canvas (16b cut I.4). */
+export const LIVE_LABEL = "Live: the arena's own positions, at most once an arena second.";
+
+/** The live status lines' second and last (16b cut I.4; the TUI's too). */
+export const LIVE_CADENCE = "Live, at most once a second.";
+export const LIVE_STOP = "@arena/watch off stops it.";
 
 /** One unit of the roster: the callsign every viewer calls it by, and its
  * side. No object number and no pilot. */
@@ -240,6 +259,161 @@ export function decodeReplayGrid(data: unknown): { match: number; keyframe: numb
   }
   const keyframe = isObj(data.keyframe) ? (nat(data.keyframe.index) ?? 0) : 0;
   return { match, keyframe };
+}
+
+/** One unit of a live picture (16b cut I.4): the payload's positional row
+ * `[callsign, team letter, x | null, y | null, heading, object number, flags]`. */
+export interface ObserverUnit {
+  callsign: string;
+  team: "red" | "blue";
+  /** Its cell, or `null` off the window. */
+  cell: [number, number] | null;
+  heading_deg: number;
+  /** Its object number — a staff surface names it on purpose. */
+  id: number;
+  /** `w` wreck, `p` power online, `s` starting, `m` machine, `h` held, in
+   * that order. */
+  flags: string;
+}
+
+/** One `arena.observer` picture, decoded (16b cut I.4's `observer_frame`). */
+export interface ObserverPicture {
+  match: number;
+  now_ms: number;
+  tempo: string;
+  /** The staff tempo floor, milliseconds, while one stands. */
+  floor_ms: number | null;
+  cell_cm: number;
+  width: number;
+  height: number;
+  in_flight: number;
+  units: ObserverUnit[];
+}
+
+/** **Read one `arena.observer` keyframe** (16b cut I.4), tolerant as
+ * `decodeReplay` is — or `null` for `watching: false` and for anything with no
+ * match. */
+export function decodeObserver(data: unknown): ObserverPicture | null {
+  if (!isObj(data) || data.watching === false) {
+    return null;
+  }
+  const match = nat(data.match);
+  if (match === null) {
+    return null;
+  }
+  const units: ObserverUnit[] = (Array.isArray(data.units) ? data.units : []).flatMap(
+    (row): ObserverUnit[] => {
+      if (!Array.isArray(row)) {
+        return [];
+      }
+      const x = nat(row[2]);
+      const y = nat(row[3]);
+      return [
+        {
+          callsign: clean(row[0], "?", 8),
+          team: row[1] === "B" ? "blue" : "red",
+          cell: x !== null && y !== null ? [x, y] : null,
+          heading_deg: (nat(row[4]) ?? 0) % 360,
+          id: nat(row[5]) ?? 0,
+          flags: clean(row[6], "", 8),
+        },
+      ];
+    },
+  );
+  return {
+    match,
+    now_ms: Math.max(0, int(data.now_ms, 0)),
+    tempo: clean(data.tempo, "?", 8),
+    floor_ms: nat(data.floor_ms),
+    cell_cm: int(data.cell_cm, 100),
+    width: Math.max(0, int(data.width, 0)),
+    height: Math.max(0, int(data.height, 0)),
+    in_flight: nat(data.in_flight) ?? 0,
+    units,
+  };
+}
+
+/** Whether an `arena.observer` keyframe says there is nothing to watch. */
+export function isObserverCleared(data: unknown): boolean {
+  return isObj(data) && data.watching === false;
+}
+
+/** **A live picture as a one-keyframe replay** (16b cut I.4): the roster its
+ * units, one keyframe at its `now_ms`, its wrecks wrecked at that moment — so
+ * `frameAt` and `composeReplayWindow` draw it exactly as a replay's keyframe is
+ * drawn. It carries no shot and no outcome. */
+export function liveAsReplay(pic: ObserverPicture): Replay {
+  return {
+    match: pic.match,
+    arena: "",
+    cell_cm: pic.cell_cm,
+    width: pic.width,
+    height: pic.height,
+    summary_ms: 0,
+    end_ms: pic.now_ms,
+    outcome: "",
+    reason: "",
+    roster: pic.units.map((u) => ({ callsign: u.callsign, team: u.team })),
+    keyframes: [
+      {
+        t_ms: pic.now_ms,
+        units: pic.units.map((u) =>
+          u.cell === null ? null : { x: u.cell[0], y: u.cell[1], heading_deg: u.heading_deg },
+        ),
+      },
+    ],
+    shots: [],
+    destroyed: pic.units.flatMap((u, i): [number, number][] =>
+      u.flags.includes("w") ? [[pic.now_ms, i]] : [],
+    ),
+    truncated: false,
+    cut: [],
+  };
+}
+
+/** A live unit's words after its object number: `machine` or `pilot`, then
+ * `wreck`, `held` and `starting` where they apply (the TUI's). */
+function liveWords(u: ObserverUnit): string {
+  const words = [u.flags.includes("m") ? "machine" : "pilot"];
+  for (const [flag, word] of [
+    ["w", "wreck"],
+    ["h", "held"],
+    ["s", "starting"],
+  ] as const) {
+    if (u.flags.includes(flag)) {
+      words.push(word);
+    }
+  }
+  return words.join("  ");
+}
+
+/** **The live picture's view model** (16b cut I.4): every string the screen
+ * prints for one picture drawn in the window `win` — the heading, the label
+ * that says what it is, the clock, the legend, one row a unit (its cell and
+ * heading or `off the window`, its object number, its words) and the four
+ * status lines the TUI's status pane prints. No shots and no wrecks: the
+ * picture carries none. */
+export function liveView(pic: ObserverPicture, win: ComposedWindow | null): ReplayView {
+  const floor = pic.floor_ms === null ? "" : `  floor ${pic.floor_ms}`;
+  return {
+    header: `Watching ${pic.match} — ${clockText(pic.now_ms)} (live)`,
+    label: LIVE_LABEL,
+    clock: clockText(pic.now_ms),
+    legend: markerLegend(win),
+    shots: [],
+    wrecks: [],
+    units: pic.units.map((u) => ({
+      callsign: u.callsign,
+      side: u.team,
+      where: `${
+        u.cell === null
+          ? "off the window"
+          : `(${u.cell[0]}, ${u.cell[1]})  ${String(u.heading_deg).padStart(3, "0")}°`
+      }  #${u.id}  ${liveWords(u)}`,
+    })),
+    truncation: [],
+    status: [`Match ${pic.match}  ${pic.tempo}${floor}`, LIVE_CADENCE, `In flight: ${pic.in_flight}`, LIVE_STOP],
+  };
 }
 
 /** Where every unit is drawn at one arena millisecond. */
@@ -483,6 +657,9 @@ export interface ReplayView {
   units: ReplayUnitRow[];
   /** One sentence per cut, the line client's words. */
   truncation: string[];
+  /** **A live picture's status lines** (16b cut I.4, `liveView`); empty for a
+   * replay. */
+  status: string[];
 }
 
 const SHOT_WORDS: ReadonlyMap<string, string> = new Map([
@@ -557,6 +734,7 @@ export function replayView(
           return `A page of the tape of match ${id} could not be read; the replay is missing what it held.`;
       }
     }),
+    status: [],
   };
 }
 
@@ -571,5 +749,8 @@ export function replayViewLines(view: ReplayView): string[] {
   lines.push(...(view.shots.length > 0 ? view.shots : ["No shots yet."]));
   lines.push(...(view.wrecks.length > 0 ? view.wrecks : ["No wrecks yet."]));
   lines.push(...view.truncation);
+  // 16b cut I.4: a live picture's status lines (a replay has none, and its
+  // golden is unchanged).
+  lines.push(...view.status);
   return lines;
 }

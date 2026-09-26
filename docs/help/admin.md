@@ -99,6 +99,23 @@ The simulator's black box (SIM_ADMIN or Royalty):
                     placed like any other. Its pilot is told nothing,
                     and every other pilot's sensors simply find it where
                     it now is.
+  @arena/watch <match>|off
+                    Watch a running match: its whole field reaches your
+                    panel on arena.observer at most once an arena second
+                    - every tank by callsign, cell, heading and object
+                    number, whether it is powered, held, a wreck or the
+                    machine's, and how many rounds are in flight - and
+                    screen 0 of the TUI and the web draws it live; the
+                    line client prints none of it. For a staffer with no
+                    centre slot and no seat ("You are flying, or about
+                    to; EXIT and leave your slot before you watch." -
+                    any character of a flying account, and a pilot who
+                    has EXITed and kept the slot, too); at most eight a
+                    match. "off" stops it, and so do a disconnect, the
+                    end of the match and losing the power; bare says
+                    what you watch. While you watch, SIM REPLAY answers
+                    "You are watching match 12; @arena/watch off first."
+                    No pilot is ever sent any of it.
 
 Powers: BOOT, EXAMINE_ALL, TEL_ANYWHERE, TEL_ANYTHING, CHOWN_ANY,
 COMSYS_ADMIN, BUILDER_LLM, SEE_HIDDEN, FACTION_ADMIN, SIM_ADMIN. Wizards

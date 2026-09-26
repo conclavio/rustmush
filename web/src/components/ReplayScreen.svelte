@@ -21,6 +21,15 @@
   // The keys (`,` `.` `u` `x` `p`) are the cockpit's second table, dispatched
   // by the shell (`GameApp.localAction`); the scrubber, play and the units'
   // buttons below drive the same store.
+  //
+  // **The live picture (16b cut I.4; 16c N10)** is the same screen in LIVE
+  // mode (`app.replay.live`): a staffer's `@arena/watch` picture, pushed at
+  // most once an arena second and held by the store as a one-keyframe
+  // document, drawn by the same `composeReplayWindow` and worded by
+  // `liveView` — no scrubber and no play (nothing steps it), the label `Live:
+  // the arena's own positions, at most once an arena second.`, a status pane
+  // in place of the shots and the wrecks, and every unit's object number on
+  // purpose (a staff surface; the picture carries it).
   import type { GameApp } from "$lib/game.svelte";
   import {
     COCKPIT_VIEW_CELLS,
@@ -35,6 +44,7 @@
   import {
     composeReplayWindow,
     frameAt,
+    liveView,
     replayView,
     WAITING_FOR_THE_REPLAY,
   } from "$lib/replay";
@@ -69,8 +79,15 @@
       ? composeReplayWindow(ground, doc, frame, app.replay.focus, COCKPIT_VIEW_CELLS, COCKPIT_VIEW_CELLS)
       : null,
   );
+  // 16b cut I.4: a live picture is worded by `liveView` from the picture itself.
+  const live = $derived(app.replay.live);
+  const observer = $derived(app.replay.observer);
   const view = $derived(
-    doc !== null && frame !== null ? replayView(doc, frame, win, app.replay.cursorMs) : null,
+    live && observer !== null
+      ? liveView(observer, win)
+      : doc !== null && frame !== null
+        ? replayView(doc, frame, win, app.replay.cursorMs)
+        : null,
   );
   const focusCallsign = $derived(doc?.roster[app.replay.focus]?.callsign ?? null);
 
@@ -205,21 +222,25 @@
         </div>
       {/if}
       <p class="label">{view.label}</p>
-      <div class="scrub">
-        <button type="button" class="play" aria-label={app.replay.playing ? "pause" : "play"} onclick={togglePlay}
-          >{app.replay.playing ? "pause" : "play"}</button
-        >
-        <input
-          type="range"
-          aria-label="arena time"
-          min="0"
-          max={doc.end_ms}
-          step="100"
-          value={app.replay.cursorMs}
-          oninput={onScrub}
-        />
-        <span class="clock">{view.clock}</span>
-      </div>
+      {#if live}
+        <p class="clock">{view.clock}</p>
+      {:else}
+        <div class="scrub">
+          <button type="button" class="play" aria-label={app.replay.playing ? "pause" : "play"} onclick={togglePlay}
+            >{app.replay.playing ? "pause" : "play"}</button
+          >
+          <input
+            type="range"
+            aria-label="arena time"
+            min="0"
+            max={doc.end_ms}
+            step="100"
+            value={app.replay.cursorMs}
+            oninput={onScrub}
+          />
+          <span class="clock">{view.clock}</span>
+        </div>
+      {/if}
       {#if view.legend.length > 0}
         <p class="legendline">{view.legend}</p>
       {/if}
@@ -242,25 +263,34 @@
         {/each}
       </section>
 
-      <section class="pane" aria-label="shots">
-        <h4 class="pt">shots</h4>
-        {#each view.shots as line, i (i)}
-          <p class="line">{line}</p>
-        {/each}
-        {#if view.shots.length === 0}
-          <p class="muted">No shots yet.</p>
-        {/if}
-      </section>
+      {#if live}
+        <section class="pane" aria-label="status">
+          <h4 class="pt">status</h4>
+          {#each view.status as line, i (i)}
+            <p class="line">{line}</p>
+          {/each}
+        </section>
+        {:else}
+        <section class="pane" aria-label="shots">
+          <h4 class="pt">shots</h4>
+          {#each view.shots as line, i (i)}
+            <p class="line">{line}</p>
+          {/each}
+          {#if view.shots.length === 0}
+            <p class="muted">No shots yet.</p>
+          {/if}
+        </section>
 
-      <section class="pane" aria-label="wrecks">
-        <h4 class="pt">wrecks</h4>
-        {#each view.wrecks as line, i (i)}
-          <p class="line">{line}</p>
-        {/each}
-        {#if view.wrecks.length === 0}
-          <p class="muted">No wrecks yet.</p>
-        {/if}
-      </section>
+        <section class="pane" aria-label="wrecks">
+          <h4 class="pt">wrecks</h4>
+          {#each view.wrecks as line, i (i)}
+            <p class="line">{line}</p>
+          {/each}
+          {#if view.wrecks.length === 0}
+            <p class="muted">No wrecks yet.</p>
+          {/if}
+        </section>
+      {/if}
     </div>
 
     {#each view.truncation as line, i (i)}

@@ -747,3 +747,97 @@ mod custody_writes {
         );
     }
 }
+
+/// The names of cut I.4's staff picture that no pilot surface may speak.
+const OBSERVER_NAMES: [&str; 4] = [
+    "Observer",
+    "ObserverUnit",
+    "observer_frame",
+    "OBSERVER_FEED",
+];
+
+/// **The staff picture has no path into a pilot's feed** (16b cut I.4; doc 16
+/// §1's observer rule; 16c N10).
+///
+/// `@arena/watch` gives staff an objective picture of a running match — every
+/// unit by callsign, cell and object number — built by `Arena::observer` and
+/// published on `arena.observer` to watchers only. Doc 16 §1 says a pilot is
+/// told nothing about a unit their platform has not detected, and what keeps
+/// that true is that the two paths never meet: the pilot's frame is built by
+/// `Arena::frames` and rendered by `crates/tacsim/src/match_/cockpit.rs`, and
+/// neither names the picture's type, its row, its payload builder or its feed.
+/// This reads both and refuses those names, so a path from one to the other is
+/// a reviewed diff and not an accident.
+#[test]
+fn the_observer_has_no_path_into_a_pilot_feed() {
+    let root = repo_root();
+    let cockpit_path = root.join("crates/tacsim/src/match_/cockpit.rs");
+    let step_path = root.join("crates/tacsim/src/arena/step.rs");
+    let cockpit = fs::read_to_string(&cockpit_path)
+        .unwrap_or_else(|error| panic!("{}: {error}", cockpit_path.display()));
+    let step = fs::read_to_string(&step_path)
+        .unwrap_or_else(|error| panic!("{}: {error}", step_path.display()));
+
+    // `Arena::frames`: from its `fn frames(` line to the next `fn ` at the
+    // same indent.
+    let lines: Vec<&str> = step.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("fn frames("))
+        .unwrap_or_else(|| {
+            panic!(
+                "no `fn frames(` in {}: `Arena::frames` moved, and this gate is now asserting \
+                 nothing. Re-point it in the same commit.",
+                step_path.display()
+            )
+        });
+    let indent = lines
+        .get(start)
+        .map_or(0, |line| line.len() - line.trim_start().len());
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, line)| {
+            let trimmed = line.trim_start();
+            line.len() - trimmed.len() == indent
+                && (trimmed.starts_with("fn ")
+                    || trimmed.starts_with("pub fn ")
+                    || trimmed.starts_with("pub(crate) fn "))
+        })
+        .map_or(lines.len(), |(n, _)| n);
+    let frames_text = lines.get(start..end).unwrap_or_default().join("\n");
+    assert!(
+        frames_text.contains("Frame {"),
+        "the slice of step.rs read as `Arena::frames` builds no `Frame`; the scan is reading \
+         the wrong place:\n{frames_text}"
+    );
+
+    let mut offences: Vec<String> = Vec::new();
+    // Each text with the file line its first line is.
+    for (what, text, first) in [
+        ("crates/tacsim/src/match_/cockpit.rs", cockpit.as_str(), 1),
+        (
+            "`Arena::frames` in crates/tacsim/src/arena/step.rs",
+            frames_text.as_str(),
+            start + 1,
+        ),
+    ] {
+        for name in OBSERVER_NAMES {
+            if let Some((n, _)) = text
+                .lines()
+                .enumerate()
+                .find(|(_, line)| line.contains(name))
+            {
+                offences.push(format!("{what}, line {}: names {name:?}", n + first));
+            }
+        }
+    }
+    assert!(
+        offences.is_empty(),
+        "the staff picture (16b cut I.4) reached a pilot surface. Doc 16 §1: nothing tells a \
+         pilot about a unit their platform has not detected, and `arena.observer` names every \
+         unit; the cockpit payloads and `Arena::frames` must never name it.\n{}",
+        offences.join("\n")
+    );
+}

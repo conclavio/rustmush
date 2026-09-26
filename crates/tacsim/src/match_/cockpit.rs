@@ -1964,6 +1964,11 @@ pub fn frame_weapons(frame: &Frame) -> Vec<WeaponRow> {
 /// [`CockpitError`], as the line the pilot sees.
 pub fn board(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
     let actor = ctx.actor;
+    // **16b cut I.4**: nothing here unbinds a staff watcher, because a watcher
+    // cannot reach this verb's success: `BOARD` needs the actor's own centre
+    // slot (read below), `@arena/watch` refuses anybody who holds one — theirs
+    // or their account's — and a slot is claimed only while the centre is not
+    // busy, one match at a time. `open_match` keeps the one defensive unbind.
     // **16b cut F.4**: the layer, first. A pod on a server with the layer off has
     // no tank behind it, so boarding one can only end in a refusal further down
     // the path; this is that refusal, said at the word the player typed.

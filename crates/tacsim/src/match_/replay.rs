@@ -381,7 +381,7 @@ fn cell_from(x_cm: i64, y_cm: i64, cell_cm: u16, width: u16, height: u16) -> Opt
 }
 
 /// Whole degrees from millidegrees, `0..360`.
-fn whole_degrees(heading_mdeg: u32) -> u16 {
+pub(crate) fn whole_degrees(heading_mdeg: u32) -> u16 {
     u16::try_from((heading_mdeg / 1_000) % 360).unwrap_or(0)
 }
 
@@ -1622,7 +1622,8 @@ impl Refused {
 ///
 /// Synchronous and RAM only: the replay and its ground are on the book. The
 /// centre gate is `sim_command`'s; there is **no pilot gate** (Q37: public).
-/// Refusals, in this order: the usage line ([`REPLAY_USAGE`]); `Match 12 is
+/// Refusals, in this order: the usage line ([`REPLAY_USAGE`]); (16b cut I.4)
+/// `You are watching match 3; @arena/watch off first.`; `Match 12 is
 /// still running.` (a record on the book in any state that is not an end — the
 /// one answer an unfinished match gives, checked before the ring); `The centre
 /// remembers its last 20 matches; match 12 is not one of them.`; `The server
@@ -1659,7 +1660,14 @@ fn answer(ctx: &mut Ctx<'_>, word: &str) -> Result<(), Refused> {
     let actor = ctx.actor;
     let ask = parse_ask(word).ok_or_else(|| Refused::dropping(REPLAY_USAGE))?;
     let id = ask.match_id;
-    // I.4: a watcher is refused here
+    // **16b cut I.4**: a watcher is refused, first after the usage line: one
+    // picture at a time, and the watch is the one they asked for last.
+    if let Some(watched) = crate::arena_bridge::watching(ctx.w, actor) {
+        return Err(Refused::dropping(format!(
+            "You are watching match {}; @arena/watch off first.",
+            watched.0
+        )));
+    }
     let (replay, cursor, own_callsign) = {
         let book = ctx
             .w

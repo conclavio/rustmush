@@ -404,6 +404,9 @@ struct Replay {
     /// **16b cut Y.4**: every catch-up report a frame carried to the mover's
     /// pilot, with the arena time of the pulse that built it.
     catchups: Vec<(i64, tacsim::arena::Catchup)>,
+    /// **16b cut I.4**: the arena time of every staff picture a pulse built,
+    /// in order — empty unless the run was watched.
+    observers: Vec<i64>,
 }
 
 impl Replay {
@@ -463,6 +466,7 @@ fn replay_on(
     let mut told: Vec<String> = Vec::new();
     let mut pulses_seen: Vec<(i64, bool, bool)> = Vec::new();
     let mut catchups: Vec<(i64, tacsim::arena::Catchup)> = Vec::new();
+    let mut observers: Vec<i64> = Vec::new();
     loop {
         arena.clock.pin_tempo_for_tests(pin(arena.now_ms));
         let mut controls: Vec<Control> = Vec::new();
@@ -492,6 +496,7 @@ fn replay_on(
         told.extend(heard(&out.frames, MOVER_PILOT));
         pulses_seen.push(seen(arena, started, &out));
         catchups.extend(reported(started, &out));
+        observers.extend(out.observer.as_ref().map(|picture| picture.now_ms));
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
         }
@@ -528,6 +533,7 @@ fn replay_on(
         told,
         pulses_seen,
         catchups,
+        observers,
     }
 }
 
@@ -788,6 +794,80 @@ fn one_scripted_log_at_three_cadences_is_one_event_list_and_one_hash_sequence() 
     }
 }
 
+/// **16b cut I.4's mandatory cross-tempo test** (16b §11; doc 16 §3.1 "Rate
+/// independence", D-16-2; 16c N10): a watched match is the same match. The (a)
+/// script with `Arena::watched` set before the run, against the same script
+/// unwatched, at 5,000, 1,000 and 500 ms: one event list, one per-substep hash
+/// sequence, one set of finals and one notice list — the picture is a view
+/// built in phase 5 that no hash folds and nothing that steers reads.
+///
+/// And the watched run's picture count is the number of distinct arena
+/// seconds its pulses landed in, `until_ms / max(cadence, 1_000) + 1`: the
+/// driver steps once at wall 0, so the opening pulse builds one for second 0,
+/// and at 500 ms the pulse at 500 is in that same second. The unwatched run
+/// builds none.
+#[test]
+fn i4_a_watched_match_is_the_same_match() {
+    const UNTIL_MS: i64 = 60_000;
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut watched_runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut plain = scripted_arena();
+        let unwatched = replay(&mut plain, cadence, UNTIL_MS, &script(), &quiet);
+        let mut seen = scripted_arena();
+        seen.watched = true;
+        let watched = replay(&mut seen, cadence, UNTIL_MS, &script(), &quiet);
+
+        assert!(
+            unwatched.observers.is_empty(),
+            "an unwatched run built a picture at {cadence} ms"
+        );
+        let expected = usize::try_from(UNTIL_MS / cadence.max(1_000) + 1).expect("a count");
+        assert_eq!(
+            watched.observers.len(),
+            expected,
+            "at {cadence} ms the watched run built {:?}",
+            watched.observers
+        );
+        let seconds: Vec<i64> = watched
+            .observers
+            .iter()
+            .map(|now_ms| now_ms.div_euclid(1_000))
+            .collect();
+        assert!(
+            seconds.windows(2).all(|pair| pair[0] < pair[1]),
+            "two pictures in one arena second at {cadence} ms: {:?}",
+            watched.observers
+        );
+
+        assert_eq!(
+            watched.events,
+            unwatched.events,
+            "watching changed the event list at {cadence} ms: {:?} against {:?}",
+            watched.kinds(),
+            unwatched.kinds()
+        );
+        assert_eq!(
+            watched.hashes, unwatched.hashes,
+            "watching changed the hash sequence at {cadence} ms"
+        );
+        assert_eq!(watched.finals, unwatched.finals, "{cadence} ms");
+        assert_eq!(watched.told, unwatched.told, "{cadence} ms");
+        assert_eq!(watched.substeps, unwatched.substeps, "{cadence} ms");
+        watched_runs.push((cadence, watched));
+    }
+    // And the three watched runs are one match, as the three unwatched are.
+    let Some((_, first)) = watched_runs.first() else {
+        panic!("three watched runs");
+    };
+    assert!(first.count("startup") == 1, "{:?}", first.kinds());
+    for (cadence, run) in watched_runs.iter().skip(1) {
+        assert_eq!(run.events, first.events, "{cadence} ms");
+        assert_eq!(run.hashes, first.hashes, "{cadence} ms");
+        assert_eq!(run.finals, first.finals, "{cadence} ms");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // (a1) the task's own wake rule: 16b cut U.1 (16c `T-22`, Q25)
 // ---------------------------------------------------------------------------
@@ -847,6 +927,7 @@ fn replay_as_the_task_floored(
     let mut woke_at: Vec<i64> = Vec::new();
     let mut pulses_seen: Vec<(i64, bool, bool)> = Vec::new();
     let mut catchups: Vec<(i64, tacsim::arena::Catchup)> = Vec::new();
+    let mut observers: Vec<i64> = Vec::new();
     loop {
         arena.clock.pin_tempo_for_tests(Tempo::Quiet);
         let mut controls: Vec<Control> = Vec::new();
@@ -878,6 +959,7 @@ fn replay_as_the_task_floored(
         told.extend(heard(&out.frames, MOVER_PILOT));
         pulses_seen.push(seen(arena, started, &out));
         catchups.extend(reported(started, &out));
+        observers.extend(out.observer.as_ref().map(|picture| picture.now_ms));
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
         }
@@ -915,6 +997,7 @@ fn replay_as_the_task_floored(
         told,
         pulses_seen,
         catchups,
+        observers,
     };
     (replay, woke_at, walls)
 }

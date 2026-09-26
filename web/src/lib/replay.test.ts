@@ -16,9 +16,14 @@ import { describe, expect, it } from "vitest";
 import { decodeArenaMap, markerLegend, type ArenaMap } from "./cockpit";
 import {
   composeReplayWindow,
+  decodeObserver,
   decodeReplay,
   decodeReplayGrid,
   frameAt,
+  isObserverCleared,
+  LIVE_LABEL,
+  liveAsReplay,
+  liveView,
   replayView,
   replayViewLines,
   type Replay,
@@ -279,5 +284,90 @@ describe("the view model", () => {
     }
     expect(body).toContain("both sides are shown");
     expect(body).not.toMatch(/#\d/);
+  });
+});
+
+// The live picture (16b cut I.4; 16c N10): one `arena.observer` keyframe, read,
+// drawn as a one-keyframe replay and worded — a staff surface, so the object
+// numbers are on it on purpose.
+describe("the live picture", () => {
+  const live = (): Record<string, unknown> => ({
+  schema: { id: "arena.observer", version: 1, retain: "latest" },
+  match: 7,
+  now_ms: 90_000,
+  clock: "1:30",
+  tempo: "engaged",
+  floor_ms: 5_000,
+  cell_cm: 1_000,
+  width: 96,
+  height: 64,
+  in_flight: 2,
+  units: [
+    ["RA", "R", 6, 4, 90, 301, "pm"],
+    ["RB", "R", null, null, 0, 303, "s"],
+    ["BA", "B", 20, 14, 270, 302, "ph"],
+    ["BB", "B", 14, 7, 225, 304, "w"],
+  ],
+});
+
+  it("reads a picture whole, and tells `watching: false` from one", () => {
+    const pic = decodeObserver(live());
+    expect(pic).not.toBeNull();
+    expect(pic).toMatchObject({ match: 7, now_ms: 90_000, tempo: "engaged", floor_ms: 5_000, in_flight: 2 });
+    expect(pic?.units.map((u) => [u.callsign, u.team, u.cell, u.id, u.flags])).toEqual([
+      ["RA", "red", [6, 4], 301, "pm"],
+      ["RB", "red", null, 303, "s"],
+      ["BA", "blue", [20, 14], 302, "ph"],
+      ["BB", "blue", [14, 7], 304, "w"],
+    ]);
+    const cleared = { schema: { id: "arena.observer", version: 1, retain: "latest" }, watching: false };
+    expect(decodeObserver(cleared)).toBeNull();
+    expect(isObserverCleared(cleared)).toBe(true);
+    expect(isObserverCleared(live())).toBe(false);
+    expect(decodeObserver({ units: [] })).toBeNull();
+  });
+
+  it("draws the units as a replay draws them: a wreck `%`, a unit with no cell nowhere", () => {
+    const pic = decodeObserver(live())!;
+    const doc = liveAsReplay(pic);
+    const frame = frameAt(doc, pic.now_ms);
+    expect(frame.between).toBe(false);
+    const win = composeReplayWindow(theMap(), doc, frame, 0, 39, 20);
+    const at = (x: number, y: number): string => win.grid[win.h - 1 - (y - win.y0)]?.charAt(x - win.x0) ?? "";
+    expect(at(6, 4)).toBe("o");
+    expect(at(20, 14)).toBe("*");
+    expect(at(14, 7)).toBe("%");
+    expect(win.markers.some((m) => m.designator === "RB")).toBe(false);
+  });
+
+  it("words the picture: live, at most once an arena second, every unit by its number", () => {
+    const pic = decodeObserver(live())!;
+    const doc = liveAsReplay(pic);
+    const win = composeReplayWindow(theMap(), doc, frameAt(doc, pic.now_ms), 0, 39, 20);
+    const view = liveView(pic, win);
+    expect(view.header).toBe("Watching 7 — 1:30 (live)");
+    expect(view.label).toBe(LIVE_LABEL);
+    expect(view.label).toBe("Live: the arena's own positions, at most once an arena second.");
+    expect(view.clock).toBe("1:30");
+    expect(view.units.map((u) => `${u.callsign.padEnd(4)} ${u.side.padEnd(5)} ${u.where}`)).toEqual([
+      "RA   red   (6, 4)  090°  #301  machine",
+      "RB   red   off the window  #303  pilot  starting",
+      "BA   blue  (20, 14)  270°  #302  pilot  held",
+      "BB   blue  (14, 7)  225°  #304  pilot  wreck",
+    ]);
+    expect(view.status).toEqual([
+      "Match 7  engaged  floor 5000",
+      "Live, at most once a second.",
+      "In flight: 2",
+      "@arena/watch off stops it.",
+    ]);
+    for (const line of view.status) {
+      expect([...line].length).toBeLessThanOrEqual(32);
+    }
+    expect(view.shots).toEqual([]);
+    expect(liveView({ ...pic, floor_ms: null }, win).status[0]).toBe("Match 7  engaged");
+    // A replay has no status lines, so its golden is unchanged.
+    const r = theReplay();
+    expect(replayView(r, frameAt(r, 0), null, 0).status).toEqual([]);
   });
 });

@@ -482,6 +482,13 @@ owner = "canon"
 reason = "E4c: seeds canon records the bridge case asserts on."
 
 [[site]]
+path = "crates/mush-server/tests/arena_bridge.rs"
+accessor = "World::module_state_mut"
+slot = "ArenaRegistry"
+owner = "tacsim"
+reason = "16b cut I.4: the rig opens its match through a hand-built CustodyOut with no MatchBook record, so `arena_bridge::watch`'s liveness check cannot pass there; its test module binds the watcher on the registry directly (`ArenaRegistry::bind_watcher`, the registry's own bookkeeping) and offers `ArenaMsg::Watch` itself, to pin that the staff picture reaches its watcher and no pilot through the real world loop."
+
+[[site]]
 path = "crates/mush-sim/tests/e7c6.rs"
 accessor = "World::module_state_mut"
 slot = "ScenesState"

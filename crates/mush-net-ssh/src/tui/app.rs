@@ -40,15 +40,15 @@ use serde_json::Value;
 
 use super::keys::{Key, KeyParser};
 use super::panels::{
-    ARENA_MAP_FEED, COCKPIT_FEED, ChanMsg, NOTICE_SENTENCE_TAG, PanelOutcome, PanelStore,
-    REPLAY_FEED, UNIT_FEED,
+    ARENA_MAP_FEED, COCKPIT_FEED, ChanMsg, NOTICE_SENTENCE_TAG, OBSERVER_FEED, PanelOutcome,
+    PanelStore, REPLAY_FEED, UNIT_FEED,
 };
 use super::render::{
     Entry, GUTTER_W, PaneRows, RenderCtx, dim_span_owned, floor_line, legend_line,
     render_backlog_rows, render_channels_rows, render_event, render_rolls_rows, render_sheet_rows,
     render_vitals_rows, render_who_rail, status_line, tab_strip, vitals_line, wrap_spans,
 };
-use super::replay::{Document, Picture, REPLAY_DOCUMENT_SHAPE, REPLAY_GRID_SHAPE};
+use super::replay::{Document, Live, Picture, REPLAY_DOCUMENT_SHAPE, REPLAY_GRID_SHAPE};
 use super::screen::{
     BorderRole, COCKPIT_SCREEN, FLOOR_COLS, GLOBAL_KEYS, JUMP_KEYS, KeyAction, KeyBinding,
     LocalAction, PaneContent, PaneId, PaneSlot, PaneSpec, Screen, ScreenId, builtin_screens,
@@ -116,6 +116,20 @@ pub const MAP_HEAL_LATCH_S: i64 = 2;
 /// `mush-net-web`'s send timeout: an answer that has not landed by then on a
 /// healthy link is not coming.
 pub const REPLAY_ASK_LATCH_S: i64 = 10;
+
+/// **How long a live picture may go without a keyframe before the timer heal
+/// asks `arena.observer` again** (16b cut I.4), seconds — and the least time
+/// between two such asks. The world pushes a picture at most once an arena
+/// second while the watch holds, but only once a PULSE: every `quiet_ms`
+/// (5,000 by default) at `Quiet`, and as seldom as `MAX_TEMPO_FLOOR_MS`
+/// (10,000) under a staff floor. Fifteen seconds sits above the longest of
+/// those gaps with a pump tick to spare, so a healthy watch at any tempo or
+/// floor is never asked for; a quiet that long means a lagging match or a
+/// server half that restarted and forgot the watch, and the answer is then the
+/// picture again, or `watching: false`, which closes the picture honestly. (A
+/// `quiet_ms` configured above fifteen seconds would cost one extra picture per
+/// quiet pulse and nothing else.)
+pub const LIVE_STALE_S: i64 = 15;
 
 /// Nav or input (D-I-17).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -375,6 +389,11 @@ pub struct TuiApp {
     /// applied to the replay's match id. A close clears it, so a later `SIM
     /// REPLAY` of the same match opens the screen again.
     picture_switched: Option<i64>,
+    /// **When the last live picture arrived** (16b cut I.4), world seconds —
+    /// what [`Self::heal_queries`] measures [`LIVE_STALE_S`] from.
+    live_seen_at: Option<i64>,
+    /// When the timer heal last asked `arena.observer` (16b cut I.4).
+    live_asked_at: Option<i64>,
 }
 
 fn system_clock() -> i64 {
@@ -449,6 +468,8 @@ impl TuiApp {
             dismissed: BTreeSet::new(),
             replay_asked_at: None,
             picture_switched: None,
+            live_seen_at: None,
+            live_asked_at: None,
         })
     }
 
@@ -517,11 +538,23 @@ impl TuiApp {
     /// **The active screen's binding table** (16b cut I.2): the second table
     /// ([`Screen::alt_keys`]) while the picture is the layout, the screen's own
     /// otherwise — drawn in the legend and the help, and the one dispatched.
-    fn keys(&self) -> &[KeyBinding] {
+    ///
+    /// **16b cut I.4**: on a LIVE picture the table is the picture's own
+    /// without `,` `.` and `x` — nothing steps a live picture and only the
+    /// server closes it (a local close would be undone by the next keyframe a
+    /// second later) — so the legend and the help draw `u` and `p` alone and
+    /// the three keys are unbound, which does nothing.
+    fn keys(&self) -> Vec<KeyBinding> {
         let screen = self.screen();
         match screen.alt_keys.as_deref() {
-            Some(alt) if self.picture_layout() => alt,
-            _ => &screen.keys,
+            Some(alt) if self.picture_layout() => {
+                let live = self.picture.is_some_and(|p| p.live);
+                alt.iter()
+                    .copied()
+                    .filter(|b| !(live && matches!(b.key, ',' | '.' | 'x')))
+                    .collect()
+            }
+            _ => screen.keys.clone(),
         }
     }
 
@@ -1052,20 +1085,40 @@ impl TuiApp {
     /// would queue copies on a slow socket until `mush-net-web`'s send timeout
     /// closed it. The document is asked when the picture opens, on a hello's
     /// re-hydrate (the `Hello` arm of [`Self::apply_event`]) and on `p`.
+    ///
+    /// **16b cut I.4**: and a live picture that has gone [`LIVE_STALE_S`]
+    /// without a keyframe re-asks `arena.observer` (at most once per
+    /// [`LIVE_STALE_S`]): after a server-half restart the watch is gone and
+    /// the answer is `watching: false`, which closes the picture honestly
+    /// rather than leaving the last picture up for the rest of the session.
     #[must_use]
     pub fn heal_queries(&mut self, now: i64) -> Vec<(String, Value)> {
+        let mut queries = Vec::new();
+        if self.picture.is_some_and(|p| p.live) {
+            let aged = |at: Option<i64>| {
+                at.is_none_or(|at| !(0..LIVE_STALE_S).contains(&now.saturating_sub(at)))
+            };
+            if aged(self.live_seen_at) && aged(self.live_asked_at) {
+                self.live_asked_at = Some(now);
+                queries.push((
+                    OBSERVER_FEED.to_string(),
+                    Value::Object(serde_json::Map::new()),
+                ));
+            }
+        }
         let Some(match_id) = self.ground_match() else {
-            return Vec::new();
+            return queries;
         };
         if self.holds_the_ground(match_id) || !self.map_ask_due(match_id, now) {
-            return Vec::new();
+            return queries;
         }
         self.map_asked_at = Some(now);
         self.map_asked_for = Some(match_id);
-        vec![(
+        queries.push((
             ARENA_MAP_FEED.to_string(),
             Value::Object(serde_json::Map::new()),
-        )]
+        ));
+        queries
     }
 
     /// Arm the map latch when `queries` carries an `arena.map` ask for the held
@@ -1226,6 +1279,81 @@ impl TuiApp {
         }
     }
 
+    /// **What one `arena.observer` keyframe asks of the client** (16b cut I.4;
+    /// 16c N10) — the live picture's trigger, its every refresh and its close.
+    /// Called INSTEAD of the store's generic keyframe path:
+    ///
+    /// * **A picture** (`match` present) opens a LIVE picture of its match on
+    ///   screen 0 and clears that match's `dismissed` mark — **closing an open
+    ///   replay** (the first live keyframe replaces the picture and the
+    ///   replay's feeds are forgotten) — or, for the live picture already open,
+    ///   replaces what is drawn. A SEATED pilot keeps the cockpit (a watcher is
+    ///   never a pilot, so this is defensive): the picture is stored and opens
+    ///   nothing. Screen 0 opens itself once per match id, and the ground is
+    ///   asked under the map latch ([`Self::picture_asks`]); nothing else is
+    ///   asked — every later picture is pushed.
+    /// * **`watching: false`** — the watch ended, the match ended, the staffer
+    ///   lost the power, or a server-half restart forgot it — CLOSES a live
+    ///   picture and marks its match dismissed. A replay is left alone.
+    fn follow_the_observer(
+        &mut self,
+        feed: &mush_proto::SmolStr,
+        data: &Value,
+        now: i64,
+    ) -> Vec<(String, Value)> {
+        let Some(match_id) = Live::of(data).map(|live| live.match_id()) else {
+            if data.get("watching").and_then(Value::as_bool) == Some(false)
+                && self.picture.is_some_and(|p| p.live)
+            {
+                self.close_picture();
+                self.leave_a_screen_this_server_does_not_have();
+            }
+            return Vec::new();
+        };
+        self.dismissed.remove(&match_id);
+        if self.cockpit_seat {
+            self.panels
+                .apply_panel(feed, PanelFrameKind::Keyframe, data, now);
+            return Vec::new();
+        }
+        let open = self
+            .picture
+            .is_some_and(|p| p.live && p.match_id == match_id);
+        if !open {
+            // A replay, or another match's live picture: this one replaces it.
+            if self.picture.is_some() {
+                self.close_picture();
+            }
+            if !self.holds_the_ground(match_id) {
+                self.panels.forget(ARENA_MAP_FEED);
+            }
+            self.picture = Some(Picture {
+                match_id,
+                at: 0,
+                focus: 0,
+                live: true,
+            });
+        }
+        self.live_seen_at = Some(now);
+        self.panels
+            .apply_panel(feed, PanelFrameKind::Keyframe, data, now);
+        // The focus stays inside the units the picture holds.
+        let units = Live::of(data).map_or(0, |live| live.units().len());
+        if let Some(p) = self.picture.as_mut()
+            && usize::from(p.focus) >= units
+        {
+            p.focus = 0;
+        }
+        let mut queries = Vec::new();
+        if self.picture_switched != Some(match_id) {
+            self.picture_switched = Some(match_id);
+            queries.extend(self.open_the_cockpit_screen());
+        }
+        let asks = self.picture_asks(&queries, now);
+        queries.extend(asks);
+        queries
+    }
+
     /// **The asks an open picture is owed** (16b cut I.2): the document ONCE —
     /// when it is not held and no ask is outstanding — and the ground under the
     /// cockpit's own map latch ([`Self::map_ask_due`], keyed by match) until it
@@ -1237,7 +1365,11 @@ impl TuiApp {
         };
         let empty = || Value::Object(serde_json::Map::new());
         let mut queries = Vec::new();
-        if !self.replay_ask_outstanding(now) && self.replay_document(picture.match_id).is_none() {
+        // 16b cut I.4: a live picture has no document; every picture is pushed.
+        if !picture.live
+            && !self.replay_ask_outstanding(now)
+            && self.replay_document(picture.match_id).is_none()
+        {
             self.replay_asked_at = Some(now);
             queries.push((REPLAY_FEED.to_string(), empty()));
         }
@@ -1266,6 +1398,10 @@ impl TuiApp {
         };
         self.dismissed.insert(picture.match_id);
         self.panels.forget(REPLAY_FEED);
+        // 16b cut I.4: and a live picture's own feed and clocks.
+        self.panels.forget(OBSERVER_FEED);
+        self.live_seen_at = None;
+        self.live_asked_at = None;
         if self.holds_the_ground(picture.match_id) {
             self.panels.forget(ARENA_MAP_FEED);
         }
@@ -1359,6 +1495,14 @@ impl TuiApp {
                 // so the app decides what the store keeps (`follow_the_replay`).
                 if feed.as_str() == REPLAY_FEED && *kind == PanelFrameKind::Keyframe {
                     let asks = self.follow_the_replay(feed, data, now);
+                    queries.extend(asks);
+                    return queries;
+                }
+                // **16b cut I.4**: an `arena.observer` keyframe is the live
+                // picture's trigger, its refresh or its close
+                // (`follow_the_observer`).
+                if feed.as_str() == OBSERVER_FEED && *kind == PanelFrameKind::Keyframe {
+                    let asks = self.follow_the_observer(feed, data, now);
                     queries.extend(asks);
                     return queries;
                 }
@@ -1592,9 +1736,17 @@ impl TuiApp {
                 // it — and the ground under its latch. An `available: false`
                 // answer (the cursor died with the old world) then closes the
                 // picture instead of asking again.
-                if self.picture.is_some() {
-                    self.panels.forget(REPLAY_FEED);
-                    self.replay_asked_at = None;
+                if let Some(picture) = self.picture {
+                    if picture.live {
+                        // 16b cut I.4: a live picture is re-asked, not
+                        // forgotten — the answer is the picture again, or
+                        // `watching: false`, which closes it.
+                        self.live_asked_at = Some(now);
+                        queries.push((OBSERVER_FEED.to_string(), empty()));
+                    } else {
+                        self.panels.forget(REPLAY_FEED);
+                        self.replay_asked_at = None;
+                    }
                     let asks = self.picture_asks(&queries, now);
                     queries.extend(asks);
                 }
@@ -1998,7 +2150,7 @@ impl TuiApp {
         }
         // 16b cut I.2: the active TABLE — the picture's own while it is the
         // layout — so neither table's keys act under the other's legend.
-        let Some(binding) = self.keys().iter().find(|b| b.key == c).copied() else {
+        let Some(binding) = self.keys().into_iter().find(|b| b.key == c) else {
             r.redraw = false;
             return;
         };
@@ -2030,11 +2182,19 @@ impl TuiApp {
         let Some(key) = self.selected_row_key() else {
             return false;
         };
-        let Some(unit) = self
-            .picture
-            .and_then(|p| self.replay_document(p.match_id))
-            .and_then(|doc| doc.roster_index(&key))
-        else {
+        let unit = match self.picture {
+            // 16b cut I.4: a live picture's units, by callsign.
+            Some(p) if p.live => self
+                .panels
+                .get(OBSERVER_FEED)
+                .and_then(Live::of)
+                .and_then(|live| live.unit_index(&key)),
+            _ => self
+                .picture
+                .and_then(|p| self.replay_document(p.match_id))
+                .and_then(|doc| doc.roster_index(&key)),
+        };
+        let Some(unit) = unit else {
             return false;
         };
         if let Some(p) = self.picture.as_mut() {
@@ -2054,7 +2214,11 @@ impl TuiApp {
                 let now = self.now();
                 if let Some(picture) = self.picture {
                     let empty = || Value::Object(serde_json::Map::new());
-                    if !self.replay_ask_outstanding(now) {
+                    if picture.live {
+                        // 16b cut I.4: a live picture's pull is the picture.
+                        self.live_asked_at = Some(now);
+                        r.queries.push((OBSERVER_FEED.to_string(), empty()));
+                    } else if !self.replay_ask_outstanding(now) {
                         self.replay_asked_at = Some(now);
                         r.queries.push((REPLAY_FEED.to_string(), empty()));
                     }
@@ -2065,8 +2229,10 @@ impl TuiApp {
                     }
                 }
             }
+            // 16b cut I.4: nothing steps a live picture — and the live table
+            // does not bind `,` `.` or `x`, so these are the replay's alone.
             LocalAction::PicturePrev => {
-                if let Some(p) = self.picture.as_mut() {
+                if let Some(p) = self.picture.as_mut().filter(|p| !p.live) {
                     p.at = p.at.saturating_sub(1);
                 }
             }
@@ -2075,15 +2241,23 @@ impl TuiApp {
                     .picture
                     .and_then(|p| self.replay_document(p.match_id))
                     .map_or(0, |doc| doc.keyframe_count());
-                if let Some(p) = self.picture.as_mut() {
+                if let Some(p) = self.picture.as_mut().filter(|p| !p.live) {
                     p.at = p.at.saturating_add(1).min(count.saturating_sub(1));
                 }
             }
             LocalAction::PictureFocus => {
-                let roster = self
-                    .picture
-                    .and_then(|p| self.replay_document(p.match_id))
-                    .map_or(0, |doc| doc.roster().len());
+                let roster = match self.picture {
+                    // 16b cut I.4: a live picture's units.
+                    Some(p) if p.live => self
+                        .panels
+                        .get(OBSERVER_FEED)
+                        .and_then(Live::of)
+                        .map_or(0, |live| live.units().len()),
+                    _ => self
+                        .picture
+                        .and_then(|p| self.replay_document(p.match_id))
+                        .map_or(0, |doc| doc.roster().len()),
+                };
                 if let Some(p) = self.picture.as_mut()
                     && roster > 0
                 {
@@ -2092,8 +2266,11 @@ impl TuiApp {
                 }
             }
             LocalAction::PictureClose => {
-                self.close_picture();
-                self.leave_a_screen_this_server_does_not_have();
+                // 16b cut I.4: only the server closes a live picture.
+                if self.picture.is_some_and(|p| !p.live) {
+                    self.close_picture();
+                    self.leave_a_screen_this_server_does_not_have();
+                }
             }
             LocalAction::Refresh => {
                 // On the cockpit screen this is `p`, pull (16b cut B.2): its
@@ -7693,5 +7870,243 @@ mod tests {
         app.feed_input(b"\t");
         app.feed_input(b"\r");
         assert_eq!(app.mode(), Mode::Input);
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut I.4 — the live picture on screen 0 (16c N10)
+    // -----------------------------------------------------------------------
+
+    /// One `arena.observer` picture of `match_id` on the fixtures' yard.
+    fn live_picture(match_id: i64) -> OutputEvent {
+        arena_keyframe(
+            OBSERVER_FEED,
+            serde_json::json!({
+                "schema": { "id": OBSERVER_FEED, "version": 1, "retain": "latest" },
+                "match": match_id, "now_ms": 90_000, "clock": "1:30", "tempo": "engaged",
+                "floor_ms": null, "cell_cm": 1_000, "width": 96, "height": 64,
+                "in_flight": 2,
+                "units": [
+                    ["RA", "R", 6, 4, 90, 301, "pm"],
+                    ["RB", "R", 2, 9, 0, 303, "p"],
+                    ["BA", "B", 36, 14, 270, 302, "ph"],
+                    ["BB", "B", 14, 7, 225, 304, "w"],
+                ],
+            }),
+        )
+    }
+
+    /// `watching: false`.
+    fn live_cleared() -> OutputEvent {
+        arena_keyframe(
+            OBSERVER_FEED,
+            serde_json::json!({
+                "schema": { "id": OBSERVER_FEED, "version": 1, "retain": "latest" },
+                "watching": false,
+            }),
+        )
+    }
+
+    /// An app watching match 7 live, the ground held.
+    fn live_app() -> TuiApp {
+        let mut app = arena_app();
+        app.apply_event(&live_picture(7));
+        app.apply_event(&replay_ground());
+        app
+    }
+
+    /// **The live picture opens screen 0** (16b cut I.4): the first picture
+    /// opens a LIVE picture of its match with no seat — the tab appears — and
+    /// asks the ground and nothing else: no document, and never the picture
+    /// itself, which is pushed.
+    #[test]
+    fn i4_a_live_picture_opens_screen_zero_and_asks_only_the_ground() {
+        let mut app = arena_app();
+        let q = app.apply_event(&live_picture(7));
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+        assert_eq!(
+            app.picture(),
+            Some(Picture {
+                match_id: 7,
+                at: 0,
+                focus: 0,
+                live: true
+            })
+        );
+        assert_eq!(count(&q, ARENA_MAP_FEED), 1, "{q:?}");
+        assert_eq!(count(&q, REPLAY_FEED), 0, "{q:?}");
+        assert_eq!(count(&q, OBSERVER_FEED), 0, "{q:?}");
+        // A later picture replaces what is drawn and asks nothing.
+        app.apply_event(&replay_ground());
+        let q = app.apply_event(&live_picture(7));
+        assert!(q.is_empty(), "{q:?}");
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(text.contains("0 cockpit"), "{text}");
+        assert!(text.contains("Watching 7 \u{2014} 1:30 (live)"), "{text}");
+    }
+
+    /// **Nothing steps a live picture, and only the server closes it** (16b
+    /// cut I.4): `,` `.` and `x` are unbound (nothing happens, nothing is
+    /// sent) and out of the legend; `u` walks the units; `p` asks the picture
+    /// again and never the replay.
+    #[test]
+    fn i4_x_and_the_steps_are_inert_on_a_live_picture() {
+        let mut app = live_app();
+        for key in [b",", b".", b"x"] {
+            let r = app.feed_input(key);
+            assert!(!r.redraw, "{key:?} is bound on a live picture");
+            assert!(r.submit.is_empty() && r.queries.is_empty(), "{key:?}");
+        }
+        assert_eq!(app.picture().map(|p| (p.live, p.at)), Some((true, 0)));
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN, "`x` closed nothing");
+        app.feed_input(b"u");
+        assert_eq!(app.picture().map(|p| p.focus), Some(1));
+        app.feed_input(b"uuu");
+        assert_eq!(app.picture().map(|p| p.focus), Some(0), "four units wrap");
+        let r = app.feed_input(b"p");
+        assert_eq!(count(&r.queries, OBSERVER_FEED), 1, "{:?}", r.queries);
+        assert_eq!(count(&r.queries, REPLAY_FEED), 0, "{:?}", r.queries);
+        let text = super::super::frame_text(&mut app, 120, 34);
+        let legend = text.lines().last().unwrap_or_default();
+        assert_eq!(
+            legend, "u focus \u{b7} p pull \u{b7} Enter type \u{b7} ? help",
+            "{text}"
+        );
+    }
+
+    /// **`watching: false` closes a live picture** (16b cut I.4) and marks its
+    /// match dismissed — the viewer back on the scene, the tab gone, the feed
+    /// forgotten — and leaves a replay alone; a fresh picture opens again.
+    #[test]
+    fn i4_watching_false_closes_the_live_picture_and_dismisses_it() {
+        let mut app = live_app();
+        let q = app.apply_event(&live_cleared());
+        assert!(q.is_empty(), "{q:?}");
+        assert_eq!(app.picture(), None);
+        assert!(app.dismissed(7));
+        assert_eq!(app.active_screen(), ScreenId(1));
+        assert!(app.panels().get(OBSERVER_FEED).is_none());
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(!text.contains("0 cockpit"), "{text}");
+        // A watch again: the mark clears and the picture opens.
+        app.apply_event(&live_picture(7));
+        assert!(!app.dismissed(7));
+        assert_eq!(app.picture().map(|p| p.live), Some(true));
+
+        let mut replay = picture_app();
+        replay.apply_event(&live_cleared());
+        assert_eq!(
+            replay.picture().map(|p| (p.match_id, p.live)),
+            Some((7, false)),
+            "a replay is not the watch's to close"
+        );
+    }
+
+    /// **A live picture closes an open replay** (16b cut I.4): the first live
+    /// keyframe replaces the picture — the replay's document and ground are
+    /// forgotten and its match dismissed — and the live match's ground is
+    /// asked.
+    #[test]
+    fn i4_a_live_keyframe_closes_an_open_replay() {
+        let mut app = picture_app();
+        let q = app.apply_event(&live_picture(12));
+        assert_eq!(
+            app.picture(),
+            Some(Picture {
+                match_id: 12,
+                at: 0,
+                focus: 0,
+                live: true
+            })
+        );
+        assert!(app.dismissed(7));
+        assert!(app.panels().get(REPLAY_FEED).is_none());
+        assert!(!app.holds_the_ground(7));
+        assert_eq!(count(&q, ARENA_MAP_FEED), 1, "{q:?}");
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+    }
+
+    /// The clock the live heal test drives (one test touches it).
+    static LIVE_CLOCK: AtomicI64 = AtomicI64::new(0);
+
+    fn live_clock() -> i64 {
+        LIVE_CLOCK.load(Ordering::Relaxed)
+    }
+
+    /// **The heal re-asks a quiet live picture** (16b cut I.4): nothing while
+    /// pictures arrive — at a `Quiet` pulse's five seconds or under the longest
+    /// staff floor's ten included; once [`LIVE_STALE_S`] pass without one, the
+    /// timer asks `arena.observer` — at most once per [`LIVE_STALE_S`] — and a
+    /// hello asks it at once. The answer `watching: false` closes the picture.
+    #[test]
+    fn i4_the_heal_re_asks_a_quiet_live_picture() {
+        LIVE_CLOCK.store(100, Ordering::Relaxed);
+        let mut app = arena_app();
+        app.set_clock(live_clock);
+        app.apply_event(&live_picture(7));
+        app.apply_event(&replay_ground());
+        assert!(
+            app.heal_queries(104).is_empty(),
+            "a fresh picture is not asked"
+        );
+        // A healthy watch at `Quiet`: a picture every five seconds is never
+        // asked for, whatever second the pump's tick lands on.
+        for at in [105, 110] {
+            LIVE_CLOCK.store(at, Ordering::Relaxed);
+            app.apply_event(&live_picture(7));
+            for tick in at..at + 5 {
+                assert_eq!(count(&app.heal_queries(tick), OBSERVER_FEED), 0, "{tick}");
+            }
+        }
+        // Nor under the longest staff floor (10 s between pictures).
+        const { assert!(LIVE_STALE_S > 10 + 4, "a floor and a tick") };
+        assert_eq!(count(&app.heal_queries(120), OBSERVER_FEED), 0);
+        let stale = 110 + LIVE_STALE_S;
+        assert_eq!(count(&app.heal_queries(stale - 1), OBSERVER_FEED), 0);
+        let q = app.heal_queries(stale);
+        assert_eq!(count(&q, OBSERVER_FEED), 1, "{q:?}");
+        assert_eq!(
+            count(&app.heal_queries(stale + 2), OBSERVER_FEED),
+            0,
+            "latched"
+        );
+        assert_eq!(
+            count(&app.heal_queries(stale + LIVE_STALE_S), OBSERVER_FEED),
+            1,
+            "aged"
+        );
+        // A picture resets the clock.
+        let back = stale + LIVE_STALE_S + 1;
+        LIVE_CLOCK.store(back, Ordering::Relaxed);
+        app.apply_event(&live_picture(7));
+        assert_eq!(
+            count(&app.heal_queries(back + LIVE_STALE_S - 1), OBSERVER_FEED),
+            0
+        );
+        // A hello asks at once.
+        let q = app.apply_event(&OutputEvent::Hello {
+            proto: 1,
+            server: "rustmush".into(),
+            features: vec![],
+            panels: vec![],
+        });
+        assert_eq!(count(&q, OBSERVER_FEED), 1, "{q:?}");
+        assert_eq!(count(&q, REPLAY_FEED), 0, "{q:?}");
+        // After a server-half restart the answer closes the picture.
+        app.apply_event(&live_cleared());
+        assert_eq!(app.picture(), None);
+        assert!(app.heal_queries(back + 3 * LIVE_STALE_S).is_empty());
+    }
+
+    /// **`Enter` on a live contacts row moves the focus** (16b cut I.4).
+    #[test]
+    fn i4_enter_on_a_live_contacts_row_moves_the_focus() {
+        let mut app = live_app();
+        app.feed_input(b"\t\t\t\t");
+        assert_eq!(app.focused_pane(), Some(PaneId("contacts")));
+        app.feed_input(b"\x1b[B\x1b[B");
+        let r = app.feed_input(b"\r");
+        assert_eq!(app.mode(), Mode::Nav);
+        assert!(r.submit.is_empty() && r.queries.is_empty());
+        assert_eq!(app.picture().map(|p| p.focus), Some(2), "BA is the focus");
     }
 }

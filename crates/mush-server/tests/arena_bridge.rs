@@ -19,6 +19,16 @@
 //! [`tacsim::arena_bridge::open_match`]. The units are bare object ids: custody
 //! (the `deployed` marker, the frozen placement, the check-in) is T.3's, and
 //! nothing in T.2 reads a unit record.
+//!
+//! **16b cut I.4** added the second proof,
+//! `an_observer_frame_reaches_its_watcher_and_no_pilot`: the staff picture
+//! (`arena.observer`) is pushed to a watcher and never to a pilot, through the
+//! same loop. The rig's match has no lifecycle record around it (it is opened
+//! through a hand-built `CustodyOut`), so `arena_bridge::watch`'s liveness check
+//! cannot pass here; the test module binds the watcher on the registry directly
+//! (`ArenaRegistry::bind_watcher`) and offers `ArenaMsg::Watch` itself, and a
+//! second character — a staffer made in the world before it boots — connects
+//! as the watcher while God stays the pilot.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,7 +37,8 @@ use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_core::{
     ArgShape, CmdError, CommandSpec, Ctx, DefinitionDigest, DefinitionId, DefinitionKey,
-    DefinitionKind, Engine, GOD, GameModule, Inbound, ModError, ObjId, OwnerId, Registrar, World,
+    DefinitionKind, Engine, GOD, GameModule, Inbound, LIMBO, ModError, ObjId, ObjKind, OwnerId,
+    Powers, Registrar, World,
 };
 use mush_ipc::{DetachCause, SendTarget};
 use mush_proto::OutputEvent;
@@ -48,7 +59,7 @@ use tacsim::arena::state::{
     ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, EntryZone, Pilot, Team, TerrainCell,
     TrackedRules,
 };
-use tacsim::arena_task::MatchId;
+use tacsim::arena_task::{ArenaMsg, ArenaOut, MatchId};
 use tacsim::config::{ArenaConfig, MatchConfig};
 
 /// The match this test runs.
@@ -57,6 +68,8 @@ const MATCH: MatchId = MatchId(4_242);
 const UNIT: ObjId = ObjId(9_001);
 /// The connection God is attached on.
 const CONN: u64 = 0x4242;
+/// **16b cut I.4**: the connection the watcher is attached on.
+const WATCHER_CONN: u64 = 0x4343;
 
 // ---------------------------------------------------------------------------
 // Rig
@@ -72,14 +85,18 @@ struct RecordingGateway {
 impl RecordingGateway {
     /// Every `arena.cockpit` keyframe, with the target it went to.
     fn frames(&self) -> Vec<(SendTarget, serde_json::Value)> {
+        self.panels(tacsim::arena_bridge::FRAME_FEED)
+    }
+
+    /// **16b cut I.4**: every keyframe of `feed`, with the target it went to.
+    fn panels(&self, wanted: &str) -> Vec<(SendTarget, serde_json::Value)> {
         self.sent
             .lock()
             .expect("recording gateway mutex")
             .iter()
             .filter_map(|(target, event)| match event.as_ref() {
                 OutputEvent::Panel { feed, kind, data }
-                    if feed.as_str() == tacsim::arena_bridge::FRAME_FEED
-                        && *kind == mush_proto::PanelFrameKind::Keyframe =>
+                    if feed.as_str() == wanted && *kind == mush_proto::PanelFrameKind::Keyframe =>
                 {
                     Some((target.clone(), data.clone()))
                 }
@@ -301,13 +318,65 @@ impl GameModule for ArenaStarter {
                 .map_err(|error| CmdError::msg(error.to_string()))
             }),
         )?;
+        // **16b cut I.4**: the watcher binds itself on the registry directly —
+        // this match has no `MatchBook` record, so `arena_bridge::watch`'s
+        // liveness check cannot pass — and the task is offered the `Watch` the
+        // verb would have offered for a first watcher.
+        reg.command(
+            CommandSpec {
+                name: "@arenawatch".into(),
+                shape: ArgShape::None,
+                help: "test: watch the rig's match, bound on the registry directly".into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                let actor = ctx.actor;
+                let tasks = ctx
+                    .w
+                    .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+                    .map(|registry| {
+                        registry.bind_watcher(actor, MATCH);
+                        registry.tasks().clone()
+                    })
+                    .ok_or_else(|| CmdError::msg("no arena registry"))?;
+                tasks
+                    .offer(MATCH, ArenaMsg::Watch { on: true })
+                    .map_err(|_| CmdError::msg("the task refused the Watch"))
+            }),
+        )?;
+        // And its undo: `unwatch` is the registry's `unbind_watcher`, the
+        // cleared picture, and `Watch { on: false }` for the last watcher.
+        reg.command(
+            CommandSpec {
+                name: "@arenaunwatch".into(),
+                shape: ArgShape::None,
+                help: "test: stop watching the rig's match".into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                let actor = ctx.actor;
+                tacsim::arena_bridge::unwatch(ctx, actor)
+                    .map(|_| ())
+                    .ok_or_else(|| CmdError::msg("not watching"))
+            }),
+        )?;
         Ok(())
     }
 }
 
 fn boot(store: Arc<dyn ObjectStore>, gateway: Arc<RecordingGateway>) -> PersistHandles {
+    boot_world(World::new_minimal(), store, gateway)
+}
+
+/// [`boot`] over a world the caller has already furnished (16b cut I.4: the
+/// watcher character is made in it before the engine starts).
+fn boot_world(
+    world: World,
+    store: Arc<dyn ObjectStore>,
+    gateway: Arc<RecordingGateway>,
+) -> PersistHandles {
     let engine = Engine::with_modules(
-        World::new_minimal(),
+        world,
         world_task::base_registry(),
         vec![
             Box::new(tacsim::TacsimRuleset::default()),
@@ -555,6 +624,217 @@ async fn a_running_arenas_frames_reach_its_pilot_and_its_chunks_land_in_the_matc
         arenas.live_ids().is_empty(),
         "the shutdown tail stopped and joined every arena task"
     );
+    let _ = handles.writer_join.await;
+    let _ = handles.outbox_join.await;
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut I.4: the staff picture reaches its watcher and no pilot
+// ---------------------------------------------------------------------------
+
+/// One command line, as `actor` on `conn`, settled.
+async fn type_line(handles: &PersistHandles, conn: u64, actor: ObjId, line: &str) {
+    assert!(
+        handles
+            .handle
+            .inbound(Inbound::Cmd {
+                conn,
+                actor,
+                line: line.to_string(),
+            })
+            .await
+    );
+    assert!(handles.handle.barrier().await, "{line} settles");
+}
+
+/// **16b cut I.4's composition pin** (doc 16 §1; 16c N10): through the real
+/// world loop, every `arena.observer` keyframe is addressed to the watcher and
+/// never to the pilot; no `arena.cockpit` payload carries the picture's keys or
+/// schema; a `Frames` with no frame and a picture still reaches the watcher;
+/// and after the watch ends the watcher is sent `watching: false` and nothing
+/// more.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_observer_frame_reaches_its_watcher_and_no_pilot() {
+    let store = Arc::new(InMemoryStore::new());
+    let gateway = Arc::new(RecordingGateway::default());
+    // The watcher: a second character, a staffer, made before the engine boots.
+    let mut world = World::new_minimal();
+    let watcher = world
+        .create(ObjKind::Player, "Watcher", GOD, Some(LIMBO))
+        .expect("a second character");
+    if let Some(object) = world.get_mut(watcher) {
+        object.powers = Powers::SIM_ADMIN;
+    }
+    let handles = boot_world(
+        world,
+        Arc::clone(&store) as Arc<dyn ObjectStore>,
+        Arc::clone(&gateway),
+    );
+    let arenas = handles.arenas.clone().expect("the arena table");
+    for (conn, actor) in [(CONN, GOD), (WATCHER_CONN, watcher)] {
+        assert!(
+            handles
+                .handle
+                .inbound(Inbound::ConnUp {
+                    conn,
+                    actor,
+                    caps_structured: true,
+                    from_linkdead: false,
+                })
+                .await
+        );
+    }
+    assert!(handles.handle.barrier().await, "the connects settle");
+    type_line(&handles, CONN, GOD, "@arenastart").await;
+    assert_eq!(arenas.live_ids(), vec![MATCH]);
+    until(Duration::from_secs(5), "the pilot's first frame", || {
+        !gateway.frames().is_empty()
+    })
+    .await;
+
+    // ---- (a) the watch: pictures reach the watcher, naming the unit ----
+    type_line(&handles, WATCHER_CONN, watcher, "@arenawatch").await;
+    let to_watcher = SendTarget::Char(u64::from(watcher.0));
+    let to_pilot = SendTarget::Char(u64::from(GOD.0));
+    until(Duration::from_secs(5), "a picture for the watcher", || {
+        gateway
+            .panels(tacsim::arena_bridge::OBSERVER_FEED)
+            .iter()
+            .any(|(target, data)| *target == to_watcher && data.get("units").is_some())
+    })
+    .await;
+    let pictures = gateway.panels(tacsim::arena_bridge::OBSERVER_FEED);
+    let (_, picture) = pictures
+        .iter()
+        .find(|(_, data)| data.get("units").is_some())
+        .cloned()
+        .expect("a picture");
+    assert_eq!(picture["match"], serde_json::json!(MATCH.0), "{picture}");
+    assert_eq!(
+        picture["units"][0][5],
+        serde_json::json!(UNIT.0),
+        "a staff surface names the unit's object number: {picture}"
+    );
+
+    // ---- (b) a `Frames` with no frame and a picture still reaches the watcher ----
+    let sentinel = tacsim::arena::observer::Observer {
+        now_ms: 0,
+        tempo: tacsim::arena::clock::Tempo::Quiet,
+        in_flight: 4_242,
+        units: Vec::new(),
+    };
+    arenas
+        .egress_sender()
+        .expect("the egress sender")
+        .send(ArenaOut::Frames {
+            match_id: MATCH,
+            frames: Vec::new(),
+            now_ms: 0,
+            observer: Some(sentinel.clone()),
+        })
+        .await
+        .expect("the world's egress takes the message");
+    until(Duration::from_secs(5), "the frameless picture", || {
+        gateway
+            .panels(tacsim::arena_bridge::OBSERVER_FEED)
+            .iter()
+            .any(|(target, data)| {
+                *target == to_watcher && data["in_flight"] == serde_json::json!(4_242)
+            })
+    })
+    .await;
+
+    // ---- (c) the watch ends: `watching: false`, and nothing more ----
+    type_line(&handles, WATCHER_CONN, watcher, "@arenaunwatch").await;
+    until(Duration::from_secs(5), "the cleared picture", || {
+        gateway
+            .panels(tacsim::arena_bridge::OBSERVER_FEED)
+            .iter()
+            .any(|(target, data)| {
+                *target == to_watcher && data["watching"] == serde_json::json!(false)
+            })
+    })
+    .await;
+    // The fence: a picture queued on the egress AFTER the unwatch, then an
+    // order whose frame can only come from a later pulse — so once the pilot
+    // reads that frame, the world has handled the picture, and sent it to
+    // nobody.
+    arenas
+        .egress_sender()
+        .expect("the egress sender")
+        .send(ArenaOut::Frames {
+            match_id: MATCH,
+            frames: Vec::new(),
+            now_ms: 0,
+            observer: Some(tacsim::arena::observer::Observer {
+                in_flight: 777,
+                ..sentinel
+            }),
+        })
+        .await
+        .expect("the world's egress takes the message");
+    type_line(
+        &handles,
+        CONN,
+        GOD,
+        &format!("@arena/intent #{}=startup", UNIT.0),
+    )
+    .await;
+    until(Duration::from_secs(10), "the pilot's powered frame", || {
+        gateway
+            .frames()
+            .iter()
+            .any(|(_, data)| data["power"] != serde_json::json!("off"))
+    })
+    .await;
+    let pictures = gateway.panels(tacsim::arena_bridge::OBSERVER_FEED);
+    let cleared_at = pictures
+        .iter()
+        .position(|(_, data)| data["watching"] == serde_json::json!(false))
+        .expect("the cleared picture");
+    assert_eq!(
+        pictures.len(),
+        cleared_at + 1,
+        "the watcher was sent something after the watch ended: {:?}",
+        pictures.get(cleared_at..)
+    );
+    assert!(
+        !pictures
+            .iter()
+            .any(|(_, data)| data["in_flight"] == serde_json::json!(777)),
+        "a picture reached somebody after the last watcher left"
+    );
+
+    // ---- (d) every picture went to the watcher, and none to the pilot ----
+    for (target, data) in &pictures {
+        assert_eq!(
+            *target, to_watcher,
+            "an arena.observer event went to {target:?}: {data}"
+        );
+        assert_ne!(*target, to_pilot);
+    }
+    // And no cockpit payload carries the picture's keys or its schema.
+    let cockpits = gateway.frames();
+    assert!(!cockpits.is_empty());
+    for (target, data) in &cockpits {
+        assert_eq!(*target, to_pilot, "a cockpit frame went to {target:?}");
+        assert!(
+            data.get("in_flight").is_none()
+                && data.get("flags").is_none()
+                && data["schema"]["id"] != serde_json::json!(tacsim::arena_bridge::OBSERVER_FEED),
+            "a cockpit payload carries the staff picture: {data}"
+        );
+    }
+
+    // ---- shutdown ----
+    assert!(
+        handles
+            .handle
+            .inbound(Inbound::Control(mush_core::ControlMsg::Shutdown))
+            .await
+    );
+    let _ = handles.world_join.await.expect("the world task joins");
+    world_task::arena_shutdown(handles.arenas).await;
     let _ = handles.writer_join.await;
     let _ = handles.outbox_join.await;
 }

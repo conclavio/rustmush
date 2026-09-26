@@ -3082,6 +3082,23 @@ pub struct Arena {
     /// ([`crate::arena::step::Frame::catchup`]) — so it is said once. A view,
     /// for the reason [`Arena::at_release`] is.
     pub pending_catchup: BTreeMap<ObjId, crate::arena::catchup::Catchup>,
+    /// **Whether any staffer is watching this match** (16b cut I.4; 16c N10),
+    /// set and cleared by the task on an `ArenaMsg::Watch` and read once by
+    /// phase 5 of [`Arena::step`]: while it is set the pulse builds the staff
+    /// picture ([`Arena::observer`]) at most once per pulse and at most once an
+    /// arena second.
+    ///
+    /// A **view**, on `last_frames`' argument: a fact about who is watching and
+    /// not about the match, so [`crate::arena::hash::state_hash`] does not fold
+    /// it, nothing that steers reads it, and no equality compares it. `false` at
+    /// [`Arena::new`].
+    pub watched: bool,
+    /// **The arena second the last staff picture was built in** (16b cut I.4),
+    /// or `None` before the first — the whole of the once-an-arena-second gate.
+    /// Cleared by every `ArenaMsg::Watch { on: true }`, so a new watcher's first
+    /// pulse builds one. A view, for the reason [`Arena::watched`] is; `None`
+    /// at [`Arena::new`].
+    pub last_observer_s: Option<i64>,
     /// **The notices this pulse owes each platform's pilots** (16b cut S.2; doc 16
     /// §3.6: *notices fire once per transition*), keyed by the **platform** and not
     /// by the pilot, because doc 16 §3.7 puts the station on the tank and two
@@ -3637,6 +3654,9 @@ impl Arena {
             // 16b cut Y.4: nobody has lost sight of anything yet.
             at_release: BTreeMap::new(),
             pending_catchup: BTreeMap::new(),
+            // 16b cut I.4: nobody is watching yet.
+            watched: false,
+            last_observer_s: None,
             pending_notices: BTreeMap::new(),
             held_losses: BTreeMap::new(),
             substep_hashes: Vec::new(),

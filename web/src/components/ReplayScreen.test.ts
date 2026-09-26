@@ -142,3 +142,49 @@ describe("ReplayScreen mounted", () => {
     }
   });
 });
+
+// The live picture (16b cut I.4; 16c N10): the same screen in LIVE mode — no
+// scrubber and no play, the label that says what it is, a status pane in
+// place of the shots and the wrecks, and the object numbers the picture
+// carries (a staff surface).
+describe("ReplayScreen mounted live", () => {
+  it("draws the picture with no scrubber, says it is live, and names each unit's number", async () => {
+    const { replay } = mount();
+    replay.applyObserver(
+      {
+        schema: { id: "arena.observer", version: 1, retain: "latest" },
+        match: 7,
+        now_ms: 90_000,
+        tempo: "engaged",
+        floor_ms: null,
+        cell_cm: 1_000,
+        width: 96,
+        height: 64,
+        in_flight: 2,
+        units: [
+          ["RA", "R", 6, 4, 90, 301, "pm"],
+          ["BA", "B", 20, 14, 270, 302, "ph"],
+        ],
+      },
+      5,
+      0,
+    );
+    replay.applyMap(read("cockpit", "arena_map.json"));
+    await tick();
+    const body = document.body.textContent ?? "";
+    expect(body).toContain("Watching 7 — 1:30 (live)");
+    expect(body).toContain("Live: the arena's own positions, at most once an arena second.");
+    expect(document.querySelector('input[type="range"]')).toBeNull();
+    expect(screen.queryByRole("button", { name: "play" })).toBeNull();
+    expect(document.querySelector("canvas")).not.toBeNull();
+    for (const line of ["Match 7  engaged", "Live, at most once a second.", "In flight: 2", "@arena/watch off stops it."]) {
+      expect(body).toContain(line);
+    }
+    expect(body).toContain("#301  machine");
+    expect(body).toContain("#302  pilot  held");
+    expect(body).not.toContain("No shots yet.");
+    // Still nothing from the decoys beside it.
+    expect(body).not.toContain("Decoy");
+    expect(body).not.toContain("#909");
+  });
+});

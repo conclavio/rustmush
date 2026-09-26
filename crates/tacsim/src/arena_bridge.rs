@@ -23,6 +23,12 @@
 //! frames go out on, and one mirror row per match for `@arena/status`. Nothing
 //! here is behind a lock, because nothing else ever reads it.
 //!
+//! **16b cut I.4** (16c N10) put the staff watchers on it: who watches which
+//! match (at most [`crate::arena_bridge::MAX_WATCHERS`] a match), the feed their picture goes out on
+//! ([`crate::arena_bridge::OBSERVER_FEED`]) and the last picture each watched match sent. A watcher
+//! is never a pilot — [`crate::arena_bridge::watch`] refuses anybody holding a centre slot or a seat —
+//! and the picture reaches watchers and nobody else.
+//!
 //! # How the egress re-enters the world
 //!
 //! The arena's egress is one bounded `mpsc` the world loop drains without
@@ -70,6 +76,7 @@ use tokio::task::JoinHandle;
 use crate::arena::clock::Tempo;
 use crate::arena::intents::{Control, ControlState, Intent, IntentKind};
 use crate::arena::ledger::LedgerEvent;
+use crate::arena::observer::Observer;
 use crate::arena::state::{Channel, ContactId, MatchEnd, Power, StopReason};
 use crate::arena::step::Frame;
 use crate::arena_task::{ArenaHandle, ArenaMsg, ArenaOut, MatchId};
@@ -122,6 +129,31 @@ pub const MAP_FEED: &str = "arena.map";
 /// manifest and a `PanelSubscribe` routes to that handler; after `arena.map`
 /// in the manifest order `mush-server`'s boot-parity test pins.
 pub const REPLAY_FEED: &str = "arena.replay";
+
+/// **The panel feed the staff picture goes out on** (16b cut I.4; 16c N10).
+///
+/// **Pushed** to a match's watchers — never to a pilot, never to anybody else —
+/// by `on_frames` whenever the arena's `Frames` carries a picture (at most
+/// once an arena second), as [`crate::match_::observer::observer_frame`]'s
+/// keyframe, and answered by the query handler [`register`] installs to a
+/// watcher who resyncs. Anybody who is not watching is answered
+/// [`crate::match_::observer::observer_cleared`], and a watch that ends is sent
+/// the same. The payload declares no `shape`, so a line client prints nothing
+/// for it. After `arena.replay` in the manifest order `mush-server`'s
+/// boot-parity test pins.
+pub const OBSERVER_FEED: &str = "arena.observer";
+
+/// **At most this many staffers watch one match** (16b cut I.4; 16b cut U.2's
+/// bound): at most one picture per watcher per pulse, so at most eight
+/// `arena.observer` events on any pulse, far under
+/// `[tacsim.harness].max_output_events_per_pulse`.
+pub const MAX_WATCHERS: usize = 8;
+
+/// `@arena/watch`'s refusal for anybody who flies, or is about to (16b cut
+/// I.4): a centre slot of the actor's own or of any character of their
+/// account, or a seat binding. A dropped or `EXIT`ed pilot keeps their slot.
+pub const WATCH_FLYING: &str =
+    "You are flying, or about to; EXIT and leave your slot before you watch.";
 
 /// The notice category every arena notice carries — every arena line but the
 /// per-pulse notice sentences, which carry [`NOTICE_SENTENCE_TAG`].
@@ -607,6 +639,18 @@ pub struct ArenaRegistry {
     /// so the rate can refuse an order and never change an outcome. Cleared per
     /// unit by [`ArenaRegistry::untrack`].
     order_stamps: BTreeMap<ObjId, VecDeque<i64>>,
+    /// **Who watches which match** (16b cut I.4; 16c N10), staffer to match.
+    /// Written only by [`ArenaRegistry::bind_watcher`] and
+    /// [`ArenaRegistry::unbind_watcher`]; at most [`MAX_WATCHERS`] rows a match
+    /// ([`watch`] refuses the ninth). A watcher holds no slot and no seat.
+    watchers: BTreeMap<ObjId, MatchId>,
+    /// **The panel feed the staff picture goes out on** (16b cut I.4):
+    /// [`OBSERVER_FEED`]'s handle, kept because it is pushed on.
+    observers: PanelFeedHandle,
+    /// **The last staff picture each watched match sent** (16b cut I.4), what
+    /// the `arena.observer` query re-renders for a watcher who resyncs. Dropped
+    /// when a match's last watcher goes and by [`ArenaRegistry::untrack`].
+    last_observer: BTreeMap<MatchId, Observer>,
 }
 
 /// **One match's deliberation state, on the world side** (16b cut N.2).
@@ -661,9 +705,14 @@ struct OrderWatch {
 }
 
 impl ArenaRegistry {
-    /// A registry over `tasks`, publishing frames on `frames`.
+    /// A registry over `tasks`, publishing frames on `frames` and (16b cut
+    /// I.4) the staff picture on `observers`.
     #[must_use]
-    pub fn new(tasks: ArenaTasks, frames: PanelFeedHandle) -> ArenaRegistry {
+    pub fn new(
+        tasks: ArenaTasks,
+        frames: PanelFeedHandle,
+        observers: PanelFeedHandle,
+    ) -> ArenaRegistry {
         ArenaRegistry {
             tasks,
             frames,
@@ -678,6 +727,9 @@ impl ArenaRegistry {
             arenas: BTreeMap::new(),
             deliberation: BTreeMap::new(),
             order_stamps: BTreeMap::new(),
+            watchers: BTreeMap::new(),
+            observers,
+            last_observer: BTreeMap::new(),
         }
     }
 
@@ -889,6 +941,10 @@ impl ArenaRegistry {
         for unit in &units {
             self.order_stamps.remove(unit);
         }
+        // **16b cut I.4**: and the last staff picture. The watchers themselves
+        // are [`crate::match_::finish`]'s to unbind, BEFORE this call, because
+        // each is owed a cleared picture and this has no `Ctx` to send one.
+        self.last_observer.remove(&match_id);
         self.matches.remove(&match_id)
     }
 
@@ -947,6 +1003,52 @@ impl ArenaRegistry {
     #[must_use]
     pub fn seat_of_pilot(&self, pilot: ObjId) -> Option<(MatchId, ObjId)> {
         self.pilots.get(&pilot).copied()
+    }
+
+    /// **Bind a staffer as a watcher of that match** (16b cut I.4) — the
+    /// registry's own bookkeeping and nothing else: no check, no message to
+    /// the task, nothing sent. [`watch`] calls it after its checks; a test rig
+    /// whose match has no lifecycle record around it calls it directly. A
+    /// staffer already watching another match is moved (one row a watcher).
+    pub fn bind_watcher(&mut self, actor: ObjId, match_id: MatchId) {
+        self.watchers.insert(actor, match_id);
+    }
+
+    /// **Forget one watcher** (16b cut I.4), answering the match they watched —
+    /// the undo of [`Self::bind_watcher`], bookkeeping only. When that was the
+    /// match's last watcher its last picture goes with it, so a later watcher
+    /// is never answered a stale one. [`unwatch`] is what also clears the
+    /// panel and tells the task.
+    pub fn unbind_watcher(&mut self, actor: ObjId) -> Option<MatchId> {
+        let match_id = self.watchers.remove(&actor)?;
+        if !self.watchers.values().any(|held| *held == match_id) {
+            self.last_observer.remove(&match_id);
+        }
+        Some(match_id)
+    }
+
+    /// **Everybody watching that match** (16b cut I.4), in object order — at
+    /// most [`MAX_WATCHERS`].
+    #[must_use]
+    pub fn watchers_of(&self, match_id: MatchId) -> Vec<ObjId> {
+        self.watchers
+            .iter()
+            .filter(|(_, held)| **held == match_id)
+            .map(|(watcher, _)| *watcher)
+            .collect()
+    }
+
+    /// **The match that staffer watches** (16b cut I.4), if any.
+    #[must_use]
+    pub fn watching(&self, actor: ObjId) -> Option<MatchId> {
+        self.watchers.get(&actor).copied()
+    }
+
+    /// **The last staff picture that match sent** (16b cut I.4), while it is
+    /// watched.
+    #[must_use]
+    pub fn last_observer(&self, match_id: MatchId) -> Option<&Observer> {
+        self.last_observer.get(&match_id)
     }
 
     /// **Everybody still bound to that match** (16b cut Q.3), in object order —
@@ -1154,6 +1256,13 @@ pub fn open_match(
         registry.bind_unit(unit, match_id);
     }
     for (pilot, unit, station, epoch) in pilots {
+        // **16b cut I.4**: a pilot is never a watcher. Unreachable through the
+        // verbs today — `@arena/watch` refuses anybody holding a centre slot,
+        // a slot is claimed only while the centre is not busy, the centre runs
+        // one match at a time, and `BOARD` needs a slot — so this is ONE
+        // defensive unbind per pilot, bookkeeping only (the other match, if
+        // there were one, would keep building pictures nobody is sent).
+        registry.unbind_watcher(pilot);
         registry.bind_pilot(pilot, match_id, unit);
         match Channel::parse(&station) {
             Some(channel) => registry.set_epoch(unit, channel, epoch),
@@ -1635,7 +1744,8 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
                 match_id,
                 frames,
                 now_ms,
-            } => on_frames(ctx, match_id, frames, now_ms),
+                observer,
+            } => on_frames(ctx, match_id, frames, now_ms, observer),
             ArenaOut::Ledger { match_id, chunk } => {
                 on_chunk(ctx, match_id, chunk.seq, &chunk.bytes);
             }
@@ -1667,7 +1777,20 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
 /// [`crate::arena_task::ArenaOut::Frames`]. The mirror takes the clock whether or
 /// not anybody was told anything, which is what makes the board's `arena time`
 /// line move on a match nobody is moving in.
-fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>, now_ms: i64) {
+///
+/// **16b cut I.4**: a staff picture on the message goes to the match's
+/// watchers ([`on_observer`]) FIRST, and touches nothing the pilot loop below
+/// reads or writes.
+fn on_frames(
+    ctx: &mut Ctx<'_>,
+    match_id: MatchId,
+    frames: Vec<(ObjId, Frame)>,
+    now_ms: i64,
+    observer: Option<Observer>,
+) {
+    if let Some(observer) = observer {
+        on_observer(ctx, match_id, observer);
+    }
     let Some(feed) = ctx
         .w
         .module_state::<ArenaRegistry>()
@@ -1814,6 +1937,234 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>, 
             mirror.tempo = tempo;
         }
     }
+}
+
+/// **One staff picture, to the match's watchers** (16b cut I.4; 16c N10).
+///
+/// Kept as the match's last picture (what the `arena.observer` query answers a
+/// watcher who resyncs) and published as
+/// [`crate::match_::observer::observer_frame`]'s keyframe, with the tempo floor
+/// the mirror holds, to each watcher of the match — at most [`MAX_WATCHERS`],
+/// so at most eight events — **whose object still exists and who is still
+/// staff**. The power is re-checked here because a watch outlives the verb
+/// that began it: a watcher who lost `SIM_ADMIN` is unwatched with the cleared
+/// picture ([`unwatch`]), and one whose object has gone is unbound. Nobody
+/// else is sent anything, and no pilot ever is.
+fn on_observer(ctx: &mut Ctx<'_>, match_id: MatchId, observer: Observer) {
+    let Some((feed, watchers, floor_ms, ground)) = ctx
+        .w
+        .module_state_mut::<ArenaRegistry>()
+        .and_then(|registry| {
+            let ground = registry.arenas.get(&match_id).cloned()?;
+            // A picture the arena built before it heard the last watcher
+            // leave is kept for nobody and sent to nobody.
+            let watchers = registry.watchers_of(match_id);
+            if watchers.is_empty() {
+                return None;
+            }
+            registry.last_observer.insert(match_id, observer.clone());
+            Some((
+                registry.observers.clone(),
+                watchers,
+                registry
+                    .matches
+                    .get(&match_id)
+                    .and_then(|mirror| mirror.tempo_floor_ms),
+                ground,
+            ))
+        })
+    else {
+        return;
+    };
+    let payload =
+        crate::match_::observer::observer_frame(match_id, &observer, floor_ms, &ground.terrain);
+    for watcher in watchers {
+        if ctx.w.get(watcher).is_none() || !crate::match_::lobby::is_staff(ctx.w, watcher) {
+            unwatch(ctx, watcher);
+            continue;
+        }
+        feed.keyframe_to(ctx, Audience::Actor(watcher), payload.clone());
+    }
+}
+
+/// **Tell one watcher's panel there is nothing to watch** (16b cut I.4): one
+/// `arena.observer` keyframe carrying
+/// [`crate::match_::observer::observer_cleared`], the way [`clear_cockpit`]
+/// clears a cockpit. A watcher whose object has gone is sent nothing.
+pub fn clear_observer(ctx: &mut Ctx<'_>, watcher: ObjId) {
+    let Some(feed) = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .map(|registry| registry.observers.clone())
+    else {
+        return;
+    };
+    if ctx.w.get(watcher).is_none() {
+        return;
+    }
+    feed.keyframe_to(
+        ctx,
+        Audience::Actor(watcher),
+        crate::match_::observer::observer_cleared(),
+    );
+}
+
+/// **The match that staffer watches** (16b cut I.4), read off the registry —
+/// what `SIM REPLAY` refuses a watcher on.
+#[must_use]
+pub fn watching(w: &mush_core::World, actor: ObjId) -> Option<MatchId> {
+    w.module_state::<ArenaRegistry>()
+        .and_then(|registry| registry.watching(actor))
+}
+
+/// **Begin watching a running match** (16b cut I.4; 16c N10: `@arena/watch
+/// <match>`). The verb's staff gate has already run.
+///
+/// Refuses, in order:
+///
+/// 1. an actor who holds a centre slot — their own
+///    (`Centre::slot_of_pilot`) or any character's of their account
+///    (`Centre::slot_of_account`, read the way the lobby's own `claim` reads
+///    it) — or a seat binding ([`ArenaRegistry::seat_of_pilot`]), with
+///    [`WATCH_FLYING`]. A dropped or `EXIT`ed pilot keeps their slot, so they
+///    are refused too. **This is what makes a watcher never a pilot**: the
+///    centre runs one match at a time, a slot is claimed only while it is not
+///    busy and `BOARD` needs one, so nobody can become a pilot of a running
+///    match while watching it;
+/// 2. a match the book does not hold, or holds in any state but `running`:
+///    `There is no match 12.` / `Match 12 is {state}.`;
+/// 3. a ninth watcher: `Match 12 already has 8 watchers.` (an actor already
+///    watching it is not counted twice).
+///
+/// Then the actor's replay cursor is dropped (one picture at a time), the
+/// actor is bound — moved off any other match they watched, whose own watch
+/// ends as [`unwatch`] ends one — and, for the match's first watcher, the task
+/// is offered `ArenaMsg::Watch { on: true }`. A refused offer unbinds again:
+/// `That match is busy; try again in a moment.` while the task lives.
+///
+/// # Errors
+///
+/// Every refusal above, as the line the staffer sees.
+pub fn watch(ctx: &mut Ctx<'_>, actor: ObjId, match_id: MatchId) -> Result<(), CmdError> {
+    let account = ctx
+        .w
+        .module_state::<mush_sim::AccountOracle>()
+        .and_then(|oracle| oracle.account_of(actor));
+    let slotted = crate::match_::lobby::centre(ctx.w).is_some_and(|centre| {
+        centre.slot_of_pilot(actor).is_some()
+            || account.is_some_and(|account| centre.slot_of_account(account).is_some())
+    });
+    let seated = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .is_some_and(|registry| registry.seat_of_pilot(actor).is_some());
+    if slotted || seated {
+        return Err(CmdError::msg(WATCH_FLYING));
+    }
+    let state = ctx
+        .w
+        .module_state::<crate::match_::MatchBook>()
+        .and_then(|book| book.get(match_id))
+        .map(|record| record.state);
+    match state {
+        Some(crate::match_::MatchState::Running) => {}
+        Some(state) => {
+            return Err(crate::match_::ArenaVerbError::WrongState {
+                match_id: match_id.0,
+                state: state.as_str(),
+            }
+            .into());
+        }
+        None => return Err(crate::match_::ArenaVerbError::NoMatch(match_id.0).into()),
+    }
+    let (already, others, tasks) = {
+        let registry = ctx
+            .w
+            .module_state::<ArenaRegistry>()
+            .ok_or(crate::match_::ArenaVerbError::Unavailable)?;
+        let watchers = registry.watchers_of(match_id);
+        (
+            watchers.contains(&actor),
+            watchers.len(),
+            registry.tasks().clone(),
+        )
+    };
+    if already {
+        return Ok(());
+    }
+    if others >= MAX_WATCHERS {
+        return Err(CmdError::msg(format!(
+            "Match {match_id} already has {MAX_WATCHERS} watchers."
+        )));
+    }
+    // One picture at a time: a watch closes the actor's replay.
+    if let Some(book) = ctx.w.module_state_mut::<crate::match_::MatchBook>() {
+        book.drop_replay_cursor(actor);
+    }
+    // Moving from another match ends that watch as `off` would.
+    if watching(ctx.w, actor).is_some() {
+        unwatch(ctx, actor);
+    }
+    if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+        registry.bind_watcher(actor, match_id);
+    }
+    if others == 0 && tasks.offer(match_id, ArenaMsg::Watch { on: true }).is_err() {
+        if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+            registry.unbind_watcher(actor);
+        }
+        return Err(CmdError::msg(if tasks.is_live(match_id) {
+            "That match is busy; try again in a moment."
+        } else {
+            "That match has ended."
+        }));
+    }
+    Ok(())
+}
+
+/// **Stop watching** (16b cut I.4), answering the match that was watched, or
+/// `None` for an actor who watched nothing.
+///
+/// [`ArenaRegistry::unbind_watcher`], then the cleared picture on the actor's
+/// panel ([`clear_observer`]), then — when nobody is left watching the match —
+/// `ArenaMsg::Watch { on: false }` to its task. A refused offer is logged and
+/// nothing else: the arena keeps building its once-a-second picture until the
+/// next `Watch` reaches it, and the world sends it to nobody.
+///
+/// Called by `@arena/watch off`, by `SeatFacts::disconnected` (so the fan-out
+/// stays bounded by connected staff), by `on_observer` and the
+/// `arena.observer` answer's next frame for a watcher who lost the power, and
+/// by a re-bind onto another match. [`crate::match_::finish`] does not call it:
+/// the match is ending, so it unbinds each watcher itself before `untrack` and
+/// clears each panel after.
+pub fn unwatch(ctx: &mut Ctx<'_>, actor: ObjId) -> Option<MatchId> {
+    let match_id = ctx
+        .w
+        .module_state_mut::<ArenaRegistry>()?
+        .unbind_watcher(actor)?;
+    clear_observer(ctx, actor);
+    let (left, tasks) = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .map_or((0, None), |registry| {
+            (
+                registry.watchers_of(match_id).len(),
+                Some(registry.tasks().clone()),
+            )
+        });
+    if left == 0
+        && let Some(tasks) = tasks
+        && tasks.is_live(match_id)
+        && tasks
+            .offer(match_id, ArenaMsg::Watch { on: false })
+            .is_err()
+    {
+        tracing::warn!(
+            %match_id,
+            "the last watcher left but the arena task would not take the Watch; it keeps \
+             building its picture until the next Watch reaches it, and nobody is sent it"
+        );
+    }
+    Some(match_id)
 }
 
 /// **Tell one pilot's panel that there is no cockpit any more** (16b cut Q.3).
@@ -2308,6 +2659,12 @@ impl mush_core::EventHook for SeatFacts {
     ///
     /// [`send_control`]'s signature and every caller are untouched.
     fn disconnected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
+        // **16b cut I.4**: a watch ends with its watcher's connection, so the
+        // pictures a pulse fans out go only to staff who are here. A watcher
+        // holds no seat, so the seated arm below never runs for one.
+        if watching(ctx.w, actor).is_some() {
+            unwatch(ctx, actor);
+        }
         if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
             let now_ms = ctx.w.now().saturating_mul(1_000);
             crate::match_::lobby::slot_dropped(ctx, actor, now_ms);
@@ -2471,6 +2828,21 @@ fn seated_ground(
     Some((match_id, registry.arena_of(match_id)?))
 }
 
+/// **The ground of the match a watcher watches** (16b cut I.4), for
+/// `arena.map`'s second clause — only while the watcher is still staff, the
+/// same test [`on_observer`] re-checks.
+fn watched_ground(
+    w: &mush_core::World,
+    actor: ObjId,
+) -> Option<(MatchId, &crate::arena::state::ArenaDefinition)> {
+    let registry = w.module_state::<ArenaRegistry>()?;
+    let match_id = registry.watching(actor)?;
+    if !crate::match_::lobby::is_staff(w, actor) {
+        return None;
+    }
+    Some((match_id, registry.arena_of(match_id)?))
+}
+
 /// **`arena.map`'s handler** (16b cut Q.3): the terrain of the arena the asker
 /// is flying in, or [`crate::match_::cockpit::map_unseated`].
 ///
@@ -2507,19 +2879,28 @@ impl mush_core::QueryHandler for MapQuery {
                 &ground.terrain,
                 &ground.key_spots,
             ),
-            // (2) I.4: a watcher → the watched match's ground
-            // (3) 16b cut I.1: the finished match the actor's replay cursor
-            // names, drawn on the ground it was fought on.
-            None => match crate::match_::replay::cursor_ground(w, actor) {
+            // (2) **16b cut I.4**: a watcher (still staff) is answered the
+            // ground of the match they watch, under that match's id.
+            None => match watched_ground(w, actor) {
                 Some((match_id, ground)) => crate::match_::cockpit::map_frame(
                     match_id,
                     ground.id.as_str(),
                     &ground.terrain,
                     &ground.key_spots,
                 ),
-                // (4) Nothing about any match: not its id, not its ground, not
-                // whether one is running at all.
-                None => crate::match_::cockpit::map_unseated(),
+                // (3) 16b cut I.1: the finished match the actor's replay cursor
+                // names, drawn on the ground it was fought on.
+                None => match crate::match_::replay::cursor_ground(w, actor) {
+                    Some((match_id, ground)) => crate::match_::cockpit::map_frame(
+                        match_id,
+                        ground.id.as_str(),
+                        &ground.terrain,
+                        &ground.key_spots,
+                    ),
+                    // (4) Nothing about any match: not its id, not its ground,
+                    // not whether one is running at all.
+                    None => crate::match_::cockpit::map_unseated(),
+                },
             },
         };
         Ok(mush_proto::OutputEvent::Panel {
@@ -2602,6 +2983,56 @@ impl mush_core::QueryHandler for ReplayQuery {
     }
 }
 
+/// **`arena.observer`'s handler** (16b cut I.4; 16c N10): the last staff
+/// picture of the match the asker watches, re-rendered with the mirror's tempo
+/// floor — what a watcher's panel re-asks after a reconnect or a server-half
+/// restart — or [`crate::match_::observer::observer_cleared`] to everybody
+/// else: a bystander, a pilot, a watcher whose match has sent no picture yet,
+/// and a watcher who is no longer staff.
+///
+/// **A query reads and cannot unbind** (it has the world immutably): a watcher
+/// who lost the power is answered `watching: false` here and unwatched by the
+/// next picture of their match ([`on_observer`]) — which comes at most once an
+/// arena second but only once a pulse, so up to `quiet_ms` (5,000 by default)
+/// later at `Quiet` and up to [`crate::arena::MAX_TEMPO_FLOOR_MS`] (10,000)
+/// under a staff floor, while they still count against [`MAX_WATCHERS`] — and
+/// is sent nothing in between, because that is where the power is re-checked.
+/// Takes no parameters, as every query here.
+struct ObserverQuery;
+
+impl mush_core::QueryHandler for ObserverQuery {
+    fn query(
+        &self,
+        w: &mush_core::World,
+        actor: ObjId,
+        _params: &serde_json::Value,
+    ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
+        let data = w
+            .module_state::<ArenaRegistry>()
+            .filter(|_| crate::match_::lobby::is_staff(w, actor))
+            .and_then(|registry| {
+                let match_id = registry.watching(actor)?;
+                let observer = registry.last_observer(match_id)?;
+                let ground = registry.arena_of(match_id)?;
+                let floor_ms = registry
+                    .mirror(match_id)
+                    .and_then(|mirror| mirror.tempo_floor_ms);
+                Some(crate::match_::observer::observer_frame(
+                    match_id,
+                    observer,
+                    floor_ms,
+                    &ground.terrain,
+                ))
+            })
+            .unwrap_or_else(crate::match_::observer::observer_cleared);
+        Ok(mush_proto::OutputEvent::Panel {
+            feed: SmolStr::new_static(OBSERVER_FEED),
+            kind: mush_proto::PanelFrameKind::Keyframe,
+            data,
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -2636,8 +3067,13 @@ pub fn register(
     // map's is — `SIM REPLAY` pushes its grid through the ordinary output path,
     // exactly as `VIEW` pushes its own — and the manifest order moves with it.
     drop(reg.panel_feed(REPLAY_FEED)?);
+    // **16b cut I.4**: the staff picture's feed after it, its handle KEPT on
+    // the registry — this one is pushed, to watchers — and the manifest order
+    // moves with it.
+    let observers = reg.panel_feed(OBSERVER_FEED)?;
     reg.query_handler(MAP_FEED, Arc::new(MapQuery))?;
     reg.query_handler(REPLAY_FEED, Arc::new(ReplayQuery))?;
+    reg.query_handler(OBSERVER_FEED, Arc::new(ObserverQuery))?;
     reg.query_handler(FRAME_FEED, Arc::new(CockpitQuery))?;
     reg.async_completion(Arc::new(ArenaEgress))?;
     // **16b cut V.3 (16c N2)**: the tacsim module's FIRST store-read completion,
@@ -2651,7 +3087,11 @@ pub fn register(
     // `Connected`'s registrations above on `EventHook::revived`.
     reg.hook(mush_core::HookPoint::Linkdead, Arc::new(SeatFacts));
     reg.hook(mush_core::HookPoint::Disconnected, Arc::new(SeatFacts));
-    reg.state(ArenaRegistry::new(ArenaTasks::new(egress_capacity), frames));
+    reg.state(ArenaRegistry::new(
+        ArenaTasks::new(egress_capacity),
+        frames,
+        observers,
+    ));
     // 16b cut T.3: the match book beside the registry. A second slot rather than
     // three more fields on the first, because the two have different lifetimes —
     // a registry row exists only while a task does, and a `MatchRecord` outlives
@@ -2734,7 +3174,14 @@ pub fn register(
                    ground; the arena, at its next pulse, refuses an occupied cell or a round \
                    in flight to or from the unit, and every place it receives is on the \
                    tape, placed or place_refused, unless the match ends in that pulse. Its \
-                   pilot is told nothing; other pilots' sensors find it where it now is."
+                   pilot is told nothing; other pilots' sensors find it where it now is.\n\
+                   @arena/watch <match> | off         (staff) watch a running match: its \
+                   whole field reaches your panel on arena.observer at most once an arena \
+                   second, every unit by callsign, cell and object number, and screen 0 of \
+                   the TUI and the web draws it; the line client prints none of it. For a \
+                   staffer with no centre slot and no seat; at most eight a match. `off` \
+                   stops it, and so do a disconnect and the match's end; bare says what you \
+                   watch."
                 .into(),
             ..CommandSpec::default()
         },
@@ -3077,5 +3524,80 @@ fn say_expired_orders(ctx: &mut Ctx<'_>) {
             }
         }
         notify_staff(ctx, format!("Arena match {match_id}: {line}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mush_core::{GOD, ObjId};
+    use smol_str::SmolStr;
+
+    use super::{ArenaRegistry, open_match};
+    use crate::arena::state::{Pilot, Team};
+    use crate::arena::test_support::{custody, pose, tank};
+    use crate::arena_task::MatchId;
+
+    /// **16b cut I.4**: `open_match` keeps ONE defensive unbind per pilot it
+    /// binds. Unreachable through the verbs — `@arena/watch` refuses a slot
+    /// holder, and a slot is claimed only while the centre is not busy — so it
+    /// is proved here, on the registry, by binding a watcher by hand and
+    /// opening a match that seats them.
+    #[tokio::test]
+    async fn i4_open_match_unbinds_a_watcher_it_seats_as_a_pilot() {
+        const UNIT: ObjId = ObjId(9_101);
+        const MATCH: MatchId = MatchId(77);
+        let mut tw =
+            mush_testkit::TestWorld::with_modules(vec![Box::new(crate::TacsimRuleset::default())]);
+        let pilot = tw.spawn_player("Watcher");
+        if let Some(registry) = tw.world_mut().module_state_mut::<ArenaRegistry>() {
+            registry.bind_watcher(pilot, MatchId(76));
+            registry.bind_watcher(GOD, MatchId(76));
+        }
+        let cfg = crate::config::ArenaConfig::default();
+        let mut out = mush_core::Outbox::new();
+        let engine = tw.engine_mut();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(SmolStr::new(crate::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let opened = open_match(
+            &mut ctx,
+            MATCH,
+            custody(
+                vec![tank(UNIT, Team::Red, pose(1_500, 1_500))],
+                vec![Pilot {
+                    unit: UNIT,
+                    pilot,
+                    station: SmolStr::new("cockpit"),
+                    epoch: 1,
+                }],
+            ),
+            &cfg,
+            &crate::config::MatchConfig::default(),
+            &crate::config::SensorsConfig::default(),
+        );
+        assert!(opened.is_ok(), "the match opens: {opened:?}");
+        let registry = ctx
+            .w
+            .module_state::<ArenaRegistry>()
+            .expect("the registry is composed");
+        assert_eq!(registry.watching(pilot), None, "the pilot watches nothing");
+        assert_eq!(registry.seat_of_pilot(pilot), Some((MATCH, UNIT)));
+        assert_eq!(
+            registry.watching(GOD),
+            Some(MatchId(76)),
+            "a watcher who is not seated is left alone"
+        );
+        let tasks = registry.tasks().clone();
+        if let Some((handle, join)) = tasks.remove(MATCH) {
+            handle.signal_stop();
+            join.abort();
+        }
     }
 }

@@ -305,6 +305,10 @@ fn expected_panels() -> Vec<&'static str> {
     // `SIM REPLAY` pushes its grid on it and its query answers the replay the
     // asker's cursor names.
     panels.push("arena.replay");
+    // 16b cut I.4: the staff picture's feed, registered right after the
+    // replay feed. Pushed to a match's watchers and to nobody else; its query
+    // answers a watcher who resyncs.
+    panels.push("arena.observer");
     panels.push("who");
     panels.push("legal.actions");
     panels
