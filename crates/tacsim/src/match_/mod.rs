@@ -54,6 +54,9 @@ pub mod centre;
 /// the gate that makes them contextual, and doc 16 §5's frame.
 pub mod cockpit;
 pub mod lobby;
+/// 16b cut Z.4 (16c `N8`): **the side nets** — `RedNet` and `BlueNet`, comsys
+/// channels made at boot, joined at the check-out and left with the seat.
+pub(crate) mod net;
 mod record;
 // 16b cut V.3: the debrief — the pure fold from the tape to one reader's report,
 // the report documents, `SIM REPORT`, `@arena/report` and the module's store-read
@@ -92,6 +95,7 @@ pub use lobby::{
     reset as reset_centre, slot_seated, slot_vacated, slots_per_side, start as sim_start,
     status_lines, unattended_deadline, unattended_line, unit_type as sim_unit_type,
 };
+pub use net::{BLUE_NET, RED_NET, net_name};
 pub use record::{
     HISTORY_DEPTH, HistoryRow, HistoryUnit, MatchOutcome, MatchRecord, MatchState, NO_HISTORY,
     PoseNumbers, TeamRoster, UnitOutcome, UnitResult, arena_label, civil_utc, duration_words,

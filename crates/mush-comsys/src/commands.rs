@@ -17,16 +17,14 @@ use mush_core::{
 use smol_str::SmolStr;
 
 use crate::data::{
-    Channel, ComsysState, MAX_HISTORY_CAP, MAX_TITLE_LEN, Membership, chan_key, hist_key,
-    member_key, persist_channel, persist_del, persist_membership, persist_meta,
+    Channel, ComsysState, MAX_CHANNEL_NAME_LEN, MAX_HISTORY_CAP, MAX_TITLE_LEN, Membership,
+    chan_key, hist_key, member_key, persist_channel, persist_del, persist_membership, persist_meta,
+    valid_channel_name,
 };
 use crate::speak::{channel_notice, render_recall};
 
 /// Longest accepted channel alias.
 const MAX_ALIAS_LEN: usize = 16;
-
-/// Longest accepted channel name.
-const MAX_CHANNEL_NAME_LEN: usize = 32;
 
 /// Default `@channel/recall` depth.
 const DEFAULT_RECALL: usize = 10;
@@ -69,8 +67,19 @@ fn chan_admin(w: &World, who: ObjId, c: &Channel) -> bool {
 /// Whether `who` may see channel `c` (clist / who / addcom discovery):
 /// the see lock, with an admin bypass so staff can administer channels
 /// hidden from them. Message **delivery** never uses the bypass.
+///
+/// **16b cut Z.4**: on a [`crate::data::ChannelFlags::closed`] channel the
+/// question is membership and not the see lock — a member sees it (its see lock
+/// may be `#false`, which is what hides it from everybody else), a non-member
+/// does not, whatever the lock says. The admin bypass is unchanged.
 fn chan_visible(w: &World, who: ObjId, c: &Channel) -> bool {
-    eval_lock(w, &c.perms.see, who, MAX_LOCK_DEPTH) || chan_admin(w, who, c)
+    let seen = if c.flags.closed {
+        w.module_state::<ComsysState>()
+            .is_some_and(|st| st.members.contains_key(&(who, c.id)))
+    } else {
+        eval_lock(w, &c.perms.see, who, MAX_LOCK_DEPTH)
+    };
+    seen || chan_admin(w, who, c)
 }
 
 /// Whether an addcom alias would shadow something dispatch already means:
@@ -96,26 +105,21 @@ fn valid_alias(alias: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
-fn valid_channel_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= MAX_CHANNEL_NAME_LEN
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
-
 fn valid_hex(hex: &str) -> bool {
     hex.strip_prefix('#')
         .is_some_and(|d| (d.len() == 6 || d.len() == 3) && d.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 /// Render a channel's flag letters for listings (`L`oud, `T` = no titles,
-/// `H` = logged history, `P` = persisted history, `I` = in-character),
-/// `-` when none.
+/// `H` = logged history, `P` = persisted history, `I` = in-character, `C` =
+/// closed: members only, 16b cut Z.4), `-` when none.
 fn flag_letters(c: &Channel) -> String {
     let mut s = String::new();
     if c.flags.loud {
         s.push('L');
+    }
+    if c.flags.closed {
+        s.push('C');
     }
     if c.flags.ic {
         s.push('I');
@@ -721,8 +725,9 @@ fn channel_recall(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .ok_or_else(|| CmdError::msg("That channel no longer exists."))?;
     // Recall is delivery: the see lock gates it exactly as it gates live
     // messages, with NO admin bypass — a member barred from hearing the
-    // channel must not read its retained history either.
-    if !eval_lock(ctx.w, &c.perms.see, actor, MAX_LOCK_DEPTH) {
+    // channel must not read its retained history either. (16b cut Z.4: through
+    // `Channel::hears`, so a closed channel's members pass it.)
+    if !c.hears(ctx.w, actor) {
         return Err(CmdError::msg(format!("You cannot listen to {}.", c.name)));
     }
     if !c.flags.logged {
@@ -923,8 +928,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             name: "clist".into(),
             shape: ArgShape::None,
             help: "clist  --  List the channels you are allowed to see (their see \
-                   lock), with member counts, flags (L=loud, I=in-character, \
-                   T=no titles, H=history, P=persisted), and descriptions."
+                   lock), with member counts, flags (L=loud, C=closed: members \
+                   only, I=in-character, T=no titles, H=history, P=persisted), and \
+                   descriptions.  A closed channel is listed only to its members."
                 .into(),
             ..CommandSpec::default()
         },

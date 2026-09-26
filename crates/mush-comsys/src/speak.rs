@@ -11,7 +11,9 @@
 //! live connections. A member receives a message iff they are **connected
 //! with at least one live connection** (link-dead members receive nothing,
 //! so their cursor must not move), **ungagged**, **pass the channel's see
-//! lock**, and are **not `@ignore`-ing the speaker**; exactly those members
+//! lock** (not consulted on a closed channel, whose members always pass:
+//! [`crate::data::Channel::hears`], 16b cut Z.4), and are **not
+//! `@ignore`-ing the speaker**; exactly those members
 //! have their [`crate::data::Membership::last_read`] cursor advanced (and mirrored),
 //! which is what makes the login unread notice honest.
 
@@ -121,7 +123,7 @@ pub(crate) fn channel_speak(
 
     // Phase 1: bump seq, snapshot what delivery needs, then release the
     // mutable module-state borrow before selecting the live audience.
-    let (seq, chan_name, flags, hist, see, chan_doc, title) = {
+    let (seq, chan_name, flags, hist, chan_doc, title) = {
         let Some(st) = w.module_state_mut::<ComsysState>() else {
             return;
         };
@@ -133,14 +135,13 @@ pub(crate) fn channel_speak(
         let chan_name = c.name.clone();
         let flags = c.flags;
         let hist = c.history;
-        let see = c.perms.see.clone();
         let chan_doc = serde_json::to_value(&*c).expect("channel doc serializes");
         let title = if flags.no_titles {
             None
         } else {
             st.members.get(&(actor, chan)).and_then(|m| m.title.clone())
         };
-        (seq, chan_name, flags, hist, see, chan_doc, title)
+        (seq, chan_name, flags, hist, chan_doc, title)
     };
     push_op(
         out,
@@ -162,9 +163,16 @@ pub(crate) fn channel_speak(
     // ungagged membership first. Offline memberships can be numerous and can
     // never receive this send; production lifecycle admission independently
     // bounds this connected set.
+    //
+    // The see-lock pass is `Channel::hears` (16b cut Z.4): a closed channel's
+    // members are delivered to whatever its see lock says, because on a closed
+    // channel that lock is what hides it from everybody else.
     let st = w
         .module_state::<ComsysState>()
         .expect("comsys state remains installed during a synchronous send");
+    let Some(channel) = st.channels.get(&chan) else {
+        return;
+    };
     let deliver: Vec<ObjId> = w
         .connected()
         .filter(|&p| {
@@ -172,7 +180,7 @@ pub(crate) fn channel_speak(
                 .get(&(p, chan))
                 .is_some_and(|membership| !membership.gagged)
                 && w.has_live_conns(p)
-                && eval_lock(w, &see, p, MAX_LOCK_DEPTH)
+                && channel.hears(w, p)
                 && !is_ignoring(w, p, actor)
         })
         .collect();
@@ -282,9 +290,9 @@ pub(crate) fn channel_notice(
         return;
     };
     let line = format!("[{}] {text}", c.name);
-    let see = &c.perms.see;
     for m in st.members_of(chan) {
-        if m.gagged || !w.is_connected(m.player) || !eval_lock(w, see, m.player, MAX_LOCK_DEPTH) {
+        // 16b cut Z.4: `Channel::hears`, the one see-lock read of delivery.
+        if m.gagged || !w.is_connected(m.player) || !c.hears(w, m.player) {
             continue;
         }
         if let Some(about) = about
@@ -315,7 +323,9 @@ pub(crate) fn unread_notices(w: &World, actor: ObjId) -> Vec<String> {
         let Some(c) = st.channels.get(&m.channel) else {
             continue;
         };
-        if !c.flags.loud || !eval_lock(w, &c.perms.see, actor, MAX_LOCK_DEPTH) {
+        // 16b cut Z.4: `Channel::hears`, so a closed channel's member is
+        // counted to whatever its see lock says.
+        if !c.flags.loud || !c.hears(w, actor) {
             continue;
         }
         let unread = c.seq.saturating_sub(m.last_read);

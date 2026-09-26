@@ -7835,3 +7835,434 @@ async fn z3_one_pilot_and_six_a_side_make_two_squads_and_the_span_refuses_all() 
         format!("Ordered red-2 to hold: it stops where it stands and fires nothing.{Y1_TAIL}")
     );
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut Z.4 (16c N8): the side nets
+// ---------------------------------------------------------------------------
+
+/// The channel id of one side's net, which the boot made.
+fn z4_net(rig: &Rig, team: Team) -> mush_comsys::ChannelId {
+    mush_comsys::api::channel_id_by_name(rig.tw.world(), match_::net_name(team))
+        .expect("the boot made both nets")
+}
+
+/// Who is on one side's net, in player order.
+fn z4_members(rig: &Rig, team: Team) -> Vec<ObjId> {
+    mush_comsys::api::members_of(rig.tw.world(), z4_net(rig, team))
+}
+
+/// One pilot's membership of one side's net, as `(alias, title)`.
+fn z4_on(rig: &Rig, n: usize, team: Team) -> Option<(String, Option<String>)> {
+    let net = z4_net(rig, team);
+    rig.tw
+        .world()
+        .module_state::<mush_comsys::ComsysState>()
+        .and_then(|state| state.members.get(&(rig.pilot(n), net)))
+        .map(|member| (member.alias.to_string(), member.title.clone()))
+}
+
+/// Every plain line [`Rig::log`] holds for `who`, in order.
+fn z4_lines(rig: &Rig, who: ObjId) -> Vec<String> {
+    rig.log
+        .iter()
+        .filter(|(audience, _)| *audience == Audience::Actor(who))
+        .map(|(_, event)| mush_testkit::text_of(event))
+        .collect()
+}
+
+/// How many times `who` has been sent exactly `line`.
+fn z4_count(rig: &Rig, who: ObjId, line: &str) -> usize {
+    z4_lines(rig, who)
+        .iter()
+        .filter(|seen| *seen == line)
+        .count()
+}
+
+/// Every `Channel` frame in `events`, as `(to, channel, title, actor, text)`.
+fn z4_channel_frames(
+    events: &[(Audience, OutputEvent)],
+) -> Vec<(ObjId, String, Option<String>, String, String)> {
+    events
+        .iter()
+        .filter_map(|(audience, event)| match (audience, event) {
+            (
+                Audience::Actor(to),
+                OutputEvent::Channel {
+                    channel,
+                    title,
+                    actor,
+                    text,
+                    ..
+                },
+            ) => Some((
+                *to,
+                channel.to_string(),
+                title.clone(),
+                actor.name.clone(),
+                text.to_plain_text(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Put `pilot` on `team`'s net under `alias`, the way a missed path would have
+/// left one there.
+fn z4_plant(rig: &mut Rig, n: usize, team: Team, alias: &str) {
+    let net = z4_net(rig, team);
+    let pilot = rig.pilot(n);
+    let joined = rig.with_ctx_mut(n, |ctx| {
+        mush_comsys::api::force_join(ctx, pilot, net, alias)
+    });
+    assert!(joined, "the plant took");
+}
+
+const RED_JOINED: &str = "You have been joined to channel RedNet (alias: ra).";
+const BLUE_JOINED: &str = "You have been joined to channel BlueNet (alias: ba).";
+const RED_REMOVED: &str = "You have been removed from channel RedNet.";
+const BLUE_REMOVED: &str = "You have been removed from channel BlueNet.";
+
+/// **The join lands at the `Boarding → Running` trigger, not at `SIM START`**
+/// (16b cut Z.4): nobody is on a net after `SIM START` or after the first
+/// `BOARD`; the last `BOARD` puts each pilot on their side's net with their
+/// callsign lower-cased as the alias and the callsign as the title, and each
+/// reads comsys's own join line once, just ahead of `Good hunting` — which stays
+/// the check-out's last line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z4_the_last_board_puts_each_pilot_on_their_sides_net_under_their_callsign() {
+    let mut rig = Rig::boot(2);
+    assert!(z4_members(&rig, Team::Red).is_empty());
+    assert!(z4_members(&rig, Team::Blue).is_empty());
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    assert!(
+        z4_members(&rig, Team::Red).is_empty(),
+        "SIM START joins nobody"
+    );
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    assert!(
+        z4_members(&rig, Team::Red).is_empty(),
+        "nor does the first BOARD"
+    );
+    let said = rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running, "{said}");
+
+    assert_eq!(z4_members(&rig, Team::Red), vec![rig.pilot(0)]);
+    assert_eq!(z4_members(&rig, Team::Blue), vec![rig.pilot(1)]);
+    assert_eq!(
+        z4_on(&rig, 0, Team::Red),
+        Some(("ra".to_owned(), Some("RA".to_owned())))
+    );
+    assert_eq!(
+        z4_on(&rig, 1, Team::Blue),
+        Some(("ba".to_owned(), Some("BA".to_owned())))
+    );
+    assert_eq!(z4_count(&rig, rig.pilot(0), RED_JOINED), 1);
+    assert_eq!(z4_count(&rig, rig.pilot(1), BLUE_JOINED), 1);
+    assert_eq!(z4_count(&rig, rig.pilot(0), BLUE_JOINED), 0);
+    // In the last `BOARD`'s own answer, just ahead of the line that says the
+    // match is running (which goes to the centre's rooms, so it is read off what
+    // the pilot saw rather than off the actor-addressed log).
+    let hunting = said.find("Good hunting").expect("the start is announced");
+    let joined = said.find(BLUE_JOINED).expect("the join is said");
+    assert!(joined < hunting, "{said}");
+}
+
+/// **A line on the net reaches its side and nobody else** (16b cut Z.4): `ra
+/// contact bearing 090` from red is one `Channel` frame, to the red pilot, on
+/// `RedNet`, carrying the callsign as the title — and nothing at all to blue; a
+/// pose rides the same frame; and blue cannot list the net or read who is on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z4_a_line_on_the_net_reaches_its_side_and_nobody_else() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let (red, blue) = (rig.pilot(0), rig.pilot(1));
+
+    let events = rig.events(0, "ra contact bearing 090");
+    assert_eq!(
+        z4_channel_frames(&events),
+        vec![(
+            red,
+            "RedNet".to_owned(),
+            Some("RA".to_owned()),
+            "Pilot0".to_owned(),
+            "contact bearing 090".to_owned()
+        )]
+    );
+    let events = rig.events(0, "ra :waves");
+    let frames = z4_channel_frames(&events);
+    assert_eq!(frames.len(), 1, "{frames:?}");
+    assert!(events.iter().any(|(_, event)| matches!(
+        event,
+        OutputEvent::Channel {
+            kind: mush_proto::NarrativeKind::Pose,
+            ..
+        }
+    )));
+    // Blue's own net is blue's.
+    let events = rig.events(1, "ba copy");
+    assert_eq!(
+        z4_channel_frames(&events)
+            .iter()
+            .map(|frame| frame.0)
+            .collect::<Vec<_>>(),
+        vec![blue]
+    );
+    // Nothing of red's net ever reached blue.
+    assert!(
+        !z4_channel_frames(&rig.log)
+            .iter()
+            .any(|frame| frame.0 == blue && frame.1 == "RedNet"),
+        "a red line reached blue"
+    );
+    // And blue cannot find it to ask.
+    let said = rig.say(1, "clist");
+    assert!(!said.contains("RedNet"), "{said}");
+    assert!(said.contains("BlueNet"), "{said}");
+    assert_eq!(rig.say(1, "@channel/who RedNet"), "No such channel.");
+    assert_eq!(rig.say(1, "addcom rn=RedNet"), "No such channel.");
+}
+
+/// **`EXIT` takes the pilot off their net, once** (16b cut Z.4), and what blue
+/// can read about red's net — nothing — reads the same before and after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z4_exit_takes_the_pilot_off_their_net_once() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let before = (rig.say(1, "clist"), rig.say(1, "@channel/who RedNet"));
+    let said = rig.say(0, "exit");
+    assert!(said.contains(RED_REMOVED), "{said}");
+    assert!(said.contains("You climb out of"), "{said}");
+    assert_eq!(z4_count(&rig, rig.pilot(0), RED_REMOVED), 1);
+    assert!(z4_members(&rig, Team::Red).is_empty());
+    assert_eq!(z4_members(&rig, Team::Blue), vec![rig.pilot(1)]);
+    let after = (rig.say(1, "clist"), rig.say(1, "@channel/who RedNet"));
+    assert_eq!(before, after, "the other side reads nothing of the leave");
+    // Off the net, the alias means nothing any more.
+    let events = rig.events(0, "ra anybody");
+    assert!(z4_channel_frames(&events).is_empty());
+}
+
+/// **The check-in takes everybody off, and a rematch joins them again** (16b cut
+/// Z.4): the end hands every seat back through the one seam, so each pilot reads
+/// the removal line once; the next match joins the same pilots under the same
+/// callsigns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z4_the_check_in_takes_everybody_off_and_a_rematch_joins_them_again() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    rig.say(0, "sim abort");
+    for _ in 0..400 {
+        if rig.state() == MatchState::Aborted {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+    }
+    assert_eq!(rig.state(), MatchState::Aborted, "the check-in lands");
+    assert!(z4_members(&rig, Team::Red).is_empty());
+    assert!(z4_members(&rig, Team::Blue).is_empty());
+    assert_eq!(z4_count(&rig, rig.pilot(0), RED_REMOVED), 1);
+    assert_eq!(z4_count(&rig, rig.pilot(1), BLUE_REMOVED), 1);
+
+    rig.staff("@arena/reset");
+    rig.walk_to(0, match_::LOBBY_ENTRY);
+    rig.walk_to(1, match_::LOBBY_ENTRY);
+    rig.fly().await;
+    assert_eq!(
+        z4_on(&rig, 0, Team::Red),
+        Some(("ra".to_owned(), Some("RA".to_owned())))
+    );
+    assert_eq!(
+        z4_on(&rig, 1, Team::Blue),
+        Some(("ba".to_owned(), Some("BA".to_owned())))
+    );
+    assert_eq!(z4_count(&rig, rig.pilot(0), RED_JOINED), 2, "one per match");
+}
+
+/// **A machine-only side has nobody on its net, and a stale member is swept**
+/// (16b cut Z.4): a bystander planted on red's net and a red pilot planted on
+/// blue's before the check-out are both gone after it, the red pilot is on red's
+/// net under their own callsign, and blue — flown by machines alone — has nobody.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z4_a_machine_only_side_has_nobody_and_a_stale_member_is_swept() {
+    let mut rig = Rig::boot_with(3, y1_config());
+    z4_plant(&mut rig, 2, Team::Red, "zz");
+    z4_plant(&mut rig, 0, Team::Blue, "yy");
+    assert_eq!(z4_members(&rig, Team::Red), vec![rig.pilot(2)]);
+    rig.fly_with_ai(1, 0, 1).await;
+    assert_eq!(z4_members(&rig, Team::Red), vec![rig.pilot(0)]);
+    assert!(
+        z4_members(&rig, Team::Blue).is_empty(),
+        "the machines' side has nobody on its net"
+    );
+    assert_eq!(z4_count(&rig, rig.pilot(2), RED_REMOVED), 1);
+    assert_eq!(z4_count(&rig, rig.pilot(0), BLUE_REMOVED), 1);
+    assert_eq!(
+        z4_on(&rig, 0, Team::Red),
+        Some(("ra".to_owned(), Some("RA".to_owned())))
+    );
+}
+
+/// **A pilot already on their net under another alias is joined again under
+/// their callsign** (16b cut Z.4): the forced join leaves an existing member as
+/// it is, so the join repairs it by taking them off first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z4_a_pilot_on_their_net_under_a_stale_alias_is_joined_again_as_their_callsign() {
+    let mut rig = Rig::boot(2);
+    z4_plant(&mut rig, 0, Team::Red, "rb");
+    rig.fly().await;
+    assert_eq!(
+        z4_on(&rig, 0, Team::Red),
+        Some(("ra".to_owned(), Some("RA".to_owned())))
+    );
+    assert_eq!(z4_count(&rig, rig.pilot(0), RED_REMOVED), 1);
+    assert_eq!(z4_count(&rig, rig.pilot(0), RED_JOINED), 1);
+}
+
+/// **A staff `@arena/start` match joins nobody** (16b cut Z.4): it shares
+/// `match_::start` with the lobby and never passes through the lobby's
+/// check-out, which is where the join is.
+///
+/// The case that matters is a **human seated by staff**: nothing inside `start`
+/// tells a lobby pilot from a staff-seated one (both are checked out with their
+/// unit, and every unit carries a `Designator::Slot`), so a join moved into
+/// `start` or `lobby::adopt` would put this pilot on `RedNet`. Pilot0 is seated
+/// on red 1's tank the way a staffer's `@spatial/station` and `@spatial/assign`
+/// seat one — the cockpit station declared and a seat activated through the
+/// simulation's own API, no pod and no lobby — and is checked out with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z4_a_staff_started_match_joins_nobody() {
+    let mut rig = Rig::boot(2);
+    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let blue = match_::tank_for_slot(rig.tw.world(), Team::Blue, 1).expect("blue 1's tank");
+    let pilot = rig.pilot(0);
+    // A console with no space of its own is reached from the room the tank
+    // stands in, so the staffer's pilot walks there first.
+    let bay = rig
+        .tw
+        .world()
+        .get(red)
+        .and_then(|tank| tank.location)
+        .expect("the tank stands somewhere");
+    rig.tw
+        .world_mut()
+        .move_to(pilot, bay)
+        .expect("a pilot walks up to the tank");
+    rig.with_ctx_mut(0, |ctx| {
+        let station =
+            mush_sim::StationId::new(match_::cockpit::STATION).expect("the cockpit station id");
+        mush_sim::declare_station(
+            ctx,
+            red,
+            &station,
+            match_::cockpit::STATION_ROLE,
+            &match_::cockpit::cockpit_channels(),
+            None,
+            match_::cockpit::STATION_PRIORITY,
+        )
+        .expect("a station on a tank nobody holds");
+        mush_sim::request_seat_activation(
+            ctx,
+            &mush_sim::SeatRequest::Activate {
+                unit: red,
+                station,
+                npc: pilot,
+                granted: match_::cockpit::cockpit_channels(),
+                fallback: None,
+            },
+        )
+        .expect("a vacant seat takes its holder");
+    });
+    assert_eq!(
+        rig.seats(0),
+        vec![(red, match_::cockpit::STATION.to_owned())],
+        "the staff seat took"
+    );
+    let said = rig.staff(&format!(
+        "@arena/start {}=#{}/#{}",
+        match_::CENTRE_ARENA,
+        red.0,
+        blue.0
+    ));
+    assert!(said.contains("is running on"), "{said}");
+    // The seated human is really in the match: the arena sends them frames.
+    assert!(rig.frame_for(0).await, "the staff-seated pilot is bound");
+    assert!(z4_members(&rig, Team::Red).is_empty());
+    assert!(z4_members(&rig, Team::Blue).is_empty());
+    assert_eq!(z4_on(&rig, 0, Team::Red), None);
+    assert_eq!(z4_count(&rig, pilot, RED_JOINED), 0);
+    assert!(
+        !rig.log
+            .iter()
+            .any(|(_, event)| mush_testkit::text_of(event).contains("You have been joined")),
+        "nobody was told of a join"
+    );
+    rig.staff("@arena/abort");
+}
+
+/// **A drop past the grace keeps the pilot on their net, through the reclaim**
+/// (16b cut Z.4): the drop does not hand the seat back, so nothing leaves, and
+/// the reclaim needs no rejoin — no removal line, and no second join line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z4_a_drop_past_the_grace_stays_on_the_net_through_the_reclaim() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    assert_eq!(
+        z4_members(&rig, Team::Red),
+        vec![pilot],
+        "a drop is not a leave"
+    );
+    let now = rig.now;
+    rig.tick_to(now + 5);
+    let said = rig.say(0, "board");
+    assert!(said.contains("is yours again where it stands"), "{said}");
+    assert_eq!(
+        z4_on(&rig, 0, Team::Red),
+        Some(("ra".to_owned(), Some("RA".to_owned())))
+    );
+    assert_eq!(z4_count(&rig, pilot, RED_REMOVED), 0);
+    assert_eq!(z4_count(&rig, pilot, RED_JOINED), 1);
+}
+
+/// **A pilot who dropped and never came back is still taken off at the
+/// check-in** (16b cut Z.4): the drop keeps the billet (the seat hook releases
+/// the focus, not the seat), so the check-in's `release_seat` still reaches
+/// `hand_seat_back` for them and the net is empty after the match — nobody left
+/// on it to hear the next match's red side.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn z4_a_pilot_who_dropped_and_never_reclaimed_is_taken_off_at_the_check_in() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    let now = rig.now;
+    rig.tick_to(now + 5);
+    assert_eq!(
+        z4_members(&rig, Team::Red),
+        vec![pilot],
+        "past the grace, still on the net"
+    );
+    // Blue calls it off; the dropped red pilot never boards again.
+    rig.say(1, "sim abort");
+    for _ in 0..400 {
+        if rig.state() == MatchState::Aborted {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+    }
+    assert_eq!(rig.state(), MatchState::Aborted, "the check-in lands");
+    assert!(
+        z4_members(&rig, Team::Red).is_empty(),
+        "the dropped pilot is off red's net"
+    );
+    assert!(z4_members(&rig, Team::Blue).is_empty());
+    assert_eq!(z4_count(&rig, pilot, RED_REMOVED), 1);
+    assert_eq!(z4_count(&rig, rig.pilot(1), BLUE_REMOVED), 1);
+}

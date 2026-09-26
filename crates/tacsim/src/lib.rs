@@ -529,7 +529,21 @@ impl GameModule for TacsimRuleset {
     /// session is attached — which on the split server is the gateway's
     /// re-announce, in no order against that tick — holding each for at most
     /// [`match_::HATCH_HOLD_S`] ([`match_::MatchBook::take_hatch_notices`]).
+    ///
+    /// **16b cut Z.4 (16c `N8`)**: and, before the sweep, the two side nets
+    /// (`match_::net::ensure_nets`) — made once, their locks and flags
+    /// re-asserted on every boot after. Comsys is composed first, so its state is
+    /// loaded by now; without it nothing is made and the layer runs without a
+    /// radio. The sweep then takes anybody a restart left in a pod off their net
+    /// as it gives their seat back.
     fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        let (red, blue) = match_::net::ensure_nets(ctx);
+        if red.is_none() || blue.is_none() {
+            tracing::debug!(
+                "tacsim: the side nets are not made (comsys is not composed); matches run \
+                 without a radio"
+            );
+        }
         let ejected = match_::cockpit::eject_all_at_boot(ctx);
         if !ejected.is_empty() {
             tracing::warn!(

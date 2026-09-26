@@ -155,7 +155,9 @@ or `blue`) and type:
 
 The match starts the moment every claimed slot is seated, or when the boarding
 window runs out and the unseated slots are dropped. Everyone in the centre reads
-`Match N is running. Good hunting.`
+`Match N is running. Good hunting.` In the same moment each pilot is joined to
+their side's radio, `RedNet` or `BlueNet`, with their callsign as the alias
+(`ra hello`), until they climb out: `help cockpit`.
 
 **`EXIT` once the match is running is final.** The seat, its control lease and
 your focus are released, the tank goes to its autopilot for the rest of the

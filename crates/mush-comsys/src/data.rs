@@ -17,7 +17,8 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 
-use mush_core::{Deferred, LockExpr, ModuleOp, ModuleWrite, ObjId, Outbox};
+use mush_core::lock::MAX_LOCK_DEPTH;
+use mush_core::{Deferred, LockExpr, ModuleOp, ModuleWrite, ObjId, Outbox, World, eval_lock};
 use mush_proto::NarrativeKind;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -43,6 +44,9 @@ pub const MAX_HISTORY_CAP: u32 = 10_000;
 /// Longest accepted `comtitle` (characters).
 pub const MAX_TITLE_LEN: usize = 60;
 
+/// Longest accepted channel name (bytes; the charset is ASCII).
+pub(crate) const MAX_CHANNEL_NAME_LEN: usize = 32;
+
 /// The kv key of the comsys meta document.
 pub const META_KEY: &str = "meta";
 
@@ -67,7 +71,9 @@ pub struct ChannelPerms {
     /// Who may speak.
     pub speak: LockExpr,
     /// Who may see the channel: hides it from `clist`/`@channel/who` *and*
-    /// gates message delivery.
+    /// gates message delivery — except on a [`ChannelFlags::closed`] channel,
+    /// where membership decides both and this lock only keeps the channel from
+    /// everybody else (see [`Channel::hears`]).
     pub see: LockExpr,
     /// Who may administer (destroy/perm/color/set) — on top of the
     /// always-admitted `COMSYS_ADMIN` power and Royalty+.
@@ -132,6 +138,20 @@ pub struct ChannelFlags {
     /// channel's lines never leave the world unless someone says so.
     #[serde(default)]
     pub relay: bool,
+    /// **Members only** (16b cut Z.4; 16c N8): a closed channel does not exist
+    /// for anybody who is not on it. `clist` omits it, and `@channel/who` and
+    /// `addcom` answer `No such channel.` to a non-member **whatever the see lock
+    /// says** (the admin bypass stands, as it does for every channel); and
+    /// delivery to a **member** never consults the see lock
+    /// ([`Channel::hears`]), so a closed channel's see lock may be `#false` —
+    /// which is what keeps its roster, its member count and who on it is
+    /// connected from anybody outside it — without silencing the members.
+    ///
+    /// Made by a driving module through `api::ensure_channel` (the simulator's
+    /// side nets); no verb sets it. Off by default, and a document written before
+    /// the flag reads as open.
+    #[serde(default)]
+    pub closed: bool,
 }
 
 /// How much history a LOGGED channel keeps and whether it survives reboot.
@@ -195,6 +215,36 @@ impl Channel {
             seq: 0,
         }
     }
+
+    /// **Whether a member of this channel is delivered its traffic** — the
+    /// question every delivery read asks of one membership (a live line, a
+    /// channel notice, the LOUD login count, `@channel/recall` and the web's two
+    /// hydration queries), always with **no** admin bypass.
+    ///
+    /// The see lock, except on a [`ChannelFlags::closed`] channel, whose members
+    /// hear it whatever the see lock says (16b cut Z.4): there the see lock is
+    /// what hides the channel from everybody else, and consulting it for a
+    /// member would silence the members too.
+    ///
+    /// Callers have already established that `who` is a member; this never
+    /// answers the membership question itself.
+    #[must_use]
+    pub fn hears(&self, w: &World, who: ObjId) -> bool {
+        self.flags.closed || eval_lock(w, &self.perms.see, who, MAX_LOCK_DEPTH)
+    }
+}
+
+/// Whether `name` is a usable channel name: 1 to [`MAX_CHANNEL_NAME_LEN`]
+/// letters, digits, `-` and `_`. Shared by `@channel/create` and the
+/// module-driven `api::ensure_channel` (16b cut Z.4), so a name a module makes
+/// is one a staffer could have typed.
+#[must_use]
+pub(crate) fn valid_channel_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_CHANNEL_NAME_LEN
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// One player's membership of one channel — the persisted

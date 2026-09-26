@@ -4359,3 +4359,60 @@ fn catchup_cells(block: &str) -> Vec<(u64, u64)> {
         })
         .collect()
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut Z.4 (16c N8): the side nets, as one more column
+// ---------------------------------------------------------------------------
+
+/// **The side's net carries a pilot's words and nothing else, and none of it to
+/// the other side** (16b cut Z.4; doc 16 §1, §5).
+///
+/// The net is a surface the observer rule has to be asked about like every
+/// other: while Ada speaks on red's net, everything Bo — the other side's pilot
+/// — receives in the window passes [`names_nothing`] and carries neither the
+/// net's name nor its words; and the line Ada reads back is comsys's own and
+/// holds her callsign, her name and her words, and nothing a sensor would have
+/// had to find: no tank name, no object number.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn z4_a_net_line_names_the_callsign_the_speaker_and_the_words_and_reaches_no_one_else() {
+    let server = boot("observer-net").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+
+    let (red, blue, _muster, _domain) = seat_the_witnesses(&mut god).await;
+    take_off(&mut ada, &mut bo).await;
+    ada.expect("You have been joined to channel RedNet (alias: ra).")
+        .await;
+    bo.expect("You have been joined to channel BlueNet (alias: ba).")
+        .await;
+
+    let bo_mark = bo.mark();
+    let ada_mark = ada.mark();
+    say(&mut ada, "ra contact east", "[RedNet] RA Ada: contact east").await;
+    // Blue's window closes on its own sentinel's refusal.
+    let seen = ask_whole(&mut bo, SENTINEL).await;
+    let window = strip_ansi(&bo.seen[bo_mark..]);
+    assert!(
+        window.contains(&seen),
+        "the window is the whole of what Bo read"
+    );
+    names_nothing(&window, red, blue, "blue while red spoke on its net");
+    for leak in ["RedNet", "contact east", "RA Ada"] {
+        assert!(
+            !window.contains(leak),
+            "blue read {leak:?} while red spoke on its net:\n{window}"
+        );
+    }
+
+    // Red's own line: the net, the callsign, the name and the words — and not
+    // one thing more.
+    let ada_seen = strip_ansi(&ada.seen[ada_mark..]);
+    let line = ada_seen
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("[RedNet]"))
+        .expect("Ada reads her own line back");
+    assert_eq!(line, "[RedNet] RA Ada: contact east");
+    names_nothing(&ada_seen, red, blue, "red's own net line");
+}

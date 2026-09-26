@@ -1352,3 +1352,91 @@ fn v3_a_result_from_before_reports_existed_is_refused_without_a_read() {
         "{said}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut Z.4 (16c N8): the side nets are made at boot, once
+// ---------------------------------------------------------------------------
+
+/// The channels named `name` the world holds (case-insensitively), with their
+/// flags and locks.
+fn z4_nets_named(rig: &Rig, name: &str) -> Vec<mush_comsys::Channel> {
+    rig.tw
+        .world()
+        .module_state::<mush_comsys::ComsysState>()
+        .map(|state| {
+            state
+                .channels
+                .values()
+                .filter(|channel| channel.name.eq_ignore_ascii_case(name))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// **The boot makes `RedNet` and `BlueNet`, once** (16b cut Z.4): closed, the
+/// join, see and admin locks shut, speak open, every other flag off, and the
+/// description the pilots' `clist` prints. A second boot over the same store
+/// still holds two — and shuts again a join lock a staffer opened in between,
+/// while a recoloured net keeps its colour.
+#[test]
+fn z4_the_boot_makes_the_two_nets_once_and_a_reboot_still_holds_two() {
+    let mut rig = Rig::boot(0);
+    let shut = mush_core::LockExpr::Const(false);
+    for (name, side) in [(match_::RED_NET, "red"), (match_::BLUE_NET, "blue")] {
+        let nets = z4_nets_named(&rig, name);
+        assert_eq!(nets.len(), 1, "{name}");
+        let net = nets.first().expect("one");
+        assert_eq!(
+            net.flags,
+            mush_comsys::ChannelFlags {
+                closed: true,
+                ..mush_comsys::ChannelFlags::default()
+            },
+            "{name}"
+        );
+        assert_eq!(net.perms.join, shut, "{name}");
+        assert_eq!(net.perms.see, shut, "{name}");
+        assert_eq!(net.perms.admin, shut, "{name}");
+        assert_eq!(net.perms.speak, mush_core::LockExpr::Const(true), "{name}");
+        assert_eq!(
+            net.description,
+            format!(
+                "The {side} side's net for a match in the simulator; joined with your pod and \
+                 left with it."
+            )
+        );
+    }
+    let before = rig
+        .tw
+        .world()
+        .module_state::<mush_comsys::ComsysState>()
+        .map(|state| state.channels.len())
+        .expect("comsys is composed");
+
+    // Staff open red's join lock and recolour it, and the server restarts.
+    rig.staff("@channel/perm RedNet=join=#1");
+    rig.staff("@channel/color RedNet=red,#ff0000");
+    assert_ne!(
+        z4_nets_named(&rig, match_::RED_NET)
+            .first()
+            .map(|net| net.perms.join.clone()),
+        Some(shut.clone())
+    );
+    rig.reboot();
+    let after = rig
+        .tw
+        .world()
+        .module_state::<mush_comsys::ComsysState>()
+        .map(|state| state.channels.len())
+        .expect("comsys is composed");
+    assert_eq!(after, before, "nothing was made twice");
+    assert_eq!(z4_nets_named(&rig, match_::RED_NET).len(), 1);
+    assert_eq!(z4_nets_named(&rig, match_::BLUE_NET).len(), 1);
+    let red = z4_nets_named(&rig, match_::RED_NET)
+        .into_iter()
+        .next()
+        .expect("red's net");
+    assert_eq!(red.perms.join, shut, "the boot shut the lock again");
+    assert_eq!(red.color.ansi, "red", "and kept the colour");
+}

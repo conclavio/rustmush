@@ -325,6 +325,18 @@ assertions need two pilots seated, and a slot belongs to an account.
 """
 
 [[site]]
+path = "crates/mushd/tests/sim_net.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut Z.4's side-net lens (16c N8), performing the same post-composition
+wiring its lobby and observer twins above perform and for the same reason: the
+nets are joined only through the lobby's check-out, so three pilots on three
+accounts have to hold slots and board before anybody is on a net.
+"""
+
+[[site]]
 path = "crates/mushd/tests/sim_weapons.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

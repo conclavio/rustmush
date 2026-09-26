@@ -47,11 +47,12 @@ use mush_core::{AccountId, Ctx, ObjId, World};
 use mush_proto::{OutputEvent, RichText};
 use smol_str::SmolStr;
 
-use crate::arena::state::{EndReason, StopReason, Team};
+use crate::arena::state::{Designator, EndReason, StopReason, Team};
 use crate::arena_bridge::NOTICE_CATEGORY;
 use crate::arena_task::MatchId;
 use crate::config::{ArenaConfig, CommandConfig, MatchConfig, SensorsConfig};
 use crate::match_::centre::{self, CENTRE_ARENA, CentreRoom, PODS_PER_SIDE};
+use crate::match_::net;
 use crate::match_::{MatchBook, MatchOutcome, MatchState, Side};
 
 /// The one line every out-of-place `SIM` refuses with. Until 16b cut F.4 a
@@ -1896,6 +1897,15 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
                 centre.board_deadline_ms = None;
             }
             tracing::info!(match_id = match_id.0, "tacsim: match entered Running");
+            // **16b cut Z.4 (16c `N8`)**: the sides' nets, here and not in
+            // `start` — staff `@arena/start` shares `start`, and nothing inside it
+            // tells a lobby pilot from a staff-seated one — and only after its
+            // `Ok`, so a refused check-out joins nobody. **Before** the
+            // announcement, in the same batch: `Good hunting` stays the last line
+            // of the check-out, which is the line every client and every wire test
+            // waits on to know the match is theirs, so the join line is already in
+            // hand by then and never lands in the answer to what they type next.
+            join_the_nets(ctx);
             announce(ctx, format!("Match {match_id} is running. Good hunting."));
             Ok(())
         }
@@ -1907,6 +1917,63 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
                 format!("Match {match_id} could not start: {error}. The pods are free again."),
             );
             Err(SimError::Start(error.to_string()))
+        }
+    }
+}
+
+/// **Put every human pilot of the match that just started on their side's net**
+/// (16b cut Z.4; 16c `N8`; doc 16 §3.7 "Boarding") — [`run`]'s success arm, at
+/// the `Boarding → Running` trigger: the last `BOARD` or the board deadline, and
+/// never `SIM START`, which only locks the pods.
+///
+/// One join per slot of the centre, under the slot's callsign as
+/// `resolve_callsigns`' first pass gives that pilot's unit —
+/// `Designator::Slot { team, slot: index }`, so `RA`, `BE` — which needs no read
+/// of the arena. The slots are the humans: a machine the AI fill fields has no
+/// slot and no pilot, and never joins. Each side's roster is its own slots'
+/// pilots, and [`net::join_pilot`] sweeps whoever else is on that side's net
+/// first; a side with no human pilot has its net swept alone, so a stale member
+/// cannot outlive a machine-only side either.
+///
+/// Every slot is seated by the time the centre is `Running` (the trigger waits
+/// for all of them, the deadline drops the rest); the `is_seated` filter is the
+/// second lock on that door, because a pilot who never boarded must not be on
+/// the radio of a match they are not in.
+fn join_the_nets(ctx: &mut Ctx<'_>) {
+    let seated: Vec<(Team, u8, ObjId)> = centre(ctx.w)
+        .map(|centre| {
+            centre
+                .slots
+                .iter()
+                .filter(|slot| slot.is_seated())
+                .map(|slot| (slot.team, slot.index, slot.pilot))
+                .collect()
+        })
+        .unwrap_or_default();
+    for team in Team::ALL {
+        let roster: Vec<ObjId> = seated
+            .iter()
+            .filter(|(side, _, _)| *side == team)
+            .map(|(_, _, pilot)| *pilot)
+            .collect();
+        if roster.is_empty() {
+            net::sweep(ctx, team, &roster);
+            continue;
+        }
+        for (_, index, pilot) in seated.iter().filter(|(side, _, _)| *side == team) {
+            let callsign = Designator::Slot {
+                team,
+                slot: u16::from(*index),
+            }
+            .to_string();
+            if !net::join_pilot(ctx, *pilot, team, &callsign, &roster) {
+                tracing::debug!(
+                    pilot = %pilot,
+                    callsign,
+                    "tacsim: a pilot was not joined to their side's net (comsys absent, the net \
+                     gone, or no free alias)"
+                );
+            }
         }
     }
 }

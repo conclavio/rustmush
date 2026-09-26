@@ -439,6 +439,7 @@ fn seed_default_channel(ctx: &mut ModuleCtx<'_>) {
             logged: true,
             ic: false,
             relay: false,
+            closed: false,
         };
         c.history = HistoryPolicy {
             persist: true,

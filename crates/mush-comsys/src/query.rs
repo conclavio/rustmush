@@ -11,8 +11,7 @@
 //! hearing a channel must not read its state or history through a panel
 //! either.
 
-use mush_core::lock::MAX_LOCK_DEPTH;
-use mush_core::{ObjId, QueryHandler, World, eval_lock};
+use mush_core::{ObjId, QueryHandler, World};
 use mush_proto::{OutputEvent, PanelFrameKind, RichText};
 use smol_str::SmolStr;
 
@@ -68,8 +67,10 @@ impl QueryHandler for StateQuery {
             let Some(c) = st.channels.get(&m.channel) else {
                 continue; // orphaned membership; boot cleanup owns it
             };
-            // Delivery semantics: the see lock, no admin bypass.
-            if !eval_lock(w, &c.perms.see, actor, MAX_LOCK_DEPTH) {
+            // Delivery semantics: the see lock, no admin bypass — through
+            // `Channel::hears`, so a closed channel's member keeps its tab (16b
+            // cut Z.4: its see lock is what hides it from everybody else).
+            if !c.hears(w, actor) {
                 continue;
             }
             channels.push(serde_json::json!({
@@ -160,7 +161,8 @@ impl QueryHandler for BacklogQuery {
             // unenumerable.
             return Err(err("You are not on that channel."));
         };
-        if !eval_lock(w, &c.perms.see, actor, MAX_LOCK_DEPTH) {
+        // 16b cut Z.4: `Channel::hears`, as live delivery.
+        if !c.hears(w, actor) {
             return Err(err(format!("You cannot listen to {}.", c.name)));
         }
         if !c.flags.logged {

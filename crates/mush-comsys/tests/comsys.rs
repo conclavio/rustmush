@@ -1888,3 +1888,447 @@ fn the_ic_flag_round_trips_and_a_pre_i7_document_reads_as_ooc() {
     assert!(!legacy.ic, "a document without the key is OOC");
     assert_eq!(legacy, mush_comsys::ChannelFlags::default());
 }
+
+// ----------------------------------------------------------------------
+// 16b cut Z.4 (16c N8): the module-driven make-once API and the closed flag
+// ----------------------------------------------------------------------
+
+/// Run one closure against a real `Ctx` the way a driving module (tacsim's
+/// boot, its lobby) calls comsys's API, and hand back what it emitted and the
+/// module writes it deferred.
+fn with_api<T>(
+    engine: &mut Engine,
+    f: impl FnOnce(&mut mush_core::Ctx<'_>) -> T,
+) -> (T, Vec<(Audience, OutputEvent)>, Vec<ModuleOp>) {
+    let mut out = Outbox::new();
+    let answer = {
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: None,
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        f(&mut ctx)
+    };
+    let ops = out
+        .take_deferred()
+        .into_iter()
+        .filter_map(|d| match d {
+            Deferred::Persist(op) => Some(op),
+            _ => None,
+        })
+        .collect();
+    (answer, out.take(), ops)
+}
+
+/// The keys of every `JsonSet` in `ops`, in order.
+fn set_keys(ops: &[ModuleOp]) -> Vec<String> {
+    ops.iter()
+        .filter_map(|op| match &op.op {
+            ModuleWrite::JsonSet { key, .. } => Some(key.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A side net's locks, as tacsim makes one: every lock shut but speak.
+fn net_perms() -> mush_comsys::ChannelPerms {
+    mush_comsys::ChannelPerms {
+        join: mush_core::LockExpr::Const(false),
+        speak: mush_core::LockExpr::Const(true),
+        see: mush_core::LockExpr::Const(false),
+        admin: mush_core::LockExpr::Const(false),
+    }
+}
+
+/// A side net's flags: closed, and nothing else.
+fn closed() -> mush_comsys::ChannelFlags {
+    mush_comsys::ChannelFlags {
+        closed: true,
+        ..mush_comsys::ChannelFlags::default()
+    }
+}
+
+/// The plain lines one actor was sent.
+fn lines_to(events: &[(Audience, OutputEvent)], who: ObjId) -> Vec<String> {
+    events
+        .iter()
+        .filter(|(aud, _)| *aud == Audience::Actor(who))
+        .map(|(_, e)| mush_testkit::text_of(e))
+        .collect()
+}
+
+/// `ensure_channel` twice makes one channel, with one `chan:` document and one
+/// meta write between the two calls; a third call after `@channel/perm` opened
+/// the join lock shuts it again with one channel write and nothing else, and
+/// keeps what the module does not own (the colour a staffer set).
+#[test]
+fn z4_ensure_channel_makes_one_channel_once_and_reasserts_its_locks() {
+    let (mut engine, _, _) = setup();
+    let (first, _, ops_one) = with_api(&mut engine, |ctx| {
+        mush_comsys::api::ensure_channel(ctx, "RedNet", "The red net.", closed(), net_perms())
+    });
+    let (second, _, ops_two) = with_api(&mut engine, |ctx| {
+        mush_comsys::api::ensure_channel(ctx, "rednet", "Another text.", closed(), net_perms())
+    });
+    let id = first.expect("a usable name on a composed comsys makes a channel");
+    assert_eq!(
+        second,
+        Some(id),
+        "the same channel, by name, case-insensitively"
+    );
+    let keys: Vec<String> = set_keys(&ops_one)
+        .into_iter()
+        .chain(set_keys(&ops_two))
+        .collect();
+    assert_eq!(
+        keys,
+        vec![format!("chan:{}", id.0), "meta".to_string()],
+        "one channel document and one meta write across both calls"
+    );
+    let st = state(&engine);
+    assert_eq!(st.channels.len(), 2, "Public and the one net");
+    let c = st.channels.get(&id).expect("the net");
+    assert_eq!(c.name, "RedNet");
+    assert_eq!(
+        c.description, "The red net.",
+        "the description is the first call's"
+    );
+    assert!(c.flags.closed);
+
+    // Staff open the join lock and recolour it; the next boot's call shuts the
+    // lock again and leaves the colour.
+    run(&mut engine, GOD, "@channel/perm RedNet=join=#1");
+    run(&mut engine, GOD, "@channel/color RedNet=red,#ff0000");
+    let _ = engine.take_module_ops();
+    assert_ne!(
+        state(&engine)
+            .channels
+            .get(&id)
+            .map(|c| c.perms.join.clone()),
+        Some(mush_core::LockExpr::Const(false)),
+        "the staffer opened it"
+    );
+    let (third, _, ops_three) = with_api(&mut engine, |ctx| {
+        mush_comsys::api::ensure_channel(ctx, "RedNet", "The red net.", closed(), net_perms())
+    });
+    assert_eq!(third, Some(id));
+    assert_eq!(set_keys(&ops_three), vec![format!("chan:{}", id.0)]);
+    let c = state(&engine).channels.get(&id).expect("the net").clone();
+    assert_eq!(c.perms, net_perms(), "the module's locks, re-asserted");
+    assert_eq!(c.color.ansi, "red", "a recoloured net keeps its colour");
+}
+
+/// A name `@channel/create` would refuse is refused here too, and nothing is
+/// written.
+#[test]
+fn z4_ensure_channel_answers_none_for_an_unusable_name_and_writes_nothing() {
+    let (mut engine, _, _) = setup();
+    let long = "N".repeat(33);
+    for bad in ["", "Red Net", "Net!", long.as_str()] {
+        let (answer, _, ops) = with_api(&mut engine, |ctx| {
+            mush_comsys::api::ensure_channel(ctx, bad, "x", closed(), net_perms())
+        });
+        assert_eq!(answer, None, "{bad:?}");
+        assert!(ops.is_empty(), "{bad:?} wrote {ops:?}");
+    }
+    assert_eq!(state(&engine).channels.len(), 1, "only Public");
+}
+
+/// `set_title` persists the membership, the next line carries the title, and it
+/// refuses a non-member and an over-long title.
+#[test]
+fn z4_set_title_persists_and_the_next_line_carries_it() {
+    let (mut engine, nick, ann) = setup();
+    let (id, _, _) = with_api(&mut engine, |ctx| {
+        let id = mush_comsys::api::ensure_channel(
+            ctx,
+            "Ops",
+            "",
+            mush_comsys::ChannelFlags::default(),
+            mush_comsys::ChannelPerms::default(),
+        )
+        .expect("made");
+        assert!(mush_comsys::api::force_join(ctx, nick, id, "ops"));
+        id
+    });
+    let (set, _, ops) = with_api(&mut engine, |ctx| {
+        mush_comsys::api::set_title(ctx, nick, id, Some("RA"))
+    });
+    assert!(set);
+    let member_key = format!("member:{}:{}", nick.0, id.0);
+    let doc = ops
+        .iter()
+        .find_map(|op| match &op.op {
+            ModuleWrite::JsonSet { key, value } if key.as_str() == member_key => {
+                Some(value.clone())
+            }
+            _ => None,
+        })
+        .expect("the membership document is written");
+    assert_eq!(doc["title"], "RA");
+    // The same title again writes nothing.
+    let (again, _, ops) = with_api(&mut engine, |ctx| {
+        mush_comsys::api::set_title(ctx, nick, id, Some("RA"))
+    });
+    assert!(again);
+    assert!(ops.is_empty(), "{ops:?}");
+
+    let out = run(&mut engine, nick, "ops contact east");
+    let evs = chan_events(&out);
+    assert_eq!(evs.len(), 1, "{evs:?}");
+    assert_eq!(evs[0].title.as_deref(), Some("RA"));
+    assert_eq!(evs[0].text, "contact east");
+
+    // Not a member; too long.
+    let (refused, _, ops) = with_api(&mut engine, |ctx| {
+        mush_comsys::api::set_title(ctx, ann, id, Some("BA"))
+    });
+    assert!(!refused);
+    assert!(ops.is_empty());
+    // One past `comtitle`'s sixty characters.
+    let long = "x".repeat(61);
+    let (refused, _, ops) = with_api(&mut engine, |ctx| {
+        mush_comsys::api::set_title(ctx, nick, id, Some(&long))
+    });
+    assert!(!refused);
+    assert!(ops.is_empty());
+    assert_eq!(
+        state(&engine)
+            .members
+            .get(&(nick, id))
+            .and_then(|m| m.title.clone())
+            .as_deref(),
+        Some("RA")
+    );
+}
+
+/// A `#false` join lock refuses `addcom` — even on an open channel a player can
+/// see — while the module's forced join still joins.
+#[test]
+fn z4_a_shut_join_lock_refuses_addcom_while_force_join_joins() {
+    let (mut engine, nick, ann) = setup();
+    let perms = mush_comsys::ChannelPerms {
+        join: mush_core::LockExpr::Const(false),
+        ..mush_comsys::ChannelPerms::default()
+    };
+    let (id, _, _) = with_api(&mut engine, |ctx| {
+        mush_comsys::api::ensure_channel(
+            ctx,
+            "Shut",
+            "",
+            mush_comsys::ChannelFlags::default(),
+            perms,
+        )
+    });
+    let id = id.expect("made");
+    let out = run(&mut engine, nick, "addcom sh=Shut");
+    assert!(
+        sys_texts(&out)
+            .iter()
+            .any(|t| t.contains("Channel Shut does not admit you.")),
+        "{:?}",
+        sys_texts(&out)
+    );
+    assert!(!state(&engine).members.contains_key(&(nick, id)));
+    let (joined, events, _) = with_api(&mut engine, |ctx| {
+        mush_comsys::api::force_join(ctx, ann, id, "sh")
+    });
+    assert!(joined);
+    assert!(state(&engine).members.contains_key(&(ann, id)));
+    assert_eq!(
+        lines_to(&events, ann),
+        vec!["You have been joined to channel Shut (alias: sh).".to_string()]
+    );
+}
+
+/// When the alias asked for already names another channel of the member's, the
+/// join line says what they got and what the one they asked for means.
+#[test]
+fn z4_a_forced_join_says_what_an_alias_it_could_not_take_already_means() {
+    let (mut engine, nick, _) = setup();
+    let (_, events, _) = with_api(&mut engine, |ctx| {
+        let id = mush_comsys::api::ensure_channel(ctx, "RedNet", "", closed(), net_perms())
+            .expect("made");
+        assert!(mush_comsys::api::force_join(ctx, nick, id, "pub"));
+    });
+    assert_eq!(
+        lines_to(&events, nick),
+        vec![
+            "You have been joined to channel RedNet (alias: pub2; pub is your alias for Public)."
+                .to_string()
+        ]
+    );
+}
+
+/// **A closed channel is its members' alone**: with a `#false` see lock it is
+/// delivered to its members, is absent from a non-member's `clist` and present
+/// (flag `C`) in a member's, `@channel/who` and `addcom` answer `No such
+/// channel.` to a non-member and the roster to a member, and a member's web
+/// hydration lists it; `members_of` reads the roster.
+#[test]
+fn z4_a_closed_channel_is_delivered_to_its_members_and_is_nothing_to_anybody_else() {
+    let (mut engine, nick, ann) = setup();
+    let (id, _, _) = with_api(&mut engine, |ctx| {
+        let id =
+            mush_comsys::api::ensure_channel(ctx, "RedNet", "The red net.", closed(), net_perms())
+                .expect("made");
+        assert!(mush_comsys::api::force_join(ctx, nick, id, "ra"));
+        id
+    });
+    assert_eq!(mush_comsys::api::members_of(&engine.world, id), vec![nick]);
+
+    // Delivery: the see lock is shut, and the member still hears it.
+    let out = run(&mut engine, nick, "ra contact east");
+    assert_eq!(
+        recipients(&out),
+        vec![nick],
+        "the member alone; God is not on it"
+    );
+
+    // clist: absent for Ann, present for Nick with the closed letter.
+    let out = run(&mut engine, ann, "clist");
+    assert!(
+        !sys_texts(&out).iter().any(|t| t.contains("RedNet")),
+        "{:?}",
+        sys_texts(&out)
+    );
+    let out = run(&mut engine, nick, "clist");
+    let row = sys_texts(&out)
+        .into_iter()
+        .find(|t| t.contains("RedNet"))
+        .expect("the member's clist lists the net");
+    assert!(row.contains(" C "), "the closed letter: {row}");
+
+    // who and addcom: no such channel to Ann, the roster to Nick.
+    for line in ["@channel/who RedNet", "addcom rn=RedNet"] {
+        let out = run(&mut engine, ann, line);
+        assert_eq!(
+            sys_texts(&out),
+            vec!["No such channel.".to_string()],
+            "{line}"
+        );
+    }
+    let out = run(&mut engine, nick, "@channel/who RedNet");
+    assert_eq!(
+        sys_texts(&out),
+        vec![
+            "-- Channel RedNet: 1 member --".to_string(),
+            "  Nick [connected]".to_string()
+        ]
+    );
+
+    // The member's channel tabs hydrate it; the non-member's do not.
+    let data = panel_data(
+        web_query(&mut engine, nick, "comsys.state", serde_json::json!({})),
+        "comsys",
+    );
+    assert!(
+        data["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["name"] == "RedNet" && c["alias"] == "ra"),
+        "{data:?}"
+    );
+    let data = panel_data(
+        web_query(&mut engine, ann, "comsys.state", serde_json::json!({})),
+        "comsys",
+    );
+    assert!(
+        !data["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["name"] == "RedNet"),
+        "{data:?}"
+    );
+
+    // A second member: both hear it, and the roster reads both.
+    with_api(&mut engine, |ctx| {
+        assert!(mush_comsys::api::force_join(ctx, ann, id, "ra"));
+    });
+    let out = run(&mut engine, ann, "ra copy");
+    assert_eq!(recipients(&out), vec![nick, ann]);
+    assert_eq!(
+        mush_comsys::api::members_of(&engine.world, id),
+        vec![nick, ann]
+    );
+    let (left, events, _) = with_api(&mut engine, |ctx| {
+        mush_comsys::api::force_leave(ctx, nick, id)
+    });
+    assert!(left);
+    assert_eq!(
+        lines_to(&events, nick),
+        vec!["You have been removed from channel RedNet.".to_string()]
+    );
+    assert_eq!(mush_comsys::api::members_of(&engine.world, id), vec![ann]);
+}
+
+/// **A closed channel's notices and LOUD count ignore its see lock too** (16b
+/// cut Z.4): the brief names every per-member read of delivery, not only live
+/// speech. With a `#false` see lock, an admin's `addcom` (which passes the shut
+/// join lock) and their `delcom` still tell the members, and a member who was
+/// away is counted what they missed at login.
+#[test]
+fn z4_a_closed_channels_notices_and_loud_count_ignore_its_see_lock() {
+    let (mut engine, nick, ann) = setup();
+    let loud_closed = mush_comsys::ChannelFlags {
+        loud: true,
+        ..closed()
+    };
+    let (id, _, _) = with_api(&mut engine, |ctx| {
+        let id = mush_comsys::api::ensure_channel(ctx, "RedNet", "", loud_closed, net_perms())
+            .expect("made");
+        assert!(mush_comsys::api::force_join(ctx, nick, id, "ra"));
+        assert!(mush_comsys::api::force_join(ctx, ann, id, "ra"));
+        id
+    });
+
+    // The join and leave notices reach the members.
+    let out = run(&mut engine, GOD, "addcom rn=RedNet");
+    assert!(state(&engine).members.contains_key(&(GOD, id)));
+    for who in [nick, ann] {
+        assert_eq!(
+            lines_to(out.events(), who),
+            vec!["[RedNet] God has joined this channel.".to_string()],
+            "{who:?}"
+        );
+    }
+    let out = run(&mut engine, GOD, "delcom rn");
+    assert!(!state(&engine).members.contains_key(&(GOD, id)));
+    for who in [nick, ann] {
+        assert_eq!(
+            lines_to(out.events(), who),
+            vec!["[RedNet] God has left this channel.".to_string()],
+            "{who:?}"
+        );
+    }
+
+    // Ann is away while Nick speaks twice; at login she is told the count.
+    engine.world.set_connected(ann, false);
+    run(&mut engine, nick, "ra missed one");
+    run(&mut engine, nick, "ra missed two");
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine.step(
+        Inbound::ConnUp {
+            conn: 60,
+            actor: ann,
+            caps_structured: false,
+            from_linkdead: false,
+        },
+        &mut out,
+        &mut fx,
+    );
+    assert!(
+        sys_texts(&out)
+            .iter()
+            .any(|t| t == "[RedNet] 2 messages since you last read."),
+        "got: {:?}",
+        sys_texts(&out)
+    );
+}

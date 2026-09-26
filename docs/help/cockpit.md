@@ -77,6 +77,14 @@ pod 1 is `RA`, red pod 2 is `RB`, blue pod 3 is `BC`. `STATUS` opens with
 yours, and `SIM STATUS` prints each pod's beside its number, so a callsign on
 the radio is a person you can look up.
 
+Your side shares a radio for the match, `RedNet` or `BlueNet`: you are joined
+to it when the match starts and taken off it when you climb out, and your
+callsign is your alias and your title on it, so `ra contact east` reaches every
+red pilot as `[RedNet] RA Ada: contact east`, and the channel screen keeps it
+with the net's other lines. The other
+side cannot hear it or see who is on it, and the machines say nothing. While
+you hold the alias, type `RANGE` and `BEARING` past their first two letters.
+
 A contact your sensors have found but not yet told apart has no callsign to
 give you, so your platform numbers it for itself: `X1`, `X2`, in the order your
 own sensors found things. Those numbers are **yours** — your teammate's `X1` is
@@ -324,7 +332,7 @@ An order **stands for ten minutes or until your next order to it**, and
 every answer ends by saying so. When it runs out the machines go back to their
 own doctrine and your side hears `Squad red-1: mind link dropped, unit on
 doctrine (its hold order has run out).` Nobody else is told you gave an order:
-there is no radio line.
+nothing is said on your side's radio unless you say it.
 
 **You may hold orders on four squads at once**: a fifth is refused until one of
 the four runs out or you release one, and a new order to a squad you already
@@ -418,7 +426,9 @@ both clients the notices list also carries the answer to anything you type while
 you are in the tank, and each match starts it empty. Nothing on the screen is
 sent until you press Enter: the reading verbs are the only ones a bare key runs,
 and `STARTUP`, `HEADING`, `SPEED`, `LOCK` and `FIRE` are always typed.
-`p` pulls the panel again, and the map too if it has gone dark.
+`p` pulls the panel again, and the map too if it has gone dark. Your side's
+radio is not on this screen: its lines are on the channel screen with every
+other channel's, and the notices list does not repeat them.
 
 See also: `help simulator`, `help tui`, `help chargen` (gunnery is the rating
 the shot reads).

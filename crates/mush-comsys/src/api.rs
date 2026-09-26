@@ -5,13 +5,109 @@
 //! keeps eligible members joined. These calls are module-driven: they skip
 //! the join lock (the driving module owns the policy decision) but never
 //! skip persistence or the membership invariants.
+//!
+//! Second consumer (16b cut Z.4; 16c N8): the simulator (`tacsim`), whose two
+//! side nets are made once through [`ensure_channel`] as **closed** channels
+//! ([`crate::ChannelFlags::closed`]), joined with [`force_join`] and
+//! [`set_title`] when a match starts, and swept with [`members_of`] and
+//! [`force_leave`].
 
 use mush_core::{Ctx, ObjId, World};
 use smol_str::SmolStr;
 
 use crate::data::{
-    Channel, ChannelId, ComsysState, Membership, member_key, persist_del, persist_membership,
+    Channel, ChannelFlags, ChannelId, ChannelPerms, ComsysState, MAX_TITLE_LEN, Membership,
+    member_key, persist_channel, persist_del, persist_membership, persist_meta, valid_channel_name,
 };
+
+/// **Make a channel once** (16b cut Z.4): the channel named `name`
+/// (case-insensitive) is answered when it exists, with its `perms` and `flags`
+/// re-asserted to the arguments — the driving module owns the policy, so a lock
+/// a staffer opened with `@channel/perm` is closed again — and its colour,
+/// description, history and members kept; else it is allocated with
+/// `description`, `flags` and `perms` (default colour and history), persisted
+/// (the channel document and the meta document) and answered.
+///
+/// Writes nothing when the channel exists and already carries `perms` and
+/// `flags`, so a boot that calls this every time persists the channel once.
+/// `None` when comsys is not composed or `name` is not a usable channel name
+/// (the one rule `@channel/create` applies), and then nothing is written.
+pub fn ensure_channel(
+    ctx: &mut Ctx<'_>,
+    name: &str,
+    description: &str,
+    flags: ChannelFlags,
+    perms: ChannelPerms,
+) -> Option<ChannelId> {
+    if !valid_channel_name(name) {
+        return None;
+    }
+    let st = ctx.w.module_state_mut::<ComsysState>()?;
+    if let Some(id) = st.channel_by_name(name).map(|c| c.id) {
+        let c = st.channels.get_mut(&id)?;
+        if c.perms != perms || c.flags != flags {
+            c.perms = perms;
+            c.flags = flags;
+            let doc = c.clone();
+            persist_channel(ctx.out, &doc);
+        }
+        return Some(id);
+    }
+    let id = st.alloc_chan_id();
+    let mut c = Channel::new(id, name);
+    c.description = description.to_string();
+    c.flags = flags;
+    c.perms = perms;
+    st.channels.insert(id, c.clone());
+    let next = st.next_chan_id;
+    persist_channel(ctx.out, &c);
+    persist_meta(ctx.out, next);
+    Some(id)
+}
+
+/// **Set (or clear) a member's comtitle on `channel`** (16b cut Z.4),
+/// persisting the membership — module-driven, so the `NO_TITLES` refusal
+/// `comtitle` makes is not made here (a title on such a channel is kept and
+/// suppressed on delivery, as it always is).
+///
+/// `None`, or a title that is empty after trimming, clears it. `false` when
+/// `player` is not a member, or the title is longer than `MAX_TITLE_LEN` (sixty)
+/// characters (`comtitle`'s rule), and then nothing changes. A title that is
+/// already the member's writes nothing.
+pub fn set_title(
+    ctx: &mut Ctx<'_>,
+    player: ObjId,
+    channel: ChannelId,
+    title: Option<&str>,
+) -> bool {
+    let title = title.map(str::trim).filter(|t| !t.is_empty());
+    if title.is_some_and(|t| t.chars().count() > MAX_TITLE_LEN) {
+        return false;
+    }
+    let Some(m) = ctx
+        .w
+        .module_state_mut::<ComsysState>()
+        .and_then(|st| st.members.get_mut(&(player, channel)))
+    else {
+        return false;
+    };
+    if m.title.as_deref() == title {
+        return true;
+    }
+    m.title = title.map(str::to_string);
+    let doc = m.clone();
+    persist_membership(ctx.out, &doc);
+    true
+}
+
+/// **The members of `channel`, by player** (16b cut Z.4), in player order. A
+/// read; empty when the channel does not exist or comsys is not composed.
+#[must_use]
+pub fn members_of(w: &World, channel: ChannelId) -> Vec<ObjId> {
+    w.module_state::<ComsysState>()
+        .map(|st| st.members_of(channel).map(|m| m.player).collect())
+        .unwrap_or_default()
+}
 
 /// The id of the channel with this (case-insensitive) name, if any.
 #[must_use]
@@ -97,6 +193,17 @@ pub fn force_join(ctx: &mut Ctx<'_>, player: ObjId, channel: ChannelId, alias: &
         tracing::warn!(player = player.0, channel = %channel, "comsys: no free alias for forced join");
         return false;
     };
+    // **16b cut Z.4**: when the alias asked for was taken, the member is told
+    // what it already means to them as well as what they got instead — a pilot
+    // who types `ra` and reaches `Public` should not have to find out by doing it.
+    let shadowed: Option<SmolStr> = (alias != base)
+        .then(|| {
+            ctx.w.module_state::<ComsysState>().and_then(|st| {
+                let taken = st.membership_by_alias(player, &base)?;
+                st.channels.get(&taken.channel).map(|c| c.name.clone())
+            })
+        })
+        .flatten();
     let m = Membership {
         player,
         channel,
@@ -109,11 +216,14 @@ pub fn force_join(ctx: &mut Ctx<'_>, player: ObjId, channel: ChannelId, alias: &
         st.members.insert((player, channel), m.clone());
     }
     persist_membership(ctx.out, &m);
-    ctx.out.sys_to_actor(
-        player,
-        "channel",
-        format!("You have been joined to channel {name} (alias: {alias})."),
-    );
+    let line = match shadowed {
+        Some(other) => format!(
+            "You have been joined to channel {name} (alias: {alias}; {base} is your alias for \
+             {other})."
+        ),
+        None => format!("You have been joined to channel {name} (alias: {alias})."),
+    };
+    ctx.out.sys_to_actor(player, "channel", line);
     true
 }
 

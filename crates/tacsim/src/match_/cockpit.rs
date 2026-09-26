@@ -2456,7 +2456,8 @@ impl EjectReport {
 /// **Give one cockpit seat back** (16b cut F.1) — the one way, wherever a seat
 /// has to be let go.
 ///
-/// Three steps, and the order is `EXIT`'s because `EXIT`'s was right:
+/// Three steps, and the order is `EXIT`'s because `EXIT`'s was right, and since
+/// 16b cut Z.4 a fourth after them:
 ///
 /// 1. `Control { Released }` on all three channels, which raises the arena's
 ///    epoch and **purges whatever that seat had queued** — the reason a pilot who
@@ -2468,7 +2469,11 @@ impl EjectReport {
 /// 3. the **billet**, given back. A stand-down deliberately leaves the billet
 ///    where it is, which is right for an NPC's own station and wrong for a pod
 ///    lent for one match: the billet *is* the loan, and one left behind is the
-///    next pilot's `StationHeld`.
+///    next pilot's `StationHeld`;
+/// 4. **the side's net** (16b cut Z.4), left through
+///    [`crate::match_::net::leave_pilot`]: the pilot joined it with the match
+///    and leaves it with the seat, and reads comsys's own `You have been
+///    removed from channel RedNet.` once.
 ///
 /// `by_pilot` is whose choice it was. `Release` and `Revoke` reach one
 /// `stand_down` in `mush-sim`; the variant is the statement, and a sweep after an
@@ -2513,7 +2518,7 @@ pub(crate) fn hand_seat_back(
             "tacsim: a cockpit seat did not stand down"
         );
     }
-    match mush_sim::vacate_station(ctx, unit, station, actor) {
+    let vacated = match mush_sim::vacate_station(ctx, unit, station, actor) {
         // `false` is "there was no billet to give back", which is the answer a
         // second sweep gets and is not a failure.
         Ok(vacated) => vacated,
@@ -2526,7 +2531,15 @@ pub(crate) fn hand_seat_back(
             );
             false
         }
-    }
+    };
+    // 4. **16b cut Z.4 (16c `N8`): the radio goes with the seat**, whatever the
+    //    billet answered. Both side nets, idempotent — a pilot on neither (a
+    //    staff-seated one, a second sweep) reads nothing — so this one line
+    //    covers `EXIT`, a seated `SIM LEAVE`, the check-in and the boot's sweep.
+    //    A drop past the grace never reaches here, and the pilot stays on their
+    //    net for the reclaim.
+    crate::match_::net::leave_pilot(ctx, actor);
+    vacated
 }
 
 /// Every actor holding the cockpit billet on `unit`, given it back (16b cut
