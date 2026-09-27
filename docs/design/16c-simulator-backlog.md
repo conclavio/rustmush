@@ -530,7 +530,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
 - **Owner's choices.** A mode of the centre or a room (default: a mode). Still or shuffling (default:
   still).
 
-### N14. `@macro`
+### N14. `@macro` — landed AD.1
 
 - **Pitch.** `@macro l=lock $1`. Platform-wide, most useful in a cockpit whose action verbs are typed on
   every surface by design.
@@ -918,6 +918,8 @@ is in no cut: it waits on an owner ruling.
 
 ### Cut AD: `@macro`
 
+Landed 2026-09-27 at `ee8acbcd`; see 16b section 9, row AD. Built as one sub-cut, committed and pushed on its own green gate, then the full sweep green on its first round with no repair; N14 closed at its defaults; no harness run was owed and none was made, and no baseline row is added. Deferred, none of them a 16c item: `$*` and `$0`, per-account macros (`Q-AD2`), `@wait` inside a macro (`Q-AD3`), a prefix-expanded line (`Q-AD1`), a staff view of another player's macros, and a client-side set of macro names so the TUI's and the web's sticky modes stop wrapping a macro as speech (a gateway-half and `web/` cut of its own).
+
 **When it lands.** A player can name a line and type the name, on every surface, with up to three
 positional arguments, and no macro can reach a verb its player could not type.
 
@@ -1057,6 +1059,9 @@ debts, plus the four feature choices that change the most.
 | Q-O1 | How do the machines behave under Hold, and who governs a squad on dev1? (raised by cut O's plan, not assumed) | Doctrine's own goal: a machine drives to the key spot in place of the hunt and the walk, parks inside the square and fights from there, and an attacking machine stops at `engage_cm` and never drives in to contest a held square, so a human can camp The Crossroads against an AI side that shoots but never enters, the shipped ground's blue machines reaching the spot first; on dev1 the commander's order governs whenever it gives one (the forced tool always answers an order). Built on this default (O.1); reversed by an `Approach` clause that closes into the square. | O, open |
 | Q-O2 | Should a range's result occupy the twenty-deep history ring at all, flushing a real match's row, report and replay? | Yes: a range is a match like any other, tagged ` [range]` on the ring, the header and the replay; the flush is the ring's. Built on this default (O.3). | O |
 | Q-O3 | Should the report-only, flag-gated Hold lane (`TACSIM_HOLD_LANE=1`, `harness_lance_goal_cost` beside the lance lane's) join the weekly job? | No: run by hand in O.1's gate only. Until answered the flag matches neither `RUN_*` nor `*_RUN`, so `ci_gated_test_inventory` neither registers nor exempts it; a yes renames and inventories it. | O, open |
+| Q-AD1 | May a macro's line start with a speech prefix (`@macro w=:waves at $1`)? (raised by cut AD's plan, not assumed) | No: the line starts with a word (`say`, `pose`, `semipose`, `@emit` or a verb), and a prefixed line is refused at definition (`A macro's line starts with a word (say, pose, semipose, @emit), not with " : ; or \.`); a prefix-expanded rewrite would have to skip the later stages the way a typed prefix does, and `AliasOutcome::Rewrite` carries no such flag. Built on this default (AD.1). | AD, open |
+| Q-AD2 | Are macros per character or per account? (raised by cut AD's plan, not assumed) | Per character: the object the line is typed as, twenty each; an alt has its own, and nothing is kept per account. Built on this default (AD.1). | AD, open |
+| Q-AD3 | May a macro's line be `@wait ...`, the one player verb that re-dispatches a stored line later? (raised by cut AD's plan, not assumed) | No (`A macro cannot queue a command.`): `@macro z=@wait 0=z` would re-arm itself on every fire, hold a wait-queue slot per chain and survive a disconnect, the one way a mortal could make the world task loop. Built on this default (AD.1), and wider than asked: a `$` in a line's first word is refused at definition too (`A macro's first word cannot hold a $; the words after it can.`), because `@macro y=$1 $1` typed `y @wait 0=y` reached the queue past every definition-time check, and the stage re-checks the expansion's verb (`@wait`, `@sshkey`, `@newpassword`, `@newchar`) whatever the document holds. The owner may want `@wait` back with a depth mark. | AD, open |
 
 ---
 
