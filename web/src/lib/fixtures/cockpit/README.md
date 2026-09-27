@@ -8,9 +8,9 @@ not parity — so there is exactly one set here, and no copies to drift. Rust
 
 | file | what it is | built by |
 |---|---|---|
-| `cockpit_frame.json` | the per-pulse cockpit keyframe, feed `arena.cockpit` | `tacsim::match_::cockpit::status_frame` |
+| `cockpit_frame.json` | the per-pulse cockpit keyframe, feed `arena.cockpit`; since 16b cut O.2 it carries `"ecm": null` (the scene's platform carries no jamming pod) | `tacsim::match_::cockpit::status_frame` |
 | `arena_map.json` | the whole arena's terrain, feed `arena.map`, pulled and never pushed; since 16b cut V.1 it carries the ground's named `spots` (`{ letter, name, cell }`, authored order, arena cells) after `legend` | `tacsim::match_::cockpit::map_frame` |
-| `view_frame.json` | the 39×20-cell window `VIEW` sends, the two composed server-side, with `cell_columns: 2`, `origin_cell` and `extent` (16b cut B.4); since 16b cut V.1 its `units` open with the spot markers (`spot: true`) and its `legend` ends with `["A", "The Ford"]` | `tacsim::match_::cockpit::view_window` |
+| `view_frame.json` | the 39×20-cell window `VIEW` sends, the two composed server-side, with `cell_columns: 2`, `origin_cell` and `extent` (16b cut B.4); since 16b cut V.1 its `units` open with the spot markers (`spot: true`) and its `legend` ends with `["A", "The Ford"]`; since 16b cut O.2 it carries `"ecm": null` with the rest of the status keys | `tacsim::match_::cockpit::view_window` |
 | `view_grid.txt` | the twenty map rows a line client prints of it, north-up, ONE glyph per cell (39 by 20; the line client prints each cell twice); the spot `A` is the letter at row 3 from the south, column 25, over the pond | `mush_ansi::panel::grid_lines` |
 | `web_view_model.txt` | every line the web's cockpit screen prints for that frame (16b cut Q.5), composed at 78 by 20 — so its legend line is `x BA  + RB  ? X3  A The Ford` | `web/src/lib/cockpit.ts`'s `cockpitViewLines` |
 | `notice_lines.json` | the notices ring's wording: an array of `{ "notice": <one notice object as the wire sends it>, "line": "<the ring line>" }` (16b cut B.1) | **hand-written**; no bless variable |
@@ -26,7 +26,9 @@ prints for it. vitest drives each pair through the real decoder and
 a heat detail, a block with a cause and one with `cause: null`, `unidentified`
 and `classified` with `was` (and a friendly `classified`, whose mark follows the
 new name), a spent hit, a friendly lock, the victim's `struck`, `struck_spent`
-and `section_lost` with their section, and a kind named `constructor` (the word
+and `section_lost` with their section, the pod's two switch notices `emcon_on`
+and `emcon_off` with the pod's radius on `detail.radius_m` and an `EMCON`
+refused `no_jammer` (16b cut O.2), and a kind named `constructor` (the word
 tables are `Map`s, so an inherited key is not a word). Change a line here only
 together with both renderers.
 
@@ -48,7 +50,9 @@ eighth line); `machine: null`; `cell_now: null`; `cell_then: null` with a
 full, where the one overflow count cannot say whose it was and is its own
 clause (`3 more not named`) rather than read as contacts gained. The condition words are
 the arena's own (`intact`, `destroyed`, `wreck`). `cockpit_frame.json` and
-`view_frame.json` carry `"catchup": null`: the scene is an ordinary pulse.
+`view_frame.json` carry `"catchup": null`: the scene is an ordinary pulse. They
+carry `"ecm": null` too (16b cut O.2): the scene's platform carries no jamming
+pod, so neither panel's scope row grows an `EMCON` suffix.
 Change a line here only together with all three renderers.
 
 The scene's platform carries the **shipped** 600 m sight (`sight_cm: 60_000`, 60

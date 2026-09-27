@@ -669,12 +669,13 @@ const fn continuous_code(kind: &IntentKind) -> u8 {
         IntentKind::Heading { .. } => 0,
         IntentKind::Speed { .. } => 1,
         IntentKind::Order(_) | IntentKind::ReleaseOrder { .. } => 2,
-        // Discrete (16b cut I.3: a staff `Place` among them); never buffered
-        // under a continuous key.
+        // Discrete (16b cut I.3: a staff `Place` among them; 16b cut O.2: the
+        // pod's `Emcon` switch too); never buffered under a continuous key.
         IntentKind::Startup
         | IntentKind::Lock { .. }
         | IntentKind::Fire { .. }
-        | IntentKind::Place { .. } => 3,
+        | IntentKind::Place { .. }
+        | IntentKind::Emcon { .. } => 3,
     }
 }
 

@@ -3754,6 +3754,16 @@ impl Arena {
                 | IntentKind::ReleaseOrder { .. } => {}
                 // 16b cut I.3: a staff act; a machine never issues one.
                 IntentKind::Place { .. } => {}
+                // **16b cut O.2**: a machine never switches its pod, so it keeps
+                // the switch where it found it — on for every machine that
+                // fielded the tank (the owner's default at check-out), but
+                // possibly **off** for one that adopted a released seat whose
+                // pilot had typed `EMCON off` (`apply_control`'s `Released`
+                // arm hands the tank over and does not touch `ecm_on`). A
+                // machine's own `EMCON` decision, and what it should do with an
+                // inherited silent pod, are recorded residuals of cut O, not
+                // built.
+                IntentKind::Emcon { .. } => {}
             }
         }
     }

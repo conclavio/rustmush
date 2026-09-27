@@ -1,6 +1,6 @@
 # The cockpit
 
-The thirteen verbs you fly a tank with, in the order a pilot uses them. They work
+The fourteen verbs you fly a tank with, in the order a pilot uses them. They work
 while you are at the station of a tank a running match has deployed, and nowhere
 else — `help simulator` is how you get there.
 
@@ -24,9 +24,14 @@ else — `help simulator` is how you get there.
                       A weapon of two words takes its initials: FIRE mg.
   WEAPONSTATUS        every weapon: ready or cycling, its rounds, its own chance
                       against your lock, and that lock's range band.
+  EMCON [on|off]      switch your jamming pod, if you carry one: on jams every
+                      sight inside its bubble, yours among them; off clears
+                      your own sight and hides you from nothing. On at
+                      check-out.
   STATUS              your callsign, power, speed, heading, position, the named
-                      spot nearest you, what your own scope holds, and your
-                      armour and internals section by section. If you chose
+                      spot nearest you, what your own scope holds, your pod's
+                      switch if you carry one, and your armour and internals
+                      section by section. If you chose
                       a chassis with `SIM UNIT`, the second line brackets it
                       — `Red Tank 1 [biped_mk1]: …` —
                       because a pod's tank keeps the pod's own name whatever is
@@ -155,6 +160,20 @@ If something is jamming your sight, `STATUS` says so on a line of its own —
 `receiver degraded: 15 of 40 through cover, 60% reach` — and your panel says it
 once on the way in and once on the way out. It is your own machine's reading:
 nothing tells you who is jamming you or from where.
+
+If your own tank carries the jamming pod (`SIM UNIT line_tank_ecm`), the pod is
+on at check-out and radiates from the moment power is up, and it jams **every**
+sight inside its bubble: the other side's, your own side's radio links, and
+your own sight too, because you are standing in the middle of it. `EMCON off`
+silences it — `EMCON off: the pod is silent; your own sight clears, and nothing
+hides you.` — so your receiver clears and your side's mesh closes again, and the
+other side's sights near you are no longer blinded. `EMCON on` switches it back
+and says how far it reaches: `EMCON on: the pod radiates; every sight inside 60
+m is jammed, your own among them.` Bare `EMCON` says which it is, and `STATUS`
+carries `emcon on: the pod radiates` or `emcon off: the pod is silent` on a line
+of its own. Nobody else is told you switched: a sight inside the bubble finds
+out only from its own receiver, at its own next look. A tank with no pod
+answers `This tank carries no jamming pod.`
 
 `SCAN` is what is left of one contact, section by section:
 

@@ -120,6 +120,12 @@
 //! standing outside one, and a pod is in its own bubble: this is a rule about
 //! where the *looker* is, with no exception for the unit carrying the thing.
 //!
+//! **The pod has a switch** (16b cut O.2, 16c N12): a pilot's `EMCON off`
+//! ([`crate::arena::intents::resolve_emcon`]) silences it, and a silent pod is
+//! skipped by [`Arena::jamming_at`] beside a wrecked or unpowered one — so the
+//! carrier's own sight clears and its side's mesh closes again, at the price of
+//! hiding nobody. Every pod checks out radiating ([`UnitState::ecm_on`]).
+//!
 //! **W3 still holds**: this is not an emitter term in the sense that fact forbids.
 //! Nothing here lengthens a reach, accepts a line the sensor would have refused or
 //! detects anything at all — a pod can only ever take away, which is why the pass
@@ -1275,7 +1281,7 @@ impl Arena {
     /// no pod has `jam_radius_cm == 0` and returns here without touching the index
     /// or the counters, which is what makes the stock pass bit-identical.
     ///
-    /// Three things stop a pod radiating, all read at scan time rather than baked
+    /// Four things stop a pod radiating, all read at scan time rather than baked
     /// in at check-out:
     ///
     /// - **distance**: the observer must be inside *that* pod's radius;
@@ -1285,10 +1291,18 @@ impl Arena {
     ///   not started up jams nobody. This is the one place the pass reads a unit's
     ///   power for a reason other than the target's heat, and it is deliberate: the
     ///   sight of a cold tank still works, because optics are optics, and its pod
-    ///   does not, because a transmitter is not.
+    ///   does not, because a transmitter is not;
+    /// - **the switch** (16b cut O.2, 16c N12): a pod its pilot has put to `EMCON
+    ///   off` ([`UnitState::ecm_on`] false) radiates nothing. **This one clause
+    ///   governs detection and both ends of the mesh at once**, because every
+    ///   pass and every share reads the jamming through [`Arena::jam_fold_of`]
+    ///   (16b cut U.2) and that memo is this function's: a silent pod can neither
+    ///   blind a tank nor stop it phoning home, and nothing else in the crate
+    ///   needs to know the switch exists.
     ///
     /// A pod is inside its own bubble at range zero, so a unit that carries one
-    /// jams itself. There is no exception: the rule is about where the *looker* is.
+    /// jams itself. There is no exception: the rule is about where the *looker* is
+    /// — which is why the switch exists at all.
     ///
     /// **Who calls it directly** (16b cut U.2, 16c `T-29`). It stays the pure
     /// primitive — a pose in, a fold out, the scan counted — and exactly two
@@ -1315,7 +1329,7 @@ impl Arena {
             let Some(jammer) = pod.jammer else {
                 continue;
             };
-            if pod.limits.wreck || pod.power != Power::Online {
+            if pod.limits.wreck || pod.power != Power::Online || !pod.ecm_on {
                 continue;
             }
             if range_cm(pose, &pod.pose) > u64::from(jammer.radius_cm) {
@@ -1337,8 +1351,10 @@ impl Arena {
     /// (16b cut U.2, 16c `T-29`; doc 16 §9 item 4): [`Arena::jam_fold`]'s entry
     /// for `unit` when it has one, and otherwise [`Arena::jamming_at`] of the
     /// unit's pose, computed once and stored. The clears are the substep's two
-    /// index rebuilds and every `StartupComplete` and `Impact` the due loop
-    /// applies (see [`Arena::jam_fold`]).
+    /// index rebuilds, every `StartupComplete` and `Impact` the due loop
+    /// applies, and every flip of a pod's switch
+    /// ([`crate::arena::intents::resolve_emcon`], 16b cut O.2; see
+    /// [`Arena::jam_fold`]).
     ///
     /// The answer is the **raw** fold — the pods alone, no filter — and each
     /// caller applies [`Jamming::recovered`] with its own unit's filter, exactly
@@ -2299,6 +2315,12 @@ pub enum NoticeKind {
     /// **This platform's own receiver is running clean again** (16b cut D.4,
     /// `B-22`).
     ReceiverClear,
+    /// **This platform's own jamming pod was switched on** (16b cut O.2, 16c
+    /// N12), said to its own pilots off the ledger's `emcon`.
+    EmconOn,
+    /// **This platform's own jamming pod was switched off** (16b cut O.2, 16c
+    /// N12), with what that costs said in the line.
+    EmconOff,
 }
 
 impl NoticeKind {
@@ -2330,6 +2352,9 @@ impl NoticeKind {
             // correctly with no client change.
             NoticeKind::ReceiverDegraded => "receiver_degraded",
             NoticeKind::ReceiverClear => "receiver_clear",
+            // **16b cut O.2**: the pod's switch, one word for each way.
+            NoticeKind::EmconOn => "emcon_on",
+            NoticeKind::EmconOff => "emcon_off",
         }
     }
 }
@@ -2570,6 +2595,19 @@ pub enum FrameNotice {
         /// Whether the receiver is now degraded.
         degraded: bool,
     },
+    /// **This platform's own jamming pod was switched** (16b cut O.2, 16c N12),
+    /// said to its own pilots at the arena timestamp the switch resolved at.
+    ///
+    /// The pilot's own tank and nothing else: the radius is the pod's own
+    /// authored bubble, so the line can say how far the sights it blinds reach,
+    /// and there is no field here for anybody else's sight to be named in. The
+    /// sights inside the bubble learn of it only through their own receivers.
+    Emcon {
+        /// Whether the pod now radiates.
+        on: bool,
+        /// The pod's bubble, whole metres (`jammer.radius_cm / 100`).
+        radius_m: u32,
+    },
 }
 
 impl FrameNotice {
@@ -2594,6 +2632,9 @@ impl FrameNotice {
             // 16b cut D.4: one transition, two words.
             FrameNotice::Receiver { degraded: true } => NoticeKind::ReceiverDegraded,
             FrameNotice::Receiver { degraded: false } => NoticeKind::ReceiverClear,
+            // 16b cut O.2: one switch, two words.
+            FrameNotice::Emcon { on: true, .. } => NoticeKind::EmconOn,
+            FrameNotice::Emcon { on: false, .. } => NoticeKind::EmconOff,
         }
     }
 
@@ -2741,7 +2782,9 @@ impl FrameNotice {
             | FrameNotice::OwnDestroyed
             | FrameNotice::OwnDisabled
             // 16b cut D.4: the pilot's own receiver is not a section of anything.
-            | FrameNotice::Receiver { .. } => None,
+            | FrameNotice::Receiver { .. }
+            // 16b cut O.2: nor is the pilot's own pod's switch.
+            | FrameNotice::Emcon { .. } => None,
         }
     }
 
@@ -2765,7 +2808,9 @@ impl FrameNotice {
             | FrameNotice::OwnDisabled
             // **16b cut D.4**: the receiver notice names no contact, by
             // construction — there is no field on it for one.
-            | FrameNotice::Receiver { .. } => None,
+            | FrameNotice::Receiver { .. }
+            // **16b cut O.2**: nor does the pod's switch, for the same reason.
+            | FrameNotice::Emcon { .. } => None,
         }
     }
 }
@@ -3396,5 +3441,222 @@ mod tests {
         assert!(total.passes > 0 && total.detected > 0, "{total:?}");
         assert_eq!(total.jam_checks + counters.jam_checks, 0);
         assert!(arena.jam_fold.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut O.2 — the pod's switch (16c N12)
+    // -----------------------------------------------------------------------
+
+    /// **`jamming_at` skips a silent pod**: the carrier standing at range zero
+    /// of its own pod folds `None` once the switch is off, as does every unit
+    /// the radiating pod reached — and the same arena with the switch back on
+    /// folds what it folded before.
+    #[test]
+    fn o2_jamming_at_skips_a_silent_pod() {
+        let mut arena = u2_field();
+        let own = u2_pose_of(&arena, U2_POD);
+        let near = u2_pose_of(&arena, U2_RED);
+        let mut counters = PerceptionCounters::default();
+        let radiating = arena.jamming_at(&own, &mut counters);
+        assert!(radiating.is_some(), "a pod jams its own carrier");
+        assert!(arena.jamming_at(&near, &mut counters).is_some());
+        if let Some(state) = arena.unit_mut(U2_POD) {
+            state.ecm_on = false;
+        }
+        assert_eq!(
+            arena.jamming_at(&own, &mut counters),
+            None,
+            "the carrier's own sight clears"
+        );
+        assert_eq!(arena.jamming_at(&near, &mut counters), None);
+        if let Some(state) = arena.unit_mut(U2_POD) {
+            state.ecm_on = true;
+        }
+        assert_eq!(arena.jamming_at(&own, &mut counters), radiating);
+    }
+
+    /// **A mate behind a silent pod's bubble is reached by the share a
+    /// radiating pod refused** (doc 16 W6, 16b cut Q.6's two-ended fold, 16b cut
+    /// O.2's one clause): sixty metres between two teammates is inside the
+    /// sight's 300 m share reach and outside the 45 m the pod leaves of it at
+    /// the mate's end, so the link is cut by range while the pod radiates and
+    /// made when it falls silent — the mesh reads the switch through the same
+    /// memo detection does.
+    #[test]
+    fn o2_a_mate_behind_a_silent_pod_receives_the_share_a_radiating_pod_refused() {
+        use crate::arena::test_support::line_tank;
+        let field = |on: bool| -> bool {
+            let mut arena = arena_of(vec![
+                line_tank(U2_RED, Team::Red, pose(500, 500)),
+                line_tank(U2_MATE, Team::Red, pose(6_500, 500)),
+                tank(U2_BLUE, Team::Blue, pose(500, 5_500)),
+                tank(U2_POD, Team::Blue, pose(7_500, 2_500)),
+            ]);
+            u2_fit_pod(&mut arena, U2_POD, Power::Online);
+            if let Some(state) = arena.unit_mut(U2_POD) {
+                state.ecm_on = on;
+            }
+            let plot = arena
+                .unit(U2_BLUE)
+                .map(SeenPose::of)
+                .unwrap_or_else(|| panic!("the target is in the match"));
+            let id = crate::arena::rng::draw_contact_id(arena.seed, U2_RED, U2_BLUE);
+            arena.contacts.insert(
+                U2_RED,
+                id,
+                crate::arena::state::ShadowContact::sighted(
+                    U2_BLUE,
+                    Classification::Classified { team: Team::Blue },
+                    0,
+                    plot,
+                ),
+            );
+            let units = arena.units.clone();
+            arena.index.rebuild(&arena.definition.terrain, &units);
+            arena.jam_fold.clear();
+            let mut counters = PerceptionCounters::default();
+            let mut journal: Vec<Notice> = Vec::new();
+            arena.share_pass(U2_RED, 0, &mut counters, &mut journal);
+            assert!(counters.jam_checks > 0, "the share scanned for the pod");
+            let theirs = crate::arena::rng::draw_contact_id(arena.seed, U2_MATE, U2_BLUE);
+            arena.contacts.resolve(U2_MATE, theirs).is_some()
+        };
+        assert!(!field(true), "the radiating pod did not cut the link");
+        assert!(field(false), "the silent pod still cut the link");
+    }
+
+    /// **A flip flood costs an observer at most one transition per pass** (the
+    /// cut O plan's item 38, recorded and not floored): three flips of the pod
+    /// inside one `pass_ms` of the observer's — off, on, off — journal three
+    /// `emcon` lines at their own milliseconds and one `receiver` line, at the
+    /// observer's next pass, for the state the flood ended in.
+    #[test]
+    fn o2_three_flips_inside_one_pass_give_an_observer_one_transition() {
+        use crate::arena::intents::{Intent, IntentKind};
+        use crate::arena::state::Channel;
+        use crate::arena::test_support::{arena_at_epoch, line_tank};
+
+        let mut arena = arena_at_epoch(
+            vec![
+                line_tank(U2_RED, Team::Red, pose(1_500, 1_500)),
+                tank(U2_POD, Team::Blue, pose(3_500, 3_500)),
+                tank(U2_SPARE, Team::Red, pose(7_500, 7_500)),
+            ],
+            1,
+        );
+        for id in [U2_RED, U2_SPARE] {
+            if let Some(state) = arena.unit_mut(id) {
+                state.power = Power::Online;
+            }
+        }
+        u2_fit_pod(&mut arena, U2_POD, Power::Online);
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut step = |arena: &mut Arena, wall: i64, kinds: &[(IntentKind, u64)]| {
+            let intents: Vec<Intent> = kinds
+                .iter()
+                .map(|(kind, seq)| Intent {
+                    unit: U2_POD,
+                    channel: Channel::Sensors,
+                    epoch: 1,
+                    kind: kind.clone(),
+                    seq: *seq,
+                })
+                .collect();
+            let out = arena.step(wall, &[], &intents);
+            for chunk in &out.ledger_chunks {
+                bytes.extend_from_slice(&chunk.bytes);
+            }
+            assert_eq!(arena.now_ms, wall, "the pulse reached its wall time");
+        };
+        step(&mut arena, 0, &[]);
+        step(&mut arena, 2_000, &[]);
+        // The observer's passes are `pass_ms` apart from its stagger.
+        let pass_ms = i64::from(arena.sensors_cfg.pass_ms);
+        let first = crate::arena::rng::stagger_ms(arena.seed, U2_RED, pass_ms);
+        let base = first + 2 * pass_ms;
+        assert!((2_000..3_000).contains(&base), "{base}");
+        step(
+            &mut arena,
+            base + 100,
+            &[(IntentKind::Emcon { on: false }, 1)],
+        );
+        step(
+            &mut arena,
+            base + 300,
+            &[(IntentKind::Emcon { on: true }, 2)],
+        );
+        step(
+            &mut arena,
+            base + 500,
+            &[(IntentKind::Emcon { on: false }, 3)],
+        );
+        step(&mut arena, base + pass_ms + 500, &[]);
+        arena.ledger.flush();
+        for chunk in arena.ledger.take_chunks() {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        let events: Vec<crate::arena::ledger::LedgerEvent> = String::from_utf8(bytes)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        let emcon: Vec<(i64, EventKind)> = events
+            .iter()
+            .filter(|event| event.kind.as_str() == "emcon")
+            .map(|event| (event.t_ms, event.kind.clone()))
+            .collect();
+        assert_eq!(
+            emcon,
+            vec![
+                (
+                    base + 100,
+                    EventKind::Emcon {
+                        unit: U2_POD,
+                        on: false
+                    }
+                ),
+                (
+                    base + 300,
+                    EventKind::Emcon {
+                        unit: U2_POD,
+                        on: true
+                    }
+                ),
+                (
+                    base + 500,
+                    EventKind::Emcon {
+                        unit: U2_POD,
+                        on: false
+                    }
+                ),
+            ]
+        );
+        let receiver: Vec<(i64, EventKind)> = events
+            .iter()
+            .filter(
+                |event| matches!(event.kind, EventKind::Receiver { unit, .. } if unit == U2_RED),
+            )
+            .map(|event| (event.t_ms, event.kind.clone()))
+            .collect();
+        assert_eq!(
+            receiver,
+            vec![
+                (
+                    first,
+                    EventKind::Receiver {
+                        unit: U2_RED,
+                        degraded: true
+                    }
+                ),
+                (
+                    base + pass_ms,
+                    EventKind::Receiver {
+                        unit: U2_RED,
+                        degraded: false
+                    }
+                ),
+            ],
+            "one transition for the whole flood, at the observer's own next pass"
+        );
     }
 }

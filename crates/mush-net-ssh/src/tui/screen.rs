@@ -951,6 +951,12 @@ pub fn builtin_screens() -> Vec<Screen> {
                 //   `heat 100/100  OVERHEATED`                          24
                 //   `receiver 100/100  100%`                            22
                 //   `scope hostile`                                     13
+                //     and, since 16b cut O.2, the pod's switch on the
+                //     same row for a platform that carries one
+                //     (`scope hostile  EMCON off` is 24; the longest
+                //     scope word, `scope unidentified  EMCON off`, 29)
+                //     — on the row and not an eighth, so `min_h` 7
+                //     stands
                 //   `Lock` an eight-letter designator, past a
                 //     kilometre at 100%                                 27
                 // The lock is the last row and the one a gunner reads before

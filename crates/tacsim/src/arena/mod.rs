@@ -248,7 +248,7 @@ pub use horizon::{Horizon, HorizonSight};
 pub use index::{SpatialIndex, range_cm};
 pub use intents::{
     Control, ControlState, Intent, IntentKind, IntentOutcome, IntentSource, Refusal, apply_control,
-    apply_intent, drain_pending, resolve_startup,
+    apply_intent, drain_pending, resolve_emcon, resolve_startup,
 };
 pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, LedgerFull};
 pub use motion::{Held, MotionOutcome, cos_fx, integrate, sin_fx};

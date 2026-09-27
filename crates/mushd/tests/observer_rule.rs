@@ -3748,6 +3748,8 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         sections: Vec::new(),
         heat: None,
         receiver: None,
+        // 16b cut O.2: no pod.
+        ecm: None,
         // 16b cut Y.4: no reclaim here.
         catchup: None,
     }
@@ -5529,4 +5531,244 @@ async fn o1_the_hold_rule_is_public_and_its_clock_reaches_no_pilot() {
     let history = ask_whole(&mut ada, "SIM HISTORY").await;
     let flat = history.split_whitespace().collect::<Vec<&str>>().join(" ");
     history_row_is_public(&flat, 2, "#2 aborted [hold]", Some("RA"));
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut O.2 — the pod's switch is its own pilot's; everybody else learns only
+// through their own receiver (16c N12)
+// ---------------------------------------------------------------------------
+
+/// **The words the pod's switch is said in** (16b cut O.2, plan item 28): its
+/// verb and its lines (`EMCON`, `emcon`), the refusal's sentence (`jamming
+/// pod`), the two notice kinds and the refusal word. None may reach Bo while
+/// the match runs.
+///
+/// **Two words are deliberately NOT on it.** `ecm` is a key every cockpit frame
+/// carries — `null` on a platform with no pod — so the assertion on it is that
+/// Bo's value is `null`, never that the key is absent; and `pod` is the
+/// boarding announcement's and the slot rows' word. **Nor is the corpus the
+/// `Selection` window**: `Slot red 1 will field line_tank_ecm.`, the board's
+/// `[line_tank_ecm]` and `SIM UNIT`'s `Fieldable units:` list are lobby-public
+/// by 16b cut Q.8 (an opponent may answer a choice), so the sweep starts at the
+/// running match's `Good hunting.` and not before.
+const O2_EMCON_WORDS: [&str; 6] = [
+    "emcon",
+    "EMCON",
+    "jamming pod",
+    "emcon_on",
+    "emcon_off",
+    "no_jammer",
+];
+
+/// **16b cut O.2 (16c N12; plan items 22, 28, 38)**: Ada flies the ECM tank and
+/// Bo stands inside its bubble. While the match runs Bo's frames carry `ecm` as
+/// `null` and never `"on"` or `"off"`, and nothing he receives carries a word of
+/// the switch; he learns of the pod only through his own receiver — degraded
+/// while Ada's pod radiates, and `Receiver clear.` after her `EMCON off` by the
+/// ordinary path. Ada's own frames carry her switch and her lines carry her
+/// notice. Cy, who flies nothing, is answered the unseated keyframe. Every line
+/// and frame names no unit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn o2_the_pods_switch_is_told_to_its_pilot_and_bo_learns_only_through_his_receiver() {
+    let server = boot("observer-emcon").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, _cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+    let (red, blue, _muster, _domain) = seat_the_witnesses(&mut god).await;
+
+    // Selection: Ada chooses the pod-carrying tank, and staff poses both slot-1
+    // tanks four cells apart on the road — Bo inside the pod's 60 m.
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(
+        &mut ada,
+        "SIM UNIT line_tank_ecm",
+        "Slot red 1 will field line_tank_ecm.",
+    )
+    .await;
+    say(
+        &mut god,
+        "@arena/pose RA=100 97 90",
+        "RA opens at cell (100, 97) heading 90 for the next match.",
+    )
+    .await;
+    say(
+        &mut god,
+        "@arena/pose BA=104 97 270",
+        "BA opens at cell (104, 97) heading 270 for the next match.",
+    )
+    .await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut bo, "blue", "Blue Room").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+    bo.expect("Good hunting").await;
+
+    let mut ada_web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
+    let mut bo_web = web_session(&server, "bo", PILOT_PASSWORD, "Bo").await;
+    let mut cy_web = web_session(&server, "cy", PILOT_PASSWORD, "Cy").await;
+    let mut bo_frames: Vec<Value> = Vec::new();
+
+    // Ada's pod radiates once her power is up; Bo, inside the bubble, reads
+    // his own receiver degraded — and nothing else about it.
+    power_up(&mut ada).await;
+    power_up(&mut bo).await;
+    let mut seen = String::new();
+    wait_until(STEP_TIMEOUT, "Bo's receiver to read degraded", async || {
+        seen = ask_whole(&mut bo, "STATUS").await;
+        seen.contains("receiver degraded")
+    })
+    .await;
+    assert!(
+        !seen.contains("emcon"),
+        "Bo's STATUS carried the other tank's switch: {seen}"
+    );
+    bo.expect("Receiver degraded: something is jamming the sight.")
+        .await;
+    let mut query = 900_u64;
+    let mut jammed = Value::Null;
+    wait_until(
+        STEP_TIMEOUT,
+        "Bo's frame to carry the receiver",
+        async || {
+            query += 1;
+            jammed = panel_query(&mut bo_web, query, COCKPIT_FEED).await;
+            jammed.get("receiver").is_some_and(Value::is_object)
+        },
+    )
+    .await;
+    bo_frames.push(jammed.clone());
+    let ada_on = o1_cockpit(&mut ada_web, 950).await;
+    assert_eq!(
+        ada_on.get("ecm"),
+        Some(&json!("on")),
+        "Ada's own frame does not carry her switch: {ada_on}"
+    );
+
+    // The switch, said to Ada alone.
+    let ada_mark = ada.mark();
+    let bo_mark = bo.mark();
+    say(
+        &mut ada,
+        "EMCON off",
+        "EMCON going off; the pod is silent from the next pulse.",
+    )
+    .await;
+    ada.expect_after(
+        ada_mark,
+        "EMCON off: the pod is silent; your own sight clears, and nothing hides you.",
+    )
+    .await;
+    // Bo's receiver clears by the ordinary path: his own pass, his own line.
+    bo.expect_after(bo_mark, "Receiver clear.").await;
+    let mut clear = Value::Null;
+    wait_until(
+        STEP_TIMEOUT,
+        "Bo's frame to drop the receiver",
+        async || {
+            query += 1;
+            clear = panel_query(&mut bo_web, query, COCKPIT_FEED).await;
+            clear.get("receiver") == Some(&Value::Null)
+        },
+    )
+    .await;
+    bo_frames.push(clear.clone());
+    let seen = ask_whole(&mut bo, "STATUS").await;
+    assert!(
+        !seen.contains("receiver degraded"),
+        "Bo's receiver did not clear: {seen}"
+    );
+    let mut ada_off = Value::Null;
+    wait_until(
+        STEP_TIMEOUT,
+        "Ada's frame to carry the switch off",
+        async || {
+            query += 1;
+            ada_off = panel_query(&mut ada_web, query, COCKPIT_FEED).await;
+            ada_off.get("ecm") == Some(&json!("off"))
+        },
+    )
+    .await;
+
+    // Bo's frames: the key is there, and it is null.
+    for frame in &bo_frames {
+        assert_eq!(
+            frame.get("ecm"),
+            Some(&Value::Null),
+            "Bo's frame carried a switch that is not his: {frame}"
+        );
+    }
+    // Cy flies nothing: the unseated keyframe, and nothing of the switch.
+    let cy_frame = panel_query(&mut cy_web, 990, COCKPIT_FEED).await;
+    assert_eq!(cy_frame, unseated(COCKPIT_FEED), "{cy_frame}");
+
+    // Everything Bo received while the match ran — his lines and his frames —
+    // carries none of the switch's words; and nothing anybody received names
+    // a unit.
+    o1_drain(&mut ada).await;
+    o1_drain(&mut bo).await;
+    let running = |who: &str, seen: String| {
+        let (_, after) = seen
+            .rsplit_once("Good hunting.")
+            .unwrap_or_else(|| panic!("{who}'s transcript has no `Good hunting.`"));
+        assert!(
+            after.contains(HUH),
+            "{who}'s transcript was not read to its end: {after:?}"
+        );
+        after.to_owned()
+    };
+    let bo_lines = running("Bo", strip_ansi(&bo.seen));
+    let bo_seen = format!(
+        "{}\n{}\n{}",
+        bo_lines,
+        bo_frames
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<String>>()
+            .join("\n"),
+        cy_frame
+    );
+    for word in O2_EMCON_WORDS {
+        assert!(
+            !bo_seen.contains(word),
+            "Bo was told of the other tank's switch ({word:?}):\n{bo_seen}"
+        );
+    }
+    let ada_seen = running("Ada", strip_ansi(&ada.seen));
+    assert!(
+        ada_seen.contains("EMCON off: the pod is silent"),
+        "{ada_seen}"
+    );
+    // The frames name no unit at all. The transcripts carry each pilot's own
+    // `STATUS` (`power_up` reads it), which names that pilot's OWN tank — the
+    // pilot's own platform is outside the observer rule (doc 16 §5) — so each
+    // transcript is held to naming nothing of the OTHER side's tank.
+    let frames = format!(
+        "{}\n{ada_on}\n{ada_off}\n{cy_frame}",
+        bo_frames
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<String>>()
+            .join("\n")
+    );
+    names_nothing(&frames, red, blue, "the frames around the pod's switch");
+    for (who, seen, theirs, dbref) in [
+        ("Bo", &bo_lines, RED_TANK, red),
+        ("Ada", &ada_seen, BLUE_TANK, blue),
+    ] {
+        for leak in [theirs.to_owned(), format!("#{dbref}")] {
+            assert!(
+                !seen.contains(&leak),
+                "{who}'s lines around the pod's switch leaked {leak:?}:\n{seen}"
+            );
+        }
+    }
+    // A frame carries each contact's row key by design (it is never printed);
+    // no LINE either pilot read carries one.
+    no_sixteen_digit_word(&format!("{bo_lines}\n{ada_seen}"), "the pod's switch");
+
+    say(&mut ada, "SIM ABORT", "aborts match").await;
 }

@@ -54,7 +54,7 @@ use crate::arena::clock::{Tempo, TempoSignals, substep_ms, substeps};
 use crate::arena::hash::state_hash;
 use crate::arena::intents::{
     Control, Intent, IntentKind, IntentOutcome, IntentSource, Refusal, apply_control, apply_intent,
-    drain_pending, resolve_startup,
+    drain_pending, resolve_emcon, resolve_startup,
 };
 use crate::arena::ledger::{EventKind, LedgerChunk};
 use crate::arena::motion::integrate;
@@ -255,6 +255,14 @@ pub struct Frame {
     /// no side and no object number, which is what keeps it there. See
     /// [`crate::arena::perception::Receiver`] for the two declared limits.
     pub receiver: Option<crate::arena::perception::Receiver>,
+    /// **The platform's own jamming pod's switch** (16b cut O.2, 16c N12):
+    /// `None` for a platform that carries no pod — every stock tank — and
+    /// `Some(`[`crate::arena::state::UnitState::ecm_on`]`)` for one that does.
+    ///
+    /// The pilot's own machine, like [`Frame::receiver`] beside it, so it is
+    /// outside the observer rule; it is what `STATUS`'s `emcon` line, the
+    /// panels' scope-row suffix and the cockpit's local `EMCON` refusals read.
+    pub ecm: Option<bool>,
     /// **What happened while the pilot could not see** (16b cut Y.4; doc 07 §1.3
     /// step 5), on the first frame after a reclaim and on no other — `None`
     /// everywhere else.
@@ -411,6 +419,10 @@ impl Frame {
             // receiver that changed degree inside one bubble — which journals
             // nothing and says nothing — still sends the pilot the numbers.
             && self.receiver == other.receiver
+            // **16b cut O.2**: `STATUS` prints it and both panels draw it, and
+            // it moves only on a pilot's own flip, so comparing it costs no
+            // frame anybody would not already have been sent.
+            && self.ecm == other.ecm
             // **16b cut F.2**: the damage surface is compared, so a round that
             // came off the armour sends a frame. It is the cheapest comparison on
             // this list after the integers — a handful of small structs per pilot
@@ -810,6 +822,14 @@ impl Arena {
                     // Doc 16 §3.3 "Startup".
                     IntentKind::Startup => {
                         if let Err(refusal) = resolve_startup(self, id, at_ms) {
+                            self.stage_refusal(id, word, refusal, None);
+                        }
+                    }
+                    // **16b cut O.2** (16c N12): the pod's switch, in `Startup`'s
+                    // shape. `resolve_emcon` journals and stages its own flip; a
+                    // no-op journals and stages nothing.
+                    IntentKind::Emcon { on } => {
+                        if let Err(refusal) = resolve_emcon(self, id, on, at_ms) {
                             self.stage_refusal(id, word, refusal, None);
                         }
                     }
@@ -1864,6 +1884,9 @@ impl Arena {
                     // 16b cut D.4: the platform's own receiver, as its last
                     // sensor pass left it.
                     receiver: unit.receiver,
+                    // **16b cut O.2**: the pod's switch, for a platform that
+                    // carries a pod.
+                    ecm: unit.jammer.map(|_| unit.ecm_on),
                     // 16b cut Y.4: taken in the second pass below, which may
                     // write the arena.
                     catchup: None,
@@ -2728,7 +2751,11 @@ impl Arena {
     }
 
     /// Put one notice in the platform's queue for this pulse.
-    fn stage_notice(&mut self, platform: ObjId, notice: FrameNotice) {
+    ///
+    /// `pub(crate)` since 16b cut O.2, for
+    /// [`crate::arena::intents::resolve_emcon`], which stages its own notice as
+    /// it journals its own line.
+    pub(crate) fn stage_notice(&mut self, platform: ObjId, notice: FrameNotice) {
         self.pending_notices
             .entry(platform)
             .or_default()

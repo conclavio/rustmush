@@ -1,4 +1,4 @@
-//! **The cockpit: boarding, the pilot's fifteen verbs, and the frame they
+//! **The cockpit: boarding, the pilot's sixteen verbs, and the frame they
 //! read** (16b cut K.2; 16b §8 cut K, K2–K4; doc 16 §3.3 "Startup", "Stations
 //! are on the tank", §3.6 "What a pilot sees", §3.7, §3.8 "Disconnects", §5, §6
 //! "Deliberation").
@@ -8,14 +8,15 @@
 //! This is the half that reports one, and everything the pilot can do once
 //! seated.
 //!
-//! **Fifteen**: the thirteen cockpit selectors of [`COCKPIT_VERBS`], plus
+//! **Sixteen**: the fourteen cockpit selectors of [`COCKPIT_VERBS`], plus
 //! [`BOARD_VERB`] and [`EXIT_VERB`], which are not selectors — they are how a
 //! pilot gets into the cockpit and out of it. The table below is that list in
 //! that order, and **16b cut D.2** made the three agree: the head said twelve in
 //! one place and fourteen in another, and the table was missing `RANGE` and
 //! `BEARING` altogether (16c `T-77`). **16b cut Y.1** added the thirteenth
 //! selector, `ORDER` — see "Commanding the machines" below
-//! [`crate::match_::cockpit::resolve_designator`].
+//! [`crate::match_::cockpit::resolve_designator`]. **16b cut O.2** added the
+//! fourteenth, `EMCON`: the jamming pod's switch (16c N12).
 //!
 //! ```text
 //! BOARD                      climb into your pod and take the tank's cockpit
@@ -30,6 +31,7 @@
 //! SCAN [<contact>]           what is left of one of them, by section
 //! FIRE [<weapon>]            shoot it
 //! WEAPONSTATUS               ammunition and readiness
+//! EMCON [on|off]             the jamming pod's switch, if the tank carries one
 //! STATUS                     callsign, power, speed, heading, scope, nearest spot, damage
 //! ORDER <squad|ALL> <what>   command your side's machines (HOLD, ADVANCE, ENGAGE, WITHDRAW, SCREEN, SUPPORT; RELEASE)
 //! EXIT                       climb out
@@ -76,10 +78,10 @@
 //! # The verbs are contextual, and the gate is what makes them so
 //!
 //! There is no such thing as a verb that exists only in a cockpit: the command
-//! table is global. So all fifteen are registered globally and
+//! table is global. So all sixteen are registered globally and
 //! [`CockpitGate`] refuses each of them, with one line, wherever it does not
 //! mean anything — `BOARD` outside a team room, `EXIT` outside a pod, and the
-//! thirteen cockpit selectors to anyone who is not focused on a station of a
+//! fourteen cockpit selectors to anyone who is not focused on a station of a
 //! **deployed** unit. A pilot who has boarded but whose match has not started
 //! yet is in that last case on purpose: there is no arena to order until the
 //! trigger fires.
@@ -169,7 +171,10 @@ pub const EXIT_VERB: &str = "exit";
 /// **16b cut Y.1** added `order`, the thirteenth and the first that speaks to a
 /// unit other than the pilot's own: doc 16 §6's orders from a pilot rather than
 /// from the LLM seam.
-pub const COCKPIT_VERBS: [&str; 13] = [
+///
+/// **16b cut O.2** added `emcon`, the fourteenth: the jamming pod's switch (16c
+/// N12), a discrete intent on the sensors channel.
+pub const COCKPIT_VERBS: [&str; 14] = [
     "startup",
     "heading",
     "speed",
@@ -183,6 +188,7 @@ pub const COCKPIT_VERBS: [&str; 13] = [
     "bearing",
     "scan",
     "order",
+    "emcon",
 ];
 
 /// The station id one pod's pilot holds **on the tank** (doc 16 §3.3).
@@ -355,6 +361,12 @@ pub const DESTROYED: &str = "Your tank is destroyed and takes no orders. EXIT le
 /// holds the two together, for the reason [`POWER_NOT_ONLINE`] is pinned to the
 /// arena's word.
 pub const IMMOBILE: &str = "Your tank cannot move.";
+
+/// **The line `EMCON` answers for a tank that carries no jamming pod** (16b cut
+/// O.2, 16c N12), read off [`Frame::ecm`] — and, after the `EMCON refused.`
+/// prefix, the sentence the arena's own
+/// [`crate::arena::intents::Refusal::NoJammer`] renders.
+pub const NO_JAMMER: &str = "This tank carries no jamming pod.";
 
 /// **What follows a friendly contact's designator on the three lines that name
 /// one** (16b cut D.2, `B-18`; doc 16 §3.6).
@@ -555,6 +567,11 @@ pub enum CockpitError {
     /// still sees and still shoots.
     #[error("{IMMOBILE}")]
     Immobile,
+    /// **`EMCON` on a tank that carries no jamming pod** (16b cut O.2), read off
+    /// [`Frame::ecm`]; byte for byte what `refusal_line` says for
+    /// [`crate::arena::intents::Refusal::NoJammer`] after its prefix.
+    #[error("{NO_JAMMER}")]
+    NoJammer,
     /// **A `FIRE` the cockpit refused locally, in the arena's own sentence** (16b
     /// cut D.2, `B-16`).
     ///
@@ -1317,6 +1334,18 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
             RECEIVER_CLEAR
         }
         .to_owned(),
+        // **16b cut O.2** (16c N12): the pilot's own pod, and what the switch
+        // costs said in the line — on, the carrier's own sight is inside the
+        // bubble with everybody else's; off, the sight clears and the bubble
+        // hides nobody. The radius is the pod's own; nothing here names any
+        // sight it reaches.
+        FrameNotice::Emcon { on: true, radius_m } => format!(
+            "EMCON on: the pod radiates; every sight inside {radius_m} m is jammed, your own \
+             among them."
+        ),
+        FrameNotice::Emcon { on: false, .. } => {
+            "EMCON off: the pod is silent; your own sight clears, and nothing hides you.".to_owned()
+        }
     }
 }
 
@@ -1483,6 +1512,9 @@ pub(crate) fn refusal_line(
         (Refusal::MotionDisabled, _) => "Your tank cannot move.".to_owned(),
         (Refusal::Linkdead, _) => "Your seat has gone linkdead.".to_owned(),
         (Refusal::NotReflex, _) => "That tank has a pilot in it.".to_owned(),
+        // 16b cut O.2: the cockpit refuses it locally off the frame; the arena's
+        // word reaches here only when the frame was not yet there to say so.
+        (Refusal::NoJammer, _) => CockpitError::NoJammer.to_string(),
     };
     order_refused(order, weapon, &said)
 }
@@ -2700,7 +2732,7 @@ pub(crate) fn eject_pilot(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
 
 // ---------------------------------------------------------------------------
 // K3: the cockpit verbs (twelve at K3; `ORDER`, the thirteenth, is below
-// under "Commanding the machines")
+// under "Commanding the machines"; `EMCON`, the fourteenth, follows `STARTUP`)
 // ---------------------------------------------------------------------------
 
 /// `STARTUP` — bring power up (doc 16 §3.3).
@@ -2743,14 +2775,7 @@ fn startup(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
     forward_intent(ctx, seat.driver, seat.unit, IntentKind::Startup)?;
     // The optimism is stamped only once the order is away: a refused forward is
     // not a startup in progress.
-    let stands_s =
-        crate::match_::lobby::configs(ctx.w).map_or(HINT_FALLBACK_S, |(arena_cfg, _, _)| {
-            // Whole seconds, rounded up, plus one: the hint must outlast the
-            // longest a frame can be away.
-            let quiet_ms = i64::from(arena_cfg.tempo.quiet_ms).max(0);
-            quiet_ms.saturating_add(999) / 1_000 + 1
-        });
-    let until_s = ctx.w.now().saturating_add(stands_s);
+    let until_s = hint_until_s(ctx.w);
     if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
         registry.hint_starting(seat.driver, until_s);
     }
@@ -2766,6 +2791,117 @@ fn startup(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
 /// (16b cut D.1), seconds: one whole `Quiet` period of the shipped default, plus
 /// one.
 const HINT_FALLBACK_S: i64 = 6;
+
+/// **The world second a hint stamped now expires at** (16b cut D.1; shared by
+/// `EMCON`'s hint since 16b cut O.2): now plus one whole `Quiet` period in
+/// seconds, rounded up, plus one — the longest a frame can be away, and one
+/// second more. [`HINT_FALLBACK_S`] when the configuration cannot be read.
+fn hint_until_s(w: &World) -> i64 {
+    let stands_s = crate::match_::lobby::configs(w).map_or(HINT_FALLBACK_S, |(arena_cfg, _, _)| {
+        // Whole seconds, rounded up, plus one: the hint must outlast the
+        // longest a frame can be away.
+        let quiet_ms = i64::from(arena_cfg.tempo.quiet_ms).max(0);
+        quiet_ms.saturating_add(999) / 1_000 + 1
+    });
+    w.now().saturating_add(stands_s)
+}
+
+/// **`STATUS`'s pod line** (16b cut O.2, 16c N12), printed after the receiver
+/// line and only for a platform that carries a pod ([`Frame::ecm`]).
+#[must_use]
+pub const fn emcon_status_line(on: bool) -> &'static str {
+    if on {
+        "  emcon on: the pod radiates"
+    } else {
+        "  emcon off: the pod is silent"
+    }
+}
+
+/// `EMCON [on|off]` — the jamming pod's switch (16b cut O.2; 16c N12).
+///
+/// **Bare**, it reads the held frame: `EMCON on: the pod radiates.` or `EMCON
+/// off: the pod is silent.`, [`CockpitError::NoJammer`] for a tank with no pod,
+/// and [`CockpitError::NoFrameYet`] before the first frame. **With a word**
+/// (`on` or `off`, any case; anything else is the usage line) it is a discrete
+/// order on the sensors channel:
+///
+/// * refused locally with [`CockpitError::NoJammer`] when the held frame says
+///   the tank carries no pod, and with [`CockpitError::NoFrameYet`] before the
+///   first frame — the switch cannot be known to exist, and the arena would
+///   refuse it anyway if it does not;
+/// * answered `EMCON is already on.` / `EMCON is already off.`, forwarding
+///   nothing, when the switch is already where the order puts it — read off
+///   **the bridge's hint first and the mirror second**
+///   ([`crate::arena_bridge::ArenaRegistry::emcon_hint`]; the cut O plan's item
+///   38). An intent is buffered to the next pulse and never steps the arena,
+///   so the mirror is up to one `Quiet` period stale: without the hint `EMCON
+///   off` then `EMCON on` inside one pulse would answer the second from a
+///   mirror that still read `on`, and the tank would end silent while the
+///   pilot was told otherwise. With it, both are forwarded with true replies,
+///   and the arena resolves them in order to the state the pilot left;
+/// * otherwise forwarded, the hint stamped with `STARTUP`'s expiry
+///   ([`hint_until_s`]), and answered `EMCON coming on; the pod radiates from
+///   the next pulse.` / `EMCON going off; the pod is silent from the next
+///   pulse.`
+///
+/// The wreck comes first, as it does for every order (`require_alive`). Power
+/// is not asked: the switch is a position, and the arena's jamming fold is
+/// what reads power. What the arena makes of the order is said to the pilot's
+/// own frame as an `emcon_on`/`emcon_off` notice, which names what switching
+/// off costs.
+fn emcon(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
+    let actor = ctx.actor;
+    require_alive(ctx.w, seat.driver)?;
+    let word = rest.trim().to_ascii_lowercase();
+    let wanted = match word.as_str() {
+        "" => None,
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => return Err(CockpitError::Usage("EMCON on|off.".to_owned())),
+    };
+    let held = last_frame(ctx.w, seat.driver).ok_or(CockpitError::NoFrameYet)?;
+    let Some(mirror) = held.frame.ecm else {
+        return Err(CockpitError::NoJammer);
+    };
+    let Some(on) = wanted else {
+        let line = if mirror {
+            "EMCON on: the pod radiates."
+        } else {
+            "EMCON off: the pod is silent."
+        };
+        ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+        return Ok(());
+    };
+    // The hint first, the mirror second (the cut O plan's item 38).
+    let now = ctx.w.now();
+    let current = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .and_then(|registry| registry.emcon_hint(seat.driver, now))
+        .unwrap_or(mirror);
+    if current == on {
+        let line = if on {
+            "EMCON is already on."
+        } else {
+            "EMCON is already off."
+        };
+        ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+        return Ok(());
+    }
+    forward_intent(ctx, seat.driver, seat.unit, IntentKind::Emcon { on })?;
+    // Stamped only once the order is away, as `STARTUP`'s is.
+    let until_s = hint_until_s(ctx.w);
+    if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+        registry.hint_emcon(seat.driver, on, until_s);
+    }
+    let line = if on {
+        "EMCON coming on; the pod radiates from the next pulse."
+    } else {
+        "EMCON going off; the pod is silent from the next pulse."
+    };
+    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    Ok(())
+}
 
 /// `HEADING <deg>` — 0 to 359, clockwise from north (doc 16 §3.7).
 fn heading(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
@@ -3731,6 +3867,11 @@ fn status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
             if let Some(receiver) = frame.receiver {
                 lines.push(receiver_line(receiver));
             }
+            // **16b cut O.2** (16c N12): after the receiver and only for a
+            // platform that carries a pod — the pilot's own switch.
+            if let Some(on) = frame.ecm {
+                lines.push(emcon_status_line(on).to_owned());
+            }
             // **16b cut F.2**: doc 16 §5's *armor and internals per section as
             // current over max*, one line per section and wrapped to eighty
             // columns by construction — the section, its internals, then each
@@ -4172,10 +4313,16 @@ pub fn status_frame_held(
                 "refusal": notice.refusal().map(|refusal| refusal.as_str()),
                 "order": notice.order().map(SmolStr::as_str),
                 "weapon": notice.weapon().map(SmolStr::as_str),
-                "detail": match notice.detail() {
-                    RefusalDetail::None => serde_json::Value::Null,
-                    RefusalDetail::Cycling { secs } => serde_json::json!({ "secs": secs }),
-                    RefusalDetail::Overheated { heat, max } => {
+                // **16b cut O.2**: an `emcon_on`/`emcon_off` notice carries the
+                // pod's radius here, so a panel composes its own line without
+                // reading `text`.
+                "detail": match (notice, notice.detail()) {
+                    (FrameNotice::Emcon { radius_m, .. }, _) => {
+                        serde_json::json!({ "radius_m": radius_m })
+                    }
+                    (_, RefusalDetail::None) => serde_json::Value::Null,
+                    (_, RefusalDetail::Cycling { secs }) => serde_json::json!({ "secs": secs }),
+                    (_, RefusalDetail::Overheated { heat, max }) => {
                         serde_json::json!({ "heat": heat, "max": max })
                     }
                 },
@@ -4319,6 +4466,11 @@ pub fn status_frame_held(
             "budget_max": receiver.budget_max,
             "reach_percent": receiver.reach_permille / 10,
         })),
+        // **16b cut O.2** (16c N12): the pilot's own pod's switch, `"on"` or
+        // `"off"`, and `null` for a platform that carries no pod — every stock
+        // tank. The key is on every frame, as `receiver` is; only its value is
+        // the pilot's own.
+        "ecm": frame.ecm.map(|on| if on { "on" } else { "off" }),
         // **16b cut Y.4** (doc 07 §1.3 step 5): what happened while the pilot
         // could not see, on the first frame after a reclaim and `null` on
         // every other — the mirror stores it cleared, so a read verb's frame
@@ -5982,7 +6134,7 @@ fn join_names(names: &[String]) -> String {
 // The gate and the dispatch
 // ---------------------------------------------------------------------------
 
-/// **The contextual gate**: the fifteen verbs exist everywhere and mean
+/// **The contextual gate**: the sixteen verbs exist everywhere and mean
 /// something in a team room, in a pod, and at a deployed unit's station.
 ///
 /// One line each, and nothing else refused: a gate that is asked about `look`
@@ -6124,7 +6276,7 @@ fn refusal(error: CockpitError) -> CmdError {
     CmdError::msg(error.to_string())
 }
 
-/// Run one cockpit verb: resolve the station first, so every one of the thirteen
+/// Run one cockpit verb: resolve the station first, so every one of the fourteen
 /// answers the same way to somebody who is not flying.
 ///
 /// **16b cut U.4 (16c `T-53`)**: the seat is resolved **once**, here, and every
@@ -6154,6 +6306,8 @@ fn cockpit_command(ctx: &mut Ctx<'_>, verb: &'static str) -> Result<(), CmdError
         "scan" => scan(ctx, &seat, &rest),
         // 16b cut Y.1: the side's machines, on the six objectives and the release (16b cut Z.2).
         "order" => order(ctx, &seat, &rest),
+        // 16b cut O.2: the jamming pod's switch.
+        "emcon" => emcon(ctx, &seat, &rest),
         // Not reachable: the table below registers exactly `COCKPIT_VERBS`, and
         // this arm is the closed-set proof rather than a panic.
         _ => Err(CockpitError::OutsideCockpit),
@@ -6213,18 +6367,24 @@ fn cockpit_help(verb: &str) -> String {
         "weaponstatus" => "WEAPONSTATUS        every weapon you carry: ready or cycling, its \
                            rounds, its own chance against your lock, and that lock's range band."
             .to_owned(),
+        // 16b cut O.2 (16c N12): what the switch does to whom, because the
+        // cost of each position is the whole reason to type it.
+        "emcon" => "EMCON [on|off]      switch your jamming pod, if you carry one: on jams every \
+                    sight inside its bubble, yours among them; off clears your own sight and \
+                    hides you from nothing. On at check-out."
+            .to_owned(),
         // 16b cut D.2 (`T-77`): the callsign is `STATUS`'s first line and the
         // help did not mention it, so a pilot asked "who is RA?" had nowhere to
         // be sent; and cut D.1 replaced the arena's global tempo on the third
         // line with this platform's own scope.
         _ => "STATUS              your callsign, power, speed, heading, position, the named spot \
-              nearest you, what your own scope holds, and your armour and internals section by \
-              section."
+              nearest you, what your own scope holds, your pod's switch if you carry one, and \
+              your armour and internals section by section."
             .to_owned(),
     }
 }
 
-/// Register the cockpit on the **tacsim** module: fifteen verbs and one gate.
+/// Register the cockpit on the **tacsim** module: sixteen verbs and one gate.
 ///
 /// The state the verbs read is [`ArenaRegistry`]'s and [`crate::match_::MatchBook`]'s, both
 /// registered by [`crate::arena_bridge::register`], so nothing here declares a
@@ -6236,10 +6396,11 @@ fn cockpit_help(verb: &str) -> String {
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // `BOARD` writes a station document, a placement, a billet and (at the
     // trigger) cut T.3's whole check-out; `EXIT` writes the same in reverse. Of
-    // the thirteen selectors, five stage one arena intent each, cut Y.1's `ORDER`
+    // the fourteen selectors, six stage at most one arena intent each (cut O.2's
+    // `EMCON` among them, which also stamps a bridge hint), cut Y.1's `ORDER`
     // stages one per unit it fans out to, and the other seven — cut Q.1's `RANGE`
     // and `BEARING` and cut Q.2's `SCAN` among them — only read the last frame;
-    // none of the thirteen writes a document. They are
+    // none of the fourteen writes a document. They are
     // registered on the same
     // lane as their two neighbours rather than split across two classifications
     // for one subsystem.
@@ -6517,6 +6678,8 @@ mod tests {
             Refusal::Overheated,
             Refusal::NoWeapon,
             Refusal::NotReflex,
+            // 16b cut O.2.
+            Refusal::NoJammer,
         ] {
             // 16b cut D.2 (`B-16`): the weapon is in the prefix now, so a pilot
             // with two guns reads which breech was refused.
@@ -6846,9 +7009,9 @@ mod tests {
         }
         assert_eq!(
             COCKPIT_VERBS.len(),
-            13,
-            "doc 16 section 3.7's nine, cut Q.1's two read verbs, cut Q.2's SCAN and cut \
-             Y.1's ORDER"
+            14,
+            "doc 16 section 3.7's nine, cut Q.1's two read verbs, cut Q.2's SCAN, cut Y.1's \
+             ORDER and cut O.2's EMCON"
         );
     }
 
@@ -7071,7 +7234,7 @@ mod tests {
     /// and the `STATUS` help names the callsign line.
     #[test]
     fn d2_the_verb_table_and_the_help_agree_with_the_selector_list() {
-        assert_eq!(COCKPIT_VERBS.len(), 13);
+        assert_eq!(COCKPIT_VERBS.len(), 14);
         let head = include_str!("cockpit.rs");
         for verb in COCKPIT_VERBS {
             let upper = verb.to_uppercase();
@@ -7912,8 +8075,10 @@ mod tests {
     /// gate, and carries its help line.
     #[test]
     fn y1_order_is_the_thirteenth_selector() {
-        assert_eq!(COCKPIT_VERBS.len(), 13);
-        assert_eq!(COCKPIT_VERBS.last(), Some(&"order"));
+        // 16b cut O.2 put `emcon` after it, so it is the thirteenth and no
+        // longer the last.
+        assert_eq!(COCKPIT_VERBS.len(), 14);
+        assert_eq!(COCKPIT_VERBS.get(12), Some(&"order"));
         assert_eq!(
             cockpit_help("order"),
             "ORDER <squad|ALL> <objective>  command your side's machines: HOLD, ADVANCE <spot>, \
@@ -7922,5 +8087,36 @@ mod tests {
              doctrine. A side's lead orders any squad of the side; anyone else their pod pair's \
              tank."
         );
+    }
+
+    /// **16b cut O.2** (16c N12): the fourteenth selector's words, pinned — the
+    /// help that says what each position costs, the `STATUS` line, the local
+    /// refusal and the arena's own, which are one sentence after the prefix.
+    #[test]
+    fn o2_emcon_is_the_fourteenth_selector_and_its_words_are_pinned() {
+        use crate::arena::perception::RefusalDetail;
+        assert_eq!(COCKPIT_VERBS.last(), Some(&"emcon"));
+        assert_eq!(
+            cockpit_help("emcon"),
+            "EMCON [on|off]      switch your jamming pod, if you carry one: on jams every sight \
+             inside its bubble, yours among them; off clears your own sight and hides you from \
+             nothing. On at check-out."
+        );
+        assert!(
+            cockpit_help("status").contains(", your pod's switch if you carry one"),
+            "{}",
+            cockpit_help("status")
+        );
+        assert_eq!(emcon_status_line(true), "  emcon on: the pod radiates");
+        assert_eq!(emcon_status_line(false), "  emcon off: the pod is silent");
+        assert_eq!(
+            CockpitError::NoJammer.to_string(),
+            "This tank carries no jamming pod."
+        );
+        assert_eq!(
+            refusal_line("emcon", Refusal::NoJammer, None, RefusalDetail::None),
+            "EMCON refused. This tank carries no jamming pod."
+        );
+        assert_eq!(Refusal::NoJammer.as_str(), "no_jammer");
     }
 }

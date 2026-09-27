@@ -265,6 +265,11 @@ export interface CockpitFrame {
   /** The receiver, or `null` on a clean one (and from a server that does not
    * send the key). The row's presence is what says "degraded". */
   receiver: CockpitReceiver | null;
+  /** The platform's own jamming pod's switch (16b cut O.2, 16c N12): `"on"`
+   * or `"off"`, and `null` for a platform that carries no pod — and from a
+   * server that does not send the key, or a word this build predates. The
+   * status block's scope row carries it as a suffix. */
+  ecm: "on" | "off" | null;
   /** The arena's one global cadence word. The status block does NOT print it
    * (16b cut D.2), and no shipped client reads it today; it stays decoded
    * because `T-59` is closed for the printed word alone. */
@@ -609,6 +614,8 @@ export function decodeCockpitFrame(data: unknown): CockpitFrame | null {
     heading_deg: int(data.heading_deg, 0),
     heat: decodeHeat(data.heat),
     receiver: decodeReceiver(data.receiver),
+    // 16b cut O.2: the pod's switch, or `null` (absent, null or unknown alike).
+    ecm: data.ecm === "on" || data.ecm === "off" ? data.ecm : null,
     tempo: clean(data.tempo, "?"),
     scope: clean(data.scope, "?"),
     lock_designator: optStr(data.lock_designator, 8),
@@ -876,6 +883,9 @@ const NOTICE_WORDS: ReadonlyMap<string, string> = new Map([
   ["power_online", "power online"],
   ["destroyed", "your tank is destroyed"],
   ["disabled", "your tank is out of the fight"],
+  // 16b cut O.2 (16c N12): the pilot's own pod's switch, short.
+  ["emcon_on", "EMCON on"],
+  ["emcon_off", "EMCON off: pod silent"],
 ]);
 
 /** Why an order was refused, in the pilot's words (`Refusal::as_str`). A word
@@ -893,6 +903,8 @@ const REFUSAL_WORDS: ReadonlyMap<string, string> = new Map([
   ["overheated", "overheated"],
   ["no_weapon", "no such weapon"],
   ["epoch", "the seat changed hands"],
+  // 16b cut O.2: `EMCON` on a tank with no pod.
+  ["no_jammer", "no jamming pod"],
 ]);
 
 /** Why motion stopped, in the pilot's words (`BlockedCause::as_str`). */
@@ -1148,7 +1160,7 @@ export interface CockpitView {
    * map — exactly as the TUI's legend does (16b cut B.3, `B-62`). */
   legend: string;
   /** The status block: callsign, power, speed/heading (and the tank's own
-   * limit), heat, the degraded receiver, scope, lock. */
+   * limit), heat, the degraded receiver, scope (and the pod's switch), lock. */
   status: string[];
   damage: CockpitDamageRow[];
   /** One line a weapon, or the single `(no weapon)` line. */
@@ -1221,7 +1233,11 @@ export function statusLines(frame: CockpitFrame): string[] {
   // arena's one global tempo word — a pilot with an empty scope read `engaged`
   // off somebody else's fight. `frame.tempo` is still decoded, but nothing in
   // this client reads it: `T-59` is closed for the printed word alone.
-  lines.push(`scope ${frame.scope}`);
+  // 16b cut O.2 (16c N12): the pod's switch rides this row — `scope hostile
+  // EMCON on` — and a platform with no pod prints the row unchanged, exactly
+  // as the TUI's does.
+  const pod = frame.ecm === null ? "" : `  EMCON ${frame.ecm}`;
+  lines.push(`scope ${frame.scope}${pod}`);
   lines.push(lockLine(frame));
   return lines;
 }

@@ -1049,6 +1049,11 @@ fn the_cockpit_screen_paints_at_both_budget_sizes() {
 /// short pane would lose and the one a gunner reads before `FIRE`. The golden
 /// is the review; the assertions are the proof the status pane's `min_w` 34
 /// and `min_h` 7 are right.
+///
+/// **16b cut O.2**: the jammed cockpit is the pod-carrying scene, so its frame
+/// carries `"ecm": "on"` and the scope row reads `scope hostile  EMCON on` —
+/// the switch on the row and not an eighth one; the fullest block switches it
+/// off for the longer suffix.
 #[test]
 fn the_jammed_wreck_s_status_is_painted_whole_at_the_floor() {
     let arena_app = |frame: serde_json::Value| {
@@ -1059,6 +1064,7 @@ fn the_jammed_wreck_s_status_is_painted_whole_at_the_floor() {
     let mut frame = fixture(COCKPIT_FRAME);
     frame["receiver"] = serde_json::json!({ "budget": 15, "budget_max": 40, "reach_percent": 60 });
     frame["wreck"] = serde_json::json!(true);
+    frame["ecm"] = serde_json::json!("on");
     let mut app = arena_app(frame.clone());
     let text = frame_text(&mut app, 120, 34);
     for row in [
@@ -1067,7 +1073,7 @@ fn the_jammed_wreck_s_status_is_painted_whole_at_the_floor() {
         "43 kph  heading 045\u{b0}  DESTROYED",
         "heat 40/100",
         "receiver 15/40  60%",
-        "scope hostile",
+        "scope hostile  EMCON on",
         "Lock BA  440 m  62%",
     ] {
         assert!(
@@ -1085,6 +1091,7 @@ fn the_jammed_wreck_s_status_is_painted_whole_at_the_floor() {
     frame["heat"]["overheated"] = serde_json::json!(true);
     frame["lock_range_m"] = serde_json::json!(1440);
     frame["lock_percent"] = serde_json::json!(100);
+    frame["ecm"] = serde_json::json!("off");
     let mut app = arena_app(frame);
     for (w, h) in [(120u16, 34u16), (160, 48)] {
         let text = frame_text(&mut app, w, h);
@@ -1094,7 +1101,7 @@ fn the_jammed_wreck_s_status_is_painted_whole_at_the_floor() {
             "43 kph  heading 045\u{b0}  DESTROYED",
             "heat 100/100  OVERHEATED",
             "receiver 15/40  60%",
-            "scope hostile",
+            "scope hostile  EMCON off",
             "Lock BA  1440 m  100%",
         ] {
             assert!(

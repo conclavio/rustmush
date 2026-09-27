@@ -6826,6 +6826,243 @@ fn q6_one_scripted_jammed_share_at_three_cadences_is_one_event_list() {
     assert!(lost_ms < found_ms, "lost {lost_ms}, found again {found_ms}");
 }
 
+// --- 16b cut O.2: the pod's switch (16c N12) --------------------------------
+
+/// **The ridge of [`o2_emcon_arena`]** (16b cut O.2): a three-cell block across
+/// the pod's line to the target — (13, 8) to (3, 2) crosses columns 7 to 9 at
+/// rows 4 to 6 — and nowhere near the sharer's column or the mates' row.
+const O2_RIDGE: [(u16, u16); 9] = [
+    (7, 4),
+    (8, 4),
+    (9, 4),
+    (7, 5),
+    (8, 5),
+    (9, 5),
+    (7, 6),
+    (8, 6),
+    (9, 6),
+];
+
+/// The ridge's height: thirty metres, far over any sight the catalog mounts.
+const O2_RIDGE_CM: i16 = 3_000;
+
+/// **The ECM tank inside its own bubble, with a teammate inside it too** (16b
+/// cut O.2): the sharer three cells in from the west edge, holding the target
+/// classified by its own eye; the blind mate six cells east of it; and the
+/// *red* pod four cells east of the mate — so the mate and the pod's own sight
+/// stand inside the 60 m bubble and the sharer, 100 m off, does not.
+///
+/// Sixty metres between sharer and mate is well inside the Mk1 sight's 300 m
+/// share reach and outside the 45 m the pod leaves of it at the mate's end, so
+/// while the pod radiates the link is cut by range (16b cut Q.6) and the pod's
+/// own receiver reads degraded (a pod is in its own bubble). The switch is the
+/// only thing the script moves.
+///
+/// **A ridge stands between the pod and the target** ([`O2_RIDGE`]), so the
+/// silent pod's own sight never takes the target and the one sighting that can
+/// reach the mate is the sharer's: the mate's first `detected` is the share the
+/// radiating pod refused, completing, and not a fresh sighting relayed by the
+/// pod (a sighting travels one hop, 16b cut F.3). The ridge is off the sharer's
+/// line to the target (column 3) and off row 8, the sharer's and the pod's
+/// lines to the mate.
+fn o2_emcon_arena(catalog: &Catalog) -> Arena {
+    let ridge: Vec<(u16, u16, TerrainCell)> = O2_RIDGE
+        .iter()
+        .map(|(x, y)| (*x, *y, at_elev(O2_RIDGE_CM)))
+        .collect();
+    let mut arena = arena_of(
+        catalog,
+        vec![
+            unit_of(catalog, content::LINE_TANK, RED, Team::Red, (3, 8)),
+            blind(unit_of(
+                catalog,
+                content::LINE_TANK,
+                MESH_MATE,
+                Team::Red,
+                (9, 8),
+            )),
+            blind(unit_of(
+                catalog,
+                content::LINE_TANK,
+                BLUE,
+                Team::Blue,
+                (3, 2),
+            )),
+            unit_of(catalog, content::LINE_TANK_ECM, POD, Team::Red, (13, 8)),
+        ],
+        &ridge,
+    );
+    for id in [RED, MESH_MATE, POD] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.power = Power::Online;
+        }
+    }
+    let contact = tacsim::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+    arena.contacts.insert(
+        RED,
+        contact,
+        ShadowContact::sighted(
+            BLUE,
+            Classification::Classified { team: Team::Blue },
+            0,
+            plot_of(&arena, BLUE),
+        ),
+    );
+    arena
+}
+
+/// The pod's pilot switches it off at 10 s and on again at 30 s — both beats on
+/// the 5,000 ms lattice, so each lands at its own millisecond at every cadence.
+fn o2_emcon_script() -> Vec<ReliefBeat> {
+    use tacsim::arena::intents::IntentKind;
+    vec![
+        ReliefBeat {
+            t_ms: 10_000,
+            intents: vec![relief_intent(POD, IntentKind::Emcon { on: false }, 1)],
+        },
+        ReliefBeat {
+            t_ms: 30_000,
+            intents: vec![relief_intent(POD, IntentKind::Emcon { on: true }, 2)],
+        },
+    ]
+}
+
+/// **`EMCON off` at a beat clears the receiver and the mesh, and `EMCON on`
+/// re-degrades it, at three cadences** (16b §11's mandatory cross-tempo test,
+/// owed by 16b cut O.2; 16c N12).
+///
+/// One event list, one hash sequence (item 1.19 folds the switch) and one
+/// notice list at 5,000, 1,000 and 500 ms; the two `emcon` lines at the beats'
+/// own milliseconds; the pod's own receiver degraded from its first pass,
+/// cleared by exactly one `receiver` line at its first pass after the off
+/// beat, and degraded again by exactly one after the on beat; and the share the
+/// radiating pod refused completing — the blind mate's first `detected` — at
+/// the sharer's first pass after the switch went off, with a control replay
+/// (the sharer blinded) proving that sighting was the sharer's and not the
+/// silent pod's own.
+#[test]
+fn o2_emcon_off_at_a_beat_clears_the_receiver_and_the_mesh_at_three_cadences() {
+    let catalog = ecm_catalog();
+    let script = o2_emcon_script();
+    let first = q6_three_cadences("o2 emcon", 45_000, || o2_emcon_arena(&catalog), &script);
+    let emcon = first.lines("emcon", &[]);
+    assert_eq!(
+        emcon,
+        vec![
+            (
+                10_000,
+                format!("{{\"kind\":\"emcon\",\"unit\":{},\"on\":false}}", POD.0)
+            ),
+            (
+                30_000,
+                format!("{{\"kind\":\"emcon\",\"unit\":{},\"on\":true}}", POD.0)
+            ),
+        ],
+        "the switch is journalled at the beats' own milliseconds"
+    );
+    let receiver = first.lines("receiver", &[&format!("\"unit\":{}", POD.0)]);
+    let degraded: Vec<(i64, bool)> = receiver
+        .iter()
+        .map(|(at, json)| (*at, json.contains("\"degraded\":true")))
+        .collect();
+    assert_eq!(
+        degraded.len(),
+        3,
+        "the pod's own receiver: degraded, cleared once, degraded once: {receiver:?}"
+    );
+    let (Some((opened, true)), Some((cleared, false)), Some((again, true))) = (
+        degraded.first().copied(),
+        degraded.get(1).copied(),
+        degraded.get(2).copied(),
+    ) else {
+        panic!("degraded, clear, degraded: {degraded:?}");
+    };
+    let pass_ms = i64::from(SensorsConfig::default().pass_ms);
+    assert!(
+        opened < pass_ms,
+        "the first pass ran in the bubble: {opened}"
+    );
+    assert!(
+        cleared > 10_000 && cleared <= 10_000 + pass_ms,
+        "the receiver cleared at the pod's first pass after the off beat: {cleared}"
+    );
+    assert!(
+        again > 30_000 && again <= 30_000 + pass_ms,
+        "the receiver re-degraded at the first pass after the on beat: {again}"
+    );
+    // Only the pod's own sight stands in the bubble with a sensor: the sharer is
+    // outside it and the mate is blind, so no other receiver moved.
+    assert_eq!(
+        first.lines("receiver", &[]).len(),
+        3,
+        "a receiver outside the pod moved"
+    );
+    // The mesh: the mate was told nothing while the pod radiated, and the
+    // refused share completed once the switch went off.
+    let told = first.lines("detected", &["\"viewer\":5", "\"target\":9"]);
+    let Some((found_ms, _)) = told.first() else {
+        panic!("the silent pod never let the share through: {told:?}");
+    };
+    // At the sharer's first pass after the off beat: the flip cleared the memo,
+    // so the pass that follows it reads the silent pod at the mate's end, and a
+    // share is applied in the substep of the pass that scheduled it.
+    assert!(
+        *found_ms > 10_000 && *found_ms <= 10_000 + pass_ms,
+        "the mate was told at {found_ms}, not at the sharer's first pass after the \
+         off beat (10000, {}]",
+        10_000 + pass_ms
+    );
+    // And it was the *sharer's* sighting that arrived. With the sharer blinded the
+    // mate is told nothing in the whole run, so nothing but the refused share
+    // completing can have told it: the ridge keeps the silent pod's own sight off
+    // the target, and a sighting travels one hop.
+    let mut unshared = o2_emcon_arena(&catalog);
+    if let Some(state) = unshared.unit_mut(RED) {
+        state.sensor = None;
+    }
+    let control = q6_replay(&mut unshared, 1_000, 45_000, &script);
+    assert!(
+        control
+            .lines("detected", &["\"viewer\":5", "\"target\":9"])
+            .is_empty()
+            && control
+                .lines("detected", &["\"viewer\":7", "\"target\":9"])
+                .is_empty(),
+        "with the sharer blind, the mate or the pod still took the target, so the \
+         mate's contact above is not the refused share completing"
+    );
+    assert!(
+        first.perception.jam_checks > 0 && first.perception.share_ops > 0,
+        "the switch was read by a scan: {:?}",
+        first.perception
+    );
+    // And the pod's pilot was told both flips, with the pod's own radius.
+    let pod_pilot = mush_core::ObjId(1_003);
+    let flips: Vec<&FrameNotice> = first
+        .notices
+        .get(&pod_pilot)
+        .map(|notices| {
+            notices
+                .iter()
+                .filter(|notice| matches!(notice, FrameNotice::Emcon { .. }))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        flips,
+        vec![
+            &FrameNotice::Emcon {
+                on: false,
+                radius_m: 60
+            },
+            &FrameNotice::Emcon {
+                on: true,
+                radius_m: 60
+            },
+        ]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // D.2 — a cold gun is not hot (`B-16`)
 // ---------------------------------------------------------------------------

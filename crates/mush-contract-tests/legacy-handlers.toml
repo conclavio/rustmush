@@ -751,6 +751,11 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
+name = "emcon"
+category = "authoritative"
+note = "16b cut O.2 (doc 16 section 3.7 Verbs, section 9 item 4; 16c N12; 16b section 9 cut O). One of the fourteen cockpit selectors: EMCON [on|off], the jamming pod's switch. Contextual while the actor is focused on a station of a unit an arena holds custody of, and refused anywhere else in one line (\"You are not at the station of a deployed unit.\") by the tacsim module's CockpitGate. It writes NOTHING durable: bare, it reads the last `arena.cockpit` keyframe; with a word it stages at most one arena Intent (IntentKind::Emcon, discrete, sensors channel) through arena_bridge::forward_intent, which stamps the world's epoch mirror and offers the order to the match's bounded inbox, and stamps one RAM hint row on the tacsim module's existing ArenaRegistry slot (ArenaRegistry::hint_emcon, in the Starting hint's shape) -- no document, no world mutation, no prepared mechanic. It is refused locally, forwarding nothing, for a tank the held frame says carries no pod (\"This tank carries no jamming pod.\") and for the state it is already in (\"EMCON is already on.\" / \"off.\", read off the hint first and the mirror second). The arena authorises again at apply against its own epoch table and resolves it in phase 4 (arena::intents::resolve_emcon), journalling one `emcon` line per real flip. The category is `authoritative` with the rest of the cockpit rather than `read-only`, because the sixteen verbs are one subsystem on one lane and BOARD and EXIT, which carry the writes, cannot be anything else."
+
+[[handler]]
 name = "examine"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"

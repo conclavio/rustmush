@@ -101,7 +101,15 @@ thread_local! {
 ///    18. **heat** (16b cut M.3, 16c `T-06`): a presence byte — `1` when
 ///        [`crate::arena::state::UnitState::heat_now`] answers — then that heat
 ///        as `u32` and [`crate::arena::state::HeatState::carry_milli`] as `u32`;
-///        `[0]` alone for a unit that carries no heat, which is every stock tank.
+///        `[0]` alone for a unit that carries no heat, which is every stock tank;
+///    19. **the pod's switch** (16b cut O.2, 16c N12): one byte,
+///        [`crate::arena::state::UnitState::ecm_on`] (`1` radiating, `0`
+///        silent), written for every unit whether it carries a pod or not. It
+///        decides what every sight inside the pod's bubble sees — detection and
+///        both ends of the mesh — and it is authoritative state with one writer
+///        ([`crate::arena::intents::resolve_emcon`]), so a replay whose pilot's
+///        switch landed a pulse later must not compare equal even before the
+///        next pass shows the difference in a contact.
 /// 2. **The spent-section window** (16b cut D.2), in the map's own key order: the
 ///    count of entries as `u64`, then per entry the platform told's `u32`, the
 ///    target's `u32`, the section id's bytes and the arena millisecond as `i64`.
@@ -545,6 +553,9 @@ pub fn state_hash(arena: &Arena) -> u64 {
             }
             _ => hash = fnv1a64_update(hash, &[0_u8]),
         }
+        // **16b cut O.2** (16c N12): the pod's switch, which decides what every
+        // sight inside its bubble sees.
+        hash = fnv1a64_update(hash, &[u8::from(unit.ecm_on)]);
     }
     // **16b cut D.2**: the spent-section window, in the map's own key order.
     hash = fnv1a64_update(hash, &(arena.spent_said.len() as u64).to_le_bytes());
@@ -1511,5 +1522,22 @@ mod tests {
             row.hold_retry_ms = None;
         }
         assert_eq!(state_hash(&machine), adopted);
+    }
+
+    /// **16b cut O.2** (16c N12), item 1.19: two arenas differing only in one
+    /// unit's pod switch differ, and switching it back is the same state again.
+    #[test]
+    fn o2_the_hash_folds_the_pods_switch() {
+        let base = state_hash(&two_tanks());
+        let mut silent = two_tanks();
+        if let Some(unit) = silent.unit_mut(ObjId(9)) {
+            assert!(unit.ecm_on, "every unit checks out radiating");
+            unit.ecm_on = false;
+        }
+        assert_ne!(state_hash(&silent), base, "the switch went unhashed");
+        if let Some(unit) = silent.unit_mut(ObjId(9)) {
+            unit.ecm_on = true;
+        }
+        assert_eq!(state_hash(&silent), base);
     }
 }

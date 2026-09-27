@@ -618,6 +618,37 @@ pub struct ArenaRegistry {
     /// A frame carrying `power == Off` and **no** such refusal does *not* clear
     /// it: a batch staged before the intent arrived is drained after it.
     starting_hints: BTreeMap<ObjId, i64>,
+    /// **The switch each pilot last forwarded to their pod** (16b cut O.2, 16c
+    /// N12; the cut O plan's item 38), pilot to `(on, until_s)`: the `EMCON`
+    /// the world has just sent, until the world second `until_s`.
+    ///
+    /// The `Starting` hint's reason again: an intent is buffered to the next
+    /// pulse and never steps the arena, so the mirror's `ecm` is up to one
+    /// `Quiet` period stale, and without this `EMCON off` then `EMCON on` inside
+    /// one pulse would answer `EMCON is already on.` to the second — true of the
+    /// mirror, false of the tank the pilot has just switched. The cockpit reads
+    /// this **before** the mirror ([`ArenaRegistry::emcon_hint`]), so the two
+    /// orders are both forwarded with true replies and the arena, resolving
+    /// them in order, ends where the pilot left it.
+    ///
+    /// Stamped at forward with the expiry `STARTUP` computes (one second past a
+    /// whole `Quiet` period), and it ends the four ways
+    /// [`ArenaRegistry::starting_hints`] does, read for the switch:
+    /// 1. **confirmed** — [`on_frames`] removes it when a frame for that pilot
+    ///    carries `ecm == Some(on)`, the arena agreeing with the pilot;
+    /// 2. **refused** — [`on_frames`] removes it when a frame for that pilot
+    ///    carries a [`crate::arena::perception::FrameNotice::Refused`] whose
+    ///    `order` is `emcon`;
+    /// 3. **expired** — the world clock passes the stamped second, and the
+    ///    mirror answers again;
+    /// 4. **unbound** — [`ArenaRegistry::unbind_pilot`] and
+    ///    [`ArenaRegistry::untrack`] drop it wherever they drop the `Starting`
+    ///    hint.
+    ///
+    /// A frame whose `ecm` disagrees and that carries no such refusal does
+    /// *not* clear it: a batch staged before the intent arrived is drained
+    /// after it.
+    emcon_hints: BTreeMap<ObjId, (bool, i64)>,
     /// **16b cut K.2**: the ground each running match is fought over, so `VIEW`
     /// can draw the window without re-deriving a 65,536-cell arena from the
     /// atlas on every look. One `Arc` per match, taken at check-out and dropped
@@ -724,6 +755,7 @@ impl ArenaRegistry {
             matches: BTreeMap::new(),
             last_frames: BTreeMap::new(),
             starting_hints: BTreeMap::new(),
+            emcon_hints: BTreeMap::new(),
             arenas: BTreeMap::new(),
             deliberation: BTreeMap::new(),
             order_stamps: BTreeMap::new(),
@@ -927,6 +959,8 @@ impl ArenaRegistry {
         // *next* match's pilot that their cold tank is coming up.
         for pilot in pilots {
             self.starting_hints.remove(&pilot);
+            // 16b cut O.2: and the pod's switch hint, for the same reason.
+            self.emcon_hints.remove(&pilot);
         }
         self.arenas.remove(&match_id);
         // 16b cut N.2: and the deliberation row, for the same reason. An order
@@ -1080,6 +1114,8 @@ impl ArenaRegistry {
         // **16b cut D.1**, the hint's fourth end: the optimism is about a seat,
         // and this is where the seat ends.
         self.starting_hints.remove(&pilot);
+        // 16b cut O.2: and the pod's switch hint, for the same reason.
+        self.emcon_hints.remove(&pilot);
         self.pilots.remove(&pilot).is_some()
     }
 
@@ -1104,6 +1140,33 @@ impl ArenaRegistry {
     /// refused and the unbound ends all come through here.
     pub fn clear_starting_hint(&mut self, pilot: ObjId) {
         self.starting_hints.remove(&pilot);
+    }
+
+    /// **Stamp the pod's switch hint for one pilot** (16b cut O.2): the pilot
+    /// has just forwarded `EMCON on` (`on`) or `EMCON off`, and the hint stands
+    /// until the world second `until_s`. A second stamp replaces the first —
+    /// the pilot's latest order is the one the arena will end on. See
+    /// `ArenaRegistry::emcon_hints` for the four ways it ends.
+    pub fn hint_emcon(&mut self, pilot: ObjId, on: bool, until_s: i64) {
+        self.emcon_hints.insert(pilot, (on, until_s));
+    }
+
+    /// **The switch that pilot last forwarded, while the hint stands** at the
+    /// world second `now_s` (16b cut O.2), or `None` — no hint, or an expired
+    /// one, and then the cockpit reads the mirror. An expired row is left where
+    /// it is, as [`ArenaRegistry::starting_hint`] leaves one.
+    #[must_use]
+    pub fn emcon_hint(&self, pilot: ObjId, now_s: i64) -> Option<bool> {
+        self.emcon_hints
+            .get(&pilot)
+            .filter(|(_, until_s)| now_s <= *until_s)
+            .map(|(on, _)| *on)
+    }
+
+    /// **Forget one pilot's pod-switch hint** (16b cut O.2) — the confirmed and
+    /// the refused ends come through here.
+    pub fn clear_emcon_hint(&mut self, pilot: ObjId) {
+        self.emcon_hints.remove(&pilot);
     }
 
     /// Publish one `(unit, channel)` epoch into the mirror — cut T.3 seeds it at
@@ -1878,9 +1941,26 @@ fn on_frames(
                     if order.as_str() == IntentKind::Startup.as_str()
             )
         });
+        // **16b cut O.2**: the pod-switch hint's first two ends, by the same
+        // rule — the frame's `ecm` agreeing with the switch the pilot sent, or
+        // the arena's refusal of an `emcon` order.
+        let emcon_refused = frame.notices.iter().any(|notice| {
+            matches!(
+                notice,
+                crate::arena::perception::FrameNotice::Refused { order, .. }
+                    if order.as_str() == IntentKind::Emcon { on: true }.as_str()
+            )
+        });
         if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
             if confirmed || refused {
                 registry.clear_starting_hint(pilot);
+            }
+            let emcon_confirmed = registry
+                .emcon_hints
+                .get(&pilot)
+                .is_some_and(|(on, _)| frame.ecm == Some(*on));
+            if emcon_confirmed || emcon_refused {
+                registry.clear_emcon_hint(pilot);
             }
             // **Stored with the notices cleared.** The mirror is what `CONTACTS`,
             // `VIEW` and `STATUS` re-render, and a notice re-rendered is a notice
@@ -3599,5 +3679,48 @@ mod tests {
             handle.signal_stop();
             join.abort();
         }
+    }
+
+    /// **16b cut O.2** (the cut O plan's item 38): the pod-switch hint's stamp,
+    /// read and expiry. It answers the switch last forwarded while it stands —
+    /// through the stamped second itself — a later stamp replaces an earlier
+    /// one, it answers `None` past the second and for a pilot never stamped,
+    /// and an unbind drops it with the seat.
+    #[test]
+    fn o2_the_emcon_hint_is_stamped_read_and_expires() {
+        let mut tw =
+            mush_testkit::TestWorld::with_modules(vec![Box::new(crate::TacsimRuleset::default())]);
+        let pilot = tw.spawn_player("Ada");
+        let other = tw.spawn_player("Bo");
+        let registry = tw
+            .world_mut()
+            .module_state_mut::<ArenaRegistry>()
+            .expect("the registry is composed");
+        assert_eq!(registry.emcon_hint(pilot, 100), None, "no stamp, no hint");
+        registry.hint_emcon(pilot, false, 106);
+        assert_eq!(registry.emcon_hint(pilot, 100), Some(false));
+        assert_eq!(
+            registry.emcon_hint(pilot, 106),
+            Some(false),
+            "the stamped second stands"
+        );
+        assert_eq!(
+            registry.emcon_hint(pilot, 107),
+            None,
+            "and the next does not"
+        );
+        assert_eq!(registry.emcon_hint(other, 100), None, "per pilot");
+        // Off then on inside one pulse: the later stamp is the one read.
+        registry.hint_emcon(pilot, true, 108);
+        assert_eq!(registry.emcon_hint(pilot, 107), Some(true));
+        registry.clear_emcon_hint(pilot);
+        assert_eq!(registry.emcon_hint(pilot, 107), None, "cleared");
+        registry.hint_emcon(pilot, true, 108);
+        registry.unbind_pilot(pilot);
+        assert_eq!(
+            registry.emcon_hint(pilot, 107),
+            None,
+            "unbound with the seat"
+        );
     }
 }

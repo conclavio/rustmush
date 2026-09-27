@@ -84,6 +84,7 @@
       "relative_deg": 345
     }
   ],
+  "ecm": null,
   "heading_deg": 45,
   "heading_mdeg": 45000,
   "heat": {

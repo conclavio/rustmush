@@ -1607,6 +1607,24 @@ pub struct UnitState {
     /// row is not: it is a fact about the unit's fit that nothing in a match moves,
     /// and what a pod *does* shows up in the contacts the hash already folds.
     pub jammer: Option<Jammer>,
+    /// **The pod's switch** (16b cut O.2, 16c N12): `true` while the pod
+    /// radiates. `true` at check-out for every unit — the owner's default, and
+    /// what every match before cut O.2 did — and read only where `jammer` is
+    /// `Some`: [`crate::arena::Arena::jamming_at`] skips a pod whose switch is
+    /// off beside the wreck and power tests, so a silent pod neither blinds the
+    /// sights inside its bubble nor cuts its own side's mesh.
+    ///
+    /// **One writer**, [`crate::arena::intents::resolve_emcon`], on a pilot's
+    /// `EMCON on|off`. A machine never switches its pod, so a machine that
+    /// adopts a released seat keeps the switch its pilot left — off, if they
+    /// typed `EMCON off` — for the rest of the match (a recorded residual of
+    /// cut O; the handover in `apply_control` does not touch it). Arena state and not a
+    /// capability on the M32 record, on `power`'s precedent: it opens `true` at
+    /// every [`Arena::new`] and is never written back at check-in, so no
+    /// content byte moves. Unlike `jammer` beside it, it **is** folded into
+    /// [`crate::arena::hash::state_hash`] (item 1.19): it decides what every
+    /// sight in the bubble sees, and it is authoritative state with one writer.
+    pub ecm_on: bool,
     /// **The counter-jamming filter it carries** (16b cut X.5; doc 16 §9 item 5), or
     /// `None` for a unit that mounts none — every stock unit, so a stock pass runs
     /// the arithmetic cut X.4 left it.
@@ -3453,16 +3471,18 @@ pub struct Arena {
     /// with no filter applied (each caller recovers its own). Read and filled
     /// only through [`crate::arena::Arena::jam_fold_of`].
     ///
-    /// **It is exact, not approximate.** The fold reads four things: the unit's
-    /// pose, and for every pod in the bubble its pose, its `power` and its
-    /// `limits.wreck` (a pod's `jammer` row is fixed at check-out). The memo is
-    /// cleared at **both** `SpatialIndex::rebuild` sites in `Arena::step`'s
-    /// substep — the poses are fixed from each rebuild to the next — and after
-    /// **every `StartupComplete` and every `Impact`** the due loop applies,
-    /// which are the only two things inside a substep that move a pod's power or
-    /// wreck (a startup brings a pod online; an impact can wreck its hull, which
-    /// turns the power off). Between two clears nothing the fold reads can move,
-    /// so a memoised answer is the answer `jamming_at` would give.
+    /// **It is exact, not approximate.** The fold reads five things: the unit's
+    /// pose, and for every pod in the bubble its pose, its `power`, its
+    /// `limits.wreck` and its switch `ecm_on` (a pod's `jammer` row is fixed at
+    /// check-out). The memo is cleared at **both** `SpatialIndex::rebuild` sites
+    /// in `Arena::step`'s substep — the poses are fixed from each rebuild to the
+    /// next — after **every `StartupComplete` and every `Impact`** the due loop
+    /// applies, which are the only two things inside a substep that move a pod's
+    /// power or wreck (a startup brings a pod online; an impact can wreck its
+    /// hull, which turns the power off), and by
+    /// [`crate::arena::intents::resolve_emcon`] on every flip of a pod's switch
+    /// (16b cut O.2). Between two clears nothing the fold reads can move, so a
+    /// memoised answer is the answer `jamming_at` would give.
     ///
     /// A `BTreeMap`, two integers a row, and empty for every match with no pod:
     /// [`crate::arena::Arena::jam_fold_of`] returns before touching it when
@@ -3714,6 +3734,10 @@ impl Arena {
                 },
                 thermal,
                 jammer,
+                // **16b cut O.2**: every pod checks out radiating (the owner's
+                // default, 16c N12); a unit with no pod carries the switch too and
+                // nothing reads it.
+                ecm_on: true,
                 eccm,
                 // **16b cut D.4**: a unit checks out with a clean receiver and
                 // learns otherwise at its first pass. There is no notice for it:

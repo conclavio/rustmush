@@ -953,3 +953,48 @@ describe("16b cut Y.4: the catch-up report", () => {
     expect(long?.rounds_spent).toHaveLength(6);
   });
 });
+
+// **16b cut O.2** (16c N12): the pod's switch — decoded off the frame's `ecm`,
+// printed on the scope row as the TUI prints it, and its two notices and the
+// refusal worded short, in parity.
+describe("16b cut O.2", () => {
+  it("decodes `ecm`, and reads an absent or unknown key as null", () => {
+    const raw = json("cockpit_frame.json") as Record<string, unknown>;
+    // The committed scene carries no pod.
+    expect(raw.ecm).toBeNull();
+    expect(theFrame().ecm).toBeNull();
+    expect(decodeCockpitFrame({ ...raw, ecm: "on" })?.ecm).toBe("on");
+    expect(decodeCockpitFrame({ ...raw, ecm: "off" })?.ecm).toBe("off");
+    const older = { ...raw };
+    delete older.ecm;
+    expect(decodeCockpitFrame(older)?.ecm).toBeNull();
+    expect(decodeCockpitFrame({ ...raw, ecm: "sideways" })?.ecm).toBeNull();
+    expect(decodeCockpitFrame({ ...raw, ecm: true })?.ecm).toBeNull();
+  });
+
+  it("carries the switch on the scope row and adds no row", () => {
+    const frame = theFrame();
+    const plain = statusLines(frame);
+    expect(plain).toContain("scope hostile");
+    const on = statusLines({ ...frame, ecm: "on" });
+    expect(on).toHaveLength(plain.length);
+    expect(on).toContain("scope hostile  EMCON on");
+    const off = statusLines({ ...frame, ecm: "off" });
+    expect(off).toContain("scope hostile  EMCON off");
+    expect(statusLines({ ...frame, ecm: null })).toEqual(plain);
+    // The longest scope word with the longer suffix fits the TUI's 32 columns.
+    const longest = statusLines({ ...frame, ecm: "off", scope: "unidentified" });
+    expect(longest).toContain("scope unidentified  EMCON off");
+    for (const line of longest) {
+      expect(line.length).toBeLessThanOrEqual(32);
+    }
+  });
+
+  it("words the two switch notices and the refusal short", () => {
+    expect(notice({ kind: "emcon_on" })).toBe("EMCON on");
+    expect(notice({ kind: "emcon_off" })).toBe("EMCON off: pod silent");
+    expect(notice({ kind: "refused", order: "emcon", refusal: "no_jammer" })).toBe(
+      "EMCON refused: no jamming pod",
+    );
+  });
+});

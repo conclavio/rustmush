@@ -593,6 +593,17 @@ impl Fold {
             EventKind::PowerOnline { unit } if *unit == me => {
                 let _ = self.push_line(t_ms, seq, "power online.".to_owned());
             }
+            // **16b cut O.2** (16c N12): the pilot's own pod's switch. Another
+            // unit's switch is not this pilot's to read — the sights it reached
+            // learned of it only through their own receivers.
+            EventKind::Emcon { unit, on } if *unit == me => {
+                let text = if *on {
+                    "you switched EMCON on."
+                } else {
+                    "you switched EMCON off."
+                };
+                let _ = self.push_line(t_ms, seq, text.to_owned());
+            }
             EventKind::Locked { unit, target, .. } if *unit == me => {
                 let text = format!("locked {}.", self.name_of(*target));
                 let _ = self.push_line(t_ms, seq, text);
@@ -949,6 +960,14 @@ impl Fold {
             ),
             EventKind::Receiver { unit: id, degraded } => {
                 format!("{word} unit={} degraded={degraded}", unit(id))
+            }
+            // 16b cut O.2: the switch's position as a bare word.
+            EventKind::Emcon { unit: id, on } => {
+                format!(
+                    "{word} unit={} {}",
+                    unit(id),
+                    if *on { "on" } else { "off" }
+                )
             }
             EventKind::Locked {
                 unit: id,

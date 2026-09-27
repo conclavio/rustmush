@@ -54,7 +54,8 @@ pub const CHUNK_BYTES: usize = 16 * 1024;
 /// [`EventKind::Locked`], [`EventKind::Fired`], [`EventKind::Impact`] and
 /// [`EventKind::Miss`]; **16b cut I.3** adds the staff levers' three kinds,
 /// [`EventKind::TempoFloor`], [`EventKind::Placed`] and
-/// [`EventKind::PlaceRefused`] (twenty-eight kinds). The rest are the
+/// [`EventKind::PlaceRefused`]; **16b cut O.2** adds [`EventKind::Emcon`]
+/// (twenty-nine kinds). The rest are the
 /// kinds doc 16 §4 names and later cuts give fields to; they are declared here so
 /// that the kind vocabulary is fixed in one reviewed diff and a later cut adds
 /// fields rather than a new event stream. **They still serialise**: an internally
@@ -197,6 +198,19 @@ pub enum EventKind {
         unit: ObjId,
         /// Whether its receiver is now degraded.
         degraded: bool,
+    },
+    /// **A platform's jamming pod was switched** (16b cut O.2, 16c N12), at the
+    /// arena millisecond phase 4 resolved the pilot's `EMCON` at.
+    ///
+    /// Journalled only on a real flip
+    /// ([`crate::arena::intents::resolve_emcon`]): an order that finds the switch
+    /// already where it puts it writes no line. What the sights inside the bubble
+    /// made of it is each one's own `receiver` line, at its own next pass.
+    Emcon {
+        /// The platform whose pod it is.
+        unit: ObjId,
+        /// Whether the pod now radiates.
+        on: bool,
     },
     /// **A platform locked a contact** (16b cut W.1; doc 16 §3.7's `LOCK`).
     ///
@@ -511,6 +525,7 @@ impl EventKind {
             EventKind::Classified { .. } => "classified",
             EventKind::Lost { .. } => "lost",
             EventKind::Receiver { .. } => "receiver",
+            EventKind::Emcon { .. } => "emcon",
             EventKind::Locked { .. } => "locked",
             EventKind::Fired { .. } => "fired",
             EventKind::Impact { .. } => "impact",
@@ -1034,6 +1049,15 @@ mod tests {
             EventKind::Receiver {
                 unit: ObjId(4),
                 degraded: true,
+            },
+            // 16b cut O.2: the pod's switch, each way.
+            EventKind::Emcon {
+                unit: ObjId(4),
+                on: false,
+            },
+            EventKind::Emcon {
+                unit: ObjId(4),
+                on: true,
             },
             EventKind::Locked {
                 unit: ObjId(4),

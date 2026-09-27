@@ -830,3 +830,139 @@ async fn two_pilots_field_two_different_machines_and_the_pods_are_pods_again() {
         no_sixteen_digit_word(&whole);
     }
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut O.2 — the pod-carrying tank, switched off over SSH (16c N12)
+// ---------------------------------------------------------------------------
+
+/// Where staff poses the two slot-1 tanks for the ECM match (16b cut O.2): on
+/// the east-west road, four cells apart, so the stock tank stands inside the
+/// Mk1 pod's 60 m bubble from the first substep.
+const O2_RED_POSE: &str = "@arena/pose RA=100 97 90";
+const O2_BLUE_POSE: &str = "@arena/pose BA=104 97 270";
+
+/// **The pod's switch, over the production composition** (16b cut O.2; 16c
+/// N12). No mushd test flew the ECM tank before this cut, so the setup is its
+/// own: Ada takes `SIM UNIT line_tank_ecm` in `Selection`, Bo keeps the stock
+/// tank on the other side, and staff poses both through `@arena/pose` before
+/// `SIM START` with Bo inside the pod's 60 m. Ada reads her switch on at
+/// check-out, powers up (a pod radiates only with power up) and reads her own
+/// receiver degraded — a pod is in its own bubble — then types `EMCON off`: the
+/// reply, the notice that says what it costs, her receiver clearing by the
+/// ordinary path, the `STATUS` line; and after `SIM ABORT` the tape carries the
+/// one `emcon` line for her tank.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn o2_a_pilot_in_the_ecm_tank_switches_the_pod_off_and_the_tape_says_so() {
+    let server = boot("sim-units-emcon").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let listing = ask(&mut god, "@find Simulator Lobby", "END OF LIST").await;
+    let lobby = dbref_of(&listing, "Simulator Lobby");
+    for pilot in [ADA, BO] {
+        say(
+            &mut god,
+            &format!("@teleport #{}=#{lobby}", pilot.0),
+            "Teleported",
+        )
+        .await;
+    }
+    let listing = ask(&mut god, &format!("@find {RED_TANK}"), "END OF LIST").await;
+    let red = dbref_of(&listing, RED_TANK);
+
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(
+        &mut ada,
+        "SIM UNIT line_tank_ecm",
+        "Slot red 1 will field line_tank_ecm.",
+    )
+    .await;
+    say(
+        &mut god,
+        O2_RED_POSE,
+        "RA opens at cell (100, 97) heading 90 for the next match.",
+    )
+    .await;
+    say(
+        &mut god,
+        O2_BLUE_POSE,
+        "BA opens at cell (104, 97) heading 270 for the next match.",
+    )
+    .await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut bo, "blue", "Blue Room").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+
+    // On at check-out, whatever the power.
+    poll_whole(&mut ada, "EMCON", "EMCON on: the pod radiates.").await;
+    let seen = ask_whole(&mut bo, "EMCON").await;
+    assert!(
+        seen.contains("This tank carries no jamming pod."),
+        "the stock tank has a pod: {seen}"
+    );
+    power_up(&mut ada).await;
+    let seen = poll_whole(&mut ada, "STATUS", "receiver degraded").await;
+    assert!(
+        seen.contains("  emcon on: the pod radiates"),
+        "STATUS does not carry the switch: {seen}"
+    );
+
+    // The switch.
+    let mark = ada.mark();
+    say(
+        &mut ada,
+        "EMCON off",
+        "EMCON going off; the pod is silent from the next pulse.",
+    )
+    .await;
+    ada.expect_after(
+        mark,
+        "EMCON off: the pod is silent; your own sight clears, and nothing hides you.",
+    )
+    .await;
+    ada.expect_after(mark, "Receiver clear.").await;
+    let seen = poll_whole(&mut ada, "STATUS", "emcon off: the pod is silent").await;
+    assert!(
+        !seen.contains("receiver degraded"),
+        "the carrier's own sight did not clear: {seen}"
+    );
+    let seen = ask_whole(&mut ada, "EMCON off").await;
+    assert!(seen.contains("EMCON is already off."), "{seen}");
+
+    // The tape.
+    ada.send_line("SIM ABORT").await;
+    poll_whole(&mut ada, "SIM STATUS", "aborted").await;
+    let mut events = Vec::new();
+    wait_until(STEP_TIMEOUT, "the emcon line to persist", async || {
+        events = ledger_events(&server.store, 1).await;
+        count(&events, "emcon") > 0
+    })
+    .await;
+    let switches: Vec<&Value> = events
+        .iter()
+        .filter(|event| event.get("kind").and_then(Value::as_str) == Some("emcon"))
+        .collect();
+    assert_eq!(switches.len(), 1, "{switches:?}");
+    assert_eq!(
+        switches
+            .first()
+            .and_then(|event| event.get("unit"))
+            .and_then(Value::as_u64),
+        Some(u64::from(red)),
+        "{switches:?}"
+    );
+    assert_eq!(
+        switches
+            .first()
+            .and_then(|event| event.get("on"))
+            .and_then(Value::as_bool),
+        Some(false),
+        "{switches:?}"
+    );
+    no_sixteen_digit_word(&strip_ansi(&ada.seen));
+    no_sixteen_digit_word(&strip_ansi(&bo.seen));
+}

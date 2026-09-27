@@ -310,6 +310,60 @@
       "cause": null,
       "contact": null,
       "designator": null,
+      "detail": { "radius_m": 60 },
+      "friendly": false,
+      "kind": "emcon_on",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "spent": false,
+      "text": "EMCON on: the pod radiates; every sight inside 60 m is jammed, your own among them.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "EMCON on"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": { "radius_m": 60 },
+      "friendly": false,
+      "kind": "emcon_off",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "spent": false,
+      "text": "EMCON off: the pod is silent; your own sight clears, and nothing hides you.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "EMCON off: pod silent"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": null,
+      "friendly": false,
+      "kind": "refused",
+      "order": "emcon",
+      "refusal": "no_jammer",
+      "section": null,
+      "spent": false,
+      "text": "EMCON refused. This tank carries no jamming pod.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "EMCON refused: no jamming pod"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
       "detail": null,
       "friendly": false,
       "kind": "constructor",

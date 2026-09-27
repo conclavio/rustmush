@@ -2536,6 +2536,10 @@ mod fixture {
             // server does not send, and a degraded receiver would have put a
             // second `STATUS` line and a fourth panel row into every golden.
             receiver: None,
+            // **16b cut O.2**: and it carries no jamming pod — a stock tank —
+            // so the payload's `ecm` key is `null` and no golden's scope row
+            // grows a suffix.
+            ecm: None,
             contacts: vec![
                 // Classified hostile, read two seconds ago, and the lock.
                 FrameContact {
@@ -4763,6 +4767,35 @@ fn d4_the_new_sentences_are_these_sentences() {
     assert_eq!(cockpit::RECEIVER_CLEAR, "Receiver clear.");
     assert_eq!(NoticeKind::ReceiverDegraded.as_str(), "receiver_degraded");
     assert_eq!(NoticeKind::ReceiverClear.as_str(), "receiver_clear");
+
+    // **16b cut O.2** (16c N12): the pilot's own pod, both ways — and what
+    // switching it off costs, said in the line.
+    let on = FrameNotice::Emcon {
+        on: true,
+        radius_m: 60,
+    };
+    let off = FrameNotice::Emcon {
+        on: false,
+        radius_m: 60,
+    };
+    assert_eq!(
+        cockpit::notice_line(&frame, &on, &rows),
+        "EMCON on: the pod radiates; every sight inside 60 m is jammed, your own among them."
+    );
+    assert_eq!(
+        cockpit::notice_line(&frame, &off, &rows),
+        "EMCON off: the pod is silent; your own sight clears, and nothing hides you."
+    );
+    assert_eq!(on.kind(), NoticeKind::EmconOn);
+    assert_eq!(off.kind(), NoticeKind::EmconOff);
+    assert_eq!(NoticeKind::EmconOn.as_str(), "emcon_on");
+    assert_eq!(NoticeKind::EmconOff.as_str(), "emcon_off");
+    // Neither names a contact, a designator or a section.
+    for notice in [&on, &off] {
+        assert_eq!(notice.contact(), None);
+        assert_eq!(notice.designator(), None);
+        assert_eq!(notice.section(), None);
+    }
 }
 
 /// **`STATUS`'s receiver line and `RANGE`'s step, through the real verbs** (16b
@@ -10139,4 +10172,470 @@ async fn o1_a_hold_is_won_and_every_record_says_hold() {
         line.contains("aborted (the server restarted)") && !line.contains('['),
         "{line}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut O.2 — `EMCON`, the jamming pod's switch (16c N12)
+// ---------------------------------------------------------------------------
+
+/// **The pod's switch, through the real verb** (16b cut O.2; 16c N12).
+///
+/// Pilot 0 chose `line_tank_ecm` through `SIM UNIT`, so the arena fields the
+/// pod-carrying tank in red slot 1; pilot 1 flies the stock tank. The dark
+/// panel before the first frame, bare and with a word, forwarding nothing; every
+/// reply and refusal verbatim; the frame's `ecm` on both (the pod's tank `on`, the
+/// stock one `null`); the `STATUS` line; the notice lines on the next frame;
+/// a stock tank's `EMCON off` refused locally with no intent forwarded; and
+/// **`EMCON off` then `EMCON on` typed back to back, both accepted with true
+/// replies** — the second read off the bridge's hint and not the stale mirror —
+/// the pod on at the frame that follows and the tape carrying both lines, in
+/// order. Then one real flip, the hint read before the mirror again, the tape's
+/// line and both reports' projections.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o2_emcon_switches_the_pod_from_the_cockpit_and_says_what_it_costs() {
+    use tacsim::match_::report::{Reader, ReportRules, Roster, fold};
+
+    const RULES: ReportRules = ReportRules {
+        designate_on_detection: false,
+    };
+    const OFF_LINE: &str =
+        "EMCON off: the pod is silent; your own sight clears, and nothing hides you.";
+    const ON_LINE: &str =
+        "EMCON on: the pod radiates; every sight inside 60 m is jammed, your own among them.";
+
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    let said = rig.say(0, "sim unit line_tank_ecm");
+    assert!(said.contains("will field line_tank_ecm"), "{said}");
+    rig.say(0, "sim start");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+    let hint = |rig: &Rig, n: usize| -> Option<bool> {
+        let pilot = rig.pilot(n);
+        let now = rig.tw.world().now();
+        rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.emcon_hint(pilot, now))
+    };
+
+    // Before the first frame (16b cut V.1's precedent: nothing has been pumped,
+    // so the world holds no frame): the panel is dark, bare or with a word, and
+    // nothing is forwarded — without a frame there is nothing to say whether
+    // this tank carries a pod, or which way its switch stands.
+    assert!(rig.frame(0).is_none(), "nothing has been pumped yet");
+    assert_eq!(rig.say(0, "emcon"), cockpit::NO_FRAME_YET);
+    assert_eq!(rig.say(0, "emcon off"), cockpit::NO_FRAME_YET);
+    assert_eq!(rig.say(0, "EMCON ON"), cockpit::NO_FRAME_YET);
+    assert_eq!(hint(&rig, 0), None, "a dark panel's EMCON stamped a hint");
+
+    assert!(rig.frame_for(0).await, "the pod's pilot got no frame");
+    assert!(rig.frame_for(1).await, "the stock pilot got no frame");
+    let ecm_tank = rig.tank(0);
+    let stock_tank = rig.tank(1);
+    let emcon_lines = |rig: &Rig| -> Vec<(ObjId, bool)> {
+        rig.tape
+            .iter()
+            .filter_map(|event| match event.kind {
+                tacsim::arena::ledger::EventKind::Emcon { unit, on } => Some((unit, on)),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // The frame: the pod's tank carries its switch, the stock tank `null`.
+    assert_eq!(rig.held_frame(0).ecm, Some(true), "every pod checks out on");
+    assert_eq!(rig.held_frame(1).ecm, None);
+    let panel = Rig::panel(&rig.events(0, "status")).expect("STATUS re-pushes the frame");
+    assert_eq!(panel.get("ecm"), Some(&serde_json::json!("on")));
+    let panel = Rig::panel(&rig.events(1, "status")).expect("STATUS re-pushes the frame");
+    assert_eq!(panel.get("ecm"), Some(&serde_json::Value::Null));
+
+    // Bare reads, and the STATUS line.
+    let said = rig.say(0, "emcon");
+    assert!(said.contains("EMCON on: the pod radiates."), "{said}");
+    let said = rig.say(1, "emcon");
+    assert!(said.contains("This tank carries no jamming pod."), "{said}");
+    let said = rig.say(0, "status");
+    assert!(said.contains("  emcon on: the pod radiates"), "{said}");
+    let said = rig.say(1, "status");
+    assert!(!said.to_lowercase().contains("emcon"), "{said}");
+
+    // The refusals: already on, a bad word, a stock tank — none forwards.
+    let said = rig.say(0, "emcon ON");
+    assert!(said.contains("EMCON is already on."), "{said}");
+    assert_eq!(hint(&rig, 0), None, "an order already true stamps nothing");
+    let said = rig.say(0, "emcon sideways");
+    assert!(said.contains("EMCON on|off."), "{said}");
+    let said = rig.say(1, "emcon off");
+    assert!(said.contains("This tank carries no jamming pod."), "{said}");
+    assert_eq!(
+        hint(&rig, 1),
+        None,
+        "the stock tank's refusal stamped nothing"
+    );
+
+    // Off then on, back to back: the mirror still says `on` for the second,
+    // and the hint is what makes its reply true.
+    let said = rig.say(0, "emcon off");
+    assert!(
+        said.contains("EMCON going off; the pod is silent from the next pulse."),
+        "{said}"
+    );
+    assert_eq!(hint(&rig, 0), Some(false));
+    let said = rig.say(0, "emcon on");
+    assert!(
+        said.contains("EMCON coming on; the pod radiates from the next pulse."),
+        "{said}"
+    );
+    assert_eq!(hint(&rig, 0), Some(true));
+    let lines = rig
+        .tape_count_until(|event| event.kind.as_str() == "emcon", 2)
+        .await;
+    assert_eq!(lines, 2, "both orders were resolved and journalled");
+    assert_eq!(
+        emcon_lines(&rig),
+        vec![(ecm_tank, false), (ecm_tank, true)],
+        "the tape carries both switches, in the order they were typed"
+    );
+    // The frames that carried the two notices were staged before the chunk
+    // that closed over the two lines, so the mirror is past them.
+    assert_eq!(rig.held_frame(0).ecm, Some(true), "the pod ended on");
+    assert_eq!(
+        hint(&rig, 0),
+        None,
+        "the frame that agreed cleared the hint"
+    );
+    let told = rig.tw.seen_by(&rig.log, rig.pilot(0)).join("\n");
+    assert!(told.contains(OFF_LINE), "{told}");
+    assert!(told.contains(ON_LINE), "{told}");
+
+    // One real flip: the reply, then the hint answering before the mirror.
+    let said = rig.say(0, "emcon off");
+    assert!(
+        said.contains("EMCON going off; the pod is silent from the next pulse."),
+        "{said}"
+    );
+    let said = rig.say(0, "emcon off");
+    assert!(said.contains("EMCON is already off."), "{said}");
+    let lines = rig
+        .tape_count_until(|event| event.kind.as_str() == "emcon", 3)
+        .await;
+    assert_eq!(lines, 3, "one more line, and not two");
+    assert_eq!(emcon_lines(&rig).last(), Some(&(ecm_tank, false)));
+    assert_eq!(rig.held_frame(0).ecm, Some(false));
+    let said = rig.say(0, "status");
+    assert!(said.contains("  emcon off: the pod is silent"), "{said}");
+    let said = rig.say(0, "emcon");
+    assert!(said.contains("EMCON off: the pod is silent."), "{said}");
+    let panel = Rig::panel(&rig.events(0, "status")).expect("STATUS re-pushes the frame");
+    assert_eq!(panel.get("ecm"), Some(&serde_json::json!("off")));
+    // And with the hint cleared, the mirror answers.
+    assert_eq!(hint(&rig, 0), None);
+    let said = rig.say(0, "emcon off");
+    assert!(said.contains("EMCON is already off."), "{said}");
+
+    // The stock tank's pod never moved: no line names it.
+    assert!(
+        emcon_lines(&rig).iter().all(|(unit, _)| *unit == ecm_tank),
+        "{:?}",
+        emcon_lines(&rig)
+    );
+    assert_ne!(ecm_tank, stock_tank);
+    // **And its local refusal forwarded nothing** — which the missing hint
+    // above cannot say on its own, since the hint is stamped only after a
+    // forward succeeds. An `emcon` intent that had reached the arena would have
+    // come back, pulses ago now, as `Refusal::NoJammer` on the stock pilot's
+    // frame and been told as the arena's own refusal line; the tape has been
+    // pumped well past that, and the stock pilot was told neither it nor any
+    // EMCON sentence but the local refusals.
+    let stock_told = rig.tw.seen_by(&rig.log, rig.pilot(1)).join("\n");
+    assert!(
+        !stock_told.contains("EMCON refused"),
+        "the stock tank's EMCON off reached the arena: {stock_told}"
+    );
+    assert!(
+        !stock_told.contains("EMCON going") && !stock_told.contains("EMCON coming"),
+        "{stock_told}"
+    );
+
+    // The tape, folded: the pilot's own switches on the pod's pilot's report
+    // and nothing on the other's; the staff fold's field for each.
+    let roster = Roster::from_record(&rig.record());
+    let own = fold(&rig.tape, &roster, Reader::Pilot { unit: ecm_tank }, RULES);
+    let switched: Vec<&String> = own
+        .lines
+        .iter()
+        .filter(|line| line.contains("switched EMCON"))
+        .collect();
+    assert_eq!(switched.len(), 3, "{:?}", own.lines);
+    assert!(
+        switched
+            .first()
+            .is_some_and(|line| line.ends_with("  you switched EMCON off.")),
+        "{switched:?}"
+    );
+    assert!(
+        switched
+            .get(1)
+            .is_some_and(|line| line.ends_with("  you switched EMCON on.")),
+        "{switched:?}"
+    );
+    let other = fold(
+        &rig.tape,
+        &roster,
+        Reader::Pilot { unit: stock_tank },
+        RULES,
+    );
+    assert!(
+        other
+            .lines
+            .iter()
+            .chain(other.tail.iter())
+            .all(|line| !line.contains("EMCON")),
+        "another pilot's switch reached this pilot's report: {:?}",
+        other.lines
+    );
+    let staff = fold(&rig.tape, &roster, Reader::Staff, RULES);
+    let fields: Vec<&String> = staff
+        .lines
+        .iter()
+        .filter(|line| line.contains("emcon unit="))
+        .collect();
+    assert_eq!(fields.len(), 3, "{:?}", staff.lines);
+    assert!(
+        fields
+            .first()
+            .is_some_and(|line| line.ends_with(&format!("(#{}) off", ecm_tank.0))),
+        "{fields:?}"
+    );
+    assert!(
+        fields
+            .get(1)
+            .is_some_and(|line| line.ends_with(&format!("(#{}) on", ecm_tank.0))),
+        "{fields:?}"
+    );
+}
+
+/// **The pod-switch hint's frame-borne ends** (16b cut O.2), in D.1's shape
+/// for the `STARTUP` hint.
+///
+/// The hint is stamped with the switch the pilot last forwarded, and a frame
+/// ends it only two ways: its `ecm` **agrees** with that switch (the arena
+/// confirmed it), or it carries the arena's `Refused` of an **`emcon`** order.
+/// A frame whose `ecm` still disagrees may be a batch staged before the intent
+/// arrived, and a refusal of another order is not this one's, so both leave it
+/// standing — the first is what makes `EMCON off` then `EMCON on` inside one
+/// pulse two true replies. Composed frames through [`Rig::push_frame`], the real
+/// egress seam; the stamp through the registry, so no intent is in flight.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o2_the_emcon_hint_ends_only_on_agreement_or_its_own_refusal() {
+    use tacsim::arena::intents::{IntentKind, Refusal};
+    use tacsim::arena::perception::{FrameNotice, RefusalDetail};
+
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let hint = |rig: &Rig| -> Option<bool> {
+        let now = rig.tw.world().now();
+        rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.emcon_hint(pilot, now))
+    };
+    let stamp = |rig: &mut Rig, on: bool| {
+        if let Some(registry) = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+        {
+            registry.hint_emcon(pilot, on, i64::MAX);
+        }
+    };
+    assert_eq!(hint(&rig), None, "a frame on its own stamped an EMCON hint");
+
+    // The scene: a pod radiating, as the mirror holds it.
+    let mut frame = rig.held_frame(0);
+    frame.ecm = Some(true);
+    frame.notices.clear();
+    rig.push_frame(0, frame.clone());
+    stamp(&mut rig, false);
+    assert_eq!(hint(&rig), Some(false));
+    // Read before the mirror: the switch just sent, not the stale `on`.
+    let said = rig.say(0, "emcon off");
+    assert!(said.contains("EMCON is already off."), "{said}");
+
+    // (1) A frame whose `ecm` still disagrees, and no refusal, LEAVES it.
+    rig.push_frame(0, frame.clone());
+    assert_eq!(
+        hint(&rig),
+        Some(false),
+        "a frame staged before the intent arrived cleared the hint"
+    );
+
+    // (2) A refusal of ANOTHER order leaves it too.
+    let refusal = |order: &str, refusal: Refusal| FrameNotice::Refused {
+        order: smol_str::SmolStr::new(order),
+        refusal,
+        weapon: None,
+        detail: RefusalDetail::None,
+    };
+    let mut other = frame.clone();
+    other.notices = vec![refusal("fire", Refusal::PowerNotOnline)];
+    rig.push_frame(0, other);
+    assert_eq!(
+        hint(&rig),
+        Some(false),
+        "a refusal of another order cleared the hint"
+    );
+
+    // (3) **Refused**: the arena's refusal of an `emcon` order clears it, so the
+    // pilot who reads `EMCON refused.` is not then told `already off`.
+    let mut refused = frame.clone();
+    refused.notices = vec![refusal(
+        IntentKind::Emcon { on: false }.as_str(),
+        Refusal::NoJammer,
+    )];
+    rig.push_frame(0, refused);
+    assert_eq!(
+        hint(&rig),
+        None,
+        "the refusing frame did not clear the hint"
+    );
+    let said = rig.say(0, "emcon");
+    assert!(said.contains("EMCON on: the pod radiates."), "{said}");
+
+    // (4) **Confirmed**: a frame whose `ecm` agrees clears it — either way.
+    stamp(&mut rig, false);
+    let mut silent = frame.clone();
+    silent.ecm = Some(false);
+    rig.push_frame(0, silent.clone());
+    assert_eq!(
+        hint(&rig),
+        None,
+        "the agreeing frame did not clear the hint"
+    );
+    stamp(&mut rig, true);
+    rig.push_frame(0, silent);
+    assert_eq!(
+        hint(&rig),
+        Some(true),
+        "a disagreeing `off` frame cleared an `on` hint"
+    );
+    rig.push_frame(0, frame);
+    assert_eq!(
+        hint(&rig),
+        None,
+        "the agreeing `on` frame did not clear the hint"
+    );
+}
+
+/// **The pod-switch hint's other door: the match's own rows go** (16b cut O.2),
+/// on the precedent of `d1_untracking_a_match_drops_a_hint_no_frame_ever_confirmed`
+/// — a pilot with a hint and **no remembered frame at all**, so a sweep keyed on
+/// the frames the registry holds would find nothing to clear.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o2_untracking_a_match_drops_an_emcon_hint_no_frame_ever_confirmed() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    assert!(
+        rig.frame(0).is_none(),
+        "a frame arrived before the test could stamp a hint without one"
+    );
+    let match_id = rig
+        .centre()
+        .match_id
+        .expect("a running centre has a match id");
+    let now = rig.tw.world().now();
+    let Some(registry) = rig
+        .tw
+        .world_mut()
+        .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+    else {
+        panic!("the arena registry is composed");
+    };
+    registry.hint_emcon(pilot, false, i64::MAX);
+    assert_eq!(registry.emcon_hint(pilot, now), Some(false));
+    assert!(
+        registry.pilots_of(match_id).contains(&pilot),
+        "the pilot is not on the match's roster, so the sweep below would pass \
+         without doing anything"
+    );
+    let _ = registry.untrack(match_id);
+    assert_eq!(
+        registry.emcon_hint(pilot, now),
+        None,
+        "untracking the match left behind an EMCON hint no frame had confirmed"
+    );
+}
+
+/// **Both blessed fixtures carry `"ecm": null`** (16b cut O.2): the scene's
+/// platform carries no pod, so the key is on the frame and empty — which is
+/// what keeps every golden's scope row without a suffix.
+#[test]
+fn o2_both_blessed_fixtures_carry_ecm_null() {
+    for (name, text) in [
+        (
+            "cockpit_frame.json",
+            include_str!("../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"),
+        ),
+        (
+            "view_frame.json",
+            include_str!("../../../web/src/lib/fixtures/cockpit/view_frame.json"),
+        ),
+    ] {
+        let frame: serde_json::Value = serde_json::from_str(text).expect("a fixture reads");
+        assert_eq!(
+            frame.get("ecm"),
+            Some(&serde_json::Value::Null),
+            "{name} does not carry `ecm` as null"
+        );
+    }
+    let (cockpit, _, view) = fixture::payloads();
+    assert_eq!(cockpit.get("ecm"), Some(&serde_json::Value::Null));
+    assert_eq!(view.get("ecm"), Some(&serde_json::Value::Null));
+}
+
+/// **The hand-written ring rows are the server's own wire shape** (16b cut
+/// O.2): the two `emcon` notices `status_frame` publishes on the scene's frame
+/// — the kind, the pod's radius on `detail.radius_m` and every other key
+/// `null` or `false` — equal the `notice` objects of their rows in
+/// `notice_lines.json` byte for byte, and the frame's `ecm` is the switch.
+#[test]
+fn o2_the_emcon_notice_rows_are_what_status_frame_publishes() {
+    use tacsim::arena::perception::FrameNotice;
+
+    let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+        "../../../web/src/lib/fixtures/cockpit/notice_lines.json"
+    ))
+    .expect("notice_lines.json is an array");
+    for (on, kind) in [(true, "emcon_on"), (false, "emcon_off")] {
+        let mut frame = fixture::frame();
+        frame.ecm = Some(on);
+        frame.notices = vec![FrameNotice::Emcon { on, radius_m: 60 }];
+        let payload = cockpit::status_frame(fixture::MATCH, &frame);
+        assert_eq!(
+            payload.get("ecm"),
+            Some(&serde_json::json!(if on { "on" } else { "off" }))
+        );
+        let published = payload
+            .pointer("/notices/0")
+            .cloned()
+            .unwrap_or_else(|| panic!("{kind}: no notice on the frame: {payload}"));
+        let committed = rows
+            .iter()
+            .find_map(|row| {
+                row.get("notice")
+                    .filter(|notice| notice.get("kind") == Some(&serde_json::json!(kind)))
+            })
+            .cloned()
+            .unwrap_or_else(|| panic!("notice_lines.json has no {kind} row"));
+        assert_eq!(published, committed, "{kind}");
+    }
 }

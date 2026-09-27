@@ -2610,9 +2610,20 @@ pub fn render_cockpit_status_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows
     // fight. `tempo` stays on the frame and stays decoded, because `T-59` is
     // closed for the printed word alone and a client may yet want the cadence;
     // no shipped client reads it today, here or in `web/`.
+    //
+    // **16b cut O.2** (16c N12): the pilot's own pod's switch rides this row,
+    // `scope hostile  EMCON on` / `  EMCON off`, and nothing is added for a
+    // platform with no pod (`ecm` null or absent) — not an eighth row, because
+    // cut AB.1 sized the pane at seven (`screen.rs`). The longest,
+    // `scope unidentified  EMCON off`, is 29 of the pane's 32 inner columns.
+    let pod = match data.get("ecm").and_then(Value::as_str) {
+        Some("on") => "  EMCON on",
+        Some("off") => "  EMCON off",
+        _ => "",
+    };
     rows.push(PaneRow::plain(Line::from(Span::styled(
         format!(
-            "scope {}",
+            "scope {}{pod}",
             clean(data.get("scope").and_then(Value::as_str).unwrap_or("?"))
         ),
         system,
@@ -2896,6 +2907,9 @@ const NOTICE_WORDS: &[(&str, &str)] = &[
     ("power_online", "power online"),
     ("destroyed", "your tank is destroyed"),
     ("disabled", "your tank is out of the fight"),
+    // 16b cut O.2 (16c N12): the pilot's own pod's switch, short.
+    ("emcon_on", "EMCON on"),
+    ("emcon_off", "EMCON off: pod silent"),
 ];
 
 /// Why an order was refused, in the pilot's words (`Refusal::as_str`; the web's
@@ -2912,6 +2926,8 @@ const REFUSAL_WORDS: &[(&str, &str)] = &[
     ("overheated", "overheated"),
     ("no_weapon", "no such weapon"),
     ("epoch", "the seat changed hands"),
+    // 16b cut O.2: `EMCON` on a tank with no pod.
+    ("no_jammer", "no jamming pod"),
 ];
 
 /// Why motion stopped, in the pilot's words (`BlockedCause::as_str`; the web's
@@ -5663,6 +5679,66 @@ mod tests {
                 assert!(!row.contains(word), "the fixture printed {word}: {rows:?}");
             }
         }
+    }
+
+    /// **16b cut O.2** (16c N12): the pod's switch rides the scope row —
+    /// `scope hostile  EMCON on` / `  EMCON off` — and a platform with no pod
+    /// (`ecm` null, or a frame from before the key existed) prints the row
+    /// unchanged. No eighth row, and every row inside the pane's 32 columns at
+    /// the longest scope word.
+    #[test]
+    fn o2_the_scope_row_carries_the_pods_switch() {
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane: None,
+            picture: None,
+        };
+        let status = |frame: &Value| -> Vec<String> {
+            render_cockpit_status_rows(frame, &ctx)
+                .rows
+                .iter()
+                .map(PaneRow::text)
+                .collect()
+        };
+        let mut frame = cockpit(serde_json::json!([5, 5]), serde_json::json!([]));
+        let plain = status(&frame);
+        assert!(plain.contains(&"scope hostile".to_string()), "{plain:?}");
+        for (ecm, row) in [
+            (serde_json::json!("on"), "scope hostile  EMCON on"),
+            (serde_json::json!("off"), "scope hostile  EMCON off"),
+            (Value::Null, "scope hostile"),
+        ] {
+            frame["ecm"] = ecm.clone();
+            let rows = status(&frame);
+            assert_eq!(rows.len(), plain.len(), "{ecm}: no row added");
+            assert!(rows.contains(&row.to_string()), "{ecm}: {rows:?}");
+        }
+        // An absent key is null.
+        if let Some(object) = frame.as_object_mut() {
+            object.remove("ecm");
+        }
+        assert_eq!(status(&frame), plain);
+        // The longest scope word with the longer suffix still fits.
+        frame["ecm"] = serde_json::json!("off");
+        frame["scope"] = serde_json::json!("unidentified");
+        let rows = status(&frame);
+        assert!(
+            rows.contains(&"scope unidentified  EMCON off".to_string()),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().all(|row| row.chars().count() <= 32),
+            "a row would wrap the pane's 32 inner columns: {rows:?}"
+        );
+        // A word the client does not know adds nothing.
+        frame["ecm"] = serde_json::json!("sideways");
+        assert!(status(&frame).contains(&"scope unidentified".to_string()));
     }
 
     /// 16b cut Q.4: the degree mark degrades with every other non-ASCII glyph

@@ -40,6 +40,9 @@
 //! - **[`IntentKind::Place`]** (16b cut I.3) is a staff act that rides the same
 //!   path: discrete, resolved in phase 4, and exempt from the three gates that
 //!   exist for a pilot's orders (the wreck, `Linkdead` and the seat's rate).
+//! - **[`IntentKind::Emcon`]** (16b cut O.2) is a pilot's discrete action like
+//!   `STARTUP`, on [`Channel::Sensors`], resolved in phase 4 by
+//!   [`resolve_emcon`]: the jamming pod's switch.
 //!
 //! A refusal is always one of the named [`Refusal`] words, never a silent drop:
 //! cut K's cockpit turns each into a line a pilot can act on (a place's is a
@@ -180,6 +183,22 @@ pub enum IntentKind {
         /// The row.
         y: u16,
     },
+    /// **Switch the unit's jamming pod** (16b cut O.2, 16c N12: `EMCON on|off`).
+    /// Discrete, [`Channel::Sensors`] (the pod is part of what the platform
+    /// senses with, and the channel `LOCK` travels on), word `emcon`; resolved
+    /// in pulse phase 4 by [`resolve_emcon`].
+    ///
+    /// It meets every gate a pilot's discrete order meets in [`apply_intent`]
+    /// — the unit, the epoch, the channel, the wreck, `Linkdead` and the seat's
+    /// rate — and nothing else: a pod switches whatever the hull's power, since
+    /// the switch is a position and power is what makes the position radiate.
+    /// A machine never gives one: the reflex controller leaves the switch where
+    /// it found it — on at check-out, or off on a released seat whose pilot had
+    /// switched it off (a recorded residual of cut O).
+    Emcon {
+        /// `true` to radiate, `false` to fall silent.
+        on: bool,
+    },
 }
 
 impl IntentKind {
@@ -215,6 +234,7 @@ impl IntentKind {
                 | IntentKind::Lock { .. }
                 | IntentKind::Fire { .. }
                 | IntentKind::Place { .. }
+                | IntentKind::Emcon { .. }
         )
     }
 
@@ -230,7 +250,7 @@ impl IntentKind {
             | IntentKind::Order(_)
             | IntentKind::ReleaseOrder { .. }
             | IntentKind::Place { .. } => Channel::Helm,
-            IntentKind::Lock { .. } => Channel::Sensors,
+            IntentKind::Lock { .. } | IntentKind::Emcon { .. } => Channel::Sensors,
             IntentKind::Fire { .. } => Channel::Fire,
         }
     }
@@ -247,6 +267,7 @@ impl IntentKind {
             IntentKind::Order(_) => "order",
             IntentKind::ReleaseOrder { .. } => "release",
             IntentKind::Place { .. } => "place",
+            IntentKind::Emcon { .. } => "emcon",
         }
     }
 }
@@ -359,6 +380,11 @@ pub enum Refusal {
     /// squad's order steers the reflex machine, and a seated tank has none.
     #[error("that unit is not on the reflex controller")]
     NotReflex,
+    /// **`EMCON` for a unit that carries no jamming pod** (16b cut O.2, 16c
+    /// N12). The cockpit refuses it locally off the held frame; this is the
+    /// word the arena's own refusal path uses when the order gets that far.
+    #[error("that unit carries no jamming pod")]
+    NoJammer,
 }
 
 impl Refusal {
@@ -381,6 +407,7 @@ impl Refusal {
             Refusal::Overheated => "overheated",
             Refusal::NoWeapon => "no_weapon",
             Refusal::NotReflex => "not_reflex",
+            Refusal::NoJammer => "no_jammer",
         }
     }
 }
@@ -670,7 +697,8 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
             | IntentKind::Fire { .. }
             | IntentKind::Order(_)
             | IntentKind::ReleaseOrder { .. }
-            | IntentKind::Place { .. } => {}
+            | IntentKind::Place { .. }
+            | IntentKind::Emcon { .. } => {}
         }
         return IntentOutcome::AppliedContinuous;
     }
@@ -840,6 +868,77 @@ pub fn resolve_startup(arena: &mut Arena, unit: ObjId, at_ms: i64) -> Result<(),
     let _ = arena
         .ledger
         .append(at_ms, EventKind::Startup { unit }, Vec::new(), hash);
+    Ok(())
+}
+
+/// **Resolve `EMCON on|off`** (16b cut O.2, 16c N12): switch the unit's jamming
+/// pod, in pulse phase 4 beside [`resolve_startup`] and in its shape.
+///
+/// A **no-op** — the switch already where the order puts it — answers `Ok(())`
+/// and journals and stages nothing. The cockpit refuses the no-op locally
+/// (`EMCON is already on.`), reading its own hint before the mirror; one still
+/// reaches here when two pilots of one tank race, or when a pilot's hint and
+/// the arena disagree, and the arena path journals **real flips only**, so the
+/// tape never carries a switch that switched nothing.
+///
+/// A **flip**, in this order:
+///
+/// 1. the hash is asked **before** anything is written — `Arena::event_hash`'s
+///    rule, *every resolver asks before it writes* — so the line shares phase
+///    4's one hash with every other action the phase resolves;
+/// 2. `ecm_on` is written ([`crate::arena::state::UnitState::ecm_on`]'s one
+///    writer);
+/// 3. [`Arena::jam_fold`] is cleared, because it memoises a function of the
+///    switch: a memo that outlived a flip would give the rest of the substep the
+///    old answer;
+/// 4. one `emcon` line at `at_ms`;
+/// 5. one [`crate::arena::perception::FrameNotice::Emcon`] to the unit's own
+///    pilots, carrying the pod's radius in whole metres.
+///
+/// **No floor on flips** (16b cut O plan item 38). A pilot flipping at the
+/// seat's rate — `max_pending_per_unit` a second — writes that many `emcon`
+/// lines, but it costs each observer inside the bubble **at most one
+/// `receiver` transition and one notice per `sensors.pass_ms`**: an observer's
+/// receiver is written only at that observer's own sensor pass, and a
+/// transition is journalled and told only when its `is_some()` changes
+/// ([`Arena::sensor_pass`]'s rule), so every flip between two of its passes
+/// collapses into whatever the switch reads at the next. That is the accepted
+/// bound and the ledger note records it.
+///
+/// # Errors
+///
+/// [`Refusal::Unknown`] for a unit this arena does not hold, [`Refusal::Wreck`]
+/// for a wreck, [`Refusal::NoJammer`] for a unit that carries no pod. A ledger
+/// that has reached its byte bound does not fail the flip, for the reason it
+/// does not fail [`resolve_startup`]'s.
+pub fn resolve_emcon(arena: &mut Arena, unit: ObjId, on: bool, at_ms: i64) -> Result<(), Refusal> {
+    let Some(state) = arena.unit(unit) else {
+        return Err(Refusal::Unknown);
+    };
+    if state.limits.wreck {
+        return Err(Refusal::Wreck);
+    }
+    let Some(jammer) = state.jammer else {
+        return Err(Refusal::NoJammer);
+    };
+    if state.ecm_on == on {
+        return Ok(());
+    }
+    let hash = arena.event_hash();
+    if let Some(state) = arena.unit_mut(unit) {
+        state.ecm_on = on;
+    }
+    arena.jam_fold.clear();
+    let _ = arena
+        .ledger
+        .append(at_ms, EventKind::Emcon { unit, on }, Vec::new(), hash);
+    arena.stage_notice(
+        unit,
+        crate::arena::perception::FrameNotice::Emcon {
+            on,
+            radius_m: jammer.radius_cm / 100,
+        },
+    );
     Ok(())
 }
 
@@ -1616,12 +1715,279 @@ mod tests {
             Refusal::MotionDisabled,
             Refusal::Linkdead,
             Refusal::Unknown,
+            // 16b cut O.2.
+            Refusal::NoJammer,
         ]
         .map(|refusal| refusal.as_str());
         let unique: std::collections::BTreeSet<&str> = words.iter().copied().collect();
         assert_eq!(unique.len(), words.len());
         assert!(words.iter().all(|word| !word.is_empty()));
         assert_eq!(ControlState::Linkdead.as_str(), "linkdead");
+        assert_eq!(Refusal::NoJammer.as_str(), "no_jammer");
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut O.2 — `EMCON`, the pod's switch (16c N12)
+    // -----------------------------------------------------------------------
+
+    /// A pod on RED: 100 m of bubble, which reaches BLUE 71 m off on the
+    /// diagonal, and the radius a flip's notice carries as 100.
+    fn o2_pod() -> crate::arena::perception::Jammer {
+        crate::arena::perception::Jammer {
+            radius_cm: 10_000,
+            attenuation_cost: 25,
+            signature_permille: 150,
+        }
+    }
+
+    /// Two tanks, RED carrying [`o2_pod`] with the match's bubble radius set as
+    /// `Arena::new` would have resolved it.
+    fn o2_arena() -> Arena {
+        let mut arena = two_tanks(1);
+        if let Some(state) = arena.unit_mut(RED) {
+            state.jammer = Some(o2_pod());
+        }
+        arena.jam_radius_cm = o2_pod().radius_cm;
+        arena
+    }
+
+    /// [`o2_arena`] with RED's power up, so its pod radiates, and the index
+    /// built as phase 3(b) leaves it.
+    fn o2_radiating() -> Arena {
+        let mut arena = o2_arena();
+        online(&mut arena, RED);
+        let units = arena.units.clone();
+        arena.index.rebuild(&arena.definition.terrain, &units);
+        arena.jam_fold.clear();
+        arena
+    }
+
+    /// Every line the ledger holds, flushed, as `(t_ms, kind word, json)`.
+    fn o2_lines(arena: &mut Arena) -> Vec<(i64, &'static str, String)> {
+        y1_lines(arena)
+            .into_iter()
+            .map(|event| {
+                (
+                    event.t_ms,
+                    event.kind.as_str(),
+                    serde_json::to_string(&event.kind).unwrap_or_default(),
+                )
+            })
+            .collect()
+    }
+
+    /// **The kind**: `EMCON` is the ninth arm — discrete, on the sensors
+    /// channel, word `emcon` — so it queues for phase 4 and is counted by the
+    /// seat's rate like any pilot's action.
+    #[test]
+    fn o2_emcon_is_a_discrete_order_on_the_sensors_channel() {
+        let kind = IntentKind::Emcon { on: false };
+        assert!(kind.is_discrete());
+        assert!(!kind.is_continuous());
+        assert_eq!(kind.channel_required(), Channel::Sensors);
+        assert_eq!(kind.as_str(), "emcon");
+        assert_eq!(IntentKind::Emcon { on: true }.as_str(), "emcon");
+        // Refused on the helm, as a gunner's grant is not a driver's.
+        let mut arena = o2_arena();
+        assert_eq!(
+            apply_intent(
+                &mut arena,
+                &Intent {
+                    unit: RED,
+                    channel: Channel::Helm,
+                    epoch: 1,
+                    kind: IntentKind::Emcon { on: false },
+                    seq: 1,
+                },
+                IntentSource::Seat
+            ),
+            IntentOutcome::Refused(Refusal::Channel)
+        );
+        // Queued on the sensors channel whatever the power — the switch is a
+        // position — and counted against the seat's rate.
+        assert_eq!(arena.unit(RED).map(|state| state.power), Some(Power::Off));
+        let bound = arena.arena_cfg.intents.max_pending_per_unit;
+        for seq in 0..u64::from(bound) {
+            assert_eq!(
+                apply_intent(
+                    &mut arena,
+                    &intent(RED, 1, seq, IntentKind::Emcon { on: seq % 2 == 1 }),
+                    IntentSource::Seat
+                ),
+                IntentOutcome::Queued,
+                "order {seq}"
+            );
+        }
+        assert_eq!(
+            apply_intent(
+                &mut arena,
+                &intent(RED, 1, 99, IntentKind::Emcon { on: false }),
+                IntentSource::Seat
+            ),
+            IntentOutcome::Refused(Refusal::QueueFull),
+            "the seat's rate counts EMCON like any action"
+        );
+    }
+
+    /// **The pilot's gates**: a wreck and a linkdead seat refuse `EMCON` at
+    /// apply, as they refuse every discrete order a pilot gives.
+    #[test]
+    fn o2_emcon_is_refused_on_a_wreck_and_on_a_linkdead_seat() {
+        let mut wreck = o2_arena();
+        if let Some(state) = wreck.unit_mut(RED) {
+            state.limits.wreck = true;
+        }
+        assert_eq!(
+            apply_intent(
+                &mut wreck,
+                &intent(RED, 1, 1, IntentKind::Emcon { on: false }),
+                IntentSource::Seat
+            ),
+            IntentOutcome::Refused(Refusal::Wreck)
+        );
+        let mut dead = o2_arena();
+        apply_control(
+            &mut dead,
+            &Control {
+                unit: RED,
+                channel: Channel::Sensors,
+                epoch: 1,
+                state: ControlState::Linkdead,
+                pilot: None,
+            },
+        );
+        assert_eq!(
+            apply_intent(
+                &mut dead,
+                &intent(RED, 1, 1, IntentKind::Emcon { on: false }),
+                IntentSource::Seat
+            ),
+            IntentOutcome::Refused(Refusal::Linkdead)
+        );
+        assert!(dead.pending.is_empty() && wreck.pending.is_empty());
+    }
+
+    /// **`resolve_emcon`'s three refusals**, each writing, journalling and
+    /// staging nothing: no such unit, a wreck, and a unit with no pod.
+    #[test]
+    fn o2_resolve_emcon_refuses_an_unknown_unit_a_wreck_and_a_unit_with_no_pod() {
+        let mut arena = o2_arena();
+        let before = arena.ledger.seq();
+        assert_eq!(
+            resolve_emcon(&mut arena, ObjId(77), false, 0),
+            Err(Refusal::Unknown)
+        );
+        assert_eq!(
+            resolve_emcon(&mut arena, BLUE, false, 0),
+            Err(Refusal::NoJammer),
+            "BLUE carries no pod"
+        );
+        assert_eq!(arena.unit(BLUE).map(|state| state.ecm_on), Some(true));
+        if let Some(state) = arena.unit_mut(RED) {
+            state.limits.wreck = true;
+        }
+        assert_eq!(
+            resolve_emcon(&mut arena, RED, false, 0),
+            Err(Refusal::Wreck)
+        );
+        assert_eq!(arena.unit(RED).map(|state| state.ecm_on), Some(true));
+        assert_eq!(arena.ledger.seq(), before, "a refusal journals nothing");
+        assert!(arena.pending_notices.is_empty(), "and stages nothing");
+    }
+
+    /// **A no-op journals and stages nothing**: the switch already where the
+    /// order puts it answers `Ok(())` and leaves every trace as it was — the
+    /// memo included.
+    #[test]
+    fn o2_a_no_op_emcon_journals_nothing_and_stages_nothing() {
+        let mut arena = o2_radiating();
+        let mut counters = crate::arena::perception::PerceptionCounters::default();
+        let folded = arena.jam_fold_of(BLUE, &mut counters);
+        assert!(folded.is_some(), "BLUE stands in RED's bubble");
+        let before = arena.ledger.seq();
+        assert_eq!(resolve_emcon(&mut arena, RED, true, 0), Ok(()));
+        assert_eq!(arena.unit(RED).map(|state| state.ecm_on), Some(true));
+        assert_eq!(arena.ledger.seq(), before, "a no-op journals nothing");
+        assert!(arena.pending_notices.is_empty(), "a no-op stages nothing");
+        assert_eq!(
+            arena.jam_fold.get(&BLUE),
+            Some(&folded),
+            "a no-op leaves the memo alone"
+        );
+    }
+
+    /// **The flip**: it writes the switch, clears the memo, journals one
+    /// `emcon` line at the millisecond it is handed under the phase's hash
+    /// (asked before the write), and stages one notice with the pod's radius in
+    /// whole metres — each way.
+    #[test]
+    fn o2_a_flip_writes_clears_the_memo_journals_one_line_and_stages_one_notice() {
+        use crate::arena::perception::FrameNotice;
+
+        let mut arena = o2_radiating();
+        arena.now_ms = 12_000;
+        let mut counters = crate::arena::perception::PerceptionCounters::default();
+        assert!(arena.jam_fold_of(BLUE, &mut counters).is_some());
+        assert!(!arena.jam_fold.is_empty());
+        // The hash the line must carry: the state before the write.
+        let expected = crate::arena::hash::state_hash(&arena);
+        assert_eq!(resolve_emcon(&mut arena, RED, false, 10_000), Ok(()));
+        assert_eq!(arena.unit(RED).map(|state| state.ecm_on), Some(false));
+        assert!(arena.jam_fold.is_empty(), "the flip cleared the memo");
+        assert_eq!(
+            arena.jam_fold_of(BLUE, &mut counters),
+            None,
+            "and the next fold reads the silent pod"
+        );
+        assert_eq!(
+            arena.pending_notices.get(&RED),
+            Some(&vec![FrameNotice::Emcon {
+                on: false,
+                radius_m: 100
+            }])
+        );
+        assert!(
+            !arena.pending_notices.contains_key(&BLUE),
+            "nobody else is told"
+        );
+        let lines = y1_lines(&mut arena);
+        let emcon: Vec<&crate::arena::ledger::LedgerEvent> = lines
+            .iter()
+            .filter(|event| event.kind.as_str() == "emcon")
+            .collect();
+        assert_eq!(emcon.len(), 1, "{lines:?}");
+        assert_eq!(emcon.first().map(|event| event.t_ms), Some(10_000));
+        assert_eq!(emcon.first().map(|event| event.hash), Some(expected));
+        assert_eq!(
+            emcon.first().map(|event| event.kind.clone()),
+            Some(EventKind::Emcon {
+                unit: RED,
+                on: false
+            })
+        );
+        // And back on: one more line, one more notice.
+        arena.pending_notices.clear();
+        assert_eq!(resolve_emcon(&mut arena, RED, true, 11_000), Ok(()));
+        assert_eq!(arena.unit(RED).map(|state| state.ecm_on), Some(true));
+        assert_eq!(
+            arena.pending_notices.get(&RED),
+            Some(&vec![FrameNotice::Emcon {
+                on: true,
+                radius_m: 100
+            }])
+        );
+        let words: Vec<(i64, &'static str, String)> = o2_lines(&mut arena);
+        assert_eq!(
+            words
+                .iter()
+                .filter(|(_, word, _)| *word == "emcon")
+                .map(|(t_ms, _, json)| (*t_ms, json.clone()))
+                .collect::<Vec<_>>(),
+            vec![(
+                11_000,
+                format!("{{\"kind\":\"emcon\",\"unit\":{},\"on\":true}}", RED.0)
+            )]
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -475,3 +475,63 @@ fn o1_a_hold_ends_the_pilots_report_and_tags_the_header() {
         "{header:?}"
     );
 }
+
+/// **16b cut O.2** (16c N12): the pod's switch folds to the switching pilot's
+/// own timeline and to nobody else's, and the staff fold spells it as a field
+/// with the position as a bare word.
+#[test]
+fn o2_the_pods_switch_is_the_pilots_own_line_and_a_staff_field() {
+    let red = ObjId(101);
+    let blue = ObjId(201);
+    let mut roster = Roster::new();
+    roster.insert(red, Some(Team::Red), SmolStr::new("RA"), None);
+    roster.insert(blue, Some(Team::Blue), SmolStr::new("BA"), None);
+    let event = |seq: u64, t_ms: i64, unit: ObjId, on: bool| LedgerEvent {
+        seq,
+        t_ms,
+        kind: EventKind::Emcon { unit, on },
+        draws: Vec::new(),
+        hash: 0,
+    };
+    let tape = vec![
+        event(1, 10_000, red, false),
+        event(2, 12_000, blue, false),
+        event(3, 30_000, red, true),
+    ];
+    let own = fold(&tape, &roster, Reader::Pilot { unit: red }, RULES);
+    assert_eq!(
+        own.lines,
+        vec![
+            "  0:10  you switched EMCON off.".to_owned(),
+            "  0:30  you switched EMCON on.".to_owned(),
+        ],
+        "the pilot's own switches, and not the other side's"
+    );
+    let theirs = fold(&tape, &roster, Reader::Pilot { unit: blue }, RULES);
+    assert_eq!(
+        theirs.lines,
+        vec!["  0:12  you switched EMCON off.".to_owned()]
+    );
+    let staff = fold(&tape, &roster, Reader::Staff, RULES);
+    let fields: Vec<String> = staff
+        .lines
+        .iter()
+        .map(|line| {
+            line.split_once("  emcon ")
+                .map_or(String::new(), |(_, rest)| rest.to_owned())
+        })
+        .collect();
+    assert_eq!(
+        fields,
+        vec![
+            "unit=RA(#101) off".to_owned(),
+            "unit=BA(#201) off".to_owned(),
+            "unit=RA(#101) on".to_owned(),
+        ],
+        "{:?}",
+        staff.lines
+    );
+    for line in own.lines.iter().chain(theirs.lines.iter()) {
+        assert_eq!(leak(line), None, "{line}");
+    }
+}
