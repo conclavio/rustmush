@@ -990,6 +990,14 @@ impl Arena {
         // **16b cut Q.7** put `Spent` beside it, in that order: a side eliminated
         // on the same pulse is an elimination with a winner, and a draw over the
         // top of it would lose the result.
+        //
+        // **16b cut O.1 adds no Hold backstop here, on purpose.** A Hold win is
+        // settled by its own due event inside a substep (`DueKind::HoldSettles`),
+        // and nothing outside a substep moves a pose or wrecks a unit on a
+        // schedule the clock could miss: a staff `@arena/place` moves a pose that
+        // the next substep's end reads, and a direct `destroy_unit` from a rig
+        // is read by the next substep's presence settle and by the event's own
+        // fresh read at its pop.
         let mut settled = self.settle_elimination();
         if settled.is_none() {
             settled = self.settle_spent();
@@ -1248,6 +1256,9 @@ impl Arena {
         // staging scan below settles it at exactly its place in `(t_ms, seq)`
         // order — see the `LossSettles` arm.
         let mut settles: Vec<(usize, ObjId, ContactId, i64)> = Vec::new();
+        // **16b cut O.1** (16c N11): the Hold win this loop confirmed, and its
+        // millisecond — ended after the loop, before the two settles.
+        let mut hold_won: Option<(Team, i64)> = None;
         // The horizon is the substep's end until the deadline pops, and the
         // deadline's own millisecond after: `pop_due` then answers only what
         // shares that millisecond (everything earlier has already been popped),
@@ -1268,6 +1279,48 @@ impl Arena {
                 // is never applied: the match is over.
                 DueKind::MatchDeadline => {
                     deadline_hit = Some(event.t_ms);
+                }
+                // **16b cut O.1** (16c N11; plan items 1, 15, 40): a sole
+                // occupant's clock has run out. The win is awarded only when this
+                // event is the clock that is still running — `held_by` names this
+                // very `(team, since_ms)`, so an occupancy that was contested or
+                // re-opened since leaves a stale event that fires into nothing —
+                // **and a presence reading taken FRESH, here, at the pop** still
+                // finds `team` alone. `held_by` was written at the previous
+                // boundary; the fresh read is over the positions this substep's
+                // motion committed and every impact this loop has applied so far,
+                // so a holder wrecked since, or an enemy driven into the square
+                // during this substep, voids the win. A confirmed win shrinks the
+                // horizon exactly as the deadline's arm does, so nothing due after
+                // its millisecond is applied or journalled.
+                //
+                // **The three true tie rules**, each pinned by a test:
+                //
+                // * `HoldSettles` is scheduled at `since_ms`, at least
+                //   `MIN_HOLD_MS` (10 s) before it pops, so it carries a lower
+                //   sequence than any impact due at the same millisecond (a round
+                //   flies at most 2.56 km at 1,000 m/s) and pops first; and
+                //   `MatchDeadline`, scheduled at check-out, is lower still;
+                // * (1) **a holder wrecked at an EARLIER millisecond of the last
+                //   substep voids the win**: the fresh read finds nobody;
+                // * (2) **a holder wrecked at the hold's OWN millisecond still
+                //   wins**: the impact pops after this arm, inside the shrunk
+                //   horizon, is applied and journalled, and then the match ends as
+                //   `hold` — the one moment the objective was met, it was met;
+                // * (3) **a hold at the deadline's own millisecond beats
+                //   `Timeout`**: the hold is settled before the timeout arm below,
+                //   which asks `self.ended.is_none()`.
+                DueKind::HoldSettles { team, since_ms } => {
+                    if self.ended.is_none()
+                        && self
+                            .hold
+                            .as_ref()
+                            .is_some_and(|hold| hold.held_by == Some((team, since_ms)))
+                        && self.hold_presence() == Some(team)
+                    {
+                        hold_won = Some((team, event.t_ms));
+                        deadline_hit = Some(event.t_ms);
+                    }
                 }
                 // **16b cut M.2** (16c `T-83`; doc 16 §3.6 "What a pilot sees"): a
                 // held loss's hysteresis has run out. **The rule**: the loss is
@@ -1469,6 +1522,21 @@ impl Arena {
         // **16b cut Q.7** settles `Spent` here too, and after it: the last round
         // in flight lands as a due event inside this very substep, so the substep
         // that resolves it is the substep in which nobody can shoot any more.
+        //
+        // **16b cut O.1** (16c N11) puts the objective in front of both. First
+        // who holds the key spot, over the poses motion committed and every
+        // impact the loop above applied (`Arena::settle_hold_presence`, which
+        // opens or drops the clock); then a win the `HoldSettles` arm confirmed,
+        // at its own millisecond. The two settles below then answer `None` on
+        // the ended match — elimination is *settled second*, the owner's default
+        // — and so does the deadline's timeout arm, which is why a hold at the
+        // deadline's own millisecond is a hold.
+        self.settle_hold_presence();
+        if let Some((winner, t_ms)) = hold_won {
+            let reason = EndReason::Hold { winner };
+            notices.push((t_ms, EventKind::MatchEnded { reason }, Vec::new()));
+            self.ended = Some(MatchEnd { reason, t_ms });
+        }
         let mut settled = self.settle_elimination();
         if settled.is_none() {
             settled = self.settle_spent();
@@ -5842,5 +5910,463 @@ mod tests {
         assert_eq!(i3_place_lines(&log).len(), 2, "and nothing else of a place");
         assert_eq!(arena.unit(A).map(|unit| unit.pose.x_cm), Some(3_500));
         assert_eq!(arena.unit(I3_B).map(|unit| unit.pose.x_cm), Some(5_500));
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut O.1 — the Hold clock, the fresh read and the three tie rules
+    // -----------------------------------------------------------------------
+
+    /// The blue holder the O.1 tie tests stand on the spot: `m2_pair`'s scout at
+    /// (4, 0), and (with `glass`) the one-section target a single round of the
+    /// cannon destroys, facing west down the line of fire — the M.2 kill test's.
+    fn o1_holder(glass: bool) -> crate::arena::state::CustodyUnit {
+        use crate::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitProfile};
+        use crate::arena::test_support::scout;
+        let mut blue = scout(ObjId(9), Team::Blue, pose(4_500, 500));
+        if glass {
+            blue.pose.heading_mdeg = 270_000;
+            blue.profile = UnitProfile {
+                bands: vec![BandProfile {
+                    band: SmolStr::new("front"),
+                    width_cm: 350,
+                    height_cm: 250,
+                    sections: vec![(SmolStr::new("hull"), 100)],
+                }],
+                sections: vec![SectionProfile {
+                    id: SmolStr::new("hull"),
+                    facets: vec![SmolStr::new("front")],
+                    consequences: vec![Consequence::DestroyUnit],
+                    struck_through: None,
+                }],
+            };
+        }
+        blue
+    }
+
+    /// **A Hold field**: `m2_pair`'s red scout `A` at (0, 0), `blue` on the key
+    /// spot at (4, 0) — one cell round it, `hold_ms` long — and a second blue
+    /// tank far off it at (7, 7), so a wrecked holder does not eliminate blue.
+    fn o1_hold_field(
+        hold_ms: u32,
+        blue: crate::arena::state::CustodyUnit,
+        max_duration_ms: u32,
+    ) -> Arena {
+        use crate::arena::state::{ArenaMode, CustodyOut, HoldRule, KeySpot, MatchMode};
+        use crate::arena::test_support::{custody, definition, scout};
+        let mut ground = definition();
+        ground.key_spots = vec![KeySpot {
+            name: SmolStr::new("The Line"),
+            x: 4,
+            y: 0,
+        }];
+        ground.modes = vec![ArenaMode::Hold(HoldRule {
+            spot: 0,
+            radius_cells: 1,
+            hold_ms,
+        })];
+        Arena::new(
+            CustodyOut {
+                definition: ground,
+                mode: MatchMode::Hold,
+                ..custody(
+                    vec![
+                        scout(A, Team::Red, pose(500, 500)),
+                        blue,
+                        tank(ObjId(20), Team::Blue, pose(7_500, 7_500)),
+                    ],
+                    Vec::new(),
+                )
+            },
+            &ArenaConfig::default(),
+            &MatchConfig {
+                max_duration_ms,
+                ..MatchConfig::default()
+            },
+            &crate::config::SensorsConfig::default(),
+        )
+        .expect("the hold field")
+    }
+
+    /// The `HoldSettles` events on the heap, as `(t_ms, team, since_ms)`.
+    fn o1_holds(arena: &Arena) -> Vec<(i64, Team, i64)> {
+        arena
+            .due
+            .iter()
+            .filter_map(|event| match event.kind {
+                DueKind::HoldSettles { team, since_ms } => Some((event.t_ms, team, since_ms)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// **16b cut O.1**: the clock opens at the first substep boundary the sole
+    /// occupant is seen at, and the win is settled at `since + hold_ms` —
+    /// its own millisecond, inside a substep — with no line after it, and
+    /// `match_ended { hold }` the last line. A skirmish of the same field
+    /// schedules no hold at all. (Nothing else is due in that substep here; the
+    /// horizon's shrink over a round due after the win is
+    /// `o1_a_round_due_after_the_holds_millisecond_in_its_substep_is_never_applied`.)
+    #[test]
+    fn o1_a_hold_is_won_at_its_own_millisecond_and_nothing_after_it_lands() {
+        // Opened at 250 (the first boundary); due at 250 + 10,100 = 10,350,
+        // inside the substep 10,250..10,500.
+        let mut arena = o1_hold_field(10_100, o1_holder(false), 60_000);
+        let mut journal = Log::default();
+        journal.absorb(&arena.step(0, &[], &[]));
+        journal.absorb(&arena.step(1_000, &[], &[]));
+        assert_eq!(
+            arena.hold.and_then(|hold| hold.held_by),
+            Some((Team::Blue, 250))
+        );
+        assert_eq!(o1_holds(&arena), vec![(10_350, Team::Blue, 250)]);
+        let mut ended = None;
+        for wall in (2_000..=11_000).step_by(1_000) {
+            let out = arena.step(wall, &[], &[]);
+            journal.absorb(&out);
+            if out.ended.is_some() {
+                ended = out.ended;
+                break;
+            }
+        }
+        assert_eq!(
+            ended,
+            Some(MatchEnd {
+                reason: EndReason::Hold { winner: Team::Blue },
+                t_ms: 10_350
+            })
+        );
+        assert_eq!(arena.now_ms, 10_500, "the substep the win fell in");
+        let log = journal.events(&mut arena);
+        assert_eq!(
+            log.last().map(|event| (event.t_ms, event.kind.clone())),
+            Some((
+                10_350,
+                EventKind::MatchEnded {
+                    reason: EndReason::Hold { winner: Team::Blue }
+                }
+            ))
+        );
+        assert!(
+            log.iter().all(|event| event.t_ms <= 10_350),
+            "a line after the hold's millisecond was journalled: {log:?}"
+        );
+        assert_eq!(
+            log.iter()
+                .filter(|event| event.kind.as_str() == "match_ended")
+                .count(),
+            1
+        );
+        // The same field at a skirmish schedules no hold.
+        let mut skirmish = m2_pair_with(60_000, o1_holder(false));
+        skirmish.step(0, &[], &[]);
+        skirmish.step(1_000, &[], &[]);
+        assert!(skirmish.hold.is_none());
+        assert!(o1_holds(&skirmish).is_empty());
+    }
+
+    /// **16b cut O.1**: a clock dropped by a contest leaves its event to fire
+    /// into nothing at its own millisecond; the side alone again re-opens with a
+    /// later `since` and a new event, and wins at that one.
+    #[test]
+    fn o1_a_contest_drops_the_clock_and_its_stale_event_fires_into_nothing() {
+        let mut arena = o1_hold_field(10_000, o1_holder(false), 60_000);
+        arena.step(0, &[], &[]);
+        arena.step(1_000, &[], &[]);
+        assert_eq!(
+            arena.hold.and_then(|hold| hold.held_by),
+            Some((Team::Blue, 250))
+        );
+        // Red drives in (placed, between two pulses): contested at 1,250.
+        if let Some(red) = arena.unit_mut(A) {
+            red.pose = pose(3_500, 500);
+        }
+        arena.step(2_000, &[], &[]);
+        assert_eq!(arena.hold.and_then(|hold| hold.held_by), None);
+        // Red leaves: blue alone again at 2,250.
+        if let Some(red) = arena.unit_mut(A) {
+            red.pose = pose(500, 500);
+        }
+        arena.step(3_000, &[], &[]);
+        assert_eq!(
+            arena.hold.and_then(|hold| hold.held_by),
+            Some((Team::Blue, 2_250))
+        );
+        assert_eq!(
+            o1_holds(&arena),
+            vec![(10_250, Team::Blue, 250), (12_250, Team::Blue, 2_250)]
+        );
+        // The stale event pops at 10,250 and ends nothing.
+        for wall in (4_000..=11_000).step_by(1_000) {
+            assert_eq!(arena.step(wall, &[], &[]).ended, None, "at {wall}");
+        }
+        assert_eq!(o1_holds(&arena), vec![(12_250, Team::Blue, 2_250)]);
+        let out = arena.step(12_000, &[], &[]);
+        assert_eq!(out.ended, None);
+        let out = arena.step(13_000, &[], &[]);
+        assert_eq!(
+            out.ended,
+            Some(MatchEnd {
+                reason: EndReason::Hold { winner: Team::Blue },
+                t_ms: 12_250
+            })
+        );
+    }
+
+    /// Fire `A`'s cannon at the holder as `m2_fire` does: the journal, the
+    /// shot's sequence and the millisecond its round is due.
+    fn o1_fire(arena: &mut Arena) -> (Log, u64, i64) {
+        m2_fire(arena)
+    }
+
+    /// **Tie rule (1)** (16b cut O.1; plan item 40): **a holder wrecked at an
+    /// EARLIER millisecond of the last substep voids the win.** The round lands
+    /// at `impact_at` and the hold is due one millisecond later in the same
+    /// substep: the arm's fresh read finds nobody on the spot, so it awards
+    /// nothing, and the substep's presence settle drops the clock. Blue still
+    /// has a tank, so the match runs on.
+    #[test]
+    fn o1_tie_1_a_holder_wrecked_earlier_in_the_last_substep_voids_the_win() {
+        let (_, _, impact_at) = o1_fire(&mut o1_hold_field(3_600_000, o1_holder(true), 60_000));
+        assert!(
+            impact_at > 3_011 && impact_at < 3_250,
+            "the fixture needs the round and the hold inside one substep: {impact_at}"
+        );
+        let hold_ms = u32::try_from(impact_at + 1 - 250).unwrap_or(u32::MAX);
+        let mut arena = o1_hold_field(hold_ms, o1_holder(true), 60_000);
+        let (mut journal, _, landed_at) = o1_fire(&mut arena);
+        assert_eq!(landed_at, impact_at, "the probe and the run agree");
+        assert_eq!(o1_holds(&arena), vec![(impact_at + 1, Team::Blue, 250)]);
+        let out = arena.step(4_000, &[], &[]);
+        journal.absorb(&out);
+        assert!(
+            arena.unit(ObjId(9)).is_some_and(|unit| unit.limits.wreck),
+            "the fixture needs the round to destroy the holder"
+        );
+        assert_eq!(out.ended, None, "a wrecked holder wins nothing");
+        assert_eq!(arena.hold.and_then(|hold| hold.held_by), None);
+        let log = journal.events(&mut arena);
+        assert!(
+            !log.iter().any(|event| event.kind.as_str() == "match_ended"),
+            "{log:?}"
+        );
+    }
+
+    /// **Tie rule (2)** (16b cut O.1; plan item 40): **a holder wrecked at the
+    /// hold's OWN millisecond still wins.** The hold's event was scheduled at
+    /// `since` — long before the shot — so it carries the lower sequence and
+    /// pops first; its fresh read finds the holder alive; the horizon shrinks to
+    /// that millisecond; the round due at it is still applied and journalled;
+    /// and then the match ends as `hold`, the last line.
+    #[test]
+    fn o1_tie_2_a_holder_wrecked_at_the_holds_own_millisecond_still_wins() {
+        let (_, _, impact_at) = o1_fire(&mut o1_hold_field(3_600_000, o1_holder(true), 60_000));
+        let hold_ms = u32::try_from(impact_at - 250).unwrap_or(u32::MAX);
+        let mut arena = o1_hold_field(hold_ms, o1_holder(true), 60_000);
+        let (mut journal, seq, landed_at) = o1_fire(&mut arena);
+        assert_eq!(landed_at, impact_at, "the probe and the run agree");
+        let hold_seq = arena
+            .due
+            .iter()
+            .find(|event| matches!(event.kind, DueKind::HoldSettles { .. }))
+            .map(|event| (event.t_ms, event.seq));
+        let impact = arena
+            .due
+            .iter()
+            .find(|event| event.kind == DueKind::Impact { shot_seq: seq })
+            .map(|event| (event.t_ms, event.seq));
+        assert_eq!(hold_seq.map(|(t_ms, _)| t_ms), Some(impact_at));
+        assert!(
+            hold_seq.map(|(_, seq)| seq) < impact.map(|(_, seq)| seq),
+            "the hold pops first: {hold_seq:?} {impact:?}"
+        );
+        let out = arena.step(4_000, &[], &[]);
+        journal.absorb(&out);
+        assert_eq!(
+            out.ended,
+            Some(MatchEnd {
+                reason: EndReason::Hold { winner: Team::Blue },
+                t_ms: impact_at
+            })
+        );
+        assert!(
+            arena.unit(ObjId(9)).is_some_and(|unit| unit.limits.wreck),
+            "the round on the hold's millisecond was applied"
+        );
+        let log = journal.events(&mut arena);
+        let hit = log
+            .iter()
+            .position(|event| event.kind.as_str() == "hit" && event.t_ms == impact_at);
+        let end = log
+            .iter()
+            .position(|event| event.kind.as_str() == "match_ended");
+        assert!(
+            hit.is_some() && hit < end,
+            "the hit is journalled before the end: {log:?}"
+        );
+        assert_eq!(
+            log.last().map(|event| event.kind.clone()),
+            Some(EventKind::MatchEnded {
+                reason: EndReason::Hold { winner: Team::Blue }
+            })
+        );
+    }
+
+    /// **The horizon** (16b cut O.1; plan items 1, 15; cut W.2's rule): a win
+    /// settled at its own millisecond shrinks the loop's horizon to it, exactly
+    /// as the deadline's arm does. The round is due ONE millisecond after the
+    /// hold, inside the same substep: it is never applied — the holder stands
+    /// whole, the `Impact` is left on the heap — nothing is journalled after the
+    /// hold's millisecond, and `match_ended { hold }` is the last line. Without
+    /// the shrink that round would wreck the holder of a match already won.
+    #[test]
+    fn o1_a_round_due_after_the_holds_millisecond_in_its_substep_is_never_applied() {
+        let (_, _, impact_at) = o1_fire(&mut o1_hold_field(3_600_000, o1_holder(true), 60_000));
+        assert!(
+            impact_at > 3_011 && impact_at < 3_250,
+            "the fixture needs the hold and the round inside one substep: {impact_at}"
+        );
+        let won_at = impact_at - 1;
+        let hold_ms = u32::try_from(won_at - 250).unwrap_or(u32::MAX);
+        let mut arena = o1_hold_field(hold_ms, o1_holder(true), 60_000);
+        let (mut journal, seq, landed_at) = o1_fire(&mut arena);
+        assert_eq!(landed_at, impact_at, "the probe and the run agree");
+        assert_eq!(o1_holds(&arena), vec![(won_at, Team::Blue, 250)]);
+        let out = arena.step(4_000, &[], &[]);
+        journal.absorb(&out);
+        assert_eq!(
+            out.ended,
+            Some(MatchEnd {
+                reason: EndReason::Hold { winner: Team::Blue },
+                t_ms: won_at
+            })
+        );
+        assert!(
+            arena.unit(ObjId(9)).is_some_and(|unit| !unit.limits.wreck),
+            "the round due after the win was applied"
+        );
+        assert!(
+            arena
+                .due
+                .iter()
+                .any(|event| event.kind == DueKind::Impact { shot_seq: seq }
+                    && event.t_ms == impact_at),
+            "the round is left on the heap, never popped"
+        );
+        let log = journal.events(&mut arena);
+        assert!(
+            log.iter().all(|event| event.t_ms <= won_at),
+            "a line after the hold's millisecond was journalled: {log:?}"
+        );
+        assert_eq!(
+            log.last().map(|event| (event.t_ms, event.kind.clone())),
+            Some((
+                won_at,
+                EventKind::MatchEnded {
+                    reason: EndReason::Hold { winner: Team::Blue }
+                }
+            ))
+        );
+    }
+
+    /// **The fresh read, the motion half** (16b cut O.1; plan item 15): **an
+    /// enemy that drives into the square during the last substep gives no
+    /// win.** The boundary before the pop read blue alone, so `held_by` still
+    /// names the clock when its event pops; only the fresh read at the pop —
+    /// over the poses this substep's motion committed — sees red inside, and it
+    /// awards nothing; the substep's presence settle then drops the clock. The
+    /// control, the same field with red kept out, wins at that millisecond.
+    #[test]
+    fn o1_an_enemy_driving_into_the_square_in_the_last_substep_voids_the_win() {
+        // Opened at 250, due at 10,250: the last substep is 10,000..10,250.
+        let run_to_the_last_boundary = |arena: &mut Arena| {
+            for wall in (0..=10_000).step_by(1_000) {
+                assert_eq!(arena.step(wall, &[], &[]).ended, None, "at {wall}");
+            }
+            assert_eq!(arena.now_ms, 10_000);
+            assert_eq!(
+                arena.hold.and_then(|hold| hold.held_by),
+                Some((Team::Blue, 250))
+            );
+            assert_eq!(o1_holds(arena), vec![(10_250, Team::Blue, 250)]);
+        };
+        // The control: nobody comes, and blue wins at its own millisecond.
+        let mut control = o1_hold_field(10_000, o1_holder(false), 60_000);
+        run_to_the_last_boundary(&mut control);
+        assert_eq!(
+            control.step(11_000, &[], &[]).ended,
+            Some(MatchEnd {
+                reason: EndReason::Hold { winner: Team::Blue },
+                t_ms: 10_250
+            })
+        );
+        // Red, one cell west of the square at the last boundary, driving east
+        // at 5 m/s: 125 cm in the substep puts it over the square's edge.
+        let mut arena = o1_hold_field(10_000, o1_holder(false), 60_000);
+        run_to_the_last_boundary(&mut arena);
+        if let Some(red) = arena.unit_mut(A) {
+            red.pose = pose(2_950, 500);
+            red.pose.heading_mdeg = 90_000;
+            red.power = Power::Online;
+            red.speed_cms = 500;
+            red.desired_speed_cms = 500;
+        }
+        let cell = |arena: &Arena| {
+            arena
+                .unit(A)
+                .and_then(|red| arena.definition.terrain.cell_of(&red.pose))
+        };
+        assert_eq!(cell(&arena), Some((2, 0)), "outside the square at 10,000");
+        let mut journal = Log::default();
+        let out = arena.step(10_250, &[], &[]);
+        journal.absorb(&out);
+        assert_eq!(arena.now_ms, 10_250, "the one substep the clock ran out in");
+        assert!(
+            cell(&arena).is_some_and(|at| arena.hold.is_some_and(|hold| hold.square_contains(at))),
+            "the fixture needs red inside the square by the pop: {:?}",
+            cell(&arena)
+        );
+        assert_eq!(out.ended, None, "a contested square wins nothing");
+        assert_eq!(arena.hold.and_then(|hold| hold.held_by), None);
+        assert!(o1_holds(&arena).is_empty(), "the popped event was the last");
+        let log = journal.events(&mut arena);
+        assert!(
+            !log.iter().any(|event| event.kind.as_str() == "match_ended"),
+            "{log:?}"
+        );
+    }
+
+    /// **Tie rule (3)** (16b cut O.1; plan item 40): **a hold at the deadline's
+    /// own millisecond beats `Timeout`.** The deadline pops first (it was
+    /// scheduled at check-out), the hold second; the hold is settled before the
+    /// timeout arm, which then finds the match ended.
+    #[test]
+    fn o1_tie_3_a_hold_at_the_deadlines_own_millisecond_beats_the_timeout() {
+        let mut arena = o1_hold_field(2_750, o1_holder(false), 3_000);
+        let mut journal = Log::default();
+        let mut ended = None;
+        for wall in [0, 1_000, 2_000, 3_000] {
+            let out = arena.step(wall, &[], &[]);
+            journal.absorb(&out);
+            ended = ended.or(out.ended);
+        }
+        assert_eq!(
+            ended,
+            Some(MatchEnd {
+                reason: EndReason::Hold { winner: Team::Blue },
+                t_ms: 3_000
+            })
+        );
+        let log = journal.events(&mut arena);
+        let ends: Vec<(i64, EventKind)> = m2_ends(&log);
+        assert_eq!(
+            ends,
+            vec![(
+                3_000,
+                EventKind::MatchEnded {
+                    reason: EndReason::Hold { winner: Team::Blue }
+                }
+            )],
+            "one end, the hold, and no timeout beside it"
+        );
     }
 }

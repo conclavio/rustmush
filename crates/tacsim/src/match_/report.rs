@@ -1087,7 +1087,9 @@ impl Fold {
             EventKind::MatchEnded { reason } => {
                 let winner = match reason {
                     EndReason::Elimination { winner: Some(team) }
-                    | EndReason::Conceded { winner: team } => team.as_str(),
+                    | EndReason::Conceded { winner: team }
+                    // 16b cut O.1: a hold names its winner the same way.
+                    | EndReason::Hold { winner: team } => team.as_str(),
                     _ => "-",
                 };
                 format!("{word} reason={} winner={winner}", reason_word(*reason))
@@ -1205,6 +1207,10 @@ fn counted(n: u32, one: &str, many: &str) -> String {
 /// Red lost 1 of 2; blue lost 0 of 2.
 /// ```
 ///
+/// **16b cut O.1**: a match fought under a mode other than the skirmish carries
+/// its tag after the outcome words (`… red won (red held the key spot) [hold],
+/// 2 m 0 s.`), as the ring's line does.
+///
 /// For [`Reader::Pilot`]: `You flew RA: destroyed; 14 shots, 6 hits.` (the row's
 /// own outcome word and counters) and, when `facts` are given, `You fired 14
 /// rounds of cannon and 60 of machine_gun.` (weapon ids as authored, in
@@ -1229,10 +1235,12 @@ pub fn header_lines(
     };
     let mut lines = vec![
         format!(
-            "Match {}{place}, {}: {}, {}.",
+            "Match {}{place}, {}: {}{}, {}.",
             row.id.0,
             civil_utc(row.ended_ms / 1_000),
             outcome_words(row.outcome, &row.reason),
+            // 16b cut O.1: ` [hold]` for a match fought under another rule.
+            row.mode_tag(),
             duration_words(row.arena_ms),
         ),
         {
@@ -1662,6 +1670,7 @@ fn empty_row(id: MatchId) -> HistoryRow {
         named: false,
         reports: Vec::new(),
         replay: false,
+        mode: None,
     }
 }
 

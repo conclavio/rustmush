@@ -390,6 +390,7 @@ fn definition(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
         // on them is a `Pilot`.
         key_spots: Vec::new(),
         waypoints: tacsim::arena::state::Waypoints::default(),
+        modes: Vec::new(),
     }
 }
 
@@ -524,6 +525,7 @@ fn arena_of(
             pilots,
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
         },
         &ArenaConfig::default(),
         match_cfg,

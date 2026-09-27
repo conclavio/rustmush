@@ -234,7 +234,8 @@ pub use clock::{
     Clock, MAX_TEMPO_FLOOR_MS, MIN_SUBSTEP_MS, Tempo, TempoSignals, substep_ms, substeps,
 };
 pub use command::{
-    MAX_SIGNAL_CONTACTS, SignalContact, SignalReason, SquadDigest, SquadSignal, SquadWatch,
+    BriefObjective, MAX_SIGNAL_CONTACTS, SignalContact, SignalReason, SquadDigest, SquadSignal,
+    SquadWatch,
 };
 pub use condition::{Condition, ConditionBand, MAX_SCANNED_SECTIONS, Reading};
 pub use damage::{
@@ -270,12 +271,13 @@ pub use slope::{
     SlopeLimit, driving_mode, effective_cost, grade_pct, steepness_pct, step_kind, too_steep,
 };
 pub use state::{
-    Arena, ArenaDefinition, ArenaError, ArenaTerrain, Channel, Classification, ContactId,
-    Controller, CustodyOut, CustodyUnit, DEFAULT_SENSOR_HEIGHT_CM, Designator, DesignatorBook,
-    DueEvent, DueHeap, DueKind, EndReason, EntryZone, EpochTable, HeatState, KeySpot, MatchEnd,
-    MotionCarry, MotionLimits, NO_SUCH_CONTACT, PROVISIONAL_PREFIX, Pilot, Power, ShadowContact,
-    ShadowContacts, Side, StopReason, Team, TerrainCell, TrackedRules, UnitState, Waypoint,
-    Waypoints, WeaponSummary,
+    Arena, ArenaDefinition, ArenaError, ArenaMode, ArenaTerrain, Channel, Classification,
+    ContactId, Controller, CustodyOut, CustodyUnit, DEFAULT_SENSOR_HEIGHT_CM, Designator,
+    DesignatorBook, DueEvent, DueHeap, DueKind, EndReason, EntryZone, EpochTable, HeatState,
+    HoldRule, HoldState, KeySpot, MatchEnd, MatchMode, MotionCarry, MotionLimits, NO_SUCH_CONTACT,
+    PROVISIONAL_PREFIX, Pilot, Power, SPOT_LETTERS, ShadowContact, ShadowContacts, Side,
+    StopReason, Team, TerrainCell, TrackedRules, UnitState, Waypoint, Waypoints, WeaponSummary,
+    spot_letter,
 };
 pub use step::{Frame, FrameHeat, FrameSlots, StepOutput};
 pub use weapons::{FrameBand, FrameWeapon, Shot, WeaponBand};
@@ -303,8 +305,8 @@ pub(crate) mod test_support {
     use crate::arena::perception::{SensorProfile, SignatureFactor};
     use crate::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitProfile};
     use crate::arena::state::{
-        Arena, ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, EntryZone, Pilot, Side,
-        Team, TerrainCell, TrackedRules, WeaponSummary,
+        Arena, ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, EntryZone, MatchMode, Pilot,
+        Side, Team, TerrainCell, TrackedRules, WeaponSummary,
     };
     use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
     use crate::definitions::resolution::ResolutionDef;
@@ -432,6 +434,7 @@ pub(crate) mod test_support {
                 ],
                 &[(SmolStr::new("west"), SmolStr::new("east"))],
             ),
+            modes: Vec::new(),
         }
     }
 
@@ -947,6 +950,7 @@ pub(crate) mod test_support {
             pilots,
             resolution: resolution(),
             seed: 2350,
+            mode: MatchMode::Skirmish,
         }
     }
 
@@ -988,6 +992,7 @@ pub(crate) mod test_support {
                 pilots: Vec::new(),
                 resolution: resolution(),
                 seed: 2_350,
+                mode: MatchMode::Skirmish,
             },
             &ArenaConfig::default(),
             &MatchConfig::default(),

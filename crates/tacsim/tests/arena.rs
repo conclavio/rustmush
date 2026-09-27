@@ -199,6 +199,7 @@ fn definition() -> ArenaDefinition {
         // on them is a `Pilot`.
         key_spots: Vec::new(),
         waypoints: tacsim::arena::state::Waypoints::default(),
+        modes: Vec::new(),
     }
 }
 
@@ -248,6 +249,7 @@ fn arena_of(units: Vec<CustodyUnit>, match_cfg: &MatchConfig) -> Arena {
             pilots,
             resolution: tacsim::match_::stock_resolution(),
             seed: 2_350,
+            mode: tacsim::arena::MatchMode::Skirmish,
         },
         &ArenaConfig::default(),
         match_cfg,
@@ -3118,6 +3120,7 @@ fn canopy_arena_of(units: Vec<CustodyUnit>) -> Arena {
             pilots,
             resolution: tacsim::match_::stock_resolution(),
             seed: 2_350,
+            mode: tacsim::arena::MatchMode::Skirmish,
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -3560,5 +3563,316 @@ fn the_hash_folds_a_screens_facing_and_a_supports_charge() {
         }),
         east,
         "the fold is a function of the order"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut O.1 — a Hold at three cadences (16b §11's mandatory cross-tempo test)
+// ---------------------------------------------------------------------------
+
+/// The Hold spot of the O.1 cross-tempo tests: `(13, 30)`, west of the band.
+const O1_SPOT: (u16, u16) = (13, 30);
+
+/// The red mover and the blue tank of the O.1 tests.
+const O1_RED: ObjId = ObjId(4);
+const O1_BLUE: ObjId = ObjId(9);
+
+/// **This file's window with one key spot and a Hold declared on it**:
+/// [`O1_SPOT`], three cells round it, ten seconds.
+fn o1_hold_definition() -> ArenaDefinition {
+    ArenaDefinition {
+        key_spots: vec![tacsim::arena::state::KeySpot {
+            name: SmolStr::new("The Spot"),
+            x: O1_SPOT.0,
+            y: O1_SPOT.1,
+        }],
+        modes: vec![tacsim::arena::ArenaMode::Hold(tacsim::arena::HoldRule {
+            spot: 0,
+            radius_cells: 3,
+            hold_ms: 10_000,
+        })],
+        ..definition()
+    }
+}
+
+/// **A Hold match** on [`o1_hold_definition`]: the red mover facing east in
+/// column 5 of the spot's row, and `blue` — each unit piloted, with a
+/// five-second startup so a `STARTUP` at 0 is online by the 5,000 ms beat.
+fn o1_hold_arena(blue: CustodyUnit) -> Arena {
+    let mut red = tank(O1_RED, Team::Red, centre(5, O1_SPOT.1));
+    red.pose.heading_mdeg = 90_000;
+    let units = vec![red, blue];
+    let pilots = units
+        .iter()
+        .enumerate()
+        .map(|(seat, unit)| Pilot {
+            unit: unit.id,
+            pilot: ObjId(1_000 + u32::try_from(seat).unwrap_or(0)),
+            station: SmolStr::new("cockpit"),
+            epoch: 1,
+        })
+        .collect();
+    Arena::new(
+        CustodyOut {
+            definition: o1_hold_definition(),
+            units,
+            pilots,
+            resolution: tacsim::match_::stock_resolution(),
+            seed: 2_350,
+            mode: tacsim::arena::MatchMode::Hold,
+        },
+        &ArenaConfig::default(),
+        &MatchConfig {
+            startup_ms: 5_000,
+            ..MatchConfig::default()
+        },
+        &SensorsConfig::default(),
+    )
+    .expect("the hold arena")
+}
+
+/// What one O.1 run produced: the ledger, the per-substep hashes, the Hold
+/// clock read at every 5,000 ms boundary, and the end.
+struct HoldRun {
+    events: Vec<Line>,
+    hashes: Vec<u64>,
+    clocks: Vec<(i64, Option<(Team, i64)>)>,
+    ended: Option<tacsim::arena::state::MatchEnd>,
+    pulses: u32,
+}
+
+/// Drive `arena` through `script` at `cadence_ms` until arena time reaches
+/// `until_ms` or the match ends — [`replay`]'s loop, reading the Hold clock at
+/// every 5,000 ms boundary (a pulse boundary at all three cadences).
+fn o1_run(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) -> HoldRun {
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut clocks: Vec<(i64, Option<(Team, i64)>)> = Vec::new();
+    let mut next = 0_usize;
+    let mut pulses = 0_u32;
+    let mut wall = 0_i64;
+    let ended = loop {
+        arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+        let mut intents: Vec<Intent> = Vec::new();
+        while let Some(beat) = script.get(next) {
+            if beat.t_ms > arena.now_ms {
+                break;
+            }
+            intents.extend(beat.intents.iter().cloned());
+            next += 1;
+        }
+        let out = arena.step(wall, &[], &intents);
+        absorb(&out, &mut bytes);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        pulses += 1;
+        if arena.now_ms % 5_000 == 0 {
+            clocks.push((arena.now_ms, arena.hold.and_then(|hold| hold.held_by)));
+        }
+        if out.ended.is_some() || arena.now_ms >= until_ms {
+            break out.ended;
+        }
+        wall += cadence_ms;
+    };
+    arena.ledger.flush();
+    for chunk in arena.ledger.take_chunks() {
+        bytes.extend_from_slice(&chunk.bytes);
+    }
+    HoldRun {
+        events: lines(&bytes),
+        hashes,
+        clocks,
+        ended,
+        pulses,
+    }
+}
+
+/// Every `match_ended` line of a run, as `(t_ms, kind)`.
+fn o1_ends(run: &HoldRun) -> Vec<(i64, String)> {
+    run.events
+        .iter()
+        .filter(|(_, kind, _, _)| kind.contains("match_ended"))
+        .map(|(t_ms, kind, _, _)| (*t_ms, kind.clone()))
+        .collect()
+}
+
+/// Compare every run with the first: one event list, one hash sequence, one
+/// clock at every 5,000 ms boundary, one end — and really three cadences.
+fn o1_same_match(runs: &[(i64, HoldRun)]) {
+    let Some((_, first)) = runs.first() else {
+        panic!("three runs");
+    };
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "the event list differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.clocks, first.clocks,
+            "the Hold clock differs at {cadence} ms"
+        );
+        assert_eq!(run.ended, first.ended, "the end differs at {cadence} ms");
+        assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
+}
+
+/// The red mover's orders: `STARTUP` at 0, drive east at the 5,000 ms beat, and
+/// stop at the 15,000 ms beat — inside the square.
+fn o1_red_orders() -> Vec<Beat> {
+    vec![
+        Beat::at(0, Vec::new(), vec![intent(O1_RED, IntentKind::Startup, 1)]),
+        Beat::at(
+            5_000,
+            Vec::new(),
+            vec![intent(O1_RED, IntentKind::Speed { cms: 1_000 }, 2)],
+        ),
+        Beat::at(
+            15_000,
+            Vec::new(),
+            vec![intent(O1_RED, IntentKind::Speed { cms: 0 }, 3)],
+        ),
+    ]
+}
+
+/// **16b cut O.1's first cross-tempo test** (16b §11; doc 16 §3.1, D-16-2;
+/// 16c N11): one red mover drives onto the key spot while blue stays off it.
+/// At 5,000, 1,000 and 500 ms: one event list, one hash sequence, one clock at
+/// every boundary, and exactly one `match_ended { hold: red }` at exactly
+/// `since + hold_ms` — a substep boundary plus whole seconds, so on the
+/// substep lattice at every cadence.
+#[test]
+fn o1_a_hold_is_won_at_one_millisecond_at_three_cadences() {
+    let mut runs: Vec<(i64, HoldRun)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = o1_hold_arena(tank(O1_BLUE, Team::Blue, centre(50, 30)));
+        let run = o1_run(&mut arena, cadence, 60_000, &o1_red_orders());
+        // Where the mover stopped: inside the square.
+        let cell = arena
+            .unit(O1_RED)
+            .and_then(|unit| arena.definition.terrain.cell_of(&unit.pose))
+            .expect("on the window");
+        assert!(
+            arena.hold.is_some_and(|hold| hold.square_contains(cell)),
+            "the mover stopped at {cell:?}, off the square"
+        );
+        runs.push((cadence, run));
+    }
+    o1_same_match(&runs);
+    let Some((_, first)) = runs.first() else {
+        panic!("three runs");
+    };
+    let since = first
+        .clocks
+        .iter()
+        .find_map(|(_, held)| *held)
+        .map(|(team, since)| {
+            assert_eq!(team, Team::Red);
+            since
+        })
+        .expect("red held the spot at a 5,000 ms boundary");
+    assert_eq!(since % 250, 0, "the clock opens on a substep boundary");
+    let won_at = since + 10_000;
+    assert_eq!(
+        first.ended,
+        Some(tacsim::arena::state::MatchEnd {
+            reason: EndReason::Hold { winner: Team::Red },
+            t_ms: won_at
+        })
+    );
+    let ends = o1_ends(first);
+    assert_eq!(ends.len(), 1, "exactly one end: {ends:?}");
+    assert_eq!(ends.first().map(|(t_ms, _)| *t_ms), Some(won_at));
+    assert!(
+        ends.iter()
+            .all(|(_, kind)| kind.contains(r#"{"hold":{"winner":"red"}}"#)),
+        "{ends:?}"
+    );
+    assert!(
+        first.events.iter().all(|(t_ms, _, _, _)| *t_ms <= won_at),
+        "a line after the win"
+    );
+}
+
+/// **16b cut O.1's second cross-tempo test**: the red mover holds the spot, and
+/// a blue mover, ordered south at the 10,000 ms beat, drives into the square
+/// before red's clock runs out — the square is contested and the clock drops,
+/// at the same substep at every cadence; blue drives on through the square and
+/// out of its south side, and red, alone again, re-opens the clock with a
+/// later `since` and wins at that one.
+#[test]
+fn o1_a_contested_hold_resets_and_the_match_runs_on_at_three_cadences() {
+    let blue_orders = || {
+        let mut script = o1_red_orders();
+        script.retain(|beat| beat.t_ms != 0);
+        let mut beats = vec![Beat::at(
+            0,
+            Vec::new(),
+            vec![
+                intent(O1_RED, IntentKind::Startup, 1),
+                intent(O1_BLUE, IntentKind::Startup, 1),
+            ],
+        )];
+        beats.extend(script);
+        beats.push(Beat::at(
+            10_000,
+            Vec::new(),
+            vec![intent(O1_BLUE, IntentKind::Speed { cms: 1_000 }, 2)],
+        ));
+        beats.sort_by_key(|beat| beat.t_ms);
+        beats
+    };
+    let mut runs: Vec<(i64, HoldRun)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        // Blue north of the spot, facing south down its column.
+        let mut blue = tank(O1_BLUE, Team::Blue, centre(O1_SPOT.0, 40));
+        blue.pose.heading_mdeg = 180_000;
+        let mut arena = o1_hold_arena(blue);
+        let run = o1_run(&mut arena, cadence, 90_000, &blue_orders());
+        runs.push((cadence, run));
+    }
+    o1_same_match(&runs);
+    let Some((_, first)) = runs.first() else {
+        panic!("three runs");
+    };
+    // Red opens a clock, the contest drops it, and red re-opens a later one.
+    let opened: Vec<i64> = first
+        .clocks
+        .iter()
+        .filter_map(|(_, held)| *held)
+        .map(|(team, since)| {
+            assert_eq!(team, Team::Red, "only red is ever alone on the spot");
+            since
+        })
+        .collect();
+    let first_since = opened.first().copied().expect("red held the spot");
+    let dropped = first
+        .clocks
+        .iter()
+        .skip_while(|(_, held)| held.is_none())
+        .any(|(_, held)| held.is_none());
+    assert!(
+        dropped,
+        "the contest never dropped the clock: {:?}",
+        first.clocks
+    );
+    let last_since = opened.last().copied().expect("red held the spot again");
+    assert!(
+        last_since > first_since,
+        "the second clock opened later: {first_since} then {last_since} ({:?})",
+        first.clocks
+    );
+    // No end at the first clock's millisecond; one at the second's.
+    let ends = o1_ends(first);
+    assert_eq!(
+        ends.iter().map(|(t_ms, _)| *t_ms).collect::<Vec<_>>(),
+        vec![last_since + 10_000],
+        "{ends:?}"
+    );
+    assert_eq!(
+        first.ended.map(|end| end.reason),
+        Some(EndReason::Hold { winner: Team::Red })
     );
 }

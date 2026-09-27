@@ -154,6 +154,16 @@
 //! un-ignored, runs it at one lance a side for ten arena seconds with the
 //! any-knob checks asserted.
 //!
+//! **The Hold lane since 16b cut O.1** (16c N11; plan item 27). The lance
+//! lane's shape at `MatchMode::Hold` on the shipped ground's own rule, `hold_ms`
+//! raised to the loader's maximum so no win ends the window, cohort
+//! `lance_hold`, JSON `<stem>-lance_hold.<ext>`. It is **not** ignored and
+//! **not** in the weekly script or the CI job: `tacsim_harness_hold_lane`
+//! returns at once unless `TACSIM_HOLD_LANE` is exactly `1`, and it asserts
+//! nothing. Whether it joins the weekly job is Q-O3 for the owner. Both lanes
+//! print a `harness_lance_goal_cost` line (report-only), which is how the two
+//! are read side by side.
+//!
 //! What it must not do (16b §9's `H` row): touch `mush-sim` or `mush-atlas` — a
 //! harness that needs a new API in the thing it measures is measuring its own
 //! change — assert by default, or run on push. The ban on asserting by default
@@ -1706,6 +1716,7 @@ fn arena_definition(
         ],
         key_spots: Vec::new(),
         waypoints,
+        modes: Vec::new(),
     }
 }
 
@@ -2623,6 +2634,7 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
             pilots,
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: knobs.seed,
+            mode: tacsim::arena::MatchMode::Skirmish,
         },
         &arena_cfg,
         &match_cfg,
@@ -5425,6 +5437,7 @@ fn tacsim_harness_llm_cost_run() {
             pilots: Vec::new(),
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: knobs.seed,
+            mode: tacsim::arena::MatchMode::Skirmish,
         },
         &arena_cfg,
         &match_cfg,
@@ -6395,6 +6408,11 @@ struct LanceKnobs {
     units: u32,
     /// `TACSIM_LANCE_ARENA_S`: arena seconds measured after the warm-up.
     arena_s: u32,
+    /// **The rule the lane's match is fought under** (16b cut O.1):
+    /// `Skirmish` for the lance lane, `Hold` for the report-only Hold lane
+    /// ([`tacsim_harness_hold_lane`]), which runs on the shipped ground's own
+    /// rule with `hold_ms` raised to `MAX_HOLD_MS` so no win ends the window.
+    mode: tacsim::arena::MatchMode,
 }
 
 impl LanceKnobs {
@@ -6402,6 +6420,7 @@ impl LanceKnobs {
         LanceKnobs {
             units: env_u32("TACSIM_LANCE_UNITS", DEFAULT_LANCE_UNITS),
             arena_s: env_u32("TACSIM_LANCE_ARENA_S", DEFAULT_LANCE_ARENA_S),
+            mode: tacsim::arena::MatchMode::Skirmish,
         }
     }
 }
@@ -6611,6 +6630,62 @@ fn tacsim_harness_lance() {
     measure_lance(&Knobs::from_env(), &LanceKnobs::from_env());
 }
 
+/// Whether the report-only Hold lane was asked for (16b cut O.1; plan item 27).
+/// **Exactly `"1"`**, the cost run's rule ([`cost_run_requested`]).
+fn hold_lane_requested(value: Option<&str>) -> bool {
+    value.is_some_and(|value| value.trim() == "1")
+}
+
+/// **The report-only Hold lane** (16b cut O.1; plan item 27; Q-O3): the lance
+/// lane's shape at `MatchMode::Hold` on the shipped ground's own rule (The
+/// Crossroads), with `hold_ms` raised to `MAX_HOLD_MS` so no win ends the
+/// window, printing the lance lane's `harness_*` lines (cohort `lance_hold`,
+/// `ended=` among them) and its goal cost — the machines doctrine governs
+/// (under `Engage`, a `Support` off station, or a refused call) drive to the
+/// spot, and that search is what it costs.
+///
+/// **Not `#[ignore]`d, and flag-gated instead**: every ignored test in this file
+/// is run by `scripts/harness-weekly.sh` and the CI `tacsim-harness` job, under
+/// `TACSIM_ASSERT=1`, and whether this lane joins them is Q-O3 for the owner
+/// (default no). It returns at once unless `TACSIM_HOLD_LANE` is exactly `1`,
+/// so the ordinary workspace run proves the early return, and it passes
+/// `assert: false` whatever `TACSIM_ASSERT` says: it ASSERTS NOTHING — no lens,
+/// no bound, no baseline. Run it by hand:
+/// `TACSIM_HOLD_LANE=1 cargo test --release -p tacsim --test harness tacsim_harness_hold_lane -- --exact --nocapture`.
+#[test]
+fn tacsim_harness_hold_lane() {
+    if !hold_lane_requested(std::env::var("TACSIM_HOLD_LANE").ok().as_deref()) {
+        return;
+    }
+    let mut knobs = Knobs::from_env();
+    knobs.assert = false;
+    measure_lance(
+        &knobs,
+        &LanceKnobs {
+            mode: tacsim::arena::MatchMode::Hold,
+            ..LanceKnobs::from_env()
+        },
+    );
+}
+
+/// **16b cut O.1**: the Hold lane is off unless its flag says `1` — the cost
+/// run's twin — and an ordinary test run does not set it.
+#[test]
+fn the_hold_lane_is_off_unless_its_flag_says_1() {
+    assert!(!hold_lane_requested(None));
+    assert!(!hold_lane_requested(Some("")));
+    assert!(!hold_lane_requested(Some("0")));
+    assert!(!hold_lane_requested(Some("true")));
+    assert!(!hold_lane_requested(Some("yes")));
+    assert!(hold_lane_requested(Some("1")));
+    assert!(hold_lane_requested(Some(" 1 ")));
+    assert!(
+        !hold_lane_requested(std::env::var("TACSIM_HOLD_LANE").ok().as_deref()),
+        "TACSIM_HOLD_LANE is set in this environment: the Hold lane is report-only and run by \
+         hand, so an ordinary test run must not request it"
+    );
+}
+
 /// **The lance lane, small and un-ignored** (16b cut Z.1): eight units — one
 /// lance a side — for ten arena seconds on the default seed at jitter nought,
 /// its JSON under the system temp directory. It proves the lane runs: the
@@ -6640,6 +6715,7 @@ fn z1_the_lance_lane_runs_small() {
         &LanceKnobs {
             units: 8,
             arena_s: 10,
+            mode: tacsim::arena::MatchMode::Skirmish,
         },
     );
     for prefix in [
@@ -6933,13 +7009,26 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
     let tw = TestWorld::with_modules(fan_out_roster());
     let boot_ms = boot_at.elapsed().as_secs_f64() * 1_000.0;
     let catalog = fielded_catalog(&tw);
-    let definition = tacsim::match_::definition_for(
+    let mut definition = tacsim::match_::definition_for(
         tw.world(),
         &smol_str::SmolStr::new(tacsim::match_::PROVING_GROUND),
     )
     .expect("the proving ground's ground builds")
     .expect("the proving ground is defined");
     drop(tw);
+    // **16b cut O.1**: the Hold lane fights on the shipped ground's own rule —
+    // The Crossroads, which the musters stand 27 cells either side of — with
+    // `hold_ms` raised to `MAX_HOLD_MS` on this copy of the definition, so no win
+    // ends the window and the figure is the whole run's goal cost.
+    if lance.mode == tacsim::arena::MatchMode::Hold {
+        let rule = definition
+            .hold_rule()
+            .expect("the shipped proving ground declares a Hold");
+        definition.modes = vec![tacsim::arena::ArenaMode::Hold(tacsim::arena::HoldRule {
+            hold_ms: tacsim::definitions::arena::MAX_HOLD_MS,
+            ..rule
+        })];
+    }
 
     // ---- (2) the units ----
     let mut units = Vec::new();
@@ -7002,6 +7091,7 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             pilots: Vec::new(),
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: knobs.seed,
+            mode: lance.mode,
         },
         &arena_cfg,
         &match_cfg,
@@ -7151,7 +7241,13 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
     let Stepper { arena, counts, .. } = stepper;
 
     // ---- (5) the report ----
-    let cohort = "lance";
+    // 16b cut O.1: the Hold lane's lines carry their own cohort word, so they
+    // are never read as the lance lane's.
+    let cohort = if lance.mode == tacsim::arena::MatchMode::Hold {
+        "lance_hold"
+    } else {
+        "lance"
+    };
     let tempo = Tempo {
         name: "lance_engaged",
         period_ms: arena_cfg.tempo.engaged_ms,
@@ -7242,6 +7338,18 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             "harness_lance_weapons: cohort={cohort} fired={} impacts={} sections_destroyed={} \
              units_destroyed={}",
             counts.fired, counts.impacts, counts.sections, counts.destroyed
+        ),
+        // **16b cut O.1**: what the machines' goals cost — the figure the Hold
+        // lane exists to report beside the lance lane's own (report-only on
+        // both).
+        format!(
+            "harness_lance_goal_cost: cohort={cohort} ticks={} path_queries={} path_deferred={} \
+             path_cells={} path_failures={} (report-only)",
+            run.reflex_total.ticks,
+            run.reflex_total.path_queries,
+            run.reflex_total.path_deferred,
+            run.reflex_total.path_cells,
+            run.reflex_total.path_failures
         ),
         format!(
             "harness_lance_perception_total: cohort={cohort} passes={} candidates={} traces={} \
@@ -7350,7 +7458,7 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             "max_ledger_bytes": knobs.max_ledger_bytes,
         },
     });
-    let path = arena_report_path(&knobs.json, "lance");
+    let path = arena_report_path(&knobs.json, cohort);
     write_report(&path, &report);
     lines.push(format!(
         "harness_lance_json: cohort={cohort} {}",

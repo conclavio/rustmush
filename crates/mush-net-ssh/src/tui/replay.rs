@@ -144,6 +144,9 @@ const OUTCOME_WORDS: &[(&str, &str, &str)] = &[
     ("blue", "elimination", "blue won (red elim.)"),
     ("red", "conceded", "red won (blue conc.)"),
     ("blue", "conceded", "blue won (red conc.)"),
+    // 16b cut O.1 (16c N11): a hold names its winner.
+    ("red", "hold", "red won (held spot)"),
+    ("blue", "hold", "blue won (held spot)"),
     ("draw", "spent", "draw (no ammo)"),
     ("draw", "elimination", "draw (both elim.)"),
     ("timeout", "unattended", "timed out (empty)"),
@@ -164,6 +167,44 @@ pub fn outcome_short(outcome: &str, reason: &str) -> String {
             || truncate_chars(&clean(outcome), 16),
             |(_, _, words)| (*words).to_string(),
         )
+}
+
+/// **The ` [hold]` tag for a replay document's mode word** (16b cut O.1; plan
+/// item 39): ` [{mode}]` for a word that is neither empty nor `skirmish`, so a
+/// match fought under another rule is never read as a plain fight; the empty
+/// string otherwise — which is every replay written before the cut, whose
+/// document has no `mode` at all.
+#[must_use]
+pub fn mode_tag(mode: &str) -> String {
+    if mode.is_empty() || mode == "skirmish" {
+        String::new()
+    } else {
+        format!(" [{mode}]")
+    }
+}
+
+/// **The replay map's heading** (16b cut I.2; the tag 16b cut O.1's): `Replay
+/// 12 — 1:30 (19/55)`, `-` for the dash without UTF-8, and the mode's ` [hold]`
+/// tag after it ([`mode_tag`]). At its widest — a four-digit match, a
+/// sixty-minute clock, three-digit keyframes and the tag — it is 36 columns,
+/// inside the replay map's 39. (The status pane's first row carries the outcome
+/// words and is 32 columns at its widest already, so the tag rides here.)
+#[must_use]
+pub fn replay_heading(
+    match_id: i64,
+    t_ms: i64,
+    at: usize,
+    count: usize,
+    mode: &str,
+    utf8: bool,
+) -> String {
+    let sep = if utf8 { "\u{2014}" } else { "-" };
+    format!(
+        "Replay {match_id} {sep} {} ({}/{count}){}",
+        clock_text(t_ms),
+        at.saturating_add(1),
+        mode_tag(mode)
+    )
 }
 
 /// An arena millisecond as `m:ss` — `tacsim::match_::lobby::clock_text`, the
@@ -275,6 +316,17 @@ impl<'a> Document<'a> {
             .iter()
             .position(|unit| unit.callsign == callsign)
             .and_then(|at| u16::try_from(at).ok())
+    }
+
+    /// **The rule the match was fought under** (16b cut O.1): the document's
+    /// `mode` word, cleaned and cut to sixteen characters, or `skirmish` where
+    /// the key is absent — every replay written before the cut.
+    #[must_use]
+    pub fn mode(&self) -> String {
+        self.doc.get("mode").and_then(Value::as_str).map_or_else(
+            || "skirmish".to_string(),
+            |word| truncate_chars(&clean(word), 16),
+        )
     }
 
     /// How many keyframes it holds.
@@ -683,13 +735,13 @@ pub fn map_rows(ctx: &RenderCtx<'_>) -> Option<PaneRows> {
     let focus = doc
         .slot(at, usize::from(picture.focus))
         .map(|(x, y, _)| (x, y));
-    let sep = if ctx.utf8 { "\u{2014}" } else { "-" };
-    let heading = format!(
-        "Replay {} {sep} {} ({}/{})",
+    let heading = replay_heading(
         picture.match_id,
-        clock_text(doc.keyframe_t(at)),
-        at.saturating_add(1),
-        doc.keyframe_count()
+        doc.keyframe_t(at),
+        at,
+        doc.keyframe_count(),
+        &doc.mode(),
+        ctx.utf8,
     );
     Some(compose_map(ctx, map, &heading, focus, &units))
 }
@@ -1299,6 +1351,9 @@ mod tests {
         }
         assert_eq!(outcome_short("red", "elimination"), "red won (blue elim.)");
         assert_eq!(outcome_short("abort", "abort"), "aborted");
+        // 16b cut O.1: a hold's words.
+        assert_eq!(outcome_short("red", "hold"), "red won (held spot)");
+        assert_eq!(outcome_short("blue", "hold"), "blue won (held spot)");
         // A pair not in the table prints its outcome word alone.
         assert_eq!(outcome_short("draw", "stalemate"), "draw");
         for line in [
@@ -1313,6 +1368,44 @@ mod tests {
         ] {
             assert!(line.chars().count() <= 32, "{line:?}");
         }
+    }
+
+    /// **16b cut O.1 (plan item 39)**: the replay map's heading carries ` [hold]`
+    /// for a match fought under the Hold rule, nothing for a skirmish or for a
+    /// document with no `mode` (every replay before the cut), and stays inside
+    /// the replay map's 39 columns at its widest.
+    #[test]
+    fn o1_the_replay_heading_carries_the_mode_tag() {
+        assert_eq!(
+            replay_heading(12, 90_000, 18, 55, "hold", true),
+            "Replay 12 \u{2014} 1:30 (19/55) [hold]"
+        );
+        assert_eq!(
+            replay_heading(12, 90_000, 18, 55, "hold", false),
+            "Replay 12 - 1:30 (19/55) [hold]"
+        );
+        assert_eq!(
+            replay_heading(12, 90_000, 18, 55, "skirmish", true),
+            "Replay 12 \u{2014} 1:30 (19/55)"
+        );
+        assert_eq!(mode_tag(""), "");
+        assert_eq!(mode_tag("skirmish"), "");
+        assert_eq!(mode_tag("hold"), " [hold]");
+        let widest = replay_heading(9_999, 3_680_000, 735, 736, "hold", true);
+        assert!(widest.chars().count() <= 39, "{widest:?}");
+        // The decoder: an absent key reads a skirmish, a present one its word.
+        let mut doc = serde_json::json!({
+            "schema": { "shape": "replay" }, "match": 12, "outcome": "red", "reason": "hold",
+        });
+        assert_eq!(
+            Document::of(&doc).map(|doc| doc.mode()).as_deref(),
+            Some("skirmish")
+        );
+        doc["mode"] = serde_json::json!("hold");
+        assert_eq!(
+            Document::of(&doc).map(|doc| doc.mode()).as_deref(),
+            Some("hold")
+        );
     }
 
     #[test]

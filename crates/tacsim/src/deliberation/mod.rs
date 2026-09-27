@@ -284,6 +284,7 @@ mod tests {
                     bearing_deg: 270,
                 },
             ],
+            objective: None,
         };
         let job = DeliberationJob::Deliberate {
             brief: brief.clone(),
@@ -356,6 +357,7 @@ mod tests {
             default_ttl_ms: 30_000,
             contacts: Vec::new(),
             members: Vec::new(),
+            objective: None,
         };
         let job = DeliberationJob::Deliberate { brief };
         let payload = serde_json::to_string(&job).expect("a job");

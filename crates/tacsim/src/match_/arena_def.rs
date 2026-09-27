@@ -107,6 +107,9 @@ pub fn stock_definition(id: &SmolStr) -> Option<ArenaDefinition> {
         // above would be.
         key_spots: Vec::new(),
         waypoints: crate::arena::state::Waypoints::default(),
+        // **16b cut O.1**: and no modes — with no key spot there is nothing to
+        // hold, so a stand-in match is a skirmish and nothing else.
+        modes: Vec::new(),
     })
 }
 
@@ -776,6 +779,7 @@ mod tests {
             }],
             key_spots: Vec::new(),
             waypoints: Waypoints::default(),
+            modes: Vec::new(),
         };
         let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
             .unwrap_or_else(|_| panic!("a posture"));

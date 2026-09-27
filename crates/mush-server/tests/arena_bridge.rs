@@ -223,6 +223,7 @@ fn custody() -> CustodyOut {
             // 16b cut N.1: no authored furniture; this fixture's unit is a pilot's.
             key_spots: Vec::new(),
             waypoints: tacsim::arena::state::Waypoints::default(),
+            modes: Vec::new(),
         },
         units: vec![CustodyUnit {
             id: UNIT,
@@ -253,6 +254,7 @@ fn custody() -> CustodyOut {
         }],
         resolution: tacsim::match_::stock_resolution(),
         seed: 7_777,
+        mode: tacsim::arena::MatchMode::Skirmish,
     }
 }
 

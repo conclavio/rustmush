@@ -1526,6 +1526,63 @@ fn i2_the_replay_map_composes_the_committed_grid() {
     );
 }
 
+/// **The mode tag through the renderer** (16b cut O.1; plan item 39): the
+/// committed replay with its `mode` made `hold` (and its outcome a red hold)
+/// draws its map heading `Replay 7 — 0:05 (2/3) [hold]` through
+/// `render_cockpit_map_rows` itself — the field the heading is built from is
+/// the document's `mode`, read by the production path — and the committed
+/// skirmish draws it with no tag, as does a document with no `mode` at all
+/// (every replay written before the cut).
+#[test]
+fn o1_the_replay_map_heading_carries_the_mode_tag() {
+    let heading = |doc: serde_json::Value| -> Option<String> {
+        let mut store = store_with_the_ground();
+        store.apply_panel(
+            &SmolStr::new_static("arena.replay"),
+            PanelFrameKind::Keyframe,
+            &doc,
+            0,
+        );
+        let theme = AnsiTheme::default();
+        let picture = Picture {
+            match_id: 7,
+            at: 1,
+            focus: 0,
+            live: false,
+        };
+        let ctx = RenderCtx {
+            picture: Some(&picture),
+            ..map_ctx(&theme, &store, (39, 22))
+        };
+        render_cockpit_map_rows(&serde_json::json!({ "seated": false }), &ctx)
+            .rows
+            .first()
+            .map(PaneRow::text)
+    };
+    let mut held = replay_answer();
+    held["outcome"] = serde_json::json!("red");
+    held["reason"] = serde_json::json!("hold");
+    held["mode"] = serde_json::json!("hold");
+    assert_eq!(
+        heading(held).as_deref(),
+        Some("Replay 7 \u{2014} 0:05 (2/3) [hold]")
+    );
+    let skirmish = replay_answer();
+    assert_eq!(skirmish["mode"], serde_json::json!("skirmish"));
+    assert_eq!(
+        heading(skirmish).as_deref(),
+        Some("Replay 7 \u{2014} 0:05 (2/3)")
+    );
+    let mut before = replay_answer();
+    if let Some(doc) = before.as_object_mut() {
+        doc.remove("mode");
+    }
+    assert_eq!(
+        heading(before).as_deref(),
+        Some("Replay 7 \u{2014} 0:05 (2/3)")
+    );
+}
+
 /// **The status pane of a CUT replay** (16b cut I.2): the `Cut:` lines are
 /// rendered by `render_cockpit_status_rows` itself, not typed out — one per
 /// `cut` word in the document's order, with the clocks read off the document

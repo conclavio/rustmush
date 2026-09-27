@@ -97,11 +97,12 @@ pub use cockpit::{
     flying,
 };
 pub use lobby::{
-    BoardReader, Centre, OUTSIDE_CENTRE, ResetOutcome, SimError, Slot, abort as sim_abort,
-    ai as sim_ai, ai_side_size, authored_unit_type, board_deadline, centre as centre_of, claim,
-    clock_text, concede as sim_concede, largest_side, leave, pilot_of, pod_of,
-    reset as reset_centre, slot_seated, slot_vacated, slots_per_side, start as sim_start,
-    status_lines, unattended_deadline, unattended_line, unit_type as sim_unit_type,
+    BoardReader, Centre, HoldWords, OUTSIDE_CENTRE, ResetOutcome, SimError, Slot,
+    abort as sim_abort, ai as sim_ai, ai_side_size, authored_unit_type, board_deadline,
+    centre as centre_of, claim, clock_text, concede as sim_concede, hold_words, largest_side,
+    leave, mode as sim_mode, pilot_of, pod_of, reset as reset_centre, slot_seated, slot_vacated,
+    slots_per_side, start as sim_start, status_lines, unattended_deadline, unattended_line,
+    unit_type as sim_unit_type,
 };
 pub use net::{BLUE_NET, RED_NET, net_name};
 pub use record::{
@@ -121,7 +122,9 @@ use mush_core::{Ctx, ObjId};
 use smol_str::SmolStr;
 
 use crate::arena::damage::UnitReturn;
-use crate::arena::state::{CustodyOut, CustodyUnit, EndReason, MatchEnd, Pilot, StopReason, Team};
+use crate::arena::state::{
+    CustodyOut, CustodyUnit, EndReason, MatchEnd, MatchMode, Pilot, StopReason, Team,
+};
 use crate::arena_bridge::{ArenaRegistry, OpenMatchError, match_log_id};
 use crate::arena_task::MatchId;
 use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
@@ -729,6 +732,19 @@ pub enum StartError {
     /// The arena refused the check-out, or could not be started.
     #[error("{0}")]
     Open(#[from] OpenMatchError),
+    /// **16b cut O.1** — the ground does not declare the mode the match was
+    /// asked for ([`crate::arena::state::ArenaDefinition::supports`]). Refused
+    /// right after the definition is resolved, before anything is written. No
+    /// production composition reaches it from the lobby — the catalog is
+    /// compiled in and the centre's arena is always the proving ground, which
+    /// declares `hold` — so it is the direct caller's refusal.
+    #[error("arena {arena} does not support {mode}")]
+    ModeUnsupported {
+        /// The mode's wire word.
+        mode: &'static str,
+        /// The arena's id.
+        arena: SmolStr,
+    },
 }
 
 /// **`Boarding → Running`** (doc 16 §3.8): check every unit out and open the
@@ -755,6 +771,12 @@ pub enum StartError {
 ///
 /// [`StartError`], naming the unit or the side. On any of them, nothing is
 /// deployed.
+///
+/// **16b cut O.1**: `mode` is the rule the match is fought under (the lobby's
+/// `SIM MODE`; `@arena/start` passes [`MatchMode::Skirmish`]), refused with
+/// [`StartError::ModeUnsupported`] when the ground does not declare it, and
+/// carried on the [`CustodyOut`] and the [`MatchRecord`].
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     ctx: &mut Ctx<'_>,
     match_id: MatchId,
@@ -763,12 +785,22 @@ pub fn start(
     arena_cfg: &ArenaConfig,
     match_cfg: &MatchConfig,
     sensors_cfg: &SensorsConfig,
+    mode: MatchMode,
 ) -> Result<MatchId, StartError> {
     // 16b cut C.2: the authored arena when a loaded pack declares one, and the
     // stand-in window of T.3 otherwise.
     let definition = arena_def::definition_for(ctx.w, arena)
         .map_err(StartError::NoGround)?
         .ok_or_else(|| StartError::NoArena(arena.clone()))?;
+    // **16b cut O.1** (16c N11): a mode the ground does not declare is refused
+    // here, before the first write, as the arena itself would refuse it
+    // (`ArenaError::ModeUnsupported`).
+    if !definition.supports(mode) {
+        return Err(StartError::ModeUnsupported {
+            mode: mode.as_str(),
+            arena: arena.clone(),
+        });
+    }
 
     // (1) Every refusal, before the first write.
     let mut seen: Vec<ObjId> = Vec::new();
@@ -911,6 +943,9 @@ pub fn start(
         unparsed: 0,
         // 16b cut I.1: built beside the folds, once the callsigns are known.
         replay: None,
+        // 16b cut O.1: the rule it is fought under, for the result and the
+        // replay.
+        mode,
         // 16b cut N.2: the same grouping `Arena::new` derives, from the same
         // triples and the same `[tacsim.arena].squad_size` (16b cut Z.1) — a
         // side's reflex units dealt into squads, lowest id commanding. One
@@ -1006,6 +1041,7 @@ pub fn start(
         pilots,
         resolution,
         seed,
+        mode,
     };
     let callsigns = match crate::arena_bridge::open_match(
         ctx,
@@ -1643,7 +1679,10 @@ pub fn finish(
     // writes the replay it folded: the tape says `void`, and so does the replay.
     let replay_written = match replay_fold {
         Some(fold) => {
-            let replay = fold.finish(outcome, record::reason_word(end.reason));
+            // 16b cut O.1: the mode off the record, so the replay says the
+            // rule the match was fought under (plan item 39).
+            let mut replay = fold.finish(outcome, record::reason_word(end.reason));
+            replay.mode = record.mode;
             record::write_replay(ctx, match_id, &replay);
             if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
                 book.hold_replay(match_id, Arc::new(replay));

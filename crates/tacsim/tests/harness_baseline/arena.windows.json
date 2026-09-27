@@ -1,7 +1,7 @@
 {
   "blessed": {
-    "commit": "eb1702aabbb7dd3d7b593a5ac4b1bc0594d6a61d",
-    "date": "2026-09-25T17:11:47Z",
+    "commit": "f3c053b17d1bad0f4e251958a38baf0d10154135",
+    "date": "2026-09-26T23:29:50Z",
     "host": {
       "cpus": 32,
       "hostname": "ALIEN18",
@@ -51,7 +51,7 @@
     "frames_per_pulse_mean": 19.525,
     "held_at_end": 14,
     "lagged_pulses": 0,
-    "ledger_bytes_streamed": 3404107,
+    "ledger_bytes_streamed": 3403813,
     "ledger_chunks": 211,
     "moving_at_end": 124
   },
@@ -66,8 +66,8 @@
   },
   "memory": {
     "horizon_bytes": 26112,
-    "rss_end_kib": 44016,
-    "rss_start_kib": 21656,
+    "rss_end_kib": 44132,
+    "rss_start_kib": 21568,
     "vmrss_end_kib": null,
     "vmrss_start_kib": null
   },
@@ -160,15 +160,15 @@
     ]
   },
   "setup_ms": {
-    "arena_open": 1.579,
-    "boot": 19.788,
-    "generate": 3.676,
+    "arena_open": 1.713,
+    "boot": 22.382,
+    "generate": 3.754,
     "killed_warming": 0,
-    "pack_apply": 20.71,
-    "terrain_convert": 1.328,
+    "pack_apply": 20.547,
+    "terrain_convert": 1.344,
     "warm_pulses": 47,
-    "warm_up": 55.581,
-    "window_open": 12.259
+    "warm_up": 58.075,
+    "window_open": 12.596
   },
   "slope": {
     "refusals": 877,
@@ -183,11 +183,11 @@
   },
   "tempos": [
     {
-      "max_ms": 10.978,
+      "max_ms": 10.295,
       "name": "arena_engaged",
-      "p50_ms": 2.541,
-      "p95_ms": 3.943,
-      "p99_ms": 5.397,
+      "p50_ms": 2.58,
+      "p95_ms": 4.621,
+      "p99_ms": 5.695,
       "period_ms": 500,
       "pulses": 120
     }
@@ -228,10 +228,10 @@
     "cell_probes_peak": 4858,
     "horizon_probes_peak": 4842,
     "jam_checks_peak": 688,
-    "ms_max": 13.944,
-    "ms_p50": 5.165,
-    "ms_p95": 7.73,
-    "ms_p99": 9.735,
+    "ms_max": 13.422,
+    "ms_p50": 5.236,
+    "ms_p95": 8.74,
+    "ms_p99": 9.991,
     "share_ops_peak": 107,
     "traces_peak": 952,
     "window_ms": 500,

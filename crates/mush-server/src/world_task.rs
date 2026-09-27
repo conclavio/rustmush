@@ -14606,6 +14606,7 @@ mod tests {
                     bearing_deg: 270,
                 },
             ],
+            objective: None,
         }
     }
 

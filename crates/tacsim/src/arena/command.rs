@@ -45,6 +45,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mush_core::ObjId;
+use serde::{Deserialize, Serialize};
 
 use crate::arena::reflex::ReflexState;
 use crate::arena::state::{Arena, Classification, ContactId, Team};
@@ -142,6 +143,29 @@ impl SignalReason {
     }
 }
 
+/// **The match's objective, as a squad's commander is told it** (16b cut O.1;
+/// 16c N11; plan items 14, 33).
+///
+/// Every field is **public in selection** — the lobby's board prints the rule
+/// while the match is set up, and the spot's name and letter are on every
+/// pilot's map legend (doc 16 §3.2) — so telling a provider costs no observer
+/// rule anything. What it never carries is the clock: who holds the spot, and
+/// since when, reaches no pilot and no commander (plan item 10).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BriefObjective {
+    /// The mode's wire word (`hold`). Never printed: the prompt describes the
+    /// objective in words that are not one of the forced tool's six objectives.
+    pub mode: String,
+    /// The key spot's cell, `(column, row)`.
+    pub cell: (u16, u16),
+    /// The key spot's map letter, or `None` past the alphabet.
+    pub letter: Option<char>,
+    /// The half-side of the square round the spot, cells.
+    pub radius_cells: u16,
+    /// How long a side must be alone on it, whole seconds.
+    pub hold_s: u32,
+}
+
 /// **One squad, as the world is told about it.**
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SquadSignal {
@@ -210,6 +234,18 @@ pub struct SquadSignal {
     /// row per roster unit the arena still holds, in roster order, the commander
     /// first at ordinal `1`. Filled only for a squad that is being reported.
     pub members: Vec<SignalMember>,
+    /// **The match's objective** (16b cut O.1; 16c N11; plan items 14, 33), or
+    /// `None` on a skirmish — filled from [`crate::arena::Arena::hold`].
+    ///
+    /// **Why the commander is told**: after 16b cut AC every reflex squad on
+    /// dev1 deliberates through a live LLM commander, and its forced tool always
+    /// answers one of six orders. A commander blind to the objective answers its
+    /// first `NoOrder` signal with an order that overrides doctrine's Hold goal
+    /// for up to the order's TTL — the squad that would have driven to the spot
+    /// would be sent somewhere else. Told, it can leave doctrine alone
+    /// (`engage`) or send the squad to the spot (`advance`, which hands over to
+    /// doctrine on arrival).
+    pub objective: Option<BriefObjective>,
 }
 
 /// What the arena remembers about one squad between signals.
@@ -260,6 +296,17 @@ impl Arena {
             self.definition.terrain.width(),
             self.definition.terrain.height(),
         );
+        // **16b cut O.1** (16c N11): the objective every signal of this match
+        // carries — the same for every squad of both sides, and `None` on a
+        // skirmish. Built once per take, and cloned only onto a squad that is
+        // actually being reported.
+        let objective = self.hold.as_ref().map(|hold| BriefObjective {
+            mode: crate::arena::state::MatchMode::Hold.as_str().to_owned(),
+            cell: hold.spot,
+            letter: hold.letter,
+            radius_cells: hold.radius_cells,
+            hold_s: hold.hold_ms / 1_000,
+        });
         let mut expired = std::mem::take(&mut self.squads_expired);
         let mut watch = std::mem::take(&mut self.squad_watch);
         let mut reported: Vec<SquadId> = Vec::new();
@@ -418,6 +465,7 @@ impl Arena {
                 cell: self.definition.terrain.cell_of(&commander.pose),
                 window,
                 members,
+                objective: objective.clone(),
             });
         }
         self.squad_watch = watch;

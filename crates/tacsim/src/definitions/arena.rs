@@ -32,8 +32,8 @@ use mush_core::CanonicalId;
 use serde::{Deserialize, Serialize};
 
 use crate::arena::state::{
-    ArenaDefinition, ArenaTerrain, EntryZone, KeySpot as ArenaKeySpot, PROVISIONAL_PREFIX, Team,
-    TerrainCell, Waypoint as ArenaWaypoint, Waypoints,
+    ArenaDefinition, ArenaMode, ArenaTerrain, EntryZone, HoldRule, KeySpot as ArenaKeySpot,
+    PROVISIONAL_PREFIX, Team, TerrainCell, Waypoint as ArenaWaypoint, Waypoints,
 };
 use crate::definitions::DefinitionError;
 use crate::definitions::unit::TRACKED;
@@ -68,6 +68,60 @@ pub const MAX_WAYPOINT_EDGES: usize = 1_024;
 /// The most stock units one arena may place — `match.max_slots_per_side` (12)
 /// on each side (16b §9).
 pub const MAX_ARENA_UNITS: usize = 24;
+
+/// **The widest a Hold square may be**, cells either side of its spot (16b cut
+/// O.1; plan item 1): the presence test is one Chebyshev comparison per unit
+/// per substep whatever the radius, and thirty-two cells is 320 m on the shipped
+/// ground — a square 650 m across, wider than any spot a side could be said to
+/// hold.
+pub const MAX_HOLD_RADIUS_CELLS: u16 = 32;
+
+/// **The shortest a Hold may last**, arena milliseconds (16b cut O.1): ten
+/// seconds, which is what makes the settle order's tie rule true — a
+/// `HoldSettles` is scheduled at least this long before it pops, so it carries a
+/// lower sequence than any impact due at its own millisecond.
+pub const MIN_HOLD_MS: u32 = 10_000;
+
+/// **The longest a Hold may last**, arena milliseconds (16b cut O.1): an hour,
+/// the stock `match.max_duration_ms`.
+pub const MAX_HOLD_MS: u32 = 3_600_000;
+
+/// **One mode a ground declares it supports** (16b cut O.1; 16c N11), beyond the
+/// skirmish every ground supports and none declares.
+///
+/// Named `ArenaModeDef` and not `ModeDef` because [`crate::definitions::unit`]
+/// already owns that name for a mobility mode, and strict rustdoc wants every
+/// intra-doc link to resolve one way.
+///
+/// ```json
+/// { "mode": "hold", "spot": "The Crossroads", "radius_cells": 6, "hold_ms": 120000 }
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ArenaModeDef {
+    /// **Keep a key spot uncontested for a time** — the side alone within
+    /// `radius_cells` of the named spot for `hold_ms` wins.
+    Hold {
+        /// One of the arena's key spots, by its exact authored name.
+        spot: String,
+        /// The half-side of the square round the spot, cells:
+        /// `1..=`[`MAX_HOLD_RADIUS_CELLS`].
+        radius_cells: u16,
+        /// How long a side must be alone on it, milliseconds: whole seconds,
+        /// [`MIN_HOLD_MS`] to [`MAX_HOLD_MS`].
+        hold_ms: u32,
+    },
+}
+
+impl ArenaModeDef {
+    /// The mode's word — what a refusal names it by.
+    #[must_use]
+    pub const fn word(&self) -> &'static str {
+        match self {
+            ArenaModeDef::Hold { .. } => "hold",
+        }
+    }
+}
 
 /// A team's deployment rectangle, in cells, inclusive of both corners.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -167,6 +221,11 @@ pub struct ArenaDef {
     pub key_spots: Vec<KeySpot>,
     /// The patrol graph.
     pub waypoints: WaypointGraph,
+    /// **The modes this ground supports** beyond the skirmish (16b cut O.1; 16c
+    /// N11), in authored order. Absent and `[]` are the same thing — a ground
+    /// that is fought only to elimination — and an empty list is not written.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modes: Vec<ArenaModeDef>,
     /// The stock units.
     pub tanks: Vec<TankDef>,
     /// Why these numbers.
@@ -314,6 +373,7 @@ impl ArenaDef {
             )?;
             self.on_window(entry, spot.x, spot.y, &format!("key spot `{}`", spot.name))?;
         }
+        self.check_modes(entry)?;
         self.check_waypoints(entry)?;
         if self.tanks.len() > MAX_ARENA_UNITS {
             return Err(DefinitionError::value(
@@ -379,6 +439,131 @@ impl ArenaDef {
             }
         }
         Ok(())
+    }
+
+    /// **The modes a ground declares, checked at load** (16b cut O.1; plan item
+    /// 20), after the key spots they name. Six refusals, in this order, for each
+    /// declaration:
+    ///
+    /// 1. a mode word **declared twice** — one ground, one rule per mode;
+    /// 2. a `spot` that is not **exactly** one of the arena's key-spot names —
+    ///    case-sensitive, because the name is resolved once, here and in
+    ///    [`from_pack`], and a second spelling would be a second name;
+    /// 3. `radius_cells` outside `1..=`[`MAX_HOLD_RADIUS_CELLS`];
+    /// 4. `hold_ms` outside [`MIN_HOLD_MS`]`..=`[`MAX_HOLD_MS`];
+    /// 5. `hold_ms` that is **not whole seconds** — the settle is at
+    ///    `since + hold_ms`, `since` is a substep boundary, and a whole second is
+    ///    what keeps the win's millisecond on every cadence's lattice;
+    /// 6. a hold square (`[x−r, x+r] × [y−r, y+r]`, clipped to the window) that
+    ///    **reaches an entry zone** — a side that musters on the spot would hold
+    ///    it from the first substep.
+    ///
+    /// Validation encodes nothing, so a declaration that passes digests exactly
+    /// as its bytes do.
+    fn check_modes(&self, entry: &str) -> Result<(), DefinitionError> {
+        let mut words: Vec<&'static str> = Vec::new();
+        for mode in &self.modes {
+            let word = mode.word();
+            if words.contains(&word) {
+                return Err(DefinitionError::value(
+                    entry,
+                    format!("mode `{word}` is declared twice"),
+                ));
+            }
+            words.push(word);
+            match mode {
+                ArenaModeDef::Hold {
+                    spot,
+                    radius_cells,
+                    hold_ms,
+                } => {
+                    let Some(at) = self.key_spots.iter().find(|named| named.name == *spot) else {
+                        return Err(DefinitionError::value(
+                            entry,
+                            format!(
+                                "mode `{word}` names key spot `{spot}`, which the arena does not \
+                                 declare"
+                            ),
+                        ));
+                    };
+                    if *radius_cells == 0 || *radius_cells > MAX_HOLD_RADIUS_CELLS {
+                        return Err(DefinitionError::value(
+                            entry,
+                            format!(
+                                "mode `{word}` radius_cells is 1 to {MAX_HOLD_RADIUS_CELLS}; \
+                                 {radius_cells} is not"
+                            ),
+                        ));
+                    }
+                    if !(MIN_HOLD_MS..=MAX_HOLD_MS).contains(hold_ms) {
+                        return Err(DefinitionError::value(
+                            entry,
+                            format!(
+                                "mode `{word}` hold_ms is {MIN_HOLD_MS} to {MAX_HOLD_MS}; \
+                                 {hold_ms} is not"
+                            ),
+                        ));
+                    }
+                    if hold_ms % 1_000 != 0 {
+                        return Err(DefinitionError::value(
+                            entry,
+                            format!("mode `{word}` hold_ms is whole seconds; {hold_ms} is not"),
+                        ));
+                    }
+                    let x0 = at.x.saturating_sub(*radius_cells);
+                    let x1 =
+                        at.x.saturating_add(*radius_cells)
+                            .min(self.cols.saturating_sub(1));
+                    let y0 = at.y.saturating_sub(*radius_cells);
+                    let y1 =
+                        at.y.saturating_add(*radius_cells)
+                            .min(self.rows.saturating_sub(1));
+                    if let Some(zone) = self.entry_zones.iter().find(|zone| {
+                        x0 <= zone.x1 && zone.x0 <= x1 && y0 <= zone.y1 && zone.y0 <= y1
+                    }) {
+                        return Err(DefinitionError::value(
+                            entry,
+                            format!(
+                                "mode `{word}` at `{spot}` reaches the {} entry zone",
+                                zone.team.as_str()
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// **The declared modes, resolved** (16b cut O.1): each
+    /// [`ArenaModeDef::Hold`] as an [`ArenaMode::Hold`] whose `spot` is the
+    /// named key spot's **index** — what [`from_pack`] puts on the definition,
+    /// and what `match_::lobby`'s words read without building a window. A
+    /// declaration naming no spot (which [`ArenaDef::check`] refuses at load) is
+    /// left out rather than guessed at.
+    #[must_use]
+    pub fn arena_modes(&self) -> Vec<ArenaMode> {
+        self.modes
+            .iter()
+            .filter_map(|mode| match mode {
+                ArenaModeDef::Hold {
+                    spot,
+                    radius_cells,
+                    hold_ms,
+                } => self
+                    .key_spots
+                    .iter()
+                    .position(|named| named.name == *spot)
+                    .and_then(|index| u16::try_from(index).ok())
+                    .map(|index| {
+                        ArenaMode::Hold(HoldRule {
+                            spot: index,
+                            radius_cells: *radius_cells,
+                            hold_ms: *hold_ms,
+                        })
+                    }),
+            })
+            .collect()
     }
 
     fn check_waypoints(&self, entry: &str) -> Result<(), DefinitionError> {
@@ -850,6 +1035,9 @@ pub fn from_pack(
                 })
                 .collect::<Vec<_>>(),
         ),
+        // **16b cut O.1** (16c N11): the declared modes, each spot resolved from
+        // its name to its index once, here, as the graph's edges are above.
+        modes: def.arena_modes(),
     })
 }
 
@@ -993,5 +1181,178 @@ mod tests {
     fn the_spot_cap_is_twenty_two() {
         assert_eq!(MAX_KEY_SPOTS, 22);
         assert_eq!(MAX_KEY_SPOTS, crate::match_::cockpit::SPOT_LETTERS.len());
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut O.1 — the modes a ground declares
+    // -----------------------------------------------------------------------
+
+    /// The shipped arena's own entry, decoded — a real, valid `ArenaDef` to
+    /// vary one field of.
+    fn shipped() -> ArenaDef {
+        let doc: serde_json::Value =
+            serde_json::from_str(crate::definitions::content::PROVING_GROUND_JSON)
+                .expect("the arena pack is json");
+        serde_json::from_value(doc["entries"]["tacsim.arena.proving_ground"]["def"].clone())
+            .expect("the shipped arena entry decodes")
+    }
+
+    fn hold(spot: &str, radius_cells: u16, hold_ms: u32) -> ArenaModeDef {
+        ArenaModeDef::Hold {
+            spot: spot.to_owned(),
+            radius_cells,
+            hold_ms,
+        }
+    }
+
+    /// The detail `check` refuses `def` with, or `None` when it passes.
+    fn refusal(def: &ArenaDef) -> Option<String> {
+        match def.check("tacsim.arena.test") {
+            Ok(()) => None,
+            Err(DefinitionError::Value { detail, .. }) => Some(detail),
+            Err(other) => panic!("a mode refuses as a value: {other:?}"),
+        }
+    }
+
+    /// **16b cut O.1**: every one of `check`'s six mode refusals, verbatim, in
+    /// its order, and the shipped declaration passing them all.
+    #[test]
+    fn o1_the_six_mode_refusals_are_verbatim() {
+        let with = |modes: Vec<ArenaModeDef>| {
+            let mut def = shipped();
+            def.modes = modes;
+            refusal(&def)
+        };
+        // The shipped declaration passes.
+        assert_eq!(with(vec![hold("The Crossroads", 6, 120_000)]), None);
+        // 1. Declared twice.
+        assert_eq!(
+            with(vec![
+                hold("The Crossroads", 6, 120_000),
+                hold("North Barn", 6, 120_000)
+            ]),
+            Some("mode `hold` is declared twice".to_owned())
+        );
+        // 2. A spot the arena does not declare — and one differing only in case.
+        assert_eq!(
+            with(vec![hold("The Pub", 6, 120_000)]),
+            Some(
+                "mode `hold` names key spot `The Pub`, which the arena does not declare".to_owned()
+            )
+        );
+        assert_eq!(
+            with(vec![hold("the crossroads", 6, 120_000)]),
+            Some(
+                "mode `hold` names key spot `the crossroads`, which the arena does not declare"
+                    .to_owned()
+            ),
+            "the name is matched exactly, case and all"
+        );
+        // 3. The radius, both ends.
+        for radius in [0, MAX_HOLD_RADIUS_CELLS + 1] {
+            assert_eq!(
+                with(vec![hold("The Crossroads", radius, 120_000)]),
+                Some(format!(
+                    "mode `hold` radius_cells is 1 to 32; {radius} is not"
+                ))
+            );
+        }
+        assert_eq!(
+            with(vec![hold("North Barn", MAX_HOLD_RADIUS_CELLS, 120_000)]),
+            None
+        );
+        // 4. The time, both ends.
+        for ms in [MIN_HOLD_MS - 1_000, MAX_HOLD_MS + 1_000] {
+            assert_eq!(
+                with(vec![hold("The Crossroads", 6, ms)]),
+                Some(format!(
+                    "mode `hold` hold_ms is 10000 to 3600000; {ms} is not"
+                ))
+            );
+        }
+        assert_eq!(with(vec![hold("The Crossroads", 6, MIN_HOLD_MS)]), None);
+        assert_eq!(with(vec![hold("The Crossroads", 6, MAX_HOLD_MS)]), None);
+        // 5. Whole seconds.
+        assert_eq!(
+            with(vec![hold("The Crossroads", 6, 10_500)]),
+            Some("mode `hold` hold_ms is whole seconds; 10500 is not".to_owned())
+        );
+        // 6. A square that reaches an entry zone: a spot at column 20 with a
+        //    square of six reaches the red zone's column 15; a square of four
+        //    stops at column 16.
+        let mut near = shipped();
+        near.key_spots.push(KeySpot {
+            name: "Red Gate".to_owned(),
+            x: 20,
+            y: 50,
+        });
+        near.modes = vec![hold("Red Gate", 6, 120_000)];
+        assert_eq!(
+            refusal(&near),
+            Some("mode `hold` at `Red Gate` reaches the red entry zone".to_owned())
+        );
+        // The exact touch: a square of five starts ON column 15, the zone's
+        // own last column — one shared column is a reach.
+        near.modes = vec![hold("Red Gate", 5, 120_000)];
+        assert_eq!(
+            refusal(&near),
+            Some("mode `hold` at `Red Gate` reaches the red entry zone".to_owned()),
+            "a square sharing the zone's edge column reaches it"
+        );
+        near.modes = vec![hold("Red Gate", 4, 120_000)];
+        assert_eq!(refusal(&near), None, "column 16 is clear of the zone");
+    }
+
+    /// **16b cut O.1**: `modes` absent and `[]` both parse to the empty list,
+    /// and an empty list is not written back.
+    #[test]
+    fn o1_modes_absent_and_empty_both_parse() {
+        let doc: serde_json::Value =
+            serde_json::from_str(crate::definitions::content::PROVING_GROUND_JSON)
+                .expect("the arena pack is json");
+        let mut entry = doc["entries"]["tacsim.arena.proving_ground"]["def"].clone();
+        entry
+            .as_object_mut()
+            .expect("an object")
+            .remove("modes")
+            .expect("the shipped entry declares its modes");
+        let absent: ArenaDef = serde_json::from_value(entry.clone()).expect("absent parses");
+        assert!(absent.modes.is_empty());
+        entry["modes"] = serde_json::json!([]);
+        let empty: ArenaDef = serde_json::from_value(entry).expect("[] parses");
+        assert!(empty.modes.is_empty());
+        let written = serde_json::to_value(&empty).expect("encodes");
+        assert!(
+            written.get("modes").is_none(),
+            "an empty list is not written"
+        );
+        // An unknown key on a declaration is refused, as everywhere in a pack.
+        let bad: Result<ArenaModeDef, _> = serde_json::from_value(serde_json::json!({
+            "mode": "hold", "spot": "The Crossroads", "radius_cells": 6, "hold_ms": 120000,
+            "points": 3
+        }));
+        assert!(bad.is_err());
+    }
+
+    /// **16b cut O.1**: the declaration resolves its spot's name to its index,
+    /// which is what `from_pack` puts on the definition.
+    #[test]
+    fn o1_the_declared_spot_resolves_to_its_index() {
+        let def = shipped();
+        assert_eq!(
+            def.arena_modes(),
+            vec![ArenaMode::Hold(HoldRule {
+                spot: 1,
+                radius_cells: 6,
+                hold_ms: 120_000,
+            })]
+        );
+        let mut none = def.clone();
+        none.modes = Vec::new();
+        assert!(none.arena_modes().is_empty());
+        // A name `check` would refuse is left out, never guessed at.
+        let mut stray = def;
+        stray.modes = vec![hold("The Pub", 6, 120_000)];
+        assert!(stray.arena_modes().is_empty());
     }
 }

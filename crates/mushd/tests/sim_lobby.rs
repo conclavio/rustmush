@@ -1095,3 +1095,93 @@ async fn i1_a_finished_match_replays_to_both_pilots_and_a_bystander() {
     )
     .await;
 }
+
+// ---------------------------------------------------------------------------
+// (9) 16b cut O.1 — `SIM MODE` over the real front door (16c N11)
+// ---------------------------------------------------------------------------
+
+/// **`SIM MODE` over SSH** (16b cut O.1): a bystander reads it, the red lead
+/// sets Hold and every refusal comes back over the wire in its own sentence,
+/// the set is announced in the red room, the blue room and the lobby alike,
+/// and the board carries the rule. No 120-second wall wait: the win is the
+/// rig's, under paused time (`crates/tacsim/tests/cockpit.rs`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn o1_sim_mode_over_the_wire() {
+    let server = boot("sim-lobby-o1-mode").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+
+    // A bystander with no slot reads it.
+    let said = one_line(&ask(&mut cy, "SIM MODE", "supports: skirmish, hold.").await);
+    assert!(
+        said.contains("Mode: skirmish. The Proving Ground supports: skirmish, hold."),
+        "{said}"
+    );
+    // A set outside `Selection`.
+    say(&mut ada, "SIM MODE hold", "centre is idle").await;
+
+    // Ada leads red from the red room, Bo blue from the blue room; Cy claims
+    // red's second slot and stays in the lobby.
+    let listing = ask(&mut god, "@find Red Room", "END OF LIST").await;
+    let red_room = dbref_of(&listing, "Red Room");
+    let listing = ask(&mut god, "@find Blue Room", "END OF LIST").await;
+    let blue_room = dbref_of(&listing, "Blue Room");
+    for (pilot, room) in [(ADA, red_room), (BO, blue_room)] {
+        say(
+            &mut god,
+            &format!("@teleport #{}=#{room}", pilot.0),
+            "Teleported",
+        )
+        .await;
+    }
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(&mut cy, "SIM TEAM red", "takes red slot 2").await;
+
+    // The refusals, over the wire.
+    say(
+        &mut cy,
+        "SIM MODE hold",
+        "Only a side's lead or staff can set the mode.",
+    )
+    .await;
+    say(&mut ada, "SIM MODE capture", "No such mode: capture.").await;
+
+    // The set, heard in every room of the centre.
+    let said = one_line(&ask(&mut ada, "SIM MODE hold", "elimination still ends it").await);
+    assert!(
+        said.contains(
+            "Mode set to hold: keep The Crossroads (B) uncontested for 120 seconds to win; \
+             elimination still ends it."
+        ),
+        "{said}"
+    );
+    bo.expect("Mode set to hold").await;
+    cy.expect("Mode set to hold").await;
+
+    // The board says the rule, to every reader.
+    for term in [&mut ada, &mut bo, &mut cy] {
+        let status = one_line(&ask(term, "SIM STATUS", "uncontested for 120 s").await);
+        assert!(
+            status.contains("mode: hold — keep The Crossroads (B) uncontested for 120 s"),
+            "{status}"
+        );
+    }
+    // And the bystander's read carries it.
+    let said = one_line(&ask(&mut cy, "SIM MODE", "seconds to win.").await);
+    assert!(
+        said.contains(
+            "Mode: hold. The Proving Ground supports: skirmish, hold. Hold: keep The \
+             Crossroads (B) uncontested for 120 seconds to win."
+        ),
+        "{said}"
+    );
+
+    // `Boarding` refuses a set.
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "SIM MODE skirmish", "centre is boarding").await;
+    say(&mut ada, "SIM ABORT", "calls the match off").await;
+}

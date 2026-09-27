@@ -276,6 +276,23 @@ pub enum ReflexState {
     /// without ever entering `Approach` or `Engage`, so a screening tick reads
     /// `patrol` in the state distribution. So does a supporter holding its
     /// station, or standing where it is because it cannot see its charge.
+    ///
+    /// **16b cut O.1 (16c N11; plan items 2, 16, 32, 33): in a Hold match the
+    /// key spot is doctrine's fallback goal.** The list is then 1. the movement
+    /// order, 2. the search, 3. **the Hold spot** (`Arena::hold_goal`) in place
+    /// of BOTH the hunt and the waypoint walk, and 4. the waypoint walk only
+    /// while `hold_goal` declines — a spot no route reaches, given up for
+    /// `max(hunt_after_ms, repath_ms)` ([`ReflexUnit::hold_retry_ms`]). A
+    /// machine arrives anywhere inside `radius − 1` of the spot and parks there
+    /// (presence is all a hold needs, and one cell cannot seat a side); it is
+    /// **not** a standing `Objective::Advance` written by the arena, because a
+    /// live `Advance` suppresses the hostile edges for its whole TTL and arrival
+    /// does not end it. A hostile sighted from the spot is fought **from inside
+    /// the square** (the `Approach` arm's inside rule), and an `Advance` a
+    /// commander sends into the square hands over to this goal on arrival
+    /// (beside AA.1's arm). Both sides' machines take it. What is NOT changed,
+    /// recorded for the owner in Q-O1: an attacking machine stops at
+    /// `engage_cm` and never contests the square.
     Patrol,
     /// Closing on the hostile the utility score picked.
     Approach,
@@ -445,6 +462,17 @@ pub struct ReflexUnit {
     /// the far edge), by the `unreachable` edge on it, by every tick of a
     /// movement order, and by leaving `Patrol` for any reason.
     pub hunt: Option<(u16, u16)>,
+    /// **When a Hold goal no route reaches may be tried again** (16b cut O.1;
+    /// plan items 16, 34), arena milliseconds; `None` otherwise.
+    ///
+    /// Set by `Arena::follow`'s `unreachable` edge when the goal that failed
+    /// is the Hold spot — E.4's give-up, `B-41`'s lesson applied once more — to
+    /// `t_ms + max(hunt_after_ms, repath_ms)`, and read by
+    /// `Arena::hold_goal`, which declines while it is in the future (so
+    /// `Patrol` falls through to the waypoint walk and the fallback waypoint
+    /// holds) and clears it once past. Folded into the state hash beside the
+    /// machine's other clocks.
+    pub hold_retry_ms: Option<i64>,
 }
 
 impl ReflexUnit {
@@ -744,7 +772,7 @@ impl ReflexMemory {
 /// immutably and the ordering half can borrow it mutably, which is also what keeps
 /// "decide from the world the substep committed" honest.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct ReflexPlan {
+pub(crate) struct ReflexPlan {
     startup: bool,
     heading_mdeg: Option<u32>,
     speed_cms: Option<i32>,
@@ -1362,6 +1390,35 @@ impl Arena {
                 plan.expired = Some((order.squad, order.objective.as_str()));
                 None
             }
+            // **16b cut O.1 (16c N11; plan item 33): an `Advance` into the hold
+            // square ends for a unit when it arrives inside the square**, through
+            // the same `plan.expired` path and the same one `order_expired` line
+            // as AA.1's arm above. The live commander on dev1 always answers an
+            // order (its forced tool has no "no order"), and `advance` to the key
+            // spot is the reply it is likely to give; left standing, it would park
+            // the machine on arrival with the hostile edges suppressed for the
+            // order's whole TTL — a holder that cannot shoot back. Ended here, the
+            // unit is on doctrine from this tick, `Patrol`'s list hands it to
+            // `Arena::hold_goal` (goal `here`, speed 0), and the squad's next
+            // signal says `OrderExpired` with the objective in its brief.
+            //
+            // **Arrival is either of two readings**: the unit's cell inside the
+            // square, or the unit within [`ARRIVE_CELLS`] of the ordered cell —
+            // `Arena::follow`'s own test, at which it stops. An ordered cell on
+            // the square's edge is reached from outside one cell short of it, and
+            // with the first reading alone that machine would stand there, out of
+            // the square, under the order for its whole TTL; ended here instead,
+            // `hold_goal` drives it the last cells in.
+            Some(order)
+                if matches!(
+                    order.objective,
+                    Objective::Advance { to } if self.advance_reached_the_hold(to, self.definition.terrain.cell_of(&unit.pose))
+                ) =>
+            {
+                row.order = None;
+                plan.expired = Some((order.squad, order.objective.as_str()));
+                None
+            }
             // **16b cut Z.2 (16c N6)**: a `Support` whose charge has left the
             // arena, or whose charge this unit's own contact reads dead
             // ([`Arena::contact_reads_dead`] — what the unit knows, never the
@@ -1861,11 +1918,20 @@ impl Arena {
                         // below it is not asked; a movement order above never reaches
                         // here, and has just cleared both clocks' goals, so neither
                         // survives one.
+                        //
+                        // **16b cut O.1 (16c N11)**: in a Hold match the key spot
+                        // takes the hunt's place and the walk's — see
+                        // [`ReflexState::Patrol`] and [`Arena::hold_goal`] — and
+                        // the walk is asked only while the spot is given up.
                         _ => {
-                            if !self.search_goal(t_ms, &mut row, here, &memory.cfg)
-                                && !self.hunt_goal(id, t_ms, &mut row, here, &memory.cfg)
-                            {
-                                self.patrol_goal(id, &mut row, here);
+                            if !self.search_goal(t_ms, &mut row, here, &memory.cfg) {
+                                if self.hold.is_some() {
+                                    if !self.hold_goal(t_ms, unit, &mut row, here, &mut plan) {
+                                        self.patrol_goal(id, &mut row, here);
+                                    }
+                                } else if !self.hunt_goal(id, t_ms, &mut row, here, &memory.cfg) {
+                                    self.patrol_goal(id, &mut row, here);
+                                }
                             }
                         }
                     }
@@ -1921,7 +1987,24 @@ impl Arena {
                         // close still stops at `engage_cm` and holds its fire through
                         // the outer three tenths: firing on the move while closing is
                         // not built (16b row E).
-                        let close_edge = if unit.cannot_close() {
+                        //
+                        // **16b cut O.1 (16c N11; plan item 32): a machine inside
+                        // the hold square fights from it.** It takes
+                        // `cannot_close`'s two readings — `release_cm` as its edge
+                        // into `Engage`, and `here` as its goal outside that edge —
+                        // and one more: `here` inside the edge with no line, where
+                        // a machine that can drive would otherwise close on the
+                        // plot and leave the square. So it fires at anything with a
+                        // line inside its reach without leaving the radius, and
+                        // `Engage`'s `goal = here` keeps it there. What is NOT
+                        // changed, recorded for the owner in Q-O1: a machine
+                        // OUTSIDE the square — an attacker
+                        // sighting a holder — still stops at `engage_cm` (42 cells
+                        // for the stock tank) and never drives in to contest it.
+                        let inside = self.hold.as_ref().is_some_and(|hold| {
+                            here.is_some_and(|cell| hold.square_contains(cell))
+                        });
+                        let close_edge = if unit.cannot_close() || inside {
                             ranges.release_cm
                         } else {
                             ranges.engage_cm
@@ -1939,11 +2022,25 @@ impl Arena {
                                     t_ms,
                                     &mut plan,
                                 );
+                            } else if inside {
+                                // **16b cut O.1 (plan item 32)**: inside the edge
+                                // with no line, the holder does NOT close on the
+                                // plot, which would walk it off the square cell
+                                // by cell and hand the spot to whoever is left
+                                // on it. It stands and waits for a line — the
+                                // reading `cannot_close` gets for nothing, since
+                                // a machine that cannot drive goes nowhere
+                                // whatever its goal says.
+                                row.goal = here;
                             } else {
                                 row.goal = plot
                                     .and_then(|plot| plot.cell(&self.definition.terrain))
                                     .or(here);
                             }
+                        } else if inside {
+                            // 16b cut O.1: on the spot, it stands and waits for
+                            // the hostile to come inside its reach.
+                            row.goal = here;
                         } else {
                             let want =
                                 stand_off_want(ranges.engage_cm, u64::from(cell_cm.max(1)), range);
@@ -2282,6 +2379,85 @@ impl Arena {
             row.route.clear();
         }
         true
+    }
+
+    /// **`Patrol`'s Hold goal: the key spot** (16b cut O.1; 16c N11; plan items
+    /// 2, 16, 34). Answers whether it took the goal; asked only in a Hold match,
+    /// in place of both [`Arena::hunt_goal`] and [`Arena::patrol_goal`].
+    ///
+    /// It is **doctrine's own fallback goal** and not a standing
+    /// `Objective::Advance` written by the arena: a live `Advance` suppresses the
+    /// hostile edges for its whole TTL and arrival does not end it, so a machine
+    /// told to advance to the spot would park there unable to shoot back. As a
+    /// goal it leaves the hostile edges running, and a hostile sighted pre-empts
+    /// it without this being asked at all.
+    ///
+    /// * **Declines** while [`ReflexUnit::hold_retry_ms`] is in the future — a
+    ///   spot no route reached, given up by [`Arena::follow`]'s `unreachable`
+    ///   edge, so the list falls through to the waypoint walk and the fallback
+    ///   waypoint holds — and clears the clock once past.
+    /// * **Arrived** — a machine that [`UnitState::cannot_close`], or one whose
+    ///   cell is within `radius_cells − 1` of the spot (Chebyshev): the goal is
+    ///   `here`, the route is cleared and the speed ordered is `0`, as
+    ///   `Objective::Hold` parks a machine. Anywhere inside and not the spot's
+    ///   own cell, because presence is all a hold needs and one cell with
+    ///   [`ARRIVE_CELLS`] of one cannot seat a side; one cell short of the edge,
+    ///   so a machine braking onto the square does not stop astride it.
+    /// * **Otherwise** the goal is the spot itself (the route cleared on a
+    ///   change), and [`Arena::follow`] drives it there.
+    ///
+    /// Either way the hunt is dropped and its clock restarted: a machine with a
+    /// spot to hold has no business crossing to the far zone.
+    pub(crate) fn hold_goal(
+        &self,
+        t_ms: i64,
+        unit: &UnitState,
+        row: &mut ReflexUnit,
+        here: Option<(u16, u16)>,
+        plan: &mut ReflexPlan,
+    ) -> bool {
+        let Some(hold) = self.hold.as_ref() else {
+            return false;
+        };
+        if row.hold_retry_ms.is_some_and(|until| t_ms < until) {
+            return false;
+        }
+        row.hold_retry_ms = None;
+        let arrived = unit.cannot_close()
+            || here.is_some_and(|cell| {
+                cell.0
+                    .abs_diff(hold.spot.0)
+                    .max(cell.1.abs_diff(hold.spot.1))
+                    <= hold.radius_cells.saturating_sub(1)
+            });
+        if arrived {
+            row.goal = here;
+            row.route.clear();
+            plan.speed_cms = Some(0);
+        } else if row.goal != Some(hold.spot) {
+            row.goal = Some(hold.spot);
+            row.route.clear();
+        }
+        row.hunt = None;
+        row.unheld_since_ms = Some(t_ms);
+        true
+    }
+
+    /// **Whether an `Advance { to }` has reached the Hold square** (16b cut O.1;
+    /// plan item 33): `to` is inside the square, and the unit's cell `here` is
+    /// either inside it too or within [`ARRIVE_CELLS`] of `to` — where
+    /// [`Arena::follow`] stops it. `false` on a skirmish, off the window, and for
+    /// an ordered cell outside the square (that `Advance` is the commander's
+    /// own business and runs its course).
+    fn advance_reached_the_hold(&self, to: (u16, u16), here: Option<(u16, u16)>) -> bool {
+        let Some(hold) = self.hold.as_ref() else {
+            return false;
+        };
+        hold.square_contains(to)
+            && here.is_some_and(|cell| {
+                hold.square_contains(cell)
+                    || cell.0.abs_diff(to.0).max(cell.1.abs_diff(to.1)) <= ARRIVE_CELLS
+            })
     }
 
     /// `Patrol`'s goal: the node it is walking to, advanced when it arrives.
@@ -3265,6 +3441,27 @@ impl Arena {
                         if row.hunt.is_some_and(|cell| row.goal == Some(cell)) {
                             row.hunt = None;
                             row.unheld_since_ms = Some(t_ms);
+                        }
+                        // **16b cut O.1 (16c N11; plan items 16, 34; `B-41`'s
+                        // lesson applied once more)**: a Hold spot no route
+                        // reaches — a spot sealed off to this hull's class — is
+                        // given up here too, or `hold_goal` would re-assert it on
+                        // the very next tick and the fallback waypoint would never
+                        // hold. Given up for `max(hunt_after_ms, repath_ms)`: one
+                        // failed search per retry, and **floored at `repath_ms`
+                        // because `hunt_after_ms` 0 is the documented "off"
+                        // value**. The floor does not change how often the spot
+                        // is searched — `repath_ms` already throttles a search
+                        // above (`fresh_enough`) — but what the machine does in
+                        // between: unfloored at 0, `hold_goal` would re-assert the
+                        // spot on the very next tick and the machine would steer
+                        // straight at the sealed pocket between two failures,
+                        // which is `B-41`'s own defect; floored, the fallback
+                        // waypoint holds until the retry.
+                        if self.hold.is_some_and(|hold| row.goal == Some(hold.spot)) {
+                            row.hold_retry_ms = Some(t_ms.saturating_add(i64::from(
+                                memory.cfg.hunt_after_ms.max(memory.cfg.repath_ms),
+                            )));
                         }
                         self.fall_back_to_waypoint(id, row, here);
                     }

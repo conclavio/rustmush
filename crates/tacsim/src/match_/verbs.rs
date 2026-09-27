@@ -101,6 +101,9 @@ impl From<ArenaVerbError> for CmdError {
 /// Runs `Selection → Boarding → Running` in one authoritative action with the
 /// named units and the pilots currently seated on them, so the custody trigger is
 /// exercised without cut K's lobby.
+///
+/// **16b cut O.1**: always a skirmish — a mode is the lobby's `SIM MODE`, and a
+/// `mode` argument here is a recorded residual.
 pub fn start(
     ctx: &mut Ctx<'_>,
     arena_cfg: &crate::config::ArenaConfig,
@@ -157,6 +160,9 @@ pub fn start(
     // machine is walked rather than jumped: cut K's `SIM START` lands on exactly
     // this call with exactly this predecessor state.
     let arena = SmolStr::new(&definition);
+    // **16b cut O.1**: a staff start is always a skirmish. `@arena/start` takes
+    // no mode argument — the lobby's `SIM MODE` is where a mode is chosen — and
+    // that is a residual recorded for the owner, not an oversight.
     super::start(
         ctx,
         match_id,
@@ -165,6 +171,7 @@ pub fn start(
         arena_cfg,
         match_cfg,
         sensors_cfg,
+        crate::arena::state::MatchMode::Skirmish,
     )
     .map_err(|error| CmdError::msg(error.to_string()))?;
     // It ran: the centre now says so, so `SIM STATUS` in the lobby and
@@ -1089,6 +1096,7 @@ fn arm_panic_for_seed(
                 entry_zones: Vec::new(),
                 key_spots: Vec::new(),
                 waypoints: crate::arena::state::Waypoints::default(),
+                modes: Vec::new(),
             },
             units: vec![CustodyUnit {
                 id: unit,
@@ -1108,6 +1116,7 @@ fn arm_panic_for_seed(
             pilots: Vec::new(),
             resolution: crate::match_::stock_resolution(),
             seed,
+            mode: crate::arena::state::MatchMode::Skirmish,
         },
         &crate::config::ArenaConfig::default(),
         &crate::config::MatchConfig::default(),

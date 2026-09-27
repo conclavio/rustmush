@@ -5243,3 +5243,290 @@ async fn i4_a_watch_reaches_the_staffer_who_asked_and_no_one_else() {
     }
     say(&mut god, &format!("@arena/abort {id}"), "is stopping").await;
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut O.1 — the Hold rule is public, its clock reaches no pilot (16c N11)
+// ---------------------------------------------------------------------------
+
+/// The words a Hold clock would be told in; none may reach a pilot while the
+/// match runs (16b cut O.1, plan items 10, 17). **The key spot's name is NOT on
+/// this list, on purpose**: V.1 prints every spot's name and letter in the map
+/// legend, in VIEW's off-window line, to `RANGE`/`BEARING <spot>` and on
+/// `STATUS`'s `nearest spot:` — public ground by doc 16 §3.2, and pinned as
+/// such elsewhere in this file — so the clock's secrecy is the frame's key set,
+/// Bo's board shape and the absence of these words, never the name.
+const O1_CLOCK_WORDS: [&str; 6] = [
+    "holds ",
+    "holding",
+    "held since",
+    "since ",
+    "seconds left",
+    "remaining",
+];
+
+/// The board's line under Hold, whitespace collapsed.
+const O1_BOARD_LINE: &str = "mode: hold — keep The Crossroads (B) uncontested for 120 s";
+
+/// A running board read, as **every** line of the board — the contiguous block
+/// from its `Simulator centre` head through its `arena time` row, nothing
+/// filtered out of it — with every digit made `#`: its shape, which is the
+/// same across two matches whatever their ids and clocks. A row a later change
+/// adds anywhere in the block is therefore in the shape, and a Hold board that
+/// carried one would no longer be the skirmish board plus the `mode:` line.
+fn o1_board_shape(answer: &str) -> Vec<String> {
+    let lines: Vec<&str> = answer.lines().map(str::trim).collect();
+    let head = lines
+        .iter()
+        .position(|line| line.starts_with("Simulator centre"))
+        .unwrap_or_else(|| panic!("no board head in {answer:?}"));
+    let clock = lines
+        .iter()
+        .skip(head)
+        .position(|line| line.starts_with("arena time"))
+        .map(|at| head + at)
+        .unwrap_or_else(|| panic!("no arena time row in {answer:?}"));
+    lines
+        .get(head..=clock)
+        .unwrap_or_default()
+        .iter()
+        .map(|line| {
+            line.chars()
+                .map(|c| if c.is_ascii_digit() { '#' } else { c })
+                .collect::<String>()
+        })
+        .collect()
+}
+
+/// **Everything that has reached `term` so far is in its scrollback** (16b cut
+/// O.1): a parser refusal sent now is answered after every line the world
+/// queued for this session before it, so once its `Huh?` has arrived nothing
+/// earlier is still in flight. Retried on the transient, as [`ask_whole`] is.
+async fn o1_drain(term: &mut Term) {
+    for _ in 0..RETRY_BUDGET {
+        let mark = term.mark();
+        term.send_line(SENTINEL).await;
+        if term.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("the sentinel was never answered");
+}
+
+/// **The pilot's cockpit frame, asked for** (16b cut O.1): the `arena.cockpit`
+/// query answers the world's mirror of the last frame, so it does not wait on a
+/// pulse that changed something to push one. Asked until the arena has sent the
+/// pilot a frame at all.
+async fn o1_cockpit(ws: &mut Ws, first_id: u64) -> Value {
+    let mut id = first_id;
+    let mut answer = Value::Null;
+    wait_until(
+        STEP_TIMEOUT,
+        "the pilot's first cockpit frame",
+        async || {
+            id += 1;
+            answer = panel_query(ws, id, COCKPIT_FEED).await;
+            answer != unseated(COCKPIT_FEED)
+        },
+    )
+    .await;
+    answer
+}
+
+/// The top-level keys of a cockpit frame.
+fn o1_keys(frame: &Value) -> Vec<String> {
+    let mut keys: Vec<String> = frame
+        .as_object()
+        .map(|object| object.keys().cloned().collect())
+        .unwrap_or_default();
+    keys.sort();
+    keys
+}
+
+/// **16b cut O.1 (16c N11; plan items 10, 17, 28)**: the Hold RULE is public in
+/// selection and its CLOCK reaches no pilot.
+///
+/// In `Selection` God, Cy and both pilots read the board's `mode:` line and the
+/// `Mode set to hold` announcement. During the Hold match — red posed on The
+/// Crossroads, alone there — a pilot's cockpit frame has exactly the key set a
+/// skirmish's frame has; Bo's board read is the skirmish board's shape plus
+/// exactly the `mode:` line; and nothing Ada or Bo receive while it runs names a
+/// unit or carries a clock word. The match is ended with `SIM ABORT`, and the
+/// history row after is public: `aborted [hold]`, with no wait.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn o1_the_hold_rule_is_public_and_its_clock_reaches_no_pilot() {
+    let server = boot("observer-hold").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+    let (red, blue, _muster, _domain) = seat_the_witnesses(&mut god).await;
+    let listing = ask(&mut god, "@find Simulator Lobby", "END OF LIST").await;
+    let lobby = dbref_of(&listing, "Simulator Lobby");
+    say(
+        &mut god,
+        &format!("@teleport #{}=#{lobby}", CY.0),
+        "Teleported",
+    )
+    .await;
+    say(
+        &mut god,
+        &format!("@teleport #{}=#{lobby}", GOD.0),
+        "Simulator Lobby",
+    )
+    .await;
+
+    // Match 1, a skirmish: the reference frame and the reference board.
+    take_off(&mut ada, &mut bo).await;
+    let mut ada_web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
+    let skirmish_keys = o1_keys(&o1_cockpit(&mut ada_web, 800).await);
+    drop(ada_web);
+    let skirmish_board = o1_board_shape(&ask_whole(&mut bo, "SIM STATUS").await);
+    say(&mut ada, "SIM ABORT", "aborts match").await;
+    cy.expect("Its units are checked in.").await;
+    for pilot in [ADA, BO] {
+        say(
+            &mut god,
+            &format!("@teleport #{}=#{lobby}", pilot.0),
+            "Teleported",
+        )
+        .await;
+    }
+
+    // Match 2's selection: the rule, set and read by everybody.
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(&mut ada, "SIM MODE hold", "elimination still ends it").await;
+    for term in [&mut bo, &mut cy, &mut god] {
+        term.expect("Mode set to hold").await;
+    }
+    for (who, term) in [
+        ("Ada", &mut ada),
+        ("Bo", &mut bo),
+        ("Cy", &mut cy),
+        ("God", &mut god),
+    ] {
+        let board = ask(term, "SIM STATUS", "uncontested for 120 s").await;
+        let flat = board.split_whitespace().collect::<Vec<&str>>().join(" ");
+        assert!(
+            flat.contains(O1_BOARD_LINE),
+            "{who} did not read the rule: {flat}"
+        );
+    }
+    // Red's slot 1 opens on the spot; blue's on its authored muster, 120 cells
+    // off it, so red is the square's one occupant from the first substep.
+    say(
+        &mut god,
+        "@arena/pose RA=129 97 90",
+        "opens at cell (129, 97) heading 90",
+    )
+    .await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut bo, "blue", "Blue Room").await;
+    // Each pilot's transcript of match 2 starts here, before its `BOARD`:
+    // match 1 already put a `Good hunting` in both scrollbacks, so a wait on
+    // the whole scrollback would return at once and read nothing of this one.
+    let ada_from = ada.mark();
+    let bo_from = bo.mark();
+    say(&mut ada, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect_after(ada_from, "Good hunting").await;
+    bo.expect_after(bo_from, "Good hunting").await;
+
+    // The frame: the skirmish's keys, and not one more.
+    let mut ada_web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
+    let mut bo_web = web_session(&server, "bo", PILOT_PASSWORD, "Bo").await;
+    let mut frames: Vec<Value> = Vec::new();
+    for (ws, id) in [(&mut ada_web, 820), (&mut bo_web, 840)] {
+        let frame = o1_cockpit(ws, id).await;
+        assert_eq!(
+            o1_keys(&frame),
+            skirmish_keys,
+            "a Hold frame's keys differ from a skirmish's: {frame}"
+        );
+        frames.push(frame);
+    }
+    // Some arena time with red alone on the spot.
+    wait_until(
+        STEP_TIMEOUT,
+        "the arena clock to pass two seconds",
+        async || {
+            let staff = ask(&mut god, "@arena/status", "ledger writes awaiting").await;
+            support::arena_clock_seconds(&staff).is_some_and(|seconds| seconds >= 2)
+        },
+    )
+    .await;
+    // Bo's board: the skirmish's shape, plus exactly the `mode:` line.
+    let held_board = o1_board_shape(&ask_whole(&mut bo, "SIM STATUS").await);
+    let mode_lines: Vec<&String> = held_board
+        .iter()
+        .filter(|line| line.starts_with("mode:"))
+        .collect();
+    assert_eq!(mode_lines.len(), 1, "{held_board:?}");
+    let without: Vec<String> = held_board
+        .iter()
+        .filter(|line| !line.starts_with("mode:"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        without, skirmish_board,
+        "the Hold board is not the skirmish board plus the rule"
+    );
+    // A second frame each, read while red holds the spot.
+    for (ws, id) in [(&mut ada_web, 860), (&mut bo_web, 880)] {
+        let frame = o1_cockpit(ws, id).await;
+        assert_eq!(o1_keys(&frame), skirmish_keys, "{frame}");
+        frames.push(frame);
+    }
+    // Nothing either pilot received while it ran names a unit or tells a clock.
+    // Both sessions are drained first, so every line the world queued for
+    // either pilot while red held the spot is in its scrollback. Each
+    // transcript from its match-2 `Good hunting` on: what arrives before it is
+    // the boarding (the pod's own room text among it), not the match — and
+    // the drain's own `Huh?` in it is the proof the slice was read to its end.
+    o1_drain(&mut ada).await;
+    o1_drain(&mut bo).await;
+    let running = |who: &str, seen: String| {
+        let (_, after) = seen
+            .rsplit_once("Good hunting.")
+            .unwrap_or_else(|| panic!("{who}'s match-2 transcript has no `Good hunting.`"));
+        assert!(
+            after.contains(HUH),
+            "{who}'s transcript was not read to its end: {after:?}"
+        );
+        after.to_owned()
+    };
+    let seen = format!(
+        "{}\n{}\n{}",
+        running("Ada", strip_ansi(&ada.seen[ada_from..])),
+        running("Bo", strip_ansi(&bo.seen[bo_from..])),
+        frames
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<String>>()
+            .join("\n")
+    );
+    names_nothing(
+        &seen,
+        red,
+        blue,
+        "a pilot's lines and frames in a Hold match",
+    );
+    for word in O1_CLOCK_WORDS {
+        assert!(
+            !seen.contains(word),
+            "a pilot was told the clock ({word:?}):\n{seen}"
+        );
+    }
+
+    // Ended by `SIM ABORT`: the row is public and tagged, with no wait.
+    say(&mut ada, "SIM ABORT", "aborts match").await;
+    cy.expect("Match 2 is over").await;
+    let history = ask_whole(&mut cy, "SIM HISTORY").await;
+    let flat = history.split_whitespace().collect::<Vec<&str>>().join(" ");
+    history_row_is_public(&flat, 2, "#2 aborted [hold]", None);
+    let history = ask_whole(&mut ada, "SIM HISTORY").await;
+    let flat = history.split_whitespace().collect::<Vec<&str>>().join(" ");
+    history_row_is_public(&flat, 2, "#2 aborted [hold]", Some("RA"));
+}

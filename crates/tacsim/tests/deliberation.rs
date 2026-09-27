@@ -211,6 +211,7 @@ fn definition_painted(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
         ],
         key_spots: Vec::new(),
         waypoints: graph(),
+        modes: Vec::new(),
     }
 }
 
@@ -383,6 +384,7 @@ fn field_placed(
             pilots: Vec::new(),
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
         },
         cfg,
         &match_cfg(),
@@ -619,6 +621,7 @@ fn field_of(cfg: &ArenaConfig, units: &[(ObjId, Team, (u16, u16))]) -> Arena {
             pilots: Vec::new(),
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
         },
         cfg,
         &match_cfg(),
@@ -1314,6 +1317,7 @@ fn an_order_is_refused_for_a_unit_a_pilot_is_flying() {
             }],
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
         },
         &cfg,
         &match_cfg(),
@@ -3136,6 +3140,7 @@ fn y1_signal(roster: &tacsim::deliberation::SquadRoster) -> tacsim::arena::comma
         window: (16, 16),
         // 16b cut Z.1: the members ride the signal; the world never reads them.
         members: Vec::new(),
+        objective: None,
     }
 }
 
@@ -3371,4 +3376,150 @@ async fn z2_a_scripted_screen_and_support_map_and_a_support_lands_on_every_unit(
             "{line:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut O.1 — the commander is told the objective (16c N11; plan items 14,
+// 33)
+// ---------------------------------------------------------------------------
+
+/// [`field_placed`]'s three machines on a ground with a Hold declared at
+/// `(8, 12)` (map letter `A`, the ground's first spot), six cells round it,
+/// 120 s — fought at `mode`.
+fn o1_field(cfg: &ArenaConfig, mode: tacsim::arena::MatchMode) -> Arena {
+    let mut definition = definition();
+    definition.key_spots = vec![tacsim::arena::state::KeySpot {
+        name: SmolStr::new("The Spot"),
+        x: 8,
+        y: 12,
+    }];
+    definition.modes = vec![tacsim::arena::ArenaMode::Hold(tacsim::arena::HoldRule {
+        spot: 0,
+        radius_cells: 6,
+        hold_ms: 120_000,
+    })];
+    let units = vec![
+        tank_seeing(
+            RED_A,
+            Team::Red,
+            centre(2, 4),
+            Controller::Reflex,
+            WIDE_SIGHT_CELLS,
+        ),
+        tank_seeing(
+            RED_B,
+            Team::Red,
+            centre(2, 6),
+            Controller::Reflex,
+            WIDE_SIGHT_CELLS,
+        ),
+        tank_seeing(
+            BLUE,
+            Team::Blue,
+            centre(14, 4),
+            Controller::Reflex,
+            WIDE_SIGHT_CELLS,
+        ),
+    ];
+    let mut arena = Arena::new(
+        CustodyOut {
+            definition,
+            units,
+            pilots: Vec::new(),
+            resolution: tacsim::match_::stock_resolution(),
+            seed: SEED,
+            mode,
+        },
+        cfg,
+        &match_cfg(),
+        &SensorsConfig::default(),
+    )
+    .expect("the test arena");
+    arena.clock.pin_tempo_for_tests(Tempo::Engaged);
+    arena
+}
+
+/// The text of a request's user turn.
+fn o1_user_text(request: &mush_llm::CompletionRequest) -> String {
+    request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            mush_llm::ContentBlock::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// **16b cut O.1 (16c N11; plan items 14, 33)**: a Hold arena's first
+/// `NoOrder` signal carries the objective — the spot's cell, its letter, the
+/// radius and the time in whole seconds — and the prompt the provider is sent
+/// prints it on one `objective:` line in words that are none of the tool's
+/// orders, beside the system turn's mapping sentence; a skirmish's signal
+/// carries none and its prompt prints none.
+#[tokio::test]
+async fn o1_a_hold_arenas_first_signal_tells_the_commander_the_objective() {
+    use tacsim::deliberation::{SquadBrief, deliberate};
+
+    let (llm, mock) = mock_service();
+    let mut arena = o1_field(&arena_cfg(0), tacsim::arena::MatchMode::Hold);
+    let mut bytes = Vec::new();
+    let signals = run(&mut arena, 2_000, &mut bytes);
+    let first = signals
+        .iter()
+        .find(|signal| signal.reason == tacsim::arena::command::SignalReason::NoOrder)
+        .expect("a squad asked with no order");
+    assert_eq!(
+        first.objective,
+        Some(tacsim::arena::BriefObjective {
+            mode: "hold".to_owned(),
+            cell: (8, 12),
+            letter: Some('A'),
+            radius_cells: 6,
+            hold_s: 120,
+        })
+    );
+    assert!(
+        signals
+            .iter()
+            .all(|signal| signal.objective == first.objective),
+        "every squad of both sides is told the same objective"
+    );
+    mock.push_response(tool_use(
+        serde_json::json!({"objective": "engage", "ttl_ms": 20_000}),
+        0.000_25,
+    ));
+    let brief = SquadBrief::from_signal(1, first, 2);
+    deliberate(&llm, &brief).await.expect("the mock answers");
+    let request = mock.last_request().expect("the provider was asked");
+    let user = o1_user_text(&request);
+    assert!(
+        user.contains(
+            "objective: key spot A at 8,12; the side alone inside 6 cells of it for 120 s wins \
+             the match\n"
+        ),
+        "{user}"
+    );
+    let system = request.system.clone().unwrap_or_default();
+    assert!(
+        system.contains("In a key-spot match: engage keeps doctrine"),
+        "{system}"
+    );
+
+    // A skirmish of the same field: no objective, and no line.
+    let mut skirmish = o1_field(&arena_cfg(0), tacsim::arena::MatchMode::Skirmish);
+    let mut bytes = Vec::new();
+    let signals = run(&mut skirmish, 2_000, &mut bytes);
+    assert!(!signals.is_empty());
+    assert!(signals.iter().all(|signal| signal.objective.is_none()));
+    mock.push_response(tool_use(
+        serde_json::json!({"objective": "engage", "ttl_ms": 20_000}),
+        0.000_25,
+    ));
+    let brief = SquadBrief::from_signal(1, &signals[0], 2);
+    deliberate(&llm, &brief).await.expect("the mock answers");
+    let request = mock.last_request().expect("the provider was asked");
+    assert!(!o1_user_text(&request).contains("objective:"));
 }

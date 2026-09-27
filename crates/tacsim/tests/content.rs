@@ -363,7 +363,7 @@ const DIGESTS: [(&str, &str); 9] = [
     ),
     (
         "tacsim.pack.proving_ground",
-        "b75b98fd6d1669499384ea3fbf3ac54adaf06f90d0e34625094e9449c1a91c83",
+        "fd5860b51a60376725ec5fbe86797e8acef969db9a34fc70c87a23ea56c21b08",
     ),
     (
         "tacsim.proving_ground",
@@ -717,6 +717,7 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
             pilots: Vec::new(),
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: 2_350,
+            mode: tacsim::arena::MatchMode::Skirmish,
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -1334,7 +1335,9 @@ fn m4_the_five_tank_packs_are_version_two_and_the_biped_is_not_moved() {
 #[test]
 fn z3_the_arena_fields_six_a_side_in_the_authored_order() {
     let pack = tacsim::pack::load_pack(content::PROVING_GROUND_JSON).expect("the arena verifies");
-    assert_eq!(pack.manifest().version(), 3, "16b cut Z.3's version");
+    // 16b cut O.1 moved the version to 4 (the Hold declaration); the twelve
+    // tanks are Z.3's and unchanged.
+    assert_eq!(pack.manifest().version(), 4, "16b cut O.1's version");
     let catalog = Catalog::build_game(&[], "tacsim").expect("the shipped content binds");
     let arena = catalog
         .arenas
@@ -1477,12 +1480,14 @@ fn z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made() 
         planned.contains("0 create, 1 update, 0 retire"),
         "the arena entry is one update:\n{planned}"
     );
+    // 16b cut O.1: the shipped arena is version 4 now, so a version 2 world
+    // that takes it lands at 4.
     assert!(
-        applied.contains("Applied tacsim.pack.proving_ground@3"),
+        applied.contains("Applied tacsim.pack.proving_ground@4"),
         "{applied}"
     );
     assert!(!applied.contains("STOPPED"), "{applied}");
-    assert_eq!(arena_latch(&tw), Some(3));
+    assert_eq!(arena_latch(&tw), Some(4));
     // Every write the applier made under the atlas's identity was taken: the
     // roster document, the four units' documents and the placements all go
     // through `ctx.out`, which no namespace census refuses.
@@ -1616,8 +1621,68 @@ fn z3_a_deployed_roster_tank_refuses_the_apply_and_writes_nothing() {
     let (_, applied) =
         support::take_from_shelf(&mut tw, mush_core::GOD, content::PROVING_GROUND_PACK);
     assert!(
-        applied.contains("Applied tacsim.pack.proving_ground@3"),
+        applied.contains("Applied tacsim.pack.proving_ground@4"),
         "{applied}"
     );
     assert_eq!(units_in(&tw).len(), 12);
+}
+
+/// **16b cut O.1 (16c N11)**: the shipped ground declares Hold at The
+/// Crossroads — the parsed declaration, the spot resolved to its index 1 and
+/// map letter `B`, six cells round it, 120 s — and the hold square stands clear
+/// of both entry zones.
+#[test]
+fn o1_the_shipped_ground_declares_hold_at_the_crossroads() {
+    use tacsim::definitions::arena::ArenaModeDef;
+    let catalog = Catalog::build_game(&[], "tacsim").expect("the shipped content binds");
+    let arena = catalog
+        .arenas
+        .values()
+        .next()
+        .expect("the proving ground is shipped");
+    assert_eq!(
+        arena.modes,
+        vec![ArenaModeDef::Hold {
+            spot: "The Crossroads".to_owned(),
+            radius_cells: 6,
+            hold_ms: 120_000,
+        }]
+    );
+    let resolved = arena.arena_modes();
+    assert_eq!(
+        resolved,
+        vec![tacsim::arena::ArenaMode::Hold(tacsim::arena::HoldRule {
+            spot: 1,
+            radius_cells: 6,
+            hold_ms: 120_000,
+        })]
+    );
+    assert_eq!(tacsim::match_::cockpit::spot_letter(1), Some('B'));
+    let spot = arena.key_spots.get(1).expect("the second spot");
+    assert_eq!(
+        (spot.name.as_str(), spot.x, spot.y),
+        ("The Crossroads", 129, 97)
+    );
+    // The square, 123..=135 by 91..=103, against the zones' own columns.
+    for zone in &arena.entry_zones {
+        assert!(
+            123 > zone.x1 || zone.x0 > 135,
+            "the hold square reaches the {} entry zone",
+            zone.team.as_str()
+        );
+    }
+    // 120 cells from the blue muster (column 249) and 123 from the red (6).
+    let muster = |team: Team| {
+        arena
+            .tanks
+            .iter()
+            .find(|tank| tank.team == team && tank.id.as_str().ends_with("_1"))
+            .map(|tank| tank.x)
+            .expect("slot 1")
+    };
+    assert_eq!(muster(Team::Blue) - spot.x, 120);
+    assert_eq!(spot.x - muster(Team::Red), 123);
+    let note = &arena.note;
+    assert!(note.contains("VERSION 4 (16b cut O.1)"), "{note}");
+    assert!(note.len() <= 1_024, "{} bytes", note.len());
 }

@@ -122,7 +122,8 @@ thread_local! {
 ///    the `rallied` byte; then, from **16b cut E.4**, `last_plot` (a presence
 ///    byte, then the cell's two `u16` and the plot's `i64` stamp),
 ///    `unheld_since_ms` (a presence byte then an `i64`) and `hunt` (a presence
-///    byte then the cell's two `u16`).
+///    byte then the cell's two `u16`); then, from **16b cut O.1**,
+///    `hold_retry_ms` (a presence byte then an `i64`).
 /// 4. **The shadow contact store** (16b cut S.1), in its own iteration order —
 ///    viewer object number ascending, then contact id ascending, which is what
 ///    the two `BTreeMap`s give: per contact the viewer's `u32`, the contact id's
@@ -158,6 +159,24 @@ thread_local! {
 /// 9. The due-event count, `u64`.
 /// 10. **The in-flight shot count** (16b cut W.1), `u64`.
 /// 11. The ledger's event sequence, `u64`.
+/// 12. **The mode and the Hold objective** (16b cut O.1; 16c N11): the mode's
+///     code byte ([`crate::arena::state::MatchMode::code`]: `0` skirmish, `1`
+///     hold); then the hold as a presence byte, the spot's `x` and `y` as `u16`,
+///     `radius_cells` as `u16` and `hold_ms` as `u32`, then `held_by` as a
+///     presence byte and the team byte (`0` red, `1` blue) in one call, then the
+///     `i64` arena millisecond it opened at — `[0]` alone for no hold, and `[0]`
+///     alone for a hold nobody holds.
+///
+/// **Why the Hold clock is in it** (16b cut O.1), under cut D.4's one rule —
+/// *persistent state that decides an end is hashed*. `held_by` moves with **no
+/// ledger line of its own** (opening, dropping and re-opening the clock journal
+/// nothing: it reaches no pilot), and it decides the match: a replay that saw
+/// the sole occupant one substep earlier would win one substep earlier, and
+/// until then nothing else in here would differ. Folding it catches that at the
+/// substep it happened. The `HoldSettles` event it schedules is folded by the
+/// due count (item 9). The machines' `hold_retry_ms` (item 3) is the same
+/// argument read for a controller: a decision with no line of its own that
+/// decides a later goal.
 ///
 /// **Why the contacts are in it** (16b cut S.1). Doc 16 §3.1 makes the arena the
 /// single writer for *unit poses, unit condition cells, contacts, orders,
@@ -631,6 +650,10 @@ pub fn state_hash(arena: &Arena) -> u64 {
             }
             None => hash = fnv1a64_update(hash, &[0_u8]),
         }
+        // **16b cut O.1**: when a Hold spot no route reached may be tried again —
+        // a decision the controller made, written and read at arena timestamps,
+        // exactly as the hunt's clock beside it is.
+        hash = fold_stamp(hash, row.hold_retry_ms);
     }
     for (viewer, id, held) in arena.contacts.all() {
         hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
@@ -692,6 +715,34 @@ pub fn state_hash(arena: &Arena) -> u64 {
     hash = fnv1a64_update(hash, &(arena.due.len() as u64).to_le_bytes());
     hash = fnv1a64_update(hash, &(arena.shots.len() as u64).to_le_bytes());
     hash = fnv1a64_update(hash, &arena.ledger.seq().to_le_bytes());
+    // **16b cut O.1** (item 12): the mode, and the Hold objective with its clock.
+    hash = fnv1a64_update(hash, &[arena.mode.code()]);
+    match arena.hold.as_ref() {
+        Some(hold) => {
+            hash = fnv1a64_update(hash, &[1_u8]);
+            hash = fnv1a64_update(hash, &hold.spot.0.to_le_bytes());
+            hash = fnv1a64_update(hash, &hold.spot.1.to_le_bytes());
+            hash = fnv1a64_update(hash, &hold.radius_cells.to_le_bytes());
+            hash = fnv1a64_update(hash, &hold.hold_ms.to_le_bytes());
+            match hold.held_by {
+                Some((team, since_ms)) => {
+                    hash = fnv1a64_update(
+                        hash,
+                        &[
+                            1_u8,
+                            match team {
+                                crate::arena::state::Team::Red => 0_u8,
+                                crate::arena::state::Team::Blue => 1_u8,
+                            },
+                        ],
+                    );
+                    hash = fnv1a64_update(hash, &since_ms.to_le_bytes());
+                }
+                None => hash = fnv1a64_update(hash, &[0_u8]),
+            }
+        }
+        None => hash = fnv1a64_update(hash, &[0_u8]),
+    }
     hash
 }
 
@@ -1382,5 +1433,83 @@ mod tests {
             tank(ObjId(9), Team::Blue, pose(1_500, 1_500)),
         ]);
         assert_ne!(state_hash(&swapped), state_hash(&two_tanks()));
+    }
+
+    /// **16b cut O.1's extension** (item 12): the mode and the Hold clock move
+    /// the hash — two arenas differing only in `held_by`, or only in its `since`,
+    /// or only in the mode, are two states — and so does a machine's
+    /// `hold_retry_ms`.
+    #[test]
+    fn o1_the_hash_folds_the_mode_the_hold_clock_and_the_hold_retry() {
+        use crate::arena::state::{HoldState, MatchMode};
+        let hold = HoldState {
+            spot: (4, 4),
+            letter: Some('A'),
+            radius_cells: 1,
+            hold_ms: 10_000,
+            held_by: None,
+        };
+        let with = |mode: MatchMode, held: Option<HoldState>| {
+            let mut arena = two_tanks();
+            arena.mode = mode;
+            arena.hold = held;
+            state_hash(&arena)
+        };
+        let base = state_hash(&two_tanks());
+        assert_eq!(with(MatchMode::Skirmish, None), base);
+        let open = with(MatchMode::Hold, Some(hold));
+        assert_ne!(open, base, "the mode and the objective went unhashed");
+        assert_ne!(with(MatchMode::Hold, None), base, "the mode alone");
+        let red = with(
+            MatchMode::Hold,
+            Some(HoldState {
+                held_by: Some((Team::Red, 250)),
+                ..hold
+            }),
+        );
+        assert_ne!(red, open, "`held_by` went unhashed");
+        let blue = with(
+            MatchMode::Hold,
+            Some(HoldState {
+                held_by: Some((Team::Blue, 250)),
+                ..hold
+            }),
+        );
+        assert_ne!(blue, red, "the holding side went unhashed");
+        let later = with(
+            MatchMode::Hold,
+            Some(HoldState {
+                held_by: Some((Team::Red, 500)),
+                ..hold
+            }),
+        );
+        assert_ne!(later, red, "the clock's `since` went unhashed");
+        let wider = with(
+            MatchMode::Hold,
+            Some(HoldState {
+                radius_cells: 2,
+                ..hold
+            }),
+        );
+        assert_ne!(wider, open, "the radius went unhashed");
+
+        // A machine's hold retry.
+        let mut machine = two_tanks();
+        machine
+            .reflex
+            .adopt(ObjId(4), crate::arena::reflex::ReflexState::Patrol);
+        let adopted = state_hash(&machine);
+        if let Some(row) = machine.reflex.unit_mut(ObjId(4)) {
+            row.hold_retry_ms = Some(90_000);
+        }
+        assert_ne!(
+            state_hash(&machine),
+            adopted,
+            "`hold_retry_ms` went unhashed"
+        );
+        if let Some(row) = machine.reflex.unit_mut(ObjId(4)) {
+            row.hold_retry_ms = None;
+        }
+        assert_eq!(state_hash(&machine), adopted);
     }
 }

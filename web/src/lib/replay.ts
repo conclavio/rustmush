@@ -112,6 +112,10 @@ export interface Replay {
   end_ms: number;
   outcome: string;
   reason: string;
+  /** **The rule the match was fought under** (16b cut O.1): the document's
+   * `mode` word, or `""` where it has none — every replay written before the
+   * cut. A word other than `skirmish` is tagged on the header (` [hold]`). */
+  mode: string;
   roster: ReplayRoster[];
   keyframes: Keyframe[];
   shots: ReplayShot[];
@@ -237,6 +241,7 @@ export function decodeReplay(data: unknown): Replay | null {
     end_ms: Math.max(0, int(data.end_ms, 0)),
     outcome: clean(data.outcome, "", 16),
     reason: clean(data.reason, "", 24),
+    mode: clean(data.mode, "", 16),
     roster,
     keyframes,
     shots,
@@ -353,6 +358,7 @@ export function liveAsReplay(pic: ObserverPicture): Replay {
     end_ms: pic.now_ms,
     outcome: "",
     reason: "",
+    mode: "",
     roster: pic.units.map((u) => ({ callsign: u.callsign, team: u.team })),
     keyframes: [
       {
@@ -613,6 +619,9 @@ const OUTCOME_WORDS: ReadonlyMap<string, string> = new Map([
   ["blue/elimination", "blue won (red eliminated)"],
   ["red/conceded", "red won (blue conceded)"],
   ["blue/conceded", "blue won (red conceded)"],
+  // 16b cut O.1 (16c N11).
+  ["red/hold", "red won (red held the key spot)"],
+  ["blue/hold", "blue won (blue held the key spot)"],
   ["draw/spent", "draw (both sides out of ammunition)"],
   ["draw/elimination", "draw (both sides eliminated)"],
   ["timeout/unattended", "timed out (every pilot had left)"],
@@ -626,6 +635,13 @@ const OUTCOME_WORDS: ReadonlyMap<string, string> = new Map([
 /** The outcome words for a pair; any other pair as `outcome (reason)`. */
 export function outcomeWords(outcome: string, reason: string): string {
   return OUTCOME_WORDS.get(`${outcome}/${reason}`) ?? (reason ? `${outcome} (${reason})` : outcome);
+}
+
+/** **The mode's tag** (16b cut O.1): ` [hold]` for a word that is neither empty
+ * nor `skirmish`, so a match fought under another rule is never read as a
+ * plain fight; nothing for a skirmish or a document with no `mode`. */
+export function modeTag(mode: string): string {
+  return mode === "" || mode === "skirmish" ? "" : ` [${mode}]`;
 }
 
 /** One row of the units table. */
@@ -715,7 +731,7 @@ export function replayView(
     truncation.push("keyframes");
   }
   return {
-    header: `Replay of match ${id} — ${outcomeWords(replay.outcome, replay.reason)} — both sides are shown: this match is over.`,
+    header: `Replay of match ${id} — ${outcomeWords(replay.outcome, replay.reason)}${modeTag(replay.mode)} — both sides are shown: this match is over.`,
     label,
     clock: `${clockText(cursorMs)} of ${clockText(replay.end_ms)}`,
     legend: markerLegend(win),

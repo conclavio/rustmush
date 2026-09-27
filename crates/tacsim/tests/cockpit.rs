@@ -9820,3 +9820,323 @@ async fn i4_a_watch_closes_the_replay_and_sim_replay_refuses_a_watcher() {
     );
     assert_eq!(windows.len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut O.1 — `SIM MODE` and the Hold win (16c N11)
+// ---------------------------------------------------------------------------
+
+/// What `SIM MODE` answers on the shipped ground at a skirmish, verbatim.
+const O1_BARE_SKIRMISH: &str = "Mode: skirmish. The Proving Ground supports: skirmish, hold.";
+
+/// What it answers once the mode is Hold, verbatim.
+const O1_BARE_HOLD: &str = "Mode: hold. The Proving Ground supports: skirmish, hold. Hold: keep \
+                            The Crossroads (B) uncontested for 120 seconds to win.";
+
+/// The announcement of a set to Hold, verbatim.
+const O1_SET_HOLD: &str = "Mode set to hold: keep The Crossroads (B) uncontested for 120 seconds \
+                           to win; elimination still ends it.";
+
+/// The board's line under Hold, verbatim.
+const O1_BOARD_LINE: &str = "  mode: hold \u{2014} keep The Crossroads (B) uncontested for 120 s";
+
+/// **16b cut O.1**: `SIM MODE` reads for anybody and sets for a lead or staff
+/// in `Selection`, every reply and refusal verbatim; the set is announced in
+/// every centre room; the board prints the rule in `Selection` and nothing at a
+/// skirmish; the check-out carries the mode onto the record; and the return to
+/// `Idle` clears it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o1_sim_mode_reads_sets_refuses_announces_and_is_cleared_at_idle() {
+    let mut rig = Rig::boot(3);
+    // The bare read, in `Idle`, slot or no slot.
+    assert_eq!(rig.say(2, "sim mode"), O1_BARE_SKIRMISH);
+    // A set outside `Selection`.
+    assert_eq!(
+        rig.say(0, "sim mode hold"),
+        "The simulator centre is idle; that is not something you can do to it now."
+    );
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(2, "sim team red");
+    // A claimant who leads nothing, and an unknown word.
+    assert_eq!(
+        rig.say(2, "sim mode hold"),
+        "Only a side's lead or staff can set the mode."
+    );
+    assert_eq!(
+        rig.say(0, "sim mode capture"),
+        "No such mode: capture. SIM MODE lists them."
+    );
+    // No board line at a skirmish.
+    let board = lobby_board(&rig, 2);
+    assert!(
+        !board.iter().any(|line| line.contains("mode:")),
+        "{board:?}"
+    );
+    // The set, case-folded, heard in every room of the centre.
+    let events = rig.events(0, "SIM MODE Hold");
+    let rooms: Vec<ObjId> = [
+        match_::LOBBY_ENTRY,
+        match_::RED_ROOM_ENTRY,
+        match_::BLUE_ROOM_ENTRY,
+    ]
+    .into_iter()
+    .map(|entry| match_::centre_object(rig.tw.world(), entry).expect("a centre room"))
+    .collect();
+    for room in &rooms {
+        assert!(
+            events.iter().any(|(audience, event)| matches!(
+                audience,
+                Audience::Room { room: heard, .. } if heard == room
+            ) && format!("{event:?}").contains(O1_SET_HOLD)),
+            "room {room} did not hear the set: {events:?}"
+        );
+    }
+    assert_eq!(rig.centre().mode, tacsim::arena::MatchMode::Hold);
+    // The read now carries the rule, for anybody; the board says it too.
+    assert_eq!(rig.say(2, "sim mode"), O1_BARE_HOLD);
+    let board = lobby_board(&rig, 2);
+    assert!(board.iter().any(|line| line == O1_BOARD_LINE), "{board:?}");
+    // The other side's lead may set it back, and the first lead again.
+    assert_eq!(
+        rig.say(1, "sim mode skirmish"),
+        "Mode set to skirmish: eliminate the other side to win."
+    );
+    assert_eq!(rig.centre().mode, tacsim::arena::MatchMode::Skirmish);
+    assert_eq!(rig.say(0, "sim mode hold"), O1_SET_HOLD);
+    assert_eq!(rig.centre().mode, tacsim::arena::MatchMode::Hold);
+
+    // The check-out carries it onto the record.
+    rig.say(0, "sim start");
+    assert_eq!(
+        rig.say(0, "sim mode skirmish"),
+        "The simulator centre is boarding; that is not something you can do to it now."
+    );
+    let board = lobby_board(&rig, 2);
+    assert!(board.iter().any(|line| line == O1_BOARD_LINE), "{board:?}");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.walk_to(2, match_::RED_ROOM_ENTRY);
+    rig.say(0, "board");
+    rig.say(1, "board");
+    rig.say(2, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+    assert_eq!(rig.record().mode, tacsim::arena::MatchMode::Hold);
+    // The bare read answers mid-match too.
+    assert_eq!(rig.say(1, "sim mode"), O1_BARE_HOLD);
+
+    // The return to `Idle` clears it.
+    rig.say(0, "sim abort");
+    for _ in 0..400 {
+        if rig.state().is_terminal() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+    }
+    assert!(rig.state().is_terminal());
+    rig.staff("@arena/reset");
+    assert_eq!(rig.state(), MatchState::Idle);
+    assert_eq!(rig.centre().mode, tacsim::arena::MatchMode::Skirmish);
+    assert_eq!(rig.say(2, "sim mode"), O1_BARE_SKIRMISH);
+}
+
+/// The board as pilot `n` reads it.
+fn lobby_board(rig: &Rig, n: usize) -> Vec<String> {
+    match_::status_lines(rig.tw.world(), BoardReader::Player(rig.pilot(n)))
+}
+
+/// **16b cut O.1 (plan item 30)**: `match_::start` refuses a mode the ground
+/// does not declare — the stand-in window declares none — right after the
+/// definition is resolved, and writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o1_start_refuses_a_mode_the_ground_does_not_declare() {
+    let mut rig = Rig::boot(1);
+    let tank = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let refused = rig.with_ctx_mut(0, |ctx| {
+        match_::start(
+            ctx,
+            tacsim::arena_task::MatchId(99),
+            &smol_str::SmolStr::new(match_::STAND_IN),
+            &[match_::Side {
+                team: Team::Red,
+                units: vec![match_::Fielded::unslotted(tank)],
+            }],
+            &tacsim::config::ArenaConfig::default(),
+            &tacsim::config::MatchConfig::default(),
+            &tacsim::config::SensorsConfig::default(),
+            tacsim::arena::MatchMode::Hold,
+        )
+    });
+    let Err(error) = refused else {
+        panic!("a hold started on a ground that declares none");
+    };
+    assert_eq!(
+        error,
+        match_::StartError::ModeUnsupported {
+            mode: "hold",
+            arena: smol_str::SmolStr::new(match_::STAND_IN),
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "arena tacsim.arena.stand_in does not support hold"
+    );
+    assert!(
+        !mush_sim::deployed::is_deployed(rig.tw.world(), tank),
+        "nothing was checked out"
+    );
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .and_then(|book| book.get(tacsim::arena_task::MatchId(99)))
+            .is_none(),
+        "no record was written"
+    );
+}
+
+/// **16b cut O.1 (plan item 26): the win itself**, under paused time — the
+/// arena is a tokio task and `Rig::tick_to` moves only the world's clock, so
+/// paused time is what advances it and 120 arena seconds cost no wall time.
+///
+/// Red's tank is posed on The Crossroads and blue's stands on its authored
+/// muster; both are boarded and started up; and the pump waits on the terminal
+/// head, never a fixed count. The head reads `red wins: held The Crossroads`,
+/// the result and the replay documents carry `"mode": "hold"`, `SIM HISTORY`
+/// tags the row, the report's header tags it, and a restart row written after
+/// carries no mode and reads with no tag. The record is what is asserted —
+/// never the arena's own `HoldState`, which the rig cannot see.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn o1_a_hold_is_won_and_every_record_says_hold() {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    assert_eq!(rig.say(0, "sim mode hold"), O1_SET_HOLD);
+    let said = rig.staff("@arena/pose RA=129 97 90");
+    assert!(
+        said.contains("RA opens at cell (129, 97) heading 90 for the next match."),
+        "{said}"
+    );
+    rig.say(0, "sim start");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+    let match_id = rig.centre().match_id.expect("a running match");
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    rig.say(0, "startup");
+    rig.say(1, "startup");
+    assert!(
+        rig.powered(0).await && rig.powered(1).await,
+        "both started up"
+    );
+    // The pump, waiting on the terminal head: 120 arena seconds and a margin
+    // is 13,000 ten-millisecond sleeps at the most.
+    for _ in 0..13_000 {
+        rig.pump();
+        if rig.state().is_terminal() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        rig.state(),
+        MatchState::Ended,
+        "no end by {} arena ms",
+        rig.staged_now_ms
+    );
+    assert!(
+        rig.staged_now_ms >= 120_000,
+        "the match ended before a hold could: {} ms",
+        rig.staged_now_ms
+    );
+    let board = lobby_board(&rig, 1);
+    assert_eq!(
+        board.first().map(String::as_str),
+        Some(
+            format!(
+                "Simulator centre: ended (match {match_id}) \u{2014} red wins: held The Crossroads"
+            )
+            .as_str()
+        ),
+        "{board:?}"
+    );
+
+    // The documents.
+    let writes: Vec<(String, serde_json::Value)> = rig
+        .tw
+        .take_module_ops()
+        .into_iter()
+        .filter(|op| op.ns == tacsim::NS)
+        .filter_map(|op| match op.op {
+            mush_core::ModuleWrite::JsonSet { key, value } => Some((key.to_string(), value)),
+            _ => None,
+        })
+        .collect();
+    let document = |key: String| {
+        writes
+            .iter()
+            .find(|(held, _)| *held == key)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| panic!("{key} was written"))
+    };
+    let result = document(format!("tacsim:match:{}", match_id.0));
+    assert_eq!(result["mode"], serde_json::json!("hold"));
+    assert_eq!(result["outcome"], serde_json::json!("red"));
+    assert_eq!(result["reason"], serde_json::json!("hold"));
+    let replay = document(format!("tacsim:replay:{}", match_id.0));
+    assert_eq!(replay["mode"], serde_json::json!("hold"));
+
+    // The ring and the report's header.
+    let history = rig.say(1, "sim history");
+    assert!(
+        history.contains(&format!(
+            "#{}  red won (red held the key spot) [hold]",
+            match_id.0
+        )),
+        "{history}"
+    );
+    let row = rig
+        .tw
+        .world()
+        .module_state::<match_::MatchBook>()
+        .and_then(|book| book.remembered(match_id).cloned())
+        .expect("the ring holds the match");
+    assert_eq!(row.mode, Some(tacsim::arena::MatchMode::Hold));
+    let header = match_::report::header_lines(
+        &row,
+        "The Proving Ground",
+        match_::report::Reader::Staff,
+        None,
+        None,
+    );
+    assert!(
+        header
+            .first()
+            .is_some_and(|line| line.contains("red won (red held the key spot) [hold], ")),
+        "{header:?}"
+    );
+
+    // A restart row knows no mode and says none.
+    let tank = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    rig.with_ctx_mut(0, |ctx| {
+        match_::write_restart_abort(ctx, tacsim::arena_task::MatchId(77), &[tank]);
+    });
+    let restart = rig
+        .tw
+        .world()
+        .module_state::<match_::MatchBook>()
+        .and_then(|book| book.remembered(tacsim::arena_task::MatchId(77)).cloned())
+        .expect("the ring holds the restart row");
+    assert_eq!(restart.mode, None);
+    let history = rig.say(1, "sim history");
+    let line = history
+        .lines()
+        .find(|line| line.contains("#77 "))
+        .unwrap_or_else(|| panic!("{history}"));
+    assert!(
+        line.contains("aborted (the server restarted)") && !line.contains('['),
+        "{line}"
+    );
+}

@@ -3946,6 +3946,7 @@ fn replacement_custody(rig: &Rig) -> tacsim::arena::state::CustodyOut {
         pilots: Vec::new(),
         resolution: resolution_for(&catalog),
         seed: 2_396,
+        mode: tacsim::arena::MatchMode::Skirmish,
     }
 }
 
@@ -4579,6 +4580,7 @@ async fn v2_a_row_the_ring_evicts_has_its_report_documents_deleted_in_the_same_w
         named: true,
         reports,
         replay: false,
+        mode: None,
     };
     {
         let book = rig
@@ -5135,12 +5137,15 @@ async fn z3_a_version_two_arena_is_four_a_side_until_it_takes_version_three() {
         .collect();
     let (planned, applied) =
         support::take_from_shelf(&mut rig.tw, GOD, "tacsim.pack.proving_ground");
+    // 16b cut O.1: the shipped arena is version 4, so the version 2 world
+    // takes version 4 in one step (the four tanks are Z.3's, the Hold
+    // declaration O.1's).
     assert!(
-        planned.contains("Plan for tacsim.pack.proving_ground@3: 0 create, 1 update, 0 retire"),
+        planned.contains("Plan for tacsim.pack.proving_ground@4: 0 create, 1 update, 0 retire"),
         "{planned}"
     );
     assert!(
-        applied.contains("Applied tacsim.pack.proving_ground@3"),
+        applied.contains("Applied tacsim.pack.proving_ground@4"),
         "{applied}"
     );
     assert!(!applied.contains("STOPPED"), "{applied}");
@@ -5295,4 +5300,95 @@ async fn z3_the_arena_pack_is_on_the_shelf() {
         !said.contains("tacsim.pack.proving_ground (not on the shelf)"),
         "{said}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut O.1 — a standing world takes the Hold declaration
+// ---------------------------------------------------------------------------
+
+/// **A world booted at the arena's version 3 reads Hold at once and takes
+/// version 4 from the shelf** (16b cut O.1; `deploy/README.md`'s shelf
+/// paragraph). The arena catalog is compiled in and rebuilt at every boot, so
+/// `SIM MODE` lists `hold` and accepts it before the pack is taken; the shelf
+/// then plans the arena entry as one update, applies it with the centre idle,
+/// adopts the twelve standing tanks by roster and remakes none, and moves the
+/// latch to 4.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o1_a_version_three_world_reads_hold_at_once_and_takes_version_four() {
+    let mut rig = Rig::boot_on(
+        1,
+        support::roster_booting(fill_config(), support::boot_packs_at_arena_v3(true)),
+    );
+    let latch = |rig: &Rig| {
+        rig.tw
+            .world()
+            .module_state::<mush_content::ContentState>()
+            .expect("content")
+            .latches
+            .applied(
+                &mush_core::CanonicalId::new(tacsim::definitions::content::PROVING_GROUND_PACK)
+                    .expect("an id"),
+            )
+            .map(mush_content::Applied::version)
+    };
+    assert_eq!(latch(&rig), Some(3), "the world stands at version 3");
+    let said = rig.say(0, "sim mode");
+    assert!(
+        said.contains("Mode: skirmish. The Proving Ground supports: skirmish, hold."),
+        "{said}"
+    );
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim mode hold");
+    assert!(
+        said.contains(
+            "Mode set to hold: keep The Crossroads (B) uncontested for 120 seconds to win; \
+             elimination still ends it."
+        ),
+        "{said}"
+    );
+    rig.say(0, "sim leave");
+    assert_eq!(rig.state(), MatchState::Idle);
+
+    // A slot, its tank, and the tank's `(x_cm, y_cm, heading_mdeg)`.
+    type Standing = (Team, u8, ObjId, (i64, i64, u32));
+    let before: Vec<Standing> = Team::ALL
+        .into_iter()
+        .flat_map(|team| (1..=match_::PODS_PER_SIDE).map(move |index| (team, index)))
+        .map(|(team, index)| {
+            let tank = match_::tank_for_slot(rig.tw.world(), team, index).expect("a v3 slot");
+            let (_, pose) = mush_sim::pose_of(rig.tw.world(), tank).expect("placed");
+            (team, index, tank, (pose.x_cm, pose.y_cm, pose.heading_mdeg))
+        })
+        .collect();
+    assert_eq!(before.len(), 12, "version 3 made twelve tanks");
+    let (planned, applied) =
+        support::take_from_shelf(&mut rig.tw, GOD, "tacsim.pack.proving_ground");
+    assert!(
+        planned.contains("Plan for tacsim.pack.proving_ground@4: 0 create, 1 update, 0 retire"),
+        "{planned}"
+    );
+    assert!(
+        applied.contains("Applied tacsim.pack.proving_ground@4"),
+        "{applied}"
+    );
+    assert!(!applied.contains("STOPPED"), "{applied}");
+    assert_eq!(latch(&rig), Some(4));
+    for (team, index, tank, cell) in &before {
+        assert_eq!(
+            match_::tank_for_slot(rig.tw.world(), *team, *index),
+            Some(*tank),
+            "{} slot {index} kept its object",
+            team.as_str()
+        );
+        let (_, pose) = mush_sim::pose_of(rig.tw.world(), *tank).expect("placed");
+        assert_eq!(
+            (pose.x_cm, pose.y_cm, pose.heading_mdeg),
+            *cell,
+            "{} slot {index} stands where it stood",
+            team.as_str()
+        );
+    }
+    // And still Hold on the latched version.
+    let said = rig.say(0, "sim mode");
+    assert!(said.contains("supports: skirmish, hold."), "{said}");
 }

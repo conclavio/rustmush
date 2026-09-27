@@ -391,3 +391,87 @@ fn v3_a_real_fight_folds_to_each_pilots_own_projection() {
     // A pilot's header never carries it.
     assert!(header.iter().all(|line| !line.contains("seed")));
 }
+
+/// **16b cut O.1 (16c N11)**: a Hold's end, as a pilot's report and the
+/// header say it — the pilot's end line reads `the match ended: red held the
+/// key spot.` off the tape's own `match_ended { hold }` line, and the header
+/// carries the ` [hold]` tag after the outcome words.
+#[test]
+fn o1_a_hold_ends_the_pilots_report_and_tags_the_header() {
+    let red = ObjId(101);
+    let blue = ObjId(201);
+    let mut roster = Roster::new();
+    roster.insert(red, Some(Team::Red), SmolStr::new("RA"), None);
+    roster.insert(blue, Some(Team::Blue), SmolStr::new("BA"), None);
+    let end = LedgerEvent {
+        seq: 1,
+        t_ms: 120_250,
+        kind: EventKind::MatchEnded {
+            reason: EndReason::Hold { winner: Team::Red },
+        },
+        draws: Vec::new(),
+        hash: 0,
+    };
+    for unit in [red, blue] {
+        let report = fold(
+            std::slice::from_ref(&end),
+            &roster,
+            Reader::Pilot { unit },
+            RULES,
+        );
+        assert_eq!(
+            report.tail,
+            vec!["  2:00  the match ended: red held the key spot.".to_owned()],
+            "{unit}"
+        );
+    }
+    let document = serde_json::json!({
+        "record": "tacsim.match",
+        "record_version": 1,
+        "match": 3,
+        "arena": "tacsim.arena.proving_ground",
+        "outcome": "red",
+        "reason": "hold",
+        "mode": "hold",
+        "teams": [
+            { "team": "red", "units": [red.0], "pilots": [] },
+            { "team": "blue", "units": [blue.0], "pilots": [] },
+        ],
+        "units": [
+            { "unit": red.0, "callsign": "RA", "outcome": "intact", "shots": 0, "hits": 0 },
+            { "unit": blue.0, "callsign": "BA", "outcome": "intact", "shots": 0, "hits": 0 },
+        ],
+        "ledger": { "log": "match.3", "digest": "ab", "chunks": 1 },
+        "seed": 0,
+        "started_ms": 1_790_258_000_000_i64,
+        "ended_ms": 1_790_258_520_000_i64,
+        "arena_ms": 120_250,
+        "reports": [],
+        "replay": false,
+    });
+    let row = HistoryRow::from_document(&document).expect("a row");
+    let header = header_lines(
+        &row,
+        "The Proving Ground",
+        Reader::Pilot { unit: red },
+        None,
+        None,
+    );
+    assert_eq!(
+        header.first().map(String::as_str),
+        Some(
+            "Match 3 on The Proving Ground, 2026-09-24 14:02 UTC: red won (red held the key \
+             spot) [hold], 2 m 0 s."
+        )
+    );
+    // A skirmish's header carries no tag, and neither does a row that does not
+    // say its mode.
+    let mut plain = document.clone();
+    plain["mode"] = serde_json::json!("skirmish");
+    let row = HistoryRow::from_document(&plain).expect("a row");
+    let header = header_lines(&row, "The Proving Ground", Reader::Staff, None, None);
+    assert!(
+        header.first().is_some_and(|line| !line.contains('[')),
+        "{header:?}"
+    );
+}

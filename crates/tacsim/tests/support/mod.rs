@@ -359,6 +359,97 @@ pub fn booted_world() -> TestWorld {
 }
 
 // ---------------------------------------------------------------------------
+// 16b cut O.1 — a world standing at the arena's version 3
+// ---------------------------------------------------------------------------
+
+/// The digest `tacsim.pack.proving_ground@3` shipped with (16b cut Z.3), as
+/// `tests/content.rs` pinned it until cut O.1.
+pub const ARENA_V3_DIGEST: &str =
+    "b75b98fd6d1669499384ea3fbf3ac54adaf06f90d0e34625094e9449c1a91c83";
+
+/// The arena entry's `note` as version 3 carried it, verbatim. Version 4 had
+/// to say the same in fewer words to make room for its own sentence under the
+/// note's 1,024-byte bound, so this is the one string of version 3 that cannot
+/// be derived from version 4.
+pub const ARENA_V3_NOTE: &str = "D-16-5 fixes the window: 256 by 256 cells at 1,000 cm, 2.56 km \
+    square, offset to 20,000 m so its frame cannot touch the lot's or the harness's. The entry \
+    zones are sixteen cells deep on each short side. The key spots are where the ground decides \
+    something: the ford, the crossroads, the two compounds. The waypoint graph is the two roads \
+    and four spurs, the smallest on which Patrol's route is not a straight line. VERSION 2 (16b \
+    cut F.4) moves the muster onto the ford: version 1 mustered on rows 118 to 130, and the \
+    river (columns 62 to 66) stopped a tank at deep water 550 m out. The ford is rows 92 to 102; \
+    slot 1 stands on the east-west road at row 97 and slots 2 to 4 at 95, 99 and 93, so every \
+    tank drives straight across. The muster nodes moved to row 105. VERSION 3 (16b cut Z.3) \
+    adds slots 5 and 6 a side: row 101 in the muster column and row 94 one column behind it, \
+    both inside the ford's rows 92 to 102, a clear cell from every other slot and on no other \
+    slot's straight road east or west.";
+
+/// **Version 3 of the arena pack** (16b cut O.1), rebuilt from the shipped
+/// version 4 by taking its `modes` back out and putting version 3's note back
+/// ([`ARENA_V3_NOTE`]), the version set to 3 and the digest re-derived — and
+/// then **held to version 3's own pinned digest** ([`ARENA_V3_DIGEST`]), Z.3's
+/// [`arena_pack_v2`] precedent one version on.
+#[must_use]
+pub fn arena_pack_v3() -> String {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(tacsim::definitions::content::PROVING_GROUND_JSON)
+            .expect("the arena pack is json");
+    let def = &mut doc["entries"][PROVING_GROUND]["def"];
+    assert!(
+        def.as_object_mut()
+            .expect("the arena entry is an object")
+            .remove("modes")
+            .is_some(),
+        "version 4 declares its modes"
+    );
+    assert!(
+        def["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("VERSION 4 (16b cut O.1)")),
+        "version 4's note carries its own sentence"
+    );
+    def["note"] = serde_json::Value::from(ARENA_V3_NOTE);
+    doc["manifest"]["version"] = serde_json::Value::from(3);
+    doc["manifest"]["digest"] = serde_json::Value::from("0".repeat(64));
+    let unsigned = serde_json::to_string(&doc).expect("json");
+    let digest = mush_content::parse_pack(&unsigned)
+        .expect("version 3 parses")
+        .computed_digest()
+        .expect("digests")
+        .to_hex();
+    assert_eq!(
+        digest, ARENA_V3_DIGEST,
+        "the rebuilt fixture is not version 3: version 4 changed more than `modes` and the note"
+    );
+    doc["manifest"]["digest"] = serde_json::Value::from(digest);
+    serde_json::to_string(&doc).expect("json")
+}
+
+/// The boot packs of a world that **took the arena's version 3 and not its
+/// version 4** (16b cut O.1) — dev1's world as it was wiped on 2026-09-26: the
+/// shipped starter area (twelve pods), the arena's ground, and
+/// [`arena_pack_v3`] (twelve tanks, no Hold declaration on the latch).
+/// `starter_area` false leaves the lot out, for a rig that needs only the
+/// arena.
+#[must_use]
+pub fn boot_packs_at_arena_v3(starter_area: bool) -> Vec<mush_content::Pack> {
+    let mut packs = if starter_area {
+        mush_atlas::starter::packs().expect("the starter packs load")
+    } else {
+        Vec::new()
+    };
+    let mut game = tacsim::definitions::content::boot_packs().expect("the game packs load");
+    let arena = game.pop().expect("the arena pack boots last");
+    assert_eq!(
+        arena.manifest().id().as_str(),
+        tacsim::definitions::content::PROVING_GROUND_PACK
+    );
+    packs.extend(game);
+    packs.push(mush_content::load_pack(&arena_pack_v3()).expect("version 3 verifies"));
+    packs
+}
+
+// ---------------------------------------------------------------------------
 // 16b cut Z.3 — a world standing at the arena's version 2
 // ---------------------------------------------------------------------------
 
@@ -387,17 +478,21 @@ const ARENA_V2_NOTE: &str = "D-16-5 fixes the window: 256 by 256 cells at 1,000 
     between each pair, so every tank can drive straight across. The muster nodes moved to row \
     105. The columns and the entry zones are unchanged.";
 
-/// **Version 2 of the arena pack** (16b cut Z.3), rebuilt from the shipped
-/// version 3 by taking its four tanks back out and putting version 2's note
-/// back ([`ARENA_V2_NOTE`]), the version set to 2 and the digest re-derived —
-/// and then **held to version 2's own pinned digest**, so the fixture is
-/// version 2 in everything the digest covers and not merely something like it.
+/// **Version 2 of the arena pack** (16b cut Z.3), rebuilt from version 3 by
+/// taking its four tanks back out and putting version 2's note back
+/// ([`ARENA_V2_NOTE`]), the version set to 2 and the digest re-derived — and
+/// then **held to version 2's own pinned digest**, so the fixture is version 2
+/// in everything the digest covers and not merely something like it.
 /// (`mush-atlas`'s `tests/interior.rs` builds its OOC fixtures the same way.)
+///
+/// **16b cut O.1 rebuilds it from [`arena_pack_v3`]'s string** and not from the
+/// shipped bytes, which are version 4 now: the chain is v4 → v3 → v2, so each
+/// step undoes exactly one version's change and the version 3 assertion, the
+/// note restore and the [`ARENA_V2_DIGEST`] pin below stand as Z.3 wrote them.
 #[must_use]
 pub fn arena_pack_v2() -> String {
     let mut doc: serde_json::Value =
-        serde_json::from_str(tacsim::definitions::content::PROVING_GROUND_JSON)
-            .expect("the arena pack is json");
+        serde_json::from_str(&arena_pack_v3()).expect("the arena pack is json");
     let def = &mut doc["entries"][PROVING_GROUND]["def"];
     let tanks = def["tanks"]
         .as_array_mut()
@@ -596,8 +691,9 @@ pub fn staff_lobby_pack_v4() -> String {
 
 /// The boot packs of a world that **took neither Z.3 pack's new OOC version**
 /// (16b cut Z.3): the region, [`ooc_pack_v6`] (eight pods),
-/// [`staff_lobby_pack_v4`], the arena's ground, and the arena at version 3
-/// (twelve tanks) or, with `arena_v2`, at [`arena_pack_v2`] (eight tanks) —
+/// [`staff_lobby_pack_v4`], the arena's ground, and the arena at version 4
+/// (twelve tanks; 16b cut O.1 moved the shipped arena from version 3) or, with
+/// `arena_v2`, at [`arena_pack_v2`] (eight tanks) —
 /// the second being dev1's world before the packs are taken, the first a
 /// staffer who took the arena pack and not the OOC pack.
 #[must_use]
@@ -700,6 +796,7 @@ pub fn shipped_arena(world: &TestWorld, sides: &[&[Muster]]) -> Arena {
             pilots: Vec::new(),
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),

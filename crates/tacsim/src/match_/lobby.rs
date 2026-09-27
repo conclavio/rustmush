@@ -47,7 +47,7 @@ use mush_core::{AccountId, Ctx, ObjId, World};
 use mush_proto::{OutputEvent, RichText};
 use smol_str::SmolStr;
 
-use crate::arena::state::{Designator, EndReason, StopReason, Team};
+use crate::arena::state::{Designator, EndReason, MatchMode, StopReason, Team};
 use crate::arena_bridge::NOTICE_CATEGORY;
 use crate::arena_task::MatchId;
 use crate::config::{ArenaConfig, CommandConfig, MatchConfig, SensorsConfig};
@@ -205,6 +205,16 @@ pub struct Centre {
     ///
     /// Cleared wherever [`Centre::unattended_since_ms`] is.
     pub unattended_warned: bool,
+    /// **The rule the next match is fought under** (16b cut O.1; 16c N11), as
+    /// `SIM MODE` set it — [`MatchMode::Skirmish`] by default.
+    ///
+    /// A match-wide setting on [`Centre::ai_side_size`]'s model: set by a side's
+    /// lead or staff in `Selection` ([`mode`]), read by anybody, carried to the
+    /// check-out by `ready`, and cleared with the rest of the board at every
+    /// return to `Idle` (`release_rows`' `Idle` arm, and `to_idle`'s
+    /// `Centre::default`). It is **public in selection**: the board prints the
+    /// rule (`  mode: hold — …`) to every reader, and never who holds the spot.
+    pub mode: MatchMode,
 }
 
 impl Centre {
@@ -428,6 +438,28 @@ pub enum SimError {
     /// centre and only the *set* is gated, so this is the sentence for the set.
     #[error("Only a side's lead or staff can set the AI fill.")]
     NotLeadForAi,
+    /// **`SIM MODE <word>` from somebody who leads no side** (16b cut O.1): the
+    /// mode is a match-wide setting, and a match-wide setting is the lead's or
+    /// staff's, as `SIM AI`'s is.
+    #[error("Only a side's lead or staff can set the mode.")]
+    NotLeadForMode,
+    /// **`SIM MODE <word>` naming no mode** (16b cut O.1).
+    #[error("No such mode: {word}. SIM MODE lists them.")]
+    NoSuchMode {
+        /// What was typed, as it was typed.
+        word: String,
+    },
+    /// **`SIM MODE <word>` naming a mode the ground does not declare** (16b cut
+    /// O.1). No production composition reaches it — the catalog is compiled in
+    /// and the centre's arena is always the proving ground, which declares
+    /// `hold` — so its sentence is pinned in-source.
+    #[error("{arena} does not support {mode}; SIM MODE lists what it does.")]
+    ModeUnsupported {
+        /// The mode's wire word.
+        mode: &'static str,
+        /// The ground's authored name ([`crate::match_::record::arena_label`]).
+        arena: String,
+    },
     /// **`SIM CONCEDE` from somebody who is not their side's lead** (16b
     /// cut D.3, `B-33`).
     ///
@@ -1844,6 +1876,9 @@ struct Ready {
     match_cfg: MatchConfig,
     /// `[tacsim.sensors]`.
     sensors_cfg: SensorsConfig,
+    /// **The rule the match is fought under** (16b cut O.1), off
+    /// [`Centre::mode`].
+    mode: MatchMode,
 }
 
 /// Fire the check-out with whatever is seated (doc 16 §3.8's
@@ -1866,6 +1901,7 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
         arena_cfg,
         match_cfg,
         sensors_cfg,
+        mode,
     } = match ready(ctx) {
         Ok(ready) => ready,
         Err(error) => {
@@ -1884,6 +1920,7 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
         &arena_cfg,
         &match_cfg,
         &sensors_cfg,
+        mode,
     ) {
         Ok(_) => {
             if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
@@ -1986,6 +2023,8 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
         .filter(|arena| !arena.is_empty())
         .unwrap_or_else(|| SmolStr::new_static(CENTRE_ARENA));
     let mut sides: Vec<Side> = Vec::new();
+    // 16b cut O.1: the mode `SIM MODE` chose, a skirmish by default.
+    let mode = centre(ctx.w).map_or(MatchMode::Skirmish, |centre| centre.mode);
     // **16b cut U.4 (16c `T-52`)**: the opening cells staff set with
     // `@arena/pose`, which ride each slot's `Fielded` into the check-out — for a
     // claimed pod and an AI-filled one alike, since both are the slot's.
@@ -2086,6 +2125,7 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
         arena_cfg,
         match_cfg,
         sensors_cfg,
+        mode,
     })
 }
 
@@ -2280,6 +2320,187 @@ pub fn ai(ctx: &mut Ctx<'_>, size: Option<u8>) -> Result<(), SimError> {
         book.centre_mut().ai_side_size = Some(size);
     }
     announce(ctx, format!("AI fill set to {size} a side."));
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `SIM MODE` — which rule the match is fought under (16b cut O.1; 16c N11)
+// ---------------------------------------------------------------------------
+
+/// **The words of a ground's Hold rule** (16b cut O.1): the key spot's authored
+/// name and map letter, the radius and the time — everything `SIM MODE`, the
+/// board and the terminal head say about it, and all of it public ground (doc
+/// 16 §3.2: the spot's name and letter are on every pilot's map legend).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HoldWords {
+    /// The key spot's authored name (`The Crossroads`).
+    pub spot: SmolStr,
+    /// Its map letter (`B`).
+    pub letter: char,
+    /// The half-side of the square, cells.
+    pub radius_cells: u16,
+    /// The time a side must be alone on it, milliseconds.
+    pub hold_ms: u32,
+}
+
+impl HoldWords {
+    /// The time in whole seconds — the loader holds `hold_ms` to whole seconds.
+    #[must_use]
+    pub const fn seconds(&self) -> u32 {
+        self.hold_ms / 1_000
+    }
+}
+
+/// **The centre's ground's Hold rule, in words** (16b cut O.1), read off the
+/// loaded `ArenaDef` in `TacsimStore.definitions().arenas` — the compiled-in
+/// catalog, with no window built — and [`crate::match_::cockpit::spot_letter`].
+/// `None` for a world whose catalog has no centre arena or whose arena declares
+/// no Hold.
+#[must_use]
+pub fn hold_words(w: &World) -> Option<HoldWords> {
+    let arena = mush_core::CanonicalId::new(CENTRE_ARENA).ok()?;
+    let def = w
+        .module_state::<crate::TacsimStore>()?
+        .definitions()
+        .arenas
+        .get(&arena)?;
+    def.arena_modes()
+        .into_iter()
+        .find_map(|declared| match declared {
+            crate::arena::state::ArenaMode::Hold(rule) => {
+                let index = usize::from(rule.spot);
+                let spot = def.key_spots.get(index)?;
+                Some(HoldWords {
+                    spot: SmolStr::new(&spot.name),
+                    letter: crate::match_::cockpit::spot_letter(index)?,
+                    radius_cells: rule.radius_cells,
+                    hold_ms: rule.hold_ms,
+                })
+            }
+        })
+}
+
+/// The words of the modes the centre's ground declares, in authored order —
+/// `skirmish` first, which every ground supports and none declares.
+fn declared_mode_words(w: &World) -> Vec<&'static str> {
+    let mut words = vec![MatchMode::Skirmish.as_str()];
+    let declared = mush_core::CanonicalId::new(CENTRE_ARENA)
+        .ok()
+        .and_then(|arena| {
+            w.module_state::<crate::TacsimStore>()?
+                .definitions()
+                .arenas
+                .get(&arena)
+                .map(crate::definitions::arena::ArenaDef::arena_modes)
+        })
+        .unwrap_or_default();
+    for mode in declared {
+        let word = mode.mode().as_str();
+        if !words.contains(&word) {
+            words.push(word);
+        }
+    }
+    words
+}
+
+/// **`SIM MODE [skirmish|hold]`** — read or set which rule the next match is
+/// fought under (16b cut O.1; 16c N11).
+///
+/// **Reading it is anybody's**, in any state, slot or no slot (the `SIM AI` and
+/// `SIM UNIT` precedent, 16b cut D.1): `Mode: {current}. {label} supports:
+/// {words}.`, to the actor alone — the current mode, the ground's authored name
+/// and the words it supports, `skirmish` first — and, while the mode is Hold,
+/// ` Hold: keep {spot} ({letter}) uncontested for {s} seconds to win.`
+///
+/// **Setting it** is a side's lead's or staff's, in `Selection` only, to a mode
+/// the ground declares; it is announced to every centre room the way `SIM UNIT`
+/// is: `Mode set to hold: keep {spot} ({letter}) uncontested for {s} seconds to
+/// win; elimination still ends it.` or `Mode set to skirmish: eliminate the other
+/// side to win.` The mode is public in selection; who holds the spot during a
+/// match is told to nobody.
+///
+/// # Errors
+///
+/// [`SimError`], as the line the player sees. The read refuses only with
+/// [`SimError::LayerOff`], [`SimError::OutsideCentre`] and
+/// [`SimError::Unavailable`]; a set adds [`SimError::UnknownAccount`] for a
+/// non-staff character with no account, [`SimError::WrongState`] outside
+/// `Selection`, [`SimError::NotLeadForMode`], [`SimError::NoSuchMode`] and
+/// [`SimError::ModeUnsupported`].
+pub fn mode(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError> {
+    let actor = ctx.actor;
+    require_layer(ctx.w)?;
+    in_centre(ctx.w, actor)?;
+    let current = centre(ctx.w).ok_or(SimError::Unavailable)?.mode;
+    let label = crate::match_::record::arena_label(ctx.w, CENTRE_ARENA);
+    let hold = hold_words(ctx.w);
+    // The bare read: anybody in the centre, in any state.
+    let Some(word) = choice.map(str::trim).filter(|word| !word.is_empty()) else {
+        let words = declared_mode_words(ctx.w).join(", ");
+        let mut line = format!("Mode: {}. {label} supports: {words}.", current.as_str());
+        if current == MatchMode::Hold
+            && let Some(hold) = &hold
+        {
+            line.push_str(&format!(
+                " Hold: keep {} ({}) uncontested for {} seconds to win.",
+                hold.spot,
+                hold.letter,
+                hold.seconds()
+            ));
+        }
+        ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+        return Ok(());
+    };
+    // Setting it: `Selection`, a lead or staff, a mode word, a mode the ground
+    // declares — in that order, `SIM AI`'s.
+    let staff = is_staff(ctx.w, actor);
+    let account = match account_of(ctx.w, actor) {
+        Ok(account) => Some(account),
+        Err(_) if staff => None,
+        Err(error) => return Err(error),
+    };
+    {
+        let centre = centre(ctx.w).ok_or(SimError::Unavailable)?;
+        if centre.state != MatchState::Selection {
+            return Err(SimError::WrongState {
+                state: centre.state.as_str(),
+            });
+        }
+        let lead = account.is_some_and(|account| {
+            Team::ALL
+                .iter()
+                .any(|team| centre.leads_side(*team, account))
+        });
+        if !staff && !lead {
+            return Err(SimError::NotLeadForMode);
+        }
+    }
+    let chosen = MatchMode::parse(word).ok_or_else(|| SimError::NoSuchMode {
+        word: word.to_owned(),
+    })?;
+    if !declared_mode_words(ctx.w).contains(&chosen.as_str()) {
+        return Err(SimError::ModeUnsupported {
+            mode: chosen.as_str(),
+            arena: label,
+        });
+    }
+    if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+        book.centre_mut().mode = chosen;
+    }
+    let announcement = match (chosen, hold) {
+        (MatchMode::Hold, Some(hold)) => format!(
+            "Mode set to hold: keep {} ({}) uncontested for {} seconds to win; elimination \
+             still ends it.",
+            hold.spot,
+            hold.letter,
+            hold.seconds()
+        ),
+        (MatchMode::Hold, None) => "Mode set to hold; elimination still ends it.".to_owned(),
+        (MatchMode::Skirmish, _) => {
+            "Mode set to skirmish: eliminate the other side to win.".to_owned()
+        }
+    };
+    announce(ctx, announcement);
     Ok(())
 }
 
@@ -2756,6 +2977,8 @@ fn release_rows(ctx: &mut Ctx<'_>, state: MatchState, outcome: Option<MatchOutco
             // 16b cut Q.7: the fill size belongs to the match that was set up,
             // so the next `SIM TEAM` starts from the default again.
             centre.ai_side_size = None;
+            // 16b cut O.1: and so does the mode.
+            centre.mode = MatchMode::Skirmish;
         }
     }
 }
@@ -2848,6 +3071,13 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
         (Some(_), Some(EndReason::Unattended)) => {
             format!("{head} — timeout: every pilot had left")
         }
+        // **16b cut O.1** (16c N11): a hold, and where — the spot's name is
+        // public ground, and the match is over.
+        (Some(_), Some(EndReason::Hold { winner })) => format!(
+            "{head} — {} wins: held {}",
+            winner.as_str(),
+            hold_words(w).map_or_else(|| "the key spot".to_owned(), |hold| hold.spot.to_string())
+        ),
         // **16b cut D.3 (`T-60`)**: no dash where the outcome only repeats the
         // state. `aborted (match 3) — abort` and `void — void` told the reader
         // the same thing twice; the states that carry information keep theirs.
@@ -2968,6 +3198,24 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
         rows.push(format!(
             "  AI fill: each side fields {}; machines take the unclaimed pods.",
             ai_side_size(w, centre, &match_cfg)
+        ));
+    }
+    // **16b cut O.1** (16c N11; plan items 10, 17): the rule, to every reader,
+    // while a match is set up, boarding or running — and only for a mode other
+    // than the skirmish, so a stock board is byte for byte what it was. It says
+    // the RULE and never who holds the spot: the clock reaches no pilot.
+    if centre.mode == MatchMode::Hold
+        && matches!(
+            centre.state,
+            MatchState::Selection | MatchState::Boarding | MatchState::Running
+        )
+        && let Some(hold) = hold_words(w)
+    {
+        rows.push(format!(
+            "  mode: hold — keep {} ({}) uncontested for {} s",
+            hold.spot,
+            hold.letter,
+            hold.seconds()
         ));
     }
     if let Some(deadline) = centre.board_deadline_ms {
@@ -3305,5 +3553,34 @@ mod tests {
         );
         assert!(centre.leads_side(Team::Blue, d), "blue is untouched");
         assert_eq!(centre.leads.len(), 1);
+    }
+
+    /// **16b cut O.1**: the three `SIM MODE` refusals' sentences, pinned here —
+    /// `ModeUnsupported` above all, which no production-composed world reaches
+    /// (the catalog is compiled in and the centre's arena is always the proving
+    /// ground, which declares `hold`).
+    #[test]
+    fn o1_the_mode_refusals_read_as_their_sentences() {
+        assert_eq!(
+            SimError::ModeUnsupported {
+                mode: "hold",
+                arena: "The Stand-in".to_owned(),
+            }
+            .to_string(),
+            "The Stand-in does not support hold; SIM MODE lists what it does."
+        );
+        assert_eq!(
+            SimError::NotLeadForMode.to_string(),
+            "Only a side's lead or staff can set the mode."
+        );
+        assert_eq!(
+            SimError::NoSuchMode {
+                word: "capture".to_owned(),
+            }
+            .to_string(),
+            "No such mode: capture. SIM MODE lists them."
+        );
+        // A new centre is a skirmish.
+        assert_eq!(Centre::default().mode, MatchMode::Skirmish);
     }
 }

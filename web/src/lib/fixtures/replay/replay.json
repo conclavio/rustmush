@@ -89,6 +89,7 @@
     ]
   ],
   "match": 7,
+  "mode": "skirmish",
   "outcome": "abort",
   "reason": "abort",
   "record": "tacsim.replay",

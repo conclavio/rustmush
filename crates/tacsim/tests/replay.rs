@@ -344,6 +344,7 @@ fn fixture_replay() -> Replay {
         entry_zones: Vec::new(),
         key_spots: support::yard::spots(),
         waypoints: Waypoints::default(),
+        modes: Vec::new(),
     };
     let roster = |callsign: &str, team: Team| ReplayRoster {
         callsign: SmolStr::new(callsign),
@@ -397,6 +398,7 @@ fn fixture_replay() -> Replay {
         destroyed: vec![(7_000, 3)],
         truncated: false,
         cut: Vec::new(),
+        mode: tacsim::arena::MatchMode::Skirmish,
     }
 }
 
@@ -479,4 +481,33 @@ fn i1_the_replay_fixture_scene_exercises_the_clamp_the_cover_and_the_wreck() {
         Some(replay.clone())
     );
     assert_eq!(leak(&text(&replay.to_document())), None);
+}
+
+/// **16b cut O.1 (16c N11; plan item 39)**: a replay finished as a Hold carries
+/// the hold's words, and its document carries `"mode"` beside `outcome` and
+/// `reason` — which a replay written before the cut has no key for, and reads
+/// as a skirmish.
+#[test]
+fn o1_a_held_replay_carries_its_words_and_its_mode() {
+    let mut replay = fixture_replay();
+    replay.outcome = MatchOutcome::Red;
+    replay.reason = SmolStr::new("hold");
+    replay.mode = tacsim::arena::MatchMode::Hold;
+    let document = replay.to_document();
+    assert_eq!(document["outcome"], serde_json::json!("red"));
+    assert_eq!(document["reason"], serde_json::json!("hold"));
+    assert_eq!(document["mode"], serde_json::json!("hold"));
+    assert_eq!(Replay::from_document(&document), Some(replay.clone()));
+    let (header, _) = replay_lines(&replay, 0, 0, &support::yard::terrain());
+    assert!(
+        header.contains("red won (red held the key spot) [hold]"),
+        "{header}"
+    );
+    // A document written before the cut: no key, a skirmish, no tag.
+    let mut old = document;
+    old.as_object_mut().expect("an object").remove("mode");
+    let read = Replay::from_document(&old).expect("still a replay");
+    assert_eq!(read.mode, tacsim::arena::MatchMode::Skirmish);
+    let (header, _) = replay_lines(&read, 0, 0, &support::yard::terrain());
+    assert!(!header.contains("[hold]"), "{header}");
 }

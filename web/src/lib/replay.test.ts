@@ -24,6 +24,8 @@ import {
   LIVE_LABEL,
   liveAsReplay,
   liveView,
+  modeTag,
+  outcomeWords,
   replayView,
   replayViewLines,
   type Replay,
@@ -117,6 +119,37 @@ describe("decodeReplay", () => {
     expect(decodeReplayGrid(JSON.parse(text(DIR, "replay_window.json")))).toEqual({ match: 7, keyframe: 1 });
     expect(decodeReplayGrid(answer())).toBeNull();
     expect(decodeReplayGrid({ schema: { shape: "grid" } })).toBeNull();
+  });
+});
+
+// **16b cut O.1 (16c N11; plan item 39)**: a hold's words, and the mode's tag
+// on the replay's header — nothing for a skirmish or a document with no `mode`
+// (every replay written before the cut).
+describe("the mode", () => {
+  it("words a hold and tags the header", () => {
+    expect(outcomeWords("red", "hold")).toBe("red won (red held the key spot)");
+    expect(outcomeWords("blue", "hold")).toBe("blue won (blue held the key spot)");
+    expect(modeTag("hold")).toBe(" [hold]");
+    expect(modeTag("skirmish")).toBe("");
+    expect(modeTag("")).toBe("");
+    // The committed document is a skirmish; a hold of the same tape heads
+    // itself with the tag after the outcome words.
+    const skirmish = theReplay();
+    expect(skirmish.mode).toBe("skirmish");
+    const held = decodeReplay({ ...answer(), outcome: "red", reason: "hold", mode: "hold" });
+    if (held === null) {
+      throw new Error("the hold decodes");
+    }
+    expect(held.mode).toBe("hold");
+    const frame = frameAt(held, 5000);
+    expect(replayView(held, frame, null, 5000).header).toBe(
+      "Replay of match 7 — red won (red held the key spot) [hold] — both sides are shown: this match is over.",
+    );
+    expect(replayView(skirmish, frameAt(skirmish, 5000), null, 5000).header).not.toContain("[");
+    // A document with no `mode` reads as none, and tags nothing.
+    const old = answer();
+    delete old.mode;
+    expect(decodeReplay(old)?.mode).toBe("");
   });
 });
 

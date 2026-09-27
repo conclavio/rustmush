@@ -1359,6 +1359,10 @@ fn v1_the_arena_check_refuses_a_bad_spot_name_and_a_twenty_third_spot() {
     };
     let mut full = def.clone();
     full.key_spots = fill(MAX_KEY_SPOTS);
+    // 16b cut O.1: the shipped ground's Hold names `The Crossroads`, which a
+    // list of survey marks does not hold; this test is about the spot cap, so
+    // the declaration goes with the spots it named.
+    full.modes.clear();
     assert_eq!(MAX_KEY_SPOTS, 22);
     full.check(id.as_str())
         .expect("twenty-two spots are the alphabet, and load");

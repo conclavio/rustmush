@@ -228,6 +228,7 @@ fn definition() -> ArenaDefinition {
         // on them is a `Pilot`.
         key_spots: Vec::new(),
         waypoints: tacsim::arena::state::Waypoints::default(),
+        modes: Vec::new(),
     }
 }
 
@@ -279,6 +280,7 @@ fn custody(seed: u64) -> CustodyOut {
         ],
         resolution: tacsim::match_::stock_resolution(),
         seed,
+        mode: tacsim::arena::MatchMode::Skirmish,
     }
 }
 

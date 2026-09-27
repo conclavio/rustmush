@@ -454,6 +454,22 @@ point at a route that has nothing to take. The lobby then seats the slots before
 the missing one a side; a reset instance is the repair until a later version
 ships.
 
+**The Hold mode: the arena 3 → 4 (16b cut O.1).** Version 4 only declares the
+modes the ground supports (Hold at The Crossroads, six cells, 120 s); no tank,
+cell or roster changes. The arena catalog is compiled in and rebuilt at every
+boot, so `SIM MODE hold` works the moment the new server half is up, whatever
+the latch says; taking the pack only moves the latch. With the centre idle, run
+`@atlas/pack plan tacsim.pack.proving_ground` **first**: on a version 3 latch it
+reads `0 create, 1 update, 0 retire`, and `@atlas/pack apply <fingerprint>`
+moves the latch to 4, adopts the twelve standing tanks by roster and remakes
+none. On a version 2 latch (a store never reset since Z.3) the six-a-side
+paragraph above applies first — `neighborhood.ooc_area` before the arena — and
+the arena step then lands at 4 in one apply. A world that skips it loses nothing
+but the boot's info line saying a newer version is available. This cut also
+moves the gateway half (the replay's outcome words and its head's `[hold]` tag
+on the TUI and the web), so its deploy is `GATEWAY_RESTART=1` with `web/dist`
+rebuilt after the commit.
+
 **Replays (16b cut I.1).** Every match that ends writes one more document in its
 result's own batch, `tacsim:replay:<match>` — both sides' positions every 5 s,
 the shots and the wrecks, at most 256 KiB — and the result says `"replay": true`.

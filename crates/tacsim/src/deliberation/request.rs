@@ -44,6 +44,7 @@ use mush_llm::{
     LlmFeature, LlmService, Priority, StructuredError, StructuredSpec, ToolDef, call_structured,
 };
 
+pub use crate::arena::command::BriefObjective;
 use crate::arena::command::{SignalReason, SquadSignal};
 use crate::arena::state::{Classification, ContactId};
 use crate::deliberation::order::{
@@ -120,6 +121,20 @@ pub struct SquadBrief {
     /// **The squad's own units, as their own facts** (16b cut Z.1, 16c N6),
     /// commander first, from [`crate::arena::command::SquadSignal::members`].
     pub members: Vec<BriefMember>,
+    /// **The match's objective** (16b cut O.1; 16c N11; plan items 14, 33),
+    /// copied from [`crate::arena::command::SquadSignal::objective`]; `None` on
+    /// a skirmish, and absent reads `None`.
+    ///
+    /// **Why**: after 16b cut AC the commander is live on dev1, and the forced
+    /// tool always answers one of six orders. An objective-blind commander
+    /// overrides doctrine's Hold goal on its first `NoOrder` reply, so it is
+    /// told the objective — in words that carry **no order word**
+    /// ([`user_prompt`]'s `objective:` line): `hold` in the tool's vocabulary
+    /// parks the squad where it stands, which is the one reading of "hold the
+    /// spot" that loses it. Every field is public in selection, so the line
+    /// costs the observer rule nothing.
+    #[serde(default)]
+    pub objective: Option<BriefObjective>,
 }
 
 /// **One member of the squad, as the prompt names it** (16b cut Z.1, 16c N6).
@@ -244,6 +259,8 @@ impl SquadBrief {
             default_ttl_ms: signal.default_ttl_ms,
             contacts,
             members,
+            // 16b cut O.1: carried whole, as the default is.
+            objective: signal.objective.clone(),
         }
     }
 
@@ -496,14 +513,21 @@ fn order_of(brief: &SquadBrief, payload: &OrderPayload) -> Result<Order, String>
 }
 
 /// The system turn: the frame, and the closed vocabulary.
+///
+/// **16b cut O.1** (plan item 33) added one sentence mapping the vocabulary onto
+/// a key-spot match: `engage` keeps doctrine (which drives to the spot and
+/// fights from it), `advance` to the spot arrives and does not fire, `hold`
+/// parks the squad where it stands.
 #[must_use]
 pub fn system_prompt() -> String {
     format!(
         "{FRAME}\n\nDoctrine: a squad with no order fights on its own reflexes — it patrols, closes \
 on the nearest worthwhile hostile, holds a firing band and breaks off when it is hurt. Give an \
 order only to change that. A screen holds an arc without giving chase; support keeps station on \
-one of your own members and shoots what it shoots, and the member named fights on. Prefer a short \
-time to live when the situation is moving."
+one of your own members and shoots what it shoots, and the member named fights on. In a key-spot \
+match: engage keeps doctrine, which drives the squad to the key spot and fights from it; advance \
+to the spot arrives and does not fire; hold parks the squad where it stands. Prefer a short time \
+to live when the situation is moving."
     )
 }
 
@@ -552,6 +576,21 @@ pub fn user_prompt(brief: &SquadBrief) -> String {
     }
     if let Some((x, y)) = brief.cell {
         let _ = writeln!(out, "commander_cell: {x},{y}");
+    }
+    // **16b cut O.1** (16c N11; plan item 33): the objective, in words that are
+    // not one of the tool's six objectives — never `hold`, which in that
+    // vocabulary parks the squad where it stands.
+    if let Some(objective) = &brief.objective {
+        let (x, y) = objective.cell;
+        let spot = match objective.letter {
+            Some(letter) => format!("key spot {letter} at {x},{y}"),
+            None => format!("key spot at {x},{y}"),
+        };
+        let _ = writeln!(
+            out,
+            "objective: {spot}; the side alone inside {} cells of it for {} s wins the match",
+            objective.radius_cells, objective.hold_s
+        );
     }
     let _ = writeln!(
         out,
@@ -702,6 +741,8 @@ mod tests {
                     bearing_mdeg: 270_000,
                 },
             ],
+            // 16b cut O.1: a skirmish.
+            objective: None,
         }
     }
 
@@ -1104,5 +1145,95 @@ mod tests {
         ] {
             assert!(!reason.as_str().is_empty());
         }
+    }
+
+    /// **16b cut O.1** (16c N11; plan items 14, 33): a brief carrying the Hold
+    /// objective prints one `objective:` line, verbatim, after the commander's
+    /// cell — in words that are none of the forced tool's six objectives — and a
+    /// skirmish's brief prints none.
+    #[test]
+    fn o1_the_objective_line_is_verbatim_and_carries_no_order_word() {
+        let mut held = signal();
+        held.objective = Some(BriefObjective {
+            mode: "hold".to_owned(),
+            cell: (129, 97),
+            letter: Some('B'),
+            radius_cells: 6,
+            hold_s: 120,
+        });
+        let brief = SquadBrief::from_signal(7, &held, 2);
+        assert_eq!(brief.objective, held.objective, "carried whole");
+        let prompt = user_prompt(&brief);
+        let line = "objective: key spot B at 129,97; the side alone inside 6 cells of it for 120 s \
+                    wins the match\n";
+        assert!(
+            prompt.contains(&format!("commander_cell: 3,4\n{line}")),
+            "after the commander's cell: {prompt}"
+        );
+        let words: Vec<String> = order_tool()
+            .input_schema
+            .pointer("/properties/objective/enum")
+            .and_then(serde_json::Value::as_array)
+            .map(|words| {
+                words
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(words.len(), 6, "the tool's six objectives");
+        for word in &words {
+            assert!(
+                !line
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|token| token.eq_ignore_ascii_case(word)),
+                "the objective line carries the order word `{word}`"
+            );
+        }
+        // A spot with no letter prints no letter.
+        let mut bare = brief.clone();
+        if let Some(objective) = bare.objective.as_mut() {
+            objective.letter = None;
+        }
+        assert!(user_prompt(&bare).contains("objective: key spot at 129,97; the side alone"));
+        // A skirmish prints nothing.
+        let skirmish = SquadBrief::from_signal(7, &signal(), 2);
+        assert_eq!(skirmish.objective, None);
+        assert!(!user_prompt(&skirmish).contains("objective:"));
+        // The system turn maps the vocabulary onto a key-spot match.
+        assert!(system_prompt().contains(
+            "In a key-spot match: engage keeps doctrine, which drives the squad to the key spot \
+             and fights from it; advance to the spot arrives and does not fire; hold parks the \
+             squad where it stands."
+        ));
+    }
+
+    /// **16b cut O.1**: the brief crosses the world task's seam as JSON with the
+    /// objective and without it — an absent key reads `None`, so a brief written
+    /// before the cut still decodes.
+    #[test]
+    fn o1_the_brief_round_trips_with_and_without_the_objective() {
+        let mut held = signal();
+        held.objective = Some(BriefObjective {
+            mode: "hold".to_owned(),
+            cell: (129, 97),
+            letter: Some('B'),
+            radius_cells: 6,
+            hold_s: 120,
+        });
+        for brief in [
+            SquadBrief::from_signal(7, &held, 2),
+            SquadBrief::from_signal(7, &signal(), 2),
+        ] {
+            let json = serde_json::to_value(&brief).expect("encodes");
+            let back: SquadBrief = serde_json::from_value(json).expect("decodes");
+            assert_eq!(back, brief);
+        }
+        let mut old =
+            serde_json::to_value(SquadBrief::from_signal(7, &signal(), 2)).expect("encodes");
+        old.as_object_mut().expect("an object").remove("objective");
+        let back: SquadBrief = serde_json::from_value(old).expect("an absent key decodes");
+        assert_eq!(back.objective, None);
     }
 }

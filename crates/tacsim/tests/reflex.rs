@@ -230,6 +230,7 @@ fn definition_with(paint: &[(u16, u16, TerrainCell)], waypoints: Waypoints) -> A
         ],
         key_spots: Vec::new(),
         waypoints,
+        modes: Vec::new(),
     }
 }
 
@@ -412,6 +413,7 @@ fn arena_on(
             pilots,
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
         },
         cfg,
         &match_cfg(),
@@ -5791,6 +5793,7 @@ fn road(len: u16, node: (u16, u16)) -> ArenaDefinition {
             }],
             &[],
         ),
+        modes: Vec::new(),
     }
 }
 
@@ -9350,6 +9353,7 @@ fn z2_station_field_on(paint: &[(u16, u16, TerrainCell)]) -> Arena {
         ],
         key_spots: Vec::new(),
         waypoints: graph(),
+        modes: Vec::new(),
     };
     let mut arena = arena_on(
         definition,
@@ -10119,6 +10123,7 @@ fn i3_a_placed_machine_re_plans() {
         ],
         key_spots: Vec::new(),
         waypoints: graph(),
+        modes: Vec::new(),
     };
     let mut arena = arena_on(
         definition,
@@ -10186,4 +10191,899 @@ fn i3_a_placed_machine_re_plans() {
     let log = events(&mut arena, &mut bytes);
     assert_eq!(count(&log, "placed"), 1);
     assert_eq!(count(&log, "place_refused"), 0);
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut O.1 — the machines in a Hold match (16c N11; plan items 2, 16, 32,
+// 33, 34)
+// ---------------------------------------------------------------------------
+
+/// A third red machine, for the O.1 order test.
+const O1_RED3: ObjId = ObjId(7);
+
+/// The pilot who types the O.1 `ORDER … HOLD` and its `RELEASE`.
+const O1_PILOT: ObjId = ObjId(1_500);
+
+/// **This file's window with a Hold declared**: one key spot at `spot`,
+/// `radius_cells` round it, `hold_ms` long, over `paint`ed ground.
+fn o1_ground(
+    paint: &[(u16, u16, TerrainCell)],
+    spot: (u16, u16),
+    radius_cells: u16,
+    hold_ms: u32,
+) -> ArenaDefinition {
+    ArenaDefinition {
+        key_spots: vec![tacsim::arena::state::KeySpot {
+            name: SmolStr::new("The Spot"),
+            x: spot.0,
+            y: spot.1,
+        }],
+        modes: vec![tacsim::arena::ArenaMode::Hold(tacsim::arena::HoldRule {
+            spot: 0,
+            radius_cells,
+            hold_ms,
+        })],
+        ..definition(paint)
+    }
+}
+
+/// [`arena_on`] at `MatchMode::Hold`.
+fn o1_arena(
+    definition: ArenaDefinition,
+    units: Vec<CustodyUnit>,
+    cfg: &ArenaConfig,
+    seated: &[ObjId],
+) -> Arena {
+    let pilots = seated
+        .iter()
+        .enumerate()
+        .map(|(seat, unit)| Pilot {
+            unit: *unit,
+            pilot: ObjId(1_000 + u32::try_from(seat).unwrap_or(0)),
+            station: SmolStr::new("cockpit"),
+            epoch: 1,
+        })
+        .collect();
+    Arena::new(
+        CustodyOut {
+            definition,
+            units,
+            pilots,
+            resolution: tacsim::match_::stock_resolution(),
+            seed: SEED,
+            mode: tacsim::arena::MatchMode::Hold,
+        },
+        cfg,
+        &match_cfg(),
+        &SensorsConfig::default(),
+    )
+    .expect("the hold arena")
+}
+
+/// Whether `unit` stands inside the arena's Hold square.
+fn o1_inside(arena: &Arena, unit: ObjId) -> bool {
+    arena
+        .unit(unit)
+        .and_then(|state| arena.definition.terrain.cell_of(&state.pose))
+        .is_some_and(|cell| arena.hold.is_some_and(|hold| hold.square_contains(cell)))
+}
+
+/// **16b cut O.1 (16c N11; plan items 2, 16)**: in a Hold match the machines
+/// drive to the key spot and park anywhere inside `radius − 1`, and then stop
+/// searching; one under a pilot-shaped `ORDER … HOLD` stays where it stands
+/// until the `RELEASE`, and then drives to the spot too.
+///
+/// Red's three machines against a blue tank that stands cold and out of every
+/// red sight (so no engagement interrupts), under an hour-long `hold_ms` (so no
+/// win does): every free machine ends INSIDE the square, the searches of the
+/// second minute are a small fraction of the first's, and the ordered machine
+/// has not moved a cell until its release.
+#[test]
+fn o1_hold_mode_machines_drive_to_the_spot_and_park_inside_the_radius() {
+    let ground = o1_ground(&[], (10, 8), 3, 3_600_000);
+    let mut arena = o1_arena(
+        ground,
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(1, 4),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                RED2,
+                Team::Red,
+                centre(1, 12),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                O1_RED3,
+                Team::Red,
+                centre(1, 8),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(15, 0),
+                vec![cannon()],
+                Controller::Pilot,
+            ),
+        ],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let squad = arena
+        .squad_of(O1_RED3)
+        .map(|roster| roster.id)
+        .expect("the machine is in a squad");
+    let hold = tacsim::arena::intents::IntentKind::Order(Box::new(tacsim::deliberation::Order {
+        squad,
+        objective: tacsim::deliberation::Objective::Hold,
+        target: None,
+        horizon_ms: 600_000,
+        constraints: tacsim::deliberation::Constraints {
+            hold_fire: false,
+            max_range_band: None,
+        },
+        ttl_ms: 600_000,
+        issued_ms: 0,
+        issuer: Some(O1_PILOT),
+        spot: None,
+    }));
+    let intent =
+        |arena: &Arena, kind: &tacsim::arena::intents::IntentKind| tacsim::arena::intents::Intent {
+            unit: O1_RED3,
+            channel: Channel::Helm,
+            epoch: arena.epochs.current(O1_RED3, Channel::Helm),
+            kind: kind.clone(),
+            seq: 1,
+        };
+    let mut bytes: Vec<u8> = Vec::new();
+    let order = intent(&arena, &hold);
+    absorb(&arena.step(0, &[], &[order]), &mut bytes);
+    let first = run(&mut arena, 60_000, &mut bytes);
+    let second = run(&mut arena, 120_000, &mut bytes);
+    for unit in [RED, RED2] {
+        assert!(
+            o1_inside(&arena, unit),
+            "{unit} did not park inside the square: {:?}",
+            arena
+                .unit(unit)
+                .map(|state| (state.pose.x_cm, state.pose.y_cm))
+        );
+        let row = arena.reflex.unit(unit).cloned().expect("a machine");
+        assert_eq!(row.state, ReflexState::Patrol);
+        let here = arena
+            .unit(unit)
+            .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
+        assert_eq!(row.goal, here, "{unit} parked: its goal is where it stands");
+        assert!(row.hunt.is_none(), "no hunt in a Hold match");
+    }
+    assert!(first.path_queries > 0, "{first:?}");
+    assert!(
+        second.path_queries * 5 <= first.path_queries,
+        "the searches did not plateau once the side had arrived: {} then {}",
+        first.path_queries,
+        second.path_queries
+    );
+    assert_eq!(
+        arena.unit(BLUE).map(|state| state.power),
+        Some(Power::Off),
+        "blue stood cold throughout"
+    );
+    // The ordered machine stood where it was told to.
+    assert_eq!(
+        arena
+            .unit(O1_RED3)
+            .and_then(|state| arena.definition.terrain.cell_of(&state.pose)),
+        Some((1, 8)),
+        "a machine under a pilot's HOLD does not drive to the spot"
+    );
+    // The release hands it back to doctrine, and doctrine drives it there.
+    let release = tacsim::arena::intents::IntentKind::ReleaseOrder {
+        squad,
+        issuer: Some(O1_PILOT),
+    };
+    let order = intent(&arena, &release);
+    let wall = arena.now_ms;
+    absorb(&arena.step(wall, &[], &[order]), &mut bytes);
+    run(&mut arena, 180_000, &mut bytes);
+    assert!(
+        o1_inside(&arena, O1_RED3),
+        "the released machine did not drive to the spot"
+    );
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "match_ended"), 0, "no win inside an hour");
+}
+
+/// **16b cut O.1 (plan item 32): a holder fights from inside the square.** A
+/// machine parked on the spot, and an armed hostile it holds past its
+/// `engage_cm` and inside its `release_cm` with a line — the band in which a
+/// machine outside the square drives toward a stand-off cell. The holder takes
+/// `release_cm` as its edge instead, as a machine that cannot close does: it
+/// fires within seconds without leaving its cell. The same field at a
+/// skirmish is the control — that machine drives out of the cell to close.
+/// (This file's window is 160 m across, so the band is the file's own seven to
+/// ten cells rather than the shipped tank's 420 to 600 m.)
+#[test]
+fn o1_a_holder_fights_from_inside_the_square() {
+    let units = || {
+        vec![
+            with_sight(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(4, 8),
+                    vec![cannon()],
+                    Controller::Reflex,
+                ),
+                SIGHT_CELLS,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(13, 8),
+                vec![cannon()],
+                Controller::Pilot,
+            ),
+        ]
+    };
+    // Drive a field for up to fifteen arena seconds with the hostile held,
+    // answering when the machine first fired and every cell it stood in.
+    let fight = |arena: &mut Arena| -> (Option<i64>, Vec<Option<(u16, u16)>>) {
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut fired_at: Option<i64> = None;
+        let mut cells = Vec::new();
+        let mut wall = 0_i64;
+        while arena.now_ms < 15_000 && fired_at.is_none() {
+            let now = arena.now_ms;
+            plant_contact(arena, RED, BLUE, Team::Blue, now);
+            let out = arena.step(wall, &[], &[]);
+            absorb(&out, &mut bytes);
+            cells.push(
+                arena
+                    .unit(RED)
+                    .and_then(|state| arena.definition.terrain.cell_of(&state.pose)),
+            );
+            if out.reflex.shots > 0 {
+                fired_at = Some(arena.now_ms);
+            }
+            wall += 500;
+        }
+        (fired_at, cells)
+    };
+    let mut arena = o1_arena(
+        o1_ground(&[], (4, 8), 1, 3_600_000),
+        units(),
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let range = plot_range(&arena, RED, BLUE);
+    assert!(
+        range > ENGAGE_CM && range <= RELEASE_CM,
+        "the fixture needs the hostile between the two edges: {range}"
+    );
+    let (fired_at, cells) = fight(&mut arena);
+    let fired_at = fired_at.expect("the holder fired within fifteen arena seconds");
+    assert!(fired_at <= 10_000, "it fired at {fired_at} ms");
+    assert!(
+        cells.iter().all(|cell| *cell == Some((4, 8))),
+        "the holder never left its cell on the spot: {cells:?}"
+    );
+    assert!(o1_inside(&arena, RED));
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage));
+    // The control: at a skirmish the same machine closes, leaving the cell.
+    let mut skirmish = arena_of(units(), &[], &arena_cfg(reflex_cfg()), &[BLUE]);
+    let (_, cells) = fight(&mut skirmish);
+    assert!(
+        cells.iter().any(|cell| cell.is_some_and(|(x, _)| x > 5)),
+        "a machine with no spot to hold closes on the hostile: {cells:?}"
+    );
+}
+
+/// **16b cut O.1 (plan item 33): an `Advance` into the square ends on
+/// arrival.** A machine sent by its commander to the key spot from outside the
+/// square: the moment it stands inside the square its order ends — one
+/// `order_expired` line, the row back on doctrine — and doctrine's Hold goal
+/// takes it from there, parking it inside the square with its goal where it
+/// stands and its speed ordered to nought.
+#[test]
+fn o1_an_advance_into_the_square_ends_on_arrival() {
+    let ground = o1_ground(&[], (10, 8), 3, 3_600_000);
+    let mut arena = o1_arena(
+        ground,
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(1, 8),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(15, 0),
+                vec![cannon()],
+                Controller::Pilot,
+            ),
+        ],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let squad = arena
+        .squad_of(RED)
+        .map(|roster| roster.id)
+        .expect("the machine is in a squad");
+    let advance =
+        tacsim::arena::intents::IntentKind::Order(Box::new(tacsim::deliberation::Order {
+            squad,
+            objective: tacsim::deliberation::Objective::Advance { to: (10, 8) },
+            target: None,
+            horizon_ms: 600_000,
+            constraints: tacsim::deliberation::Constraints {
+                hold_fire: false,
+                max_range_band: None,
+            },
+            ttl_ms: 600_000,
+            issued_ms: 0,
+            issuer: None,
+            spot: None,
+        }));
+    let order = tacsim::arena::intents::Intent {
+        unit: RED,
+        channel: Channel::Helm,
+        epoch: arena.epochs.current(RED, Channel::Helm),
+        kind: advance,
+        seq: 1,
+    };
+    let mut bytes: Vec<u8> = Vec::new();
+    absorb(&arena.step(0, &[], &[order]), &mut bytes);
+    // Drive until the order ends, reading where the machine stood when it did.
+    let mut ended_inside: Option<bool> = None;
+    let mut wall = 500_i64;
+    while arena.now_ms < 30_000 && ended_inside.is_none() {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        if out.reflex.orders_expired > 0 {
+            ended_inside = Some(o1_inside(&arena, RED));
+        }
+        wall += 500;
+    }
+    assert_eq!(
+        ended_inside,
+        Some(true),
+        "the order ended on arrival in the square"
+    );
+    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    assert!(row.order.is_none(), "the machine is on doctrine");
+    // Doctrine's Hold goal parks it inside the square.
+    run(&mut arena, 40_000, &mut bytes);
+    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    let here = arena
+        .unit(RED)
+        .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
+    assert!(o1_inside(&arena, RED));
+    assert_eq!(row.goal, here, "parked where it stands");
+    assert_eq!(
+        arena.unit(RED).map(|state| state.desired_speed_cms),
+        Some(0)
+    );
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "order_expired"), 1, "one order_expired line");
+}
+
+/// **16b cut O.1 (plan items 16, 34; `B-41`'s lesson): a spot no route reaches
+/// is given up after one search and tried again** — `max(hunt_after_ms,
+/// repath_ms)` later, with the fallback waypoint holding in between; and at
+/// `hunt_after_ms` 0 (the documented "off") the retry is `repath_ms` after each
+/// failure, with the fallback still holding between two of them.
+#[test]
+fn o1_a_sealed_spot_is_given_up_after_one_search_and_tried_again() {
+    // A pocket walled on every side, the spot in its middle.
+    let mut paint: Vec<(u16, u16, TerrainCell)> = Vec::new();
+    for x in 8..=12_u16 {
+        paint.push((x, 6, wall()));
+        paint.push((x, 10, wall()));
+    }
+    for y in 6..=10_u16 {
+        paint.push((8, y, wall()));
+        paint.push((12, y, wall()));
+    }
+    let field = |cfg: ReflexConfig| {
+        o1_arena(
+            o1_ground(&paint, (10, 8), 1, 3_600_000),
+            vec![tank(
+                RED,
+                Team::Red,
+                centre(2, 3),
+                vec![cannon()],
+                Controller::Reflex,
+            )],
+            &arena_cfg(cfg),
+            &[],
+        )
+    };
+    let nodes = |arena: &Arena| -> Vec<(u16, u16)> {
+        arena
+            .definition
+            .waypoints
+            .nodes()
+            .iter()
+            .map(|node| (node.x, node.y))
+            .collect()
+    };
+
+    // At the shipped hunt clock, ninety seconds: one failed search, the
+    // fallback holds, and one more at the retry.
+    let cfg = reflex_cfg();
+    let retry = i64::from(cfg.hunt_after_ms.max(cfg.repath_ms));
+    assert_eq!(retry, 90_000);
+    let mut arena = field(cfg);
+    let mut bytes: Vec<u8> = Vec::new();
+    let early = run(&mut arena, 60_000, &mut bytes);
+    assert_eq!(early.path_failures, 1, "one failed search: {early:?}");
+    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    let given_up = row
+        .hold_retry_ms
+        .expect("the spot is given up until a retry");
+    assert!(
+        row.goal.is_some_and(|goal| nodes(&arena).contains(&goal)),
+        "the fallback waypoint holds: {:?}",
+        row.goal
+    );
+    let failed_at = given_up - retry;
+    assert!(failed_at > 0 && failed_at < 5_000, "failed at {failed_at}");
+    let late = run(&mut arena, failed_at + retry + 2_000, &mut bytes);
+    assert_eq!(late.path_failures, 1, "one more at the retry: {late:?}");
+    assert_eq!(
+        arena.reflex.unit(RED).and_then(|row| row.hold_retry_ms),
+        Some(failed_at + 2 * retry),
+        "given up again for the same stretch"
+    );
+
+    // At `hunt_after_ms` 0, the "off" value: the retry is floored at
+    // `repath_ms`. The floor does not change how often the spot is searched —
+    // `repath_ms` already throttles every search (`follow`'s `fresh_enough`),
+    // so twenty seconds buy five failures either way — but what the machine
+    // does BETWEEN two failures: each failure gives the spot up until exactly
+    // `repath_ms` after it, and on every tick in between the fallback waypoint
+    // is the goal and the sealed spot is not. Unfloored, the retry would be the
+    // failure's own millisecond, `hold_goal` would re-assert the spot on the
+    // very next tick, and the machine would steer at the pocket between
+    // searches — `B-41`'s defect.
+    let off = ReflexConfig {
+        hunt_after_ms: 0,
+        repath_ms: 4_000,
+        ..reflex_cfg()
+    };
+    let mut arena = field(off);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut failures = 0_u32;
+    let mut between = 0_u32;
+    let mut wall = arena.now_ms;
+    while arena.now_ms < 20_500 {
+        let opened = arena.now_ms;
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        failures += out.reflex.path_failures;
+        let row = arena.reflex.unit(RED).cloned().expect("a machine");
+        if out.reflex.path_failures > 0 {
+            // The failure fell in this pulse, `(opened, now]`; its retry is
+            // `repath_ms` after it.
+            let failed_at = row.hold_retry_ms.map(|until| until - 4_000);
+            assert!(
+                failed_at.is_some_and(|at| at >= opened && at <= arena.now_ms),
+                "the retry is not the failure plus `repath_ms`: {:?} in {opened}..{}",
+                row.hold_retry_ms,
+                arena.now_ms
+            );
+        } else if row.hold_retry_ms.is_some_and(|until| arena.now_ms < until) {
+            between += 1;
+            assert!(
+                row.goal.is_some_and(|goal| nodes(&arena).contains(&goal)),
+                "between two failures the fallback waypoint holds, at {}: {:?}",
+                arena.now_ms,
+                row.goal
+            );
+        }
+        wall += 500;
+    }
+    assert!(
+        (4..=6).contains(&failures),
+        "one failed search per `repath_ms`: {failures}"
+    );
+    assert!(
+        between >= 10,
+        "the fallback held on only {between} ticks between failures"
+    );
+}
+
+/// What [`o1_a_holder_with_no_line_waits_on_the_spot`] reads of one field: every
+/// cell the machine stood in, the states it was in, and the rounds it fired.
+type O1Wait = (Vec<Option<(u16, u16)>>, Vec<ReflexState>, u32);
+
+/// **16b cut O.1 (plan item 32): a holder with no line waits on the spot.**
+/// A machine parked on the key spot holds a hostile between its `engage_cm`
+/// and its `release_cm`, with a wall cell squarely between them. Inside the
+/// square its edge is `release_cm`, so the hostile is inside it; with no line
+/// there, a machine off the spot closes on the plot's own cell (E.1's reading)
+/// — and a holder that did would walk off the square cell by cell. It stands
+/// instead, in `Approach`, for as long as the line is blocked. The same field
+/// at a skirmish is the control: that machine leaves its cell.
+#[test]
+fn o1_a_holder_with_no_line_waits_on_the_spot() {
+    let units = || {
+        vec![
+            with_sight(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(4, 8),
+                    vec![cannon()],
+                    Controller::Reflex,
+                ),
+                SIGHT_CELLS,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(12, 8),
+                vec![cannon()],
+                Controller::Pilot,
+            ),
+        ]
+    };
+    let curtain = [(8_u16, 8_u16, wall())];
+    // Fifteen arena seconds with the hostile held: every cell the machine
+    // stood in, the states it was in, and the rounds it fired.
+    let wait = |arena: &mut Arena| -> O1Wait {
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut cells = Vec::new();
+        let mut states = Vec::new();
+        let mut shots = 0_u32;
+        let mut wall = 0_i64;
+        while arena.now_ms < 15_000 {
+            let now = arena.now_ms;
+            plant_contact(arena, RED, BLUE, Team::Blue, now);
+            let out = arena.step(wall, &[], &[]);
+            absorb(&out, &mut bytes);
+            shots += out.reflex.shots;
+            cells.push(
+                arena
+                    .unit(RED)
+                    .and_then(|state| arena.definition.terrain.cell_of(&state.pose)),
+            );
+            states.extend(state_of(arena, RED));
+            wall += 500;
+        }
+        (cells, states, shots)
+    };
+    let mut arena = o1_arena(
+        o1_ground(&curtain, (4, 8), 1, 3_600_000),
+        units(),
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let range = plot_range(&arena, RED, BLUE);
+    assert!(
+        range > ENGAGE_CM && range <= RELEASE_CM,
+        "the fixture needs the hostile between the two edges: {range}"
+    );
+    let (cells, states, shots) = wait(&mut arena);
+    assert_eq!(shots, 0, "no line, no shot");
+    assert!(
+        states.contains(&ReflexState::Approach),
+        "the machine never took the hostile: {states:?}"
+    );
+    assert!(
+        !states.contains(&ReflexState::Engage),
+        "the wall is between them: {states:?}"
+    );
+    assert!(
+        cells.iter().all(|cell| *cell == Some((4, 8))),
+        "the holder left its cell on the spot: {cells:?}"
+    );
+    assert!(o1_inside(&arena, RED));
+    // The control: at a skirmish the same machine closes on the hostile.
+    let mut skirmish = arena_of(units(), &curtain, &arena_cfg(reflex_cfg()), &[BLUE]);
+    let (cells, _, _) = wait(&mut skirmish);
+    assert!(
+        cells.iter().any(|cell| cell.is_some_and(|(x, _)| x > 5)),
+        "a machine with no spot to hold closes on the hostile: {cells:?}"
+    );
+}
+
+/// **16b cut O.1 (plan item 33): an `Advance` to a cell on the square's edge
+/// hands over one cell short of it.** The ordered cell is the west edge of the
+/// square; a machine driving at it from the west stops within
+/// [`tacsim::arena::reflex::ARRIVE_CELLS`] of it — which can be outside the
+/// square — and an order ended only by standing inside would then stand for
+/// its whole TTL. Ended at `follow`'s own arrival instead: one
+/// `order_expired`, and doctrine's Hold goal drives it the last cells in.
+#[test]
+fn o1_an_advance_to_the_squares_edge_hands_over_where_it_stops() {
+    let ground = o1_ground(&[], (10, 8), 3, 3_600_000);
+    let mut arena = o1_arena(
+        ground,
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(1, 8),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(15, 0),
+                vec![cannon()],
+                Controller::Pilot,
+            ),
+        ],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let edge = (7_u16, 8_u16);
+    assert!(arena.hold.is_some_and(
+        |hold| hold.square_contains(edge) && !hold.square_contains((edge.0 - 1, edge.1))
+    ));
+    let order = o1_advance(&arena, RED, edge);
+    let mut bytes: Vec<u8> = Vec::new();
+    absorb(&arena.step(0, &[], &[order]), &mut bytes);
+    let mut ended_at: Option<(u16, u16)> = None;
+    let mut wall = 500_i64;
+    while arena.now_ms < 30_000 && ended_at.is_none() {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        if out.reflex.orders_expired > 0 {
+            ended_at = arena
+                .unit(RED)
+                .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
+        }
+        wall += 500;
+    }
+    let ended_at = ended_at.expect("the order ended within thirty arena seconds");
+    assert!(
+        ended_at.0.abs_diff(edge.0).max(ended_at.1.abs_diff(edge.1))
+            <= tacsim::arena::reflex::ARRIVE_CELLS,
+        "it ended where `follow` stops: {ended_at:?}"
+    );
+    assert!(
+        arena
+            .reflex
+            .unit(RED)
+            .is_some_and(|row| row.order.is_none()),
+        "the machine is on doctrine"
+    );
+    run(&mut arena, 45_000, &mut bytes);
+    assert!(o1_inside(&arena, RED), "doctrine drove it into the square");
+    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    let here = arena
+        .unit(RED)
+        .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
+    assert_eq!(row.goal, here, "parked where it stands");
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "order_expired"), 1, "one order_expired line");
+}
+
+/// A squad `Advance { to }` for `unit`, on the helm, as the commander sends it.
+fn o1_advance(arena: &Arena, unit: ObjId, to: (u16, u16)) -> tacsim::arena::intents::Intent {
+    let squad = arena
+        .squad_of(unit)
+        .map(|roster| roster.id)
+        .expect("the machine is in a squad");
+    tacsim::arena::intents::Intent {
+        unit,
+        channel: Channel::Helm,
+        epoch: arena.epochs.current(unit, Channel::Helm),
+        kind: tacsim::arena::intents::IntentKind::Order(Box::new(tacsim::deliberation::Order {
+            squad,
+            objective: tacsim::deliberation::Objective::Advance { to },
+            target: None,
+            horizon_ms: 600_000,
+            constraints: tacsim::deliberation::Constraints {
+                hold_fire: false,
+                max_range_band: None,
+            },
+            ttl_ms: 600_000,
+            issued_ms: 0,
+            issuer: None,
+            spot: None,
+        })),
+        seq: 1,
+    }
+}
+
+/// **The Hold machines' two fields for the cross-tempo property** (16b cut
+/// O.1; 16b §11): (a) a machine on doctrine driving to the spot and parking,
+/// beside one sent there by an `Advance` at pulse `0` that hands over on
+/// arrival; (b) a machine whose spot is sealed, giving it up and retrying
+/// every `max(hunt_after_ms, repath_ms)` with the fallback between.
+fn o1_drive_and_hand_over() -> Arena {
+    o1_arena(
+        o1_ground(&[], (10, 8), 3, 3_600_000),
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(1, 4),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                RED2,
+                Team::Red,
+                centre(1, 12),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(15, 0),
+                vec![cannon()],
+                Controller::Pilot,
+            ),
+        ],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    )
+}
+
+fn o1_sealed_spot() -> Arena {
+    let mut paint: Vec<(u16, u16, TerrainCell)> = Vec::new();
+    for x in 8..=12_u16 {
+        paint.push((x, 6, wall()));
+        paint.push((x, 10, wall()));
+    }
+    for y in 6..=10_u16 {
+        paint.push((8, y, wall()));
+        paint.push((12, y, wall()));
+    }
+    o1_arena(
+        o1_ground(&paint, (10, 8), 1, 3_600_000),
+        vec![tank(
+            RED,
+            Team::Red,
+            centre(2, 3),
+            vec![cannon()],
+            Controller::Reflex,
+        )],
+        &arena_cfg(ReflexConfig {
+            hunt_after_ms: 10_000,
+            repath_ms: 4_000,
+            ..reflex_cfg()
+        }),
+        &[],
+    )
+}
+
+/// One 5,000 ms boundary of the drive: the arena millisecond, and whether each
+/// red machine stands inside the square.
+type O1Parked = (i64, bool, bool);
+
+/// One 5,000 ms boundary of the sealed spot: the millisecond, and the retry
+/// clock.
+type O1Retry = (i64, Option<i64>);
+
+/// **16b cut O.1 (16b §11: mandatory): the Hold machines are one event list and
+/// one hash sequence at 5,000, 1,000 and 500 ms.** `hold_goal`'s park, the
+/// `Advance` handed over on arrival, and the sealed spot's give-up and retry
+/// (`ReflexUnit::hold_retry_ms`, which the hash folds) each happen at an arena
+/// millisecond no cadence can move. Sampled at every 5,000 ms boundary — a
+/// multiple of all three — the two red machines' squares and the sealed
+/// machine's retry clock are the same too, and the arcs really happen.
+#[test]
+fn o1_the_hold_machines_are_one_event_list_and_one_hash_sequence_at_three_cadences() {
+    let cadences = [5_000_i64, 1_000, 500];
+    let advance = |arena: &Arena, pulse: u32| {
+        if pulse == 0 {
+            vec![o1_advance(arena, RED2, (10, 8))]
+        } else {
+            Vec::new()
+        }
+    };
+    let mut drives: Vec<(Replay, Vec<O1Parked>)> = Vec::new();
+    for cadence in cadences {
+        let mut seen: Vec<O1Parked> = Vec::new();
+        let replay = replay_with(
+            cadence,
+            40_000,
+            o1_drive_and_hand_over(),
+            &advance,
+            &mut |arena: &mut Arena| {
+                if arena.now_ms % 5_000 == 0 {
+                    seen.push((arena.now_ms, o1_inside(arena, RED), o1_inside(arena, RED2)));
+                }
+            },
+        );
+        drives.push((replay, seen));
+    }
+    let mut sealed: Vec<(Replay, Vec<O1Retry>)> = Vec::new();
+    for cadence in cadences {
+        let mut seen: Vec<O1Retry> = Vec::new();
+        let replay = replay_with(
+            cadence,
+            35_000,
+            o1_sealed_spot(),
+            &|_, _| Vec::new(),
+            &mut |arena: &mut Arena| {
+                if arena.now_ms % 5_000 == 0 {
+                    seen.push((
+                        arena.now_ms,
+                        arena.reflex.unit(RED).and_then(|row| row.hold_retry_ms),
+                    ));
+                }
+            },
+        );
+        sealed.push((replay, seen));
+    }
+    // The arcs happened: the ordered machine handed over, and both ended on the
+    // spot; the sealed machine gave the spot up more than once.
+    let (first, parked) = drives.first().expect("three replays");
+    assert!(
+        first
+            .events
+            .iter()
+            .any(|(_, kind, _)| kind.contains("order_expired")),
+        "the Advance never handed over: {:?}",
+        first.events
+    );
+    assert_eq!(
+        parked.last(),
+        Some(&(40_000, true, true)),
+        "both machines ended inside the square: {parked:?}"
+    );
+    let (_, retries) = sealed.first().expect("three replays");
+    let mut stamps: Vec<i64> = retries.iter().filter_map(|(_, until)| *until).collect();
+    stamps.dedup();
+    assert!(
+        stamps.len() >= 2,
+        "the sealed spot was given up fewer than twice: {retries:?}"
+    );
+    for (name, runs) in [
+        (
+            "drive",
+            drives.iter().map(|(run, _)| run).collect::<Vec<_>>(),
+        ),
+        (
+            "sealed",
+            sealed.iter().map(|(run, _)| run).collect::<Vec<_>>(),
+        ),
+    ] {
+        let first = runs.first().expect("three replays");
+        assert!(
+            first.hashes.len() >= 100,
+            "{name}: {} substeps",
+            first.hashes.len()
+        );
+        for (at, run) in runs.iter().enumerate().skip(1) {
+            let cadence = cadences.get(at).copied().unwrap_or(0);
+            assert_ne!(run.pulses, first.pulses, "{name}: one run, not three");
+            assert_eq!(
+                run.events, first.events,
+                "{name}: the event list diverged at {cadence} ms"
+            );
+            assert_eq!(
+                run.hashes, first.hashes,
+                "{name}: the hash sequence diverged at {cadence} ms"
+            );
+            assert_eq!(
+                run.finals, first.finals,
+                "{name}: the field ended differently at {cadence} ms"
+            );
+        }
+    }
+    for (at, (_, seen)) in drives.iter().enumerate().skip(1) {
+        assert_eq!(seen, parked, "the squares diverged at run {at}");
+    }
+    for (at, (_, seen)) in sealed.iter().enumerate().skip(1) {
+        assert_eq!(seen, retries, "the retry clock diverged at run {at}");
+    }
 }

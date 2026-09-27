@@ -243,31 +243,12 @@ pub const FRIEND_GLYPH: &str = "+";
 /// A contact resolved to the **other** side.
 pub const HOSTILE_GLYPH: &str = "x";
 
-/// **The marker each key spot is drawn as, by its authored index** (16b cut V.1;
-/// doc 16 §3.2 "Terrain": the ground is surveyed, so its named places are
-/// known to every pilot at check-out).
-///
-/// The letters a spot may NOT be, and why each is left out: a spot marker is one
-/// byte in the grid, and the three renderers must draw the same byte, so it can
-/// never be a byte the ground is already drawn with — `D`, `T` and `W` are
-/// [`mush_atlas::TerrainClass::glyph`]'s platform, heavy woods and deep water,
-/// and a pilot must never read a field's letter as ground. `X` is
-/// [`crate::arena::state::PROVISIONAL_PREFIX`], the letter an unidentified
-/// contact's designator opens with beside the map. Twenty-two letters remain,
-/// and [`crate::definitions::arena::MAX_KEY_SPOTS`] is their count, so an arena
-/// that names a spot past the alphabet never loads.
-pub const SPOT_LETTERS: [char; 22] = [
-    'A', 'B', 'C', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'U',
-    'V', 'Y', 'Z',
-];
-
-/// **The letter of the spot at `index`** (16b cut V.1), or `None` past the
-/// alphabet — which the load-time cap makes unreachable for a loaded arena, and
-/// which every caller answers by drawing nothing rather than panicking.
-#[must_use]
-pub fn spot_letter(index: usize) -> Option<char> {
-    SPOT_LETTERS.get(index).copied()
-}
+/// **The key-spot alphabet and its one reader** (16b cut V.1), defined in the
+/// arena library since 16b cut O.1 — a Hold match's objective carries its
+/// spot's letter, and the arena reaches into no module outside itself for it —
+/// and re-exported here, where every map, legend and `RANGE` reads it. One
+/// alphabet, one place: see [`crate::arena::state::SPOT_LETTERS`].
+pub use crate::arena::state::{SPOT_LETTERS, spot_letter};
 
 /// **The step a spot's range is rounded to**, metres (16b cut V.1). Ground does
 /// not move and is not a plot, so it earns neither the scope's coarse step nor

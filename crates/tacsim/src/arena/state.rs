@@ -439,6 +439,186 @@ pub struct KeySpot {
     pub y: u16,
 }
 
+/// **The marker each key spot is drawn as, by its authored index** (16b cut V.1;
+/// doc 16 §3.2 "Terrain": the ground is surveyed, so its named places are
+/// known to every pilot at check-out).
+///
+/// The letters a spot may NOT be, and why each is left out: a spot marker is one
+/// byte in the grid, and the three renderers must draw the same byte, so it can
+/// never be a byte the ground is already drawn with — `D`, `T` and `W` are
+/// [`mush_atlas::TerrainClass::glyph`]'s platform, heavy woods and deep water,
+/// and a pilot must never read a field's letter as ground. `X` is
+/// [`PROVISIONAL_PREFIX`], the letter an unidentified contact's designator opens
+/// with beside the map. Twenty-two letters remain, and
+/// [`crate::definitions::arena::MAX_KEY_SPOTS`] is their count, so an arena that
+/// names a spot past the alphabet never loads.
+///
+/// **16b cut O.1 moved it here from `crate::match_::cockpit`**, which re-exports
+/// it: a Hold match's [`HoldState::letter`] is the letter of its key spot, and
+/// the arena library reaches into no module outside itself for it. One
+/// alphabet, one place.
+pub const SPOT_LETTERS: [char; 22] = [
+    'A', 'B', 'C', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'U',
+    'V', 'Y', 'Z',
+];
+
+/// **The letter of the spot at `index`** (16b cut V.1), or `None` past the
+/// alphabet — which the load-time cap makes unreachable for a loaded arena, and
+/// which every caller answers by drawing nothing rather than panicking. (Moved
+/// here beside [`SPOT_LETTERS`] by 16b cut O.1.)
+#[must_use]
+pub fn spot_letter(index: usize) -> Option<char> {
+    SPOT_LETTERS.get(index).copied()
+}
+
+// ---------------------------------------------------------------------------
+// Match modes (16b cut O.1; 16c N11)
+// ---------------------------------------------------------------------------
+
+/// **Which rule a match is fought under** (16b cut O.1; 16c N11; doc 16 §3.8).
+///
+/// Doc 16 §3.8's only positive way to win is to eliminate the other side
+/// ([`crate::arena::Arena::settle_elimination`]); a mode is a second reason to
+/// fight. It is BOTH a lobby choice (`SIM MODE`, announced like `SIM UNIT`) and
+/// an arena property ([`ArenaDefinition::modes`]): the lobby may choose only
+/// what the ground declares, and [`Skirmish`](MatchMode::Skirmish) — elimination
+/// and nothing else — is what every ground supports and what every match is
+/// until somebody chooses otherwise.
+///
+/// Closed, for [`EndReason`]'s reason: the result record's words are a closed
+/// vocabulary (doc 16 §4), and a new mode is a new arm, a new
+/// [`code`](MatchMode::code) and a new word. O.3 adds `Range`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchMode {
+    /// **Eliminate the other side** (doc 16 §3.8): the match every ground
+    /// supports, and the default.
+    #[default]
+    Skirmish,
+    /// **Keep the ground's key spot uncontested for its time** ([`HoldRule`]).
+    /// Elimination still ends it, settled second (16c N11's owner default).
+    Hold,
+}
+
+impl MatchMode {
+    /// Every mode, in code order — what `SIM MODE` lists a ground's support
+    /// against.
+    pub const ALL: [MatchMode; 2] = [MatchMode::Skirmish, MatchMode::Hold];
+
+    /// The wire word: the result document's and the replay document's `mode`,
+    /// the lobby's word and the ` [hold]` tag.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            MatchMode::Skirmish => "skirmish",
+            MatchMode::Hold => "hold",
+        }
+    }
+
+    /// The byte [`crate::arena::hash::state_hash`] folds in (item 12).
+    #[must_use]
+    pub const fn code(&self) -> u8 {
+        match self {
+            MatchMode::Skirmish => 0,
+            MatchMode::Hold => 1,
+        }
+    }
+
+    /// **A typed word** (`SIM MODE hold`): trimmed and case-folded, so `HOLD`
+    /// and ` hold ` are the one mode. `None` for anything else.
+    #[must_use]
+    pub fn parse(word: &str) -> Option<MatchMode> {
+        let word = word.trim();
+        MatchMode::ALL
+            .iter()
+            .copied()
+            .find(|mode| mode.as_str().eq_ignore_ascii_case(word))
+    }
+}
+
+/// **A ground's Hold declaration, resolved** (16b cut O.1): which key spot, how
+/// many cells round it count as on it, and for how long a side must be alone
+/// there to win.
+///
+/// Authored as `crate::definitions::arena::ArenaModeDef::Hold` by the spot's
+/// **name**, checked at load, and resolved by
+/// `crate::definitions::arena::from_pack` into the spot's **index** into
+/// [`ArenaDefinition::key_spots`] — a comparison per substep has no time for a
+/// string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HoldRule {
+    /// The key spot's index into [`ArenaDefinition::key_spots`].
+    pub spot: u16,
+    /// The half-side of the square round the spot, cells, Chebyshev: a unit is
+    /// on the spot when its cell is within this many of the spot's cell on both
+    /// axes. `1..=MAX_HOLD_RADIUS_CELLS` (32) by the loader.
+    pub radius_cells: u16,
+    /// How long a side must be the sole occupant to win, arena milliseconds —
+    /// whole seconds, `MIN_HOLD_MS..=MAX_HOLD_MS` by the loader.
+    pub hold_ms: u32,
+}
+
+/// **One mode a ground declares it supports** (16b cut O.1), beyond
+/// [`MatchMode::Skirmish`], which every ground supports and none declares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArenaMode {
+    /// A key spot to hold.
+    Hold(HoldRule),
+}
+
+impl ArenaMode {
+    /// The mode this declaration makes available.
+    #[must_use]
+    pub const fn mode(&self) -> MatchMode {
+        match self {
+            ArenaMode::Hold(_) => MatchMode::Hold,
+        }
+    }
+}
+
+/// **A Hold match's objective and clock** (16b cut O.1; 16c N11), on
+/// [`Arena::hold`].
+///
+/// The rule is copied off the definition at check-out, with the spot's cell
+/// and its map letter resolved, so nothing at a substep reads the definition's
+/// lists. `held_by` is the clock: the side that has been the **sole occupant**
+/// of the square since the arena millisecond beside it, written only by
+/// [`crate::arena::Arena::settle_hold_presence`] at a substep's end and folded
+/// into [`crate::arena::hash::state_hash`] (item 12), because it decides an end
+/// and moves with no ledger line of its own.
+///
+/// **It reaches no pilot** (doc 16 §1, §5; plan item 10): the rule is public in
+/// selection — the board says it — and whether and since when a side holds the
+/// spot is told to nobody. No frame, no notice and no verb reads `held_by`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HoldState {
+    /// The key spot's cell.
+    pub spot: (u16, u16),
+    /// The key spot's map letter ([`spot_letter`] of its index), or `None` past
+    /// the alphabet, which the load-time cap makes unreachable.
+    pub letter: Option<char>,
+    /// The half-side of the square, cells.
+    pub radius_cells: u16,
+    /// How long a sole occupant must stay to win, arena milliseconds.
+    pub hold_ms: u32,
+    /// **The side alone on the spot, and since when** (arena milliseconds, a
+    /// substep boundary), or `None` while the square is empty or contested.
+    pub held_by: Option<(Team, i64)>,
+}
+
+impl HoldState {
+    /// **Whether `cell` is on the spot**: within [`HoldState::radius_cells`] of
+    /// [`HoldState::spot`] on both axes (Chebyshev) — one comparison, which is
+    /// what makes the presence test one comparison per unit per substep.
+    #[must_use]
+    pub fn square_contains(&self, cell: (u16, u16)) -> bool {
+        cell.0
+            .abs_diff(self.spot.0)
+            .max(cell.1.abs_diff(self.spot.1))
+            <= self.radius_cells
+    }
+}
+
 /// **One node of the patrol graph** (16b cut N.1; doc 16 §6: *the arena pack's
 /// waypoint graph*).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -566,9 +746,37 @@ pub struct ArenaDefinition {
     pub key_spots: Vec<KeySpot>,
     /// **The patrol graph the reflex controller walks** (16b cut N.1; doc 16 §6).
     pub waypoints: Waypoints,
+    /// **The modes this ground declares** beyond [`MatchMode::Skirmish`] (16b cut
+    /// O.1; 16c N11), in authored order — `SIM MODE` lists them and
+    /// [`ArenaDefinition::supports`] answers them.
+    ///
+    /// **Deliberately NOT folded into [`ArenaDefinition::digest`]** (plan item
+    /// 9): the digest's job is to tie a ledger to the ground it was fought on,
+    /// and the mode a match was fought under is on the result record and the
+    /// replay (`"mode"`) and in the state hash (item 12). Folding the menu of
+    /// modes would move every recorded digest for a ground whose cells, zones,
+    /// spots and graph did not change.
+    pub modes: Vec<ArenaMode>,
 }
 
 impl ArenaDefinition {
+    /// **Whether a match on this ground may be fought under `mode`** (16b cut
+    /// O.1): [`MatchMode::Skirmish`] always; any other mode when the ground
+    /// declares it.
+    #[must_use]
+    pub fn supports(&self, mode: MatchMode) -> bool {
+        mode == MatchMode::Skirmish || self.modes.iter().any(|declared| declared.mode() == mode)
+    }
+
+    /// **The ground's Hold rule**, the first declared (the loader refuses a
+    /// second), or `None` for a ground that declares none.
+    #[must_use]
+    pub fn hold_rule(&self) -> Option<HoldRule> {
+        self.modes.first().map(|declared| match declared {
+            ArenaMode::Hold(rule) => *rule,
+        })
+    }
+
     /// The definition's SHA-256 identity over a canonical byte encoding.
     ///
     /// The encoding, in order, with every multi-byte integer little-endian:
@@ -594,6 +802,13 @@ impl ArenaDefinition {
     /// and from cut N a unit's route is a function of the waypoint graph as much
     /// as of the cells. Two windows with one terrain and two graphs produce two
     /// different matches, so they are two different definitions.
+    ///
+    /// **Why [`ArenaDefinition::modes`] is NOT in it** (16b cut O.1, plan item
+    /// 9): the modes are a menu, not ground. A replayed ledger is told its
+    /// ground by the cells, the zones, the spots and the graph; the mode one
+    /// match was fought under is the record's and the replay's `"mode"` and the
+    /// state hash's item 12. So the proving ground's version 4, which only
+    /// declares Hold, digests exactly as version 3 did.
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
         let mut sha = Sha256::new();
@@ -1242,6 +1457,11 @@ pub struct CustodyOut {
     pub resolution: ResolutionDef,
     /// The match seed.
     pub seed: u64,
+    /// **The rule the match is fought under** (16b cut O.1; 16c N11): the
+    /// lobby's `SIM MODE`, carried across the seam like the seed. [`Arena::new`]
+    /// refuses a mode [`CustodyOut::definition`] does not declare
+    /// ([`ArenaError::ModeUnsupported`]).
+    pub mode: MatchMode,
 }
 
 // ---------------------------------------------------------------------------
@@ -2492,6 +2712,23 @@ pub enum DueKind {
     /// or journalled; the substep then settles the timeout unless an elimination
     /// or a `Spent` in the same substep won.
     MatchDeadline,
+    /// **A Hold match's clock has run out for one sole occupant** (16b cut O.1;
+    /// 16c N11), scheduled by [`crate::arena::Arena::settle_hold_presence`] at
+    /// `since_ms + hold_ms` when `team` becomes the square's only side, exactly
+    /// as [`DueKind::MatchDeadline`] is scheduled at the bound.
+    ///
+    /// `Arena::substep`'s arm awards the win only when the clock it was
+    /// scheduled for is still the one running (`held_by == Some((team,
+    /// since_ms))`) AND a fresh presence reading at the pop still finds `team`
+    /// alone; otherwise it fires into nothing, as a stale
+    /// [`DueKind::LossSettles`] does. It is never cancelled with
+    /// [`DueHeap::retain`]: see `settle_hold_presence`.
+    HoldSettles {
+        /// The side that was alone on the spot.
+        team: Team,
+        /// The substep boundary it was first seen alone at.
+        since_ms: i64,
+    },
     /// **A held loss's hysteresis has run out** (16b cut M.2, 16c `T-83`): doc 16
     /// §3.6 "What a pilot sees", one event per held loss, scheduled by the `lost`
     /// arm of `Arena::stage_pilot_notice` at the very deadline it writes into
@@ -2665,6 +2902,19 @@ pub enum EndReason {
     /// `match.max_duration_ms`, which is an hour of two tanks driving at each
     /// other.
     Spent,
+    /// **A side kept the key spot uncontested for the declared time** (16b cut
+    /// O.1; 16c N11): a Hold match's own end, settled at its own arena
+    /// millisecond by [`DueKind::HoldSettles`] and **before** elimination and
+    /// `Spent`, which are settled second (the owner's default: *elimination
+    /// still ends it, settled second*).
+    ///
+    /// An end with a winner, like [`EndReason::Conceded`]: the result's outcome
+    /// is the winner's own word and the reason word is `hold` — doc 16 §4's six
+    /// outcome words stay six.
+    Hold {
+        /// The side that held.
+        winner: Team,
+    },
     /// **A side conceded** (16b cut D.3, `B-33`): `SIM CONCEDE`, by that side's
     /// lead, and the other side wins.
     ///
@@ -2841,6 +3091,18 @@ pub enum ArenaError {
         x: u16,
         /// The row.
         y: u16,
+    },
+    /// **16b cut O.1** — the check-out asked for a mode its ground does not
+    /// declare ([`ArenaDefinition::supports`]). `match_::start` refuses the same
+    /// thing before it writes anything, so this is the arena refusing to trust
+    /// that, as it refuses an off-window pose. The sentence names the ground's
+    /// id and the mode's word, both public.
+    #[error("arena {arena} declares no mode {mode}")]
+    ModeUnsupported {
+        /// The mode's wire word.
+        mode: &'static str,
+        /// The definition's id.
+        arena: SmolStr,
     },
 }
 
@@ -3235,6 +3497,15 @@ pub struct Arena {
     /// cut N.2) — the `order_expired` trigger, drained by
     /// `Arena::take_deliberation_signals`. A view, for the same reason.
     pub squads_expired: crate::arena::command::ExpiredSquads,
+    /// **The rule this match is fought under** (16b cut O.1; 16c N11), off
+    /// [`CustodyOut::mode`] and never moved. Folded into the state hash (item
+    /// 12) by its code byte.
+    pub mode: MatchMode,
+    /// **The Hold objective and its clock** (16b cut O.1), `Some` exactly when
+    /// [`Arena::mode`] is [`MatchMode::Hold`] — see [`HoldState`]. `None` is what
+    /// makes the presence test cost a `Skirmish` match one `Option` test per
+    /// substep and nothing more.
+    pub hold: Option<HoldState>,
 }
 
 impl Arena {
@@ -3274,10 +3545,40 @@ impl Arena {
             pilots,
             resolution,
             seed,
+            mode,
         } = custody;
         if units.is_empty() {
             return Err(ArenaError::NoUnits);
         }
+        // **16b cut O.1** (16c N11): the mode, first of the definition's own
+        // refusals — a ground that does not declare it cannot be fought under it.
+        // The spot's cell and its letter are resolved here, once, so the presence
+        // test at every substep reads four integers and no list.
+        let hold = match mode {
+            MatchMode::Skirmish => None,
+            MatchMode::Hold => {
+                let rule = definition
+                    .hold_rule()
+                    .ok_or_else(|| ArenaError::ModeUnsupported {
+                        mode: mode.as_str(),
+                        arena: definition.id.clone(),
+                    })?;
+                let spot = definition
+                    .key_spots
+                    .get(usize::from(rule.spot))
+                    .ok_or_else(|| ArenaError::ModeUnsupported {
+                        mode: mode.as_str(),
+                        arena: definition.id.clone(),
+                    })?;
+                Some(HoldState {
+                    spot: (spot.x, spot.y),
+                    letter: spot_letter(usize::from(rule.spot)),
+                    radius_cells: rule.radius_cells,
+                    hold_ms: rule.hold_ms,
+                    held_by: None,
+                })
+            }
+        };
         let mut states: Vec<UnitState> = Vec::with_capacity(units.len());
         for mut unit in units {
             if unit.pose.heading_mdeg >= 360_000 {
@@ -3680,6 +3981,10 @@ impl Arena {
             squads: crate::deliberation::squad::squads_of(&squad_input, arena_cfg.squad_size),
             squad_watch: crate::arena::command::SquadWatchTable::new(),
             squads_expired: crate::arena::command::ExpiredSquads::new(),
+            // 16b cut O.1: nobody holds anything at check-out; the first
+            // substep's end is the first reading.
+            mode,
+            hold,
         };
         // Doc 16 §3.6: one pass per unit per `sensors.pass_ms`, staggered by unit
         // id. Scheduled after the arena is built because the stagger reads the
@@ -4403,6 +4708,7 @@ mod tests {
                 ],
                 &[(SmolStr::new("west"), SmolStr::new("east"))],
             ),
+            modes: Vec::new(),
         };
         assert_eq!(base.digest(), base.clone().digest());
 
@@ -4951,6 +5257,362 @@ mod tests {
                 &[((1, 1), water)],
             )
             .is_ok()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut O.1 — the modes and the Hold objective
+    // -----------------------------------------------------------------------
+
+    /// The test window with its one key spot declared for Hold: `The Middle`
+    /// at (4, 4), one cell round it, ten seconds.
+    fn hold_definition() -> ArenaDefinition {
+        ArenaDefinition {
+            modes: vec![ArenaMode::Hold(HoldRule {
+                spot: 0,
+                radius_cells: 1,
+                hold_ms: 10_000,
+            })],
+            ..crate::arena::test_support::definition()
+        }
+    }
+
+    /// An arena of `units` on [`hold_definition`] at `MatchMode::Hold`.
+    fn hold_arena(units: Vec<CustodyUnit>) -> Arena {
+        Arena::new(
+            CustodyOut {
+                definition: hold_definition(),
+                mode: MatchMode::Hold,
+                ..custody(units, Vec::new())
+            },
+            &ArenaConfig::default(),
+            &MatchConfig::default(),
+            &SensorsConfig::default(),
+        )
+        .expect("the hold arena")
+    }
+
+    /// **16b cut O.1**: the mode's words, codes and parse, and its serde word.
+    #[test]
+    fn o1_match_mode_round_trips_its_word_and_code() {
+        assert_eq!(MatchMode::ALL, [MatchMode::Skirmish, MatchMode::Hold]);
+        assert_eq!(MatchMode::default(), MatchMode::Skirmish);
+        for (mode, word, code) in [
+            (MatchMode::Skirmish, "skirmish", 0),
+            (MatchMode::Hold, "hold", 1),
+        ] {
+            assert_eq!(mode.as_str(), word);
+            assert_eq!(mode.code(), code);
+            assert_eq!(MatchMode::parse(word), Some(mode));
+            assert_eq!(
+                serde_json::to_value(mode).expect("encodes"),
+                serde_json::json!(word)
+            );
+            assert_eq!(
+                serde_json::from_value::<MatchMode>(serde_json::json!(word)).expect("decodes"),
+                mode
+            );
+        }
+        assert_eq!(
+            MatchMode::parse(" HOLD "),
+            Some(MatchMode::Hold),
+            "trimmed and case-folded"
+        );
+        assert_eq!(MatchMode::parse("Skirmish"), Some(MatchMode::Skirmish));
+        assert_eq!(MatchMode::parse("range"), None);
+        assert_eq!(MatchMode::parse(""), None);
+        assert_eq!(
+            ArenaMode::Hold(HoldRule {
+                spot: 0,
+                radius_cells: 1,
+                hold_ms: 10_000
+            })
+            .mode(),
+            MatchMode::Hold
+        );
+        // The support rule: skirmish everywhere, hold where declared.
+        let bare = crate::arena::test_support::definition();
+        assert!(bare.supports(MatchMode::Skirmish));
+        assert!(!bare.supports(MatchMode::Hold));
+        assert_eq!(bare.hold_rule(), None);
+        let held = hold_definition();
+        assert!(held.supports(MatchMode::Hold));
+        assert_eq!(held.hold_rule().map(|rule| rule.spot), Some(0));
+        // And the modes are not in the definition's digest (plan item 9).
+        assert_eq!(held.digest(), bare.digest());
+    }
+
+    /// **16b cut O.1**: a Hold check-out on a ground that declares none is
+    /// refused by name, on the stand-in window as on any other; the same units
+    /// at a skirmish open.
+    #[test]
+    fn o1_a_hold_on_a_ground_that_declares_none_is_refused() {
+        let stock = crate::match_::stock_definition(&SmolStr::new(crate::match_::STAND_IN))
+            .expect("the stand-in window");
+        let custody_on = |mode: MatchMode| CustodyOut {
+            definition: stock.clone(),
+            mode,
+            ..custody(
+                vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))],
+                Vec::new(),
+            )
+        };
+        let refused = Arena::new(
+            custody_on(MatchMode::Hold),
+            &ArenaConfig::default(),
+            &MatchConfig::default(),
+            &SensorsConfig::default(),
+        );
+        let Err(error) = refused else {
+            panic!("a hold opened on a ground with no key spot to hold");
+        };
+        assert_eq!(
+            error,
+            ArenaError::ModeUnsupported {
+                mode: "hold",
+                arena: SmolStr::new(crate::match_::STAND_IN),
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "arena tacsim.arena.stand_in declares no mode hold"
+        );
+        let opened = Arena::new(
+            custody_on(MatchMode::Skirmish),
+            &ArenaConfig::default(),
+            &MatchConfig::default(),
+            &SensorsConfig::default(),
+        )
+        .expect("a skirmish opens");
+        assert_eq!(opened.mode, MatchMode::Skirmish);
+        assert_eq!(opened.hold, None);
+        // A hold on a ground that declares one opens with its state resolved.
+        let held = hold_arena(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+        assert_eq!(held.mode, MatchMode::Hold);
+        assert_eq!(
+            held.hold,
+            Some(HoldState {
+                spot: (4, 4),
+                letter: Some('A'),
+                radius_cells: 1,
+                hold_ms: 10_000,
+                held_by: None,
+            })
+        );
+    }
+
+    /// **16b cut O.1**: the square is Chebyshev — both axes within the radius.
+    #[test]
+    fn o1_the_hold_square_is_chebyshev() {
+        let hold = HoldState {
+            spot: (10, 10),
+            letter: Some('B'),
+            radius_cells: 2,
+            hold_ms: 10_000,
+            held_by: None,
+        };
+        for cell in [(10, 10), (8, 8), (12, 12), (8, 12), (12, 8), (10, 12)] {
+            assert!(hold.square_contains(cell), "{cell:?} is on the spot");
+        }
+        for cell in [(7, 10), (13, 10), (10, 7), (10, 13), (13, 13)] {
+            assert!(!hold.square_contains(cell), "{cell:?} is off the spot");
+        }
+        let edge = HoldState {
+            spot: (0, 0),
+            ..hold
+        };
+        assert!(edge.square_contains((0, 0)) && edge.square_contains((2, 2)));
+        assert!(!edge.square_contains((3, 0)));
+    }
+
+    /// **16b cut O.1**: `hold_presence` over the fixtures — nobody, one side,
+    /// both sides, a wreck or a disabled unit inside counting for nothing, a
+    /// unit off the window counting for nothing, and a skirmish answering
+    /// `None` whoever stands there.
+    #[test]
+    fn o1_hold_presence_reads_the_sides_in_action_on_the_square() {
+        // The spot is (4, 4); cell centres are `n × 1000 + 500`.
+        let at = |x: i64, y: i64| pose(x * 1_000 + 500, y * 1_000 + 500);
+        let mut arena = hold_arena(vec![
+            tank(ObjId(4), Team::Red, at(0, 0)),
+            tank(ObjId(5), Team::Red, at(1, 0)),
+            tank(ObjId(9), Team::Blue, at(7, 7)),
+        ]);
+        assert_eq!(arena.hold_presence(), None, "nobody on the spot");
+        let put = |arena: &mut Arena, id: u32, x: i64, y: i64| {
+            if let Some(unit) = arena.unit_mut(ObjId(id)) {
+                unit.pose = at(x, y);
+            }
+        };
+        put(&mut arena, 4, 4, 5);
+        assert_eq!(arena.hold_presence(), Some(Team::Red), "one side");
+        put(&mut arena, 5, 3, 3);
+        assert_eq!(arena.hold_presence(), Some(Team::Red), "two of one side");
+        put(&mut arena, 9, 5, 5);
+        assert_eq!(arena.hold_presence(), None, "both sides: contested");
+        // A wreck holds nothing.
+        if let Some(unit) = arena.unit_mut(ObjId(9)) {
+            unit.limits.wreck = true;
+        }
+        assert_eq!(
+            arena.hold_presence(),
+            Some(Team::Red),
+            "the blue wreck counts for nothing"
+        );
+        // Nor does a disabled hulk.
+        if let Some(unit) = arena.unit_mut(ObjId(9)) {
+            unit.limits.wreck = false;
+            unit.disabled = true;
+        }
+        assert_eq!(
+            arena.hold_presence(),
+            Some(Team::Red),
+            "a disabled unit counts for nothing"
+        );
+        // Red's two gone the same ways: nobody.
+        for (id, wreck) in [(4, true), (5, false)] {
+            if let Some(unit) = arena.unit_mut(ObjId(id)) {
+                unit.limits.wreck = wreck;
+                unit.disabled = !wreck;
+            }
+        }
+        assert_eq!(arena.hold_presence(), None);
+        // A unit off the window is on no square — tested on a spot at the
+        // window's east edge, (7, 4), whose square reaches column 8: a pose at
+        // x 8,500 cm has no cell, where a clamped cell (7, 4) or a naive one
+        // (8, 4) would both stand inside it.
+        let mut off = hold_arena(vec![
+            tank(ObjId(4), Team::Red, at(0, 0)),
+            tank(ObjId(9), Team::Blue, at(7, 7)),
+        ]);
+        off.hold = off.hold.map(|hold| HoldState {
+            spot: (7, 4),
+            ..hold
+        });
+        put(&mut off, 4, 7, 4);
+        assert_eq!(
+            off.hold_presence(),
+            Some(Team::Red),
+            "the edge cell itself is on the square"
+        );
+        if let Some(unit) = off.unit_mut(ObjId(4)) {
+            unit.pose = pose(8_500, 4_500);
+        }
+        assert_eq!(off.definition.terrain.cell_of(&pose(8_500, 4_500)), None);
+        assert!(off.hold.is_some_and(|hold| hold.square_contains((8, 4))));
+        assert_eq!(
+            off.hold_presence(),
+            None,
+            "a unit off the window holds nothing"
+        );
+        // A skirmish has no square to stand on.
+        let mut skirmish = arena_of(vec![
+            tank(ObjId(4), Team::Red, at(4, 4)),
+            tank(ObjId(9), Team::Blue, at(7, 7)),
+        ]);
+        assert_eq!(skirmish.hold_presence(), None);
+        skirmish.settle_hold_presence();
+        assert!(
+            !skirmish
+                .due
+                .iter()
+                .any(|event| matches!(event.kind, DueKind::HoldSettles { .. })),
+            "a skirmish schedules no hold"
+        );
+    }
+
+    /// **16b cut O.1**: `settle_hold_presence` opens the clock with one event,
+    /// keeps it while the same side stays, drops it when the square is
+    /// contested or empty, and re-opens with a new `since` and a new event.
+    #[test]
+    fn o1_settling_presence_opens_keeps_drops_and_reopens_the_clock() {
+        let at = |x: i64, y: i64| pose(x * 1_000 + 500, y * 1_000 + 500);
+        let mut arena = hold_arena(vec![
+            tank(ObjId(4), Team::Red, at(4, 4)),
+            tank(ObjId(9), Team::Blue, at(7, 7)),
+        ]);
+        let holds = |arena: &Arena| -> Vec<(i64, Team, i64)> {
+            arena
+                .due
+                .iter()
+                .filter_map(|event| match event.kind {
+                    DueKind::HoldSettles { team, since_ms } => Some((event.t_ms, team, since_ms)),
+                    _ => None,
+                })
+                .collect()
+        };
+        arena.now_ms = 250;
+        arena.settle_hold_presence();
+        assert_eq!(
+            arena.hold.and_then(|hold| hold.held_by),
+            Some((Team::Red, 250))
+        );
+        assert_eq!(holds(&arena), vec![(10_250, Team::Red, 250)]);
+        // Still alone at the next boundary: unchanged, and no second event.
+        arena.now_ms = 500;
+        arena.settle_hold_presence();
+        assert_eq!(
+            arena.hold.and_then(|hold| hold.held_by),
+            Some((Team::Red, 250))
+        );
+        assert_eq!(holds(&arena).len(), 1);
+        // Contested: dropped; the event is left to fire into nothing.
+        if let Some(unit) = arena.unit_mut(ObjId(9)) {
+            unit.pose = at(5, 5);
+        }
+        arena.now_ms = 750;
+        arena.settle_hold_presence();
+        assert_eq!(arena.hold.and_then(|hold| hold.held_by), None);
+        assert_eq!(holds(&arena).len(), 1, "retain is not used");
+        // Blue alone: a new clock, a new event.
+        if let Some(unit) = arena.unit_mut(ObjId(4)) {
+            unit.pose = at(0, 0);
+        }
+        arena.now_ms = 1_000;
+        arena.settle_hold_presence();
+        assert_eq!(
+            arena.hold.and_then(|hold| hold.held_by),
+            Some((Team::Blue, 1_000))
+        );
+        assert_eq!(
+            holds(&arena),
+            vec![(10_250, Team::Red, 250), (11_000, Team::Blue, 1_000)]
+        );
+        // Empty: dropped again.
+        if let Some(unit) = arena.unit_mut(ObjId(9)) {
+            unit.pose = at(7, 7);
+        }
+        arena.now_ms = 1_250;
+        arena.settle_hold_presence();
+        assert_eq!(arena.hold.and_then(|hold| hold.held_by), None);
+    }
+
+    /// **16b cut O.1**: a wreck cancels nothing of the hold's — `destroy_unit`'s
+    /// retain keeps a scheduled `HoldSettles`, and the arm's fresh read is what
+    /// decides.
+    #[test]
+    fn o1_destroy_unit_keeps_a_scheduled_hold() {
+        let at = |x: i64, y: i64| pose(x * 1_000 + 500, y * 1_000 + 500);
+        let mut arena = hold_arena(vec![
+            tank(ObjId(4), Team::Red, at(4, 4)),
+            tank(ObjId(9), Team::Blue, at(7, 7)),
+        ]);
+        arena.now_ms = 250;
+        arena.settle_hold_presence();
+        let mut journal = Vec::new();
+        arena.destroy_unit(ObjId(4), 300, None, &mut journal);
+        assert!(
+            arena.due.iter().any(|event| event.kind
+                == DueKind::HoldSettles {
+                    team: Team::Red,
+                    since_ms: 250
+                }),
+            "the hold's event survives its holder's wreck"
+        );
+        assert_eq!(
+            arena.hold_presence(),
+            None,
+            "and the fresh read finds nobody"
         );
     }
 }

@@ -57,7 +57,7 @@ use mush_proto::OutputEvent;
 use smol_str::SmolStr;
 
 use crate::arena::ledger::{EventKind, LedgerEvent};
-use crate::arena::state::{ArenaDefinition, ArenaTerrain, Designator, KeySpot, Team};
+use crate::arena::state::{ArenaDefinition, ArenaTerrain, Designator, KeySpot, MatchMode, Team};
 use crate::arena_bridge::NOTICE_CATEGORY;
 use crate::arena_task::MatchId;
 use crate::match_::MatchBook;
@@ -327,6 +327,13 @@ pub struct Replay {
     pub outcome: MatchOutcome,
     /// The result's reason word (`elimination`, `abort`, …).
     pub reason: SmolStr,
+    /// **The rule the match was fought under** (16b cut O.1; plan item 39),
+    /// written as the document's `"mode"` beside `outcome` and `reason`, so a
+    /// hold is never read back as a plain fight. Set by
+    /// [`crate::match_::finish`] off the record once the fold is finished;
+    /// [`MatchMode::Skirmish`] until then, and for a document written before
+    /// the cut, which has no key.
+    pub mode: MatchMode,
     /// Every unit, in unit-id order.
     pub roster: Vec<ReplayRoster>,
     /// The keyframes, in arena-time order; keyframe 0 is the opening.
@@ -445,6 +452,8 @@ impl ReplayFold {
                 // Placeholders: `finish` writes the result's own.
                 outcome: MatchOutcome::Void,
                 reason: SmolStr::default(),
+                // 16b cut O.1: `crate::match_::finish` writes the record's.
+                mode: MatchMode::Skirmish,
                 roster: names,
                 keyframes: Vec::new(),
                 shots: Vec::new(),
@@ -688,7 +697,7 @@ impl Replay {
     /// { "record": "tacsim.replay", "record_version": 1, "match": 12,
     ///   "arena": "tacsim.arena.proving_ground", "arena_digest": "…",
     ///   "cell_cm": 1000, "width": 256, "height": 256, "summary_ms": 5000,
-    ///   "end_ms": 272000, "outcome": "red", "reason": "elimination",
+    ///   "end_ms": 272000, "outcome": "red", "reason": "elimination", "mode": "skirmish",
     ///   "roster": [{ "callsign": "RA", "team": "red" }, …],
     ///   "keyframes": [[0, [[6, 97, 90], [249, 97, 270]]], [5000, [[8, 97, 90], null]]],
     ///   "shots": [[35250, 0, 1, "hit"], …], "destroyed": [[41000, 1]],
@@ -697,6 +706,10 @@ impl Replay {
     ///
     /// `cut` names each cause of a `truncated` replay once, in [`ReplayCut`]'s
     /// order (`roster`, `keyframes`, `shots`, `page`).
+    ///
+    /// **16b cut O.1** added `"mode"` (plan item 39): a key added, not a
+    /// version, so `record_version` stays 1 and a reader of an older document
+    /// reads a skirmish.
     #[must_use]
     pub fn to_document(&self) -> serde_json::Value {
         let roster: Vec<serde_json::Value> = self
@@ -724,6 +737,7 @@ impl Replay {
             "end_ms": self.end_ms,
             "outcome": self.outcome.as_str(),
             "reason": self.reason.as_str(),
+            "mode": self.mode.as_str(),
             "roster": roster,
             "keyframes": keyframes,
             "shots": shots,
@@ -857,6 +871,13 @@ impl Replay {
                 .and_then(|outcome| serde_json::from_value::<MatchOutcome>(outcome).ok())
                 .unwrap_or(MatchOutcome::Void),
             reason: word("reason"),
+            // 16b cut O.1: absent or unknown reads a skirmish — every replay
+            // written before the cut was one.
+            mode: value
+                .get("mode")
+                .and_then(Value::as_str)
+                .and_then(MatchMode::parse)
+                .unwrap_or_default(),
             roster,
             keyframes,
             shots,
@@ -1203,13 +1224,16 @@ pub fn replay_lines(
     let t_ms = keyframe.map_or(0, |keyframe| keyframe.t_ms);
     let horizon = replay.horizon(index);
     let header = format!(
-        "Replay of match {id} at {}, keyframe {} of {} ({}, {}): both sides as the arena recorded \
-         them every {}, around {}.",
+        "Replay of match {id} at {}, keyframe {} of {} ({}, {}{}): both sides as the arena \
+         recorded them every {}, around {}.",
         lobby::clock_text(t_ms),
         index.saturating_add(1),
         replay.keyframes.len(),
         duration_words(replay.end_ms),
         outcome_words(replay.outcome, &replay.reason),
+        // 16b cut O.1 (plan item 39): ` [hold]` for a match fought under another
+        // rule, as the ring's line and both client heads carry it.
+        crate::match_::record::mode_tag(Some(replay.mode)),
         every_words(replay.summary_ms),
         replay.callsign(focus),
     );

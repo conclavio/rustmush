@@ -1116,6 +1116,11 @@ impl Arena {
             | DueKind::PositionSummary
             | DueKind::MatchDeadline
             | DueKind::LossSettles { .. } => true,
+            // **16b cut O.1**: a wreck cancels nothing of the hold's. The clock
+            // is a side's, not a unit's, and the arm re-reads presence at the pop
+            // (`Arena::hold_presence`), so a holder that became this wreck is
+            // simply not there when its event comes round.
+            DueKind::HoldSettles { .. } => true,
         });
         if self
             .unit(target)
@@ -1275,6 +1280,99 @@ impl Arena {
         };
         self.ended = Some(end);
         Some(end)
+    }
+
+    /// **Which side stands alone on the key spot** (16b cut O.1; 16c N11), read
+    /// over the poses as they stand.
+    ///
+    /// `None` on a match with no [`crate::arena::state::HoldState`] — which
+    /// returns before any walk, so a `Skirmish` match pays one `Option` test —
+    /// and `None` with nobody on the spot or with both sides on it. `Some(team)`
+    /// when exactly one side has a unit on the spot that is **in action** (not
+    /// [`Arena::out_of_action`]: a wreck or a disabled hulk holds nothing, doc 16
+    /// §3.8's own reading of *out of the fight*) and whose cell is on the window
+    /// and inside [`crate::arena::state::HoldState::square_contains`].
+    ///
+    /// One Chebyshev comparison per unit, in unit-id order, with no allocation.
+    #[must_use]
+    pub fn hold_presence(&self) -> Option<Team> {
+        let hold = self.hold.as_ref()?;
+        let mut alone: Option<Team> = None;
+        for unit in &self.units {
+            if unit.limits.wreck || unit.disabled {
+                continue;
+            }
+            let Some(cell) = self.definition.terrain.cell_of(&unit.pose) else {
+                continue;
+            };
+            if !hold.square_contains(cell) {
+                continue;
+            }
+            match alone {
+                None => alone = Some(unit.team),
+                Some(team) if team == unit.team => {}
+                // Both sides on it: contested, and nothing further can change
+                // that answer.
+                Some(_) => return None,
+            }
+        }
+        alone
+    }
+
+    /// **Settle who holds the key spot, at a substep's end** (16b cut O.1; 16c
+    /// N11; plan items 1, 15, 40), after the due loop and before the two
+    /// settles.
+    ///
+    /// Three answers, against [`Arena::hold_presence`] over the positions this
+    /// substep's motion committed and every impact its due loop applied:
+    ///
+    /// * **the same side still alone** — unchanged: the clock that is running
+    ///   keeps running, and its event is still on the heap;
+    /// * **a side newly alone** — `held_by = Some((team, now_ms))` and one
+    ///   [`DueKind::HoldSettles`] at `now_ms + hold_ms`, exactly as
+    ///   [`DueKind::MatchDeadline`] is scheduled at the bound, so the win is
+    ///   settled at its own millisecond whatever the cadence (`now_ms` is a
+    ///   substep boundary and the shipped substep divides every shipped period;
+    ///   `hold_ms` is whole seconds);
+    /// * **nobody, or both** — `held_by = None`.
+    ///
+    /// **[`crate::arena::state::DueHeap::retain`] exists and is deliberately not
+    /// used here.** It is a `BTreeSet` rebuild, and an occupancy flipping at the
+    /// edge of the square would rebuild the whole schedule once per flip. The
+    /// event is left in the heap instead: `Arena::substep`'s arm pops it at its
+    /// own millisecond and drops it, because `held_by` no longer names that
+    /// `(team, since_ms)`. The cost is bounded — one event per *opening*, each
+    /// popped and dropped at its own millisecond, so at most as many as there
+    /// were openings in the last `hold_ms` — and it is the rule
+    /// [`DueKind::LossSettles`] already lives by.
+    ///
+    /// Nothing is journalled: `held_by` is folded into the state hash (item 12),
+    /// which is how a replay that opened the clock a substep earlier is caught
+    /// at the substep it happened, and it reaches no pilot (plan item 10).
+    pub fn settle_hold_presence(&mut self) {
+        let Some(held_by) = self.hold.as_ref().map(|hold| hold.held_by) else {
+            return;
+        };
+        let presence = self.hold_presence();
+        let now_ms = self.now_ms;
+        let (next, schedule) = match (held_by, presence) {
+            (Some((holder, since)), Some(team)) if holder == team => (Some((holder, since)), None),
+            (_, Some(team)) => (Some((team, now_ms)), Some(team)),
+            (_, None) => (None, None),
+        };
+        let hold_ms = self.hold.as_ref().map_or(0, |hold| hold.hold_ms);
+        if let Some(hold) = self.hold.as_mut() {
+            hold.held_by = next;
+        }
+        if let Some(team) = schedule {
+            self.due.schedule(
+                now_ms.saturating_add(i64::from(hold_ms)),
+                DueKind::HoldSettles {
+                    team,
+                    since_ms: now_ms,
+                },
+            );
+        }
     }
 
     /// **Every unit as the check-in takes it back** (doc 16 §3.1 "Custody",

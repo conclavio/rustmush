@@ -349,6 +349,7 @@ fn definition(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
         ],
         key_spots: Vec::new(),
         waypoints: Waypoints::default(),
+        modes: Vec::new(),
     }
 }
 
@@ -428,6 +429,7 @@ fn arena_of(
             pilots,
             resolution: tacsim::match_::resolution_for(catalog),
             seed: SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -3377,6 +3379,7 @@ fn relief(width: u16, height: u16, profile: &dyn Fn(u16, u16) -> i16) -> ArenaDe
         ],
         key_spots: Vec::new(),
         waypoints: Waypoints::default(),
+        modes: Vec::new(),
     }
 }
 
@@ -3440,6 +3443,7 @@ fn arena_over(
             pilots,
             resolution: tacsim::match_::resolution_for(catalog),
             seed: SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
         },
         cfg,
         &MatchConfig::default(),
@@ -5695,6 +5699,7 @@ fn q6_window(width: u16, height: u16) -> ArenaDefinition {
         ],
         key_spots: Vec::new(),
         waypoints: Waypoints::default(),
+        modes: Vec::new(),
     }
 }
 
@@ -5717,6 +5722,7 @@ fn q6_arena(catalog: &Catalog, units: Vec<CustodyUnit>, definition: ArenaDefinit
             pilots,
             resolution: tacsim::match_::resolution_for(catalog),
             seed: SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),

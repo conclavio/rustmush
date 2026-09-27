@@ -7,7 +7,7 @@ use mush_core::{Ctx, ObjId};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::arena::state::{Designator, EndReason, MatchEnd, Team};
+use crate::arena::state::{Designator, EndReason, MatchEnd, MatchMode, Team};
 use crate::arena_task::MatchId;
 
 /// **The lifecycle** of doc 16 §3.8.
@@ -106,8 +106,12 @@ impl From<EndReason> for MatchState {
             // every one of these is a match that ran to a conclusion, so it ends
             // like an elimination and not like an abort — and its cells are
             // committed, which is what makes the loser's wreck evidence.
+            //
+            // 16b cut O.1 (`Hold`): a side kept the key spot, which is a match
+            // fought to a conclusion like any other.
             EndReason::Elimination { .. }
             | EndReason::Spent
+            | EndReason::Hold { .. }
             | EndReason::Conceded { .. }
             | EndReason::Unattended
             | EndReason::Timeout => MatchState::Ended,
@@ -173,6 +177,10 @@ impl From<EndReason> for MatchOutcome {
             // that side's word and not a seventh one.
             EndReason::Conceded { winner: Team::Red } => MatchOutcome::Red,
             EndReason::Conceded { winner: Team::Blue } => MatchOutcome::Blue,
+            // 16b cut O.1: a hold names its winner too, and the reason word
+            // (`hold`) says how.
+            EndReason::Hold { winner: Team::Red } => MatchOutcome::Red,
+            EndReason::Hold { winner: Team::Blue } => MatchOutcome::Blue,
             // And a match every pilot had left is a `timeout`: doc 16 §4's
             // vocabulary is six words, and this is the one that means *the clock
             // ended it and nobody was eliminated*.
@@ -347,6 +355,10 @@ pub struct MatchRecord {
     /// `tacsim:replay:<match>` document ([`write_replay`]). `None` before
     /// `Running`.
     pub replay: Option<crate::match_::replay::ReplayFold>,
+    /// **The rule the match is fought under** (16b cut O.1; 16c N11), as
+    /// [`crate::match_::start`] was given it and the `CustodyOut` carried it —
+    /// what the result document's `"mode"` and the replay's say.
+    pub mode: MatchMode,
 }
 
 /// The four integers of a pose (doc 16 §3.2), without the opaque posture.
@@ -624,6 +636,9 @@ fn result_document(
     reports: &[ObjId],
     replay: bool,
 ) -> serde_json::Value {
+    // 16b cut O.1: the mode off the record, and no key at all without one — a
+    // document whose match the book no longer holds does not know it.
+    let mode = record.map(|record| record.mode);
     let (teams, arena, arena_digest, started_ms, log_id, seed) = match record {
         Some(record) => (
             record
@@ -663,7 +678,7 @@ fn result_document(
             0,
         ),
     };
-    serde_json::json!({
+    let mut document = serde_json::json!({
         "record": "tacsim.match",
         // 16b cut V.2 added `callsign` (unit and pilot rows) and `ledger.chunks`
         // and left this at 1: a key added is not a version — the rule
@@ -688,7 +703,14 @@ fn result_document(
         "reports": reports.iter().map(|unit| unit.0).collect::<Vec<u32>>(),
         // 16b cut I.1: whether this match's replay document rode it too.
         "replay": replay,
-    })
+    });
+    // **16b cut O.1** (plan items 19, 39): the rule it was fought under — a key
+    // added, not a version, by V.2's rule above. Absent reads `None`
+    // ([`HistoryRow::from_document`]).
+    if let (Some(mode), Some(object)) = (mode, document.as_object_mut()) {
+        object.insert("mode".to_owned(), serde_json::Value::from(mode.as_str()));
+    }
+    document
 }
 
 /// **The `aborted(restart)` result** (16b T5, doc 16 §3.1 "Boot reconciliation").
@@ -717,6 +739,11 @@ pub fn write_restart_abort(ctx: &mut Ctx<'_>, match_id: MatchId, units: &[ObjId]
 /// `"chunks"` is `0` — there was no record to name the units from and no mirror
 /// to count the tape on, both having gone with the process. `"teams"` stays `[]`,
 /// so a reader places these units on no side ([`HistoryUnit::team`] is `None`).
+///
+/// **16b cut O.1** (plan item 19): and it writes **no `"mode"`**. The boot does
+/// not know what rule the match was fought under — the record that held it went
+/// with the process — so the row reads `mode: None` and carries no tag, rather
+/// than calling a hold a skirmish.
 fn restart_abort_document(match_id: MatchId, units: &[ObjId], ended_ms: i64) -> serde_json::Value {
     let rows: Vec<UnitResult> = units
         .iter()
@@ -759,6 +786,8 @@ pub(crate) const fn reason_word(reason: EndReason) -> &'static str {
         EndReason::Elimination { .. } => "elimination",
         // 16b cut Q.7.
         EndReason::Spent => "spent",
+        // 16b cut O.1: the outcome beside it names the side that held.
+        EndReason::Hold { .. } => "hold",
         // 16b cut D.3 (`B-33`): the result document's own two new words. The
         // outcome beside them already names the winner.
         EndReason::Conceded { .. } => "conceded",
@@ -871,6 +900,13 @@ pub struct HistoryRow {
     /// reads `false`, which is every result written before the cut — and what
     /// `SIM REPLAY` answers `recorded before replays existed` for).
     pub replay: bool,
+    /// **The rule it was fought under** (16b cut O.1; plan item 19), or `None`
+    /// where the document carries no `"mode"` — a restart abort's, whose boot
+    /// did not know it, and every result written before the cut. A mode other
+    /// than [`MatchMode::Skirmish`] is tagged on the ring's line and the
+    /// report's header (` [hold]`), so a match fought under another rule is
+    /// never read as a plain fight.
+    pub mode: Option<MatchMode>,
 }
 
 impl HistoryRow {
@@ -888,8 +924,9 @@ impl HistoryRow {
     ///   `teams[].pilots[]` row whose `unit` is it;
     /// - `named` is true when every unit row carried a non-empty `callsign`;
     /// - `ledger.chunks` absent reads `0`, `reports` absent reads empty,
-    ///   `replay` absent reads `false` (16b cut I.1), and every other absent
-    ///   word or number reads empty or `0`.
+    ///   `replay` absent reads `false` (16b cut I.1), `mode` absent or unknown
+    ///   reads `None` (16b cut O.1), and every other absent word or number reads
+    ///   empty or `0`.
     #[must_use]
     pub fn from_document(value: &serde_json::Value) -> Option<HistoryRow> {
         use serde_json::Value;
@@ -1003,7 +1040,20 @@ impl HistoryRow {
                 .get("replay")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            mode: value
+                .get("mode")
+                .and_then(Value::as_str)
+                .and_then(MatchMode::parse),
         })
+    }
+
+    /// **The ` [hold]` tag** (16b cut O.1; plan item 19): ` [{mode}]` for a row
+    /// fought under a mode other than [`MatchMode::Skirmish`], and nothing for a
+    /// skirmish or a row that does not say. The ring's line and the report's
+    /// header append it after the outcome words.
+    #[must_use]
+    pub fn mode_tag(&self) -> String {
+        mode_tag(self.mode)
     }
 
     /// The unit `actor` piloted in this match, if they piloted one.
@@ -1095,6 +1145,9 @@ fn outcome_table(outcome: MatchOutcome, reason: &str) -> (&'static str, Option<S
         (MatchOutcome::Blue, "elimination") => ("blue won", bracket("red eliminated")),
         (MatchOutcome::Red, "conceded") => ("red won", bracket("blue conceded")),
         (MatchOutcome::Blue, "conceded") => ("blue won", bracket("red conceded")),
+        // 16b cut O.1 (16c N11).
+        (MatchOutcome::Red, "hold") => ("red won", bracket("red held the key spot")),
+        (MatchOutcome::Blue, "hold") => ("blue won", bracket("blue held the key spot")),
         (MatchOutcome::Draw, "spent") => ("draw", bracket("both sides out of ammunition")),
         (MatchOutcome::Draw, "elimination") => ("draw", bracket("both sides eliminated")),
         (MatchOutcome::Timeout, "unattended") => ("timed out", bracket("every pilot had left")),
@@ -1104,6 +1157,18 @@ fn outcome_table(outcome: MatchOutcome, reason: &str) -> (&'static str, Option<S
         (MatchOutcome::Void, "void") => ("void", None),
         (MatchOutcome::Void, "ledger_overflow") => ("void", bracket("the tape overflowed")),
         (outcome, reason) => (outcome.as_str(), bracket(reason)),
+    }
+}
+
+/// **The ` [hold]` tag for a mode word** (16b cut O.1; plan items 19, 39):
+/// ` [{mode}]` for a mode other than [`MatchMode::Skirmish`], and the empty
+/// string for a skirmish or for no mode at all — what the ring's line, the
+/// report's header and the replay's head each append after the outcome words.
+#[must_use]
+pub fn mode_tag(mode: Option<MatchMode>) -> String {
+    match mode {
+        Some(mode) if mode != MatchMode::Skirmish => format!(" [{}]", mode.as_str()),
+        _ => String::new(),
     }
 }
 
@@ -1163,6 +1228,10 @@ pub const NO_HISTORY: &str = "The centre has no finished match on record.";
 /// that unit — a row written before 16b cut V.2 has pilots and no callsigns. The
 /// public outcome and nothing of the field (16c N2, doc 16 §1): no unit's object
 /// number, no pilot's name, no position, no contact and never the seed.
+///
+/// **16b cut O.1**: a match fought under a mode other than the skirmish carries
+/// its tag after the outcome words — `#3  red won (red held the key spot)
+/// [hold]  2 m 0 s  …` — and a row that does not say its mode carries none.
 #[must_use]
 pub fn history_lines<'a>(rows: impl Iterator<Item = &'a HistoryRow>, reader: ObjId) -> Vec<String> {
     let rows: Vec<&HistoryRow> = rows.collect();
@@ -1175,9 +1244,12 @@ pub fn history_lines<'a>(rows: impl Iterator<Item = &'a HistoryRow>, reader: Obj
     lines.push(header);
     for row in rows {
         let mut line = format!(
-            "  #{}  {}  {}  {} v {}  {}",
+            "  #{}  {}{}  {}  {} v {}  {}",
             row.id.0,
             outcome_words(row.outcome, &row.reason),
+            // 16b cut O.1: ` [hold]` after the outcome words, for a match fought
+            // under another rule.
+            row.mode_tag(),
             duration_words(row.arena_ms),
             row.side_size(Team::Red),
             row.side_size(Team::Blue),
@@ -1228,6 +1300,7 @@ mod tests {
             folds: BTreeMap::new(),
             unparsed: 0,
             replay: None,
+            mode: MatchMode::Skirmish,
         };
         let end = MatchEnd {
             reason: EndReason::Timeout,
@@ -1302,6 +1375,12 @@ mod tests {
                 MatchState::Ended,
                 MatchOutcome::Blue,
             ),
+            // 16b cut O.1: a hold names its winner, and ends like any fight.
+            (
+                EndReason::Hold { winner: Team::Red },
+                MatchState::Ended,
+                MatchOutcome::Red,
+            ),
             (
                 EndReason::Unattended,
                 MatchState::Ended,
@@ -1368,6 +1447,7 @@ mod tests {
             folds: BTreeMap::new(),
             unparsed: 0,
             replay: None,
+            mode: MatchMode::Skirmish,
         }
     }
 
@@ -1601,6 +1681,7 @@ mod tests {
             named: true,
             reports: Vec::new(),
             replay: false,
+            mode: None,
         }
     }
 
@@ -1771,6 +1852,8 @@ mod tests {
                 winner: Some(Team::Red),
             },
             EndReason::Spent,
+            // 16b cut O.1.
+            EndReason::Hold { winner: Team::Red },
             EndReason::Conceded { winner: Team::Blue },
             EndReason::Unattended,
             EndReason::Timeout,
@@ -1931,5 +2014,86 @@ mod tests {
             report_key(MatchId(12), ObjId(101)).as_str(),
             "tacsim:report:12:101"
         );
+    }
+
+    /// **16b cut O.1** (plan items 19, 39): a Hold's words and its tag — the
+    /// result carries `mode`, the ring and the header append ` [hold]`, a
+    /// skirmish tags nothing, and the restart document writes no `mode` and
+    /// reads with no tag.
+    #[test]
+    fn o1_a_hold_is_worded_tagged_and_the_restart_row_is_not() {
+        assert_eq!(
+            outcome_words(MatchOutcome::Red, "hold"),
+            "red won (red held the key spot)"
+        );
+        assert_eq!(
+            outcome_words(MatchOutcome::Blue, "hold"),
+            "blue won (blue held the key spot)"
+        );
+        assert_eq!(
+            end_words(MatchOutcome::Red, "hold"),
+            "red held the key spot"
+        );
+        assert_eq!(reason_word(EndReason::Hold { winner: Team::Blue }), "hold");
+        assert_eq!(
+            MatchOutcome::from(EndReason::Hold { winner: Team::Blue }),
+            MatchOutcome::Blue
+        );
+        let mut record = v2_record();
+        record.mode = MatchMode::Hold;
+        let written = result_document(
+            Some(&record),
+            MatchId(3),
+            MatchOutcome::Red,
+            MatchEnd {
+                reason: EndReason::Hold { winner: Team::Red },
+                t_ms: 120_250,
+            },
+            "cd",
+            &v2_rows(&record),
+            1_790_258_520_000,
+            42,
+            &[],
+            false,
+        );
+        assert_eq!(written["mode"], serde_json::json!("hold"));
+        assert_eq!(written["reason"], serde_json::json!("hold"));
+        let row = HistoryRow::from_document(&written).expect("a row");
+        assert_eq!(row.mode, Some(MatchMode::Hold));
+        assert_eq!(row.mode_tag(), " [hold]");
+        let lines = history_lines(std::iter::once(&row), ObjId(99));
+        assert_eq!(
+            lines.get(1).map(String::as_str),
+            Some(
+                "  #3  red won (red held the key spot) [hold]  2 m 0 s  2 v 1  2026-09-24 14:02 UTC"
+            )
+        );
+        // A skirmish writes its word and tags nothing.
+        let skirmish = HistoryRow::from_document(&v2_document()).expect("a row");
+        assert_eq!(skirmish.mode, Some(MatchMode::Skirmish));
+        assert_eq!(skirmish.mode_tag(), "");
+        // The restart document knows no mode, and says none.
+        let restart = restart_abort_document(MatchId(4), &[ObjId(101)], 5_000);
+        assert!(restart.get("mode").is_none());
+        let row = HistoryRow::from_document(&restart).expect("a row");
+        assert_eq!(row.mode, None);
+        assert_eq!(row.mode_tag(), "");
+        // A record the book no longer holds writes no key either.
+        let orphan = result_document(
+            None,
+            MatchId(5),
+            MatchOutcome::Abort,
+            MatchEnd {
+                reason: EndReason::Abort,
+                t_ms: 0,
+            },
+            "",
+            &[],
+            0,
+            0,
+            &[],
+            false,
+        );
+        assert!(orphan.get("mode").is_none());
     }
 }

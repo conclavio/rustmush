@@ -42,6 +42,11 @@ the same thing this topic does, in fewer words.
   SIM UNIT [type]     which unit type your own slot fields. The bare word lists
                       what this server can field, for anybody in the centre, and
                       adds what you are flying if you hold a slot.
+  SIM MODE [mode]     which rule the match is fought under: skirmish (eliminate
+                      the other side) or hold (keep the ground's key spot
+                      uncontested for its time). A side's lead or staff sets it
+                      during selection; the bare word reads it and what this
+                      ground supports, for anybody in the centre.
   SIM HISTORY         the centre's last twenty matches, newest first: who won
                       and why, how long, how many a side, when; your own
                       callsign on the ones you flew.
@@ -109,6 +114,36 @@ Three things worth knowing before you pick one:
 * a legged machine still pays the tracked machine's price for crossing a cell.
   That is a known gap, not a feature of the chassis.
 * the machines that fill the unclaimed pods always fly the pod's own tank.
+
+## Modes
+
+Every match is a **skirmish** until somebody says otherwise: eliminate the other
+side and you win. `SIM MODE hold` says otherwise, on a ground that supports it:
+
+  SIM MODE                    Mode: skirmish. The Proving Ground supports:
+                              skirmish, hold.
+  SIM MODE hold               Mode set to hold: keep The Crossroads (B)
+                              uncontested for 120 seconds to win; elimination
+                              still ends it.
+
+The proving ground's hold is **The Crossroads** (`B` on the map), six cells
+round it, for 120 seconds: the side that has a unit within six cells of the
+crossroads, with none of the other side's there, for two unbroken minutes
+wins. A wreck or a disabled hulk holds nothing, and a single enemy still in the
+fight inside the square stops the clock — it starts again from nothing when one
+side is alone there once more. Elimination still ends a hold match, and so do a
+concede and the clock.
+
+The machines play it too: with nothing to fight they drive to the spot, stop
+anywhere inside the square, and fight from there — a machine on the spot shoots
+at anything its gun reaches rather than leaving the square to close. The board
+says the rule while a match is being set up, boarding and running:
+
+  mode: hold — keep The Crossroads (B) uncontested for 120 s
+
+and nobody is ever told who holds the spot, or for how long: the rule is public,
+the clock is not. `SIM HISTORY`, `SIM REPORT` and `SIM REPLAY` tag a hold match
+`[hold]` after its outcome.
 
 ## Fighting the machines
 
@@ -188,8 +223,10 @@ While it runs, the cockpit is the whole of it: `help cockpit`.
 It ends when one side has nothing left that can fight, when **neither** side has
 a round left to fire (a draw: `ended — draw: both sides are out of ammunition`),
 when a side's lead types `SIM CONCEDE` (`ended — blue wins: red
-conceded`), when the match's time runs out, or when somebody aborts it. Running
-dry on your own does not lose you the match — the other side has to be dry too.
+conceded`), when a side keeps the key spot in a hold match (`ended — red wins:
+held The Crossroads`; see Modes above), when the match's time runs out, or when
+somebody aborts it. Running dry on your own does not lose you the match — the
+other side has to be dry too.
 
 A beaten tank is not always a dead one, and a match neither side can finish is
 the reason `SIM CONCEDE` exists: it is a **result** and not an abort, so the
