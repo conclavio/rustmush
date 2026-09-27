@@ -5772,3 +5772,167 @@ async fn o2_the_pods_switch_is_told_to_its_pilot_and_bo_learns_only_through_his_
 
     say(&mut ada, "SIM ABORT", "aborts match").await;
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut O.3 — the range is public in selection, and the report is the
+// pilot's own (16c N13, N2)
+// ---------------------------------------------------------------------------
+
+/// The board's range line, flattened as `ask`'s answers are read.
+const O3_BOARD_LINE: &str = "mode: range — 1 target on the blue side";
+
+/// The `SIM RANGE 1` announcement with red claimed — its head, which a terminal
+/// does not wrap (the whole sentence runs past eighty columns; the whole of it
+/// is pinned verbatim in `tacsim/tests/cockpit.rs`).
+const O3_SET: &str = "Range set: 1 target stands on the blue side;";
+
+/// **16b cut O.3 (16c N13, N2; plan items 21, 31)**: the range is public in
+/// `Selection` and the debrief is the pilot's own.
+///
+/// God, Cy and Ada read the `Range set:` announcement and the board's
+/// `mode: range` line while the lobby is being set up — both public, as the
+/// Hold rule is. Ada then shoots at the one target from behind it until a round
+/// is told to her as a hit, and aborts. Bo, who holds no slot and flew nothing,
+/// is refused `SIM REPORT` for that match with the one sentence the centre gives
+/// anybody who did not fly it. Ada's report carries her own hit rate and no line
+/// about a round the target fired — it fired none — and passes
+/// `report_is_the_pilots_own`; every line any of them read names no unit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn o3_the_range_is_public_in_selection_and_the_report_is_the_pilots_own() {
+    let server = boot("observer-range").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+    let (red, blue, _muster, _domain) = seat_the_witnesses(&mut god).await;
+    let listing = ask(&mut god, "@find Simulator Lobby", "END OF LIST").await;
+    let lobby = dbref_of(&listing, "Simulator Lobby");
+    say(
+        &mut god,
+        &format!("@teleport #{}=#{lobby}", CY.0),
+        "Teleported",
+    )
+    .await;
+    say(
+        &mut god,
+        &format!("@teleport #{}=#{lobby}", GOD.0),
+        "Simulator Lobby",
+    )
+    .await;
+
+    // Selection: the range, set by Ada and read by everybody.
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    let marks = (god.mark(), cy.mark());
+    say(&mut ada, "SIM RANGE 1", O3_SET).await;
+    god.expect_after(marks.0, O3_SET).await;
+    cy.expect_after(marks.1, O3_SET).await;
+    let mut public = String::new();
+    for (who, term) in [("Ada", &mut ada), ("Cy", &mut cy), ("God", &mut god)] {
+        let board = ask(term, "SIM STATUS", "target on the blue side").await;
+        let flat = board.split_whitespace().collect::<Vec<&str>>().join(" ");
+        assert!(
+            flat.contains(O3_BOARD_LINE),
+            "{who} did not read the range: {flat}"
+        );
+        public.push_str(&board);
+    }
+    public.push_str(O3_SET);
+    names_nothing(&public, red, blue, "the range's public lines");
+
+    // The shooter behind the target, both facing east.
+    say(
+        &mut god,
+        "@arena/pose BA=130 97 90",
+        "BA opens at cell (130, 97) heading 90 for the next match.",
+    )
+    .await;
+    say(
+        &mut god,
+        "@arena/pose RA=126 97 90",
+        "RA opens at cell (126, 97) heading 90 for the next match.",
+    )
+    .await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    let from = ada.mark();
+    say(&mut ada, "BOARD", "climb into").await;
+    ada.expect_after(from, "Good hunting").await;
+    power_up(&mut ada).await;
+    wait_until(STEP_TIMEOUT, "the target to be told apart", async || {
+        ask_whole(&mut ada, "CONTACTS").await.contains("BA ")
+    })
+    .await;
+    // The lock is the arena's at its next pulse: a `FIRE` sent before it lands
+    // is refused `No lock`, so the lock is waited for on the lock's own line.
+    let locking = ada.mark();
+    say(&mut ada, "LOCK BA", "Locking").await;
+    ada.expect_after(locking, "Locked on BA").await;
+    let mut hit = false;
+    for _ in 0..20 {
+        wait_until(
+            Duration::from_secs(12),
+            "the cannon to be ready",
+            async || {
+                ask_whole(&mut ada, "WEAPONSTATUS")
+                    .await
+                    .lines()
+                    .any(|line| line.contains("cannon") && line.contains("ready"))
+            },
+        )
+        .await;
+        let shot = ada.mark();
+        ada.send_line("FIRE").await;
+        if ada
+            .expect_one_of_after(shot, &["Hit on BA", "Miss on BA", "refused"])
+            .await
+            == 0
+        {
+            hit = true;
+            break;
+        }
+    }
+    assert!(hit, "twenty rounds at a standing target and not one hit");
+    // Her cockpit names her own tank (`STATUS` does) and never the target's
+    // object: the target is `BA`, as her sensors told it apart.
+    let cockpit = strip_ansi(&ada.seen[from..]);
+    for leak in [BLUE_TANK.to_string(), format!("#{blue}")] {
+        assert!(
+            !cockpit.contains(&leak),
+            "Ada's cockpit on the range leaked {leak:?}:\n{cockpit}"
+        );
+    }
+    no_sixteen_digit_word(&cockpit, "Ada's cockpit on the range");
+
+    say(&mut ada, "SIM ABORT", "aborts match").await;
+    cy.expect("Match 1 is over").await;
+
+    // Bo flew nothing: one sentence.
+    let refused = ask(&mut bo, "SIM REPORT 1", "You did not fly in match 1.").await;
+    names_nothing(&refused, red, blue, "Bo's refused report");
+
+    // Ada's report: her own rate, and nothing of a target's rounds.
+    let report = sim_report(&mut ada, "SIM REPORT").await;
+    let flat = report.split_whitespace().collect::<Vec<_>>().join(" ");
+    let line = flat
+        .split("You flew RA: ")
+        .nth(1)
+        .and_then(|rest| rest.split('.').next())
+        .unwrap_or_else(|| panic!("no `You flew RA:` in:\n{report}"));
+    let rate: u64 = line
+        .rsplit_once('(')
+        .and_then(|(_, tail)| tail.split_once("%)"))
+        .and_then(|(per_cent, _)| per_cent.parse().ok())
+        .unwrap_or_else(|| panic!("`You flew RA: {line}` carries no rate"));
+    assert!((1..=100).contains(&rate), "{rate}% in:\n{report}");
+    assert!(
+        !flat.contains("hit on ") && !flat.contains("your hull"),
+        "the report names a round the target fired:\n{report}"
+    );
+    report_is_the_pilots_own(&report, red, blue, "Ada's report of the range");
+    names_nothing(&report, red, blue, "Ada's report of the range");
+
+    // And the ring says it was a range, publicly.
+    let history = ask_whole(&mut cy, "SIM HISTORY").await;
+    let flat = history.split_whitespace().collect::<Vec<&str>>().join(" ");
+    history_row_is_public(&flat, 1, "#1 aborted [range]", None);
+}

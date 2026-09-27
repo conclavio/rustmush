@@ -38,7 +38,8 @@ the same thing this topic does, in fewer words.
   SIM AI [n]          how many units a side fields when the machines fill in.
                       A side's lead or staff sets it, during selection; the
                       bare word reads the number for anybody in the centre, in
-                      any state.
+                      any state. On a range it reads `AI fill: none on a
+                      range.`: the machines fill no pod there.
   SIM UNIT [type]     which unit type your own slot fields. The bare word lists
                       what this server can field, for anybody in the centre, and
                       adds what you are flying if you hold a slot.
@@ -47,6 +48,11 @@ the same thing this topic does, in fewer words.
                       uncontested for its time). A side's lead or staff sets it
                       during selection; the bare word reads it and what this
                       ground supports, for anybody in the centre.
+  SIM RANGE [n]       set up a range: your side against n targets that neither
+                      move nor shoot, on the other side's pods; the match ends
+                      when every target is out of action, or on SIM ABORT. A
+                      side's lead or staff, with a number, during selection;
+                      the bare word reads it.
   SIM HISTORY         the centre's last twenty matches, newest first: who won
                       and why, how long, how many a side, when; your own
                       callsign on the ones you flew.
@@ -68,7 +74,7 @@ otherwise. `SIM UNIT` says otherwise:
 
   SIM UNIT                    Fieldable units: biped_mk1, line_tank,
                               line_tank_eccm, line_tank_ecm, line_tank_laser,
-                              line_tank_thermal. Yours: line_tank.
+                              line_tank_thermal, target_mk1. Yours: line_tank.
   SIM UNIT biped_mk1          Slot red 1 will field biped_mk1.
 
 It changes **your own** slot and only during selection, and everyone in the
@@ -104,6 +110,10 @@ What the shipped server can field:
                       takes some of that back.
   biped_mk1           a two-legged machine: taller, quicker to turn and slower
                       flat out, and its sight sits nine metres up.
+  target_mk1          the range's target: the stock hull with no gun, no sight
+                      and no engine speed. It is what `SIM RANGE` puts on the
+                      other side's pods; you may pick it for your own slot, but
+                      it can do nothing but stand there.
 
 Three things worth knowing before you pick one:
 
@@ -121,7 +131,7 @@ Every match is a **skirmish** until somebody says otherwise: eliminate the other
 side and you win. `SIM MODE hold` says otherwise, on a ground that supports it:
 
   SIM MODE                    Mode: skirmish. The Proving Ground supports:
-                              skirmish, hold.
+                              skirmish, hold. SIM RANGE sets a range.
   SIM MODE hold               Mode set to hold: keep The Crossroads (B)
                               uncontested for 120 seconds to win; elimination
                               still ends it.
@@ -144,6 +154,38 @@ says the rule while a match is being set up, boarding and running:
 and nobody is ever told who holds the spot, or for how long: the rule is public,
 the clock is not. `SIM HISTORY`, `SIM REPORT` and `SIM REPLAY` tag a hold match
 `[hold]` after its outcome.
+
+## The range
+
+A new pilot needs something to shoot at that does not shoot back. `SIM RANGE`
+sets one up: your side against a number of targets on the other side's pods.
+
+  SIM RANGE                   The range is not set; SIM RANGE <n> sets it in
+                              selection.
+  SIM RANGE 2                 Range set: 2 targets stand on the blue side; the
+                              match ends when every target is out of action, or
+                              on SIM ABORT.
+
+Every claimed slot has to be on one side, and while the range is set the other
+side cannot be claimed: its pods 1 to n are the targets'. A target is
+`target_mk1` — the stock tank's hull, with no gun, no sight and no speed. It
+powers up and stands where its pod put it, turning in place at most; it never
+fires and never moves. It takes a round exactly as a tank does, and it is out of
+action once it is a wreck, once both its tracks are gone, or once its engine is
+killed through the rear of the hull. The match ends when every target is out of
+action, or on `SIM ABORT`; running dry does not end it.
+
+The range needs no second pilot and no AI fill: `SIM START` works with one of
+you. The machines fill no pod on a range, not even your own side's empty ones,
+and `SIM AI` says so. `SIM MODE hold` or `SIM MODE skirmish` leaves the range.
+The board reads
+
+  mode: range — 2 targets on the blue side
+
+and `SIM HISTORY`, `SIM REPORT` and `SIM REPLAY` tag the match `[range]`.
+`SIM REPORT` prints your hit rate in its head, on the line under the match's
+losses: `You flew RA: intact; 14 shots, 6 hits (42%).` When the centre goes idle
+the targets' pods get their own tanks back.
 
 ## Fighting the machines
 

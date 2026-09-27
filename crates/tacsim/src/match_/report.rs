@@ -1218,6 +1218,20 @@ fn counted(n: u32, one: &str, many: &str) -> String {
     }
 }
 
+/// **The pilot's hit rate** (16b cut O.3; 16c N2), the bracket after `You flew
+/// …`'s counters: ` (42%)` for 6 hits in 14 shots — `hits × 100 / shots`,
+/// rounded down, in `u64` so no counter can overflow it — and nothing at all
+/// when no shot was fired, where a rate would be a division by nought dressed
+/// as `0%`. The counters are [`UnitReturn`](crate::arena::damage::UnitReturn)'s,
+/// so a hit is a round that took something off something.
+fn hit_rate(shots: u32, hits: u32) -> String {
+    u64::from(hits)
+        .saturating_mul(100)
+        .checked_div(u64::from(shots))
+        .map(|per_cent| format!(" ({per_cent}%)"))
+        .unwrap_or_default()
+}
+
 /// **A report's header** (16b cut V.3): the public part, from the remembered
 /// result and the arena's label, and then the reader's own.
 ///
@@ -1230,8 +1244,11 @@ fn counted(n: u32, one: &str, many: &str) -> String {
 /// its tag after the outcome words (`… red won (red held the key spot) [hold],
 /// 2 m 0 s.`), as the ring's line does.
 ///
-/// For [`Reader::Pilot`]: `You flew RA: destroyed; 14 shots, 6 hits.` (the row's
-/// own outcome word and counters) and, when `facts` are given, `You fired 14
+/// For [`Reader::Pilot`]: `You flew RA: destroyed; 14 shots, 6 hits (42%).` (the
+/// row's own outcome word and counters, and **16b cut O.3**'s hit rate — 16c N2,
+/// the range's reason to exist — `hits × 100 / shots` rounded down, printed only
+/// when a shot was fired, so `0 shots, 0 hits.` carries no bracket and `3 shots,
+/// 0 hits (0%).` does) and, when `facts` are given, `You fired 14
 /// rounds of cannon and 60 of machine_gun.` (weapon ids as authored, in
 /// `BTreeMap` order; `You fired nothing.`). For [`Reader::Staff`], with `staff`
 /// given: `seed …; tape match.12, digest ab12…ef, 42 chunks; this page: chunks 0
@@ -1272,11 +1289,12 @@ pub fn header_lines(
         Reader::Pilot { unit } => {
             if let Some(flown) = row.units.iter().find(|held| held.unit == unit) {
                 lines.push(format!(
-                    "You flew {}: {}; {}, {}.",
+                    "You flew {}: {}; {}, {}{}.",
                     flown.callsign,
                     outcome_word(flown.outcome),
                     counted(flown.shots, "shot", "shots"),
                     counted(flown.hits, "hit", "hits"),
+                    hit_rate(flown.shots, flown.hits),
                 ));
             }
             if let Some(report) = facts {
@@ -2796,7 +2814,7 @@ mod tests {
                 "Match 12 on The Proving Ground, 2026-09-24 14:02 UTC: blue won (red \
                  eliminated), 4 m 32 s.",
                 "Red lost 1 of 2; blue lost 0 of 2.",
-                "You flew RA: destroyed; 14 shots, 6 hits.",
+                "You flew RA: destroyed; 14 shots, 6 hits (42%).",
                 "You fired 14 rounds of cannon and 60 of machine_gun.",
             ]
         );
@@ -2811,7 +2829,10 @@ mod tests {
         );
         assert_eq!(
             blue.get(2..).unwrap_or_default(),
-            ["You flew BA: intact; 1 shot, 1 hit.", "You fired nothing."]
+            [
+                "You flew BA: intact; 1 shot, 1 hit (100%).",
+                "You fired nothing."
+            ]
         );
         assert_eq!(
             fired_line(&BTreeMap::from([(SmolStr::new("cannon"), 1)])),

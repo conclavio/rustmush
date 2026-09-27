@@ -3523,3 +3523,140 @@ async fn o1_a_hold_arenas_first_signal_tells_the_commander_the_objective() {
     let request = mock.last_request().expect("the provider was asked");
     assert!(!o1_user_text(&request).contains("objective:"));
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut O.3 — a range's targets ask the commander nothing (16c N13)
+// ---------------------------------------------------------------------------
+
+/// **A range**: red's pair on the reflex controller, armed, and six
+/// `target_mk1`s off the fielded catalog on blue, checked out by the production
+/// functions at [`tacsim::arena::MatchMode::Range`] — the targets under
+/// `targets` (the reflex controller in a range; seated for the baseline).
+fn o3_range(cfg: &ArenaConfig, targets: Controller) -> Arena {
+    let catalog = tacsim::definitions::Catalog::build_fielded(&[], tacsim::NS)
+        .expect("the fielded content binds");
+    let key = mush_core::CanonicalId::new(tacsim::definitions::content::TARGET_MK1)
+        .expect("a canonical id");
+    let spec = catalog.specs.get(&key).expect("the target is fielded");
+    let binding = catalog.bindings.get(&key).expect("its binding");
+    let mut units = vec![
+        tank(RED_A, Team::Red, centre(2, 8), Controller::Reflex),
+        tank(RED_B, Team::Red, centre(2, 9), Controller::Reflex),
+    ];
+    for (n, y) in (4_u16..10).enumerate() {
+        let id = ObjId(40 + u32::try_from(n).unwrap_or(0));
+        let cells = tacsim::definitions::to_tactical_unit(spec, binding, id).expect("a target");
+        let slot = u8::try_from(n + 1).unwrap_or(1);
+        units.push(tacsim::match_::custody_unit(
+            &catalog,
+            cells,
+            id,
+            Team::Blue,
+            centre(12, y),
+            0,
+            targets,
+            slot,
+        ));
+    }
+    let mut arena = Arena::new(
+        CustodyOut {
+            definition: definition(),
+            units,
+            pilots: Vec::new(),
+            resolution: tacsim::match_::resolution_for(&catalog),
+            seed: SEED,
+            mode: tacsim::arena::MatchMode::Range,
+        },
+        cfg,
+        &match_cfg(),
+        &SensorsConfig::default(),
+    )
+    .expect("the range");
+    arena.clock.pin_tempo_for_tests(Tempo::Engaged);
+    arena
+}
+
+/// **A range raises no deliberation signal for its targets, and its shooters'
+/// signals are what they would be without the targets in squads at all** (16b
+/// cut O.3; 16c N13; plan item 14).
+///
+/// The targets are dealt into squads like any reflex side — `blue-1` and
+/// `blue-2`, three apiece at `squad_size` 4, both `squads_of` callers untouched —
+/// and without the inert-commander clause each would ask the commander at its
+/// first pulse and after every expiry. Over a minute of arena time at the
+/// shipped floor, the range asks for red alone. The baseline is the same field
+/// with the six targets seated — so in no squad — which is what "unchanged"
+/// means: red's signals, reason, digest, contacts, members and all, are the
+/// same list. And every one of them goes through the mock service: one provider
+/// call per red signal, and not one attributed to a target.
+#[tokio::test]
+async fn o3_a_range_asks_the_commander_nothing_for_its_targets() {
+    use tacsim::deliberation::{SquadBrief, deliberate};
+
+    let cfg = ArenaConfig {
+        squad_size: 4,
+        ..arena_cfg(ArenaConfig::default().deliberate_min_ms)
+    };
+    let mut range = o3_range(&cfg, Controller::Reflex);
+    let blue_squads: Vec<(String, usize)> = range
+        .squads
+        .iter()
+        .filter(|roster| roster.id.team == Team::Blue)
+        .map(|roster| (roster.id.to_string(), roster.units.len()))
+        .collect();
+    assert_eq!(
+        blue_squads,
+        vec![("blue-1".to_owned(), 3), ("blue-2".to_owned(), 3)],
+        "the targets are in squads; the clause, not the grouping, silences them"
+    );
+    let mut bytes = Vec::new();
+    let signals = run(&mut range, 60_000, &mut bytes);
+    assert!(
+        signals.iter().all(|signal| signal.team == Team::Red),
+        "a target's squad asked: {:?}",
+        signals
+            .iter()
+            .filter(|signal| signal.team == Team::Blue)
+            .map(|signal| signal.squad.to_string())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        signals
+            .first()
+            .is_some_and(|signal| signal.squad == red_one()
+                && signal.reason == tacsim::arena::command::SignalReason::NoOrder),
+        "red asks at its first pulse as any reflex squad does"
+    );
+
+    let mut baseline = o3_range(&cfg, Controller::Pilot);
+    assert!(
+        baseline
+            .squads
+            .iter()
+            .all(|roster| roster.id.team == Team::Red),
+        "seated targets are in no squad"
+    );
+    let mut bytes = Vec::new();
+    let unchanged = run(&mut baseline, 60_000, &mut bytes);
+    assert_eq!(signals, unchanged, "red's signals are unchanged");
+
+    // Through the mock service: one call per red signal, none for a target.
+    let (llm, mock) = mock_service();
+    for signal in &signals {
+        mock.push_response(tool_use(
+            serde_json::json!({"objective": "engage", "ttl_ms": 20_000}),
+            0.000_25,
+        ));
+        let brief = SquadBrief::from_signal(1, signal, 2);
+        let order = deliberate(&llm, &brief).await.expect("the mock answers");
+        assert_eq!(order.squad.team, Team::Red);
+    }
+    assert_eq!(mock.call_count(), signals.len());
+    assert!(
+        llm.audit_log()
+            .recent(64)
+            .iter()
+            .all(|row| matches!(row.actor, Some(RED_A | RED_B))),
+        "every call is a shooter's commander's"
+    );
+}

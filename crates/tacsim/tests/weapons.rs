@@ -1104,6 +1104,9 @@ struct Replay {
     /// **16b cut M.1**: every `Refused` notice the red pilot was sent, as
     /// `(arena ms of the pulse, order word, refusal)`.
     refusals: Vec<(i64, String, Refusal)>,
+    /// **16b cut O.3**: the reflex controller's path searches over the whole
+    /// replay, off every pulse's `StepOutput::reflex`.
+    path_queries: u32,
 }
 
 /// **16b cut M.1**: the red pilot's `Refused` notices in one pulse's frames.
@@ -1153,6 +1156,7 @@ fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) ->
     let mut pulses = 0_u32;
     let mut ended = false;
     let mut refusals: Vec<(i64, String, Refusal)> = Vec::new();
+    let mut path_queries = 0_u32;
     loop {
         arena.clock.pin_tempo_for_tests(Tempo::Quiet);
         // 16b cut M.1 (`T-82`): each due beat in a zero-`dt` pulse of its own,
@@ -1166,6 +1170,7 @@ fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) ->
             let out = arena.step(wall, &[] as &[Control], &beat.intents);
             absorb(&out, &mut bytes);
             red_refusals(&out, arena.now_ms, &mut refusals);
+            path_queries = path_queries.saturating_add(out.reflex.path_queries);
             hashes.extend(arena.substep_hashes.iter().copied());
             pulses += 1;
             ended = out.ended.is_some();
@@ -1177,6 +1182,7 @@ fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) ->
         let out = arena.step(wall, &[] as &[Control], &[]);
         absorb(&out, &mut bytes);
         red_refusals(&out, arena.now_ms, &mut refusals);
+        path_queries = path_queries.saturating_add(out.reflex.path_queries);
         hashes.extend(arena.substep_hashes.iter().copied());
         pulses += 1;
         if out.ended.is_some() || arena.now_ms >= until_ms {
@@ -1211,6 +1217,7 @@ fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) ->
         shots: arena.next_shot_seq,
         pulses,
         refusals,
+        path_queries,
     }
 }
 
@@ -1972,4 +1979,330 @@ fn a_lock_taken_on_a_provisional_number_survives_the_contact_being_told_apart() 
     let log = events(&mut arena, &mut bytes);
     assert_eq!(count(&log, "fired"), 1, "one pull, with no second lock");
     assert_eq!(count(&log, "locked"), 1, "and no lock was re-taken");
+}
+
+// ---------------------------------------------------------------------------
+// (l) 16b cut O.3 — the range ends when the last target is out of action
+// ---------------------------------------------------------------------------
+
+/// The first shooter, on the second target.
+const RED2: ObjId = ObjId(5);
+/// The target the first shooter faces head on.
+const TARGET_FRONT: ObjId = ObjId(11);
+/// The target the second shooter stands behind.
+const TARGET_REAR: ObjId = ObjId(12);
+
+/// **One fielded unit, checked out as `match_::start` checks one out**: the M32
+/// unit off the fielded catalog's own binding, and every row the arena reads
+/// decoded by the production functions (`custody_unit`).
+fn fielded_unit(
+    catalog: &tacsim::definitions::Catalog,
+    entry: &str,
+    id: ObjId,
+    team: Team,
+    pose: Pose,
+    controller: tacsim::arena::state::Controller,
+    slot: u8,
+) -> CustodyUnit {
+    let key = mush_core::CanonicalId::new(entry).expect("a canonical entry id");
+    let spec = catalog.specs.get(&key).expect("the unit entry");
+    let binding = catalog.bindings.get(&key).expect("the unit binding");
+    let cells = tacsim::definitions::to_tactical_unit(spec, binding, id).expect("the unit");
+    tacsim::match_::custody_unit(catalog, cells, id, team, pose, 0, controller, slot)
+}
+
+/// The cell centre of `(x, y)`, facing `heading_mdeg`.
+fn facing(x: u16, y: u16, heading_mdeg: u32) -> Pose {
+    Pose {
+        heading_mdeg,
+        ..centre(x, y)
+    }
+}
+
+/// **A range, as `SIM RANGE 2` fields one** (16b cut O.3; 16c N13): two stock
+/// tanks, seated, on red, and two `target_mk1`s with nobody in them on blue —
+/// so the reflex controller's, as `match_::start` makes any unseated unit —
+/// checked out at [`tacsim::arena::MatchMode::Range`]. Red 1 stands four cells
+/// in front of the first target, which faces it; red 2 stands four cells behind
+/// the second, which faces away — the rear band, hull 40, engine 30, turret 30.
+fn range_arena() -> Arena {
+    range_field(tacsim::definitions::content::TARGET_MK1)
+}
+
+/// [`range_arena`]'s field with `blue` standing on the targets' two pods — the
+/// target itself, or (for the `spent` contrast) an armed stock tank.
+fn range_field(blue: &str) -> Arena {
+    use tacsim::arena::state::Controller;
+    let catalog = tacsim::definitions::Catalog::build_fielded(&[], tacsim::NS)
+        .expect("the fielded content binds");
+    let line_tank = tacsim::definitions::content::LINE_TANK;
+    let target = blue;
+    let units = vec![
+        fielded_unit(
+            &catalog,
+            line_tank,
+            RED,
+            Team::Red,
+            facing(6, 4, 90_000),
+            Controller::Pilot,
+            1,
+        ),
+        fielded_unit(
+            &catalog,
+            line_tank,
+            RED2,
+            Team::Red,
+            facing(6, 10, 90_000),
+            Controller::Pilot,
+            2,
+        ),
+        fielded_unit(
+            &catalog,
+            target,
+            TARGET_FRONT,
+            Team::Blue,
+            facing(10, 4, 270_000),
+            Controller::Reflex,
+            1,
+        ),
+        fielded_unit(
+            &catalog,
+            target,
+            TARGET_REAR,
+            Team::Blue,
+            facing(10, 10, 90_000),
+            Controller::Reflex,
+            2,
+        ),
+    ];
+    let pilots = [RED, RED2]
+        .into_iter()
+        .enumerate()
+        .map(|(seat, unit)| Pilot {
+            unit,
+            pilot: ObjId(1_000 + u32::try_from(seat).unwrap_or(0)),
+            station: SmolStr::new("cockpit"),
+            epoch: 1,
+        })
+        .collect();
+    Arena::new(
+        CustodyOut {
+            definition: definition(&[]),
+            units,
+            pilots,
+            resolution: tacsim::match_::resolution_for(&catalog),
+            seed: SEED,
+            mode: tacsim::arena::MatchMode::Range,
+        },
+        &ArenaConfig::default(),
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the range")
+}
+
+/// Both shooters start up at 0 and, from 15,000 (`match.startup_ms` is 10,000
+/// and the first sensor passes and the classification are behind them), lock
+/// and fire on their own target at every 10,000 ms beat — the cannon cycles in
+/// 6,000, so every shot the script orders is ready. The beats run long past the
+/// end: once the last target is out of action the match ends, and the replay
+/// stops at the pulse that ended it at every cadence.
+fn range_script() -> Vec<Beat> {
+    let cannon = || IntentKind::Fire {
+        weapon: SmolStr::new("cannon"),
+    };
+    let mut beats = vec![Beat {
+        t_ms: 0,
+        intents: vec![
+            intent(RED, IntentKind::Startup, 1),
+            intent(RED2, IntentKind::Startup, 1),
+        ],
+    }];
+    for n in 0..30_u64 {
+        let at = 15_000 + i64::try_from(n).unwrap_or(0) * 10_000;
+        let seq = n * 2 + 2;
+        beats.push(Beat {
+            t_ms: at,
+            intents: vec![
+                intent(
+                    RED,
+                    IntentKind::Lock {
+                        contact: contact_of(RED, TARGET_FRONT),
+                    },
+                    seq,
+                ),
+                intent(RED, cannon(), seq + 1),
+                intent(
+                    RED2,
+                    IntentKind::Lock {
+                        contact: contact_of(RED2, TARGET_REAR),
+                    },
+                    seq,
+                ),
+                intent(RED2, cannon(), seq + 1),
+            ],
+        });
+    }
+    beats
+}
+
+/// **A range ends when its last target is out of action, at every cadence** (16b
+/// cut O.3; 16c N13; doc 16 §3.8, 16b §11's mandatory cross-tempo test).
+///
+/// The range adds no rule of its own: it is fought under the ordinary
+/// elimination rule, and a target is out of action as any unit is — a wreck, or
+/// disabled with no weapons. So this drives two real stock tanks against two
+/// real targets off the fielded catalog, one target shot head on until its hull
+/// goes (a wreck) and one shot from behind until its engine goes (disabled: no
+/// gun and now no motion), and asserts one event list and one per-substep hash
+/// sequence at 5,000, 1,000 and 500 ms; exactly one `match_ended`, an
+/// elimination with red the winner; never `spent` (a target is not armed at
+/// check-out, `Arena::spent`); and no path search at all from the targets, which
+/// are the only reflex units on the field (the inert rule, `reflex.rs`).
+#[test]
+fn o3_a_range_ends_when_the_last_target_is_out_of_action_at_three_cadences() {
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = range_arena();
+        let run = replay(&mut arena, cadence, 400_000, &range_script());
+        assert!(
+            arena.ended.is_some(),
+            "cadence {cadence}: the range did not end by {}",
+            arena.now_ms
+        );
+        runs.push((cadence, run));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+    let lines = |kind: &str| -> Vec<&Line> {
+        first
+            .events
+            .iter()
+            .filter(|(_, encoded, _, _)| encoded.contains(&format!("\"kind\":\"{kind}\"")))
+            .collect()
+    };
+    let ended = lines("match_ended");
+    assert_eq!(ended.len(), 1, "exactly one end: {ended:?}");
+    assert!(
+        ended
+            .iter()
+            .all(|(_, encoded, _, _)| encoded.contains(r#"{"elimination":{"winner":"red"}}"#)),
+        "the range ends by elimination, red the winner: {ended:?}"
+    );
+    assert!(
+        first
+            .events
+            .iter()
+            .all(|(_, encoded, _, _)| !encoded.contains("\"spent\"")),
+        "a range is never `spent`"
+    );
+    // One target wrecked, the other disabled — and the disabled one by its engine,
+    // the one section behind the hull's rear facet.
+    let destroyed = lines("unit_destroyed");
+    let disabled = lines("unit_disabled");
+    assert!(
+        destroyed
+            .iter()
+            .any(|(_, encoded, _, _)| encoded.contains(&format!("\"unit\":{}", TARGET_FRONT.0))),
+        "the target shot head on is a wreck: {destroyed:?}"
+    );
+    assert!(
+        disabled
+            .iter()
+            .any(|(_, encoded, _, _)| encoded.contains(&format!("\"unit\":{}", TARGET_REAR.0))),
+        "the target shot from behind is disabled: {disabled:?}"
+    );
+    assert!(
+        lines("section_destroyed").iter().any(|(_, encoded, _, _)| {
+            encoded.contains(&format!("\"unit\":{}", TARGET_REAR.0))
+                && encoded.contains("\"section\":\"engine\"")
+        }),
+        "and it is its engine that went"
+    );
+    assert_eq!(first.path_queries, 0, "a target searches for nothing");
+
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "the event list differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes,
+            first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms ({} against {})",
+            run.hashes.len(),
+            first.hashes.len()
+        );
+        assert_eq!(run.shots, first.shots);
+        assert_eq!(run.path_queries, 0);
+        assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
+}
+
+/// **Running dry never ends a range** (16b cut O.3; 16c N13; the help's
+/// "running dry does not end it"), and the same dry shooters against armed
+/// tanks would.
+///
+/// `Arena::spent` ends a match only when **both** sides came into it armed
+/// (`UnitState::armed_at_checkout`) and nothing in action has a round left. A
+/// target never carried a gun, so a range whose shooters have emptied every
+/// weapon is not a dry field: it runs on until `SIM ABORT` or the last target
+/// is out of action. The contrast — the same field with two stock tanks on the
+/// targets' pods, every weapon on both sides emptied — ends `spent` at once,
+/// so the first half is a claim about the targets and not about a field that
+/// was never dry.
+#[test]
+fn o3_a_range_whose_shooters_run_dry_is_not_spent() {
+    let startup = vec![Beat {
+        t_ms: 0,
+        intents: vec![
+            intent(RED, IntentKind::Startup, 1),
+            intent(RED2, IntentKind::Startup, 1),
+        ],
+    }];
+    let empty = |arena: &mut Arena| {
+        for unit in &mut arena.units {
+            for rounds in unit.ammo.values_mut() {
+                *rounds = 0;
+            }
+        }
+    };
+
+    // The range: red dry, the targets never armed.
+    let mut arena = range_arena();
+    empty(&mut arena);
+    assert!(
+        arena
+            .units
+            .iter()
+            .filter(|unit| unit.team == Team::Red)
+            .all(|unit| unit.armed_at_checkout() && !unit.ammo.is_empty()),
+        "the shooters came in armed"
+    );
+    let run = replay(&mut arena, 1_000, 60_000, &startup);
+    assert!(!arena.spent(), "a range with dry shooters read as spent");
+    assert_eq!(arena.settle_spent(), None);
+    assert_eq!(arena.ended, None, "the range ended by {}", arena.now_ms);
+    assert!(arena.now_ms >= 60_000, "the replay ran its minute");
+    assert!(
+        run.events
+            .iter()
+            .all(|(_, encoded, _, _)| !encoded.contains("\"kind\":\"match_ended\"")),
+        "nothing ended the range"
+    );
+    for target in [TARGET_FRONT, TARGET_REAR] {
+        assert!(!arena.out_of_action(target), "{target:?} is still standing");
+    }
+
+    // The contrast: armed tanks on the targets' pods, and every weapon dry.
+    let mut arena = range_field(tacsim::definitions::content::LINE_TANK);
+    empty(&mut arena);
+    assert!(arena.spent(), "two dry armed sides are a dry field");
+    let _ = replay(&mut arena, 1_000, 60_000, &startup);
+    assert_eq!(
+        arena.ended.map(|end| end.reason),
+        Some(tacsim::arena::EndReason::Spent),
+        "the contrast is a spent draw"
+    );
 }

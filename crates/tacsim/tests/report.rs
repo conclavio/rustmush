@@ -535,3 +535,96 @@ fn o2_the_pods_switch_is_the_pilots_own_line_and_a_staff_field() {
         assert_eq!(leak(line), None, "{line}");
     }
 }
+
+/// **16b cut O.3 (16c N2, N13)**: the pilot's own line carries the hit rate —
+/// `(42%)` for 6 hits in 14 shots, rounded down; `(0%)` when shots were fired
+/// and none landed; no bracket at all when nothing was fired — and a range's
+/// header carries the ` [range]` tag after the outcome words. The staff rows
+/// are unchanged.
+#[test]
+fn o3_the_pilot_line_carries_the_hit_rate_and_the_header_tags_a_range() {
+    let (ra, rb, rc) = (ObjId(101), ObjId(102), ObjId(103));
+    let (ba, bb) = (ObjId(201), ObjId(202));
+    let document = serde_json::json!({
+        "record": "tacsim.match",
+        "record_version": 1,
+        "match": 4,
+        "arena": "tacsim.arena.proving_ground",
+        "outcome": "red",
+        "reason": "elimination",
+        "mode": "range",
+        "teams": [
+            { "team": "red", "units": [ra.0, rb.0, rc.0], "pilots": [] },
+            { "team": "blue", "units": [ba.0, bb.0], "pilots": [] },
+        ],
+        "units": [
+            { "unit": ra.0, "callsign": "RA", "outcome": "intact", "shots": 14, "hits": 6 },
+            { "unit": rb.0, "callsign": "RB", "outcome": "intact", "shots": 0, "hits": 0 },
+            { "unit": rc.0, "callsign": "RC", "outcome": "intact", "shots": 3, "hits": 0 },
+            { "unit": ba.0, "callsign": "BA", "outcome": "destroyed", "shots": 0, "hits": 0 },
+            { "unit": bb.0, "callsign": "BB", "outcome": "destroyed", "shots": 0, "hits": 0 },
+        ],
+        "ledger": { "log": "match.4", "digest": "ab", "chunks": 1 },
+        "seed": 0,
+        "started_ms": 1_790_258_000_000_i64,
+        "ended_ms": 1_790_258_520_000_i64,
+        "arena_ms": 272_000,
+        "reports": [],
+        "replay": false,
+    });
+    let row = HistoryRow::from_document(&document).expect("a row");
+    assert_eq!(row.mode, Some(tacsim::arena::MatchMode::Range));
+    let pilot = |unit: ObjId| {
+        header_lines(
+            &row,
+            "The Proving Ground",
+            Reader::Pilot { unit },
+            None,
+            None,
+        )
+    };
+    let header = pilot(ra);
+    assert_eq!(
+        header,
+        vec![
+            "Match 4 on The Proving Ground, 2026-09-24 14:02 UTC: red won (blue eliminated) \
+             [range], 4 m 32 s."
+                .to_owned(),
+            "Red lost 0 of 3; blue lost 2 of 2.".to_owned(),
+            "You flew RA: intact; 14 shots, 6 hits (42%).".to_owned(),
+        ]
+    );
+    assert_eq!(
+        pilot(rb).get(2).map(String::as_str),
+        Some("You flew RB: intact; 0 shots, 0 hits."),
+        "no shot, no rate"
+    );
+    assert_eq!(
+        pilot(rc).get(2).map(String::as_str),
+        Some("You flew RC: intact; 3 shots, 0 hits (0%)."),
+        "shots and no hit is nought per cent"
+    );
+    // The staff rows carry no rate.
+    let staff = header_lines(
+        &row,
+        "The Proving Ground",
+        Reader::Staff,
+        None,
+        Some((
+            &Page {
+                first: 0,
+                last: 0,
+                lines: 0,
+                unreadable: 0,
+            },
+            &Roster::from_row(&row),
+        )),
+    );
+    assert!(
+        staff
+            .iter()
+            .any(|line| line.contains("RA") && line.ends_with("14 shots, 6 hits.")),
+        "{staff:?}"
+    );
+    assert!(staff.iter().all(|line| !line.contains('%')), "{staff:?}");
+}

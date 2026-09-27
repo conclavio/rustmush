@@ -659,6 +659,12 @@ fn the_band_word_the_shipped_content_can_print() {
 /// the figure `docs/help/simulator.md` quotes to a pilot in "Fighting the
 /// machines": *about seven tenths of what its own sight and its gun's inner band
 /// allow (420 m for the stock tank)*.
+///
+/// **16b cut O.3** (16c N13) fields a seventh schema, the range's target, which
+/// carries no weapon and no sight: its row is `(0, 0, 0)` — the sight and both
+/// reaches answer nought with nothing mounted and nothing loaded ("then nothing
+/// is in range of it") — the dry half skips it (it has no default weapon to
+/// empty), and the closing loop expects it to have nothing to fall back to.
 #[test]
 fn e1_the_ranges_the_shipped_machines_fight_at() {
     use mush_core::ObjId;
@@ -671,8 +677,9 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
         tacsim::definitions::Catalog::build_fielded(&[], "tacsim").expect("the fielded content");
     assert_eq!(
         catalog.specs.len(),
-        6,
-        "the shipped unit schemas: the line tank and doc 16 §9's five extensions"
+        7,
+        "the shipped unit schemas: the line tank, doc 16 §9's five extensions and \
+         the range's target"
     );
     let definition = stock_definition(&SmolStr::new_static(STAND_IN)).expect("the stand-in window");
     let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
@@ -776,6 +783,8 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
                 45_000,
                 45_000
             ),
+            // 16b cut O.3: no sight and nothing loaded, so nothing is in range.
+            ("tacsim.unit.target_mk1".to_owned(), 0, 0, 0),
         ],
         "the reaches the shipped machines fight at, loaded"
     );
@@ -820,13 +829,31 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
         );
         assert!(state.fight_limit_cm(ARENA_CELL_CM) <= reach);
     }
+    // 16b cut O.3: the target passes that loop with nothing in it — no weapon
+    // row to band, nothing loaded, and both reaches nought — which is pinned
+    // here rather than left to an empty loop.
+    let target_at = names
+        .iter()
+        .position(|name| name == "tacsim.unit.target_mk1")
+        .expect("the range's target is fielded");
+    let target_id = ObjId(u32::try_from(target_at).unwrap_or(0) + 10);
+    let target = arena.unit(target_id).expect("the target is in the arena");
+    assert!(target.weapons.is_empty() && target.loaded_weapon().is_none());
+    assert_eq!(
+        (
+            target.fight_inner_cm(ARENA_CELL_CM),
+            target.fight_limit_cm(ARENA_CELL_CM)
+        ),
+        (0, 0)
+    );
 
-    // And again with the weapon a bare `FIRE` fires emptied. Every shipped unit
-    // carries a second gun, so every one of them keeps fighting — at its
-    // coaxial's own first band, which on this content is 600 m and therefore
+    // And again with the weapon a bare `FIRE` fires emptied. Every shipped
+    // armed unit carries a second gun, so every one of them keeps fighting — at
+    // its coaxial's own first band, which on this content is 600 m and therefore
     // exactly the sight: nought margin, and the day a shorter gun is authored
-    // this table is where it shows.
-    let dry: Vec<SmolStr> = names
+    // this table is where it shows. **16b cut O.3**: a unit with no default
+    // weapon — the range's target — has nothing to empty and is skipped.
+    let dry: Vec<Option<SmolStr>> = names
         .iter()
         .enumerate()
         .map(|(at, name)| {
@@ -834,23 +861,32 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
             let Some(state) = arena.unit(id) else {
                 panic!("{name} is in the arena")
             };
-            state
-                .default_weapon()
-                .map(|weapon| weapon.id.clone())
-                .unwrap_or_else(|| panic!("{name} carries a default weapon"))
+            state.default_weapon().map(|weapon| weapon.id.clone())
         })
         .collect();
     for (at, weapon) in dry.iter().enumerate() {
         let id = ObjId(u32::try_from(at).unwrap_or(0) + 10);
-        if let Some(state) = arena.unit_mut(id) {
+        if let Some(weapon) = weapon
+            && let Some(state) = arena.unit_mut(id)
+        {
             state.ammo.insert(weapon.clone(), 0);
         }
     }
     assert_eq!(
-        dry.iter().map(SmolStr::to_string).collect::<Vec<_>>(),
-        vec!["cannon", "cannon", "cannon", "cannon", "laser", "cannon"],
+        dry.iter()
+            .map(|weapon| weapon.as_ref().map(SmolStr::to_string))
+            .collect::<Vec<_>>(),
+        vec![
+            Some("cannon".to_owned()),
+            Some("cannon".to_owned()),
+            Some("cannon".to_owned()),
+            Some("cannon".to_owned()),
+            Some("laser".to_owned()),
+            Some("cannon".to_owned()),
+            None,
+        ],
         "the weapon a bare `FIRE` fires: the cannon, or the first in component \
-         order on a hull that carries none"
+         order on a hull that carries none, and nothing on the range's target"
     );
     assert_eq!(
         table(&arena),
@@ -881,6 +917,8 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
                 45_000,
                 45_000
             ),
+            // 16b cut O.3: no sight and nothing loaded, so nothing is in range.
+            ("tacsim.unit.target_mk1".to_owned(), 0, 0, 0),
         ],
         "and with the default weapon dry: every one of them fights on its coaxial"
     );
@@ -892,9 +930,10 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
         let loaded = state
             .loaded_weapon()
             .map(|weapon: &WeaponSummary| weapon.id.to_string());
+        // 16b cut O.3: a unit with no weapon has nothing to fall to.
+        let expected = (!state.weapons.is_empty()).then(|| "machine_gun".to_owned());
         assert_eq!(
-            loaded,
-            Some("machine_gun".to_owned()),
+            loaded, expected,
             "{name}: a dry default weapon falls to the next loaded one"
         );
     }
@@ -1123,7 +1162,8 @@ fn the_muster_stands_on_the_road_and_the_run_at_the_enemy_reaches_the_ford() {
 // ---------------------------------------------------------------------------
 
 /// **`fielded_sources` is `sources` plus the five tables, in `requires` order,
-/// and nothing latched moved** (16b cut Q.8).
+/// and nothing latched moved** (16b cut Q.8) — and, since **16b cut O.3**, a
+/// sixth table after them: the range's target, which requires nothing.
 ///
 /// The order claim is the one worth a test: [`content::SOURCES`] is authored as
 /// "a pack after every pack it names", the five extension tables each carry the
@@ -1138,8 +1178,9 @@ fn q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_ord
     let fielded = content::fielded_sources();
     assert_eq!(
         fielded.len(),
-        stock.len() + 10,
-        "eight shipped packs and doc 16 section 9's ten extension files"
+        stock.len() + 11,
+        "eight shipped packs and eleven extension files: doc 16 section 9's ten and \
+         the range's target"
     );
     for (shipped, both) in stock.iter().zip(fielded.iter()) {
         assert_eq!(shipped.name, both.name, "the shipped prefix is unmoved");
@@ -1216,6 +1257,14 @@ fn m2_every_fielded_units_substep_divides_the_three_periods() {
         for mode in modes {
             let speed = mode.rules.max_speed_cms;
             let substep = tacsim::arena::clock::substep_ms(&tempo, 1_000, speed);
+            // 16b cut O.3: the range's target authors a zero ceiling, and a zero
+            // ceiling has no cell crossing to bound — it answers the cap.
+            if speed == 0 {
+                assert_eq!(
+                    substep, tempo.substep_max_ms,
+                    "{entry}: a zero ceiling answers `substep_max_ms`"
+                );
+            }
             for (name, period) in [
                 ("quiet_ms", tempo.quiet_ms),
                 ("alert_ms", tempo.alert_ms),
@@ -1233,8 +1282,14 @@ fn m2_every_fielded_units_substep_divides_the_three_periods() {
         }
     }
     assert!(
-        checked >= 6,
+        checked >= 7,
         "every fielded unit's modes were read: {checked}"
+    );
+    assert!(
+        catalog.specs.contains_key(
+            &mush_core::CanonicalId::new(content::TARGET_MK1).expect("a canonical id")
+        ),
+        "and the zero-ceiling arm above was reached by the range's target"
     );
 }
 
@@ -1246,7 +1301,9 @@ fn m2_every_fielded_units_substep_divides_the_three_periods() {
 /// `right_track` authors `disable_motion_when_all_of: [left_track, right_track]`
 /// on **both** of them, so a tank on no tracks neither turns nor drives
 /// whichever track goes last. Five tanks, exactly; the biped's legs are X.2's
-/// and are asserted by its own test.
+/// and are asserted by its own test. **16b cut O.3**: and the range's target,
+/// which carries the stock hull's tracks verbatim — both gone is one of the
+/// three ways it is out of action.
 #[test]
 fn m4_every_fielded_tanks_two_tracks_carry_the_pair_rule() {
     use tacsim::definitions::unit::Consequence;
@@ -1283,8 +1340,9 @@ fn m4_every_fielded_tanks_two_tracks_carry_the_pair_rule() {
             content::LINE_TANK_ECM,
             content::LINE_TANK_LASER,
             content::LINE_TANK_THERMAL,
+            content::TARGET_MK1,
         ],
-        "the five tanks, and nothing else with two tracks"
+        "the five tanks and the target, and nothing else with two tracks"
     );
 }
 

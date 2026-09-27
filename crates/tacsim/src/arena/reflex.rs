@@ -1436,6 +1436,43 @@ impl Arena {
             other => other,
         };
 
+        // ---- the inert rule (16b cut O.3; 16c N13; plan item 7) ----
+        //
+        // **A unit that cannot move and carries no weapon is inert to this
+        // controller**: it starts up, and then it does nothing at all. It is the
+        // general rule for any such hull — `tacsim.unit.target_mk1`, the range's
+        // target, is the one the game ships — and it sits beside AA.1's immobile
+        // reading ([`UnitState::cannot_close`]), which is about a machine that
+        // cannot close but can still shoot: that one holds and fights from where
+        // it stands; this one has nothing to hold with.
+        //
+        // Why a rule and not the ordinary path: nothing below would leave such a
+        // unit alone. `follow` plans for any goal it is handed, and `cannot_close`
+        // only moves `Approach`'s closing edge — it does not stop `Patrol`'s list
+        // choosing a search, a hunt, a hold spot or a waypoint. A target standing
+        // on the machine slots would otherwise spend a search every `repath_ms` of
+        // every window on waypoints it can never reach, and hunt contacts it can
+        // never shoot. So once it has power it is parked in `Patrol` with no goal,
+        // no route, no target, no hunt and no plot, and nothing else is asked: no
+        // search, no path query, no intent — and it never reaches O.1's
+        // `hold_goal`, the `Approach` rule or the `Advance` clause.
+        //
+        // A **cold** inert unit takes the `Power::Off` arm below as any machine
+        // does, so it comes online and a thermal sight reads it hot. The
+        // predicate is two reads of the custody's constants and one `is_empty`:
+        // on a lane that fields only armed types it is false at its first term.
+        let inert = unit.weapons.is_empty() && unit.mobility.max_speed_cms == 0;
+        if inert && matches!(unit.power, Power::Online | Power::Starting) {
+            row.state = ReflexState::Patrol;
+            row.goal = None;
+            row.route.clear();
+            row.target = None;
+            row.hunt = None;
+            row.last_plot = None;
+            memory.units.insert(id, row);
+            return plan;
+        }
+
         // ---- power ----
         match unit.power {
             Power::Off => {

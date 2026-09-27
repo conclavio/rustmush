@@ -169,7 +169,9 @@ thread_local! {
 /// 11. The ledger's event sequence, `u64`.
 /// 12. **The mode and the Hold objective** (16b cut O.1; 16c N11): the mode's
 ///     code byte ([`crate::arena::state::MatchMode::code`]: `0` skirmish, `1`
-///     hold); then the hold as a presence byte, the spot's `x` and `y` as `u16`,
+///     hold, `2` range — 16b cut O.3's arm rides this one byte and adds none:
+///     a range carries no objective, so its hold is `[0]`); then the hold as a
+///     presence byte, the spot's `x` and `y` as `u16`,
 ///     `radius_cells` as `u16` and `hold_ms` as `u32`, then `held_by` as a
 ///     presence byte and the team byte (`0` red, `1` blue) in one call, then the
 ///     `i64` arena millisecond it opened at — `[0]` alone for no hold, and `[0]`

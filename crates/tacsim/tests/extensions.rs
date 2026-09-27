@@ -189,6 +189,16 @@ const DIGESTS_ECCM: [(&str, &str); 2] = [
 /// The filter's pack files, by their paths under `content/`.
 const PACK_FILES_ECCM: [&str; 2] = ["sensors/eccm_mk1.json", "units/line_tank_eccm.json"];
 
+/// **The range's target's digest pin** (16b cut O.3; 16c N13), the way X.1 pins
+/// the laser's: one unit schema, requiring nothing.
+const DIGESTS_TARGET: [(&str, &str); 1] = [(
+    "tacsim.pack.target_mk1",
+    "f376460f54bef4c862ff30d152f515917fb135356d9e7523149f0cfadf012068",
+)];
+
+/// The target's pack file, by its path under `content/`.
+const PACK_FILES_TARGET: [&str; 1] = ["units/target_mk1.json"];
+
 /// **The shipped sight's signature table, verbatim** (16b cut X.3).
 ///
 /// Doc 16 §9's rule read for this item: the thermal sight is an addition and the
@@ -8276,4 +8286,221 @@ fn m4_a_pod_at_condition_nought_reads_as_no_pod_and_at_one_still_jams() {
     );
     assert_eq!(arena.unit(POD).and_then(|state| state.jammer), None);
     assert_eq!(arena.jam_radius_cm, 0, "no pod, no bubble to query");
+}
+
+// ---------------------------------------------------------------------------
+// O.3 — the range's target (16c N13)
+// ---------------------------------------------------------------------------
+
+/// **The range's target binds, is made, is refitted to and from, and checks out
+/// and back in as the thing it says it is** (16b cut O.3; 16c N13).
+///
+/// `tacsim.unit.target_mk1` is the fielded catalog's sixth table
+/// (`content::EXTENSIONS_TARGET`): the stock hull with the power role alone, no
+/// weapon, no sensor and a zero speed. Everything the range needs of it is
+/// asserted here on the production routes — the pin, `Catalog::build_fielded`,
+/// `mush_tactics::module::create_unit` and `refit_unit` in the production
+/// composition, `custody_unit` and `Arena::new` on the stand-in window, and the
+/// check-in — so the lobby's refit at `SIM START` and the arena's elimination
+/// rule have nothing to discover about it.
+#[test]
+fn o3_the_target_binds_creates_refits_and_checks_out() {
+    if writing() {
+        for relative in PACK_FILES_TARGET {
+            resign(relative);
+        }
+        return;
+    }
+
+    // The pin, and the pack requires nothing.
+    let pinned: std::collections::BTreeMap<&str, &str> = DIGESTS_TARGET.into_iter().collect();
+    for (name, json) in content::EXTENSIONS_TARGET {
+        let pack = tacsim::pack::load_pack(json)
+            .unwrap_or_else(|error| panic!("{name} does not verify: {error}"));
+        let id = pack.manifest().id().to_string();
+        assert_eq!(
+            pinned.get(id.as_str()).copied(),
+            Some(pack.manifest().digest().to_hex().as_str()),
+            "{id}'s digest moved; re-review the content and re-pin it"
+        );
+        assert!(
+            pack.manifest().requires().is_empty(),
+            "a target mounts nothing, so it requires no pack"
+        );
+    }
+    assert_eq!(pinned.len(), content::EXTENSIONS_TARGET.len());
+
+    // Its own table adds one unit schema and nothing else.
+    let stock = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    let alone = catalog_of(&content::extension_sources_of(&content::EXTENSIONS_TARGET));
+    assert_eq!(alone.specs.len(), stock.specs.len() + 1, "one unit schema");
+    assert_eq!(alone.weapons.len(), stock.weapons.len(), "and no weapon");
+    assert_eq!(alone.sensors.len(), stock.sensors.len(), "and no sensor");
+    assert_eq!(alone.arenas.len(), stock.arenas.len(), "and no arena");
+
+    // It binds through the fielded route every production site builds from.
+    let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let target_key = CanonicalId::new(content::TARGET_MK1).expect("a canonical id");
+    let tank_key = CanonicalId::new(content::LINE_TANK).expect("a canonical id");
+    let spec = fielded
+        .bindings
+        .get(&target_key)
+        .map(|binding| binding.spec.clone())
+        .expect("the target is in the fielded catalog");
+    let tank_spec = fielded
+        .bindings
+        .get(&tank_key)
+        .map(|binding| binding.spec.clone())
+        .expect("the stock tank is in the fielded catalog");
+
+    // `create_unit` of a fresh object, in the production composition: the unit
+    // carries the power component alone, and its document names no weapon.
+    let mut tw = mush_testkit::TestWorld::with_modules(x6_production_roster());
+    let target = tw
+        .world_mut()
+        .create(
+            mush_core::ObjKind::Thing,
+            "Range Target",
+            mush_core::GOD,
+            Some(mush_core::ObjId(0)),
+        )
+        .expect("a thing");
+    let hull = tw
+        .world_mut()
+        .create(
+            mush_core::ObjKind::Thing,
+            "Spare Hull",
+            mush_core::GOD,
+            Some(mush_core::ObjId(0)),
+        )
+        .expect("a thing");
+    // Every call answers the unit and the text of what it queued to persist.
+    let mut act = |obj: mush_core::ObjId,
+                   spec: &mush_tactics::UnitSpec,
+                   refit: bool|
+     -> (mush_tactics::TacticalUnit, String) {
+        let mut out = mush_core::Outbox::new();
+        let engine = tw.engine_mut();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: mush_core::GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(SmolStr::new(tacsim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let made = if refit {
+            mush_tactics::module::refit_unit(&mut ctx, obj, spec)
+        } else {
+            mush_tactics::module::create_unit(&mut ctx, obj, spec)
+        }
+        .unwrap_or_else(|error| panic!("#{} refused: {error}", obj.0));
+        let written = format!("{:?}", out.take_deferred());
+        (made, written)
+    };
+    let (made, document) = act(target, &spec, false);
+    let components: Vec<String> = made.components().map(|(id, _)| id.to_string()).collect();
+    assert_eq!(components, ["power"], "the power role alone");
+    assert!(
+        document.contains("tacsim.unit.target_mk1") && !document.contains("tacsim.weapon"),
+        "the target's document names no weapon: {document}"
+    );
+
+    // `refit_unit` of a line tank to the target and back, both ways accepted.
+    let (_, tank_document) = act(hull, &tank_spec, false);
+    assert!(
+        tank_document.contains("tacsim.weapon.cannon_105"),
+        "the needle above means something: a tank's document names its gun"
+    );
+    let (refitted, refitted_document) = act(hull, &spec, true);
+    assert_eq!(refitted.schema(), &spec.definition, "the tank is a target");
+    assert!(!refitted_document.contains("tacsim.weapon"));
+    let (back, back_document) = act(hull, &tank_spec, true);
+    assert_eq!(back.schema(), &tank_spec.definition, "and a tank again");
+    assert!(back_document.contains("tacsim.weapon.cannon_105"));
+
+    // The check-out, on the stand-in window, at `MatchMode::Range`: no weapon, no
+    // sensor, not armed at check-out, cannot close, no speed — and the arena's
+    // speed ceiling, hence its substep, is the stock tank's with or without it.
+    let stand_in = tacsim::match_::stock_definition(&SmolStr::new(tacsim::match_::STAND_IN))
+        .expect("the stand-in window");
+    let open = |units: Vec<CustodyUnit>| {
+        Arena::new(
+            CustodyOut {
+                definition: stand_in.clone(),
+                units,
+                pilots: Vec::new(),
+                resolution: tacsim::match_::resolution_for(&fielded),
+                seed: SEED,
+                mode: tacsim::arena::MatchMode::Range,
+            },
+            &ArenaConfig::default(),
+            &MatchConfig::default(),
+            &SensorsConfig::default(),
+        )
+        .expect("a range opens on any ground")
+    };
+    let checked_out = |cells: mush_tactics::TacticalUnit, id, team, cell| {
+        tacsim::match_::custody_unit(
+            &fielded,
+            cells,
+            id,
+            team,
+            pose(cell),
+            0,
+            tacsim::arena::state::Controller::Reflex,
+            1,
+        )
+    };
+    let shooter = || {
+        let cells = tacsim::definitions::to_tactical_unit(
+            fielded.specs.get(&tank_key).expect("the stock tank"),
+            fielded.bindings.get(&tank_key).expect("its binding"),
+            RED,
+        )
+        .expect("the stock tank's cells");
+        checked_out(cells, RED, Team::Red, RED_CELL)
+    };
+    let arena = open(vec![
+        shooter(),
+        checked_out(made, target, Team::Blue, BLUE_CELL),
+    ]);
+    let state = arena.unit(target).expect("the target is checked out");
+    assert!(state.weapons.is_empty(), "no weapon");
+    assert!(state.sensor.is_none(), "no sensor");
+    assert!(
+        !state.armed_at_checkout(),
+        "so it can never make a range `spent`"
+    );
+    assert!(state.cannot_close(), "and it cannot close");
+    assert_eq!(state.mobility.max_speed_cms, 0, "zero speed");
+    assert_eq!(state.power, Power::Off, "cold at check-out, like any unit");
+    assert!(
+        !arena.out_of_action(target),
+        "an intact target is in action"
+    );
+    let without = open(vec![shooter()]);
+    assert_eq!(
+        arena.max_speed_cms(),
+        without.max_speed_cms(),
+        "the target does not move the arena's speed ceiling"
+    );
+    let tempo = ArenaConfig::default().tempo;
+    assert_eq!(
+        tacsim::arena::clock::substep_ms(&tempo, CELL_CM, arena.max_speed_cms()),
+        tacsim::arena::clock::substep_ms(&tempo, CELL_CM, without.max_speed_cms()),
+        "nor its substep"
+    );
+
+    // The check-in returns it intact.
+    let returned = arena.returned_units();
+    let home = returned
+        .iter()
+        .find(|unit| unit.unit == target)
+        .expect("the target comes home");
+    assert!(!home.wreck && !home.disabled, "intact");
+    assert_eq!((home.shots, home.hits), (0, 0));
+    assert_eq!(home.cells.schema(), &spec.definition);
 }

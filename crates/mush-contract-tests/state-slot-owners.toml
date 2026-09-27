@@ -388,6 +388,19 @@ the write is at `SIM START`.
 """
 
 [[site]]
+path = "crates/mushd/tests/sim_range.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut O.3's range lens, performing the same post-composition wiring the rows
+above perform and for the same reason: one pilot holds a slot, sets `SIM RANGE`,
+boards the pod her slot locked and fires at a target on a server with the AI
+fill off, and a slot belongs to an ACCOUNT. It is the one lens that shows a lone
+human starting a match with the fill off, which only a range allows.
+"""
+
+[[site]]
 path = "crates/mushd/tests/arena_story.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

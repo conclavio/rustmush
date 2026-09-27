@@ -1,0 +1,139 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.target_mk1",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "f376460f54bef4c862ff30d152f515917fb135356d9e7523149f0cfadf012068",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.unit.target_mk1": {
+      "kind": "unit",
+      "def": {
+        "label": "range target",
+        "sections": [
+          {
+            "id": "hull",
+            "facets": [
+              { "id": "front", "armor": 400 },
+              { "id": "left", "armor": 250 },
+              { "id": "right", "armor": 250 },
+              { "id": "rear", "armor": 150 },
+              { "id": "top", "armor": 100 }
+            ],
+            "internals": 200,
+            "consequences": [{ "kind": "destroy_unit" }]
+          },
+          {
+            "id": "turret",
+            "facets": [
+              { "id": "front", "armor": 350 },
+              { "id": "left", "armor": 220 },
+              { "id": "right", "armor": 220 },
+              { "id": "rear", "armor": 140 }
+            ],
+            "internals": 150,
+            "consequences": [{ "kind": "remove_weapons", "section": "turret" }]
+          },
+          {
+            "id": "left_track",
+            "facets": [{ "id": "left", "armor": 120 }],
+            "internals": 100,
+            "consequences": [
+              { "kind": "slow", "percent": 50 },
+              { "kind": "no_turn_toward", "side": "left" },
+              { "kind": "disable_motion_when_all_of", "sections": ["left_track", "right_track"] }
+            ]
+          },
+          {
+            "id": "right_track",
+            "facets": [{ "id": "right", "armor": 120 }],
+            "internals": 100,
+            "consequences": [
+              { "kind": "slow", "percent": 50 },
+              { "kind": "no_turn_toward", "side": "right" },
+              { "kind": "disable_motion_when_all_of", "sections": ["left_track", "right_track"] }
+            ]
+          },
+          {
+            "id": "engine",
+            "facets": [],
+            "internals": 120,
+            "consequences": [{ "kind": "disable_motion" }],
+            "struck_through": { "section": "hull", "facet": "rear" }
+          }
+        ],
+        "components": [
+          {
+            "id": "power",
+            "section": "hull",
+            "role": {
+              "kind": "power",
+              "capability": "tacsim.power",
+              "states": ["off", "starting", "online"],
+              "initial": "off"
+            }
+          }
+        ],
+        "mobility": {
+          "tracked": {
+            "max_speed_cms": 0,
+            "accel_cms2": 100,
+            "brake_cms2": 200,
+            "turn_rate_mdeg_s": 30000,
+            "reverse_factor_pct": 50
+          }
+        },
+        "facets": [
+          {
+            "band": "front",
+            "sections": [
+              { "section": "hull", "weight": 50 },
+              { "section": "turret", "weight": 50 }
+            ]
+          },
+          {
+            "band": "left",
+            "sections": [
+              { "section": "hull", "weight": 40 },
+              { "section": "left_track", "weight": 30 },
+              { "section": "turret", "weight": 30 }
+            ]
+          },
+          {
+            "band": "right",
+            "sections": [
+              { "section": "hull", "weight": 40 },
+              { "section": "right_track", "weight": 30 },
+              { "section": "turret", "weight": 30 }
+            ]
+          },
+          {
+            "band": "rear",
+            "sections": [
+              { "section": "hull", "weight": 40 },
+              { "section": "engine", "weight": 30 },
+              { "section": "turret", "weight": 30 }
+            ]
+          },
+          {
+            "band": "top",
+            "sections": [
+              { "section": "hull", "weight": 50 },
+              { "section": "turret", "weight": 50 }
+            ]
+          }
+        ],
+        "silhouettes": [
+          { "band": "front", "width_cm": 350, "height_cm": 250 },
+          { "band": "left", "width_cm": 700, "height_cm": 250 },
+          { "band": "right", "width_cm": 700, "height_cm": 250 },
+          { "band": "rear", "width_cm": 350, "height_cm": 250 },
+          { "band": "top", "width_cm": 700, "height_cm": 350 }
+        ],
+        "sensor_height_cm": 150,
+        "note": "The range's target (16b cut O.3; 16c N13). The stock hull: the line tank's five sections, their facets and consequences, its facet table and its silhouettes verbatim, so a round does to it exactly what it does to a tank, and both tracks gone or the engine killed through the hull's rear put it out of action (doc 16 section 3.8). No gun and no sight, so it neither fires nor holds a contact. Zero speed, so it stands where the pod put it; a target still turns in place (16b cut AA.1's immobile reading). The power role alone, so it comes online and a thermal sight reads it hot. SIM RANGE is what fields it, on the pods of the side the shooters did not claim."
+      }
+    }
+  }
+}

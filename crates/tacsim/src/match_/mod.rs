@@ -100,9 +100,9 @@ pub use lobby::{
     BoardReader, Centre, HoldWords, OUTSIDE_CENTRE, ResetOutcome, SimError, Slot,
     abort as sim_abort, ai as sim_ai, ai_side_size, authored_unit_type, board_deadline,
     centre as centre_of, claim, clock_text, concede as sim_concede, hold_words, largest_side,
-    leave, mode as sim_mode, pilot_of, pod_of, reset as reset_centre, slot_seated, slot_vacated,
-    slots_per_side, start as sim_start, status_lines, unattended_deadline, unattended_line,
-    unit_type as sim_unit_type,
+    leave, mode as sim_mode, pilot_of, pod_of, range as sim_range, range_sides,
+    reset as reset_centre, slot_seated, slot_vacated, slots_per_side, start as sim_start,
+    status_lines, unattended_deadline, unattended_line, unit_type as sim_unit_type,
 };
 pub use net::{BLUE_NET, RED_NET, net_name};
 pub use record::{

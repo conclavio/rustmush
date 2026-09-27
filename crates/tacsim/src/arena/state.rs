@@ -487,7 +487,7 @@ pub fn spot_letter(index: usize) -> Option<char> {
 ///
 /// Closed, for [`EndReason`]'s reason: the result record's words are a closed
 /// vocabulary (doc 16 §4), and a new mode is a new arm, a new
-/// [`code`](MatchMode::code) and a new word. O.3 adds `Range`.
+/// [`code`](MatchMode::code) and a new word. O.3 added `Range`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchMode {
@@ -498,12 +498,21 @@ pub enum MatchMode {
     /// **Keep the ground's key spot uncontested for its time** ([`HoldRule`]).
     /// Elimination still ends it, settled second (16c N11's owner default).
     Hold,
+    /// **The range** (16b cut O.3; 16c N13): one side's pilots against a side
+    /// of targets — `tacsim.unit.target_mk1`, which neither moves nor shoots —
+    /// on the other side's pods. No rule of its own: it ends by the ordinary
+    /// elimination rule, when every target is out of action (doc 16 §3.8), or
+    /// on `SIM ABORT`; `spent` never ends it, because a target is not armed at
+    /// check-out ([`crate::arena::Arena::spent`]). Chosen by `SIM RANGE <n>` and
+    /// never by `SIM MODE`, and every ground supports it
+    /// ([`ArenaDefinition::supports`]): a target needs no key spot.
+    Range,
 }
 
 impl MatchMode {
     /// Every mode, in code order — what `SIM MODE` lists a ground's support
     /// against.
-    pub const ALL: [MatchMode; 2] = [MatchMode::Skirmish, MatchMode::Hold];
+    pub const ALL: [MatchMode; 3] = [MatchMode::Skirmish, MatchMode::Hold, MatchMode::Range];
 
     /// The wire word: the result document's and the replay document's `mode`,
     /// the lobby's word and the ` [hold]` tag.
@@ -512,6 +521,7 @@ impl MatchMode {
         match self {
             MatchMode::Skirmish => "skirmish",
             MatchMode::Hold => "hold",
+            MatchMode::Range => "range",
         }
     }
 
@@ -521,6 +531,7 @@ impl MatchMode {
         match self {
             MatchMode::Skirmish => 0,
             MatchMode::Hold => 1,
+            MatchMode::Range => 2,
         }
     }
 
@@ -761,11 +772,14 @@ pub struct ArenaDefinition {
 
 impl ArenaDefinition {
     /// **Whether a match on this ground may be fought under `mode`** (16b cut
-    /// O.1): [`MatchMode::Skirmish`] always; any other mode when the ground
-    /// declares it.
+    /// O.1): [`MatchMode::Skirmish`] always; **[`MatchMode::Range`] always** (16b
+    /// cut O.3 — the range is a side of targets on the other side's pods and
+    /// needs nothing of the ground, so there is no `ArenaMode` arm to declare
+    /// it); any other mode when the ground declares it.
     #[must_use]
     pub fn supports(&self, mode: MatchMode) -> bool {
-        mode == MatchMode::Skirmish || self.modes.iter().any(|declared| declared.mode() == mode)
+        matches!(mode, MatchMode::Skirmish | MatchMode::Range)
+            || self.modes.iter().any(|declared| declared.mode() == mode)
     }
 
     /// **The ground's Hold rule**, the first declared (the loader refuses a
@@ -3575,7 +3589,9 @@ impl Arena {
         // The spot's cell and its letter are resolved here, once, so the presence
         // test at every substep reads four integers and no list.
         let hold = match mode {
-            MatchMode::Skirmish => None,
+            // 16b cut O.3: a range carries no objective; its targets end it by
+            // the elimination rule.
+            MatchMode::Skirmish | MatchMode::Range => None,
             MatchMode::Hold => {
                 let rule = definition
                     .hold_rule()
@@ -5319,11 +5335,15 @@ mod tests {
     /// **16b cut O.1**: the mode's words, codes and parse, and its serde word.
     #[test]
     fn o1_match_mode_round_trips_its_word_and_code() {
-        assert_eq!(MatchMode::ALL, [MatchMode::Skirmish, MatchMode::Hold]);
+        assert_eq!(
+            MatchMode::ALL,
+            [MatchMode::Skirmish, MatchMode::Hold, MatchMode::Range]
+        );
         assert_eq!(MatchMode::default(), MatchMode::Skirmish);
         for (mode, word, code) in [
             (MatchMode::Skirmish, "skirmish", 0),
             (MatchMode::Hold, "hold", 1),
+            (MatchMode::Range, "range", 2),
         ] {
             assert_eq!(mode.as_str(), word);
             assert_eq!(mode.code(), code);
@@ -5343,7 +5363,8 @@ mod tests {
             "trimmed and case-folded"
         );
         assert_eq!(MatchMode::parse("Skirmish"), Some(MatchMode::Skirmish));
-        assert_eq!(MatchMode::parse("range"), None);
+        // 16b cut O.3: the word parses; `lobby::mode` is what refuses it.
+        assert_eq!(MatchMode::parse("range"), Some(MatchMode::Range));
         assert_eq!(MatchMode::parse(""), None);
         assert_eq!(
             ArenaMode::Hold(HoldRule {
@@ -5358,6 +5379,8 @@ mod tests {
         let bare = crate::arena::test_support::definition();
         assert!(bare.supports(MatchMode::Skirmish));
         assert!(!bare.supports(MatchMode::Hold));
+        // 16b cut O.3: every ground supports a range.
+        assert!(bare.supports(MatchMode::Range));
         assert_eq!(bare.hold_rule(), None);
         let held = hold_definition();
         assert!(held.supports(MatchMode::Hold));

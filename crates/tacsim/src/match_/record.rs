@@ -1164,6 +1164,8 @@ fn outcome_table(outcome: MatchOutcome, reason: &str) -> (&'static str, Option<S
 /// ` [{mode}]` for a mode other than [`MatchMode::Skirmish`], and the empty
 /// string for a skirmish or for no mode at all — what the ring's line, the
 /// report's header and the replay's head each append after the outcome words.
+/// **16b cut O.3**'s range reads ` [range]` through it with no code of its own,
+/// so a range is never read as a fight anywhere it is shown.
 #[must_use]
 pub fn mode_tag(mode: Option<MatchMode>) -> String {
     match mode {

@@ -215,6 +215,18 @@ pub struct Centre {
     /// `Centre::default`). It is **public in selection**: the board prints the
     /// rule (`  mode: hold — …`) to every reader, and never who holds the spot.
     pub mode: MatchMode,
+    /// **How many targets the range fields** (16b cut O.3; 16c N13), as `SIM
+    /// RANGE <n>` set it, or `None` when the next match is not a range.
+    ///
+    /// **The invariant**: `mode == MatchMode::Range` exactly when this is
+    /// `Some`. Every write keeps it: [`range`] writes both, [`mode`] setting
+    /// `hold` or `skirmish` clears this, and both returns to `Idle` clear both
+    /// (`release_rows`' `Idle` arm, and `to_idle`'s `Centre::default`). The
+    /// targets stand on pods 1 to `n` of the side opposite every claimed slot
+    /// ([`range_sides`]); which side that is is not stored, because under a range
+    /// every claim is on one side by construction ([`range`] refuses two sides,
+    /// [`claim`] refuses the target side).
+    pub range_targets: Option<u8>,
 }
 
 impl Centre {
@@ -460,6 +472,42 @@ pub enum SimError {
         /// The ground's authored name ([`crate::match_::record::arena_label`]).
         arena: String,
     },
+    /// **`SIM MODE range`** (16b cut O.3; plan item 21): the range is one set
+    /// and one read, and both are `SIM RANGE`'s — a range needs a count, which
+    /// `SIM MODE` has no word for.
+    #[error("SIM RANGE <n> sets the range.")]
+    RangeViaRange,
+    /// **`SIM RANGE <n>` from somebody who leads no side** (16b cut O.3): a
+    /// match-wide setting is the lead's or staff's, as `SIM AI`'s and `SIM
+    /// MODE`'s are.
+    #[error("Only a side's lead or staff can set the range.")]
+    NotLeadForRange,
+    /// **`SIM RANGE <n>` with slots claimed on both sides** (16b cut O.3): the
+    /// range is the claimed side against a side of targets, so the targets need
+    /// a side nobody claimed.
+    #[error("The range is one side against the targets; every slot must be on one side.")]
+    RangeTwoSides,
+    /// **`SIM RANGE <n>` outside the side's pods** (16b cut O.3).
+    #[error("The range fields 1 to {max} targets.")]
+    RangeCount {
+        /// The upper bound: [`slots_per_side`].
+        max: u8,
+    },
+    /// **`SIM TEAM` onto the targets' side while the mode is a range** (16b cut
+    /// O.3): those pods are the targets'.
+    #[error("The range puts targets on the {team} side; claim a {other} slot.")]
+    RangeSide {
+        /// The targets' side.
+        team: &'static str,
+        /// The shooters' side.
+        other: &'static str,
+    },
+    /// **`SIM AI <n>` while the mode is a range** (16b cut O.3; plan item 39):
+    /// the fill does not run on a range — its pods are the targets' — so a set
+    /// would be a number nothing reads, and D.1's rule is that what `SIM AI`
+    /// says be true on the server it is said on.
+    #[error("The range fields no machines; SIM RANGE sets its targets.")]
+    AiOnRange,
     /// **`SIM CONCEDE` from somebody who is not their side's lead** (16b
     /// cut D.3, `B-33`).
     ///
@@ -660,6 +708,36 @@ pub fn ai_side_size(w: &World, centre: &Centre, match_cfg: &MatchConfig) -> u8 {
         .clamp(1, cap)
 }
 
+/// **The range's two sides** (16b cut O.3; 16c N13): `(shooters, targets)` —
+/// the side every claimed slot is on, and the other one — or `None` when the
+/// centre is not set to a range or holds no slot to read a side off.
+///
+/// Under a range every claim is on one side by construction ([`range`] refuses
+/// a centre with slots on both, [`claim`] refuses the targets' side), so the
+/// first slot's side is every slot's. The returns to `Idle` clear the range with
+/// the slots, so the only states with a range and no slot are the terminal ones,
+/// after `release_rows` has dropped the rows; there the board prints no range
+/// line and the bare `SIM RANGE` read names no side.
+#[must_use]
+pub fn range_sides(centre: &Centre) -> Option<(Team, Team)> {
+    if centre.mode != MatchMode::Range {
+        return None;
+    }
+    let shooters = centre.slots.first()?.team;
+    Some((shooters, shooters.other()))
+}
+
+/// **A count of targets in words** (16b cut O.3, fixer): `1 target`, `2
+/// targets` — the report's own `1 shot, 1 hit` rule, because `SIM RANGE 1` is
+/// the flow the help recommends and `1 targets` is the first line it prints.
+fn targets_counted(count: u8) -> String {
+    if count == 1 {
+        "1 target".to_owned()
+    } else {
+        format!("{count} targets")
+    }
+}
+
 /// **The pod one pilot holds** (cut K.2's `BOARD` asks this first).
 #[must_use]
 pub fn pod_of(w: &World, pilot: ObjId) -> Option<ObjId> {
@@ -822,6 +900,16 @@ pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
                 index: held.index,
             });
         }
+        // **16b cut O.3** (16c N13): under a range the other side's pods are the
+        // targets', so a claim there is refused before the side's cap is read.
+        if let Some((shooters, targets)) = range_sides(centre)
+            && team == targets
+        {
+            return Err(SimError::RangeSide {
+                team: targets.as_str(),
+                other: shooters.as_str(),
+            });
+        }
         let index = centre.free_index(team, cap).ok_or(SimError::SideFull {
             team: team.as_str(),
             max: cap,
@@ -851,10 +939,20 @@ pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
     // side — it gives the machines the pods nobody claimed — so the old sentence
     // told a solo player to go and find an opponent they do not need.
     let fill = configs(ctx.w).is_some_and(|(_, match_cfg, _)| match_cfg.ai_fill);
-    let advice = if fill {
-        "`SIM START` begins the match; the machines take the pods nobody claims."
-    } else {
-        "`SIM START` begins the match once both sides have a pilot."
+    // **16b cut O.3**: and under a range neither of those is true — the targets
+    // take the other side's pods and the machines take none, fill or no fill.
+    let targets = centre(ctx.w)
+        .and_then(range_sides)
+        .map(|(_, targets)| targets);
+    let advice = match targets {
+        Some(targets) => format!(
+            "`SIM START` begins the match; the targets stand on the {} side.",
+            targets.as_str()
+        ),
+        None if fill => {
+            "`SIM START` begins the match; the machines take the pods nobody claims.".to_owned()
+        }
+        None => "`SIM START` begins the match once both sides have a pilot.".to_owned(),
     };
     announce(
         ctx,
@@ -1213,7 +1311,11 @@ fn settle_boarding(ctx: &mut Ctx<'_>) {
         };
         // **16b cut Q.7**: with the fill on, a side losing its last slot is not an
         // abort — the machines take that side. A centre losing its last slot is.
-        let empty = if fill {
+        //
+        // **16b cut O.3** (plan item 13): and under a range the targets' side is
+        // never "nobody" — it is targets — so the question is the shooters' side
+        // alone, which is every slot of the centre, fill or no fill.
+        let empty = if fill || centre.mode == MatchMode::Range {
             centre.slots.is_empty().then_some(None)
         } else {
             Team::ALL
@@ -1298,7 +1400,12 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         // machines. With it off, both sides still need a pilot, byte for byte.
         // `Selection` is only reachable with a slot in it, so the first arm is a
         // guard and not a path.
-        if match_cfg.ai_fill {
+        //
+        // **16b cut O.3** (16c N13; plan item 13): under a range the targets'
+        // side is never empty — its pods are the targets' — so the question is
+        // the shooters' side alone, which is every claimed slot: a range starts
+        // on a server with the fill off, which is the shipped default.
+        if match_cfg.ai_fill || centre.mode == MatchMode::Range {
             if centre.slots.is_empty() {
                 return Err(SimError::NobodyPlaying);
             }
@@ -1421,13 +1528,34 @@ fn fit_fielded_units(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     // A claimed slot whose index is outside the configured count (an operator
     // narrowed `max_slots_per_side` under a live lobby) is still walked: it is in
     // the match, and the fill's own loop is what the count bounds.
+    //
+    // **16b cut O.3** (16c N13): under a range the targets' pods 1 to `n` want
+    // [`crate::definitions::content::TARGET_MK1`], and are walked as **claimed**
+    // with a choice on them — a refusal on one refuses the start as a claimed
+    // slot's does, with that pod's own index, because the range cannot run
+    // without its targets. Every other pod wants what it wanted before.
     let pods: Vec<(Team, u8, bool, Option<SmolStr>)> = {
         let Some(centre) = centre(ctx.w) else {
             return Err(SimError::Unavailable);
         };
+        let range = range_sides(centre)
+            .zip(centre.range_targets)
+            .map(|((_, targets), count)| (targets, count));
         let mut pods: Vec<(Team, u8, bool, Option<SmolStr>)> = Vec::new();
         for team in Team::ALL {
-            for index in 1..=per_side {
+            let targets = range
+                .filter(|(targets, _)| *targets == team)
+                .map_or(0, |(_, count)| count);
+            for index in 1..=per_side.max(targets) {
+                if index <= targets {
+                    pods.push((
+                        team,
+                        index,
+                        true,
+                        Some(SmolStr::new_static(crate::definitions::content::TARGET_MK1)),
+                    ));
+                    continue;
+                }
                 let claim = centre
                     .slots
                     .iter()
@@ -2043,8 +2171,44 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
         if match_cfg.ai_fill && !centre.slots.iter().any(Slot::is_seated) {
             return Err(SimError::NobodyPlaying);
         }
+        // **16b cut O.3** (16c N13; plan item 13): a range with no slot to read
+        // the shooters' side off is a range nobody is playing.
+        let range = if centre.mode == MatchMode::Range {
+            let (_, targets) = range_sides(centre).ok_or(SimError::NobodyPlaying)?;
+            Some((targets, centre.range_targets.unwrap_or(0)))
+        } else {
+            None
+        };
         let fill_to = ai_side_size(ctx.w, centre, &match_cfg);
         for team in Team::ALL {
+            // **16b cut O.3**: the targets' side is its pods 1 to `n`, each a
+            // `Fielded` with **no seated pilot** — which is what makes a unit the
+            // reflex controller's (`crate::match_::start`), so a target starts up
+            // and stands (the inert rule in `reflex.rs`) — and it is never empty:
+            // a missing tank is the broken world `SimError::NoUnit` names, as for
+            // a claimed slot. Neither `EmptySide` refusal below reads it.
+            if let Some((targets, count)) = range
+                && team == targets
+            {
+                let mut units: Vec<crate::match_::Fielded> = Vec::new();
+                for index in 1..=count {
+                    let tank =
+                        centre::tank_for_slot(ctx.w, team, index).ok_or(SimError::NoUnit {
+                            team: team.as_str(),
+                            index,
+                        })?;
+                    units.push(crate::match_::Fielded {
+                        unit: tank,
+                        slot: index,
+                        opening: openings.get(&(team, index)).copied(),
+                    });
+                }
+                if units.is_empty() {
+                    return Err(SimError::EmptySide(team.as_str()));
+                }
+                sides.push(Side { team, units });
+                continue;
+            }
             // **16b cut Q.1**: the pod index travels with the unit. It is the
             // only place in the tree that knows which slot fielded which tank, so
             // `Arena::new` can resolve `RA`, `BC` and a pilot and their teammates
@@ -2061,7 +2225,7 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                     })
                 })
                 .collect();
-            if !match_cfg.ai_fill && units.is_empty() {
+            if (!match_cfg.ai_fill || range.is_some()) && units.is_empty() {
                 return Err(SimError::EmptySide(team.as_str()));
             }
             // **16b cut N.1** (doc 16 §6: *the AI fill of a later lobby*), behind
@@ -2084,7 +2248,12 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
             // refuses one that has nobody seated anywhere.
             //
             // Off by default, and `crate::config::MatchConfig::ai_fill` says why.
-            if match_cfg.ai_fill {
+            //
+            // **16b cut O.3**: and never on a range. The shooters' side is its
+            // claimed slots ONLY — its unclaimed pods are left out whatever the
+            // fill says, so a pilot on a range shoots at targets and nothing
+            // shoots back.
+            if match_cfg.ai_fill && range.is_none() {
                 for index in 1..=slots_per_side(ctx.w, &match_cfg) {
                     if units.len() >= usize::from(fill_to) {
                         break;
@@ -2198,8 +2367,13 @@ pub fn board_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
     // **16b cut Q.7**: with the fill on the deadline asks about the centre and not
     // about a side — a side that boarded nobody is a side the machines fly, and
     // only a centre that boarded nobody is an abort.
+    //
+    // **16b cut O.3** (plan item 13): and under a range the targets' side never
+    // boards anybody and is never empty, so the question is the shooters' side,
+    // which is every slot of the centre, fill or no fill.
     let fill = configs(ctx.w).is_some_and(|(_, match_cfg, _)| match_cfg.ai_fill);
-    let empty = if fill {
+    let range = centre(ctx.w).is_some_and(|centre| centre.mode == MatchMode::Range);
+    let empty = if fill || range {
         centre(ctx.w)
             .is_some_and(|centre| centre.slots.is_empty())
             .then_some(None)
@@ -2253,7 +2427,9 @@ pub fn board_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
 ///
 /// [`SimError`], as the line the player sees:
 /// [`SimError::AiOff`] on a server with `[tacsim.match].ai_fill` off (both the
-/// read and the set), and then, for the set alone,
+/// read and the set); **under a range** (16b cut O.3) the read answers `AI
+/// fill: none on a range.` and the set is [`SimError::AiOnRange`]; and then, for
+/// the set alone,
 /// [`SimError::WrongState`] outside `Selection`, [`SimError::NotLeadForAi`] for
 /// anyone but a side's lead or staff, [`SimError::AiRange`] outside
 /// `1..=slots_per_side`, and [`SimError::AiBelowSide`] under what a side has
@@ -2275,6 +2451,22 @@ pub fn ai(ctx: &mut Ctx<'_>, size: Option<u8>) -> Result<(), SimError> {
         return Err(SimError::AiOff);
     }
     let cap = slots_per_side(ctx.w, &match_cfg);
+    // **16b cut O.3** (16c N13; plan item 39): a range fields no machines — its
+    // other side's pods are the targets' — so the number the fill would read is
+    // not the number any match here will field. D.1's rule is that the text be
+    // true on the server it is said on: the read says so, and a set is refused
+    // rather than stored for nothing.
+    if centre(ctx.w).is_some_and(|centre| centre.mode == MatchMode::Range) {
+        if size.is_some() {
+            return Err(SimError::AiOnRange);
+        }
+        ctx.out.sys_to_actor(
+            actor,
+            NOTICE_CATEGORY,
+            "AI fill: none on a range.".to_owned(),
+        );
+        return Ok(());
+    }
     // **16b cut D.1**: the bare read answers anybody standing in the centre, in
     // any state, lead or not. It is one number about the server's own settings —
     // the same number the board's own `AI fill:` line prints to everyone in the
@@ -2406,6 +2598,12 @@ fn declared_mode_words(w: &World) -> Vec<&'static str> {
 /// **`SIM MODE [skirmish|hold]`** — read or set which rule the next match is
 /// fought under (16b cut O.1; 16c N11).
 ///
+/// **16b cut O.3**: the range is not one of its words. `SIM MODE range` is
+/// refused [`SimError::RangeViaRange`] (a range needs a count, which is
+/// `SIM RANGE <n>`'s), the read ends ` SIM RANGE sets a range.`, and setting
+/// `hold` or `skirmish` leaves a range, clearing [`Centre::range_targets`] with
+/// the mode.
+///
 /// **Reading it is anybody's**, in any state, slot or no slot (the `SIM AI` and
 /// `SIM UNIT` precedent, 16b cut D.1): `Mode: {current}. {label} supports:
 /// {words}.`, to the actor alone — the current mode, the ground's authored name
@@ -2448,6 +2646,8 @@ pub fn mode(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError> {
                 hold.seconds()
             ));
         }
+        // 16b cut O.3: the range is the one mode this list does not carry.
+        line.push_str(" SIM RANGE sets a range.");
         ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
         return Ok(());
     };
@@ -2478,16 +2678,10 @@ pub fn mode(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError> {
     let chosen = MatchMode::parse(word).ok_or_else(|| SimError::NoSuchMode {
         word: word.to_owned(),
     })?;
-    if !declared_mode_words(ctx.w).contains(&chosen.as_str()) {
-        return Err(SimError::ModeUnsupported {
-            mode: chosen.as_str(),
-            arena: label,
-        });
-    }
-    if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
-        book.centre_mut().mode = chosen;
-    }
+    // The announcement first, because its one refusal comes before the support
+    // test: **16b cut O.3**, the range is `SIM RANGE <n>`'s alone.
     let announcement = match (chosen, hold) {
+        (MatchMode::Range, _) => return Err(SimError::RangeViaRange),
         (MatchMode::Hold, Some(hold)) => format!(
             "Mode set to hold: keep {} ({}) uncontested for {} seconds to win; elimination \
              still ends it.",
@@ -2500,7 +2694,142 @@ pub fn mode(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError> {
             "Mode set to skirmish: eliminate the other side to win.".to_owned()
         }
     };
+    if !declared_mode_words(ctx.w).contains(&chosen.as_str()) {
+        return Err(SimError::ModeUnsupported {
+            mode: chosen.as_str(),
+            arena: label,
+        });
+    }
+    if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+        let centre = book.centre_mut();
+        centre.mode = chosen;
+        // 16b cut O.3: leaving a range takes its count with it (the invariant on
+        // `Centre::range_targets`).
+        centre.range_targets = None;
+    }
     announce(ctx, announcement);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `SIM RANGE` — one side against targets (16b cut O.3; 16c N13)
+// ---------------------------------------------------------------------------
+
+/// **`SIM RANGE [<n>]`** — read or set up a range: the claimed side against
+/// `n` targets that neither move nor shoot, standing on the other side's pods 1
+/// to `n` (16b cut O.3; 16c N13).
+///
+/// **The bare word always reads** — anybody standing in the centre, in any
+/// state, slot or no slot, to the actor alone (D.1's rule for `SIM AI`):
+/// `Range: {n} targets on the {team} side.` while the mode is a range (`Range:
+/// {n} targets.` in a terminal state, where no slot is left to read a side
+/// off), else `The range is not set; SIM RANGE <n> sets it in selection.`
+/// Every count reads `1 target` for one (`targets_counted`), and the
+/// announcement's verb with it (`1 target stands`).
+///
+/// **A number sets it**: in `Selection`, by a side's lead or staff, with every
+/// claimed slot on one side, `n` from 1 to [`slots_per_side`]. It writes
+/// [`Centre::mode`] and [`Centre::range_targets`] together and announces to
+/// every centre room `Range set: {n} targets stand on the {other} side; the
+/// match ends when every target is out of action, or on SIM ABORT.` `SIM MODE
+/// hold` or `SIM MODE skirmish` leaves it.
+///
+/// What a range is, once set: the targets' side is never empty for the four
+/// one-sided gates (`start`, `settle_boarding`, `board_deadline`, `ready`), so
+/// it starts on a server with the fill off; `SIM START` refits the targets'
+/// pods to `tacsim.unit.target_mk1` (`fit_fielded_units`); the shooters' own
+/// unclaimed pods are never filled; and the match ends by the ordinary
+/// elimination rule or on `SIM ABORT` — `spent` never ends it.
+///
+/// # Errors
+///
+/// [`SimError`], as the line the player sees. The read refuses only with
+/// [`SimError::LayerOff`], [`SimError::OutsideCentre`] and
+/// [`SimError::Unavailable`]; a set adds [`SimError::UnknownAccount`] for a
+/// non-staff character with no account, [`SimError::WrongState`] outside
+/// `Selection`, [`SimError::NotLeadForRange`], [`SimError::RangeTwoSides`] and
+/// [`SimError::RangeCount`], in that order.
+pub fn range(ctx: &mut Ctx<'_>, count: Option<u8>) -> Result<(), SimError> {
+    let actor = ctx.actor;
+    require_layer(ctx.w)?;
+    in_centre(ctx.w, actor)?;
+    // The bare read: anybody in the centre, in any state.
+    let Some(count) = count else {
+        let centre = centre(ctx.w).ok_or(SimError::Unavailable)?;
+        let line = match centre
+            .range_targets
+            .filter(|_| centre.mode == MatchMode::Range)
+        {
+            Some(count) => match range_sides(centre) {
+                Some((_, targets)) => format!(
+                    "Range: {} on the {} side.",
+                    targets_counted(count),
+                    targets.as_str()
+                ),
+                // A terminal centre: the rows are released and no side is left
+                // to read the targets' off, so the line names none.
+                None => format!("Range: {}.", targets_counted(count)),
+            },
+            None => "The range is not set; SIM RANGE <n> sets it in selection.".to_owned(),
+        };
+        ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+        return Ok(());
+    };
+    // Setting it: `Selection`, a lead or staff, one side, a count — in that
+    // order, `SIM AI`'s and `SIM MODE`'s.
+    let staff = is_staff(ctx.w, actor);
+    let account = match account_of(ctx.w, actor) {
+        Ok(account) => Some(account),
+        Err(_) if staff => None,
+        Err(error) => return Err(error),
+    };
+    let (_, match_cfg, _) = configs(ctx.w).ok_or(SimError::Unavailable)?;
+    let cap = slots_per_side(ctx.w, &match_cfg);
+    let targets = {
+        let centre = centre(ctx.w).ok_or(SimError::Unavailable)?;
+        if centre.state != MatchState::Selection {
+            return Err(SimError::WrongState {
+                state: centre.state.as_str(),
+            });
+        }
+        let lead = account.is_some_and(|account| {
+            Team::ALL
+                .iter()
+                .any(|team| centre.leads_side(*team, account))
+        });
+        if !staff && !lead {
+            return Err(SimError::NotLeadForRange);
+        }
+        if Team::ALL.iter().all(|team| centre.side_len(*team) > 0) {
+            return Err(SimError::RangeTwoSides);
+        }
+        // `Selection` is only reachable with a slot in it, so there is always a
+        // side to read; the fallback is a guard and not a path.
+        let shooters = centre
+            .slots
+            .first()
+            .map(|slot| slot.team)
+            .ok_or(SimError::NobodyPlaying)?;
+        shooters.other()
+    };
+    if count < 1 || count > cap {
+        return Err(SimError::RangeCount { max: cap });
+    }
+    if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+        let centre = book.centre_mut();
+        centre.mode = MatchMode::Range;
+        centre.range_targets = Some(count);
+    }
+    announce(
+        ctx,
+        format!(
+            "Range set: {} {} on the {} side; the match ends when every target is out of \
+             action, or on SIM ABORT.",
+            targets_counted(count),
+            if count == 1 { "stands" } else { "stand" },
+            targets.as_str()
+        ),
+    );
     Ok(())
 }
 
@@ -2979,6 +3308,9 @@ fn release_rows(ctx: &mut Ctx<'_>, state: MatchState, outcome: Option<MatchOutco
             centre.ai_side_size = None;
             // 16b cut O.1: and so does the mode.
             centre.mode = MatchMode::Skirmish;
+            // 16b cut O.3: and the range's count with it (the invariant on
+            // `Centre::range_targets`).
+            centre.range_targets = None;
         }
     }
 }
@@ -3188,8 +3520,12 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
     // third" off the letter and would otherwise find blue's third missing from the
     // board. The line publishes no order of battle the letters do not already
     // give: how many a side, and that the machines take the pods nobody claimed.
+    //
+    // **16b cut O.3** (plan item 21): and not under a range, where it would be
+    // false — the fill takes no pod on a range.
     if let Some((_, match_cfg, _)) = configs(w)
         && match_cfg.ai_fill
+        && centre.mode != MatchMode::Range
         && matches!(
             centre.state,
             MatchState::Selection | MatchState::Boarding | MatchState::Running
@@ -3216,6 +3552,21 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
             hold.spot,
             hold.letter,
             hold.seconds()
+        ));
+    }
+    // **16b cut O.3** (16c N13): the range, in the same shape and the same
+    // states — how many targets, and on which side, which is the whole of what
+    // `SIM RANGE` set and is public in selection.
+    if matches!(
+        centre.state,
+        MatchState::Selection | MatchState::Boarding | MatchState::Running
+    ) && let Some(count) = centre.range_targets
+        && let Some((_, targets)) = range_sides(centre)
+    {
+        rows.push(format!(
+            "  mode: range — {} on the {} side",
+            targets_counted(count),
+            targets.as_str()
         ));
     }
     if let Some(deadline) = centre.board_deadline_ms {
@@ -3582,5 +3933,57 @@ mod tests {
         );
         // A new centre is a skirmish.
         assert_eq!(Centre::default().mode, MatchMode::Skirmish);
+    }
+
+    /// **16b cut O.3**: the range's six refusals read as their sentences, and a
+    /// new centre holds no range — the invariant's `Idle` half.
+    #[test]
+    fn o3_the_range_refusals_read_as_their_sentences() {
+        for (error, line) in [
+            (SimError::RangeViaRange, "SIM RANGE <n> sets the range."),
+            (
+                SimError::NotLeadForRange,
+                "Only a side's lead or staff can set the range.",
+            ),
+            (
+                SimError::RangeTwoSides,
+                "The range is one side against the targets; every slot must be on one side.",
+            ),
+            (
+                SimError::RangeCount { max: 6 },
+                "The range fields 1 to 6 targets.",
+            ),
+            (
+                SimError::RangeSide {
+                    team: "blue",
+                    other: "red",
+                },
+                "The range puts targets on the blue side; claim a red slot.",
+            ),
+            (
+                SimError::AiOnRange,
+                "The range fields no machines; SIM RANGE sets its targets.",
+            ),
+        ] {
+            assert_eq!(error.to_string(), line);
+        }
+        let idle = Centre::default();
+        assert_eq!(idle.range_targets, None);
+        assert_eq!(range_sides(&idle), None, "not a range");
+        // The sides are read off the first slot: the shooters, then the other.
+        let mut centre = Centre {
+            mode: MatchMode::Range,
+            range_targets: Some(2),
+            ..Centre::default()
+        };
+        assert_eq!(range_sides(&centre), None, "no slot to read a side off");
+        centre.slots.push(slot(Team::Blue, 1, 1));
+        assert_eq!(range_sides(&centre), Some((Team::Blue, Team::Red)));
+        centre.mode = MatchMode::Hold;
+        assert_eq!(range_sides(&centre), None, "a hold is not a range");
+        // One target is one target (the fixer's pluralisation).
+        assert_eq!(targets_counted(1), "1 target");
+        assert_eq!(targets_counted(2), "2 targets");
+        assert_eq!(targets_counted(6), "6 targets");
     }
 }

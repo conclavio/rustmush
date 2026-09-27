@@ -63,16 +63,19 @@
 //! [`EXTENSIONS_THERMAL`], on the same rule. **16b cut X.4** adds the jamming pod
 //! and the tank that carries it as [`EXTENSIONS_ECM`], on the same rule again.
 //! **16b cut X.5** adds the counter-jamming filter and its tank as
-//! [`EXTENSIONS_ECCM`], the last of doc 16 §9's five.
+//! [`EXTENSIONS_ECCM`], the last of doc 16 §9's five. **16b cut O.3** adds the
+//! range's target as [`EXTENSIONS_TARGET`], a sixth table on the same rule.
 //!
 //! # And what is **fielded**
 //!
 //! **16b cut Q.8** answers X.1 deviation 1's open question — *whether the
 //! extensions join the shipped catalog* — with **yes for the game, and no for
-//! the stock game**. [`fielded_sources`] is [`sources`] followed by all five
-//! extension tables in `requires` order, and [`super::Catalog::build_fielded`]
-//! is what the three production sites build from, so `SIM UNIT` can offer a
-//! pilot a biped and `@unit/create` can name a laser tank on a shipped server.
+//! the stock game**. [`fielded_sources`] is [`sources`] followed by all six
+//! extension tables in `requires` order — doc 16 §9's five and, since 16b cut
+//! O.3, the range's target — and [`super::Catalog::build_fielded`] is what the
+//! three production sites build from, so `SIM UNIT` can offer a pilot a biped,
+//! `@unit/create` can name a laser tank on a shipped server, and `SIM RANGE` can
+//! field a target.
 //!
 //! [`SOURCES`] and [`sources`] are untouched, and so is
 //! [`super::Catalog::build_game`]: "the stock game" is a statement about the
@@ -272,6 +275,27 @@ pub const EXTENSIONS_ECCM: [(&str, &str); 2] = [
     ),
 ];
 
+/// `crates/tacsim/content/units/target_mk1.json` (16b cut O.3).
+pub const TARGET_MK1_JSON: &str = include_str!("../../content/units/target_mk1.json");
+
+/// **The range's target** (16b cut O.3; 16c N13): the stock hull with no weapon,
+/// no sensor and no speed — what `SIM RANGE <n>` fields on the target side's
+/// pods 1 to `n`.
+pub const TARGET_MK1: &str = "tacsim.unit.target_mk1";
+
+/// **The range's content** (16b cut O.3; 16c N13): one unit schema, which mounts
+/// no weapon and no sensor and so requires no other pack at all.
+///
+/// A table of its **own** beside doc 16 §9's five, for the reason
+/// [`EXTENSIONS_BIPED`] gives: each table's acceptance states the whole of what
+/// its own content adds to the catalog — here one unit schema, and no weapon, no
+/// ammunition and no sensor row — and no later table may move an earlier one's
+/// count. It is not a §9 item; it is the fielded catalog's sixth table because
+/// the range needs something on the pods to shoot at that does not shoot back,
+/// and the fielded catalog is the one route a pod's tank can be refitted from.
+pub const EXTENSIONS_TARGET: [(&str, &str); 1] =
+    [("tacsim/content/units/target_mk1.json", TARGET_MK1_JSON)];
+
 /// The extension packs as sources [`crate::verify_sources`] reads exactly as it
 /// reads an operator's.
 #[must_use]
@@ -321,19 +345,20 @@ pub fn sources() -> Vec<PackSource> {
 }
 
 /// **Every pack the fielded game loads** (16b cut Q.8): [`SOURCES`], then doc 16
-/// §9's five extension items, in `requires` order — a pack after every pack it
-/// names.
+/// §9's five extension items, then the range's target (16b cut O.3), in
+/// `requires` order — a pack after every pack it names.
 ///
-/// The five tables carry no dependency on one another: each unit requires the
-/// stock cannon, coaxial and sight (plus, for the laser tank, the two laser
-/// packs of its own table), and every sensor and ammunition row requires
-/// nothing. So the order below is `EXTENSIONS`, `EXTENSIONS_BIPED`,
-/// `EXTENSIONS_THERMAL`, `EXTENSIONS_ECM`, `EXTENSIONS_ECCM`, which is the order
-/// doc 16 §9 numbers its items in, and `crates/tacsim/tests/content.rs` pins
-/// that every named requirement is satisfied by a pack ahead of it.
+/// The six tables carry no dependency on one another: each armed unit requires
+/// the stock cannon, coaxial and sight (plus, for the laser tank, the two laser
+/// packs of its own table), the target requires nothing, and every sensor and
+/// ammunition row requires nothing. So the order below is `EXTENSIONS`,
+/// `EXTENSIONS_BIPED`, `EXTENSIONS_THERMAL`, `EXTENSIONS_ECM`, `EXTENSIONS_ECCM`,
+/// which is the order doc 16 §9 numbers its items in, and then
+/// `EXTENSIONS_TARGET` last; `crates/tacsim/tests/content.rs` pins that every
+/// named requirement is satisfied by a pack ahead of it.
 ///
 /// Named `<built-in …>` like [`sources`], and not `<extension …>` like
-/// [`extension_sources_of`]: through this route the five are shipped content and
+/// [`extension_sources_of`]: through this route the six are shipped content and
 /// not an operator's file, and the name is what a refusal quotes.
 #[must_use]
 pub fn fielded_sources() -> Vec<PackSource> {
@@ -344,6 +369,7 @@ pub fn fielded_sources() -> Vec<PackSource> {
         EXTENSIONS_THERMAL.as_slice(),
         EXTENSIONS_ECM.as_slice(),
         EXTENSIONS_ECCM.as_slice(),
+        EXTENSIONS_TARGET.as_slice(),
     ] {
         out.extend(table.iter().map(|(name, bytes)| PackSource {
             name: format!("<built-in {name}>"),

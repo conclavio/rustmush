@@ -488,7 +488,10 @@ pub struct Silhouette {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrackedDef {
-    /// The forward ceiling, cm/s.
+    /// The forward ceiling, cm/s. **Nought is legal** and [`UnitSpec::check`]
+    /// puts no floor under it: a hull that stands where it is put and turns in
+    /// place (16b cut AA.1's immobile reading) — `tacsim.unit.target_mk1`, the
+    /// range's target (16b cut O.3), is the one the game ships.
     pub max_speed_cms: u32,
     /// Acceleration, cm/s².
     pub accel_cms2: u32,

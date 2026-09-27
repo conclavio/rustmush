@@ -1498,7 +1498,7 @@ async fn q8_sim_unit_lists_selects_and_clears_a_choice() {
     assert!(
         said.contains(
             "Fieldable units: biped_mk1, line_tank, line_tank_eccm, line_tank_ecm, \
-             line_tank_laser, line_tank_thermal. Yours: line_tank."
+             line_tank_laser, line_tank_thermal, target_mk1. Yours: line_tank."
         ),
         "{said}"
     );
@@ -5391,4 +5391,195 @@ async fn o1_a_version_three_world_reads_hold_at_once_and_takes_version_four() {
     // And still Hold on the latched version.
     let said = rig.say(0, "sim mode");
     assert!(said.contains("supports: skirmish, hold."), "{said}");
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut O.3 — the range reads as a range in the ring
+// ---------------------------------------------------------------------------
+
+/// **16b cut O.3 (16c N13; plan items 19, 39)**: a range's result reads back as
+/// `mode: Some(Range)` and its ring line carries ` [range]` after the outcome
+/// words — through O.1's tag, with no code of its own — so a range is never read
+/// as a fight in `SIM HISTORY`.
+#[test]
+fn o3_a_range_result_reads_as_a_range_in_the_ring() {
+    let document = serde_json::json!({
+        "record": "tacsim.match",
+        "record_version": 1,
+        "match": 5,
+        "arena": "tacsim.arena.proving_ground",
+        "outcome": "abort",
+        "reason": "abort",
+        "mode": "range",
+        "teams": [
+            { "team": "red", "units": [101], "pilots": [{ "pilot": 7, "unit": 101, "callsign": "RA" }] },
+            { "team": "blue", "units": [201], "pilots": [] },
+        ],
+        "units": [
+            { "unit": 101, "callsign": "RA", "outcome": "intact", "shots": 2, "hits": 1 },
+            { "unit": 201, "callsign": "BA", "outcome": "intact", "shots": 0, "hits": 0 },
+        ],
+        "ledger": { "log": "match.5", "digest": "ab", "chunks": 1 },
+        "seed": 0,
+        "started_ms": 1_790_258_000_000_i64,
+        "ended_ms": 1_790_258_520_000_i64,
+        "arena_ms": 30_000,
+        "reports": [101],
+        "replay": true,
+    });
+    let row = match_::HistoryRow::from_document(&document).expect("a result document");
+    assert_eq!(row.mode, Some(tacsim::arena::MatchMode::Range));
+    assert_eq!(row.mode_tag(), " [range]");
+    let lines = match_::history_lines(std::iter::once(&row), ObjId(7));
+    assert_eq!(
+        lines,
+        vec![
+            "The centre's last match:".to_owned(),
+            "  #5  aborted [range]  30 s  1 v 1  2026-09-24 14:02 UTC  (you flew RA)".to_owned(),
+        ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut O.3 — the range's boarding gates (plan item 13)
+// ---------------------------------------------------------------------------
+
+/// A fill-off centre with its two claimants both on red and `SIM RANGE 1` set
+/// and started: boarding, with the one target on blue's pod 1.
+fn o3_range_boarding(rig: &mut Rig) {
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    let said = rig.say(0, "sim range 1");
+    assert!(
+        said.contains("Range set: 1 target stands on the blue side;"),
+        "{said}"
+    );
+    let said = rig.say(0, "sim start");
+    assert!(
+        said.contains("boarding"),
+        "a range starts with the fill off: {said}"
+    );
+    assert_eq!(rig.state(), MatchState::Boarding);
+}
+
+/// **A shooter leaving or getting out during boarding is not an empty side on a
+/// range** (16b cut O.3; plan item 13), with the fill OFF — the shipped default
+/// and the only configuration where `settle_boarding`'s range arm is not the
+/// fill's own.
+///
+/// Before O.3 the fill-off branch asked every side whether it had a slot, and
+/// under a range blue never does: its pods are the targets'. So an `EXIT`
+/// (`slot_vacated`) or a `SIM LEAVE` during boarding would call the match off
+/// with `the blue side has nobody left to fly it` — the N13 bug in a new place.
+/// Here the one who got out keeps boarding open, the one who left lets the
+/// boarded one's match run, and nothing is ever aborted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o3_a_range_survives_a_leave_and_an_exit_during_boarding_with_the_fill_off() {
+    let mut rig = Rig::boot(2);
+    o3_range_boarding(&mut rig);
+    assert!(!rig.seat(0), "one of two seated is not the trigger");
+
+    // `EXIT` during boarding: the slot is unseated, the centre is not empty.
+    rig.vacate(0);
+    assert_eq!(
+        rig.state(),
+        MatchState::Boarding,
+        "an EXIT on a range called the match off"
+    );
+
+    // Pilot0 boards again; Pilot1 gives up the slot, which leaves everybody who
+    // is left seated — so the match runs, with red alone against its target.
+    assert!(!rig.seat(0), "Pilot1 is still unseated");
+    let heard = rig.say_overheard(1, "sim leave", 0);
+    assert!(
+        !heard.contains("aborted") && !heard.contains("nobody left to fly it"),
+        "{heard}"
+    );
+    assert_eq!(rig.state(), MatchState::Running, "{heard}");
+    let units = rig.match_units();
+    assert_eq!(
+        units,
+        vec![(Team::Red, 1), (Team::Blue, 1)],
+        "the boarded shooter against the one target"
+    );
+}
+
+/// **The boarding deadline on a range drops the shooter who never boarded and
+/// runs with the one who did — and aborts only a centre that boarded nobody**
+/// (16b cut O.3; plan item 13), with the fill OFF.
+///
+/// Before O.3 the deadline's fill-off branch found blue — the targets' side,
+/// which never holds a slot — empty and aborted with `the blue side boarded
+/// nobody`, whoever had boarded on red.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o3_the_boarding_deadline_on_a_range_asks_the_shooters_alone() {
+    let mut rig = Rig::boot(2);
+    o3_range_boarding(&mut rig);
+    assert!(!rig.seat(0));
+    let heard = rig.tick_heard(10, 0);
+    assert!(
+        heard.contains("Pilot1 never boarded; red slot 2 is dropped."),
+        "{heard}"
+    );
+    assert!(!heard.contains("aborted"), "{heard}");
+    assert_eq!(rig.state(), MatchState::Running, "it ran with who was in");
+    assert_eq!(rig.centre().slots.len(), 1);
+    assert_eq!(rig.match_units(), vec![(Team::Red, 1), (Team::Blue, 1)]);
+
+    // Nobody boards at all: that is an abort, in the centre's words and not in
+    // a side's.
+    let mut rig = Rig::boot(2);
+    o3_range_boarding(&mut rig);
+    let match_id = rig.centre().match_id.expect("a boarding match id");
+    let heard = rig.tick_heard(10, 0);
+    assert!(
+        heard.contains(&format!("Match {match_id} is aborted: nobody boarded.")),
+        "{heard}"
+    );
+    assert!(!heard.contains("side boarded nobody"), "{heard}");
+    assert_eq!(rig.state(), MatchState::Aborted);
+}
+
+/// **`unattended` ends a range as it ends any match** (16b cut O.3; plan item
+/// 13's "unattended applies as today"), with the fill OFF: the one shooter gives
+/// the seat up, the clock starts though the target is still in its pod — a
+/// target is nobody's seat — and at the interval the match is stopped, and the
+/// ring reads the `timeout` as a range's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o3_a_range_every_shooter_left_ends_itself_after_the_interval() {
+    let mut cfg = config();
+    cfg.match_.unattended_ms = 10_000;
+    let mut rig = Rig::boot_on(1, roster_with(cfg));
+    rig.say(0, "sim team red");
+    rig.say(0, "sim range 1");
+    rig.say(0, "sim start");
+    assert!(rig.seat(0), "the one shooter boards and the range runs");
+    assert_eq!(rig.state(), MatchState::Running);
+    rig.tick_to(20);
+    assert_eq!(
+        rig.centre().unattended_since_ms,
+        None,
+        "the shooter is aboard"
+    );
+
+    rig.release(0);
+    assert_eq!(rig.centre().unattended_since_ms, Some(20_000));
+    rig.tick_to(29);
+    assert_eq!(rig.state(), MatchState::Running, "not before the interval");
+    let heard = rig.tick_heard(30, 0);
+    assert!(
+        heard.contains("Match 1 ends: every pilot has left it."),
+        "{heard}"
+    );
+    rig.end_match(tacsim::arena::EndReason::Unattended);
+    assert_eq!(rig.state(), MatchState::Ended);
+    assert_eq!(
+        rig.centre().outcome,
+        Some(tacsim::match_::MatchOutcome::Timeout)
+    );
+    let history = rig.say(0, "sim history");
+    assert!(
+        history.contains("#1  timed out (every pilot had left) [range]"),
+        "{history}"
+    );
 }

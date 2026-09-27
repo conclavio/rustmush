@@ -14,6 +14,7 @@
 //! SIM REPORT [<match>]    your own debrief of a match you flew
 //! SIM REPLAY <match> …    watch a finished match back, both sides, a keyframe at a time
 //! SIM MODE [mode]         which rule the match is fought under: skirmish or hold
+//! SIM RANGE [n]           your side against n targets that neither move nor shoot
 //! ```
 //!
 //! # Why one verb and not five
@@ -114,13 +115,16 @@ pub enum Selector {
     /// **`SIM MODE [skirmish|hold]`** (16b cut O.1; 16c N11): which rule the
     /// match is fought under — [`crate::match_::lobby::mode`].
     Mode,
+    /// **`SIM RANGE [<n>]`** (16b cut O.3; 16c N13): the claimed side against
+    /// `n` targets on the other side's pods — [`crate::match_::lobby::range`].
+    Range,
 }
 
 impl Selector {
-    /// The twelve words, in help order (16b cut V.2 added `history`, ninth;
+    /// The thirteen words, in help order (16b cut V.2 added `history`, ninth;
     /// 16b cut V.3 `report`, tenth; 16b cut I.1 `replay`, eleventh; 16b cut O.1
-    /// `mode`, twelfth).
-    pub const ALL: [(Selector, &'static str); 12] = [
+    /// `mode`, twelfth; 16b cut O.3 `range`, thirteenth).
+    pub const ALL: [(Selector, &'static str); 13] = [
         (Selector::Team, "team"),
         (Selector::Leave, "leave"),
         (Selector::Start, "start"),
@@ -133,6 +137,7 @@ impl Selector {
         (Selector::Report, "report"),
         (Selector::Replay, "replay"),
         (Selector::Mode, "mode"),
+        (Selector::Range, "range"),
     ];
 
     /// One word, however it was spelled.
@@ -180,7 +185,7 @@ fn selector_of(ctx: &Ctx<'_>) -> Option<(Selector, String)> {
     Selector::parse(head).map(|selector| (selector, rest.to_owned()))
 }
 
-/// `SIM <team|leave|start|abort|concede|status|ai|unit|history|report|replay|mode>`
+/// `SIM <team|leave|start|abort|concede|status|ai|unit|history|report|replay|mode|range>`
 /// — the whole lobby (doc 16 §3.7).
 ///
 /// # Errors
@@ -190,7 +195,7 @@ pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "SIM TEAM red|blue | SIM LEAVE | SIM START | SIM ABORT | SIM CONCEDE | \
                          SIM STATUS | SIM AI [n] | SIM UNIT [type] | SIM HISTORY | \
                          SIM REPORT [match] | SIM REPLAY <match> [<m:ss> | next | prev] \
-                         [<callsign>] | SIM MODE [skirmish|hold]";
+                         [<callsign>] | SIM MODE [skirmish|hold] | SIM RANGE [<n>]";
     // **Where before what** (16b cut F.4 residual). The deleted gate answered
     // every spelling of the verb outside the centre with the one
     // [`crate::match_::OUTSIDE_CENTRE`] line, and taking it away put the parser
@@ -302,6 +307,23 @@ pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let rest = rest.trim();
             let choice = (!rest.is_empty()).then_some(rest);
             lobby::mode(ctx, choice).map_err(refusal)
+        }
+        // **16b cut O.3 (16c N13)**: the thirteenth selector, and no thirteenth
+        // verb. `SIM AI`'s split: bare always reads, a number sets, and a word
+        // that is not a number is a question and never a silent read.
+        Selector::Range => {
+            let rest = rest.trim();
+            let count = if rest.is_empty() {
+                None
+            } else {
+                match rest.parse::<u8>() {
+                    Ok(count) => Some(count),
+                    Err(_) => {
+                        return Err(CmdError::msg("How many targets? `SIM RANGE 4`."));
+                    }
+                }
+            };
+            lobby::range(ctx, count).map_err(refusal)
         }
     }
 }
@@ -470,6 +492,10 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    (eliminate the other side) or hold (keep the ground's key spot uncontested \
                    for its time). A side's lead or staff sets it during selection; bare, it \
                    reads the mode and what this ground supports.\n\
+                   SIM RANGE [n]       set up a range: your side against n targets that \
+                   neither move nor shoot, on the other side's pods; the match ends when every \
+                   target is out of action, or on SIM ABORT. A side's lead or staff, with a \
+                   number, during selection; the bare word reads it.\n\
                    The switch spelling (SIM/STATUS) is the same command. All of it works in \
                    the simulator lobby, the two team rooms and the pods; anywhere else every \
                    spelling of SIM answers only where the simulator is."
@@ -497,8 +523,9 @@ mod tests {
         // 16b cut Q.7 made it six: `ai` joined the five. 16b cut Q.8 made it
         // seven with `unit`, 16b cut D.3 eight with `concede`, 16b cut V.2
         // nine with `history`, 16b cut V.3 ten with `report`, 16b cut I.1
-        // eleven with `replay`, and 16b cut O.1 twelve with `mode`.
-        assert_eq!(switches.len(), 12);
+        // eleven with `replay`, 16b cut O.1 twelve with `mode`, and 16b cut O.3
+        // thirteen with `range`.
+        assert_eq!(switches.len(), 13);
         for (selector, name) in Selector::ALL {
             assert!(switches.iter().any(|switch| switch == name), "{name}");
             assert_eq!(Selector::parse(name), Some(selector));

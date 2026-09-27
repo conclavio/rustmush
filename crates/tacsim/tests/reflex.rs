@@ -11087,3 +11087,229 @@ fn o1_the_hold_machines_are_one_event_list_and_one_hash_sequence_at_three_cadenc
         assert_eq!(seen, retries, "the retry clock diverged at run {at}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut O.3 — the inert rule (16c N13)
+// ---------------------------------------------------------------------------
+
+/// **A `target_mk1` off the fielded catalog**, checked out by the production
+/// functions (`match_::custody_unit`) under the reflex controller: the real
+/// five sections, the power role alone, no weapon, no sensor, zero speed.
+fn o3_target(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+    let catalog = tacsim::definitions::Catalog::build_fielded(&[], tacsim::NS)
+        .expect("the fielded content binds");
+    let key = mush_core::CanonicalId::new(tacsim::definitions::content::TARGET_MK1)
+        .expect("a canonical id");
+    let spec = catalog.specs.get(&key).expect("the target is fielded");
+    let binding = catalog.bindings.get(&key).expect("its binding");
+    let cells = tacsim::definitions::to_tactical_unit(spec, binding, id).expect("the target");
+    tacsim::match_::custody_unit(&catalog, cells, id, team, pose, 0, Controller::Reflex, 1)
+}
+
+/// **Destroy one of `unit`'s sections the way an impact does**: the M32 section
+/// condition set to `destroyed`, then every one of the section's authored
+/// consequences applied through `Arena::apply_consequence` and the disabled
+/// check run through `Arena::settle_disabled` — the two calls the impact path
+/// makes, so what the arena concludes from them is its own.
+fn o3_destroy_section(arena: &mut Arena, unit: ObjId, section: &str) {
+    let plan = UnitMutationPlan::new(
+        vec![UnitMutationOp::SetSectionCondition {
+            section: SectionId::new(section).expect("a section"),
+            condition: mush_tactics::ConditionId::new(tacsim::arena::damage::DESTROYED)
+                .expect("a condition"),
+        }],
+        None,
+        Some(SmolStr::new("test:destroy")),
+    )
+    .expect("a one-op plan");
+    let (cells, consequences) = {
+        let state = arena.unit(unit).expect("the unit");
+        let cells = mush_tactics::apply(&state.unit, &plan, 0)
+            .expect("the plan applies")
+            .0;
+        let consequences = state
+            .profile
+            .section(section)
+            .map(|row| row.consequences.clone())
+            .unwrap_or_default();
+        (cells, consequences)
+    };
+    if let Some(state) = arena.unit_mut(unit) {
+        state.unit = cells;
+    }
+    let t_ms = arena.now_ms;
+    let mut journal = Vec::new();
+    for consequence in &consequences {
+        arena.apply_consequence(unit, consequence, t_ms, None, &mut journal);
+    }
+    arena.settle_disabled(unit, t_ms, &mut journal);
+}
+
+/// **The inert rule** (16b cut O.3; 16c N13; plan items 7 and 41(d)): a unit that
+/// cannot move and carries no weapon starts up and then does nothing at all.
+///
+/// A `target_mk1` under the reflex controller, on a window with a patrol graph —
+/// which a machine that could move would walk, spending path searches — comes
+/// online after `match.startup_ms` and then, over a minute of arena time, makes
+/// no path search and stages no order but the one `STARTUP`, and stands in
+/// `Patrol` with no goal. An armed machine beside it engages it. And it is out
+/// of action by each of doc 16 §3.8's three routes for its hull — wrecked, both
+/// tracks gone, the engine killed through the hull's rear — and by nothing less:
+/// one track, the turret (whose `remove_weapons` has nothing to remove) or a
+/// hull hit that leaves the hull standing leave it in action.
+#[test]
+fn o3_an_inert_target_starts_up_and_searches_nothing() {
+    let target = || o3_target(BLUE, Team::Blue, centre(9, 8));
+    // Alone: nothing to see, nothing to shoot, a graph to walk.
+    let mut arena = arena_of(vec![target()], &[], &arena_cfg(reflex_cfg()), &[]);
+    assert_eq!(arena.unit(BLUE).map(|unit| unit.power), Some(Power::Off));
+    let mut bytes: Vec<u8> = Vec::new();
+    let counters = run(&mut arena, 60_000, &mut bytes);
+    assert_eq!(
+        arena.unit(BLUE).map(|unit| unit.power),
+        Some(Power::Online),
+        "a cold target starts up, so a thermal sight reads it hot"
+    );
+    assert_eq!(counters.path_queries, 0, "it searches for nothing");
+    assert_eq!(counters.intents, 1, "the one `STARTUP`, and no other order");
+    assert_eq!(state_of(&arena, BLUE), Some(ReflexState::Patrol));
+    let row = arena.reflex.unit(BLUE).cloned().expect("a machine");
+    assert_eq!((row.goal, row.target, row.hunt), (None, None, None));
+    assert!(row.route.is_empty() && row.last_plot.is_none());
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "startup"), 1);
+    assert_eq!(
+        arena
+            .unit(BLUE)
+            .map(|unit| (unit.pose.x_cm, unit.pose.y_cm)),
+        Some((9_500, 8_500)),
+        "it stands where its pod put it"
+    );
+
+    // Beside an armed machine: the machine engages it; it still does nothing.
+    let mut arena = arena_of(
+        vec![
+            with_sight(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(5, 8),
+                    vec![cannon()],
+                    Controller::Reflex,
+                ),
+                10,
+            ),
+            target(),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 30_000, &mut bytes);
+    let log = events(&mut arena, &mut bytes);
+    assert!(count(&log, "fired") > 0, "the armed machine shoots at it");
+    assert!(
+        log.iter().all(|event| !matches!(
+            &event.kind,
+            tacsim::arena::ledger::EventKind::Fired { unit, .. } if *unit == BLUE
+        )),
+        "and it never shoots back"
+    );
+
+    // The three routes out of action, each on a fresh target, and nothing less.
+    let fresh = || arena_of(vec![target()], &[], &arena_cfg(reflex_cfg()), &[]);
+    // A wreck: the hull.
+    let mut arena = fresh();
+    o3_destroy_section(&mut arena, BLUE, "turret");
+    o3_destroy_section(&mut arena, BLUE, "left_track");
+    assert!(
+        !arena.out_of_action(BLUE),
+        "the turret and one track leave it in action"
+    );
+    o3_destroy_section(&mut arena, BLUE, "hull");
+    assert!(arena.out_of_action(BLUE), "a wreck is out of action");
+    assert!(arena.unit(BLUE).is_some_and(|unit| unit.limits.wreck));
+    // Both tracks.
+    let mut arena = fresh();
+    o3_destroy_section(&mut arena, BLUE, "right_track");
+    assert!(!arena.out_of_action(BLUE), "one track is not enough");
+    o3_destroy_section(&mut arena, BLUE, "left_track");
+    assert!(arena.out_of_action(BLUE), "both tracks gone: disabled");
+    assert!(
+        arena
+            .unit(BLUE)
+            .is_some_and(|unit| unit.disabled && !unit.limits.wreck)
+    );
+    // The engine, the section behind the hull's rear facet.
+    let mut arena = fresh();
+    o3_destroy_section(&mut arena, BLUE, "engine");
+    assert!(arena.out_of_action(BLUE), "a dead engine: disabled");
+    assert!(
+        arena
+            .unit(BLUE)
+            .is_some_and(|unit| unit.disabled && !unit.limits.wreck)
+    );
+    assert_eq!(
+        arena
+            .unit(BLUE)
+            .and_then(|unit| unit.profile.section("engine"))
+            .and_then(|row| row.struck_through.clone()),
+        Some((SmolStr::new("hull"), SmolStr::new("rear"))),
+        "struck through the hull's rear"
+    );
+}
+
+/// **The inert rule under three cadences** (16b §11): a target beside a
+/// patrolling machine — the machine on the waypoint graph, the target standing
+/// — is one event list and one hash sequence at 5,000, 1,000 and 500 ms, and the
+/// target's machine row is the same parked row at every one of them.
+#[test]
+fn o3_an_inert_target_is_the_same_at_three_cadences() {
+    let mut first: Option<(Vec<String>, Vec<u64>)> = None;
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = arena_of(
+            vec![
+                tank(RED, Team::Red, centre(3, 8), Vec::new(), Controller::Reflex),
+                o3_target(BLUE, Team::Blue, centre(12, 3)),
+            ],
+            &[],
+            &arena_cfg(reflex_cfg()),
+            &[],
+        );
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut hashes: Vec<u64> = Vec::new();
+        let mut wall = 0_i64;
+        while arena.now_ms < 30_000 {
+            arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+            let out = arena.step(wall, &[], &[]);
+            for chunk in &out.ledger_chunks {
+                bytes.extend_from_slice(&chunk.bytes);
+            }
+            hashes.extend(arena.substep_hashes.iter().copied());
+            wall += cadence;
+        }
+        let log: Vec<String> = events(&mut arena, &mut bytes)
+            .iter()
+            .map(|event| {
+                format!(
+                    "{} {} {}",
+                    event.t_ms,
+                    serde_json::to_string(&event.kind).unwrap_or_default(),
+                    event.hash
+                )
+            })
+            .collect();
+        assert_eq!(state_of(&arena, BLUE), Some(ReflexState::Patrol));
+        match &first {
+            None => first = Some((log, hashes)),
+            Some((events, sequence)) => {
+                assert_eq!(&log, events, "the event list differs at {cadence} ms");
+                assert_eq!(
+                    &hashes, sequence,
+                    "the hash sequence differs at {cadence} ms"
+                );
+            }
+        }
+    }
+}

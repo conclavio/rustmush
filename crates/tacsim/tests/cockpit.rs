@@ -9858,12 +9858,15 @@ async fn i4_a_watch_closes_the_replay_and_sim_replay_refuses_a_watcher() {
 // 16b cut O.1 — `SIM MODE` and the Hold win (16c N11)
 // ---------------------------------------------------------------------------
 
-/// What `SIM MODE` answers on the shipped ground at a skirmish, verbatim.
-const O1_BARE_SKIRMISH: &str = "Mode: skirmish. The Proving Ground supports: skirmish, hold.";
+/// What `SIM MODE` answers on the shipped ground at a skirmish, verbatim — with
+/// 16b cut O.3's tail, which points at the one mode the list does not carry.
+const O1_BARE_SKIRMISH: &str = "Mode: skirmish. The Proving Ground supports: skirmish, hold. SIM \
+                                RANGE sets a range.";
 
-/// What it answers once the mode is Hold, verbatim.
+/// What it answers once the mode is Hold, verbatim (16b cut O.3's tail last).
 const O1_BARE_HOLD: &str = "Mode: hold. The Proving Ground supports: skirmish, hold. Hold: keep \
-                            The Crossroads (B) uncontested for 120 seconds to win.";
+                            The Crossroads (B) uncontested for 120 seconds to win. SIM RANGE \
+                            sets a range.";
 
 /// The announcement of a set to Hold, verbatim.
 const O1_SET_HOLD: &str = "Mode set to hold: keep The Crossroads (B) uncontested for 120 seconds \
@@ -10638,4 +10641,526 @@ fn o2_the_emcon_notice_rows_are_what_status_frame_publishes() {
             .unwrap_or_else(|| panic!("notice_lines.json has no {kind} row"));
         assert_eq!(published, committed, "{kind}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut O.3 — `SIM RANGE` and the range's targets (16c N13)
+// ---------------------------------------------------------------------------
+
+/// What the bare `SIM RANGE` answers when no range is set, verbatim.
+const O3_NOT_SET: &str = "The range is not set; SIM RANGE <n> sets it in selection.";
+
+/// The announcement of `SIM RANGE 2` with red claimed, verbatim.
+const O3_SET_TWO: &str = "Range set: 2 targets stand on the blue side; the match ends when every \
+                          target is out of action, or on SIM ABORT.";
+
+/// The board's line under that range, verbatim.
+const O3_BOARD_LINE: &str = "  mode: range \u{2014} 2 targets on the blue side";
+
+/// **The invariant** `mode == Range ⇔ range_targets.is_some()` on the centre as
+/// it stands (16b cut O.3; plan item 21), asserted after every write.
+fn o3_invariant(rig: &Rig) {
+    let centre = rig.centre();
+    assert_eq!(
+        centre.mode == tacsim::arena::MatchMode::Range,
+        centre.range_targets.is_some(),
+        "mode {:?} with range_targets {:?}",
+        centre.mode,
+        centre.range_targets
+    );
+}
+
+/// The unit schema the tank in `team`'s pod `index` holds now.
+fn o3_schema(rig: &Rig, team: Team, index: u8) -> String {
+    let tank = match_::tank_for_slot(rig.tw.world(), team, index).expect("that pod's tank");
+    mush_tactics::module::unit_of(rig.tw.world(), tank)
+        .map(|unit| unit.schema().key().id.as_str().to_owned())
+        .unwrap_or_default()
+}
+
+/// Pump until the centre is terminal, or give up.
+async fn o3_until_terminal(rig: &mut Rig) {
+    for _ in 0..400 {
+        rig.pump();
+        if rig.state().is_terminal() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(rig.state().is_terminal(), "the check-in lands");
+}
+
+/// **16b cut O.3**: `SIM RANGE` on a server with the fill OFF (the rig's
+/// default and the shipped one) — every reply and refusal verbatim, the bare
+/// read in `Idle`, in `Selection` by the lead (a read, not a set) and in
+/// `Running`; `SIM MODE range` refused; the invariant after every write; the
+/// announcement in every centre room; the board line; a claim on the targets'
+/// side refused and the claim advice under a range; `SIM MODE hold` leaving the
+/// range; `SIM START` accepted with the fill off; the targets' pods refitted to
+/// `target_mk1` and nothing else refitted; every target the reflex
+/// controller's; the record's mode; `SIM HISTORY`'s and the replay's ` [range]`;
+/// the pilot's header line with no shots carrying no rate; and the `Idle` reset
+/// putting the targets' pods back to `line_tank`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o3_sim_range_reads_sets_refuses_and_starts_with_the_fill_off() {
+    let mut rig = Rig::boot(3);
+    o3_invariant(&rig);
+    let per_side = {
+        let cfg = config();
+        match_::slots_per_side(rig.tw.world(), &cfg.match_)
+    };
+    // The bare read in `Idle`, slot or no slot; a set outside `Selection`; a
+    // word that is not a number.
+    assert_eq!(rig.say(2, "sim range"), O3_NOT_SET);
+    assert_eq!(
+        rig.say(0, "sim range 2"),
+        "The simulator centre is idle; that is not something you can do to it now."
+    );
+    assert_eq!(
+        rig.say(0, "sim range four"),
+        "How many targets? `SIM RANGE 4`."
+    );
+    o3_invariant(&rig);
+
+    // Both sides claimed: the range needs a side nobody claimed.
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    assert_eq!(
+        rig.say(0, "sim range 2"),
+        "The range is one side against the targets; every slot must be on one side."
+    );
+    o3_invariant(&rig);
+    rig.say(1, "sim leave");
+    rig.say(2, "sim team red");
+    // A claimant who leads nothing; the lead's bare word reads and sets nothing.
+    assert_eq!(
+        rig.say(2, "sim range 2"),
+        "Only a side's lead or staff can set the range."
+    );
+    assert_eq!(rig.say(0, "sim range"), O3_NOT_SET);
+    o3_invariant(&rig);
+    // The count's bounds.
+    let bounds = format!("The range fields 1 to {per_side} targets.");
+    assert_eq!(rig.say(0, "sim range 0"), bounds);
+    assert_eq!(rig.say(0, &format!("sim range {}", per_side + 1)), bounds);
+    // `SIM MODE range` is the range's to set, and no one else's.
+    assert_eq!(
+        rig.say(0, "sim mode range"),
+        "SIM RANGE <n> sets the range."
+    );
+    o3_invariant(&rig);
+    assert_eq!(rig.centre().mode, tacsim::arena::MatchMode::Skirmish);
+
+    // The set, heard in every room of the centre.
+    let events = rig.events(0, "SIM RANGE 2");
+    for entry in [
+        match_::LOBBY_ENTRY,
+        match_::RED_ROOM_ENTRY,
+        match_::BLUE_ROOM_ENTRY,
+    ] {
+        let room = match_::centre_object(rig.tw.world(), entry).expect("a centre room");
+        assert!(
+            events.iter().any(|(audience, event)| matches!(
+                audience,
+                Audience::Room { room: heard, .. } if *heard == room
+            ) && format!("{event:?}").contains(O3_SET_TWO)),
+            "room {room} did not hear the set: {events:?}"
+        );
+    }
+    o3_invariant(&rig);
+    assert_eq!(rig.centre().mode, tacsim::arena::MatchMode::Range);
+    assert_eq!(rig.centre().range_targets, Some(2));
+    // The read, for anybody; the mode's read; the board.
+    assert_eq!(
+        rig.say(2, "sim range"),
+        "Range: 2 targets on the blue side."
+    );
+    assert_eq!(
+        rig.say(2, "sim mode"),
+        "Mode: range. The Proving Ground supports: skirmish, hold. SIM RANGE sets a range."
+    );
+    let board = lobby_board(&rig, 2);
+    assert!(board.iter().any(|line| line == O3_BOARD_LINE), "{board:?}");
+    assert!(
+        !board.iter().any(|line| line.contains("AI fill:")),
+        "{board:?}"
+    );
+    // A claim on the targets' side, refused; a claim on the shooters', advised.
+    assert_eq!(
+        rig.say(1, "sim team blue"),
+        "The range puts targets on the blue side; claim a red slot."
+    );
+    let said = rig.say(1, "sim team red");
+    assert!(
+        said.contains(
+            "Pilot1 takes red slot 3. `SIM START` begins the match; the targets stand on the \
+             blue side."
+        ),
+        "{said}"
+    );
+    // The fill is off here, and `SIM AI` says so first, range or not.
+    assert_eq!(rig.say(1, "sim ai"), "AI fill is off on this server.");
+    // `SIM MODE hold` leaves the range, and `SIM RANGE 2` takes it back.
+    rig.say(0, "sim mode hold");
+    o3_invariant(&rig);
+    assert_eq!(rig.centre().mode, tacsim::arena::MatchMode::Hold);
+    assert_eq!(rig.say(2, "sim range"), O3_NOT_SET);
+    assert_eq!(rig.say(0, "sim range 2"), O3_SET_TWO);
+    o3_invariant(&rig);
+
+    // `SIM START`, with the fill off: accepted, and the targets' pods refitted.
+    let said = rig.say(0, "sim start");
+    assert!(said.contains("is boarding"), "{said}");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    assert_eq!(o3_schema(&rig, Team::Blue, 1), "tacsim.unit.target_mk1");
+    assert_eq!(o3_schema(&rig, Team::Blue, 2), "tacsim.unit.target_mk1");
+    assert_eq!(o3_schema(&rig, Team::Blue, 3), "tacsim.unit.line_tank");
+    assert_eq!(o3_schema(&rig, Team::Red, 4), "tacsim.unit.line_tank");
+    let board = lobby_board(&rig, 2);
+    assert!(board.iter().any(|line| line == O3_BOARD_LINE), "{board:?}");
+    for n in 0..3 {
+        rig.walk_to(n, match_::RED_ROOM_ENTRY);
+        rig.say(n, "board");
+    }
+    assert_eq!(rig.state(), MatchState::Running);
+    assert_eq!(
+        rig.say(1, "sim range"),
+        "Range: 2 targets on the blue side."
+    );
+    let board = lobby_board(&rig, 1);
+    assert!(board.iter().any(|line| line == O3_BOARD_LINE), "{board:?}");
+
+    // The record: a range; red its three claimed tanks; blue the two targets,
+    // with no pilot and in a squad — the reflex controller's.
+    let record = rig.record();
+    assert_eq!(record.mode, tacsim::arena::MatchMode::Range);
+    let targets: Vec<ObjId> = (1..=2)
+        .map(|index| match_::tank_for_slot(rig.tw.world(), Team::Blue, index).expect("a pod"))
+        .collect();
+    let side = |team: Team| {
+        record
+            .teams
+            .iter()
+            .find(|roster| roster.team == team)
+            .cloned()
+            .expect("the side")
+    };
+    assert_eq!(side(Team::Red).units.len(), 3);
+    assert_eq!(side(Team::Blue).units, targets);
+    assert!(side(Team::Blue).pilots.is_empty(), "no target is seated");
+    let squadded: Vec<ObjId> = record
+        .squads
+        .iter()
+        .flat_map(|roster| roster.units.iter().copied())
+        .collect();
+    assert_eq!(
+        squadded, targets,
+        "every target and nothing else is a machine"
+    );
+
+    // The end, by `SIM ABORT`: the ring and the replay say it was a range.
+    let match_id = rig.centre().match_id.expect("a running match");
+    rig.say(0, "sim abort");
+    o3_until_terminal(&mut rig).await;
+    // The terminal centre still holds the range (only the returns to `Idle`
+    // clear it) but no slot to read a side off: the bare read names the count
+    // alone, and the board prints no range line.
+    o3_invariant(&rig);
+    assert_eq!(rig.say(2, "sim range"), "Range: 2 targets.");
+    let board = lobby_board(&rig, 2);
+    assert!(
+        !board.iter().any(|line| line.contains("mode: range")),
+        "{board:?}"
+    );
+    let history = rig.say(2, "sim history");
+    assert!(
+        history.contains(&format!("#{}  aborted [range]  ", match_id.0)),
+        "{history}"
+    );
+    let replay = rig.say(2, &format!("sim replay {}", match_id.0));
+    assert!(replay.contains("aborted [range])"), "{replay}");
+    let row = rig
+        .tw
+        .world()
+        .module_state::<match_::MatchBook>()
+        .and_then(|book| book.remembered(match_id).cloned())
+        .expect("the ring holds the match");
+    assert_eq!(row.mode, Some(tacsim::arena::MatchMode::Range));
+    let tank = side(Team::Red).units[0];
+    let header = match_::report::header_lines(
+        &row,
+        "The Proving Ground",
+        match_::report::Reader::Pilot { unit: tank },
+        None,
+        None,
+    );
+    assert!(
+        header
+            .iter()
+            .any(|line| line.starts_with("You flew R") && line.ends_with("0 shots, 0 hits.")),
+        "no shot, no rate: {header:?}"
+    );
+    assert!(
+        header
+            .first()
+            .is_some_and(|line| line.contains("aborted [range], ")),
+        "{header:?}"
+    );
+
+    // The return to `Idle`: the range goes, and the targets' pods get their
+    // own tanks back.
+    rig.staff("@arena/reset");
+    assert_eq!(rig.state(), MatchState::Idle);
+    o3_invariant(&rig);
+    assert_eq!(rig.centre().mode, tacsim::arena::MatchMode::Skirmish);
+    assert_eq!(o3_schema(&rig, Team::Blue, 1), "tacsim.unit.line_tank");
+    assert_eq!(o3_schema(&rig, Team::Blue, 2), "tacsim.unit.line_tank");
+    assert_eq!(rig.say(2, "sim range"), O3_NOT_SET);
+}
+
+/// **16b cut O.3, the fill ON** (plan items 13, 21, 39): `SIM AI` reads and
+/// refuses honestly on a range, the board prints no `AI fill:` line under it,
+/// the claim advice names the targets and not the machines, and at `SIM START`
+/// the shooters' own unclaimed pods are **not** fielded — the fill takes no pod
+/// on a range — while the targets are.
+///
+/// The lead asks for three a side **before** the range is set, so the stored
+/// size (3) outlives the set and exceeds red's two claims: `ready()`'s fill loop
+/// would put a machine in red's pod 3 were its range guard missing, and the
+/// record below would hold three red units and a red squad.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o3_the_range_with_the_fill_on_fields_no_machines_and_says_so() {
+    let mut rig = Rig::boot_with(2, y1_config());
+    rig.say(0, "sim team red");
+    assert_eq!(rig.say(0, "sim ai"), "AI fill: 1 a side.");
+    let said = rig.say(0, "sim ai 3");
+    assert!(said.contains("AI fill set to 3 a side."), "{said}");
+    assert_eq!(rig.centre().ai_side_size, Some(3));
+    assert!(
+        lobby_board(&rig, 1)
+            .iter()
+            .any(|line| line.contains("AI fill:")),
+        "the fill's line, before the range"
+    );
+    assert_eq!(
+        rig.say(0, "sim range 1"),
+        "Range set: 1 target stands on the blue side; the match ends when every target is out \
+         of action, or on SIM ABORT."
+    );
+    o3_invariant(&rig);
+    assert_eq!(rig.say(1, "sim ai"), "AI fill: none on a range.");
+    assert_eq!(
+        rig.say(0, "sim ai 4"),
+        "The range fields no machines; SIM RANGE sets its targets."
+    );
+    assert_eq!(
+        rig.centre().ai_side_size,
+        Some(3),
+        "the refused set stored nothing"
+    );
+    let board = lobby_board(&rig, 1);
+    assert!(
+        !board.iter().any(|line| line.contains("AI fill:")),
+        "{board:?}"
+    );
+    assert!(
+        board
+            .iter()
+            .any(|line| line == "  mode: range \u{2014} 1 target on the blue side"),
+        "{board:?}"
+    );
+    let said = rig.say(1, "sim team red");
+    assert!(
+        said.contains("the targets stand on the blue side.") && !said.contains("machines"),
+        "{said}"
+    );
+    rig.say(0, "sim start");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    for n in 0..2 {
+        rig.walk_to(n, match_::RED_ROOM_ENTRY);
+        rig.say(n, "board");
+    }
+    assert_eq!(rig.state(), MatchState::Running);
+    let record = rig.record();
+    let side = |team: Team| {
+        let mut units = record
+            .teams
+            .iter()
+            .find(|roster| roster.team == team)
+            .map(|roster| roster.units.clone())
+            .unwrap_or_default();
+        units.sort();
+        units
+    };
+    let pod = |team: Team, index: u8| {
+        match_::tank_for_slot(rig.tw.world(), team, index).expect("that pod's tank")
+    };
+    let mut claimed = vec![pod(Team::Red, 1), pod(Team::Red, 2)];
+    claimed.sort();
+    assert_eq!(
+        side(Team::Red),
+        claimed,
+        "the two claimed and no machine, though the fill was sized to three"
+    );
+    let unclaimed = pod(Team::Red, 3);
+    assert!(
+        record
+            .teams
+            .iter()
+            .all(|roster| !roster.units.contains(&unclaimed)),
+        "red's unclaimed pod 3 was fielded: {:?}",
+        record.teams
+    );
+    let target = pod(Team::Blue, 1);
+    assert_eq!(side(Team::Blue), vec![target]);
+    assert_eq!(o3_schema(&rig, Team::Blue, 1), "tacsim.unit.target_mk1");
+    let squadded: Vec<ObjId> = record
+        .squads
+        .iter()
+        .flat_map(|roster| roster.units.iter().copied())
+        .collect();
+    assert_eq!(
+        squadded,
+        vec![target],
+        "the target is the only machine: {:?}",
+        record.squads
+    );
+    assert_eq!(rig.say(1, "sim ai"), "AI fill: none on a range.");
+    rig.say(0, "sim abort");
+    o3_until_terminal(&mut rig).await;
+}
+
+/// **16b cut O.3: the range's own end**, under paused time (plan item 26's
+/// pattern) — one pilot, `SIM RANGE 1`, the shooter posed four cells behind
+/// the target with both facing east, so every round lands on the rear band.
+/// Started with the fill off, started up, locked on `BA` and fired until the
+/// board's head is terminal: the head reads the elimination, the result and
+/// replay documents carry `"mode": "range"`, `SIM HISTORY` tags the row, and
+/// the pilot's own header line carries the hit rate off the real counters.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn o3_a_range_ends_when_its_target_is_out_of_action() {
+    let mut rig = Rig::boot(1);
+    rig.say(0, "sim team red");
+    rig.say(0, "sim range 1");
+    for (callsign, x) in [("BA", 130), ("RA", 126)] {
+        let said = rig.staff(&format!("@arena/pose {callsign}={x} 97 90"));
+        assert!(
+            said.contains(&format!("{callsign} opens at cell ({x}, 97) heading 90")),
+            "{said}"
+        );
+    }
+    rig.say(0, "sim start");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.say(0, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+    let match_id = rig.centre().match_id.expect("a running match");
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    rig.say(0, "startup");
+    assert!(rig.powered(0).await, "started up");
+    // The target, told apart: `BA`.
+    let mut locked = false;
+    for _ in 0..2_000 {
+        rig.pump();
+        let told = rig.frame(0).is_some_and(|frame| {
+            frame
+                .contacts
+                .iter()
+                .any(|contact| contact.designator.to_string() == "BA")
+        });
+        if told {
+            let said = rig.say(0, "lock BA");
+            assert!(said.contains("Locking BA."), "{said}");
+            locked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(locked, "the target was never told apart");
+    // Fire once an arena second until the board's head is terminal.
+    for tick in 0..20_000_u32 {
+        rig.pump();
+        if rig.state().is_terminal() {
+            break;
+        }
+        if tick % 100 == 0 {
+            rig.say(0, "fire");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        rig.state(),
+        MatchState::Ended,
+        "no end by {} arena ms",
+        rig.staged_now_ms
+    );
+    let board = lobby_board(&rig, 0);
+    assert_eq!(
+        board.first().map(String::as_str),
+        Some(format!("Simulator centre: ended (match {match_id}) \u{2014} red").as_str()),
+        "{board:?}"
+    );
+    let writes: Vec<(String, serde_json::Value)> = rig
+        .tw
+        .take_module_ops()
+        .into_iter()
+        .filter(|op| op.ns == tacsim::NS)
+        .filter_map(|op| match op.op {
+            mush_core::ModuleWrite::JsonSet { key, value } => Some((key.to_string(), value)),
+            _ => None,
+        })
+        .collect();
+    let document = |key: String| {
+        writes
+            .iter()
+            .find(|(held, _)| *held == key)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| panic!("{key} was written"))
+    };
+    let result = document(format!("tacsim:match:{}", match_id.0));
+    assert_eq!(result["mode"], serde_json::json!("range"));
+    assert_eq!(result["outcome"], serde_json::json!("red"));
+    assert_eq!(result["reason"], serde_json::json!("elimination"));
+    let replay = document(format!("tacsim:replay:{}", match_id.0));
+    assert_eq!(replay["mode"], serde_json::json!("range"));
+    let history = rig.say(0, "sim history");
+    assert!(
+        history.contains(&format!(
+            "#{}  red won (blue eliminated) [range]",
+            match_id.0
+        )),
+        "{history}"
+    );
+    let row = rig
+        .tw
+        .world()
+        .module_state::<match_::MatchBook>()
+        .and_then(|book| book.remembered(match_id).cloned())
+        .expect("the ring holds the match");
+    let flown = row
+        .units
+        .iter()
+        .find(|unit| unit.callsign == "RA")
+        .cloned()
+        .expect("RA's row");
+    assert!(
+        flown.shots >= 1 && flown.hits >= 1,
+        "{} shots, {} hits",
+        flown.shots,
+        flown.hits
+    );
+    let per_cent = flown.hits * 100 / flown.shots;
+    let header = match_::report::header_lines(
+        &row,
+        "The Proving Ground",
+        match_::report::Reader::Pilot { unit: flown.unit },
+        None,
+        None,
+    );
+    assert!(
+        header
+            .iter()
+            .any(|line| line.starts_with("You flew RA: ")
+                && line.ends_with(&format!(" ({per_cent}%)."))),
+        "{header:?}"
+    );
 }

@@ -321,6 +321,21 @@ impl Arena {
             if commander.limits.wreck || commander.disabled {
                 continue;
             }
+            // **16b cut O.3** (16c N13; plan items 7, 14): nor does a commander
+            // that is **inert** — no weapon and no speed, which is what a range's
+            // target is (`tacsim.unit.target_mk1`) and what the reflex controller
+            // already treats as inert (`reflex.rs`'s `decide`). A range's target
+            // side is dealt into squads like any reflex side — both `squads_of`
+            // callers (`Arena::new` and `match_::start`'s record) are untouched and
+            // still agree — and without this each target squad would ask the live
+            // commander on a server with deliberation on at its first pulse and
+            // again after every expiry, for units that can do nothing with any
+            // order it gave. A squad is skipped by its commander alone, as a
+            // wrecked commander's is: the range fields targets in squads of
+            // targets, so no armed unit is ever under an inert commander.
+            if commander.weapons.is_empty() && commander.mobility.max_speed_cms == 0 {
+                continue;
+            }
             let row = watch.entry(squad.id).or_default();
             // **The floor first**, because it is one comparison and it is what a
             // squad in a firefight fails nine times out of ten. An expiry gets no
