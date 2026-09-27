@@ -14,6 +14,7 @@ pub mod building;
 pub mod info;
 pub mod items;
 pub mod look;
+pub mod macros;
 pub mod movement;
 pub mod speech;
 
@@ -31,6 +32,10 @@ pub fn register_core_commands(reg: &mut Registry) -> Result<(), RegistryError> {
     building::register(reg)?;
     info::register(reg)?;
     admin::register(reg)?;
+    // The kernel's `@macro` and its alias stage (16b cut AD.1): registered
+    // here, before any module composes, so the macro stage is the FIRST
+    // alias stage on every composition.
+    macros::register(reg)?;
     crate::behavior::register(reg)?;
     Ok(())
 }

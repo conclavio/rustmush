@@ -16,6 +16,8 @@
 //!   (`CreatePlayer`) — the reply comes back as `ToGateway::Reply`.
 //! - Alice `say`s and God hears it: a full round trip through the world loop
 //!   and back out to a *different* connection, cross-process.
+//! - Alice makes a `@macro` and types it, and God hears the expansion: the
+//!   kernel's macro alias stage runs in the server half (16b cut AD.1).
 //! - God `@dig`s a room (a mutating command round-trips and persists).
 //! - God `@boot`s Alice: server → gateway `CloseSession` (fire-and-forget, the
 //!   world loop never blocks — D4/F3); Alice's channel closes, and God can
@@ -251,6 +253,14 @@ async fn two_process_connect_play_boot_disconnect() {
     // --- Alice says, God hears: full cross-process say round trip ---
     alice.send_line("say hello across the fork").await;
     god.expect("Alice says, \"hello across the fork\"").await;
+
+    // --- A macro expands in the server half (16b cut AD.1): the gateway never
+    //     saw a verb called `hey`, so God hearing the expansion proves the
+    //     kernel's alias stage runs across the IPC boundary ---
+    alice.send_line("@macro hey=say hey there, $1").await;
+    alice.expect("Macro hey set: say hey there, $1").await;
+    alice.send_line("hey God").await;
+    god.expect("Alice says, \"hey there, God\"").await;
 
     // --- A mutating command round-trips (@dig persists a room) ---
     god.send_line("@dig Vault = east;e, west;w").await;

@@ -11,8 +11,11 @@
 //!    on a channel through a per-player alias, and before exits/commands so
 //!    they cannot move onto the live grid. Skipped entirely when no gate is
 //!    registered (byte-identical default).
-//! 3. the alias stage — registered [`AliasStage`] hooks (the comsys seam;
-//!    empty in M0). **Prefix-expanded lines skip this stage**: the prefix
+//! 3. the alias stage — registered [`AliasStage`] hooks: the kernel's
+//!    macro stage first ([`MacroStage`](crate::commands::macros::MacroStage),
+//!    16b cut AD.1), then the modules' stages (comsys's channel aliases ride
+//!    it). A rewrite is gated at once and offered to the LATER stages only.
+//!    **Prefix-expanded lines skip this stage**: the prefix
 //!    character already settled the line's meaning, so a channel alias
 //!    named `say`/`pose` can never capture `"hello`
 //! 4. the `home` keyword
@@ -357,26 +360,46 @@ pub enum AliasOutcome {
     NotMine,
     /// Fully handled (output already queued); dispatch stops.
     Handled,
-    /// Rewrite the line and continue dispatch with the result.
+    /// Rewrite the line and continue dispatch with the result: the command
+    /// gates see the substitute at once, and it is offered to the LATER
+    /// stages only (never back to the stage that produced it, nor to any
+    /// earlier one) before dispatch goes on at the `home`-keyword step.
     Rewrite(String),
 }
 
 /// A pre-dispatch hook running after single-char prefix expansion and
-/// before exit matching — the seam where comsys will hang per-player
-/// channel aliases (`pub Hello`). Empty in M0.
+/// before exit matching. The kernel registers the first one, the macro
+/// stage ([`MacroStage`](crate::commands::macros::MacroStage), 16b cut
+/// AD.1); the modules' stages follow in composition order, comsys's
+/// per-player channel aliases (`pub Hello`) among them.
 ///
-/// **Multi-stage contract** (load-bearing once several modules register):
+/// **Multi-stage contract** (load-bearing once several stages register):
 ///
 /// - Stages run in **registration order**; registration order is priority
 ///   order.
 /// - The first stage returning [`AliasOutcome::Handled`] ends dispatch.
-/// - The first stage returning [`AliasOutcome::Rewrite`] ends the *stage
-///   loop*: later stages never see the line, the rewritten line is **not**
-///   re-offered to any stage (no rewrite chains), and dispatch continues
-///   with it at the `home`-keyword step. At most one rewrite per line.
+/// - A stage returning [`AliasOutcome::Rewrite`] replaces the line; the
+///   command gates see the substitute AT ONCE (a refusal ends dispatch),
+///   and the loop goes on with the NEXT stage on the new line. A stage
+///   never sees a line twice and never sees its own output, so a chain of
+///   rewrites is bounded by the stage count and no stage can expand what it
+///   produced (the macro stage, being first, expands exactly once). With
+///   the loop done, dispatch continues at the `home`-keyword step.
 pub trait AliasStage: Send + Sync {
     /// Inspect (and possibly consume or rewrite) an input line.
     fn try_alias(&self, w: &mut World, actor: ObjId, line: &str, out: &mut Outbox) -> AliasOutcome;
+
+    /// Whether this stage would claim a line whose first word is `word`, typed by
+    /// `actor` — the question `@macro` asks before it takes a name. Default: no.
+    ///
+    /// **Observer contract** (doc 16 §5): a `true` is shown to `actor` as a
+    /// refusal, so the answer may depend only on the actor's own settings (their
+    /// channel aliases, their own macros) or on static vocabulary — never on
+    /// world state the actor has not perceived (a unit's callsign, an object in
+    /// another room), or the refusal becomes an oracle.
+    fn claims_word(&self, _w: &World, _actor: ObjId, _word: &str) -> bool {
+        false
+    }
 }
 
 /// A **pre-dispatch command gate**, consulted after single-char prefix
@@ -943,6 +966,18 @@ impl Registry {
             .map(|entry| (entry.module.as_deref(), entry.compatibility))
     }
 
+    /// Whether any registered alias stage would claim a line whose first
+    /// word is `word`, typed by `actor` ([`AliasStage::claims_word`]; its
+    /// observer contract binds every stage). `@macro` refuses such a name
+    /// (16b cut AD.1): a macro named after the actor's channel alias would
+    /// shadow the alias for them.
+    #[must_use]
+    pub fn alias_stage_claims_word(&self, w: &World, actor: ObjId, word: &str) -> bool {
+        self.alias_stages
+            .iter()
+            .any(|entry| entry.stage.claims_word(w, actor, word))
+    }
+
     /// Declared compatibility classes for fallback-command ingress, in
     /// registration order. `None` is reserved for host/core registration.
     pub fn command_fallback_compatibilities(
@@ -1238,33 +1273,37 @@ pub fn dispatch(
         return;
     }
 
-    // 3. Alias stage (comsys seam). Prefix-expanded lines skip it: the
+    // 3. Alias stages: the kernel's macro stage first, then the modules'
+    //    (comsys's channel aliases). Prefix-expanded lines skip them: the
     //    prefix character already settled what the line means (room
     //    speech), and letting an alias named "say"/"pose" capture the
     //    synthetic verb would reroute private speech onto a channel the
     //    player never named. A *typed* "say hello" still offers the alias
-    //    stage first, per treaty ruling 5.
+    //    stages first, per treaty ruling 5.
+    //
+    //    A rewrite (16b cut AD.1, D9) substitutes a DIFFERENT verb for the
+    //    one step 2 gated, and everything downstream (the later stages,
+    //    home, exits, the command table) acts on the substitute — so the
+    //    gates see it AT ONCE, or the whole gate is one alias stage away
+    //    from being defeated. Then the loop goes on with the NEXT stage on
+    //    the new line: a macro whose line is a channel alias (`@macro
+    //    r=rad $1`) reaches comsys instead of falling past it to `Huh?`. A
+    //    stage never sees a line twice and never its own output, so a chain
+    //    is bounded by the stage count and the macro stage (first) expands
+    //    exactly once. With no rewrite (and always with no gate registered)
+    //    dispatch does exactly the work it did before.
     if !prefix_expanded {
-        let mut rewritten = false;
         for entry in &reg.alias_stages {
             match entry.stage.try_alias(w, actor, &cur, out) {
                 AliasOutcome::NotMine => {}
                 AliasOutcome::Handled => return,
                 AliasOutcome::Rewrite(s) => {
                     cur = s;
-                    rewritten = true;
-                    break;
+                    if command_gates_refuse(reg, w, actor, &cur, out) {
+                        return;
+                    }
                 }
             }
-        }
-        // A rewrite substitutes a DIFFERENT verb for the one step 2 gated,
-        // and everything downstream (home, exits, the command table) acts on
-        // the substitute — so the gates see it too, or the whole gate is one
-        // alias stage away from being defeated. Only on the rewrite path:
-        // with no rewrite (and always with no gate registered) dispatch does
-        // exactly the work it did before.
-        if rewritten && command_gates_refuse(reg, w, actor, &cur, out) {
-            return;
         }
     }
 
@@ -1468,9 +1507,9 @@ fn run_handler(
 /// `out` and the caller must stop dispatching.
 ///
 /// Skipped entirely when no gate is registered (the default), so dispatch is
-/// byte-identical to the un-gated pipeline. Called twice on the alias path:
-/// once on the prefix-expanded line, once more on the verb an
-/// [`AliasOutcome::Rewrite`] put in its place.
+/// byte-identical to the un-gated pipeline. Called once on the
+/// prefix-expanded line and once more on each [`AliasOutcome::Rewrite`], at
+/// the rewrite, before any later stage sees the substitute.
 fn command_gates_refuse(
     reg: &Registry,
     w: &World,

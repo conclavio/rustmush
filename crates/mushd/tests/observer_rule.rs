@@ -5936,3 +5936,81 @@ async fn o3_the_range_is_public_in_selection_and_the_report_is_the_pilots_own() 
     let flat = history.split_whitespace().collect::<Vec<&str>>().join(" ");
     history_row_is_public(&flat, 1, "#1 aborted [range]", None);
 }
+
+/// Everything `line` answered and nothing else: [`ask_whole`]'s slice from the
+/// LAST echo of `line` (a retried line is echoed again) to the sentinel's
+/// `Huh?`, with the sentinel's own echo taken out (the terminal echoes both
+/// typed lines before either is answered), trimmed. The world answers in the
+/// order it took the lines, so the slice is the whole answer, not the part of
+/// it before a needle. A transient in it (a world mid-commit answered `line`,
+/// not the sentinel) is a retry, not an answer.
+async fn whole_macro_answer(term: &mut Term, line: &str) -> String {
+    for _ in 0..RETRY_BUDGET {
+        let seen = ask_whole(term, line).await;
+        let (_, after) = seen
+            .rsplit_once(line)
+            .unwrap_or_else(|| panic!("no echo of `{line}` in:\n{seen}"));
+        let (before_huh, _) = after
+            .split_once(HUH)
+            .unwrap_or_else(|| panic!("no sentinel answer after `{line}` in:\n{seen}"));
+        let answer = before_huh.replacen(SENTINEL, "", 1);
+        let answer = answer.trim();
+        if answer.contains(COMMIT_PENDING) || answer.contains(CONTROL_UNKNOWN) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        return answer.to_owned();
+    }
+    panic!("`{line}` was refused as transient {RETRY_BUDGET} times running")
+}
+
+/// **`@macro`'s refusal on a name names nothing** (16b cut AD.1, 16c N14; doc 16
+/// §5 applied to a refusal).
+///
+/// A bystander asks for macros named after words that collide with very
+/// different things — a core verb, the kernel's `home` and `quit`, tacsim's bare
+/// `board`, and one of their own channel aliases — and every answer is the one
+/// `TAKEN` sentence, byte for byte. Then after `@` and `+` words: two real staff
+/// verbs of the production composition (`@arena`, `@unit`) and two that exist
+/// nowhere, and every answer is the one `BAD_NAME` sentence, because the name's
+/// characters are checked before anything is consulted. Nothing in either group
+/// says what was hit. No match is started.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_taken_name_is_refused_the_same_way_whatever_it_collided_with() {
+    let server = boot("observer-macro").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+
+    // Comsys seeds Public on the first boot and joins every existing character
+    // to it as `pub`; Cy existed before the modules booted. The bare alias is
+    // claimed and prompts, which proves the membership without a broadcast.
+    say(&mut cy, "pub", "What do you want to say on Public?").await;
+
+    let taken = mush_core::commands::macros::TAKEN;
+    let bad_name = mush_core::commands::macros::BAD_NAME;
+    let mut groups: Vec<Vec<String>> = Vec::new();
+    for (words, expected) in [
+        (&["look", "home", "quit", "board", "pub"][..], taken),
+        (&["@arena", "@unit", "@zzqnotaverb", "+zzq"][..], bad_name),
+    ] {
+        let mut answers = Vec::new();
+        for word in words {
+            let line = format!("@macro {word}=say x");
+            let answer = whole_macro_answer(&mut cy, &line).await;
+            // The WHOLE answer, echo to sentinel, is the one sentence: nothing
+            // before or after it names what the word collided with.
+            assert_eq!(answer, expected, "`{line}` answered:\n{answer}");
+            for leak in ["arena", "unit", "board"] {
+                assert!(
+                    !answer.to_ascii_lowercase().contains(leak),
+                    "`{line}` named what it hit:\n{answer}"
+                );
+            }
+            answers.push(answer);
+        }
+        for pair in answers.windows(2) {
+            assert_eq!(pair[0], pair[1], "one sentence, byte for byte");
+        }
+        groups.push(answers);
+    }
+    assert_eq!(groups.len(), 2);
+}

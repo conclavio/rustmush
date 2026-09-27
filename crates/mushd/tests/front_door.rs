@@ -330,3 +330,32 @@ async fn an_alt_made_after_boot_shares_its_account_and_cannot_take_a_second_slot
     // account already holds, which is only sayable because the alt maps at all.
     say(&mut alt, "SIM TEAM blue", "You already hold red slot 1.").await;
 }
+
+/// **A macro made at the front door survives a reconnect** (16b cut AD.1, 16c
+/// N14). A character made after boot defines a macro, types it, lists it, quits
+/// and comes back: the macro is on the character, read by the kernel's alias
+/// stage on the production composition over real SSH.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_macro_made_at_the_front_door_survives_a_reconnect() {
+    let server = boot("front-door-macro").await;
+
+    let (_r, mut rowan) = register(server.addr, "Rowan").await;
+    say(
+        &mut rowan,
+        "@macro hey=say hello, $1",
+        "Macro hey set: say hello, $1",
+    )
+    .await;
+    say(&mut rowan, "hey Bly", "hello, Bly").await;
+    let listed = ask(&mut rowan, "@macro", "hey").await;
+    assert!(listed.contains("Your macros (1 of 20):"), "{listed}");
+
+    rowan.send_line("QUIT").await;
+    rowan.expect_close().await;
+
+    let (_again, mut back) = play_client(server.addr).await;
+    back.expect("Welcome to the simulator.").await;
+    back.send_line(&format!("connect Rowan {PASSWORD}")).await;
+    back.expect("Connected as Rowan").await;
+    say(&mut back, "hey again", "hello, again").await;
+}

@@ -49,7 +49,9 @@ fn exit_in(w: &World, holder: ObjId, q: &str) -> Option<ObjId> {
     })
 }
 
-fn exit_name_matches(o: &Obj, q: &str) -> bool {
+/// Whether exit `o` answers to `q`: exact (case-insensitive) over its
+/// `;`-segments and aliases. Shared with `@macro`'s exit note.
+pub(super) fn exit_name_matches(o: &Obj, q: &str) -> bool {
     o.name
         .split(';')
         .map(str::trim)

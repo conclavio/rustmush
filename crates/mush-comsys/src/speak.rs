@@ -81,6 +81,16 @@ impl AliasStage for ComsysAliases {
         channel_speak(w, out, actor, chan, kind, text, None);
         AliasOutcome::Handled
     }
+
+    /// A word is claimed when it is one of `actor`'s OWN channel aliases —
+    /// the actor's own setting, so answering it as `@macro`'s refusal tells
+    /// them nothing they did not choose (the observer contract of
+    /// [`AliasStage::claims_word`]; 16b cut AD.1). `membership_by_alias`
+    /// already compares case-insensitively.
+    fn claims_word(&self, w: &World, actor: ObjId, word: &str) -> bool {
+        w.module_state::<ComsysState>()
+            .is_some_and(|st| st.membership_by_alias(actor, word).is_some())
+    }
 }
 
 /// Split off the first whitespace-delimited word.

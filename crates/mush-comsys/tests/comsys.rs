@@ -297,6 +297,49 @@ fn speaking_delivers_all_three_pose_forms() {
     assert_eq!(st.channels.get(&public).unwrap().seq, 3);
 }
 
+/// 16b cut AD.1: the comsys stage answers `claims_word` for the actor's OWN
+/// aliases only (its observer contract), case-insensitively, which is what
+/// `@macro` refuses a name on.
+#[test]
+fn the_stage_claims_the_actor_s_own_aliases() {
+    let (mut engine, nick, _) = setup();
+    // A player created without the ObjCreated observer has no membership.
+    let cy = engine
+        .world
+        .create(ObjKind::Player, "Cy", GOD, Some(LIMBO))
+        .unwrap();
+    let reg = &engine.registry;
+    let w = &engine.world;
+    assert!(reg.alias_stage_claims_word(w, nick, "pub"));
+    assert!(reg.alias_stage_claims_word(w, nick, "PUB"));
+    assert!(!reg.alias_stage_claims_word(w, nick, "xyz"));
+    assert!(!reg.alias_stage_claims_word(w, cy, "pub"));
+}
+
+/// 16b cut AD.1 (D9): a macro whose line is a channel alias is rewritten by
+/// the kernel's stage and then reaches comsys, the LATER stage; and a macro
+/// may not be named after one of the typist's own aliases.
+#[test]
+fn a_macro_whose_line_is_a_channel_alias_reaches_comsys() {
+    let (mut engine, nick, ann) = setup();
+    let texts = sys_texts(&run(&mut engine, nick, "@macro pub=say x"));
+    assert_eq!(
+        texts,
+        vec![mush_core::commands::macros::TAKEN.to_string()],
+        "an alias of the typist's own is taken"
+    );
+    let texts = sys_texts(&run(&mut engine, nick, "@macro r=pub $1"));
+    assert_eq!(texts, vec!["Macro r set: pub $1".to_string()]);
+    let out = run(&mut engine, nick, "r moving to B now");
+    let evs = chan_events(&out);
+    assert_eq!(recipients(&out), vec![GOD, nick, ann]);
+    assert!(
+        evs.iter()
+            .all(|e| e.channel == "Public" && e.text == "moving to B now" && e.actor == "Nick"),
+        "{evs:?}"
+    );
+}
+
 #[test]
 fn alias_is_case_insensitive_and_bare_alias_prompts() {
     let (mut engine, nick, _) = setup();

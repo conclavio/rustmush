@@ -6632,6 +6632,31 @@ fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
     }
 }
 
+/// The typed heads `refuse_store_read_only` lets through while the store is
+/// read-only: the conservative non-mutating allowlist, matched against the
+/// line's first word (switches stripped, lowercased). Public so a contract
+/// test can read the real list: 16b cut AD.1 asserts no word here can be a
+/// player's macro name, since the gate trusts a typed head and a macro of
+/// that name would otherwise expand past it.
+pub const STORE_READ_ONLY_ALLOWED: &[&str] = &[
+    "look",
+    "l",
+    "who",
+    "help",
+    "think",
+    "say",
+    "pose",
+    "semipose",
+    "@emit",
+    "examine",
+    "ex",
+    "inventory",
+    "inv",
+    "i",
+    // Staff must be able to stop the server while the store is down.
+    "@shutdown",
+];
+
 /// In store-read-only mode, decide whether an inbound message must be refused.
 /// Returns `Some((actor, message))` to refuse, `None` to let it through.
 ///
@@ -6690,25 +6715,7 @@ fn refuse_store_read_only(world: &World, msg: &Inbound) -> Option<(ObjId, String
         .next()
         .unwrap_or("")
         .to_lowercase();
-    const ALLOWED: &[&str] = &[
-        "look",
-        "l",
-        "who",
-        "help",
-        "think",
-        "say",
-        "pose",
-        "semipose",
-        "@emit",
-        "examine",
-        "ex",
-        "inventory",
-        "inv",
-        "i",
-        // Staff must be able to stop the server while the store is down.
-        "@shutdown",
-    ];
-    if ALLOWED.contains(&verb.as_str()) {
+    if STORE_READ_ONLY_ALLOWED.contains(&verb.as_str()) {
         return None;
     }
     refusal()

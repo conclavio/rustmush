@@ -24,8 +24,8 @@
 //!    through **durably, acked** before the server starts serving.
 //!
 //! The module list itself is [`server_modules`]: comsys first (its
-//! [`AliasStage`](mush_core::AliasStage) is the earliest alias stage in
-//! dispatch), then canon, org, faction, scenes, simulation, tactics, economy,
+//! [`AliasStage`](mush_core::AliasStage) is the earliest MODULE alias stage
+//! in dispatch; the kernel's macro stage runs before it), then canon, org, faction, scenes, simulation, tactics, economy,
 //! mail, jobs, weather, then script (both M5).
 //! Their persistence namespaces are disjoint, so the order is otherwise
 //! cosmetic — but it is the registration order hooks and observers fire in,

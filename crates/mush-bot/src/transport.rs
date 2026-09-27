@@ -151,9 +151,14 @@ pub fn validate_command(command: &str) -> Result<()> {
     // data, so a line another player wrote must never be able to grant
     // persistent access to the account (`@sshkey/add`), lock its operator
     // out (`@sshkey/del`), spawn characters, or end the session. The runner
-    // manages keys, characters and disconnects outside the game.
+    // manages keys, characters and disconnects outside the game. A macro
+    // can carry any of these verbs past a first-word check (`@macro
+    // k=@sshkey/add ...`, then `k`), so the bot may not define or delete one;
+    // the runner owns the character's macros.
     if verb == "@sshkey"
         || verb.starts_with("@sshkey/")
+        || verb == "@macro"
+        || verb.starts_with("@macro/")
         || matches!(
             verb.as_str(),
             "@newchar" | "quit" | "@quit" | "logout" | "@logout"
@@ -186,6 +191,9 @@ mod tests {
             "quit now",
             "LOGOUT",
             "@tui",
+            "@macro k=@sshkey/add ssh-ed25519 AAAA bot",
+            "@MACRO/del k",
+            "@macro",
         ] {
             assert!(validate_command(command).is_err(), "{command}");
         }
@@ -199,6 +207,7 @@ mod tests {
             "look",
             "@emit The wind picks up.",
             "page Marco=QUIT",
+            "say @macro is handy",
         ] {
             assert!(validate_command(command).is_ok(), "{command}");
         }

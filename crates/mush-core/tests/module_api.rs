@@ -539,10 +539,15 @@ fn frozen_registry_exposes_command_compatibility_by_name_and_alias() {
             .registry
             .alias_stage_compatibilities()
             .collect::<Vec<_>>(),
-        vec![(
-            Some("toy"),
-            mush_core::CommandCompatibility::LegacyPostImage
-        )]
+        // The kernel's macro stage (16b cut AD.1) is registered by
+        // `register_core_commands`, so it is first, as host/core (`None`).
+        vec![
+            (None, mush_core::CommandCompatibility::LegacyPostImage),
+            (
+                Some("toy"),
+                mush_core::CommandCompatibility::LegacyPostImage
+            )
+        ]
     );
 }
 

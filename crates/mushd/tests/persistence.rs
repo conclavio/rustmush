@@ -2406,3 +2406,76 @@ async fn an_unclean_world_exit_takes_no_shutdown_bgsave() {
         "the shutdown tail must add no BGSAVE after an unclean world exit"
     );
 }
+
+/// **A macro survives a restart through the store** (16b cut AD.1, 16c N14).
+/// `@macro` writes one JSON attribute on the player object through the ordinary
+/// snapshot lane, so a fresh boot from the same store has it, a world task on
+/// that reloaded world expands it, and a deletion is as durable as the
+/// definition (the last one removes the attribute).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_macro_survives_a_restart_through_the_store() {
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let guard = Arc::new(IpGuard::new());
+    let (sessions, handles) = boot_rig(&store, &guard).await;
+    let world = handles.handle.clone();
+    let mut god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
+
+    god_cmd_committed(&world, "@macro hey=say hello $1").await;
+    expect_text(&mut god_rx, "Macro hey set").await;
+
+    // A fresh boot from the same store sees the document.
+    let reloaded = load_or_seed_world(&*store).await.expect("reload");
+    let doc = reloaded
+        .get(GOD)
+        .unwrap()
+        .attrs
+        .get("macros")
+        .and_then(mush_core::Attr::as_json)
+        .cloned()
+        .expect("the macros attribute survived as JSON");
+    assert_eq!(
+        doc.get("hey").and_then(|v| v.as_str()),
+        Some("say hello $1"),
+        "{doc}"
+    );
+
+    // And a world task on the reloaded world expands it.
+    let store2: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let engine2 = Engine::new(reloaded, world_task::base_registry());
+    let sessions2 = Arc::new(SessionManager::new());
+    let handles2 = world_task::spawn_persist(
+        engine2,
+        Arc::clone(&sessions2),
+        ServerDeps {
+            metrics: std::sync::Arc::new(mush_net_web::Metrics::new()),
+            store: store2,
+            guard: Arc::new(IpGuard::new()),
+            staff: Arc::new(StaffQueue::new()),
+            llm: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
+        },
+    );
+    let mut god2_rx = attach_direct(&sessions2, &handles2.handle, 7, GOD, "god").await;
+    assert!(
+        handles2
+            .handle
+            .inbound(Inbound::Cmd {
+                conn: 7,
+                actor: GOD,
+                line: "hey there".into(),
+            })
+            .await
+    );
+    expect_text(&mut god2_rx, "hello there").await;
+
+    // The deletion, on the first rig, is durable too: the last macro gone
+    // removes the attribute from the store.
+    god_cmd_committed(&world, "@macro/del hey").await;
+    expect_text(&mut god_rx, "Macro hey deleted.").await;
+    let reloaded = load_or_seed_world(&*store).await.expect("reload again");
+    assert!(
+        reloaded.get(GOD).unwrap().attrs.get("macros").is_none(),
+        "the deletion reached the store"
+    );
+}

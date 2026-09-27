@@ -450,4 +450,5 @@ radio is not on this screen: its lines are on the channel screen with every
 other channel's, and the notices list does not repeat them.
 
 See also: `help simulator`, `help tui`, `help chargen` (gunnery is the rating
-the shot reads).
+the shot reads), `help macros` (a word of your own for a line you type
+often).

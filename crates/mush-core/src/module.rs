@@ -3304,7 +3304,7 @@ impl<'a> Registrar<'a> {
     }
 
     /// Append an alias-stage hook (the comsys seam; runs in registration
-    /// order during dispatch).
+    /// order during dispatch, after the kernel's macro stage).
     pub fn alias_stage(&mut self, stage: Arc<dyn AliasStage>) -> Result<(), ModError> {
         let compatibility = self.command_compatibility.ok_or_else(|| {
             ModError::msg(format!(

@@ -479,6 +479,12 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
+name = "@macro"
+category = "legacy-post-image"
+family = "kernel.macros"
+note = "16b cut AD.1 (16c N14): a character's own command macros, one bounded JSON document (`macros`: at most twenty folded names of sixteen characters to lines of two hundred) on the player object, written with World::set_attr on the compatibility snapshot lane the way `@ignore` writes its list; no authority, no prepared mechanic, no other object. Read by the kernel's macro alias stage alone; an expansion is one Rewrite that runs as the typist under the typist's own gates, so it reaches no verb its player could not type."
+
+[[handler]]
 name = "@mail"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
