@@ -130,10 +130,10 @@ const SHIPPED: &[ShippedInstance] = &[
         env: "deploy/dev1/instance.env",
         log_format: "pretty",
         onboarding: Onboarding::Open,
-        // The values the owner set by hand on the box on 2026-09-22 (16c T-88);
-        // at rate 4 from this epoch at unix 0, the fresh world reads the 2250s.
+        // The owner's clock of 2026-09-26 (16c T-88): at rate 4 from this epoch
+        // at unix 0, the world wiped on 2026-09-26 opened on 2350-01-01.
         ic_ratio: 4,
-        ic_epoch: "2026-09-22 00:00",
+        ic_epoch: "2123-01-19 11:15",
     },
 ];
 
