@@ -604,7 +604,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
 ## 4. Execution order
 
 Fourteen serial cuts and a tail. Ledger letters used before this document: R G P H A T C K S W N X F Q;
-the twelve below use the rest of the alphabet, and the review cut AA (after E) opens the second series, the owner's ruling cut AB (after Y) follows it, and the owner's fix cut AC (after I, before the 2026-09-26 dev1 redeploy) follows that.
+the twelve below use the rest of the alphabet, and the review cut AA (after E) opens the second series, the owner's ruling cut AB (after Y) follows it, and the owner's fix cut AC (after I, before the 2026-09-26 dev1 redeploy) follows that; the tail's five cuts AD to AH (after O, started on the owner's word of 2026-09-27) close the second series.
 Each cut is a functional boundary of roughly cut F's size: three to five sub-cuts of 1.5k to 3k lines
 with their tests. 16b §0's build discipline applies unchanged: the workspace green at every sub-cut, the
 gates re-blessed in the commit that moves them, a reviewer that did not write the cut, one commit and one
@@ -909,12 +909,90 @@ the fielded catalog. Hash: moves. Assumes N11's, N12's and N13's defaults. Size:
 
 ### The tail
 
-In rank order, each a cut when it is reached, named from a second series once the single letters run
-out: N14 (`@macro`); N15 (content breadth, which carries `B-58`, `T-18` and the lease half of `T-54` if
-a unit gains a second station); N16 (durability and resume, the last engineering item before H1); N17
-(`VIEW BRIEF`); N18 (hints). `B-58` is the one bug not in a lettered cut: it is L, it needs `T-15`
-first, and the help already names the gap. `B-75` (added by cut D's record) is in no lettered cut
-either: it waits on an owner ruling.
+Started on the owner's word of 2026-09-27 ("go ahead and start the tail"), as five cuts in the rank order the
+first draft gave them, named from the second series: AD (N14, `@macro`), AE (N15, content breadth, which
+carries `B-58`, `T-18` and the lease half of `T-54` if a unit gains a second station), AF (N16, durability
+and resume, the last engineering item before H1), AG (N17, `VIEW BRIEF`), AH (N18, hints). `B-58` needed
+`T-15` first, which cut M.4 landed, and the help already names the gap. `B-75` (added by cut D's record)
+is in no cut: it waits on an owner ruling.
+
+### Cut AD: `@macro`
+
+**When it lands.** A player can name a line and type the name, on every surface, with up to three
+positional arguments, and no macro can reach a verb its player could not type.
+
+- **AD.1** `@macro <name>=<line>`, `@macro` (read), `@macro/del <name>`: one expansion only (a macro that
+  expands to a macro is refused), `$1` to `$3`, never over a registered verb, twenty per player, stored on
+  the player, expanded at the alias stage the kernel already runs before command resolution, and the
+  help.
+
+N14 at its defaults (platform-wide; three positional arguments). Depends on nothing. Gateway: no. Packs:
+none. Hash: no. One new verb, so one non-baseline `legacy-handlers.toml` stanza (16b section 0.7). The
+observer rule: an expansion runs as the typist, under the typist's own permissions, and a refusal for a
+registered verb's name is byte-identical whatever the verb. Size: medium, one sub-cut.
+
+### Cut AE: content breadth, with the legged cost row
+
+**When it lands.** A scout, a heavy and a second biped, an autocannon and a missile with a flight time,
+and one capped drone make a catalog; the biped pays its own row's costs; the shipped ground has one bluff
+steep enough to refuse an edge.
+
+- **AE.1** Chassis: a cost layer per locomotion row on `ArenaTerrain` chosen per unit (`B-58`; `T-15`
+  landed M.4), the scout, the heavy and the second biped as versioned definitions with migration chains,
+  and the proving ground's bluff (`T-18`) as the next arena pack version.
+- **AE.2** Weapons: the autocannon and the missile with a flight time (a scheduled impact, as every shot
+  is), `FIRE`'s default weapon a choice, `WEAPONSTATUS` and the help.
+- **AE.3** One drone under W2's cap (`arena.max_units_by_class`), and the lease half of `T-54` only if a
+  unit of this cut gains a second station.
+
+N15 at its defaults (no infantry; one capped drone). Depends on `T-35` (landed U.1). Gateway: yes if a
+pane draws a new weapon or section shape. Packs: the arena pack (the bluff) and the fielded catalog
+(versioned definitions, digest pins, the boot refit). Hash: moves (AE.1 changes the biped's costs).
+Size: large, three sub-cuts.
+
+### Cut AF: per-pulse durability and resume
+
+**When it lands.** A server-half restart no longer voids a running match: the arena comes back from its
+last snapshot and the ledger tail, byte-identical, and the pilots return through the reclaim.
+
+- **AF.1** `Serialize` on the state tree behind a versioned `snapshot` module whose deserialised
+  `state_hash` must equal the recorded one; the definition and the terrain re-derived from the digest; the
+  test that snapshots every pulse of a scripted match and asserts a byte-identical ledger from any
+  resume point.
+- **AF.2** The `arena -> world Snapshot { at_ms, hash, bytes }` message every `arena.snapshot_ms`
+  (default 5,000), written on the arena writer lane with disjoint key ownership.
+- **AF.3** Boot re-creates the arena from the last snapshot at or after the last acked chunk, replays the
+  ledger tail, re-opens the task; a hash mismatch voids loudly; `write_restart_abort` stops being the
+  restart's answer; the pilots return through N4 (Y.3); `deliberation/mod.rs`'s recorded deviation
+  re-read, because its second argument stops being true; doc 16 section 11's first "Before IC play"
+  item closed.
+
+N16 at its defaults (every 5,000 ms plus tail replay; OOC matches resume). Depends on N4 (Y.3) and
+cut M. Gateway: no (the server half; the proof is `restart_survival`'s shape). Packs: none. Hash: must
+not move. The arena still holds no store handle. Size: extra large, three sub-cuts.
+
+### Cut AG: `VIEW BRIEF`
+
+**When it lands.** The frame in sentences: the ground on eight bearings, run-length described, then the
+contacts as `CONTACTS` words them, then the key spots; a second renderer of one frame, nothing new
+across the seam.
+
+- **AG.1** `VIEW BRIEF` in line mode, the observer assertions, the help.
+
+N17 at its default (built now, after the fighting features). Depends on N1 (V.1). Gateway: no. Packs:
+none. Hash: no. Size: medium, one sub-cut.
+
+### Cut AH: first-time hints
+
+**When it lands.** One sentence naming the next verb at five points, once per account, `@tutorial off`;
+and `T-77`'s two help sentences.
+
+- **AH.1** The five hint points, the per-account flag, `@tutorial off`, and the two help sentences the
+  smoke's first-time pilot was owed (moving makes a tank visible further out; facing matters).
+
+N18 built now on the owner's word rather than with the second player. Depends on nothing. Gateway: no
+(hints are `Sys` lines on the existing path). Packs: none. Hash: no. One new verb, so one stanza. Size:
+small, one sub-cut.
 
 ---
 
