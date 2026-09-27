@@ -321,7 +321,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
 - **Owner's choices.** Legend or in-grid names (default: legend plus a one-letter marker). May a pilot
   name a spot they cannot see (default: yes, surveyed ground). More spots now (default: no).
 
-### N2. The debrief: `SIM REPORT`, `SIM HISTORY`, `@arena/report` — landed V.2 and V.3
+### N2. The debrief: `SIM REPORT`, `SIM HISTORY`, `@arena/report` — landed V.2 and V.3; the hit rate landed O.3
 
 - **Pitch.** A match ends in one line. This gives each pilot a report of their own match (shots, hits,
   what they killed, what killed them, how long) and the centre a history of its last matches.
@@ -487,7 +487,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
 - **Owner's choices.** Pause or slow (default: slow). `@arena/place` at all (default: yes, in `Running`,
   nothing in flight). Announced in-world (default: journalled always, announced never).
 
-### N11. `SIM MODE`: Hold
+### N11. `SIM MODE`: Hold — landed O.1
 
 - **Pitch.** A side that keeps a named key spot uncontested for N seconds of arena time wins.
 - **Grounding.** `eliminated` is the only positive win (`arena:damage.rs:1086-1105`); `EndReason` and
@@ -503,7 +503,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
 - **Owner's choices.** First mode (default: `Hold`). Lobby choice or arena property (default: both).
   Does elimination still end it (default: yes, settled second). Public in selection (default: yes).
 
-### N12. `EMCON`
+### N12. `EMCON` — landed O.2
 
 - **Pitch.** A tank carrying a pod jams its own side with no switch.
 - **Grounding.** Doc 16 §11 X.4 and Q.6: powered pods within their radius of the observer fold into
@@ -516,7 +516,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
 - **Depends on.** `B-22` for the words. **Size.** S–M. **Risk.** Low.
 - **Owner's choices.** Default state at check-out (default: on, as today).
 
-### N13. The range
+### N13. The range — landed O.3
 
 - **Pitch.** Targets that do not shoot back, and a match that does not end when one is hit.
 - **Grounding.** An unarmed stationary unit is not `out_of_action` until wrecked
@@ -895,6 +895,8 @@ from the second series.
 
 ### Cut O: more reasons to fight and more to do
 
+Landed 2026-09-27 at `944780c0`; see 16b section 9, row O. Built as the three sub-cuts below, each committed and pushed on its own green gate (O.1 `8c2f0388`, O.2 `d547c94d`, O.3 `b78b06a7`), then the full sweep, whose first round found one failure that was not this cut's (`t88_the_shipped_instances_render_the_clock_they_chose` in `mush-config`: `225e7a8a` had moved dev1's `IC_EPOCH` to `2123-01-19 11:15` and left the shipped-instance table behind; repaired at `944780c0`, `T-88`'s test asserting as much as before) and whose second round was green with no rerun; N11, N12 and N13 landed at their defaults and N2's hit rate with them; three owner questions added to section 5 (`Q-O1` to `Q-O3`, defaults assumed); no pack applied by hand beyond the arena latch's 3 to 4 move through the shelf. Deferred: a `mode` argument on `@arena/start` (always a skirmish), a Hold match's clock on the staff observer picture, a machine's own `EMCON` decision (a machine keeps the switch it inherits, so a released `EMCON off` tank fields a silent pod for the rest of the match: an owner ruling), a floor on `EMCON` flips, `SIM UNIT target_mk1` refused for a human, range outcome words beyond the tag, an attacking machine contesting a held square and the shipped ground's blue-first asymmetry, a `Hold` declaration on a ground with no spot in reach of both musters, a second mode (`Defend`, `Escort`), the Hold lane on the weekly job (`Q-O3`) and its `TACSIM_HOLD_LANE` flag's absence from the gated-test inventory, the `harness_lance_goal_cost` line's absence from `docs/ops.md` and the lance prefix list, the `EMCON` hint's three narrow windows (a stale frame's early clear, the expiry under a staff tempo floor, bare `EMCON` reading the mirror), and the comment, test-pin and help-text inaccuracies the O.2 and O.3 judges listed (16b row O).
+
 **When it lands.** A match can be won by holding a named place; a pod can be switched off; a new pilot
 can shoot at targets that do not shoot back and read their hit rate.
 
@@ -974,6 +976,9 @@ debts, plus the four feature choices that change the most.
 | Q-AB2 | Should the TUI also floor on HEIGHT (blank every screen under some row count), or keep B.3's rule that a short terminal drops panes in the screen's declared order? (raised by cut AB's reviews, not assumed) | No row floor; width alone. Under 30 rows the cockpit's damage pane goes first as B.3 built it, under 12 rows every screen drops its chrome and keeps the scrollback and the box; `COCKPIT_ROWS` 30 is a documented derivation `draw` never reads. Built at AB.1. | AB, open |
 | Q-AB3 | Does the notices pane ride the Right column (weapons, contacts, notices) or the Left as B.3 built it? | The Right, as AB.1 built it: seven inner rows at 120 by 34 and twelve at 160 by 48 instead of two on the Left under the 12-row damage pane, and the cockpit whole from 120 by 30 with the Left column status over damage. The owner may put it back on the Left (two rows at 120 by 34, four at 120 by 36) in a later cut. | AB, open |
 | Q-I1 | Does the line printer's one grid budget (78 by 20 printed columns; `VIEW` and `SIM REPLAY` at 39 by 20 cells, two printed columns a cell) fall under the 120-column ruling (`Q-AB1`)? (raised by cut I's plan, not assumed) | No: the ruling names client surfaces built new, and the printer is the line client's, which AB left at 78 by 20; `SIM REPLAY` shares `VIEW`'s window. If overruled, the printer's budget moves to a 59 by 20 window in a small follow-up and `VIEW` moves with it. | I, open |
+| Q-O1 | How do the machines behave under Hold, and who governs a squad on dev1? (raised by cut O's plan, not assumed) | Doctrine's own goal: a machine drives to the key spot in place of the hunt and the walk, parks inside the square and fights from there, and an attacking machine stops at `engage_cm` and never drives in to contest a held square, so a human can camp The Crossroads against an AI side that shoots but never enters, the shipped ground's blue machines reaching the spot first; on dev1 the commander's order governs whenever it gives one (the forced tool always answers an order). Built on this default (O.1); reversed by an `Approach` clause that closes into the square. | O, open |
+| Q-O2 | Should a range's result occupy the twenty-deep history ring at all, flushing a real match's row, report and replay? | Yes: a range is a match like any other, tagged ` [range]` on the ring, the header and the replay; the flush is the ring's. Built on this default (O.3). | O |
+| Q-O3 | Should the report-only, flag-gated Hold lane (`TACSIM_HOLD_LANE=1`, `harness_lance_goal_cost` beside the lance lane's) join the weekly job? | No: run by hand in O.1's gate only. Until answered the flag matches neither `RUN_*` nor `*_RUN`, so `ci_gated_test_inventory` neither registers nor exempts it; a yes renames and inventories it. | O, open |
 
 ---
 
