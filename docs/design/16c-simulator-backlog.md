@@ -41,7 +41,7 @@ re-run), 86 debts unchanged, and a thirteenth cut, AA, placed after E and before
 at `8366b3fe` adds `B-81` (P2), bringing the total to 81 bugs (0 P0, 14 P1, 67 P2); no runtime probe
 was run for that finding. The 2026-09-26 dev1 deploy recon adds `B-82` (P1, the split's world task never
 holds the LLM service; read at `50397c1b` and seen live in dev1's journal), bringing the total to 82 bugs (0 P0,
-15 P1, 67 P2), and the owner's fix cut AC is placed after I; cut AC's record adds `B-83` (P2, a `BOARD` lost on the split at the walk's commit window) and `T-89` (no per-feature LLM budget caps on the features dev1 now spends on), 83 bugs and 89 debts. Cut E's record
+15 P1, 67 P2), and the owner's fix cut AC is placed after I; cut AC's record adds `B-83` (P2, a `BOARD` lost on the split at the walk's commit window) and `T-89` (no per-feature LLM budget caps on the features dev1 now spends on), 83 bugs and 89 debts; cut AE's sweep adds `B-84` (P1, the reflex controller's two path-search wastes), 84 bugs (0 P0, 16 P1, 68 P2), and its fix cut AI is placed after AF. Cut E's record
 (2026-09-22) closed ten bugs (`B-04`, `B-05`, `B-39` to `B-46`) and six debts (`T-32`, `T-46`, `T-47`,
 `T-55`, `T-56`, `T-81`) outright and one debt (`T-42`) in part; it added no row, its residuals being listed
 in 16b section 9, row E, and its deferrals in section 4's cut E entry. Cut AA's record (2026-09-22) closed
@@ -89,6 +89,7 @@ byte-identical `No such contact.`
 | B-13 — landed B.5 | A line that arrives while another command's commit is in flight is refused with `The world is committing another action; please retry in a moment.` Four web lines sent in one burst lost three. `must_defer_behind_commit` covers four connection messages and no command, by design (head-of-line blocking); every test rig in the tree retries the string and a player has no such loop. Bursts of cockpit verbs inside a match were all served, so the committing commands (moves, claims) open the window. | `mush-server/src/world_task.rs:954-956`, `:979`, `:1030-1040`, `:1093-1099` | Measure how often a command meets the window; then a bounded per-session defer queue (depth 4, 250 ms) replayed after the receipt, refusing only on timeout and in a player's words. | M | verified, live |
 | B-14 — landed B.4 | Attaching a second connection to a character prints the whole room on the first connection too: the attach dispatches a real `look` as the actor, and its output goes to every connection of that actor. A pilot who opens the browser cockpit beside an SSH window gets a room description in the fight's scrollback. | `mush-gateway/src/bridge_common.rs:955-962` (the per-connection half at `:930-938` is correct) | Address the attach-time room view to the attaching connection only, the way `SessionInfo` already is. | S | verified, live |
 | B-82 — landed AC.1 | On the split, production shape (`mush-gateway` supervising `mush-server`) the world task is never handed the LLM service the boot built: every tacsim deliberation logs `WARN tacsim Effect::ModuleAsync: no LlmService on this world task; the squad stays on doctrine` and every NPC turn `npc Effect::ModuleAsync dropped: no LlmService on this world task`, so LLM commanders and NPC minds never fire in production, while `llm service built enabled=true providers=2 routes=12` is logged a few lines earlier by the same boot. The all-in-one `mushd` (the local rig) sets the handle, so no test and no local play meets it. Live on dev1 since the fork (M16b, `89a05672`), on every deliberation from 2026-09-21; found in the 2026-09-26 deploy recon. | `mush-server/src/lib.rs:334-346` (`ServerDeps::in_memory()`, then store, guard, staff, quarantine_spool and outbox_adapters overwritten; `llm` left `None`; `metrics` the throwaway registry) against `mushd/src/main.rs:429-440` (`llm: Some(Arc::clone(&booted.llm))`); `mush-server/src/world_task.rs:1810`, `:9951`, `:9982`, `:10048` | One production `ServerDeps` constructor shared by both binaries (WS04's rule: the split delegates, never transcribes), carrying the booted `llm` and the one metrics registry the sink and the world loop share; a parity test in `mush-server/tests/boot_parity.rs` that the split's deps carry the handle; a split-shape proof over the two-process rig with `[llm]` on and the mock provider that a tacsim deliberation reaches a provider and the WARN never prints. | S | Verified by reading at `50397c1b`; live on dev1. Cut AC. |
+| B-84 | The reflex controller wastes its wake on two path searches that go nowhere. (1) Orbiting: a follower steers at an adjacent route cell inside its own turning circle, so its heading falls about thirty degrees a decide tick at 5 to 8 m/s, and the `follow` wandered-off branch (cut Q.7) clears the route and sets `searched_ms = None`, so a 7,000 to 16,000-cell search runs every 1,000 ms for as long as the orbit lasts. (2) The corner cut: a unit stopped `impassable` on a corner cut (154 of the harness cohort's 160 stops) has its route cleared by `note_blocked`, and `path_with`'s shoulder rule skips impassable shoulders, so the identical 13,667-cell route is searched again every `repath_ms` without the unit moving. In play a wingman circles instead of arriving and a tank sits on a corner; on the harness the authored lane's per-wake p99 tracks `path_cells` (r 0.77) and reads 8 to 17 ms by seed (2350: 11.6; 2351: 16.0 with a per-window p99 of 27.4 past the 20 ms lens; 2353: 13.3 before cut AE), so the 12 ms per-wake lens holds at the harness seed by chance. Found by cut AE's sweep repairer (2026-09-28) after B-58 moved the seed-2350 fight; both wastes predate AE. | `arena:reflex.rs` (`follow`'s wandered-off branch, `note_blocked`, `repath_ms`); `arena:path.rs` (`path_with`'s shoulder rule, the class gap its doc names); `arena:motion.rs` (the corner-cut refusal) | A follower keeps its route while the next route cell is inside its turning circle and steers at the first cell outside it; a stop on a corner cut is answered by a one-cell shoulder step or a refusal that keeps the route, not by a re-search of the same route; a re-search of a route whose refusal has not changed is refused by name and counted; the per-wake `path_cells` peak reported and bounded; every change proved at three cadences and measured on both lanes at four seeds. Moves the CI deterministic block (a bless with the reason) and the hash. | L | plausible (the sweep repairer's instrumented diagnosis at seed 2350 and a four-seed sweep; not yet reproduced in play) |
 
 ### 1.2 P2
 
@@ -604,7 +605,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
 ## 4. Execution order
 
 Fourteen serial cuts and a tail. Ledger letters used before this document: R G P H A T C K S W N X F Q;
-the twelve below use the rest of the alphabet, and the review cut AA (after E) opens the second series, the owner's ruling cut AB (after Y) follows it, and the owner's fix cut AC (after I, before the 2026-09-26 dev1 redeploy) follows that; the tail's five cuts AD to AH (after O, started on the owner's word of 2026-09-27) close the second series.
+the twelve below use the rest of the alphabet, and the review cut AA (after E) opens the second series, the owner's ruling cut AB (after Y) follows it, and the owner's fix cut AC (after I, before the 2026-09-26 dev1 redeploy) follows that; the tail's five cuts AD to AH (after O, started on the owner's word of 2026-09-27) close the second series, with the fix cut AI (`B-84`, from cut AE's sweep) placed after AF.
 Each cut is a functional boundary of roughly cut F's size: three to five sub-cuts of 1.5k to 3k lines
 with their tests. 16b §0's build discipline applies unchanged: the workspace green at every sub-cut, the
 gates re-blessed in the commit that moves them, a reviewer that did not write the cut, one commit and one
@@ -999,6 +1000,26 @@ N18 built now on the owner's word rather than with the second player. Depends on
 small, one sub-cut.
 
 ---
+
+### Cut AI: the machines stop searching in circles
+
+**When it lands.** A wingman that wandered off its route keeps the route and steers back onto it; a
+tank stopped on a corner cut steps around the corner or holds, and never searches the same route
+again without moving; the wake's path cost is reported and bounded on both harness lanes.
+
+- **AI.1** `B-84`: the follower's steering target is the first route cell outside its turning circle
+  and a wander inside the circle keeps the route; a stop on a corner cut is a one-cell shoulder step
+  or a refusal that keeps the route; a re-search of a route whose refusal has not changed is refused
+  by name and counted; `path_cells` per wake reported with a bound in `[tacsim.harness]`; the
+  cross-tempo test at three cadences and both lanes measured at four seeds, the CI baseline
+  re-blessed once with the reason.
+
+From cut AE's sweep (2026-09-28): the authored lane's per-wake p99 rose from 8 to 9 ms to 11 to 12.4 ms
+against the 12 ms lens when `B-58` moved the harness fight, and the repairer's instrumented diagnosis
+put the cost on the two searches above, which predate AE and hold at other seeds already. Depends on
+AE.1 (the per-row prices) and Q.7. Gateway: no. Packs: none. Hash: moves. Size: large, one sub-cut.
+Until it lands the gates' rule for a per-wake lens miss on the authored lane is the per-window one:
+re-run once with the deterministic block untouched, a second miss real, nobody moves a lens.
 
 ## 5. Open questions for the owner
 

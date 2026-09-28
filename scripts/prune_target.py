@@ -12,7 +12,11 @@ outputs (`.exe`/`.pdb`/`.d` on Windows; the extensionless binary and `.d` on
 Unix) and deletes the rest. Library outputs (`.rlib`/`.rmeta`/`.so`/`.dll`)
 are left alone: dependents pin them by hash and Cargo rebuilds what it needs.
 With `--incremental` it also removes `target/<profile>/incremental`, which is a
-pure cache. Both are safe to run at any time except while a build is running.
+pure cache. Both are safe to run at any time except while a build is running, so by default
+the script refuses when a cargo, rustc, rustdoc or linker process is alive and
+writes one line to `<target>/prune.log` saying so (the 2026-09-28 full-workspace
+sweep lost 57 test targets to the scheduled 04:00 run, which deleted the binaries
+cargo was about to execute); `--force` prunes anyway.
 
 A one-line summary is appended to `<target>/prune.log` so an unattended run
 leaves a trace.
@@ -28,6 +32,7 @@ import datetime as dt
 import os
 import re
 import shutil
+import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -79,18 +84,71 @@ def prune_deps(deps: Path, dry_run: bool) -> tuple[int, int, int]:
     return kept, removed, freed
 
 
+BUILD_PROCESSES = {"cargo", "rustc", "rustdoc", "link", "lld", "lld-link", "cc", "clang", "ld", "ld.lld"}
+
+
+def build_in_progress() -> list[str]:
+    """The names of build processes alive right now, sorted and de-duplicated.
+
+    Pruning while cargo runs deletes the very test executables a `cargo test`
+    is about to run, so the default is to refuse. A process listing that cannot
+    be read answers an empty list: the prune then runs as it always did, which
+    is the behaviour an operator on an unknown platform expects.
+    """
+    found: set[str] = set()
+    try:
+        if os.name == "nt":
+            out = subprocess.run(
+                ["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, check=False
+            ).stdout
+            for line in out.splitlines():
+                exe = line.split(",", 1)[0].strip().strip('"').lower()
+                stem = exe[:-4] if exe.endswith(".exe") else exe
+                if stem in BUILD_PROCESSES:
+                    found.add(stem)
+        else:
+            out = subprocess.run(
+                ["ps", "-eo", "comm="], capture_output=True, text=True, check=False
+            ).stdout
+            for line in out.splitlines():
+                stem = line.strip().rsplit("/", 1)[-1].lower()
+                if stem in BUILD_PROCESSES:
+                    found.add(stem)
+    except OSError:
+        return []
+    return sorted(found)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     ap.add_argument("--repo", default=".", help="workspace root containing target/")
     ap.add_argument("--target", default=None, help="explicit target dir (overrides --repo)")
     ap.add_argument("--incremental", action="store_true", help="also remove <profile>/incremental")
     ap.add_argument("--dry-run", action="store_true", help="report only; delete nothing")
+    ap.add_argument(
+        "--force", action="store_true", help="prune even while cargo, rustc or the linker is running"
+    )
     args = ap.parse_args()
 
     target = Path(args.target) if args.target else Path(args.repo) / "target"
     if not target.is_dir():
         print(f"no target dir at {target}", file=sys.stderr)
         return 0
+
+    if not args.force and not args.dry_run:
+        busy = build_in_progress()
+        if busy:
+            note = (
+                f"{dt.datetime.now():%Y-%m-%d %H:%M} skipped: a build is running "
+                f"({', '.join(busy)}); --force prunes anyway"
+            )
+            print(note, file=sys.stderr)
+            try:
+                with (target / "prune.log").open("a", encoding="utf-8") as log:
+                    log.write(note + "\n")
+            except OSError:
+                pass
+            return 0
 
     total_kept = total_removed = total_freed = 0
     for profile in PROFILES:
