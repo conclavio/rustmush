@@ -1,10 +1,63 @@
 //! **The match's states and the one document it leaves behind** (16b cut T.3;
 //! doc 16 §3.8 "Lifecycle", §4 "The result record").
+//!
+//! # The two documents of a running match (16b cut AF.2; 16c N16)
+//!
+//! Beside the result, which a match leaves behind, a **running** match now keeps
+//! two documents in the store while it runs, written on the arena writer lane
+//! (the module's own op lane, `crate::store::push_op`, the lane its chunks ride):
+//!
+//! - **`tacsim:snapshot:<n>`** ([`snapshot_key`]) — the arena's own document,
+//!   exactly as [`crate::arena::Snapshot::encode`] built it, written by
+//!   `crate::arena_bridge`'s `on_snapshot` every `[tacsim.arena].snapshot_ms` of
+//!   arena time. It carries **no `match` key** (the arena library has no match
+//!   id, and its document refuses unknown keys): the key alone names the match,
+//!   and nothing but `on_snapshot` writes it.
+//! - **`tacsim:live:<n>`** ([`live_key`]) — **the live record** ([`LiveRecord`]),
+//!   the world's own RAM the next boot will need to resume the match: the
+//!   [`MatchRecord`] with its debrief folds and its replay fold, the centre with
+//!   its slots, the tape's counters and the moment of the last snapshot. Written
+//!   by [`write_live`] at check-out, beside every snapshot (in the same action,
+//!   so both ride one batch) and when the record parks in `Stopping`.
+//!
+//! Both are deleted with the result, in its action, on every end including a
+//! void ([`delete_live_and_snapshot`]), and by the boot for every match it does
+//! not resume (in 16b cut AF.2, every one: a restart still voids; AF.3 resumes).
+//!
+//! **Disjoint key ownership.** Both keys are in tacsim's own namespace (the
+//! module stamps `ns: "tacsim"` on every op it pushes), beside
+//! `tacsim:match:<n>`, `tacsim:report:<n>:<unit>` and `tacsim:replay:<n>`; the
+//! tape is `log:match.<n>:<k>` (`mush_core::chunk_key`). No writer writes
+//! another's key, and the four id parsers — [`match_id_of_key`],
+//! [`crate::match_::replay::replay_id_of_key`], [`snapshot_id_of_key`] and
+//! [`live_id_of_key`] — accept pairwise disjoint sets (the unit tests below).
+//!
+//! **Readable by nobody but the boot** (doc 16 §1's observer rule, for two new
+//! surfaces). The live record holds account ids, the seed and every pilot's
+//! fold; the snapshot holds every contact id and every position. The only store
+//! reads this crate makes are `SIM REPORT`'s ([`report_key`]) and
+//! `@arena/report`'s (`mush_core::chunk_key`): one unit test below builds
+//! every key those two can build and asserts none of them is one of these, and
+//! a second scans the crate's source and pins those two as its only store
+//! reads — so a later verb that reads by key cannot reach either without a test
+//! failing.
+//!
+//! **The `LIVE_FORMAT` policy.** A later shape change to [`MatchRecord`],
+//! [`crate::match_::lobby::Centre`], [`crate::match_::lobby::Slot`],
+//! [`crate::match_::report::Fold`] or [`crate::match_::replay::ReplayFold`] (or
+//! anything they hold) is either **an added field with `#[serde(default)]`** — an
+//! older live record still decodes, which is how a running half written by one
+//! build resumes under the next — or **a [`LIVE_FORMAT`] bump**, which voids a
+//! running match at the reload by name. 16b cut AF.3 adds one field the first
+//! way. Every struct of the tree refuses an unknown key, so a record written by
+//! a newer build is refused rather than half-read.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use mush_core::{Ctx, ObjId};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use smol_str::SmolStr;
 
 use crate::arena::state::{Designator, EndReason, MatchEnd, MatchMode, Team};
@@ -261,7 +314,8 @@ impl UnitResult {
 }
 
 /// One side, as the record holds it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TeamRoster {
     /// Which side.
     pub team: Team,
@@ -272,7 +326,8 @@ pub struct TeamRoster {
 }
 
 /// **One match, while the world is tracking it** — RAM only (D-16-3).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MatchRecord {
     /// The match.
     pub id: MatchId,
@@ -806,6 +861,347 @@ pub fn match_id_of_key(key: &str) -> Option<MatchId> {
         .filter(|rest| rest.chars().all(|c| c.is_ascii_digit()) && !rest.is_empty())
         .and_then(|rest| rest.parse::<u64>().ok())
         .map(MatchId)
+}
+
+// ---------------------------------------------------------------------------
+// The two documents of a running match (16b cut AF.2; 16c N16)
+// ---------------------------------------------------------------------------
+
+/// **The arena snapshot's key** (16b cut AF.2): `tacsim:snapshot:<n>`.
+#[must_use]
+pub fn snapshot_key(match_id: MatchId) -> SmolStr {
+    SmolStr::new(format!("tacsim:snapshot:{}", match_id.0))
+}
+
+/// **The live record's key** (16b cut AF.2): `tacsim:live:<n>`.
+#[must_use]
+pub fn live_key(match_id: MatchId) -> SmolStr {
+    SmolStr::new(format!("tacsim:live:{}", match_id.0))
+}
+
+/// The match id `prefix` followed by digits and nothing else names, or `None`.
+fn id_after(key: &str, prefix: &str) -> Option<MatchId> {
+    key.strip_prefix(prefix)
+        .filter(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+        .and_then(|rest| rest.parse::<u64>().ok())
+        .map(MatchId)
+}
+
+/// The match id a snapshot key names (the exact form: digits only), or `None`
+/// for any other key — what the boot reads its leftover snapshots by.
+#[must_use]
+pub fn snapshot_id_of_key(key: &str) -> Option<MatchId> {
+    id_after(key, "tacsim:snapshot:")
+}
+
+/// The match id a live record's key names (the exact form: digits only), or
+/// `None` for any other key.
+#[must_use]
+pub fn live_id_of_key(key: &str) -> Option<MatchId> {
+    id_after(key, "tacsim:live:")
+}
+
+/// The live record's `record` word: a reader checks it first.
+pub const LIVE_RECORD: &str = "tacsim.live";
+
+/// **The live record's format** (16b cut AF.2): bumped by a shape change that
+/// is not an added `#[serde(default)]` field — this module's head has the
+/// policy — and a record of another format is refused by name.
+pub const LIVE_FORMAT: u32 = 1;
+
+/// **What the world holds of one running match, as the boot would need it**
+/// (16b cut AF.2): the document at [`live_key`].
+///
+/// The document is `{"record": "tacsim.live", "format": 1, "match": <n>,
+/// "at_ms", "chunks_appended", "chunks_lost", "resumed_from_ms": null | <ms>,
+/// "state": <one JSON string>, "state_digest": <64 lowercase base-16
+/// characters>}`, where `state` is `serde_json::to_string` of the record and
+/// the centre and `state_digest` is SHA-256 over its bytes. **The state is a
+/// string for the reason the arena snapshot's is**
+/// ([`crate::arena::snapshot`]'s head): the folds hold contact ids and the
+/// record a seed, full-range `u64`s the store's Redis seam re-serialises and
+/// does not promise to keep; a string comes back byte for byte, and the digest
+/// proves it did.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveRecord {
+    /// The match: the document's `match`, which must equal its key's and the
+    /// record's own id.
+    pub match_id: MatchId,
+    /// The arena millisecond of the last snapshot written beside it, or `0`
+    /// before the first — what 16b cut AF.3 checks against the snapshot's own
+    /// `at_ms` (the two documents from one moment).
+    pub at_ms: i64,
+    /// Chunks appended to the tape so far (`MatchMirror::chunks_appended`).
+    pub chunks_appended: u64,
+    /// Chunks the tape refused so far (`MatchMirror::chunks_lost`).
+    pub chunks_lost: u64,
+    /// The snapshot moment the match was last resumed from; `None` in 16b cut
+    /// AF.2, which resumes nothing (AF.3 writes it).
+    pub resumed_from_ms: Option<i64>,
+    /// The match's record, folds and replay fold included.
+    pub record: MatchRecord,
+    /// The centre as it stood — the lobby's, when it is running this match,
+    /// and otherwise the one `lobby::adopt` binds for a staff `@arena/start`.
+    pub centre: crate::match_::lobby::Centre,
+}
+
+/// **Why a live record was refused** (16b cut AF.2). Each `Display` starts
+/// `the live record does not decode:`, the sentence 16b cut AF.3's void reason
+/// prints whole.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum LiveRecordError {
+    /// The document's `record` is not [`LIVE_RECORD`].
+    #[error("the live record does not decode: not a live record (record {found})")]
+    Record {
+        /// What the `record` key held, as JSON.
+        found: String,
+    },
+    /// The document is a live record of another format.
+    #[error("the live record does not decode: live record format {found} is not {expected}")]
+    Format {
+        /// The document's format.
+        found: u64,
+        /// [`LIVE_FORMAT`].
+        expected: u32,
+    },
+    /// The state string is not the one the document was written with.
+    #[error(
+        "the live record does not decode: state digest mismatch: recorded {recorded}, computed \
+         {computed}"
+    )]
+    DigestMismatch {
+        /// The document's `state_digest`.
+        recorded: String,
+        /// SHA-256 over the state string as given.
+        computed: String,
+    },
+    /// A missing or unknown key, a value of the wrong shape (`serde`'s own
+    /// message), or a record whose id is not the document's match.
+    #[error("the live record does not decode: {0}")]
+    Malformed(String),
+}
+
+/// The live record's document, as `serde` reads and writes it: every key of
+/// [`LiveRecord`]'s shape and no other.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveDocument<'a> {
+    record: String,
+    format: u32,
+    #[serde(rename = "match")]
+    match_id: MatchId,
+    at_ms: i64,
+    chunks_appended: u64,
+    chunks_lost: u64,
+    resumed_from_ms: Option<i64>,
+    #[serde(borrow)]
+    state: Cow<'a, str>,
+    state_digest: String,
+}
+
+/// The state string's contents, borrowed for the write — the world loop pays
+/// this every snapshot and must not clone the folds to do it.
+#[derive(Serialize)]
+struct LiveStateRef<'a> {
+    record: &'a MatchRecord,
+    centre: &'a crate::match_::lobby::Centre,
+}
+
+/// The state string's contents, owned for the read; the same two keys.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveState {
+    record: MatchRecord,
+    centre: crate::match_::lobby::Centre,
+}
+
+/// SHA-256 over `state`'s bytes, as every digest in the tree is written.
+fn live_state_digest(state: &str) -> String {
+    crate::arena::digest_text(&Sha256::digest(state.as_bytes()).into())
+}
+
+/// **Build a live document from borrows** — what [`LiveRecord::to_document`]
+/// and [`write_live`] both write.
+#[allow(clippy::too_many_arguments)]
+fn live_document(
+    match_id: MatchId,
+    at_ms: i64,
+    chunks_appended: u64,
+    chunks_lost: u64,
+    resumed_from_ms: Option<i64>,
+    record: &MatchRecord,
+    centre: &crate::match_::lobby::Centre,
+) -> Result<serde_json::Value, LiveRecordError> {
+    let state = serde_json::to_string(&LiveStateRef { record, centre })
+        .map_err(|error| LiveRecordError::Malformed(error.to_string()))?;
+    serde_json::to_value(LiveDocument {
+        record: LIVE_RECORD.to_owned(),
+        format: LIVE_FORMAT,
+        match_id,
+        at_ms,
+        chunks_appended,
+        chunks_lost,
+        resumed_from_ms,
+        state_digest: live_state_digest(&state),
+        state: Cow::Borrowed(&state),
+    })
+    .map_err(|error| LiveRecordError::Malformed(error.to_string()))
+}
+
+impl LiveRecord {
+    /// **The document at [`live_key`]** (this type's doc has its shape).
+    ///
+    /// # Errors
+    ///
+    /// [`LiveRecordError::Malformed`] when a value does not serialise, which no
+    /// value of this tree does (every map in it is keyed by an integer or a
+    /// string).
+    pub fn to_document(&self) -> Result<serde_json::Value, LiveRecordError> {
+        live_document(
+            self.match_id,
+            self.at_ms,
+            self.chunks_appended,
+            self.chunks_lost,
+            self.resumed_from_ms,
+            &self.record,
+            &self.centre,
+        )
+    }
+
+    /// **A live record back out of its document** (16b cut AF.2), checked in
+    /// this order: the record word, the format, the document's own shape, the
+    /// state digest (before the state is parsed), the state's shape, and that
+    /// the record inside is the document's match. The caller compares
+    /// [`LiveRecord::match_id`] with the key it read the document under (the V.2
+    /// rule: a document whose own `match` disagrees with its key is not that
+    /// match's).
+    ///
+    /// # Errors
+    ///
+    /// Each check refuses by its own [`LiveRecordError`] variant.
+    pub fn from_document(document: &serde_json::Value) -> Result<LiveRecord, LiveRecordError> {
+        let record = document.get("record");
+        if record.and_then(serde_json::Value::as_str) != Some(LIVE_RECORD) {
+            return Err(LiveRecordError::Record {
+                found: record.map_or_else(|| "absent".to_owned(), ToString::to_string),
+            });
+        }
+        let format = document.get("format").and_then(serde_json::Value::as_u64);
+        if format != Some(u64::from(LIVE_FORMAT)) {
+            return Err(LiveRecordError::Format {
+                found: format.unwrap_or(0),
+                expected: LIVE_FORMAT,
+            });
+        }
+        let head = LiveDocument::deserialize(document)
+            .map_err(|error| LiveRecordError::Malformed(error.to_string()))?;
+        let computed = live_state_digest(&head.state);
+        if computed != head.state_digest {
+            return Err(LiveRecordError::DigestMismatch {
+                recorded: head.state_digest,
+                computed,
+            });
+        }
+        let LiveState { record, centre } = serde_json::from_str(&head.state)
+            .map_err(|error| LiveRecordError::Malformed(error.to_string()))?;
+        if record.id != head.match_id {
+            return Err(LiveRecordError::Malformed(format!(
+                "the document is match {} and the record inside it is match {}",
+                head.match_id, record.id
+            )));
+        }
+        Ok(LiveRecord {
+            match_id: head.match_id,
+            at_ms: head.at_ms,
+            chunks_appended: head.chunks_appended,
+            chunks_lost: head.chunks_lost,
+            resumed_from_ms: head.resumed_from_ms,
+            record,
+            centre,
+        })
+    }
+}
+
+/// **Write one match's live record** (16b cut AF.2) at [`live_key`], on the
+/// module's own op lane.
+///
+/// Read off the registry's mirror: `at_ms` (the last snapshot's moment, `0`
+/// before the first), the two chunk counters and `resumed_from_ms`; off the
+/// book: the record and the centre — the book's own centre when it is on this
+/// match, and otherwise the centre `lobby::adopt` binds for a staff
+/// `@arena/start` (`Running`, on this match, nothing else). Serialised from
+/// borrows: nothing of the record is cloned on the world loop.
+///
+/// **Three callers**: `crate::match_::start` at check-out, in the action that
+/// writes the markers; `crate::arena_bridge`'s `on_snapshot`, beside the
+/// snapshot document in one action; and the two writers that park the record in
+/// `Stopping` (`crate::match_::abort` and `lobby::unattended_deadline`), so a
+/// stop in flight at a crash is found by the boot as stopping and is never
+/// undone by a resume (16b cut AF.3). A match the book does not hold writes
+/// nothing; a record that does not serialise (which none does) is logged.
+pub fn write_live(ctx: &mut Ctx<'_>, match_id: MatchId) {
+    let (at_ms, chunks_appended, chunks_lost, resumed_from_ms) = ctx
+        .w
+        .module_state::<crate::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.mirror(match_id))
+        .map_or((0, 0, 0, None), |mirror| {
+            (
+                mirror.snapshot_at_ms.unwrap_or(0),
+                mirror.chunks_appended,
+                mirror.chunks_lost,
+                mirror.resumed_from_ms,
+            )
+        });
+    let Some(book) = ctx.w.module_state::<super::MatchBook>() else {
+        return;
+    };
+    let Some(record) = book.get(match_id) else {
+        return;
+    };
+    let adopted;
+    let centre = if book.centre().match_id == Some(match_id) {
+        book.centre()
+    } else {
+        adopted = crate::match_::lobby::Centre {
+            state: MatchState::Running,
+            match_id: Some(match_id),
+            ..crate::match_::lobby::Centre::default()
+        };
+        &adopted
+    };
+    let written = live_document(
+        match_id,
+        at_ms,
+        chunks_appended,
+        chunks_lost,
+        resumed_from_ms,
+        record,
+        centre,
+    );
+    match written {
+        Ok(value) => crate::store::push_op(
+            ctx.out,
+            mush_core::ModuleWrite::JsonSet {
+                key: live_key(match_id),
+                value,
+            },
+        ),
+        Err(error) => tracing::error!(
+            match_id = match_id.0,
+            %error,
+            "tacsim: a match's live record could not be written; a restart would not find it"
+        ),
+    }
+}
+
+/// **Delete both documents of a running match** (16b cut AF.2): the live
+/// record and the arena snapshot, on the module's own op lane — by
+/// `crate::match_::finish` in the result's action on every end, a void
+/// included, and by the boot for every leftover pair it does not resume.
+pub fn delete_live_and_snapshot(ctx: &mut Ctx<'_>, match_id: MatchId) {
+    for key in [live_key(match_id), snapshot_key(match_id)] {
+        crate::store::push_op(ctx.out, mush_core::ModuleWrite::Del { key });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2097,5 +2493,365 @@ mod tests {
             false,
         );
         assert!(orphan.get("mode").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut AF.2 (16c N16): the two documents of a running match
+    // -----------------------------------------------------------------------
+
+    /// One key parser, named.
+    type Parser = (&'static str, fn(&str) -> Option<MatchId>);
+
+    /// Every tacsim key parser of the running and finished matches.
+    fn parsers() -> [Parser; 4] {
+        [
+            ("match", match_id_of_key),
+            ("replay", crate::match_::replay::replay_id_of_key),
+            ("snapshot", snapshot_id_of_key),
+            ("live", live_id_of_key),
+        ]
+    }
+
+    /// **16b cut AF.2**: the two new keys round-trip, the parses are exact
+    /// (digits only), and the four parsers are pairwise disjoint — each accepts
+    /// its own key and refuses every other, a report key included.
+    #[test]
+    fn af2_the_four_key_parsers_are_pairwise_disjoint() {
+        assert_eq!(snapshot_key(MatchId(7)).as_str(), "tacsim:snapshot:7");
+        assert_eq!(live_key(MatchId(7)).as_str(), "tacsim:live:7");
+        assert_eq!(snapshot_id_of_key("tacsim:snapshot:7"), Some(MatchId(7)));
+        assert_eq!(live_id_of_key("tacsim:live:7"), Some(MatchId(7)));
+        for bad in [
+            "tacsim:live:",
+            "tacsim:live:7x",
+            "tacsim:live:-7",
+            "tacsim:live:7:1",
+            "tacsim:live: 7",
+            "tacsim:snapshot:",
+            "tacsim:snapshot:+7",
+        ] {
+            assert_eq!(live_id_of_key(bad), None, "{bad}");
+            assert_eq!(snapshot_id_of_key(bad), None, "{bad}");
+        }
+        let keys = [
+            ("match", "tacsim:match:1"),
+            ("replay", "tacsim:replay:1"),
+            ("snapshot", "tacsim:snapshot:1"),
+            ("live", "tacsim:live:1"),
+            ("report", "tacsim:report:1:2"),
+        ];
+        for (owner, key) in keys {
+            for (parser, parse) in parsers() {
+                assert_eq!(
+                    parse(key).is_some(),
+                    owner == parser,
+                    "the {parser} parser on {key}"
+                );
+            }
+        }
+    }
+
+    /// `report_key`'s shape: `tacsim:report:<match>:<unit>`, digits both.
+    fn is_report_key(key: &str) -> bool {
+        key.strip_prefix("tacsim:report:")
+            .and_then(|rest| rest.split_once(':'))
+            .is_some_and(|(id, unit)| {
+                [id, unit]
+                    .iter()
+                    .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+            })
+    }
+
+    /// **16b cut AF.2 — the two documents are readable by nobody but the boot**
+    /// (doc 16 §1's observer rule, for two new surfaces).
+    ///
+    /// The crate's only store reads are `SIM REPORT`'s, one [`report_key`], and
+    /// `@arena/report`'s, a page of `mush_core::chunk_key`s of the match's log.
+    /// Every key those two can build, over a range of matches, units and chunks,
+    /// is one of those two shapes and is accepted by none of the four `tacsim:`
+    /// id parsers. With the scan below, which pins those two readers as the
+    /// crate's only ones, a later verb that reads by key reaches `tacsim:live:`
+    /// (account ids, the seed, every fold) or `tacsim:snapshot:` (every contact
+    /// id, every position) only by failing one of the two.
+    #[test]
+    fn af2_no_key_a_store_read_can_build_is_a_running_matchs_document() {
+        let ids = [
+            0_u64,
+            1,
+            2,
+            9,
+            10,
+            99,
+            12_345,
+            u64::from(u32::MAX),
+            u64::MAX,
+        ];
+        let units = [0_u32, 1, 101, 4_096, u32::MAX];
+        let mut read = Vec::new();
+        for id in ids {
+            for unit in units {
+                read.push(report_key(MatchId(id), ObjId(unit)));
+            }
+            let log = crate::arena_bridge::match_log_id(MatchId(id));
+            for chunk in [0_u64, 1, 15, 16, 1_000_000, u64::MAX] {
+                read.push(mush_core::chunk_key(&log, chunk));
+            }
+        }
+        for key in &read {
+            assert!(
+                is_report_key(key) || mush_core::parse_chunk_key(key).is_some(),
+                "{key} is neither a report key nor a chunk key"
+            );
+            for (parser, parse) in parsers() {
+                assert_eq!(parse(key), None, "the {parser} parser accepts {key}");
+            }
+            assert!(
+                !key.starts_with("tacsim:live:") && !key.starts_with("tacsim:snapshot:"),
+                "{key}"
+            );
+        }
+    }
+
+    /// **16b cut AF.2 — and those two are the crate's only store reads.** The
+    /// test above proves the keys the two readers build; this one pins the
+    /// readers: a scan of every `.rs` file under `src/`, comments stripped,
+    /// finds the store-read call exactly twice, both in `match_/report.rs`
+    /// (`request` and `request_page`). A new verb that reads the store by key —
+    /// any key, `tacsim:live:` among them — fails here and must say why its key
+    /// is not one of the two documents before this count moves.
+    #[test]
+    fn af2_the_crate_reads_the_store_in_two_places_and_only_there() {
+        // Built from two halves, so this file's own text is not a caller.
+        let needle = concat!("read_", "store(");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![root.clone()];
+        let mut callers: Vec<(String, usize)> = Vec::new();
+        while let Some(dir) = stack.pop() {
+            let entries = std::fs::read_dir(&dir).expect("the source directory reads");
+            for entry in entries {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("a source file reads");
+                let calls: usize = text
+                    .lines()
+                    .map(|line| line.split("//").next().unwrap_or_default())
+                    .map(|code| code.matches(needle).count())
+                    .sum();
+                if calls > 0 {
+                    let name = path
+                        .strip_prefix(&root)
+                        .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_default();
+                    callers.push((name, calls));
+                }
+            }
+        }
+        callers.sort();
+        assert_eq!(
+            callers,
+            vec![("match_/report.rs".to_owned(), 2)],
+            "the crate's store reads moved: every reader must be one of `SIM REPORT`'s or \
+             `@arena/report`'s, whose keys the test above proves are never a running match's \
+             documents"
+        );
+    }
+
+    /// A record carrying everything a running match's does: a pilot fold, a
+    /// replay fold, a full-range seed, a last pose, and a centre with a seated
+    /// slot on it.
+    fn af2_live() -> LiveRecord {
+        let mut record = v2_record();
+        record.seed = u64::MAX - 1;
+        record.last_pose.insert(
+            ObjId(101),
+            PoseNumbers {
+                x_cm: 1_500,
+                y_cm: 2_500,
+                z_cm: 30,
+                heading_mdeg: 90_000,
+            },
+        );
+        let roster = crate::match_::report::Roster::from_record(&record);
+        record.folds = roster
+            .pilots()
+            .map(|(_, unit)| {
+                (
+                    unit,
+                    crate::match_::report::Fold::new(
+                        roster.clone(),
+                        crate::match_::report::Reader::Pilot { unit },
+                        crate::match_::report::ReportRules {
+                            designate_on_detection: false,
+                        },
+                    ),
+                )
+            })
+            .collect();
+        let named: Vec<(ObjId, Designator, Team)> = record
+            .callsigns
+            .iter()
+            .filter_map(|(unit, name)| record.team_of(*unit).map(|team| (*unit, *name, team)))
+            .collect();
+        record.replay = Some(crate::match_::replay::ReplayFold::new(
+            record.id,
+            &record.arena,
+            &record.arena_definition_digest,
+            1_000,
+            64,
+            64,
+            5_000,
+            &named,
+            &[],
+        ));
+        let account = mush_core::AccountId::mint("pilot-5", 5).expect("an account id mints");
+        let centre = crate::match_::lobby::Centre {
+            state: MatchState::Running,
+            match_id: Some(record.id),
+            arena: record.arena.clone(),
+            slots: vec![crate::match_::lobby::Slot {
+                team: Team::Red,
+                index: 1,
+                account,
+                pilot: ObjId(5),
+                pod: Some(ObjId(900)),
+                unit: Some(ObjId(101)),
+                left: true,
+                dropped_at_ms: Some(1_234),
+                unit_type: None,
+            }],
+            leads: vec![(Team::Red, account)],
+            ..crate::match_::lobby::Centre::default()
+        };
+        LiveRecord {
+            match_id: record.id,
+            at_ms: 15_000,
+            chunks_appended: 4,
+            chunks_lost: 1,
+            resumed_from_ms: None,
+            record,
+            centre,
+        }
+    }
+
+    /// **16b cut AF.2**: a live record round-trips equal — through a JSON
+    /// string, as the store would hand it back — with its keys exactly the
+    /// document's, and every refusal is by name.
+    #[test]
+    fn af2_a_live_record_round_trips_and_refuses_by_name() {
+        let live = af2_live();
+        let document = live.to_document().expect("a live record serialises");
+        let object = document.as_object().expect("an object");
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "at_ms",
+                "chunks_appended",
+                "chunks_lost",
+                "format",
+                "match",
+                "record",
+                "resumed_from_ms",
+                "state",
+                "state_digest",
+            ]
+        );
+        assert_eq!(document["record"], LIVE_RECORD);
+        assert_eq!(document["format"], LIVE_FORMAT);
+        assert_eq!(document["match"], 12);
+        assert!(document["resumed_from_ms"].is_null());
+        assert!(document["state"].is_string(), "the state is one string");
+        let text = serde_json::to_string(&document).expect("the document prints");
+        let back: serde_json::Value = serde_json::from_str(&text).expect("and parses");
+        assert_eq!(LiveRecord::from_document(&back), Ok(live.clone()));
+
+        let with = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut copy = document.clone();
+            edit(&mut copy);
+            LiveRecord::from_document(&copy)
+        };
+        // A moved byte in the state: the digest refuses it before the parse.
+        let moved = with(&|doc| {
+            let state = doc["state"].as_str().unwrap_or_default().replacen(
+                "\"started_ms\":1000",
+                "\"started_ms\":1001",
+                1,
+            );
+            doc["state"] = serde_json::Value::from(state);
+        });
+        assert!(
+            matches!(moved, Err(LiveRecordError::DigestMismatch { .. })),
+            "{moved:?}"
+        );
+        // The same edit with the digest re-stamped decodes — to another record.
+        let restamped = with(&|doc| {
+            let state = doc["state"].as_str().unwrap_or_default().replacen(
+                "\"started_ms\":1000",
+                "\"started_ms\":1001",
+                1,
+            );
+            doc["state_digest"] = serde_json::Value::from(live_state_digest(&state));
+            doc["state"] = serde_json::Value::from(state);
+        });
+        assert_eq!(restamped.map(|back| back.record.started_ms), Ok(1_001));
+        let other = with(&|doc| doc["record"] = serde_json::Value::from("tacsim.snapshot"));
+        assert!(
+            matches!(other, Err(LiveRecordError::Record { .. })),
+            "{other:?}"
+        );
+        let format = with(&|doc| doc["format"] = serde_json::Value::from(2));
+        assert_eq!(
+            format,
+            Err(LiveRecordError::Format {
+                found: 2,
+                expected: LIVE_FORMAT
+            })
+        );
+        let unknown = with(&|doc| {
+            if let Some(object) = doc.as_object_mut() {
+                object.insert("extra".to_owned(), serde_json::Value::from(1));
+            }
+        });
+        assert!(
+            matches!(unknown, Err(LiveRecordError::Malformed(_))),
+            "{unknown:?}"
+        );
+        let elsewhere = with(&|doc| doc["match"] = serde_json::Value::from(13));
+        assert!(
+            matches!(elsewhere, Err(LiveRecordError::Malformed(_))),
+            "{elsewhere:?}"
+        );
+        // An unknown key inside the state, re-stamped: the state's own shape.
+        let inner = with(&|doc| {
+            let state = doc["state"].as_str().unwrap_or_default().replacen(
+                "{\"record\":{",
+                "{\"record\":{\"extra\":1,",
+                1,
+            );
+            doc["state_digest"] = serde_json::Value::from(live_state_digest(&state));
+            doc["state"] = serde_json::Value::from(state);
+        });
+        assert!(
+            matches!(inner, Err(LiveRecordError::Malformed(_))),
+            "{inner:?}"
+        );
+        // Every refusal says what AF.3's void reason prints.
+        for refused in [moved, other, format, unknown, elsewhere, inner] {
+            let said = refused
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+            assert!(
+                said.starts_with("the live record does not decode: "),
+                "{said}"
+            );
+        }
     }
 }

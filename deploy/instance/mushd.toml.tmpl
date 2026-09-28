@@ -372,6 +372,8 @@ max_rss_growth_kib = 65536
 max_frame_bytes = 16384
 # (16b cut U.2) output events one arena pulse may produce through the world's output path; sized against the measured acquisition burst (24 panels + 11 contact-notice lines per pilot = 288, teammates only: an engaged pulse is unmeasured), 512 for headroom; whoever moves it next must say why
 max_output_events_per_pulse = 512
+# (16b cut AF.2) bytes of the largest arena snapshot the 30-second lane may encode; measured: the authored lane's 4,198,651 bytes, three halves of it rounded up to the next MiB
+max_snapshot_bytes = 7340032
 
 # Onboarding. The start rooms are REAL SEEDED ROOMS, not #0. Limbo is the
 # bootstrap room the store seeds with God — it is reserved from housing, it is

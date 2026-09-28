@@ -913,8 +913,17 @@ and `drone = 0` to forbid them.
 
 `[tacsim.arena].snapshot_ms` (16b cut AF.1; default 5,000, `0` or 1,000 to 60,000)
 is how many arena milliseconds apart a running match is snapshotted; `0` turns
-snapshots off, and a server restart then voids every running match by name. Cut
-AF.1 only lands the key: nothing reads it until the snapshot message (cut AF.2).
+snapshots off, and a server restart then voids every running match by name. Since
+16b cut AF.2 the arena task reads it: on the opening pulse and on every pulse that
+crosses a boundary of arena time it encodes the arena and hands it to the world,
+which writes `tacsim:snapshot:<match>` and the match's live record
+`tacsim:live:<match>` in one action on the module's own lane; both are deleted
+with the result, and by a boot (a restart still voids until cut AF.3 resumes from
+them). Nothing but the boot reads them. `@arena/status` prints `last snapshot: at
+N ms of arena time` under each match once one has been written.
+`[tacsim.harness].max_snapshot_bytes` (16b cut AF.2; default 7,340,032) is the
+largest snapshot the harness's 30-second lane may encode — see the weekly harness
+below.
 
 #### The cost run
 
@@ -1238,8 +1247,15 @@ verbatim (a test holds them equal); only the environment differs.
   (the 12 ms lens per wake on both cohorts and per window on the CI cohort, the
   20 ms per-window lens on the authored cohort (16b cut J.3c on the owner's word,
   17.5 at J.3b; 16c Q26), the per-pulse bounds of `[tacsim.harness]` (share
-  operations 768 since 16b cut J.3b), the memory growth, the frame bytes) —
-  D-16-19's *assert locally*, on a box that is not shared.
+  operations 768 since 16b cut J.3b), the memory growth, the frame bytes, and
+  (16b cut AF.2) the largest arena snapshot the 30-second lane took against
+  `max_snapshot_bytes`, printed with its encode and decode times on
+  `harness_arena_snapshot` beside the lenses and outside the compared block, one
+  snapshot asserted for every period of arena time the window stood in) —
+  D-16-19's *assert locally*, on a box that is not shared. `TACSIM_SNAPSHOT_OFF=1`
+  stops the 30-second lane taking snapshots; it is for measuring what the encode
+  costs the lenses (off against on), the script never sets it, and an asserting
+  run refuses it.
 - **The delta** (`tacsim_harness_delta_against_the_committed_baseline`) reads the
   fresh `harness-arena.json` and `crates/tacsim/tests/harness_baseline/arena.<os>.json`.
   It fails on **any** difference in the deterministic block (the world, the

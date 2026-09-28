@@ -54,6 +54,7 @@ use std::sync::Arc;
 
 use mush_core::{Audience, CmdError, Ctx, ObjId, World};
 use mush_proto::OutputEvent;
+use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::arena::ledger::{EventKind, LedgerEvent};
@@ -155,7 +156,8 @@ pub const REPLAY_USAGE: &str = "Usage: SIM REPLAY <match> [<m:ss> | next | prev]
 
 /// **One unit of a replay's roster** (16b cut I.1): the callsign every viewer
 /// calls it by and its side. No object number and no pilot.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReplayRoster {
     /// The designator's `Display` (`RA`, `BC`).
     pub callsign: SmolStr,
@@ -167,7 +169,8 @@ pub struct ReplayRoster {
 /// heading in whole degrees clockwise from north. No `z`: a unit's height
 /// inside a match is its cell's elevation (doc 16 §3.2), which the ground
 /// already says.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KeyframeUnit {
     /// The arena cell's column.
     pub x: u16,
@@ -183,7 +186,8 @@ pub struct KeyframeUnit {
 /// in this keyframe (off the window, or not named by the arena's summary). One
 /// slot per roster entry and no key per unit is what keeps a twenty-four-unit
 /// hour near the bound.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Keyframe {
     /// Arena milliseconds.
     pub t_ms: i64,
@@ -192,7 +196,8 @@ pub struct Keyframe {
 }
 
 /// **What became of one shot** (16b cut I.1), as the tape said it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ShotOutcome {
     /// Fired, and no `hit` or `miss` line followed before the tape ended.
     Flying,
@@ -248,7 +253,8 @@ impl ShotOutcome {
 /// and a sustained fight of twelve tanks passes [`REPLAY_MAX_SHOTS`] in
 /// minutes. A lost page is a hole in the tape itself, which no seal can hide,
 /// and is said as one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ReplayCut {
     /// A roster past [`REPLAY_MAX_UNITS`] kept its first units.
     Roster,
@@ -287,7 +293,8 @@ impl ReplayCut {
 
 /// **One shot** (16b cut I.1): when it was fired, by and at which roster
 /// entries, and what became of it. No weapon, no range and no draw.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReplayShot {
     /// The `fired` line's arena millisecond.
     pub t_ms: i64,
@@ -302,7 +309,8 @@ pub struct ReplayShot {
 /// **One finished match, as a replay** (16b cut I.1) — what
 /// [`ReplayFold::finish`] answers, what [`Replay::to_document`] writes and what
 /// the ring holds.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Replay {
     /// The match.
     pub match_id: MatchId,
@@ -358,7 +366,8 @@ pub struct Replay {
 ///
 /// `PartialEq` and not `Eq`: it lives on [`crate::match_::MatchRecord`], which
 /// derives `Clone, Debug, PartialEq`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReplayFold {
     /// Object → roster index, for the units the roster kept.
     index: BTreeMap<ObjId, u16>,

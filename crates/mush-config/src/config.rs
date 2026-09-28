@@ -119,6 +119,7 @@
 //! | `[tacsim.harness].max_jam_checks_per_pulse` | `2048` | **16b cut U.2** (doc 16 §9 item 4): index candidates one pulse's jammer scans may look at |
 //! | `[tacsim.harness].max_rss_growth_kib` | `65536` | **16b cut U.2**: how far resident memory may grow over the harness's long run, KiB |
 //! | `[tacsim.harness].max_frame_bytes` | `16384` | **16b cut U.2**: the largest encoded `arena.cockpit` keyframe the fan-out lane may see; the lane measures the opening with no enemy in sight, so a combat frame is unmeasured |
+//! | `[tacsim.harness].max_snapshot_bytes` | `7340032` | **16b cut AF.2** (16c N16): the largest arena snapshot state the harness's 30-second lane may encode, bytes, asserted on both cohorts' `harness_arena_snapshot` line; measured before it was set — the authored lane's 4,198,651 bytes, three halves of it rounded up to the next MiB; the lane's own bound, kept out of the compared block |
 //! | `[tacsim.harness].max_output_events_per_pulse` | `512` | **16b cut U.2**: the most output events one arena pulse may produce through the world's output path; sized against the fan-out lane's measured acquisition burst (24 panels + 11 contact-notice lines per pilot = 288), 512 so a 24-pilot burst has headroom — whoever moves it next must say why; that burst is teammates only, so an engaged pulse is unmeasured |
 //! | `[game].starter_area` | `true` | S1: apply the shipped starter area (the lot, the OOC Area, the Staff Lobby) at a world's first boot; static content, no LLM call; never re-applied |
 //! | `[atlas].tile_max_cells` | `65536` | S1: the most cells one map tile holds; a larger footprint rasterizes coarser |
@@ -1519,6 +1520,12 @@ pub struct TacsimHarnessCfg {
     /// next must say why. That burst is teammates only, so an engaged pulse's
     /// fire and damage notices are unmeasured.
     pub max_output_events_per_pulse: u32,
+    /// **The largest arena snapshot the harness's 30-second lane may encode**,
+    /// bytes (16b cut AF.2; 16c N16): the snapshot's state string, asserted on
+    /// both cohorts. A threshold the harness asserts, never a limit on a running
+    /// match. 7 MiB, measured before it was set: the authored lane's 4,198,651
+    /// bytes, three halves of it rounded up to the next MiB.
+    pub max_snapshot_bytes: u64,
 }
 
 impl Default for TacsimHarnessCfg {
@@ -1543,6 +1550,9 @@ impl Default for TacsimHarnessCfg {
             // The measured burst is 288 (24 panels + 11 lines per pilot), on
             // the opening with no enemy in sight; an engaged pulse is unmeasured.
             max_output_events_per_pulse: 512,
+            // 16b cut AF.2: the authored lane's 4,198,651 bytes, three halves of
+            // it rounded up to the next MiB.
+            max_snapshot_bytes: 7_340_032,
         }
     }
 }
@@ -2730,6 +2740,8 @@ scene_turn_dedline_secs = 30
             ),
             (32_000, 2_048, 65_536, 16_384, 512)
         );
+        // 16b cut AF.2: 7 MiB, measured.
+        assert_eq!(h.max_snapshot_bytes, 7_340_032);
     }
 
     /// Cut G: every key of all eight tables parses to what it says. Written as
@@ -2782,7 +2794,8 @@ scene_turn_dedline_secs = 30
              max_jam_checks_per_pulse = 70\n\
              max_rss_growth_kib = 4096\n\
              max_frame_bytes = 2000\n\
-             max_output_events_per_pulse = 30\n",
+             max_output_events_per_pulse = 30\n\
+             max_snapshot_bytes = 4096\n",
         )
         .expect("the written-out blocks parse");
 
@@ -2866,6 +2879,36 @@ scene_turn_dedline_secs = 30
             ),
             (900, 70, 4_096, 2_000, 30)
         );
+        // 16b cut AF.2: the snapshot bound, written out like the rest.
+        assert_eq!(h.max_snapshot_bytes, 4_096);
+    }
+
+    /// **16b cut AF.2** (16c N16): `[tacsim.harness].max_snapshot_bytes` reads
+    /// the measured 7 MiB when a config does not name it, reads what it names,
+    /// and a misspelling refuses the config under `deny_unknown_fields` rather
+    /// than leaving the default silently in force. The floor of one is
+    /// `tacsim::config::HarnessConfig::validate`'s.
+    #[test]
+    fn af2_max_snapshot_bytes_absent_written_and_misspelt() {
+        let absent: Config =
+            toml::from_str("[tacsim.harness]\nunits = 300\n").expect("a section without it");
+        assert_eq!(
+            absent.tacsim.harness.max_snapshot_bytes, 7_340_032,
+            "the compiled default"
+        );
+        for written in [0_u64, 1, 8_388_608, u64::from(u32::MAX) + 1] {
+            let cfg: Config = toml::from_str(&format!(
+                "[tacsim.harness]\nmax_snapshot_bytes = {written}\n"
+            ))
+            .expect("the key parses");
+            assert_eq!(
+                cfg.tacsim.harness.max_snapshot_bytes, written,
+                "what is written is read; the floor is checked where the harness block is mapped"
+            );
+        }
+        let typo = toml::from_str::<Config>("[tacsim.harness]\nmax_snapshots_bytes = 1\n")
+            .expect_err("a misspelt key refuses the config");
+        assert!(typo.to_string().contains("max_snapshots_bytes"), "{typo}");
     }
 
     /// **16b cut AF.1** (16c N16): `[tacsim.arena].snapshot_ms` reads the compiled

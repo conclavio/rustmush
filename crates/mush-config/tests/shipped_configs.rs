@@ -816,6 +816,15 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
             cfg.tacsim.arena.snapshot_ms, 5_000,
             "{env_file}: 16b cut AF.1's snapshot cadence"
         );
+        // **16b cut AF.2** (16c N16): the harness's snapshot bound, measured
+        // before it was set. The template writes it with the other bounds under
+        // a header that says a box never silently runs a compiled-in default;
+        // this reads the rendered value (a harness key is not on the
+        // explicit-key list, which is for the live arena's knobs).
+        assert_eq!(
+            cfg.tacsim.harness.max_snapshot_bytes, 7_340_032,
+            "{env_file}: 16b cut AF.2's snapshot bound"
+        );
         // **16b cut AE.3** (doc 16 §2 W2): one drone a side. The template writes
         // no key, so this is the compiled default read off the parsed struct.
         assert_eq!(
@@ -838,6 +847,8 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
     assert_eq!(example.tacsim.arena.squad_size, 4);
     // 16b cut AF.1: the example writes the snapshot cadence at its default.
     assert_eq!(example.tacsim.arena.snapshot_ms, 5_000);
+    // 16b cut AF.2: and the harness's measured snapshot bound.
+    assert_eq!(example.tacsim.harness.max_snapshot_bytes, 7_340_032);
     // 16b cut AE.3: the example writes `max_units_by_class = { drone = 1 }` inline
     // under `[tacsim.arena]` (no header of its own: the template declares none).
     assert_eq!(

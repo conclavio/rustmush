@@ -514,6 +514,17 @@ screen over the new `arena.observer` feed, again a gateway-half change (the
 fresh `web/dist` and `GATEWAY_RESTART=1`, which is what puts the feed in the web
 hello), with no pack and no config key.
 
+**Snapshots (16b cut AF.2).** A running match now writes two documents to the
+store every `[tacsim.arena].snapshot_ms` of arena time (default 5,000):
+`tacsim:snapshot:<match>` and `tacsim:live:<match>`, about 215 KB together as
+stored for a twelve-tank match a minute into a fight (a 169 KB snapshot and a
+45 KB live record, measured). The live record grows with the debriefs and the
+replay: twenty-four full debriefs and a full replay put it at an estimated
+1.4 MB, reached only late in a long, large match. Both are overwritten in place
+and deleted with the result; `snapshot_ms` is the lever (a longer cadence
+writes less, `0` writes none). A reload or restart still aborts a running
+match as `restart` until 16b cut AF.3 resumes from them.
+
 ### The first staff login
 
 Stop the instance, then run the current `mush-server` (or all-in-one `mushd`)

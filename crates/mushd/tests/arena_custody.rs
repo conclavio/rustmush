@@ -381,6 +381,15 @@ fn pose_y_cm(placement: &Value) -> i64 {
         .unwrap_or_else(|| panic!("a direct placement carries a pose: {placement}"))
 }
 
+/// **One of a running match's two documents** (16b cut AF.2), as the store
+/// holds it: `tacsim:snapshot:<n>` or `tacsim:live:<n>`.
+async fn running_document(store: &Arc<dyn ObjectStore>, key: &str) -> Option<Value> {
+    store
+        .module_json_get("tacsim", key)
+        .await
+        .expect("the store read")
+}
+
 /// Every ledger line one match wrote, parsed, in the order the arena wrote them
 /// (16b cut M.1) — `crates/mushd/tests/arena_story.rs`'s reader: a chunk document
 /// carries the chunk's exact bytes in its `lines` fields, collected in chunk order
@@ -743,10 +752,27 @@ async fn a_restart_mid_match_restores_the_units_and_records_an_aborted_restart()
     })
     .await;
 
+    // **16b cut AF.2**: and the running match's two documents on disk too — the
+    // arena's snapshot and the world's live record — so the reboot below finds
+    // a leftover pair to delete.
+    wait_until(
+        Duration::from_secs(10),
+        "the snapshot and the live record",
+        async || {
+            running_document(&first.store, "tacsim:snapshot:1")
+                .await
+                .is_some()
+                && running_document(&first.store, "tacsim:live:1")
+                    .await
+                    .is_some()
+        },
+    )
+    .await;
+
     // Stop the server where it stands, mid-`Running`, with both markers on
-    // disk and no result document. An OOC match holds no durable state and
-    // never resumes (D-16-3), so this is exactly the state the next boot has
-    // to reconcile.
+    // disk and no result document. A running match does not resume yet (16b
+    // cut AF.3 resumes from the two documents; until then a restart voids), so
+    // this is exactly the state the next boot has to reconcile.
     let store = Arc::clone(&first.store);
     drop(term);
     drop(first);
@@ -795,6 +821,19 @@ async fn a_restart_mid_match_restores_the_units_and_records_an_aborted_restart()
         Some("restart"),
         "{result}"
     );
+    // **16b cut AF.2**: and the leftover pair is gone — the boot deleted the
+    // snapshot and the live record of the match it voided.
+    wait_until(
+        Duration::from_secs(10),
+        "the boot to delete the leftover pair",
+        async || {
+            running_document(&store, "tacsim:snapshot:1")
+                .await
+                .is_none()
+                && running_document(&store, "tacsim:live:1").await.is_none()
+        },
+    )
+    .await;
 
     // (4) The next match this world runs gets a NEW id: a counter that
     //     restarted at zero would write over `log:match.1` and `tacsim:match:1`.
@@ -807,4 +846,70 @@ async fn a_restart_mid_match_restores_the_units_and_records_an_aborted_restart()
     )
     .await;
     say(&mut term2, "@arena/abort 2", "is stopping").await;
+}
+
+/// **The two documents exist while a match runs and go with its result** (16b
+/// cut AF.2; 16c N16): over SSH, a staff `@arena/start` — the store holds the
+/// arena's snapshot (`tacsim.snapshot`, and no `match` key: the store key names
+/// it) and the world's live record (it decodes, it names match 1 and its record
+/// runs); `@arena/abort 1`, and both are gone while the result document is
+/// there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn af2_the_two_documents_exist_while_a_match_runs_and_go_with_its_result() {
+    let server = boot("arena-af2", None, true).await;
+    let (_handle, mut term) = staff_session(server.addr).await;
+    prepare(&mut term).await;
+    say(
+        &mut term,
+        &format!("@arena/start {ARENA}=#{}/#{}", RED.0, BLUE.0),
+        "is running on",
+    )
+    .await;
+    wait_until(
+        Duration::from_secs(10),
+        "the snapshot and the live record",
+        async || {
+            running_document(&server.store, "tacsim:snapshot:1")
+                .await
+                .is_some()
+                && running_document(&server.store, "tacsim:live:1")
+                    .await
+                    .is_some()
+        },
+    )
+    .await;
+    let snapshot = running_document(&server.store, "tacsim:snapshot:1")
+        .await
+        .expect("the snapshot");
+    assert_eq!(
+        snapshot.get("record").and_then(Value::as_str),
+        Some("tacsim.snapshot"),
+        "the arena's own document"
+    );
+    assert!(snapshot.get("match").is_none(), "the key names the match");
+    let live = running_document(&server.store, "tacsim:live:1")
+        .await
+        .expect("the live record");
+    let live = tacsim::match_::LiveRecord::from_document(&live)
+        .unwrap_or_else(|error| panic!("the live record the store gave back: {error}"));
+    assert_eq!(live.match_id, tacsim::arena_task::MatchId(1));
+    assert_eq!(live.record.state, tacsim::match_::MatchState::Running);
+
+    say(&mut term, "@arena/abort 1", "is stopping").await;
+    wait_until(
+        Duration::from_secs(20),
+        "the result, and the two documents gone",
+        async || {
+            running_document(&server.store, "tacsim:match:1")
+                .await
+                .is_some()
+                && running_document(&server.store, "tacsim:snapshot:1")
+                    .await
+                    .is_none()
+                && running_document(&server.store, "tacsim:live:1")
+                    .await
+                    .is_none()
+        },
+    )
+    .await;
 }

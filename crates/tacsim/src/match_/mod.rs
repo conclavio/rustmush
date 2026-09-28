@@ -106,10 +106,12 @@ pub use lobby::{
 };
 pub use net::{BLUE_NET, RED_NET, net_name};
 pub use record::{
-    HISTORY_DEPTH, HistoryRow, HistoryUnit, MatchOutcome, MatchRecord, MatchState, NO_HISTORY,
-    PoseNumbers, TeamRoster, UnitOutcome, UnitResult, arena_label, civil_utc, duration_words,
-    end_words, history_lines, match_id_of_key, outcome_words, report_key, result_key, write_replay,
-    write_report, write_restart_abort,
+    HISTORY_DEPTH, HistoryRow, HistoryUnit, LIVE_FORMAT, LIVE_RECORD, LiveRecord, LiveRecordError,
+    MatchOutcome, MatchRecord, MatchState, NO_HISTORY, PoseNumbers, TeamRoster, UnitOutcome,
+    UnitResult, arena_label, civil_utc, delete_live_and_snapshot, duration_words, end_words,
+    history_lines, live_id_of_key, live_key, match_id_of_key, outcome_words, report_key,
+    result_key, snapshot_id_of_key, snapshot_key, write_live, write_replay, write_report,
+    write_restart_abort,
 };
 pub use reset::{RESET_CAUSE, ResetReport, reset_stock_tanks, spec_plan};
 pub use sim::{SIM_VERB, Selector, sim_command};
@@ -1118,6 +1120,16 @@ pub fn start(
             &opening.poses,
         ));
     }
+    // **16b cut AF.2 (16c N16)**: the live record, in this same authoritative
+    // action as the markers, once the record carries its folds and its replay
+    // fold. The opening pulse snapshots at once and rewrites it; this one write
+    // is kept anyway, because it is cheap and a crash before the first snapshot
+    // then finds a live record with no snapshot beside it — a void 16b cut AF.3
+    // names `no snapshot document` rather than `no live record`. A lobby
+    // centre is still `Boarding` at this line (the lobby moves it to `Running`
+    // when this returns, in the same action); the snapshot's rewrite carries it
+    // `Running`.
+    record::write_live(ctx, match_id);
     Ok(match_id)
 }
 
@@ -1707,6 +1719,10 @@ pub fn finish(
         &reports,
         replay_written,
     );
+    // **16b cut AF.2 (16c N16)**: the running match's two documents go with its
+    // result, in this same action, on every end — a void included: a finished
+    // match is never resumed, and nothing but the boot ever read them.
+    record::delete_live_and_snapshot(ctx, match_id);
     // 16b cut K.1: and the lobby's own half of the release — the pods and the
     // slots — in this same authoritative action, with the centre left in its
     // terminal state carrying the outcome until somebody resets it.
@@ -1830,6 +1846,11 @@ pub fn abort(ctx: &mut Ctx<'_>, match_id: MatchId, reason: StopReason) -> AbortO
             {
                 record.state = MatchState::Stopping;
             }
+            // **16b cut AF.2 (16c N16)**: the live record is rewritten the
+            // moment the record parks, so a stop in flight at a crash is found
+            // by the boot as `stopping` and voided — never undone by a resume
+            // that would bring back a match somebody had ended (16b cut AF.3).
+            record::write_live(ctx, match_id);
             return AbortOutcome::Stopping;
         }
         Err(crate::arena_bridge::ControlRefusal::Busy) => return AbortOutcome::Busy,

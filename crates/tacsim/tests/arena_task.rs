@@ -28,7 +28,14 @@
 //!   take never cut; no control is dropped and a displaced
 //!   release still runs; a burst is bounded per unit with the newest refused;
 //!   the inbox keeps room for a control, a stop and an ack; and a stop that
-//!   meets an `Ended` in flight is `Busy` where a task that died is `Gone`.
+//!   meets an `Ended` in flight is `Busy` where a task that died is `Gone`;
+//! - **(h)** (16b cut AF.2) the snapshot: one on the opening pulse and one a
+//!   period of arena time, each decoding to the arena that was encoded, behind
+//!   every chunk closed before it, the one of the pulse before an end reaching
+//!   the world before the end, none on a pulse that ended the match or stalled,
+//!   and none with the rule off. Every fixture above
+//!   turns the rule off (`without_snapshots`), so their streams are the ones
+//!   they were written against.
 //!
 //! # Seeds
 //!
@@ -79,9 +86,9 @@ use tokio::task::JoinHandle;
 /// **16b cut M.1** adds its own rows (`2_356` onwards). None of its proofs arms
 /// a hook, but a row each keeps one match per proof and the rule in one place.
 ///
-/// **16b cut M.2** adds `2_398` and `2_399` for the same reason, and **16b cut
-/// U.1** `2_400` and `2_401`.
-const SEEDS: [(u64, &str); 21] = [
+/// **16b cut M.2** adds `2_398` and `2_399` for the same reason, **16b cut
+/// U.1** `2_400` and `2_401`, and **16b cut AF.2** `2_402` to `2_407`.
+const SEEDS: [(u64, &str); 27] = [
     (2_350, "the round trip"),
     (2_351, "the injected panic"),
     (2_352, "the stall"),
@@ -112,6 +119,21 @@ const SEEDS: [(u64, &str); 21] = [
     ),
     (2_400, "U.1: a two-tank match wakes on the substep lattice"),
     (2_401, "U.1: a late wake does not carry its lateness"),
+    (
+        2_402,
+        "AF.2: a snapshot on the first pulse and every five seconds",
+    ),
+    (
+        2_403,
+        "AF.2: two chunks then the snapshot on a one-message egress",
+    ),
+    (2_404, "AF.2: no snapshot with the rule off"),
+    (
+        2_405,
+        "AF.2: the snapshot before the end reaches the world first",
+    ),
+    (2_406, "AF.2: no snapshot on a pulse that ended the match"),
+    (2_407, "AF.2: no snapshot on a stalled pulse"),
 ];
 
 /// **16b cut AA.3**: the stall hook is one global seed slot, and arming it
@@ -292,12 +314,29 @@ fn custody(seed: u64) -> CustodyOut {
 /// not configurable, so the only honest way to close one in a test is to write
 /// enough events — a summary every 5 ms of arena time over two units is about
 /// ten summaries per 50 ms pulse, which fills a chunk in well under a second.
+///
+/// **16b cut AF.2**: and no snapshots ([`without_snapshots`]), like every
+/// fixture of this file that predates them.
 fn fast_arena() -> ArenaConfig {
-    let mut cfg = ArenaConfig::default();
+    let mut cfg = without_snapshots(ArenaConfig::default());
     cfg.tempo.quiet_ms = 50;
     cfg.tempo.alert_ms = 50;
     cfg.tempo.engaged_ms = 50;
     cfg.ledger.summary_ms = 5;
+    cfg
+}
+
+/// **`cfg` with the snapshot rule off** (16b cut AF.2): `snapshot_ms = 0`.
+///
+/// Every proof in this file that predates cut AF.2 counts, indexes or orders
+/// the egress's messages — the four capacity-1 backpressure proofs of 16b cut
+/// M.1, the index-based `clocks`, `frame_in` and `frames_for`, every U.1 count —
+/// and an [`ArenaOut::Snapshot`] on the opening pulse and every 5,000 ms would
+/// move all of them for a reason none of them is about. So every pre-existing
+/// fixture turns the rule off and those streams stay byte-identical; only the
+/// AF.2 proofs at the end of this file turn it on.
+fn without_snapshots(mut cfg: ArenaConfig) -> ArenaConfig {
+    cfg.snapshot_ms = 0;
     cfg
 }
 
@@ -949,8 +988,10 @@ fn no_passes() -> SensorsConfig {
 /// defaults and would otherwise be what decides the wakes at `Quiet`. As with
 /// [`no_passes`], the reflex tick's first offset is seeded inside the 600 s
 /// (16b cut U.1), so "past the window" holds on the seeds these tests use.
+///
+/// **16b cut AF.2**: with no snapshots ([`without_snapshots`]).
 fn arena_at(period_ms: u32) -> ArenaConfig {
-    let mut cfg = ArenaConfig::default();
+    let mut cfg = without_snapshots(ArenaConfig::default());
     cfg.tempo.quiet_ms = period_ms;
     cfg.tempo.alert_ms = period_ms;
     cfg.tempo.engaged_ms = period_ms;
@@ -1051,7 +1092,10 @@ async fn d1_an_idle_match_publishes_its_clock_once_an_arena_second() {
 /// **What the SHIPPED config does with the clock clause** (16b cut D.1, `B-29`).
 ///
 /// The test above pins the clause by pushing the recurring due events out of the
-/// way; this one changes nothing at all. On the defaults the per-unit sensor pass
+/// way; this one changes nothing but the snapshot rule (16b cut AF.2 turned it
+/// off in every fixture of this file that predates it, [`without_snapshots`]:
+/// an `ArenaOut::Snapshot` is not a `Frames` and [`clocks`] never reads one, so
+/// the clause pinned here is the shipped one either way). On the defaults the per-unit sensor pass
 /// (`sensors.pass_ms`, 1,000 ms) and the reflex decision (`reflex.decide_ms`,
 /// 1,000 ms) are both due more often than `tempo.quiet_ms`, and `next_due_ms` is
 /// the earlier of the next period multiple and the first substep boundary at or
@@ -1063,11 +1107,18 @@ async fn d1_an_idle_match_publishes_its_clock_once_an_arena_second() {
 ///
 /// That is the figure the seam is sized by and the figure
 /// [`tacsim::arena_task::ArenaOut::Frames`]' own doc states, so it is pinned on
-/// the config the game ships rather than on one no server runs.
+/// the arena block the game ships — its tempo, sensor and reflex cadences — and
+/// not on one no server runs; only `snapshot_ms` is off.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn d1_the_shipped_config_publishes_its_clock_about_once_an_arena_second() {
-    let (_handle, mut rx) =
-        start_unseated(2_377, &ArenaConfig::default(), &SensorsConfig::default());
+    // 16b cut AF.2: the shipped arena block with the snapshot rule off
+    // ([`without_snapshots`]) — a snapshot is not a clock, and nothing here is
+    // about one.
+    let (_handle, mut rx) = start_unseated(
+        2_377,
+        &without_snapshots(ArenaConfig::default()),
+        &SensorsConfig::default(),
+    );
     let messages = collect(&mut rx, Duration::from_millis(10_050)).await;
     let clocks = clocks(&messages);
     assert!(
@@ -2172,7 +2223,9 @@ fn fixture_substep() -> i64 {
 
 /// **Every wake is a lattice point, and there are at most `1000 / substep` of
 /// them an arena second** (16b cut U.1). A two-tank match at `Quiet` on the
-/// shipped config, `RED` started and driven north so that its pilot's view
+/// shipped config with the snapshot rule off (16b cut AF.2,
+/// [`without_snapshots`]; a snapshot rides the egress between wakes and is not
+/// a `Frames`, so [`clocks`] would not count it anyway), `RED` started and driven north so that its pilot's view
 /// changes on every pulse and every wake therefore publishes a `Frames`: each
 /// message's `now_ms` is a multiple of the substep, no arena second carries more
 /// than four, and more than one message lands in some second — the proof that
@@ -2184,7 +2237,13 @@ async fn u1_a_two_tank_match_wakes_on_the_lattice_at_most_once_a_substep() {
         startup_ms: 500,
         ..MatchConfig::default()
     };
-    let (handle, _join, mut rx) = start_with_egress(seed, &ArenaConfig::default(), &match_cfg, 256);
+    // 16b cut AF.2: with the snapshot rule off ([`without_snapshots`]).
+    let (handle, _join, mut rx) = start_with_egress(
+        seed,
+        &without_snapshots(ArenaConfig::default()),
+        &match_cfg,
+        256,
+    );
     handle
         .offer(order(RED, IntentKind::Startup, 1))
         .expect("the inbox takes the startup");
@@ -2277,5 +2336,316 @@ async fn u1_a_late_wake_still_asks_for_the_next_lattice_point_from_the_base() {
     assert_eq!(
         back, 2_000,
         "the late wake's three milliseconds were carried into the next deadline"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AF.2 (16c N16) — the snapshot rides the egress behind the chunks
+// ---------------------------------------------------------------------------
+
+/// Every `Snapshot` message, with its index among `messages`.
+fn snapshots(messages: &[ArenaOut]) -> Vec<(usize, &tacsim::arena::Snapshot)> {
+    messages
+        .iter()
+        .enumerate()
+        .filter_map(|(at, message)| match message {
+            ArenaOut::Snapshot { snapshot, .. } => Some((at, snapshot.as_ref())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **The world receives every chunk closed before a snapshot before that
+/// snapshot, and none closed after it** (16b cut AF.2): for each `Snapshot`,
+/// every `Ledger` whose sequence is at or below its `chunk_seq` came earlier
+/// and every one above it came later — the invariant 16b cut AF.3's resume
+/// (`flushed_upto = last_closed_seq`) stands on.
+fn assert_snapshots_follow_their_chunks(messages: &[ArenaOut]) {
+    let chunks: Vec<(usize, u64)> = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(at, message)| match message {
+            ArenaOut::Ledger { chunk, .. } => Some((at, chunk.seq)),
+            _ => None,
+        })
+        .collect();
+    for (at, snapshot) in snapshots(messages) {
+        for (chunk_at, seq) in &chunks {
+            assert_eq!(
+                *seq <= snapshot.chunk_seq,
+                *chunk_at < at,
+                "chunk {seq} (message {chunk_at}) against the snapshot at {} ms closing chunk {} \
+                 (message {at})",
+                snapshot.at_ms,
+                snapshot.chunk_seq
+            );
+        }
+    }
+}
+
+/// **A snapshot on the opening pulse and one a period of arena time, each one
+/// the arena's own** (16b cut AF.2).
+///
+/// Three runs, on tokio's paused clock:
+///
+/// 1. **The cadence.** The shipped arena block (`snapshot_ms = 5,000`) over
+///    sixty arena seconds, the world reading everything: one `Snapshot` right
+///    after the opening pulse's `Frames` and before any later pulse's message,
+///    then one per period — thirteen, the i-th taken in period i — each one
+///    decoding against the fixture's ground to an arena whose state hash is
+///    the one recorded, and every one following its chunks.
+/// 2. **The order behind the chunks.** A one-message egress the world does not
+///    read for five seconds while a five-millisecond summary cadence closes
+///    several chunks: when it reads, the chunks closed before the five-second
+///    snapshot come first, in order, and the snapshot straight after them —
+///    `Ledger`, `Ledger`, …, `Snapshot` — and the opening pulse's snapshot,
+///    replaced while it waited, never arrives.
+/// 3. **Off.** `snapshot_ms = 0`: no `Snapshot` in sixty seconds.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn af2_a_snapshot_rides_the_egress_on_the_first_pulse_and_every_five_seconds() {
+    // (1) The cadence, on the shipped arena block.
+    let seed = SEEDS[21].0;
+    let arena_cfg = ArenaConfig::default();
+    assert_eq!(arena_cfg.snapshot_ms, 5_000, "the shipped cadence");
+    let (_handle, mut rx) = start(seed, &arena_cfg);
+    let messages = collect(&mut rx, Duration::from_millis(60_050)).await;
+    assert!(ended(&messages).is_none(), "the match ran the minute out");
+    let taken = snapshots(&messages);
+    assert_eq!(
+        taken
+            .iter()
+            .map(|(_, snapshot)| snapshot.at_ms.div_euclid(5_000))
+            .collect::<Vec<i64>>(),
+        (0..=12).collect::<Vec<i64>>(),
+        "one snapshot a period, the i-th in period i: {:?}",
+        taken
+            .iter()
+            .map(|(_, snapshot)| snapshot.at_ms)
+            .collect::<Vec<i64>>()
+    );
+    let (first_at, first) = taken[0];
+    assert_eq!(first.at_ms, 0, "the opening pulse's");
+    assert!(
+        matches!(messages.first(), Some(ArenaOut::Frames { now_ms: 0, .. })),
+        "the opening pulse's frames lead"
+    );
+    assert!(
+        messages[..first_at].iter().all(|message| match message {
+            ArenaOut::Frames { now_ms, .. } => *now_ms == 0,
+            ArenaOut::Ledger { .. } => true,
+            _ => false,
+        }),
+        "the opening snapshot follows the opening pulse's messages and precedes every later \
+         pulse's"
+    );
+    for (_, snapshot) in &taken {
+        let arena = tacsim::arena::Snapshot::decode(&snapshot.document, definition())
+            .unwrap_or_else(|error| panic!("the snapshot at {} ms: {error}", snapshot.at_ms));
+        assert_eq!(arena.now_ms, snapshot.at_ms);
+        assert_eq!(
+            tacsim::arena::hash::state_hash(&arena),
+            snapshot.state_hash,
+            "the decoded arena is the arena the task encoded"
+        );
+    }
+    assert_snapshots_follow_their_chunks(&messages);
+
+    // (2) Two chunks and more, then the snapshot, on a one-message egress.
+    let seed = SEEDS[22].0;
+    let mut arena_cfg = arena_at(5_000);
+    arena_cfg.snapshot_ms = 5_000;
+    arena_cfg.ledger.summary_ms = 5;
+    let (handle, _join, mut rx) = start_with_egress(seed, &arena_cfg, &MatchConfig::default(), 1);
+    // The world does not read while the arena runs its first five seconds.
+    tokio::time::sleep(Duration::from_millis(5_050)).await;
+    // Then it is stopped, so the end drains the task's whole retry queue in
+    // order, waiting on the world as it reads.
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    let messages = collect(&mut rx, Duration::from_millis(10_000)).await;
+    assert_eq!(ended(&messages), Some(EndReason::Abort));
+    let taken = snapshots(&messages);
+    assert_eq!(
+        taken
+            .iter()
+            .map(|(_, snapshot)| snapshot.at_ms)
+            .collect::<Vec<i64>>(),
+        vec![5_000],
+        "the opening snapshot was replaced by the newer while it waited"
+    );
+    let (at, snapshot) = taken[0];
+    assert!(
+        snapshot.chunk_seq >= 2,
+        "the pulses before the snapshot closed two chunks at least"
+    );
+    let before: Vec<u64> = messages[..at]
+        .iter()
+        .filter_map(|message| match message {
+            ArenaOut::Ledger { chunk, .. } => Some(chunk.seq),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        before,
+        (1..=snapshot.chunk_seq).collect::<Vec<u64>>(),
+        "every chunk closed before the snapshot, in order, and nothing after it"
+    );
+    assert!(
+        matches!(
+            &messages[at.saturating_sub(2)..at],
+            [ArenaOut::Ledger { .. }, ArenaOut::Ledger { .. }]
+        ),
+        "Ledger, Ledger, Snapshot"
+    );
+    assert_snapshots_follow_their_chunks(&messages);
+
+    // (3) Off.
+    let seed = SEEDS[23].0;
+    let (_handle, mut rx) = start(seed, &without_snapshots(ArenaConfig::default()));
+    let messages = collect(&mut rx, Duration::from_millis(60_050)).await;
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, ArenaOut::Frames { .. })),
+        "the match ran"
+    );
+    assert!(
+        snapshots(&messages).is_empty(),
+        "no snapshot with snapshot_ms = 0"
+    );
+}
+
+/// **The snapshot of the pulse before the end reaches the world before the
+/// end** (16b cut AF.2).
+///
+/// A one-message egress the world does not read: the opening pulse's `Frames`
+/// takes the slot, and the five-second pulse's snapshot waits in the task's
+/// retry queue. The abort's pulse ends the match and takes no snapshot of its
+/// own, so when `Task::end` drains the queue, the world reads the waiting
+/// `Snapshot`, taken before the end's moment, and then, last, `Ended`.
+///
+/// "None of its own" holds here by the period rule alone and is not the proof
+/// of `Task::pulse`'s `ended`/`stalled` guard: a `Stop` is honoured in phase 1
+/// before anything integrates, so an abort's pulse never advances arena time
+/// and always stands in the period the pulse before it already snapshotted
+/// (asserted below). The guard is proven where a terminal or stalled pulse
+/// enters a NEW period —
+/// [`af2_a_pulse_that_ends_or_stalls_the_match_takes_no_snapshot`].
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn af2_the_pulse_before_the_end_s_snapshot_reaches_the_world_before_the_end() {
+    let seed = SEEDS[24].0;
+    let mut arena_cfg = arena_at(5_000);
+    arena_cfg.snapshot_ms = 5_000;
+    let (handle, _join, mut rx) = start_with_egress(seed, &arena_cfg, &MatchConfig::default(), 1);
+    // Past the five-second pulse and short of the ten: the snapshot of the
+    // pulse at 5,000 is the one waiting.
+    tokio::time::sleep(Duration::from_millis(7_000)).await;
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    let messages = collect(&mut rx, Duration::from_millis(10_000)).await;
+    let end_ms = messages
+        .iter()
+        .find_map(|message| match message {
+            ArenaOut::Ended { end, .. } => Some(end.t_ms),
+            _ => None,
+        })
+        .expect("the match reported its end");
+    assert!(
+        matches!(messages.last(), Some(ArenaOut::Ended { .. })),
+        "the result is the last message"
+    );
+    let taken = snapshots(&messages);
+    assert_eq!(
+        taken
+            .iter()
+            .map(|(_, snapshot)| snapshot.at_ms)
+            .collect::<Vec<i64>>(),
+        vec![5_000],
+        "one snapshot, the pulse before the end's, and none of the end's own"
+    );
+    assert!(end_ms > 5_000, "the end came after the snapshot's moment");
+    assert_eq!(
+        end_ms.div_euclid(5_000),
+        1,
+        "the abort's pulse stands in the snapshot's own period (a stop never advances \
+         arena time), so the period rule alone keeps it from taking one"
+    );
+    // In that order: the snapshot, and after it no other snapshot, then the end.
+    let order: Vec<&str> = messages
+        .iter()
+        .filter_map(|message| match message {
+            ArenaOut::Snapshot { .. } => Some("snapshot"),
+            ArenaOut::Ended { .. } => Some("ended"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(order, vec!["snapshot", "ended"]);
+    assert_snapshots_follow_their_chunks(&messages);
+}
+
+/// **A pulse that ended the match, or stalled, takes no snapshot** (16b cut
+/// AF.2): `Task::pulse`'s guard, `ended.is_none() && !stalled`, proven on
+/// pulses that enter a period no snapshot was taken in — the opening pulse,
+/// period 0 — so the period rule alone would take one and only the guard
+/// refuses it. (An abort's pulse cannot prove it: a stop never advances arena
+/// time, see [`af2_the_pulse_before_the_end_s_snapshot_reaches_the_world_before_the_end`].)
+///
+/// 1. **Ended.** [`ends_on_the_opening_pulse`]: the opening pulse times the
+///    match out. Its result deletes the documents, and a snapshot of an ended
+///    arena is nothing a boot may resume, so none reaches the world before the
+///    `Ended`.
+/// 2. **Stalled.** The opening pulse is held 200 ms past a 30 ms `stall_ms` by
+///    the stall hook (proof (c)'s shape), and the watchdog voids the match: a
+///    stalled pulse's arena is void, so it is never snapshotted either.
+///
+/// Without the guard, each run's opening pulse queues a `Snapshot` at 0 ms that
+/// `Task::end` drains ahead of the `Ended`.
+#[tokio::test(flavor = "multi_thread")]
+async fn af2_a_pulse_that_ends_or_stalls_the_match_takes_no_snapshot() {
+    // (1) The pulse that ended the match: inside the default 2,000 ms stall
+    // bound, so it is the `ended` half alone that holds.
+    let seed = SEEDS[25].0;
+    let mut arena_cfg = fast_arena();
+    arena_cfg.snapshot_ms = 5_000;
+    let (_handle, mut rx) = start_with(seed, &arena_cfg, &ends_on_the_opening_pulse());
+    let messages = collect(&mut rx, Duration::from_millis(2_000)).await;
+    assert_eq!(
+        ended(&messages),
+        Some(EndReason::Timeout),
+        "the opening pulse ended the match: {messages:#?}"
+    );
+    assert!(
+        snapshots(&messages).is_empty(),
+        "the pulse that ended the match took no snapshot, though it opened period 0"
+    );
+
+    // (2) The stalled pulse. Held until the match has ended: proofs (c) and
+    // (f) arm the same global slot.
+    let _stall = STALL_HOOK.lock().await;
+    let seed = SEEDS[26].0;
+    let mut arena_cfg = fast_arena();
+    arena_cfg.snapshot_ms = 5_000;
+    arena_cfg.tempo.stall_ms = 30;
+    let mut armed = Arena::new(
+        custody(seed),
+        &arena_cfg,
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the arming arena is accepted");
+    armed.stall_next_step_for_tests(Duration::from_millis(200));
+    drop(armed);
+    let (_handle, mut rx) = start(seed, &arena_cfg);
+    let messages = collect(&mut rx, Duration::from_millis(2_000)).await;
+    assert_eq!(
+        ended(&messages),
+        Some(EndReason::Void),
+        "a 200 ms pulse under a 30 ms bound voids the match: {messages:#?}"
+    );
+    assert!(
+        snapshots(&messages).is_empty(),
+        "the stalled pulse took no snapshot, though it opened period 0"
     );
 }

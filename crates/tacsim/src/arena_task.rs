@@ -24,14 +24,16 @@
 //!                                       and the staff picture while watched (I.4)
 //! task  -> world  ArenaOut::Lagged      the clock or the egress is behind
 //! task  -> world  ArenaOut::Deliberate  the squads with something new to decide (N.2)
+//! task  -> world  ArenaOut::Snapshot    the arena as a document, every arena.snapshot_ms (AF.2)
 //! task  -> world  ArenaOut::Ended       the match is over, with its ledger digest
 //! ```
 //!
 //! `Deliberate` is doc 16 §3.1's eighth conceptual seam message. The table
 //! includes `LedgerAck` and `Lagged` reliability signals, **16b cut I.3**'s
 //! `TempoFloor` and **16b cut I.4**'s `Watch`, staff bookkeeping applied on
-//! arrival, while custody out is a spawn argument: it lists all eleven runtime
-//! enum variants.
+//! arrival, while custody out is a spawn argument: it lists all twelve runtime
+//! enum variants (**16b cut AF.2** added `Snapshot`, durability's and not
+//! doc 16 §3.1's; see "The snapshot" below).
 //! [`crate::arena_task::ArenaOut::Deliberate`] explains its report-only contract.
 //!
 //! `CustodyOut` is the argument to [`crate::arena_task::spawn_arena`] rather than a message — a
@@ -83,6 +85,32 @@
 //! `Stop` or a `LedgerAck` always fits
 //! ([`crate::arena_task::ArenaHandle::offer`]).
 //!
+//! # The snapshot (16b cut AF.2; 16c N16; doc 16 §3.1 "Durability")
+//!
+//! Every `[tacsim.arena].snapshot_ms` of **arena** time, and on the opening
+//! pulse, the task encodes its arena ([`crate::arena::Snapshot::encode`]) after
+//! the pulse's publication and hands the world
+//! [`crate::arena_task::ArenaOut::Snapshot`] — the rule is `Task::snapshot_if_due`'s:
+//! the arena's `now_ms` divided by the cadence names a period, and a pulse in a
+//! period no snapshot was taken in takes one. So a floored or lagging match
+//! snapshots per arena second and never per wall second, a pulse that ended the
+//! match (or stalled) takes none, and `0` turns the rule off.
+//!
+//! **The snapshot rides the chunks' backlog, behind them, in order.** The task's
+//! retry queue holds both (`Outbound`), is drained oldest first, and a snapshot
+//! is queued after the pulse's own chunks — so **the world always receives every
+//! chunk closed before a snapshot before that snapshot**, which is what 16b cut
+//! AF.3's resume stands on (it sets `flushed_upto` to the snapshot's last closed
+//! chunk, because the snapshot carries no chunk bytes). That is the order the
+//! world *receives* in; the store's commit order is normal and not guaranteed
+//! (the E0 note in `mush-server`'s `retained.rs`), which is why AF.3 still checks
+//! the tape against the snapshot at boot. At most one snapshot waits: a newer
+//! one replaces the older (only the newest can be resumed from) and goes to the
+//! back, still behind every chunk closed before it; and a snapshot never counts
+//! against the chunk bound, so under a stalled world it can never push a chunk
+//! out. `Task::end` drains the queue before `Ended`, so a snapshot queued on the
+//! pulse before the end reaches the world before the result that deletes it.
+//!
 //! # Failure
 //!
 //! `step` runs under [`std::panic::catch_unwind`]. A panic ends the task with
@@ -113,6 +141,7 @@ use crate::arena::damage::UnitReturn;
 use crate::arena::intents::{Control, ControlState, Intent, IntentKind};
 use crate::arena::ledger::LedgerChunk;
 use crate::arena::observer::Observer;
+use crate::arena::snapshot::Snapshot;
 use crate::arena::state::{
     Arena, ArenaError, Channel, CustodyOut, Designator, EndReason, MatchEnd, StopReason,
 };
@@ -125,7 +154,10 @@ use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
 /// stamps every egress message with it, and names the match's ledger log after
 /// it. It is deliberately a `u64` and not a store id: an OOC match holds no
 /// durable record of its own while it runs (D-16-3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
 pub struct MatchId(pub u64);
 
 impl std::fmt::Display for MatchId {
@@ -292,6 +324,29 @@ pub enum ArenaOut {
         /// `[tacsim.arena].deliberate_min_ms` in arena time.
         signals: Vec<crate::arena::command::SquadSignal>,
     },
+    /// **The arena as a document** (16b cut AF.2; 16c N16; doc 16 §3.1
+    /// "Durability"): taken after the publication of the opening pulse and of
+    /// every pulse that crosses a `[tacsim.arena].snapshot_ms` boundary in arena
+    /// time, never on a pulse that ended the match.
+    ///
+    /// It is **not** droppable, unlike `Frames`: it rides the task's retry queue
+    /// behind every chunk closed before it (this module's head, "The snapshot"),
+    /// and a newer one waiting replaces an older one. The world writes it, beside
+    /// its own live record, to `tacsim:snapshot:<match>` on the arena writer lane
+    /// (`crate::arena_bridge`'s `on_snapshot`); nothing in the arena waits for it
+    /// or hears of it again.
+    ///
+    /// Behind an [`Arc`] because this enum is `Clone` and a waiting send clones
+    /// its message on every retry; the world takes the document out of it
+    /// without a copy once the task has let its own clone go. `Debug` stays
+    /// cheap: [`crate::arena::Snapshot`]'s prints its head, never the document.
+    Snapshot {
+        /// Which match: the document itself names none (the arena library has
+        /// no match id), so this and the store key are what name it.
+        match_id: MatchId,
+        /// The document and its head.
+        snapshot: Arc<Snapshot>,
+    },
     /// The match is over. The last chunks precede this message.
     Ended {
         /// Which match.
@@ -334,6 +389,7 @@ impl ArenaOut {
             | ArenaOut::Frames { match_id, .. }
             | ArenaOut::Lagged { match_id }
             | ArenaOut::Deliberate { match_id, .. }
+            | ArenaOut::Snapshot { match_id, .. }
             | ArenaOut::Ended { match_id, .. } => *match_id,
         }
     }
@@ -517,6 +573,9 @@ pub fn spawn_arena(
         held_observer: None,
         held_notice_drops: 0,
         reported: Arc::clone(&reported),
+        // 16b cut AF.2: the reader of the key AF.1 put on every layer.
+        snapshot_ms: arena_cfg.snapshot_ms,
+        last_snapshot_period: None,
     }));
     Ok((
         ArenaHandle {
@@ -551,11 +610,15 @@ struct Task {
     inbox: mpsc::Receiver<ArenaMsg>,
     egress: mpsc::Sender<ArenaOut>,
     stop: watch::Receiver<bool>,
-    /// Chunks the world could not take yet, oldest first. Ordering is the whole
-    /// point: a black box read back out of `log:match.<id>` must be the sequence
-    /// the arena wrote.
-    backlog: VecDeque<LedgerChunk>,
-    /// `ledger.max_unflushed_chunks + 1`. Past it the arena's own
+    /// Chunks the world could not take yet, oldest first — **and, since 16b cut
+    /// AF.2, at most one snapshot among them**, behind every chunk closed before
+    /// it. Ordering is the whole point: a black box read back out of
+    /// `log:match.<id>` must be the sequence the arena wrote, and the world must
+    /// hold every chunk a snapshot follows before it holds the snapshot (this
+    /// module's head, "The snapshot").
+    backlog: VecDeque<Outbound>,
+    /// `ledger.max_unflushed_chunks + 1`, **counted over the chunks alone** (16b
+    /// cut AF.2: a waiting snapshot never counts). Past it the arena's own
     /// `Ledger::overflowed` voids the match at the next pulse anyway (nothing is
     /// being acknowledged), so the bound here is only what keeps the task's
     /// memory flat while that happens.
@@ -600,6 +663,76 @@ struct Task {
     /// Set the moment the `Ended` send completes; shared with
     /// [`ArenaHandle::has_reported`] (16b cut M.1, `B-49`).
     reported: Arc<AtomicBool>,
+    /// **`[tacsim.arena].snapshot_ms`** (16b cut AF.2): arena milliseconds
+    /// between two snapshots; `0` takes none.
+    snapshot_ms: u32,
+    /// **The period the last snapshot was taken in** (16b cut AF.2) —
+    /// `now_ms.div_euclid(snapshot_ms)` — or `None` before the first. Recorded
+    /// before the encode, so a period whose encode failed is not tried again.
+    last_snapshot_period: Option<i64>,
+}
+
+/// **One entry of the task's retry queue** (16b cut AF.2): a closed chunk, or
+/// the arena's snapshot, each sent as its own message in the order queued.
+#[derive(Debug)]
+enum Outbound {
+    /// Sent as [`ArenaOut::Ledger`].
+    Chunk(LedgerChunk),
+    /// Sent as [`ArenaOut::Snapshot`]; at most one is ever queued.
+    Snapshot(Arc<Snapshot>),
+}
+
+impl Outbound {
+    /// The message this entry is sent as — a clone of the chunk, or of the
+    /// [`Arc`], since an entry leaves the queue only once the egress took it.
+    fn message(&self, match_id: MatchId) -> ArenaOut {
+        match self {
+            Outbound::Chunk(chunk) => ArenaOut::Ledger {
+                match_id,
+                chunk: chunk.clone(),
+            },
+            Outbound::Snapshot(snapshot) => ArenaOut::Snapshot {
+                match_id,
+                snapshot: Arc::clone(snapshot),
+            },
+        }
+    }
+}
+
+/// **The period rule** (16b cut AF.2): whether a pulse that left the arena at
+/// `now_ms` takes a snapshot, recording its period in `last` when it does.
+///
+/// The period is `now_ms.div_euclid(snapshot_ms)`, in **arena** time: the
+/// opening pulse (period 0) takes one, a pulse in a period no snapshot was taken
+/// in takes one, and any number of pulses inside one period take none — so a
+/// pulse that moves the arena past two boundaries at once still takes one
+/// snapshot, of the arena as it stands. `0` takes none, ever.
+///
+/// Public for one reader beside the task: the harness's 30-second lane
+/// (`crates/tacsim/tests/harness.rs`, `run_wakes`), which takes its snapshots
+/// by this rule so it measures the encodes production pays and no others.
+#[must_use]
+pub fn snapshot_due(last: &mut Option<i64>, now_ms: i64, snapshot_ms: u32) -> bool {
+    if snapshot_ms == 0 {
+        return false;
+    }
+    let period = now_ms.div_euclid(i64::from(snapshot_ms));
+    if *last == Some(period) {
+        return false;
+    }
+    *last = Some(period);
+    true
+}
+
+/// What [`Task::snapshot_if_due`] did, for the unit tests.
+#[derive(Debug, PartialEq, Eq)]
+enum SnapshotTaken {
+    /// No boundary was crossed (or the rule is off).
+    NotDue,
+    /// A snapshot was queued.
+    Queued,
+    /// The encode refused; logged once for the period.
+    Failed,
 }
 
 // ---------------------------------------------------------------------------
@@ -1070,6 +1203,13 @@ impl Task {
         // the result says `void` — recorded in 16b's AA row; the journalled
         // variant is a library change and larger.
         let stalled = took > self.stall;
+        // **16b cut AF.2**: the snapshot, after the publication so it queues
+        // behind this pulse's chunks, and before the terminal arms below — never
+        // on a pulse that ended the match (its result deletes the documents) and
+        // never on a stalled one (the watchdog voids the match).
+        if ended.is_none() && !stalled {
+            let _ = self.snapshot_if_due();
+        }
         if let Some(end) = ended {
             // An end that is already a void keeps its word: both reasons are void
             // on both sides of the seam (`Task::end` and `match_::finish` test the
@@ -1351,12 +1491,13 @@ impl Task {
     /// only once the egress has taken it, so the order is never broken. The
     /// `try_send` form, `drain_backlog`, stays for `pulse` and `publish`, which
     /// must never wait.
+    ///
+    /// **16b cut AF.2**: a queued snapshot goes in its place in the order, as
+    /// [`ArenaOut::Snapshot`] — so the one taken on the pulse before the end
+    /// reaches the world before `Ended`.
     async fn drain_backlog_waiting(&mut self) -> Drain {
-        while let Some(chunk) = self.backlog.front().cloned() {
-            let message = ArenaOut::Ledger {
-                match_id: self.match_id,
-                chunk,
-            };
+        while let Some(entry) = self.backlog.front() {
+            let message = entry.message(self.match_id);
             match self.send_waiting(message).await {
                 Drain::Drained => {
                     self.backlog.pop_front();
@@ -1368,32 +1509,95 @@ impl Task {
     }
 
     /// Put one closed chunk at the back of the retry queue.
+    ///
+    /// **16b cut AF.2**: the bound counts chunks alone, and what goes past it is
+    /// the oldest **chunk**, never the waiting snapshot — a snapshot is not the
+    /// black box, and one waiting must never cost the world a chunk.
     fn queue_chunk(&mut self, chunk: LedgerChunk) {
-        if self.backlog.len() >= self.backlog_bound {
+        let chunks = self
+            .backlog
+            .iter()
+            .filter(|entry| matches!(entry, Outbound::Chunk(_)))
+            .count();
+        if chunks >= self.backlog_bound {
             // The world has stopped draining. The arena's own
             // `Ledger::overflowed` voids the match at the next pulse (nothing
             // is being acknowledged either), so this only keeps the task's
             // memory flat until it does; the oldest goes, because the newest
             // chunks are the ones nearest the failure worth reading.
-            let dropped = self.backlog.pop_front().map(|chunk| chunk.seq);
+            let dropped = self
+                .backlog
+                .iter()
+                .position(|entry| matches!(entry, Outbound::Chunk(_)))
+                .and_then(|at| self.backlog.remove(at))
+                .and_then(|entry| match entry {
+                    Outbound::Chunk(chunk) => Some(chunk.seq),
+                    Outbound::Snapshot(_) => None,
+                });
             tracing::error!(
                 match_id = %self.match_id,
                 dropped = ?dropped,
                 "the world is not draining the match ledger; a chunk was dropped"
             );
         }
-        self.backlog.push_back(chunk);
+        self.backlog.push_back(Outbound::Chunk(chunk));
+    }
+
+    /// **Put the arena's snapshot at the back of the retry queue** (16b cut
+    /// AF.2), behind every chunk closed before it.
+    ///
+    /// **At most one waits**: any snapshot already queued is taken out first,
+    /// because only the newest can be resumed from and an older one behind a
+    /// stalled world is state nobody will read. It never counts against
+    /// `backlog_bound` ([`Task::queue_chunk`]).
+    fn queue_snapshot(&mut self, snapshot: Arc<Snapshot>) {
+        self.backlog
+            .retain(|entry| !matches!(entry, Outbound::Snapshot(_)));
+        self.backlog.push_back(Outbound::Snapshot(snapshot));
+    }
+
+    /// **The snapshot rule** (16b cut AF.2), run by `pulse` after its
+    /// publication on a pulse that neither ended the match nor stalled: when
+    /// [`snapshot_due`] says the arena has entered a period with no snapshot,
+    /// encode it and queue it behind the pulse's chunks, then offer the queue.
+    ///
+    /// The period is recorded before the encode, so a refused encode is logged
+    /// once a period and not once a pulse; the next period tries again. The
+    /// encode runs here, on the task's thread between two pulses — production
+    /// pays it here, and the harness's 30-second lane measures it at the same
+    /// place (`crates/tacsim/tests/harness.rs`, `harness_arena_snapshot`).
+    fn snapshot_if_due(&mut self) -> SnapshotTaken {
+        if !snapshot_due(
+            &mut self.last_snapshot_period,
+            self.arena.now_ms,
+            self.snapshot_ms,
+        ) {
+            return SnapshotTaken::NotDue;
+        }
+        match Snapshot::encode(&self.arena) {
+            Ok(snapshot) => {
+                self.queue_snapshot(Arc::new(snapshot));
+                self.drain_backlog();
+                SnapshotTaken::Queued
+            }
+            Err(error) => {
+                tracing::error!(
+                    match_id = %self.match_id,
+                    arena_ms = self.arena.now_ms,
+                    %error,
+                    "the arena could not be snapshotted; the match will not resume from this period"
+                );
+                SnapshotTaken::Failed
+            }
+        }
     }
 
     /// Offer as much of the retry queue as the egress will take, oldest first,
-    /// stopping at the first refusal so the order is never broken.
+    /// stopping at the first refusal so the order is never broken — a waiting
+    /// snapshot in its place (16b cut AF.2).
     fn drain_backlog(&mut self) {
-        while let Some(chunk) = self.backlog.front() {
-            let message = ArenaOut::Ledger {
-                match_id: self.match_id,
-                chunk: chunk.clone(),
-            };
-            match self.egress.try_send(message) {
+        while let Some(entry) = self.backlog.front() {
+            match self.egress.try_send(entry.message(self.match_id)) {
                 Ok(()) => {
                     self.backlog.pop_front();
                 }
@@ -2142,6 +2346,8 @@ mod tests {
             held_observer: None,
             held_notice_drops: 0,
             reported: Arc::new(AtomicBool::new(false)),
+            snapshot_ms: 0,
+            last_snapshot_period: None,
         };
         let picture = |now_ms: i64| {
             let mut observer = task_picture();
@@ -2211,6 +2417,220 @@ mod tests {
         }
         ender.await.expect("the end joins");
         assert_eq!(seen, vec![Some(3_000), Some(4_000)]);
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut AF.2 — the snapshot rule and the ordered retry queue
+    // -----------------------------------------------------------------------
+
+    /// **16b cut AF.2**: the period rule, in arena time. The opening pulse
+    /// takes one; two pulses inside one period take none; one boundary crossed
+    /// is one snapshot; a floored pulse that moves the arena 2,000 ms crosses at
+    /// most one boundary and so takes at most one; a pulse that jumps two
+    /// boundaries at once still takes one; and `0` takes none, ever.
+    #[test]
+    fn af2_the_period_rule_takes_one_snapshot_a_period_of_arena_time() {
+        let mut last = None;
+        assert!(snapshot_due(&mut last, 0, 5_000), "the opening pulse");
+        assert_eq!(last, Some(0));
+        assert!(!snapshot_due(&mut last, 250, 5_000));
+        assert!(
+            !snapshot_due(&mut last, 4_999, 5_000),
+            "two pulses in one period"
+        );
+        assert!(
+            snapshot_due(&mut last, 5_000, 5_000),
+            "one boundary crossed"
+        );
+        assert!(
+            !snapshot_due(&mut last, 5_000, 5_000),
+            "the same moment again"
+        );
+        // A floored match pulsing every 2,000 ms of arena time: never two in one
+        // pulse, and exactly one per period over a minute — thirteen, periods 0
+        // to 12.
+        let mut last = None;
+        let mut taken = Vec::new();
+        for now_ms in (0..=60_000_i64).step_by(2_000) {
+            if snapshot_due(&mut last, now_ms, 5_000) {
+                taken.push(now_ms);
+            }
+        }
+        assert_eq!(
+            taken,
+            vec![
+                0, 6_000, 10_000, 16_000, 20_000, 26_000, 30_000, 36_000, 40_000, 46_000, 50_000,
+                56_000, 60_000
+            ],
+            "the first pulse in each period of arena time"
+        );
+        // A lagging pulse that crosses two boundaries at once takes one.
+        let mut last = Some(1);
+        assert!(snapshot_due(&mut last, 17_000, 5_000));
+        assert_eq!(last, Some(3));
+        // Off.
+        let mut last = None;
+        for now_ms in (0..=60_000_i64).step_by(250) {
+            assert!(!snapshot_due(&mut last, now_ms, 0));
+        }
+        assert_eq!(last, None);
+    }
+
+    /// A task on a one-message egress the test holds, with `backlog_bound`
+    /// chunks allowed, snapshots every `snapshot_ms`.
+    fn af2_task(
+        arena: Arena,
+        backlog_bound: usize,
+        snapshot_ms: u32,
+    ) -> (Task, mpsc::Receiver<ArenaOut>) {
+        let (egress, world) = mpsc::channel(1);
+        let (_inbox_tx, inbox) = mpsc::channel(4);
+        let (_stop_tx, stop) = watch::channel(false);
+        let task = Task {
+            match_id: MatchId(11),
+            arena,
+            inbox,
+            egress,
+            stop,
+            backlog: VecDeque::new(),
+            backlog_bound,
+            per_unit_bound: 4,
+            stall: Duration::from_secs(60),
+            last_clock_s: None,
+            held_frames: None,
+            held_observer: None,
+            held_notice_drops: 0,
+            reported: Arc::new(AtomicBool::new(false)),
+            snapshot_ms,
+            last_snapshot_period: None,
+        };
+        (task, world)
+    }
+
+    /// One chunk with a sequence and no bytes.
+    fn chunk(seq: u64) -> LedgerChunk {
+        LedgerChunk {
+            seq,
+            bytes: Vec::new(),
+        }
+    }
+
+    /// The retry queue as words: `c<seq>` for a chunk, `s<at_ms>` for a
+    /// snapshot.
+    fn queue_words(task: &Task) -> Vec<String> {
+        task.backlog
+            .iter()
+            .map(|entry| match entry {
+                Outbound::Chunk(chunk) => format!("c{}", chunk.seq),
+                Outbound::Snapshot(snapshot) => format!("s{}", snapshot.at_ms),
+            })
+            .collect()
+    }
+
+    /// A snapshot of a one-tank arena, re-stamped to `at_ms` so two can be
+    /// told apart (only the head is read by the queue).
+    fn snapshot_at(at_ms: i64) -> Arc<Snapshot> {
+        let arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+        let mut snapshot = Snapshot::encode(&arena).expect("an arena between pulses encodes");
+        snapshot.at_ms = at_ms;
+        Arc::new(snapshot)
+    }
+
+    /// **16b cut AF.2**: under a world that is not draining, a second snapshot
+    /// queued behind a full chunk backlog **replaces** the first — at most one
+    /// waits, at the back, behind every chunk — and the chunks are untouched:
+    /// a snapshot never counts against the bound, so it can never push a chunk
+    /// out.
+    #[tokio::test]
+    async fn af2_a_newer_snapshot_replaces_the_waiting_one_and_takes_no_chunk_room() {
+        let arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+        let (mut task, mut world) = af2_task(arena, 3, 5_000);
+        // The world's one slot is taken, so nothing below leaves.
+        task.egress
+            .try_send(ArenaOut::Lagged {
+                match_id: MatchId(11),
+            })
+            .expect("the empty egress takes one message");
+        for seq in 1..=3 {
+            task.queue_chunk(chunk(seq));
+        }
+        task.queue_snapshot(snapshot_at(5_000));
+        task.drain_backlog();
+        assert_eq!(queue_words(&task), vec!["c1", "c2", "c3", "s5000"]);
+        task.queue_chunk(chunk(4));
+        // The bound is three chunks: the oldest chunk went, never the snapshot.
+        assert_eq!(queue_words(&task), vec!["c2", "c3", "s5000", "c4"]);
+        task.queue_snapshot(snapshot_at(10_000));
+        assert_eq!(
+            queue_words(&task),
+            vec!["c2", "c3", "c4", "s10000"],
+            "the newer replaces the older and goes behind every chunk closed before it"
+        );
+        // And the world, reading again, is handed them in that order.
+        assert!(matches!(world.recv().await, Some(ArenaOut::Lagged { .. })));
+        let mut seen = Vec::new();
+        while !task.backlog.is_empty() {
+            task.drain_backlog();
+            match world.recv().await {
+                Some(ArenaOut::Ledger { chunk, .. }) => seen.push(format!("c{}", chunk.seq)),
+                Some(ArenaOut::Snapshot { snapshot, .. }) => {
+                    seen.push(format!("s{}", snapshot.at_ms));
+                }
+                other => panic!("an unexpected message: {other:?}"),
+            }
+        }
+        assert_eq!(seen, vec!["c2", "c3", "c4", "s10000"]);
+    }
+
+    /// **16b cut AF.2**: the chunk overflow still drops the oldest **chunk**,
+    /// wherever the waiting snapshot stands — at the front of the queue too —
+    /// and never the snapshot.
+    #[test]
+    fn af2_the_chunk_overflow_drops_the_oldest_chunk_and_never_the_snapshot() {
+        let arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+        let (mut task, _world) = af2_task(arena, 2, 5_000);
+        // Nothing is drained in this test, so the queue is exactly what was put
+        // in it.
+        task.queue_snapshot(snapshot_at(0));
+        task.queue_chunk(chunk(1));
+        task.queue_chunk(chunk(2));
+        assert_eq!(queue_words(&task), vec!["s0", "c1", "c2"]);
+        task.queue_chunk(chunk(3));
+        assert_eq!(queue_words(&task), vec!["s0", "c2", "c3"]);
+        task.queue_chunk(chunk(4));
+        assert_eq!(queue_words(&task), vec!["s0", "c3", "c4"]);
+    }
+
+    /// **16b cut AF.2**: an encode refused is logged once a period, not once a
+    /// pulse — the period is recorded before the encode — and the next period
+    /// tries again (and succeeds once the arena is between pulses).
+    #[test]
+    fn af2_an_encode_error_is_logged_once_a_period() {
+        let mut arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+        // Per-pulse scratch left in place: the encode refuses it as "taken
+        // inside a pulse".
+        arena.spent_hits.insert(7);
+        let (mut task, _world) = af2_task(arena, 8, 5_000);
+        assert_eq!(task.snapshot_if_due(), SnapshotTaken::Failed);
+        assert_eq!(task.last_snapshot_period, Some(0));
+        task.arena.now_ms = 2_000;
+        assert_eq!(
+            task.snapshot_if_due(),
+            SnapshotTaken::NotDue,
+            "the same period is not tried again"
+        );
+        assert!(task.backlog.is_empty(), "nothing was queued");
+        task.arena.now_ms = 5_000;
+        assert_eq!(task.snapshot_if_due(), SnapshotTaken::Failed);
+        task.arena.spent_hits.clear();
+        task.arena.now_ms = 10_000;
+        assert_eq!(task.snapshot_if_due(), SnapshotTaken::Queued);
+        // Queued, then offered at once: the empty egress took it.
+        assert!(task.backlog.is_empty());
+        // Off: nothing is ever due.
+        task.snapshot_ms = 0;
+        task.arena.now_ms = 15_000;
+        assert_eq!(task.snapshot_if_due(), SnapshotTaken::NotDue);
     }
 
     /// A one-unit picture, for the held-picture test.

@@ -403,6 +403,9 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             // The burst is the opening's, teammates only: an engaged pulse is
             // unmeasured.
             max_output_events_per_pulse: cfg.harness.max_output_events_per_pulse,
+            // 16b cut AF.2 (16c N16): the 30-second lane's snapshot bound,
+            // measured before it was set; mapped straight across.
+            max_snapshot_bytes: cfg.harness.max_snapshot_bytes,
         },
     };
     // **16b cut Q.7**: the arena's own values, checked here and nowhere else.
@@ -1070,7 +1073,8 @@ mod tests {
              max_jam_checks_per_pulse = 70\n\
              max_rss_growth_kib = 4096\n\
              max_frame_bytes = 2000\n\
-             max_output_events_per_pulse = 30\n",
+             max_output_events_per_pulse = 30\n\
+             max_snapshot_bytes = 4096\n",
         );
         let typed = tacsim_config(&cfg).expect("the blocks map");
 
@@ -1187,6 +1191,8 @@ mod tests {
                 max_rss_growth_kib: 4_096,
                 max_frame_bytes: 2_000,
                 max_output_events_per_pulse: 30,
+                // 16b cut AF.2: mapped like the rest.
+                max_snapshot_bytes: 4_096,
             }
         );
 
@@ -1550,6 +1556,14 @@ mod tests {
                 "[tacsim.harness]",
                 "max_output_events_per_pulse = 0\n",
                 "[tacsim.harness].max_output_events_per_pulse",
+                "0",
+            ),
+            // 16b cut AF.2 (16c N16): a snapshot bound of nought fails the
+            // 30-second lane on its first snapshot.
+            (
+                "[tacsim.harness]",
+                "max_snapshot_bytes = 0\n",
+                "[tacsim.harness].max_snapshot_bytes",
                 "0",
             ),
             // 16b cut D.3 (`B-33`): off, or a lull and not a hiccup.

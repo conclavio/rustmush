@@ -45,6 +45,7 @@
 
 use mush_core::{AccountId, Ctx, ObjId, World};
 use mush_proto::{OutputEvent, RichText};
+use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::arena::state::{Designator, EndReason, MatchMode, StopReason, Team};
@@ -60,7 +61,8 @@ use crate::match_::{MatchBook, MatchOutcome, MatchState, Side};
 pub const OUTSIDE_CENTRE: &str = "The simulator is through the lobby.";
 
 /// One claimed slot in the centre (doc 16 §3.8's `Selection`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Slot {
     /// Which side.
     pub team: Team,
@@ -140,7 +142,8 @@ impl Slot {
 }
 
 /// **The simulator centre**, one per server, one match at a time.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Centre {
     /// Where it is in doc 16 §3.8's machine.
     pub state: MatchState,
@@ -3313,6 +3316,12 @@ pub fn unattended_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
                     record.state = MatchState::Stopping;
                 }
             }
+            // **16b cut AF.2 (16c N16)**: and the live record says so at once,
+            // as `crate::match_::abort` rewrites it — an unattended stop in
+            // flight at a crash is found by the boot as `stopping` and voided,
+            // never undone by a resume that would hand a match every pilot had
+            // left back to nobody (16b cut AF.3).
+            crate::match_::write_live(ctx, match_id);
             announce(ctx, unattended_line(match_id));
         }
         // The match is already gone: there is nothing to stop and nothing to say.

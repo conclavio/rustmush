@@ -236,6 +236,18 @@ struct Knobs {
     /// **16b cut U.2** (16c `T-36`): output events one arena pulse may produce
     /// through the fan-out lane.
     max_output_events_per_pulse: u32,
+    /// **16b cut AF.2** (16c N16): the largest snapshot state the 30-second
+    /// lane may encode, bytes — asserted on `harness_arena_snapshot`'s
+    /// `bytes_max`, and deliberately **not** a `thresholds` key (see
+    /// [`SnapshotFigures`]).
+    max_snapshot_bytes: u64,
+    /// **`TACSIM_SNAPSHOT_OFF=1`** (16b cut AF.2): **measurement only.** The
+    /// 30-second lane takes no snapshot, so the off-and-on timing measurement
+    /// can attribute a lens move to the encode or to noise (16b cut AF.2,
+    /// `Q-AF5`). The weekly script never sets it, and a run under
+    /// `TACSIM_ASSERT` refuses it: the snapshot bound is never asserted over no
+    /// snapshots.
+    snapshot_off: bool,
     /// **`TACSIM_LONG_RUN_S`** (16b cut U.2): the long-run lane's measured
     /// window, arena seconds. Default [`DEFAULT_LONG_RUN_S`].
     long_run_s: u32,
@@ -280,6 +292,8 @@ impl Knobs {
             max_rss_growth_kib: cfg.max_rss_growth_kib,
             max_frame_bytes: cfg.max_frame_bytes,
             max_output_events_per_pulse: cfg.max_output_events_per_pulse,
+            max_snapshot_bytes: cfg.max_snapshot_bytes,
+            snapshot_off: std::env::var("TACSIM_SNAPSHOT_OFF").is_ok_and(|v| v.trim() == "1"),
             long_run_s: env_u32("TACSIM_LONG_RUN_S", DEFAULT_LONG_RUN_S),
             sight_origins: env_u64("TACSIM_SIGHT_ORIGINS", DEFAULT_SIGHT_ORIGINS),
         }
@@ -2522,6 +2536,15 @@ struct Stepper {
     wall: i64,
     /// The slope refusals over the whole run, the warm-up included.
     slope_refusals: u64,
+    /// **`[tacsim.arena].snapshot_ms`, when this lane takes snapshots** (16b
+    /// cut AF.2), or `None` — the default, and what [`open_field`] and the lance
+    /// lane build. **Only [`measure_arena`] sets it**, so the 30-second lane
+    /// alone pays and measures the encode: the long run's RSS bound and the
+    /// lance lane's timings are untouched in fact and not only in words.
+    snapshot_ms: Option<u32>,
+    /// The period of the last snapshot [`run_wakes`] took, as the task keeps it
+    /// (`tacsim::arena_task::snapshot_due`).
+    last_snapshot_period: Option<i64>,
 }
 
 /// **An arena fielded, opened and warmed up** — everything the measurement lanes
@@ -2690,6 +2713,9 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
         // The slope refusals over the whole run, the warm-up included: the
         // controller plans its first routes there.
         slope_refusals: 0,
+        // 16b cut AF.2: no snapshots unless the lane opts in (`measure_arena`).
+        snapshot_ms: None,
+        last_snapshot_period: None,
     };
 
     // ---- the warm-up: the controller starts them up ----
@@ -2773,6 +2799,26 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
     }
 }
 
+/// **16b cut AF.2 (16c N16): the snapshot rule is the 30-second lane's opt-in.**
+/// A [`Stepper`] as [`open_field`] builds it — the one every relief lane starts
+/// from, the 600-second long run's included — carries no cadence, so
+/// [`run_wakes`] takes no snapshot for it: the long run's RSS bound (about
+/// 120 kept documents of a 300-unit field otherwise) and every other lane's
+/// timings are untouched in fact. Only [`measure_arena`] sets the cadence. The
+/// lance lane builds its own [`Stepper`] with `None` beside `slope_refusals`.
+/// Runs on every `cargo test`, on a sixteen-unit field.
+#[test]
+fn af2_a_stepper_open_field_builds_takes_no_snapshot() {
+    let mut knobs = Knobs::from_env();
+    knobs.units = 16;
+    knobs.fighting = 4;
+    knobs.seed = DEFAULT_SEED;
+    knobs.jitter_ms = 0;
+    let field = open_field(&knobs, Reach::Ci);
+    assert_eq!(field.stepper.snapshot_ms, None);
+    assert_eq!(field.stepper.last_snapshot_period, None);
+}
+
 /// **The warm-up** (16b cut U.1; one body since 16b cut Z.1): the opening pulse
 /// at wall nought, then a wake at every `next_due_ms` until arena time reaches
 /// `warm_until`, every chunk counted and acknowledged as [`run_wakes`] does.
@@ -2812,6 +2858,24 @@ struct Run {
     peak: tacsim::arena::perception::PerceptionCounters,
     reflex_total: tacsim::arena::reflex::ReflexCounters,
     reflex_peak: tacsim::arena::reflex::ReflexCounters,
+    /// **One sample per snapshot taken** (16b cut AF.2), empty unless the
+    /// stepper opted in ([`Stepper::snapshot_ms`]).
+    snapshots: Vec<SnapshotSample>,
+    /// The documents those snapshots encoded, in order — decoded by
+    /// [`decode_snapshots`] after the timed loop, never inside it.
+    documents: Vec<serde_json::Value>,
+}
+
+/// **One snapshot the 30-second lane took** (16b cut AF.2): the arena
+/// millisecond it was taken at, the state's bytes ([`tacsim::arena::Snapshot::bytes`],
+/// what the bound is asserted on), the encode's wall time, and the wall time of
+/// the wake it followed — the pair production pays back to back on the task's
+/// thread.
+struct SnapshotSample {
+    now_ms: i64,
+    bytes: usize,
+    encode_ms: f64,
+    wake_ms: f64,
 }
 
 /// **The measured wakes** (16b cut U.1; one body for both lanes since 16b cut
@@ -2862,6 +2926,8 @@ fn run_wakes(
         // wake. `harness.max_path_queries_per_pulse` is asserted against the peak.
         reflex_total: tacsim::arena::reflex::ReflexCounters::default(),
         reflex_peak: tacsim::arena::reflex::ReflexCounters::default(),
+        snapshots: Vec::new(),
+        documents: Vec::new(),
     };
     let arena = &mut stepper.arena;
     while arena.now_ms < until_ms {
@@ -2879,6 +2945,34 @@ fn run_wakes(
             jam_checks: out.perception.jam_checks,
             share_ops: out.perception.share_ops,
         });
+        // **16b cut AF.2**: the snapshot, where the task takes it — after the
+        // pulse, on a pulse that did not end the match, by the task's own period
+        // rule — timed and run INLINE, between this wake and the next, because
+        // production pays it there on the task's thread and its cache cost lands
+        // on the next wake there too; a lane that took it elsewhere would measure
+        // less than production pays. Never folded into `Wake.ms`: the lens
+        // measures `step`. The document is kept; the decode runs after the loop
+        // (`decode_snapshots`), so no harness-only work sits between two wakes.
+        if let Some(snapshot_ms) = stepper.snapshot_ms
+            && out.ended.is_none()
+            && tacsim::arena_task::snapshot_due(
+                &mut stepper.last_snapshot_period,
+                arena.now_ms,
+                snapshot_ms,
+            )
+        {
+            let at = Instant::now();
+            let encoded = tacsim::arena::Snapshot::encode(arena);
+            let encode_ms = at.elapsed().as_secs_f64() * 1_000.0;
+            let snapshot = encoded.expect("the arena encodes between two pulses");
+            run.snapshots.push(SnapshotSample {
+                now_ms: arena.now_ms,
+                bytes: snapshot.bytes().len(),
+                encode_ms,
+                wake_ms: ms,
+            });
+            run.documents.push(snapshot.document);
+        }
         // A substep shorter than the lattice's: the remainder a wake off the
         // lattice cuts, and a phase-4 drain's zero-length one.
         let full = u32::try_from((arena.now_ms - before) / substep_ms.max(1)).unwrap_or(0);
@@ -2934,6 +3028,145 @@ fn run_wakes(
     run
 }
 
+/// **The snapshots' correctness pass** (16b cut AF.2), run AFTER the timed
+/// loop over the documents [`run_wakes`] kept: each one decoded against the
+/// field's own ground (cloned outside the timer), every check of
+/// [`tacsim::arena::Snapshot::decode`] applied — the ground's digest, the
+/// physics digest, the state digest, the pose refusals and the state hash —
+/// and the decoded arena's hash compared again with the head's. Answers the
+/// slowest decode, milliseconds, and whether every one passed; a failure is
+/// printed as `hash_ok=false` and fails the run under `TACSIM_ASSERT`.
+fn decode_snapshots(
+    documents: &[serde_json::Value],
+    definition: &tacsim::arena::state::ArenaDefinition,
+) -> (f64, bool) {
+    let mut decode_ms_max = 0.0_f64;
+    let mut hash_ok = true;
+    for document in documents {
+        let ground = definition.clone();
+        let at = Instant::now();
+        let decoded = tacsim::arena::Snapshot::decode(document, ground);
+        decode_ms_max = decode_ms_max.max(at.elapsed().as_secs_f64() * 1_000.0);
+        let head = tacsim::arena::Snapshot::head(document);
+        match (decoded, head) {
+            (Ok(arena), Ok(head))
+                if tacsim::arena::hash::state_hash(&arena) == head.state_hash
+                    && arena.now_ms == head.at_ms => {}
+            (decoded, head) => {
+                println!(
+                    "harness_arena_snapshot_refused: at_ms={:?} decode={:?}",
+                    head.map(|head| head.at_ms),
+                    decoded.err()
+                );
+                hash_ok = false;
+            }
+        }
+    }
+    (decode_ms_max, hash_ok)
+}
+
+/// **The snapshot figures of one 30-second run** (16b cut AF.2; 16c N16): what
+/// `harness_arena_snapshot` prints and the report's `snapshot` object holds.
+///
+/// **Outside the compared block, on purpose.** [`deterministic_block`] flattens
+/// every `thresholds.*` key but two into the block the delta compares against
+/// the committed baseline, so `[tacsim.harness].max_snapshot_bytes` is NOT a
+/// `thresholds` key and is NOT on `harness_arena_thresholds` — which breaks the
+/// pattern of every other bound in this file, deliberately: the bound belongs
+/// to the one lane that measures it, and it and every figure here live on the
+/// snapshot line and in the `snapshot` object, which neither
+/// [`DETERMINISTIC_OBJECTS`] nor [`DETERMINISTIC_LEAVES`] names (as 16b cut U.3
+/// placed `command`). The byte counts are a function of the seeded run and the
+/// times are not; neither is compared.
+struct SnapshotFigures {
+    /// `snapshot_ms`, or `None` when the lane took none (`TACSIM_SNAPSHOT_OFF`).
+    every_ms: Option<u32>,
+    count: usize,
+    /// The arena millisecond each was taken at, in order.
+    at_ms: Vec<i64>,
+    bytes_max: usize,
+    bytes_mean: usize,
+    encode_p50: f64,
+    encode_p99: f64,
+    encode_max: f64,
+    decode_ms_max: f64,
+    wake_plus_encode_ms_max: f64,
+    max_snapshot_bytes: u64,
+    hash_ok: bool,
+}
+
+impl SnapshotFigures {
+    fn of(
+        every_ms: Option<u32>,
+        samples: &[SnapshotSample],
+        decode: (f64, bool),
+        max_snapshot_bytes: u64,
+    ) -> SnapshotFigures {
+        let mut encode: Vec<f64> = samples.iter().map(|sample| sample.encode_ms).collect();
+        encode.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let total: usize = samples.iter().map(|sample| sample.bytes).sum();
+        SnapshotFigures {
+            every_ms,
+            count: samples.len(),
+            at_ms: samples.iter().map(|sample| sample.now_ms).collect(),
+            bytes_max: samples.iter().map(|sample| sample.bytes).max().unwrap_or(0),
+            bytes_mean: total.checked_div(samples.len()).unwrap_or(0),
+            encode_p50: quantile(&encode, 500),
+            encode_p99: quantile(&encode, 990),
+            encode_max: encode.last().copied().unwrap_or(0.0),
+            decode_ms_max: decode.0,
+            wake_plus_encode_ms_max: samples
+                .iter()
+                .map(|sample| sample.wake_ms + sample.encode_ms)
+                .fold(0.0, f64::max),
+            max_snapshot_bytes,
+            hash_ok: decode.1,
+        }
+    }
+
+    fn every_word(&self) -> String {
+        self.every_ms
+            .map_or_else(|| "off".to_string(), |ms| ms.to_string())
+    }
+
+    fn line(&self, cohort: &str) -> String {
+        format!(
+            "harness_arena_snapshot: cohort={cohort} every_ms={} count={} bytes_max={} bytes_mean={} encode_ms_p50={:.3} encode_ms_p99={:.3} encode_ms_max={:.3} decode_ms_max={:.3} wake_plus_encode_ms_max={:.3} max_snapshot_bytes={} hash_ok={}",
+            self.every_word(),
+            self.count,
+            self.bytes_max,
+            self.bytes_mean,
+            self.encode_p50,
+            self.encode_p99,
+            self.encode_max,
+            self.decode_ms_max,
+            self.wake_plus_encode_ms_max,
+            self.max_snapshot_bytes,
+            self.hash_ok
+        )
+    }
+
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "every_ms": self.every_ms,
+            "count": self.count,
+            "at_ms": self.at_ms,
+            "bytes_max": self.bytes_max,
+            "bytes_mean": self.bytes_mean,
+            "encode_ms": {
+                "p50": num(self.encode_p50),
+                "p99": num(self.encode_p99),
+                "max": num(self.encode_max),
+            },
+            "decode_ms_max": num(self.decode_ms_max),
+            "wake_plus_encode_ms_max": num(self.wake_plus_encode_ms_max),
+            // The bound, here and never under `thresholds` (this type's doc).
+            "max_snapshot_bytes": self.max_snapshot_bytes,
+            "hash_ok": self.hash_ok,
+        })
+    }
+}
+
 /// **The arena measurement** (16b cut A.2 through 16b cut U.2): [`open_field`],
 /// then [`run_wakes`] for `TACSIM_ARENA_S` arena seconds after the warm-up, and
 /// the report.
@@ -2953,10 +3186,29 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
     let rss_start_kib = resident_kib();
     let vmrss_start_kib = vmrss_kib();
     let mut field = open_field(knobs, reach);
+    // **16b cut AF.2**: this lane — and no other — takes the task's snapshots,
+    // at the field's own `[tacsim.arena].snapshot_ms` (5,000: about seven over
+    // the thirty seconds), unless `TACSIM_SNAPSHOT_OFF=1` asks for the
+    // measurement's off-run.
+    field.stepper.snapshot_ms = if knobs.snapshot_off {
+        None
+    } else {
+        Some(field.arena_cfg.snapshot_ms)
+    };
+    let every_ms = field.stepper.snapshot_ms;
     let until_ms = field
         .warm_end
         .saturating_add(i64::from(knobs.arena_s) * 1_000);
-    let run = run_wakes(&mut field.stepper, until_ms, |_| Vec::new(), |_| {});
+    let mut run = run_wakes(&mut field.stepper, until_ms, |_| Vec::new(), |_| {});
+    // 16b cut AF.2: the decodes, after the timed loop, on the field's own ground
+    // — and the kept documents (about 4 MB each on this field) dropped BEFORE the
+    // end-of-window memory is read: they are the harness's bookkeeping, where
+    // production holds at most one snapshot a match, and only until the egress
+    // takes it. Read with them, `rss_end_kib` (16c `T-36`'s reported figure)
+    // rose by their bytes at AF.2 for nothing production pays.
+    let documents = std::mem::take(&mut run.documents);
+    let decoded = decode_snapshots(&documents, &field.stepper.arena.definition);
+    drop(documents);
     let rss_end_kib = resident_kib();
     let vmrss_end_kib = vmrss_kib();
 
@@ -3007,7 +3259,27 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         peak,
         reflex_total,
         reflex_peak,
+        snapshots,
+        documents: _,
     } = run;
+    let snapshot = SnapshotFigures::of(every_ms, &snapshots, decoded, knobs.max_snapshot_bytes);
+    // 16b cut AF.2: the periods of arena time the measured wakes stood in, every
+    // one of which the task's rule snapshots — counted here apart from the rule
+    // (a wake that ended the match takes none), so an asserting run that took
+    // no snapshot, or too few, fails rather than asserting its bound over nothing.
+    let snapshot_periods = every_ms.filter(|ms| *ms > 0).map_or(0, |ms| {
+        let measured = if ended.is_some() {
+            wakes.len().saturating_sub(1)
+        } else {
+            wakes.len()
+        };
+        wakes
+            .iter()
+            .take(measured)
+            .map(|wake| wake.now_ms.div_euclid(i64::from(ms)))
+            .collect::<std::collections::BTreeSet<i64>>()
+            .len()
+    });
 
     let tempo = Tempo {
         name: "arena_engaged",
@@ -3398,6 +3670,9 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
     let command_cfg = tacsim::config::CommandConfig::default();
     let command = CommandFigures::of(&arena, &command_cfg, counts.ordered_lines, &counts.ordered);
     println!("{}", command.line("harness_arena_command", cohort));
+    // **16b cut AF.2**: the snapshots this lane took — outside the lens and
+    // outside the compared block ([`SnapshotFigures`]).
+    println!("{}", snapshot.line(cohort));
     println!(
         "harness_arena_perception_peak: cohort={cohort} passes={} candidates={} traces={} cell_probes={} horizon_probes={} jam_checks={} share_ops={} detected={} classified={} lost={}",
         peak.passes,
@@ -3669,6 +3944,11 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         // 16b cut Y.2 (doc 16 §2 W8): reported, and not in the deterministic
         // block — the committed baseline is untouched by decision.
         "command": command.json(),
+        // 16b cut AF.2 (16c N16): the snapshots, the bound among them —
+        // outside `DETERMINISTIC_OBJECTS`, `DETERMINISTIC_LEAVES` and
+        // `thresholds`, as `command` is (`SnapshotFigures`' doc says why the
+        // bound is here and not with the others).
+        "snapshot": snapshot.json(),
         // 16b cut U.2: the crate's reading on every platform, and Linux's own
         // beside it (`null` elsewhere). 16b cut J.2: the horizon index's bytes,
         // reported under 16c `T-36`'s memory bound and not compared (`memory` is
@@ -3798,6 +4078,34 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         // **16b cut Y.2** (doc 16 §2 W8): the span of control and the orders
         // per commander per minute, bounded by `[tacsim.command]`.
         command.assert_bounded();
+        // **16b cut AF.2** (16c N16): every snapshot decoded to the arena that
+        // was encoded, and the largest is under the bound this lane measured.
+        // No time bound: the encode's cost is a printed figure, and a lens it
+        // moves is 16c `Q-AF5`, never a lens change.
+        // And the bound is over something: an asserting run takes the snapshots
+        // (`TACSIM_SNAPSHOT_OFF=1` is the off-and-on measurement's alone), one in
+        // every period of arena time its measured wakes stood in.
+        assert!(
+            !knobs.snapshot_off,
+            "TACSIM_SNAPSHOT_OFF=1 is for measurement only; an asserting run takes the snapshots"
+        );
+        assert!(
+            snapshot.count >= 1 && snapshot.count == snapshot_periods,
+            "the {cohort} cohort took {} snapshots over {snapshot_periods} periods of arena \
+             time at every_ms={}",
+            snapshot.count,
+            snapshot.every_word()
+        );
+        assert!(
+            snapshot.hash_ok,
+            "a snapshot of the {cohort} cohort did not decode to the arena that was encoded"
+        );
+        assert!(
+            u64::try_from(snapshot.bytes_max).unwrap_or(u64::MAX) <= knobs.max_snapshot_bytes,
+            "the largest snapshot, {} bytes, is past harness.max_snapshot_bytes {}",
+            snapshot.bytes_max,
+            knobs.max_snapshot_bytes
+        );
     }
 }
 
@@ -5713,10 +6021,18 @@ impl mush_core::AccountIdentity for FanOutAccounts {
 /// process.
 fn fan_out_roster() -> Vec<Box<dyn GameModule>> {
     use tacsim::composition as comp;
-    let cfg = tacsim::TacsimConfig {
+    let mut cfg = tacsim::TacsimConfig {
         enabled: true,
         ..tacsim::TacsimConfig::default()
     };
+    // **16b cut AF.2**: no snapshots on this lane. It runs the production task,
+    // which reads `[tacsim.arena].snapshot_ms` off this config and would put a
+    // `Snapshot` on the egress every 5,000 ms — six more world applies over the
+    // match, each moving a snapshot document into an op and serialising a
+    // twenty-four-pilot live record, inside `world_ms` and `applies`. The
+    // snapshot's cost is the 30-second lane's to measure (`harness_arena_snapshot`),
+    // and this lane stays the lane it was, in fact and not only in words.
+    cfg.arena.snapshot_ms = 0;
     let llm = std::sync::Arc::new(
         mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
             .expect("a disabled LLM service composes"),
@@ -7152,6 +7468,9 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         clock: WakeClock::new(knobs),
         wall: 0,
         slope_refusals: 0,
+        // 16b cut AF.2: the lance lane takes no snapshot.
+        snapshot_ms: None,
+        last_snapshot_period: None,
     };
     let warm_at = Instant::now();
     let warm_until = i64::from(match_cfg.startup_ms)

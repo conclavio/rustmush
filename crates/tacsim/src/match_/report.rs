@@ -95,7 +95,8 @@ pub const REPORT_RECORD: &str = "tacsim.report";
 // ---------------------------------------------------------------------------
 
 /// **One unit as a report names it** (16b cut V.3).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RosterUnit {
     /// Its side, or `None` for a unit on no roster (a restart abort's).
     pub team: Option<Team>,
@@ -115,7 +116,8 @@ pub struct RosterUnit {
 /// the pilot folds, and from a remembered result ([`Roster::from_row`]) for a
 /// staff page. The one source of every callsign is the arena's own
 /// (`crate::arena::state::Arena::callsigns`, carried by 16b cut V.2).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Roster {
     units: BTreeMap<ObjId, RosterUnit>,
 }
@@ -213,7 +215,8 @@ impl Roster {
 }
 
 /// **Whose report it is** (16b cut V.3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Reader {
     /// One pilot, reading their own match through their own platform's fog.
     Pilot {
@@ -227,7 +230,8 @@ pub enum Reader {
 /// **The match's own rules the projection needs** (16b cut V.3), held on the
 /// fold from check-out rather than re-read later, so a config reload during a
 /// match cannot change how that match is told.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReportRules {
     /// `[tacsim.sensors].designate_on_detection`: a contact is named by its
     /// target's callsign the moment it is held, rather than once it is told
@@ -252,7 +256,8 @@ pub struct ReportRules {
 /// ([`OwnTank::from_custody`]); a fold with none (a fixture's) can prove no
 /// group complete, so it never says a tank cannot move on that consequence's
 /// word.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OwnTank {
     /// Section → the section list of each `disable_motion_when_all_of` it
     /// authors, in authored order.
@@ -352,7 +357,8 @@ pub struct Page {
 /// apart because under `designate_on_detection` a blip is named at once and
 /// still not told apart — and a section id is a chassis vocabulary (16b cut
 /// Q.2), earned only by telling the target apart.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Known {
     target: ObjId,
     designated: bool,
@@ -360,7 +366,8 @@ struct Known {
 }
 
 /// A shot the pilot fired whose outcome is not on the tape yet.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HeldShot {
     /// The `Fired` event's own stamp and seq — the shot line's.
     t_ms: i64,
@@ -372,7 +379,8 @@ struct HeldShot {
 }
 
 /// One timeline line and the stamp it sorts by.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Line {
     t_ms: i64,
     seq: u64,
@@ -384,7 +392,8 @@ struct Line {
 ///
 /// `Clone + Debug + PartialEq` because it lives on the
 /// [`crate::match_::MatchRecord`], which is all three.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Fold {
     roster: Roster,
     reader: Reader,

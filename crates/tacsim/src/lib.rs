@@ -575,6 +575,10 @@ impl GameModule for TacsimRuleset {
 ///    release the cockpit seats, which are `mush-sim`'s. So it leaves the markers
 ///    for this pass, which releases the seats and writes one `aborted(restart)`
 ///    per match id they name (doc 16 §8 "Restart mid-match").
+/// 3. **The running matches' documents** (16b cut AF.2). Every
+///    `tacsim:live:<n>` and `tacsim:snapshot:<n>` the store held is deleted,
+///    after the aborts: this boot resumes nothing, so they describe matches that
+///    are over (16b cut AF.3 resumes from them and deletes only the rest).
 ///
 /// The order is fixed by composition: `mush-tactics` is composed before this
 /// layer, so its `on_world_loaded` has run and its restored list is waiting.
@@ -582,7 +586,17 @@ fn boot_matches(ctx: &mut ModuleCtx<'_>, kv: &[(smol_str::SmolStr, serde_json::V
     let mut high_water = 0_u64;
     let mut remembered: Vec<match_::HistoryRow> = Vec::new();
     let mut replays: Vec<match_::replay::Replay> = Vec::new();
+    // **16b cut AF.2 (16c N16)**: the ids of every running match's documents
+    // the last process left behind — a live record, a snapshot, or both.
+    let mut leftovers: std::collections::BTreeSet<crate::arena_task::MatchId> =
+        std::collections::BTreeSet::new();
     for (key, value) in kv {
+        if let Some(id) = match_::live_id_of_key(key.as_str())
+            .or_else(|| match_::snapshot_id_of_key(key.as_str()))
+        {
+            leftovers.insert(id);
+            continue;
+        }
         // **16b cut I.1 (16c N9)**: every replay document is a boot document
         // too. A document whose own `match` disagrees with its key is not the
         // replay this key holds, and is left out.
@@ -642,11 +656,19 @@ fn boot_matches(ctx: &mut ModuleCtx<'_>, kv: &[(smol_str::SmolStr, serde_json::V
         tracing::error!(
             match_id,
             units = units.len(),
-            "tacsim: match {match_id} was still running when this server last stopped. An OOC \
-             match holds no durable state and never resumes, so its units have been restored \
-             from their check-out snapshots and the match is recorded aborted(restart)."
+            "tacsim: match {match_id} was still running when this server last stopped. A \
+             running match does not resume across a restart on this server, so its units have \
+             been restored from their check-out snapshots and the match is recorded \
+             aborted(restart)."
         );
         match_::write_restart_abort(ctx, crate::arena_task::MatchId(match_id), &units);
+    }
+    // **16b cut AF.2 (16c N16)**: a restart still voids — the arena is gone and
+    // nothing here re-opens it — so every live record and snapshot the store
+    // held is deleted, after the restart aborts above, in the boot's own
+    // writes. 16b cut AF.3 turns "every" into "every one it does not resume".
+    for match_id in leftovers {
+        match_::delete_live_and_snapshot(ctx, match_id);
     }
 
     // **16b cut F.1**: and then the centre itself, whether or not any marker was

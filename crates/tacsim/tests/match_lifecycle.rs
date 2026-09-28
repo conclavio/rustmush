@@ -3186,12 +3186,24 @@ async fn d3_a_match_every_pilot_left_ends_itself_after_the_interval() {
     assert_eq!(rig.centre().unattended_since_ms, Some(30_000));
 
     // And at it: the stop is sent, the stamp is cleared, and the centre says so.
+    let match_id = rig.centre().match_id.expect("the running match");
+    let _ = rig.tw.take_module_ops();
     let heard = rig.tick_heard(40, 0);
     assert!(
         heard.contains("Match 1 ends: every pilot has left it."),
         "{heard}"
     );
     assert_eq!(rig.centre().unattended_since_ms, None, "the stamp is spent");
+    // **16b cut AF.2**: the stop's own action rewrites the live record parked
+    // `stopping`, so a crash before the end is found by the boot as a stopping
+    // match (voided) and never resumed as a running one.
+    let writes = writes_of(rig.tw.take_module_ops());
+    let stopping = set_of(&writes, &match_::live_key(match_id))
+        .map(|document| match_::LiveRecord::from_document(&document))
+        .expect("the unattended stop rewrote the live record")
+        .expect("and it decodes");
+    assert_eq!(stopping.record.state, MatchState::Stopping);
+    assert_eq!(stopping.centre.match_id, Some(match_id));
 
     // A further tick says nothing more: the stamp is what armed it.
     let heard = rig.tick_heard(41, 0);
@@ -6073,4 +6085,499 @@ async fn ae3_the_lobby_cap_is_per_side_by_effective_type_and_reads_the_config() 
     );
     let board = rig.say(0, "sim status");
     assert!(!board.contains("[drone_mk1]"), "{board}");
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AF.2 (16c N16) — the two documents of a running match
+// ---------------------------------------------------------------------------
+
+/// One module write, as `(set|del, key, value)`.
+type Write = (&'static str, String, Option<serde_json::Value>);
+
+/// The module writes a list of ops carries, in order.
+fn writes_of(ops: Vec<mush_core::ModuleOp>) -> Vec<Write> {
+    ops.into_iter()
+        .filter_map(|op| match op.op {
+            mush_core::ModuleWrite::JsonSet { key, value } => {
+                Some(("set", key.to_string(), Some(value)))
+            }
+            mush_core::ModuleWrite::Del { key } => Some(("del", key.to_string(), None)),
+            mush_core::ModuleWrite::StreamAppend { .. } => None,
+        })
+        .collect()
+}
+
+/// The value one `set` of `key` wrote, if the writes hold one.
+fn set_of(writes: &[Write], key: &str) -> Option<serde_json::Value> {
+    writes
+        .iter()
+        .rev()
+        .find(|(op, at, _)| *op == "set" && at == key)
+        .and_then(|(_, _, value)| value.clone())
+}
+
+/// Whether the writes delete `key`.
+fn deletes(writes: &[Write], key: &str) -> bool {
+    writes.iter().any(|(op, at, _)| *op == "del" && at == key)
+}
+
+impl Rig {
+    /// **`BOARD` from the pilot's team room, and the writes of that one
+    /// action** (16b cut AF.2): whatever was queued before is discarded first,
+    /// so what comes back is the check-out's own action when this `BOARD` fires
+    /// the trigger. A real `BOARD`, because a real seat is what gives a pilot a
+    /// debrief fold.
+    fn board_writes(&mut self, n: usize, entry: &str) -> (String, Vec<Write>) {
+        let room = match_::centre_object(self.tw.world(), entry).expect("a team room");
+        let pilot = self.pilot(n);
+        self.tw
+            .world_mut()
+            .move_to(pilot, room)
+            .expect("a pilot walks into their team room");
+        let _ = self.tw.take_module_ops();
+        let said = self.say(n, "board");
+        (said, writes_of(self.tw.take_module_ops()))
+    }
+
+    /// **One pump, and the writes of the one action it applied** (16b cut
+    /// AF.2), with the wall time the world spent on it: whatever was queued
+    /// before is discarded first, so what comes back is this pump's alone.
+    fn pump_writes(&mut self) -> (Vec<Write>, f64) {
+        let _ = self.tw.take_module_ops();
+        let at = std::time::Instant::now();
+        self.pump();
+        let ms = at.elapsed().as_secs_f64() * 1_000.0;
+        (writes_of(self.tw.take_module_ops()), ms)
+    }
+
+    /// **Hand the world one egress message no running task would send now**
+    /// (16b cut AF.2): staged on the registry's tasks and drained by the egress
+    /// wake, as [`Rig::pump`] does with what a task sent, and the module writes
+    /// that one action carried.
+    fn deliver_writes(&mut self, message: tacsim::arena_task::ArenaOut) -> Vec<Write> {
+        let tasks = self
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .map(|registry| registry.tasks().clone())
+            .expect("the arena registry");
+        assert!(tasks.stage(message), "the egress stage takes the message");
+        let _ = self.tw.take_module_ops();
+        self.tw.apply(mush_core::WorldCommand::ModuleAsyncDone {
+            module: smol_str::SmolStr::new_static(tacsim::arena_bridge::MODULE),
+            actor: GOD,
+            correlation: 0,
+            payload: tacsim::arena_bridge::EGRESS_PAYLOAD.to_owned(),
+        });
+        writes_of(self.tw.take_module_ops())
+    }
+}
+
+/// **The two documents ride the arena writer lane beside the match, and go with
+/// its result** (16b cut AF.2; 16c N16; the brief's test 4).
+///
+/// - **At check-out**: the `BOARD` that fires `Boarding → Running` writes
+///   `tacsim:live:<id>` in its own action, beside the tank's deployed marker,
+///   and the record inside is `running` with a fold per pilot and the replay
+///   fold.
+/// - **At a snapshot**: the pump that hands the world the arena's `Snapshot`
+///   writes `tacsim:snapshot:<id>` and `tacsim:live:<id>` in that one action,
+///   the live record's `at_ms` the snapshot's own; the snapshot document is the
+///   arena's (`tacsim.snapshot`, no `match` key).
+/// - **`@arena/status`**: staff read `last snapshot: at N ms of arena time`;
+///   a pilot's `@arena/status` is refused byte for byte as it was before any
+///   snapshot existed (the observer rule's assertion for the new line).
+/// - **At the abort**: the live record is rewritten `stopping` in the abort's
+///   own action, before any end.
+/// - **At the end**: the action that writes the result deletes both.
+/// - **After the end**: a `Snapshot` the world drains for the finished match is
+///   dropped, and neither document comes back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn af2_the_two_documents_ride_the_lane_and_go_with_the_result() {
+    let mut rig = Rig::boot(2);
+    // The control-lease mirror, read once before anybody boards.
+    rig.tick_to(1);
+    let refused = rig.say(0, "@arena/status");
+    assert!(refused.contains("Permission denied."), "{refused}");
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    let (said, _) = rig.board_writes(0, match_::RED_ROOM_ENTRY);
+    assert!(said.contains("climb into"), "{said}");
+    let (said, checkout) = rig.board_writes(1, match_::BLUE_ROOM_ENTRY);
+    assert!(said.contains("climb into"), "{said}");
+    assert_eq!(
+        rig.state(),
+        MatchState::Running,
+        "the second BOARD fires the check-out"
+    );
+    let match_id = rig.centre().match_id.expect("a running match");
+    let live_key = match_::live_key(match_id).to_string();
+    let snapshot_key = match_::snapshot_key(match_id).to_string();
+
+    // (1) At check-out, in the check-out's own action.
+    let document = set_of(&checkout, &live_key)
+        .unwrap_or_else(|| panic!("the check-out wrote no live record: {checkout:?}"));
+    assert!(
+        checkout
+            .iter()
+            .any(|(op, key, _)| *op == "set" && key.starts_with("unit:")),
+        "the markers ride the same action: {:?}",
+        checkout
+            .iter()
+            .map(|(op, key, _)| (op, key))
+            .collect::<Vec<_>>()
+    );
+    let live = match_::LiveRecord::from_document(&document).expect("the live record decodes");
+    assert_eq!(live.match_id, match_id);
+    assert_eq!(live.record.state, MatchState::Running);
+    assert_eq!(live.record.folds.len(), 2, "a fold per pilot");
+    assert!(live.record.replay.is_some(), "the replay fold");
+    assert_eq!((live.at_ms, live.resumed_from_ms), (0, None));
+    // The round trip holds on what the world wrote, and a moved byte is refused.
+    assert_eq!(
+        live.to_document().as_ref().ok(),
+        Some(&document),
+        "the document is its own round trip"
+    );
+    let mut moved = document.clone();
+    if let Some(state) = moved["state"]
+        .as_str()
+        .map(|state| state.replacen("\"id\":", "\"id\": ", 1))
+    {
+        moved["state"] = serde_json::Value::from(state);
+    }
+    assert!(matches!(
+        match_::LiveRecord::from_document(&moved),
+        Err(match_::LiveRecordError::DigestMismatch { .. })
+    ));
+
+    // (2) At a snapshot: both documents in the one action of one pump.
+    let mut taken: Option<(Vec<Write>, serde_json::Value)> = None;
+    for _ in 0..400 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let (writes, _) = rig.pump_writes();
+        if let Some(snapshot) = set_of(&writes, &snapshot_key) {
+            taken = Some((writes, snapshot));
+            break;
+        }
+    }
+    let (writes, snapshot) = taken.expect("the arena snapshotted its opening pulse");
+    assert_eq!(snapshot["record"], "tacsim.snapshot");
+    assert!(snapshot.get("match").is_none(), "the key names the match");
+    let head = tacsim::arena::Snapshot::head(&snapshot).expect("the head reads");
+    let live = set_of(&writes, &live_key)
+        .map(|document| match_::LiveRecord::from_document(&document))
+        .expect("the live record rides the snapshot's action")
+        .expect("and decodes");
+    assert_eq!(
+        live.at_ms, head.at_ms,
+        "the two documents are of one moment"
+    );
+    assert_eq!(live.record.state, MatchState::Running);
+    assert_eq!(live.centre.match_id, Some(match_id));
+    assert_eq!(live.centre.state, MatchState::Running);
+
+    // (3) `@arena/status`, staff and pilot.
+    let status = rig.staff("@arena/status");
+    assert!(
+        status.contains(&format!(
+            "\n  last snapshot: at {} ms of arena time",
+            head.at_ms
+        )),
+        "{status}"
+    );
+    assert_eq!(
+        rig.say(0, "@arena/status"),
+        refused,
+        "a pilot's refusal is the same bytes with a snapshot written"
+    );
+
+    // (4) The abort parks the record, and the live record says so at once.
+    let _ = rig.tw.take_module_ops();
+    let said = rig.say(1, "sim abort");
+    assert!(said.contains("aborts match"), "{said}");
+    let writes = writes_of(rig.tw.take_module_ops());
+    let stopping = set_of(&writes, &live_key)
+        .map(|document| match_::LiveRecord::from_document(&document))
+        .expect("the abort rewrote the live record")
+        .expect("and it decodes");
+    assert_eq!(stopping.record.state, MatchState::Stopping);
+    assert!(
+        !writes
+            .iter()
+            .any(|(_, key, _)| key == &match_::result_key(match_id).to_string()),
+        "no result yet"
+    );
+
+    // (5) The end deletes both, in the result's own action.
+    let result_key = match_::result_key(match_id).to_string();
+    let mut ended: Option<Vec<Write>> = None;
+    for _ in 0..400 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let (writes, _) = rig.pump_writes();
+        if set_of(&writes, &result_key).is_some() {
+            ended = Some(writes);
+            break;
+        }
+    }
+    let writes = ended.expect("the check-in lands");
+    assert!(deletes(&writes, &live_key), "{writes:?}");
+    assert!(deletes(&writes, &snapshot_key), "{writes:?}");
+    assert_eq!(rig.state(), MatchState::Aborted);
+
+    // (6) A snapshot the world reads AFTER the result — one a task put on the
+    // shared egress before it went — writes nothing: the match is not held
+    // live, and writing would re-create the two documents its result deleted,
+    // to lie there until the next boot (and, from 16b cut AF.3, to be read by
+    // it as a running match that has a result).
+    let late = tacsim::arena::Snapshot {
+        at_ms: head.at_ms,
+        state_hash: head.state_hash,
+        ledger_seq: head.ledger_seq,
+        chunk_seq: head.chunk_seq,
+        arena: head.arena.clone(),
+        definition_digest: head.definition_digest.clone(),
+        document: snapshot,
+    };
+    let writes = rig.deliver_writes(tacsim::arena_task::ArenaOut::Snapshot {
+        match_id,
+        snapshot: Arc::new(late),
+    });
+    assert!(
+        !writes
+            .iter()
+            .any(|(_, key, _)| key == &live_key || key == &snapshot_key),
+        "a snapshot of a finished match wrote: {writes:?}"
+    );
+}
+
+/// **The bytes `value` takes inside another document's JSON string** (16b cut
+/// AF.2): its compact JSON, escaped once more — what a fold line or a replay
+/// entry costs inside the live record's `state`, which the store holds as one
+/// string, every `"` a `\"`.
+fn escaped_len(value: &serde_json::Value) -> usize {
+    let inner = serde_json::to_string(value).unwrap_or_default();
+    serde_json::to_string(&serde_json::Value::String(inner))
+        .map_or(0, |outer| outer.len().saturating_sub(2))
+}
+
+/// **The summed [`escaped_len`] of an array's items, one comma each.**
+fn escaped_items(value: &serde_json::Value) -> (usize, usize) {
+    value.as_array().map_or((0, 0), |items| {
+        (
+            items.iter().map(|item| escaped_len(item) + 1).sum(),
+            items.len(),
+        )
+    })
+}
+
+/// **The summed compact length of an array's items, one comma each** — the
+/// measure `ReplayFold`'s byte budget counts its document's entries in.
+fn compact_items(value: &serde_json::Value) -> usize {
+    value.as_array().map_or(0, |items| {
+        items
+            .iter()
+            .map(|item| serde_json::to_string(item).map_or(0, |text| text.len() + 1))
+            .sum()
+    })
+}
+
+/// **What the world pays per snapshot, at the first and the last snapshot of a
+/// minute of fire** (16b cut AF.2; the brief's item 6): twelve tanks — two
+/// pilots and ten machines of the AI fill — the machines posed astride the
+/// proving ground's crossroads fifty-four cells apart, inside the authored
+/// sight, so they fight from the first passes, and each pilot's tank posed
+/// eight cells in front of the OTHER side's line and powered up, so the
+/// machines see it, shoot it, and its debrief fold fills with the hit lines
+/// the live record carries; sixty arena seconds on tokio's paused clock.
+///
+/// At the opening snapshot and at the snapshot at 60,000 ms it prints
+/// `af2_world_side:` — the live record's bytes **as stored** and its
+/// serialisation time (the work `write_live` does, timed on the decoded
+/// record), the snapshot document's bytes as stored, and the wall time of the
+/// one pump that carried the snapshot through `on_snapshot` on the world loop —
+/// and after them `af2_world_side_ceiling:`, an **estimate** of the live
+/// record's ceiling: the last document as stored, plus twenty-four folds at
+/// [`tacsim::match_::report::REPORT_MAX_LINES`] lines at the measured bytes a
+/// kept line costs inside the stored `state` string, plus the replay fold at
+/// [`tacsim::match_::replay::REPLAY_MAX_BYTES`] scaled by the measured ratio of
+/// the fold's serde form, escaped, to the compact arrays that budget counts
+/// (the larger of the shots' and the keyframes' ratios).
+///
+/// Asserted: the match fought, every snapshot came with its live record, the
+/// pilots' folds filled, and every live record the world wrote re-encodes, off
+/// its own decode, to the very document written — the round trip on folds and
+/// a replay fold that carry data.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn af2_the_world_side_cost_at_the_first_and_the_last_snapshot_of_a_minute_of_fire() {
+    let mut rig = fill_rig(2);
+    // The control-lease mirror, read once before anybody boards.
+    rig.tick_to(1);
+    for (letter, row) in ["A", "B", "C", "D", "E", "F"]
+        .iter()
+        .zip([97, 95, 99, 93, 101, 91])
+    {
+        for said in [
+            rig.staff(&format!("@arena/pose R{letter}=102 {row} 90")),
+            rig.staff(&format!("@arena/pose B{letter}=156 {row} 270")),
+        ] {
+            assert!(said.contains("opens at cell"), "{said}");
+        }
+    }
+    // The pilots' own tanks (RA and BA), each in front of the other side's
+    // machines and facing them, so the machines' fire lands on them.
+    for said in [
+        rig.staff("@arena/pose RA=148 97 90"),
+        rig.staff("@arena/pose BA=110 97 270"),
+    ] {
+        assert!(said.contains("opens at cell"), "{said}");
+    }
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    let said = rig.say(0, "sim ai 6");
+    assert!(said.contains('6'), "{said}");
+    rig.say(0, "sim start");
+    rig.board_writes(0, match_::RED_ROOM_ENTRY);
+    rig.board_writes(1, match_::BLUE_ROOM_ENTRY);
+    assert_eq!(rig.state(), MatchState::Running);
+    assert_eq!(rig.match_units().len(), 12, "six a side");
+    // Both pilots power up, so their tanks run hot and the machines see them.
+    for n in 0..2 {
+        let said = rig.say(n, "startup");
+        assert!(!said.is_empty(), "STARTUP answers");
+    }
+    let match_id = rig.centre().match_id.expect("a running match");
+    let live_key = match_::live_key(match_id).to_string();
+    let snapshot_key = match_::snapshot_key(match_id).to_string();
+
+    let mut first: Option<String> = None;
+    let mut last: Option<(i64, String, serde_json::Value, match_::LiveRecord)> = None;
+    let mut seen = 0_u32;
+    for _ in 0..2_000 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let (writes, pump_ms) = rig.pump_writes();
+        let Some(snapshot) = set_of(&writes, &snapshot_key) else {
+            continue;
+        };
+        seen += 1;
+        let document =
+            set_of(&writes, &live_key).expect("every snapshot rides with its live record");
+        let live = match_::LiveRecord::from_document(&document).expect("the live record decodes");
+        let at = std::time::Instant::now();
+        let encoded = live.to_document().expect("the live record serialises");
+        let live_encode_ms = at.elapsed().as_secs_f64() * 1_000.0;
+        // The round trip on real data: nothing a derive carries is dropped or
+        // altered between what the world wrote and what the boot would read.
+        assert_eq!(
+            encoded, document,
+            "the live record at {} ms re-encodes to the document written",
+            live.at_ms
+        );
+        let live_bytes = serde_json::to_string(&document).map_or(0, |text| text.len());
+        let snapshot_bytes = serde_json::to_string(&snapshot).map_or(0, |text| text.len());
+        let lines: usize = live
+            .record
+            .folds
+            .values()
+            .map(|fold| fold.clone().finish().lines.len())
+            .sum();
+        let shots = live.record.replay.as_ref().map_or(0, |fold| {
+            fold.clone()
+                .finish(match_::MatchOutcome::Draw, "")
+                .shots
+                .len()
+        });
+        let line = |word: &str| {
+            format!(
+                "af2_world_side: at={word} at_ms={} live_bytes={live_bytes} live_encode_ms={live_encode_ms:.3} snapshot_bytes={snapshot_bytes} snapshot_set_ms={pump_ms:.3} folds={} fold_lines={lines} replay_shots={shots}",
+                live.at_ms,
+                live.record.folds.len()
+            )
+        };
+        if first.is_none() {
+            first = Some(line("first"));
+        }
+        let at_ms = live.at_ms;
+        last = Some((at_ms, line("last"), document, live));
+        if at_ms >= 60_000 {
+            break;
+        }
+    }
+    let first = first.expect("the opening snapshot");
+    let (at_ms, last_line, document, live) = last.expect("a last snapshot");
+    assert!(at_ms >= 60_000, "the minute ran: last snapshot at {at_ms}");
+    assert!(seen >= 13, "a snapshot every five arena seconds: {seen}");
+    println!("{first}");
+    println!("{last_line}");
+    // The fight happened: shots are on the replay fold the live record carries,
+    // and the pilots' folds carry more than their `power online.` lines.
+    let fold = live.record.replay.clone().expect("the replay fold");
+    let replay = fold.clone().finish(match_::MatchOutcome::Draw, "");
+    assert!(!replay.shots.is_empty(), "the minute had no fire");
+    let fold_lines: usize = live
+        .record
+        .folds
+        .values()
+        .map(|fold| fold.clone().finish().lines.len())
+        .sum();
+    assert!(
+        fold_lines >= 10,
+        "the pilots' folds filled: {fold_lines} lines"
+    );
+
+    // The ceiling, an estimate. (a) One kept report line's bytes inside the
+    // stored `state` string, measured over every line the folds hold.
+    let state: serde_json::Value = document["state"]
+        .as_str()
+        .and_then(|text| serde_json::from_str(text).ok())
+        .expect("the state parses");
+    let (line_bytes, line_count) = state["record"]["folds"]
+        .as_object()
+        .into_iter()
+        .flat_map(|folds| folds.values())
+        .map(|fold| escaped_items(&fold["lines"]))
+        .fold((0_usize, 0_usize), |(bytes, count), (b, c)| {
+            (bytes + b, count + c)
+        });
+    let per_line = line_bytes.checked_div(line_count).unwrap_or(0);
+    // (b) The replay fold's serde form, escaped, against the compact arrays
+    // `REPLAY_MAX_BYTES` budgets (`ReplayFold::encoded_bytes`): per shot and
+    // per keyframe, the larger ratio taken.
+    let held = &state["record"]["replay"]["replay"];
+    let written = replay.to_document();
+    let (shot_bytes, shot_count) = escaped_items(&held["shots"]);
+    let (frame_bytes, frame_count) = escaped_items(&held["keyframes"]);
+    assert_eq!(
+        shot_count,
+        replay.shots.len(),
+        "the state's shots are the fold's"
+    );
+    assert_eq!(frame_count, replay.keyframes.len(), "and its keyframes");
+    #[allow(clippy::cast_precision_loss)]
+    let ratio = |held: usize, compact: usize| {
+        if compact == 0 {
+            0.0
+        } else {
+            held as f64 / compact as f64
+        }
+    };
+    let shot_ratio = ratio(shot_bytes, compact_items(&written["shots"]));
+    let frame_ratio = ratio(frame_bytes, compact_items(&written["keyframes"]));
+    let replay_ratio = shot_ratio.max(frame_ratio);
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let replay_ceiling =
+        (tacsim::match_::replay::REPLAY_MAX_BYTES as f64 * replay_ratio).ceil() as usize;
+    let live_bytes = serde_json::to_string(&document).map_or(0, |text| text.len());
+    let ceiling =
+        live_bytes + 24 * tacsim::match_::report::REPORT_MAX_LINES * per_line + replay_ceiling;
+    println!(
+        "af2_world_side_ceiling: estimate folds=24 lines_per_fold={} bytes_per_line_stored={per_line} (over {line_count} lines) replay_max_bytes={} replay_ratio_shots={shot_ratio:.2} replay_ratio_keyframes={frame_ratio:.2} replay_stored_bytes~{replay_ceiling} live_stored_bytes~{ceiling}",
+        tacsim::match_::report::REPORT_MAX_LINES,
+        tacsim::match_::replay::REPLAY_MAX_BYTES
+    );
 }

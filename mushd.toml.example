@@ -376,6 +376,11 @@ max_frame_bytes = 16384            # (16b cut U.2) bytes of the largest arena.co
 # whoever moves it next must say why. Both fan-out bounds were measured on the opening, with
 # no enemy in sight: a combat frame and an engaged pulse are not measured yet.
 max_output_events_per_pulse = 512  # (16b cut U.2) output events one arena pulse may produce through the world's output path
+# (16b cut AF.2) The 30-second lane takes a running match's snapshot every
+# [tacsim.arena].snapshot_ms as the arena task does, and asserts its largest against
+# this. Measured before it was set: the authored lane's 4,198,651 bytes, three halves of
+# it rounded up to the next MiB. The lane's own bound, reported outside the compared block.
+max_snapshot_bytes = 7340032       # (16b cut AF.2) bytes of the largest arena snapshot the 30-second lane may encode
 
 [onboarding]                       # (M9) the chargen_required gate + start rooms
 # When off (the default), a fresh character plays immediately, exactly as

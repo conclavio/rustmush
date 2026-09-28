@@ -537,6 +537,16 @@ pub struct MatchMirror {
     /// itself holds is `Clock::floor_ms`; this is the world's copy of the last
     /// set it delivered.
     pub tempo_floor_ms: Option<u32>,
+    /// **The arena millisecond of the last snapshot the world wrote** (16b cut
+    /// AF.2), or `None` before the first: `on_snapshot` sets it as it writes
+    /// `tacsim:snapshot:<n>`, the live record carries it as its `at_ms`, and
+    /// `@arena/status` prints it.
+    pub snapshot_at_ms: Option<i64>,
+    /// **That snapshot's state hash** (16b cut AF.2), beside it.
+    pub snapshot_hash: Option<u64>,
+    /// **The snapshot moment this match was last resumed from** (16b cut AF.2
+    /// carries it on the live record; 16b cut AF.3 sets it), or `None`.
+    pub resumed_from_ms: Option<i64>,
 }
 
 /// **The last frame one pilot was sent** (16b cut K.2, K3).
@@ -1816,6 +1826,7 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
             ArenaOut::Deliberate { match_id, signals } => {
                 on_deliberate(ctx, match_id, &signals);
             }
+            ArenaOut::Snapshot { match_id, snapshot } => on_snapshot(ctx, match_id, snapshot),
             ArenaOut::Ended {
                 match_id,
                 end,
@@ -2459,6 +2470,56 @@ fn on_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64, bytes: &[u8]) {
     tasks.note_ledger_write(match_id, seq);
 }
 
+/// **One snapshot of a running match** (16b cut AF.2; 16c N16): the arena's
+/// document to `tacsim:snapshot:<n>` and the world's live record to
+/// `tacsim:live:<n>`, **in this one action**, so both ride one batch of the
+/// arena writer lane and a store that applied one without the other is the
+/// exception 16b cut AF.3's moment check catches, not the rule.
+///
+/// The mirror takes the snapshot's moment and hash first, so the live record
+/// written beside it carries `at_ms` equal to the snapshot's own. The document
+/// is taken out of the [`Arc`] without a copy in the common case — the task
+/// dropped its clone once the egress took the message — and cloned only if
+/// something else still holds one. **No ack**: a document is not a chunk, and
+/// the task waits on nothing it sends here. A snapshot of a match the book does
+/// not hold live (an end already processed, a staff reset) is dropped with a
+/// `debug` line: its result has deleted, or is about to delete, both documents.
+fn on_snapshot(ctx: &mut Ctx<'_>, match_id: MatchId, snapshot: Arc<crate::arena::Snapshot>) {
+    let live = ctx
+        .w
+        .module_state::<crate::match_::MatchBook>()
+        .and_then(|book| book.get(match_id))
+        .is_some_and(|record| record.state.is_live());
+    if !live {
+        tracing::debug!(
+            %match_id,
+            arena_ms = snapshot.at_ms,
+            "a snapshot arrived for a match the world no longer holds live; it is dropped"
+        );
+        return;
+    }
+    if let Some(mirror) = ctx
+        .w
+        .module_state_mut::<ArenaRegistry>()
+        .and_then(|registry| registry.matches.get_mut(&match_id))
+    {
+        mirror.snapshot_at_ms = Some(snapshot.at_ms);
+        mirror.snapshot_hash = Some(snapshot.state_hash);
+    }
+    let document = Arc::try_unwrap(snapshot).map_or_else(
+        |shared| shared.document.clone(),
+        |snapshot| snapshot.document,
+    );
+    push_op(
+        ctx.out,
+        mush_core::ModuleWrite::JsonSet {
+            key: crate::match_::snapshot_key(match_id),
+            value: document,
+        },
+    );
+    crate::match_::write_live(ctx, match_id);
+}
+
 /// Count one chunk as lost and acknowledge it, so the arena's bounded egress
 /// does not stall on a page that will never be written.
 fn lose_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64) {
@@ -2864,6 +2925,12 @@ fn status_rows(ctx: &Ctx<'_>) -> Vec<String> {
         // reason, and only while one stands.
         if let Some(floor_ms) = mirror.tempo_floor_ms {
             rows.push(format!("  tempo floor: {floor_ms} ms"));
+        }
+        // **16b cut AF.2**: the last snapshot the world wrote, on a line of its
+        // own for the same reason, once there is one. Staff-only, as the verb
+        // is: an arena millisecond names nothing on the field.
+        if let Some(at_ms) = mirror.snapshot_at_ms {
+            rows.push(format!("  last snapshot: at {at_ms} ms of arena time"));
         }
     }
     if !rows.is_empty() {

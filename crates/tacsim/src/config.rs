@@ -849,6 +849,18 @@ pub struct HarnessConfig {
     /// burst is teammates only — no enemy is in sight in the lane's thirty
     /// seconds — so an engaged pulse's fire and damage notices are unmeasured.
     pub max_output_events_per_pulse: u32,
+    /// **The largest arena snapshot the 30-second lane may encode**, bytes (16b
+    /// cut AF.2; 16c N16): the state string of `crate::arena::Snapshot::bytes`,
+    /// asserted on `harness_arena_snapshot`'s `bytes_max` on both cohorts. It
+    /// is the harness's own lane's bound and never a throttle: nothing in the
+    /// arena or the task reads it, and a larger snapshot is still taken and
+    /// written.
+    ///
+    /// 7 MiB (7,340,032) since 16b cut AF.2, **measured before it was set**:
+    /// the authored lane's 4,198,651 bytes, three halves of it rounded up to
+    /// the next MiB (16b cut J.3b's precedent); the CI cohort measured
+    /// 3,897,681 on the same run.
+    pub max_snapshot_bytes: u64,
 }
 
 impl Default for HarnessConfig {
@@ -874,6 +886,9 @@ impl Default for HarnessConfig {
             // The measured burst is 288 (24 panels + 11 lines per pilot), on
             // the opening with no enemy in sight; an engaged pulse is unmeasured.
             max_output_events_per_pulse: 512,
+            // 16b cut AF.2: the authored lane's 4,198,651 bytes, three halves
+            // of it rounded up to the next MiB (7 MiB).
+            max_snapshot_bytes: 7_340_032,
         }
     }
 }
@@ -1263,7 +1278,8 @@ impl HarnessConfig {
             ));
         }
         // **16b cut U.2**: a bound of nought is a harness that fails on the first
-        // pulse that does anything, so each of the five is at least one.
+        // pulse that does anything, so each of the five is at least one — and
+        // **16b cut AF.2**'s snapshot bound with them.
         for (key, value) in [
             (
                 "max_cell_probes_per_pulse",
@@ -1279,6 +1295,8 @@ impl HarnessConfig {
                 "max_output_events_per_pulse",
                 u64::from(self.max_output_events_per_pulse),
             ),
+            // 16b cut AF.2.
+            ("max_snapshot_bytes", self.max_snapshot_bytes),
         ] {
             at_least(&format!("[tacsim.harness].{key}"), 1, value)?;
         }
