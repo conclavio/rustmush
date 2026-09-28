@@ -2640,7 +2640,7 @@ fn hand_back_seats_of_actor(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
 /// restart ([`eject_all_at_boot`], its silent sibling). Idempotent, and fallible
 /// per pod without failing the others.
 pub(crate) fn eject_all(ctx: &mut Ctx<'_>) -> EjectReport {
-    sweep_pods(ctx, true)
+    sweep_pods(ctx, true, &BTreeSet::new())
 }
 
 /// **[`eject_all`] at boot** (16b cut U.4, 16c `B-37`), from the module's
@@ -2655,13 +2655,35 @@ pub(crate) fn eject_all(ctx: &mut Ctx<'_>) -> EjectReport {
 /// says the hatch line and the room once that body's session is attached, for
 /// at most [`crate::match_::HATCH_HOLD_S`] ([`crate::match_::sim`]'s
 /// `board_tick`).
+///
+/// **16b cut AF.3: a resumed match is exempt.** When the boot resumed the
+/// centre's match (the centre `Running` on a match id, which only the resume
+/// leaves it at boot), its slots' pods and their tanks are left alone: the
+/// bodies stay inside, no hatch line is owed, and the billets stay on the
+/// tanks — Y.3's reclaim re-runs the seat path idempotently from the pod with
+/// the billet held. Every other pod is swept as before, and a crash during
+/// `Boarding` (no marker, no snapshot, nothing resumed) still opens the hatch.
 pub(crate) fn eject_all_at_boot(ctx: &mut Ctx<'_>) -> EjectReport {
-    sweep_pods(ctx, false)
+    let keep: BTreeSet<ObjId> = lobby::centre(ctx.w)
+        .filter(|centre| centre.state == MatchState::Running && centre.match_id.is_some())
+        .map(|centre| {
+            centre
+                .slots
+                .iter()
+                .filter_map(|slot| slot.pod)
+                .flat_map(|pod| [Some(pod), centre::tank_of(ctx.w, pod)])
+                .chain(centre.slots.iter().map(|slot| slot.unit))
+                .flatten()
+                .collect()
+        })
+        .unwrap_or_default();
+    sweep_pods(ctx, false, &keep)
 }
 
 /// Both sweeps' one body. `told` says the hatch line and the room at once; its
-/// absence defers them to the boarding tick.
-fn sweep_pods(ctx: &mut Ctx<'_>, told: bool) -> EjectReport {
+/// absence defers them to the boarding tick. `keep` names pods and tanks the
+/// sweep leaves exactly as they are (16b cut AF.3: a resumed match's).
+fn sweep_pods(ctx: &mut Ctx<'_>, told: bool, keep: &BTreeSet<ObjId>) -> EjectReport {
     let pods: Vec<(ObjId, Option<ObjId>, Option<ObjId>)> = centre::POD_ENTRIES
         .iter()
         .filter_map(|(team, index, _)| centre::pod_object(ctx.w, *team, *index))
@@ -2677,8 +2699,11 @@ fn sweep_pods(ctx: &mut Ctx<'_>, told: bool) -> EjectReport {
     for (pod, room, tank) in pods {
         // The billets on the pod's own tank, whether or not anybody is still
         // sitting in the pod: the two halves are stranded independently.
-        if let Some(tank) = tank {
+        if let Some(tank) = tank.filter(|tank| !keep.contains(tank)) {
             report.merge(hand_back_seats_of_unit(ctx, tank));
+        }
+        if keep.contains(&pod) {
+            continue;
         }
         let Some(room) = room else {
             continue;

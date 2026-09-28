@@ -21,23 +21,27 @@
 //! * the whole `@arena` lifecycle surface is live across the boundary — the read,
 //!   the refusals, and the fact that each one comes back as itself and not as a
 //!   broken pipe;
-//! * a server restart **while a match is running** leaves the arena surface live,
-//!   with no match running and no custody left behind — doc 16 §8's "restart
-//!   mid-match" seen from the side the gateway can see, and (16b cut M.1, `T-42`)
-//!   the store's side of it: the boot reconciliation's result document;
+//! * a server restart **while a match is running** leaves the arena surface live
+//!   and — since 16b cut AF.3 — the match running too, resumed from its last
+//!   snapshot: doc 16 §8's "restart mid-match" seen from the side the gateway
+//!   can see, and the store's side of it (the markers kept, no result document
+//!   until the match ends the ordinary way);
 //! * the custody admission error is the same named sentence here as everywhere
 //!   else;
-//! * (16b cut U.4, 16c `B-37`) two pilots who really boarded, whose sessions
-//!   survive the restart on the gateway, are let out of their pods by the boot
-//!   and read the hatch line from the reconciled world's first tick.
+//! * (16b cut AF.3) two pilots who really boarded, whose sessions survive the
+//!   restart on the gateway, read that the match resumed and that their tanks
+//!   fly on doctrine, and take them back with `BOARD` — the split's whole point;
+//! * (16b cut U.4, 16c `B-37`) a pilot in a pod when the server stops during
+//!   `Boarding` — nothing checked out, nothing to resume — is let out of the pod
+//!   by the boot and reads the hatch line from the rebooted world's first tick.
 //!
 //! What stays the `mushd` twin's is the rest of the claims about the **store**:
 //! the byte-identical record around an idle unit, the driven unit's final
 //! placement, the injected panic. This file sees what the gateway can see, and
-//! (16b cut M.1, `T-42`) reads the server half's store for exactly two things
-//! of the restart: that both units' `deployed` markers were written before the
-//! crash and are gone after it, and the result document the boot
-//! reconciliation writes (`tacsim:match:<id>`, `abort` for `restart`).
+//! (16b cut M.1, `T-42`; 16b cut AF.3) reads the server half's store for the
+//! restart's own facts: both units' `deployed` markers and the arena's snapshot
+//! written before the crash, the markers still there after it and no result
+//! document, and the ordinary result once the resumed match is aborted.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -551,17 +555,43 @@ fn dbref_of(listing: &str, name: &str) -> u32 {
 // The lens
 // ---------------------------------------------------------------------------
 
+/// Whether the server half's store holds `tacsim:snapshot:<match_id>` — the
+/// arena's own snapshot of a running match (16b cut AF.2), which a boot resumes
+/// from (16b cut AF.3).
+async fn snapshot_on_disk(store: &Arc<dyn ObjectStore>, match_id: u64) -> bool {
+    store
+        .module_json_get("tacsim", &format!("tacsim:snapshot:{match_id}"))
+        .await
+        .expect("the store read")
+        .is_some()
+}
+
+/// `text` with every run of whitespace one space: the line client wraps at the
+/// terminal's width, and the resume line is longer than eighty columns.
+fn flat(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// How many times `needle` appears in what `term` received since `mark`, both
+/// flattened.
+fn count_since(term: &Term, mark: usize, needle: &str) -> usize {
+    flat(&strip_ansi(&term.seen[mark..]))
+        .matches(flat(needle).as_str())
+        .count()
+}
+
 /// The arena lifecycle surface is live across the boundary, and a restart
-/// **while a match is running** leaves it live with nothing in custody.
+/// **while a match is running** resumes it.
 ///
-/// **16b cut M.1** (`T-42`): the crash used to come after `@arena/abort` had
-/// already checked the units in, so "restarts with nothing in custody" was said
-/// of a match that had ended. It now comes while the match is `Running`, once
-/// both units' `deployed` markers are in the store (the wait
-/// `crates/mushd/tests/arena_custody.rs`'s restart test makes — without it the
-/// reboot may find no marker and write no result), and afterwards the lens
-/// asserts what "nothing in custody" means: no match running, the unit movable
-/// again, and the boot reconciliation's result document for the match.
+/// **16b cut M.1** (`T-42`) made the crash come while the match is `Running`,
+/// once both units' `deployed` markers are in the store. **16b cut AF.3**: and
+/// once the arena's snapshot is too, because since that cut a server-half
+/// restart resumes a running match from it. So afterwards the surviving staff
+/// session reads `@arena/status` with the match running and its `resumed:`
+/// line, the store holds no result document for it, the admission site still
+/// refuses its unit, and `@arena/abort` ends it the ordinary way — an `abort`
+/// result, and neither unit left in custody — after which the lifecycle
+/// refusals still answer as themselves and the unit is movable again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_arena_surface_survives_the_split_and_a_server_restart() {
     let server_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
@@ -603,13 +633,6 @@ async fn the_arena_surface_survives_the_split_and_a_server_restart() {
         .await;
 
     // --- (2b) the whole round trip, on the units the content made ---------
-    //
-    // 16b cut C.2 put doc 16 §3.3's stock tanks in the world at a first
-    // boot, so the split twin no longer has to invent a unit to have a match:
-    // it finds two of the arena's own and fights on the ground the same pack
-    // authored. This is the half the `mushd` twin proves about the *store*,
-    // proved here about the **boundary** — every one of these lines is a
-    // command the gateway forwards and an answer it carries back.
     let red = dbref_of(
         &god.ask("@find Red Tank 1", "END OF LIST").await,
         "Red Tank 1",
@@ -635,11 +658,17 @@ async fn the_arena_surface_survives_the_split_and_a_server_restart() {
         "deployed in arena match",
     )
     .await;
-    // Both markers durable before the crash, or the reboot has nothing to
-    // reconcile and writes no result.
-    wait_until(STEP_TIMEOUT, "both custody markers to land", async || {
-        deployed(&server_store, red).await && deployed(&server_store, blue).await
-    })
+    // Both markers and the arena's snapshot durable before the crash, or the
+    // reboot has nothing to resume from.
+    wait_until(
+        STEP_TIMEOUT,
+        "both custody markers and the snapshot to land",
+        async || {
+            deployed(&server_store, red).await
+                && deployed(&server_store, blue).await
+                && snapshot_on_disk(&server_store, match_id).await
+        },
+    )
     .await;
 
     // --- (3) make the server EXIT ON ITS OWN, mid-match --------------------
@@ -655,99 +684,75 @@ async fn the_arena_surface_survives_the_split_and_a_server_restart() {
     god.expect_after(before_crash, "Reconnected").await;
     god.expect_after(before_crash, "Limbo #0").await;
 
-    // --- (4) the arena surface is live again, with nothing in custody -----
-    //
-    // Doc 16 §8's restart-mid-match, seen from the gateway: the reconciled world
-    // has no match running and no marker left behind, and the lifecycle verbs
-    // answer exactly as they did before the crash.
-    god.say("@arena/status", "No match is running.").await;
-    god.say("@arena/abort", "No match is running.").await;
+    // --- (4) the match resumed -------------------------------------------
+    god.say("@arena/status", "resumed: from a snapshot at")
+        .await;
+    let status = god.ask("@arena/status", "last snapshot: at").await;
+    assert!(
+        status.contains(&format!("match {match_id}: running")),
+        "{status}"
+    );
+    let key = format!("tacsim:match:{match_id}");
+    assert!(
+        server_store
+            .module_json_get("tacsim", &key)
+            .await
+            .expect("the store read")
+            .is_none(),
+        "a resumed match writes no result"
+    );
+    assert!(deployed(&server_store, red).await, "the red marker stays");
+    assert!(deployed(&server_store, blue).await, "the blue marker stays");
     god.say(
-        "@arena/start tacsim.arena.proving_ground=#9998/#9999",
-        "is not a tactical unit",
+        &format!("@spatial/unplace #{red}"),
+        "deployed in arena match",
     )
     .await;
-    // The match that was running is on the record as the boot reconciliation's
-    // aborted restart, and neither unit carries a marker.
-    let key = format!("tacsim:match:{match_id}");
-    wait_until(STEP_TIMEOUT, "the restart's result document", async || {
+
+    // --- (5) and ends the ordinary way ------------------------------------
+    god.say(&format!("@arena/abort {match_id}"), "is stopping")
+        .await;
+    wait_until(STEP_TIMEOUT, "the abort's result document", async || {
         server_store
             .module_json_get("tacsim", &key)
             .await
             .expect("the store read")
             .is_some_and(|result| {
-                result.get("outcome").and_then(serde_json::Value::as_str) == Some("abort")
-                    && result.get("reason").and_then(serde_json::Value::as_str) == Some("restart")
+                result.get("reason").and_then(serde_json::Value::as_str) == Some("abort")
             })
     })
     .await;
-    assert!(
-        !deployed(&server_store, red).await,
-        "the red marker survived"
-    );
-    assert!(
-        !deployed(&server_store, blue).await,
-        "the blue marker survived"
-    );
+    wait_until(STEP_TIMEOUT, "both markers to go", async || {
+        !deployed(&server_store, red).await && !deployed(&server_store, blue).await
+    })
+    .await;
+    god.say("@arena/abort", "No match is running.").await;
+    // The lifecycle refusals still come back across the rebooted boundary as
+    // themselves.
+    god.say(
+        "@arena/start tacsim.arena.proving_ground=#9998/#9999",
+        "is not a tactical unit",
+    )
+    .await;
     // Last, because it takes the tank off the map: the admission site that
-    // refused while the arena held the unit lets it go now.
+    // refused while the resumed arena held the unit lets it go once the abort
+    // checked it in.
     let answer = god
         .ask(&format!("@spatial/unplace #{red}"), "Unplaced")
         .await;
     assert!(
         !answer.contains("deployed in arena match"),
-        "a unit the restart checked in is still refused as deployed: {answer}"
+        "a unit the abort checked in is still refused as deployed: {answer}"
     );
 
     drop(god);
 }
 
-/// **The hatch line reaches a pilot whose session survived the restart** (16b cut
-/// U.4, 16c `B-37`).
-///
-/// The split server is production, and it is the one place a player's session
-/// outlives the world that seated them: the gateway holds the SSH connection
-/// while the server half restarts and reattaches it afterwards. Two pilots
-/// really `BOARD` — a body placed inside a pod and a cockpit billet on each tank,
-/// both durable — and the server half then exits on its own mid-match. The boot
-/// that follows opens the pods inside the boot (tacsim's `on_all_loaded`), and
-/// because boot output reaches nobody the module's boarding tick says the hatch
-/// line — to a body whose session the gateway's re-announce has re-attached,
-/// holding it until then, since nothing orders the re-announce against the first
-/// tick. This asserts that each pilot actually reads it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_pilot_in_a_pod_across_a_server_restart_reads_the_hatch_line() {
-    let store = shared_store().await;
-    let crash: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::new(Mutex::new(None));
-    let (ssh_addr, _trigger) = start_split_with(
-        Arc::clone(&store),
-        Box::new(CrashOnceLauncher {
-            store: Arc::clone(&store),
-            launches: AtomicUsize::new(0),
-            crash: Arc::clone(&crash),
-        }),
-    )
-    .await;
-
-    let (_g, mut god) = play_client(ssh_addr).await;
-    god.connect_when_admitted("boss", GM_PASSWORD, "Connected as God")
-        .await;
-    let red = dbref_of(
-        &god.ask("@find Red Tank 1", "END OF LIST").await,
-        "Red Tank 1",
-    );
-    let blue = dbref_of(
-        &god.ask("@find Blue Tank 1", "END OF LIST").await,
-        "Blue Tank 1",
-    );
-
-    let (_a, mut ada) = play_client(ssh_addr).await;
-    ada.connect_when_admitted("ada", PILOT_PASSWORD, "Connected as Ada")
-        .await;
-    let (_b, mut bo) = play_client(ssh_addr).await;
-    bo.connect_when_admitted("bo", PILOT_PASSWORD, "Connected as Bo")
-        .await;
-    for term in [&mut ada, &mut bo] {
+/// Two pilots claim, start and walk to their team rooms on `store`'s split; the
+/// ones `board` names (0 Ada, 1 Bo) `BOARD`, retried on the control-lease
+/// mirror's transient.
+async fn claim_and_board(ada: &mut Term, bo: &mut Term, board: &[usize]) {
+    for term in [&mut *ada, &mut *bo] {
         term.say("ooc", "Welcome Hall").await;
         // `SIM` is a verb before it is an exit, so the walk takes the exit's
         // other name, as `arena_story_split.rs` does.
@@ -758,7 +763,10 @@ async fn a_pilot_in_a_pod_across_a_server_restart_reads_the_hatch_line() {
     ada.say("SIM START", "is boarding").await;
     ada.say("red", "Red Room").await;
     bo.say("blue", "Blue Room").await;
-    for term in [&mut ada, &mut bo] {
+    for (n, term) in [&mut *ada, &mut *bo].into_iter().enumerate() {
+        if !board.contains(&n) {
+            continue;
+        }
         // The control-lease mirror is a 1 Hz projection, and a `BOARD` before
         // its first read is refused as the transient it is.
         wait_until(STEP_TIMEOUT, "a pilot to board", async || {
@@ -770,33 +778,170 @@ async fn a_pilot_in_a_pod_across_a_server_restart_reads_the_hatch_line() {
         })
         .await;
     }
-    ada.expect("Good hunting").await;
-    // The markers durable, which is what tells the reboot a match was running;
-    // the pods and the billets were written by the `BOARD`s before them.
-    wait_until(STEP_TIMEOUT, "both custody markers to land", async || {
-        deployed(&store, red).await && deployed(&store, blue).await
-    })
-    .await;
+}
 
-    // The server half exits on its own, mid-match.
-    let (ada_mark, bo_mark) = (ada.mark(), bo.mark());
+/// The split with a crashable first boot, over one shared store.
+async fn crashable_split(
+    store: &Arc<dyn ObjectStore>,
+) -> (SocketAddr, Arc<Mutex<Option<oneshot::Sender<()>>>>) {
+    let crash: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::new(Mutex::new(None));
+    let (ssh_addr, _trigger) = start_split_with(
+        Arc::clone(store),
+        Box::new(CrashOnceLauncher {
+            store: Arc::clone(store),
+            launches: AtomicUsize::new(0),
+            crash: Arc::clone(&crash),
+        }),
+    )
+    .await;
+    (ssh_addr, crash)
+}
+
+/// Make the first boot's server half exit on its own.
+fn crash_now(crash: &Arc<Mutex<Option<oneshot::Sender<()>>>>) {
     let crash_tx = crash
         .lock()
         .ok()
         .and_then(|mut slot| slot.take())
         .expect("the first boot published its crash sender");
     let _ = crash_tx.send(());
+}
 
-    // Each pilot's session survived; each reads its hatch.
-    for (term, mark) in [(&mut ada, ada_mark), (&mut bo, bo_mark)] {
+/// **A pilot in a pod across a server restart boards the resumed match** (16b
+/// cut AF.3; the split's whole point): the gateway holds the connections while
+/// the server half restarts, and from AF.3 the match they were flying survives
+/// it too.
+///
+/// Two pilots really `BOARD`; once `Good hunting` is read and both markers and
+/// the arena's snapshot are durable, the server half exits on its own. Each
+/// surviving session reads `Reconnected`, then the resume line and the
+/// doctrine line exactly once; `BOARD` (retried while the tank is still being
+/// handed over) takes the tank back where it stands and the first frame says
+/// `Back aboard`; the markers are still there; `STATUS` answers a frame.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pilot_in_a_pod_across_a_server_restart_boards_the_resumed_match() {
+    let store = shared_store().await;
+    let (ssh_addr, crash) = crashable_split(&store).await;
+    let (_g, mut god) = play_client(ssh_addr).await;
+    god.connect_when_admitted("boss", GM_PASSWORD, "Connected as God")
+        .await;
+    let red = dbref_of(
+        &god.ask("@find Red Tank 1", "END OF LIST").await,
+        "Red Tank 1",
+    );
+    let blue = dbref_of(
+        &god.ask("@find Blue Tank 1", "END OF LIST").await,
+        "Blue Tank 1",
+    );
+    let (_a, mut ada) = play_client(ssh_addr).await;
+    ada.connect_when_admitted("ada", PILOT_PASSWORD, "Connected as Ada")
+        .await;
+    let (_b, mut bo) = play_client(ssh_addr).await;
+    bo.connect_when_admitted("bo", PILOT_PASSWORD, "Connected as Bo")
+        .await;
+    claim_and_board(&mut ada, &mut bo, &[0, 1]).await;
+    ada.expect("Good hunting").await;
+    wait_until(
+        STEP_TIMEOUT,
+        "both custody markers and the snapshot to land",
+        async || {
+            deployed(&store, red).await
+                && deployed(&store, blue).await
+                && snapshot_on_disk(&store, 1).await
+        },
+    )
+    .await;
+
+    let (ada_mark, bo_mark) = (ada.mark(), bo.mark());
+    crash_now(&crash);
+
+    let resumed = tacsim::match_::RESUME_LINE;
+    for (term, mark, tank) in [
+        (&mut ada, ada_mark, "Red Tank 1"),
+        (&mut bo, bo_mark, "Blue Tank 1"),
+    ] {
+        let doctrine = format!("{tank} is flying on doctrine; BOARD takes it back.");
         term.expect_after(mark, "Reconnected").await;
-        term.expect_after(mark, "The hatch of").await;
-        term.expect_after(mark, "swings open.").await;
+        term.expect_after(mark, &doctrine).await;
+        // Two more boarding ticks: nothing is said again.
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
+        term.say("zzz-sentinel", "Huh?").await;
+        assert_eq!(count_since(term, mark, resumed), 1, "the resume line, once");
+        assert_eq!(
+            count_since(term, mark, &doctrine),
+            1,
+            "the doctrine line, once"
+        );
+        let seen = flat(&strip_ansi(&term.seen[mark..]));
+        assert!(
+            seen.find(flat(resumed).as_str()) < seen.find(flat(&doctrine).as_str()),
+            "the resume line first: {seen}"
+        );
     }
-    // And the boot reconciliation's own claims hold across it.
-    assert!(!deployed(&store, red).await, "the red marker survived");
-    assert!(!deployed(&store, blue).await, "the blue marker survived");
-    // A pilot the boot let out of the pod holds no cockpit any more.
+    for term in [&mut ada, &mut bo] {
+        let mark = term.mark();
+        wait_until(STEP_TIMEOUT, "the tank to come back", async || {
+            let at = term.mark();
+            term.send_line("BOARD").await;
+            term.expect_one_of_after(
+                at,
+                &[
+                    "yours again where it stands",
+                    "still being handed over",
+                    CONTROL_UNKNOWN,
+                    COMMIT_PENDING,
+                ],
+            )
+            .await
+                == 0
+        })
+        .await;
+        term.expect_after(mark, "Back aboard").await;
+    }
+    assert!(deployed(&store, red).await, "the red marker stays");
+    assert!(deployed(&store, blue).await, "the blue marker stays");
+    ada.say("STATUS", "power").await;
+    bo.say("STATUS", "power").await;
+}
+
+/// **A pilot in a pod across a crash during `Boarding` reads the hatch line**
+/// (16b cut U.4, 16c `B-37`, kept by 16b cut AF.3): nothing was checked out yet
+/// — no marker, no snapshot, nothing to resume — so the boot opens the pod and
+/// gives the billet back, and because boot output reaches nobody the boarding
+/// tick says the hatch line to the pilot whose session the gateway re-attached.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pilot_in_a_pod_across_a_boarding_crash_reads_the_hatch_line() {
+    let store = shared_store().await;
+    let (ssh_addr, crash) = crashable_split(&store).await;
+    let (_g, mut god) = play_client(ssh_addr).await;
+    god.connect_when_admitted("boss", GM_PASSWORD, "Connected as God")
+        .await;
+    let red = dbref_of(
+        &god.ask("@find Red Tank 1", "END OF LIST").await,
+        "Red Tank 1",
+    );
+    let blue = dbref_of(
+        &god.ask("@find Blue Tank 1", "END OF LIST").await,
+        "Blue Tank 1",
+    );
+    let (_a, mut ada) = play_client(ssh_addr).await;
+    ada.connect_when_admitted("ada", PILOT_PASSWORD, "Connected as Ada")
+        .await;
+    let (_b, mut bo) = play_client(ssh_addr).await;
+    bo.connect_when_admitted("bo", PILOT_PASSWORD, "Connected as Bo")
+        .await;
+    // Ada boards; Bo does not, so the match is still `Boarding`.
+    claim_and_board(&mut ada, &mut bo, &[0]).await;
+    assert!(!deployed(&store, red).await && !deployed(&store, blue).await);
+
+    let ada_mark = ada.mark();
+    crash_now(&crash);
+
+    ada.expect_after(ada_mark, "Reconnected").await;
+    ada.expect_after(ada_mark, "The hatch of").await;
+    ada.expect_after(ada_mark, "swings open.").await;
+    assert!(!deployed(&store, red).await, "no red marker");
+    assert!(!deployed(&store, blue).await, "no blue marker");
     ada.say("STATUS", "You are not at the station of a deployed unit.")
         .await;
 }

@@ -576,19 +576,14 @@ fn cell_current(listing: &str, path: &str) -> i64 {
 ///
 /// A chunk document carries the chunk's **exact bytes** as one entry's `lines`
 /// field (16b T4), so the black box is reassembled by collecting every `lines`
-/// string in chunk order and splitting it.
+/// string in chunk order and splitting it — **16b cut AF.3**: in the order the
+/// tape counts (`tacsim::arena_bridge::tape_in_order`), so a resumed match's
+/// abandoned tail is never read as the match. Behaviour-neutral on a tape no
+/// restart forked, which is every tape this story writes.
 async fn ledger_events(store: &Arc<dyn ObjectStore>, match_id: u64) -> Vec<Value> {
-    let log = format!("match.{match_id}");
+    let kept = kept_tape(store, match_id).await;
     let mut events = Vec::new();
-    for chunk in 0..256 {
-        let key = mush_core::chunk_key(&log, chunk);
-        let Some(value) = store
-            .module_json_get("tacsim", key.as_str())
-            .await
-            .expect("the store read")
-        else {
-            break;
-        };
+    for value in kept {
         let mut lines: Vec<String> = Vec::new();
         collect_lines(&value, &mut lines);
         for blob in lines {
@@ -605,12 +600,50 @@ async fn ledger_events(store: &Arc<dyn ObjectStore>, match_id: u64) -> Vec<Value
 }
 
 /// **The black box's raw bytes** (16b cut M.1, `B-48`): every `lines` string of
-/// every chunk document, in chunk order, concatenated exactly — the same walk
+/// every kept chunk, in chunk order, concatenated exactly — the same walk
 /// [`ledger_events`] makes, with no parse, no trim and no newline added. Its
-/// SHA-256 is what the result document's digest must be.
+/// SHA-256 is what the result document's digest must be (16b cut AF.3: over
+/// the tape as `tape_in_order` counts it, which is the bytes that left the
+/// arena whether or not a resume forked the log).
 async fn ledger_bytes(store: &Arc<dyn ObjectStore>, match_id: u64) -> String {
-    let log = format!("match.{match_id}");
+    let kept = kept_tape(store, match_id).await;
     let mut bytes = String::new();
+    for value in kept {
+        let mut lines: Vec<String> = Vec::new();
+        collect_lines(&value, &mut lines);
+        for blob in lines {
+            bytes.push_str(&blob);
+        }
+    }
+    bytes
+}
+
+/// **The tape as `tape_in_order` counts it** (16b cut AF.3) — and, on a log no
+/// resume forked, **exactly its raw chunk entries**, asserted: the reader only
+/// truncates at a marker, so a chunk the world appended twice or out of order
+/// on an unforked tape still breaks the digest check (`B-48`'s lens) instead of
+/// being folded away by the last-write rule.
+async fn kept_tape(store: &Arc<dyn ObjectStore>, match_id: u64) -> Vec<Value> {
+    let entries = ledger_entries(store, match_id).await;
+    let (kept, markers) = tacsim::arena_bridge::tape_in_order(&entries);
+    if markers.is_empty() {
+        let raw: Vec<Value> = entries
+            .into_iter()
+            .filter(|entry| entry.get("chunk").and_then(Value::as_u64).is_some())
+            .collect();
+        assert_eq!(
+            raw, kept,
+            "an unforked tape is its raw chunk entries, each once and in order"
+        );
+    }
+    kept
+}
+
+/// Every entry of one match's log, in document order (16b cut AF.3): arena
+/// chunks and resume markers alike.
+async fn ledger_entries(store: &Arc<dyn ObjectStore>, match_id: u64) -> Vec<Value> {
+    let log = format!("match.{match_id}");
+    let mut entries = Vec::new();
     for chunk in 0..256 {
         let key = mush_core::chunk_key(&log, chunk);
         let Some(value) = store
@@ -620,13 +653,16 @@ async fn ledger_bytes(store: &Arc<dyn ObjectStore>, match_id: u64) -> String {
         else {
             break;
         };
-        let mut lines: Vec<String> = Vec::new();
-        collect_lines(&value, &mut lines);
-        for blob in lines {
-            bytes.push_str(&blob);
-        }
+        entries.extend(
+            value
+                .get("entries")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry.get("value").cloned()),
+        );
     }
-    bytes
+    entries
 }
 
 /// Every `"lines"` string in one chunk document, in document order.

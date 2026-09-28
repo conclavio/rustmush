@@ -525,6 +525,21 @@ impl Fold {
         self.gap = true;
     }
 
+    /// **One line said at this point of the tape, as it is** (16b cut AF.3): the
+    /// staff pager's resume-marker line ([`fold_page`]). Placed after every
+    /// event folded so far and before the next — keyed at the last event's time
+    /// and the next event's seq, and pushed before that event's own line, which
+    /// a stable sort keeps behind it — never stamped, never counted against
+    /// [`REPORT_MAX_LINES`] and never truncated: it is the tape's structure, not
+    /// one of its events. It moves nothing a fold reads (`expected`, the gap).
+    pub(crate) fn mark(&mut self, text: String) {
+        self.lines.push(Line {
+            t_ms: self.last_ms,
+            seq: self.expected.unwrap_or(0),
+            text,
+        });
+    }
+
     /// **The report.** Every shot still held reads `no outcome on the tape`
     /// (named as at the end), and the timeline is sorted stably by each line's
     /// own `(t_ms, seq)` — a shot line by its `Fired`, because a shot completes
@@ -2163,6 +2178,20 @@ pub struct PageFold {
 /// is counted as unreadable), and the chunk each line came from kept so a page
 /// cut short at [`REPORT_MAX_LINES`] can say where the rest of it starts.
 ///
+/// **16b cut AF.3: the page's entries go through
+/// [`crate::arena_bridge::tape_in_order`] first**, so a resumed match's
+/// abandoned tail — the chunks the old server wrote after the snapshot it
+/// resumed from — is not folded, and each resume marker prints its line
+/// ([`crate::arena_bridge::resume_marker_line`]) at its place: after the last
+/// chunk it keeps and before the first resumed one. **Nothing on the fold is
+/// reset** at a marker: `expected` counts the tape's events, and the truncated
+/// tape is contiguous by construction (chunk N's last event is followed by the
+/// resumed chunk N + 1's first, which the snapshot's open buffer began where
+/// chunk N ended), so a gap there would be a real one. **The limit of a paged
+/// reader**: an abandoned chunk whose marker sits on the NEXT page is shown on
+/// this one as it is, and the next page's marker line says which chunks it
+/// retired.
+///
 /// # Errors
 ///
 /// [`mush_core::read_cold_range`]'s refusal of the page.
@@ -2172,7 +2201,35 @@ pub fn fold_page(
     first_chunk: u64,
     roster: &Roster,
 ) -> Result<PageFold, mush_core::LedgerReadError> {
-    let entries = mush_core::read_cold_range(docs, log_id)?;
+    let read = mush_core::read_cold_range(docs, log_id)?;
+    // 16b cut AF.3: the entries in the order the tape counts, each kept chunk
+    // with the ledger seq of the entry it is (the last one written for its
+    // arena chunk, which is the one `tape_in_order` keeps), and the markers.
+    let values: Vec<serde_json::Value> = read.iter().map(|entry| entry.value.clone()).collect();
+    let (kept, markers) = crate::arena_bridge::tape_in_order(&values);
+    let mut seq_of_chunk: BTreeMap<u64, u64> = BTreeMap::new();
+    for entry in &read {
+        if let Some(chunk) = entry.value.get("chunk").and_then(serde_json::Value::as_u64) {
+            seq_of_chunk.insert(chunk, entry.seq);
+        }
+    }
+    let entries: Vec<(u64, u64, serde_json::Value)> = kept
+        .into_iter()
+        .filter_map(|value| {
+            let chunk = value.get("chunk").and_then(serde_json::Value::as_u64)?;
+            Some((chunk, seq_of_chunk.get(&chunk).copied().unwrap_or(0), value))
+        })
+        .collect();
+    let mut markers: std::collections::VecDeque<(u64, String)> = markers
+        .iter()
+        .filter_map(|marker| {
+            let from = marker
+                .get("resumed")
+                .and_then(|resumed| resumed.get("from_chunk"))
+                .and_then(serde_json::Value::as_u64)?;
+            Some((from, crate::arena_bridge::resume_marker_line(marker)?))
+        })
+        .collect();
     // Which chunk holds each entry: `read_cold_range` has just validated every
     // document as a chunk of this log with contiguous, gap-free entries.
     let mut chunk_of: BTreeMap<u64, u64> = BTreeMap::new();
@@ -2202,9 +2259,15 @@ pub fn fold_page(
     );
     let (mut parsed, mut unreadable) = (0_usize, 0_usize);
     let mut cut_at: Option<u64> = None;
-    for entry in &entries {
-        let text = entry
-            .value
+    for (chunk, seq, value) in &entries {
+        // Every marker that retired the chunks above its own, said before the
+        // first chunk it did not retire.
+        while markers.front().is_some_and(|(from, _)| *from < *chunk) {
+            if let Some((_, line)) = markers.pop_front() {
+                fold.mark(line);
+            }
+        }
+        let text = value
             .get("lines")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
@@ -2215,12 +2278,16 @@ pub fn fold_page(
                     let before = fold.truncated();
                     fold.absorb(&event);
                     if cut_at.is_none() && fold.truncated() > before {
-                        cut_at = Some(chunk_of.get(&entry.seq).copied().unwrap_or(first_chunk));
+                        cut_at = Some(chunk_of.get(seq).copied().unwrap_or(first_chunk));
                     }
                 }
                 Err(_) => unreadable = unreadable.saturating_add(1),
             }
         }
+    }
+    // A marker with nothing after it on this page is said at the page's end.
+    for (_, line) in markers {
+        fold.mark(line);
     }
     Ok(PageFold {
         report: fold.finish(),

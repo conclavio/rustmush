@@ -5,8 +5,9 @@
 //! takes custody of real unit records and gives them back, that a unit nothing
 //! happened to comes back byte-identical, that a driven one comes back where the
 //! arena left it, that a panicking pulse voids the match without taking the world
-//! with it, and that a restart in the middle of a match is a void the next boot
-//! reconciles. None of that can be shown by calling a function. So this drives
+//! with it, and that a restart in the middle of a match is resumed by the next
+//! boot from the match's last snapshot (16b cut AF.3) — or, when it cannot be,
+//! voided by name. None of that can be shown by calling a function. So this drives
 //! the whole stack over **real SSH**, the way `onboarding_e2e.rs` does, and reads
 //! the **store** for what landed.
 //!
@@ -134,17 +135,28 @@ fn tacsim_config() -> tacsim::TacsimConfig {
     cfg
 }
 
+/// **[`tacsim_config`] with the layer on** (16b cut AF.3): the resume's tests
+/// need it, because a boot voids every running match on a server whose
+/// simulator is off (`the simulator is off on this server`) — and this file's
+/// other lenses run `@arena/start` with the layer at its shipped default, off.
+fn resume_config() -> tacsim::TacsimConfig {
+    let mut cfg = tacsim_config();
+    cfg.enabled = true;
+    cfg
+}
+
 /// The production module list, in production order (16b cut C.2: there is no
 /// fixture module in it any more — see this file's header).
 fn module_list(
     onboarding: &mush_core::OnboardingConfig,
     llm: &Arc<LlmService>,
+    cfg: tacsim::TacsimConfig,
 ) -> Vec<Box<dyn GameModule>> {
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
     mods.extend(modules::sheet_modules(onboarding, &Default::default()));
-    mods.push(modules::tacsim_module(tacsim_config()));
+    mods.push(modules::tacsim_module(cfg));
     // 16b cut C.2: the content module last, with `[game].starter_area` off and
     // the game's own boot packs on — the arena's ground has to be in this
     // world's atlas records before `@arena/start` can build its window.
@@ -156,6 +168,17 @@ fn module_list(
 /// of the lens — and `seed` creates the room and the two tanks, which a reboot
 /// must not do again.
 async fn boot(tag: &str, store: Option<Arc<dyn ObjectStore>>, seed: bool) -> Server {
+    boot_with(tag, store, seed, tacsim_config()).await
+}
+
+/// [`boot`] on a named `[tacsim]` (16b cut AF.3: the config edited between two
+/// boots, which only a real boot over the store can show).
+async fn boot_with(
+    tag: &str,
+    store: Option<Arc<dyn ObjectStore>>,
+    seed: bool,
+    cfg: tacsim::TacsimConfig,
+) -> Server {
     let dir = scratch_dir(tag);
     let store: Arc<dyn ObjectStore> = match store {
         Some(store) => store,
@@ -210,8 +233,8 @@ async fn boot(tag: &str, store: Option<Arc<dyn ObjectStore>>, seed: bool) -> Ser
             .build(),
     );
 
-    let mut engine =
-        Engine::with_modules(world, registry, module_list(&onboarding, &llm)).expect("modules");
+    let mut engine = Engine::with_modules(world, registry, module_list(&onboarding, &llm, cfg))
+        .expect("modules");
     modules::boot_modules(&mut engine, &*store)
         .await
         .expect("module boot");
@@ -394,18 +417,13 @@ async fn running_document(store: &Arc<dyn ObjectStore>, key: &str) -> Option<Val
 /// (16b cut M.1) — `crates/mushd/tests/arena_story.rs`'s reader: a chunk document
 /// carries the chunk's exact bytes in its `lines` fields, collected in chunk order
 /// and split.
+///
+/// **16b cut AF.3**: through `tacsim::arena_bridge::tape_in_order`, so a resumed
+/// match's abandoned tail is not read as the match.
 async fn ledger_events(store: &Arc<dyn ObjectStore>, match_id: u64) -> Vec<Value> {
-    let log = format!("match.{match_id}");
+    let kept = kept_tape(store, match_id).await;
     let mut events = Vec::new();
-    for chunk in 0..256 {
-        let key = mush_core::chunk_key(&log, chunk);
-        let Some(value) = store
-            .module_json_get("tacsim", key.as_str())
-            .await
-            .expect("the store read")
-        else {
-            break;
-        };
+    for value in kept {
         let mut lines: Vec<String> = Vec::new();
         collect_lines(&value, &mut lines);
         for blob in lines {
@@ -729,88 +747,403 @@ async fn an_injected_panic_voids_the_match_and_the_world_keeps_serving() {
     .await;
 }
 
-/// **Restart mid-match** (doc 16 §3.1 "Boot reconciliation", §8): a server that
-/// stops while a match is running leaves `deployed` markers behind, and the next
-/// boot restores them, releases the seats and records an `aborted(restart)`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_restart_mid_match_restores_the_units_and_records_an_aborted_restart() {
-    let first = boot("arena-restart-a", None, true).await;
-    let (_handle, mut term) = staff_session(first.addr).await;
-    prepare(&mut term).await;
-    let before_red = record(&first.store, RED).await.expect("the red record");
+/// **Every event the tracing layer is handed, with its fields** (16b cut
+/// AF.3): set as the thread's default around a boot, which runs on the test's
+/// own thread, so the boot's one void line and its `reason` can be read.
+#[derive(Clone, Default)]
+struct Captured(Arc<std::sync::Mutex<Vec<std::collections::BTreeMap<String, String>>>>);
 
+/// [`Captured`]'s field visitor: strings as they are, the rest by `Debug`.
+struct FieldsOf<'a>(&'a mut std::collections::BTreeMap<String, String>);
+
+impl tracing::field::Visit for FieldsOf<'_> {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.0.insert(field.name().to_owned(), value.to_owned());
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0.insert(field.name().to_owned(), format!("{value:?}"));
+    }
+}
+
+impl tracing::Subscriber for Captured {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        *metadata.level() <= tracing::Level::WARN
+    }
+
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut fields = std::collections::BTreeMap::new();
+        event.record(&mut FieldsOf(&mut fields));
+        if let Ok(mut held) = self.0.lock() {
+            held.push(fields);
+        }
+    }
+
+    fn enter(&self, _: &tracing::span::Id) {}
+
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+impl Captured {
+    /// The reason the boot's void line gave for match `id`, if it gave one.
+    fn void_reason(&self, id: u64) -> Option<String> {
+        let held = self.0.lock().ok()?;
+        held.iter()
+            .find(|fields| {
+                fields
+                    .get("message")
+                    .is_some_and(|message| message.contains("could not resume"))
+                    && fields.get("match_id").map(String::as_str) == Some(id.to_string().as_str())
+            })
+            .and_then(|fields| fields.get("reason").cloned())
+    }
+}
+
+/// **Stop a server the way a crash stops it** (16b cut AF.3): its arena tasks
+/// told to stop, then its world task and its store writer aborted and joined,
+/// before any of its sessions is dropped. Dropping the `Server` alone detaches
+/// those tasks rather than ending them, and a world that is still running when
+/// the pilots' sessions go handles their disconnects — releasing every seat and
+/// taking one more snapshot — which is a clean shutdown the resume would then
+/// read, not the crash under test.
+async fn crash(server: &mut Server) {
+    if let Some(arenas) = &server._handles.arenas {
+        arenas.signal_stop_all();
+    }
+    server._handles.world_join.abort();
+    let _ = (&mut server._handles.world_join).await;
+    server._handles.writer_join.abort();
+    let _ = (&mut server._handles.writer_join).await;
+}
+
+/// **The tape as `tape_in_order` counts it** (16b cut AF.3) — and, on a log no
+/// resume forked, **exactly its raw chunk entries**, asserted: the reader only
+/// truncates at a marker, so a chunk the world appended twice or out of order
+/// on an unforked tape still breaks the digest check (`B-48`'s lens) instead of
+/// being folded away by the last-write rule.
+async fn kept_tape(store: &Arc<dyn ObjectStore>, match_id: u64) -> Vec<Value> {
+    let entries = ledger_entries(store, match_id).await;
+    let (kept, markers) = tacsim::arena_bridge::tape_in_order(&entries);
+    if markers.is_empty() {
+        let raw: Vec<Value> = entries
+            .into_iter()
+            .filter(|entry| entry.get("chunk").and_then(Value::as_u64).is_some())
+            .collect();
+        assert_eq!(
+            raw, kept,
+            "an unforked tape is its raw chunk entries, each once and in order"
+        );
+    }
+    kept
+}
+
+/// Every entry of one match's log, in document order (16b cut AF.3): arena
+/// chunks and resume markers alike.
+async fn ledger_entries(store: &Arc<dyn ObjectStore>, match_id: u64) -> Vec<Value> {
+    let log = format!("match.{match_id}");
+    let mut entries = Vec::new();
+    for chunk in 0..256 {
+        let key = mush_core::chunk_key(&log, chunk);
+        let Some(value) = store
+            .module_json_get("tacsim", key.as_str())
+            .await
+            .expect("the store read")
+        else {
+            break;
+        };
+        entries.extend(
+            value
+                .get("entries")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry.get("value").cloned()),
+        );
+    }
+    entries
+}
+
+/// Start match 1 with both tanks, and wait for the markers and both of the
+/// running match's documents to be in the store — the state a server that
+/// stops here leaves behind.
+async fn start_and_wait_for_the_snapshot(term: &mut Term, store: &Arc<dyn ObjectStore>) {
     say(
-        &mut term,
+        term,
         &format!("@arena/start {ARENA}=#{}/#{}", RED.0, BLUE.0),
         "is running on",
     )
     .await;
-    wait_until(Duration::from_secs(10), "the markers to land", async || {
-        record(&first.store, RED)
-            .await
-            .is_some_and(|document| document.get("deployed").is_some())
-    })
-    .await;
-
-    // **16b cut AF.2**: and the running match's two documents on disk too — the
-    // arena's snapshot and the world's live record — so the reboot below finds
-    // a leftover pair to delete.
     wait_until(
         Duration::from_secs(10),
-        "the snapshot and the live record",
+        "the markers and the two documents",
         async || {
-            running_document(&first.store, "tacsim:snapshot:1")
+            record(store, RED)
                 .await
-                .is_some()
-                && running_document(&first.store, "tacsim:live:1")
+                .is_some_and(|document| document.get("deployed").is_some())
+                && record(store, BLUE)
                     .await
-                    .is_some()
+                    .is_some_and(|document| document.get("deployed").is_some())
+                && running_document(store, "tacsim:snapshot:1").await.is_some()
+                && running_document(store, "tacsim:live:1").await.is_some()
         },
     )
     .await;
+}
 
-    // Stop the server where it stands, mid-`Running`, with both markers on
-    // disk and no result document. A running match does not resume yet (16b
-    // cut AF.3 resumes from the two documents; until then a restart voids), so
-    // this is exactly the state the next boot has to reconcile.
+/// **Restart mid-match: the match resumes** (16b cut AF.3; doc 16 §3.1
+/// "Durability", "Boot reconciliation", §8 "Restart mid-match"): a server
+/// stopped while a staff match runs, with both markers and both of the running
+/// match's documents on disk, and booted again over the same store.
+///
+/// The markers stay on both records and `@unit/damage` is refused as deployed;
+/// `@arena/status` lists match 1 running with its `resumed:` line; there is no
+/// result document; `@arena/abort 1` stops it and the result is an ordinary
+/// `abort` with a tape; the markers go with it. The raw log holds one resume
+/// marker, with the old server's chunks each once and in order before it, the
+/// chunk it names among them, and the resumed server's chunks each once and in
+/// order from the one after it; `tape_in_order` reads a contiguous tape. The
+/// next match is match 2.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restart_mid_match_resumes_the_match_and_the_units_stay_deployed() {
+    let mut first = boot_with("arena-resume-a", None, true, resume_config()).await;
+    let (_handle, mut term) = staff_session(first.addr).await;
+    prepare(&mut term).await;
+    start_and_wait_for_the_snapshot(&mut term, &first.store).await;
+
+    // Stop the server where it stands, mid-`Running`.
     let store = Arc::clone(&first.store);
+    crash(&mut first).await;
     drop(term);
     drop(first);
 
-    let second = boot("arena-restart-b", Some(Arc::clone(&store)), false).await;
-    let (_handle2, mut term2) = staff_session(second.addr).await;
-
-    // (1) The marker is gone and the snapshot is back.
-    wait_until(
-        Duration::from_secs(20),
-        "the boot reconciliation",
-        async || {
-            record(&store, RED)
-                .await
-                .is_some_and(|document| document.get("deployed").is_none())
-        },
+    let second = boot_with(
+        "arena-resume-b",
+        Some(Arc::clone(&store)),
+        false,
+        resume_config(),
     )
     .await;
+    let (_handle2, mut term2) = staff_session(second.addr).await;
+
+    // (1) The markers are still on both records, and the units still refused.
+    for unit in [RED, BLUE] {
+        assert!(
+            record(&store, unit)
+                .await
+                .is_some_and(|document| document.get("deployed").is_some()),
+            "#{} lost its marker at the resume",
+            unit.0
+        );
+    }
+    say(
+        &mut term2,
+        &format!("@unit/damage #{}={{\"ops\":[]}}", RED.0),
+        "is deployed in arena match 1",
+    )
+    .await;
+
+    // (2) The match runs, and staff read that it resumed.
+    say(&mut term2, "@arena/status", "resumed: from a snapshot at").await;
+    assert!(
+        running_document(&store, "tacsim:match:1").await.is_none(),
+        "a resumed match writes no result"
+    );
+
+    // (3) An abort ends it the ordinary way.
+    say(&mut term2, "@arena/abort 1", "is stopping").await;
+    wait_until(Duration::from_secs(20), "the result", async || {
+        running_document(&store, "tacsim:match:1").await.is_some()
+    })
+    .await;
+    let result = running_document(&store, "tacsim:match:1")
+        .await
+        .expect("the result");
+    assert_eq!(
+        result.get("reason").and_then(Value::as_str),
+        Some("abort"),
+        "{result}"
+    );
+    assert!(
+        result
+            .pointer("/ledger/chunks")
+            .and_then(Value::as_u64)
+            .is_some_and(|chunks| chunks >= 1),
+        "{result}"
+    );
+    wait_until(Duration::from_secs(10), "the markers to go", async || {
+        record(&store, RED)
+            .await
+            .is_some_and(|document| document.get("deployed").is_none())
+            && record(&store, BLUE)
+                .await
+                .is_some_and(|document| document.get("deployed").is_none())
+    })
+    .await;
+
+    // (4) The tape: one resume marker, the raw chunks around it, and a
+    // contiguous tape once read in the order it counts.
+    let entries = ledger_entries(&store, 1).await;
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry.get("resumed").is_some())
+            .count(),
+        1,
+        "{entries:?}"
+    );
+    // The raw log, around its one marker: the old server's chunks each once
+    // and in order from 1; a marker naming a chunk the old server wrote; and
+    // the resumed server's chunks each once and in order from the one after it
+    // — so the only sequences written twice are the abandoned tail's, above
+    // the marker's chunk.
+    let chunks_of = |entries: &[Value]| -> Vec<u64> {
+        entries
+            .iter()
+            .filter_map(|entry| entry.get("chunk").and_then(Value::as_u64))
+            .collect()
+    };
+    let at = entries
+        .iter()
+        .position(|entry| entry.get("resumed").is_some())
+        .expect("the resume marker");
+    let (old, rest) = entries.split_at(at);
+    let from = rest
+        .first()
+        .and_then(|marker| marker.pointer("/resumed/from_chunk"))
+        .and_then(Value::as_u64)
+        .expect("the marker's from_chunk");
+    let before = chunks_of(old);
+    let after = chunks_of(rest.get(1..).unwrap_or_default());
+    assert_eq!(
+        before,
+        (1..=u64::try_from(before.len()).unwrap_or(0)).collect::<Vec<u64>>(),
+        "the old server's chunks, each once and in order: {entries:?}"
+    );
+    assert!(
+        from <= before.last().copied().unwrap_or(0),
+        "the marker names chunk {from}, which the old server never wrote: {before:?}"
+    );
+    assert_eq!(
+        after,
+        (from + 1..=from + u64::try_from(after.len()).unwrap_or(0)).collect::<Vec<u64>>(),
+        "the resumed chunks, each once and in order from {}: {entries:?}",
+        from + 1
+    );
+    let (kept, markers) = tacsim::arena_bridge::tape_in_order(&entries);
+    assert_eq!(markers.len(), 1);
+    let sequences: Vec<u64> = chunks_of(&kept);
+    assert_eq!(
+        sequences,
+        (1..=u64::try_from(sequences.len()).unwrap_or(0)).collect::<Vec<u64>>(),
+        "a contiguous tape"
+    );
+
+    // (5) The next match is match 2.
+    say(
+        &mut term2,
+        &format!("@arena/start {ARENA}=#{}/#{}", RED.0, BLUE.0),
+        "Match 2 is running",
+    )
+    .await;
+    say(&mut term2, "@arena/abort 2", "is stopping").await;
+}
+
+/// **Restart mid-match with a snapshot that is not what the arena wrote: a
+/// void by name** (16b cut AF.3): the same stop, then `tacsim:snapshot:1`
+/// rewritten in the store with a hashed field moved and its digest stamped
+/// again, so the boot passes every check up to the decode's hash. The old
+/// answer, now for this arm alone: the restored record is the check-out
+/// snapshot exactly, `@unit/damage` is accepted, `tacsim:match:1` is an
+/// `abort` for `restart`, both documents are gone — and the log names the
+/// reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restart_mid_match_voids_a_match_whose_snapshot_is_wrong() {
+    let mut first = boot_with("arena-void-a", None, true, resume_config()).await;
+    let (_handle, mut term) = staff_session(first.addr).await;
+    prepare(&mut term).await;
+    let before_red = record(&first.store, RED).await.expect("the red record");
+    start_and_wait_for_the_snapshot(&mut term, &first.store).await;
+    let store = Arc::clone(&first.store);
+    crash(&mut first).await;
+    drop(term);
+    drop(first);
+
+    // The snapshot, a hashed field moved and the digest stamped again.
+    let mut snapshot = running_document(&store, "tacsim:snapshot:1")
+        .await
+        .expect("the snapshot");
+    let state = snapshot
+        .get("state")
+        .and_then(Value::as_str)
+        .expect("a state string");
+    let mut parsed: Value = serde_json::from_str(state).expect("a JSON state");
+    let now = parsed.get("now_ms").and_then(Value::as_i64).unwrap_or(0);
+    parsed["now_ms"] = serde_json::json!(now + 1);
+    let state = serde_json::to_string(&parsed).expect("a state encodes");
+    {
+        use sha2::Digest as _;
+        snapshot["state_digest"] = Value::String(tacsim::arena::snapshot::digest_text(
+            &sha2::Sha256::digest(state.as_bytes()).into(),
+        ));
+    }
+    snapshot["state"] = Value::String(state);
+    store
+        .write(mush_store::WriteBatch {
+            serial: 1,
+            durable: true,
+            module_ops: vec![mush_core::ModuleOp {
+                ns: smol_str::SmolStr::new("tacsim"),
+                op: mush_core::ModuleWrite::JsonSet {
+                    key: smol_str::SmolStr::new("tacsim:snapshot:1"),
+                    value: snapshot,
+                },
+            }],
+            ..mush_store::WriteBatch::default()
+        })
+        .await
+        .expect("the store takes the edit");
+
+    let captured = Captured::default();
+    let second = {
+        let _guard = tracing::subscriber::set_default(captured.clone());
+        boot_with(
+            "arena-void-b",
+            Some(Arc::clone(&store)),
+            false,
+            resume_config(),
+        )
+        .await
+    };
+    assert!(
+        captured
+            .void_reason(1)
+            .is_some_and(|reason| reason.starts_with("state hash mismatch (recorded ")),
+        "{:?}",
+        captured.void_reason(1)
+    );
+    let (_handle2, mut term2) = staff_session(second.addr).await;
     assert_eq!(
         record(&store, RED).await,
         Some(before_red),
         "the restored record is the check-out snapshot exactly"
     );
-
-    // (2) The units are mutable again.
     say(
         &mut term2,
         &format!("@unit/damage #{}={{\"ops\":[]}}", RED.0),
         "Applied 0 op(s)",
     )
     .await;
-
-    // (3) And the match it was in is on the record as an aborted restart.
-    let result = store
-        .module_json_get("tacsim", "tacsim:match:1")
+    let result = running_document(&store, "tacsim:match:1")
         .await
-        .expect("the store read")
-        .expect("boot reconciliation writes the match's result");
+        .expect("the void writes the match's result");
     assert_eq!(
         result.get("outcome").and_then(Value::as_str),
         Some("abort"),
@@ -821,31 +1154,73 @@ async fn a_restart_mid_match_restores_the_units_and_records_an_aborted_restart()
         Some("restart"),
         "{result}"
     );
-    // **16b cut AF.2**: and the leftover pair is gone — the boot deleted the
-    // snapshot and the live record of the match it voided.
-    wait_until(
-        Duration::from_secs(10),
-        "the boot to delete the leftover pair",
-        async || {
-            running_document(&store, "tacsim:snapshot:1")
-                .await
-                .is_none()
-                && running_document(&store, "tacsim:live:1").await.is_none()
-        },
-    )
-    .await;
+    assert!(
+        running_document(&store, "tacsim:snapshot:1")
+            .await
+            .is_none()
+    );
+    assert!(running_document(&store, "tacsim:live:1").await.is_none());
+}
 
-    // (4) The next match this world runs gets a NEW id: a counter that
-    //     restarted at zero would write over `log:match.1` and `tacsim:match:1`.
-    // The first match's check-in re-placed both tanks, so they are still
-    // participants; nothing to re-attach.
-    say(
-        &mut term2,
-        &format!("@arena/start {ARENA}=#{}/#{}", RED.0, BLUE.0),
-        "Match 2 is running",
-    )
-    .await;
-    say(&mut term2, "@arena/abort 2", "is stopping").await;
+/// **The two void arms only a real boot can reach** (16b cut AF.3): the
+/// config edited between the boots — `[tacsim.arena].snapshot_ms = 0`, the
+/// operator's kill switch, and `[tacsim].enabled = false` — each voids a
+/// running match by name, with its units restored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restart_with_snapshots_or_the_layer_off_voids_by_name() {
+    for (tag, reason, edit) in [
+        (
+            "snapshots-off",
+            "snapshots are off on this server",
+            (|cfg: &mut tacsim::TacsimConfig| cfg.arena.snapshot_ms = 0)
+                as fn(&mut tacsim::TacsimConfig),
+        ),
+        (
+            "layer-off",
+            "the simulator is off on this server",
+            |cfg: &mut tacsim::TacsimConfig| cfg.enabled = false,
+        ),
+    ] {
+        let mut first = boot_with(&format!("arena-{tag}-a"), None, true, resume_config()).await;
+        let (_handle, mut term) = staff_session(first.addr).await;
+        prepare(&mut term).await;
+        let before_red = record(&first.store, RED).await.expect("the red record");
+        start_and_wait_for_the_snapshot(&mut term, &first.store).await;
+        let store = Arc::clone(&first.store);
+        crash(&mut first).await;
+        drop(term);
+        drop(first);
+
+        let mut cfg = resume_config();
+        edit(&mut cfg);
+        let captured = Captured::default();
+        let _second = {
+            let _guard = tracing::subscriber::set_default(captured.clone());
+            boot_with(
+                &format!("arena-{tag}-b"),
+                Some(Arc::clone(&store)),
+                false,
+                cfg,
+            )
+            .await
+        };
+        assert_eq!(captured.void_reason(1).as_deref(), Some(reason), "{tag}");
+        assert_eq!(record(&store, RED).await, Some(before_red), "{tag}");
+        assert!(
+            record(&store, BLUE)
+                .await
+                .is_some_and(|document| document.get("deployed").is_none()),
+            "{tag}"
+        );
+        let result = running_document(&store, "tacsim:match:1")
+            .await
+            .expect("the void writes the match's result");
+        assert_eq!(
+            result.get("reason").and_then(Value::as_str),
+            Some("restart"),
+            "{tag}: {result}"
+        );
+    }
 }
 
 /// **The two documents exist while a match runs and go with its result** (16b

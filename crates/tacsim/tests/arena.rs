@@ -5580,3 +5580,178 @@ fn af1_the_snapshot_shape_is_pinned() {
         "the snapshot's shape moved: bump SNAPSHOT_FORMAT and re-bless.\n{joined}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// (af3) the resume releases every seat: 16b cut AF.3 (16c N16)
+// ---------------------------------------------------------------------------
+
+/// **What a resume injects**: one `Released` on every channel of every seat the
+/// decoded arena still holds, each at the epoch the world's mirror sends — the
+/// arena's table plus one, as `send_control` bumps it — naming the pilot, as
+/// the boot's phase B delivers them through `control_all_channels`.
+fn af3_resume_releases(arena: &Arena) -> Vec<Control> {
+    arena
+        .pilots
+        .iter()
+        .flat_map(|seat| {
+            Channel::ALL.map(|channel| Control {
+                unit: seat.unit,
+                channel,
+                epoch: arena.epochs.current(seat.unit, channel) + 1,
+                state: ControlState::Released,
+                pilot: Some(seat.pilot),
+            })
+        })
+        .collect()
+}
+
+/// [`y3_reclaim_script`] with the resume's releases inserted at `at` (the
+/// resumed segment's cursor), as one beat at arena time `t_ms`: delivered by the
+/// first pulse that starts at `t_ms` or later, which in a resumed run is the
+/// first resumed pulse.
+fn af3_script(at: usize, t_ms: i64, releases: &[Control]) -> Vec<Beat> {
+    let mut beats = y3_reclaim_script();
+    let at = at.min(beats.len());
+    beats.insert(at, Beat::at(t_ms, releases.to_vec(), Vec::new()));
+    beats
+}
+
+/// **16b cut AF.3's mandatory cross-tempo test** (16b §11; doc 16 §3.1 "Rate
+/// independence", D-16-2), **well posed**: a resume is not a no-input property
+/// (AF.1's test 2 is that one, at every pulse) — it injects an input, a
+/// `Released` on every channel of every seat the snapshot still holds, at the
+/// first resumed pulse. So the reference is not the uninterrupted run but the
+/// uninterrupted run **whose script injects the same `Released` at the same
+/// arena time T**.
+///
+/// Over [`y3_reclaim_script`]'s shape (the pilot seated, linkdead at 35 s,
+/// released at 40 s, back at a new epoch at 55 s), for every resume moment T
+/// that is a multiple of 5,000 ms in the run:
+///
+/// - **(a)** at each of 5,000 / 1,000 / 500 ms, the run snapshotted at T,
+///   decoded, re-anchored (`resume_at`) and continued from the cursor with the
+///   releases delivered on its first resumed pulse is the uninterrupted run at
+///   that cadence with the releases scripted at T — in events, hashes, finals
+///   and catch-ups;
+/// - **(b)** the three cadences' resumed runs at T are one event list, one hash
+///   sequence, one final state and one catch-up list.
+#[test]
+fn af3_a_resume_with_every_seat_released_at_three_cadences_is_one_event_list_and_one_hash_sequence()
+{
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut released_somewhere = 0_u32;
+    for t_ms in (0..Y3_UNTIL_MS).step_by(5_000) {
+        let mut runs: Vec<(i64, Replay)> = Vec::new();
+        for cadence in [5_000_i64, 1_000, 500] {
+            let k = t_ms / cadence;
+            let mut arena = scripted_arena();
+            let (first, cursor) = replay_on_from(
+                &mut arena,
+                &mut (0..=k).map(|pulse| pulse * cadence),
+                t_ms,
+                &y3_reclaim_script(),
+                0,
+                &quiet,
+            );
+            assert_eq!(arena.now_ms, t_ms, "{cadence} ms stopped at T = {t_ms}");
+            let snapshot = Snapshot::encode(&arena).expect("an arena between two pulses encodes");
+            let mut resumed =
+                Snapshot::decode(&snapshot.document, definition()).expect("and decodes");
+            let _first_due = resumed.resume_at(t_ms);
+            let releases = af3_resume_releases(&resumed);
+            released_somewhere += u32::from(!releases.is_empty());
+            let script = af3_script(cursor, t_ms, &releases);
+            let (mut second, reached) = replay_on_from(
+                &mut resumed,
+                &mut ((k + 1)..).map(|pulse| pulse * cadence),
+                Y3_UNTIL_MS,
+                &script,
+                cursor,
+                &quiet,
+            );
+            finish_replay(&mut resumed, &mut second);
+            assert_eq!(reached, script.len(), "the script, exactly once");
+            let run = joined(&first, &second);
+
+            // (a) The uninterrupted run with the same releases delivered at the
+            // same arena time T: the same arena stepped to T and on, never
+            // encoded, handed the releases on its first pulse from T. At T > 0
+            // that is exactly the plain replay with the releases scripted at T,
+            // and the two are held equal; at T = 0 it is not — the opening
+            // pulse at 0 has already taken the script's own beats at 0 when a
+            // resume could be taken, so the releases land on the next pulse,
+            // which also starts at 0, and a script beat at 0 cannot say that.
+            let mut reference_arena = scripted_arena();
+            let (head, _) = replay_on_from(
+                &mut reference_arena,
+                &mut (0..=k).map(|pulse| pulse * cadence),
+                t_ms,
+                &y3_reclaim_script(),
+                0,
+                &quiet,
+            );
+            let (mut tail, _) = replay_on_from(
+                &mut reference_arena,
+                &mut ((k + 1)..).map(|pulse| pulse * cadence),
+                Y3_UNTIL_MS,
+                &script,
+                cursor,
+                &quiet,
+            );
+            finish_replay(&mut reference_arena, &mut tail);
+            let reference = joined(&head, &tail);
+            if t_ms > 0 {
+                let mut plain_arena = scripted_arena();
+                let plain = replay(&mut plain_arena, cadence, Y3_UNTIL_MS, &script, &quiet);
+                assert_eq!(
+                    reference.events, plain.events,
+                    "T = {t_ms}: the two references"
+                );
+                assert_eq!(
+                    reference.hashes, plain.hashes,
+                    "T = {t_ms}: the two references"
+                );
+            }
+            let what = format!("resumed at T = {t_ms} ms at {cadence} ms");
+            assert_eq!(
+                run.events,
+                reference.events,
+                "{what}: {:?} against {:?}",
+                run.kinds(),
+                reference.kinds()
+            );
+            assert_eq!(run.hashes, reference.hashes, "{what}: the hashes");
+            assert_eq!(run.finals, reference.finals, "{what}: the finals");
+            assert_eq!(run.catchups, reference.catchups, "{what}: the catch-ups");
+            // A seat the resume released after the script's own `Live` is the
+            // machine's for the rest of the run: nothing seats the pilot again.
+            if !releases.is_empty() && t_ms > Y3_LIVE_MS {
+                assert_eq!(
+                    resumed.unit(MOVER).map(|unit| unit.controller),
+                    Some(tacsim::arena::state::Controller::Reflex),
+                    "{what}: the released tank is the machine's"
+                );
+            }
+            runs.push((cadence, run));
+        }
+        // (b) The three cadences are one match.
+        let Some((_, first)) = runs.first() else {
+            panic!("three runs");
+        };
+        for (cadence, run) in runs.iter().skip(1) {
+            let what = format!("resumed at T = {t_ms} ms: {cadence} ms against 5,000 ms");
+            assert_eq!(run.events, first.events, "{what}: the events");
+            assert_eq!(run.hashes, first.hashes, "{what}: the hashes");
+            assert_eq!(run.finals, first.finals, "{what}: the finals");
+            assert_eq!(run.catchups, first.catchups, "{what}: the catch-ups");
+            assert_ne!(
+                run.pulses, first.pulses,
+                "{what}: the cadence really differed"
+            );
+        }
+    }
+    assert!(
+        released_somewhere >= 3,
+        "the resume released a seat at too few resume moments to mean anything"
+    );
+}

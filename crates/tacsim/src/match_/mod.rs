@@ -62,6 +62,10 @@ pub(crate) mod net;
 // sent. Documented by its own module doc.
 pub mod observer;
 mod record;
+// 16b cut AF.3 (16c N16): the boot's resume — phase A's named checks, phase
+// B's re-open, the seats reconciled and the void by name. Documented by its
+// own module doc.
+pub mod resume;
 // 16b cut I.1: the replay — the pure fold from the tape to one objective
 // picture of both sides, the replay documents, `SIM REPLAY` and the two queries'
 // reads. Documented by its own module doc, as `report` is.
@@ -114,6 +118,9 @@ pub use record::{
     write_restart_abort,
 };
 pub use reset::{RESET_CAUSE, ResetReport, reset_stock_tanks, spec_plan};
+pub use resume::{
+    PendingResume, RESUME_LINE, ResumeRefusal, doctrine_line, resume_pending, void_at_boot,
+};
 pub use sim::{SIM_VERB, Selector, sim_command};
 pub use verbs::{ArenaVerbError, arena_command, register_switches, state_word};
 
@@ -168,8 +175,8 @@ pub const MAX_TRACKED_MATCHES: usize = 256;
 /// remembers the centre's last [`HISTORY_DEPTH`] finished matches, newest first,
 /// as one [`HistoryRow`] each ([`MatchBook::remember`]). The ring is **RAM**,
 /// filled at boot from the result documents the module's boot data already
-/// carries (`boot_matches` in the crate root, before its restart-abort loop
-/// writes anything) and kept current by every result write
+/// carries (`boot_matches` in the crate root, before its voids — 16b cut AF.3's phase A
+/// — write anything) and kept current by every result write
 /// (`record::write_result`, [`write_restart_abort`]), each of which remembers
 /// the very document it pushes. It is what `SIM HISTORY` reads, and what 16b cut
 /// V.3's `SIM REPORT` will read — **never the store**: the depth is past
@@ -241,6 +248,17 @@ pub struct MatchBook {
     /// `arena.replay` and `arena.map` queries read for that actor. RAM, never
     /// persisted.
     replay_cursors: BTreeMap<ObjId, replay::ReplayCursor>,
+    /// **16b cut AF.3 (16c N16)** — the matches the boot's phase A found
+    /// resumable, in id order, waiting for phase B (the crate's
+    /// `on_all_loaded`). Empty outside the boot.
+    pending_resumes: Vec<resume::PendingResume>,
+    /// **16b cut AF.3** — the two lines the resume owes each pilot whose seat
+    /// it released, as `(body, tank)`. See [`MatchBook::defer_resume_lines`].
+    resume_lines: Vec<(ObjId, ObjId)>,
+    /// **16b cut AF.3** — the world second after which a resume line still owed
+    /// is dropped unsaid, set by the first boarding tick that holds one (the
+    /// hatch lines' [`HATCH_HOLD_S`], for the same reason).
+    resume_hold_until_s: Option<i64>,
 }
 
 /// **One opening cell staff chose for a centre slot** (16b cut U.4, 16c `T-52`;
@@ -315,6 +333,56 @@ impl MatchBook {
     pub(crate) fn hold_hatch_notices(&mut self, held: Vec<(ObjId, ObjId)>, until_s: i64) {
         self.hatch_hold_until_s = (!held.is_empty()).then_some(until_s);
         self.hatch_notices = held;
+    }
+
+    /// **Owe one pilot the resume's two lines** (16b cut AF.3; 16c N16,
+    /// `Q-AF4`): [`RESUME_LINE`], then Y.3's [`doctrine_line`] for `tank`.
+    ///
+    /// The boot's resume releases every seat to doctrine, and it cannot say so:
+    /// boot output reaches no session, and on the split server, which is
+    /// production, the pilot's session survived the restart of the server half
+    /// and still shows the abandoned timeline's last cockpit frame. So each
+    /// `(body, tank)` is kept here, and the boarding tick ([`sim`]'s
+    /// `board_tick`) says both lines — and clears the panel — to a body whose
+    /// session is attached while its slot is still dropped, holding the rest
+    /// for at most [`HATCH_HOLD_S`]. Only the resume adds to it.
+    pub(crate) fn defer_resume_lines(&mut self, body: ObjId, tank: ObjId) {
+        self.resume_lines.push((body, tank));
+    }
+
+    /// Whether the book still owes `actor` the resume's lines — what
+    /// `SeatFacts::connected` asks, so a pilot reads them once whichever path
+    /// reaches them first.
+    #[must_use]
+    pub fn resume_lines_deferred(&self, actor: ObjId) -> bool {
+        self.resume_lines.iter().any(|(body, _)| *body == actor)
+    }
+
+    /// Take every owed resume line, as `(body, tank)`. A second caller gets
+    /// nothing until the first hands back what it could not say yet.
+    pub fn take_resume_lines(&mut self) -> Vec<(ObjId, ObjId)> {
+        std::mem::take(&mut self.resume_lines)
+    }
+
+    /// The world second the owed resume lines are held until, once a boarding
+    /// tick has started holding them.
+    #[must_use]
+    pub const fn resume_hold_until_s(&self) -> Option<i64> {
+        self.resume_hold_until_s
+    }
+
+    /// Hand back the resume lines a tick could not say yet, held until
+    /// `until_s`. An empty hand-back ends the hold.
+    pub(crate) fn hold_resume_lines(&mut self, held: Vec<(ObjId, ObjId)>, until_s: i64) {
+        self.resume_hold_until_s = (!held.is_empty()).then_some(until_s);
+        self.resume_lines = held;
+    }
+
+    /// **The matches waiting for the boot's phase B** (16b cut AF.3), in id
+    /// order.
+    #[must_use]
+    pub fn pending_resumes(&self) -> &[resume::PendingResume] {
+        &self.pending_resumes
     }
 
     /// **The opening cells overridden for the next match** (16b cut U.4), by
@@ -1761,7 +1829,8 @@ fn same_pose(
     })
 }
 
-/// Release the cockpit seats of a unit the boot pass restored (16b T5).
+/// Release the cockpit seats of a unit the boot restored (16b T5; since 16b cut
+/// AF.3 a unit of a match that could not resume, [`void_at_boot`]).
 ///
 /// The same seam `release_seat` uses; a separate name because the boot caller
 /// is a different story and deserves to read as one.

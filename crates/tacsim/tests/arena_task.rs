@@ -68,7 +68,7 @@ use tacsim::arena::state::{
     Pilot, Power, StopReason, Team, TerrainCell, TrackedRules,
 };
 use tacsim::arena_bridge::{ArenaTasks, ControlRefusal};
-use tacsim::arena_task::{ArenaHandle, ArenaMsg, ArenaOut, MatchId, spawn_arena};
+use tacsim::arena_task::{ArenaHandle, ArenaMsg, ArenaOut, MatchId, resume_arena, spawn_arena};
 use tacsim::config::{ArenaConfig, MatchConfig, SensorsConfig};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -87,8 +87,9 @@ use tokio::task::JoinHandle;
 /// a hook, but a row each keeps one match per proof and the rule in one place.
 ///
 /// **16b cut M.2** adds `2_398` and `2_399` for the same reason, **16b cut
-/// U.1** `2_400` and `2_401`, and **16b cut AF.2** `2_402` to `2_407`.
-const SEEDS: [(u64, &str); 27] = [
+/// U.1** `2_400` and `2_401`, **16b cut AF.2** `2_402` to `2_407`, and **16b
+/// cut AF.3** `2_408`.
+const SEEDS: [(u64, &str); 28] = [
     (2_350, "the round trip"),
     (2_351, "the injected panic"),
     (2_352, "the stall"),
@@ -134,6 +135,10 @@ const SEEDS: [(u64, &str); 27] = [
     ),
     (2_406, "AF.2: no snapshot on a pulse that ended the match"),
     (2_407, "AF.2: no snapshot on a stalled pulse"),
+    (
+        2_408,
+        "AF.3: a resumed task's first pulse and first snapshot",
+    ),
 ];
 
 /// **16b cut AA.3**: the stall hook is one global seed slot, and arming it
@@ -2647,5 +2652,85 @@ async fn af2_a_pulse_that_ends_or_stalls_the_match_takes_no_snapshot() {
     assert!(
         snapshots(&messages).is_empty(),
         "the stalled pulse took no snapshot, though it opened period 0"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AF.3 (16c N16) — a resumed task's clock
+// ---------------------------------------------------------------------------
+
+/// **A resumed task pulses on the lattice after the snapshot's moment, and does
+/// not snapshot the period it was decoded in again** (16b cut AF.3;
+/// `arena_task::resume_arena`'s two differences from `spawn_arena`).
+///
+/// One unseated match at a 1,000 ms period with a snapshot every 5,000 ms runs
+/// five arena seconds and is stopped; its snapshot at 5,000 ms is decoded
+/// against the fixture's ground, flushed as the world flushes it, and handed to
+/// `resume_arena`, on tokio's paused clock:
+///
+/// - **the first pulse is a lattice point away, never at once**: nothing leaves
+///   the task for 999 ms of its own base, and its first clock reads 6,000 — the
+///   pulse an uninterrupted task would have taken next — not the 5,000 an
+///   immediate pulse on an unanchored arena would publish;
+/// - **the period the snapshot stands in is already snapshotted**
+///   (`last_snapshot_period = now_ms / snapshot_ms`): the first `Snapshot` the
+///   resumed task sends is the next period's, at 10,000 ms, and none falls in
+///   the snapshot's own period. A task that forgot it would snapshot at 6,000
+///   ms, and the head's `at_ms` would move off the moment the live record says
+///   it resumed from — the resume-once rule's memory — at every resume.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn af3_a_resumed_task_pulses_on_the_lattice_and_skips_the_snapshot_s_own_period() {
+    let seed = SEEDS[27].0;
+    // The pushed-out pass and tick fall past the whole window (see `no_passes`).
+    for unit in [RED, BLUE] {
+        assert!(tacsim::arena::rng::stagger_ms(seed, unit, 600_000) > 20_000);
+    }
+    let mut arena_cfg = arena_at(1_000);
+    arena_cfg.snapshot_ms = 5_000;
+    let (handle, mut rx) = start_unseated(seed, &arena_cfg, &no_passes());
+    let messages = collect(&mut rx, Duration::from_millis(5_050)).await;
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    let document = snapshots(&messages)
+        .into_iter()
+        .map(|(_, snapshot)| snapshot)
+        .find(|snapshot| snapshot.at_ms == 5_000)
+        .map(|snapshot| snapshot.document.clone())
+        .expect("the five-second snapshot");
+    let mut arena = tacsim::arena::Snapshot::decode(&document, definition())
+        .expect("the snapshot decodes against its ground");
+    assert_eq!(arena.now_ms, 5_000);
+    arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
+
+    let (egress_tx, mut rx) = mpsc::channel(256);
+    let (_handle, _join) = resume_arena(
+        &tokio::runtime::Handle::current(),
+        MatchId(seed),
+        arena,
+        &arena_cfg,
+        egress_tx,
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(999), rx.recv())
+            .await
+            .is_err(),
+        "a resumed task pulsed before its first lattice point"
+    );
+    let messages = collect(&mut rx, Duration::from_millis(11_050)).await;
+    let first = messages.iter().find_map(clock_of);
+    assert_eq!(
+        first,
+        Some(6_000),
+        "the first resumed pulse is the lattice point after the snapshot's moment"
+    );
+    let taken: Vec<i64> = snapshots(&messages)
+        .iter()
+        .map(|(_, snapshot)| snapshot.at_ms)
+        .collect();
+    assert_eq!(
+        taken,
+        vec![10_000, 15_000],
+        "the snapshot's own period is not snapshotted again; the next ones are"
     );
 }

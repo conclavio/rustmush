@@ -504,8 +504,8 @@ It is kept for as long as the centre remembers the match (its last twenty) and
 deleted with the row, so the store holds at most twenty of them; a boot reads
 them back with the result documents. No pack and no config key. Every result
 row written before this commit answers `SIM REPLAY` with `recorded before
-replays existed`, and a reload or restart aborts a running match as `restart`,
-which writes no replay. Web clients see the `arena.replay` feed in their hello
+replays existed`, and a match voided at a reload is recorded `restart`, which
+writes no replay. Web clients see the `arena.replay` feed in their hello
 only after a gateway restart, and draw it only after 16b cut I.2. From 16b cut
 I.2's commit screen 0 carries the replay on the TUI and the web, a
 gateway-half change: the fresh `web/dist` and `GATEWAY_RESTART=1`. From 16b cut
@@ -522,8 +522,25 @@ stored for a twelve-tank match a minute into a fight (a 169 KB snapshot and a
 replay: twenty-four full debriefs and a full replay put it at an estimated
 1.4 MB, reached only late in a long, large match. Both are overwritten in place
 and deleted with the result; `snapshot_ms` is the lever (a longer cadence
-writes less, `0` writes none). A reload or restart still aborts a running
-match as `restart` until 16b cut AF.3 resumes from them.
+writes less, `0` writes none).
+
+**Resume (16b cut AF.3).** From the first reload whose running half is 16b cut
+AF.2 or later, a server-half reload resumes a running match from its last
+snapshot (every five arena seconds; the match rewinds to it, every tank flies
+on doctrine until its pilot boards again and reads what they missed), and a
+full gateway restart resumes it too once the players reconnect. Four things
+void it instead, recorded `aborted(restart)` with the reason in the log: a
+deploy that changes the snapshot format (a key added under `[tacsim.arena]`,
+`[tacsim.match]` or `[tacsim.sensors]` is one), the state hash's folds, the
+proving ground's digest or the locomotion table (most arena cuts do one of
+these — read the cut's note); `snapshot_ms = 0` under `[tacsim.arena]`, which
+turns snapshots off; a server that dies again before the resumed match's next
+snapshot, which is not resumed a third time; and a store that lost the tail of
+the tape or half of the two documents.
+
+After the first deploy of AF.3, start a match, reload once and read
+`@arena/status`'s `resumed:` line — the one check the in-memory rigs cannot
+make.
 
 ### The first staff login
 

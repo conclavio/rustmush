@@ -628,3 +628,179 @@ fn o3_the_pilot_line_carries_the_hit_rate_and_the_header_tags_a_range() {
     );
     assert!(staff.iter().all(|line| !line.contains('%')), "{staff:?}");
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut AF.3 (16c N16) — the truncating reader
+// ---------------------------------------------------------------------------
+
+/// One arena chunk entry, `{"chunk": n, "lines": ...}`, with a tag in its lines
+/// so the test can tell two writes of one sequence apart.
+fn chunk_entry(n: u64, tag: &str) -> serde_json::Value {
+    serde_json::json!({ "chunk": n, "bytes": tag.len(), "lines": tag })
+}
+
+/// One resume marker, as `tacsim::match_::resume_pending` appends it.
+fn marker_entry(from: u64, at_ms: i64) -> serde_json::Value {
+    serde_json::json!({ "resumed": { "from_chunk": from, "at_ms": at_ms, "restart_ms": 7_000 } })
+}
+
+/// The `lines` tags of a kept tape, in order.
+fn tags(kept: &[serde_json::Value]) -> Vec<String> {
+    kept.iter()
+        .filter_map(|entry| entry.get("lines").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// **The tape reader truncates at the marker** (16b cut AF.3; the brief's test
+/// 3): a pure proof of `arena_bridge::tape_in_order` and of the pager's use of
+/// it.
+///
+/// - `[1, 2, 3, 4, 5, marker(from 2), 3']` keeps `[1, 2, 3']` — the old
+///   server's 4 and 5 are abandoned however many there were, which a
+///   last-write rule alone would have kept;
+/// - a marker at the end of what the old server wrote (`from 3` after 3)
+///   discards nothing;
+/// - two markers each retire their own abandoned tail;
+/// - an unforked tape comes back unchanged;
+/// - the pager's sentence is rendered from the marker verbatim and is at most
+///   120 columns at a six-digit chunk and eight-digit milliseconds;
+/// - a staff page holding `[1 .. N, abandoned, marker, N + 1']` folds with no
+///   gap: the fold is reset by nothing and the truncated tape is contiguous.
+#[test]
+fn af3_the_tape_reader_truncates_at_the_marker() {
+    use tacsim::arena_bridge::{resume_marker_line, tape_in_order};
+
+    // (1) The abandoned tail, whatever its length.
+    let tape = vec![
+        chunk_entry(1, "1"),
+        chunk_entry(2, "2"),
+        chunk_entry(3, "3"),
+        chunk_entry(4, "4"),
+        chunk_entry(5, "5"),
+        marker_entry(2, 10_000),
+        chunk_entry(3, "3'"),
+    ];
+    let (kept, markers) = tape_in_order(&tape);
+    assert_eq!(tags(&kept), ["1", "2", "3'"]);
+    assert_eq!(markers, vec![marker_entry(2, 10_000)]);
+
+    // (2) A marker at the tail's own end abandons nothing.
+    let tape = vec![
+        chunk_entry(1, "1"),
+        chunk_entry(2, "2"),
+        chunk_entry(3, "3"),
+        marker_entry(3, 15_000),
+        chunk_entry(4, "4"),
+        chunk_entry(5, "5"),
+    ];
+    let (kept, markers) = tape_in_order(&tape);
+    assert_eq!(tags(&kept), ["1", "2", "3", "4", "5"]);
+    assert_eq!(markers.len(), 1);
+
+    // (3) Two resumes, two abandoned tails.
+    let tape = vec![
+        chunk_entry(1, "1"),
+        chunk_entry(2, "2"),
+        chunk_entry(3, "3"),
+        marker_entry(1, 5_000),
+        chunk_entry(2, "2'"),
+        chunk_entry(3, "3'"),
+        chunk_entry(4, "4'"),
+        marker_entry(3, 15_000),
+        chunk_entry(4, "4''"),
+    ];
+    let (kept, markers) = tape_in_order(&tape);
+    assert_eq!(tags(&kept), ["1", "2'", "3'", "4''"]);
+    assert_eq!(
+        markers,
+        vec![marker_entry(1, 5_000), marker_entry(3, 15_000)]
+    );
+
+    // (4) An unforked tape is itself.
+    let tape: Vec<serde_json::Value> = (1..=6).map(|n| chunk_entry(n, &n.to_string())).collect();
+    let (kept, markers) = tape_in_order(&tape);
+    assert_eq!(kept, tape);
+    assert!(markers.is_empty());
+
+    // (5) The pager's sentence, and its worst case against the floor.
+    assert_eq!(
+        resume_marker_line(&marker_entry(2, 10_000)).as_deref(),
+        Some(
+            "-- resumed at chunk 2 (10000 ms of arena time); the old server's chunks after 2 \
+             are abandoned --"
+        )
+    );
+    assert_eq!(resume_marker_line(&chunk_entry(2, "2")), None);
+    let worst = resume_marker_line(&marker_entry(999_999, 99_999_999)).expect("a marker line");
+    assert!(
+        worst.chars().count() <= 120,
+        "{} columns: {worst}",
+        worst.chars().count()
+    );
+    assert_eq!(worst.chars().count(), 109, "{worst}");
+
+    // (6) A staff page over a forked tape folds with no gap. Chunks 0 and 1
+    // hold events 1..=4; the old server's chunk 2 holds 5..=6 and is
+    // abandoned; the resumed chunk 2' holds 5..=6 again.
+    let unit = ObjId(101);
+    let events = |from: u64, at_ms: i64| -> String {
+        (0..2)
+            .map(|n| {
+                let held = LedgerEvent {
+                    seq: from + n,
+                    t_ms: at_ms + i64::try_from(n).unwrap_or(0) * 1_000,
+                    kind: EventKind::PowerOnline { unit },
+                    draws: Vec::new(),
+                    hash: 0,
+                };
+                serde_json::to_string(&held).expect("an event encodes")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let doc = |n: u64, entries: Vec<(u64, serde_json::Value)>| {
+        (
+            mush_core::chunk_key("match.12", n),
+            serde_json::json!({
+                "chunk": n,
+                "sealed": true,
+                "entries": entries
+                    .into_iter()
+                    .map(|(seq, value)| serde_json::json!({ "seq": seq, "value": value }))
+                    .collect::<Vec<_>>(),
+            }),
+        )
+    };
+    let arena_chunk = |n: u64, lines: String| serde_json::json!({ "chunk": n, "lines": lines });
+    let docs = vec![
+        doc(0, vec![(0, arena_chunk(1, events(1, 1_000)))]),
+        doc(1, vec![(1, arena_chunk(2, events(3, 3_000)))]),
+        doc(
+            2,
+            vec![
+                (2, arena_chunk(3, events(5, 5_000))),
+                (3, marker_entry(2, 4_500)),
+                (4, arena_chunk(3, events(5, 5_500))),
+            ],
+        ),
+    ];
+    let mut roster = Roster::new();
+    roster.insert(unit, Some(Team::Red), SmolStr::new("RA"), None);
+    let folded =
+        tacsim::match_::report::fold_page(&docs, "match.12", 0, &roster).expect("a valid page");
+    assert!(!folded.report.gap, "{:?}", folded.report.lines);
+    let marker_at = folded
+        .report
+        .lines
+        .iter()
+        .position(|line| line.starts_with("-- resumed at chunk 2 (4500 ms"))
+        .unwrap_or_else(|| panic!("the marker line is printed: {:?}", folded.report.lines));
+    assert_eq!(
+        marker_at, 4,
+        "after the four kept events and before the resumed two: {:?}",
+        folded.report.lines
+    );
+    assert_eq!(folded.report.lines.len(), 7, "{:?}", folded.report.lines);
+    assert_eq!(folded.page.lines, 6, "the abandoned two are not folded");
+}

@@ -385,6 +385,7 @@ fn refusal(error: SimError) -> CmdError {
 /// `lobby::board_deadline` asks the layer first.
 fn board_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     say_owed_hatch_lines(ctx);
+    say_owed_resume_lines(ctx);
     let now_ms = ctx.w.now().saturating_mul(1_000);
     lobby::board_deadline(ctx, now_ms);
     // **16b cut D.3 (`B-33`)**: the other deadline the lobby owns. `Boarding` has
@@ -434,6 +435,65 @@ fn say_owed_hatch_lines(ctx: &mut Ctx<'_>) {
     }
     if let Some(book) = ctx.w.module_state_mut::<crate::match_::MatchBook>() {
         book.hold_hatch_notices(held, until_s);
+    }
+}
+
+/// **The resume's two lines, to the pilots it released** (16b cut AF.3; 16c
+/// N16, `Q-AF4`) — see [`crate::match_::MatchBook::defer_resume_lines`].
+///
+/// **Its own say rule, not the hatch line's**: a resumed pilot's body is
+/// still inside their pod (the boot's sweep leaves a resumed match's pods
+/// alone), which is exactly the body the hatch rule skips. So a line is said
+/// iff the session is attached, the centre is `Running` and the pilot's slot is
+/// still dropped — in a pod or not — and dropped unsaid once the slot is no
+/// longer dropped (the pilot took the tank back before this tick: nothing stale
+/// is said) or past the hold, when a later login says them through
+/// `SeatFacts::connected` instead. Saying them clears the slot's
+/// `released_by_resume` (`lobby::resume_line_said`), so the resume line is
+/// said once whichever path said it. Saying them also sends one cleared cockpit
+/// keyframe: on the split server the gateway session and its client survived
+/// the server half and still hold the abandoned timeline's last frame — the
+/// lock, the contacts, the pose the first line has just said did not count —
+/// and no binding is left in the fresh registry for `send_control` to clear it
+/// by.
+fn say_owed_resume_lines(ctx: &mut Ctx<'_>) {
+    let Some((owed, until_s)) = ctx
+        .w
+        .module_state_mut::<crate::match_::MatchBook>()
+        .map(|book| (book.take_resume_lines(), book.resume_hold_until_s()))
+    else {
+        return;
+    };
+    if owed.is_empty() {
+        return;
+    }
+    let now_s = ctx.w.now();
+    let until_s = until_s.unwrap_or_else(|| now_s.saturating_add(crate::match_::HATCH_HOLD_S));
+    let mut held = Vec::new();
+    for (body, tank) in owed {
+        let dropped = lobby::centre(ctx.w)
+            .filter(|centre| centre.state == crate::match_::MatchState::Running)
+            .and_then(|centre| centre.slot_of_pilot(body))
+            .is_some_and(lobby::Slot::is_dropped);
+        if !dropped {
+            continue;
+        }
+        if !ctx.w.is_connected(body) {
+            if now_s < until_s {
+                held.push((body, tank));
+            }
+            continue;
+        }
+        ctx.out
+            .sys_to_actor(body, NOTICE_CATEGORY, crate::match_::RESUME_LINE);
+        let line = crate::match_::doctrine_line(ctx.w, tank);
+        ctx.out.sys_to_actor(body, NOTICE_CATEGORY, line);
+        // Said once: a later login while still dropped reads Y.3's line alone.
+        lobby::resume_line_said(ctx, body);
+        crate::arena_bridge::clear_cockpit(ctx, body);
+    }
+    if let Some(book) = ctx.w.module_state_mut::<crate::match_::MatchBook>() {
+        book.hold_resume_lines(held, until_s);
     }
 }
 

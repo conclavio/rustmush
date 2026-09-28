@@ -127,6 +127,12 @@ struct Rig {
     /// **16b cut V.2**: every ledger chunk [`Rig::pump`] has handed the world,
     /// by match — the count the result document's `ledger.chunks` must equal.
     chunks_seen: BTreeMap<u64, u64>,
+    /// **16b cut AF.3**: the store as every write the rig has taken left it
+    /// ([`Rig::pump_ops`]) — what [`Rig::reboot_mid_match`] boots from.
+    image: StoreImage,
+    /// **16b cut AF.3**: the arena clock of every `ArenaOut::Frames` [`Rig::pump`]
+    /// has staged, as `(match, now_ms)`, in order.
+    frames_seen: Vec<(u64, i64)>,
 }
 
 impl Rig {
@@ -166,6 +172,8 @@ impl Rig {
             pilots: who,
             egress,
             chunks_seen: BTreeMap::new(),
+            image: StoreImage::new(),
+            frames_seen: Vec::new(),
         }
     }
 
@@ -193,6 +201,13 @@ impl Rig {
                             }
                             _ => None,
                         };
+                        // 16b cut AF.3: the arena clock each pulse's frames carry.
+                        if let tacsim::arena_task::ArenaOut::Frames {
+                            match_id, now_ms, ..
+                        } = &message
+                        {
+                            self.frames_seen.push((match_id.0, *now_ms));
+                        }
                         if !tasks.stage(message) {
                             break;
                         }
@@ -2916,6 +2931,7 @@ async fn d3_the_ai_floor_is_clamped_to_the_pods_a_side_has() {
             left: false,
             dropped_at_ms: None,
             unit_type: None,
+            released_by_resume: false,
         });
     }
     assert_eq!(
@@ -3187,7 +3203,7 @@ async fn d3_a_match_every_pilot_left_ends_itself_after_the_interval() {
 
     // And at it: the stop is sent, the stamp is cleared, and the centre says so.
     let match_id = rig.centre().match_id.expect("the running match");
-    let _ = rig.tw.take_module_ops();
+    let _ = rig.pump_ops();
     let heard = rig.tick_heard(40, 0);
     assert!(
         heard.contains("Match 1 ends: every pilot has left it."),
@@ -3197,7 +3213,7 @@ async fn d3_a_match_every_pilot_left_ends_itself_after_the_interval() {
     // **16b cut AF.2**: the stop's own action rewrites the live record parked
     // `stopping`, so a crash before the end is found by the boot as a stopping
     // match (voided) and never resumed as a running one.
-    let writes = writes_of(rig.tw.take_module_ops());
+    let writes = writes_of(rig.pump_ops());
     let stopping = set_of(&writes, &match_::live_key(match_id))
         .map(|document| match_::LiveRecord::from_document(&document))
         .expect("the unattended stop rewrote the live record")
@@ -4484,7 +4500,7 @@ async fn v2_the_result_names_every_unit_by_the_arenas_callsign_and_counts_its_ta
     rig.tick_to(1);
     board_both(&mut rig);
     let match_id = rig.centre().match_id.expect("a running match");
-    let _ = rig.tw.take_module_ops();
+    let _ = rig.pump_ops();
 
     // The arena's own callsigns, off the frames it sent.
     let mut flown: BTreeMap<u64, (u64, String)> = BTreeMap::new();
@@ -4537,8 +4553,7 @@ async fn v2_the_result_names_every_unit_by_the_arenas_callsign_and_counts_its_ta
 
     let key = format!("tacsim:match:{}", match_id.0);
     let document = rig
-        .tw
-        .take_module_ops()
+        .pump_ops()
         .into_iter()
         .filter(|op| op.ns == tacsim::NS)
         .find_map(|op| match op.op {
@@ -4796,7 +4811,7 @@ async fn v3_a_finished_match_writes_one_report_per_pilot_and_the_result_names_th
         })
         .collect();
     assert_eq!(tanks.len(), 2, "both pilots were framed");
-    let _ = rig.tw.take_module_ops();
+    let _ = rig.pump_ops();
 
     let said = rig.say(1, "sim abort");
     assert!(said.contains("aborts match"), "{said}");
@@ -4810,8 +4825,7 @@ async fn v3_a_finished_match_writes_one_report_per_pilot_and_the_result_names_th
     assert_eq!(rig.state(), MatchState::Aborted, "the check-in lands");
 
     let writes: BTreeMap<String, serde_json::Value> = rig
-        .tw
-        .take_module_ops()
+        .pump_ops()
         .into_iter()
         .filter(|op| op.ns == tacsim::NS)
         .filter_map(|op| match op.op {
@@ -4993,7 +5007,7 @@ async fn v3_sim_report_refuses_in_order_and_both_reads_complete_through_the_modu
     assert_eq!(rig.state(), MatchState::Aborted, "the check-in lands");
     // Every document the store would now hold, the last write of a key winning.
     let mut kv: BTreeMap<smol_str::SmolStr, serde_json::Value> = BTreeMap::new();
-    for op in rig.tw.take_module_ops() {
+    for op in rig.pump_ops() {
         if op.ns != tacsim::NS {
             continue;
         }
@@ -6134,20 +6148,20 @@ impl Rig {
             .world_mut()
             .move_to(pilot, room)
             .expect("a pilot walks into their team room");
-        let _ = self.tw.take_module_ops();
+        let _ = self.pump_ops();
         let said = self.say(n, "board");
-        (said, writes_of(self.tw.take_module_ops()))
+        (said, writes_of(self.pump_ops()))
     }
 
     /// **One pump, and the writes of the one action it applied** (16b cut
     /// AF.2), with the wall time the world spent on it: whatever was queued
     /// before is discarded first, so what comes back is this pump's alone.
     fn pump_writes(&mut self) -> (Vec<Write>, f64) {
-        let _ = self.tw.take_module_ops();
+        let _ = self.pump_ops();
         let at = std::time::Instant::now();
         self.pump();
         let ms = at.elapsed().as_secs_f64() * 1_000.0;
-        (writes_of(self.tw.take_module_ops()), ms)
+        (writes_of(self.pump_ops()), ms)
     }
 
     /// **Hand the world one egress message no running task would send now**
@@ -6162,14 +6176,14 @@ impl Rig {
             .map(|registry| registry.tasks().clone())
             .expect("the arena registry");
         assert!(tasks.stage(message), "the egress stage takes the message");
-        let _ = self.tw.take_module_ops();
+        let _ = self.pump_ops();
         self.tw.apply(mush_core::WorldCommand::ModuleAsyncDone {
             module: smol_str::SmolStr::new_static(tacsim::arena_bridge::MODULE),
             actor: GOD,
             correlation: 0,
             payload: tacsim::arena_bridge::EGRESS_PAYLOAD.to_owned(),
         });
-        writes_of(self.tw.take_module_ops())
+        writes_of(self.pump_ops())
     }
 }
 
@@ -6294,10 +6308,10 @@ async fn af2_the_two_documents_ride_the_lane_and_go_with_the_result() {
     );
 
     // (4) The abort parks the record, and the live record says so at once.
-    let _ = rig.tw.take_module_ops();
+    let _ = rig.pump_ops();
     let said = rig.say(1, "sim abort");
     assert!(said.contains("aborts match"), "{said}");
-    let writes = writes_of(rig.tw.take_module_ops());
+    let writes = writes_of(rig.pump_ops());
     let stopping = set_of(&writes, &live_key)
         .map(|document| match_::LiveRecord::from_document(&document))
         .expect("the abort rewrote the live record")
@@ -6580,4 +6594,1504 @@ async fn af2_the_world_side_cost_at_the_first_and_the_last_snapshot_of_a_minute_
         tacsim::match_::report::REPORT_MAX_LINES,
         tacsim::match_::replay::REPLAY_MAX_BYTES
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AF.3 (16c N16) — the boot resumes a running match
+// ---------------------------------------------------------------------------
+
+/// **The store, as one process's writes left it** (16b cut AF.3): per module
+/// namespace, per key, the last document written — a `JsonSet` replaces, a
+/// `Del` removes, a `StreamAppend` is not a document. Cumulative across every
+/// drain a test makes, so a document written before a mid-test drain is not
+/// lost to the reboot ([`Rig::pump_ops`]).
+type StoreImage = BTreeMap<smol_str::SmolStr, BTreeMap<smol_str::SmolStr, serde_json::Value>>;
+
+/// Fold `ops` into `image`, in order.
+fn fold_ops(image: &mut StoreImage, ops: &[mush_core::ModuleOp]) {
+    for op in ops {
+        let docs = image.entry(op.ns.clone()).or_default();
+        match &op.op {
+            mush_core::ModuleWrite::JsonSet { key, value } => {
+                docs.insert(key.clone(), value.clone());
+            }
+            mush_core::ModuleWrite::Del { key } => {
+                docs.remove(key);
+            }
+            mush_core::ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
+}
+
+impl Rig {
+    /// **Take the module writes queued since the last take, fold them into the
+    /// store image and hand them back** (16b cut AF.3) — what every test uses
+    /// instead of a bare `take_module_ops`, so [`Rig::reboot_mid_match`] boots
+    /// from every document this world has written.
+    fn pump_ops(&mut self) -> Vec<mush_core::ModuleOp> {
+        let ops = self.tw.take_module_ops();
+        fold_ops(&mut self.image, &ops);
+        ops
+    }
+
+    /// **The store image** (16b cut AF.3), for a test to edit between the
+    /// shutdown and the boot of [`Rig::reboot_mid_match`] — through
+    /// [`Rig::reboot_mid_match_editing`].
+    fn store_image(&mut self) -> &mut StoreImage {
+        &mut self.image
+    }
+
+    /// **A restart of the server half with a match running, in process** (16b
+    /// cut AF.3; the brief's item 11), answering the writes the boot made.
+    async fn reboot_mid_match(&mut self) -> Vec<Write> {
+        self.reboot_mid_match_editing(|_| {}).await
+    }
+
+    /// [`Rig::reboot_mid_match`], with `edit` run on the store image after the
+    /// old process has stopped and before the new one boots:
+    ///
+    /// 1. every live task of the old registry is stopped and joined
+    ///    (`ArenaTasks::shutdown`, as `mush_server::world_task::arena_shutdown`
+    ///    does); whatever the old tasks had put on the egress and the world had
+    ///    not drained yet is **dropped on purpose** — a process that crashed
+    ///    never handled it, and the stop signal sends no `Ended` — and the writes
+    ///    the world had already queued are folded into the image;
+    /// 2. the registry slot is replaced by `ArenaRegistry::fresh` (a new
+    ///    process's registry) and its egress taken, as `boot_on` takes it;
+    /// 3. the match book is reset, and so are `mush-sim`'s custody index and
+    ///    its focus map (`FocusState`, never hydrated at boot) — each a new
+    ///    process's empty RAM;
+    /// 4. the boot data is the image per namespace, each run through
+    ///    `ModuleBootData::normalize` (mush-core `module.rs`: every `log:` key
+    ///    moved into `ledger` as text, the loader's own shape);
+    /// 5. every module's boot runs again (`modules_loaded`: every
+    ///    `on_world_loaded`, then every `on_all_loaded`) and the account oracle
+    ///    is wired again, as `boot_on` wires it. Connected flags are untouched.
+    async fn reboot_mid_match_editing(&mut self, edit: impl FnOnce(&mut StoreImage)) -> Vec<Write> {
+        // (1)
+        let old = self
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .map(|registry| registry.tasks().clone())
+            .expect("the arena registry");
+        old.shutdown(tacsim::arena_bridge::JOIN_TIMEOUT).await;
+        if let Some(rx) = self.egress.as_mut() {
+            while rx.try_recv().is_ok() {}
+        }
+        let _ = self.pump_ops();
+        // (2)
+        {
+            let registry = self
+                .tw
+                .world_mut()
+                .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+                .expect("the arena registry");
+            *registry = tacsim::arena_bridge::ArenaRegistry::fresh(registry);
+        }
+        self.egress = self
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .map(|registry| registry.tasks().clone())
+            .and_then(|tasks| tasks.take_egress());
+        // (3)
+        *self
+            .tw
+            .world_mut()
+            .module_state_mut::<match_::MatchBook>()
+            .expect("the match book") = match_::MatchBook::new();
+        *self
+            .tw
+            .world_mut()
+            .module_state_mut::<mush_sim::deployed::DeployedUnits>()
+            .expect("the custody index") = mush_sim::deployed::DeployedUnits::new();
+        *self
+            .tw
+            .world_mut()
+            .module_state_mut::<mush_sim::FocusState>()
+            .expect("the focus map") = mush_sim::FocusState::default();
+        // (4)
+        edit(self.store_image());
+        let data: std::collections::HashMap<smol_str::SmolStr, mush_core::ModuleBootData> = self
+            .image
+            .iter()
+            .map(|(ns, docs)| {
+                let mut data = mush_core::ModuleBootData {
+                    kv: docs
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                    ..Default::default()
+                };
+                data.normalize();
+                (ns.clone(), data)
+            })
+            .collect();
+        // (5)
+        self.tw.modules_loaded(data);
+        let mut map = Accounts::default();
+        for (n, pilot) in self.pilots.iter().enumerate() {
+            map.0.insert(
+                *pilot,
+                AccountId::mint(&format!("account-{n}"), n as i64).expect("an account id"),
+            );
+        }
+        *self
+            .tw
+            .world_mut()
+            .module_state_mut::<mush_sim::AccountOracle>()
+            .expect("the simulation is composed") = mush_sim::AccountOracle::new(Arc::new(map));
+        writes_of(self.pump_ops())
+    }
+
+    /// The tacsim document the image holds under `key`.
+    fn image_doc(&self, key: &str) -> Option<serde_json::Value> {
+        self.image
+            .get(tacsim::NS)
+            .and_then(|docs| docs.get(key))
+            .cloned()
+    }
+
+    /// The match book, read.
+    fn book(&self) -> &match_::MatchBook {
+        self.tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .expect("the match book")
+    }
+
+    /// The arena registry, read.
+    fn registry(&self) -> &tacsim::arena_bridge::ArenaRegistry {
+        self.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .expect("the arena registry")
+    }
+}
+
+/// One captured event: its level and its fields.
+type CapturedEvent = (tracing::Level, BTreeMap<String, String>);
+
+/// **Every event the tracing layer is handed, with its fields** (16b cut
+/// AF.3): the rig's own subscriber, set as the thread's default for one test,
+/// so a boot's error line and its `reason` field can be read.
+#[derive(Clone, Default)]
+struct Captured(Arc<std::sync::Mutex<Vec<CapturedEvent>>>);
+
+/// The field visitor [`Captured`] records with: strings as they are, the rest
+/// by their `Debug`.
+struct FieldsOf<'a>(&'a mut BTreeMap<String, String>);
+
+impl tracing::field::Visit for FieldsOf<'_> {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.0.insert(field.name().to_owned(), value.to_owned());
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0.insert(field.name().to_owned(), format!("{value:?}"));
+    }
+}
+
+impl tracing::Subscriber for Captured {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut fields = BTreeMap::new();
+        event.record(&mut FieldsOf(&mut fields));
+        if let Ok(mut held) = self.0.lock() {
+            held.push((*event.metadata().level(), fields));
+        }
+    }
+
+    fn enter(&self, _: &tracing::span::Id) {}
+
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+impl Captured {
+    /// The reason the boot's one void line gave for `match_id`, if it gave one.
+    fn void_reason(&self, match_id: u64) -> Option<String> {
+        let held = self.0.lock().ok()?;
+        held.iter()
+            .filter(|(level, _)| *level == tracing::Level::ERROR)
+            .map(|(_, fields)| fields)
+            .find(|fields| {
+                fields
+                    .get("message")
+                    .is_some_and(|message| message.contains("could not resume"))
+                    && fields.get("match_id").map(String::as_str)
+                        == Some(match_id.to_string().as_str())
+            })
+            .and_then(|fields| fields.get("reason").cloned())
+    }
+
+    /// How many events whose message holds `needle` were seen.
+    fn said(&self, needle: &str) -> usize {
+        self.0.lock().map_or(0, |held| {
+            held.iter()
+                .filter(|(_, fields)| {
+                    fields
+                        .get("message")
+                        .is_some_and(|message| message.contains(needle))
+                })
+                .count()
+        })
+    }
+}
+
+/// `[tacsim]` for the resume's tests: [`config`] with a snapshot every arena
+/// second and a position summary every 20 ms, so a 16 KiB chunk closes in a
+/// couple of seconds and a snapshot follows it within one more.
+fn af3_config() -> TacsimConfig {
+    let mut cfg = config();
+    cfg.arena.snapshot_ms = 1_000;
+    cfg.arena.ledger.summary_ms = 20;
+    cfg
+}
+
+/// A rig on [`af3_config`].
+fn af3_rig(pilots: usize) -> Rig {
+    Rig::boot_on(pilots, roster_with(af3_config()))
+}
+
+/// **A running lobby match**: pilots 0 (red) and 1 (blue) claimed, started and
+/// boarded through the real `BOARD`. Answers the match id.
+fn af3_running(rig: &mut Rig) -> tacsim::arena_task::MatchId {
+    // The control-lease mirror, read once before anybody boards.
+    rig.tick_to(1);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    let (said, _) = rig.board_writes(0, match_::RED_ROOM_ENTRY);
+    assert!(said.contains("climb into"), "{said}");
+    let (said, _) = rig.board_writes(1, match_::BLUE_ROOM_ENTRY);
+    assert!(said.contains("climb into"), "{said}");
+    assert_eq!(rig.state(), MatchState::Running);
+    rig.centre().match_id.expect("a running match")
+}
+
+/// Pump until the image holds a snapshot of `match_id` taken after at least
+/// `chunks` of its chunks had closed, and answer its head.
+async fn af3_snapshot_after(
+    rig: &mut Rig,
+    match_id: tacsim::arena_task::MatchId,
+    chunks: u64,
+) -> tacsim::arena::SnapshotHead {
+    let key = match_::snapshot_key(match_id).to_string();
+    for _ in 0..3_000 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+        let _ = rig.pump_ops();
+        if let Some(head) = rig
+            .image_doc(&key)
+            .and_then(|document| tacsim::arena::Snapshot::head(&document).ok())
+            .filter(|head| head.chunk_seq >= chunks)
+        {
+            return head;
+        }
+    }
+    panic!("no snapshot of match {match_id} after {chunks} chunk(s)");
+}
+
+/// The chunk documents of `match_id`'s log the image holds, by index.
+fn af3_log_docs(
+    rig: &Rig,
+    match_id: tacsim::arena_task::MatchId,
+) -> BTreeMap<u64, serde_json::Value> {
+    let log = tacsim::arena_bridge::match_log_id(match_id);
+    rig.image
+        .get(tacsim::NS)
+        .map(|docs| {
+            docs.iter()
+                .filter_map(|(key, value)| {
+                    let (id, index) = mush_core::parse_chunk_key(key)?;
+                    (id == log).then(|| (index, value.clone()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The world-ledger chunk index the log's next append opens: the tail's own
+/// when it is unsealed, the one after when it is sealed, 0 for no log.
+fn af3_next_chunk(docs: &BTreeMap<u64, serde_json::Value>) -> u64 {
+    docs.iter().next_back().map_or(0, |(index, doc)| {
+        if doc.get("sealed").and_then(serde_json::Value::as_bool) == Some(true) {
+            index + 1
+        } else {
+            *index
+        }
+    })
+}
+
+/// A document's state string edited by `edit` and its digest stamped again —
+/// the live record's and the snapshot's, which are stamped the same way.
+fn af3_restamp(document: &mut serde_json::Value, edit: impl FnOnce(&str) -> String) {
+    use sha2::Digest as _;
+    let state = document["state"]
+        .as_str()
+        .map(edit)
+        .expect("a state string");
+    document["state_digest"] = serde_json::Value::String(tacsim::arena::snapshot::digest_text(
+        &sha2::Sha256::digest(state.as_bytes()).into(),
+    ));
+    document["state"] = serde_json::Value::String(state);
+}
+
+/// The keys a list of writes touched, for a failure message.
+fn keys_of(writes: &[Write]) -> Vec<&str> {
+    writes.iter().map(|(_, key, _)| key.as_str()).collect()
+}
+
+/// **The boot resumes a match from its two documents** (16b cut AF.3; the
+/// brief's test 1), over the in-process reboot rig: a lobby match with two
+/// seated pilots, snapshotted after a chunk had closed, and the server half
+/// restarted under it.
+///
+/// After the boot: both units are still deployed; the record is `running` with
+/// its folds; the centre is `running` on the match with every seated slot
+/// dropped, left and `released_by_resume`, the leads resettled (every slot has
+/// left, so no side has one) and the unattended clock stamped; the task is
+/// live; the world's epoch mirror is the snapshot's table plus one on every
+/// channel of a seat it held; the boot wrote the `resumed` marker into
+/// `log:match.<id>` at the log's next chunk (never chunk 0, and no earlier chunk
+/// document rewritten), the live record with `resumed_from_ms` and no result
+/// document; the task's first frames carry an arena clock at or past the
+/// snapshot's moment. Then an abort ends it through `finish` with an ordinary
+/// result: `ledger.chunks` at least the chunks the live record counted, a
+/// replay, a report per pilot, and both documents deleted.
+///
+/// **Two more arms**, on a second match: a live record shaped as a 16b cut AF.2
+/// running half wrote it (no `released_by_resume` key anywhere) still resumes —
+/// the promise the field's `#[serde(default)]` keeps — and with the
+/// `tacsim:match:seq` document gone the book's next id is still above the
+/// resumed match's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn af3_a_boot_resumes_a_match_from_its_two_documents() {
+    let mut rig = af3_rig(2);
+    let match_id = af3_running(&mut rig);
+    let id = match_id.0;
+    let head = af3_snapshot_after(&mut rig, match_id, 1).await;
+    let tanks: Vec<ObjId> = rig
+        .centre()
+        .slots
+        .iter()
+        .filter_map(|slot| slot.unit)
+        .collect();
+    assert_eq!(tanks.len(), 2);
+    let live_key = match_::live_key(match_id).to_string();
+    let live_before = rig
+        .image_doc(&live_key)
+        .map(|document| match_::LiveRecord::from_document(&document))
+        .expect("the live record is in the store")
+        .expect("and decodes");
+    let snapshot_doc = rig
+        .image_doc(&match_::snapshot_key(match_id))
+        .expect("the snapshot is in the store");
+    let log_before = af3_log_docs(&rig, match_id);
+    let next_chunk = af3_next_chunk(&log_before);
+    assert!(
+        next_chunk > 0,
+        "a chunk closed before the snapshot: {:?}",
+        log_before.keys()
+    );
+
+    let writes = rig.reboot_mid_match().await;
+
+    // Custody: both units are still out on loan and still refused.
+    for tank in &tanks {
+        assert!(
+            mush_tactics::custody::marker_of(rig.tw.world(), *tank).is_some(),
+            "#{} lost its marker",
+            tank.0
+        );
+        assert!(mush_sim::deployed::is_deployed(rig.tw.world(), *tank));
+    }
+    // The record, as the live record carried it.
+    let record = rig
+        .book()
+        .get(match_id)
+        .cloned()
+        .expect("the record is back");
+    assert_eq!(record.state, MatchState::Running);
+    assert_eq!(record.folds.len(), 2, "a fold per pilot");
+    assert!(record.replay.is_some(), "the replay fold");
+    // The centre, and every seat released to doctrine.
+    let centre = rig.centre();
+    assert_eq!(centre.state, MatchState::Running);
+    assert_eq!(centre.match_id, Some(match_id));
+    for slot in centre.slots.iter().filter(|slot| slot.is_seated()) {
+        assert!(slot.is_dropped(), "{slot:?}");
+        assert!(slot.left && slot.released_by_resume, "{slot:?}");
+    }
+    assert!(
+        centre.leads.is_empty(),
+        "every slot left: {:?}",
+        centre.leads
+    );
+    assert!(centre.unattended_since_ms.is_some(), "the unattended clock");
+    assert!(centre.board_deadline_ms.is_none());
+    // The task.
+    assert!(rig.registry().tasks().is_live(match_id), "the task is live");
+    // The epoch mirror: the snapshot's table, plus one on a released seat.
+    let ground = match_::definition_for(rig.tw.world(), &head.arena)
+        .expect("the ground builds")
+        .expect("and is loaded");
+    let decoded =
+        tacsim::arena::Snapshot::decode(&snapshot_doc, ground).expect("the snapshot decodes");
+    assert_eq!(
+        decoded.pilots.len(),
+        2,
+        "both seats were held at the snapshot"
+    );
+    for unit in &decoded.units {
+        let seated = decoded.pilots.iter().any(|seat| seat.unit == unit.id);
+        for channel in tacsim::arena::state::Channel::ALL {
+            let table = decoded.epochs.current(unit.id, channel);
+            assert_eq!(
+                rig.registry().epoch_of(unit.id, channel),
+                table + u64::from(seated),
+                "#{} {channel:?}",
+                unit.id.0
+            );
+        }
+    }
+    // The marker, at the log's next chunk; no earlier chunk touched.
+    let log = tacsim::arena_bridge::match_log_id(match_id);
+    let marker_key = mush_core::chunk_key(&log, next_chunk).to_string();
+    let marked = set_of(&writes, &marker_key)
+        .unwrap_or_else(|| panic!("no write of {marker_key}: {:?}", keys_of(&writes)));
+    let marker = marked["entries"]
+        .as_array()
+        .and_then(|entries| entries.last())
+        .map(|entry| entry["value"].clone())
+        .expect("the chunk holds an entry");
+    assert_eq!(
+        marker["resumed"]["from_chunk"],
+        serde_json::json!(head.chunk_seq)
+    );
+    assert_eq!(marker["resumed"]["at_ms"], serde_json::json!(head.at_ms));
+    for index in 0..next_chunk {
+        let key = mush_core::chunk_key(&log, index).to_string();
+        assert!(set_of(&writes, &key).is_none(), "{key} was rewritten");
+    }
+    // The live record, rewritten with the resume's memory; no result.
+    let live = set_of(&writes, &live_key)
+        .map(|document| match_::LiveRecord::from_document(&document))
+        .expect("the boot rewrote the live record")
+        .expect("and it decodes");
+    assert_eq!(live.resumed_from_ms, Some(head.at_ms));
+    assert_eq!(live.at_ms, head.at_ms);
+    assert!(live.centre.slots.iter().all(|slot| slot.released_by_resume));
+    let result_key = match_::result_key(match_id).to_string();
+    assert!(
+        set_of(&writes, &result_key).is_none(),
+        "a resumed match has no result"
+    );
+    // The task's first frames.
+    let seen = rig.frames_seen.len();
+    let mut first: Option<i64> = None;
+    for _ in 0..400 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+        let _ = rig.pump_ops();
+        if let Some((_, now_ms)) = rig
+            .frames_seen
+            .iter()
+            .skip(seen)
+            .find(|(held, _)| *held == id)
+        {
+            first = Some(*now_ms);
+            break;
+        }
+    }
+    let first = first.expect("the resumed task sent a frame");
+    assert!(
+        first >= head.at_ms,
+        "{first} is before the snapshot at {}",
+        head.at_ms
+    );
+
+    // An abort ends it with an ordinary result.
+    let said = rig.staff(&format!("@arena/abort {id}"));
+    assert!(said.contains("is stopping"), "{said}");
+    let mut ended: Option<Vec<Write>> = None;
+    for _ in 0..600 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let (writes, _) = rig.pump_writes();
+        if set_of(&writes, &result_key).is_some() {
+            ended = Some(writes);
+            break;
+        }
+    }
+    let writes = ended.expect("the check-in lands");
+    let result = set_of(&writes, &result_key).expect("the result");
+    assert_eq!(result["reason"], "abort", "{result}");
+    assert!(
+        result["ledger"]["chunks"].as_u64().unwrap_or(0) >= live_before.chunks_appended,
+        "{result}"
+    );
+    assert_eq!(result["replay"], true, "{result}");
+    for tank in &tanks {
+        let report = match_::report_key(match_id, *tank).to_string();
+        assert!(set_of(&writes, &report).is_some(), "{report}");
+    }
+    assert!(deletes(&writes, &live_key));
+    assert!(deletes(&writes, &match_::snapshot_key(match_id)));
+    for tank in &tanks {
+        assert!(mush_tactics::custody::marker_of(rig.tw.world(), *tank).is_none());
+    }
+
+    // (Two more arms) An AF.2-shaped live record, and no counter document.
+    let mut rig = af3_rig(2);
+    let match_id = af3_running(&mut rig);
+    let _ = af3_snapshot_after(&mut rig, match_id, 0).await;
+    let key = match_::live_key(match_id).to_string();
+    let writes = rig
+        .reboot_mid_match_editing(|image| {
+            let docs = image.entry(smol_str::SmolStr::new(tacsim::NS)).or_default();
+            if let Some(document) = docs.get_mut(key.as_str()) {
+                af3_restamp(document, |state| {
+                    state.replace(",\"released_by_resume\":false", "")
+                });
+                assert!(
+                    !document["state"]
+                        .as_str()
+                        .is_some_and(|state| state.contains("released_by_resume")),
+                    "an AF.2-shaped record"
+                );
+            }
+            docs.remove(match_::SEQ_KEY);
+        })
+        .await;
+    assert!(rig.registry().tasks().is_live(match_id), "it resumed");
+    assert_eq!(
+        rig.book().get(match_id).map(|record| record.state),
+        Some(MatchState::Running)
+    );
+    assert!(set_of(&writes, &match_::result_key(match_id)).is_none());
+    assert!(
+        rig.book().peek_seq() > match_id.0,
+        "the next id {} is not above the resumed {}",
+        rig.book().peek_seq(),
+        match_id.0
+    );
+    let said = rig.staff(&format!("@arena/abort {}", match_id.0));
+    assert!(said.contains("is stopping"), "{said}");
+}
+
+/// **One running lobby match for a resume test** (16b cut AF.3): the rig, the
+/// match, the head of the snapshot the image holds (taken after at least
+/// `chunks` closed chunks), the two tanks, and — when `moved` — red's tank
+/// placed three cells east of its muster during `Boarding`, so the check-out
+/// takes it there and only the boot's tank reset can put it back. `pods` is
+/// each pilot and the pod their body sat in when the snapshot was taken.
+struct Af3Match {
+    rig: Rig,
+    match_id: tacsim::arena_task::MatchId,
+    head: tacsim::arena::SnapshotHead,
+    tanks: Vec<ObjId>,
+    moved: Option<(ObjId, mush_sim::data::Pose)>,
+    pods: Vec<(ObjId, ObjId)>,
+}
+
+async fn af3_match(chunks: u64, moved: bool) -> Af3Match {
+    let mut rig = af3_rig(2);
+    rig.tick_to(1);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    let moved = if moved {
+        let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red's tank");
+        let (domain, pose) = mush_sim::pose_of(rig.tw.world(), red).expect("placed");
+        let said = rig.staff(&format!(
+            "@spatial/place/domain #{}={},{{\"x_cm\":{},\"y_cm\":{},\"heading_mdeg\":{}}}",
+            red.0,
+            domain.0,
+            pose.x_cm + 3_000,
+            pose.y_cm,
+            pose.heading_mdeg
+        ));
+        assert!(said.contains("Placed"), "the placement was refused: {said}");
+        let (_, at) = mush_sim::pose_of(rig.tw.world(), red).expect("placed");
+        Some((red, at))
+    } else {
+        None
+    };
+    let (said, _) = rig.board_writes(0, match_::RED_ROOM_ENTRY);
+    assert!(said.contains("climb into"), "{said}");
+    let (said, _) = rig.board_writes(1, match_::BLUE_ROOM_ENTRY);
+    assert!(said.contains("climb into"), "{said}");
+    assert_eq!(rig.state(), MatchState::Running);
+    let match_id = rig.centre().match_id.expect("a running match");
+    let tanks: Vec<ObjId> = rig
+        .centre()
+        .slots
+        .iter()
+        .filter_map(|slot| slot.unit)
+        .collect();
+    let head = af3_snapshot_after(&mut rig, match_id, chunks).await;
+    let pods: Vec<(ObjId, ObjId)> = (0..2)
+        .map(|n| (rig.pilot(n), rig.pod(n).expect("a boarded pilot's pod")))
+        .collect();
+    for (pilot, pod) in &pods {
+        assert_eq!(
+            rig.tw
+                .world()
+                .get(*pilot)
+                .and_then(|object| object.location),
+            Some(*pod),
+            "the pilot sits in the pod when the server stops"
+        );
+    }
+    Af3Match {
+        rig,
+        match_id,
+        head,
+        tanks,
+        moved,
+        pods,
+    }
+}
+
+impl Rig {
+    /// One closure against a real `Ctx` under the tacsim module's identity.
+    fn with_ctx<T>(&mut self, f: impl FnOnce(&mut Ctx<'_>) -> T) -> T {
+        let mut out = Outbox::new();
+        let engine = self.tw.engine_mut();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: SwitchSet::default(),
+            args: ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(tacsim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        f(&mut ctx)
+    }
+
+    /// The billets held on `unit`.
+    fn billets(&self, unit: ObjId) -> usize {
+        self.tw
+            .world()
+            .module_state::<mush_sim::SpatialState>()
+            .and_then(|state| state.assignments.get(&unit))
+            .map_or(0, |host| host.seats.len())
+    }
+}
+
+/// The tacsim namespace of a store image.
+fn tacsim_docs(image: &mut StoreImage) -> &mut BTreeMap<smol_str::SmolStr, serde_json::Value> {
+    image.entry(smol_str::SmolStr::new(tacsim::NS)).or_default()
+}
+
+/// What a void's reason must be.
+enum Reason {
+    /// These words exactly.
+    Exact(String),
+    /// Words that begin so (the rest carries a digest or a count).
+    Prefix(&'static str),
+}
+
+/// **Reboot `m`'s server half with `edit` applied to the store, and hold the
+/// boot to a void by name** (16b cut AF.3): the reason the one error line
+/// gives; the units restored — no marker, not deployed, `@unit/damage` accepted
+/// — with no billet left on them; the `aborted(restart)` result; both
+/// documents deleted; no live task; and every roster tank at spec and at
+/// muster (a second reset changes nothing, and a tank moved off its muster
+/// before the check-out is back on it).
+async fn af3_void(m: &mut Af3Match, edit: impl FnOnce(&mut StoreImage), reason: Reason) {
+    let captured = Captured::default();
+    let writes = {
+        let _guard = tracing::subscriber::set_default(captured.clone());
+        m.rig.reboot_mid_match_editing(edit).await
+    };
+    let id = m.match_id;
+    let said = captured.void_reason(id.0);
+    match reason {
+        Reason::Exact(words) => assert_eq!(said.as_deref(), Some(words.as_str())),
+        Reason::Prefix(words) => assert!(
+            said.as_deref().is_some_and(|said| said.starts_with(words)),
+            "{said:?} does not begin {words:?}"
+        ),
+    }
+    // 16b cut U.4 (`B-37`) across a void: a voided match's centre is not
+    // `Running`, so the boot's sweep keeps nothing — every pilot is put out of
+    // the pod the match locked, and owed the hatch line.
+    let owed = m.rig.book().hatch_notices().to_vec();
+    for (pilot, pod) in &m.pods {
+        assert_ne!(
+            m.rig
+                .tw
+                .world()
+                .get(*pilot)
+                .and_then(|object| object.location),
+            Some(*pod),
+            "a voided match left #{} shut in its pod",
+            pilot.0
+        );
+        assert!(
+            owed.contains(&(*pilot, *pod)),
+            "no hatch line is owed to #{}: {owed:?}",
+            pilot.0
+        );
+    }
+    for tank in &m.tanks {
+        assert!(
+            mush_tactics::custody::marker_of(m.rig.tw.world(), *tank).is_none(),
+            "#{} kept its marker",
+            tank.0
+        );
+        assert!(!mush_sim::deployed::is_deployed(m.rig.tw.world(), *tank));
+        assert_eq!(m.rig.billets(*tank), 0, "#{} kept a billet", tank.0);
+        let said = m
+            .rig
+            .staff(&format!("@unit/damage #{}={{\"ops\":[]}}", tank.0));
+        assert!(said.contains("Applied 0 op(s)"), "{said}");
+    }
+    let result = set_of(&writes, &match_::result_key(id))
+        .unwrap_or_else(|| panic!("no result: {:?}", keys_of(&writes)));
+    assert_eq!(result["outcome"], "abort", "{result}");
+    assert_eq!(result["reason"], "restart", "{result}");
+    assert!(deletes(&writes, &match_::live_key(id)));
+    assert!(deletes(&writes, &match_::snapshot_key(id)));
+    assert!(
+        !m.rig.registry().tasks().is_live(id),
+        "a voided match has no task"
+    );
+    assert_ne!(m.rig.centre().state, MatchState::Running);
+    let again = m
+        .rig
+        .with_ctx(|ctx| match_::reset_stock_tanks(ctx, &std::collections::BTreeSet::new()));
+    assert!(
+        !again.changed() && again.deployed.is_empty(),
+        "the boot left a tank off its spec or its muster: {again:?}"
+    );
+    if let Some((tank, at)) = &m.moved {
+        let (_, now) = mush_sim::pose_of(m.rig.tw.world(), *tank).expect("placed");
+        assert_ne!(
+            (now.x_cm, now.y_cm),
+            (at.x_cm, at.y_cm),
+            "the moved tank was not put back at muster"
+        );
+    }
+}
+
+/// The snapshot document the image holds for `m`, edited through its parsed
+/// state and stamped again (so the edit is past the digest check).
+fn af3_state_edit(document: &mut serde_json::Value, edit: impl FnOnce(&mut serde_json::Value)) {
+    af3_restamp(document, |state| {
+        let mut parsed: serde_json::Value = serde_json::from_str(state).expect("a JSON state");
+        edit(&mut parsed);
+        serde_json::to_string(&parsed).expect("a state encodes")
+    });
+}
+
+/// **A match the boot cannot resume is voided by name, one reason at a time**
+/// (16b cut AF.3; the brief's test 2), over the in-process reboot rig and the
+/// store image of test 1 edited once per reason — every reason the in-process
+/// rig can reach. (The layer off and `snapshot_ms = 0` rebuild the store slot
+/// from the module's own frozen config, which this rig cannot change between
+/// boots; they are `mushd`'s `arena_custody.rs`' arms.)
+///
+/// Each arm: the error line's reason is the closed list's word for its case;
+/// the units are restored and at spec and at muster (the phase-B arms too:
+/// red's tank is moved off its muster before the check-out, and only the
+/// boot's reset puts it back); the seats are released; the `aborted(restart)`
+/// document is written; both documents are deleted; no task runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
+    // No snapshot document.
+    let mut m = af3_match(0, true).await;
+    let key = match_::snapshot_key(m.match_id).to_string();
+    af3_void(
+        &mut m,
+        |image| {
+            tacsim_docs(image).remove(key.as_str());
+        },
+        Reason::Exact("no snapshot document".to_owned()),
+    )
+    .await;
+
+    // No live record.
+    let mut m = af3_match(0, true).await;
+    let key = match_::live_key(m.match_id).to_string();
+    af3_void(
+        &mut m,
+        |image| {
+            tacsim_docs(image).remove(key.as_str());
+        },
+        Reason::Exact("no live record".to_owned()),
+    )
+    .await;
+
+    // The live record's state edited without a new digest.
+    let mut m = af3_match(0, true).await;
+    let key = match_::live_key(m.match_id).to_string();
+    af3_void(
+        &mut m,
+        |image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                let moved = document["state"]
+                    .as_str()
+                    .map(|state| state.replacen("\"id\":", "\"id\": ", 1))
+                    .expect("a state");
+                document["state"] = serde_json::Value::String(moved);
+            }
+        },
+        Reason::Prefix("the live record does not decode: state digest mismatch: recorded "),
+    )
+    .await;
+
+    // The live record parked `stopping` (an abort before the restart).
+    let mut m = af3_match(0, true).await;
+    let said = m.rig.staff(&format!("@arena/abort {}", m.match_id.0));
+    assert!(said.contains("is stopping"), "{said}");
+    af3_void(
+        &mut m,
+        |_| {},
+        Reason::Exact("the live record is not running (state stopping)".to_owned()),
+    )
+    .await;
+
+    // The check-out's own live record beside the opening snapshot (16b cut
+    // AF.2's carried constraint: `at_ms` is 0 for both, so only the centre
+    // tells them apart): its centre still `boarding`.
+    let mut m = af3_match(0, true).await;
+    let key = match_::live_key(m.match_id).to_string();
+    af3_void(
+        &mut m,
+        |image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                af3_state_edit(document, |state| {
+                    state["centre"]["state"] = serde_json::json!("boarding");
+                });
+            }
+        },
+        Reason::Exact("the live record is not running (state boarding)".to_owned()),
+    )
+    .await;
+
+    // The snapshot's state edited without a new digest (phase B's decode).
+    let mut m = af3_match(0, true).await;
+    let key = match_::snapshot_key(m.match_id).to_string();
+    af3_void(
+        &mut m,
+        |image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                let moved = document["state"]
+                    .as_str()
+                    .map(|state| state.replacen("\"now_ms\":", "\"now_ms\": ", 1))
+                    .expect("a state");
+                document["state"] = serde_json::Value::String(moved);
+            }
+        },
+        Reason::Prefix("the snapshot does not decode: state digest mismatch: recorded "),
+    )
+    .await;
+
+    // Edited and stamped again: the hash refuses it (phase B).
+    let mut m = af3_match(0, true).await;
+    let key = match_::snapshot_key(m.match_id).to_string();
+    let recorded = m.head.state_hash;
+    af3_void(
+        &mut m,
+        |image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                af3_state_edit(document, |state| {
+                    let now = state["now_ms"].as_i64().unwrap_or(0);
+                    state["now_ms"] = serde_json::json!(now + 1);
+                });
+            }
+        },
+        Reason::Prefix("state hash mismatch (recorded "),
+    )
+    .await;
+    assert!(
+        m.head.state_hash == recorded,
+        "the head is the unedited snapshot's"
+    );
+
+    // Another ground on the head.
+    let mut m = af3_match(0, true).await;
+    let key = match_::snapshot_key(m.match_id).to_string();
+    af3_void(
+        &mut m,
+        |image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                document["arena_definition_digest"] = serde_json::json!("f".repeat(64));
+            }
+        },
+        Reason::Exact("the snapshot and the record name different grounds".to_owned()),
+    )
+    .await;
+
+    // Another locomotion table.
+    let mut m = af3_match(0, true).await;
+    let key = match_::snapshot_key(m.match_id).to_string();
+    af3_void(
+        &mut m,
+        |image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                document["physics_digest"] = serde_json::json!("0".repeat(64));
+            }
+        },
+        Reason::Exact(format!(
+            "the ground's movement prices changed (recorded {}, loaded {})",
+            "0".repeat(64),
+            mush_atlas::physics::LOCOMOTION_DIGEST
+        )),
+    )
+    .await;
+
+    // The two documents from two moments.
+    let mut m = af3_match(0, true).await;
+    let key = match_::live_key(m.match_id).to_string();
+    let at_ms = m.head.at_ms;
+    af3_void(
+        &mut m,
+        |image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                document["at_ms"] = serde_json::json!(at_ms + 1_000);
+            }
+        },
+        Reason::Exact(format!(
+            "the live record and the snapshot are from different moments (live at {} ms, \
+             snapshot at {at_ms} ms)",
+            at_ms + 1_000
+        )),
+    )
+    .await;
+
+    // A marker on a unit the record does not field: red's second pod's tank,
+    // marked as the match's with its own cells as the snapshot.
+    let mut m = af3_match(0, true).await;
+    let stray = match_::tank_for_slot(m.rig.tw.world(), Team::Red, 2).expect("red's second tank");
+    let (id, arena) = (m.match_id.0, m.head.arena.clone());
+    af3_void(
+        &mut m,
+        |image| {
+            let docs = image
+                .entry(smol_str::SmolStr::new(mush_tactics::module::NS))
+                .or_default();
+            if let Some(document) = docs.get_mut(format!("unit:{}", stray.0).as_str()) {
+                let unit = document["unit"].clone();
+                document["deployed"] = serde_json::json!({
+                    "mark": { "match_id": id, "arena": arena.as_str() },
+                    "snapshot": unit,
+                });
+            }
+        },
+        Reason::Exact("the units still checked out are not the record's roster".to_owned()),
+    )
+    .await;
+    assert!(
+        mush_tactics::custody::marker_of(m.rig.tw.world(), stray).is_none(),
+        "the stray marker is restored with the match's"
+    );
+
+    // Already resumed from this very snapshot: the resume-once rule.
+    let mut m = af3_match(0, true).await;
+    let key = match_::live_key(m.match_id).to_string();
+    let at_ms = m.head.at_ms;
+    af3_void(
+        &mut m,
+        |image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                document["resumed_from_ms"] = serde_json::json!(at_ms);
+            }
+        },
+        Reason::Exact(format!(
+            "the server stopped again before this match's next snapshot (already resumed \
+             from {at_ms} ms)"
+        )),
+    )
+    .await;
+
+    // A breach in the resumed log: its last chunk is not a chunk.
+    let mut m = af3_match(1, true).await;
+    let last = af3_log_docs(&m.rig, m.match_id)
+        .keys()
+        .next_back()
+        .copied()
+        .expect("a chunk document");
+    let key = mush_core::chunk_key(&tacsim::arena_bridge::match_log_id(m.match_id), last);
+    af3_void(
+        &mut m,
+        |image| {
+            tacsim_docs(image).insert(key, serde_json::json!("not a chunk"));
+        },
+        Reason::Prefix("the ledger tail could not be restored: "),
+    )
+    .await;
+
+    // The tape behind the snapshot: every chunk document from the one holding
+    // the snapshot's last closed chunk on is lost.
+    let mut m = af3_match(1, true).await;
+    let chunk_seq = m.head.chunk_seq;
+    let lost: Vec<smol_str::SmolStr> = af3_log_docs(&m.rig, m.match_id)
+        .into_iter()
+        .filter(|(_, document)| {
+            document["entries"].as_array().is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|entry| entry["value"]["chunk"].as_u64() >= Some(chunk_seq))
+            })
+        })
+        .map(|(index, _)| {
+            mush_core::chunk_key(&tacsim::arena_bridge::match_log_id(m.match_id), index)
+        })
+        .collect();
+    assert!(!lost.is_empty());
+    af3_void(
+        &mut m,
+        |image| {
+            for key in &lost {
+                tacsim_docs(image).remove(key);
+            }
+        },
+        Reason::Prefix("the tape is behind the snapshot (last durable chunk "),
+    )
+    .await;
+
+    // Another snapshot format.
+    let mut m = af3_match(0, true).await;
+    let key = match_::snapshot_key(m.match_id).to_string();
+    af3_void(
+        &mut m,
+        |image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                document["format"] = serde_json::json!(2);
+            }
+        },
+        Reason::Exact("the snapshot does not decode: snapshot format 2 is not 1".to_owned()),
+    )
+    .await;
+
+    // Phase B: the ground the two documents name is not the one loaded — the
+    // replay's own mechanism (a foreign digest recorded), on both documents so
+    // phase A's agreement check passes.
+    let mut m = af3_match(0, true).await;
+    let (live_key, snapshot_key) = (
+        match_::live_key(m.match_id).to_string(),
+        match_::snapshot_key(m.match_id).to_string(),
+    );
+    let real = m.head.definition_digest.clone();
+    let foreign = "0".repeat(64);
+    let arena = m.head.arena.clone();
+    let real_digest = real.clone();
+    af3_void(
+        &mut m,
+        |image| {
+            let docs = tacsim_docs(image);
+            if let Some(document) = docs.get_mut(snapshot_key.as_str()) {
+                document["arena_definition_digest"] = serde_json::json!(foreign.clone());
+            }
+            if let Some(document) = docs.get_mut(live_key.as_str()) {
+                af3_restamp(document, |state| state.replace(&real, &foreign));
+            }
+        },
+        Reason::Exact(format!(
+            "the ground {arena} is not the ground loaded on this server (recorded {}, loaded \
+             {})",
+            "0".repeat(64),
+            real_digest
+        )),
+    )
+    .await;
+}
+
+/// **The ledger tail is restored before the first append** (16b cut AF.3; the
+/// brief's test 4). Without it the registry's fresh ledger would open
+/// `log:match.<id>` at chunk 0 again and overwrite it.
+///
+/// - The log's durable tail is an **unsealed** chunk `n` holding `k` entries —
+///   here the real tail followed by one small abandoned chunk the old server
+///   wrote after its snapshot, unsealed: the resume marker lands in chunk `n` as
+///   entry `k`, and no earlier chunk is written. (A sealed tail — every real
+///   16 KiB chunk — puts it in `n + 1`: test 1.)
+/// - A breach in another, finished match's log (a chunk that is not a chunk)
+///   voids nothing: the resume inspects its own log's documents alone.
+/// - A breach in the resumed log voids with `the ledger tail could not be
+///   restored`, and a tail that does not reach the snapshot's chunk voids with
+///   `the tape is behind the snapshot`: test 2's arms, by the same helper.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn af3_the_ledger_tail_is_restored_before_the_first_append() {
+    let mut m = af3_match(1, false).await;
+    let log = tacsim::arena_bridge::match_log_id(m.match_id);
+    let docs = af3_log_docs(&m.rig, m.match_id);
+    let next = af3_next_chunk(&docs);
+    let last_seq = docs
+        .values()
+        .next_back()
+        .and_then(|document| document["entries"].as_array())
+        .and_then(|entries| entries.last())
+        .and_then(|entry| entry["seq"].as_u64())
+        .expect("the tail's last entry");
+    let abandoned = serde_json::json!({
+        "chunk": next,
+        "sealed": false,
+        "entries": [{
+            "seq": last_seq + 1,
+            "value": { "chunk": m.head.chunk_seq + 5, "bytes": 0, "lines": "" },
+        }],
+    });
+    let key = mush_core::chunk_key(&log, next);
+    let foreign = mush_core::chunk_key("match.999", 0);
+    let writes = m
+        .rig
+        .reboot_mid_match_editing(|image| {
+            let docs = tacsim_docs(image);
+            docs.insert(key.clone(), abandoned);
+            docs.insert(foreign, serde_json::json!("not a chunk"));
+        })
+        .await;
+    assert!(
+        m.rig.registry().tasks().is_live(m.match_id),
+        "another log's breach voided nothing"
+    );
+    let written = set_of(&writes, key.as_str())
+        .unwrap_or_else(|| panic!("no write of {key}: {:?}", keys_of(&writes)));
+    let entries = written["entries"].as_array().expect("entries");
+    assert_eq!(entries.len(), 2, "the marker is entry 1 of chunk {next}");
+    assert_eq!(entries[1]["seq"], serde_json::json!(last_seq + 2));
+    assert_eq!(
+        entries[1]["value"]["resumed"]["from_chunk"],
+        serde_json::json!(m.head.chunk_seq)
+    );
+    assert_eq!(written["sealed"], false);
+    for index in 0..next {
+        let earlier = mush_core::chunk_key(&log, index).to_string();
+        assert!(
+            set_of(&writes, &earlier).is_none(),
+            "{earlier} was rewritten"
+        );
+    }
+    let said = m.rig.staff(&format!("@arena/abort {}", m.match_id.0));
+    assert!(said.contains("is stopping"), "{said}");
+
+    // The two voiding arms, as test 2 runs them.
+    let mut m = af3_match(1, false).await;
+    let last = af3_log_docs(&m.rig, m.match_id)
+        .keys()
+        .next_back()
+        .copied()
+        .expect("a chunk document");
+    let key = mush_core::chunk_key(&tacsim::arena_bridge::match_log_id(m.match_id), last);
+    af3_void(
+        &mut m,
+        |image| {
+            tacsim_docs(image).insert(key, serde_json::json!("not a chunk"));
+        },
+        Reason::Prefix("the ledger tail could not be restored: "),
+    )
+    .await;
+    let mut m = af3_match(1, false).await;
+    let chunk_seq = m.head.chunk_seq;
+    let log = tacsim::arena_bridge::match_log_id(m.match_id);
+    let keys: Vec<smol_str::SmolStr> = af3_log_docs(&m.rig, m.match_id)
+        .into_keys()
+        .map(|index| mush_core::chunk_key(&log, index))
+        .collect();
+    af3_void(
+        &mut m,
+        |image| {
+            for key in &keys {
+                tacsim_docs(image).remove(key);
+            }
+        },
+        Reason::Exact(format!(
+            "the tape is behind the snapshot (last durable chunk 0, snapshot at chunk {})",
+            chunk_seq
+        )),
+    )
+    .await;
+}
+
+/// **The snapshot of `m`, decoded on its own ground, handed `controls` in one
+/// pulse at its own moment (no arena time passes), and encoded again** — a
+/// consistent document, its digest and its hash the changed arena's own: the
+/// decode-encode twin the brief's test 5 builds its snapshots with.
+fn af3_twin(m: &Af3Match, controls: &[tacsim::arena::intents::Control]) -> serde_json::Value {
+    let document = m
+        .rig
+        .image_doc(&match_::snapshot_key(m.match_id))
+        .expect("the snapshot");
+    let ground = match_::definition_for(m.rig.tw.world(), &m.head.arena)
+        .expect("the ground builds")
+        .expect("and is loaded");
+    let mut arena = tacsim::arena::Snapshot::decode(&document, ground).expect("it decodes");
+    let _ = arena.resume_at(0);
+    let _ = arena.step(0, controls, &[]);
+    assert_eq!(arena.now_ms, m.head.at_ms, "no arena time passed");
+    assert_eq!(arena.ledger.last_closed_seq(), m.head.chunk_seq);
+    tacsim::arena::Snapshot::encode(&arena)
+        .expect("the twin encodes")
+        .document
+}
+
+/// The `Released` a seat's drop sends: every channel of `unit`, one epoch past
+/// the snapshot's table, naming `pilot`.
+fn af3_released(m: &Af3Match, pilot: ObjId, unit: ObjId) -> Vec<tacsim::arena::intents::Control> {
+    let document = m
+        .rig
+        .image_doc(&match_::snapshot_key(m.match_id))
+        .expect("the snapshot");
+    let ground = match_::definition_for(m.rig.tw.world(), &m.head.arena)
+        .expect("the ground builds")
+        .expect("and is loaded");
+    let arena = tacsim::arena::Snapshot::decode(&document, ground).expect("it decodes");
+    tacsim::arena::state::Channel::ALL
+        .into_iter()
+        .map(|channel| tacsim::arena::intents::Control {
+            unit,
+            channel,
+            epoch: arena.epochs.current(unit, channel) + 1,
+            state: tacsim::arena::intents::ControlState::Released,
+            pilot: Some(pilot),
+        })
+        .collect()
+}
+
+/// The live record of `m` with its centre's slots edited by `edit`.
+fn af3_edit_slots(document: &mut serde_json::Value, edit: impl Fn(&mut serde_json::Value)) {
+    af3_state_edit(document, |state| {
+        if let Some(slots) = state["centre"]["slots"].as_array_mut() {
+            for slot in slots {
+                edit(slot);
+            }
+        }
+    });
+}
+
+/// **A seat the world saw leave or reclaim after the snapshot is reconciled**
+/// (16b cut AF.3; the brief's test 5): the world's slots and the arena's
+/// roster disagree in both directions by up to one snapshot period, and the
+/// resume settles each.
+///
+/// - **(a)** the live record has red's slot `left` (an `EXIT` the world handled
+///   after the snapshot's pulse) while the snapshot still seats its pilot: the
+///   resume releases the seat at the arena anyway — a watcher's first picture
+///   has every tank on the reflex controller — and `BOARD` answers `LeftForGood`:
+///   an `EXIT` is one-way.
+/// - **(b)** the live record has red's slot seated and un-left (a reclaim the
+///   world handled after the snapshot's pulse) while the snapshot does NOT hold
+///   its pilot (the twin: the drop's `Released` taken at the snapshot's own
+///   moment): after the boot the slot is dropped, no `AlreadyAboard`, and
+///   `BOARD` after `reclaim_min_ms` takes the tank back.
+/// - **(c)** every slot left and dropped before the snapshot: nothing marks a
+///   slot at the boot, so the unattended clock is restamped at the boot's own
+///   moment, and with nobody back the record parks `stopping` once
+///   `unattended_ms` of world time has passed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn af3_a_seat_the_world_saw_leave_or_reclaim_after_the_snapshot_is_reconciled() {
+    // (a) An `EXIT` after the snapshot's pulse.
+    let mut m = af3_match(0, false).await;
+    let red_pilot = m.rig.pilot(0);
+    let key = match_::live_key(m.match_id).to_string();
+    let _ = m
+        .rig
+        .reboot_mid_match_editing(|image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                af3_edit_slots(document, |slot| {
+                    if slot["pilot"] == serde_json::json!(red_pilot.0) {
+                        slot["left"] = serde_json::json!(true);
+                    }
+                });
+            }
+        })
+        .await;
+    let red = m
+        .rig
+        .centre()
+        .slot_of_pilot(red_pilot)
+        .cloned()
+        .expect("red's slot");
+    assert!(red.left && red.dropped_at_ms.is_none(), "{red:?}");
+    assert!(!red.released_by_resume, "an EXIT is not the resume's");
+    let said = m.rig.staff(&format!("@arena/watch {}", m.match_id.0));
+    assert!(!said.is_empty(), "{said}");
+    let mut reflex = false;
+    for _ in 0..400 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        m.rig.pump();
+        let _ = m.rig.pump_ops();
+        if let Some(picture) = m
+            .rig
+            .registry()
+            .last_observer(m.match_id)
+            .filter(|picture| picture.now_ms > m.head.at_ms)
+        {
+            reflex = picture
+                .units
+                .iter()
+                .all(|unit| unit.controller == tacsim::arena::state::Controller::Reflex);
+            break;
+        }
+    }
+    assert!(reflex, "every seat the snapshot held is the machine's");
+    m.rig.tick_to(30);
+    let said = m.rig.say(0, "board");
+    assert!(
+        said.contains("for the rest of the match; it cannot be taken back."),
+        "{said}"
+    );
+
+    // (b) A reclaim after the snapshot's pulse.
+    let mut m = af3_match(0, false).await;
+    let red_pilot = m.rig.pilot(0);
+    let red_tank = m
+        .rig
+        .centre()
+        .slot_of_pilot(red_pilot)
+        .and_then(|slot| slot.unit)
+        .expect("red's tank");
+    let twin = af3_twin(&m, &af3_released(&m, red_pilot, red_tank));
+    let key = match_::snapshot_key(m.match_id).to_string();
+    let _ = m
+        .rig
+        .reboot_mid_match_editing(|image| {
+            tacsim_docs(image).insert(smol_str::SmolStr::new(&key), twin);
+        })
+        .await;
+    assert!(m.rig.registry().tasks().is_live(m.match_id), "it resumed");
+    let red = m
+        .rig
+        .centre()
+        .slot_of_pilot(red_pilot)
+        .cloned()
+        .expect("red's slot");
+    assert!(red.is_dropped() && red.released_by_resume, "{red:?}");
+    m.rig.tick_to(3);
+    let said = m.rig.say(0, "board");
+    assert!(said.contains("is still being handed over"), "{said}");
+    assert!(!said.contains("already in your pod"), "{said}");
+    m.rig.tick_to(30);
+    let said = m.rig.say(0, "board");
+    assert!(said.contains("is yours again where it stands."), "{said}");
+
+    // (c) Everybody gone before the snapshot.
+    let mut m = af3_match(0, false).await;
+    let mut controls = Vec::new();
+    for slot in m.rig.centre().slots {
+        let unit = slot.unit.expect("seated");
+        controls.extend(af3_released(&m, slot.pilot, unit));
+    }
+    let twin = af3_twin(&m, &controls);
+    let (live_key, snapshot_key) = (
+        match_::live_key(m.match_id).to_string(),
+        match_::snapshot_key(m.match_id).to_string(),
+    );
+    let _ = m
+        .rig
+        .reboot_mid_match_editing(|image| {
+            let docs = tacsim_docs(image);
+            docs.insert(smol_str::SmolStr::new(&snapshot_key), twin);
+            if let Some(document) = docs.get_mut(live_key.as_str()) {
+                af3_edit_slots(document, |slot| {
+                    slot["left"] = serde_json::json!(true);
+                    slot["dropped_at_ms"] = serde_json::json!(500);
+                });
+            }
+        })
+        .await;
+    let centre = m.rig.centre();
+    assert!(centre.slots.iter().all(|slot| slot.is_dropped()));
+    assert!(
+        centre.slots.iter().all(|slot| !slot.released_by_resume),
+        "the resume released nobody"
+    );
+    assert_eq!(
+        centre.unattended_since_ms,
+        Some(1_000),
+        "restamped at the boot's own moment"
+    );
+    let unattended_s = i64::from(tacsim::config::MatchConfig::default().unattended_ms) / 1_000;
+    m.rig.tick_to(1 + unattended_s - 1);
+    assert_eq!(
+        m.rig.book().get(m.match_id).map(|record| record.state),
+        Some(MatchState::Running),
+        "not before its time"
+    );
+    m.rig.tick_to(2 + unattended_s);
+    assert_eq!(
+        m.rig.book().get(m.match_id).map(|record| record.state),
+        Some(MatchState::Stopping),
+        "a match nobody came back to parks"
+    );
+}
+
+/// **The boot's tank reset keeps a resumed match's tanks, quietly, and resets
+/// a match voided in phase B** (16b cut AF.3; the brief's test 14 — here and
+/// not in `tests/reset.rs`, because the in-process reboot of a running match is
+/// this file's rig).
+///
+/// After a resume: the boot said no `a roster tank is still deployed` line,
+/// and the reset the boot ran, asked again with the resumed tanks kept, lists
+/// nothing under `deployed` and changes nothing; asked with nothing kept it
+/// lists both — the keep is what spared them. After a phase-B void: the tank
+/// moved off its muster before the check-out is back on it (test 2's phase-B
+/// arm asserts the same through `af3_void`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn af3_the_boot_reset_keeps_a_resumed_match_s_tanks_quietly_and_resets_a_voided_one() {
+    let mut m = af3_match(0, false).await;
+    let captured = Captured::default();
+    {
+        let _guard = tracing::subscriber::set_default(captured.clone());
+        let _ = m.rig.reboot_mid_match().await;
+    }
+    assert!(m.rig.registry().tasks().is_live(m.match_id), "it resumed");
+    assert_eq!(
+        captured.said("a roster tank is still deployed at an Idle transition"),
+        0,
+        "a resumed tank is skipped without a word"
+    );
+    let keep: std::collections::BTreeSet<ObjId> = m.tanks.iter().copied().collect();
+    let kept = m.rig.with_ctx(|ctx| match_::reset_stock_tanks(ctx, &keep));
+    assert!(kept.deployed.is_empty(), "{kept:?}");
+    assert!(!kept.changed(), "{kept:?}");
+    let unkept = m
+        .rig
+        .with_ctx(|ctx| match_::reset_stock_tanks(ctx, &std::collections::BTreeSet::new()));
+    let mut listed = unkept.deployed.clone();
+    listed.sort_unstable();
+    let mut tanks = m.tanks.clone();
+    tanks.sort_unstable();
+    assert_eq!(listed, tanks, "unkept, the resumed tanks are the fault");
+
+    // A phase-B void: the ground moved under the documents.
+    let mut m = af3_match(0, true).await;
+    let (live_key, snapshot_key) = (
+        match_::live_key(m.match_id).to_string(),
+        match_::snapshot_key(m.match_id).to_string(),
+    );
+    let real = m.head.definition_digest.clone();
+    let foreign = "0".repeat(64);
+    af3_void(
+        &mut m,
+        |image| {
+            let docs = tacsim_docs(image);
+            if let Some(document) = docs.get_mut(snapshot_key.as_str()) {
+                document["arena_definition_digest"] = serde_json::json!(foreign.clone());
+            }
+            if let Some(document) = docs.get_mut(live_key.as_str()) {
+                af3_restamp(document, |state| state.replace(&real, &foreign));
+            }
+        },
+        Reason::Prefix("the ground "),
+    )
+    .await;
 }

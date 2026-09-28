@@ -128,6 +128,9 @@ struct Rig {
     /// (16b cut I.4), recorded by [`Rig::pump`] — what "afterwards the staged
     /// frames carry no picture" is read off.
     pictures: Vec<i64>,
+    /// **16b cut AF.3**: the store as every write the rig has taken left it
+    /// ([`Rig::pump_ops`]) — what [`Rig::reboot_mid_match`] boots from.
+    image: StoreImage,
 }
 
 impl Rig {
@@ -169,6 +172,7 @@ impl Rig {
             staged_now_ms: 0,
             tape: Vec::new(),
             pictures: Vec::new(),
+            image: StoreImage::new(),
         };
         // **The control-lease mirror.** `request_seat_activation` fails closed on
         // an unread one (`SeatError::ControlUnknown`), and the mirror is
@@ -8377,8 +8381,7 @@ async fn i1_sim_replay_prints_steps_centres_and_the_queries_read_the_cursor() {
 
     // The check-in's writes: the replay document, then the result that says so.
     let writes: Vec<(String, serde_json::Value)> = rig
-        .tw
-        .take_module_ops()
+        .pump_ops()
         .into_iter()
         .filter(|op| op.ns == tacsim::NS)
         .filter_map(|op| match op.op {
@@ -10120,8 +10123,7 @@ async fn o1_a_hold_is_won_and_every_record_says_hold() {
 
     // The documents.
     let writes: Vec<(String, serde_json::Value)> = rig
-        .tw
-        .take_module_ops()
+        .pump_ops()
         .into_iter()
         .filter(|op| op.ns == tacsim::NS)
         .filter_map(|op| match op.op {
@@ -11119,8 +11121,7 @@ async fn o3_a_range_ends_when_its_target_is_out_of_action() {
         "{board:?}"
     );
     let writes: Vec<(String, serde_json::Value)> = rig
-        .tw
-        .take_module_ops()
+        .pump_ops()
         .into_iter()
         .filter(|op| op.ns == tacsim::NS)
         .filter_map(|op| match op.op {
@@ -11214,5 +11215,625 @@ fn ae2_an_unheld_miss_reads_miss_and_nothing_more() {
             reason: smol_str::SmolStr::new(tacsim::arena::damage::MOVED),
         }),
         "Miss on X2: the target moved."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AF.3 (16c N16) — the pilots come back through the reclaim
+// ---------------------------------------------------------------------------
+
+/// **The store, as one process's writes left it** (16b cut AF.3): per module
+/// namespace, per key, the last document written. `match_lifecycle.rs` owns
+/// the rig this copies the steps of ([`Rig::reboot_mid_match`]).
+type StoreImage = BTreeMap<smol_str::SmolStr, BTreeMap<smol_str::SmolStr, serde_json::Value>>;
+
+impl Rig {
+    /// Take the module writes queued since the last take, fold them into the
+    /// store image and hand them back (16b cut AF.3).
+    fn pump_ops(&mut self) -> Vec<mush_core::ModuleOp> {
+        let ops = self.tw.take_module_ops();
+        for op in &ops {
+            let docs = self.image.entry(op.ns.clone()).or_default();
+            match &op.op {
+                mush_core::ModuleWrite::JsonSet { key, value } => {
+                    docs.insert(key.clone(), value.clone());
+                }
+                mush_core::ModuleWrite::Del { key } => {
+                    docs.remove(key);
+                }
+                mush_core::ModuleWrite::StreamAppend { .. } => {}
+            }
+        }
+        ops
+    }
+
+    /// **A restart of the server half with a match running, in process** (16b
+    /// cut AF.3), by `match_lifecycle.rs`' steps: the old tasks stopped and
+    /// joined and their undrained egress dropped on purpose (a crashed process
+    /// never handled it), the queued writes folded into the image, a fresh
+    /// registry (`ArenaRegistry::fresh`) and its egress taken, the match book
+    /// , `mush-sim`'s custody index and focus map reset, the image handed to every module
+    /// as its boot data through `ModuleBootData::normalize`, and the account
+    /// oracle wired again. Connected flags are untouched. What the boot said is
+    /// recorded into [`Rig::log`] — nothing, since boot output reaches nobody.
+    async fn reboot_mid_match(&mut self) {
+        let old = self
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .map(|registry| registry.tasks().clone())
+            .expect("the arena registry");
+        old.shutdown(tacsim::arena_bridge::JOIN_TIMEOUT).await;
+        if let Some(rx) = self.egress.as_mut() {
+            while rx.try_recv().is_ok() {}
+        }
+        let _ = self.pump_ops();
+        {
+            let registry = self
+                .tw
+                .world_mut()
+                .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+                .expect("the arena registry");
+            *registry = tacsim::arena_bridge::ArenaRegistry::fresh(registry);
+        }
+        self.egress = self
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .map(|registry| registry.tasks().clone())
+            .and_then(|tasks| tasks.take_egress());
+        *self
+            .tw
+            .world_mut()
+            .module_state_mut::<match_::MatchBook>()
+            .expect("the match book") = match_::MatchBook::new();
+        *self
+            .tw
+            .world_mut()
+            .module_state_mut::<mush_sim::deployed::DeployedUnits>()
+            .expect("the custody index") = mush_sim::deployed::DeployedUnits::new();
+        *self
+            .tw
+            .world_mut()
+            .module_state_mut::<mush_sim::FocusState>()
+            .expect("the focus map") = mush_sim::FocusState::default();
+        let data: std::collections::HashMap<smol_str::SmolStr, mush_core::ModuleBootData> = self
+            .image
+            .iter()
+            .map(|(ns, docs)| {
+                let mut data = mush_core::ModuleBootData {
+                    kv: docs
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                    ..Default::default()
+                };
+                data.normalize();
+                (ns.clone(), data)
+            })
+            .collect();
+        self.tw.modules_loaded(data);
+        let mut map = Accounts::default();
+        for (n, pilot) in self.pilots.iter().enumerate() {
+            map.0.insert(
+                *pilot,
+                AccountId::mint(&format!("account-{n}"), n as i64).expect("an account id"),
+            );
+        }
+        *self
+            .tw
+            .world_mut()
+            .module_state_mut::<mush_sim::AccountOracle>()
+            .expect("the simulation is composed") = mush_sim::AccountOracle::new(Arc::new(map));
+        let _ = self.pump_ops();
+    }
+
+    /// Pump until the image holds a snapshot of the running match taken at or
+    /// after arena millisecond `at_least`, and answer its head.
+    async fn af3_snapshot_at_or_after(&mut self, at_least: i64) -> tacsim::arena::SnapshotHead {
+        let match_id = self.centre().match_id.expect("a running match");
+        let key = match_::snapshot_key(match_id).to_string();
+        for _ in 0..3_000 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            self.pump();
+            let _ = self.pump_ops();
+            if let Some(head) = self
+                .image
+                .get(tacsim::NS)
+                .and_then(|docs| docs.get(key.as_str()))
+                .and_then(|document| tacsim::arena::Snapshot::head(document).ok())
+                .filter(|head| head.at_ms >= at_least)
+            {
+                return head;
+            }
+        }
+        panic!("no snapshot at or after {at_least} ms");
+    }
+
+    /// The arena clock the world's mirror holds for the running match.
+    fn af3_arena_ms(&self) -> i64 {
+        let match_id = self.centre().match_id.expect("a running match");
+        self.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.mirror(match_id))
+            .map_or(0, |mirror| mirror.now_ms)
+    }
+}
+
+/// The `Sys` lines one actor was sent since `from` in the rig's log.
+fn af3_said(rig: &Rig, actor: ObjId, from: usize) -> Vec<String> {
+    rig.log
+        .iter()
+        .skip(from)
+        .filter_map(|(audience, event)| match event {
+            OutputEvent::Sys(text) if *audience == Audience::Actor(actor) => {
+                Some(text.to_plain_text())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// `away_s` off a cockpit frame's catch-up.
+fn af3_away_s(frame: &serde_json::Value) -> i64 {
+    frame
+        .pointer("/catchup/away_s")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or_else(|| panic!("the frame carries no catch-up: {frame}"))
+}
+
+/// `[tacsim]` for the cockpit's resume tests: this file's [`config`] with a
+/// snapshot every arena second.
+fn af3_config() -> TacsimConfig {
+    let mut cfg = config();
+    cfg.arena.snapshot_ms = 1_000;
+    cfg
+}
+
+/// **The pilots come back through the reclaim after a resume** (16b cut AF.3;
+/// the brief's test 6), over this file's rig rebooted mid-match. Four pilots:
+/// red 1 (pilot 0) and blue 1 (pilot 1) seated when the server stops, red 2
+/// (pilot 2) who typed `EXIT` before the snapshot, blue 2 (pilot 3) who
+/// dropped (a `QUIT`) before it. Every session survives the restart, as the
+/// split's do. Red 1's tank opens 62 cells west of blue's on the east-west
+/// road, out of every blue sight, and is driven into them only after blue 2's
+/// drop: the contact blue 2's tank gains meanwhile.
+///
+/// - Before any tick, a reconnect says nothing to a pilot the resume owes the
+///   two lines (the tick is the path that says them); `STATUS` answers `You
+///   are not at the station of a deployed unit.`; the board reads `flown by
+///   doctrine` on every slot the resume released, and the other side's reduced
+///   row is byte-identical to the one it read before the restart (Y.3's,
+///   withholding it); `BOARD` inside `reclaim_min_ms` answers `HandingOver`
+///   with the seconds.
+/// - Blue 1 takes the tank back before the tick fires (the world's clock moved
+///   with no tick), and the tick then says nothing to them.
+/// - The first boarding tick says red 1 the resume line then the doctrine line,
+///   once, and sends red 1's attached session exactly one cleared cockpit
+///   keyframe (the abandoned timeline's last panel); a later tick says nothing,
+///   and a login after it reads Y.3's line alone.
+/// - Red 1 past the floor: `You climb back into … is yours again where it
+///   stands.`; the first frame's `catchup` counts `away` from the snapshot's
+///   moment and the line client reads `Back aboard RA after …`; `HEADING 90` is
+///   taken; an `EXIT` afterwards is one-way.
+/// - Red 2 reads `LeftForGood`.
+/// - Blue 2 reconnects to Y.3's line alone — no resume line — and after the
+///   floor takes the tank back with a catch-up counted from their own drop
+///   (the carried `at_release`), which lists red 1's tank as gained: it was
+///   gained after the drop and before the snapshot, so a baseline rebuilt at
+///   the snapshot's moment would list nothing new.
+/// - A second rig, the pilot away across the restart: the first tick holds the
+///   owed lines, the hold runs out unsaid, a later login says both, once, the
+///   tick after it nothing, and a login after that Y.3's line alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn af3_the_pilots_board_the_resumed_match_through_the_reclaim() {
+    let mut rig = Rig::boot_with(4, af3_config());
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(2, "sim team red");
+    rig.say(3, "sim team blue");
+    // Red 1's tank opens 62 cells west of blue's muster, on the road: 620 m,
+    // past the 600 m every blue sight reaches.
+    let said = rig.staff("@arena/pose RA=187 97 90");
+    assert!(
+        said.contains("RA opens at cell (187, 97) heading 90 for the next match."),
+        "{said}"
+    );
+    rig.say(0, "sim start");
+    for (n, room) in [
+        (0, match_::RED_ROOM_ENTRY),
+        (1, match_::BLUE_ROOM_ENTRY),
+        (2, match_::RED_ROOM_ENTRY),
+        (3, match_::BLUE_ROOM_ENTRY),
+    ] {
+        rig.walk_to(n, room);
+        rig.say(n, "board");
+    }
+    assert_eq!(rig.state(), MatchState::Running);
+    let match_id = rig.centre().match_id.expect("a running match");
+    rig.say(0, "startup");
+    assert!(rig.powered(0).await, "the arena brings power online");
+    let (red1, blue1, red2, blue2) = (rig.pilot(0), rig.pilot(1), rig.pilot(2), rig.pilot(3));
+    let (tank0, pod0) = (rig.tank(0), rig.pod(0).expect("red 1's pod"));
+    // Before the snapshot: red 2 climbs out for good, blue 2 drops holding no
+    // contact.
+    let said = rig.say(2, "exit");
+    assert!(!said.is_empty(), "{said}");
+    // Blue's two tanks hold each other as contacts — a mate is a contact the
+    // sight has classified as its own side — so blue 2 drops once blue 1's
+    // frame holds its mate classified and nothing west of blue's entry zone:
+    // blue 2's tank then holds blue 1's (the contact held at the drop and at
+    // the reclaim alike) and red 1's tank is in no blue sight.
+    let mut settled = false;
+    for _ in 0..1_000 {
+        rig.pump();
+        if rig.frame(1).is_some_and(|frame| {
+            frame.contacts.iter().any(|contact| {
+                contact.class
+                    == tacsim::arena::state::Classification::Classified { team: Team::Blue }
+            }) && frame
+                .contacts
+                .iter()
+                .all(|contact| contact.cell.is_some_and(|(x, _)| x >= 240))
+        }) {
+            settled = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        settled,
+        "blue's sights never settled on their own side alone: {:?}",
+        rig.frame(1).map(|frame| frame.contacts)
+    );
+    rig.fire_conn(blue2, mush_core::ConnTransition::Disconnected);
+    let drop_ms = rig.af3_arena_ms();
+    // A contact gained meanwhile: red 1 drives east along the road into blue's
+    // sights and stops some 46 cells short of blue's tanks — outside the band a
+    // withdrawing machine turns to fight in — and blue 1's own frame says when
+    // blue's sights hold it; blue 2's tank, two rows from blue 1's, holds it
+    // too.
+    let said = rig.say(0, "speed 54");
+    assert!(said.contains("Making 54 kph"), "{said}");
+    let mut gained = false;
+    for _ in 0..3_000 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+        // Red 1's tank, and not a blue return: west of blue's entry zone.
+        gained = gained
+            || rig.frame(1).is_some_and(|frame| {
+                frame
+                    .contacts
+                    .iter()
+                    .any(|contact| contact.cell.is_some_and(|(x, _)| x < 240))
+            });
+        if gained
+            && rig
+                .frame(0)
+                .and_then(|frame| frame.cell)
+                .is_some_and(|(x, _)| x >= 203)
+        {
+            break;
+        }
+    }
+    assert!(gained, "blue's sights never held red 1's tank");
+    let said = rig.say(0, "speed 0");
+    assert!(!said.is_empty(), "{said}");
+    let seen_ms = rig.af3_arena_ms();
+    let head = rig
+        .af3_snapshot_at_or_after((seen_ms + 2_000).max(drop_ms + 2_000))
+        .await;
+    // What the other side reads of red, before the restart.
+    let theirs = rig.say(1, "sim status");
+    let red_row_before = theirs
+        .lines()
+        .find(|line| line.trim_start().starts_with("red:"))
+        .unwrap_or_else(|| panic!("no red row: {theirs}"))
+        .to_owned();
+
+    rig.reboot_mid_match().await;
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .is_some_and(|registry| registry.tasks().is_live(match_id)),
+        "it resumed"
+    );
+    for (n, pilot) in [(0, red1), (1, blue1)] {
+        let slot = rig.centre().slot_of_pilot(pilot).cloned().expect("a slot");
+        assert!(
+            slot.is_dropped() && slot.released_by_resume,
+            "{n}: {slot:?}"
+        );
+        assert_eq!(
+            rig.location(n),
+            rig.pod(n),
+            "{n}: the resume left the body in the pod"
+        );
+    }
+    let blue2_slot = rig.centre().slot_of_pilot(blue2).cloned().expect("a slot");
+    assert!(blue2_slot.is_dropped() && !blue2_slot.released_by_resume);
+    let red2_slot = rig.centre().slot_of_pilot(red2).cloned().expect("a slot");
+    assert!(red2_slot.left && red2_slot.dropped_at_ms.is_none());
+
+    // Before any tick: a reconnect says nothing to a pilot the tick owes.
+    let events = rig.fire_conn(red1, mush_core::ConnTransition::Connected);
+    let said = rig.tw.seen_by(&events, red1).join("\n");
+    assert!(
+        !said.contains("resumed") && !said.contains("doctrine"),
+        "the reconnect said what the tick owes: {said}"
+    );
+    let said = rig.say(0, "status");
+    assert!(
+        said.contains("You are not at the station of a deployed unit."),
+        "{said}"
+    );
+    let board = tacsim::match_::status_lines(rig.tw.world(), BoardReader::Staff).join("\n");
+    assert_eq!(
+        board.matches(", flown by doctrine").count(),
+        3,
+        "red 1, blue 1 and blue 2: {board}"
+    );
+    let theirs = rig.say(1, "sim status");
+    let red_to_blue = theirs
+        .lines()
+        .find(|line| line.trim_start().starts_with("red:"))
+        .unwrap_or_else(|| panic!("no red row: {theirs}"));
+    assert_eq!(
+        red_to_blue, red_row_before,
+        "the other side's reduced row moved across the resume: {theirs}"
+    );
+    assert!(
+        !red_to_blue.contains("doctrine") && !red_to_blue.contains("left"),
+        "the other side read the resume: {theirs}"
+    );
+    let tank0_name = mush_core::output::display_name(rig.tw.world(), tank0);
+    let said = rig.say(0, "board");
+    assert!(
+        said.contains(&format!(
+            "{tank0_name} is still being handed over; try again in 5 second(s)."
+        )),
+        "{said}"
+    );
+
+    // Blue 1 takes the tank back before the tick fires.
+    let now = rig.now;
+    rig.now = now + 6;
+    rig.tw.set_now(now + 6);
+    let said = rig.say(1, "board");
+    assert!(said.contains("is yours again where it stands."), "{said}");
+
+    // The first tick: red 1 reads the two lines once, and one cleared panel.
+    let mark = rig.log.len();
+    rig.tick_to(now + 6);
+    let lines = af3_said(&rig, red1, mark);
+    let doctrine = format!("{tank0_name} is flying on doctrine; BOARD takes it back.");
+    assert_eq!(
+        lines,
+        vec![match_::RESUME_LINE.to_owned(), doctrine.clone()],
+        "the tick's two lines, in order"
+    );
+    assert!(
+        af3_said(&rig, blue1, mark).is_empty(),
+        "a pilot who took the tank back is told nothing"
+    );
+    let cleared_to_red1 = rig.log[mark..]
+        .iter()
+        .filter(|(audience, event)| {
+            *audience == Audience::Actor(red1)
+                && matches!(
+                    event,
+                    OutputEvent::Panel { feed, data, .. }
+                        if feed.as_str() == tacsim::arena_bridge::FRAME_FEED
+                            && *data == cockpit::cockpit_cleared()
+                )
+        })
+        .count();
+    assert_eq!(
+        cleared_to_red1, 1,
+        "one cleared keyframe to red 1's session"
+    );
+    let mark = rig.log.len();
+    rig.tick_to(now + 7);
+    assert!(af3_said(&rig, red1, mark).is_empty(), "said once");
+    // And a login after the tick said them reads Y.3's line alone.
+    let events = rig.fire_conn(red1, mush_core::ConnTransition::Connected);
+    assert_eq!(
+        rig.tw.seen_by(&events, red1),
+        vec![doctrine.clone()],
+        "the resume line is said once, whichever path said it"
+    );
+
+    // Red 1 takes the tank back: the reclaim and the catch-up.
+    let mark = rig.log.len();
+    let events = rig.events(0, "board");
+    let said = rig.tw.seen_by(&events, red1).join("\n");
+    assert!(
+        said.contains(&format!(
+            "You climb back into {}: {tank0_name} is yours again where it stands.",
+            mush_core::output::display_name(rig.tw.world(), pod0)
+        )),
+        "{said}"
+    );
+    let frames = y4_frames_until(&mut rig, red1, mark, 1).await;
+    let first = frames.first().cloned().expect("a frame after the reclaim");
+    let away = af3_away_s(&first);
+    let since_snapshot = (rig.af3_arena_ms() - head.at_ms) / 1_000;
+    assert!(
+        (since_snapshot - 1..=since_snapshot + 1).contains(&away),
+        "away {away} s is counted from the snapshot's moment ({since_snapshot} s)"
+    );
+    assert!(
+        af3_said(&rig, red1, mark)
+            .iter()
+            .any(|line| line.starts_with("Back aboard RA after")),
+        "the line client reads the catch-up"
+    );
+    let said = rig.say(0, "heading 90");
+    assert!(said.contains("Steering to 90"), "{said}");
+    let said = rig.say(0, "exit");
+    assert!(!said.is_empty(), "{said}");
+    let said = rig.say(0, "board");
+    assert!(
+        said.contains(&format!(
+            "You left {tank0_name} for the rest of the match; it cannot be taken back."
+        )),
+        "{said}"
+    );
+
+    // Red 2 left before the snapshot, for good.
+    let said = rig.say(2, "board");
+    assert!(
+        said.contains("for the rest of the match; it cannot be taken back."),
+        "{said}"
+    );
+
+    // Blue 2 dropped before the snapshot: Y.3's line alone, and a catch-up
+    // from their own drop.
+    let tank3 = rig.tank(3);
+    let events = rig.fire_conn(blue2, mush_core::ConnTransition::Connected);
+    let said = rig.tw.seen_by(&events, blue2).join("\n");
+    assert!(
+        said.contains(&format!(
+            "{} is flying on doctrine; BOARD takes it back.",
+            mush_core::output::display_name(rig.tw.world(), tank3)
+        )),
+        "{said}"
+    );
+    assert!(!said.contains(match_::RESUME_LINE), "{said}");
+    let mark = rig.log.len();
+    let said = rig.say(3, "board");
+    assert!(said.contains("is yours again where it stands."), "{said}");
+    let frames = y4_frames_until(&mut rig, blue2, mark, 1).await;
+    let first = frames.first().cloned().expect("a frame after the reclaim");
+    let away = af3_away_s(&first);
+    let since_drop = (rig.af3_arena_ms() - drop_ms) / 1_000;
+    assert!(
+        away >= since_drop - 1,
+        "away {away} s is counted from the drop ({since_drop} s), not the snapshot"
+    );
+    assert!(
+        away > (rig.af3_arena_ms() - head.at_ms) / 1_000,
+        "away {away} s is longer than the time since the snapshot"
+    );
+    // The contact gained meanwhile: red 1's tank came into blue's sights after
+    // blue 2's drop and before the snapshot, so it is new against the carried
+    // `at_release` row — and would not be against a row rebuilt at the
+    // snapshot's moment.
+    let catchup = first.get("catchup").cloned().unwrap_or_default();
+    let gained: Vec<String> = catchup["contacts_new"]
+        .as_array()
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !gained.is_empty(),
+        "no contact gained meanwhile in blue 2's catch-up: {catchup}"
+    );
+    // Every gained name is held on the frame, and one of them is red 1's tank:
+    // the return west of blue's entry zone.
+    let held: Vec<(String, Option<u64>)> = first["contacts"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let name = row["designator"].as_str()?.to_owned();
+                    Some((
+                        name,
+                        row.pointer("/cell/0").and_then(serde_json::Value::as_u64),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for name in &gained {
+        assert!(
+            held.iter().any(|(held, _)| held == name),
+            "{name} is gained but not held on the frame: {first}"
+        );
+    }
+    assert!(
+        held.iter()
+            .any(|(name, x)| gained.contains(name) && x.is_some_and(|x| x < 240)),
+        "red 1's tank is not among the contacts gained meanwhile: {catchup} / {first}"
+    );
+    // And blue 1's tank, held at the drop and at the reclaim, is not new: the
+    // carried row kept what blue 2's tank held, not only when it dropped.
+    assert!(
+        held.iter()
+            .filter(|(name, _)| gained.contains(name))
+            .all(|(_, x)| x.is_some_and(|x| x < 240)),
+        "a contact held since before the drop reads as gained: {catchup} / {first}"
+    );
+
+    // A second rig, the pilot away across the restart (a fresh server half's
+    // connection map is empty): the first tick holds the owed lines, the hold
+    // runs out unsaid, and a later login says both, once.
+    let mut rig = Rig::boot_with(2, af3_config());
+    rig.fly().await;
+    let _ = rig.af3_snapshot_at_or_after(0).await;
+    let pilot = rig.pilot(0);
+    let tank = rig.tank(0);
+    rig.tw.world_mut().set_connected(pilot, false);
+    rig.reboot_mid_match().await;
+    let owed = |rig: &Rig| {
+        rig.tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .is_some_and(|book| book.resume_lines_deferred(pilot))
+    };
+    let now = rig.now;
+    let mark = rig.log.len();
+    rig.tick_to(now + 1);
+    assert!(
+        af3_said(&rig, pilot, mark).is_empty(),
+        "nobody attached to tell"
+    );
+    assert!(owed(&rig), "the first tick holds the lines");
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .and_then(match_::MatchBook::resume_hold_until_s),
+        Some(now + 1 + match_::HATCH_HOLD_S),
+        "held from the first tick that held them"
+    );
+    rig.tick_to(now + match_::HATCH_HOLD_S);
+    assert!(owed(&rig), "still held inside the hold");
+    rig.tick_to(now + 1 + match_::HATCH_HOLD_S);
+    assert!(!owed(&rig), "dropped unsaid past the hold");
+    assert!(
+        af3_said(&rig, pilot, mark).is_empty(),
+        "nothing was said to a body with no session"
+    );
+    rig.tw.world_mut().set_connected(pilot, true);
+    let doctrine = format!(
+        "{} is flying on doctrine; BOARD takes it back.",
+        mush_core::output::display_name(rig.tw.world(), tank)
+    );
+    let events = rig.fire_conn(pilot, mush_core::ConnTransition::Connected);
+    assert_eq!(
+        rig.tw.seen_by(&events, pilot),
+        vec![match_::RESUME_LINE.to_owned(), doctrine.clone()],
+        "a later login says the two lines"
+    );
+    let mark = rig.log.len();
+    let now = rig.now;
+    rig.tick_to(now + 1);
+    assert!(
+        af3_said(&rig, pilot, mark).is_empty(),
+        "and the tick nothing"
+    );
+    let events = rig.fire_conn(pilot, mush_core::ConnTransition::Connected);
+    assert_eq!(
+        rig.tw.seen_by(&events, pilot),
+        vec![doctrine],
+        "a login after that reads Y.3's line alone"
     );
 }

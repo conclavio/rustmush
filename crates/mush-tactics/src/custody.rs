@@ -18,6 +18,12 @@
 //!   returned through [`crate::unit::apply`], or — on `Void` — the check-out
 //!   snapshot restored and **no arena-derived cell committed at all**; then the
 //!   marker is cleared, in the same single write.
+//! * **At boot** (16b cut AF.3) the markers are **kept**, because a running
+//!   match survives a restart of the server half: the tactics boot pass leaves
+//!   them on the records and in [`mush_sim::deployed`] and hands the list to the
+//!   game crate ([`crate::custody::take_boot_deployed`]), which resumes the
+//!   match or gives each unit back through [`crate::custody::restore_at_boot`];
+//!   whatever it does not claim is restored at this crate's `on_all_loaded`.
 //!
 //! # Why the snapshot is a whole unit
 //!
@@ -280,20 +286,76 @@ pub fn deployed(w: &World) -> Vec<(ObjId, DeployedMarker)> {
         .collect()
 }
 
-/// **What the boot pass restored** (16b T5), taken once.
+/// **The markers this boot found** (16b T5; rewritten by 16b cut AF.3), taken
+/// once.
 ///
-/// The tactics recovery pass treats a `deployed` marker with no live arena as a
-/// voided match: it restores the snapshot and clears the marker, because that is
-/// its own record. It cannot write the match's *result* — that record is the game
-/// crate's, in the game crate's namespace — so it leaves the markers here and the
-/// game crate's own boot pass takes them, releases the seats and writes one
-/// `aborted(restart)` result per match.
+/// Since AF.3 a running match survives a restart of the server half, so the
+/// tactics boot pass no longer restores a marked unit: it keeps the marker on
+/// the record, in [`mush_sim::deployed`] and on disk, and leaves the list here.
+/// The game crate takes them in its own `on_world_loaded` — which composition
+/// runs after this crate's and before any `on_all_loaded`, the **claim window**
+/// — and either resumes the match they name or restores them through
+/// [`restore_at_boot`]; whatever is still here at this module's
+/// `on_all_loaded` is restored then, so a world with no game layer never keeps
+/// a marker past its boot.
 ///
 /// Taken rather than read, so the second caller gets nothing and a match cannot
-/// be reported aborted twice.
+/// be claimed twice.
 #[must_use]
-pub fn take_boot_restored(w: &mut World) -> Vec<(ObjId, DeployedMarker)> {
+pub fn take_boot_deployed(w: &mut World) -> Vec<(ObjId, DeployedMarker)> {
     w.module_state_mut::<crate::module::UnitStore>()
-        .map(|store| std::mem::take(&mut store.boot_restored))
+        .map(|store| std::mem::take(&mut store.boot_deployed))
         .unwrap_or_default()
+}
+
+/// **Restore one unit a boot found checked out and nobody resumed** (16b cut
+/// AF.3; the per-unit form of what the T5 boot pass did to every marker).
+///
+/// The marker's check-out snapshot goes into the active record, the marker is
+/// cleared in RAM and in [`mush_sim::deployed`], and the marker-less document is
+/// persisted in one write on this crate's namespace (the game crate's boot
+/// crosses into it through its declared delegation, as a check-in does). The
+/// world placement is not touched: the game crate's stock-tank reset puts a
+/// roster tank back at muster, and a staff unit keeps the placement it was
+/// frozen at.
+///
+/// # Errors
+///
+/// [`CustodyError::NotDeployed`] when the unit carries no marker,
+/// [`CustodyError::Unavailable`] with no record schema, and
+/// [`CustodyError::Encode`] when the snapshot will not encode — the marker then
+/// stays, and the next boot tries again. Nothing is written on any of them.
+pub fn restore_at_boot(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CustodyError> {
+    let (marker, schema) = {
+        let store = ctx
+            .w
+            .module_state::<crate::module::UnitStore>()
+            .ok_or(CustodyError::Unavailable)?;
+        let marker = store
+            .deployed
+            .get(&unit)
+            .cloned()
+            .ok_or(CustodyError::NotDeployed(unit))?;
+        let schema = store
+            .record_definition
+            .clone()
+            .ok_or(CustodyError::Unavailable)?;
+        (marker, schema)
+    };
+    let (document, digest) = crate::module::encode_unit_document(&schema, &marker.snapshot, None)
+        .map_err(CustodyError::Encode)?;
+    tracing::warn!(
+        %unit,
+        match_id = marker.match_id(),
+        arena = %marker.mark.arena,
+        "tactics: a unit was still checked out to an arena at boot and its match did not \
+         resume; the check-out snapshot is restored and the marker cleared"
+    );
+    if let Some(store) = ctx.w.module_state_mut::<crate::module::UnitStore>() {
+        store.replace_active(marker.snapshot.clone(), digest);
+        store.set_deployed(unit, None, None);
+    }
+    mush_sim::deployed::clear(ctx.w, unit);
+    crate::module::persist_unit_document(ctx, unit, document);
+    Ok(())
 }

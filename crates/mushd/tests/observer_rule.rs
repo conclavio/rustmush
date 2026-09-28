@@ -248,26 +248,44 @@ async fn boot_with(tag: &str, designate: bool) -> Server {
 /// The same, with the session layer's link-dead grace named too (16b cut Y.4),
 /// so a test can drop a pilot past it in seconds and not minutes.
 async fn boot_grace(tag: &str, designate: bool, grace: Duration) -> Server {
+    boot_over(tag, designate, grace, None).await
+}
+
+/// **The same, over a store an earlier server wrote** (16b cut AF.3): `reuse`
+/// boots the composition again over that store and seeds nothing — the
+/// restart half of the resume's lens, as `sim_rematch.rs` boots twice.
+async fn boot_over(
+    tag: &str,
+    designate: bool,
+    grace: Duration,
+    reuse: Option<Arc<dyn ObjectStore>>,
+) -> Server {
     let dir = scratch_dir(tag);
-    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
-    store
-        .create_account(AccountRec {
-            id: None,
-            name: "boss".to_string(),
-            argon2_hash: hash_password(GM_PASSWORD).expect("a hash"),
-            created: 0,
-            characters: vec![CharacterRef {
-                id: GOD,
-                name: "God".to_string(),
-            }],
-            ssh_keys: vec![],
-            discord: None,
-        })
-        .await
-        .expect("the staff account");
+    let seed = reuse.is_none();
+    let store: Arc<dyn ObjectStore> = reuse.unwrap_or_else(|| Arc::new(InMemoryStore::new()));
+    if seed {
+        store
+            .create_account(AccountRec {
+                id: None,
+                name: "boss".to_string(),
+                argon2_hash: hash_password(GM_PASSWORD).expect("a hash"),
+                created: 0,
+                characters: vec![CharacterRef {
+                    id: GOD,
+                    name: "God".to_string(),
+                }],
+                ssh_keys: vec![],
+                discord: None,
+            })
+            .await
+            .expect("the staff account");
+    }
 
     let mut world = load_or_seed_world(&*store).await.expect("boot world");
     for (id, name) in [(ADA, "Ada"), (BO, "Bo"), (CY, "Cy")] {
+        if !seed {
+            break;
+        }
         let made = world
             .create(ObjKind::Player, name, GOD, Some(LIMBO))
             .expect("a character");
@@ -6615,4 +6633,178 @@ async fn ae3_the_drones_refusals_are_the_callers_and_its_mesh_is_the_mesh() {
     no_sixteen_digit_word(&strip_ansi(&ada.seen), "Ada's transcript");
     no_sixteen_digit_word(&strip_ansi(&bo.seen), "Bo's transcript");
     no_sixteen_digit_word(&strip_ansi(&cy.seen), "Cy's transcript");
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AF.3 — the resume says nothing it may not
+// ---------------------------------------------------------------------------
+
+/// **Stop a server the way a crash stops it** (16b cut AF.3): its arena tasks
+/// told to stop, then its world task and its store writer aborted and joined,
+/// before any of its sessions is dropped. Dropping the `Server` alone detaches
+/// those tasks rather than ending them, and a world that is still running when
+/// the pilots' sessions go handles their disconnects — releasing every seat and
+/// taking one more snapshot — which is a clean shutdown the resume would then
+/// read, not the crash under test.
+async fn crash(server: &mut Server) {
+    if let Some(arenas) = &server._handles.arenas {
+        arenas.signal_stop_all();
+    }
+    server._handles.world_join.abort();
+    let _ = (&mut server._handles.world_join).await;
+    server._handles.writer_join.abort();
+    let _ = (&mut server._handles.writer_join).await;
+}
+
+/// **The resume's surfaces name nothing** (16b cut AF.3; doc 16 §1, §3.6, §5):
+/// the composed server, restarted over its store mid-match as `sim_rematch.rs`
+/// boots twice, asked the observer rule's questions of every new surface.
+///
+/// - Each pilot's two lines — the resume line and the doctrine line — name
+///   their own tank and nothing else: Ada's never say `Blue Tank 1`, Bo's never
+///   `Red Tank 1`.
+/// - The other side's board row a pilot reads is Y.3's reduced row, byte for
+///   byte: index, callsign and pilot, and no `doctrine` or `left`.
+/// - A bystander in the lobby reads nothing of the resume at all.
+/// - After Ada takes her tank back, every designator she does not hold still
+///   answers the one byte-identical `No such contact.`
+/// - Staff read the `resumed:` row on `@arena/status`; a pilot's
+///   `@arena/status` is refused with the same bytes it was before the restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn af3_the_resume_names_nothing_a_pilot_or_a_bystander_may_not_read() {
+    let mut first = boot("observer-resume-a").await;
+    let (_g, mut god) = login(first.addr, "boss", GM_PASSWORD, "God").await;
+    let listing = ask(&mut god, "@find Simulator Lobby", "END OF LIST").await;
+    let lobby = dbref_of(&listing, "Simulator Lobby");
+    for who in [ADA, BO, CY] {
+        say(
+            &mut god,
+            &format!("@teleport #{}=#{lobby}", who.0),
+            "Teleported",
+        )
+        .await;
+    }
+    let (_a, mut ada) = login(first.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(first.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let refused_before = ask(&mut ada, "@arena/status", "Permission denied.").await;
+    take_off(&mut ada, &mut bo).await;
+    let store = Arc::clone(&first.store);
+    wait_until(STEP_TIMEOUT, "the snapshot to land", async || {
+        store
+            .module_json_get("tacsim", "tacsim:snapshot:1")
+            .await
+            .expect("the store read")
+            .is_some()
+    })
+    .await;
+    crash(&mut first).await;
+    drop(ada);
+    drop(bo);
+    drop(god);
+    drop(first);
+
+    let second = boot_over(
+        "observer-resume-b",
+        false,
+        SessionConfig::default().linkdead_grace,
+        Some(Arc::clone(&store)),
+    )
+    .await;
+    let (_g2, mut god) = login(second.addr, "boss", GM_PASSWORD, "God").await;
+    let (_c2, mut cy) = login(second.addr, "cy", PILOT_PASSWORD, "Cy").await;
+    let (_a2, mut ada) = login(second.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b2, mut bo) = login(second.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    ada.expect(&format!(
+        "{RED_TANK} is flying on doctrine; BOARD takes it back."
+    ))
+    .await;
+    bo.expect(&format!(
+        "{BLUE_TANK} is flying on doctrine; BOARD takes it back."
+    ))
+    .await;
+    // Two more boarding ticks for anything late, then everything read to the end.
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    for term in [&mut ada, &mut bo, &mut cy] {
+        say(term, SENTINEL, HUH).await;
+    }
+    // Flattened: the line client wraps at eighty columns, and the resume line
+    // is longer than that.
+    let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (ada_seen, bo_seen, cy_seen) = (
+        flat(&strip_ansi(&ada.seen)),
+        flat(&strip_ansi(&bo.seen)),
+        flat(&strip_ansi(&cy.seen)),
+    );
+    assert!(ada_seen.contains(tacsim::match_::RESUME_LINE), "{ada_seen}");
+    assert!(bo_seen.contains(tacsim::match_::RESUME_LINE), "{bo_seen}");
+    assert!(
+        !ada_seen.contains(BLUE_TANK),
+        "Ada read the other tank: {ada_seen}"
+    );
+    assert!(
+        !bo_seen.contains(RED_TANK),
+        "Bo read the other tank: {bo_seen}"
+    );
+    for word in ["resumed", "doctrine", RED_TANK, BLUE_TANK] {
+        assert!(
+            !cy_seen.contains(word),
+            "the bystander read {word:?} of the resume: {cy_seen}"
+        );
+    }
+
+    // The other side's row: Y.3's reduced row, byte for byte.
+    let board = strip_ansi(&ask(&mut ada, "SIM STATUS", "blue:").await);
+    let blue_row = board
+        .lines()
+        .find(|line| line.trim_start().starts_with("blue:"))
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    assert_eq!(blue_row, "blue: 1 (BA): Bo", "{board}");
+
+    // Ada takes her tank back; every unheld designator answers one sentence.
+    wait_until(STEP_TIMEOUT, "the tank to come back", async || {
+        let mark = ada.mark();
+        ada.send_line("BOARD").await;
+        ada.expect_one_of_after(
+            mark,
+            &[
+                "yours again where it stands",
+                "still being handed over",
+                COMMIT_PENDING,
+                CONTROL_UNKNOWN,
+            ],
+        )
+        .await
+            == 0
+    })
+    .await;
+    // Everything the reclaim says — the pod, the catch-up — read to the end
+    // first, so each refusal below is read alone.
+    ada.expect("Back aboard").await;
+    say(&mut ada, SENTINEL, HUH).await;
+    let mut refusals: Vec<String> = Vec::new();
+    for line in ["LOCK BA", "LOCK X1", "LOCK ZZ", "RANGE BA", "BEARING BA"] {
+        let seen = ask(&mut ada, line, NO_SUCH_CONTACT).await;
+        refusals.push(seen.trim_start_matches(line).trim().to_owned());
+    }
+    for answer in &refusals {
+        assert_eq!(answer, NO_SUCH_CONTACT, "{refusals:?}");
+    }
+
+    // Staff read the resume; a pilot is refused as before.
+    say(&mut god, "@arena/status", "resumed: from a snapshot at").await;
+    let refused_after = ask(&mut ada, "@arena/status", "Permission denied.").await;
+    let refusal = |seen: &str| {
+        seen.rsplit("@arena/status")
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_owned()
+    };
+    assert_eq!(
+        refusal(&refused_after),
+        refusal(&refused_before),
+        "a pilot's refusal is the same bytes with the resumed row present"
+    );
 }

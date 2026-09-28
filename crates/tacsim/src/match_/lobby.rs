@@ -121,6 +121,19 @@ pub struct Slot {
     /// types again — which is also what the reset on that transition guarantees
     /// of the tanks themselves.
     pub unit_type: Option<SmolStr>,
+    /// **Whether the boot's resume released this seat** (16b cut AF.3; 16c
+    /// N16, `Q-AF4`): a restart of the server half resumed the match from its
+    /// last snapshot and gave every seat to doctrine, this one included. It is
+    /// what tells a pilot who dropped of their own accord (Y.3's line alone)
+    /// from one the restart dropped, who is owed the resume line before it.
+    /// Cleared by `slot_reclaimed`, and by `resume_line_said` once the line
+    /// has been said, so it is said once.
+    ///
+    /// `#[serde(default)]`: a live record an AF.2 running half wrote has no
+    /// such key, and it must decode under this build so that match resumes
+    /// (the live record's own `LIVE_FORMAT` policy).
+    #[serde(default)]
+    pub released_by_resume: bool,
 }
 
 impl Slot {
@@ -190,9 +203,13 @@ pub struct Centre {
     /// tick, and cleared by exactly three things: a `Stop { Unattended }` the
     /// arena accepted, a [`crate::arena_bridge::ControlRefusal::NoMatch`] (the
     /// match is already gone), and `release_rows` (the end arrived by some
-    /// other route). RAM, on this same `MatchBook` slot: no new state slot, and
-    /// nothing about it survives a restart, which is right — a restart leaves an
-    /// `Idle` centre and no match to be unattended.
+    /// other route). On this same `MatchBook` slot: no new state slot. It is
+    /// carried by the live record (16b cut AF.2) but **not trusted across a
+    /// restart**: a resumed centre (16b cut AF.3) comes back with it cleared,
+    /// its seats are released to doctrine through `slot_left`, which stamps it
+    /// once the last one is marked, and the resume restamps it at the boot's
+    /// own moment when every slot was already left — so a match nobody comes
+    /// back to ends `unattended_ms` after the restart, not an hour later.
     ///
     /// A centre with **no slots** — a staff `@arena/start`, which `adopt` binds
     /// — is never stamped: there was nobody to leave.
@@ -979,6 +996,7 @@ pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
             left: false,
             dropped_at_ms: None,
             unit_type: None,
+            released_by_resume: false,
         });
         if !centre.leads.iter().any(|(side, _)| *side == team) {
             centre.leads.push((team, account));
@@ -1087,7 +1105,7 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     if emptied {
         // 16b cut D.3 (`T-48`): the one writer of `Idle`, then the tank pass.
         to_idle(ctx);
-        crate::match_::reset_stock_tanks(ctx);
+        crate::match_::reset_stock_tanks(ctx, &std::collections::BTreeSet::new());
     } else {
         unfit_slot(ctx, team, index);
     }
@@ -2228,9 +2246,28 @@ pub(crate) fn slot_reclaimed(
     slot.left = false;
     slot.dropped_at_ms = None;
     slot.unit = Some(unit);
+    // 16b cut AF.3: the pilot is back; a resume owes them nothing more.
+    slot.released_by_resume = false;
     centre.clear_unattended();
     centre.resettle_leads();
     Ok(())
+}
+
+/// **The resume line has been said to `pilot`** (16b cut AF.3; 16c N16,
+/// `Q-AF4`): the slot's `released_by_resume` is cleared, so the pilot reads
+/// `match_::RESUME_LINE` once, whichever path said it — the boarding tick to
+/// a session that survived the restart, or `SeatFacts::connected` to a later
+/// login — and a login after that reads Y.3's line alone, as any dropped
+/// pilot's does. Nothing when the pilot holds no slot.
+pub(crate) fn resume_line_said(ctx: &mut Ctx<'_>, pilot: ObjId) {
+    if let Some(slot) = ctx.w.module_state_mut::<MatchBook>().and_then(|book| {
+        book.centre_mut()
+            .slots
+            .iter_mut()
+            .find(|slot| slot.pilot == pilot)
+    }) {
+        slot.released_by_resume = false;
+    }
 }
 
 /// Everything [`run`] needs once it has decided the match can be attempted.
@@ -3257,7 +3294,7 @@ pub fn concede(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
 /// of [`run`]'s refusal arms.
 fn call_off(ctx: &mut Ctx<'_>, why: String) {
     release(ctx, MatchState::Aborted, Some(MatchOutcome::Abort));
-    crate::match_::reset_stock_tanks(ctx);
+    crate::match_::reset_stock_tanks(ctx, &std::collections::BTreeSet::new());
     announce(ctx, why);
 }
 
@@ -3404,9 +3441,11 @@ impl ResetOutcome {
 /// `UnitSpec`* can live. Three things, in this order:
 ///
 /// 1. the **seat sweep**, before anything else and **before the already-idle
-///    early return**. A restart leaves the centre `Idle` by construction (the
-///    match book is RAM) while a body is still standing in a pod and a billet is
-///    still held on its tank, and the old `reset` returned on the first line in
+///    early return**. A restart that could not resume the match (16b cut AF.3
+///    voids it by name; a resumed match's centre comes back `Running` from its
+///    live record) leaves the centre `Idle` while a body may still be standing
+///    in a pod and a billet still held on its tank, and the old `reset`
+///    returned on the first line in
 ///    exactly that case — so the staff repair the design pointed at was a no-op
 ///    on the one path that most needed it;
 /// 2. the **tank reset** ([`crate::match_::reset_stock_tanks`]), which is what
@@ -3418,7 +3457,7 @@ impl ResetOutcome {
 pub fn reset(ctx: &mut Ctx<'_>) -> ResetOutcome {
     let was_idle = centre(ctx.w).is_some_and(|centre| *centre == Centre::default());
     let ejected = crate::match_::cockpit::eject_all(ctx);
-    let tanks = crate::match_::reset_stock_tanks(ctx);
+    let tanks = crate::match_::reset_stock_tanks(ctx, &std::collections::BTreeSet::new());
     if !was_idle {
         to_idle(ctx);
     }
@@ -3954,6 +3993,7 @@ mod tests {
             left: false,
             dropped_at_ms: None,
             unit_type: None,
+            released_by_resume: false,
         }
     }
 

@@ -161,11 +161,17 @@ pub struct UnitStore {
     /// **16b cut T.3**: the units a simulation authority currently holds, by
     /// object — the RAM half of the `deployed` marker on each record.
     pub deployed: BTreeMap<ObjId, crate::custody::DeployedMarker>,
-    /// **16b cut T.3 / T5**: the markers the boot pass found with no live arena,
-    /// restored and cleared. Taken once by the game crate's own boot pass, which
-    /// writes their `aborted(restart)` results; see
-    /// [`crate::custody::take_boot_restored`].
-    pub boot_restored: Vec<(ObjId, crate::custody::DeployedMarker)>,
+    /// **16b cut AF.3** (renamed from T.3's `boot_restored`): the markers this
+    /// boot found, **kept** — on [`UnitStore::deployed`], in
+    /// [`mush_sim::deployed`] and on disk — and not restored. The game crate
+    /// takes them in its own `on_world_loaded` (the claim window: composition
+    /// runs this crate's `on_world_loaded` before the game layer's, and every
+    /// `on_world_loaded` before any `on_all_loaded`) and either resumes the
+    /// match they name or restores them through
+    /// [`crate::custody::restore_at_boot`]; whatever is still here at this
+    /// module's `on_all_loaded` is restored then. See
+    /// [`crate::custody::take_boot_deployed`].
+    pub boot_deployed: Vec<(ObjId, crate::custody::DeployedMarker)>,
     /// **16b cut T.3**: the current `record/unit` schema reference, so a custody
     /// write can encode a document without the module handle the command
     /// closures capture. `None` until `register` installs it, and a custody
@@ -1204,6 +1210,28 @@ impl GameModule for TacticsModule {
             .ok_or_else(|| ModError::msg("tactics current record definition was not registered"))?;
         boot_units(ctx, data, &self.catalog, &legacy, &current)
     }
+
+    /// **16b cut AF.3: the end of the claim window.** `boot_units` keeps every
+    /// `deployed` marker it finds and leaves them on
+    /// [`UnitStore::boot_deployed`] for the game layer, whose `on_world_loaded`
+    /// runs after this crate's (composition order: `mush-sim`, `mush-tactics`,
+    /// the game crate) and before any `on_all_loaded`. Whatever it did not
+    /// take — every marker, on a world with no game layer composed — is
+    /// restored here from its own check-out snapshot, so this crate stays
+    /// whole on its own and no marker outlives the boot unclaimed.
+    fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        for (unit, _) in crate::custody::take_boot_deployed(ctx.w) {
+            if let Err(error) = crate::custody::restore_at_boot(ctx, unit) {
+                tracing::error!(
+                    %unit,
+                    %error,
+                    "tactics: a deployed unit nobody claimed at boot could not be restored; its \
+                     marker stays on the record until the next boot"
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 // ---- persistence ------------------------------------------------------
@@ -1214,11 +1242,17 @@ fn unit_key(obj: ObjId) -> SmolStr {
 /// Encode one unit's authoritative document, with or without its 16b cut T.3
 /// custody marker.
 ///
-/// Every shipped caller passes `None`: a deployed unit refuses `@unit/create`,
-/// `@unit/damage`, `@unit/remove`, the destroy gate, the detach gate and the
-/// asset scrub at their own admission sites, so the only writer that can see a
-/// marker is [`crate::custody`] itself, and it names the marker explicitly in
-/// both directions.
+/// A deployed unit refuses `@unit/create`, `@unit/damage`, `@unit/remove`, the
+/// destroy gate and the detach gate at their own admission sites, and those
+/// callers pass `None`. **Since 16b cut AF.3 the marker is not only
+/// [`crate::custody`]'s to see**: a running match survives a restart of the
+/// server half, so the boot keeps every marker it finds, and every writer that
+/// can rewrite a deployed unit's document without asking the admission sites —
+/// the E3c component-asset scrub, at boot and on `ObjDestroyed` — passes the
+/// marker the store holds for the unit ([`UnitStore::deployed`]). A rewrite
+/// that dropped it would leave a unit on disk that a second restart no longer
+/// knows is out on loan. [`crate::custody`] names the marker explicitly in both
+/// directions, and [`crate::custody::restore_at_boot`] writes it cleared.
 pub(crate) fn encode_unit_document(
     record_schema: &DefinitionRef,
     unit: &TacticalUnit,
@@ -1359,7 +1393,13 @@ fn on_obj_destroyed(
         scrub_component_assets(&store.units, now, &|a| a == obj)
     };
     for unit in repaired {
-        match encode_unit_document(current_record_definition, &unit, None) {
+        // **16b cut AF.3**: a unit out on loan keeps its marker through the
+        // rewrite (`encode_unit_document`'s doc says why).
+        let marker = ctx
+            .w
+            .module_state::<UnitStore>()
+            .and_then(|store| store.deployed.get(&unit.object()).cloned());
+        match encode_unit_document(current_record_definition, &unit, marker.as_ref()) {
             Ok((document, digest)) => {
                 tracing::warn!(unit = %unit.object(), dead = %obj, "tactics: component asset pointer scrubbed (object destroyed)");
                 persist_encoded_unit(ctx.out, unit.object(), document);
@@ -1549,10 +1589,10 @@ struct PendingRecord {
     key_object: Option<ObjId>,
     payload_digest: Option<DefinitionDigest>,
     unit: Option<TacticalUnit>,
-    /// 16b cut T.3: the `deployed` marker the document carried, if any. A marker
-    /// discovered at boot has no live arena behind it by construction (an OOC
-    /// match holds no durable state and never resumes, D-16-3), so `boot_units`
-    /// treats every one of them as a void.
+    /// 16b cut T.3: the `deployed` marker the document carried, if any. Since
+    /// 16b cut AF.3 a running match survives a restart of the server half, so
+    /// `boot_units` keeps every one it finds for the game layer to claim, and
+    /// this crate's `on_all_loaded` restores whatever nobody claimed.
     deployed: Option<crate::custody::DeployedMarker>,
     origin: Option<RecordOrigin>,
     failure: Option<RecordFailure>,
@@ -2257,8 +2297,8 @@ fn boot_units(
         record_definition: Some(current_record_definition.clone()),
         ..UnitStore::default()
     };
-    // The custody markers this boot found with no live arena behind them.
-    let mut restored: Vec<(ObjId, crate::custody::DeployedMarker)> = Vec::new();
+    // The custody markers this boot found, kept for the game layer to claim.
+    let mut kept: Vec<(ObjId, crate::custody::DeployedMarker)> = Vec::new();
     for record in pending {
         if let Some(repair) = record.binding_repair.clone() {
             store.push_binding_repair(repair, &mut report);
@@ -2306,22 +2346,22 @@ fn boot_units(
         if let Some(plan) = &migration_plan {
             report.push_migration_plan(plan.clone());
         }
-        // **16b T5, boot reconciliation** (doc 16 §3.1 "Boot reconciliation";
-        // 16b §7 T5). An OOC match holds no durable state and never resumes
-        // (D-16-3), so a `deployed` marker read off the store is by construction
-        // a marker with no live arena: the match it names died with the process.
-        // Every one of them is therefore a void — restore the snapshot, clear
-        // the marker, and hand the game crate what it needs to release the seats
-        // and write the `aborted(restart)` result.
+        // **Boot reconciliation** (doc 16 §3.1; 16b T5, rewritten by 16b cut
+        // AF.3). Since AF.3 a running match survives a restart of the server
+        // half: the arena resumes from its last snapshot. So a `deployed` marker
+        // read off the store is **kept** — on the RAM record, in
+        // `mush_sim::deployed` (every admission site still refuses the unit),
+        // and on disk — and handed to the game layer, which either resumes the
+        // match it names or restores the unit through
+        // `custody::restore_at_boot`. The record's cells are the ones on disk:
+        // a check-out does not move them, and the arena is their single writer
+        // until the check-in.
         let mut record = record;
-        let mut restored_marker = None;
-        if state == MechanicalState::Active
-            && let Some(marker) = record.deployed.take()
-        {
-            record.unit = Some(marker.snapshot.clone());
-            restored_marker = Some(marker);
+        let mut kept_marker = None;
+        if state == MechanicalState::Active {
+            kept_marker = record.deployed.take();
         }
-        let deployed = None;
+        let deployed = kept_marker.clone();
         if state == MechanicalState::Active {
             let Some(unit) = record.unit.clone() else {
                 // Unreachable on a tree that compiles: `Active` is only reached
@@ -2331,8 +2371,10 @@ fn boot_units(
                 continue;
             };
             let object = unit.object();
-            if let Some(marker) = restored_marker {
-                restored.push((object, marker));
+            if let Some(marker) = kept_marker {
+                mush_sim::deployed::mark(ctx.w, object, marker.mark.clone());
+                store.deployed.insert(object, marker.clone());
+                kept.push((object, marker));
             }
             store.units.insert(object, unit);
         }
@@ -2393,7 +2435,16 @@ fn boot_units(
         })
     };
     for unit in repaired {
-        match encode_unit_document(current_record_definition, &unit, None) {
+        // **16b cut AF.3**: the kept marker rides the rewrite, so a scrubbed
+        // deployed unit's document still says it is out on loan and a second
+        // restart still finds it. The marker's own check-out snapshot is not
+        // scrubbed here: a dangling pointer inside it is repaired by the next
+        // boot's pass, once the snapshot has been restored into the record.
+        match encode_unit_document(
+            current_record_definition,
+            &unit,
+            store.deployed.get(&unit.object()),
+        ) {
             Ok((document, digest)) => {
                 tracing::warn!(unit = %unit.object(), "tactics: component asset pointer(s) to a missing object scrubbed at boot");
                 persist_encoded_unit(ctx.out, unit.object(), document);
@@ -2404,43 +2455,14 @@ fn boot_units(
             }
         }
     }
-    // The restored records are written back as documents with no marker, so a
-    // second restart finds nothing to reconcile. One write per unit, on this
-    // crate's own namespace.
-    let mut reconciled: Vec<(ObjId, serde_json::Value)> = Vec::new();
-    for (object, marker) in &restored {
-        match encode_unit_document(current_record_definition, &marker.snapshot, None) {
-            Ok((document, digest)) => {
-                tracing::warn!(
-                    unit = %object,
-                    match_id = marker.match_id(),
-                    arena = %marker.mark.arena,
-                    "tactics: a unit was still checked out to an arena at boot; the match cannot \
-                     resume, so the check-out snapshot is restored and the marker cleared"
-                );
-                store.update_active(marker.snapshot.clone(), digest);
-                reconciled.push((*object, document));
-            }
-            Err(error) => tracing::error!(
-                unit = %object,
-                %error,
-                // 16b cut F.1: say what the operator can actually do. No verb
-                // clears a marker; this pass is the only thing that does, so the
-                // remedy is another run of it — restart the server half.
-                "tactics: a deployed unit's restored snapshot would not encode at boot; the \
-                 marker stays on the record and this boot pass is the only thing that clears \
-                 one, so the unit is stuck until the server is restarted again"
-            ),
-        }
-    }
-    store.boot_restored = restored;
+    // **16b cut AF.3**: nothing is restored here any more. The markers are the
+    // game layer's to claim (`custody::take_boot_deployed`) until this
+    // module's `on_all_loaded`, which restores whatever is left.
+    store.boot_deployed = kept;
     store.boot_report = Some(report);
 
     if let Some(slot) = ctx.w.module_state_mut::<UnitStore>() {
         *slot = store;
-    }
-    for (object, document) in reconciled {
-        persist_unit_document(ctx, object, document);
     }
     Ok(())
 }

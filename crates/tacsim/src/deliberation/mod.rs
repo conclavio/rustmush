@@ -69,12 +69,19 @@
 //!    order is not a projected offer — it is a typed record with six objectives
 //!    and two constraints — so the offer protocol would have had to be bent around
 //!    it, and the repair turn the row asks for thrown away.
-//! 2. **There is nothing for durability to preserve.** A K7 decision is durable so
-//!    that a decision captured before a crash is re-leased and finished after it.
-//!    A match does not survive a restart: boot reconciliation ends it
-//!    `aborted(restart)` and returns the units. A squad order with a
-//!    thirty-second floor and a time to live measured in seconds has no state on
-//!    the far side of a restart to be recovered into.
+//! 2. **Durability would preserve the wrong thing.** Since 16b cut AF a match
+//!    survives a server-half restart: the arena resumes from its last snapshot
+//!    and the world releases every seat to doctrine. What a restart does NOT
+//!    preserve is a deliberation in flight — the `Effect::ModuleAsync` died with
+//!    the process and its reply has nowhere to land. The arena carries its
+//!    standing orders and its squad watch across the resume, so the machines
+//!    keep obeying the last order and a squad is asked again at its next trigger
+//!    after the floor — an expiry it had already flagged, or a change in what its
+//!    commander holds — about the field as it then stands. A K7 decision would
+//!    recover the old question into the resumed match and answer it late,
+//!    against a field the snapshot has moved on from; for an order with a
+//!    thirty-second floor and a time to live in seconds, re-asking is the right
+//!    answer and durability is the wrong one.
 //! 3. **The cost is a cut of its own.** A second decision source means a second
 //!    owner, four kernel state families, three action definitions, three action
 //!    providers, a fallback adapter, a wake adapter and an arm in

@@ -150,7 +150,16 @@ impl ResetReport {
 /// See the module head for where this is called from and what it refuses to
 /// touch. Idempotent and quiet: a tank already at its spec and already at its
 /// authored cell is compared and left alone.
-pub fn reset_stock_tanks(ctx: &mut Ctx<'_>) -> ResetReport {
+///
+/// **16b cut AF.3**: `keep` is the tanks of the matches the boot is resuming.
+/// Each is skipped **quietly** — no `warn` line, not listed under
+/// [`ResetReport::deployed`] — because it is deployed on purpose and stays so;
+/// every other deployed roster tank is still the fault it always was. Every
+/// caller but the boot passes an empty set.
+pub fn reset_stock_tanks(
+    ctx: &mut Ctx<'_>,
+    keep: &std::collections::BTreeSet<ObjId>,
+) -> ResetReport {
     let mut report = ResetReport::default();
     let Ok(arena) = mush_core::CanonicalId::new(CENTRE_ARENA) else {
         return report;
@@ -189,7 +198,7 @@ pub fn reset_stock_tanks(ctx: &mut Ctx<'_>) -> ResetReport {
             .collect()
     };
     for (schema, object, authored) in slots {
-        if ctx.w.get(object).is_none() {
+        if ctx.w.get(object).is_none() || keep.contains(&object) {
             continue;
         }
         // Never a deployed unit. The reset runs on the way into `Idle`, so this

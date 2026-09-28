@@ -3057,6 +3057,13 @@ impl EpochTable {
         self.epochs.len()
     }
 
+    /// **Every row, in `(unit, channel)` order** (16b cut AF.3): what a resumed
+    /// match's world mirror is seeded from, read off the decoded arena before it
+    /// moves into its task, so the world stamps the epochs the arena authorises.
+    pub fn rows(&self) -> impl Iterator<Item = ((ObjId, Channel), u64)> + '_ {
+        self.epochs.iter().map(|(key, epoch)| (*key, *epoch))
+    }
+
     /// Whether the table is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {

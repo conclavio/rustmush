@@ -228,6 +228,9 @@ struct Tasks {
     live: BTreeMap<MatchId, Live>,
     staged: VecDeque<ArenaOut>,
     acks: Vec<PendingAck>,
+    /// The egress capacity the table was built with (16b cut AF.3,
+    /// [`ArenaTasks::capacity`]).
+    capacity: usize,
 }
 
 /// **The table of live arena tasks**, shared by the world task (which starts and
@@ -256,7 +259,15 @@ impl ArenaTasks {
             live: BTreeMap::new(),
             staged: VecDeque::new(),
             acks: Vec::new(),
+            capacity: capacity.max(1),
         })))
+    }
+
+    /// **The egress capacity this table was built with** (16b cut AF.3): what
+    /// [`ArenaRegistry::fresh`] builds a new process's table at.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.0.lock().ok().map_or(1, |tasks| tasks.capacity)
     }
 
     /// The egress receiver, once. `None` on every later call — the world loop is
@@ -773,6 +784,22 @@ impl ArenaRegistry {
             observers,
             last_observer: BTreeMap::new(),
         }
+    }
+
+    /// **The registry `register` would build at a new process's boot**, over
+    /// this one's two feed handles, with an [`ArenaTasks`] of the same capacity
+    /// (16b cut AF.3): no task, no binding, no mirror row and a fresh
+    /// [`Ledger`]. What an in-process test uses to stand for a server-half
+    /// restart — the old table's tasks stopped and joined first, as the
+    /// shutdown tail does; production never calls it, because a new process
+    /// registers its own.
+    #[must_use]
+    pub fn fresh(old: &ArenaRegistry) -> ArenaRegistry {
+        ArenaRegistry::new(
+            ArenaTasks::new(old.tasks.capacity()),
+            old.frames.clone(),
+            old.observers.clone(),
+        )
     }
 
     /// **16b cut N.2**: how many orders this match has issued and how many
@@ -1350,6 +1377,251 @@ pub fn open_match(
 }
 
 // ---------------------------------------------------------------------------
+// Resuming a match (16b cut AF.3; 16c N16)
+// ---------------------------------------------------------------------------
+
+/// **Re-open one match from its decoded snapshot and register it** (16b cut
+/// AF.3; doc 16 §3.1 "Durability") — [`open_match`] from an
+/// [`crate::arena::state::Arena`] the boot decoded rather than a check-out.
+///
+/// In order: the id must not be live and there must be a runtime; then, read
+/// off the arena **before** it moves into its task — every row of its epoch
+/// table (the callsigns are not read: the record the live record carried has
+/// them already), and the **seated roster** `arena.pilots` as
+/// `(pilot, unit)` pairs, which is the answer; then the ledger's
+/// `flushed_upto` is set to its last closed chunk (every chunk closed before
+/// the snapshot reached the world before it did — the task's ordered backlog —
+/// and the boot's phase A checked that the tape reaches it); then the task
+/// ([`crate::arena_task::resume_arena`]), the table, the mirror row, the ground,
+/// every unit bound and every epoch row published. **No pilot is bound and no
+/// watcher**: the resume releases every seat to doctrine, and the pilots come
+/// back through `BOARD`.
+///
+/// The mirror is the snapshot's moment: the chunk counters off the live
+/// record, the arena clock and the snapshot's time and hash, and
+/// [`MatchMirror::resumed_from_ms`], which the live record written next carries
+/// as the resume-once rule's memory.
+///
+/// # Errors
+///
+/// [`OpenMatchError`]: no registry, no runtime, or a duplicate id. Nothing is
+/// registered on any of them.
+pub fn resume_match(
+    ctx: &mut Ctx<'_>,
+    match_id: MatchId,
+    mut arena: crate::arena::Arena,
+    live: &crate::match_::LiveRecord,
+) -> Result<Vec<(ObjId, ObjId)>, OpenMatchError> {
+    let tasks = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .map(|registry| registry.tasks.clone())
+        .ok_or(OpenMatchError::Unavailable)?;
+    if tasks.live_ids().contains(&match_id) {
+        return Err(OpenMatchError::Duplicate(match_id));
+    }
+    let egress = tasks.egress_sender().ok_or(OpenMatchError::Unavailable)?;
+    let runtime = tokio::runtime::Handle::try_current().map_err(|_| OpenMatchError::NoRuntime)?;
+    let arena_cfg = crate::match_::lobby::configs(ctx.w)
+        .map(|(arena_cfg, _, _)| arena_cfg)
+        .ok_or(OpenMatchError::Unavailable)?;
+    // Everything the world keeps of the arena, read before the move.
+    let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
+    let epochs: Vec<((ObjId, Channel), u64)> = arena.epochs.rows().collect();
+    let roster: Vec<(ObjId, ObjId)> = arena
+        .pilots
+        .iter()
+        .map(|pilot| (pilot.pilot, pilot.unit))
+        .collect();
+    let at_ms = arena.now_ms;
+    let state_hash = crate::arena::hash::state_hash(&arena);
+    let ground = Arc::new(arena.definition.clone());
+    // 16c N16: the snapshot carries no chunk bytes, and every chunk closed
+    // before it is durable (the backlog's order, and phase A's tape check), so
+    // the resumed ledger owes the world nothing below its last closed chunk.
+    arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
+    let (handle, join) =
+        crate::arena_task::resume_arena(&runtime, match_id, arena, &arena_cfg, egress);
+    if let Some((old, old_join)) = tasks.insert(match_id, handle, join) {
+        // Cannot happen (the id was checked above); stopped rather than leaked.
+        old.signal_stop();
+        old_join.abort();
+    }
+    let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() else {
+        if let Some((handle, join)) = tasks.remove(match_id) {
+            handle.signal_stop();
+            join.abort();
+        }
+        return Err(OpenMatchError::Unavailable);
+    };
+    registry.track(match_id);
+    registry.arenas.insert(match_id, ground);
+    for unit in units {
+        registry.bind_unit(unit, match_id);
+    }
+    for ((unit, channel), epoch) in epochs {
+        registry.set_epoch(unit, channel, epoch);
+    }
+    if let Some(mirror) = registry.matches.get_mut(&match_id) {
+        mirror.chunks_appended = live.chunks_appended;
+        mirror.chunks_lost = live.chunks_lost;
+        mirror.arena_ms = at_ms;
+        mirror.now_ms = at_ms;
+        mirror.snapshot_at_ms = Some(at_ms);
+        mirror.snapshot_hash = Some(state_hash);
+        mirror.resumed_from_ms = Some(at_ms);
+    }
+    Ok(roster)
+}
+
+/// **Restore the ledger tails of the logs a boot resumes** (16b cut AF.3) — the
+/// door `crate::boot_matches` reaches the registry's private [`Ledger`] by.
+///
+/// The registry's ledger is fresh at every boot, and nothing restored its
+/// per-log tails while no match ever appended to its log again after a
+/// restart. A resumed match does: without this its first append would open
+/// `log:match.<id>` at chunk 0 and **overwrite** the durable chunk there. So the
+/// boot inspects the resumed logs' own documents and restores their tails —
+/// `logs` alone, so a hole in a finished match's tape never costs a running
+/// one anything.
+///
+/// # Errors
+///
+/// [`mush_core::LedgerRestoreError`] when the inspection holds a breach; the
+/// ledger is unchanged.
+pub(crate) fn restore_ledger_tails(
+    w: &mut mush_core::World,
+    history: &mush_core::LedgerHistory,
+    logs: &std::collections::BTreeSet<String>,
+) -> Result<mush_core::LedgerRestoreReport, mush_core::LedgerRestoreError> {
+    let Some(registry) = w.module_state_mut::<ArenaRegistry>() else {
+        return Ok(mush_core::LedgerRestoreReport::default());
+    };
+    registry
+        .ledger
+        .restore_logs_from_history(history, |log| logs.contains(log))
+}
+
+/// The seal threshold the registry's ledger appends under — what the boot
+/// inspects a resumed log's tail against (16b cut AF.3).
+pub(crate) fn ledger_chunk_target(w: &mush_core::World) -> usize {
+    w.module_state::<ArenaRegistry>()
+        .map_or(mush_core::Ledger::new().chunk_target_bytes(), |registry| {
+            registry.ledger.chunk_target_bytes()
+        })
+}
+
+/// **Prepare the resume marker for one match's log** (16b cut AF.3): the
+/// `{"resumed": {...}}` entry, validated and fully built but not applied, so
+/// the boot can refuse the resume before anything is written (a tail sealed at
+/// its target is the refusal it exists for).
+///
+/// # Errors
+///
+/// [`mush_core::LedgerAppendError`], and the ledger is unchanged.
+pub(crate) fn prepare_resume_marker(
+    w: &mush_core::World,
+    match_id: MatchId,
+    marker: serde_json::Value,
+) -> Result<mush_core::PreparedLedgerAppend, String> {
+    let registry = w
+        .module_state::<ArenaRegistry>()
+        .ok_or_else(|| "the arena is not available on this server".to_owned())?;
+    registry
+        .ledger
+        .prepare_append(&match_log_id(match_id), marker)
+        .map_err(|error| error.to_string())
+}
+
+/// **Apply a prepared resume marker and queue its write** (16b cut AF.3) on the
+/// module's own namespace, in the boot's own action — before the resumed
+/// task's first chunk, which reaches the world only through a later drain.
+pub(crate) fn append_resume_marker(
+    ctx: &mut Ctx<'_>,
+    match_id: MatchId,
+    prepared: mush_core::PreparedLedgerAppend,
+) {
+    let op = {
+        let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() else {
+            return;
+        };
+        match registry.ledger.apply_prepared(prepared) {
+            Ok((_seq, op)) => op,
+            Err(error) => {
+                // Nothing touched the registry's ledger between the prepare
+                // and here — the boot owns the loop — so this is said and not
+                // expected.
+                tracing::error!(
+                    %match_id,
+                    %error,
+                    "tacsim: a resumed match's marker became stale between prepare and apply; \
+                     its tape carries no resume marker"
+                );
+                return;
+            }
+        }
+    };
+    push_op(ctx.out, op);
+}
+
+/// **A match's tape in the order it counts** (16b cut AF.3; 16c N16): every
+/// arena chunk entry of `log:match.<id>` that the match still stands by, and
+/// every resume marker, each in order.
+///
+/// `entries` are the log's entries' values in document order: an arena chunk
+/// (`{"chunk": n, "bytes", "lines"}`) or a resume marker
+/// (`{"resumed": {"from_chunk": N, "at_ms", "restart_ms"}}`). The log is
+/// append-only, and a resumed arena writes `N + 1, N + 2 …` again with
+/// different bytes after whatever the old process wrote past its snapshot —
+/// **any number** of chunks, the old server's abandoned timeline. So, walking
+/// in order: a chunk entry is kept; **at a marker, every kept entry whose
+/// chunk is above its `from_chunk` is discarded**; after the walk the last
+/// write per sequence wins (a defence — nothing produces two), and the result
+/// is sorted by sequence. `[1, 2, 3, 4, 5, marker(2), 3']` is `[1, 2, 3']`: a
+/// last-write rule alone would have kept the old 4 and 5.
+///
+/// Answers `(kept chunks, markers)`. An entry that is neither is dropped.
+#[must_use]
+pub fn tape_in_order(
+    entries: &[serde_json::Value],
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let mut kept: Vec<(u64, serde_json::Value)> = Vec::new();
+    let mut markers: Vec<serde_json::Value> = Vec::new();
+    for entry in entries {
+        if let Some(from) = entry
+            .get("resumed")
+            .and_then(|resumed| resumed.get("from_chunk"))
+            .and_then(serde_json::Value::as_u64)
+        {
+            kept.retain(|(chunk, _)| *chunk <= from);
+            markers.push(entry.clone());
+        } else if let Some(chunk) = entry.get("chunk").and_then(serde_json::Value::as_u64) {
+            kept.push((chunk, entry.clone()));
+        }
+    }
+    let mut by_seq: BTreeMap<u64, serde_json::Value> = BTreeMap::new();
+    for (chunk, entry) in kept {
+        by_seq.insert(chunk, entry);
+    }
+    (by_seq.into_values().collect(), markers)
+}
+
+/// **The pager's line for one resume marker** (16b cut AF.3): what
+/// `@arena/report` prints at the marker's place in its page, or `None` for an
+/// entry that is not a marker. 109 characters at a six-digit chunk and
+/// eight-digit milliseconds, under the 120-column floor.
+#[must_use]
+pub fn resume_marker_line(entry: &serde_json::Value) -> Option<String> {
+    let resumed = entry.get("resumed")?;
+    let from = resumed.get("from_chunk")?.as_u64()?;
+    let at_ms = resumed.get("at_ms")?.as_i64()?;
+    Some(format!(
+        "-- resumed at chunk {from} ({at_ms} ms of arena time); the old server's chunks after \
+         {from} are abandoned --"
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Routing: the three functions cut K's verbs and cut T.3's lifecycle call
 // ---------------------------------------------------------------------------
 
@@ -1751,7 +2023,15 @@ pub fn send_stop(
 /// revival (see [`SeatFacts`]). `BOARD` and `EXIT` are cut K.2's verbs and call
 /// [`send_control`] directly, on the same world task, right beside
 /// `request_seat_activation`.
-fn control_all_channels(ctx: &mut Ctx<'_>, unit: ObjId, state: ControlState, pilot: ObjId) {
+///
+/// **16b cut AF.3** made it `pub(crate)`: a resumed match releases every seat
+/// its decoded arena still holds through it (`crate::match_::resume_pending`).
+pub(crate) fn control_all_channels(
+    ctx: &mut Ctx<'_>,
+    unit: ObjId,
+    state: ControlState,
+    pilot: ObjId,
+) {
     for channel in Channel::ALL {
         if let Err(error) = send_control(ctx, unit, channel, state, Some(pilot)) {
             tracing::debug!(%unit, channel = channel.as_str(), %error, "arena control not delivered");
@@ -2725,6 +3005,13 @@ impl mush_core::EventHook for SeatFacts {
     /// reconnecting pilot past the grace was told nothing at all. The tank is
     /// the pilot's own, which they may always be told about (doc 16 §1); what
     /// it did while they were gone is not said here.
+    ///
+    /// **16b cut AF.3**: a pilot whose seat a boot's resume released
+    /// (`Slot::released_by_resume`) reads `match_::RESUME_LINE` before it — once:
+    /// while the match book still owes them the pair
+    /// (`MatchBook::resume_lines_deferred`) the boarding tick is the one that
+    /// says them, and this says nothing; whichever path says the resume line
+    /// clears `released_by_resume`, so a login after it reads Y.3's line alone.
     fn connected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
         if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
             control_all_channels(ctx, unit, ControlState::Live, actor);
@@ -2734,14 +3021,33 @@ impl mush_core::EventHook for SeatFacts {
             .filter(|centre| centre.state == crate::match_::MatchState::Running)
             .and_then(|centre| centre.slot_of_pilot(actor))
             .filter(|slot| slot.is_dropped())
-            .and_then(|slot| slot.unit);
-        if let Some(tank) = dropped {
-            let line = format!(
-                "{} is flying on doctrine; BOARD takes it back.",
-                mush_core::output::display_name(ctx.w, tank)
-            );
-            ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+            .and_then(|slot| slot.unit.map(|tank| (tank, slot.released_by_resume)));
+        let Some((tank, resumed)) = dropped else {
+            return;
+        };
+        // **16b cut AF.3**: a pilot whose seat the boot's resume released is
+        // owed the resume line first — but once. While the book still holds the
+        // line deferred for them, the boarding tick is the one that says both
+        // (and clears the panel a surviving session still shows), so this says
+        // nothing; after the tick has dropped it, a later login says them here.
+        let deferred = ctx
+            .w
+            .module_state::<crate::match_::MatchBook>()
+            .is_some_and(|book| book.resume_lines_deferred(actor));
+        if deferred {
+            return;
         }
+        if resumed {
+            ctx.out
+                .sys_to_actor(actor, NOTICE_CATEGORY, crate::match_::RESUME_LINE);
+            // Once: a login after this one reads Y.3's line alone.
+            crate::match_::lobby::resume_line_said(ctx, actor);
+        }
+        ctx.out.sys_to_actor(
+            actor,
+            NOTICE_CATEGORY,
+            crate::match_::doctrine_line(ctx.w, tank),
+        );
     }
 
     /// **16b cut K.2 (K4)**: the pilot's line came back inside the grace. The
@@ -2931,6 +3237,13 @@ fn status_rows(ctx: &Ctx<'_>) -> Vec<String> {
         // is: an arena millisecond names nothing on the field.
         if let Some(at_ms) = mirror.snapshot_at_ms {
             rows.push(format!("  last snapshot: at {at_ms} ms of arena time"));
+        }
+        // **16b cut AF.3**: and, for a match this boot resumed, the moment it
+        // resumed from — staff-only by the verb's gate, for the reason above.
+        if let Some(at_ms) = mirror.resumed_from_ms {
+            rows.push(format!(
+                "  resumed: from a snapshot at {at_ms} ms of arena time"
+            ));
         }
     }
     if !rows.is_empty() {

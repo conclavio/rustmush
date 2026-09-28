@@ -52,6 +52,13 @@
 //! fast one no faster — the tempo decides how often `step` runs, and nothing
 //! else does.
 //!
+//! **A resumed task** (16b cut AF.3, [`crate::arena_task::resume_arena`]) does
+//! not pulse at once: its arena was decoded from a snapshot with no wall
+//! anchor, so the loop re-anchors the clock at nought of its own new base
+//! (`Arena::resume_at(0)`) and sleeps to the first lattice point after the
+//! snapshot's moment, measured from that base — the pulse an uninterrupted task
+//! would have taken next. Everything after it is the ordinary loop.
+//!
 //! **Two messages pull the deadline in** (16b cut I.3): a `Stop` and a
 //! `TempoFloor` set the next wake to a millisecond from now, since the loop
 //! otherwise recomputes its deadline only after a pulse — under a 10,000 ms
@@ -152,8 +159,11 @@ use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
 ///
 /// Cut T.3 owns the counter that mints these; this cut only carries the value,
 /// stamps every egress message with it, and names the match's ledger log after
-/// it. It is deliberately a `u64` and not a store id: an OOC match holds no
-/// durable record of its own while it runs (D-16-3).
+/// it. It is deliberately a `u64` and not a store id. Since 16b cut AF.2 the
+/// task snapshots its match every `[tacsim.arena].snapshot_ms` of arena time
+/// (`tacsim:snapshot:<n>`, beside the world's `tacsim:live:<n>`), and since 16b
+/// cut AF.3 the boot resumes a running match from those two documents
+/// ([`resume_arena`]).
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -531,10 +541,60 @@ pub fn spawn_arena(
     sensors_cfg: &SensorsConfig,
     egress: mpsc::Sender<ArenaOut>,
 ) -> Result<(ArenaHandle, JoinHandle<()>, Callsigns), ArenaError> {
-    let units = custody.units.len();
     let arena = Arena::new(custody, arena_cfg, match_cfg, sensors_cfg)?;
     // 16b cut V.2: read before `arena` is moved into the task below.
     let callsigns = arena.callsigns();
+    let (handle, join) = spawn(runtime, match_id, arena, arena_cfg, egress, false);
+    Ok((handle, join, callsigns))
+}
+
+/// **Re-open one match from a decoded snapshot** (16b cut AF.3; 16c N16; doc 16
+/// §3.1 "Durability").
+///
+/// The same task [`spawn_arena`] builds, over an [`Arena`] the boot decoded
+/// ([`crate::arena::Snapshot::decode`]) rather than one built from a check-out,
+/// with two differences, both about the clock: the period the snapshot was
+/// taken in counts as already snapshotted (`last_snapshot_period` is the
+/// arena's `now_ms` divided by the cadence — `checked_div`, so a cadence of
+/// nought, which the boot never resumes under, cannot panic it), and the loop's
+/// first pulse lands on the lattice from the task's own new base instead of at
+/// once (`arena_loop`; the module head's timer paragraph). The world has
+/// already set the ledger's `flushed_upto` and read everything else it needs
+/// off the arena before handing it over.
+///
+/// `arena_cfg` is the server's `[tacsim.arena]`: the task's own bounds (the
+/// inbox, the stall, the backlog, the cadence) are the host's, as a fresh
+/// check-out's are; the arena keeps its own frozen copy for its rules.
+#[must_use]
+pub fn resume_arena(
+    runtime: &tokio::runtime::Handle,
+    match_id: MatchId,
+    arena: Arena,
+    arena_cfg: &ArenaConfig,
+    egress: mpsc::Sender<ArenaOut>,
+) -> (ArenaHandle, JoinHandle<()>) {
+    spawn(runtime, match_id, arena, arena_cfg, egress, true)
+}
+
+/// **The one construction both entry points share** (16b cut AF.3 factored it
+/// out of [`spawn_arena`]): the inbox, the stop signal, the task and its
+/// handle, over an arena that already exists.
+fn spawn(
+    runtime: &tokio::runtime::Handle,
+    match_id: MatchId,
+    arena: Arena,
+    arena_cfg: &ArenaConfig,
+    egress: mpsc::Sender<ArenaOut>,
+    resumed: bool,
+) -> (ArenaHandle, JoinHandle<()>) {
+    let units = arena.units.len();
+    // **16b cut AF.3**: a resumed task has already snapshotted the period its
+    // arena stands in — that period's snapshot is the one it was decoded from.
+    let last_snapshot_period = if resumed {
+        arena.now_ms.checked_div(i64::from(arena_cfg.snapshot_ms))
+    } else {
+        None
+    };
     let per_unit = usize::try_from(arena_cfg.intents.max_pending_per_unit).unwrap_or(usize::MAX);
     let reserve = reserve(units);
     // Clamped to what tokio's channel accepts, which is a bound no real config
@@ -575,9 +635,10 @@ pub fn spawn_arena(
         reported: Arc::clone(&reported),
         // 16b cut AF.2: the reader of the key AF.1 put on every layer.
         snapshot_ms: arena_cfg.snapshot_ms,
-        last_snapshot_period: None,
+        last_snapshot_period,
+        resumed,
     }));
-    Ok((
+    (
         ArenaHandle {
             match_id,
             inbox: inbox_tx,
@@ -586,8 +647,7 @@ pub fn spawn_arena(
             reported,
         },
         join,
-        callsigns,
-    ))
+    )
 }
 
 /// **The inbox slots an intent may never take** (16b cut M.1, `B-50`): one
@@ -670,6 +730,10 @@ struct Task {
     /// `now_ms.div_euclid(snapshot_ms)` — or `None` before the first. Recorded
     /// before the encode, so a period whose encode failed is not tried again.
     last_snapshot_period: Option<i64>,
+    /// **Whether this task was re-opened from a snapshot** (16b cut AF.3,
+    /// [`resume_arena`]): its first pulse is due on the lattice from its own
+    /// base, never at once ([`arena_loop`]).
+    resumed: bool,
 }
 
 /// **One entry of the task's retry queue** (16b cut AF.2): a closed chunk, or
@@ -1047,8 +1111,19 @@ async fn arena_loop(mut task: Task) {
     // `next_due_ms` comes back in the same units — so the first pulse is due
     // immediately (it only establishes the wall reference and integrates
     // nothing: doc 16 §3.1 "Clock and lag").
+    //
+    // **16b cut AF.3**: except for a resumed task. Its arena was decoded with no
+    // wall anchor; `resume_at(0)` re-anchors the clock at nought of this new
+    // base and answers the first lattice point after the snapshot's moment in
+    // the same milliseconds, so the first resumed pulse lands where an
+    // uninterrupted task's would have, measured from here.
     let base = Instant::now();
-    let mut due = base;
+    let mut due = if task.resumed {
+        let first = task.arena.resume_at(0);
+        deadline(base, first)
+    } else {
+        base
+    };
     // Every intent and control the world has offered since the last pulse,
     // under the four rules of this module's head (16b cut M.1). Emptied by each
     // pulse, so nothing waiting can outlive the pulse that takes it.
@@ -2348,6 +2423,7 @@ mod tests {
             reported: Arc::new(AtomicBool::new(false)),
             snapshot_ms: 0,
             last_snapshot_period: None,
+            resumed: false,
         };
         let picture = |now_ms: i64| {
             let mut observer = task_picture();
@@ -2503,6 +2579,7 @@ mod tests {
             reported: Arc::new(AtomicBool::new(false)),
             snapshot_ms,
             last_snapshot_period: None,
+            resumed: false,
         };
         (task, world)
     }

@@ -495,18 +495,29 @@ impl GameModule for TacsimRuleset {
         };
         *slot = loaded;
         boot_check_placements(ctx);
-        boot_matches(ctx, &kv);
+        // **16b cut AF.3**: the ledger's chunk documents and the loader's
+        // floors too — a resumed match's log tail is restored from them.
+        boot_matches(ctx, &kv, &data.ledger, &data.omitted);
         boot_reconcile(ctx)
     }
 
-    /// **The boot's pod sweep** (16b cut F.1; moved here by 16b cut U.4, 16c
-    /// `B-37`).
+    /// **Phase B of the resume, then the boot's pod sweep** (16b cut F.1; moved
+    /// here by 16b cut U.4, 16c `B-37`; phase B by 16b cut AF.3).
     ///
-    /// A restart mid-match leaves the centre `Idle` by construction — the match
-    /// book is RAM — but what `BOARD` wrote is durable: the body placed inside
-    /// the pod and the cockpit billet on the tank's `assignment:<unit>`
-    /// document. So the boot opens every pod and gives every billet back
-    /// (`match_::cockpit::eject_all_at_boot`).
+    /// **16b cut AF.3 (16c N16)**: first, every running match the boot's phase A
+    /// (`boot_matches`) found resumable is re-opened
+    /// (`match_::resume::phase_b`): its ground built, its snapshot decoded
+    /// once, its task opened on a fresh base, its record and centre restored,
+    /// its seats released to doctrine. It runs here because the ground is
+    /// built from the atlas's records, which are certain only once every module
+    /// has loaded, and **before** the sweep, which leaves a resumed match's
+    /// pods and tanks alone.
+    ///
+    /// A restart mid-match that did NOT resume leaves the centre `Idle` — the
+    /// match book is RAM — but what `BOARD` wrote is durable: the body placed
+    /// inside the pod and the cockpit billet on the tank's `assignment:<unit>`
+    /// document. So the boot opens every other pod and gives every other billet
+    /// back (`match_::cockpit::eject_all_at_boot`).
     ///
     /// It needs the pods, and a pod resolves through the **content latch**,
     /// which the content module fills in its own `on_world_loaded` — after this
@@ -544,6 +555,7 @@ impl GameModule for TacsimRuleset {
                  without a radio"
             );
         }
+        match_::resume::phase_b(ctx);
         let ejected = match_::cockpit::eject_all_at_boot(ctx);
         if !ejected.is_empty() {
             tracing::warn!(
@@ -560,7 +572,7 @@ impl GameModule for TacsimRuleset {
 /// **The match half of the boot pass** (16b cut T.3; T5, doc 16 §3.1 "Boot
 /// reconciliation").
 ///
-/// Two jobs, in order:
+/// Three jobs, in order:
 ///
 /// 1. **Identity.** Adopt the persisted match counter, then raise it past every
 ///    result document this world already holds. The second half is what makes a
@@ -569,32 +581,60 @@ impl GameModule for TacsimRuleset {
 ///    this boot over the second match of the last. **16b cut V.2**: the same walk
 ///    reads each result document into a [`match_::HistoryRow`] and remembers it
 ///    on the book's history ring, before anything below writes.
-/// 2. **Custody.** `mush-tactics`' recovery pass has already restored every
-///    `deployed` marker it found and cleared it — that is its own document. What
-///    it cannot do is write the *match's* result, which is this module's, or
-///    release the cockpit seats, which are `mush-sim`'s. So it leaves the markers
-///    for this pass, which releases the seats and writes one `aborted(restart)`
-///    per match id they name (doc 16 §8 "Restart mid-match").
-/// 3. **The running matches' documents** (16b cut AF.2). Every
-///    `tacsim:live:<n>` and `tacsim:snapshot:<n>` the store held is deleted,
-///    after the aborts: this boot resumes nothing, so they describe matches that
-///    are over (16b cut AF.3 resumes from them and deletes only the rest).
+/// 2. **Custody: phase A of the resume** (16b cut AF.3; 16c N16; doc 16 §8
+///    "Restart mid-match"). `mush-tactics`' boot pass has **kept** every
+///    `deployed` marker it found and left them for this window
+///    (`mush_tactics::custody::take_boot_deployed`). They are grouped by the
+///    match they name, and each match is decided resumable or not by a fixed
+///    order of named checks against the two documents of a running match
+///    (`tacsim:live:<n>` and `tacsim:snapshot:<n>`, 16b cut AF.2) and against
+///    its own ledger tail, which is restored for the resumable logs alone
+///    (`match_::resume::phase_a`). A match that cannot resume is voided by name
+///    — its units restored, its seats released, one `aborted(restart)` written
+///    — and a running match's documents no marker claims are deleted. Nothing
+///    is decoded here: phase B does that in `on_all_loaded`, once the ground
+///    can be built.
+/// 3. **The stock-tank reset**, with the resumed matches' tanks kept quietly
+///    (they are deployed on purpose).
+///
+/// **The id high-water** is raised past every live record's and snapshot's id
+/// too: a resumed match writes no result document, and a lost
+/// `tacsim:match:seq` must never mint a running match's id again.
 ///
 /// The order is fixed by composition: `mush-tactics` is composed before this
-/// layer, so its `on_world_loaded` has run and its restored list is waiting.
-fn boot_matches(ctx: &mut ModuleCtx<'_>, kv: &[(smol_str::SmolStr, serde_json::Value)]) {
+/// layer, so its `on_world_loaded` has run and its kept list is waiting; and
+/// every `on_world_loaded` runs before any `on_all_loaded`, which is where
+/// `mush-tactics` restores whatever this pass did not take.
+fn boot_matches(
+    ctx: &mut ModuleCtx<'_>,
+    kv: &[(smol_str::SmolStr, serde_json::Value)],
+    ledger: &[mush_core::LedgerDoc],
+    omitted: &mush_core::ChunkFloors,
+) {
     let mut high_water = 0_u64;
     let mut remembered: Vec<match_::HistoryRow> = Vec::new();
     let mut replays: Vec<match_::replay::Replay> = Vec::new();
-    // **16b cut AF.2 (16c N16)**: the ids of every running match's documents
-    // the last process left behind — a live record, a snapshot, or both.
-    let mut leftovers: std::collections::BTreeSet<crate::arena_task::MatchId> =
-        std::collections::BTreeSet::new();
+    // **16b cut AF.2/AF.3 (16c N16)**: every running match's documents the
+    // last process left behind — a live record, a snapshot, or both.
+    let mut documents = match_::resume::BootDocuments::default();
     for (key, value) in kv {
-        if let Some(id) = match_::live_id_of_key(key.as_str())
-            .or_else(|| match_::snapshot_id_of_key(key.as_str()))
-        {
-            leftovers.insert(id);
+        if let Some(id) = match_::live_id_of_key(key.as_str()) {
+            documents.ids.insert(id);
+            high_water = high_water.max(id.0);
+            // The V.2 rule: a record whose own `match` disagrees with its key is
+            // not the live record this key holds, and is left out.
+            match match_::LiveRecord::from_document(value) {
+                Ok(live) if live.match_id != id => {}
+                decoded => {
+                    documents.lives.insert(id, decoded);
+                }
+            }
+            continue;
+        }
+        if let Some(id) = match_::snapshot_id_of_key(key.as_str()) {
+            documents.ids.insert(id);
+            high_water = high_water.max(id.0);
+            documents.snapshots.insert(id, value.clone());
             continue;
         }
         // **16b cut I.1 (16c N9)**: every replay document is a boot document
@@ -623,7 +663,8 @@ fn boot_matches(ctx: &mut ModuleCtx<'_>, kv: &[(smol_str::SmolStr, serde_json::V
     }
     if let Some(book) = ctx.w.module_state_mut::<match_::MatchBook>() {
         book.adopt_seq(high_water);
-        // **Before** the restart-abort loop below writes anything. The ring
+        // **Before** phase A's voids below write anything (16b cut AF.3; the
+        // restart-abort loop until then). The ring
         // orders itself by id whatever the order of these calls
         // (`MatchBook::remember`), so this placement is no longer what decides
         // the order — but a restart abort written first and then displaced by a
@@ -645,37 +686,17 @@ fn boot_matches(ctx: &mut ModuleCtx<'_>, kv: &[(smol_str::SmolStr, serde_json::V
         }
     }
 
-    let restored = mush_tactics::custody::take_boot_restored(ctx.w);
-    let mut by_match: std::collections::BTreeMap<u64, Vec<mush_core::ObjId>> =
-        std::collections::BTreeMap::new();
-    for (unit, marker) in restored {
-        by_match.entry(marker.match_id()).or_default().push(unit);
-        match_::release_seats_after_restart(ctx, unit);
-    }
-    for (match_id, units) in by_match {
-        tracing::error!(
-            match_id,
-            units = units.len(),
-            "tacsim: match {match_id} was still running when this server last stopped. A \
-             running match does not resume across a restart on this server, so its units have \
-             been restored from their check-out snapshots and the match is recorded \
-             aborted(restart)."
-        );
-        match_::write_restart_abort(ctx, crate::arena_task::MatchId(match_id), &units);
-    }
-    // **16b cut AF.2 (16c N16)**: a restart still voids — the arena is gone and
-    // nothing here re-opens it — so every live record and snapshot the store
-    // held is deleted, after the restart aborts above, in the boot's own
-    // writes. 16b cut AF.3 turns "every" into "every one it does not resume".
-    for match_id in leftovers {
-        match_::delete_live_and_snapshot(ctx, match_id);
-    }
+    // **16b cut AF.3 (16c N16)**: phase A — after the ring is filled, so a
+    // restart abort it writes is remembered in its place. It answers the units
+    // of the matches it will resume, which the reset below leaves alone.
+    let resumed = match_::resume::phase_a(ctx, documents, ledger, omitted);
 
     // **16b cut F.1**: and then the centre itself, whether or not any marker was
     // found.
     //
-    // A restart mid-match leaves the centre `Idle` by construction — the match
-    // book is RAM — but the two things `BOARD` wrote are **durable**: the body is
+    // A restart mid-match that does not resume (16b cut AF.3: a void) leaves the
+    // centre `Idle` — the match book is RAM until phase B restores a resumed
+    // centre — but the two things `BOARD` wrote are **durable**: the body is
     // placed inside the pod (`place_interior`) and the cockpit billet is on the
     // tank's `assignment:<unit>` document. Boot released the seat *narrowing* of
     // a marked unit and nothing else, so two players came back to find themselves
@@ -699,7 +720,10 @@ fn boot_matches(ctx: &mut ModuleCtx<'_>, kv: &[(smol_str::SmolStr, serde_json::V
     // inside the first tick period, so a deferred reset put both tanks back on
     // their authored cells 2.4 km apart and the two never saw each other. Boot
     // finishes before the front door serves a line; a tick does not.
-    let tanks = match_::reset_stock_tanks(ctx);
+    //
+    // **16b cut AF.3**: a resumed match's tanks are deployed on purpose and stay
+    // so; the reset skips them without a word.
+    let tanks = match_::reset_stock_tanks(ctx, &resumed);
     if tanks.changed() {
         tracing::info!(
             restored = tanks.restored.len(),

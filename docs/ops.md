@@ -918,8 +918,11 @@ snapshots off, and a server restart then voids every running match by name. Sinc
 crosses a boundary of arena time it encodes the arena and hands it to the world,
 which writes `tacsim:snapshot:<match>` and the match's live record
 `tacsim:live:<match>` in one action on the module's own lane; both are deleted
-with the result, and by a boot (a restart still voids until cut AF.3 resumes from
-them). Nothing but the boot reads them. `@arena/status` prints `last snapshot: at
+with the result, and by a boot for every match it does not resume. Since 16b cut
+AF.3 the boot resumes a running match from them (the match rewinds to its last
+snapshot and every tank flies on doctrine until its pilot `BOARD`s again) and
+voids it by name, `aborted(restart)`, only when it cannot. Nothing but the boot
+reads them. `@arena/status` prints `last snapshot: at
 N ms of arena time` under each match once one has been written.
 `[tacsim.harness].max_snapshot_bytes` (16b cut AF.2; default 7,340,032) is the
 largest snapshot the harness's 30-second lane may encode — see the weekly harness

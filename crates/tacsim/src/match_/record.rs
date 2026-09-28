@@ -325,7 +325,10 @@ pub struct TeamRoster {
     pub pilots: Vec<(ObjId, ObjId)>,
 }
 
-/// **One match, while the world is tracking it** — RAM only (D-16-3).
+/// **One match, while the world is tracking it** — in RAM, and mirrored to
+/// `tacsim:live:<n>` ([`LiveRecord`]) at check-out, with every snapshot and
+/// when it parks in `Stopping` (16b cut AF.2), which is what a boot resumes
+/// it from (16b cut AF.3).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MatchRecord {
@@ -770,10 +773,13 @@ fn result_document(
 
 /// **The `aborted(restart)` result** (16b T5, doc 16 §3.1 "Boot reconciliation").
 ///
-/// A match whose units were still checked out at boot has no arena, no ledger
-/// digest and no end timestamp — the process that held all three is gone. What it
-/// does have is an id, a set of units the recovery pass restored, and a reason,
-/// and that is exactly what this writes.
+/// The result of a match that was running when the server last stopped and
+/// could not resume (16b cut AF.3, `crate::match_::void_at_boot`, whose log line
+/// names the reason from a closed list); until that cut it was every restart's
+/// answer. Such a match has no arena, no ledger digest and no end timestamp the
+/// boot can trust. What it does have is an id, a set of units restored from
+/// their check-out snapshots, and a reason, and that is exactly what this
+/// writes.
 ///
 /// **16b cut M.3**: its `"seed"` is `0`. There was no arena to have drawn
 /// anything — the record the seed lived on went with the process — and the key
@@ -935,8 +941,10 @@ pub struct LiveRecord {
     pub chunks_appended: u64,
     /// Chunks the tape refused so far (`MatchMirror::chunks_lost`).
     pub chunks_lost: u64,
-    /// The snapshot moment the match was last resumed from; `None` in 16b cut
-    /// AF.2, which resumes nothing (AF.3 writes it).
+    /// The snapshot moment the match was last resumed from, or `None` for a
+    /// match never resumed. 16b cut AF.3's resume writes it (the resume-once
+    /// rule's memory: a boot never resumes a match again from the very
+    /// snapshot it was last resumed from).
     pub resumed_from_ms: Option<i64>,
     /// The match's record, folds and replay fold included.
     pub record: MatchRecord,
@@ -2724,6 +2732,7 @@ mod tests {
                 left: true,
                 dropped_at_ms: Some(1_234),
                 unit_type: None,
+                released_by_resume: false,
             }],
             leads: vec![(Team::Red, account)],
             ..crate::match_::lobby::Centre::default()

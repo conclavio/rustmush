@@ -460,8 +460,20 @@ fn cell_current(listing: &str, path: &str) -> i64 {
 
 /// One tank's easting in whole metres, off its pilot's own `STATUS` line
 /// (`  at 1085 m east, 975 m north; …`).
+///
+/// Asked again while the panel has told the pilot nothing yet: `Good hunting`
+/// is said at the check-out, and the arena's first frame can land a moment
+/// after it on a loaded machine, when `STATUS` answers `The panel has told you
+/// nothing yet.` and carries no position at all.
 async fn easting_m(term: &mut Term) -> i64 {
-    let seen = ask_whole(term, "STATUS").await;
+    let mut seen = String::new();
+    for _ in 0..RETRY_BUDGET {
+        seen = ask_whole(term, "STATUS").await;
+        if !seen.contains("The panel has told you nothing yet.") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
     seen.lines()
         .find_map(|line| {
             let rest = line.split_once(" at ")?.1;
@@ -831,19 +843,81 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
 // (2) A restart mid-match, through the lobby
 // ---------------------------------------------------------------------------
 
+/// **Stop a server the way a crash stops it** (16b cut AF.3): its arena tasks
+/// told to stop, then its world task and its store writer aborted and joined,
+/// before any of its sessions is dropped. Dropping the `Server` alone detaches
+/// those tasks rather than ending them, and a world that is still running when
+/// the pilots' sessions go handles their disconnects — releasing every seat and
+/// taking one more snapshot — which is a clean shutdown the resume would then
+/// read, not the crash under test.
+async fn crash(server: &mut Server) {
+    if let Some(arenas) = &server._handles.arenas {
+        arenas.signal_stop_all();
+    }
+    server._handles.world_join.abort();
+    let _ = (&mut server._handles.world_join).await;
+    server._handles.writer_join.abort();
+    let _ = (&mut server._handles.writer_join).await;
+}
+
+/// How many times `needle` appears in what `term` received since `mark`, both
+/// flattened: the line client wraps at the terminal's width, and the resume
+/// line is longer than eighty columns.
+fn count_since(term: &Term, mark: usize, needle: &str) -> usize {
+    flat(&strip_ansi(&term.seen[mark..]))
+        .matches(flat(needle).as_str())
+        .count()
+}
+
+/// `BOARD` in the resumed match, retried while the tank is still being handed
+/// over (`reclaim_min_ms` after the boot's stamp) and on the two transients.
+async fn board_again(term: &mut Term) {
+    for _ in 0..RETRY_BUDGET {
+        let mark = term.mark();
+        term.send_line("BOARD").await;
+        match term
+            .expect_one_of_after(
+                mark,
+                &[
+                    "yours again where it stands",
+                    "still being handed over",
+                    COMMIT_PENDING,
+                    CONTROL_UNKNOWN,
+                ],
+            )
+            .await
+        {
+            0 => return,
+            _ => tokio::time::sleep(Duration::from_millis(500)).await,
+        }
+    }
+    panic!("BOARD never took the tank back");
+}
+
+/// **A restart mid-match, through the lobby: the match resumes and the pilots
+/// board again** (16b cut AF.3; doc 16 §8 "Restart mid-match", §3.8
+/// "Disconnects"). Staff spend thirteen of the blue tank's rounds and park it
+/// off its authored cell before the check-out; Ada and Bo fly; the server stops
+/// once the arena's snapshot is on disk and boots again over the store.
+///
+/// Each pilot logs in to the resume line and then `… is flying on doctrine;
+/// BOARD takes it back.`, once each; `BOARD` (retried while the tank is still
+/// being handed over) takes it back where it stands and the first frame says
+/// `Back aboard`; `STATUS` answers a frame. Bo's magazine still reads thirteen
+/// rounds short and the blue tank is still near where staff parked it, not at
+/// its authored cell — the tanks came from the snapshot, not the reset. `SIM
+/// ABORT` ends it; `SIM HISTORY` lists match 1 `aborted` with the callsign Ada
+/// flew and no restart row; `SIM REPORT 1` is a real debrief. A second match
+/// through the lobby opens at spec and at muster. A third boot reads both rows
+/// back, newest first, with no restart row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_restart_mid_match_through_the_lobby_leaves_no_body_in_a_pod() {
-    let first = boot("sim-restart-a", None).await;
+async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_again() {
+    let mut first = boot("sim-resume-a", None).await;
     let (_god_handle, mut god) = login(first.addr, "boss", GM_PASSWORD, "God").await;
     open_the_centre(&mut god).await;
     let (red, blue) = tank_refs(&mut god).await;
-    // **Something for the reset to undo.** Before this the reboot's "at spec, at
-    // muster" assertions below were true of the record the world booted with:
-    // nothing damaged a tank and nothing moved one, so deleting the boot reset
-    // left every one of them green. A spent magazine and a tank parked off its
-    // authored cell are the two cheapest facts that make them claims — both are
-    // committed before the check-out, so the snapshot a restart restores carries
-    // them, exactly as a fought match's damage would.
+    // Something only the snapshot carries: a spent magazine and a tank parked
+    // off its authored cell, both committed before the check-out.
     say(
         &mut god,
         &format!(
@@ -857,157 +931,154 @@ async fn a_restart_mid_match_through_the_lobby_leaves_no_body_in_a_pod() {
     let (_a, mut ada) = login(first.addr, "ada", PILOT_PASSWORD, "Ada").await;
     let (_b, mut bo) = login(first.addr, "bo", PILOT_PASSWORD, "Bo").await;
     take_off(&mut ada, &mut bo).await;
-    // Both cockpit billets are held, on the tanks' own `assignment:<unit>`
-    // documents. That half is **durable** — it is what a restart used to leave
-    // behind, and what `@spatial/unassign` was the only cure for.
     for (unit, who) in [(red, RED_TANK), (blue, BLUE_TANK)] {
         wait_for_cockpit(&first.store, unit, true, who).await;
     }
-    // Both bodies are inside their pods: `EXIT` is the verb that knows.
     say(&mut ada, "STATUS", "power").await;
+    // The markers and the arena's snapshot are on disk.
+    wait_until(STEP_TIMEOUT, "the markers and the snapshot", async || {
+        let mut settled = first
+            .store
+            .module_json_get("tacsim", "tacsim:snapshot:1")
+            .await
+            .expect("the store read")
+            .is_some();
+        for unit in [red, blue] {
+            settled &= first
+                .store
+                .module_json_get("tactics", &format!("unit:{unit}"))
+                .await
+                .expect("the store read")
+                .is_some_and(|document| document.get("deployed").is_some());
+        }
+        settled
+    })
+    .await;
 
     // Stop the server where it stands, mid-`Running`.
     let store = Arc::clone(&first.store);
+    crash(&mut first).await;
     drop(ada);
     drop(bo);
     drop(god);
     drop(first);
 
-    let second = boot("sim-restart-b", Some(Arc::clone(&store))).await;
-    let (_god2, mut god) = login(second.addr, "boss", GM_PASSWORD, "God").await;
-
-    // (1) No cockpit billet is held, and (2) the tanks are at their spec —
-    //     including the magazine staff spent before the match, which the
-    //     check-out snapshot carried through the restart.
-    //
-    //     Both reads are **waited for**, and neither is a gate on the other. The
-    //     billet goes back in `boot_matches`' own `release_seats_after_restart`
-    //     (for a unit that carried a marker); the record is put back by the reset
-    //     in the same pass, and the **pod** half of the sweep — the bodies at (3)
-    //     below — runs in the module's `on_all_loaded`, still inside the boot
-    //     (16b cut U.4; before it, it waited for the module's first 1 s tick).
-    //     All three then travel the boot's write to the store, which no login
-    //     orders, so an unwaited `@unit/show` still catches the restored
-    //     check-out snapshot on its way past.
-    for (unit, who) in [(red, RED_TANK), (blue, BLUE_TANK)] {
-        wait_for_cockpit(&store, unit, false, who).await;
-        let seen = poll_unit_show(&mut god, unit, who, |seen| {
-            cell_current(seen, "component/cannon/ammo") == LOAD
-        })
-        .await;
+    let second = boot("sim-resume-b", Some(Arc::clone(&store))).await;
+    let (_god2, god) = login(second.addr, "boss", GM_PASSWORD, "God").await;
+    // The markers are still on both records: the match is running again.
+    for unit in [red, blue] {
         assert!(
-            seen.contains("section hull: intact"),
-            "{who} is not intact after the restart: {seen}"
-        );
-        assert_eq!(
-            cell_current(&seen, "component/cannon/ammo"),
-            LOAD,
-            "{who} did not come back with a full magazine: {seen}"
+            store
+                .module_json_get("tactics", &format!("unit:{unit}"))
+                .await
+                .expect("the store read")
+                .is_some_and(|document| document.get("deployed").is_some()),
+            "#{unit} lost its marker at the resume"
         );
     }
 
-    // (3) No body is inside a pod. `EXIT` is admitted on `pod_of_body` alone, so
-    //     its refusal is the exact statement that nobody is in one — and a `look`
-    //     says which room the pilot is standing in instead.
+    // Each pilot reads the resume line, then the doctrine line, once.
+    let doctrine_red = format!("{RED_TANK} is flying on doctrine; BOARD takes it back.");
+    let doctrine_blue = format!("{BLUE_TANK} is flying on doctrine; BOARD takes it back.");
+    let resumed = tacsim::match_::RESUME_LINE;
     let (_a2, mut ada) = login(second.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let ada_mark = 0;
     let (_b2, mut bo) = login(second.addr, "bo", PILOT_PASSWORD, "Bo").await;
-    for term in [&mut ada, &mut bo] {
-        say(term, "EXIT", "You are not in a pod.").await;
+    let bo_mark = 0;
+    ada.expect(&doctrine_red).await;
+    bo.expect(&doctrine_blue).await;
+    // Two more boarding ticks: nothing is said again.
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    say(&mut ada, SENTINEL, HUH).await;
+    say(&mut bo, SENTINEL, HUH).await;
+    for (term, mark, doctrine) in [
+        (&ada, ada_mark, &doctrine_red),
+        (&bo, bo_mark, &doctrine_blue),
+    ] {
+        assert_eq!(count_since(term, mark, resumed), 1, "the resume line, once");
+        assert_eq!(
+            count_since(term, mark, doctrine),
+            1,
+            "the doctrine line, once"
+        );
+        let seen = flat(&strip_ansi(&term.seen[mark..]));
+        let (at_resumed, at_doctrine) = (
+            seen.find(flat(resumed).as_str()).unwrap_or(usize::MAX),
+            seen.find(flat(doctrine).as_str()).unwrap_or(0),
+        );
+        assert!(at_resumed < at_doctrine, "the resume line first: {seen}");
     }
-    say(&mut ada, "look", "Red Room").await;
-    say(&mut bo, "look", "Blue Room").await;
+    // Before the reclaim the pilot is at no station.
+    say(&mut ada, "STATUS", OUTSIDE_COCKPIT).await;
 
-    // (3b) **16b cut V.2**: the centre remembers the match the restart ended —
-    //      the `aborted(restart)` result this boot WROTE for match one (the
-    //      first server died with match one running, so the store held no result
-    //      for it to read), remembered on the ring by the same write —
-    //      teamless, so `0 v 0`, and named for nobody. The boot's READ of the
-    //      result documents is (6) below, across a third boot.
-    let history = poll_whole(
-        &mut ada,
-        "SIM HISTORY",
-        "#1  aborted (the server restarted)  0 s  0 v 0",
-    )
-    .await;
-    assert!(history.contains("The centre's last match:"), "{history}");
+    // Each takes the tank back where it stands, and the first frame says what
+    // happened meanwhile.
+    for term in [&mut ada, &mut bo] {
+        let mark = term.mark();
+        board_again(term).await;
+        term.expect_after(mark, "Back aboard").await;
+        say(term, "STATUS", "power").await;
+    }
+    // The tanks came from the snapshot: the spent rounds are still spent, and
+    // the blue tank is near where staff parked it, not on its authored cell.
+    // At most: the machine held the tank through the handover and may have
+    // fired, but it never put a round back.
+    let seen = ask_whole(&mut bo, "WEAPONSTATUS").await;
+    let rounds = seen
+        .lines()
+        .find(|line| line.trim_start().starts_with("cannon"))
+        .and_then(|line| line.split_once(&format!(" of {LOAD} round(s)")))
+        .and_then(|(head, _)| head.split_whitespace().last())
+        .and_then(|count| count.parse::<i64>().ok())
+        .unwrap_or_else(|| panic!("no cannon count in: {seen}"));
     assert!(
-        !history_row(&history, 1).contains("you flew"),
-        "a restart result names no unit: {history}"
+        rounds <= LOAD - 13,
+        "the rounds staff spent before the check-out were put back: {seen}"
     );
-    // **16b cut V.3**: and there is no debrief of it — the refusal comes before
-    // the pilot check, because a restart row has no pilot rows and Ada would
-    // otherwise be told she never flew.
-    let said = ask(&mut ada, "SIM REPORT 1", "no debrief").await;
+    let easting = easting_m(&mut bo).await;
     assert!(
-        said.contains("The server restarted during match 1; there is no debrief of it."),
-        "{said}"
+        (easting - BLUE_CLOSE_X_CM / 100).abs() < 200,
+        "the blue tank is at {easting} m, not near where staff parked it"
     );
 
-    // (4) And the centre runs a second match, through the lobby, with nobody's
-    //     help.
+    // The match ends the ordinary way, and is remembered as flown.
+    say(&mut ada, "SIM ABORT", "aborts match").await;
+    let history = poll_whole(&mut ada, "SIM HISTORY", "#1  aborted  ").await;
+    assert!(
+        history_row(&history, 1).ends_with(" (you flew RA)"),
+        "{history}"
+    );
+    assert!(
+        !history.contains("the server restarted"),
+        "a resumed match is not a restart row: {history}"
+    );
+    let report = flat(&sim_report(&mut ada, "SIM REPORT 1").await);
+    assert!(report.contains("You flew RA:"), "{report}");
+
+    // A second match through the lobby opens at spec and at muster.
     back_to_the_lobby(&mut ada).await;
     back_to_the_lobby(&mut bo).await;
     take_off(&mut ada, &mut bo).await;
-    assert_eq!(
-        easting_m(&mut ada).await,
-        RED_MUSTER_M,
-        "the second match did not open at the authored muster"
-    );
-    assert_eq!(
-        easting_m(&mut bo).await,
-        BLUE_MUSTER_M,
-        "the blue tank opened where staff put it before the restart, not at its authored cell"
-    );
-    let seen = ask(&mut bo, "WEAPONSTATUS", "cannon").await;
+    assert_eq!(easting_m(&mut ada).await, RED_MUSTER_M);
+    assert_eq!(easting_m(&mut bo).await, BLUE_MUSTER_M);
+    let seen = ask_whole(&mut bo, "WEAPONSTATUS").await;
     assert!(
         seen.contains(&format!("{LOAD} of {LOAD} round(s)")),
-        "the rounds staff spent before the restart were never put back: {seen}"
+        "the reset put the magazine back after the resumed match ended: {seen}"
     );
     say(&mut ada, "SIM ABORT", "aborts match").await;
-
-    // (5) **16b cut V.2**: and the second match's abort is remembered above the
-    //     restart's, with the callsign Ada flew it under.
-    let history = poll_whole(&mut ada, "SIM HISTORY", "#2  aborted  ").await;
-    assert!(
-        history.contains("The centre's last 2 matches, newest first:"),
-        "{history}"
-    );
-    assert!(
-        row_at(&history, 2) < row_at(&history, 1),
-        "newest first: {history}"
-    );
-    assert!(
-        history_row(&history, 2).ends_with(" (you flew RA)"),
-        "{history}"
-    );
-    assert!(
-        history_row(&history, 1).starts_with("#1 aborted (the server restarted) 0 s 0 v 0"),
-        "{history}"
-    );
-
-    // (6) **16b cut V.2: the ring is filled from the boot documents.** Both
-    //     results are now in the store — match one's restart abort, written by
-    //     the second boot, and match two's own `aborted`, written by its
-    //     check-in — and no match is running, so a third boot writes no result
-    //     at all. Whatever `SIM HISTORY` lists after it was READ by
-    //     `boot_matches`, in id order, off the documents; without that read the
-    //     centre would answer that it has no finished match on record.
-    //
-    //     Waited for: the check-in's writes travel the persist lane, which no
-    //     line typed here orders. Its markers are waited out too, so the third
-    //     boot finds nothing checked out and has no restart abort to write over
-    //     match two's own result.
+    poll_whole(&mut ada, "SIM HISTORY", "#2  aborted  ").await;
     wait_until(
         STEP_TIMEOUT,
         "both results and the cleared markers to reach the store",
         async || {
             let mut settled = true;
-            for (id, reason) in [(1_u64, "restart"), (2, "abort")] {
+            for id in [1_u64, 2] {
                 settled &= store
                     .module_json_get("tacsim", &format!("tacsim:match:{id}"))
                     .await
                     .expect("the store read")
-                    .is_some_and(|document| document["reason"].as_str() == Some(reason));
+                    .is_some_and(|document| document["reason"].as_str() == Some("abort"));
             }
             for unit in [red, blue] {
                 settled &= store
@@ -1025,61 +1096,28 @@ async fn a_restart_mid_match_through_the_lobby_leaves_no_body_in_a_pod() {
     drop(god);
     drop(second);
 
-    let third = boot("sim-restart-c", Some(Arc::clone(&store))).await;
+    // A third boot reads both rows back: newest first, no restart row.
+    let third = boot("sim-resume-c", Some(Arc::clone(&store))).await;
     let (_god3, mut god) = login(third.addr, "boss", GM_PASSWORD, "God").await;
-    // Everybody into the lobby by staff hand, so the read below is typed
-    // inside the centre whatever room the last check-in's hatch left Ada in.
     open_the_centre(&mut god).await;
     let (_a3, mut ada) = login(third.addr, "ada", PILOT_PASSWORD, "Ada").await;
     let history = poll_whole(&mut ada, "SIM HISTORY", "#2  aborted  ").await;
     assert!(
         history.contains("The centre's last 2 matches, newest first:"),
-        "both results read back from the store: {history}"
-    );
-    assert!(
-        row_at(&history, 2) < row_at(&history, 1),
-        "newest first, as read: {history}"
-    );
-    assert!(
-        history_row(&history, 2).ends_with(" (you flew RA)"),
-        "match two's callsign survived the store: {history}"
-    );
-    assert!(
-        history_row(&history, 1).starts_with("#1 aborted (the server restarted) 0 s 0 v 0")
-            && !history_row(&history, 1).contains("you flew"),
         "{history}"
     );
+    assert!(row_at(&history, 2) < row_at(&history, 1), "{history}");
+    assert!(!history.contains("the server restarted"), "{history}");
+    for id in [1, 2] {
+        assert!(
+            history_row(&history, id).ends_with(" (you flew RA)"),
+            "{history}"
+        );
+    }
 }
 
-/// `@unit/show <unit>`, repeated until `settled` is happy with the listing.
-///
-/// The boot reset happens inside `boot_matches`, before the front door serves a
-/// line — but its write then travels the world task's persist lane, which no line
-/// this test sends orders, so a read that happens to land first sees the restored
-/// check-out snapshot. The budget is bounded and the panic names the last
-/// listing, so a reset that never happens still fails — loudly, with the
-/// evidence.
-async fn poll_unit_show(
-    god: &mut Term,
-    unit: u32,
-    who: &str,
-    settled: impl Fn(&str) -> bool,
-) -> String {
-    let mut seen = String::new();
-    wait_until(
-        STEP_TIMEOUT,
-        &format!("{who}'s record to settle after restart"),
-        async || {
-            seen = ask_whole(god, &format!("@unit/show #{unit}")).await;
-            settled(&seen)
-        },
-    )
-    .await;
-    seen
-}
-
-/// The same read, **waited for** — `arena_custody.rs`'s `until(..)` in the shape
-/// this file needs.
+/// **A tank's cockpit billet, waited for** — `arena_custody.rs`'s `until(..)` in the
+/// shape this file needs.
 ///
 /// A store read is not a command: nothing about sending a line to the server
 /// orders the write this is looking for. Before the restart the billet arrives

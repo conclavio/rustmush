@@ -646,7 +646,8 @@ fn the_boot_opens_the_pods_before_any_tick_and_the_first_tick_says_the_hatch() {
     );
 
     // What the boot pass itself calls, on the same state, does do it.
-    let report = rig.with_ctx(match_::reset_stock_tanks);
+    let report =
+        rig.with_ctx(|ctx| match_::reset_stock_tanks(ctx, &std::collections::BTreeSet::new()));
     assert!(
         report.restored.contains(&red) && report.remustered.contains(&red),
         "{report:?}"
@@ -837,7 +838,8 @@ async fn a_deployed_roster_tank_is_skipped_and_said_so() {
     // about the function the `Idle` transition calls.
     let said = rig.staff("@arena/reset");
     assert!(said.contains("holding a match"), "{said}");
-    let report = rig.with_ctx(match_::reset_stock_tanks);
+    let report =
+        rig.with_ctx(|ctx| match_::reset_stock_tanks(ctx, &std::collections::BTreeSet::new()));
     assert!(
         report.deployed.contains(&red),
         "a deployed tank was not reported skipped: {report:?}"

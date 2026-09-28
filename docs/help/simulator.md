@@ -314,6 +314,12 @@ power is up.
 
 While it runs, the cockpit is the whole of it: `help cockpit`.
 
+If the server restarts during a match, the match goes on from its last save a
+few seconds back: the machines fly every tank until its pilot comes back. You
+will read that the match resumed and that your tank is flying on doctrine;
+`BOARD` from your pod or your team room takes it back a few seconds later, and
+your first frame says what happened while you were away.
+
 It ends when one side has nothing left that can fight, when **neither** side has
 a round left to fire (a draw: `ended — draw: both sides are out of ammunition`),
 when a side's lead types `SIM CONCEDE` (`ended — blue wins: red

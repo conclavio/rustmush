@@ -3791,3 +3791,198 @@ fn q8_a_refitted_document_decodes_as_the_new_type_on_the_next_boot() {
         "the new type's own component came back with it"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut AF.3 — the boot keeps its markers, and the game layer claims them
+// ---------------------------------------------------------------------------
+
+/// **A game layer's claim, and nothing else** (16b cut AF.3): composed after
+/// the tactics module, it takes the markers that module's boot kept
+/// (`custody::take_boot_deployed`) in its own `on_world_loaded` — the claim
+/// window — and does nothing with them, which is what a game layer that
+/// resumes the match they name leaves behind: the markers on the records and
+/// in the custody index.
+struct Claimer;
+
+impl GameModule for Claimer {
+    fn name(&self) -> &'static str {
+        "claimer"
+    }
+
+    fn register(&mut self, _reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        Ok(())
+    }
+
+    fn on_world_loaded(
+        &mut self,
+        ctx: &mut mush_core::module::ModuleCtx<'_>,
+        _data: ModuleBootData,
+    ) -> Result<(), ModError> {
+        let _ = mush_tactics::custody::take_boot_deployed(ctx.w);
+        Ok(())
+    }
+}
+
+/// [`boot_with_sim`], with or without a [`Claimer`] after the tactics module.
+fn af3_boot(claim: bool) -> TestWorld {
+    let mut modules: Vec<Box<dyn GameModule>> = vec![
+        Box::new(TestRulesModule {
+            owner: "tacsim",
+            specs: vec![example_spec(), kitted_spec()],
+        }),
+        Box::new(mush_sim::SimulationModule::new()),
+        Box::new(TacticsModule::with_catalog(example_catalog())),
+    ];
+    if claim {
+        modules.push(Box::new(Claimer));
+    }
+    TestWorld::with_modules(modules)
+}
+
+/// Check `unit` out to match 7 under the tactics module's identity, and
+/// answer the store as it then stands (the tactics namespace): the check-out's
+/// own write rides its `Ctx`'s outbox, not the engine's op queue.
+fn af3_check_out(world: &mut TestWorld, unit: ObjId) -> Vec<(SmolStr, Value)> {
+    let mut kv = fold_kv(world);
+    let ((), ops) = with_tactics_ctx(world, |ctx| {
+        mush_tactics::custody::check_out(
+            ctx,
+            unit,
+            mush_sim::DeployedMark::new(7, "tacsim.arena.proving_ground"),
+        )
+        .expect("the arena takes it");
+    });
+    for op in ops {
+        if let ModuleWrite::JsonSet { key, value } = op.op {
+            kv.retain(|(existing, _)| *existing != key);
+            kv.push((key, value));
+        }
+    }
+    kv
+}
+
+/// A restart of the server half over `kv`: the custody index is a new
+/// process's empty RAM, and the tactics module boots from its documents.
+fn af3_reboot(world: &mut TestWorld, kv: Vec<(SmolStr, Value)>) {
+    *world
+        .world_mut()
+        .module_state_mut::<mush_sim::deployed::DeployedUnits>()
+        .expect("the custody index") = mush_sim::deployed::DeployedUnits::new();
+    load_tactics(world, kv);
+}
+
+/// The one `unit:<obj>` document a list of ops wrote, if it wrote one.
+fn af3_written(ops: &[mush_core::ModuleOp], unit: ObjId) -> Option<Value> {
+    let key = format!("unit:{}", unit.0);
+    ops.iter().rev().find_map(|op| match &op.op {
+        ModuleWrite::JsonSet { key: at, value } if *at == key => Some(value.clone()),
+        _ => None,
+    })
+}
+
+/// **The boot keeps a `deployed` marker for the game layer to claim, and
+/// restores what nobody claimed** (16b cut AF.3; the brief's test 13). The
+/// tactics boot no longer restores a marked unit in `on_world_loaded`:
+///
+/// - **claimed** (a game layer composed after it takes the list): the marker
+///   survives the boot on the record and in `mush_sim::deployed`, and the unit
+///   is still refused as deployed;
+/// - **unclaimed** (no game layer): it is restored at this module's
+///   `on_all_loaded` — the check-out snapshot in the record, the marker gone
+///   from RAM and the custody index, and the marker-less document persisted —
+///   and the unit takes a plan again;
+/// - **scrubbed** (claimed, with a component pointing at an object that went
+///   away during the downtime): the boot's E3c scrub rewrites the document, and
+///   the rewrite still carries the marker, so a second restart still finds it;
+/// - **scrubbed mid-run** (the object `@destroy`ed while the unit is out on
+///   loan): the runtime scrub's rewrite carries the marker as well.
+#[test]
+fn af3_the_boot_keeps_the_markers_for_the_claim_and_restores_the_unclaimed() {
+    // Claimed.
+    let mut world = af3_boot(true);
+    let unit = make_unit(&mut world);
+    let kv = af3_check_out(&mut world, unit);
+    af3_reboot(&mut world, kv);
+    assert!(
+        mush_tactics::custody::marker_of(world.world(), unit).is_some(),
+        "the claimed marker survives the boot"
+    );
+    assert!(mush_sim::deployed::is_deployed(world.world(), unit));
+    let output = world.run(GOD, &format!("@unit/damage #{}={}", unit.0, armor_plan(-1)));
+    assert!(
+        has_error(&output),
+        "a claimed unit took a plan: {}",
+        texts(&output)
+    );
+    assert!(texts(&output).contains("deployed"), "{}", texts(&output));
+    assert!(
+        af3_written(&world.take_module_ops(), unit).is_none(),
+        "a claimed marker is not rewritten"
+    );
+
+    // Unclaimed.
+    let mut world = af3_boot(false);
+    let unit = make_unit(&mut world);
+    let snapshot = store(&world).units.get(&unit).cloned().expect("the unit");
+    let kv = af3_check_out(&mut world, unit);
+    af3_reboot(&mut world, kv);
+    assert!(
+        mush_tactics::custody::marker_of(world.world(), unit).is_none(),
+        "nobody claimed it, so on_all_loaded restored it"
+    );
+    assert!(!mush_sim::deployed::is_deployed(world.world(), unit));
+    assert_eq!(store(&world).units.get(&unit), Some(&snapshot));
+    let document =
+        af3_written(&world.take_module_ops(), unit).expect("the marker-less document is persisted");
+    assert!(document.get("deployed").is_none(), "{document}");
+    let output = world.run(GOD, &format!("@unit/damage #{}={}", unit.0, armor_plan(-1)));
+    assert!(!has_error(&output), "{}", texts(&output));
+
+    // Scrubbed, and still marked on disk.
+    let mut world = af3_boot(true);
+    let (mech, rifle) = kitted_unit(&mut world);
+    let kv = af3_check_out(&mut world, mech);
+    world.world_mut().destroy(rifle).unwrap(); // during the downtime
+    af3_reboot(&mut world, kv);
+    assert_eq!(
+        asset_of(&world, mech),
+        None,
+        "the boot scrubbed the pointer"
+    );
+    let document =
+        af3_written(&world.take_module_ops(), mech).expect("the scrub rewrote the document");
+    assert!(
+        document.get("deployed").is_some(),
+        "the rewrite dropped the marker: {document}"
+    );
+    assert!(mush_tactics::custody::marker_of(world.world(), mech).is_some());
+
+    // Scrubbed mid-run, by `@destroy`'s own event (the runtime scrub in
+    // `on_obj_destroyed`): its rewrite carries the marker too, so a restart
+    // after it still finds the unit on loan.
+    let mut world = af3_boot(true);
+    let (mech, rifle) = kitted_unit(&mut world);
+    let _ = af3_check_out(&mut world, mech);
+    world.take_module_ops();
+    world.world_mut().destroy(rifle).unwrap();
+    let mut out = Outbox::new();
+    let mut fxx = Effects::new();
+    world.engine_mut().emit_world_event(
+        &WorldEvent::ObjDestroyed { obj: rifle },
+        &mut out,
+        &mut fxx,
+    );
+    assert_eq!(
+        asset_of(&world, mech),
+        None,
+        "the runtime scrub repaired the pointer"
+    );
+    let document = af3_written(&world.take_module_ops(), mech)
+        .expect("the runtime scrub rewrote the document");
+    assert!(
+        document.get("deployed").is_some(),
+        "the runtime rewrite dropped the marker: {document}"
+    );
+    assert!(mush_tactics::custody::marker_of(world.world(), mech).is_some());
+    assert!(mush_sim::deployed::is_deployed(world.world(), mech));
+}
