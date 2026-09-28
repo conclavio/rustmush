@@ -986,10 +986,10 @@ async fn o2_a_pilot_in_the_ecm_tank_switches_the_pod_off_and_the_tape_says_so() 
 /// both brackets during `Selection`, `SIM START` refits both pods' tanks, and
 /// once they are aboard each pilot's `STATUS` prints its own chassis — the
 /// car's pair of wheels, the heavy's pair of tracks — and `WEAPONSTATUS` its own
-/// guns: the car's one row, the coaxial as its only gun (`machine_gun (mg)
-/// ready  2000 of 2000 round(s)`), and the heavy's two. From the moment either
-/// climbed in, neither session saw the other machine's type word or its object
-/// name.
+/// guns: since 16b cut AE.2 the car's two rows, the autocannon and then the
+/// coaxial (`machine_gun (mg)  ready  2000 of 2000 round(s)`), and the heavy's
+/// three, the cannon, the coaxial and the rack. From the moment either climbed
+/// in, neither session saw the other machine's type word or its object name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ae1_two_pilots_field_the_scout_car_and_the_heavy_tank() {
     let server = boot("sim-units-ae1").await;
@@ -1052,21 +1052,26 @@ async fn ae1_two_pilots_field_the_scout_car_and_the_heavy_tank() {
         );
     }
 
-    // Each pilot's own guns.
+    // Each pilot's own guns. **16b cut AE.2** gave the car its autocannon,
+    // first in component order, and the heavy its rack: two rows and three.
     let seen = ask_whole(&mut ada, "WEAPONSTATUS").await;
     assert!(
-        seen.contains("machine_gun (mg)  ready  2000 of 2000 round(s)"),
-        "the car's one gun: {seen}"
+        seen.contains("autocannon  ready  240 of 240 round(s)")
+            && seen.contains("machine_gun (mg)  ready  2000 of 2000 round(s)"),
+        "the car's two guns: {seen}"
     );
     assert!(
-        !seen.contains("cannon"),
+        !seen
+            .lines()
+            .any(|line| line.trim_start().starts_with("cannon")),
         "the car carries no cannon: {seen}"
     );
     let seen = ask_whole(&mut bo, "WEAPONSTATUS").await;
     assert!(
         seen.contains("cannon  ready  40 of 40 round(s)")
-            && seen.contains("machine_gun (mg)  ready  2000 of 2000 round(s)"),
-        "the heavy's two guns: {seen}"
+            && seen.contains("machine_gun (mg)  ready  2000 of 2000 round(s)")
+            && seen.contains("missiles  ready  6 of 6 round(s)"),
+        "the heavy's three guns: {seen}"
     );
 
     // The observer rule over every byte either session saw from the pods on.
@@ -1083,4 +1088,266 @@ async fn ae1_two_pilots_field_the_scout_car_and_the_heavy_tank() {
         );
         no_sixteen_digit_word(&whole);
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AE.2 — the autocannon and the rack, fired (16c N15)
+// ---------------------------------------------------------------------------
+
+/// The lines of one kind a unit is the `unit` of, from one match's ledger.
+fn lines_of<'a>(events: &'a [Value], kind: &str, unit: u32) -> Vec<&'a Value> {
+    events
+        .iter()
+        .filter(|event| {
+            event.get("kind").and_then(Value::as_str) == Some(kind)
+                && event.get("unit").and_then(Value::as_u64) == Some(u64::from(unit))
+        })
+        .collect()
+}
+
+/// **The scout car's bare `FIRE` is its autocannon, and the arena spends a
+/// burst of three; the heavy carries a rack beside its cannon** (16b cut AE.2;
+/// 16c N15), over the production composition.
+///
+/// Ada takes the scout car and Bo the heavy, parked 200 m apart on the road.
+/// Bo's `WEAPONSTATUS` is three rows in component order, verbatim. Ada locks
+/// Bo, types the bare `FIRE` and reads `Firing autocannon.` — HEAD's rule, the
+/// cannon if carried else the first weapon, on a car whose author listed the
+/// autocannon first — and a pulse later the arena has accepted it: her
+/// `WEAPONSTATUS` reads three of 240 spent, and the tape a `fired` line of three
+/// rounds from the autocannon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ae2_the_scout_car_fires_its_autocannon_and_the_heavy_carries_a_rack() {
+    let server = boot("sim-units-ae2").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+    let listing = ask(&mut god, &format!("@find {RED_TANK}"), "END OF LIST").await;
+    let red = dbref_of(&listing, RED_TANK);
+
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(
+        &mut ada,
+        "SIM UNIT scout_mk1",
+        "Slot red 1 will field scout_mk1.",
+    )
+    .await;
+    say(
+        &mut bo,
+        "SIM UNIT heavy_mk1",
+        "Slot blue 1 will field heavy_mk1.",
+    )
+    .await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut bo, "blue", "Blue Room").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+    power_up(&mut ada).await;
+
+    // The heavy's three rows, verbatim and in component order.
+    let seen = poll_whole(&mut bo, "WEAPONSTATUS", "missiles").await;
+    let at = |row: &str| {
+        seen.find(row)
+            .unwrap_or_else(|| panic!("no `{row}` in the heavy's WEAPONSTATUS: {seen}"))
+    };
+    let rows = [
+        at("cannon  ready  40 of 40 round(s)"),
+        at("machine_gun (mg)  ready  2000 of 2000 round(s)"),
+        at("missiles  ready  6 of 6 round(s)"),
+    ];
+    assert!(
+        rows.windows(2).all(|pair| pair[0] < pair[1]),
+        "the heavy's rows are not in component order: {seen}"
+    );
+
+    // The car's bare `FIRE`.
+    let contact = wait_for_contact(&mut ada).await;
+    let locking = ada.mark();
+    say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
+    ada.expect_after(locking, "Locked on").await;
+    let fired = ada.mark();
+    ada.send_line("FIRE").await;
+    ada.expect_after(fired, "Firing autocannon.").await;
+    let seen = poll_whole(&mut ada, "WEAPONSTATUS", "237 of 240 round(s)").await;
+    assert!(
+        seen.contains("machine_gun (mg)") && seen.contains("2000 of 2000 round(s)"),
+        "the coaxial is untouched: {seen}"
+    );
+    assert!(
+        !strip_ansi(&ada.seen[fired..]).contains("refused"),
+        "the burst was refused: {}",
+        strip_ansi(&ada.seen[fired..])
+    );
+
+    // The tape: one burst of three, from the autocannon.
+    ada.send_line("SIM ABORT").await;
+    poll_whole(&mut ada, "SIM STATUS", "aborted").await;
+    let mut events = Vec::new();
+    wait_until(STEP_TIMEOUT, "the burst to persist", async || {
+        events = ledger_events(&server.store, 1).await;
+        !lines_of(&events, "fired", red).is_empty()
+    })
+    .await;
+    let bursts = lines_of(&events, "fired", red);
+    assert_eq!(
+        bursts
+            .iter()
+            .map(|event| (
+                event.get("weapon").and_then(Value::as_str),
+                event.get("rounds").and_then(Value::as_u64)
+            ))
+            .collect::<Vec<_>>(),
+        vec![(Some("autocannon"), Some(3))],
+        "{bursts:?}"
+    );
+    no_sixteen_digit_word(&strip_ansi(&ada.seen));
+    no_sixteen_digit_word(&strip_ansi(&bo.seen));
+}
+
+/// **A heavy on the range fires its rack: `Firing missiles.`, and the round
+/// lands 2,000 arena ms after the shot** (16b cut AE.2; 16c N15; doc 16 §3.5
+/// "Scheduled impact").
+///
+/// Ada claims red, sets `SIM RANGE 1` and takes the heavy; staff poses the
+/// target and her tank on the ford road, 50 cells — 500 m, inside her 600 m
+/// sight — apart (the `sim_range.rs` pattern), her tank facing east and the
+/// target facing west, toward her. The target is the stock hull, and its
+/// **front** is the one band no single missile can put out of action: hull 400
+/// and turret 350 of armour both take the 350 whole, where its rear (hull 150
+/// over 200 internals, the engine struck through it) would be killed by one
+/// round on most hits and end the range by elimination before the test reads
+/// the rack cycling and aborts it. Her
+/// `WEAPONSTATUS` is three rows, verbatim; she holds the target as `BA`, locks
+/// it and types `FIRE missiles`, reads `Firing missiles.`, is told the outcome
+/// at the impact, and reads the rack cycling with five of six left. The tape's
+/// `impact` for that shot is 2,000 arena ms after its `fired`: 50,000 cm at
+/// 25,000 cm/s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ae2_a_heavy_on_the_range_fires_its_rack_and_the_round_lands_two_seconds_later() {
+    let server = boot("sim-units-ae2-range").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let listing = ask(&mut god, "@find Simulator Lobby", "END OF LIST").await;
+    let lobby = dbref_of(&listing, "Simulator Lobby");
+    say(
+        &mut god,
+        &format!("@teleport #{}=#{lobby}", ADA.0),
+        "Teleported",
+    )
+    .await;
+    let listing = ask(&mut god, &format!("@find {RED_TANK}"), "END OF LIST").await;
+    let red = dbref_of(&listing, RED_TANK);
+
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(
+        &mut ada,
+        "SIM RANGE 1",
+        "Range set: 1 target stands on the blue side;",
+    )
+    .await;
+    say(
+        &mut ada,
+        "SIM UNIT heavy_mk1",
+        "Slot red 1 will field heavy_mk1.",
+    )
+    .await;
+    say(
+        &mut god,
+        "@arena/pose BA=130 97 270",
+        "BA opens at cell (130, 97) heading 270 for the next match.",
+    )
+    .await;
+    say(
+        &mut god,
+        "@arena/pose RA=80 97 90",
+        "RA opens at cell (80, 97) heading 90 for the next match.",
+    )
+    .await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+    power_up(&mut ada).await;
+
+    // Three rows, verbatim.
+    let seen = poll_whole(&mut ada, "WEAPONSTATUS", "missiles").await;
+    for row in [
+        "cannon  ready  40 of 40 round(s)",
+        "machine_gun (mg)  ready  2000 of 2000 round(s)",
+        "missiles  ready  6 of 6 round(s)",
+    ] {
+        assert!(seen.contains(row), "no `{row}`: {seen}");
+    }
+
+    // The rack.
+    let contact = wait_for_contact(&mut ada).await;
+    assert_eq!(contact, "BA", "the target answers to its pod's callsign");
+    let locking = ada.mark();
+    say(&mut ada, "LOCK BA", "Locking").await;
+    ada.expect_after(locking, "Locked on BA").await;
+    let fired = ada.mark();
+    ada.send_line("FIRE missiles").await;
+    ada.expect_after(fired, "Firing missiles.").await;
+    let outcome = ada
+        .expect_one_of_after(fired, &["Hit on BA", "Miss on BA", "refused"])
+        .await;
+    assert_ne!(
+        outcome,
+        2,
+        "the missile was refused: {}",
+        strip_ansi(&ada.seen[fired..])
+    );
+    let seen = ask_whole(&mut ada, "WEAPONSTATUS").await;
+    assert!(
+        seen.contains("missiles  cycling (") && seen.contains("5 of 6 round(s)"),
+        "the rack is cycling with five left: {seen}"
+    );
+    assert!(
+        seen.contains("cannon  ready  40 of 40 round(s)"),
+        "the cannon is its own magazine: {seen}"
+    );
+
+    // The tape: the impact 2,000 arena ms after the shot.
+    ada.send_line("SIM ABORT").await;
+    poll_whole(&mut ada, "SIM STATUS", "aborted").await;
+    let mut events = Vec::new();
+    wait_until(
+        STEP_TIMEOUT,
+        "the missile's impact to persist",
+        async || {
+            events = ledger_events(&server.store, 1).await;
+            !lines_of(&events, "impact", red).is_empty()
+        },
+    )
+    .await;
+    let shots = lines_of(&events, "fired", red);
+    assert_eq!(shots.len(), 1, "one missile: {shots:?}");
+    let shot = shots.first().copied().unwrap_or(&Value::Null);
+    assert_eq!(shot.get("weapon").and_then(Value::as_str), Some("missiles"));
+    assert_eq!(
+        shot.get("range_cm").and_then(Value::as_u64),
+        Some(50_000),
+        "500 m"
+    );
+    let seq = shot.get("shot_seq").and_then(Value::as_u64);
+    let impact = lines_of(&events, "impact", red)
+        .into_iter()
+        .find(|event| event.get("shot_seq").and_then(Value::as_u64) == seq)
+        .unwrap_or_else(|| panic!("no impact for shot {seq:?}"));
+    let (Some(fired_ms), Some(impact_ms)) = (
+        shot.get("t_ms").and_then(Value::as_i64),
+        impact.get("t_ms").and_then(Value::as_i64),
+    ) else {
+        panic!("no timestamps: {shot:?} {impact:?}");
+    };
+    assert_eq!(
+        impact_ms - fired_ms,
+        2_000,
+        "50,000 cm at 25,000 cm/s is 2,000 ms"
+    );
+    no_sixteen_digit_word(&strip_ansi(&ada.seen));
 }

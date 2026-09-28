@@ -1,0 +1,43 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.missile_lr",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "2437c519457287ec4d5ac2fba9a54e1da973f6619f7db6f088fe0694fae851a4",
+    "requires": [
+      {
+        "id": "tacsim.pack.missile_round",
+        "version": 1
+      }
+    ]
+  },
+  "entries": {
+    "tacsim.weapon.missile_lr": {
+      "kind": "weapon",
+      "def": {
+        "label": "missile rack",
+        "delivery": "direct",
+        "mount": {
+          "section": "turret",
+          "facet": "front"
+        },
+        "bands": [
+          {
+            "max_range_cm": 60000,
+            "dispersion_mrad": 12
+          },
+          {
+            "max_range_cm": 300000,
+            "dispersion_mrad": 2
+          }
+        ],
+        "cycle_ms": 10000,
+        "ammunition": "tacsim.ammunition.missile_round",
+        "burst_rounds": 1,
+        "muzzle_speed_cms": 25000,
+        "heat_per_shot": 0,
+        "note": "16b cut AE.2's numbers. 250 m/s: a shot at the edge of a sight, 600 m, is 2.4 s in the air, and one on a teammate's plot at 900 m 3.6 s. The impact re-validates within one cell of where the target was, so a machine on the move (a stock tank on the grass makes 2.8 cells in 2.4 s) walks out from under it, and one that has stopped (a machine holding a square, a range target, a hulk) takes 350. The round is traced from where it was fired, so the shooter may move once it is away. Inside 600 m the cone is 12 mrad, because a rack does not aim the way a gun does; the 2 mrad band past it is a shared plot's. The outer edge is the cannon's 3 km on purpose: tempo.alert_range_cm is derived from the longest reach fielded."
+      }
+    }
+  }
+}

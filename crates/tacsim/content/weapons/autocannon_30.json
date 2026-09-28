@@ -1,0 +1,43 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.autocannon_30",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "1aee8939d0ee05e780919a5c1b06abdb455c0af6bc9fc6b15512bd15190f8d35",
+    "requires": [
+      {
+        "id": "tacsim.pack.ap_30",
+        "version": 1
+      }
+    ]
+  },
+  "entries": {
+    "tacsim.weapon.autocannon_30": {
+      "kind": "weapon",
+      "def": {
+        "label": "30 mm autocannon",
+        "delivery": "direct",
+        "mount": {
+          "section": "turret",
+          "facet": "front"
+        },
+        "bands": [
+          {
+            "max_range_cm": 100000,
+            "dispersion_mrad": 4
+          },
+          {
+            "max_range_cm": 200000,
+            "dispersion_mrad": 8
+          }
+        ],
+        "cycle_ms": 3000,
+        "ammunition": "tacsim.ammunition.ap_30",
+        "burst_rounds": 3,
+        "muzzle_speed_cms": 105000,
+        "heat_per_shot": 0,
+        "note": "16b cut AE.2's numbers. Three rounds every 3,000 ms is 60 landed a pull, the cannon's 20 a second in bites of 20, and every round is its own draw under burst:<seq>, so what lands is a count and not all or nothing. A scout car's 200 front hull is ten landed rounds, four pulls; a heavy's 700 front is thirty-five, twelve pulls and thirty-six seconds. 1 km at 4 mrad and 2 km at 8 are both past any sight on this map. 105,000 cm/s is 1,050 m/s, so a shot at 600 m is about 0.57 s in the air. 240 rounds are 80 pulls."
+      }
+    }
+  }
+}

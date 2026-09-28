@@ -1,0 +1,21 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.ap_30",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "8704ce199381569e8e9171eabc31143fe10f0f0d85f7755b5a3afa164b47d394",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.ammunition.ap_30": {
+      "kind": "ammunition",
+      "def": {
+        "label": "30 mm AP",
+        "damage": 20,
+        "penetration_class": "ap",
+        "count_per_load": 240,
+        "note": "16b cut AE.2's numbers, for the scout car's autocannon. 20 damage is a sixth of the 105 mm round's 120, and the autocannon lands three of them every three seconds, which is the cannon's 20 a second in bites of 20: a scout car's 200 cm front hull is ten landed rounds and a heavy's 700 is thirty-five. 240 rounds is eighty pulls of three. The penetration class is carried and nothing reads it yet, so no armour shrugs a bite off."
+      }
+    }
+  }
+}

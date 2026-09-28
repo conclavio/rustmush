@@ -116,18 +116,18 @@ What the shipped server can field:
                       and no engine speed. It is what `SIM RANGE` puts on the
                       other side's pods; you may pick it for your own slot, but
                       it can do nothing but stand there.
-  scout_mk1           a wheeled scout car: 108 kph on a road and quicker than
-                      a tank on the grass, thin, quick to turn. Rubble, rock
-                      and the thick woods stop it, it takes the ford slowly,
-                      and a slope a tank climbs can refuse it.
-  heavy_mk1           a heavy tank: the stock gun on nearly twice the armour, at
-                      two thirds the speed.
+  scout_mk1           a wheeled scout car with a 30 mm autocannon: 108 kph on a
+                      road and quicker than a tank on the grass, thin, quick to
+                      turn. Rubble, rock and the thick woods stop it, it takes
+                      the ford slowly, and a slope a tank climbs can refuse it.
+  heavy_mk1           a heavy tank: the stock gun and a missile rack on nearly
+                      twice the armour, at two thirds the speed.
   biped_mk2           a two-legged machine with the beam weapon in one arm and a
                       thermal sight in its head. It makes heat, and it walks
                       where a tank will not: the thick woods and a face a tank
                       is refused. It pays less than a tank to cross rubble.
 
-Three things worth knowing before you pick one:
+Five things worth knowing before you pick one:
 
 * a bare `FIRE` fires the **cannon** whenever the machine has one, and
   otherwise the first weapon it carries. The laser tank carries no cannon, so
@@ -141,6 +141,16 @@ Three things worth knowing before you pick one:
   will not take the tank.` or `Held: the slope ahead is too steep for the
   tank.`
 * the machines that fill the unclaimed pods always fly the pod's own tank.
+* the scout car's 30 mm autocannon fires three rounds a pull every three
+  seconds, out to 2 km: a cannon's damage a second in small bites, so it
+  strips a car or a drone quickly and a heavy slowly. Its bare `FIRE` is the
+  autocannon; `FIRE mg` is still the machine gun.
+* the heavy's missile rack is six rounds, one every ten seconds, and a round is
+  slow: 250 metres a second, so a shot at the edge of your sight, 600 m, is two
+  and a half seconds in the air and lands where the target was when you fired.
+  A machine on the move walks out from under it; one that has stopped, or a
+  target on the range, does not. The heavy's bare `FIRE` is still the cannon:
+  `FIRE missiles` names the rack.
 
 ## The ground
 

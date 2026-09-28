@@ -20,8 +20,9 @@ else — `help simulator` is how you get there.
   SCAN [<contact>]    what is left of a contact, section by section; your lock
                       if you name none. Needs a contact you have identified and
                       had a close look at.
-  FIRE [<weapon>]     shoot your lock; the cannon unless you name another.
-                      A weapon of two words takes its initials: FIRE mg.
+  FIRE [<weapon>]     shoot your lock with your machine's main gun — the cannon
+                      on a tank that carries one — unless you name another. A
+                      weapon of two words takes its initials: FIRE mg.
   WEAPONSTATUS        every weapon: ready or cycling, its rounds, its own chance
                       against your lock, and that lock's range band.
   EMCON [on|off]      switch your jamming pod, if you carry one: on jams every
@@ -248,12 +249,16 @@ on `WEAPONSTATUS` and on every hit: `Locked on RB (FRIENDLY), 62% to hit.`
 Nothing is refused. The word is the whole of the warning, and what you do next
 is yours.
 
-`FIRE` shoots the lock with the cannon; `FIRE mg` names another. A weapon whose
-id is two words can be typed as its **initials** — `machine_gun` is `mg` — and
-`WEAPONSTATUS` prints the short name in brackets beside the id where there is
-one. A prefix works too: `FIRE can`. The full id always works, and a word that
-could mean two of your weapons is refused saying which: ``FIRE m`` answers
-``` `m` could be machine_gun or missile; say more. ```
+`FIRE` shoots the lock with your machine's main gun — the cannon on a tank that
+carries one, the autocannon on the scout car; `WEAPONSTATUS` lists what you
+carry — and `FIRE mg` names another. A weapon whose id is two words can be
+typed as its **initials** — `machine_gun` is `mg` — and `WEAPONSTATUS` prints
+the short name in brackets beside the id where there is one. A prefix works
+too: `FIRE can`. The full id always works, and a word that could mean two of
+your weapons is refused saying which: ``FIRE m`` answers
+``` `m` could be machine_gun or missiles; say more. ``` A round is traced from
+where you fired it, so once it is away you may move; a miss on a contact you no
+longer hold reads `Miss.` and no more, in the cockpit and in your debrief.
 
 You are told what your round did and nothing more: `Hit on BA: turret.`, `Miss
 on BA: the target moved.`, `BA's turret is destroyed.`, `BA destroyed.` The

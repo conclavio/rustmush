@@ -154,6 +154,11 @@ mod tests {
             aim_x_cm: 0,
             aim_y_cm: 0,
             aim_cell: None,
+            // 16b cut AE.2: no launch point either; only the count is read.
+            from_x_cm: 0,
+            from_y_cm: 0,
+            from_cell: None,
+            from_height_cm: 0,
             damage: 1,
             resolution: crate::arena::resolution::Resolution::blind(
                 "front",

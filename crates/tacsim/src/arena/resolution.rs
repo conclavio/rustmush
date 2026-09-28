@@ -273,7 +273,20 @@ const FULL_MDEG: u32 = 360_000;
 /// occupancy rule allows anyway.
 #[must_use]
 pub fn facet_band(target: &UnitState, shooter: &UnitState) -> &'static str {
-    facet_band_seen(&SeenPose::of(target), shooter)
+    facet_band_from(target, shooter.pose.x_cm, shooter.pose.y_cm)
+}
+
+/// **The band `target` presents to a point** (16b cut AE.2) — the point a round
+/// left from, `crate::arena::weapons::Shot::from_x_cm` and `from_y_cm`.
+///
+/// The impact takes this and not [`facet_band`]: a round strikes the face that
+/// was turned toward where it was **fired from**, and the shooter may have moved
+/// or left the match since. [`facet_band`] is this band read at the shooter's
+/// present pose, which is what the acceptance, standing at the launch point,
+/// takes.
+#[must_use]
+pub fn facet_band_from(target: &UnitState, from_x_cm: i64, from_y_cm: i64) -> &'static str {
+    band_toward(&SeenPose::of(target), from_x_cm, from_y_cm)
 }
 
 /// **The same band, off a contact's plot rather than off the target** (16b cut
@@ -286,9 +299,16 @@ pub fn facet_band(target: &UnitState, shooter: &UnitState) -> &'static str {
 /// about — which is why the plot carries the heading it was seen at.
 #[must_use]
 pub fn facet_band_seen(target: &SeenPose, shooter: &UnitState) -> &'static str {
+    band_toward(target, shooter.pose.x_cm, shooter.pose.y_cm)
+}
+
+/// The one sector rule the three readings above share (16b cut AE.2 factored it
+/// out): the band a target at `target`'s pose and heading presents to the point
+/// `(x_cm, y_cm)`.
+fn band_toward(target: &SeenPose, x_cm: i64, y_cm: i64) -> &'static str {
     let absolute = bearing_of(
-        shooter.pose.x_cm.saturating_sub(target.x_cm),
-        shooter.pose.y_cm.saturating_sub(target.y_cm),
+        x_cm.saturating_sub(target.x_cm),
+        y_cm.saturating_sub(target.y_cm),
     );
     let relative = (absolute + FULL_MDEG).saturating_sub(target.heading_mdeg) % FULL_MDEG;
     // The sectors are centred, so the half-sector is rotated away before the

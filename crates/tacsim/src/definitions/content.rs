@@ -74,13 +74,25 @@
 //! | `units/heavy_mk1.json` | `tacsim.pack.heavy_mk1` | rules | never |
 //! | `units/biped_mk2.json` | `tacsim.pack.biped_mk2` | rules | never |
 //!
+//! **16b cut AE.2** adds two weapons and their rounds — the scout car's 30 mm
+//! autocannon and the heavy's missile rack — as [`EXTENSIONS_ORDNANCE`], an
+//! eighth, and moves the scout and the heavy to version 2 to carry them:
+//!
+//! | file | pack | kind | applied |
+//! |---|---|---|---|
+//! | `ammunition/ap_30.json` | `tacsim.pack.ap_30` | rules | never |
+//! | `weapons/autocannon_30.json` | `tacsim.pack.autocannon_30` | rules | never |
+//! | `ammunition/missile_round.json` | `tacsim.pack.missile_round` | rules | never |
+//! | `weapons/missile_lr.json` | `tacsim.pack.missile_lr` | rules | never |
+//!
 //! # And what is **fielded**
 //!
 //! **16b cut Q.8** answers X.1 deviation 1's open question — *whether the
 //! extensions join the shipped catalog* — with **yes for the game, and no for
-//! the stock game**. [`fielded_sources`] is [`sources`] followed by all seven
+//! the stock game**. [`fielded_sources`] is [`sources`] followed by all eight
 //! extension tables in `requires` order — doc 16 §9's five, since 16b cut O.3
-//! the range's target, and since 16b cut AE.1 the three chassis — and
+//! the range's target, since 16b cut AE.2 the two weapons, and since 16b cut
+//! AE.1 the three chassis — and
 //! [`super::Catalog::build_fielded`] is what the three production sites build
 //! from, so `SIM UNIT` can offer a pilot a biped or a scout car, `@unit/create`
 //! can name a laser tank on a shipped server, and `SIM RANGE` can field a
@@ -305,18 +317,68 @@ pub const TARGET_MK1: &str = "tacsim.unit.target_mk1";
 pub const EXTENSIONS_TARGET: [(&str, &str); 1] =
     [("tacsim/content/units/target_mk1.json", TARGET_MK1_JSON)];
 
+/// `crates/tacsim/content/ammunition/ap_30.json` (16b cut AE.2).
+pub const AP_30_JSON: &str = include_str!("../../content/ammunition/ap_30.json");
+/// `crates/tacsim/content/weapons/autocannon_30.json` (16b cut AE.2).
+pub const AUTOCANNON_30_JSON: &str = include_str!("../../content/weapons/autocannon_30.json");
+/// `crates/tacsim/content/ammunition/missile_round.json` (16b cut AE.2).
+pub const MISSILE_ROUND_JSON: &str = include_str!("../../content/ammunition/missile_round.json");
+/// `crates/tacsim/content/weapons/missile_lr.json` (16b cut AE.2).
+pub const MISSILE_LR_JSON: &str = include_str!("../../content/weapons/missile_lr.json");
+
+/// **The 30 mm autocannon** (16b cut AE.2; 16c N15): three rounds a pull every
+/// three seconds — the cannon's damage a second in bites of 20, each round its
+/// own draw under `burst:<seq>`. The scout car's first weapon from its version
+/// 2, so its bare `FIRE`.
+pub const AUTOCANNON_30: &str = "tacsim.weapon.autocannon_30";
+
+/// **The missile rack** (16b cut AE.2; 16c N15): six rounds, one every ten
+/// seconds, at 250 m/s — a round with a flight time a moving target walks out
+/// from under. Doc 16 §3.5's scheduled impact is the whole of its mechanism: a
+/// longer schedule and a due event, and nothing new on the wire. The heavy's
+/// third weapon from its version 2, named `FIRE missiles`.
+pub const MISSILE_LR: &str = "tacsim.weapon.missile_lr";
+
+/// **The two weapons of 16b cut AE.2 and their ammunition, in `requires`
+/// order** (16c N15): the 30 mm AP round, the autocannon that fires it, the
+/// missile round and the rack that fires it — two weapons and two ammunition
+/// families, and no unit schema.
+///
+/// A table of its **own**, for the reason [`EXTENSIONS_BIPED`] gives: its
+/// acceptance states the whole of what it adds and no earlier table's count
+/// moves. It is fielded **before** [`EXTENSIONS_CHASSIS`], because the scout
+/// car and the heavy tank require the autocannon and the rack from their
+/// version 2 on, and after [`EXTENSIONS_TARGET`], where every earlier table
+/// already is.
+pub const EXTENSIONS_ORDNANCE: [(&str, &str); 4] = [
+    ("tacsim/content/ammunition/ap_30.json", AP_30_JSON),
+    (
+        "tacsim/content/weapons/autocannon_30.json",
+        AUTOCANNON_30_JSON,
+    ),
+    (
+        "tacsim/content/ammunition/missile_round.json",
+        MISSILE_ROUND_JSON,
+    ),
+    ("tacsim/content/weapons/missile_lr.json", MISSILE_LR_JSON),
+];
+
 /// `crates/tacsim/content/units/scout_mk1.json` (16b cut AE.1).
 pub const SCOUT_MK1_JSON: &str = include_str!("../../content/units/scout_mk1.json");
 
 /// **The scout car** (16b cut AE.1; 16c N15): the fielded catalog's one
-/// `wheeled` unit — thin, quick, and stopped by ground a tank crosses.
+/// `wheeled` unit — thin, quick, and stopped by ground a tank crosses. From its
+/// version 2 (16b cut AE.2) its first weapon is [`AUTOCANNON_30`] and the
+/// coaxial is slaved to it.
 pub const SCOUT_MK1: &str = "tacsim.unit.scout_mk1";
 
 /// `crates/tacsim/content/units/heavy_mk1.json` (16b cut AE.1).
 pub const HEAVY_MK1_JSON: &str = include_str!("../../content/units/heavy_mk1.json");
 
 /// **The heavy tank** (16b cut AE.1; 16c N15): the stock tank's five sections
-/// at 1.75 times the armour and two thirds the speed.
+/// at 1.75 times the armour and two thirds the speed. From its version 2 (16b
+/// cut AE.2) it carries [`MISSILE_LR`] beside the cannon, which stays its bare
+/// `FIRE`.
 pub const HEAVY_MK1: &str = "tacsim.unit.heavy_mk1";
 
 /// `crates/tacsim/content/units/biped_mk2.json` (16b cut AE.1).
@@ -334,8 +396,9 @@ pub const BIPED_MK2: &str = "tacsim.unit.biped_mk2";
 /// acceptance states the whole of what it adds (three unit schemas) and no
 /// earlier table's count moves. It is fielded **after** [`EXTENSIONS_TARGET`]
 /// because the Mk2 biped requires the laser of [`EXTENSIONS`] and the thermal
-/// sight of [`EXTENSIONS_THERMAL`], so it has to follow both; the scout and
-/// the heavy require only the stock packs.
+/// sight of [`EXTENSIONS_THERMAL`], so it has to follow both; and, since **16b
+/// cut AE.2** moved the scout and the heavy to version 2, after
+/// [`EXTENSIONS_ORDNANCE`] too, whose autocannon and rack they carry.
 pub const EXTENSIONS_CHASSIS: [(&str, &str); 3] = [
     ("tacsim/content/units/scout_mk1.json", SCOUT_MK1_JSON),
     ("tacsim/content/units/heavy_mk1.json", HEAVY_MK1_JSON),
@@ -407,8 +470,13 @@ pub fn sources() -> Vec<PackSource> {
 /// target: its Mk2 biped requires the laser and the thermal sight, which are
 /// ahead of it here.
 ///
+/// **16b cut AE.2** inserts an eighth, [`EXTENSIONS_ORDNANCE`], between the
+/// target and the chassis: the scout car's version 2 requires the autocannon
+/// and the heavy's the missile rack, so both weapons (and the two rounds they
+/// fire, ahead of them in their own table) come first.
+///
 /// Named `<built-in …>` like [`sources`], and not `<extension …>` like
-/// [`extension_sources_of`]: through this route the seven are shipped content
+/// [`extension_sources_of`]: through this route the eight are shipped content
 /// and not an operator's file, and the name is what a refusal quotes.
 #[must_use]
 pub fn fielded_sources() -> Vec<PackSource> {
@@ -420,6 +488,7 @@ pub fn fielded_sources() -> Vec<PackSource> {
         EXTENSIONS_ECM.as_slice(),
         EXTENSIONS_ECCM.as_slice(),
         EXTENSIONS_TARGET.as_slice(),
+        EXTENSIONS_ORDNANCE.as_slice(),
         EXTENSIONS_CHASSIS.as_slice(),
     ] {
         out.extend(table.iter().map(|(name, bytes)| PackSource {

@@ -1120,11 +1120,14 @@ impl Arena {
 
     /// **Note that a shot of `shooter`'s had no line** (doc 16 §6's `no line`
     /// edge), which is W's `blocked` and `cover` miss reasons read as a fact about
-    /// where the shooter is standing.
+    /// where the shooter stood when it fired.
     ///
     /// Called from `crate::arena::damage`'s re-validation, so the edge is fed by
     /// the black box's own verdict rather than by a second trace of the
-    /// controller's.
+    /// controller's. **16b cut AE.2**: the re-validation traces from the eye the
+    /// round left, and calls this only for a shooter that **still stands in the
+    /// cell it fired from** — a machine that has moved on since has no line of
+    /// that shot's to re-plan.
     pub fn note_no_line(&mut self, shooter: ObjId) {
         if self
             .unit(shooter)

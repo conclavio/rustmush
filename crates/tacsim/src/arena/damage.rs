@@ -26,6 +26,14 @@
 //! [`EventKind::Miss`], and the set is the
 //! whole vocabulary — a seventh is a reviewed diff here.
 //!
+//! **16b cut AE.2** fixed where "the line is clear" is asked from: the eye the
+//! round **left**, recorded on the shot at acceptance, and not wherever the
+//! shooter has driven to by the impact — the one live case a slow round makes
+//! everyday, since production never removes a unit from a running arena. The
+//! facet the round strikes is read against the same launch point. What the
+//! shooter is **told** about a miss is `step.rs`'s business, and it tells a
+//! shooter that no longer holds the target none of these reasons.
+//!
 //! # One plan per impact, and why that matters
 //!
 //! Doc 16 §3.5: *all of it is one [`UnitMutationPlan`] per impact through
@@ -394,37 +402,63 @@ impl Arena {
             return;
         }
         // (3) The line is still clear, and the ground it ends on is not full cover.
-        // A shooter that has left the match (its own wreck, mid-flight) leaves
-        // nothing to trace from: the round is already in the air, so the line is
-        // taken as it was and the shot resolves on its own merits.
-        if self.unit(shot.shooter).is_some() {
-            let (sight, cover) = self.fire_line(shot.shooter, shot.target);
-            // **16b cut N.1**: doc 16 §6's `no line` edge is fed from here and from
-            // nowhere else. The reflex controller learns that a round of its own was
-            // stopped by the ground the way anybody would — by the shot missing —
-            // and re-plans from where it is standing, rather than by taking a trace
-            // of its own before every shot. A pilot's unit notes nothing.
-            if !sight.is_clear_or_partial() {
+        //
+        // **16b cut AE.2**: traced from the eye the round **left** — the launch
+        // point the shot recorded at acceptance (`Shot::launch_eye`) — to the
+        // cell the target stands in now, **whether or not the shooter still
+        // exists**. One rule for every direct weapon. It used to be traced from
+        // wherever the shooter was standing at the impact, and skipped for a
+        // shooter that had left the match; production never removes a unit from
+        // a running arena, so the case that mattered was the shooter that moved:
+        // a heavy that fired its rack from a crest and backed off it during the
+        // flight read `Miss: the line was blocked.` for a round that had cleared
+        // the crest. A shooter that was off the window when it fired has no eye
+        // and no line to lose, as `fire_line` answers for it.
+        let (sight, cover) = shot
+            .launch_eye()
+            .and_then(|eye| self.fire_trace_from(eye, shot.target))
+            .map_or((Sight::Clear, Cover::None), |trace| {
+                (trace.sight, trace.target_cover)
+            });
+        // **16b cut N.1**: doc 16 §6's `no line` edge is fed from here and from
+        // nowhere else. The reflex controller learns that a round of its own was
+        // stopped by the ground the way anybody would — by the shot missing —
+        // and re-plans from where it stood, rather than by taking a trace of its
+        // own before every shot. A pilot's unit notes nothing.
+        //
+        // **16b cut AE.2**: the edge is a fact about where the shooter stood when
+        // it fired, so it is fed only to a shooter that **still stands in the
+        // cell the round left from**. One that has moved since has no line to
+        // re-plan: teaching it a lesson about a line it no longer has would throw
+        // away a goal it may have just reached.
+        let stood = self.unit(shot.shooter).is_some_and(|state| {
+            shot.from_cell.is_some()
+                && self.definition.terrain.cell_of(&state.pose) == shot.from_cell
+        });
+        if !sight.is_clear_or_partial() {
+            if stood {
                 self.note_no_line(shot.shooter);
-                miss(BLOCKED, journal);
-                return;
             }
-            if cover == Cover::Full {
+            miss(BLOCKED, journal);
+            return;
+        }
+        if cover == Cover::Full {
+            if stood {
                 self.note_no_line(shot.shooter);
-                miss(COVER, journal);
-                return;
             }
+            miss(COVER, journal);
+            return;
         }
         // (4) The outcome. The probability is the one taken at acceptance, unless
         // the target turned: then the same cone and the same draw against the new
         // band's width (doc 16 §3.5).
-        let band = match self.unit(shot.shooter) {
-            Some(from) => crate::arena::resolution::facet_band(target, from),
-            // A shooter that has left the match — its own wreck, mid-flight. The
-            // face the target was showing when the round left is the best the record
-            // has; re-deriving one from a shooter that is not there would invent it.
-            None => shot.resolution.band.as_str(),
-        };
+        //
+        // **16b cut AE.2**: the band is the one the target presents to the
+        // **launch point**, which is always on the record — so there is no longer
+        // an arm for a shooter that has left, and no band chosen by a position
+        // the round never left from.
+        let band =
+            crate::arena::resolution::facet_band_from(target, shot.from_x_cm, shot.from_y_cm);
         let taken = if band == shot.resolution.band.as_str() {
             shot.resolution.clone()
         } else {
@@ -519,10 +553,27 @@ impl Arena {
             .map_or(0, |trace| trace.attenuation)
     }
 
-    /// The one walk `fire_line` and `fire_attenuation` are two readings of.
+    /// The one walk `fire_line` and `fire_attenuation` are two readings of: the
+    /// shooter's eye where it stands now, through [`Arena::fire_trace_from`].
     fn fire_trace(&self, shooter: ObjId, target: ObjId) -> Option<mush_atlas::trace::CellTrace> {
+        self.fire_trace_from(self.fire_eye(self.unit(shooter)?)?, target)
+    }
+
+    /// **The walk from an eye the caller holds to the cell the target stands in
+    /// now** (16b cut AE.2) — the impact's own trace, from the eye the round left
+    /// (`crate::arena::weapons::Shot::launch_eye`), which needs no shooter at
+    /// all: the round is in the air whatever has become of the tank that fired
+    /// it. [`Arena::fire_trace`] is this walk from the shooter's present eye.
+    ///
+    /// `None` for a target that has left the match or stands off the window, as
+    /// every other reading of the walk answers.
+    fn fire_trace_from(
+        &self,
+        eye: mush_atlas::trace::Eye,
+        target: ObjId,
+    ) -> Option<mush_atlas::trace::CellTrace> {
         let cell = self.definition.terrain.cell_of(&self.unit(target)?.pose)?;
-        self.fire_trace_at(shooter, target, cell)
+        self.trace_eye_to(eye, target, cell)
     }
 
     /// The same walk, to a cell the target is not necessarily in (16b cut F.3) —
@@ -533,7 +584,19 @@ impl Arena {
         target: ObjId,
         cell: (u16, u16),
     ) -> Option<mush_atlas::trace::CellTrace> {
-        let from = self.fire_eye(self.unit(shooter)?)?;
+        self.trace_eye_to(self.fire_eye(self.unit(shooter)?)?, target, cell)
+    }
+
+    /// **The walk itself** (16b cut AE.2 factored it out of `fire_trace_at`):
+    /// from `from` to `cell`, at the target's own eye height, over the arena's
+    /// cells. Every fire trace — the shot's at acceptance, the impact's from the
+    /// launch eye, the cockpit's advice to a plot — is this one line walk.
+    fn trace_eye_to(
+        &self,
+        from: mush_atlas::trace::Eye,
+        target: ObjId,
+        cell: (u16, u16),
+    ) -> Option<mush_atlas::trace::CellTrace> {
         let at = self.unit(target)?;
         let to = mush_atlas::trace::Eye {
             cell,
@@ -542,7 +605,9 @@ impl Arena {
         Some(trace_cells(&self.definition.terrain, from, to))
     }
 
-    /// One unit's eye, for a fire trace.
+    /// One unit's eye, for a fire trace — and, recorded at acceptance, the eye a
+    /// round leaves from (16b cut AE.2: `Arena::resolve_fire` writes the same two
+    /// numbers onto the shot as `from_cell` and `from_height_cm`).
     fn fire_eye(&self, unit: &UnitState) -> Option<mush_atlas::trace::Eye> {
         let cell = self.definition.terrain.cell_of(&unit.pose)?;
         Some(mush_atlas::trace::Eye {
@@ -1521,6 +1586,11 @@ mod tests {
             aim_x_cm: 1_500,
             aim_y_cm: 2_500,
             aim_cell: Some((1, 2)),
+            // 16b cut AE.2: where red stands, which is where it fired from.
+            from_x_cm: 1_500,
+            from_y_cm: 1_500,
+            from_cell: Some((1, 1)),
+            from_height_cm: 150,
             damage: 400,
             resolution: Resolution::blind("front", 3_000, Cover::None),
         };
@@ -1569,6 +1639,11 @@ mod tests {
             aim_x_cm: 1_500,
             aim_y_cm: 2_500,
             aim_cell: Some((1, 2)),
+            // 16b cut AE.2: where red stands, which is where it fired from.
+            from_x_cm: 1_500,
+            from_y_cm: 1_500,
+            from_cell: Some((1, 1)),
+            from_height_cm: 150,
             damage: 10,
             resolution: Resolution::blind("front", 3_000, Cover::None),
         };
@@ -1892,6 +1967,11 @@ mod tests {
                 aim_x_cm: 1_500,
                 aim_y_cm: 2_500,
                 aim_cell: Some((1, 2)),
+                // 16b cut AE.2: where red stands, which is where it fired from.
+                from_x_cm: 1_500,
+                from_y_cm: 1_500,
+                from_cell: Some((1, 1)),
+                from_height_cm: 150,
                 damage: 1_000,
                 resolution: Resolution::blind("left", 3_000, Cover::None),
             };

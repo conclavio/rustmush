@@ -1,0 +1,21 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.missile_round",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "902758dc2f22fa442a81828f30f9718f9aa35dd785801f83a0856919bb8f372a",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.ammunition.missile_round": {
+      "kind": "ammunition",
+      "def": {
+        "label": "anti-armour missile",
+        "damage": 350,
+        "penetration_class": "shaped",
+        "count_per_load": 6,
+        "note": "16b cut AE.2's numbers, for the heavy's rack. 350 damage is seven eighths of a stock tank's 400 cm front hull and half a heavy's 700. Six rounds is the rack, one every ten seconds: a minute of fire. The penetration class is carried and nothing reads it yet."
+      }
+    }
+  }
+}

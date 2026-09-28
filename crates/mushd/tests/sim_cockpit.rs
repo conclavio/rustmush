@@ -654,6 +654,9 @@ async fn a_pilot_who_types_fire_then_exit_in_one_burst_fires_nothing() {
                 || line.contains("Hit on ")
                 || line.contains("Miss on ")
                 || line.contains("Miss: ")
+                // 16b cut AE.2: a miss on a target the platform no longer
+                // holds is the one word, and must not slip past this either.
+                || line == "Miss."
                 || line.contains("Refused")
                 || line.contains(" refused.")
                 || line.contains("No lock")

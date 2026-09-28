@@ -11177,3 +11177,36 @@ async fn o3_a_range_ends_when_its_target_is_out_of_action() {
         "{header:?}"
     );
 }
+
+/// **16b cut AE.2**: a miss on a target the platform no longer holds reads
+/// `Miss.` and nothing more — the arena stages it with no reason, because
+/// `moved`, `blocked` and `cover` are facts about where the target is that the
+/// platform's sensors have not earned once the contact is gone. A held
+/// contact's miss renders as it always did.
+#[test]
+fn ae2_an_unheld_miss_reads_miss_and_nothing_more() {
+    use tacsim::arena::perception::{FrameNotice, Named};
+    use tacsim::arena::state::Designator;
+
+    let frame = fixture::frame();
+    let rows = cockpit::frame_contacts(&frame);
+    let render = |notice: FrameNotice| cockpit::notice_line(&frame, &notice, &rows);
+    assert_eq!(
+        render(FrameNotice::Miss {
+            contact: None,
+            reason: smol_str::SmolStr::new_static(""),
+        }),
+        "Miss."
+    );
+    let held = frame.lock.unwrap_or_else(|| panic!("the scene's lock"));
+    assert_eq!(
+        render(FrameNotice::Miss {
+            contact: Some(Named {
+                id: held,
+                designator: Designator::Provisional(2),
+            }),
+            reason: smol_str::SmolStr::new(tacsim::arena::damage::MOVED),
+        }),
+        "Miss on X2: the target moved."
+    );
+}

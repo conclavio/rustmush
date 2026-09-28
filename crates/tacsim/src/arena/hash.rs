@@ -290,7 +290,11 @@ thread_local! {
 /// that includes 16b cut M.4's `Resolution::beyond` (16c `B-52`): it is a
 /// function of the range at acceptance and the weapon's authored bands, both
 /// fixed when the shot was accepted, exactly as the rest of the recorded
-/// resolution is.
+/// resolution is. So is **16b cut AE.2**'s launch point (`from_x_cm`,
+/// `from_y_cm`, `from_cell`, `from_height_cm`): the shooter's pose and eye at
+/// acceptance, which this hash folded as the shooter's own pose at the substep
+/// the shot was accepted in, and which nothing writes again — the impact reads
+/// it and the shot leaves the table.
 ///
 /// The *callsign* on each unit is deliberately **not** folded: it is a pure
 /// function of the check-out message, resolved once by `Arena::new` and never

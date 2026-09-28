@@ -960,17 +960,24 @@ fn q8_build_fielded_is_the_stock_game_plus_doc_16_s9s_five_items() {
 
     // The rows the five bring with them: X.1's laser and its charge, X.3's
     // thermal sight, X.4's pod and X.5's filter. The biped mounts the stock
-    // weapons and adds none.
+    // weapons and adds none. **16b cut AE.2** adds two weapons and their two
+    // rounds: the autocannon and the 30 mm AP, the rack and its missile.
     assert_eq!(
         fielded.weapons.len(),
-        stock.weapons.len() + 1,
-        "the laser, and no other weapon"
+        stock.weapons.len() + 3,
+        "the laser, the autocannon and the missile rack, and no other weapon"
     );
     assert_eq!(
         fielded.ammunition.len(),
-        stock.ammunition.len() + 1,
-        "the laser charge"
+        stock.ammunition.len() + 3,
+        "the laser charge, the 30 mm AP and the missile round"
     );
+    for id in [content::AUTOCANNON_30, content::MISSILE_LR] {
+        assert!(
+            fielded.weapons.keys().any(|entry| entry.as_str() == id),
+            "{id} is not in the fielded catalog"
+        );
+    }
     assert_eq!(
         fielded.sensors.len(),
         stock.sensors.len() + 3,
@@ -1011,6 +1018,8 @@ fn q8_build_fielded_skips_an_extension_pack_offered_again_as_an_operator_pack() 
         content::EXTENSIONS_ECM.as_slice(),
         content::EXTENSIONS_ECCM.as_slice(),
         content::EXTENSIONS_TARGET.as_slice(),
+        // 16b cut AE.2: the ordnance the version-2 carriers require.
+        content::EXTENSIONS_ORDNANCE.as_slice(),
         content::EXTENSIONS_CHASSIS.as_slice(),
     ] {
         for source in content::extension_sources_of(table) {

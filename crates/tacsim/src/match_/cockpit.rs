@@ -1242,8 +1242,13 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
                 (None, _) => "Hit.".to_owned(),
             }
         }
+        // **16b cut AE.2**: a miss on a target the platform no longer holds
+        // carries no reason (`Arena::stage_pilot_notice` stages it empty), so it
+        // is the one word: where the target went and what stood round it are
+        // not the gunner's to know once the contact is gone. `Hit.` is its twin.
         FrameNotice::Miss { contact, reason } => match contact {
             Some(contact) => format!("Miss on {}: {}.", contact.designator, miss_words(reason)),
+            None if reason.is_empty() => "Miss.".to_owned(),
             None => format!("Miss: {}.", miss_words(reason)),
         },
         FrameNotice::Kill { contact } => match contact {
@@ -6351,7 +6356,11 @@ fn cockpit_help(verb: &str) -> String {
                    yellow, red or destroyed; your lock if you name none. Only for a contact you \
                    have identified and had a close look at, and never an exact number."
             .to_owned(),
-        "fire" => "FIRE [<weapon>]     shoot your lock; the cannon unless you name another weapon."
+        // 16b cut AE.2: the scout car's main gun is its autocannon, so "the
+        // cannon" is no longer every machine's bare `FIRE` — and the laser tank
+        // carries none, so its bare `FIRE` is the beam.
+        "fire" => "FIRE [<weapon>]     shoot your lock with your machine's main gun — the cannon \
+                   on a tank that carries one — unless you name another weapon."
             .to_owned(),
         // 16b cut Y.1: who may order what, in the help, because the refusal for
         // a squad a pilot may not order is deliberately one bare sentence.
@@ -7102,6 +7111,102 @@ mod tests {
             choose_weapon(&two, "machine_gun"),
             Ok(row) if row.id == "machine_gun"
         ));
+    }
+
+    /// **16b cut AE.2**: the weapon rows a fielded unit type's frame carries, in
+    /// component order, loaded and ready — what `FIRE` chooses among.
+    fn fielded_rows(entry: &str) -> Vec<WeaponRow> {
+        let catalog = crate::definitions::Catalog::build_fielded(&[], crate::NS)
+            .unwrap_or_else(|error| panic!("the fielded content binds: {error}"));
+        let key = mush_core::CanonicalId::new(entry).unwrap_or_else(|_| panic!("{entry}"));
+        let (Some(spec), Some(binding)) = (catalog.specs.get(&key), catalog.bindings.get(&key))
+        else {
+            panic!("{entry} is fielded")
+        };
+        let cells = crate::definitions::to_tactical_unit(spec, binding, ObjId(31))
+            .unwrap_or_else(|why| panic!("{entry} instantiates: {why}"));
+        crate::match_::weapon_summaries(&catalog, &cells)
+            .into_iter()
+            .map(|weapon| WeaponRow {
+                rounds: i64::from(weapon.count_per_load),
+                rounds_max: i64::from(weapon.count_per_load),
+                ..weapon_row(&weapon.id)
+            })
+            .collect()
+    }
+
+    /// **16b cut AE.2**: `FIRE`'s default is the content author's choice by
+    /// component order, under HEAD's unchanged rule — the cannon if carried,
+    /// else the first weapon. The scout car answers its autocannon, the heavy
+    /// its cannon (its rack is `FIRE missiles`, or the prefix `FIRE mis`), the
+    /// stock tank its cannon and the laser tank its beam; a one-word id has no
+    /// short name, so `FIRE auto` is a prefix; and `WEAPONSTATUS` prints the
+    /// new rows in the existing format.
+    #[test]
+    fn ae2_the_bare_fire_is_the_authors_choice_by_component_order() {
+        use crate::definitions::content;
+        let chosen = |entry: &str, word: &str| {
+            choose_weapon(&fielded_rows(entry), word)
+                .map(|row| row.id.to_string())
+                .map_err(|err| err.to_string())
+        };
+        assert_eq!(chosen(content::SCOUT_MK1, ""), Ok("autocannon".to_owned()));
+        assert_eq!(chosen(content::HEAVY_MK1, ""), Ok("cannon".to_owned()));
+        assert_eq!(chosen(content::LINE_TANK, ""), Ok("cannon".to_owned()));
+        assert_eq!(chosen(content::LINE_TANK_LASER, ""), Ok("laser".to_owned()));
+        assert_eq!(
+            chosen(content::SCOUT_MK1, "auto"),
+            Ok("autocannon".to_owned())
+        );
+        assert_eq!(
+            chosen(content::SCOUT_MK1, "mg"),
+            Ok("machine_gun".to_owned())
+        );
+        assert_eq!(
+            chosen(content::HEAVY_MK1, "missiles"),
+            Ok("missiles".to_owned())
+        );
+        assert_eq!(chosen(content::HEAVY_MK1, "mis"), Ok("missiles".to_owned()));
+        assert_eq!(
+            chosen(content::HEAVY_MK1, "m"),
+            Err("`m` could be machine_gun or missiles; say more.".to_owned())
+        );
+        assert_eq!(weapon_initials("autocannon"), None);
+        assert_eq!(weapon_initials("missiles"), None);
+
+        // The rows, in the existing format.
+        let scout = fielded_rows(content::SCOUT_MK1);
+        assert_eq!(
+            scout
+                .iter()
+                .map(|row| row.render(&scout))
+                .collect::<Vec<_>>(),
+            vec![
+                "autocannon  ready  240 of 240 round(s)",
+                "machine_gun (mg)  ready  2000 of 2000 round(s)",
+            ]
+        );
+        let mut heavy = fielded_rows(content::HEAVY_MK1);
+        assert_eq!(
+            heavy
+                .iter()
+                .map(|row| row.render(&heavy))
+                .collect::<Vec<_>>(),
+            vec![
+                "cannon  ready  40 of 40 round(s)",
+                "machine_gun (mg)  ready  2000 of 2000 round(s)",
+                "missiles  ready  6 of 6 round(s)",
+            ]
+        );
+        if let Some(rack) = heavy.iter_mut().find(|row| row.id == "missiles") {
+            rack.ready = false;
+            rack.ready_in_ms = 10_000;
+            rack.rounds = 5;
+        }
+        assert_eq!(
+            heavy.get(2).map(|row| row.render(&heavy)).as_deref(),
+            Some("missiles  cycling (10 s)  5 of 6 round(s)")
+        );
     }
 
     /// **`B-17`**: the row advertises a short name only where it is one.

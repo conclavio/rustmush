@@ -61,6 +61,14 @@
 //! whose line is blocked or whose target is behind full cover is accepted and costs
 //! its round; the trace here is what gives the resolution its cover, and its verdict
 //! on the line is spent at the impact, by name.
+//!
+//! **16b cut AE.2** put the launch point on the record too ([`Shot::from_x_cm`]
+//! and its three siblings): the impact traces the line from the eye the round
+//! left, and takes the facet the target presents to that point, so a shooter
+//! that moves once its round is away — a heavy backing off a crest while its
+//! 250 m/s missile is 2.4 s in the air — changes nothing about where the round
+//! flies. One rule for every direct weapon; a beam lands in the substep it was
+//! fired in and never meets the case.
 
 use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
@@ -458,6 +466,33 @@ pub struct Shot {
     /// The predicted point's cell, or `None` when the target was off the window —
     /// which is what *within one cell of the prediction* is measured against.
     pub aim_cell: Option<(u16, u16)>,
+    /// **Where the round left from: the shooter's east coordinate at
+    /// acceptance**, centimetres (16b cut AE.2).
+    ///
+    /// The round already in the air carries where it left, as it carries what it
+    /// was loaded with ([`Shot::damage`]): the impact traces its line from here
+    /// and takes the facet the target presents to this point, whatever the
+    /// shooter has done since. Until cut AE.2 the impact re-traced from where the
+    /// shooter **was standing at the impact**, so a heavy that fired its rack and
+    /// backed off a crest during the 2.4 s flight read `Miss: the line was
+    /// blocked.` for its own round, and a facet was chosen by a position the
+    /// round never left from. Production never removes a unit from a running
+    /// arena, so the one live case is the shooter that **moved**.
+    pub from_x_cm: i64,
+    /// The shooter's north coordinate at acceptance, centimetres — the other half
+    /// of [`Shot::from_x_cm`].
+    pub from_y_cm: i64,
+    /// **The cell the round left from**, or `None` for a shooter off the window
+    /// at acceptance — the launch eye's cell (16b cut AE.2), exactly the cell
+    /// `Arena::fire_eye` gave the acceptance's own trace. It is also what
+    /// decides whether the impact may teach the shooter's controller doc 16 §6's
+    /// `no line` edge: only a shooter still standing in it
+    /// ([`crate::arena::Arena::note_no_line`]).
+    pub from_cell: Option<(u16, u16)>,
+    /// **The launch eye's height above the ground**, centimetres — the shooter's
+    /// `sensor_height_cm` at acceptance, as the acceptance's own trace took it
+    /// (16b cut AE.2): a tank shoots from about where it looks.
+    pub from_height_cm: i32,
     /// **What one round of this shot carries** (16b cut W.2), off the ammunition
     /// the weapon names. Recorded on the shot rather than looked up at the impact,
     /// because a turret shot off in flight takes the weapon row with it and the
@@ -467,6 +502,20 @@ pub struct Shot {
     /// steps), which is the moment the doc resolves at. The impact reads it and
     /// re-resolves only the angular size, and only when the target turned.
     pub resolution: Resolution,
+}
+
+impl Shot {
+    /// **The eye the round left from** (16b cut AE.2): [`Shot::from_cell`] at
+    /// [`Shot::from_height_cm`], the `mush_atlas::trace::Eye` the acceptance's
+    /// own trace was taken from — or `None` for a shooter that was off the window
+    /// when it fired, which is the case `Arena::fire_eye` answers `None` for too.
+    #[must_use]
+    pub fn launch_eye(&self) -> Option<mush_atlas::trace::Eye> {
+        Some(mush_atlas::trace::Eye {
+            cell: self.from_cell?,
+            height_cm: self.from_height_cm,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -776,6 +825,21 @@ impl Arena {
             .unit(unit)
             .map(|state| range_cm(&state.pose, &aim))
             .unwrap_or(0);
+        // **16b cut AE.2**: where the round leaves from — the shooter's pose and
+        // the eye `fire_eye` builds off it, the one the acceptance's trace below
+        // is taken from — recorded beside the predicted point, because the
+        // impact traces from here and not from wherever the shooter is by then.
+        let (from_x_cm, from_y_cm, from_cell, from_height_cm) = self
+            .unit(unit)
+            .map(|state| {
+                (
+                    state.pose.x_cm,
+                    state.pose.y_cm,
+                    self.definition.terrain.cell_of(&state.pose),
+                    i32::try_from(state.sensor_height_cm).unwrap_or(i32::MAX),
+                )
+            })
+            .unwrap_or_default();
         let rounds = held.min(summary.burst_rounds.max(1));
         let ready_at = at_ms.saturating_add(i64::from(summary.cycle_ms));
         let impact_at = at_ms.saturating_add(summary.flight_ms(range));
@@ -808,6 +872,10 @@ impl Arena {
                 aim_x_cm: aim.x_cm,
                 aim_y_cm: aim.y_cm,
                 aim_cell: self.definition.terrain.cell_of(&aim),
+                from_x_cm,
+                from_y_cm,
+                from_cell,
+                from_height_cm,
                 damage: summary.damage,
                 resolution,
             },
@@ -1164,6 +1232,114 @@ mod tests {
         };
         assert!(!state.limits.motion_disabled);
         assert!(state.cannot_close(), "a hull with no speed cannot close");
+    }
+
+    /// The weapons one fielded unit type carries, as the production check-out
+    /// reads them (`crate::match_::weapon_summaries`), in component order.
+    fn fielded_weapons(entry: &str) -> Vec<WeaponSummary> {
+        let catalog = crate::definitions::Catalog::build_fielded(&[], crate::NS)
+            .unwrap_or_else(|error| panic!("the fielded content binds: {error}"));
+        let key = mush_core::CanonicalId::new(entry).unwrap_or_else(|_| panic!("{entry}"));
+        let (Some(spec), Some(binding)) = (catalog.specs.get(&key), catalog.bindings.get(&key))
+        else {
+            panic!("{entry} is fielded")
+        };
+        let cells = crate::definitions::to_tactical_unit(spec, binding, ObjId(31))
+            .unwrap_or_else(|why| panic!("{entry} instantiates: {why}"));
+        crate::match_::weapon_summaries(&catalog, &cells)
+    }
+
+    /// **16b cut AE.2**: the bare `FIRE` is still HEAD's one rule — the
+    /// cannon if carried, else the first weapon in component order — witnessed
+    /// on the carriers that rule now has to choose on. The scout car lists its
+    /// autocannon first, so that is its gun; the heavy carries a cannon beside
+    /// its rack, so the cannon is; the stock tank's cannon and the laser tank's
+    /// beam are what they were. An emptied autocannon leaves the scout fighting
+    /// on its coaxial, as every tank does; and the contact band word on the
+    /// scout is banded off the autocannon's own 1 km and 2 km, held to the
+    /// sight — which differs from the coaxial's only past the coaxial's 1.2 km,
+    /// where a teammate's plot can be `far` for the one gun and `beyond` for the
+    /// other.
+    #[test]
+    fn ae2_the_bare_fire_is_the_cannon_else_the_first_weapon_on_every_carrier() {
+        use crate::definitions::content;
+
+        let mut arena = two_scouts();
+        let mut chosen = Vec::new();
+        for entry in [
+            content::SCOUT_MK1,
+            content::HEAVY_MK1,
+            content::LINE_TANK,
+            content::LINE_TANK_LASER,
+        ] {
+            if let Some(state) = arena.unit_mut(RED) {
+                state.weapons = fielded_weapons(entry);
+                state.ammo = state
+                    .weapons
+                    .iter()
+                    .map(|weapon| (weapon.id.clone(), weapon.count_per_load))
+                    .collect();
+            }
+            let state = arena.unit(RED).unwrap_or_else(|| panic!("the red scout"));
+            chosen.push((
+                state.default_weapon().map(|weapon| weapon.id.to_string()),
+                state.loaded_weapon().map(|weapon| weapon.id.to_string()),
+            ));
+        }
+        let both = |id: &str| (Some(id.to_owned()), Some(id.to_owned()));
+        assert_eq!(
+            chosen,
+            vec![
+                both("autocannon"),
+                both("cannon"),
+                both("cannon"),
+                both("laser")
+            ]
+        );
+
+        // The scout car, dry on its autocannon: the bare `FIRE` is still the
+        // autocannon (its `Empty` is owed), the machine fights on its coaxial.
+        if let Some(state) = arena.unit_mut(RED) {
+            state.weapons = fielded_weapons(content::SCOUT_MK1);
+            state.ammo = state
+                .weapons
+                .iter()
+                .map(|weapon| (weapon.id.clone(), weapon.count_per_load))
+                .collect();
+        }
+        let state = arena.unit(RED).unwrap_or_else(|| panic!("the red scout"));
+        let edges = state.fire_bands_cm();
+        assert_eq!(edges, vec![100_000, 200_000], "the autocannon's own bands");
+        let sight = state.sight_cm(1_000);
+        assert_eq!(sight, 60_000);
+        assert_eq!(
+            [15_000_u64, 35_000, 55_000, 150_000, 200_001]
+                .map(|range| crate::match_::cockpit::contact_band(range, &edges, sight)),
+            ["close", "effective", "far", "far", "beyond"],
+            "thirds of the sight, and past the autocannon's 2 km nothing"
+        );
+        assert_eq!(
+            crate::match_::cockpit::contact_band(150_000, &[60_000, 120_000], sight),
+            "beyond",
+            "the coaxial's own bands would have said `beyond` at 1.5 km"
+        );
+        if let Some(state) = arena.unit_mut(RED) {
+            state.ammo.insert(SmolStr::new("autocannon"), 0);
+        }
+        let state = arena.unit(RED).unwrap_or_else(|| panic!("the red scout"));
+        assert_eq!(
+            state.default_weapon().map(|weapon| weapon.id.to_string()),
+            Some("autocannon".to_owned())
+        );
+        assert_eq!(
+            state.loaded_weapon().map(|weapon| weapon.id.to_string()),
+            Some("machine_gun".to_owned())
+        );
+        assert_eq!(
+            state.fight_limit_cm(1_000),
+            60_000,
+            "the coaxial's 1.2 km, held to the sight"
+        );
     }
 
     #[test]

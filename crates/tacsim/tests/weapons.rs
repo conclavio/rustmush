@@ -2306,3 +2306,393 @@ fn o3_a_range_whose_shooters_run_dry_is_not_spent() {
         "the contrast is a spent draw"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut AE.2 — the missile and the autocannon at three cadences
+// ---------------------------------------------------------------------------
+
+/// **A flat field for the AE.2 replays** (16b cut AE.2): 64 cells by 64 of
+/// ground, room for a missile at 500 m and for a tank driving 150 m across the
+/// run — with, when `walled`, [`AE2_WALL`] across it.
+fn ae2_field(walled: bool) -> ArenaDefinition {
+    const SIDE_AE2: u16 = 64;
+    let (row, from, to) = AE2_WALL;
+    let mut cells = Vec::with_capacity(usize::from(SIDE_AE2) * usize::from(SIDE_AE2));
+    for y in 0..SIDE_AE2 {
+        for x in 0..SIDE_AE2 {
+            cells.push(if walled && y == row && (from..=to).contains(&x) {
+                wall()
+            } else {
+                ground()
+            });
+        }
+    }
+    ArenaDefinition {
+        id: SmolStr::new("tacsim.arena.ae2"),
+        terrain: ArenaTerrain::new(SIDE_AE2, SIDE_AE2, CELL_CM, cells).expect("the field"),
+        entry_zones: vec![
+            EntryZone {
+                team: Team::Red,
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: SIDE_AE2 - 1,
+            },
+            EntryZone {
+                team: Team::Blue,
+                x0: SIDE_AE2 - 2,
+                y0: 0,
+                x1: SIDE_AE2 - 1,
+                y1: SIDE_AE2 - 1,
+            },
+        ],
+        key_spots: Vec::new(),
+        waypoints: tacsim::arena::state::Waypoints::default(),
+        modes: Vec::new(),
+    }
+}
+
+/// **The wall of scene (3)** (16b cut AE.2), as `(row, first column, last
+/// column)`: an opaque run of [`wall`] one row north of a heavy driving east
+/// along row 4, beginning one column past the cell (10, 4) it fires from at
+/// 5,000 ms. The line from that cell to the tank at (14, 22) passes west of the
+/// wall's end; the line from (11, 4), where the heavy is when the round lands
+/// 740 ms later, runs into it.
+const AE2_WALL: (u16, u16, u16) = (5, 11, 40);
+
+/// **A shooter of `shooter`'s type and a stock tank, both seated and both
+/// already awake** (16b cut AE.2), on [`ae2_field`], each at `(x, y, heading,
+/// speed)` and so perhaps already under way. The power and the motion are laid
+/// down before the first pulse — state the three replays share — so the script
+/// is the fire orders alone.
+fn ae2_arena(shooter: &str, red: (u16, u16, u32, i32), blue: (u16, u16, u32, i32)) -> Arena {
+    ae2_arena_on(ae2_field(false), shooter, red, blue)
+}
+
+/// [`ae2_arena`] on a field of the caller's.
+fn ae2_arena_on(
+    field: ArenaDefinition,
+    shooter: &str,
+    red: (u16, u16, u32, i32),
+    blue: (u16, u16, u32, i32),
+) -> Arena {
+    use tacsim::arena::state::Controller;
+    let catalog = tacsim::definitions::Catalog::build_fielded(&[], tacsim::NS)
+        .expect("the fielded content binds");
+    let units = vec![
+        fielded_unit(
+            &catalog,
+            shooter,
+            RED,
+            Team::Red,
+            facing(red.0, red.1, red.2),
+            Controller::Pilot,
+            1,
+        ),
+        fielded_unit(
+            &catalog,
+            tacsim::definitions::content::LINE_TANK,
+            BLUE,
+            Team::Blue,
+            facing(blue.0, blue.1, blue.2),
+            Controller::Pilot,
+            1,
+        ),
+    ];
+    let pilots = [RED, BLUE]
+        .into_iter()
+        .enumerate()
+        .map(|(seat, unit)| Pilot {
+            unit,
+            pilot: ObjId(1_000 + u32::try_from(seat).unwrap_or(0)),
+            station: SmolStr::new("cockpit"),
+            epoch: 1,
+        })
+        .collect();
+    let mut arena = Arena::new(
+        CustodyOut {
+            definition: field,
+            units,
+            pilots,
+            resolution: tacsim::match_::resolution_for(&catalog),
+            seed: SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
+        },
+        &ArenaConfig::default(),
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the AE.2 arena");
+    for (id, (_, _, heading, speed)) in [(RED, red), (BLUE, blue)] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.power = Power::Online;
+            state.desired_heading_mdeg = heading;
+            state.speed_cms = speed;
+            state.desired_speed_cms = speed;
+        }
+    }
+    arena
+}
+
+/// Lock the blue tank and fire `weapon` at each of `at`, one beat apiece.
+fn ae2_script(weapon: &str, at: &[i64]) -> Vec<Beat> {
+    let contact = contact_of(RED, BLUE);
+    at.iter()
+        .enumerate()
+        .map(|(n, t_ms)| {
+            let seq = u64::try_from(n).unwrap_or(0).saturating_mul(2) + 1;
+            Beat {
+                t_ms: *t_ms,
+                intents: vec![
+                    intent(RED, IntentKind::Lock { contact }, seq),
+                    intent(
+                        RED,
+                        IntentKind::Fire {
+                            weapon: SmolStr::new(weapon),
+                        },
+                        seq + 1,
+                    ),
+                ],
+            }
+        })
+        .collect()
+}
+
+/// **One scene at 5,000, 1,000 and 500 ms** (16b §11): one event list and one
+/// per-substep hash sequence, on a different number of pulses each time.
+/// Answers the first replay's events, each as `(t_ms, JSON)`.
+fn ae2_three(
+    label: &str,
+    until_ms: i64,
+    build: &dyn Fn() -> Arena,
+    script: &[Beat],
+) -> Vec<(i64, serde_json::Value)> {
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = build();
+        let run = replay(&mut arena, cadence, until_ms, script);
+        assert_eq!(arena.now_ms, until_ms, "{label}: {cadence} ms ran short");
+        assert!(arena.shots.is_empty(), "{label}: every round arrived");
+        runs.push((cadence, run));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("{label}: three replays");
+    };
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "{label}: the event list differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes,
+            first.hashes,
+            "{label}: the per-substep hash sequence differs at {cadence} ms ({} against {})",
+            run.hashes.len(),
+            first.hashes.len()
+        );
+        assert_ne!(
+            run.pulses, first.pulses,
+            "{label}: {cadence} ms ran the same pulses"
+        );
+    }
+    first
+        .events
+        .iter()
+        .filter_map(|(t_ms, encoded, _, _)| {
+            serde_json::from_str::<serde_json::Value>(encoded)
+                .ok()
+                .map(|value| (*t_ms, value))
+        })
+        .collect()
+}
+
+/// The lines of one kind, as `(t_ms, JSON)`.
+fn ae2_lines(events: &[(i64, serde_json::Value)], kind: &str) -> Vec<(i64, serde_json::Value)> {
+    events
+        .iter()
+        .filter(|(_, value)| value.get("kind").and_then(serde_json::Value::as_str) == Some(kind))
+        .cloned()
+        .collect()
+}
+
+/// One number off a line.
+fn ae2_number(line: &serde_json::Value, key: &str) -> Option<i64> {
+    line.get(key).and_then(serde_json::Value::as_i64)
+}
+
+/// **The mandatory cross-tempo test of 16b cut AE.2** (16b §11; doc 16 §3.1
+/// "Rate independence", §3.5 "Scheduled impact").
+///
+/// The heavy's missile at 250 m/s, in three scenes, each replayed at 5,000,
+/// 1,000 and 500 ms — one event list and one hash sequence every time:
+///
+/// 1. **the standing hit**: the tank stands broadside 200 m off, and the round
+///    lands 800 ms after it was fired, a `hit` of 350;
+/// 2. **the moving miss**: the tank crosses at 15 m/s 500 m off, and the round
+///    arrives about 2 s later to a target cells from where it was — a `miss`
+///    for `moved`;
+/// 3. **the shooter that moved**: the heavy itself is under way at 10 m/s along
+///    [`AE2_WALL`] when it fires at a standing tank broadside 185 m off, from
+///    the last cell with a line past the wall's end, and is a cell further on,
+///    behind the wall, when the round lands — traced from where it left, so a
+///    `hit`, where a trace from where it ended (HEAD's rule before this cut)
+///    would read `blocked`; the witness beside it pins the launch cell on the
+///    record and the blocked line at the impact, so the scene tells the two
+///    rules apart;
+///
+/// and the scout car's autocannon, three bursts of three at 5,000 ms beats:
+/// three `fired` lines of three rounds and 231 of 240 left.
+#[test]
+fn ae2_one_missile_at_three_cadences_lands_at_one_millisecond_with_one_outcome() {
+    use tacsim::definitions::content::{HEAVY_MK1, SCOUT_MK1};
+
+    // (1) The standing hit.
+    let events = ae2_three(
+        "the standing hit",
+        10_000,
+        &|| ae2_arena(HEAVY_MK1, (8, 4, 0, 0), (8, 24, 90_000, 0)),
+        &ae2_script("missiles", &[5_000]),
+    );
+    let fired = ae2_lines(&events, "fired");
+    assert_eq!(fired.len(), 1, "one missile: {fired:?}");
+    assert_eq!(
+        fired
+            .first()
+            .and_then(|(_, line)| ae2_number(line, "range_cm")),
+        Some(20_000)
+    );
+    assert_eq!(
+        ae2_lines(&events, "impact")
+            .iter()
+            .map(|(t_ms, _)| *t_ms)
+            .collect::<Vec<_>>(),
+        vec![5_800],
+        "20,000 cm at 25,000 cm/s is 800 ms"
+    );
+    assert_eq!(
+        ae2_lines(&events, "hit")
+            .iter()
+            .map(|(t_ms, line)| (*t_ms, ae2_number(line, "damage")))
+            .collect::<Vec<_>>(),
+        vec![(5_800, Some(350))],
+        "a standing broadside target takes the round at the impact millisecond"
+    );
+
+    // (2) The moving miss.
+    let events = ae2_three(
+        "the moving miss",
+        10_000,
+        &|| ae2_arena(HEAVY_MK1, (4, 4, 0, 0), (4, 54, 90_000, 1_500)),
+        &ae2_script("missiles", &[5_000]),
+    );
+    let range = ae2_lines(&events, "fired")
+        .first()
+        .and_then(|(_, line)| ae2_number(line, "range_cm"))
+        .expect("the missile's range");
+    assert!(range > 50_000, "fired at the crossing tank: {range}");
+    assert_eq!(
+        ae2_lines(&events, "miss")
+            .iter()
+            .map(|(t_ms, line)| (
+                *t_ms,
+                line.get("reason")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            ))
+            .collect::<Vec<_>>(),
+        vec![(
+            5_000 + range * 1_000 / 25_000,
+            Some(tacsim::arena::damage::MOVED.to_owned())
+        )],
+        "the tank walked out from under it"
+    );
+
+    // (3) The shooter that moved: fired past the wall's end, landed from
+    // behind it.
+    let walled = || {
+        ae2_arena_on(
+            ae2_field(true),
+            HEAVY_MK1,
+            (5, 4, 90_000, 1_000),
+            (14, 22, 90_000, 0),
+        )
+    };
+    let script = ae2_script("missiles", &[5_000]);
+    let events = ae2_three("the shooter that moved", 10_000, &walled, &script);
+    let outcomes: Vec<String> = events
+        .iter()
+        .filter_map(
+            |(_, line)| match line.get("kind").and_then(serde_json::Value::as_str) {
+                Some("hit") => Some("hit".to_owned()),
+                Some("miss") => line
+                    .get("reason")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                _ => None,
+            },
+        )
+        .collect();
+    assert_eq!(
+        outcomes,
+        vec!["hit".to_owned()],
+        "the round was traced from where it left, past the wall's end"
+    );
+    // The witness that the scene tells the two rules apart: the heavy fired
+    // from a cell with a clear line, and stands in another, behind the wall,
+    // when its round lands.
+    let mut arena = walled();
+    let _ = replay(&mut arena, 500, 5_500, &script);
+    let shot = arena
+        .shots
+        .values()
+        .next()
+        .cloned()
+        .expect("the missile in flight");
+    assert_eq!(
+        (shot.from_cell, shot.from_x_cm, shot.from_y_cm),
+        (Some((10, 4)), 10_500, 4_500),
+        "fired from (10, 4) at 5,000 ms, and the record says so"
+    );
+    let mut wall_ms = arena.now_ms;
+    while arena.now_ms < shot.impact_at_ms {
+        arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+        wall_ms += 100;
+        let _ = arena.step(wall_ms, &[] as &[Control], &[]);
+    }
+    let there = arena
+        .unit(RED)
+        .map(|state| {
+            (
+                state.pose.x_cm / i64::from(CELL_CM),
+                state.pose.y_cm / i64::from(CELL_CM),
+            )
+        })
+        .expect("the heavy");
+    assert_eq!(there, (11, 4), "a cell on by the impact");
+    assert!(
+        !arena.fire_line(RED, BLUE).0.is_clear_or_partial(),
+        "from where the heavy stands at the impact, the wall blocks the line"
+    );
+
+    // (4) The autocannon: three bursts.
+    let script = ae2_script("autocannon", &[5_000, 10_000, 15_000]);
+    let events = ae2_three(
+        "the autocannon",
+        20_000,
+        &|| ae2_arena(SCOUT_MK1, (8, 4, 0, 0), (8, 24, 90_000, 0)),
+        &script,
+    );
+    assert_eq!(
+        ae2_lines(&events, "fired")
+            .iter()
+            .map(|(_, line)| ae2_number(line, "rounds"))
+            .collect::<Vec<_>>(),
+        vec![Some(3), Some(3), Some(3)]
+    );
+    let mut arena = ae2_arena(SCOUT_MK1, (8, 4, 0, 0), (8, 24, 90_000, 0));
+    let _ = replay(&mut arena, 1_000, 20_000, &script);
+    assert_eq!(
+        arena.unit(RED).map(|state| state.weapon_ammo("autocannon")),
+        Some(231)
+    );
+}

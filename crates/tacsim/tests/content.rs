@@ -424,10 +424,13 @@ fn the_band_word_the_shipped_content_can_print() {
 ///
 /// **16b cut AE.1** (16c N15) fields three more: the heavy, whose row is the
 /// stock tank's; the Mk2 biped, whose thermal head holds both its reaches to 450
-/// m loaded and dry; and the scout car, whose one gun is the coaxial, so
-/// emptying it leaves a unit that still **sees** 600 m (the sight is the
-/// sensor's alone) and fights at nothing — `(60_000, 0, 0)` — and has nothing to
-/// fall back to.
+/// m loaded and dry; and the scout car, whose one gun was the coaxial, so
+/// emptying it left a unit that still **saw** 600 m (the sight is the
+/// sensor's alone) and fought at nothing — `(60_000, 0, 0)`.
+///
+/// **16b cut AE.2** gave the scout car its autocannon, first in component
+/// order: that is its bare `FIRE` and the one emptied, and dry it falls to its
+/// coaxial as every tank does — `(60_000, 60_000, 60_000)`.
 #[test]
 fn e1_the_ranges_the_shipped_machines_fight_at() {
     use mush_core::ObjId;
@@ -550,8 +553,8 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
                 45_000,
                 45_000
             ),
-            // 16b cut AE.1: the scout's one gun is the coaxial, whose first band
-            // is 600 m, exactly its sight.
+            // 16b cut AE.2: the scout's gun is the autocannon, whose first band
+            // is 1 km, past its 600 m sight.
             ("tacsim.unit.scout_mk1".to_owned(), 60_000, 60_000, 60_000),
             // 16b cut O.3: no sight and nothing loaded, so nothing is in range.
             ("tacsim.unit.target_mk1".to_owned(), 0, 0, 0),
@@ -618,13 +621,14 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
     );
 
     // And again with the weapon a bare `FIRE` fires emptied. Every shipped
-    // armed unit but one carries a second gun, so it keeps fighting — at its
-    // coaxial's own first band, which on this content is 600 m and therefore
-    // exactly the sight: nought margin, and the day a shorter gun is authored
-    // this table is where it shows. **16b cut AE.1**: the one is the scout car,
-    // whose coaxial is its only gun and so the one emptied; it keeps its sight
-    // and has nothing left to fight with. **16b cut O.3**: a unit with no
-    // default weapon — the range's target — has nothing to empty and is skipped.
+    // armed unit carries a second gun, so it keeps fighting — at its coaxial's
+    // own first band, which on this content is 600 m and therefore exactly the
+    // sight: nought margin, and the day a shorter gun is authored this table is
+    // where it shows. **16b cut AE.2**: that includes the scout car, whose
+    // autocannon is its bare `FIRE` and whose coaxial is now a second gun (in
+    // 16b cut AE.1 the coaxial was its only gun, and emptied it fought at
+    // nothing). **16b cut O.3**: a unit with no default weapon — the range's
+    // target — has nothing to empty and is skipped.
     let dry: Vec<Option<SmolStr>> = names
         .iter()
         .enumerate()
@@ -657,12 +661,12 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
             Some("cannon".to_owned()),
             Some("laser".to_owned()),
             Some("cannon".to_owned()),
-            Some("machine_gun".to_owned()),
+            Some("autocannon".to_owned()),
             None,
         ],
         "the weapon a bare `FIRE` fires: the cannon, or the first in component \
-         order on a hull that carries none (the Mk2's beam, the scout's coaxial), \
-         and nothing on the range's target"
+         order on a hull that carries none (the Mk2's beam, the scout's \
+         autocannon), and nothing on the range's target"
     );
     assert_eq!(
         table(&arena),
@@ -697,9 +701,10 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
                 45_000,
                 45_000
             ),
-            // 16b cut AE.1: the scout's only gun is the one emptied, so it still
-            // sees (the sight is the sensor's alone) and has nothing to fight at.
-            ("tacsim.unit.scout_mk1".to_owned(), 60_000, 0, 0),
+            // 16b cut AE.2: the scout's autocannon emptied, it falls to its
+            // coaxial as every tank does (in 16b cut AE.1, with the coaxial its
+            // only gun, this row was `(60_000, 0, 0)`).
+            ("tacsim.unit.scout_mk1".to_owned(), 60_000, 60_000, 60_000),
             // 16b cut O.3: no sight and nothing loaded, so nothing is in range.
             ("tacsim.unit.target_mk1".to_owned(), 0, 0, 0),
         ],
@@ -715,9 +720,10 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
             .loaded_weapon()
             .map(|weapon: &WeaponSummary| weapon.id.to_string());
         // 16b cut O.3: a unit with no weapon has nothing to fall to. **16b cut
-        // AE.1**: and a unit whose only weapon was the emptied one — the scout,
-        // whose coaxial is its gun — has nothing to fall to either. A unit that
-        // still has a loaded weapon falls to `machine_gun`.
+        // AE.1**: and a unit whose only weapon was the emptied one has nothing to
+        // fall to either (no fielded unit is one since 16b cut AE.2 gave the
+        // scout its autocannon). A unit that still has a loaded weapon falls to
+        // `machine_gun`.
         let emptied = dry.get(at).cloned().flatten();
         let expected = state
             .weapons
@@ -958,7 +964,9 @@ fn the_muster_stands_on_the_road_and_the_run_at_the_enemy_reaches_the_ford() {
 /// sixth table after them: the range's target, which requires nothing — and,
 /// since **16b cut AE.1**, a seventh: the three chassis, whose Mk2 biped
 /// requires the laser (the first table) and the thermal sight (the third), both
-/// ahead of it.
+/// ahead of it — and, since **16b cut AE.2**, an eighth between the target and
+/// the chassis: the autocannon, the missile rack and their two rounds, which
+/// the scout car's and the heavy's version 2 require.
 ///
 /// The order claim is the one worth a test: [`content::SOURCES`] is authored as
 /// "a pack after every pack it names", the five extension tables each carry the
@@ -973,9 +981,10 @@ fn q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_ord
     let fielded = content::fielded_sources();
     assert_eq!(
         fielded.len(),
-        stock.len() + 14,
-        "eight shipped packs and fourteen extension files: doc 16 section 9's ten, \
-         the range's target and 16b cut AE.1's three chassis"
+        stock.len() + 18,
+        "eight shipped packs and eighteen extension files: doc 16 section 9's ten, \
+         the range's target, 16b cut AE.2's two weapons and their two rounds, and \
+         16b cut AE.1's three chassis"
     );
     for (shipped, both) in stock.iter().zip(fielded.iter()) {
         assert_eq!(shipped.name, both.name, "the shipped prefix is unmoved");

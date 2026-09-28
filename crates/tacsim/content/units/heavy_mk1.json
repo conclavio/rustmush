@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.heavy_mk1",
-    "version": 1,
+    "version": 2,
     "kind": "rules_definition",
-    "digest": "fbb5c73cd9fe1b46b6451da016d92350d78e01b205473770f0c46987bbecb0a9",
+    "digest": "86b6fbfb9d5b24366aa412466db1b612f19eb58e76306714bf74c7365aeb749c",
     "requires": [
       {
         "id": "tacsim.pack.cannon_105",
@@ -11,6 +11,10 @@
       },
       {
         "id": "tacsim.pack.mg_coax",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.missile_lr",
         "version": 1
       },
       {
@@ -96,6 +100,15 @@
             }
           },
           {
+            "id": "missiles",
+            "section": "turret",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.missile_lr",
+              "coaxial": false
+            }
+          },
+          {
             "id": "visual_sensor",
             "section": "turret",
             "role": {
@@ -171,7 +184,7 @@
           { "band": "top", "width_cm": 780, "height_cm": 380 }
         ],
         "sensor_height_cm": 170,
-        "note": "The heavy tank of 16b cut AE.1: the stock tank's five sections, guns, sight and facet table, at 1.75 times its armour (700 against 400 on the front hull) and two thirds of its speed (1,000 cm/s against 1,500). At the 105's 120 a round, the front hull takes six rounds to strip and three more through its 320 internals, where the stock tank takes four and one. It starts, stops and turns slower too: 80 and 160 cm/s squared against 100 and 200, 20 degrees a second against 30, and 40 per cent in reverse against 50. The hull is 3.8 m by 7.8 m and 2.8 m tall, a bigger box than the tank's on every band, and the sight sits 1.7 m up. Five sections and not more, on purpose, so the damage pane fits it as it fits the tank. Both tracks carry disable_motion_when_all_of, so a heavy with no tracks neither drives nor turns."
+        "note": "The heavy tank of 16b cut AE.1: the stock tank's five sections, guns, sight and facet table, at 1.75 times its armour (700 against 400 on the front hull) and two thirds of its speed (1,000 cm/s against 1,500). At the 105's 120 a round, the front hull takes six rounds to strip and three more through its 320 internals, where the stock tank takes four and one. It starts, stops and turns slower too: 80 and 160 cm/s squared against 100 and 200, 20 degrees a second against 30, and 40 per cent in reverse against 50. The hull is 3.8 m by 7.8 m and 2.8 m tall, a bigger box than the tank's on every band, and the sight sits 1.7 m up. Five sections and not more, on purpose, so the damage pane fits it as it fits the tank. Both tracks carry disable_motion_when_all_of, so a heavy with no tracks neither drives nor turns. VERSION 2 (16b cut AE.2): a six-round missile rack beside the cannon; FIRE missiles names it, the cannon stays the bare FIRE."
       }
     }
   }

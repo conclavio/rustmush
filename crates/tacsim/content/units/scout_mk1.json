@@ -1,10 +1,14 @@
 {
   "manifest": {
     "id": "tacsim.pack.scout_mk1",
-    "version": 1,
+    "version": 2,
     "kind": "rules_definition",
-    "digest": "20b59cecccd9d78af5d5f1608b5831683d4d2927290ce6fd297c4b15e535f043",
+    "digest": "8c76e3b2274bbe026a0f4a4cf7b19ef8dd0dd58aa7204a98371264a4699ca383",
     "requires": [
+      {
+        "id": "tacsim.pack.autocannon_30",
+        "version": 1
+      },
       {
         "id": "tacsim.pack.mg_coax",
         "version": 1
@@ -74,12 +78,21 @@
         ],
         "components": [
           {
+            "id": "autocannon",
+            "section": "turret",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.autocannon_30",
+              "coaxial": false
+            }
+          },
+          {
             "id": "machine_gun",
             "section": "turret",
             "role": {
               "kind": "weapon",
               "weapon": "tacsim.weapon.mg_coax",
-              "coaxial": false
+              "coaxial": true
             }
           },
           {
@@ -158,7 +171,7 @@
           { "band": "top", "width_cm": 520, "height_cm": 260 }
         ],
         "sensor_height_cm": 200,
-        "note": "The scout car of 16b cut AE.1: the stock tank's five sections cut down, with a pair of wheels where the tracks were and the machine gun as its only gun until cut AE.2 gives it its autocannon. 3,000 cm/s is 108 kph on a road, which the wheeled row prices at 80; on grass (220) the terrain factor holds it to about 1,360 cm/s against the stock tank's 1,153, so it is quicker than a tank anywhere it can go. What it pays is where it can go: rubble, rock and the thick woods refuse it, a slope past 25 per cent refuses it where a tank climbs 45, and it fords at 400, five times a road, since the water row moved. Its ceiling on an 80 road is 3,000 x 100 / 80 = 3,750 cm/s, under the 3,996 that would shorten the 250 ms substep. The wheels are a pair: one gone is slow(50) and no turn toward it, both gone is disable_motion. The armour is half the tank's: 200 on the bow is two 105 rounds."
+        "note": "The scout car of 16b cut AE.1: the stock tank's five sections cut down, with a pair of wheels where the tracks were and the machine gun as its only gun until cut AE.2 gives it its autocannon. 3,000 cm/s is 108 kph on a road, which the wheeled row prices at 80; on grass (220) the terrain factor holds it to about 1,360 cm/s against the stock tank's 1,153, so it is quicker than a tank anywhere it can go. What it pays is where it can go: rubble, rock and the thick woods refuse it, a slope past 25 per cent refuses it where a tank climbs 45, and it fords at 400, five times a road, since the water row moved. Its ceiling on an 80 road is 3,000 x 100 / 80 = 3,750 cm/s, under the 3,996 that would shorten the 250 ms substep. The wheels are a pair: one gone is slow(50) and no turn toward it, both gone is disable_motion. The armour is half the tank's: 200 on the bow is two 105 rounds. VERSION 2 (16b cut AE.2): the 30 mm autocannon in the turret, first in component order, so it is the bare FIRE."
       }
     }
   }

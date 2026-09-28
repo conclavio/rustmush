@@ -6093,3 +6093,300 @@ async fn a_taken_name_is_refused_the_same_way_whatever_it_collided_with() {
     }
     assert_eq!(groups.len(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut AE.2 — a round in flight tells its target nothing, and a miss on a
+// contact the shooter no longer holds says no more than `Miss.` (16c N15)
+// ---------------------------------------------------------------------------
+
+/// Where the missile witnesses stand (16b cut AE.2): Bo's heavy at (160, 140)
+/// facing south, Ada's stock tank 200 m south of it at (160, 120) facing east,
+/// so it shows the heavy its whole left side.
+const AE2_SHOOTER_POSE: &str = "@arena/pose BA=160 140 180";
+const AE2_TARGET_POSE: &str = "@arena/pose RA=160 120 90";
+
+/// **Where staff puts Ada's tank for the lost-contact shot** (16b cut AE.2):
+/// 110 cells south of Bo's heavy, behind the compound at columns 150 to 170 and
+/// rows 36 to 52 — out of every sight, and 1.1 km away, so the missile is 4.4 s
+/// in the air and Bo's contact on the tank (last refreshed before the place, at
+/// the same wake) expires three sensor passes into the flight.
+const AE2_BEHIND_THE_COMPOUND: (u16, u16) = (160, 30);
+
+/// The lines of `seen` a pilot was told, without the sentinel's echo and its
+/// refusal — what [`o1_drain`] adds to a transcript to prove it complete.
+fn ae2_told(seen: &str) -> Vec<String> {
+    seen.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.contains(SENTINEL) && !line.starts_with(HUH))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// **A missile tells its target nothing in the air, and a shooter that has lost
+/// the contact reads `Miss.` and no reason** (16b cut AE.2; doc 16 §1, §5 and
+/// §3.5; 16c N2), over the production composition and real SSH.
+///
+/// Bo flies the heavy and Ada a stock tank 200 m off, broadside to him; each
+/// holds the other, told apart, before anything is fired.
+///
+/// 1. **In flight, nothing.** Bo fires his rack at Ada until a round lands. For
+///    every shot, what Ada is sent from the moment before Bo's `FIRE missiles`
+///    to the moment Bo is told the outcome — drained to the last line with a
+///    sentinel — is nothing at all for a miss, and for the hit only her own
+///    tank's lines: `Hit on the …` and, if a section went, `The … is
+///    destroyed`; no shooter, no callsign, no object number, no weapon.
+/// 2. **The lost contact.** Under a 5,000 ms staff floor, God's `@arena/place`
+///    of Ada's tank to behind the compound, 1.1 km away, and Bo's `FIRE
+///    missiles` land at one wake; phase 4 takes the place first (her tank's id
+///    is the lower) and the round flies at where the tank now is. Bo's contact
+///    expires three sensor passes into the 4.4 s flight, and the round finds the
+///    compound's wall. Bo reads `Miss.` — no `moved`, no `blocked`, no `cover`:
+///    where the target went and what stood round it are not his to know once
+///    the contact is gone. Ada reads nothing of it.
+/// 3. **The debrief says the same.** Bo's `SIM REPORT` closes that shot as
+///    `missiles at a contact: miss.` and carries no miss reason for an unheld
+///    target anywhere.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_reads_miss() {
+    let server = boot("observer-ae2").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (red, blue, _muster, _domain) = seat_the_witnesses(&mut god).await;
+    assert!(
+        red < blue,
+        "phase 4 drains in unit-id order; this test needs the target's id below the shooter's \
+         ({red} against {blue})"
+    );
+
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(&mut bo, "SIM UNIT heavy_mk1", "will field heavy_mk1").await;
+    say(
+        &mut god,
+        AE2_SHOOTER_POSE,
+        "BA opens at cell (160, 140) heading 180 for the next match.",
+    )
+    .await;
+    say(
+        &mut god,
+        AE2_TARGET_POSE,
+        "RA opens at cell (160, 120) heading 90 for the next match.",
+    )
+    .await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut bo, "blue", "Blue Room").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+    power_up(&mut ada).await;
+    power_up(&mut bo).await;
+    let id = i3_match_id(&mut god).await;
+
+    // Each holds the other, told apart.
+    for term in [&mut ada, &mut bo] {
+        wait_until(
+            STEP_TIMEOUT,
+            "the other tank to be told apart",
+            async || !first_contact(term).await.starts_with('X'),
+        )
+        .await;
+    }
+    let locking = bo.mark();
+    say(&mut bo, "LOCK RA", "Locking").await;
+    bo.expect_after(locking, "Locked on RA").await;
+
+    // ---- (1) in flight, nothing --------------------------------------------
+    let mut hit = false;
+    for _ in 0..4 {
+        wait_until(STEP_TIMEOUT, "the rack to be ready", async || {
+            ask_whole(&mut bo, "WEAPONSTATUS")
+                .await
+                .contains("missiles  ready")
+        })
+        .await;
+        o1_drain(&mut ada).await;
+        let from = ada.mark();
+        let shot = bo.mark();
+        bo.send_line("FIRE missiles").await;
+        bo.expect_after(shot, "Firing missiles.").await;
+        let outcome = bo
+            .expect_one_of_after(shot, &["Hit on RA", "Miss on RA", "refused"])
+            .await;
+        assert_ne!(
+            outcome,
+            2,
+            "the rack was refused: {}",
+            strip_ansi(&bo.seen[shot..])
+        );
+        o1_drain(&mut ada).await;
+        let told = ae2_told(&strip_ansi(&ada.seen[from..]));
+        let whole = told.join("\n");
+        for leak in [
+            "BA".to_owned(),
+            "missile".to_owned(),
+            "Firing".to_owned(),
+            "bearing".to_owned(),
+            BLUE_TANK.to_owned(),
+            format!("#{blue}"),
+            format!("#{red}"),
+        ] {
+            assert!(
+                !whole.contains(&leak),
+                "the target's pilot was told {leak:?} about a round fired at her:\n{whole}"
+            );
+        }
+        if outcome == 0 {
+            assert!(
+                told.iter().any(|line| line.starts_with("Hit on the ")),
+                "the hit did not reach its target's pilot as her own tank's line:\n{whole}"
+            );
+            assert!(
+                told.iter().all(|line| line.starts_with("Hit on the ")
+                    || (line.starts_with("The ") && line.contains(" is destroyed"))),
+                "the target's pilot read something beside her own tank's lines:\n{whole}"
+            );
+            hit = true;
+            break;
+        }
+        assert!(
+            told.is_empty(),
+            "a missile that missed told its target something:\n{whole}"
+        );
+    }
+    assert!(
+        hit,
+        "four missiles at a broadside tank 200 m off and not one hit"
+    );
+
+    // ---- (2) the contact lost in flight -------------------------------------
+    wait_until(STEP_TIMEOUT, "the rack to be ready again", async || {
+        ask_whole(&mut bo, "WEAPONSTATUS")
+            .await
+            .contains("missiles  ready")
+    })
+    .await;
+    assert!(
+        ask(
+            &mut god,
+            &format!("@arena/tempo {id}=5000"),
+            "under a floor"
+        )
+        .await
+        .contains("under a floor of 5000 ms")
+    );
+    o1_drain(&mut ada).await;
+    let from = ada.mark();
+    let fire_mark = bo.mark();
+    let god_mark = god.mark();
+    // Back to back: both wait in the task's buffer for the same wake.
+    bo.send_line("FIRE missiles").await;
+    god.send_line(&format!(
+        "@arena/place #{red}={},{}",
+        AE2_BEHIND_THE_COMPOUND.0, AE2_BEHIND_THE_COMPOUND.1
+    ))
+    .await;
+    bo.expect_after(fire_mark, "Firing missiles.").await;
+    assert_eq!(
+        god.expect_one_of_after(
+            god_mark,
+            &["Placing", "impassable", "off the arena", COMMIT_PENDING]
+        )
+        .await,
+        0,
+        "the place was not sent: {}",
+        strip_ansi(&god.seen[god_mark..])
+    );
+    // The round leaves the rack at the next wake, a floor away at most. Then the
+    // floor is lifted — a 5,000 ms floor over this file's 100 ms tempo is slow
+    // motion — and the rest, the contact's expiry three passes in and the
+    // impact 4.4 s after the shot, happens at its own arena milliseconds
+    // whatever the wall does.
+    wait_until(STEP_TIMEOUT, "the missile to leave the rack", async || {
+        ask_whole(&mut bo, "WEAPONSTATUS")
+            .await
+            .contains("missiles  cycling")
+    })
+    .await;
+    say(
+        &mut god,
+        &format!("@arena/tempo {id}=off"),
+        "its own tempo again",
+    )
+    .await;
+    wait_until(STEP_TIMEOUT, "Bo to be told the outcome", async || {
+        o1_drain(&mut bo).await;
+        ae2_told(&strip_ansi(&bo.seen[fire_mark..]))
+            .iter()
+            .any(|line| line.starts_with("Hit") || line.starts_with("Miss"))
+    })
+    .await;
+    let told = ae2_told(&strip_ansi(&bo.seen[fire_mark..]));
+    let whole = told.join("\n");
+    assert!(
+        told.iter().any(|line| line == "Miss."),
+        "a miss on a contact Bo no longer holds is the one word:\n{whole}"
+    );
+    for leak in ["moved", "blocked", "cover", "Miss:", "Miss on", "Hit"] {
+        assert!(
+            !whole.contains(leak),
+            "Bo was told {leak:?} about a target he no longer holds:\n{whole}"
+        );
+    }
+    o1_drain(&mut ada).await;
+    let told = ae2_told(&strip_ansi(&ada.seen[from..]));
+    let whole = told.join("\n");
+    // Her own sensor losing the heavy (`Contact BA lost.`) is hers to read;
+    // nothing about the round or the place is.
+    for leak in ["Hit on", "Miss", "missile", "place", "Placing", "in_flight"] {
+        assert!(
+            !whole.contains(leak),
+            "Ada was told {leak:?} about a round that went into a wall:\n{whole}"
+        );
+    }
+
+    // ---- (3) the debrief -----------------------------------------------------
+    say(&mut god, &format!("@arena/abort {id}"), "is stopping").await;
+    let mut events = Vec::new();
+    wait_until(
+        STEP_TIMEOUT,
+        "the place and the miss to reach the tape",
+        async || {
+            events = ledger_events(&server.store, id).await;
+            events.iter().any(|event| {
+                event.get("kind").and_then(Value::as_str) == Some("miss")
+                    && event.get("reason").and_then(Value::as_str) == Some("blocked")
+            })
+        },
+    )
+    .await;
+    assert!(
+        events.iter().any(|event| {
+            event.get("kind").and_then(Value::as_str) == Some("placed")
+                && event.get("unit").and_then(Value::as_u64) == Some(u64::from(red))
+        }),
+        "the place was refused, so the round was not fired at where the tank went"
+    );
+    let report = sim_report(&mut bo, &format!("SIM REPORT {id}")).await;
+    // The report itself, from its first line: the slice `sim_report` answers
+    // starts at the command and may carry what the centre said before it (the
+    // pod's hatch, a channel's `removed`).
+    let body = report
+        .split_once("Reading your report")
+        .map_or(report.as_str(), |(_, body)| body);
+    let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("missiles at a contact: miss."),
+        "the lost contact's shot is not `miss.` in Bo's report:\n{report}"
+    );
+    for leak in ["a contact: miss:", "blocked", "moved", "cover"] {
+        assert!(
+            !flat.contains(leak),
+            "Bo's report carried {leak:?} for a target he did not hold:\n{report}"
+        );
+    }
+    report_is_the_pilots_own(&report, red, blue, "Bo's report of the missiles");
+    no_sixteen_digit_word(&strip_ansi(&ada.seen), "Ada's transcript");
+    no_sixteen_digit_word(&strip_ansi(&bo.seen), "Bo's transcript");
+}

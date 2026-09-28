@@ -2490,11 +2490,18 @@ pub enum FrameNotice {
         spent: bool,
     },
     /// **A round of this platform's went nowhere** (16b cut F.2), with the
-    /// ledger's own reason word ([`crate::arena::damage::MISS_REASONS`]).
+    /// ledger's own reason word ([`crate::arena::damage::MISS_REASONS`]) while
+    /// the platform holds the target, and **no reason at all** once it does not
+    /// (16b cut AE.2): why a round missed — the target moved, the line was
+    /// blocked, the ground covered it — is a position and a cover check the
+    /// sensors did not earn. `contact: None` with an empty `reason` renders
+    /// `Miss.`.
     Miss {
         /// The contact, where the platform still holds one.
         contact: Option<Named>,
-        /// The reason, as the black box records it.
+        /// The reason, as the black box records it, when `contact` is `Some`;
+        /// empty when the platform no longer holds the target (16b cut AE.2),
+        /// which is not one of [`crate::arena::damage::MISS_REASONS`].
         reason: SmolStr,
     },
     /// **A round of this platform's finished the target** (16b cut F.2).
@@ -3344,6 +3351,19 @@ mod tests {
         let aim_cell = arena
             .unit(U2_POD)
             .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
+        // 16b cut AE.2: the round leaves from where the red tank stands, at its
+        // eye — what `resolve_fire` would have recorded.
+        let (from_x_cm, from_y_cm, from_cell, from_height_cm) = arena
+            .unit(U2_RED)
+            .map(|state| {
+                (
+                    state.pose.x_cm,
+                    state.pose.y_cm,
+                    arena.definition.terrain.cell_of(&state.pose),
+                    i32::try_from(state.sensor_height_cm).unwrap_or(i32::MAX),
+                )
+            })
+            .unwrap_or_else(|| panic!("the red tank is in the match"));
         arena.shots.insert(
             1,
             crate::arena::weapons::Shot {
@@ -3359,6 +3379,10 @@ mod tests {
                 aim_x_cm: 3_500,
                 aim_y_cm: 3_500,
                 aim_cell,
+                from_x_cm,
+                from_y_cm,
+                from_cell,
+                from_height_cm,
                 damage: 1_000_000,
                 resolution: crate::arena::resolution::Resolution {
                     p_permille: 1_000,

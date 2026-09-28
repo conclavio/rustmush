@@ -8567,14 +8567,18 @@ fn o3_the_target_binds_creates_refits_and_checks_out() {
 
 /// **The three chassis' digest pins** (16b cut AE.1; 16c N15), the way X.1 pins
 /// the laser's: the scout car, the heavy tank and the second biped.
+///
+/// **16b cut AE.2** moved the first two with the carriers' version 2 (the
+/// autocannon and the rack). Were `20b59cec…` (scout) and `fbb5c73c…` (heavy),
+/// both at version 1.
 const DIGESTS_CHASSIS: [(&str, &str); 3] = [
     (
         "tacsim.pack.scout_mk1",
-        "20b59cecccd9d78af5d5f1608b5831683d4d2927290ce6fd297c4b15e535f043",
+        "8c76e3b2274bbe026a0f4a4cf7b19ef8dd0dd58aa7204a98371264a4699ca383",
     ),
     (
         "tacsim.pack.heavy_mk1",
-        "fbb5c73cd9fe1b46b6451da016d92350d78e01b205473770f0c46987bbecb0a9",
+        "86b6fbfb9d5b24366aa412466db1b612f19eb58e76306714bf74c7365aeb749c",
     ),
     (
         "tacsim.pack.biped_mk2",
@@ -8629,7 +8633,10 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
             Some(pack.manifest().digest().to_hex().as_str()),
             "{id}'s digest moved; re-review the content and re-pin it"
         );
-        assert_eq!(pack.manifest().version(), 1, "{id} is version 1");
+        // 16b cut AE.2 moved the scout car and the heavy to version 2 (their
+        // guns); the Mk2 is still at 1.
+        let version = if id == "tacsim.pack.biped_mk2" { 1 } else { 2 };
+        assert_eq!(pack.manifest().version(), version, "{id}'s version");
     }
     assert_eq!(pinned.len(), content::EXTENSIONS_CHASSIS.len());
 
@@ -8763,7 +8770,8 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
     }
 
     // The Mk2's beam is in its right arm (X.2's mount fallback), its coaxial in
-    // its left; the scout's one gun is the machine gun until cut AE.2.
+    // its left; the scout's guns are, since cut AE.2, the autocannon first and
+    // the coaxial slaved to it.
     let (_, mk2) = cells_of(content::BIPED_MK2, 22);
     let weapons = tacsim::match_::weapon_summaries(&fielded, &mk2);
     let mount = |id: &str| {
@@ -8780,8 +8788,8 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
             .iter()
             .map(|weapon| weapon.id.to_string())
             .collect::<Vec<_>>(),
-        vec!["machine_gun".to_owned()],
-        "the scout's one gun, until cut AE.2"
+        vec!["autocannon".to_owned(), "machine_gun".to_owned()],
+        "the scout's guns in component order, since cut AE.2"
     );
 
     // And the Mk2's heat cells are laid down at check-out, on the legged row.
@@ -10068,5 +10076,746 @@ fn ae1_a_machine_walker_and_a_machine_car_steer_on_their_own_rows_at_every_caden
     assert_eq!(
         first.path_cells, own,
         "the reflex scaled the car's search on another row's cheapest cell"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// AE.2 — the autocannon, and the missile with a flight time (16c N15)
+// ---------------------------------------------------------------------------
+
+/// **The two weapons' and their rounds' digest pins** (16b cut AE.2; 16c N15),
+/// the way X.1 pins the laser's, in `requires` order: the 30 mm round, the
+/// autocannon, the missile round and the rack.
+const DIGESTS_ORDNANCE: [(&str, &str); 4] = [
+    (
+        "tacsim.pack.ap_30",
+        "8704ce199381569e8e9171eabc31143fe10f0f0d85f7755b5a3afa164b47d394",
+    ),
+    (
+        "tacsim.pack.autocannon_30",
+        "1aee8939d0ee05e780919a5c1b06abdb455c0af6bc9fc6b15512bd15190f8d35",
+    ),
+    (
+        "tacsim.pack.missile_round",
+        "902758dc2f22fa442a81828f30f9718f9aa35dd785801f83a0856919bb8f372a",
+    ),
+    (
+        "tacsim.pack.missile_lr",
+        "2437c519457287ec4d5ac2fba9a54e1da973f6619f7db6f088fe0694fae851a4",
+    ),
+];
+
+/// The ordnance's pack files, by their paths under `content/`.
+const PACK_FILES_ORDNANCE: [&str; 4] = [
+    "ammunition/ap_30.json",
+    "weapons/autocannon_30.json",
+    "ammunition/missile_round.json",
+    "weapons/missile_lr.json",
+];
+
+/// **The two carriers 16b cut AE.2 moves to version 2**, re-signed by the same
+/// writing branch; their pins are [`DIGESTS_CHASSIS`]' first two rows.
+const PACK_FILES_CARRIERS: [&str; 2] = ["units/scout_mk1.json", "units/heavy_mk1.json"];
+
+/// **The ordnance loads beside the stock game without moving it, and the two
+/// carriers take it at version 2** (16b cut AE.2; 16c N15; doc 16 §9's rule
+/// read for a table of the fielded catalog).
+///
+/// X.1's shape, one table: the four pins and the writing branch, which re-signs
+/// the scout car and the heavy too; the carriers at version 2, requiring the
+/// autocannon and the rack at version 1, the Mk2 still at 1; the stock game is
+/// the two weapons, two rounds, one unit and one arena it always was, and every
+/// stock definition keeps its identity; the fielded catalog holds five weapons,
+/// five rounds and ten unit schemas; [`tacsim::definitions::WeaponDef::check`]
+/// accepts both new weapons; and each is read off its carrier exactly as the
+/// production check-out reads it, in component order — so the scout car's bare
+/// `FIRE` is its autocannon and the heavy's is still its cannon, by the one
+/// rule HEAD always had. The rack's flight at the ranges a sight allows is
+/// pinned here too: 2,000 ms at 500 m, 2,400 at a sight's edge, 3,600 on a
+/// teammate's plot at 900 m, and the 6,000 of the arena-level test's 1.5 km.
+#[test]
+fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
+    use tacsim::arena::state::WeaponSummary;
+
+    if writing() {
+        for relative in PACK_FILES_ORDNANCE.iter().chain(PACK_FILES_CARRIERS.iter()) {
+            resign(relative);
+        }
+        return;
+    }
+
+    // The pins.
+    let pinned: std::collections::BTreeMap<&str, &str> = DIGESTS_ORDNANCE.into_iter().collect();
+    for (name, json) in content::EXTENSIONS_ORDNANCE {
+        let pack = tacsim::pack::load_pack(json)
+            .unwrap_or_else(|error| panic!("{name} does not verify: {error}"));
+        let id = pack.manifest().id().to_string();
+        assert_eq!(
+            pinned.get(id.as_str()).copied(),
+            Some(pack.manifest().digest().to_hex().as_str()),
+            "{id}'s digest moved; re-review the content and re-pin it"
+        );
+        assert_eq!(pack.manifest().version(), 1, "{id} is version 1");
+    }
+    assert_eq!(pinned.len(), content::EXTENSIONS_ORDNANCE.len());
+
+    // The carriers at version 2, requiring the new weapons; the Mk2 at 1.
+    let chassis: std::collections::BTreeMap<&str, &str> = DIGESTS_CHASSIS.into_iter().collect();
+    for (json, id, version, requires) in [
+        (
+            content::SCOUT_MK1_JSON,
+            "tacsim.pack.scout_mk1",
+            2,
+            Some("tacsim.pack.autocannon_30"),
+        ),
+        (
+            content::HEAVY_MK1_JSON,
+            "tacsim.pack.heavy_mk1",
+            2,
+            Some("tacsim.pack.missile_lr"),
+        ),
+        (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 1, None),
+    ] {
+        let pack = tacsim::pack::load_pack(json)
+            .unwrap_or_else(|error| panic!("{id} does not verify: {error}"));
+        assert_eq!(pack.manifest().id().as_str(), id);
+        assert_eq!(pack.manifest().version(), version, "{id}'s version");
+        assert_eq!(
+            chassis.get(id).copied(),
+            Some(pack.manifest().digest().to_hex().as_str()),
+            "{id}'s digest moved; re-review the content and re-pin it"
+        );
+        if let Some(weapon) = requires {
+            assert!(
+                pack.manifest()
+                    .requires()
+                    .iter()
+                    .any(|row| row.id.as_str() == weapon && row.version == 1),
+                "{id} does not require {weapon}@1"
+            );
+        }
+    }
+
+    // The stock game is what it was.
+    let stock = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    assert_eq!(stock.weapons.len(), 2, "the cannon and the coaxial");
+    assert_eq!(stock.ammunition.len(), 2, "the 105 and the ball");
+    assert_eq!(stock.specs.len(), 1, "one unit schema");
+
+    // The fielded catalog: five weapons, five rounds, ten unit schemas, and no
+    // stock identity moved.
+    let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let ids = |keys: Vec<&CanonicalId>| -> Vec<String> {
+        keys.into_iter().map(|id| id.as_str().to_owned()).collect()
+    };
+    assert_eq!(
+        ids(fielded.weapons.keys().collect()),
+        vec![
+            content::AUTOCANNON_30.to_owned(),
+            "tacsim.weapon.cannon_105".to_owned(),
+            content::LASER_MK1.to_owned(),
+            "tacsim.weapon.mg_coax".to_owned(),
+            content::MISSILE_LR.to_owned(),
+        ],
+        "the cannon, the coaxial, the laser, the autocannon and the rack"
+    );
+    assert_eq!(
+        ids(fielded.ammunition.keys().collect()),
+        vec![
+            "tacsim.ammunition.ap_30".to_owned(),
+            "tacsim.ammunition.ball_762".to_owned(),
+            "tacsim.ammunition.he_105".to_owned(),
+            "tacsim.ammunition.laser_charge".to_owned(),
+            "tacsim.ammunition.missile_round".to_owned(),
+        ]
+    );
+    assert_eq!(fielded.specs.len(), 10, "no unit schema of its own");
+    for (id, reference) in &stock.references {
+        assert_eq!(
+            fielded.references.get(id),
+            Some(reference),
+            "{id} moved when the ordnance loaded; a persisted unit points at it"
+        );
+    }
+
+    // `WeaponDef::check` accepts both, which is every bound the loader holds a
+    // weapon to — a floor-legal cycle, outward bands, a direct weapon's speed.
+    for id in [content::AUTOCANNON_30, content::MISSILE_LR] {
+        let def = fielded
+            .weapons
+            .get(&CanonicalId::new(id).expect("a canonical id"))
+            .expect("the weapon is fielded");
+        def.check(id)
+            .unwrap_or_else(|error| panic!("{id} is refused: {error}"));
+        assert_eq!(
+            def.max_range_cm(),
+            if id == content::MISSILE_LR {
+                300_000
+            } else {
+                200_000
+            }
+        );
+    }
+    // The longest reach fielded is still the cannon's 3 km, which is what
+    // `tempo.alert_range_cm` is derived from: the rack's outer edge is equal
+    // to it on purpose.
+    assert_eq!(
+        fielded
+            .weapons
+            .values()
+            .map(tacsim::definitions::WeaponDef::max_range_cm)
+            .max(),
+        Some(300_000)
+    );
+
+    // Each carrier's weapons as the production check-out reads them, in
+    // component order.
+    let summaries_of = |entry: &str| -> Vec<WeaponSummary> {
+        let key = CanonicalId::new(entry).expect("a canonical id");
+        let spec = fielded.specs.get(&key).expect("the carrier is fielded");
+        let binding = fielded.bindings.get(&key).expect("its binding");
+        let cells = tacsim::definitions::to_tactical_unit(spec, binding, mush_core::ObjId(31))
+            .unwrap_or_else(|why| panic!("{entry} instantiates: {why}"));
+        tacsim::match_::weapon_summaries(&fielded, &cells)
+    };
+    let names = |rows: &[WeaponSummary]| -> Vec<String> {
+        rows.iter().map(|weapon| weapon.id.to_string()).collect()
+    };
+    let scout = summaries_of(content::SCOUT_MK1);
+    assert_eq!(names(&scout), vec!["autocannon", "machine_gun"]);
+    let heavy = summaries_of(content::HEAVY_MK1);
+    assert_eq!(names(&heavy), vec!["cannon", "machine_gun", "missiles"]);
+    let find = |rows: &[WeaponSummary], id: &str| -> WeaponSummary {
+        rows.iter()
+            .find(|weapon| weapon.id.as_str() == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {id}"))
+    };
+    let autocannon = find(&scout, "autocannon");
+    assert_eq!(
+        (
+            autocannon.burst_rounds,
+            autocannon.cycle_ms,
+            autocannon.damage,
+            autocannon.count_per_load,
+            autocannon.muzzle_speed_cms,
+            autocannon.bands_cm(),
+        ),
+        (3, 3_000, 20, 240, 105_000, vec![100_000, 200_000])
+    );
+    assert_eq!(
+        autocannon.flight_ms(60_000),
+        571,
+        "0.57 s at a sight's edge"
+    );
+    let rack = find(&heavy, "missiles");
+    assert_eq!(
+        (
+            rack.burst_rounds,
+            rack.cycle_ms,
+            rack.damage,
+            rack.count_per_load,
+            rack.muzzle_speed_cms,
+            rack.bands_cm(),
+        ),
+        (1, 10_000, 350, 6, 25_000, vec![60_000, 300_000])
+    );
+    assert!(
+        !rack.is_beam(),
+        "a rack is a direct weapon with a flight time"
+    );
+    assert_eq!(
+        [50_000_u64, 60_000, 90_000, 150_000].map(|range| rack.flight_ms(range)),
+        [2_000, 2_400, 3_600, 6_000],
+        "500 m, a sight's edge, a teammate's plot, and the arena test's 1.5 km"
+    );
+}
+
+/// **An arena of one shooter and one line tank, both awake, the shooter locked
+/// on the tank through a contact planted by hand** (16b cut AE.2) — the shape
+/// `damage.rs`'s own tests take, because what is under test is the shot and not
+/// how the platform came to hold its target (at 1.5 km no sight would).
+fn ae2_duel(
+    catalog: &Catalog,
+    shooter: &str,
+    shooter_cell: (u16, u16),
+    target_cell: (u16, u16),
+    definition: ArenaDefinition,
+    reflex: bool,
+) -> Arena {
+    let red = unit_of(catalog, shooter, RED, Team::Red, shooter_cell);
+    let red = if reflex { under_reflex(red) } else { red };
+    let mut arena = arena_over(
+        catalog,
+        vec![
+            red,
+            unit_of(catalog, content::LINE_TANK, BLUE, Team::Blue, target_cell),
+        ],
+        definition,
+        &ArenaConfig::default(),
+    );
+    for id in [RED, BLUE] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.power = Power::Online;
+        }
+    }
+    let contact = tacsim::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+    arena.contacts.insert(
+        RED,
+        contact,
+        ShadowContact::sighted(
+            BLUE,
+            Classification::Classified { team: Team::Blue },
+            0,
+            plot_of(&arena, BLUE),
+        ),
+    );
+    arena
+        .resolve_lock(RED, contact, arena.now_ms)
+        .expect("the lock holds");
+    arena
+}
+
+/// **Make one shot in flight certain to land** (16b cut AE.2): its recorded
+/// chance at the impact's own clamp ceiling and past it. The chance is not what
+/// these tests are about — the flight, the re-validation and the launch point
+/// are — and a per-mille draw a fixture would have to hunt a seed for is the
+/// wrong thing to pin them on. The impact reads the recorded resolution for a
+/// target that has not turned (doc 16 §3.5), so this is what it uses.
+fn ae2_certain(arena: &mut Arena, seq: u64) {
+    if let Some(shot) = arena.shots.get_mut(&seq) {
+        shot.resolution.p_permille = 1_000;
+    }
+}
+
+/// One shot's outcome off an impact's journal: `Ok((section, facet, rounds,
+/// damage))` for a hit, `Err(reason)` for a miss.
+fn ae2_outcome(
+    journal: &[tacsim::arena::perception::Notice],
+) -> Result<(String, String, u32, u32), String> {
+    use tacsim::arena::ledger::EventKind;
+    journal
+        .iter()
+        .find_map(|(_, kind, _)| match kind {
+            EventKind::Hit {
+                section,
+                facet,
+                rounds,
+                damage,
+                ..
+            } => Some(Ok((
+                section.to_string(),
+                facet.to_string(),
+                *rounds,
+                *damage,
+            ))),
+            EventKind::Miss { reason, .. } => Some(Err(reason.to_string())),
+            _ => None,
+        })
+        .unwrap_or_else(|| Err(format!("no outcome in {journal:?}")))
+}
+
+/// **Three rounds a pull, each its own draw** (16b cut AE.2; doc 16 §3.5 step
+/// 4's burst): the scout car's autocannon spends three rounds of its 240 and
+/// starts its 3,000 ms cycle; how many land is one binomial sample drawn once
+/// under `burst:<seq>` — a count from nought to three, and every count reachable
+/// as the chance moves; every landed round carries 20 into one `hit` line
+/// through `apply_hit`; and a last pull with two rounds left fires the two.
+#[test]
+fn ae2_the_autocannon_is_a_burst_of_three_and_each_round_is_its_own_draw() {
+    let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let mut arena = ae2_duel(
+        &catalog,
+        content::SCOUT_MK1,
+        RED_CELL,
+        BLUE_CELL,
+        definition(&[]),
+        false,
+    );
+    let at = arena.now_ms;
+    let seq = arena
+        .resolve_fire(RED, "autocannon", at)
+        .expect("the burst is accepted");
+    let state = arena.unit(RED).expect("the car");
+    assert_eq!(state.weapon_ammo("autocannon"), 237, "three of 240 spent");
+    assert_eq!(state.weapon_ready_at_ms("autocannon"), at + 3_000);
+    assert_eq!(
+        state.weapon_ammo("machine_gun"),
+        2_000,
+        "the coaxial is its own magazine"
+    );
+    let shot = arena.shot(seq).cloned().expect("the burst in flight");
+    assert_eq!((shot.rounds, shot.damage), (3, 20));
+
+    // One draw, under `burst:<seq>`, and a count.
+    let (label, value) = arena.shot_draw(seq, shot.rounds);
+    assert_eq!(label, format!("burst:{seq}"));
+    assert_eq!(
+        arena.shot_draw(seq, shot.rounds),
+        (label, value),
+        "drawn once"
+    );
+    let landed = arena.rounds_landed(seq, 3, shot.resolution.p_permille);
+    assert!(landed <= 3);
+    assert_eq!(
+        arena.rounds_landed(seq, 3, shot.resolution.p_permille),
+        landed,
+        "the same count every time it is asked"
+    );
+    let counts: std::collections::BTreeSet<u32> = (0..=1_000_u32)
+        .map(|p| arena.rounds_landed(seq, 3, p))
+        .collect();
+    assert_eq!(
+        counts,
+        std::collections::BTreeSet::from([0, 1, 2, 3]),
+        "every round is its own trial: what lands is a count, not all or nothing"
+    );
+
+    // Every landed round is 20, in one `hit` line.
+    ae2_certain(&mut arena, seq);
+    let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
+    arena.resolve_impact(seq, shot.impact_at_ms, &mut journal);
+    let (_, _, rounds, damage) = ae2_outcome(&journal).expect("three certain rounds land");
+    assert_eq!((rounds, damage), (3, 60));
+    let draws: Vec<String> = journal
+        .iter()
+        .find(|(_, kind, _)| matches!(kind, tacsim::arena::ledger::EventKind::Hit { .. }))
+        .map(|(_, _, draws)| draws.iter().map(|(label, _)| label.clone()).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        draws,
+        vec![format!("burst:{seq}"), format!("facet:{seq}")],
+        "the burst's own draw, then the facet's: no new label"
+    );
+
+    // A last pull with two rounds left fires the two.
+    if let Some(state) = arena.unit_mut(RED) {
+        state.ammo.insert(SmolStr::new("autocannon"), 2);
+        state.ready_at_ms.insert(SmolStr::new("autocannon"), 0);
+    }
+    let last = arena
+        .resolve_fire(RED, "autocannon", arena.now_ms)
+        .expect("the last two are fired");
+    assert_eq!(arena.shot(last).map(|shot| shot.rounds), Some(2));
+    assert_eq!(arena.shot_draw(last, 2).0, format!("burst:{last}"));
+    assert_eq!(
+        arena.unit(RED).map(|state| state.weapon_ammo("autocannon")),
+        Some(0)
+    );
+    ae2_certain(&mut arena, last);
+    let impact = arena.shot(last).map(|shot| shot.impact_at_ms).unwrap_or(0);
+    let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
+    arena.resolve_impact(last, impact, &mut journal);
+    let (_, _, rounds, damage) = ae2_outcome(&journal).expect("two certain rounds land");
+    assert_eq!((rounds, damage), (2, 40));
+    if let Some(state) = arena.unit_mut(RED) {
+        state.ready_at_ms.insert(SmolStr::new("autocannon"), 0);
+    }
+    assert_eq!(
+        arena.resolve_fire(RED, "autocannon", arena.now_ms),
+        Err(Refusal::Empty)
+    );
+}
+
+/// The 1.5 km corridor the missile test flies down (16b cut AE.2): the heavy at
+/// row 2, the tank at row 152, 150 cells of flat ground between — a range no
+/// sight on this map holds, which is why the contact is planted.
+const AE2_LAUNCH: (u16, u16) = (8, 2);
+/// Where the tank stands, 150 cells north of the launch.
+const AE2_MARK: (u16, u16) = (8, 152);
+
+/// **The missile lands where the target was** (16b cut AE.2; doc 16 §3.5
+/// "Scheduled impact"): no guidance and no mechanism of its own, a longer
+/// schedule and a due event.
+///
+/// At 1.5 km the heavy's rack is 6,000 ms in the air — the impact due at the
+/// fired millisecond plus 6,000 and the rack ready again at plus 10,000 — and
+/// at a sight's edge, 600 m, 2,400. The impact re-validates within one cell of
+/// where the target was: one that never moved takes the 350 at the impact
+/// millisecond, one moved by one cell still takes it, and one moved by two is a
+/// `miss` for `moved`. And the target's pilot is told nothing between the
+/// `fired` and the `impact` millisecond: no incoming warning, no bearing, no
+/// weapon — the first thing it reads is its own hull being hit.
+#[test]
+fn ae2_the_missile_lands_where_the_target_was() {
+    use tacsim::arena::ledger::EventKind;
+    use tacsim::arena::state::DueKind;
+    const TARGET_PILOT: mush_core::ObjId = mush_core::ObjId(1_001);
+
+    let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let build = || {
+        ae2_duel(
+            &catalog,
+            content::HEAVY_MK1,
+            AE2_LAUNCH,
+            AE2_MARK,
+            q6_window(16, 160),
+            false,
+        )
+    };
+
+    // The schedule.
+    let mut arena = build();
+    let rack = arena
+        .unit(RED)
+        .and_then(|state| state.weapon("missiles").cloned())
+        .expect("the heavy carries the rack");
+    assert_eq!(rack.flight_ms(60_000), 2_400, "a sight's edge");
+    let at = arena.now_ms;
+    let seq = arena
+        .resolve_fire(RED, "missiles", at)
+        .expect("the missile is away");
+    let shot = arena.shot(seq).cloned().expect("the missile in flight");
+    assert_eq!(shot.range_cm, 150_000, "1.5 km");
+    assert_eq!(shot.fired_at_ms, at);
+    assert_eq!(shot.impact_at_ms, at + 6_000, "250 m/s over 1.5 km");
+    assert_eq!((shot.rounds, shot.damage), (1, 350));
+    let state = arena.unit(RED).expect("the heavy");
+    assert_eq!(state.weapon_ammo("missiles"), 5);
+    assert_eq!(state.weapon_ready_at_ms("missiles"), at + 10_000);
+    assert_eq!(
+        state.weapon_ammo("cannon"),
+        40,
+        "the rack is its own magazine"
+    );
+    let due: Vec<(i64, DueKind)> = arena
+        .due
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                DueKind::Impact { .. } | DueKind::WeaponReady { .. }
+            )
+        })
+        .map(|event| (event.t_ms, event.kind.clone()))
+        .collect();
+    assert_eq!(
+        due,
+        vec![
+            (at + 6_000, DueKind::Impact { shot_seq: seq }),
+            (
+                at + 10_000,
+                DueKind::WeaponReady {
+                    unit: RED,
+                    weapon: SmolStr::new("missiles"),
+                }
+            ),
+        ]
+    );
+
+    // The three outcomes, each flown through `Arena::step`.
+    for (cells_moved, expected) in [
+        (0_i64, Ok(350_u32)),
+        (1, Ok(350)),
+        (2, Err(tacsim::arena::damage::MOVED.to_owned())),
+    ] {
+        let mut arena = build();
+        let seq = arena
+            .resolve_fire(RED, "missiles", arena.now_ms)
+            .expect("the missile is away");
+        ae2_certain(&mut arena, seq);
+        if let Some(state) = arena.unit_mut(BLUE) {
+            state.pose.x_cm += cells_moved * i64::from(CELL_CM);
+        }
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut told: Vec<(i64, Vec<FrameNotice>)> = Vec::new();
+        let mut wall = 0_i64;
+        let out = arena.step(0, &[], &[]);
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        while arena.now_ms < 7_000 {
+            wall += 500;
+            let out = arena.step(wall, &[], &[]);
+            for chunk in &out.ledger_chunks {
+                bytes.extend_from_slice(&chunk.bytes);
+            }
+            for (pilot, frame) in &out.frames {
+                if *pilot == TARGET_PILOT && !frame.notices.is_empty() {
+                    told.push((arena.now_ms, frame.notices.clone()));
+                }
+            }
+        }
+        let events = ledger_of(&mut arena, &mut bytes);
+        let outcome = events.iter().find_map(|event| match &event.kind {
+            EventKind::Hit {
+                shot_seq, damage, ..
+            } if *shot_seq == seq => Some((event.t_ms, Ok(*damage))),
+            EventKind::Miss { shot_seq, reason } if *shot_seq == seq => {
+                Some((event.t_ms, Err(reason.to_string())))
+            }
+            _ => None,
+        });
+        assert_eq!(
+            outcome,
+            Some((6_000, expected.clone())),
+            "moved {cells_moved} cell(s): the outcome, at the impact millisecond"
+        );
+        // Nothing reaches the target's pilot before the impact millisecond; a
+        // hit is then its own hull and nothing else.
+        assert!(
+            told.iter().all(|(t_ms, _)| *t_ms >= 6_000),
+            "the target was told something while the round was in the air: {told:?}"
+        );
+        match expected {
+            Ok(_) => assert!(
+                matches!(
+                    told.first().and_then(|(_, notices)| notices.first()),
+                    Some(FrameNotice::Struck { .. })
+                ),
+                "the hit is the first thing its pilot reads: {told:?}"
+            ),
+            Err(_) => assert!(told.is_empty(), "a miss tells its target nothing: {told:?}"),
+        }
+    }
+}
+
+/// **The round is traced from where it left** (16b cut AE.2; doc 16 §3.5
+/// "Scheduled impact", §6's `no line` edge), on a 16 by 16 window with a 400 cm
+/// ridge across row 7 and an 800 cm crest at (8, 3) south of it.
+///
+/// From the crest the heavy's 170 cm eye sees over the ridge to the tank at (8,
+/// 11); from the flat cell (8, 2) behind it, it does not. So:
+///
+/// 1. a machine that fires from the crest and backs off it before the impact
+///    still **hits** — the line is the launch eye's, and `fire_line` from where it
+///    ends is blocked — and is **not** taught `no line` about a line it no
+///    longer has;
+/// 2. a machine that fires from behind the ridge and stays there reads
+///    `blocked`, and **is** taught (the guard is not a switch that turned the
+///    edge off);
+/// 3. a machine that fires from behind the ridge and then climbs the crest
+///    still reads `blocked` — the round never left the crest — and is not
+///    taught;
+/// 4. a shooter removed from the match mid-flight (a test's case only;
+///    production never removes a unit from a running arena) resolves its round
+///    through the stored eye: a hit from the crest, `blocked` from behind;
+/// 5. on flat ground the facet struck is the one the target presented to the
+///    launch point (its rear, to a shooter due south), not the one it presents
+///    to where the shooter ended (its right, due east).
+#[test]
+fn ae2_the_round_is_traced_from_where_it_left() {
+    const CREST: (u16, u16) = (8, 3);
+    const BEHIND: (u16, u16) = (8, 2);
+    const MARK: (u16, u16) = (8, 11);
+    let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let ridged = || {
+        relief(16, 16, &|x, y| {
+            if y == 7 {
+                400
+            } else if (x, y) == CREST {
+                800
+            } else {
+                0
+            }
+        })
+    };
+    // Fire the rack from `from`, then (optionally) put the machine at `to`,
+    // and land the round: the outcome and whether the edge was fed.
+    let fly = |from: (u16, u16), to: Option<(u16, u16)>, remove: bool| {
+        let mut arena = ae2_duel(&catalog, content::HEAVY_MK1, from, MARK, ridged(), true);
+        assert!(
+            arena.reflex.unit(RED).is_some_and(|row| !row.no_line),
+            "the machine starts with no lesson"
+        );
+        let seq = arena
+            .resolve_fire(RED, "missiles", arena.now_ms)
+            .expect("a shot is accepted whatever the line: no free probe");
+        ae2_certain(&mut arena, seq);
+        if let Some(cell) = to
+            && let Some(state) = arena.unit_mut(RED)
+        {
+            state.pose = pose(cell);
+        }
+        if remove {
+            arena.units.retain(|unit| unit.id != RED);
+        }
+        let present = arena
+            .unit(RED)
+            .map(|_| arena.fire_line(RED, BLUE).0.is_clear_or_partial());
+        let impact = arena.shot(seq).map(|shot| shot.impact_at_ms).unwrap_or(0);
+        let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
+        arena.resolve_impact(seq, impact, &mut journal);
+        let taught = arena.reflex.unit(RED).is_some_and(|row| row.no_line);
+        (ae2_outcome(&journal), present, taught)
+    };
+    let blocked = Some(tacsim::arena::damage::BLOCKED);
+
+    // (1) From the crest, then behind it: the round hits, though the line from
+    // where the machine now stands is blocked, and nothing is learnt.
+    let (outcome, present, taught) = fly(CREST, Some(BEHIND), false);
+    assert!(
+        outcome.is_ok(),
+        "the round that cleared the crest: {outcome:?}"
+    );
+    assert_eq!(
+        present,
+        Some(false),
+        "the line from behind the crest is blocked"
+    );
+    assert!(!taught, "a machine that has moved on is taught nothing");
+
+    // (2) From behind the ridge, staying: blocked, and taught.
+    let (outcome, present, taught) = fly(BEHIND, None, false);
+    assert_eq!(outcome.err().as_deref(), blocked);
+    assert_eq!(present, Some(false));
+    assert!(
+        taught,
+        "a machine still where it fired from learns the line it had"
+    );
+
+    // (3) From behind the ridge, then up on the crest: still blocked — the
+    // round never left the crest — and not taught.
+    let (outcome, present, taught) = fly(BEHIND, Some(CREST), false);
+    assert_eq!(outcome.err().as_deref(), blocked);
+    assert_eq!(present, Some(true), "the crest sees the tank now");
+    assert!(!taught);
+
+    // (4) A shooter removed mid-flight: through the stored eye either way.
+    let (outcome, present, _) = fly(CREST, None, true);
+    assert_eq!(present, None, "the shooter is gone");
+    assert!(outcome.is_ok(), "the crest's round lands: {outcome:?}");
+    let (outcome, _, _) = fly(BEHIND, None, true);
+    assert_eq!(outcome.err().as_deref(), blocked);
+
+    // (5) The face turned to the launch point. The tank faces north; the
+    // machine fires from due south of it (its rear) and ends due east of it
+    // (its right).
+    let mut arena = ae2_duel(
+        &catalog,
+        content::HEAVY_MK1,
+        (8, 3),
+        MARK,
+        relief(16, 16, &|_x, _y| 0),
+        false,
+    );
+    let seq = arena
+        .resolve_fire(RED, "missiles", arena.now_ms)
+        .expect("the missile is away");
+    assert_eq!(
+        arena.shot(seq).map(|shot| shot.resolution.band.to_string()),
+        Some("rear".to_owned()),
+        "fired at the tank's rear"
+    );
+    ae2_certain(&mut arena, seq);
+    if let Some(state) = arena.unit_mut(RED) {
+        state.pose = pose((15, 11));
+    }
+    let (Some(target), Some(shooter)) = (arena.unit(BLUE), arena.unit(RED)) else {
+        panic!("both are in the match");
+    };
+    assert_eq!(
+        tacsim::arena::resolution::facet_band(target, shooter),
+        "right",
+        "where the machine ended, the tank shows its right"
+    );
+    let impact = arena.shot(seq).map(|shot| shot.impact_at_ms).unwrap_or(0);
+    let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
+    arena.resolve_impact(seq, impact, &mut journal);
+    let (_, facet, _, damage) = ae2_outcome(&journal).expect("the certain round lands");
+    assert_eq!(
+        (facet.as_str(), damage),
+        ("rear", 350),
+        "the round struck the face turned to where it left"
     );
 }

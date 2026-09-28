@@ -2236,11 +2236,27 @@ impl Arena {
             EventKind::Miss { ref reason, .. } => {
                 if let Some((shooter, target)) = *in_flight {
                     let held = self.named_target(shooter, target);
+                    // **16b cut AE.2**: the reason is the platform's only while
+                    // it holds the target. `moved`, `blocked`, `cover`, `wreck`
+                    // are facts about where the target is and what stands round
+                    // it — a position and cover check the sensors have not
+                    // earned once the contact is gone, which a round with a
+                    // flight time makes an everyday case. So a miss on a target
+                    // the shooter no longer holds carries no reason at all, and
+                    // renders `Miss.` (`crate::match_::cockpit::notice_line`).
+                    // `Hit.` on an unheld target stays: a round striking metal
+                    // is the shooter's own physics, paid for with a round and a
+                    // cycle, and it says nothing of where or why.
+                    let reason = if held.is_some() {
+                        reason.clone()
+                    } else {
+                        SmolStr::new_static("")
+                    };
                     self.stage_notice(
                         shooter,
                         FrameNotice::Miss {
                             contact: held,
-                            reason: reason.clone(),
+                            reason,
                         },
                     );
                 }
@@ -4458,6 +4474,75 @@ mod tests {
             gunners_notices(&mut arena).is_empty(),
             "a miss with no impact before it named a shooter"
         );
+    }
+
+    /// **16b cut AE.2**: a miss keeps its reason for a target the gunner holds,
+    /// and carries none for one he does not — `moved`, `blocked` and `cover` are
+    /// facts about where the target is that his sensors have not earned. `Hit.`
+    /// on an unheld target is untouched.
+    #[test]
+    fn ae2_a_miss_on_a_target_the_gunner_does_not_hold_carries_no_reason() {
+        let mut arena = watching_gunner();
+        let mut in_flight: Option<(ObjId, ObjId)> = None;
+        let impact = |target: ObjId| EventKind::Impact {
+            shot_seq: 1,
+            unit: A,
+            target,
+        };
+        let miss = || EventKind::Miss {
+            shot_seq: 1,
+            reason: SmolStr::new(crate::arena::damage::BLOCKED),
+        };
+        // Held: the reason, as ever.
+        arena.stage_pilot_notice(0, &impact(ObjId(9)), &mut in_flight);
+        arena.stage_pilot_notice(0, &miss(), &mut in_flight);
+        assert!(
+            matches!(
+                gunners_notices(&mut arena).first(),
+                Some(FrameNotice::Miss { contact: Some(_), reason })
+                    if reason == crate::arena::damage::BLOCKED
+            ),
+            "a held target's miss keeps its reason"
+        );
+        // Not held: no contact and no reason.
+        arena.stage_pilot_notice(0, &impact(ObjId(77)), &mut in_flight);
+        arena.stage_pilot_notice(0, &miss(), &mut in_flight);
+        assert_eq!(
+            gunners_notices(&mut arena),
+            vec![FrameNotice::Miss {
+                contact: None,
+                reason: SmolStr::new_static(""),
+            }],
+            "an unheld target's miss says nothing of why"
+        );
+        // And the unheld hit is the bare `Hit.` it always was.
+        arena.stage_pilot_notice(0, &impact(ObjId(77)), &mut in_flight);
+        arena.stage_pilot_notice(
+            0,
+            &EventKind::Hit {
+                shot_seq: 1,
+                unit: A,
+                target: ObjId(77),
+                section: SmolStr::new("hull"),
+                facet: SmolStr::new("front"),
+                armor_section: SmolStr::new("hull"),
+                rounds: 1,
+                damage: 10,
+                armor_left: 10,
+                internals_left: 10,
+                consequences: Vec::new(),
+                cause: SmolStr::new("test"),
+            },
+            &mut in_flight,
+        );
+        assert!(matches!(
+            gunners_notices(&mut arena).first(),
+            Some(FrameNotice::Hit {
+                contact: None,
+                section: None,
+                ..
+            })
+        ));
     }
 
     // -----------------------------------------------------------------------

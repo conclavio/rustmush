@@ -670,7 +670,17 @@ impl Fold {
             EventKind::Miss { shot_seq, reason } => {
                 if let Some(shot) = self.held.remove(shot_seq) {
                     let name = self.name_of(shot.target);
-                    let outcome = format!("miss: {}.", miss_words(reason));
+                    // **16b cut AE.2**: the reason under the cockpit's own gate
+                    // (`step.rs` stages `FrameNotice::Miss` with no reason for a
+                    // target the shooter no longer holds). `moved`, `blocked`
+                    // and `cover` are facts about where the target was; a pilot
+                    // whose platform held no contact on it at the impact reads
+                    // `miss.` and no more, here as in the cockpit.
+                    let outcome = if self.held_on(shot.target) {
+                        format!("miss: {}.", miss_words(reason))
+                    } else {
+                        "miss.".to_owned()
+                    };
                     self.complete(shot, &name, &outcome);
                 }
             }
@@ -828,6 +838,14 @@ impl Fold {
                 }
             }
         }
+    }
+
+    /// **Whether this platform holds any contact on `target` at all** (16b cut
+    /// AE.2), named or not and told apart or not — the fold's reading of
+    /// `step.rs`'s `named_target(...).is_some()`, which is the gate on a miss's
+    /// reason.
+    fn held_on(&self, target: ObjId) -> bool {
+        self.known.values().any(|known| known.target == target)
     }
 
     /// Whether some contact this platform holds is on `target` and named.
@@ -2725,6 +2743,10 @@ mod tests {
 
     /// **16b cut V.3**: a shot line sorts by its own `fired`, though it
     /// completes after later events were written.
+    ///
+    /// **16b cut AE.2**: the pilot never held the target, so the miss reads
+    /// `miss.` with no reason — it read `miss: the line was blocked.` before,
+    /// a fact about the ground round a target the platform had not found.
     #[test]
     fn v3_a_shot_sorts_by_its_own_stamp() {
         let mut tape = Tape::new();
@@ -2741,8 +2763,49 @@ mod tests {
         assert_eq!(
             report.lines,
             vec![
-                "  0:01  cannon at a contact: miss: the line was blocked.",
+                "  0:01  cannon at a contact: miss.",
                 "  0:02  power online.",
+            ]
+        );
+    }
+
+    /// **16b cut AE.2**: the miss's reason is the pilot's only while the
+    /// platform holds the target — named, blip or told apart — and gone the
+    /// moment it does not: the same shot at a target held as a blip, and at one
+    /// whose contact was lost before the round landed.
+    #[test]
+    fn ae2_a_miss_carries_its_reason_only_on_a_target_the_platform_holds() {
+        let miss = |seq: u64| EventKind::Miss {
+            shot_seq: seq,
+            reason: SmolStr::new(damage::MOVED),
+        };
+        let mut tape = Tape::new();
+        tape.at(
+            500,
+            EventKind::Detected {
+                viewer: ME,
+                contact: ContactId(7),
+                target: THEM,
+            },
+        )
+        .at(1_000, fired(ME, "missiles", 1, THEM, 1))
+        .at(3_400, miss(1))
+        .at(
+            4_000,
+            EventKind::Lost {
+                viewer: ME,
+                contact: ContactId(7),
+                target: THEM,
+            },
+        )
+        .at(5_000, fired(ME, "missiles", 2, THEM, 1))
+        .at(7_400, miss(2));
+        let report = fold(&tape.0, &roster(), Reader::Pilot { unit: ME }, RULES);
+        assert_eq!(
+            report.lines,
+            vec![
+                "  0:01  missiles at a contact: miss: the target moved.",
+                "  0:05  missiles at a contact: miss.",
             ]
         );
     }
