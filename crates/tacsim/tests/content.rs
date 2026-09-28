@@ -5,7 +5,8 @@
 //!
 //! 1. **The generator.** The proving ground's ground is a 256 by 256 authored
 //!    class grid and a seeded relief — 65,536 cells of run-length-coded base64
-//!    that no human writes by hand. [`atlas_pack`] is the authoring source, and
+//!    that no human writes by hand. `support::ground::atlas_pack_at` is the
+//!    authoring source (16b cut AE.1 moved it there from this file), and
 //!    [`the_shipped_atlas_pack_is_this_generators_output`] asserts the file in
 //!    the tree is exactly what it produces, so the bytes are reproducible and a
 //!    hand edit is a failing test rather than a mystery.
@@ -21,7 +22,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mush_atlas::TerrainClass;
-use mush_atlas::cells::base64_encode;
 use mush_core::ObjId;
 use mush_testkit::TestWorld;
 use tacsim::arena::state::Team;
@@ -34,259 +34,15 @@ mod support;
 // The map
 // ---------------------------------------------------------------------------
 
-/// The window's side, in cells (D-16-5).
-const SIDE: u16 = 256;
-/// One cell, centimetres (doc 16 §3.2).
-const CELL_CM: u16 = 1_000;
-/// One heightfield entry's side. Four quadrants tile the window; a 256 by 256
-/// field of little-endian samples is 175 KB of base64 and `mush_content`'s
-/// `MAX_ENTRY_BYTES` is 64 KiB.
-const QUAD: u16 = 128;
-/// The region's south-west corner, metres. Offset well clear of the shipped lot
-/// (`region.limbo`, 0 to 400 m) and of the harness's own relief (10,000 m), so
-/// no window can span two regions.
-const ORIGIN_M: i64 = 20_000;
-/// Where the river runs, in columns, inclusive.
-const RIVER: (u16, u16) = (62, 66);
-/// Where the ford crosses it, in rows, inclusive.
-const FORD: (u16, u16) = (92, 102);
-/// The east-west road, in rows, inclusive.
-const ROAD_EW: (u16, u16) = (96, 98);
-/// The north-south road, in columns, inclusive.
-const ROAD_NS: (u16, u16) = (128, 130);
-
-/// The three built compounds: `(x0, x1, y0, y1)`, inclusive. Each is a ring of
-/// `Wall` around `Floor` with one `Door` in the middle of its south wall. None
-/// of them touches a road band, which is checked by a test below rather than by
-/// the author's eye.
-const BUILDINGS: [(u16, u16, u16, u16); 3] = [
-    (150, 170, 36, 52),
-    (96, 116, 186, 202),
-    (200, 216, 140, 156),
-];
-
-/// Light woods: `(x0, x1, y0, y1)`.
-const WOODS_LIGHT: [(u16, u16, u16, u16); 2] = [(20, 58, 150, 200), (160, 210, 40, 80)];
-/// Heavy woods, inside the light ones.
-const WOODS_HEAVY: [(u16, u16, u16, u16); 2] = [(30, 48, 165, 185), (175, 193, 50, 70)];
-/// Broken ground.
-const RUBBLE: [(u16, u16, u16, u16); 1] = [(100, 112, 60, 72)];
-/// Bare earth.
-const BARE: [(u16, u16, u16, u16); 2] = [(210, 255, 0, 36), (0, 40, 0, 24)];
-
-fn within(x: u16, y: u16, box_: (u16, u16, u16, u16)) -> bool {
-    x >= box_.0 && x <= box_.1 && y >= box_.2 && y <= box_.3
-}
-
-/// The authored class of one cell. The order of the tests **is** the paint
-/// order: a building beats a road, a road beats the ground under it, and the
-/// ford beats the river it crosses.
-fn class_at(x: u16, y: u16) -> TerrainClass {
-    for building in BUILDINGS {
-        if within(x, y, building) {
-            let door_x = (building.0 + building.1) / 2;
-            if y == building.2 && x == door_x {
-                return TerrainClass::Door;
-            }
-            let edge = x == building.0 || x == building.1 || y == building.2 || y == building.3;
-            return if edge {
-                TerrainClass::Wall
-            } else {
-                TerrainClass::Floor
-            };
-        }
-    }
-    let in_river = x >= RIVER.0 && x <= RIVER.1;
-    if in_river {
-        return if y >= FORD.0 && y <= FORD.1 {
-            // The crossing: shallow enough for a tracked unit, at a cost.
-            TerrainClass::Water
-        } else {
-            TerrainClass::WaterDeep
-        };
-    }
-    if (y >= ROAD_EW.0 && y <= ROAD_EW.1) || (x >= ROAD_NS.0 && x <= ROAD_NS.1) {
-        return TerrainClass::Road;
-    }
-    for patch in WOODS_HEAVY {
-        if within(x, y, patch) {
-            return TerrainClass::WoodsHeavy;
-        }
-    }
-    for patch in WOODS_LIGHT {
-        if within(x, y, patch) {
-            return TerrainClass::WoodsLight;
-        }
-    }
-    for patch in RUBBLE {
-        if within(x, y, patch) {
-            return TerrainClass::Rubble;
-        }
-    }
-    for patch in BARE {
-        if within(x, y, patch) {
-            return TerrainClass::Ground;
-        }
-    }
-    TerrainClass::Grass
-}
-
-/// The seeded relief, centimetres against the region datum, quantised to whole
-/// metres so a tile's runs stay long. Three summed sinusoids at three periods:
-/// deterministic, smooth enough that no adjacent pair is past a tracked unit's
-/// 45 % slope limit, and two metres lower wherever the river runs.
-fn elev_at(x: u16, y: u16) -> i16 {
-    let fx = f64::from(x);
-    let fy = f64::from(y);
-    let raw =
-        200.0 * (fx / 40.0).sin() + 150.0 * (fy / 55.0).cos() + 100.0 * ((fx + fy) / 70.0).sin();
-    let mut cm = (raw / 100.0).round() * 100.0;
-    if matches!(
-        class_at(x, y),
-        TerrainClass::Water | TerrainClass::WaterDeep
-    ) {
-        cm -= 200.0;
-    }
-    #[allow(clippy::cast_possible_truncation)]
-    let cm = cm as i32;
-    i16::try_from(cm).unwrap_or(0)
-}
-
-/// One quadrant's samples as base64 over little-endian signed 16-bit
-/// centimetres, the southern row first (`HeightfieldEncoding::Le16`).
-fn quadrant_le16(qx: u16, qy: u16) -> String {
-    let mut bytes = Vec::with_capacity(usize::from(QUAD) * usize::from(QUAD) * 2);
-    for y in 0..QUAD {
-        for x in 0..QUAD {
-            bytes.extend_from_slice(&elev_at(qx * QUAD + x, qy * QUAD + y).to_le_bytes());
-        }
-    }
-    base64_encode(&bytes)
-}
-
-/// One quadrant's classes, in C.1's companion encoding: the tile cell RLE with
-/// a class code as its only payload — `[cols u16][rows u16]` and then
-/// `[count u16][class u8]` per run, all little-endian, southern row first.
-fn quadrant_classes(qx: u16, qy: u16) -> String {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&QUAD.to_le_bytes());
-    bytes.extend_from_slice(&QUAD.to_le_bytes());
-    let mut run: Option<(u8, u16)> = None;
-    let flush = |bytes: &mut Vec<u8>, run: Option<(u8, u16)>| {
-        if let Some((code, n)) = run {
-            bytes.extend_from_slice(&n.to_le_bytes());
-            bytes.push(code);
-        }
-    };
-    for y in 0..QUAD {
-        for x in 0..QUAD {
-            let code = class_at(qx * QUAD + x, qy * QUAD + y).code();
-            match run {
-                Some((prev, n)) if prev == code && n < u16::MAX => run = Some((prev, n + 1)),
-                other => {
-                    flush(&mut bytes, other);
-                    run = Some((code, 1));
-                }
-            }
-        }
-    }
-    flush(&mut bytes, run);
-    base64_encode(&bytes)
-}
-
-/// **The arena's ground, as an ordinary atlas region pack.**
-///
-/// One `region`, one `locality` over it, and four `heightfield` entries whose
-/// tiles cover the window exactly. Nothing in it is TacSim's: the atlas's own
-/// appliers make every record, which is what lets
-/// `tacsim::definitions::arena::from_pack` read them back with no private
-/// channel between the two crates.
-fn atlas_pack() -> String {
-    let lo = ORIGIN_M;
-    let hi = ORIGIN_M + i64::from(SIDE) * i64::from(CELL_CM) / 100;
-    let mut entries = serde_json::Map::new();
-    entries.insert(
-        "region.proving_ground".to_string(),
-        serde_json::json!({
-            "kind": "region",
-            "def": {
-                "name": "The Proving Ground",
-                "kind": "surface",
-                "body": "luna",
-                "extent": [[lo, lo], [hi, hi]],
-                "datum_m": 0.0,
-                "background": {
-                    "surface": "ground",
-                    "mix": [],
-                    "relief_cm": 0,
-                    "relief_period_cm": 1000,
-                    "water_cm": null,
-                    "seed": 2350
-                },
-                "ground_resolution_cm": CELL_CM
-            }
-        }),
-    );
-    entries.insert(
-        "locality.proving_ground".to_string(),
-        serde_json::json!({
-            "kind": "locality",
-            "def": {
-                "region": "region.proving_ground",
-                "name": "The Proving Ground",
-                "kind": "lot",
-                "footprint": [[lo, lo], [hi, lo], [hi, hi], [lo, hi]]
-            }
-        }),
-    );
-    for qy in 0..(SIDE / QUAD) {
-        for qx in 0..(SIDE / QUAD) {
-            let ox = ORIGIN_M + i64::from(qx) * i64::from(QUAD) * i64::from(CELL_CM) / 100;
-            let oy = ORIGIN_M + i64::from(qy) * i64::from(QUAD) * i64::from(CELL_CM) / 100;
-            entries.insert(
-                format!("field.q{qx}_{qy}"),
-                serde_json::json!({
-                    "kind": "heightfield",
-                    "def": {
-                        "region": "region.proving_ground",
-                        "origin": [ox, oy],
-                        "resolution_cm": CELL_CM,
-                        "cols": QUAD,
-                        "rows": QUAD,
-                        "encoding": "le16",
-                        "data": quadrant_le16(qx, qy),
-                        "scale_cm": 1,
-                        "datum_cm": 0,
-                        "classes": quadrant_classes(qx, qy)
-                    }
-                }),
-            );
-        }
-    }
-    let doc = serde_json::json!({
-        "manifest": {
-            "id": content::PROVING_GROUND_ATLAS_PACK,
-            "version": 1,
-            "kind": "region",
-            "digest": UNSIGNED,
-            "requires": []
-        },
-        "entries": entries
-    });
-    let unsigned = serde_json::to_string_pretty(&doc).expect("the pack serializes");
-    sign(&format!("{unsigned}\n"))
-}
-
-/// The placeholder a generated or hand-authored pack carries until it is signed.
-const UNSIGNED: &str = "0000000000000000000000000000000000000000000000000000000000000000";
-
-/// Compute a pack's own digest and stamp it into its manifest, exactly as the
-/// authoring half of `mush_content::load_pack` does.
-fn sign(json: &str) -> String {
-    let parsed = mush_content::parse_pack(json).expect("the authored pack parses");
-    let digest = parsed.computed_digest().expect("the pack digests");
-    json.replace(UNSIGNED, &digest.to_hex())
-}
+// **16b cut AE.1** moved the generator — the class grid, the relief, the two
+// quadrant encoders and the pack itself — into `tests/support/ground.rs`, where
+// the shelf test in `tests/match_lifecycle.rs` can build the version-1 ground it
+// boots on. What this file asserts is unchanged: the shipped atlas pack is the
+// generator's output (version 2, with The Bluff), byte for byte.
+use support::ground::{
+    BLUFF_RAMP, BLUFF_TOP, BLUFF_TOP_CM, BUILDINGS, FORD, RIVER, ROAD_EW, ROAD_NS, SIDE, UNSIGNED,
+    atlas_pack_at, class_at, elev_at, sign, within,
+};
 
 // ---------------------------------------------------------------------------
 // The files
@@ -363,11 +119,11 @@ const DIGESTS: [(&str, &str); 9] = [
     ),
     (
         "tacsim.pack.proving_ground",
-        "fd5860b51a60376725ec5fbe86797e8acef969db9a34fc70c87a23ea56c21b08",
+        "74f4bd85dd91d4afaa78d21f45d2d19be5d02b50b0fb71dd40bcc2d7939d8017",
     ),
     (
         "tacsim.proving_ground",
-        "b0bcabf34632799f1468821c1ddfeefb4acbe30282b626ca5e02fbf32f659706",
+        "9be6c634353c82e576be61395ef2228a927ab3d47ae952708b174e4e6f41097d",
     ),
 ];
 
@@ -377,7 +133,7 @@ const DIGESTS: [(&str, &str); 9] = [
 
 #[test]
 fn the_shipped_atlas_pack_is_this_generators_output() {
-    pin_file("atlas/proving_ground.json", &atlas_pack());
+    pin_file("atlas/proving_ground.json", &atlas_pack_at(true));
 }
 
 #[test]
@@ -454,7 +210,7 @@ fn the_pinned_digests_are_the_shipped_ones() {
 
 #[test]
 fn the_authored_map_is_the_map_the_arena_entry_describes() {
-    // The four key spots, the entry zones and every waypoint must stand on
+    // The five key spots, the entry zones and every waypoint must stand on
     // ground a tracked unit can enter, or the arena is a pack that cannot start
     // a match. This is the one property the JSON cannot assert about itself.
     let catalog = Catalog::build_game(&[], "tacsim").expect("the shipped content binds");
@@ -665,6 +421,13 @@ fn the_band_word_the_shipped_content_can_print() {
 /// reaches answer nought with nothing mounted and nothing loaded ("then nothing
 /// is in range of it") — the dry half skips it (it has no default weapon to
 /// empty), and the closing loop expects it to have nothing to fall back to.
+///
+/// **16b cut AE.1** (16c N15) fields three more: the heavy, whose row is the
+/// stock tank's; the Mk2 biped, whose thermal head holds both its reaches to 450
+/// m loaded and dry; and the scout car, whose one gun is the coaxial, so
+/// emptying it leaves a unit that still **sees** 600 m (the sight is the
+/// sensor's alone) and fights at nothing — `(60_000, 0, 0)` — and has nothing to
+/// fall back to.
 #[test]
 fn e1_the_ranges_the_shipped_machines_fight_at() {
     use mush_core::ObjId;
@@ -677,9 +440,9 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
         tacsim::definitions::Catalog::build_fielded(&[], "tacsim").expect("the fielded content");
     assert_eq!(
         catalog.specs.len(),
-        7,
-        "the shipped unit schemas: the line tank, doc 16 §9's five extensions and \
-         the range's target"
+        10,
+        "the shipped unit schemas: the line tank, doc 16 §9's five extensions, \
+         the range's target and 16b cut AE.1's three chassis"
     );
     let definition = stock_definition(&SmolStr::new_static(STAND_IN)).expect("the stand-in window");
     let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
@@ -758,6 +521,10 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
         table(&arena),
         vec![
             ("tacsim.unit.biped_mk1".to_owned(), 60_000, 60_000, 60_000),
+            // 16b cut AE.1: the Mk2 sees with the thermal sight's 45 cells, and
+            // its beam's 1.2 km first band is past it.
+            ("tacsim.unit.biped_mk2".to_owned(), 45_000, 45_000, 45_000),
+            ("tacsim.unit.heavy_mk1".to_owned(), 60_000, 60_000, 60_000),
             ("tacsim.unit.line_tank".to_owned(), 60_000, 60_000, 60_000),
             (
                 "tacsim.unit.line_tank_eccm".to_owned(),
@@ -783,6 +550,9 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
                 45_000,
                 45_000
             ),
+            // 16b cut AE.1: the scout's one gun is the coaxial, whose first band
+            // is 600 m, exactly its sight.
+            ("tacsim.unit.scout_mk1".to_owned(), 60_000, 60_000, 60_000),
             // 16b cut O.3: no sight and nothing loaded, so nothing is in range.
             ("tacsim.unit.target_mk1".to_owned(), 0, 0, 0),
         ],
@@ -848,11 +618,13 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
     );
 
     // And again with the weapon a bare `FIRE` fires emptied. Every shipped
-    // armed unit carries a second gun, so every one of them keeps fighting — at
-    // its coaxial's own first band, which on this content is 600 m and therefore
+    // armed unit but one carries a second gun, so it keeps fighting — at its
+    // coaxial's own first band, which on this content is 600 m and therefore
     // exactly the sight: nought margin, and the day a shorter gun is authored
-    // this table is where it shows. **16b cut O.3**: a unit with no default
-    // weapon — the range's target — has nothing to empty and is skipped.
+    // this table is where it shows. **16b cut AE.1**: the one is the scout car,
+    // whose coaxial is its only gun and so the one emptied; it keeps its sight
+    // and has nothing left to fight with. **16b cut O.3**: a unit with no
+    // default weapon — the range's target — has nothing to empty and is skipped.
     let dry: Vec<Option<SmolStr>> = names
         .iter()
         .enumerate()
@@ -878,20 +650,28 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
             .collect::<Vec<_>>(),
         vec![
             Some("cannon".to_owned()),
+            Some("laser".to_owned()),
+            Some("cannon".to_owned()),
             Some("cannon".to_owned()),
             Some("cannon".to_owned()),
             Some("cannon".to_owned()),
             Some("laser".to_owned()),
             Some("cannon".to_owned()),
+            Some("machine_gun".to_owned()),
             None,
         ],
         "the weapon a bare `FIRE` fires: the cannon, or the first in component \
-         order on a hull that carries none, and nothing on the range's target"
+         order on a hull that carries none (the Mk2's beam, the scout's coaxial), \
+         and nothing on the range's target"
     );
     assert_eq!(
         table(&arena),
         vec![
             ("tacsim.unit.biped_mk1".to_owned(), 60_000, 60_000, 60_000),
+            // 16b cut AE.1: the Mk2 falls from its beam to its coaxial, held to
+            // its 45-cell sight as the thermal tank is.
+            ("tacsim.unit.biped_mk2".to_owned(), 45_000, 45_000, 45_000),
+            ("tacsim.unit.heavy_mk1".to_owned(), 60_000, 60_000, 60_000),
             ("tacsim.unit.line_tank".to_owned(), 60_000, 60_000, 60_000),
             (
                 "tacsim.unit.line_tank_eccm".to_owned(),
@@ -917,10 +697,14 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
                 45_000,
                 45_000
             ),
+            // 16b cut AE.1: the scout's only gun is the one emptied, so it still
+            // sees (the sight is the sensor's alone) and has nothing to fight at.
+            ("tacsim.unit.scout_mk1".to_owned(), 60_000, 0, 0),
             // 16b cut O.3: no sight and nothing loaded, so nothing is in range.
             ("tacsim.unit.target_mk1".to_owned(), 0, 0, 0),
         ],
-        "and with the default weapon dry: every one of them fights on its coaxial"
+        "and with the default weapon dry: every one with a second gun fights on its \
+         coaxial"
     );
     for (at, name) in names.iter().enumerate() {
         let id = ObjId(u32::try_from(at).unwrap_or(0) + 10);
@@ -930,8 +714,16 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
         let loaded = state
             .loaded_weapon()
             .map(|weapon: &WeaponSummary| weapon.id.to_string());
-        // 16b cut O.3: a unit with no weapon has nothing to fall to.
-        let expected = (!state.weapons.is_empty()).then(|| "machine_gun".to_owned());
+        // 16b cut O.3: a unit with no weapon has nothing to fall to. **16b cut
+        // AE.1**: and a unit whose only weapon was the emptied one — the scout,
+        // whose coaxial is its gun — has nothing to fall to either. A unit that
+        // still has a loaded weapon falls to `machine_gun`.
+        let emptied = dry.get(at).cloned().flatten();
+        let expected = state
+            .weapons
+            .iter()
+            .any(|weapon| Some(&weapon.id) != emptied.as_ref())
+            .then(|| "machine_gun".to_owned());
         assert_eq!(
             loaded, expected,
             "{name}: a dry default weapon falls to the next loaded one"
@@ -1163,7 +955,10 @@ fn the_muster_stands_on_the_road_and_the_run_at_the_enemy_reaches_the_ford() {
 
 /// **`fielded_sources` is `sources` plus the five tables, in `requires` order,
 /// and nothing latched moved** (16b cut Q.8) — and, since **16b cut O.3**, a
-/// sixth table after them: the range's target, which requires nothing.
+/// sixth table after them: the range's target, which requires nothing — and,
+/// since **16b cut AE.1**, a seventh: the three chassis, whose Mk2 biped
+/// requires the laser (the first table) and the thermal sight (the third), both
+/// ahead of it.
 ///
 /// The order claim is the one worth a test: [`content::SOURCES`] is authored as
 /// "a pack after every pack it names", the five extension tables each carry the
@@ -1178,9 +973,9 @@ fn q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_ord
     let fielded = content::fielded_sources();
     assert_eq!(
         fielded.len(),
-        stock.len() + 11,
-        "eight shipped packs and eleven extension files: doc 16 section 9's ten and \
-         the range's target"
+        stock.len() + 14,
+        "eight shipped packs and fourteen extension files: doc 16 section 9's ten, \
+         the range's target and 16b cut AE.1's three chassis"
     );
     for (shipped, both) in stock.iter().zip(fielded.iter()) {
         assert_eq!(shipped.name, both.name, "the shipped prefix is unmoved");
@@ -1282,8 +1077,8 @@ fn m2_every_fielded_units_substep_divides_the_three_periods() {
         }
     }
     assert!(
-        checked >= 7,
-        "every fielded unit's modes were read: {checked}"
+        checked >= 10,
+        "every fielded unit's modes were read, the three chassis' among them: {checked}"
     );
     assert!(
         catalog.specs.contains_key(
@@ -1335,6 +1130,7 @@ fn m4_every_fielded_tanks_two_tracks_carry_the_pair_rule() {
     assert_eq!(
         tanks,
         vec![
+            content::HEAVY_MK1,
             content::LINE_TANK,
             content::LINE_TANK_ECCM,
             content::LINE_TANK_ECM,
@@ -1342,8 +1138,35 @@ fn m4_every_fielded_tanks_two_tracks_carry_the_pair_rule() {
             content::LINE_TANK_THERMAL,
             content::TARGET_MK1,
         ],
-        "the five tanks and the target, and nothing else with two tracks"
+        "the five tanks, the heavy and the target, and nothing else with two tracks"
     );
+
+    // **16b cut AE.1**: and the scout car's two wheels carry the same rule, over
+    // their own names — one wheel gone is `slow(50)` and no turn toward it, both
+    // gone is no motion at all.
+    let wheels = Consequence::DisableMotionWhenAllOf {
+        sections: vec![
+            mush_core::CanonicalId::new("left_wheels").expect("a section id"),
+            mush_core::CanonicalId::new("right_wheels").expect("a section id"),
+        ],
+    };
+    let mut cars: Vec<String> = Vec::new();
+    for (id, spec) in &fielded.specs {
+        let wheel = |name: &str| spec.sections.iter().find(|row| row.id.as_str() == name);
+        let (Some(left), Some(right)) = (wheel("left_wheels"), wheel("right_wheels")) else {
+            continue;
+        };
+        for row in [left, right] {
+            assert!(
+                row.consequences.contains(&wheels),
+                "{id}'s {} does not carry the pair rule: {:?}",
+                row.id,
+                row.consequences
+            );
+        }
+        cars.push(id.as_str().to_owned());
+    }
+    assert_eq!(cars, vec![content::SCOUT_MK1], "the one wheeled chassis");
 }
 
 /// **16b cut M.4 (16c `B-47`): the five tank packs are version 2.** Their bytes
@@ -1393,9 +1216,10 @@ fn m4_the_five_tank_packs_are_version_two_and_the_biped_is_not_moved() {
 #[test]
 fn z3_the_arena_fields_six_a_side_in_the_authored_order() {
     let pack = tacsim::pack::load_pack(content::PROVING_GROUND_JSON).expect("the arena verifies");
-    // 16b cut O.1 moved the version to 4 (the Hold declaration); the twelve
-    // tanks are Z.3's and unchanged.
-    assert_eq!(pack.manifest().version(), 4, "16b cut O.1's version");
+    // 16b cut O.1 moved the version to 4 (the Hold declaration) and 16b cut
+    // AE.1 to 5 (The Bluff, a fifth key spot); the twelve tanks are Z.3's and
+    // unchanged.
+    assert_eq!(pack.manifest().version(), 5, "16b cut AE.1's version");
     let catalog = Catalog::build_game(&[], "tacsim").expect("the shipped content binds");
     let arena = catalog
         .arenas
@@ -1539,13 +1363,13 @@ fn z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made() 
         "the arena entry is one update:\n{planned}"
     );
     // 16b cut O.1: the shipped arena is version 4 now, so a version 2 world
-    // that takes it lands at 4.
+    // that takes it lands at 4 — and at 5 since 16b cut AE.1.
     assert!(
-        applied.contains("Applied tacsim.pack.proving_ground@4"),
+        applied.contains("Applied tacsim.pack.proving_ground@5"),
         "{applied}"
     );
     assert!(!applied.contains("STOPPED"), "{applied}");
-    assert_eq!(arena_latch(&tw), Some(4));
+    assert_eq!(arena_latch(&tw), Some(5));
     // Every write the applier made under the atlas's identity was taken: the
     // roster document, the four units' documents and the placements all go
     // through `ctx.out`, which no namespace census refuses.
@@ -1679,7 +1503,7 @@ fn z3_a_deployed_roster_tank_refuses_the_apply_and_writes_nothing() {
     let (_, applied) =
         support::take_from_shelf(&mut tw, mush_core::GOD, content::PROVING_GROUND_PACK);
     assert!(
-        applied.contains("Applied tacsim.pack.proving_ground@4"),
+        applied.contains("Applied tacsim.pack.proving_ground@5"),
         "{applied}"
     );
     assert_eq!(units_in(&tw).len(), 12);
@@ -1743,4 +1567,269 @@ fn o1_the_shipped_ground_declares_hold_at_the_crossroads() {
     let note = &arena.note;
     assert!(note.contains("VERSION 4 (16b cut O.1)"), "{note}");
     assert!(note.len() <= 1_024, "{} bytes", note.len());
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AE.1 — The Bluff (16c T-18)
+// ---------------------------------------------------------------------------
+
+/// The box every edge of The Bluff lies in: the mesa, its rim neighbours, the
+/// ramp and its foot, `x 140..=148, y 104..=121`.
+fn in_bluff_box(cell: (u16, u16)) -> bool {
+    (140..=148).contains(&cell.0) && (104..=121).contains(&cell.1)
+}
+
+/// **The Bluff is where the note says and what the note says** (16b cut AE.1;
+/// 16c `T-18`; doc 16 §9 item 6).
+///
+/// Decoded from the shipped atlas pack through the production composition and
+/// `definition_for`, the way `x6_the_authored_heightfield_reaches_the_arena_
+/// verbatim` decodes it: the file and the generator agree cell for cell; every
+/// edge past 45 per cent between two cells a tank may stand on is one of The
+/// Bluff's 107 — the 104 rim edges at 700 cm (36 orthogonal, 68 diagonal), the
+/// one corner at 800 and row 119's two flanks at 470 — and off the bluff the
+/// steepest is still 20 orthogonal and 21 diagonal; the ramp steps 230, 230 and
+/// 240; row 120's flanks 240 west and 340 east; the mesa clear of both zones,
+/// the Hold square, the roads, the ford, every waypoint node and every slot;
+/// the fifth key spot at (144, 111), lettered off `SPOT_LETTERS`, on grass with
+/// a way out for every row; the atlas at version 2 and the arena at 5, the note
+/// under its bound and carrying its own sentence.
+#[test]
+fn ae1_the_bluff_is_where_and_what_the_note_says() {
+    use tacsim::arena::CostRow;
+    use tacsim::arena::slope::{steepness_pct, step_kind};
+
+    let tw = support::booted_world();
+    let definition =
+        tacsim::match_::definition_for(tw.world(), &smol_str::SmolStr::new(PROVING_GROUND_ARENA))
+            .expect("the proving ground's ground builds")
+            .expect("the proving ground is shipped");
+    let terrain = &definition.terrain;
+    let cell_cm = u32::from(terrain.cell_cm());
+    let elev = |x: u16, y: u16| terrain.get(x, y).map(|cell| cell.elev_cm);
+
+    // The file is the generator, cell for cell, and the mesa is grass.
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            assert_eq!(elev(x, y), Some(elev_at(true, x, y)), "({x}, {y})");
+        }
+    }
+    for y in BLUFF_TOP.2..=BLUFF_TOP.3 {
+        for x in BLUFF_TOP.0..=BLUFF_TOP.1 {
+            assert_eq!(elev(x, y), Some(BLUFF_TOP_CM));
+            assert_eq!(class_at(x, y), TerrainClass::Grass, "({x}, {y})");
+        }
+    }
+    for ((x0, x1, y0, y1), cm) in BLUFF_RAMP {
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                assert_eq!(elev(x, y), Some(cm), "the ramp at ({x}, {y})");
+                assert_eq!(class_at(x, y), TerrainClass::Grass);
+            }
+        }
+    }
+
+    // Every edge between two cells a tank may stand on, measured.
+    let mut past: BTreeMap<(bool, i32), usize> = BTreeMap::new();
+    let (mut off_orthogonal, mut off_diagonal) = (0_u32, 0_u32);
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            let Some(here) = terrain.get(x, y).filter(|cell| cell.passable()) else {
+                continue;
+            };
+            for (dx, dy) in [(1_i32, 0_i32), (0, 1), (1, 1), (1, -1)] {
+                let (Some(nx), Some(ny)) = (
+                    u16::try_from(i32::from(x) + dx).ok(),
+                    u16::try_from(i32::from(y) + dy).ok(),
+                ) else {
+                    continue;
+                };
+                let Some(there) = terrain.get(nx, ny).filter(|cell| cell.passable()) else {
+                    continue;
+                };
+                let Some(kind) = step_kind((x, y), (nx, ny)) else {
+                    continue;
+                };
+                let diagonal = kind == mush_atlas::physics::StepKind::Diagonal;
+                let steepness = steepness_pct(here, there, kind, cell_cm);
+                if steepness > 45 {
+                    assert!(
+                        in_bluff_box((x, y)) && in_bluff_box((nx, ny)),
+                        "({x}, {y}) -> ({nx}, {ny}) is {steepness} per cent off The Bluff"
+                    );
+                    let rise = (i32::from(here.elev_cm) - i32::from(there.elev_cm)).abs();
+                    *past.entry((diagonal, rise)).or_default() += 1;
+                }
+                if !in_bluff_box((x, y)) && !in_bluff_box((nx, ny)) {
+                    if diagonal {
+                        off_diagonal = off_diagonal.max(steepness);
+                    } else {
+                        off_orthogonal = off_orthogonal.max(steepness);
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(
+        past.into_iter().collect::<Vec<_>>(),
+        vec![
+            ((false, 470), 2),
+            ((false, 700), 36),
+            ((true, 700), 68),
+            ((true, 800), 1),
+        ],
+        "the 107: row 119's two flanks, the rims (36 orthogonal and 68 diagonal) and the corner"
+    );
+    assert_eq!(
+        (off_orthogonal, off_diagonal),
+        (20, 21),
+        "off The Bluff the steepest passable edge is still 20 orthogonal and 21 diagonal"
+    );
+
+    // The figures the note and the help quote, edge by edge.
+    let edge = |from: (u16, u16), to: (u16, u16)| {
+        let (Some(a), Some(b), Some(kind)) = (
+            terrain.get(from.0, from.1),
+            terrain.get(to.0, to.1),
+            step_kind(from, to),
+        ) else {
+            panic!("{from:?} -> {to:?} is not a step on the window");
+        };
+        (
+            (i32::from(a.elev_cm) - i32::from(b.elev_cm)).abs(),
+            steepness_pct(a, b, kind, cell_cm),
+        )
+    };
+    // A rim edge, each way: 700 cm, 70 orthogonal and 49 diagonal.
+    assert_eq!(edge((140, 111), (141, 111)), (700, 70), "the west face");
+    assert_eq!(edge((144, 104), (144, 105)), (700, 70), "the south face");
+    assert_eq!(edge((148, 111), (147, 111)), (700, 70), "the east face");
+    assert_eq!(
+        edge((140, 104), (141, 105)),
+        (700, 49),
+        "a diagonal onto the rim"
+    );
+    // The one corner that rises 800: (148, 119) is -300, so a tank is refused
+    // the diagonal by its own slope and a walker is not.
+    assert_eq!(elev(148, 119), Some(-300));
+    assert_eq!(edge((147, 118), (148, 119)), (800, 56), "the corner");
+    // The ramp, from the top down to the grass at row 121.
+    assert_eq!(edge((144, 118), (144, 119)), (230, 23));
+    assert_eq!(edge((144, 119), (144, 120)), (230, 23));
+    assert_eq!(edge((144, 120), (144, 121)), (240, 24));
+    assert_eq!(elev(144, 121), Some(-200));
+    // Row 119's flanks: refused to tanks and cars, open to legs.
+    assert_eq!(edge((140, 119), (141, 119)), (470, 47));
+    assert_eq!(edge((147, 119), (146, 119)), (470, 47));
+    // Row 120's: any chassis from the west, a tank (not a car) from the east
+    // along the row. (147, 121) is -300 as well, and meets the ramp's foot only
+    // diagonally: 24 per cent, which motion allows a car (the search refuses it
+    // by the shoulder rule; see `support::ground::BLUFF_RAMP`).
+    assert_eq!(edge((140, 120), (141, 120)), (240, 24));
+    assert_eq!(edge((147, 120), (146, 120)), (340, 34));
+    assert_eq!(elev(147, 121), Some(-300));
+
+    // Clear of everything the ground is fought over.
+    let catalog = Catalog::build_game(&[], "tacsim").expect("the shipped content binds");
+    let arena = catalog
+        .arenas
+        .values()
+        .next()
+        .expect("the proving ground is shipped");
+    let mesa = |x: u16, y: u16| within(x, y, (BLUFF_TOP.0, BLUFF_TOP.1, BLUFF_TOP.2, 120));
+    for zone in &arena.entry_zones {
+        assert!(
+            BLUFF_TOP.1 < zone.x0 || zone.x1 < BLUFF_TOP.0,
+            "The Bluff reaches the {} entry zone",
+            zone.team.as_str()
+        );
+    }
+    for y in BLUFF_TOP.2..=120 {
+        for x in BLUFF_TOP.0..=BLUFF_TOP.1 {
+            assert!(
+                !within(x, y, (123, 135, 91, 103)),
+                "({x}, {y}) is in the Hold square"
+            );
+            assert!(
+                !(ROAD_EW.0..=ROAD_EW.1).contains(&y) && !(ROAD_NS.0..=ROAD_NS.1).contains(&x),
+                "({x}, {y}) is on a road"
+            );
+            assert!(
+                !(RIVER.0..=RIVER.1).contains(&x) && !(FORD.0..=FORD.1).contains(&y),
+                "({x}, {y}) is in the river or the ford's rows"
+            );
+        }
+    }
+    for node in &arena.waypoints.nodes {
+        assert!(
+            !mesa(node.x, node.y),
+            "waypoint `{}` is on The Bluff",
+            node.id
+        );
+    }
+    for tank in &arena.tanks {
+        assert!(!mesa(tank.x, tank.y), "`{}` musters on The Bluff", tank.id);
+    }
+
+    // The fifth key spot: The Bluff at (144, 111), lettered off the constant.
+    assert_eq!(arena.key_spots.len(), 5, "five key spots");
+    let spot = arena.key_spots.get(4).expect("the fifth spot");
+    assert_eq!(
+        (spot.name.as_str(), spot.x, spot.y),
+        ("The Bluff", 144, 111)
+    );
+    assert_eq!(
+        tacsim::match_::cockpit::spot_letter(4),
+        Some('F'),
+        "SPOT_LETTERS skips D, so the fifth is F"
+    );
+    assert_eq!(class_at(144, 111), TerrainClass::Grass);
+    for row in CostRow::ALL {
+        assert!(
+            terrain.has_way_out_for(row, 144, 111),
+            "the spot has a way out for the {} row",
+            row.as_str()
+        );
+    }
+
+    // The versions, and the note.
+    let atlas = mush_content::load_pack(content::PROVING_GROUND_ATLAS_JSON)
+        .expect("the shipped atlas pack verifies");
+    assert_eq!(atlas.manifest().version(), 2, "the atlas with The Bluff");
+    let pack = tacsim::pack::load_pack(content::PROVING_GROUND_JSON).expect("the arena verifies");
+    assert_eq!(
+        pack.manifest().version(),
+        5,
+        "the arena with its fifth spot"
+    );
+    let note = &arena.note;
+    assert!(note.contains("VERSION 5 (16b cut AE.1)"), "{note}");
+    assert!(note.len() <= 1_024, "{} bytes", note.len());
+}
+
+/// **The two rebuilt fixtures are the versions they say** (16b cut AE.1): the
+/// generator with the bluff turned off is the atlas's version 1 to the byte —
+/// the proof that moving it into `tests/support/ground.rs` changed nothing —
+/// and the arena rebuilt one version back is version 4, with its four key
+/// spots and its own note; version 3 is still rebuilt from it.
+#[test]
+fn ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena() {
+    let ground = mush_content::parse_pack(&atlas_pack_at(false)).expect("version 1 parses");
+    assert_eq!(ground.manifest().version(), 1);
+    assert_eq!(
+        ground.computed_digest().expect("digests").to_hex(),
+        support::ATLAS_V1_DIGEST,
+        "the generator with no bluff is not version 1"
+    );
+    assert_eq!(
+        ground.manifest().digest().to_hex(),
+        support::ATLAS_V1_DIGEST,
+        "and it signs itself as version 1"
+    );
+    let v4 = tacsim::pack::load_pack(&support::arena_pack_v4()).expect("version 4 verifies");
+    assert_eq!(v4.manifest().version(), 4);
+    assert_eq!(v4.manifest().digest().to_hex(), support::ARENA_V4_DIGEST);
+    assert!(support::ARENA_V4_NOTE.len() <= 1_024);
+    let v3 = tacsim::pack::load_pack(&support::arena_pack_v3()).expect("version 3 verifies");
+    assert_eq!(v3.manifest().digest().to_hex(), support::ARENA_V3_DIGEST);
 }

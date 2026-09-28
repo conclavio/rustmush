@@ -49,8 +49,8 @@ pub const MAX_ARENA_TILES: usize = 16;
 /// index, and those are the twenty-two capitals that are neither a terrain glyph
 /// (`D`, `T`, `W`) nor the provisional prefix (`X`); a spot past them could not
 /// be drawn, so it is refused here, at load. Doc 16 §3.2 asks for three or four
-/// and the shipped ground has four, so no content moved. A test in
-/// `match_::cockpit` pins the two numbers together.
+/// and the shipped ground had four, so no content moved; 16b cut AE.1 added The
+/// Bluff as a fifth. A test in `match_::cockpit` pins the two numbers together.
 pub const MAX_KEY_SPOTS: usize = 22;
 
 /// **The longest a key spot's name may be**, bytes (16b cut V.1). The web
@@ -857,6 +857,12 @@ pub fn arena_map_within_bound(
 /// void, a wall, deep water, heavy woods) becomes `move_cost: 0`, which is the
 /// arena's own spelling of impassable.
 ///
+/// **16b cut AE.1** (16c `B-58`): and the other two rows beside it. The window
+/// is built by [`ArenaTerrain::priced`], which lays the same table's `wheeled`
+/// and `legged` rows on the terrain as one class table, so a walker pays 200
+/// for the heavy woods a tank is refused and a car is refused the rubble a
+/// tank crosses. `move_cost` stays the tracked row.
+///
 /// The per-cell cost is the class's flat row and **not** `physics::move_cost`:
 /// that function prices a *step* from one cell onto another, with the diagonal
 /// factor and the slope surcharge, and doc 16 §3.4 step 2's terrain factor is
@@ -968,14 +974,24 @@ pub fn from_pack(
         });
     }
     let cells: Vec<TerrainCell> = cells.into_iter().flatten().collect();
-    let terrain = ArenaTerrain::new(def.cols, def.rows, def.cell_cm, cells).map_err(|error| {
-        ArenaBuildError::Shape {
-            arena: entry.to_string(),
-            detail: error.to_string(),
-        }
-    })?;
+    // **16b cut AE.1** (16c `B-58`): priced per row. The cells carry the tracked
+    // row as `move_cost`, as they always have; the terrain carries the whole
+    // class table beside them, so a walker and a car pay their own rows. This is
+    // the one caller of `ArenaTerrain::priced`: a hand-built window is a
+    // fixture's word for every unit, and only the loader reads the shipped table.
+    let terrain =
+        ArenaTerrain::priced(def.cols, def.rows, def.cell_cm, cells, table).map_err(|error| {
+            ArenaBuildError::Shape {
+                arena: entry.to_string(),
+                detail: error.to_string(),
+            }
+        })?;
     // **16b cut M.4** (16c `T-14`): every entry zone holds at least one cell a
     // unit could open on and drive out of, or no check-out can place that side.
+    // **The tracked reading, and deliberately** (16b cut AE.1): the loader knows
+    // no unit, and every authored slot and zone cell is grass, road or bare
+    // ground, which every row prices; a unit's own row is asked at the opening
+    // (`crate::match_::opening_pose`) and at check-out (`Arena::new`).
     for zone in &def.entry_zones {
         let usable =
             (zone.y0..=zone.y1).any(|y| (zone.x0..=zone.x1).any(|x| terrain.has_way_out(x, y)));
@@ -1123,12 +1139,19 @@ mod tests {
     }
 
     /// **16b cut V.1**: every rule `check_spot_name` holds a name to, one case
-    /// each, and the shipped four passing them all.
+    /// each, and the shipped five passing them all.
     #[test]
     fn a_spot_name_is_short_printable_unique_and_never_a_designator() {
-        // The shipped ground's four, in authored order, each against the ones
-        // before it — which is how `ArenaDef::check` calls it.
-        let shipped = ["The Ford", "The Crossroads", "North Barn", "East Compound"];
+        // The shipped ground's five (16b cut AE.1 added The Bluff), in authored
+        // order, each against the ones before it — which is how
+        // `ArenaDef::check` calls it.
+        let shipped = [
+            "The Ford",
+            "The Crossroads",
+            "North Barn",
+            "East Compound",
+            "The Bluff",
+        ];
         let mut earlier: Vec<KeySpot> = Vec::new();
         for name in shipped {
             assert_eq!(refused(name, &earlier), None, "{name} is a good name");

@@ -978,6 +978,12 @@ mod tests {
             unit.slope_limit_pct = Some(45);
         }
         assert_eq!(state_hash(&limited), base);
+        // **16b cut AE.1**: and so is the row it pays, for the same reason.
+        let mut walker = two_tanks();
+        if let Some(unit) = walker.unit_mut(ObjId(9)) {
+            unit.cost_row = crate::arena::state::CostRow::Legged;
+        }
+        assert_eq!(state_hash(&walker), base, "the cost row is a fit constant");
     }
 
     /// **16b cut E.3's extension**: a traffic hold is a fact with one writer that

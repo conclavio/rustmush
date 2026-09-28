@@ -1,0 +1,165 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.scout_mk1",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "20b59cecccd9d78af5d5f1608b5831683d4d2927290ce6fd297c4b15e535f043",
+    "requires": [
+      {
+        "id": "tacsim.pack.mg_coax",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.visual_mk1",
+        "version": 1
+      }
+    ]
+  },
+  "entries": {
+    "tacsim.unit.scout_mk1": {
+      "kind": "unit",
+      "def": {
+        "label": "Mk1 scout car",
+        "sections": [
+          {
+            "id": "hull",
+            "facets": [
+              { "id": "front", "armor": 200 },
+              { "id": "left", "armor": 140 },
+              { "id": "right", "armor": 140 },
+              { "id": "rear", "armor": 100 },
+              { "id": "top", "armor": 80 }
+            ],
+            "internals": 120,
+            "consequences": [{ "kind": "destroy_unit" }]
+          },
+          {
+            "id": "turret",
+            "facets": [
+              { "id": "front", "armor": 150 },
+              { "id": "left", "armor": 100 },
+              { "id": "right", "armor": 100 },
+              { "id": "rear", "armor": 80 }
+            ],
+            "internals": 80,
+            "consequences": [{ "kind": "remove_weapons", "section": "turret" }]
+          },
+          {
+            "id": "left_wheels",
+            "facets": [{ "id": "left", "armor": 60 }],
+            "internals": 50,
+            "consequences": [
+              { "kind": "slow", "percent": 50 },
+              { "kind": "no_turn_toward", "side": "left" },
+              { "kind": "disable_motion_when_all_of", "sections": ["left_wheels", "right_wheels"] }
+            ]
+          },
+          {
+            "id": "right_wheels",
+            "facets": [{ "id": "right", "armor": 60 }],
+            "internals": 50,
+            "consequences": [
+              { "kind": "slow", "percent": 50 },
+              { "kind": "no_turn_toward", "side": "right" },
+              { "kind": "disable_motion_when_all_of", "sections": ["left_wheels", "right_wheels"] }
+            ]
+          },
+          {
+            "id": "engine",
+            "facets": [],
+            "internals": 80,
+            "consequences": [{ "kind": "disable_motion" }],
+            "struck_through": { "section": "hull", "facet": "rear" }
+          }
+        ],
+        "components": [
+          {
+            "id": "machine_gun",
+            "section": "turret",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.mg_coax",
+              "coaxial": false
+            }
+          },
+          {
+            "id": "visual_sensor",
+            "section": "turret",
+            "role": {
+              "kind": "sensor",
+              "sensor": "tacsim.sensor.visual_mk1"
+            }
+          },
+          {
+            "id": "power",
+            "section": "hull",
+            "role": {
+              "kind": "power",
+              "capability": "tacsim.power",
+              "states": ["off", "starting", "online"],
+              "initial": "off"
+            }
+          }
+        ],
+        "mobility": {
+          "wheeled": {
+            "max_speed_cms": 3000,
+            "accel_cms2": 300,
+            "brake_cms2": 400,
+            "turn_rate_mdeg_s": 60000,
+            "reverse_factor_pct": 60
+          }
+        },
+        "facets": [
+          {
+            "band": "front",
+            "sections": [
+              { "section": "hull", "weight": 50 },
+              { "section": "turret", "weight": 50 }
+            ]
+          },
+          {
+            "band": "left",
+            "sections": [
+              { "section": "hull", "weight": 40 },
+              { "section": "left_wheels", "weight": 30 },
+              { "section": "turret", "weight": 30 }
+            ]
+          },
+          {
+            "band": "right",
+            "sections": [
+              { "section": "hull", "weight": 40 },
+              { "section": "right_wheels", "weight": 30 },
+              { "section": "turret", "weight": 30 }
+            ]
+          },
+          {
+            "band": "rear",
+            "sections": [
+              { "section": "hull", "weight": 40 },
+              { "section": "engine", "weight": 30 },
+              { "section": "turret", "weight": 30 }
+            ]
+          },
+          {
+            "band": "top",
+            "sections": [
+              { "section": "hull", "weight": 50 },
+              { "section": "turret", "weight": 50 }
+            ]
+          }
+        ],
+        "silhouettes": [
+          { "band": "front", "width_cm": 260, "height_cm": 220 },
+          { "band": "left", "width_cm": 520, "height_cm": 220 },
+          { "band": "right", "width_cm": 520, "height_cm": 220 },
+          { "band": "rear", "width_cm": 260, "height_cm": 220 },
+          { "band": "top", "width_cm": 520, "height_cm": 260 }
+        ],
+        "sensor_height_cm": 200,
+        "note": "The scout car of 16b cut AE.1: the stock tank's five sections cut down, with a pair of wheels where the tracks were and the machine gun as its only gun until cut AE.2 gives it its autocannon. 3,000 cm/s is 108 kph on a road, which the wheeled row prices at 80; on grass (220) the terrain factor holds it to about 1,360 cm/s against the stock tank's 1,153, so it is quicker than a tank anywhere it can go. What it pays is where it can go: rubble, rock and the thick woods refuse it, a slope past 25 per cent refuses it where a tank climbs 45, and it fords at 400, five times a road, since the water row moved. Its ceiling on an 80 road is 3,000 x 100 / 80 = 3,750 cm/s, under the 3,996 that would shorten the 250 ms substep. The wheels are a pair: one gone is slow(50) and no turn toward it, both gone is disable_motion. The armour is half the tank's: 200 on the bow is two 105 rounds."
+      }
+    }
+  }
+}

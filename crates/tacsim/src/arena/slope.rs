@@ -13,9 +13,11 @@
 //! A cell's `move_cost` is a property of the cell; a slope is a property of the
 //! *pair* of cells an edge joins. So the two are priced in different places:
 //! [`crate::definitions::arena::from_pack`] prices each cell from the shipped
-//! locomotion table's `tracked` row once, at apply time, and the surcharge for
-//! the edge a unit crossed to get there is applied here, at the crossing and in
-//! the search.
+//! locomotion table once, at apply time — the `tracked` row on the cell, the
+//! other two in the terrain's class table since 16b cut AE.1, and a unit pays
+//! its own row ([`CostRow::read`], read here beside the limit) — and the
+//! surcharge for the edge a unit crossed to get there is applied here, at the
+//! crossing and in the search.
 //!
 //! * [`grade_pct`] is the **uphill** slope of a step, per cent — the atlas's own
 //!   `mush_atlas::physics::slope_pct` and not a second copy of it, so a step the
@@ -65,8 +67,8 @@
 use mush_atlas::Cell;
 use mush_atlas::physics::{LocomotionTable, StepKind, slope_pct};
 
-use crate::arena::state::TerrainCell;
-use crate::definitions::unit::{LEGGED, TRACKED};
+use crate::arena::state::{CostRow, TerrainCell};
+use crate::definitions::unit::{LEGGED, TRACKED, WHEELED};
 
 /// The step between two cells, or `None` when they are not neighbours —
 /// `mush_atlas::physics::StepKind::between`, named here so that the arena has
@@ -132,22 +134,26 @@ pub fn effective_cost(cost: u32, grade_pct: u32) -> u32 {
 }
 
 /// **The mode a unit drives under**: the first mode whose locomotion is
-/// [`TRACKED`], else the first whose locomotion is [`LEGGED`], else the first
-/// whose *id* contains [`TRACKED`].
+/// [`TRACKED`], else the first whose locomotion is [`WHEELED`] (16b cut AE.1),
+/// else the first whose locomotion is [`LEGGED`], else the first whose *id*
+/// contains [`TRACKED`].
 ///
-/// The same three rungs `crate::match_::arena_def::tracked_rules` climbs to
-/// decode a unit's kinematics, written once here so that the two readers climb
-/// one ladder rather than two copies of it waiting to disagree.
+/// The same rungs `crate::match_::arena_def::tracked_rules` climbs to decode a
+/// unit's kinematics, written once here so that the two readers — three, with
+/// [`CostRow::read`] — climb one ladder rather than copies of it waiting to
+/// disagree.
 ///
 /// **The ladder is shared; what a caller does when it answers `None` is not.**
 /// `tracked_rules` falls through to doc 16 §3.3's stock tank, because a unit
 /// whose modes this does not recognise still has to drive something.
 /// [`SlopeLimit::read`] falls back to the profile's **first** mode instead, so a
-/// `wheeled`, `hover` or `biped`-only unit is held to its own row rather than
-/// left silently unlimited. A unit built that way therefore drives on the stock
+/// `hover` or `biped`-only unit is held to its own row rather than left
+/// silently unlimited. A unit built that way therefore drives on the stock
 /// tank's kinematics and is limited by its own locomotion — two rows, by
-/// intent; no shipped unit is one, and the alternative is a `wheeled` chassis
-/// that climbs anything.
+/// intent; no shipped unit is one. **16b cut AE.1** put `wheeled` on the ladder
+/// itself, because the scout car is one: a wheeled unit now decodes its own
+/// five numbers, is held to the wheeled row's 25 per cent and pays the wheeled
+/// row's prices, all off the one mode.
 #[must_use]
 pub fn driving_mode(
     profile: &mush_tactics::MobilityProfile,
@@ -156,6 +162,12 @@ pub fn driving_mode(
         .modes()
         .iter()
         .find(|mode| mode.locomotion.as_str() == TRACKED)
+        .or_else(|| {
+            profile
+                .modes()
+                .iter()
+                .find(|mode| mode.locomotion.as_str() == WHEELED)
+        })
         .or_else(|| {
             profile
                 .modes()
@@ -189,10 +201,12 @@ impl SlopeLimit {
     /// `slope_factor` doubles its limit exactly as the atlas doubles it.
     ///
     /// The mode is [`driving_mode`]'s, **or the profile's first** when that
-    /// ladder answers nothing: a unit whose only mode is `wheeled` is held to
-    /// the wheeled row's 25 per cent rather than to nothing at all. That
-    /// fallback is this reader's and not the kinematics reader's; see
-    /// [`driving_mode`] for why the two part company there.
+    /// ladder answers nothing: a unit whose only mode is `hover` is held to
+    /// the hover row's 20 per cent rather than to nothing at all. That fallback
+    /// is this reader's and not the kinematics reader's; see [`driving_mode`]
+    /// for why the two part company there. (A `wheeled`-only unit was this
+    /// fallback's case until 16b cut AE.1 put `wheeled` on the ladder; it
+    /// answers the wheeled row's 25 per cent either way.)
     #[must_use]
     pub fn read(unit: &mush_tactics::TacticalUnit) -> Option<u32> {
         let profile = unit.mobility()?;
@@ -203,6 +217,35 @@ impl SlopeLimit {
             .map(mush_tactics::MobilityTag::as_str)
             .collect();
         LocomotionTable::shipped().max_slope_pct(mode.locomotion.as_str(), &tags)
+    }
+}
+
+impl CostRow {
+    /// **The row a unit pays, read off the M32 unit at check-out** (16b cut
+    /// AE.1; 16c `B-58`), beside [`SlopeLimit::read`] and off the same mode.
+    ///
+    /// The locomotion of [`driving_mode`]'s mode, **or the profile's first
+    /// mode's** when that ladder answers nothing — [`SlopeLimit::read`]'s own
+    /// fallback, so the limit and the prices a unit is held to are one mode's —
+    /// mapped to its row: `tracked`, `wheeled`, `legged`. **Anything else is
+    /// [`CostRow::Tracked`]**: a unit with no mobility profile (every engine
+    /// fixture in this crate), a profile with no mode, or a locomotion the three
+    /// rows do not name (`hover`), which is the price every unit paid before
+    /// this cut. A read, not a guess: the tracked row is what the cells carry
+    /// as `move_cost`.
+    #[must_use]
+    pub fn read(unit: &mush_tactics::TacticalUnit) -> CostRow {
+        let Some(profile) = unit.mobility() else {
+            return CostRow::Tracked;
+        };
+        let Some(mode) = driving_mode(profile).or_else(|| profile.modes().first()) else {
+            return CostRow::Tracked;
+        };
+        match mode.locomotion.as_str() {
+            WHEELED => CostRow::Wheeled,
+            LEGGED => CostRow::Legged,
+            _ => CostRow::Tracked,
+        }
     }
 }
 
@@ -445,12 +488,22 @@ mod tests {
 
     #[test]
     fn the_limit_is_the_modes_own_and_an_unknown_locomotion_has_none() {
-        // A wheeled-only profile has no tracked and no legged mode and an id that
-        // says neither, so the fallback to the first mode is what answers — and
-        // it answers the wheeled row's own 25 per cent.
+        // A wheeled-only profile: since 16b cut AE.1 `wheeled` is a rung of the
+        // ladder itself (the scout car drives on it), so the ladder answers and
+        // the limit is the wheeled row's own 25 per cent.
         let wheeled = profile("wheeled", "ground.wheeled");
-        assert!(driving_mode(&wheeled).is_none());
-        assert_eq!(SlopeLimit::read(&unit_with(wheeled)), Some(25));
+        assert_eq!(
+            driving_mode(&wheeled).map(|mode| mode.locomotion.as_str().to_string()),
+            Some(WHEELED.to_string())
+        );
+        assert_eq!(SlopeLimit::read(&unit_with(wheeled.clone())), Some(25));
+        assert_eq!(CostRow::read(&unit_with(wheeled)), CostRow::Wheeled);
+        // A hover-only profile is the first-mode fallback's case now: the
+        // hover row's 20 per cent, and the tracked prices.
+        let hover = profile("hover", "ground.hover");
+        assert!(driving_mode(&hover).is_none());
+        assert_eq!(SlopeLimit::read(&unit_with(hover.clone())), Some(20));
+        assert_eq!(CostRow::read(&unit_with(hover)), CostRow::Tracked);
         // A locomotion the table does not know has no limit at all.
         assert_eq!(
             SlopeLimit::read(&unit_with(profile("maglev", "ground.maglev"))),
@@ -462,13 +515,15 @@ mod tests {
             driving_mode(&tracked).map(|mode| mode.locomotion.as_str().to_string()),
             Some(TRACKED.to_string())
         );
-        assert_eq!(SlopeLimit::read(&unit_with(tracked)), Some(45));
+        assert_eq!(SlopeLimit::read(&unit_with(tracked.clone())), Some(45));
+        assert_eq!(CostRow::read(&unit_with(tracked)), CostRow::Tracked);
         let legged = profile(LEGGED, "ground.legged");
         assert_eq!(
             driving_mode(&legged).map(|mode| mode.locomotion.as_str().to_string()),
             Some(LEGGED.to_string())
         );
-        assert_eq!(SlopeLimit::read(&unit_with(legged)), Some(70));
+        assert_eq!(SlopeLimit::read(&unit_with(legged.clone())), Some(70));
+        assert_eq!(CostRow::read(&unit_with(legged)), CostRow::Legged);
         let keyed = profile("hover", "ground.tracked.hover");
         assert_eq!(
             driving_mode(&keyed).map(|mode| mode.id.as_str().to_string()),
@@ -483,5 +538,7 @@ mod tests {
         // green (see `crate::arena::motion`'s own note).
         let unit = crate::arena::test_support::tactical_unit(mush_core::ObjId(4));
         assert_eq!(SlopeLimit::read(&unit), None);
+        // 16b cut AE.1: and the tracked prices, which is what they always paid.
+        assert_eq!(CostRow::read(&unit), CostRow::Tracked);
     }
 }

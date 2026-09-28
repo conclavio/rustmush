@@ -272,7 +272,7 @@ pub use slope::{
 };
 pub use state::{
     Arena, ArenaDefinition, ArenaError, ArenaMode, ArenaTerrain, Channel, Classification,
-    ContactId, Controller, CustodyOut, CustodyUnit, DEFAULT_SENSOR_HEIGHT_CM, Designator,
+    ContactId, Controller, CostRow, CustodyOut, CustodyUnit, DEFAULT_SENSOR_HEIGHT_CM, Designator,
     DesignatorBook, DueEvent, DueHeap, DueKind, EndReason, EntryZone, EpochTable, HeatState,
     HoldRule, HoldState, KeySpot, MatchEnd, MatchMode, MotionCarry, MotionLimits, NO_SUCH_CONTACT,
     PROVISIONAL_PREFIX, Pilot, Power, SPOT_LETTERS, ShadowContact, ShadowContacts, Side,
@@ -371,6 +371,96 @@ pub(crate) mod test_support {
             rules: rules(),
         };
         TacticalUnit::from_spec(&spec, id).expect("a one-section unit")
+    }
+
+    /// **[`tactical_unit`] with one ground mode of `locomotion`** (16b cut AE.1)
+    /// — the one thing [`crate::arena::state::CostRow::read`] and
+    /// [`crate::arena::slope::SlopeLimit::read`] read off a unit, so a fixture can
+    /// field a car or a walker without a catalog.
+    pub(crate) fn tactical_unit_on(id: ObjId, locomotion: &str) -> TacticalUnit {
+        use mush_tactics::{
+            LocomotionId, MediumId, MobilityMode, MobilityModeId, MobilityProfile,
+            MobilityVocabulary,
+        };
+        let mode_id =
+            MobilityModeId::new(format!("ground.{locomotion}")).expect("a canonical mode id");
+        let mode = MobilityMode::new(
+            mode_id.clone(),
+            [MediumId::new("ground").expect("a canonical medium")],
+            LocomotionId::new(locomotion).expect("a canonical locomotion"),
+            rules(),
+        );
+        let profile =
+            MobilityProfile::new(vec![mode], mode_id, &MobilityVocabulary::base().freeze())
+                .expect("a one-mode profile");
+        let spec = UnitSpec {
+            definition: dref("unit", "tacsim.unit.line_tank"),
+            sections: vec![SectionSpec {
+                id: SectionId::new("hull").expect("a canonical section"),
+                condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+                facets: vec![FacetSpec {
+                    id: FacetId::new("front").expect("a canonical facet"),
+                    cells: vec![CellSpec {
+                        id: mush_tactics::CellId::new("armor").expect("a cell"),
+                        min: 0,
+                        max: 10,
+                        init: 10,
+                    }],
+                }],
+                slots: Vec::new(),
+                cells: vec![CellSpec {
+                    id: mush_tactics::CellId::new("internals").expect("a cell"),
+                    min: 0,
+                    max: 8,
+                    init: 8,
+                }],
+            }],
+            unit_cells: Vec::new(),
+            components: Vec::new(),
+            capabilities: Vec::new(),
+            mobility: Some(profile),
+            rules: rules(),
+        };
+        TacticalUnit::from_spec(&spec, id).expect("a one-section unit with a mode")
+    }
+
+    /// **A cell of `class` priced as the loader prices it** (16b cut AE.1): the
+    /// shipped table's `tracked` row as `move_cost`, `0` where it is `null`.
+    pub(crate) fn priced_cell(class: mush_atlas::TerrainClass) -> TerrainCell {
+        TerrainCell {
+            class,
+            elev_cm: 0,
+            move_cost: mush_atlas::physics::LocomotionTable::shipped()
+                .cost(class.label(), crate::definitions::unit::TRACKED, &[])
+                .map_or(0, |cost| u16::try_from(cost).unwrap_or(u16::MAX)),
+        }
+    }
+
+    /// **A window priced per row** (16b cut AE.1): `width` by `height` of
+    /// `fill`, with `paint`ed classes, through [`ArenaTerrain::priced`] and the
+    /// shipped table — the terrain `from_pack` would build over those classes.
+    pub(crate) fn priced_terrain(
+        width: u16,
+        height: u16,
+        fill: mush_atlas::TerrainClass,
+        paint: &[((u16, u16), mush_atlas::TerrainClass)],
+    ) -> ArenaTerrain {
+        let mut cells = vec![priced_cell(fill); usize::from(width) * usize::from(height)];
+        for ((x, y), class) in paint {
+            if let Some(slot) =
+                cells.get_mut(usize::from(*y) * usize::from(width) + usize::from(*x))
+            {
+                *slot = priced_cell(*class);
+            }
+        }
+        ArenaTerrain::priced(
+            width,
+            height,
+            1_000,
+            cells,
+            mush_atlas::physics::LocomotionTable::shipped(),
+        )
+        .expect("a priced window")
     }
 
     /// A passable ground cell at cost 100 (terrain factor 1).

@@ -594,8 +594,8 @@ impl ReflexMemory {
     ///
     /// **16b cut M.4** (16c `T-15`): the window's cheapest cell, which 16b cut
     /// N.1 kept here for the A\* heuristic, moved to
-    /// [`Arena::min_move_cost`](crate::arena::state::Arena::min_move_cost), one
-    /// copy for the search and the speed ceiling both.
+    /// [`Arena::min_cost`](crate::arena::state::Arena::min_cost) (one per row
+    /// since 16b cut AE.1), one copy for the search and the speed ceiling both.
     #[must_use]
     pub fn new(cfg: &ReflexConfig) -> ReflexMemory {
         ReflexMemory {
@@ -3065,12 +3065,9 @@ impl Arena {
         ) else {
             return at.cell(&self.definition.terrain);
         };
-        if self
-            .definition
-            .terrain
-            .get(cx, cy)
-            .is_some_and(crate::arena::state::TerrainCell::passable)
-        {
+        // 16b cut AE.1: passable to this unit's own row — a walker's stand-off
+        // cell may be in the thick woods, a car's may not be on rubble.
+        if self.definition.terrain.passable_for(from.cost_row, cx, cy) {
             Some((cx, cy))
         } else {
             at.cell(&self.definition.terrain)
@@ -3095,11 +3092,11 @@ impl Arena {
             // The clamped corner first: it is the answer almost always, and it
             // costs one probe.
             let clamped = (here_x.clamp(x0, x1), here_y.clamp(y0, y1));
+            // 16b cut AE.1: passable to this unit's own row, here and below.
             if self
                 .definition
                 .terrain
-                .get(clamped.0, clamped.1)
-                .is_some_and(crate::arena::state::TerrainCell::passable)
+                .passable_for(unit.cost_row, clamped.0, clamped.1)
             {
                 return Some(clamped);
             }
@@ -3109,12 +3106,7 @@ impl Arena {
                     if read > MAX_ENTRY_SCAN {
                         return best.map(|(_, cell)| cell).or(Some(clamped));
                     }
-                    if !self
-                        .definition
-                        .terrain
-                        .get(x, y)
-                        .is_some_and(crate::arena::state::TerrainCell::passable)
-                    {
+                    if !self.definition.terrain.passable_for(unit.cost_row, x, y) {
                         continue;
                     }
                     let distance = u32::from(x.abs_diff(here_x)) + u32::from(y.abs_diff(here_y));
@@ -3163,12 +3155,8 @@ impl Arena {
     fn far_entry_cell(&self, id: ObjId) -> Option<(u16, u16)> {
         let unit = self.unit(id)?;
         let (here_x, here_y) = self.definition.terrain.cell_of(&unit.pose)?;
-        let passable = |x: u16, y: u16| {
-            self.definition
-                .terrain
-                .get(x, y)
-                .is_some_and(crate::arena::state::TerrainCell::passable)
-        };
+        // 16b cut AE.1: passable to this unit's own row.
+        let passable = |x: u16, y: u16| self.definition.terrain.passable_for(unit.cost_row, x, y);
         let reach = |x: u16, y: u16| u32::from(x.abs_diff(here_x)) + u32::from(y.abs_diff(here_y));
         let mut best: Option<(u32, (u16, u16))> = None;
         let mut read = 0_usize;
@@ -3337,7 +3325,17 @@ impl Arena {
                 row.searched_ms = Some(t_ms);
                 counters.path_queries = counters.path_queries.saturating_add(1);
                 let budget = memory.cfg.path_max_cells;
-                let scale = self.min_move_cost.max(1);
+                // **16b cut AE.1**: the heuristic's scale is this unit's own
+                // row's cheapest cell. A scale above the row's true minimum makes
+                // the heuristic inadmissible (`crate::arena::path::path`'s own
+                // doc): a car's search scaled on the tracked 100 over an 80 road
+                // would plan routes that are not its cheapest.
+                let scale = self
+                    .min_cost
+                    .get(unit.cost_row.index())
+                    .copied()
+                    .unwrap_or(1)
+                    .max(1);
                 // **16b cut Q.7**: the cells this unit has been stopped at, at
                 // most `REFLEX_AVOID_MAX` of them, built once per search.
                 let avoid: Vec<(u16, u16)> = row.avoid.iter().map(|(cell, _)| *cell).collect();
@@ -3354,6 +3352,7 @@ impl Arena {
                     budget,
                     scale,
                     unit.slope_limit_pct,
+                    unit.cost_row,
                     &avoid,
                 );
                 // 16b cut U.1: what the search refused by slope, won or lost.
@@ -3598,7 +3597,8 @@ impl Arena {
         else {
             return false;
         };
-        if !to_cell.passable() {
+        // 16b cut AE.1: passable to this unit's own row, as the crossing asks.
+        if terrain.price(unit.cost_row, to_cell) == 0 {
             return false;
         }
         if avoid.iter().any(|(cell, _)| *cell == (nx, ny)) {
@@ -3674,7 +3674,7 @@ impl Arena {
             else {
                 return false;
             };
-            if !to_cell.passable()
+            if terrain.price(unit.cost_row, to_cell) == 0
                 || avoid.iter().any(|(cell, _)| *cell == to)
                 || !edge_is_open(terrain, unit, from_cell, to_cell, from, to)
             {
@@ -3935,7 +3935,8 @@ fn octant_step(heading_mdeg: u32) -> (i32, i32) {
 
 /// **Whether one edge is crossable for this unit** (16b cut Q.7), which is
 /// [`crate::arena::motion`]'s step 4 and [`crate::arena::path::path_with`]'s edge
-/// rule asked of a single step.
+/// rule asked of a single step — with the unit's own row for the shoulders
+/// since 16b cut AE.1, as the search asks it.
 fn edge_is_open(
     terrain: &ArenaTerrain,
     unit: &UnitState,
@@ -3958,7 +3959,15 @@ fn edge_is_open(
         return false;
     }
     if kind == mush_atlas::physics::StepKind::Diagonal
-        && shoulder_refuses(terrain, Some(limit), here_cell, to_cell, here, to)
+        && shoulder_refuses(
+            terrain,
+            Some(limit),
+            unit.cost_row,
+            here_cell,
+            to_cell,
+            here,
+            to,
+        )
     {
         return false;
     }
@@ -4965,5 +4974,95 @@ mod tests {
         // A unit with no machine is left alone.
         arena.reflex.forget_route(ObjId(99));
         assert!(arena.reflex.unit(ObjId(99)).is_none());
+    }
+
+    /// **16b cut AE.1 (16c `B-58`): the three goal pickers read the unit's own
+    /// row.** On a priced window, `entry_cell` (a `Withdraw`'s goal) and
+    /// `far_entry_cell` (a hunt's) hand a car no rubble cell where they hand a tank
+    /// the rubble corner its own row crosses, and `stand_off_cell` (an
+    /// `Approach`'s) hands a walker the thick-woods cell at its holding range where
+    /// it hands a tank the plot's own cell.
+    #[test]
+    fn ae1_the_goal_pickers_read_the_units_own_row() {
+        use crate::arena::state::CostRow;
+        use crate::arena::test_support::{priced_terrain, tactical_unit_on};
+        use mush_atlas::TerrainClass;
+
+        let car = ObjId(4);
+        let walker = ObjId(5);
+        let hull = ObjId(6);
+        let at = |x: u16, y: u16| pose(i64::from(x) * 1_000 + 500, i64::from(y) * 1_000 + 500);
+        let mut units = vec![
+            tank(car, Team::Red, at(4, 4)),
+            tank(walker, Team::Red, at(1, 3)),
+            tank(hull, Team::Red, at(4, 5)),
+        ];
+        if let Some(unit) = units.get_mut(0) {
+            unit.unit = tactical_unit_on(car, crate::definitions::unit::WHEELED);
+        }
+        if let Some(unit) = units.get_mut(1) {
+            unit.unit = tactical_unit_on(walker, crate::definitions::unit::LEGGED);
+        }
+        let mut arena = arena_of(units);
+        // Both zones are rubble but for one grass cell each, and the stand-off
+        // cell is thick woods.
+        let mut paint: Vec<((u16, u16), TerrainClass)> = Vec::new();
+        for y in 0..8 {
+            for x in [0_u16, 1, 6, 7] {
+                if (x, y) != (1, 7) && (x, y) != (6, 0) && (x, y) != (1, 3) {
+                    paint.push(((x, y), TerrainClass::Rubble));
+                }
+            }
+        }
+        paint.push(((4, 3), TerrainClass::WoodsHeavy));
+        arena.definition.terrain = priced_terrain(8, 8, TerrainClass::Grass, &paint);
+        for (id, row) in [
+            (car, CostRow::Wheeled),
+            (walker, CostRow::Legged),
+            (hull, CostRow::Tracked),
+        ] {
+            if let Some(state) = arena.unit_mut(id) {
+                state.cost_row = row;
+            }
+        }
+        let terrain = arena.definition.terrain.clone();
+
+        // `Withdraw`: the car's own zone, clamped to (1, 4) — rubble — so the
+        // nearest grass by Manhattan distance, (1, 3); the tank takes the rubble
+        // corner it can cross.
+        assert!(!terrain.passable_for(CostRow::Wheeled, 1, 4));
+        assert!(terrain.passable_for(CostRow::Tracked, 1, 4));
+        assert_eq!(arena.entry_cell(car), Some((1, 3)));
+        assert_eq!(arena.entry_cell(hull), Some((1, 5)), "the clamped corner");
+        // The hunt: the far zone, likewise.
+        assert_eq!(arena.far_entry_cell(car), Some((6, 0)));
+        assert_eq!(
+            arena.far_entry_cell(hull),
+            Some((6, 5)),
+            "the clamped corner"
+        );
+
+        // `Approach`: a plot at (7, 3) held at 3 cells from the walker at (1, 3)
+        // projects to (4, 3), which is thick woods.
+        let plot = SeenPose {
+            x_cm: 7_500,
+            y_cm: 3_500,
+            z_cm: 0,
+            heading_mdeg: 0,
+            speed_cms: 0,
+        };
+        assert_eq!(
+            arena.stand_off_cell(walker, &plot, 3_000),
+            Some((4, 3)),
+            "a walker stands off in the thick woods"
+        );
+        if let Some(state) = arena.unit_mut(walker) {
+            state.cost_row = CostRow::Tracked;
+        }
+        assert_eq!(
+            arena.stand_off_cell(walker, &plot, 3_000),
+            Some((7, 3)),
+            "a tank falls back to the plot's own cell"
+        );
     }
 }

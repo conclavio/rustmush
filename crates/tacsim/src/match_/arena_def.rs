@@ -32,7 +32,8 @@ use smol_str::SmolStr;
 use crate::arena::perception::{SensorProfile, SignatureFactor};
 use crate::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitProfile};
 use crate::arena::state::{
-    ArenaDefinition, ArenaTerrain, EntryZone, Team, TerrainCell, TrackedRules, WeaponSummary,
+    ArenaDefinition, ArenaTerrain, CostRow, EntryZone, Team, TerrainCell, TrackedRules,
+    WeaponSummary,
 };
 use crate::arena::weapons::WeaponBand;
 use crate::definitions::Catalog;
@@ -181,18 +182,25 @@ pub fn definition_for(
 /// zone, exactly as one on an occupied cell does, and the zone's own walk skips
 /// such a cell; `crate::definitions::arena::from_pack` refuses a zone with none
 /// to give, and `Arena::new` refuses an impassable opening cell whoever chose it.
+///
+/// **16b cut AE.1** (16c `B-58`): both readings are **the unit's own row**
+/// (`row`, [`crate::arena::state::CostRow::read`] off the unit being placed):
+/// a car a staffer left on rubble falls through to its zone exactly as T-14
+/// says, instead of passing here on the tracked reading and being refused
+/// `CellImpassable` by `Arena::new`.
 #[must_use]
 pub fn opening_pose(
     definition: &ArenaDefinition,
     team: Team,
     world_pose: Option<Pose>,
     taken: &mut Vec<(u16, u16)>,
+    row: CostRow,
 ) -> Option<Pose> {
     if let Some(pose) = world_pose.clone()
         && pose.heading_mdeg < 360_000
         && let Some(cell) = definition.terrain.cell_of(&pose)
         && !taken.contains(&cell)
-        && definition.terrain.has_way_out(cell.0, cell.1)
+        && definition.terrain.has_way_out_for(row, cell.0, cell.1)
     {
         taken.push(cell);
         return Some(pose);
@@ -212,7 +220,7 @@ pub fn opening_pose(
             if taken.contains(&(x, y)) {
                 continue;
             }
-            if !definition.terrain.has_way_out(x, y) {
+            if !definition.terrain.has_way_out_for(row, x, y) {
                 continue;
             }
             taken.push((x, y));
@@ -321,14 +329,17 @@ pub fn custody_unit(
 /// only place in the tree that reads those keys.
 ///
 /// The mode taken is [`crate::arena::slope::driving_mode`]'s: the profile's
-/// `tracked` one, **else its `legged` one** (16b cut X.2, doc 16 §9 item 2:
-/// *motion reads either*), else a mode whose id merely contains the word — the
-/// same three rungs the unit's slope limit is read off (16b cut X.6), written
-/// once so that there is one ladder rather than two copies of it. What the two
-/// readers do when the ladder answers nothing differs, by intent: this one falls
-/// through to the stock tank below, while
-/// [`crate::arena::slope::SlopeLimit::read`] falls back to the profile's first
-/// mode so that a `wheeled`-only unit is not silently unlimited. The order is
+/// `tracked` one, **else its `wheeled` one** (16b cut AE.1: a scout car decodes
+/// its own five numbers), **else its `legged` one** (16b cut X.2, doc 16 §9
+/// item 2: *motion reads either*), else a mode whose id merely contains the
+/// word `tracked` — the same four rungs the unit's slope limit and cost row are
+/// read off (16b cuts X.6 and AE.1), written once so that there is one ladder
+/// rather than several copies of it. What the readers do when the ladder
+/// answers nothing differs, by intent: this one falls through to the stock tank
+/// below, while [`crate::arena::slope::SlopeLimit::read`] and
+/// [`crate::arena::state::CostRow::read`] fall back to the profile's first mode
+/// so that a unit on a locomotion off the ladder (`hover`) is not silently
+/// unlimited. The order is
 /// the authored one
 /// ([`crate::definitions::unit::MobilityDef::modes`]) so that a unit which
 /// declared both drives here as it binds there. A unit with no mobility profile,
@@ -730,7 +741,7 @@ mod tests {
         let mut taken = Vec::new();
         let mut cells = Vec::new();
         for _ in 0..12 {
-            let pose = opening_pose(&definition, Team::Red, None, &mut taken)
+            let pose = opening_pose(&definition, Team::Red, None, &mut taken, CostRow::Tracked)
                 .unwrap_or_else(|| panic!("an entry zone of 8 by 256 has twelve free cells"));
             let cell = definition
                 .terrain
@@ -794,14 +805,26 @@ mod tests {
         assert!(!definition.terrain.has_way_out(4, 4));
         assert!(!definition.terrain.has_way_out(0, 0));
         let mut taken = Vec::new();
-        let placed = opening_pose(&definition, Team::Red, Some(at(4, 4)), &mut taken)
-            .unwrap_or_else(|| panic!("the zone has room"));
+        let placed = opening_pose(
+            &definition,
+            Team::Red,
+            Some(at(4, 4)),
+            &mut taken,
+            CostRow::Tracked,
+        )
+        .unwrap_or_else(|| panic!("the zone has room"));
         let cell = definition.terrain.cell_of(&placed);
         assert_ne!(cell, Some((4, 4)), "the walled-in world pose was kept");
         assert_ne!(cell, Some((0, 0)), "the zone handed out a walled-in cell");
         assert_eq!(cell, Some((2, 0)), "the zone's first cell with a way out");
-        let kept = opening_pose(&definition, Team::Red, Some(at(6, 6)), &mut taken)
-            .unwrap_or_else(|| panic!("an open world pose"));
+        let kept = opening_pose(
+            &definition,
+            Team::Red,
+            Some(at(6, 6)),
+            &mut taken,
+            CostRow::Tracked,
+        )
+        .unwrap_or_else(|| panic!("an open world pose"));
         assert_eq!(definition.terrain.cell_of(&kept), Some((6, 6)));
     }
 }

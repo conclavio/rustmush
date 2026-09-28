@@ -44,12 +44,12 @@
 //! crossing — the same [`crate::arena::slope`] rule, because a route that
 //! promised an edge the tank is then refused at is a tank driving at a bluff
 //! until the match ends. [`path`] keeps its signature and its behaviour: it is
-//! `path_with(.., None)`, and with no limit no edge is refused and no shoulder
-//! is read, so every **level** window answers cell for cell and node for node
-//! what it answered before. The surcharge itself is not gated on the limit: an
-//! unlimited caller on relief pays the climb it plans over, because a search
-//! that priced a climb at the flat's cost would promise a route motion charges
-//! differently.
+//! `path_with(.., None, CostRow::Tracked, ..)`, and with no limit no edge is
+//! refused and no shoulder is read, so every **level** window answers cell for
+//! cell and node for node what it answered before. The surcharge itself is not
+//! gated on the limit: an unlimited caller on relief pays the climb it plans
+//! over, because a search that priced a climb at the flat's cost would promise
+//! a route motion charges differently.
 //!
 //! **The shoulder rule is the safe direction** (16b cut M.4, 16c `T-17`): the
 //! search refuses diagonals motion allows — a corner whose passable shoulder is a
@@ -68,7 +68,7 @@ use std::collections::BinaryHeap;
 use mush_atlas::physics::StepKind;
 
 use crate::arena::slope;
-use crate::arena::state::{ArenaTerrain, TerrainCell};
+use crate::arena::state::{ArenaTerrain, CostRow, TerrainCell};
 
 /// The numerator of the diagonal step's cost multiplier.
 ///
@@ -100,16 +100,15 @@ const NEIGHBOURS: [(i32, i32); 8] = [
 ///
 /// `1` when the window has no passable cell at all, which makes the heuristic
 /// weaker and never inadmissible — the one direction it is safe to be wrong in.
+///
+/// **The tracked row's** (16b cut AE.1): [`ArenaTerrain::min_cost`] with
+/// [`CostRow::Tracked`], which the terrain took once when it was built. A
+/// search for a unit of another row is scaled on that row's own minimum (the
+/// reflex controller reads `Arena::min_cost`); this keeps its signature for the
+/// callers that plan as a tank.
 #[must_use]
 pub fn min_move_cost(terrain: &ArenaTerrain) -> u32 {
-    terrain
-        .cells()
-        .iter()
-        .filter(|cell| cell.passable())
-        .map(|cell| u32::from(cell.move_cost))
-        .min()
-        .unwrap_or(1)
-        .max(1)
+    terrain.min_cost(CostRow::Tracked)
 }
 
 /// **Why a search produced no path.**
@@ -258,7 +257,17 @@ pub fn path(
     budget: u32,
     scale: u32,
 ) -> Result<PathResult, PathFailure> {
-    path_with(terrain, scratch, start, goal, budget, scale, None, &[])
+    path_with(
+        terrain,
+        scratch,
+        start,
+        goal,
+        budget,
+        scale,
+        None,
+        CostRow::Tracked,
+        &[],
+    )
 }
 
 /// **The bounded A\* with a slope limit** (16b cut X.6; doc 16 §9 item 6) —
@@ -302,14 +311,24 @@ pub fn path(
 /// it — and the `unreachable` edge takes it from there. `&[]` is exactly what
 /// the search was before.
 ///
+/// **The row** (16b cut AE.1; 16c `B-58`): `row` is the caller's
+/// [`CostRow`], and every price the search reads — the start and the goal's
+/// passability, each entered cell's cost and passability, the shoulders' — is
+/// that row's ([`ArenaTerrain::price`]). A walker's route crosses the thick
+/// woods a tank's goes round; a car's refuses a rubble goal. `scale` must be
+/// that row's own minimum ([`ArenaTerrain::min_cost`]), or the heuristic is
+/// not admissible for it (see [`path`]). [`path`] is this with
+/// [`CostRow::Tracked`], and on a hand-built window every row reads the cell's
+/// own `move_cost`, so every such window answers what it always answered.
+///
 /// # Errors
 ///
 /// [`PathFailure`], exactly as [`path`].
 ///
 /// The argument list is long because every one of them is a **caller's** fact —
 /// the ground, the reusable scratch, the two ends, the two bounds, the unit's
-/// slope limit and the cells it has been stopped at — and a struct to carry them
-/// would be a struct built and thrown away once per search.
+/// slope limit and row and the cells it has been stopped at — and a struct to
+/// carry them would be a struct built and thrown away once per search.
 #[allow(clippy::too_many_arguments)]
 pub fn path_with(
     terrain: &ArenaTerrain,
@@ -319,6 +338,7 @@ pub fn path_with(
     budget: u32,
     scale: u32,
     slope_limit: Option<u32>,
+    row: CostRow,
     avoid: &[(u16, u16)],
 ) -> Result<PathResult, PathFailure> {
     // The refusal count is this search's, whichever way it ends: the two early
@@ -326,7 +346,7 @@ pub fn path_with(
     // `slope_refusals()` after every search (the reflex follower does) would
     // otherwise count the previous search's refusals a second time.
     scratch.slope_refused = 0;
-    let passable = |x: u16, y: u16| terrain.get(x, y).is_some_and(|cell| cell.passable());
+    let passable = |x: u16, y: u16| terrain.passable_for(row, x, y);
     let cell_cm = u32::from(terrain.cell_cm());
     if !passable(start.0, start.1) || !passable(goal.0, goal.1) {
         return Err(PathFailure::OffGround);
@@ -405,7 +425,10 @@ pub fn path_with(
             let Some(cell) = terrain.get(nx, ny) else {
                 continue;
             };
-            if !cell.passable() {
+            // 16b cut AE.1: this row's price, read once and used twice — as the
+            // class test here and as the step's cost below.
+            let price = terrain.price(row, cell);
+            if price == 0 {
                 continue;
             }
             // **16b cut Q.7**: a cell this caller was stopped at is not a cell it
@@ -441,7 +464,15 @@ pub fn path_with(
                         continue;
                     }
                     if kind == StepKind::Diagonal
-                        && shoulder_refuses(terrain, Some(limit), here_cell, cell, (x, y), (nx, ny))
+                        && shoulder_refuses(
+                            terrain,
+                            Some(limit),
+                            row,
+                            here_cell,
+                            cell,
+                            (x, y),
+                            (nx, ny),
+                        )
                     {
                         scratch.slope_refused = scratch.slope_refused.saturating_add(1);
                         continue;
@@ -449,7 +480,7 @@ pub fn path_with(
                 }
                 grade = slope::grade_pct(here_cell, cell, kind, cell_cm);
             }
-            let cost = u32::from(cell.move_cost);
+            let cost = u32::from(price);
             let step = if dx != 0 && dy != 0 {
                 cost.saturating_mul(DIAGONAL_NUM) / DIAGONAL_DEN
             } else {
@@ -533,9 +564,14 @@ pub fn path_with(
 /// ([`crate::arena::reflex`]) has to ask the edge question *exactly* as the
 /// search asks it, and a second implementation of the shoulder rule beside this
 /// one would be two rules with one name.
+///
+/// **16b cut AE.1** gave it the caller's `row`: a shoulder impassable **to
+/// this row** is no shoulder, and is skipped as a wall is.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn shoulder_refuses(
     terrain: &ArenaTerrain,
     limit: Option<u32>,
+    row: CostRow,
     here_cell: &TerrainCell,
     to_cell: &TerrainCell,
     here: (u16, u16),
@@ -546,7 +582,7 @@ pub(crate) fn shoulder_refuses(
         let Some(shoulder) = terrain.get(sx, sy) else {
             continue;
         };
-        if !shoulder.passable() {
+        if terrain.price(row, shoulder) == 0 {
             continue;
         }
         if slope::too_steep(
@@ -765,6 +801,7 @@ mod tests {
                         65_536,
                         scale,
                         Some(45),
+                        CostRow::Tracked,
                         &[]
                     ),
                     "{start:?} -> {goal:?} moved under a limit on level ground"
@@ -793,6 +830,7 @@ mod tests {
                 4_096,
                 scale,
                 None,
+                CostRow::Tracked,
                 &sealed
             ),
             Err(PathFailure::NoRoute)
@@ -807,6 +845,7 @@ mod tests {
             4_096,
             scale,
             None,
+            CostRow::Tracked,
             &[(4, 1)],
         )
         .expect("a route round one cell");
@@ -823,6 +862,7 @@ mod tests {
                 4_096,
                 scale,
                 None,
+                CostRow::Tracked,
                 &[(7, 1)]
             ),
             Err(PathFailure::NoRoute)
@@ -837,6 +877,7 @@ mod tests {
                 4_096,
                 scale,
                 None,
+                CostRow::Tracked,
                 &[]
             ),
             path(
@@ -929,6 +970,7 @@ mod tests {
             4_096,
             scale,
             Some(45),
+            CostRow::Tracked,
             &[],
         )
         .expect("a route round the bluff");
@@ -953,6 +995,7 @@ mod tests {
                 4_096,
                 scale,
                 Some(45),
+                CostRow::Tracked,
                 &[]
             ),
             Err(PathFailure::OffGround)
@@ -972,6 +1015,7 @@ mod tests {
             4_096,
             scale,
             Some(45),
+            CostRow::Tracked,
             &[],
         )
         .expect("the bluff again");
@@ -984,6 +1028,7 @@ mod tests {
             4_096,
             scale,
             Some(45),
+            CostRow::Tracked,
             &[],
         )
         .expect("the start cell");
@@ -1008,12 +1053,33 @@ mod tests {
     /// one step is refused: the search refuses diagonals motion allows (the
     /// shoulders), never one motion would refuse. Orthogonal steps are held too,
     /// since they are the same edge rule without the shoulders.
+    ///
+    /// **16b cut AE.1** extended it over [`CostRow::ALL`]: the reliefs are
+    /// priced per row (a mix of grass, road, rubble, woods, water and rock, and
+    /// walls for the impassable sprinkling, through [`ArenaTerrain::priced`]),
+    /// and every row's search — scaled on that row's own cheapest cell — is walked
+    /// by a unit of that row. A route a car's search finds is a route a car is
+    /// never refused on, and the same for a walker and a tank.
     #[test]
     fn m4_every_step_of_a_found_route_is_one_motion_accepts() {
         use crate::arena::index::SpatialIndex;
         use crate::arena::motion::step_refusal;
         use crate::arena::state::Team;
-        use crate::arena::test_support::{arena_of, pose, tank};
+        use crate::arena::test_support::{arena_of, pose, priced_cell, tank};
+        use mush_atlas::TerrainClass;
+
+        /// The classes a relief is painted from (16b cut AE.1): each row
+        /// prices them differently, and every row refuses some of them.
+        const CLASSES: [TerrainClass; 8] = [
+            TerrainClass::Grass,
+            TerrainClass::Grass,
+            TerrainClass::Road,
+            TerrainClass::Rubble,
+            TerrainClass::WoodsHeavy,
+            TerrainClass::WoodsLight,
+            TerrainClass::Water,
+            TerrainClass::Rock,
+        ];
 
         /// splitmix64, so the reliefs and the pairs are the same on every run.
         fn next(state: &mut u64) -> u64 {
@@ -1035,23 +1101,38 @@ mod tests {
             .first()
             .cloned()
             .unwrap_or_else(|| panic!("the fixture tank"));
-        let mut routes = 0_u32;
-        let mut diagonals = 0_u32;
+        let mut routes = [0_u32; 3];
+        let mut diagonals = [0_u32; 3];
         let mut state = 0x4d17_u64;
         for _relief in 0..6 {
             let mut cells = vec![ground(); usize::from(SIDE) * usize::from(SIDE)];
             for cell in &mut cells {
                 let roll = next(&mut state) % 100;
-                if roll < 6 {
-                    cell.move_cost = 0;
-                }
+                let class = if roll < 6 {
+                    TerrainClass::Wall
+                } else {
+                    let pick = usize::try_from(next(&mut state) % 8).unwrap_or(0);
+                    CLASSES.get(pick).copied().unwrap_or(TerrainClass::Grass)
+                };
+                *cell = priced_cell(class);
                 cell.elev_cm = i16::try_from(next(&mut state) % 6).unwrap_or(0) * 100;
             }
-            let terrain = ArenaTerrain::new(SIDE, SIDE, 1_000, cells).expect("a relief window");
+            let terrain = ArenaTerrain::priced(
+                SIDE,
+                SIDE,
+                1_000,
+                cells,
+                mush_atlas::physics::LocomotionTable::shipped(),
+            )
+            .expect("a relief window");
             let index = SpatialIndex::new(&terrain);
-            for limit in [20_u32, 35, 60] {
+            for (row, limit) in CostRow::ALL
+                .into_iter()
+                .flat_map(|row| [20_u32, 35, 60].map(|limit| (row, limit)))
+            {
                 let mut unit = template.clone();
                 unit.slope_limit_pct = Some(limit);
+                unit.cost_row = row;
                 for _pair in 0..30 {
                     let coord =
                         |state: &mut u64| u16::try_from(next(state) % u64::from(SIDE)).unwrap_or(0);
@@ -1063,32 +1144,120 @@ mod tests {
                         start,
                         goal,
                         4_096,
-                        min_move_cost(&terrain),
+                        terrain.min_cost(row),
                         Some(limit),
+                        row,
                         &[],
                     ) else {
                         continue;
                     };
-                    routes += 1;
+                    if let Some(count) = routes.get_mut(row.index()) {
+                        *count += 1;
+                    }
                     let mut here = start;
                     for &step in &found.cells {
-                        if here.0 != step.0 && here.1 != step.1 {
-                            diagonals += 1;
+                        if here.0 != step.0
+                            && here.1 != step.1
+                            && let Some(count) = diagonals.get_mut(row.index())
+                        {
+                            *count += 1;
                         }
                         assert_eq!(
                             step_refusal(&unit, &index, &terrain, here, step),
                             None,
-                            "limit {limit}%: the search took {here:?} -> {step:?} and motion \
-                             refuses it"
+                            "{} row, limit {limit}%: the search took {here:?} -> {step:?} and \
+                             motion refuses it",
+                            row.as_str()
                         );
                         here = step;
                     }
                 }
             }
         }
-        // The property is worth asserting: routes were found, and they cut
-        // corners.
-        assert!(routes > 100, "{routes} routes");
-        assert!(diagonals > 100, "{diagonals} diagonal steps");
+        // The property is worth asserting: routes were found on every row, and
+        // they cut corners. The reliefs and the pairs are seeded, so each row's
+        // figures are fixed; measured when the rows were built, `[tracked,
+        // wheeled, legged]` found `[324, 98, 439]` routes with `[1957, 790,
+        // 2057]` diagonal steps among them, and each floor below is about four
+        // fifths of its row's figure — the tracked row's well above the 100 and
+        // 100 it was held to over plain ground before 16b cut AE.1 — so a
+        // change that leaves any row nearly routeless shows here instead of
+        // passing on a sliver of cases.
+        println!("m4 per row: routes {routes:?}, diagonal steps {diagonals:?}");
+        for (row, least_routes, least_diagonals) in [
+            (CostRow::Tracked, 250_u32, 1_500_u32),
+            (CostRow::Wheeled, 75, 600),
+            (CostRow::Legged, 350, 1_600),
+        ] {
+            let (found, cut) = (
+                routes.get(row.index()).copied().unwrap_or(0),
+                diagonals.get(row.index()).copied().unwrap_or(0),
+            );
+            assert!(
+                found >= least_routes,
+                "{} row: {found} routes, under {least_routes}",
+                row.as_str()
+            );
+            assert!(
+                cut >= least_diagonals,
+                "{} row: {cut} diagonal steps, under {least_diagonals}",
+                row.as_str()
+            );
+        }
+    }
+
+    /// **16b cut AE.1: a shoulder the row cannot stand on is no shoulder.**
+    /// [`shoulder_refuses`] skips a shoulder impassable **to the searching
+    /// row**, as it skips a wall. On a level 3 by 3 of grass whose one
+    /// shoulder of the diagonal `(0, 0) → (1, 1)` is rubble ten metres up, a
+    /// car (wheeled, 25) takes the diagonal in one step — rubble is no ground
+    /// of its own, so no shoulder of its corner — and a tank (tracked, 45)
+    /// goes round by the other shoulder: rubble is its ground, and a ten-metre
+    /// step up onto it is past its limit.
+    #[test]
+    fn ae1_a_shoulder_the_row_cannot_stand_on_is_no_shoulder() {
+        use crate::arena::test_support::priced_cell;
+        use mush_atlas::TerrainClass;
+        let mut cells = vec![priced_cell(TerrainClass::Grass); 9];
+        if let Some(shoulder) = cells.get_mut(1) {
+            *shoulder = TerrainCell {
+                elev_cm: 1_000,
+                ..priced_cell(TerrainClass::Rubble)
+            };
+        }
+        let terrain = ArenaTerrain::priced(
+            3,
+            3,
+            1_000,
+            cells,
+            mush_atlas::physics::LocomotionTable::shipped(),
+        )
+        .expect("a priced window");
+        assert_eq!(terrain.cost(CostRow::Wheeled, 1, 0), 0);
+        assert_eq!(terrain.cost(CostRow::Tracked, 1, 0), 200);
+        let search = |limit: u32, row: CostRow| {
+            path_with(
+                &terrain,
+                &mut PathScratch::default(),
+                (0, 0),
+                (1, 1),
+                64,
+                terrain.min_cost(row),
+                Some(limit),
+                row,
+                &[],
+            )
+            .map(|found| found.cells)
+        };
+        assert_eq!(
+            search(25, CostRow::Wheeled),
+            Ok(vec![(1, 1)]),
+            "the car's corner has one shoulder, and it is level"
+        );
+        assert_eq!(
+            search(45, CostRow::Tracked),
+            Ok(vec![(0, 1), (1, 1)]),
+            "the tank's rubble shoulder is ten metres up, so it goes round"
+        );
     }
 }

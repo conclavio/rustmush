@@ -52,6 +52,14 @@ pub const DEFINITION_DIGEST_DOMAIN: &[u8] = b"tacsim.arena.definition.v1";
 /// tables; here it is data, so a test can lay down an impassable band with no
 /// atlas at all. `class` is carried for cover and opacity, which cut S and cut W
 /// consume.
+///
+/// **16b cut AE.1** (16c `B-58`): `move_cost` is the **tracked** row's price and
+/// nothing else, and it keeps its name for that. A unit reads its own row's
+/// price through [`ArenaTerrain::cost`], which answers `move_cost` for the
+/// tracked row and the terrain's class table for the other two; `move_cost`
+/// and [`TerrainCell::passable`] are read directly only by the loader's
+/// entry-zone check, the digest and the tests that build cells — nothing that
+/// knows a unit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerrainCell {
     /// The ground class, for cover and opacity.
@@ -59,15 +67,77 @@ pub struct TerrainCell {
     /// The cell's elevation against the region datum, centimetres. A unit's
     /// `z_cm` equals the cell's `elev_cm` (doc 16 §3.2).
     pub elev_cm: i16,
-    /// The `tracked` movement cost; `0` is impassable.
+    /// The `tracked` movement cost; `0` is impassable. **The tracked row's
+    /// price** (16b cut AE.1): a unit of another row reads its own through
+    /// [`ArenaTerrain::cost`].
     pub move_cost: u16,
 }
 
 impl TerrainCell {
     /// Whether the `tracked` mode may enter this cell (doc 16 §3.4 step 4).
+    ///
+    /// **The tracked row's reading** (16b cut AE.1): a reader that knows the
+    /// unit asks [`ArenaTerrain::passable_for`] with the unit's [`CostRow`]
+    /// instead.
     #[must_use]
     pub const fn passable(&self) -> bool {
         self.move_cost != 0
+    }
+}
+
+/// **Which row of the shipped locomotion table a unit pays** (16b cut AE.1;
+/// 16c `B-58`; doc 16 §3.4 step 2).
+///
+/// Before this cut every arena cell was priced once, off the table's `tracked`
+/// row, and every reader — motion's factor and refusal, the A\* and its
+/// heuristic scale, the reflex controller's open-step tests and goal pickers,
+/// the shoulder rule, the placement and opening tests — read that one number,
+/// so a walker was refused the thick woods its own `legged` row prices at 200
+/// and paid a tank's price for rubble. A unit's row is read once, at check-out
+/// ([`CostRow::read`], in [`crate::arena::slope`] beside
+/// [`crate::arena::slope::SlopeLimit::read`]), and every reader that knows the
+/// unit asks [`ArenaTerrain::cost`] with it.
+///
+/// Three rows and no more: the three ground locomotions the unit definitions
+/// author (`crate::definitions::unit::{TRACKED, WHEELED, LEGGED}`). Anything
+/// else — a `hover` mode, a unit with no mobility profile, which is every
+/// engine fixture — reads [`CostRow::Tracked`], the price every unit paid
+/// before.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CostRow {
+    /// The `tracked` row: a tank. The row [`TerrainCell::move_cost`] holds.
+    #[default]
+    Tracked,
+    /// The `wheeled` row: a car.
+    Wheeled,
+    /// The `legged` row: a walker.
+    Legged,
+}
+
+impl CostRow {
+    /// Every row, in [`CostRow::index`] order.
+    pub const ALL: [CostRow; 3] = [CostRow::Tracked, CostRow::Wheeled, CostRow::Legged];
+
+    /// The row's locomotion word in the shipped table — the atlas's own
+    /// (`crate::definitions::unit::{TRACKED, WHEELED, LEGGED}`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            CostRow::Tracked => crate::definitions::unit::TRACKED,
+            CostRow::Wheeled => crate::definitions::unit::WHEELED,
+            CostRow::Legged => crate::definitions::unit::LEGGED,
+        }
+    }
+
+    /// The row's column in [`ArenaTerrain`]'s class table and in
+    /// [`Arena::min_cost`]: `0` tracked, `1` wheeled, `2` legged.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            CostRow::Tracked => 0,
+            CostRow::Wheeled => 1,
+            CostRow::Legged => 2,
+        }
     }
 }
 
@@ -81,12 +151,26 @@ impl ArenaTerrain {
     /// without a slope table).
     ///
     /// Read by `crate::definitions::arena::from_pack` (a zone must hold at least
-    /// one such cell) and by `crate::match_::opening_pose` (a unit is only ever
-    /// placed on one).
+    /// one such cell) and by the two world-side prechecks of `@arena/place` and
+    /// `@arena/pose`.
+    ///
+    /// **16b cut AE.1**: this is the **tracked** row's reading —
+    /// [`ArenaTerrain::has_way_out_for`] with [`CostRow::Tracked`] — kept for
+    /// the callers that know no unit. `crate::match_::opening_pose` and the
+    /// arena's own placement test know the unit and ask its row.
     #[must_use]
     pub fn has_way_out(&self, x: u16, y: u16) -> bool {
+        self.has_way_out_for(CostRow::Tracked, x, y)
+    }
+
+    /// **[`ArenaTerrain::has_way_out`] for one row** (16b cut AE.1): the cell is
+    /// passable **to that row** and at least one of its four orthogonal
+    /// neighbours is too. A car on rubble has no way out, whatever a tank would
+    /// have there.
+    #[must_use]
+    pub fn has_way_out_for(&self, row: CostRow, x: u16, y: u16) -> bool {
         let passable = |x: Option<u16>, y: Option<u16>| match (x, y) {
-            (Some(x), Some(y)) => self.get(x, y).is_some_and(TerrainCell::passable),
+            (Some(x), Some(y)) => self.passable_for(row, x, y),
             _ => false,
         };
         passable(Some(x), Some(y))
@@ -105,6 +189,17 @@ impl ArenaTerrain {
 /// other three: [`ArenaTerrain::new`] is the only way in, and it refuses a grid
 /// whose cell count is not `width × height` rather than letting a short vector
 /// turn every lookup off the end into a silent `None`.
+///
+/// **Two ways in since 16b cut AE.1, and one rule about prices** (16c `B-58`).
+/// [`ArenaTerrain::new`] (and [`ArenaTerrain::uniform`] over it) prices **every
+/// row at the cell's own `move_cost`**: a number a test authors on a cell is
+/// its statement about that cell for every unit, so every hand-built window —
+/// every fixture in the tree and the CI harness cohort — reads byte for byte
+/// what it read before the rows existed, whoever crosses it.
+/// [`ArenaTerrain::priced`], which only `crate::definitions::arena::from_pack`
+/// calls, lays the shipped locomotion table's three rows beside the cells as one
+/// class table, so on the authored ground a walker, a car and a tank each pay
+/// their own ([`ArenaTerrain::cost`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArenaTerrain {
     width: u16,
@@ -131,6 +226,30 @@ pub struct ArenaTerrain {
     /// index holds terrain, and one observer's pass still depends on nothing
     /// another observer did.
     horizon: Horizon,
+    /// **The price of every class for the rows `move_cost` does not hold**
+    /// (16b cut AE.1; 16c `B-58`): one `[tracked, wheeled, legged]` row per
+    /// `mush_atlas::TerrainClass`, indexed by the class's code (the
+    /// discriminants are contiguous, `0..=17`), `0` impassable.
+    ///
+    /// **`None` is a fixture's window, and it prices every row at the cell's
+    /// own `move_cost`.** [`ArenaTerrain::new`] and [`ArenaTerrain::uniform`]
+    /// leave it `None`: a number a test authors on a cell is its statement
+    /// about that cell **for every unit**, so every hand-built window in the
+    /// tree — the CI harness cohort's among them — answers byte for byte what
+    /// it answered before the rows existed, whichever unit crosses it. Only
+    /// [`ArenaTerrain::priced`], which `crate::definitions::arena::from_pack`
+    /// alone calls, fills it, from the shipped locomotion table.
+    ///
+    /// A class table and not a per-cell layer: the rows are a pure function of
+    /// the class, so a layer would be 256 KiB per definition, repeated for every
+    /// replay ground cached per digest, to say what fifty-four numbers say. Not
+    /// in [`ArenaDefinition::digest`] for the same reason: it is the class and
+    /// the shipped table, which is code.
+    row_costs: Option<[[u16; 3]; 18]>,
+    /// **The cheapest passable price of each row over the window's cells**
+    /// (16b cut AE.1), at least `1`, in [`CostRow::index`] order — computed
+    /// once at construction, because the grid never changes after it.
+    min_cost: [u32; 3],
 }
 
 impl ArenaTerrain {
@@ -155,13 +274,19 @@ impl ArenaTerrain {
                 // 16b cut J.2: the index is built here, from the cells just
                 // checked, so every terrain in the tree carries its own.
                 let horizon = Horizon::build(width, height, &cells);
-                Ok(ArenaTerrain {
+                let mut terrain = ArenaTerrain {
                     width,
                     height,
                     cell_cm,
                     cells,
                     horizon,
-                })
+                    // 16b cut AE.1: a hand-built window prices every row at the
+                    // cell's own number (see the field).
+                    row_costs: None,
+                    min_cost: [1; 3],
+                };
+                terrain.min_cost = terrain.cheapest();
+                Ok(terrain)
             }
             _ => Err(ArenaError::TerrainShape {
                 width,
@@ -170,6 +295,117 @@ impl ArenaTerrain {
                 cells: cells.len(),
             }),
         }
+    }
+
+    /// **The grid priced per row from `table`** (16b cut AE.1; 16c `B-58`) —
+    /// [`ArenaTerrain::new`], then the class table filled from
+    /// `TerrainClass::ALL × CostRow::ALL` (`table.cost(class.label(), row, &[])`,
+    /// `None` → `0`: fifty-four string-keyed lookups per build, never one per
+    /// cell) and each row's cheapest price taken again.
+    ///
+    /// Called by `crate::definitions::arena::from_pack` and nowhere else in the
+    /// build, with `LocomotionTable::shipped()`. The tracked column is the one
+    /// the loader already wrote onto every cell as `move_cost`, and a debug
+    /// build asserts that they agree.
+    ///
+    /// # Errors
+    ///
+    /// As [`ArenaTerrain::new`].
+    pub fn priced(
+        width: u16,
+        height: u16,
+        cell_cm: u16,
+        cells: Vec<TerrainCell>,
+        table: &mush_atlas::physics::LocomotionTable,
+    ) -> Result<ArenaTerrain, ArenaError> {
+        let mut terrain = ArenaTerrain::new(width, height, cell_cm, cells)?;
+        let mut rows = [[0_u16; 3]; 18];
+        for class in TerrainClass::ALL {
+            let Some(slot) = rows.get_mut(usize::from(class.code())) else {
+                continue;
+            };
+            for row in CostRow::ALL {
+                let price = table
+                    .cost(class.label(), row.as_str(), &[])
+                    .map_or(0, |cost| u16::try_from(cost).unwrap_or(u16::MAX));
+                if let Some(column) = slot.get_mut(row.index()) {
+                    *column = price;
+                }
+            }
+        }
+        debug_assert!(
+            terrain.cells.iter().all(|cell| {
+                rows.get(usize::from(cell.class.code()))
+                    .and_then(|prices| prices.first())
+                    .is_some_and(|tracked| *tracked == cell.move_cost)
+            }),
+            "the class table's tracked column is the loader's `move_cost`"
+        );
+        terrain.row_costs = Some(rows);
+        terrain.min_cost = terrain.cheapest();
+        Ok(terrain)
+    }
+
+    /// Each row's cheapest passable price over the cells, at least `1`.
+    fn cheapest(&self) -> [u32; 3] {
+        let mut out = [1_u32; 3];
+        for row in CostRow::ALL {
+            let least = self
+                .cells
+                .iter()
+                .map(|cell| self.price(row, cell))
+                .filter(|price| *price != 0)
+                .min()
+                .map_or(1, |price| u32::from(price).max(1));
+            if let Some(slot) = out.get_mut(row.index()) {
+                *slot = least;
+            }
+        }
+        out
+    }
+
+    /// **What `row` pays to be in `cell`** (16b cut AE.1): the cell's own
+    /// `move_cost` for the tracked row, and for every row on a window with no
+    /// class table; the table's price for the cell's class otherwise. `0` is
+    /// impassable.
+    ///
+    /// The form for a reader that already holds the cell — motion and the A\*
+    /// both have it in hand — and [`ArenaTerrain::cost`] is the same answer by
+    /// coordinates.
+    #[must_use]
+    pub fn price(&self, row: CostRow, cell: &TerrainCell) -> u16 {
+        match (row, &self.row_costs) {
+            (CostRow::Tracked, _) | (_, None) => cell.move_cost,
+            (_, Some(table)) => table
+                .get(usize::from(cell.class.code()))
+                .and_then(|prices| prices.get(row.index()))
+                .copied()
+                .unwrap_or(0),
+        }
+    }
+
+    /// **What `row` pays to be in `(x, y)`** (16b cut AE.1):
+    /// [`TerrainCell::move_cost`] for [`CostRow::Tracked`]; for the other two,
+    /// the class table's price when the terrain was [`ArenaTerrain::priced`],
+    /// else the cell's own `move_cost`. `0` off the window or impassable.
+    #[must_use]
+    pub fn cost(&self, row: CostRow, x: u16, y: u16) -> u16 {
+        self.get(x, y).map_or(0, |cell| self.price(row, cell))
+    }
+
+    /// Whether `row` may enter `(x, y)` (16b cut AE.1; doc 16 §3.4 step 4): its
+    /// [`ArenaTerrain::cost`] there is not `0`.
+    #[must_use]
+    pub fn passable_for(&self, row: CostRow, x: u16, y: u16) -> bool {
+        self.cost(row, x, y) != 0
+    }
+
+    /// **The cheapest passable price `row` pays anywhere on the window**, at
+    /// least `1` (16b cut AE.1) — the A\* heuristic's scale for a unit of that
+    /// row and the divisor of its speed ceiling. Computed at construction.
+    #[must_use]
+    pub fn min_cost(&self, row: CostRow) -> u32 {
+        self.min_cost.get(row.index()).copied().unwrap_or(1)
     }
 
     /// A grid of one repeated cell — the shape a unit test lays down before it
@@ -823,6 +1059,12 @@ impl ArenaDefinition {
     /// match was fought under is the record's and the replay's `"mode"` and the
     /// state hash's item 12. So the proving ground's version 4, which only
     /// declares Hold, digests exactly as version 3 did.
+    ///
+    /// **Why the terrain's per-row class table is NOT in it** (16b cut AE.1):
+    /// the wheeled and legged prices of a cell are a function of its class,
+    /// which item 4 folds, and of the shipped locomotion table, which is code
+    /// in the way the slope rule is code. So a definition priced per row digests
+    /// exactly as it did when every cell carried the tracked price alone.
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
         let mut sha = Sha256::new();
@@ -1126,20 +1368,36 @@ fn rounds_on_record(unit: &mush_tactics::TacticalUnit, weapon: &SmolStr) -> Opti
 }
 
 /// **The speed ceiling of a set of units on a window whose cheapest passable
-/// cell costs `min_move_cost`**, cm/s (16b cut M.4, 16c `T-15`):
-/// `fastest × 100 / min(100, min_move_cost)`, the fastest being the greatest
-/// `max_speed_cms` of a unit that is neither a wreck nor disabled. Written once
-/// for [`Arena::max_speed_cms`] and for [`Arena::new`]'s substep refusal, which
-/// runs before there is an [`Arena`] to ask.
-fn speed_ceiling_cms(units: &[UnitState], min_move_cost: u32) -> u32 {
-    let fastest = units
+/// cell costs `min_cost[row]` for each row**, cm/s (16b cut M.4, 16c `T-15`;
+/// re-derived per row by 16b cut AE.1): the greatest, over the units that are
+/// neither a wreck nor disabled, of `max_speed_cms × 100 / min(100,
+/// min_cost[unit.cost_row])`. Written once for [`Arena::max_speed_cms`] and for
+/// [`Arena::new`]'s substep refusal, which runs before there is an [`Arena`] to
+/// ask.
+///
+/// **Per unit, on its own row** (16b cut AE.1): the terrain factor a unit
+/// drives under is its own row's, so the cell it could go fastest in is the
+/// cheapest its own row prices. On the shipped ground the tracked and legged
+/// rows' cheapest passable price is 100 and the wheeled row's 80 (a road), so a
+/// 3,000 cm/s car answers 3,750 and a 1,500 cm/s tank beside it 1,500: the
+/// car's cheap road is no margin the tank needs.
+fn speed_ceiling_cms(units: &[UnitState], min_cost: &[u32; 3]) -> u32 {
+    units
         .iter()
         .filter(|state| !state.limits.wreck && !state.limits.motion_disabled)
-        .map(|state| state.mobility.max_speed_cms)
+        .map(|state| {
+            let cheapest = u64::from(
+                min_cost
+                    .get(state.cost_row.index())
+                    .copied()
+                    .unwrap_or(1)
+                    .clamp(1, 100),
+            );
+            u32::try_from(u64::from(state.mobility.max_speed_cms).saturating_mul(100) / cheapest)
+                .unwrap_or(u32::MAX)
+        })
         .max()
-        .unwrap_or(0);
-    let cheapest = u64::from(min_move_cost.clamp(1, 100));
-    u32::try_from(u64::from(fastest).saturating_mul(100) / cheapest).unwrap_or(u32::MAX)
+        .unwrap_or(0)
 }
 
 /// **Which of a unit's sections carry [`crate::arena::resolution::Consequence::DestroyUnit`]**,
@@ -1526,6 +1784,20 @@ pub struct UnitState {
     /// never moves, and what it *does* is the refusals the hash already folds
     /// through the poses.
     pub slope_limit_pct: Option<u32>,
+    /// **Which row of the shipped locomotion table this unit pays** (16b cut
+    /// AE.1; 16c `B-58`): its own driving mode's locomotion
+    /// ([`CostRow::read`]), [`CostRow::Tracked`] for a unit that declares none.
+    ///
+    /// Read off the M32 unit at check-out beside [`UnitState::slope_limit_pct`]
+    /// and for the same reasons: a fact about the fit that nothing in a match
+    /// moves. Every reader that knows the unit — motion's terrain factor and
+    /// refusal, the A\* and its heuristic scale, the reflex controller's
+    /// open-step tests and goal pickers, the placement and opening tests —
+    /// prices the ground through it ([`ArenaTerrain::cost`]). **Not folded
+    /// into [`crate::arena::hash::state_hash`]**, for `slope_limit_pct`'s
+    /// reason: it never moves, and what it does is the poses the hash already
+    /// folds.
+    pub cost_row: CostRow,
     /// **Which of this unit's sections kill it when they go**, one bit each (16b
     /// cut E.2, `B-45`).
     ///
@@ -3289,16 +3561,20 @@ pub struct Arena {
     /// one buffer for the whole match and not one per unit, and because a unit
     /// under a pilot carries no machine at all.
     pub reflex: crate::arena::reflex::ReflexMemory,
-    /// **The cheapest passable cell on the window**, its `move_cost`
-    /// ([`crate::arena::path::min_move_cost`]; at least `1`), read once at
-    /// check-out because the terrain is immutable for the life of a match.
+    /// **The cheapest passable cell on the window for each row**, in
+    /// [`CostRow::index`] order ([`ArenaTerrain::min_cost`]; each at least
+    /// `1`), read once at check-out because the terrain is immutable for the
+    /// life of a match.
     ///
     /// Two readers, one copy (16b cut M.4, 16c `T-15`): the reflex controller's
     /// A\* heuristic scale (16b cut N.1, which kept it on
     /// [`crate::arena::reflex::ReflexMemory`] until M.4) and
-    /// [`Arena::max_speed_cms`]'s true ceiling. Not folded into the state hash:
-    /// it is a function of the definition and never moves.
-    pub min_move_cost: u32,
+    /// [`Arena::max_speed_cms`]'s true ceiling. **16b cut AE.1** made it one
+    /// number per row (it was `min_move_cost`, the tracked row's): a search for
+    /// a car scaled on the tracked 100 over an 80 road would be inadmissible,
+    /// and a car's ceiling is its own row's. Not folded into the state hash: it
+    /// is a function of the definition and never moves.
+    pub min_cost: [u32; 3],
     /// Queued discrete actions per unit, with **no bound of their own** (16b
     /// cut M.1, `T-82`): a seat's `intents.max_pending_per_unit` orders a unit
     /// per arena second (counted in `apply_intent`) and the arena task's
@@ -3630,12 +3906,16 @@ impl Arena {
                     y_cm: unit.pose.y_cm,
                 });
             };
-            // **16b cut M.4** (16c `T-14`): and on a cell a unit may stand on. The
-            // announcement names nobody, so the unit and the cell go to the log.
+            // **16b cut AE.1**: the row this unit pays, read beside its slope
+            // limit below and first because the opening test needs it.
+            let cost_row = CostRow::read(&unit.unit);
+            // **16b cut M.4** (16c `T-14`): and on a cell a unit may stand on —
+            // **its own row** since 16b cut AE.1, so a car handed over on rubble
+            // is refused here as a tank in deep water is. The announcement names
+            // nobody, so the unit and the cell go to the log.
             if !definition
                 .terrain
-                .get(opening_cell.0, opening_cell.1)
-                .is_some_and(TerrainCell::passable)
+                .passable_for(cost_row, opening_cell.0, opening_cell.1)
             {
                 tracing::warn!(
                     unit = %unit.id,
@@ -3725,6 +4005,7 @@ impl Arena {
                 power: Power::Off,
                 mobility: unit.mobility,
                 slope_limit_pct,
+                cost_row,
                 fatal_sections,
                 // A unit opens the match standing still, so it entered its cell by
                 // no edge at all: grade zero, which is the flat factor.
@@ -3906,14 +4187,17 @@ impl Arena {
         // 16b cut N.1: the cheapest cell on the window, read once here so the A*
         // heuristic is admissible without a scan per query
         // (`crate::arena::path::min_move_cost`). **16b cut M.4** (`T-15`): and the
-        // speed ceiling reads it too, so it is held on the arena, once.
-        let min_move_cost = crate::arena::path::min_move_cost(&definition.terrain);
+        // speed ceiling reads it too, so it is held on the arena, once. **16b cut
+        // AE.1**: one per row, copied from the terrain, which took them when it
+        // was built.
+        let min_cost = CostRow::ALL.map(|row| definition.terrain.min_cost(row));
         // **16b cut M.4** (16c `B-57`): the substep floor may not beat the
         // one-cell bound. The ceiling is the terrain factor's (`speed_ceiling_cms`),
         // so a window with a cell cheaper than 100 is judged at the speed its
         // terrain factor allows — a conservative margin, since the order clamp
-        // (`apply_intent`) keeps every unit at or under its authored speed.
-        let ceiling_cms = speed_ceiling_cms(&states, min_move_cost);
+        // (`apply_intent`) keeps every unit at or under its authored speed. Each
+        // unit on its own row's cheapest cell (16b cut AE.1).
+        let ceiling_cms = speed_ceiling_cms(&states, &min_cost);
         let cell_cm = definition.terrain.cell_cm();
         if u64::from(crate::arena::clock::MIN_SUBSTEP_MS).saturating_mul(u64::from(ceiling_cms))
             > u64::from(cell_cm.saturating_sub(1)).saturating_mul(1_000)
@@ -3984,7 +4268,7 @@ impl Arena {
             resolution,
             pilots,
             reflex: crate::arena::reflex::ReflexMemory::new(&arena_cfg.reflex),
-            min_move_cost,
+            min_cost,
             pending: BTreeMap::new(),
             shots: BTreeMap::new(),
             next_shot_seq: 0,
@@ -4275,15 +4559,20 @@ impl Arena {
     /// machine alike) and `accelerate` drives toward the order, so the authored
     /// speed is the real top speed. The scale is a **conservative margin**: it
     /// keeps the one-cell bound true of the terrain factor itself, should a later
-    /// order path ever let the factor lift a unit past its authored figure. On
-    /// the shipped ground every passable cost is at least 100, so the answer is
-    /// the fastest authored speed exactly as before; a future 80-cost row
-    /// shortens the substep by a fifth for that margin. [`Arena::new`] refuses a
-    /// match whose ceiling beats the substep floor
+    /// order path ever let the factor lift a unit past its authored figure.
+    /// [`Arena::new`] refuses a match whose ceiling beats the substep floor
     /// ([`ArenaError::SubstepBound`]).
+    ///
+    /// **16b cut AE.1** (16c `B-58`) made it per unit on the unit's own row:
+    /// the largest `max_speed_cms × 100 / min(100, min_cost[row])` over the
+    /// units ([`Arena::min_cost`]). On the shipped ground the tracked and
+    /// legged rows' cheapest passable price is 100, so a tank or a walker
+    /// answers its authored speed; the `wheeled` row prices a road at 80, so a
+    /// 3,000 cm/s car answers 3,750 on the proving ground, and the substep,
+    /// `min(250, 999,000 / 3,750)`, is still 250 ms.
     #[must_use]
     pub fn max_speed_cms(&self) -> u32 {
-        speed_ceiling_cms(&self.units, self.min_move_cost)
+        speed_ceiling_cms(&self.units, &self.min_cost)
     }
 
     /// The side of one cell, centimetres.
@@ -5179,7 +5468,7 @@ mod tests {
     fn m4_a_cell_cheaper_than_a_hundred_raises_the_ceiling_and_shortens_the_substep() {
         let red = || fast(ObjId(4), Team::Red, pose(1_500, 1_500), 5_000);
         let flat = open_on(vec![red()], &[]).expect("the flat window opens");
-        assert_eq!(flat.min_move_cost, 100);
+        assert_eq!(flat.min_cost[0], 100);
         assert_eq!(
             flat.max_speed_cms(),
             5_000,
@@ -5190,7 +5479,7 @@ mod tests {
             ..ground()
         };
         let fast_ground = open_on(vec![red()], &[((5, 5), cheap)]).expect("it opens");
-        assert_eq!(fast_ground.min_move_cost, 80);
+        assert_eq!(fast_ground.min_cost[0], 80);
         assert_eq!(fast_ground.max_speed_cms(), 6_250, "5,000 × 100 / 80");
         let tempo = crate::config::TempoConfig::default();
         let before = crate::arena::clock::substep_ms(&tempo, 1_000, flat.max_speed_cms());
@@ -5210,6 +5499,111 @@ mod tests {
         }
         let slow = open_on(vec![red()], &all_dear).expect("it opens");
         assert_eq!(slow.max_speed_cms(), 5_000);
+    }
+
+    /// **16b cut AE.1: the ceiling is each unit's own row's** (16c `T-15`
+    /// re-derived). On a priced window of grass with one road cell — the tracked
+    /// row prices the road at 100, the wheeled row at 80 — a 3,000 cm/s car
+    /// answers `3,000 × 100 / 80` = 3,750 and the match opens (the substep is
+    /// `min(250, 999,000 / 3,750)` = 250 ms, the shipped ceiling's); a
+    /// 16,000 cm/s car over that one road cell answers 20,000 and is refused
+    /// `SubstepBound`; and a 3,000 cm/s **tracked** unit on the same window
+    /// answers 3,000, because its own row's cheapest cell is the road at 100.
+    #[test]
+    fn ae1_the_ceiling_is_each_units_own_rows() {
+        use crate::arena::test_support::{priced_terrain, tactical_unit_on};
+        use mush_atlas::TerrainClass;
+        let open = |speed_cms: u32, locomotion: Option<&str>| {
+            let mut unit = fast(ObjId(4), Team::Red, pose(1_500, 1_500), speed_cms);
+            if let Some(locomotion) = locomotion {
+                unit.unit = tactical_unit_on(ObjId(4), locomotion);
+            }
+            let mut out = custody(vec![unit], Vec::new());
+            out.definition.terrain =
+                priced_terrain(8, 8, TerrainClass::Grass, &[((5, 5), TerrainClass::Road)]);
+            Arena::new(
+                out,
+                &ArenaConfig::default(),
+                &MatchConfig::default(),
+                &SensorsConfig::default(),
+            )
+        };
+        let car = open(3_000, Some(crate::definitions::unit::WHEELED)).expect("the car opens");
+        assert_eq!(car.min_cost, [100, 80, 100], "the road, on every row");
+        assert_eq!(
+            car.unit(ObjId(4)).map(|unit| unit.cost_row),
+            Some(CostRow::Wheeled)
+        );
+        assert_eq!(car.max_speed_cms(), 3_750, "3,000 × 100 / 80");
+        let tempo = crate::config::TempoConfig::default();
+        assert_eq!(
+            crate::arena::clock::substep_ms(&tempo, 1_000, car.max_speed_cms()),
+            250,
+            "999,000 / 3,750 is 266, so the cap answers"
+        );
+        assert!(matches!(
+            open(16_000, Some(crate::definitions::unit::WHEELED)),
+            Err(ArenaError::SubstepBound {
+                ceiling_cms: 20_000,
+                ..
+            })
+        ));
+        let tank = open(3_000, None).expect("the tank opens");
+        assert_eq!(
+            tank.unit(ObjId(4)).map(|unit| unit.cost_row),
+            Some(CostRow::Tracked)
+        );
+        assert_eq!(tank.max_speed_cms(), 3_000, "its own row's cheapest is 100");
+    }
+
+    /// **16b cut AE.1: an opening cell is judged on the unit's own row.**
+    /// `Arena::new`'s opening test asks `passable_for(cost_row, ..)`, so on a
+    /// priced window a car handed over on rubble is refused `CellImpassable`
+    /// where a tank on the same cell opens, and a walker handed over in the
+    /// thick woods opens where a tank is refused — the arena trusting no row's
+    /// word but the unit's own, as it trusts no world pose.
+    #[test]
+    fn ae1_the_opening_cell_is_judged_on_the_units_own_row() {
+        use crate::arena::test_support::{priced_terrain, tactical_unit_on};
+        use crate::definitions::unit::{LEGGED, WHEELED};
+        use mush_atlas::TerrainClass;
+        let open = |locomotion: Option<&str>, class: TerrainClass| {
+            let mut unit = tank(ObjId(4), Team::Red, pose(1_500, 1_500));
+            if let Some(locomotion) = locomotion {
+                unit.unit = tactical_unit_on(ObjId(4), locomotion);
+            }
+            let mut out = custody(vec![unit], Vec::new());
+            out.definition.terrain = priced_terrain(8, 8, TerrainClass::Grass, &[((1, 1), class)]);
+            Arena::new(
+                out,
+                &ArenaConfig::default(),
+                &MatchConfig::default(),
+                &SensorsConfig::default(),
+            )
+        };
+        let refused = ArenaError::CellImpassable {
+            unit: ObjId(4),
+            x: 1,
+            y: 1,
+        };
+        assert_eq!(
+            open(Some(WHEELED), TerrainClass::Rubble).err(),
+            Some(refused.clone()),
+            "a car opened on rubble"
+        );
+        assert!(
+            open(None, TerrainClass::Rubble).is_ok(),
+            "a tank opens on rubble"
+        );
+        assert!(
+            open(Some(LEGGED), TerrainClass::WoodsHeavy).is_ok(),
+            "a walker opens in the thick woods"
+        );
+        assert_eq!(
+            open(None, TerrainClass::WoodsHeavy).err(),
+            Some(refused),
+            "a tank opened in the thick woods"
+        );
     }
 
     /// **16b cut M.4 (16c `B-57`): a match the substep floor cannot time is

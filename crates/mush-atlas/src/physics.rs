@@ -34,8 +34,12 @@ pub const LOCOMOTION_JSON: &str = include_str!("../content/locomotion.json");
 /// The shipped table's digest (`DefinitionDigest::for_canonical_value` under the
 /// domain `atlas.locomotion`): an edit to the table changes it, and the test
 /// that pins it fails until the edit is reviewed and the pin moved.
+///
+/// **16b cut AE.1** moved it: the `wheeled` row prices shallow `water` at 400
+/// (a ford is where wheels cross, at five times a road) where it was `null`.
+/// Was `13c8bf1b438a00bb7d196d4904c1b1a4a653e8973e86a2fbe735b3a797d234fc`.
 pub const LOCOMOTION_DIGEST: &str =
-    "13c8bf1b438a00bb7d196d4904c1b1a4a653e8973e86a2fbe735b3a797d234fc";
+    "9e80c09cf10236713079efcb338723f8ded12850820d2f78c0ebacc85e1d4930";
 
 /// The shipped table's digest as computed now.
 ///

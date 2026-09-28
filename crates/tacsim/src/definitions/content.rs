@@ -65,17 +65,26 @@
 //! **16b cut X.5** adds the counter-jamming filter and its tank as
 //! [`EXTENSIONS_ECCM`], the last of doc 16 §9's five. **16b cut O.3** adds the
 //! range's target as [`EXTENSIONS_TARGET`], a sixth table on the same rule.
+//! **16b cut AE.1** adds three chassis — a wheeled scout car, a heavy tank and
+//! a second biped — as [`EXTENSIONS_CHASSIS`], a seventh:
+//!
+//! | file | pack | kind | applied |
+//! |---|---|---|---|
+//! | `units/scout_mk1.json` | `tacsim.pack.scout_mk1` | rules | never |
+//! | `units/heavy_mk1.json` | `tacsim.pack.heavy_mk1` | rules | never |
+//! | `units/biped_mk2.json` | `tacsim.pack.biped_mk2` | rules | never |
 //!
 //! # And what is **fielded**
 //!
 //! **16b cut Q.8** answers X.1 deviation 1's open question — *whether the
 //! extensions join the shipped catalog* — with **yes for the game, and no for
-//! the stock game**. [`fielded_sources`] is [`sources`] followed by all six
-//! extension tables in `requires` order — doc 16 §9's five and, since 16b cut
-//! O.3, the range's target — and [`super::Catalog::build_fielded`] is what the
-//! three production sites build from, so `SIM UNIT` can offer a pilot a biped,
-//! `@unit/create` can name a laser tank on a shipped server, and `SIM RANGE` can
-//! field a target.
+//! the stock game**. [`fielded_sources`] is [`sources`] followed by all seven
+//! extension tables in `requires` order — doc 16 §9's five, since 16b cut O.3
+//! the range's target, and since 16b cut AE.1 the three chassis — and
+//! [`super::Catalog::build_fielded`] is what the three production sites build
+//! from, so `SIM UNIT` can offer a pilot a biped or a scout car, `@unit/create`
+//! can name a laser tank on a shipped server, and `SIM RANGE` can field a
+//! target.
 //!
 //! [`SOURCES`] and [`sources`] are untouched, and so is
 //! [`super::Catalog::build_game`]: "the stock game" is a statement about the
@@ -296,6 +305,43 @@ pub const TARGET_MK1: &str = "tacsim.unit.target_mk1";
 pub const EXTENSIONS_TARGET: [(&str, &str); 1] =
     [("tacsim/content/units/target_mk1.json", TARGET_MK1_JSON)];
 
+/// `crates/tacsim/content/units/scout_mk1.json` (16b cut AE.1).
+pub const SCOUT_MK1_JSON: &str = include_str!("../../content/units/scout_mk1.json");
+
+/// **The scout car** (16b cut AE.1; 16c N15): the fielded catalog's one
+/// `wheeled` unit — thin, quick, and stopped by ground a tank crosses.
+pub const SCOUT_MK1: &str = "tacsim.unit.scout_mk1";
+
+/// `crates/tacsim/content/units/heavy_mk1.json` (16b cut AE.1).
+pub const HEAVY_MK1_JSON: &str = include_str!("../../content/units/heavy_mk1.json");
+
+/// **The heavy tank** (16b cut AE.1; 16c N15): the stock tank's five sections
+/// at 1.75 times the armour and two thirds the speed.
+pub const HEAVY_MK1: &str = "tacsim.unit.heavy_mk1";
+
+/// `crates/tacsim/content/units/biped_mk2.json` (16b cut AE.1).
+pub const BIPED_MK2_JSON: &str = include_str!("../../content/units/biped_mk2.json");
+
+/// **The second biped** (16b cut AE.1; 16c N15): the laser in an arm, the
+/// thermal sight in the head, the heat of the laser tank.
+pub const BIPED_MK2: &str = "tacsim.unit.biped_mk2";
+
+/// **The three chassis of 16b cut AE.1** (16c N15): the scout car, the heavy
+/// tank and the second biped, in that order — three unit schemas, and no
+/// weapon, ammunition or sensor row of their own.
+///
+/// A table of its **own**, for the reason [`EXTENSIONS_BIPED`] gives: its
+/// acceptance states the whole of what it adds (three unit schemas) and no
+/// earlier table's count moves. It is fielded **after** [`EXTENSIONS_TARGET`]
+/// because the Mk2 biped requires the laser of [`EXTENSIONS`] and the thermal
+/// sight of [`EXTENSIONS_THERMAL`], so it has to follow both; the scout and
+/// the heavy require only the stock packs.
+pub const EXTENSIONS_CHASSIS: [(&str, &str); 3] = [
+    ("tacsim/content/units/scout_mk1.json", SCOUT_MK1_JSON),
+    ("tacsim/content/units/heavy_mk1.json", HEAVY_MK1_JSON),
+    ("tacsim/content/units/biped_mk2.json", BIPED_MK2_JSON),
+];
+
 /// The extension packs as sources [`crate::verify_sources`] reads exactly as it
 /// reads an operator's.
 #[must_use]
@@ -354,12 +400,16 @@ pub fn sources() -> Vec<PackSource> {
 /// ammunition row requires nothing. So the order below is `EXTENSIONS`,
 /// `EXTENSIONS_BIPED`, `EXTENSIONS_THERMAL`, `EXTENSIONS_ECM`, `EXTENSIONS_ECCM`,
 /// which is the order doc 16 §9 numbers its items in, and then
-/// `EXTENSIONS_TARGET` last; `crates/tacsim/tests/content.rs` pins that every
-/// named requirement is satisfied by a pack ahead of it.
+/// `EXTENSIONS_TARGET`; `crates/tacsim/tests/content.rs` pins that every named
+/// requirement is satisfied by a pack ahead of it.
+///
+/// **16b cut AE.1** appends a seventh, [`EXTENSIONS_CHASSIS`], after the
+/// target: its Mk2 biped requires the laser and the thermal sight, which are
+/// ahead of it here.
 ///
 /// Named `<built-in …>` like [`sources`], and not `<extension …>` like
-/// [`extension_sources_of`]: through this route the six are shipped content and
-/// not an operator's file, and the name is what a refusal quotes.
+/// [`extension_sources_of`]: through this route the seven are shipped content
+/// and not an operator's file, and the name is what a refusal quotes.
 #[must_use]
 pub fn fielded_sources() -> Vec<PackSource> {
     let mut out = sources();
@@ -370,6 +420,7 @@ pub fn fielded_sources() -> Vec<PackSource> {
         EXTENSIONS_ECM.as_slice(),
         EXTENSIONS_ECCM.as_slice(),
         EXTENSIONS_TARGET.as_slice(),
+        EXTENSIONS_CHASSIS.as_slice(),
     ] {
         out.extend(table.iter().map(|(name, bytes)| PackSource {
             name: format!("<built-in {name}>"),

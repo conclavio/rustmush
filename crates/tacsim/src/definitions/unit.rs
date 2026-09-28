@@ -83,6 +83,11 @@ pub const TRACKED_RULES_SCHEMA: &str = "tacsim.mobility.tracked";
 /// [`TrackedRules`], which is where the likeness belongs.
 pub const LEGGED_RULES_SCHEMA: &str = "tacsim.mobility.legged";
 
+/// The `schema` definition a **wheeled** mode's opaque rules blob is bound to
+/// (16b cut AE.1): the same five numbers again, under a third id, for the
+/// reason [`LEGGED_RULES_SCHEMA`] gives.
+pub const WHEELED_RULES_SCHEMA: &str = "tacsim.mobility.wheeled";
+
 /// The `schema` definition the power capability's rules blob is bound to.
 pub const POWER_RULES_SCHEMA: &str = "tacsim.power.states";
 
@@ -96,6 +101,12 @@ pub const TRACKED: &str = "tracked";
 /// a tank name their ground the same way.
 pub const LEGGED: &str = "legged";
 
+/// The locomotion id a wheeled mode belongs to (16b cut AE.1) — the atlas's
+/// own, beside [`TRACKED`] and [`LEGGED`] in
+/// `mush_atlas::physics::BASE_LOCOMOTIONS`, so a car prices its ground off the
+/// same table row the atlas does.
+pub const WHEELED: &str = "wheeled";
+
 /// The medium a tracked mode moves in.
 pub const GROUND: &str = "ground";
 
@@ -104,6 +115,9 @@ pub const TRACKED_MODE: &str = "ground.tracked";
 
 /// The mobility mode id a biped carries (16b cut X.2).
 pub const LEGGED_MODE: &str = "ground.legged";
+
+/// The mobility mode id a wheeled car carries (16b cut AE.1).
+pub const WHEELED_MODE: &str = "ground.wheeled";
 
 /// The armour cell every facet carries.
 pub const ARMOR_CELL: &str = "armor";
@@ -507,6 +521,10 @@ pub struct TrackedDef {
 /// same five numbers under their own mode.
 pub type LeggedDef = TrackedDef;
 
+/// **A wheeled mode's rules as authored** (16b cut AE.1), the same five numbers
+/// under their own mode.
+pub type WheeledDef = TrackedDef;
+
 /// **How a unit gets about** (doc 16 §3.3 "Mobility mode rules"), one entry per
 /// declared mode.
 ///
@@ -517,8 +535,13 @@ pub type LeggedDef = TrackedDef;
 /// shipped `DefinitionRef` and every persisted unit pointing where it was, with
 /// no migration (16b §8 cut X).
 ///
-/// [`UnitSpec::check`] refuses a unit that declares neither, which is why there
-/// is no [`Default`]: a `MobilityDef` with both fields empty is not a unit that
+/// **16b cut AE.1** added `wheeled` the same way, between the two: a third
+/// `skip_serializing_if`, so every pack that authors no wheels serialises its
+/// `game_rules` blob, and therefore every existing `DefinitionRef`, byte for
+/// byte as before.
+///
+/// [`UnitSpec::check`] refuses a unit that declares none, which is why there
+/// is no [`Default`]: a `MobilityDef` with every field empty is not a unit that
 /// stands still, it is a unit the loader will not have.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -526,6 +549,9 @@ pub struct MobilityDef {
     /// The tracked mode, for a unit that has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracked: Option<TrackedDef>,
+    /// **The wheeled mode** (16b cut AE.1), for a unit that drives on wheels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wheeled: Option<WheeledDef>,
     /// **The legged mode** (16b cut X.2), for a unit that walks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legged: Option<LeggedDef>,
@@ -535,9 +561,10 @@ pub struct MobilityDef {
 /// needed to mint a [`MobilityMode`], and the decoded five.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ModeDef {
-    /// The `mush-tactics` mode id ([`TRACKED_MODE`] or [`LEGGED_MODE`]).
+    /// The `mush-tactics` mode id ([`TRACKED_MODE`], [`WHEELED_MODE`] or
+    /// [`LEGGED_MODE`]).
     pub mode: &'static str,
-    /// The atlas locomotion ([`TRACKED`] or [`LEGGED`]).
+    /// The atlas locomotion ([`TRACKED`], [`WHEELED`] or [`LEGGED`]).
     pub locomotion: &'static str,
     /// The `schema` its opaque blob is bound to.
     pub schema: &'static str,
@@ -546,7 +573,8 @@ pub struct ModeDef {
 }
 
 impl MobilityDef {
-    /// **Every mode this unit declares**, tracked first (16b cut X.2).
+    /// **Every mode this unit declares**, tracked first (16b cut X.2), then
+    /// wheeled (16b cut AE.1), then legged.
     ///
     /// The order is the authoring order of the struct and it is load-bearing
     /// twice: the first mode is the [`MobilityProfile`]'s default, and it is what
@@ -562,6 +590,16 @@ impl MobilityDef {
                 locomotion: TRACKED,
                 schema: TRACKED_RULES_SCHEMA,
                 rules: rules_of(tracked),
+            });
+        }
+        // 16b cut AE.1: wheels between the two, the order
+        // `crate::arena::slope::driving_mode`'s ladder climbs.
+        if let Some(wheeled) = self.wheeled {
+            out.push(ModeDef {
+                mode: WHEELED_MODE,
+                locomotion: WHEELED,
+                schema: WHEELED_RULES_SCHEMA,
+                rules: rules_of(wheeled),
             });
         }
         if let Some(legged) = self.legged {
@@ -987,7 +1025,7 @@ impl UnitSpec {
         if self.mobility.modes().is_empty() {
             return Err(DefinitionError::value(
                 entry,
-                "a unit declares at least one mobility mode (`tracked` or `legged`)",
+                "a unit declares at least one mobility mode (`tracked`, `wheeled` or `legged`)",
             ));
         }
         Ok(())
@@ -1540,7 +1578,7 @@ pub fn bind(
     let default_mode = default_mode.ok_or_else(|| {
         DefinitionError::value(
             name,
-            "a unit declares at least one mobility mode (`tracked` or `legged`)",
+            "a unit declares at least one mobility mode (`tracked`, `wheeled` or `legged`)",
         )
     })?;
     let profile = MobilityProfile::new(modes, default_mode, &MobilityVocabulary::base().freeze())

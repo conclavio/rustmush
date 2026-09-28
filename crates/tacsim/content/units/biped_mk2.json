@@ -1,0 +1,218 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.biped_mk2",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "0a7346e049f6b833c2f8afc8dcdf90c58504cfadd15c44fed8b97d861e56a625",
+    "requires": [
+      {
+        "id": "tacsim.pack.laser_mk1",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.mg_coax",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.thermal_mk1",
+        "version": 1
+      }
+    ]
+  },
+  "entries": {
+    "tacsim.unit.biped_mk2": {
+      "kind": "unit",
+      "def": {
+        "label": "Mk2 biped",
+        "sections": [
+          {
+            "id": "torso",
+            "facets": [
+              { "id": "front", "armor": 520 },
+              { "id": "left", "armor": 340 },
+              { "id": "right", "armor": 340 },
+              { "id": "rear", "armor": 250 },
+              { "id": "top", "armor": 170 }
+            ],
+            "internals": 300,
+            "consequences": [{ "kind": "destroy_unit" }]
+          },
+          {
+            "id": "head",
+            "facets": [
+              { "id": "front", "armor": 170 },
+              { "id": "left", "armor": 110 },
+              { "id": "right", "armor": 110 },
+              { "id": "rear", "armor": 110 }
+            ],
+            "internals": 90,
+            "consequences": [{ "kind": "destroy_unit" }]
+          },
+          {
+            "id": "left_arm",
+            "facets": [
+              { "id": "front", "armor": 230 },
+              { "id": "left", "armor": 200 },
+              { "id": "rear", "armor": 130 }
+            ],
+            "internals": 130,
+            "consequences": [{ "kind": "remove_weapons", "section": "left_arm" }]
+          },
+          {
+            "id": "right_arm",
+            "facets": [
+              { "id": "front", "armor": 230 },
+              { "id": "right", "armor": 200 },
+              { "id": "rear", "armor": 130 }
+            ],
+            "internals": 130,
+            "consequences": [
+              { "kind": "remove_weapons", "section": "right_arm" }
+            ]
+          },
+          {
+            "id": "left_leg",
+            "facets": [
+              { "id": "front", "armor": 300 },
+              { "id": "left", "armor": 250 },
+              { "id": "rear", "armor": 200 }
+            ],
+            "internals": 180,
+            "consequences": [
+              { "kind": "slow", "percent": 50 },
+              {
+                "kind": "disable_motion_when_all_of",
+                "sections": ["left_leg", "right_leg"]
+              }
+            ]
+          },
+          {
+            "id": "right_leg",
+            "facets": [
+              { "id": "front", "armor": 300 },
+              { "id": "right", "armor": 250 },
+              { "id": "rear", "armor": 200 }
+            ],
+            "internals": 180,
+            "consequences": [
+              { "kind": "slow", "percent": 50 },
+              {
+                "kind": "disable_motion_when_all_of",
+                "sections": ["left_leg", "right_leg"]
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "id": "laser",
+            "section": "right_arm",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.laser_mk1",
+              "coaxial": false
+            }
+          },
+          {
+            "id": "machine_gun",
+            "section": "left_arm",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.mg_coax",
+              "coaxial": false
+            }
+          },
+          {
+            "id": "thermal_sensor",
+            "section": "head",
+            "role": {
+              "kind": "sensor",
+              "sensor": "tacsim.sensor.thermal_mk1",
+              "thermal": {
+                "powered_permille": 650,
+                "cold_permille": 120
+              }
+            }
+          },
+          {
+            "id": "power",
+            "section": "torso",
+            "role": {
+              "kind": "power",
+              "capability": "tacsim.power",
+              "states": ["off", "starting", "online"],
+              "initial": "off"
+            }
+          }
+        ],
+        "mobility": {
+          "legged": {
+            "max_speed_cms": 1000,
+            "accel_cms2": 140,
+            "brake_cms2": 220,
+            "turn_rate_mdeg_s": 40000,
+            "reverse_factor_pct": 40
+          }
+        },
+        "facets": [
+          {
+            "band": "front",
+            "sections": [
+              { "section": "torso", "weight": 55 },
+              { "section": "left_arm", "weight": 20 },
+              { "section": "right_arm", "weight": 20 },
+              { "section": "head", "weight": 5 }
+            ]
+          },
+          {
+            "band": "left",
+            "sections": [
+              { "section": "torso", "weight": 35 },
+              { "section": "left_arm", "weight": 25 },
+              { "section": "left_leg", "weight": 35 },
+              { "section": "head", "weight": 5 }
+            ]
+          },
+          {
+            "band": "right",
+            "sections": [
+              { "section": "torso", "weight": 35 },
+              { "section": "right_arm", "weight": 25 },
+              { "section": "right_leg", "weight": 35 },
+              { "section": "head", "weight": 5 }
+            ]
+          },
+          {
+            "band": "rear",
+            "sections": [
+              { "section": "torso", "weight": 45 },
+              { "section": "left_leg", "weight": 25 },
+              { "section": "right_leg", "weight": 25 },
+              { "section": "head", "weight": 5 }
+            ]
+          },
+          {
+            "band": "top",
+            "sections": [
+              { "section": "torso", "weight": 65 },
+              { "section": "left_arm", "weight": 15 },
+              { "section": "right_arm", "weight": 15 },
+              { "section": "head", "weight": 5 }
+            ]
+          }
+        ],
+        "silhouettes": [
+          { "band": "front", "width_cm": 540, "height_cm": 1150 },
+          { "band": "left", "width_cm": 360, "height_cm": 1150 },
+          { "band": "right", "width_cm": 360, "height_cm": 1150 },
+          { "band": "rear", "width_cm": 540, "height_cm": 1150 },
+          { "band": "top", "width_cm": 540, "height_cm": 360 }
+        ],
+        "sensor_height_cm": 950,
+        "heat_max": 60,
+        "heat_dissipation_per_s": 3,
+        "note": "The second biped of 16b cut AE.1: the Mk1's six sections, a little heavier everywhere (520 on the torso's front against 450), with the Mk1 laser in its right arm where the laser tank carries it in a turret, found through cut X.2's mount fallback, the machine gun in its left, and the Mk1 thermal sight in its head at the thermal tank's 650 and 120. The heat is the laser tank's: 60 is three pulses of 20 and 3 a second empties it in twenty seconds. The legged mode walks at 1,000 cm/s, slower than the Mk1's 1,200, twists at 40 degrees a second and backs at 40 per cent. On the legged row it pays 200 for the thick woods a tank is refused and 150 for rubble a tank pays 200 for, and it climbs 70 per cent against a tank's 45, so it takes the thick woods and the bluff's faces. It stands 11.5 m tall with the sight 9.5 m up. One leg gone is slow(50); both gone is disable_motion, authored on each leg as the pair."
+      }
+    }
+  }
+}

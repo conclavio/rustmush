@@ -541,7 +541,11 @@ async fn two_pilots_field_two_different_machines_and_the_pods_are_pods_again() {
     // ---- the catalog the shipped server fields -----------------------------
     say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
     say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
-    let seen = ask(&mut ada, "SIM UNIT", "Fieldable units:").await;
+    // 16b cut AE.1: ten types wrap the sentence at the terminal's width, so the
+    // answer is read whole — a needle from its opening could return before the
+    // wrapped rest has arrived.
+    let seen = ask_whole(&mut ada, "SIM UNIT").await;
+    assert!(seen.contains("Fieldable units:"), "{seen}");
     for word in [
         "line_tank",
         "line_tank_laser",
@@ -555,8 +559,12 @@ async fn two_pilots_field_two_different_machines_and_the_pods_are_pods_again() {
             "doc 16 section 9's items are not fielded: {seen}"
         );
     }
+    // And with the wraps undone.
     assert!(
-        seen.contains("Yours: line_tank."),
+        seen.split_whitespace()
+            .collect::<Vec<&str>>()
+            .join(" ")
+            .contains("Yours: line_tank."),
         "a slot that chose nothing flies its pod's own tank: {seen}"
     );
 
@@ -965,4 +973,114 @@ async fn o2_a_pilot_in_the_ecm_tank_switches_the_pod_off_and_the_tape_says_so() 
     );
     no_sixteen_digit_word(&strip_ansi(&ada.seen));
     no_sixteen_digit_word(&strip_ansi(&bo.seen));
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AE.1 — the scout car and the heavy tank, flown (16c N15)
+// ---------------------------------------------------------------------------
+
+/// **Two pilots field 16b cut AE.1's scout car and heavy tank over the
+/// production composition** (16c N15; doc 16 §1 and §5's observer rule).
+///
+/// Ada takes `SIM UNIT scout_mk1` and Bo `SIM UNIT heavy_mk1`; the board names
+/// both brackets during `Selection`, `SIM START` refits both pods' tanks, and
+/// once they are aboard each pilot's `STATUS` prints its own chassis — the
+/// car's pair of wheels, the heavy's pair of tracks — and `WEAPONSTATUS` its own
+/// guns: the car's one row, the coaxial as its only gun (`machine_gun (mg)
+/// ready  2000 of 2000 round(s)`), and the heavy's two. From the moment either
+/// climbed in, neither session saw the other machine's type word or its object
+/// name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ae1_two_pilots_field_the_scout_car_and_the_heavy_tank() {
+    let server = boot("sim-units-ae1").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    let seen = ask_whole(&mut ada, "SIM UNIT").await;
+    for word in ["scout_mk1", "heavy_mk1", "biped_mk2"] {
+        assert!(
+            seen.contains(word),
+            "16b cut AE.1's {word} is not fielded: {seen}"
+        );
+    }
+    say(
+        &mut ada,
+        "SIM UNIT scout_mk1",
+        "Slot red 1 will field scout_mk1.",
+    )
+    .await;
+    say(
+        &mut bo,
+        "SIM UNIT heavy_mk1",
+        "Slot blue 1 will field heavy_mk1.",
+    )
+    .await;
+    let seen = ask_whole(&mut ada, "SIM STATUS").await;
+    assert!(seen.contains("[scout_mk1]"), "{seen}");
+    assert!(seen.contains("[heavy_mk1]"), "{seen}");
+
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut bo, "blue", "Blue Room").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+    power_up(&mut ada).await;
+    power_up(&mut bo).await;
+
+    // Each pilot's own chassis.
+    let seen = ask_whole(&mut ada, "STATUS").await;
+    for section in ["hull", "turret", "left_wheels", "right_wheels", "engine"] {
+        assert!(
+            seen.contains(&format!("  {section}  intact")),
+            "the car's {section} is not in its pilot's STATUS: {seen}"
+        );
+    }
+    assert!(
+        !seen.contains("left_track"),
+        "the car has no tracks: {seen}"
+    );
+    let seen = ask_whole(&mut bo, "STATUS").await;
+    for section in ["hull", "turret", "left_track", "right_track", "engine"] {
+        assert!(
+            seen.contains(&format!("  {section}  intact")),
+            "the heavy's {section} is not in its pilot's STATUS: {seen}"
+        );
+    }
+
+    // Each pilot's own guns.
+    let seen = ask_whole(&mut ada, "WEAPONSTATUS").await;
+    assert!(
+        seen.contains("machine_gun (mg)  ready  2000 of 2000 round(s)"),
+        "the car's one gun: {seen}"
+    );
+    assert!(
+        !seen.contains("cannon"),
+        "the car carries no cannon: {seen}"
+    );
+    let seen = ask_whole(&mut bo, "WEAPONSTATUS").await;
+    assert!(
+        seen.contains("cannon  ready  40 of 40 round(s)")
+            && seen.contains("machine_gun (mg)  ready  2000 of 2000 round(s)"),
+        "the heavy's two guns: {seen}"
+    );
+
+    // The observer rule over every byte either session saw from the pods on.
+    for (whole, theirs, kind) in [
+        (strip_ansi(&ada.seen), BLUE_TANK, "heavy_mk1"),
+        (strip_ansi(&bo.seen), RED_TANK, "scout_mk1"),
+    ] {
+        let cockpit = whole
+            .rfind("climb into")
+            .map_or_else(|| whole.clone(), |at| whole[at..].to_owned());
+        assert!(
+            !cockpit.contains(kind) && !cockpit.contains(theirs),
+            "a cockpit surface named the other machine ({kind}, {theirs})"
+        );
+        no_sixteen_digit_word(&whole);
+    }
 }

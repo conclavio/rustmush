@@ -470,6 +470,33 @@ moves the gateway half (the replay's outcome words and its head's `[hold]` tag
 on the TUI and the web), so its deploy is `GATEWAY_RESTART=1` with `web/dist`
 rebuilt after the commit.
 
+**The Bluff: the atlas 1 → 2 and the arena 4 → 5 (16b cut AE.1).** The arena
+catalog is compiled in, so the server-half restart brings the fifth key spot,
+**F The Bluff**, at once, whatever the latch says — **and every replay recorded
+before the restart loses its map at the restart** (`The ground of match N is
+not the ground loaded on this server.`: the arena definition's digest folds the
+key spots). But the ground under `F` is the atlas pack, so the atlas apply must
+follow the restart at once, or `F` names flat grass. With the centre idle (read
+`@arena/status` first: the **atlas** apply is not guarded by a running match,
+only the arena apply is), take two packs by hand, in this order:
+
+```
+@atlas/pack plan tacsim.proving_ground
+@atlas/pack apply <fingerprint>
+@atlas/pack plan tacsim.pack.proving_ground
+@atlas/pack apply <fingerprint>
+```
+
+The atlas plan reads `Plan for tacsim.proving_ground@2: 0 create, 1 update, 0
+retire, 5 unchanged` and names ` update   field.q1_0 (heightfield)` — one
+update, the quadrant the bluff stands in, and nothing else — and its apply
+replaces that heightfield in place. The arena plan reads `0 create, 1 update, 0 retire`, and
+its apply moves the latch to 5 and adopts the twelve standing tanks by roster,
+remaking none. Run no `SIM START` between the two applies. The next `SIM START`
+fights on the bluff, since the arena definition is rebuilt from the records at
+every start. The three new chassis (`scout_mk1`, `heavy_mk1`, `biped_mk2`) and
+the per-row ground prices are compiled in: they need the restart and no apply.
+
 **Replays (16b cut I.1).** Every match that ends writes one more document in its
 result's own batch, `tacsim:replay:<match>` — both sides' positions every 5 s,
 the shots and the wrecks, at most 256 KiB — and the result says `"replay": true`.

@@ -462,12 +462,16 @@ impl Clock {
     /// guard stays behind it as belt and braces.
     ///
     /// **`max_speed_cms` is the terrain factor's ceiling** (16b cut M.4, 16c
-    /// `T-15`): [`crate::arena::state::Arena::max_speed_cms`], `fastest × 100 /
-    /// min(100, min_move_cost)`, because on a cell cheaper than 100 motion's
-    /// terrain cap sits above the authored speed. No unit reaches it today (the
-    /// order is clamped to the authored speed in `apply_intent`), so the scale is
-    /// a conservative margin that keeps the bound true of the cap itself. On the
-    /// shipped ground every passable cost is at least 100 and the two are equal.
+    /// `T-15`): [`crate::arena::state::Arena::max_speed_cms`], the largest
+    /// `max_speed × 100 / min(100, min_cost[row])` over the units, each on its
+    /// own cost row (16b cut AE.1, 16c `B-58`), because on a cell cheaper than
+    /// 100 motion's terrain cap sits above the authored speed. No unit reaches
+    /// it (the order is clamped to the authored speed in `apply_intent`), so the
+    /// scale is a conservative margin that keeps the bound true of the cap
+    /// itself. On the shipped ground the tracked and legged rows' cheapest
+    /// passable price is 100 and the wheeled row's is the road's 80, so a
+    /// 3,000 cm/s scout car lifts the ceiling to 3,750 — and the substep stays
+    /// 250 ms (`999,000 / 3,750` is 266).
     #[must_use]
     pub fn substep_ms(cfg: &TempoConfig, cell_cm: u16, max_speed_cms: u32) -> u32 {
         let base = match u32::from(cell_cm)

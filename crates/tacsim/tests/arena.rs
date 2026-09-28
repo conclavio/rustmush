@@ -3876,3 +3876,277 @@ fn o1_a_contested_hold_resets_and_the_match_runs_on_at_three_cadences() {
         Some(EndReason::Hold { winner: Team::Red })
     );
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut AE.1 — each unit pays its own row, at three cadences
+// ---------------------------------------------------------------------------
+
+/// [`tactical_unit`] with one ground mode of `locomotion` (16b cut AE.1): what
+/// the check-out reads a unit's row and slope limit off.
+fn tactical_unit_on(id: ObjId, locomotion: &str) -> TacticalUnit {
+    use mush_tactics::{
+        LocomotionId, MediumId, MobilityMode, MobilityModeId, MobilityProfile, MobilityVocabulary,
+    };
+    let mode_id = MobilityModeId::new(format!("ground.{locomotion}")).expect("a mode id");
+    let mode = MobilityMode::new(
+        mode_id.clone(),
+        [MediumId::new("ground").expect("a medium")],
+        LocomotionId::new(locomotion).expect("a locomotion"),
+        rules(),
+    );
+    let profile = MobilityProfile::new(vec![mode], mode_id, &MobilityVocabulary::base().freeze())
+        .expect("a one-mode profile");
+    let spec = UnitSpec {
+        definition: dref("unit", "tacsim.unit.line_tank"),
+        sections: vec![SectionSpec {
+            id: SectionId::new("hull").expect("a canonical section"),
+            condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+            facets: vec![FacetSpec {
+                id: FacetId::new("front").expect("a canonical facet"),
+                cells: vec![CellSpec {
+                    id: mush_tactics::CellId::new("armor").expect("a cell"),
+                    min: 0,
+                    max: 10,
+                    init: 10,
+                }],
+            }],
+            slots: Vec::new(),
+            cells: vec![CellSpec {
+                id: mush_tactics::CellId::new("internals").expect("a cell"),
+                min: 0,
+                max: 8,
+                init: 8,
+            }],
+        }],
+        unit_cells: Vec::new(),
+        components: Vec::new(),
+        capabilities: Vec::new(),
+        mobility: Some(profile),
+        rules: rules(),
+    };
+    TacticalUnit::from_spec(&spec, id).expect("a one-section unit with a mode")
+}
+
+/// The walker of the AE.1 script: [`MOVER`], so its pilot is the one the
+/// replay driver listens to.
+const AE1_WALKER: ObjId = MOVER;
+/// The tank beside it.
+const AE1_TANK: ObjId = ObjId(5);
+/// The car, at the rubble.
+const AE1_CAR: ObjId = ObjId(6);
+
+/// **The AE.1 window** (16b cut AE.1): 64 by 64 of grass, priced per row
+/// through `ArenaTerrain::priced` and the shipped table, with a band of thick
+/// woods at columns 20 to 23 on rows 0 to 29 and a band of rubble at the same
+/// columns on rows 30 to 63 — what `from_pack` would build over those classes.
+fn ae1_definition() -> ArenaDefinition {
+    use mush_atlas::TerrainClass;
+    let table = mush_atlas::physics::LocomotionTable::shipped();
+    let cell = |class: TerrainClass| TerrainCell {
+        class,
+        elev_cm: 0,
+        move_cost: table
+            .cost(class.label(), "tracked", &[])
+            .map_or(0, |cost| u16::try_from(cost).unwrap_or(u16::MAX)),
+    };
+    let mut cells = Vec::with_capacity(usize::from(SIDE) * usize::from(SIDE));
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            cells.push(cell(if !(20..=23).contains(&x) {
+                TerrainClass::Grass
+            } else if y < 30 {
+                TerrainClass::WoodsHeavy
+            } else {
+                TerrainClass::Rubble
+            }));
+        }
+    }
+    let mut definition = definition();
+    definition.terrain =
+        ArenaTerrain::priced(SIDE, SIDE, CELL_CM, cells, table).expect("the priced window");
+    definition
+}
+
+/// The three units, seated, on [`ae1_definition`]: a walker at (5, 10), a tank
+/// at (5, 20) and a car at (5, 40), all facing east.
+fn ae1_arena() -> Arena {
+    let mut walker = tank(AE1_WALKER, Team::Red, centre(5, 10));
+    walker.unit = tactical_unit_on(AE1_WALKER, "legged");
+    let hull = tank(AE1_TANK, Team::Red, centre(5, 20));
+    let mut car = tank(AE1_CAR, Team::Red, centre(5, 40));
+    car.unit = tactical_unit_on(AE1_CAR, "wheeled");
+    let units = vec![walker, hull, car];
+    let pilots = units
+        .iter()
+        .enumerate()
+        .map(|(seat, unit)| Pilot {
+            unit: unit.id,
+            pilot: ObjId(1_000 + u32::try_from(seat).unwrap_or(0)),
+            station: SmolStr::new("cockpit"),
+            epoch: 1,
+        })
+        .collect();
+    Arena::new(
+        CustodyOut {
+            definition: ae1_definition(),
+            units,
+            pilots,
+            resolution: tacsim::match_::stock_resolution(),
+            seed: 2_350,
+            mode: tacsim::arena::MatchMode::Skirmish,
+        },
+        &ArenaConfig::default(),
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the AE.1 arena")
+}
+
+/// The AE.1 script: all three started at arena time 0, then driven east at
+/// 1,000 cm/s from 10,000 ms — a pulse boundary at every cadence.
+fn ae1_script() -> Vec<Beat> {
+    let mut beats = vec![Beat::at(
+        0,
+        Vec::new(),
+        [AE1_WALKER, AE1_TANK, AE1_CAR]
+            .into_iter()
+            .map(|unit| intent(unit, IntentKind::Startup, 1))
+            .collect(),
+    )];
+    beats.push(Beat::at(
+        10_000,
+        Vec::new(),
+        [AE1_WALKER, AE1_TANK, AE1_CAR]
+            .into_iter()
+            .flat_map(|unit| {
+                [
+                    intent(unit, IntentKind::Heading { mdeg: 90_000 }, 2),
+                    intent(unit, IntentKind::Speed { cms: 1_000 }, 3),
+                ]
+            })
+            .collect(),
+    ));
+    beats
+}
+
+/// **16b cut AE.1's mandatory cross-tempo test** (16b §11; doc 16 §3.1 "Rate
+/// independence", D-16-2; 16c `B-58`): one scripted walk over the thick woods
+/// at 5,000, 1,000 and 500 ms is one event list, one per-substep hash sequence,
+/// one set of finals and one notice list.
+///
+/// The script: a walker and a tank driven east at a band of `WoodsHeavy`, and a
+/// car driven east at a band of `Rubble`, on a window priced per row. The
+/// walker's `legged` row prices the woods at 200 and it crosses; the tank's
+/// `tracked` row and the car's `wheeled` row refuse their bands, each one
+/// `blocked` line, cause `impassable`, at the band's west edge. Before the
+/// replays are compared the run is asserted to have done that, so three runs
+/// that did nothing cannot compare equal and prove nothing.
+#[test]
+fn ae1_one_scripted_walk_over_the_thick_woods_at_three_cadences_is_one_event_list_and_one_hash_sequence()
+ {
+    use tacsim::arena::CostRow;
+
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = ae1_arena();
+        assert_eq!(
+            [AE1_WALKER, AE1_TANK, AE1_CAR].map(|id| arena.unit(id).map(|unit| unit.cost_row)),
+            [
+                Some(CostRow::Legged),
+                Some(CostRow::Tracked),
+                Some(CostRow::Wheeled)
+            ]
+        );
+        let run = replay(&mut arena, cadence, 60_000, &ae1_script(), &quiet);
+        assert_eq!(
+            arena.now_ms, 60_000,
+            "cadence {cadence} ran to a different time"
+        );
+        runs.push((cadence, run));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+
+    // What the run did: the tank and the car each stopped once, at the band,
+    // by the ground; the walker crossed it.
+    let blocked: Vec<(ObjId, u16, &str)> = first
+        .events
+        .iter()
+        .filter(|(_, kind, _, _)| kind.contains("\"blocked\""))
+        .map(|(_, kind, _, _)| {
+            let line: serde_json::Value = serde_json::from_str(kind).unwrap_or_default();
+            (
+                ObjId(
+                    line.get("unit")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|id| u32::try_from(id).ok())
+                        .unwrap_or(0),
+                ),
+                line.get("x")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|x| u16::try_from(x).ok())
+                    .unwrap_or(0),
+                if kind.contains("\"cause\":\"impassable\"") {
+                    "impassable"
+                } else {
+                    "other"
+                },
+            )
+        })
+        .collect();
+    assert_eq!(
+        blocked,
+        vec![(AE1_TANK, 20, "impassable"), (AE1_CAR, 20, "impassable")],
+        "the tank at the woods and the car at the rubble, and nothing else: {:?}",
+        first.kinds()
+    );
+    let x_of = |id: ObjId| {
+        first
+            .finals
+            .iter()
+            .find(|(unit, ..)| *unit == id)
+            .map(|(_, x, ..)| *x)
+            .unwrap_or_else(|| panic!("{id} in the finals"))
+    };
+    assert!(
+        x_of(AE1_WALKER) >= 24 * i64::from(CELL_CM),
+        "the walker crossed the woods: {}",
+        x_of(AE1_WALKER)
+    );
+    assert_eq!(x_of(AE1_TANK), 19_999, "the tank is at the band's boundary");
+    assert_eq!(x_of(AE1_CAR), 19_999, "the car is at the band's boundary");
+    assert!(
+        first.told.iter().all(|line| !line.starts_with("Held:")),
+        "the walker was held by nothing: {:?}",
+        first.told
+    );
+
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events,
+            first.events,
+            "the event list differs at {cadence} ms: {:?} against {:?}",
+            run.kinds(),
+            first.kinds()
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the finals differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.substeps, first.substeps,
+            "the substeps differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.told, first.told,
+            "the pilot was told otherwise at {cadence} ms"
+        );
+        assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
+}

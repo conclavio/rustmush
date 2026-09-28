@@ -3406,8 +3406,8 @@ pub fn stale_clause(age_ms: i64, pass_ms: i64) -> String {
 //
 // Doc 16 §3.2 rules the proving ground surveyed: its terrain is known to every
 // pilot at check-out, its units are not. The arena pack's `key_spots` are part
-// of that ground — The Ford, The Crossroads, North Barn, East Compound — and
-// this is where a pilot reads them: a letter on the map ([`SPOT_LETTERS`]), a
+// of that ground — The Ford, The Crossroads, North Barn, East Compound and,
+// since 16b cut AE.1, The Bluff — and this is where a pilot reads them: a letter on the map ([`SPOT_LETTERS`]), a
 // name in the legend, `RANGE`/`BEARING <spot>`, `STATUS`'s nearest spot and
 // `VIEW`'s off-window line. Every function here is a pure function of the
 // authored spots and the pilot's OWN pose, so nothing in this section can say
@@ -7265,14 +7265,15 @@ mod tests {
         }
     }
 
-    /// The shipped proving ground's four, in authored order (the pack's own
-    /// `key_spots`).
+    /// The shipped proving ground's five, in authored order (the pack's own
+    /// `key_spots`; the fifth, The Bluff, is 16b cut AE.1's).
     fn shipped() -> Vec<KeySpot> {
         vec![
             spot("The Ford", 64, 97),
             spot("The Crossroads", 129, 97),
             spot("North Barn", 106, 194),
             spot("East Compound", 208, 148),
+            spot("The Bluff", 144, 111),
         ]
     }
 
@@ -7467,12 +7468,15 @@ mod tests {
             Some("Off the window: A The Ford, 190 m at 093°; C The Woods, 490 m at 064°.")
         );
         // The shipped ground from the red muster, whose 39 by 20 window (x 0..38)
-        // draws none of the four.
+        // draws none of the five. 16b cut AE.1's fifth, The Bluff at (144, 111),
+        // is 138 cells east and 14 north of (6, 97): 138.7 cells, 1390 m to the
+        // ten, at 084°.
         assert_eq!(
             off_window_spots_line(&shipped(), &[], &pose_on(6, 97, 90_000), 1_000).as_deref(),
             Some(
                 "Off the window: A The Ford, 580 m at 090°; B The Crossroads, 1230 m at 090°; \
-                 C North Barn, 1390 m at 045°; E East Compound, 2080 m at 075°."
+                 C North Barn, 1390 m at 045°; E East Compound, 2080 m at 075°; \
+                 F The Bluff, 1390 m at 084°."
             )
         );
     }

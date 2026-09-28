@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.proving_ground",
-    "version": 4,
+    "version": 5,
     "kind": "campaign_seed",
-    "digest": "fd5860b51a60376725ec5fbe86797e8acef969db9a34fc70c87a23ea56c21b08",
+    "digest": "74f4bd85dd91d4afaa78d21f45d2d19be5d02b50b0fb71dd40bcc2d7939d8017",
     "requires": []
   },
   "entries": {
@@ -26,7 +26,8 @@
           { "name": "The Ford", "x": 64, "y": 97 },
           { "name": "The Crossroads", "x": 129, "y": 97 },
           { "name": "North Barn", "x": 106, "y": 194 },
-          { "name": "East Compound", "x": 208, "y": 148 }
+          { "name": "East Compound", "x": 208, "y": 148 },
+          { "name": "The Bluff", "x": 144, "y": 111 }
         ],
         "waypoints": {
           "nodes": [
@@ -102,7 +103,7 @@
           { "id": "blue_5", "name": "Blue Tank 5", "team": "blue", "x": 249, "y": 101, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
           { "id": "blue_6", "name": "Blue Tank 6", "team": "blue", "x": 251, "y": 94, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" }
         ],
-        "note": "D-16-5 fixes the window: 256 by 256 cells of 1,000 cm at 20,000 m, clear of the lot and the harness. Entry zones are sixteen cells deep. The key spots are the ford, the crossroads and the two compounds. The waypoint graph is two roads and four spurs, so Patrol's route is not a straight line. VERSION 2 (16b cut F.4) moves the muster onto the ford: version 1 mustered on rows 118 to 130, and the river (columns 62 to 66) stopped a tank at deep water. The ford is rows 92 to 102; slot 1 stands on the east-west road at row 97 and slots 2 to 4 at 95, 99 and 93, so every tank drives straight across. The muster nodes moved to row 105. VERSION 3 (16b cut Z.3) adds slots 5 and 6 a side: row 101 in the muster column and row 94 one behind it, inside the ford, a clear cell from every other slot and on no other slot's straight road. VERSION 4 (16b cut O.1) declares the modes the ground supports: hold at The Crossroads, six cells, 120 s, on the east-west road 120 cells from the blue muster and 123 from the red."
+        "note": "D-16-5 fixes the window: 256 by 256 cells of 1,000 cm at 20,000 m, clear of the lot and the harness. Entry zones are sixteen cells deep. The key spots are the ford, the crossroads, the two compounds and the bluff. The waypoint graph is two roads and four spurs, so Patrol's route is not a straight line. VERSION 2 (16b cut F.4) moves the muster onto the ford: the river (columns 62 to 66) stopped a tank at deep water. The ford is rows 92 to 102; slot 1 stands on the east-west road at row 97 and slots 2 to 4 at 95, 99 and 93, so every tank drives straight across. The muster nodes moved to row 105. VERSION 3 (16b cut Z.3) adds slots 5 and 6 a side: row 101 in the muster column and row 94 one behind it, inside the ford. VERSION 4 (16b cut O.1) declares the modes the ground supports: hold at The Crossroads, six cells, 120 s. VERSION 5 (16b cut AE.1): The Bluff, a grass mesa 7 m up at 141..147 by 105..118, ramp on its north side; its faces refuse tracks and wheels, not legs; the fifth spot, 144,111."
       }
     }
   }

@@ -1,0 +1,178 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.heavy_mk1",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "fbb5c73cd9fe1b46b6451da016d92350d78e01b205473770f0c46987bbecb0a9",
+    "requires": [
+      {
+        "id": "tacsim.pack.cannon_105",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.mg_coax",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.visual_mk1",
+        "version": 1
+      }
+    ]
+  },
+  "entries": {
+    "tacsim.unit.heavy_mk1": {
+      "kind": "unit",
+      "def": {
+        "label": "Mk1 heavy tank",
+        "sections": [
+          {
+            "id": "hull",
+            "facets": [
+              { "id": "front", "armor": 700 },
+              { "id": "left", "armor": 450 },
+              { "id": "right", "armor": 450 },
+              { "id": "rear", "armor": 250 },
+              { "id": "top", "armor": 180 }
+            ],
+            "internals": 320,
+            "consequences": [{ "kind": "destroy_unit" }]
+          },
+          {
+            "id": "turret",
+            "facets": [
+              { "id": "front", "armor": 550 },
+              { "id": "left", "armor": 350 },
+              { "id": "right", "armor": 350 },
+              { "id": "rear", "armor": 220 }
+            ],
+            "internals": 220,
+            "consequences": [{ "kind": "remove_weapons", "section": "turret" }]
+          },
+          {
+            "id": "left_track",
+            "facets": [{ "id": "left", "armor": 200 }],
+            "internals": 140,
+            "consequences": [
+              { "kind": "slow", "percent": 50 },
+              { "kind": "no_turn_toward", "side": "left" },
+              { "kind": "disable_motion_when_all_of", "sections": ["left_track", "right_track"] }
+            ]
+          },
+          {
+            "id": "right_track",
+            "facets": [{ "id": "right", "armor": 200 }],
+            "internals": 140,
+            "consequences": [
+              { "kind": "slow", "percent": 50 },
+              { "kind": "no_turn_toward", "side": "right" },
+              { "kind": "disable_motion_when_all_of", "sections": ["left_track", "right_track"] }
+            ]
+          },
+          {
+            "id": "engine",
+            "facets": [],
+            "internals": 160,
+            "consequences": [{ "kind": "disable_motion" }],
+            "struck_through": { "section": "hull", "facet": "rear" }
+          }
+        ],
+        "components": [
+          {
+            "id": "cannon",
+            "section": "turret",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.cannon_105",
+              "coaxial": false
+            }
+          },
+          {
+            "id": "machine_gun",
+            "section": "turret",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.mg_coax",
+              "coaxial": true
+            }
+          },
+          {
+            "id": "visual_sensor",
+            "section": "turret",
+            "role": {
+              "kind": "sensor",
+              "sensor": "tacsim.sensor.visual_mk1"
+            }
+          },
+          {
+            "id": "power",
+            "section": "hull",
+            "role": {
+              "kind": "power",
+              "capability": "tacsim.power",
+              "states": ["off", "starting", "online"],
+              "initial": "off"
+            }
+          }
+        ],
+        "mobility": {
+          "tracked": {
+            "max_speed_cms": 1000,
+            "accel_cms2": 80,
+            "brake_cms2": 160,
+            "turn_rate_mdeg_s": 20000,
+            "reverse_factor_pct": 40
+          }
+        },
+        "facets": [
+          {
+            "band": "front",
+            "sections": [
+              { "section": "hull", "weight": 50 },
+              { "section": "turret", "weight": 50 }
+            ]
+          },
+          {
+            "band": "left",
+            "sections": [
+              { "section": "hull", "weight": 40 },
+              { "section": "left_track", "weight": 30 },
+              { "section": "turret", "weight": 30 }
+            ]
+          },
+          {
+            "band": "right",
+            "sections": [
+              { "section": "hull", "weight": 40 },
+              { "section": "right_track", "weight": 30 },
+              { "section": "turret", "weight": 30 }
+            ]
+          },
+          {
+            "band": "rear",
+            "sections": [
+              { "section": "hull", "weight": 40 },
+              { "section": "engine", "weight": 30 },
+              { "section": "turret", "weight": 30 }
+            ]
+          },
+          {
+            "band": "top",
+            "sections": [
+              { "section": "hull", "weight": 50 },
+              { "section": "turret", "weight": 50 }
+            ]
+          }
+        ],
+        "silhouettes": [
+          { "band": "front", "width_cm": 380, "height_cm": 280 },
+          { "band": "left", "width_cm": 780, "height_cm": 280 },
+          { "band": "right", "width_cm": 780, "height_cm": 280 },
+          { "band": "rear", "width_cm": 380, "height_cm": 280 },
+          { "band": "top", "width_cm": 780, "height_cm": 380 }
+        ],
+        "sensor_height_cm": 170,
+        "note": "The heavy tank of 16b cut AE.1: the stock tank's five sections, guns, sight and facet table, at 1.75 times its armour (700 against 400 on the front hull) and two thirds of its speed (1,000 cm/s against 1,500). At the 105's 120 a round, the front hull takes six rounds to strip and three more through its 320 internals, where the stock tank takes four and one. It starts, stops and turns slower too: 80 and 160 cm/s squared against 100 and 200, 20 degrees a second against 30, and 40 per cent in reverse against 50. The hull is 3.8 m by 7.8 m and 2.8 m tall, a bigger box than the tank's on every band, and the sight sits 1.7 m up. Five sections and not more, on purpose, so the damage pane fits it as it fits the tank. Both tracks carry disable_motion_when_all_of, so a heavy with no tracks neither drives nor turns."
+      }
+    }
+  }
+}

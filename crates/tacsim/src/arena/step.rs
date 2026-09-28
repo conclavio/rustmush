@@ -2620,9 +2620,12 @@ impl Arena {
     /// 1. the unit exists — else `unknown`. Unreachable past phase 2's own gate,
     ///    and journalled all the same, so *every `Place` the arena receives
     ///    leaves a line* holds by one rule;
-    /// 2. the cell is on the window, passable and has a way out
-    ///    ([`crate::arena::state::ArenaTerrain::has_way_out`], the rule an
-    ///    opening cell is held to) — else `impassable`;
+    /// 2. the cell is on the window, passable and has a way out **for the
+    ///    placed unit's own cost row**
+    ///    ([`crate::arena::state::ArenaTerrain::has_way_out_for`] on
+    ///    `UnitState::cost_row`, 16b cut AE.1 — the rule an opening cell is
+    ///    held to; a car onto rubble is refused though a tank would stand
+    ///    there) — else `impassable`;
     /// 3. nobody else stands in it ([`crate::arena::index::SpatialIndex::occupant`]
     ///    is empty or the unit itself) — else `occupied`: doc 16 §3.4 step 5's
     ///    one unit per cell;
@@ -2723,14 +2726,14 @@ impl Arena {
     /// **Why a place would be refused**, or `None` (16b cut I.3): the four
     /// tests of [`Arena::resolve_place`], in its order, as their wire words.
     fn place_refusal(&self, unit: ObjId, x: u16, y: u16) -> Option<&'static str> {
-        if self.unit(unit).is_none() {
+        let Some(state) = self.unit(unit) else {
             return Some("unknown");
-        }
+        };
+        // **16b cut AE.1** (16c `B-58`): passable, with a way out, **to the
+        // placed unit's own row** — a car put down on rubble is `impassable`,
+        // whatever a tank could have done there.
         let terrain = &self.definition.terrain;
-        let passable = terrain
-            .get(x, y)
-            .is_some_and(crate::arena::state::TerrainCell::passable);
-        if !passable || !terrain.has_way_out(x, y) {
+        if !terrain.has_way_out_for(state.cost_row, x, y) {
             return Some("impassable");
         }
         if self

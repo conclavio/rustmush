@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "The engine's locomotion table (doc 14 §5.1; plan §3.6). A cost is hundredths of a cell (100 = one cell at nominal speed); null is impassable. A class absent from a locomotion's classes takes its default. max_slope_pct is the rise over run, in percent, past which a cell is impassable; the cost climbs with the slope up to it. climb_cm is the step a locomotion climbs onto built ground (a kerb, a doorstep, a dock) regardless of slope, at half again the cost.",
+  "note": "The engine's locomotion table (doc 14 §5.1; plan §3.6). A cost is hundredths of a cell (100 = one cell at nominal speed); null is impassable. A class absent from a locomotion's classes takes its default. max_slope_pct is the rise over run, in percent, past which a cell is impassable; the cost climbs with the slope up to it. climb_cm is the step a locomotion climbs onto built ground (a kerb, a doorstep, a dock) regardless of slope, at half again the cost. wheeled water is 400 (16b cut AE.1): a ford is where wheels cross, at five times a road; deep water stays null.",
   "locomotions": {
     "biped": {
       "default": 150,
@@ -28,7 +28,7 @@
       "default": 200,
       "max_slope_pct": 25,
       "classes": {
-        "void": null, "paved": 90, "ground": 200, "grass": 220, "water": null, "floor": 100,
+        "void": null, "paved": 90, "ground": 200, "grass": 220, "water": 400, "floor": 100,
         "rubble": null, "road": 80, "sand": 350, "rock": null, "wall": null, "door": 120,
         "platform": 100, "woods_light": 400, "woods_heavy": null, "water_deep": null,
         "ice": 300, "regolith": 250

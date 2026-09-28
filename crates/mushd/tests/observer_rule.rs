@@ -1222,7 +1222,7 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         "`RANGE The Ford` before detection:\n{seen}"
     );
     // The window's own lines arrive after the panel: the named spots' line comes
-    // last, and all four spots are off a window that runs from column 71 to 109.
+    // last, and all five spots are off a window that runs from column 71 to 109.
     // The line wraps, and a needle taken from its opening could return before
     // the wrapped rest has arrived, so the answer is read whole (to the
     // sentinel's refusal) and the sentence is cut at its one full stop.
@@ -1245,7 +1245,8 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     assert_eq!(
         off,
         "Off the window: A The Ford, 260 m at 270°; B The Crossroads, 390 m at 090°; \
-         C North Barn, 980 m at 009°; E East Compound, 1290 m at 066°.",
+         C North Barn, 980 m at 009°; E East Compound, 1290 m at 066°; \
+         F The Bluff, 560 m at 075°.",
         "the off-window line names the spots, in authored order:\n{seen}"
     );
     // Spots only: every clause is a spot's letter and name, and nothing else.
@@ -1255,13 +1256,45 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
                 "A The Ford, ",
                 "B The Crossroads, ",
                 "C North Barn, ",
-                "E East Compound, "
+                "E East Compound, ",
+                "F The Bluff, "
             ]
             .iter()
             .any(|spot| clause.starts_with(spot)),
             "the off-window line named something that is not a spot: {clause:?}"
         );
     }
+    // **16b cut AE.1**: the fifth spot, one letter, read from each pilot's own
+    // pose. The Bluff (144, 111) is 54 cells east and 14 north of Ada at
+    // (90, 97) — 557 m, 560 to the ten, at 075° — and 16 cells west and 14 north
+    // of Bo at (160, 97) — 212 m, 210 to the ten, at 311°. Bo's window (columns
+    // 141 to 179, rows to 106) does not draw it either, so his off-window line
+    // carries it too, under the same letter.
+    let seen = ask(&mut ada, "RANGE F", "Range to The Bluff (F): ").await;
+    assert!(seen.contains("Range to The Bluff (F): 560 m."), "{seen}");
+    let seen = ask(&mut bo, "RANGE The Bluff", "Range to The Bluff (F): ").await;
+    assert!(seen.contains("Range to The Bluff (F): 210 m."), "{seen}");
+    let seen = ask(&mut bo, "BEARING f", "Bearing to The Bluff (F): ").await;
+    assert!(seen.contains("Bearing to The Bluff (F): 311°"), "{seen}");
+    let seen = ask_whole(&mut bo, "VIEW").await;
+    names_nothing(&seen, red, blue, "Bo's `VIEW`");
+    let bo_off = seen
+        .find("Off the window:")
+        .and_then(|at| seen.get(at..))
+        .and_then(|rest| rest.find('.').and_then(|stop| rest.get(..=stop)))
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ");
+    assert!(
+        bo_off.contains("F The Bluff, 210 m at 311°"),
+        "Bo's off-window line carries the fifth spot under its letter:\n{seen}"
+    );
+    assert_eq!(
+        bo_off.matches("The Bluff").count(),
+        1,
+        "one letter, once:\n{seen}"
+    );
     // And the whole battery — the refusals, the named spot, the window — says
     // nothing about either tank.
     names_nothing(
@@ -1864,8 +1897,9 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
         "the map carries no `units` key by construction: {map}"
     );
     // **16b cut V.1**: and the ground's named spots, which are surveyed ground
-    // exactly as the terrain is — the four the pack authors, in its order, in
-    // arena cells, each with its map letter. Places, never units.
+    // exactly as the terrain is — the five the pack authors (the fifth is 16b
+    // cut AE.1's), in its order, in arena cells, each with its map letter.
+    // Places, never units.
     assert_eq!(
         map.get("spots"),
         Some(&json!([
@@ -1873,8 +1907,9 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
             { "letter": "B", "name": "The Crossroads", "cell": [129, 97] },
             { "letter": "C", "name": "North Barn", "cell": [106, 194] },
             { "letter": "E", "name": "East Compound", "cell": [208, 148] },
+            { "letter": "F", "name": "The Bluff", "cell": [144, 111] },
         ])),
-        "the map names the shipped ground's four spots: {map}"
+        "the map names the shipped ground's five spots: {map}"
     );
     assert!(
         map.get("you").is_none(),
@@ -4004,6 +4039,50 @@ fn e3_the_traffic_stops_one_line_names_nothing_and_places_nothing() {
     assert_eq!(notice.section(), None);
     assert_eq!(notice.refusal(), None);
     assert_eq!(notice.order(), None);
+    assert_eq!(notice.kind(), NoticeKind::Blocked);
+}
+
+/// **16b cut AE.1: the slope's hold names nothing and places nothing** (doc 16
+/// §1, §3.6; 16c `T-18`).
+///
+/// The Bluff is the first ground on the shipped map a tank can be refused by
+/// slope, so `Held: the slope ahead is too steep for the tank.` is a sentence a
+/// pilot now reads in play and the observer rule asks it again: it names no
+/// unit, carries no number and no cell — it cannot say how high the face is or
+/// where — and the notice it is rendered from has no field any of those could
+/// travel in. And it is the one sentence for every chassis: a car refused a face
+/// reads the tank's word (a named residual, not a leak).
+#[test]
+fn ae1_the_slope_hold_names_nothing_and_places_nothing() {
+    use tacsim::arena::motion::BlockedCause;
+    use tacsim::arena::perception::{FrameNotice, NoticeKind};
+    use tacsim::arena::state::ContactId;
+    use tacsim::match_::cockpit;
+
+    let notice = FrameNotice::Blocked {
+        cause: BlockedCause::TooSteep,
+    };
+    let frame = d4_stub_frame(ContactId(0x0123_4567_89ab_cdef));
+    let line = cockpit::notice_line(&frame, &notice, &[]);
+    assert_eq!(line, "Held: the slope ahead is too steep for the tank.");
+    no_sixteen_digit_word(&line, "the slope's line");
+    for leak in [
+        "bearing", "contact", "red", "blue", "X1", "RA", "BA", "#", "cell", "unit", "Bluff",
+        "metre", " m ", "%",
+    ] {
+        assert!(
+            !line.contains(leak),
+            "the slope's line leaked {leak:?}:\n{line}"
+        );
+    }
+    assert!(
+        !line.chars().any(|c| c.is_ascii_digit()),
+        "the slope's line carried a number:\n{line}"
+    );
+    assert_eq!(notice.cause(), Some(BlockedCause::TooSteep));
+    assert_eq!(notice.contact(), None);
+    assert_eq!(notice.designator(), None);
+    assert_eq!(notice.named(), None);
     assert_eq!(notice.kind(), NoticeKind::Blocked);
 }
 

@@ -3717,20 +3717,27 @@ fn x6_production_roster() -> Vec<Box<dyn mush_core::GameModule>> {
     mods
 }
 
-/// **The authored heightfield reaches the arena verbatim, and no shipped unit
-/// can be refused by it** (16b cut X.6; doc 16 §9 item 6).
+/// **The authored heightfield reaches the arena verbatim, and the one ground a
+/// shipped unit can be refused at is The Bluff** (16b cut X.6; doc 16 §9 item
+/// 6; rewritten on purpose by 16b cut AE.1, 16c `T-18`).
 ///
 /// The first half is the import: `from_pack` copies `elev_cm` straight off the
-/// tile, so the nine levels the proving ground's generator writes are the nine
-/// levels the window holds, at the cells that hold them.
+/// tile, so the levels the proving ground's generator writes are the levels the
+/// window holds, at the cells that hold them — the relief's nine, a hundred
+/// centimetres apart, and since 16b cut AE.1 The Bluff's three: its top at 500
+/// and its ramp at 270 and 40.
 ///
-/// The second half is the whole reason A1 does not move. The steepest edge
-/// between two cells a tank may stand on is 20 per cent orthogonal and 21
-/// diagonal, and the `tracked` row's limit is 45 — so on the shipped map there
-/// is no edge any shipped unit can be refused at, in either direction, and the
-/// surcharge is the only thing X.6 does to a stock match. The ford road, which
-/// is the ground A1's two tanks actually drive, is gentler still: nothing on row
-/// 97 rises more than one level between neighbours.
+/// The second half is why A1 does not move, and what 16b cut AE.1 changed about
+/// it. X.6 pinned that the steepest edge between two cells a tank may stand on
+/// was 20 per cent orthogonal and 21 diagonal against the `tracked` row's 45, so
+/// the slope refusal, the search's shoulder rule and the follower's cliff test
+/// ran only in fixtures (16c `T-18`). Off The Bluff that is still so: measured
+/// with the bluff's box (`x 140..=148, y 104..=121`) left out, the steepest is
+/// 20 and 21. And every edge past 45 on the whole map is one of The Bluff's 107
+/// — its rims, its corner and row 119's two flanks — so nothing A1 drives is
+/// touched: row 97 and every muster slot's straight run meet no edge past 45.
+/// (The 30 per cent 16c's `T-18` row names is the grass-to-deep-water bank at
+/// (61, 161), impassable to every row, which this never measured.)
 #[test]
 fn x6_the_authored_heightfield_reaches_the_arena_verbatim() {
     let tw = mush_testkit::TestWorld::with_modules(x6_production_roster());
@@ -3750,13 +3757,14 @@ fn x6_the_authored_heightfield_reaches_the_arena_verbatim() {
     let terrain = &arena.terrain;
     assert_eq!((terrain.width(), terrain.height()), (256, 256));
 
-    // The nine levels, and the three cells the design note names.
+    // The relief's nine levels and The Bluff's three (16b cut AE.1: the ramp's
+    // 40 and 270 and the top's 500), and the three cells the design note names.
     let levels: std::collections::BTreeSet<i16> =
         terrain.cells().iter().map(|cell| cell.elev_cm).collect();
     assert_eq!(
         levels.iter().copied().collect::<Vec<i16>>(),
-        vec![-400, -300, -200, -100, 0, 100, 200, 300, 400],
-        "the authored relief is nine levels a hundred centimetres apart"
+        vec![-400, -300, -200, -100, 0, 40, 100, 200, 270, 300, 400, 500],
+        "the authored relief is nine levels a hundred centimetres apart, and The Bluff's three"
     );
     let elev = |x: u16, y: u16| terrain.get(x, y).map(|cell| cell.elev_cm);
     assert_eq!(
@@ -3776,8 +3784,12 @@ fn x6_the_authored_heightfield_reaches_the_arena_verbatim() {
     let limit = tracked_limit();
     assert_eq!(limit, 45);
     let cell_cm = u32::from(terrain.cell_cm());
-    let mut steepest = 0_u32;
+    // 16b cut AE.1: The Bluff's box — the mesa, its rim neighbours, the ramp
+    // and its foot.
+    let on_bluff = |(x, y): (u16, u16)| (140..=148).contains(&x) && (104..=121).contains(&y);
+    let (mut orthogonal, mut diagonal) = (0_u32, 0_u32);
     let mut worst = ((0_u16, 0_u16), (0_u16, 0_u16));
+    let mut past_the_limit = 0_usize;
     for y in 0..terrain.height() {
         for x in 0..terrain.width() {
             let Some(here) = terrain.get(x, y).filter(|cell| cell.passable()) else {
@@ -3797,35 +3809,76 @@ fn x6_the_authored_heightfield_reaches_the_arena_verbatim() {
                     continue;
                 };
                 let steepness = tacsim::arena::slope::steepness_pct(here, there, kind, cell_cm);
-                if steepness > steepest {
-                    steepest = steepness;
+                // Every edge past the limit, on the whole map, is The Bluff's.
+                if steepness > limit {
+                    assert!(
+                        on_bluff((x, y)) && on_bluff((nx, ny)),
+                        "the shipped map has a {steepness} per cent edge at ({x}, {y}) -> \
+                         ({nx}, {ny}), off The Bluff"
+                    );
+                    past_the_limit += 1;
+                }
+                if on_bluff((x, y)) || on_bluff((nx, ny)) {
+                    continue;
+                }
+                let steepest = if kind == mush_atlas::physics::StepKind::Diagonal {
+                    &mut diagonal
+                } else {
+                    &mut orthogonal
+                };
+                if steepness > *steepest {
+                    *steepest = steepness;
                     worst = ((x, y), (nx, ny));
                 }
             }
         }
     }
     assert!(
-        steepest <= limit,
-        "the shipped map has a {steepest} per cent edge at {worst:?}, which a line \
-         tank would be refused at — A1 cannot stand"
+        orthogonal.max(diagonal) <= limit,
+        "off The Bluff the shipped map has an edge at {worst:?} a line tank would be \
+         refused at"
     );
     assert_eq!(
-        steepest, 21,
-        "the steepest passable edge on the proving ground moved"
+        (orthogonal, diagonal),
+        (20, 21),
+        "the steepest passable edge off The Bluff moved"
+    );
+    assert_eq!(
+        past_the_limit, 107,
+        "every edge past 45 is one of The Bluff's: its 104 rims, its corner and row 119's \
+         two flanks"
     );
 
-    // And the ford road itself, which is the ground A1 drives: one level a cell.
-    for x in 0..terrain.width().saturating_sub(1) {
-        let (Some(here), Some(next)) = (terrain.get(x, 97), terrain.get(x + 1, 97)) else {
-            continue;
-        };
-        let steepness = tacsim::arena::slope::steepness_pct(
-            here,
-            next,
-            mush_atlas::physics::StepKind::Orthogonal,
-            cell_cm,
-        );
-        assert!(steepness <= 20, "row 97 rises {steepness} per cent at {x}");
+    // And the ground A1 drives never meets an edge past 45: the ford road, one
+    // level a cell, and every muster slot's straight run at its opposite
+    // number.
+    let run = |row: u16, from: u16, to: u16| {
+        for x in from..to {
+            let (Some(here), Some(next)) = (terrain.get(x, row), terrain.get(x + 1, row)) else {
+                continue;
+            };
+            let steepness = tacsim::arena::slope::steepness_pct(
+                here,
+                next,
+                mush_atlas::physics::StepKind::Orthogonal,
+                cell_cm,
+            );
+            assert!(
+                steepness <= 20,
+                "row {row} rises {steepness} per cent at {x}"
+            );
+        }
+    };
+    run(97, 0, terrain.width().saturating_sub(1));
+    for red in def.tanks.iter().filter(|tank| tank.team == Team::Red) {
+        let slot = red.id.as_str().trim_start_matches("red_");
+        let blue = def
+            .tanks
+            .iter()
+            .find(|tank| tank.id.as_str() == format!("blue_{slot}"))
+            .unwrap_or_else(|| panic!("blue_{slot} is authored"));
+        assert_eq!(red.y, blue.y, "slot {slot} faces along one row");
+        run(red.y, red.x, blue.x);
     }
     // The muster columns of cut F.4's ford road, which is where A1's tanks stand.
     assert_eq!(elev(6, 97), Some(100));
@@ -4465,6 +4518,7 @@ fn x6_the_route_goes_round_what_motion_refuses() {
         65_536,
         scale,
         Some(limit),
+        tacsim::arena::CostRow::Tracked,
         &[],
     )
     .expect("the ramp is a way up");
@@ -4543,6 +4597,7 @@ fn x6_the_route_goes_round_what_motion_refuses() {
             65_536,
             scale,
             Some(limit),
+            tacsim::arena::CostRow::Tracked,
             &[]
         ),
         Err(tacsim::arena::PathFailure::NoRoute)
@@ -5458,6 +5513,7 @@ fn x6_the_limited_search_costs_what_it_costs() {
             65_536,
             scale,
             Some(limit),
+            tacsim::arena::CostRow::Tracked,
             &[],
         )
         .unwrap_or_else(|why| panic!("{start:?} -> {goal:?} limited: {why:?}"));
@@ -8503,4 +8559,1514 @@ fn o3_the_target_binds_creates_refits_and_checks_out() {
     assert!(!home.wreck && !home.disabled, "intact");
     assert_eq!((home.shots, home.hits), (0, 0));
     assert_eq!(home.cells.schema(), &spec.definition);
+}
+
+// ---------------------------------------------------------------------------
+// AE.1 — three chassis (16c N15)
+// ---------------------------------------------------------------------------
+
+/// **The three chassis' digest pins** (16b cut AE.1; 16c N15), the way X.1 pins
+/// the laser's: the scout car, the heavy tank and the second biped.
+const DIGESTS_CHASSIS: [(&str, &str); 3] = [
+    (
+        "tacsim.pack.scout_mk1",
+        "20b59cecccd9d78af5d5f1608b5831683d4d2927290ce6fd297c4b15e535f043",
+    ),
+    (
+        "tacsim.pack.heavy_mk1",
+        "fbb5c73cd9fe1b46b6451da016d92350d78e01b205473770f0c46987bbecb0a9",
+    ),
+    (
+        "tacsim.pack.biped_mk2",
+        "0a7346e049f6b833c2f8afc8dcdf90c58504cfadd15c44fed8b97d861e56a625",
+    ),
+];
+
+/// The three chassis' pack files, by their paths under `content/`.
+const PACK_FILES_CHASSIS: [&str; 3] = [
+    "units/scout_mk1.json",
+    "units/heavy_mk1.json",
+    "units/biped_mk2.json",
+];
+
+/// **The three chassis load beside the stock game without moving it, and each
+/// drives, climbs and pays on its own row** (16b cut AE.1; 16c N15; doc 16 §9's
+/// rule read for a table of the fielded catalog).
+///
+/// X.2's shape, one table: the pins and the writing branch; the stock game is
+/// the two weapons, one unit and one arena it always was, and every stock
+/// definition keeps its identity; the fielded catalog holds ten unit schemas.
+/// Then each chassis as the production check-out reads it: the scout binds a
+/// `wheeled` mode under its own schema, is held to the wheeled row's 25 per cent
+/// ([`tacsim::arena::slope::SlopeLimit::read`]) and pays the wheeled row
+/// ([`tacsim::arena::CostRow::read`]); the Mk2 legged, 70 and `Legged`; the
+/// heavy tracked, 45 and `Tracked`. The Mk2's laser is mounted in the arm it is
+/// installed in (X.2's mount fallback: the laser's own mount names a turret the
+/// biped has not got), the scout's wheels, the heavy's tracks and the Mk2's
+/// legs carry the pair rule, and the Mk2's heat cells are laid down at the
+/// laser tank's 60 and 3.
+#[test]
+fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
+    use tacsim::arena::CostRow;
+    use tacsim::arena::slope::SlopeLimit;
+    use tacsim::definitions::unit::Consequence;
+
+    if writing() {
+        for relative in PACK_FILES_CHASSIS {
+            resign(relative);
+        }
+        return;
+    }
+
+    // The pins.
+    let pinned: std::collections::BTreeMap<&str, &str> = DIGESTS_CHASSIS.into_iter().collect();
+    for (name, json) in content::EXTENSIONS_CHASSIS {
+        let pack = tacsim::pack::load_pack(json)
+            .unwrap_or_else(|error| panic!("{name} does not verify: {error}"));
+        let id = pack.manifest().id().to_string();
+        assert_eq!(
+            pinned.get(id.as_str()).copied(),
+            Some(pack.manifest().digest().to_hex().as_str()),
+            "{id}'s digest moved; re-review the content and re-pin it"
+        );
+        assert_eq!(pack.manifest().version(), 1, "{id} is version 1");
+    }
+    assert_eq!(pinned.len(), content::EXTENSIONS_CHASSIS.len());
+
+    // The stock game is what it was.
+    let stock = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    assert_eq!(stock.weapons.len(), 2, "the cannon and the coaxial");
+    assert_eq!(stock.specs.len(), 1, "one unit schema");
+    assert_eq!(stock.arenas.len(), 1, "one arena");
+
+    // The fielded catalog: ten unit schemas, and no stock identity moved.
+    let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    assert_eq!(
+        fielded.specs.len(),
+        10,
+        "the line tank, doc 16 section 9's five, the range's target and the three chassis"
+    );
+    for (id, reference) in &stock.references {
+        assert_eq!(
+            fielded.references.get(id),
+            Some(reference),
+            "{id} moved when the chassis loaded; a persisted unit points at it"
+        );
+    }
+    let tank = CanonicalId::new(content::LINE_TANK).expect("a canonical id");
+    assert_eq!(
+        stock
+            .references
+            .get(&tank)
+            .map(|reference| reference.digest().to_hex())
+            .as_deref(),
+        Some(LINE_TANK_DIGEST),
+        "the shipped tank's definition moved: the wheeled field must serialise away"
+    );
+
+    // Each chassis, instantiated as production instantiates it.
+    let cells_of = |entry: &str, id: u32| {
+        let key = CanonicalId::new(entry).expect("a canonical id");
+        let spec = fielded.specs.get(&key).expect("the chassis is fielded");
+        let binding = fielded.bindings.get(&key).expect("its binding");
+        let cells = tacsim::definitions::to_tactical_unit(spec, binding, mush_core::ObjId(id))
+            .unwrap_or_else(|why| panic!("{entry} instantiates: {why}"));
+        (spec.clone(), cells)
+    };
+    for (entry, locomotion, schema, limit, row, speed) in [
+        (
+            content::SCOUT_MK1,
+            "wheeled",
+            tacsim::definitions::unit::WHEELED_RULES_SCHEMA,
+            25,
+            CostRow::Wheeled,
+            3_000,
+        ),
+        (
+            content::HEAVY_MK1,
+            "tracked",
+            tacsim::definitions::unit::TRACKED_RULES_SCHEMA,
+            45,
+            CostRow::Tracked,
+            1_000,
+        ),
+        (
+            content::BIPED_MK2,
+            "legged",
+            tacsim::definitions::unit::LEGGED_RULES_SCHEMA,
+            70,
+            CostRow::Legged,
+            1_000,
+        ),
+    ] {
+        let (spec, cells) = cells_of(entry, 21);
+        let profile = cells.mobility().expect("a mobility profile");
+        assert_eq!(profile.modes().len(), 1, "{entry}: one mode");
+        let mode = profile.modes().first().expect("the mode");
+        assert_eq!(mode.locomotion.as_str(), locomotion, "{entry}");
+        assert_eq!(mode.rules.schema().key().id.as_str(), schema, "{entry}");
+        assert_eq!(SlopeLimit::read(&cells), Some(limit), "{entry}'s limit");
+        assert_eq!(CostRow::read(&cells), row, "{entry}'s row");
+        // The two readings of one mode's five numbers agree, wheels included.
+        assert_eq!(
+            tacsim::match_::tracked_rules(&cells),
+            tacsim::definitions::tracked_rules(&spec),
+            "{entry}: the spec and the instantiated unit decode one mode"
+        );
+        assert_eq!(
+            tacsim::match_::tracked_rules(&cells).max_speed_cms,
+            speed,
+            "{entry}: its own authored speed, not the stock tank's fallback"
+        );
+    }
+    // The scout serialises its wheels and nothing else.
+    let scout = fielded
+        .specs
+        .get(&CanonicalId::new(content::SCOUT_MK1).expect("a canonical id"))
+        .expect("the scout");
+    let json = serde_json::to_value(scout).expect("the spec serialises");
+    assert_eq!(
+        json.get("mobility")
+            .and_then(serde_json::Value::as_object)
+            .map(|mobility| mobility.keys().cloned().collect::<Vec<String>>()),
+        Some(vec!["wheeled".to_owned()])
+    );
+
+    // The pair rule on the scout's wheels, the heavy's tracks and the Mk2's legs.
+    for (entry, left, right) in [
+        (content::SCOUT_MK1, "left_wheels", "right_wheels"),
+        (content::HEAVY_MK1, "left_track", "right_track"),
+        (content::BIPED_MK2, "left_leg", "right_leg"),
+    ] {
+        let spec = fielded
+            .specs
+            .get(&CanonicalId::new(entry).expect("a canonical id"))
+            .expect("the chassis");
+        let pair = Consequence::DisableMotionWhenAllOf {
+            sections: vec![
+                CanonicalId::new(left).expect("a section id"),
+                CanonicalId::new(right).expect("a section id"),
+            ],
+        };
+        for side in [left, right] {
+            let section = spec
+                .sections
+                .iter()
+                .find(|row| row.id.as_str() == side)
+                .unwrap_or_else(|| panic!("{entry} has {side}"));
+            assert!(
+                section.consequences.contains(&pair),
+                "{entry}'s {side} does not carry the pair rule: {:?}",
+                section.consequences
+            );
+        }
+    }
+
+    // The Mk2's beam is in its right arm (X.2's mount fallback), its coaxial in
+    // its left; the scout's one gun is the machine gun until cut AE.2.
+    let (_, mk2) = cells_of(content::BIPED_MK2, 22);
+    let weapons = tacsim::match_::weapon_summaries(&fielded, &mk2);
+    let mount = |id: &str| {
+        weapons
+            .iter()
+            .find(|weapon| weapon.id.as_str() == id)
+            .map(|weapon| weapon.mount_section.to_string())
+    };
+    assert_eq!(mount("laser"), Some("right_arm".to_owned()));
+    assert_eq!(mount("machine_gun"), Some("left_arm".to_owned()));
+    let (_, scout_cells) = cells_of(content::SCOUT_MK1, 23);
+    assert_eq!(
+        tacsim::match_::weapon_summaries(&fielded, &scout_cells)
+            .iter()
+            .map(|weapon| weapon.id.to_string())
+            .collect::<Vec<_>>(),
+        vec!["machine_gun".to_owned()],
+        "the scout's one gun, until cut AE.2"
+    );
+
+    // And the Mk2's heat cells are laid down at check-out, on the legged row.
+    let arena = arena_of(
+        &fielded,
+        vec![unit_of(
+            &fielded,
+            content::BIPED_MK2,
+            RED,
+            Team::Red,
+            RED_CELL,
+        )],
+        &[],
+    );
+    // On the torso: a biped's body is its first section, which carries the
+    // heat cells (`UnitSpec::heat_section`).
+    let torso = |name: &str| mush_tactics::CellAddr::Section {
+        section: mush_tactics::SectionId::new("torso").expect("a section"),
+        cell: mush_tactics::CellId::new(name).expect("a cell"),
+    };
+    assert_eq!(cell(&arena, RED, &torso(HEAT_CELL)), Some(0), "cold");
+    assert_eq!(cell(&arena, RED, &torso(HEAT_SINK_CELL)), Some(3));
+    assert_eq!(arena.unit(RED).and_then(UnitState::heat_max), Some(60));
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.cost_row),
+        Some(CostRow::Legged),
+        "and it checks out on the legged row"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// AE.1 — the cost per row (16c B-58) and The Bluff (16c T-18)
+// ---------------------------------------------------------------------------
+
+/// A cell of `class` priced as the loader prices it (16b cut AE.1): the shipped
+/// table's `tracked` row as `move_cost`, `0` where it is `null`.
+fn priced_cell(class: TerrainClass) -> TerrainCell {
+    TerrainCell {
+        class,
+        elev_cm: 0,
+        move_cost: mush_atlas::physics::LocomotionTable::shipped()
+            .cost(class.label(), "tracked", &[])
+            .map_or(0, |cost| u16::try_from(cost).unwrap_or(u16::MAX)),
+    }
+}
+
+/// One painted box of [`priced_window`]: `(x0, x1, y0, y1)` inclusive, and its
+/// class.
+type PricedBox = ((u16, u16, u16, u16), TerrainClass);
+
+/// **A level window priced per row** (16b cut AE.1): 48 by 8 of grass, each
+/// `(x0, x1, y0, y1)` box of `paint` its class, through `ArenaTerrain::priced`
+/// and the shipped table — the terrain `from_pack` builds over those classes —
+/// with [`relief`]'s two entry zones.
+fn priced_window(paint: &[PricedBox]) -> ArenaDefinition {
+    let (width, height) = (48_u16, 8_u16);
+    let mut cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+    for y in 0..height {
+        for x in 0..width {
+            let class = paint
+                .iter()
+                .rev()
+                .find(|((x0, x1, y0, y1), _)| (*x0..=*x1).contains(&x) && (*y0..=*y1).contains(&y))
+                .map_or(TerrainClass::Grass, |(_, class)| *class);
+            cells.push(priced_cell(class));
+        }
+    }
+    let mut definition = relief(width, height, &|_x: u16, _y: u16| 0);
+    definition.terrain = ArenaTerrain::priced(
+        width,
+        height,
+        CELL_CM,
+        cells,
+        mush_atlas::physics::LocomotionTable::shipped(),
+    )
+    .expect("the priced window");
+    definition
+}
+
+/// Every `blocked` line naming `unit`, as `(x, y, cause)` (16b cut AE.1).
+fn blocked_with_cause(
+    events: &[tacsim::arena::ledger::LedgerEvent],
+    unit: mush_core::ObjId,
+) -> Vec<(u16, u16, tacsim::arena::motion::BlockedCause)> {
+    events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            tacsim::arena::ledger::EventKind::Blocked {
+                unit: at,
+                x,
+                y,
+                cause,
+            } if *at == unit => Some((*x, *y, *cause)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Run `pulses` pulses of 500 ms and answer every speed `id` had while it stood
+/// in a column of `columns` (16b cut AE.1).
+fn speeds_in(
+    arena: &mut Arena,
+    wall: &mut i64,
+    pulses: usize,
+    id: mush_core::ObjId,
+    columns: std::ops::RangeInclusive<u16>,
+    bytes: &mut Vec<u8>,
+) -> Vec<i32> {
+    let mut seen = Vec::new();
+    for _ in 0..pulses {
+        run_logged(arena, wall, 500, 1, bytes);
+        let (cell, _, _) = standing(arena, id);
+        if columns.contains(&cell.0) {
+            seen.extend(arena.unit(id).map(|unit| unit.speed_cms));
+        }
+    }
+    seen
+}
+
+/// **The loader prices every row, and a fixture prices none** (16b cut AE.1;
+/// 16c `B-58`).
+///
+/// Over the shipped ground, built from the production roster's records through
+/// `from_pack`, every cell answers, for every row, exactly the shipped table's
+/// price for its class (`null` → `0`), and the rows' cheapest cells are 100, 80
+/// and 100 — the road, for all three, which the wheeled row prices at 80. And a
+/// window built through `ArenaTerrain::new` is a fixture's word for every unit:
+/// a `WoodsHeavy` cell authored at 150 answers 150 on every row (the table
+/// would refuse a tank and charge a walker 200), a `Grass` cell authored at 0
+/// answers 0 on every row, and the three minima agree.
+#[test]
+fn ae1_the_loader_prices_every_row_and_a_fixture_prices_none() {
+    use tacsim::arena::CostRow;
+
+    let tw = mush_testkit::TestWorld::with_modules(x6_production_roster());
+    let records = tw
+        .world()
+        .module_state::<mush_atlas::AtlasState>()
+        .map(|state| state.records.clone())
+        .expect("the atlas is composed");
+    let stock = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    let (id, def) = stock
+        .arenas
+        .iter()
+        .next()
+        .expect("the proving ground is shipped");
+    let arena = tacsim::definitions::from_pack(id.as_str(), def, &records)
+        .expect("the arena's ground is in this world's records");
+    let terrain = &arena.terrain;
+    let table = mush_atlas::physics::LocomotionTable::shipped();
+    let mut classes = std::collections::BTreeSet::new();
+    for y in 0..terrain.height() {
+        for x in 0..terrain.width() {
+            let cell = terrain.get(x, y).expect("on the window");
+            classes.insert(cell.class.label());
+            for row in CostRow::ALL {
+                let want = table
+                    .cost(cell.class.label(), row.as_str(), &[])
+                    .map_or(0, |cost| u16::try_from(cost).unwrap_or(u16::MAX));
+                assert_eq!(
+                    terrain.cost(row, x, y),
+                    want,
+                    "({x}, {y}) on {:?} for the {} row",
+                    cell.class,
+                    row.as_str()
+                );
+                assert_eq!(terrain.passable_for(row, x, y), want != 0);
+            }
+            // The tracked price is the cell's own, as it always was.
+            assert_eq!(terrain.cost(CostRow::Tracked, x, y), cell.move_cost);
+        }
+    }
+    assert!(
+        classes.contains("woods_heavy") && classes.contains("rubble") && classes.contains("water"),
+        "the shipped ground carries the classes the rows disagree on: {classes:?}"
+    );
+    assert_eq!(
+        CostRow::ALL.map(|row| terrain.min_cost(row)),
+        [100, 80, 100],
+        "the road, which the wheeled row prices at 80"
+    );
+    assert_eq!(
+        tacsim::arena::min_move_cost(terrain),
+        100,
+        "the tracked reading"
+    );
+
+    // A fixture's window prices every row at the authored number.
+    let fixture = ArenaTerrain::new(
+        2,
+        1,
+        CELL_CM,
+        vec![
+            TerrainCell {
+                class: TerrainClass::WoodsHeavy,
+                elev_cm: 0,
+                move_cost: 150,
+            },
+            TerrainCell {
+                class: TerrainClass::Grass,
+                elev_cm: 0,
+                move_cost: 0,
+            },
+        ],
+    )
+    .expect("a two-cell window");
+    for row in CostRow::ALL {
+        assert_eq!(fixture.cost(row, 0, 0), 150, "{}", row.as_str());
+        assert_eq!(fixture.cost(row, 1, 0), 0, "{}", row.as_str());
+        assert!(!fixture.passable_for(row, 1, 0));
+        assert_eq!(fixture.min_cost(row), 150, "{}", row.as_str());
+    }
+}
+
+/// **A biped walks the thick woods a tank is refused** (16b cut AE.1; the
+/// `B-58` witness), on a window priced per row through `ArenaTerrain::priced`.
+///
+/// A band of `WoodsHeavy` across a level window of grass, a Mk1 biped and a
+/// stock line tank driving east at it side by side. The walker's `legged` row
+/// prices the woods at 200, so it crosses at `max × 100 / 200` — 600 of its
+/// 1,200 cm/s — and stands beyond the band; the tank's `tracked` row prices it
+/// `null`, so the tank is held at the band's edge: one `blocked` line, cause
+/// `impassable`, and `Held: the ground ahead will not take the tank.` And on
+/// `Rubble` each pays its own row: the walker 150 (800 of its 1,200) and the
+/// tank 200 (750 of its 1,500).
+#[test]
+fn ae1_a_biped_walks_the_thick_woods_a_tank_is_refused() {
+    use tacsim::arena::CostRow;
+    use tacsim::arena::motion::BlockedCause;
+
+    let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let woods = || priced_window(&[((20, 27, 0, 7), TerrainClass::WoodsHeavy)]);
+    let pair = |definition: ArenaDefinition| {
+        let mut arena = arena_over(
+            &catalog,
+            vec![
+                blind(unit_of(
+                    &catalog,
+                    content::BIPED_MK1,
+                    RED,
+                    Team::Red,
+                    (16, 2),
+                )),
+                blind(unit_of(
+                    &catalog,
+                    content::LINE_TANK,
+                    BLUE,
+                    Team::Blue,
+                    (16, 5),
+                )),
+            ],
+            definition,
+            &ArenaConfig::default(),
+        );
+        under_way(&mut arena, RED, 90_000, 1_200);
+        under_way(&mut arena, BLUE, 90_000, 1_500);
+        arena
+    };
+
+    let mut arena = pair(woods());
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.cost_row),
+        Some(CostRow::Legged)
+    );
+    assert_eq!(
+        arena.unit(BLUE).map(|unit| unit.cost_row),
+        Some(CostRow::Tracked)
+    );
+    let terrain = arena.definition.terrain.clone();
+    assert_eq!(terrain.cost(CostRow::Legged, 22, 2), 200);
+    assert_eq!(terrain.cost(CostRow::Tracked, 22, 5), 0);
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    let in_woods = speeds_in(&mut arena, &mut wall, 40, RED, 24..=27, &mut bytes);
+    assert!(
+        !in_woods.is_empty(),
+        "the walker never stood deep in the woods"
+    );
+    assert!(
+        in_woods.iter().all(|speed| *speed == 1_200 * 100 / 200),
+        "the walker's speed deep in the woods is its own row's 600: {in_woods:?}"
+    );
+    let ((x, _), _, _) = standing(&arena, RED);
+    assert!(x >= 28, "the walker stands beyond the band: column {x}");
+    let events = ledger_of(&mut arena, &mut bytes);
+    assert!(
+        blocked_with_cause(&events, RED).is_empty(),
+        "the walker was refused nothing"
+    );
+    assert_eq!(
+        blocked_with_cause(&events, BLUE),
+        vec![(20, 5, BlockedCause::Impassable)],
+        "one stop, the ground's own"
+    );
+    assert_eq!(standing(&arena, BLUE).0, (19, 5));
+
+    // What the tank's pilot is told: the ground's sentence, once.
+    let mut arena = pair(woods());
+    let mut wall = 0_i64;
+    let told = run_heard(&mut arena, &mut wall, 500, 40, mush_core::ObjId(1_001));
+    assert_eq!(
+        told.iter()
+            .filter(|line| line.starts_with("Held:"))
+            .collect::<Vec<&String>>(),
+        vec![&"Held: the ground ahead will not take the tank.".to_owned()],
+        "{told:?}"
+    );
+
+    // On rubble each pays its own row.
+    let mut arena = pair(priced_window(&[((20, 27, 0, 7), TerrainClass::Rubble)]));
+    let rubble = arena.definition.terrain.clone();
+    assert_eq!(
+        (
+            rubble.cost(CostRow::Legged, 22, 2),
+            rubble.cost(CostRow::Tracked, 22, 5)
+        ),
+        (150, 200)
+    );
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut walker = Vec::new();
+    let mut hull = Vec::new();
+    for _ in 0..30 {
+        run_logged(&mut arena, &mut wall, 500, 1, &mut bytes);
+        if (24..=27).contains(&standing(&arena, RED).0.0) {
+            walker.extend(arena.unit(RED).map(|unit| unit.speed_cms));
+        }
+        if (24..=27).contains(&standing(&arena, BLUE).0.0) {
+            hull.extend(arena.unit(BLUE).map(|unit| unit.speed_cms));
+        }
+    }
+    assert!(
+        !walker.is_empty() && !hull.is_empty(),
+        "both stood deep in the rubble"
+    );
+    assert!(
+        walker.iter().all(|speed| *speed == 1_200 * 100 / 150),
+        "the walker's factor is 100/150: {walker:?}"
+    );
+    assert!(
+        hull.iter().all(|speed| *speed == 1_500 * 100 / 200),
+        "the hull's factor is 100/200: {hull:?}"
+    );
+}
+
+/// **A wheeled car is stopped by rubble and takes the ford slowly** (16b cut
+/// AE.1; 16c `B-58`, N15), on windows priced per row.
+///
+/// Rubble, rock and the thick woods all refuse the scout car — each one
+/// `blocked` line, cause `impassable` — where a tank crosses the first two.
+/// Shallow water prices 400 for it (the one number the engine's table moved)
+/// and 300 for a tank, and it crosses a ford at `3,000 × 100 / 400`; a road is
+/// 80. Its authored 3,000 cm/s is its top speed on the road — an order for
+/// more is clamped there — although the arena's ceiling on that window, which
+/// sizes the substep, is 3,750. A staff place of the car onto rubble is refused
+/// `impassable`, where the same place of a tank lands; and a car whose world
+/// pose is on rubble falls through `opening_pose` to its zone, and the arena
+/// opens.
+#[test]
+fn ae1_a_wheeled_car_is_stopped_by_rubble_and_takes_the_ford_slowly() {
+    use tacsim::arena::CostRow;
+    use tacsim::arena::motion::BlockedCause;
+    use tacsim::arena::state::Channel;
+
+    let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let car = |id: mush_core::ObjId, cell: (u16, u16)| {
+        blind(unit_of(&catalog, content::SCOUT_MK1, id, Team::Red, cell))
+    };
+
+    // Three classes, three cars, three stops.
+    let third = mush_core::ObjId(11);
+    let mut arena = arena_over(
+        &catalog,
+        vec![car(RED, (16, 1)), car(BLUE, (16, 3)), car(third, (16, 5))],
+        priced_window(&[
+            ((20, 23, 0, 1), TerrainClass::Rubble),
+            ((20, 23, 2, 3), TerrainClass::Rock),
+            ((20, 23, 4, 7), TerrainClass::WoodsHeavy),
+        ]),
+        &ArenaConfig::default(),
+    );
+    for id in [RED, BLUE, third] {
+        assert_eq!(
+            arena.unit(id).map(|unit| unit.cost_row),
+            Some(CostRow::Wheeled)
+        );
+        under_way(&mut arena, id, 90_000, 1_000);
+    }
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    run_logged(&mut arena, &mut wall, 500, 20, &mut bytes);
+    let events = ledger_of(&mut arena, &mut bytes);
+    for (id, y, what) in [
+        (RED, 1, "rubble"),
+        (BLUE, 3, "rock"),
+        (third, 5, "thick woods"),
+    ] {
+        assert_eq!(
+            blocked_with_cause(&events, id),
+            vec![(20, y, BlockedCause::Impassable)],
+            "{what} refuses the car"
+        );
+    }
+    let terrain = arena.definition.terrain.clone();
+    assert!(
+        terrain.passable_for(CostRow::Tracked, 21, 1),
+        "a tank crosses rubble"
+    );
+    assert!(terrain.passable_for(CostRow::Tracked, 21, 3), "and rock");
+
+    // The ford, and the road.
+    let ford = priced_window(&[
+        ((20, 27, 0, 3), TerrainClass::Water),
+        ((0, 47, 6, 6), TerrainClass::Road),
+    ]);
+    assert_eq!(
+        ford.terrain.cost(CostRow::Wheeled, 22, 1),
+        400,
+        "a ford is 400 to a car"
+    );
+    assert_eq!(
+        ford.terrain.cost(CostRow::Tracked, 22, 1),
+        300,
+        "and 300 to a tank"
+    );
+    assert_eq!(
+        ford.terrain.cost(CostRow::Wheeled, 30, 6),
+        80,
+        "a road is 80"
+    );
+    let mut arena = arena_over(
+        &catalog,
+        vec![car(RED, (16, 1)), car(BLUE, (2, 6))],
+        ford,
+        &ArenaConfig::default(),
+    );
+    assert_eq!(
+        arena.max_speed_cms(),
+        3_750,
+        "the arena sizes the substep on 3,000 x 100 / 80"
+    );
+    under_way(&mut arena, RED, 90_000, 1_000);
+    // The road car is ordered through the pilot's own door, and asked for more
+    // than it has: the order clamp holds it at its authored 3,000.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.power = Power::Online;
+        state.pose.heading_mdeg = 90_000;
+        state.desired_heading_mdeg = 90_000;
+    }
+    let kind = tacsim::arena::intents::IntentKind::Speed { cms: 5_000 };
+    let intent = tacsim::arena::intents::Intent {
+        unit: BLUE,
+        channel: Channel::Helm,
+        epoch: arena.epochs.current(BLUE, Channel::Helm),
+        kind,
+        seq: 1,
+    };
+    arena.step(0, &[], &[intent]);
+    assert_eq!(
+        arena.unit(BLUE).map(|unit| unit.desired_speed_cms),
+        Some(3_000),
+        "an order for more than the authored speed is clamped to it"
+    );
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut in_ford = Vec::new();
+    let mut on_road = 0_i32;
+    for _ in 0..30 {
+        run_logged(&mut arena, &mut wall, 500, 1, &mut bytes);
+        if (24..=27).contains(&standing(&arena, RED).0.0) {
+            in_ford.extend(arena.unit(RED).map(|unit| unit.speed_cms));
+        }
+        on_road = on_road.max(arena.unit(BLUE).map_or(0, |unit| unit.speed_cms));
+    }
+    assert!(!in_ford.is_empty(), "the car stood deep in the ford");
+    assert!(
+        in_ford.iter().all(|speed| *speed == 3_000 * 100 / 400),
+        "the car takes the ford at its own row's 750: {in_ford:?}"
+    );
+    assert_eq!(on_road, 3_000, "108 kph on the road, and not 3,750");
+    let events = ledger_of(&mut arena, &mut bytes);
+    assert!(
+        blocked_with_cause(&events, RED).is_empty(),
+        "the ford refuses no car"
+    );
+
+    // A staff place onto rubble: `impassable` for the car, taken by the tank.
+    let rubble = || priced_window(&[((30, 33, 0, 7), TerrainClass::Rubble)]);
+    let mut arena = arena_over(
+        &catalog,
+        vec![
+            car(RED, (16, 1)),
+            blind(unit_of(
+                &catalog,
+                content::LINE_TANK,
+                BLUE,
+                Team::Blue,
+                (16, 5),
+            )),
+        ],
+        rubble(),
+        &ArenaConfig::default(),
+    );
+    let place = |unit: mush_core::ObjId, arena: &Arena| {
+        let kind = tacsim::arena::intents::IntentKind::Place { x: 31, y: 3 };
+        tacsim::arena::intents::Intent {
+            unit,
+            channel: kind.channel_required(),
+            epoch: arena.epochs.current(unit, kind.channel_required()),
+            kind,
+            seq: 1,
+        }
+    };
+    let intents = [place(RED, &arena)];
+    let mut bytes: Vec<u8> = Vec::new();
+    let out = arena.step(0, &[], &intents);
+    for chunk in &out.ledger_chunks {
+        bytes.extend_from_slice(&chunk.bytes);
+    }
+    let events = ledger_of(&mut arena, &mut bytes);
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.kind,
+            tacsim::arena::ledger::EventKind::PlaceRefused { unit, reason, .. }
+                if *unit == RED && reason.as_str() == "impassable"
+        )),
+        "the car's place onto rubble is refused `impassable`: {events:?}"
+    );
+    assert_eq!(standing(&arena, RED).0, (16, 1), "and it did not move");
+    let intents = [place(BLUE, &arena)];
+    arena.step(500, &[], &intents);
+    assert_eq!(standing(&arena, BLUE).0, (31, 3), "the tank's place lands");
+
+    // `opening_pose`: a car left on rubble opens in its zone; a tank there keeps it.
+    let definition = rubble();
+    let key = CanonicalId::new(content::SCOUT_MK1).expect("a canonical id");
+    let cells = tacsim::definitions::to_tactical_unit(
+        catalog.specs.get(&key).expect("the scout"),
+        catalog.bindings.get(&key).expect("its binding"),
+        RED,
+    )
+    .expect("the scout's cells");
+    let row = CostRow::read(&cells);
+    assert_eq!(row, CostRow::Wheeled);
+    let on_rubble = pose((31, 3));
+    let mut taken = Vec::new();
+    let opened = tacsim::match_::opening_pose(
+        &definition,
+        Team::Red,
+        Some(on_rubble.clone()),
+        &mut taken,
+        row,
+    )
+    .expect("the zone has room");
+    let cell = definition.terrain.cell_of(&opened).expect("on the window");
+    assert!(
+        cell.0 <= 1,
+        "the car opens in its zone, not on rubble: {cell:?}"
+    );
+    let mut taken = Vec::new();
+    let kept = tacsim::match_::opening_pose(
+        &definition,
+        Team::Red,
+        Some(on_rubble),
+        &mut taken,
+        CostRow::Tracked,
+    )
+    .expect("a tank's pose");
+    assert_eq!(
+        definition.terrain.cell_of(&kept),
+        Some((31, 3)),
+        "a tank keeps it"
+    );
+    let mut unit = car(RED, (16, 1));
+    unit.pose = opened;
+    let arena = arena_over(&catalog, vec![unit], definition, &ArenaConfig::default());
+    assert_eq!(standing(&arena, RED).0, cell, "and the arena opens there");
+}
+
+/// **The route is the row's own** (16b cut AE.1; 16c `B-58`; doc 16 §6).
+///
+/// One window priced per row: a band of thick woods with a one-row gap at its
+/// north end, and a rubble cell. The walker's search, scaled on its own row's
+/// cheapest cell, goes straight through the woods; the tank's goes round
+/// through the gap, because the woods are not ground to it; a car's search to
+/// the rubble cell is `OffGround`, because it is not ground to a car. The
+/// per-row property that every search step is one motion accepts is
+/// `crate::arena::path`'s own in-source test, over every row.
+#[test]
+fn ae1_the_route_is_the_rows_own() {
+    use tacsim::arena::CostRow;
+
+    let definition = priced_window(&[
+        ((20, 23, 0, 6), TerrainClass::WoodsHeavy),
+        ((40, 40, 3, 3), TerrainClass::Rubble),
+    ]);
+    let terrain = &definition.terrain;
+    let search = |row: CostRow, goal: (u16, u16)| {
+        tacsim::arena::path_with(
+            terrain,
+            &mut tacsim::arena::PathScratch::default(),
+            (2, 3),
+            goal,
+            65_536,
+            terrain.min_cost(row),
+            Some(45),
+            row,
+            &[],
+        )
+    };
+    let walker = search(CostRow::Legged, (30, 3)).expect("a walker's route");
+    assert!(
+        walker
+            .cells
+            .iter()
+            .any(|&(x, y)| (20..=23).contains(&x) && y <= 6),
+        "the walker's route goes through the woods: {:?}",
+        walker.cells
+    );
+    let tank = search(CostRow::Tracked, (30, 3)).expect("a tank's route");
+    assert!(
+        tank.cells
+            .iter()
+            .filter(|(x, _)| (20..=23).contains(x))
+            .all(|(_, y)| *y == 7),
+        "the tank's route goes round, through the gap on row 7: {:?}",
+        tank.cells
+    );
+    assert!(
+        tank.cells.iter().any(|(x, _)| (20..=23).contains(x)),
+        "the tank's route does cross the band's columns, at the gap: {:?}",
+        tank.cells
+    );
+    assert_eq!(
+        search(CostRow::Wheeled, (40, 3)),
+        Err(tacsim::arena::PathFailure::OffGround),
+        "rubble is no goal for a car"
+    );
+    assert!(
+        search(CostRow::Tracked, (40, 3)).is_ok(),
+        "and is one for a tank"
+    );
+}
+
+/// Whether the x6 hand walk's shoulder check refuses the diagonal `from → to`
+/// at `limit` (16b cut AE.1): a shoulder that is on the window and passable
+/// must be within the limit orthogonally from `from` and onto `to`.
+fn shoulder_refused(terrain: &ArenaTerrain, limit: u32, from: (u16, u16), to: (u16, u16)) -> bool {
+    let cell_cm = u32::from(terrain.cell_cm());
+    let (Some(here), Some(there)) = (terrain.get(from.0, from.1), terrain.get(to.0, to.1)) else {
+        return false;
+    };
+    [(to.0, from.1), (from.0, to.1)]
+        .into_iter()
+        .any(|shoulder| {
+            let Some(cell) = terrain
+                .get(shoulder.0, shoulder.1)
+                .filter(|cell| cell.passable())
+            else {
+                return false;
+            };
+            [(here, cell), (cell, there)].into_iter().any(|(a, b)| {
+                tacsim::arena::slope::too_steep(
+                    Some(limit),
+                    tacsim::arena::slope::steepness_pct(
+                        a,
+                        b,
+                        mush_atlas::physics::StepKind::Orthogonal,
+                        cell_cm,
+                    ),
+                )
+            })
+        })
+}
+
+/// **The Bluff refuses a tank and a car and admits a walker, on the shipped
+/// ground** (16b cut AE.1; 16c `T-18`; doc 16 §9 item 6).
+///
+/// The x6 production roster over the real records, and an arena built through
+/// `definition_for`'s own `from_pack`. The rules X.6 wrote and only fixtures
+/// ever ran now run on the shipped map:
+///
+/// * a **pilot-driven** tank driven east at the west face from (140, 111) is
+///   refused the 700 cm rim by the slope — one `too_steep` `blocked` line and
+///   `Held: the slope ahead is too steep for the tank.`; a **scout car** driven
+///   the same way is refused at the same cell by the same rule (its row's 25)
+///   and told the same sentence;
+/// * a walker driven the same way climbs it (70 per cent, which its row's 70
+///   does not pass) and stands on the top at `z_cm` 500;
+/// * **row 120's east flank**, (147, 120) up onto the ramp's foot at (146,
+///   120), rises 340 cm (34 per cent): a tank driven west along row 120 takes
+///   it with no stop, and a car is refused it — one `too_steep` line at (146,
+///   120);
+/// * the tank's search from (144, 125) to the top at (144, 111) goes up the
+///   ramp, and every edge of the route passes the x6 hand walk — the slope and
+///   the shoulders;
+/// * **the production search's shoulder rule decides on the shipped ground**:
+///   the diagonals (140, 118) → (141, 119) (33 per cent) and (148, 118) →
+///   (147, 119) (flat) are each inside a tank's 45 and refused only because a
+///   shoulder is a 70 per cent rim, so a tracked `path_with` goes round and a
+///   legged one (70) takes the one diagonal step; the corner (147, 118) →
+///   (148, 119) rises 800 (56.6 per cent), past a tank's own limit and not a
+///   walker's;
+/// * and a **routeless** reflex tank steered at the face is held by
+///   `first_step_is_open`, which is 16b cut Q.7's cliff test: slope refusals
+///   counted, no `blocked` line, and an empty avoid list — `note_blocked`
+///   records nothing for a slope, so the openness test is the whole of the
+///   machine's cliff memory.
+#[test]
+fn ae1_the_bluff_refuses_a_tank_and_a_car_and_admits_a_walker_on_the_shipped_ground() {
+    use tacsim::arena::CostRow;
+    use tacsim::arena::motion::BlockedCause;
+
+    let tw = mush_testkit::TestWorld::with_modules(x6_production_roster());
+    let shipped =
+        tacsim::match_::definition_for(tw.world(), &SmolStr::new(tacsim::match_::PROVING_GROUND))
+            .expect("the proving ground's ground builds")
+            .expect("the proving ground is shipped");
+    let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let terrain = shipped.terrain.clone();
+    assert_eq!(terrain.get(141, 111).map(|cell| cell.elev_cm), Some(500));
+    assert_eq!(terrain.get(140, 111).map(|cell| cell.elev_cm), Some(-200));
+
+    // The pilot-driven tank at the west face.
+    let at_face = |entry: &str| {
+        let mut arena = arena_over(
+            &catalog,
+            vec![blind(unit_of(&catalog, entry, RED, Team::Red, (138, 111)))],
+            shipped.clone(),
+            &ArenaConfig::default(),
+        );
+        let top = arena.unit(RED).map_or(0, |unit| {
+            i32::try_from(unit.mobility.max_speed_cms).unwrap_or(0)
+        });
+        under_way(&mut arena, RED, 90_000, top);
+        arena
+    };
+    let mut arena = at_face(content::LINE_TANK);
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    run_logged(&mut arena, &mut wall, 500, 20, &mut bytes);
+    let events = ledger_of(&mut arena, &mut bytes);
+    assert_eq!(
+        blocked_with_cause(&events, RED),
+        vec![(141, 111, BlockedCause::TooSteep)],
+        "one stop, the slope's own"
+    );
+    assert_eq!(standing(&arena, RED).0, (140, 111));
+    let mut arena = at_face(content::LINE_TANK);
+    let mut wall = 0_i64;
+    let told = run_heard(&mut arena, &mut wall, 500, 20, mush_core::ObjId(1_000));
+    assert_eq!(
+        told.iter()
+            .filter(|line| line.starts_with("Held:"))
+            .collect::<Vec<&String>>(),
+        vec![&"Held: the slope ahead is too steep for the tank.".to_owned()],
+        "{told:?}"
+    );
+
+    // The scout car at the same face: the same cell, the same cause, its own
+    // row's limit, and the tank's sentence (the cockpit's word names no
+    // chassis).
+    let mut arena = at_face(content::SCOUT_MK1);
+    assert_eq!(
+        arena
+            .unit(RED)
+            .map(|unit| (unit.cost_row, unit.slope_limit_pct)),
+        Some((CostRow::Wheeled, Some(25)))
+    );
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    run_logged(&mut arena, &mut wall, 500, 20, &mut bytes);
+    let events = ledger_of(&mut arena, &mut bytes);
+    assert_eq!(
+        blocked_with_cause(&events, RED),
+        vec![(141, 111, BlockedCause::TooSteep)],
+        "the car's one stop, the slope's own"
+    );
+    assert_eq!(standing(&arena, RED).0, (140, 111));
+    let mut arena = at_face(content::SCOUT_MK1);
+    let mut wall = 0_i64;
+    let told = run_heard(&mut arena, &mut wall, 500, 20, mush_core::ObjId(1_000));
+    assert_eq!(
+        told.iter()
+            .filter(|line| line.starts_with("Held:"))
+            .collect::<Vec<&String>>(),
+        vec![&"Held: the slope ahead is too steep for the tank.".to_owned()],
+        "{told:?}"
+    );
+
+    // Row 120's east flank: a tank takes it, a car is refused it.
+    assert_eq!(terrain.get(147, 120).map(|cell| cell.elev_cm), Some(-300));
+    assert_eq!(terrain.get(146, 120).map(|cell| cell.elev_cm), Some(40));
+    let at_flank = |entry: &str| {
+        let mut arena = arena_over(
+            &catalog,
+            vec![blind(unit_of(&catalog, entry, RED, Team::Red, (150, 120)))],
+            shipped.clone(),
+            &ArenaConfig::default(),
+        );
+        let top = arena.unit(RED).map_or(0, |unit| {
+            i32::try_from(unit.mobility.max_speed_cms).unwrap_or(0)
+        });
+        under_way(&mut arena, RED, 270_000, top);
+        let mut wall = 0_i64;
+        let mut bytes: Vec<u8> = Vec::new();
+        run_logged(&mut arena, &mut wall, 500, 12, &mut bytes);
+        let events = ledger_of(&mut arena, &mut bytes);
+        (blocked_with_cause(&events, RED), standing(&arena, RED).0)
+    };
+    let (stops, (x, y)) = at_flank(content::LINE_TANK);
+    assert!(
+        stops.is_empty(),
+        "the tank was refused the flank: {stops:?}"
+    );
+    assert!(
+        y == 120 && x <= 145,
+        "the tank is on the ramp's foot, west of the flank: ({x}, {y})"
+    );
+    let (stops, cell) = at_flank(content::SCOUT_MK1);
+    assert_eq!(
+        stops,
+        vec![(146, 120, BlockedCause::TooSteep)],
+        "the car's one stop is the flank"
+    );
+    assert_eq!(cell, (147, 120));
+
+    // The walker climbs it and stands on the top.
+    let mut arena = at_face(content::BIPED_MK1);
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.cost_row),
+        Some(CostRow::Legged)
+    );
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut highest = i32::MIN;
+    for _ in 0..16 {
+        run_logged(&mut arena, &mut wall, 500, 1, &mut bytes);
+        highest = highest.max(arena.unit(RED).map_or(i32::MIN, |unit| unit.pose.z_cm));
+    }
+    assert_eq!(highest, 500, "the walker stood on the top");
+    let events = ledger_of(&mut arena, &mut bytes);
+    assert!(
+        blocked_with_cause(&events, RED).is_empty(),
+        "and was refused nothing"
+    );
+
+    // The tank's route to the top goes up the ramp, and every edge of it passes
+    // the hand walk.
+    let limit = tracked_limit();
+    let start = (144_u16, 125_u16);
+    let goal = (144_u16, 111_u16);
+    let route = tacsim::arena::path_with(
+        &terrain,
+        &mut tacsim::arena::PathScratch::default(),
+        start,
+        goal,
+        65_536,
+        terrain.min_cost(CostRow::Tracked),
+        Some(limit),
+        CostRow::Tracked,
+        &[],
+    )
+    .expect("the ramp is a way up");
+    assert!(
+        route
+            .cells
+            .iter()
+            .any(|&(x, y)| y == 120 && (141..=146).contains(&x))
+            && route
+                .cells
+                .iter()
+                .any(|&(x, y)| y == 119 && (141..=146).contains(&x)),
+        "the route takes the ramp: {:?}",
+        route.cells
+    );
+    let cell_cm = u32::from(terrain.cell_cm());
+    let mut walked = vec![start];
+    walked.extend(route.cells.iter().copied());
+    for pair in walked.windows(2) {
+        let (Some(from), Some(to)) = (pair.first().copied(), pair.get(1).copied()) else {
+            continue;
+        };
+        let (Some(here), Some(there), Some(kind)) = (
+            terrain.get(from.0, from.1),
+            terrain.get(to.0, to.1),
+            tacsim::arena::slope::step_kind(from, to),
+        ) else {
+            panic!("{from:?} -> {to:?} is not a step");
+        };
+        assert!(
+            !tacsim::arena::slope::too_steep(
+                Some(limit),
+                tacsim::arena::slope::steepness_pct(here, there, kind, cell_cm)
+            ),
+            "{from:?} -> {to:?} is past the limit"
+        );
+        if kind == mush_atlas::physics::StepKind::Diagonal {
+            assert!(
+                !shoulder_refused(&terrain, limit, from, to),
+                "a shoulder of {from:?} -> {to:?} is past the limit"
+            );
+        }
+    }
+
+    // The production search's shoulder rule, on the shipped ground: two
+    // diagonals inside a tank's limit that only a rim shoulder refuses, and the
+    // 800 cm corner, which a tank's own limit refuses. Each is one step for a
+    // walker and a way round for a tank.
+    let one_step = |from: (u16, u16), to: (u16, u16), limit: u32, row: CostRow| {
+        tacsim::arena::path_with(
+            &terrain,
+            &mut tacsim::arena::PathScratch::default(),
+            from,
+            to,
+            65_536,
+            terrain.min_cost(row),
+            Some(limit),
+            row,
+            &[],
+        )
+        .map(|found| found.cells)
+    };
+    let diagonal_pct = |from: (u16, u16), to: (u16, u16)| {
+        let (Some(here), Some(there)) = (terrain.get(from.0, from.1), terrain.get(to.0, to.1))
+        else {
+            panic!("{from:?} -> {to:?} is off the window");
+        };
+        tacsim::arena::slope::steepness_pct(
+            here,
+            there,
+            mush_atlas::physics::StepKind::Diagonal,
+            cell_cm,
+        )
+    };
+    for (from, to) in [
+        ((140_u16, 118_u16), (141_u16, 119_u16)),
+        ((148, 118), (147, 119)),
+    ] {
+        assert!(
+            !tacsim::arena::slope::too_steep(Some(limit), diagonal_pct(from, to)),
+            "{from:?} -> {to:?} is inside a tank's limit on its own"
+        );
+        assert!(
+            shoulder_refused(&terrain, limit, from, to),
+            "and a shoulder of it is a rim"
+        );
+        let tank = one_step(from, to, limit, CostRow::Tracked).expect("a tank's way round");
+        assert_ne!(
+            tank,
+            vec![to],
+            "the tank's search took the diagonal {from:?} -> {to:?} past its rim shoulder"
+        );
+        assert_eq!(tank.last(), Some(&to));
+        assert_eq!(
+            one_step(from, to, 70, CostRow::Legged),
+            Ok(vec![to]),
+            "the walker's search takes {from:?} -> {to:?} in one step"
+        );
+    }
+    assert!(tacsim::arena::slope::too_steep(
+        Some(limit),
+        diagonal_pct((147, 118), (148, 119))
+    ));
+    assert_ne!(
+        one_step((147, 118), (148, 119), limit, CostRow::Tracked),
+        Ok(vec![(148, 119)]),
+        "the 800 cm corner is no step for a tank"
+    );
+    assert_eq!(
+        one_step((147, 118), (148, 119), 70, CostRow::Legged),
+        Ok(vec![(148, 119)]),
+        "and one for a walker"
+    );
+
+    // The routeless machine, held at the face by the one-cell test.
+    let mut definition = shipped.clone();
+    definition.waypoints = relief_waypoint(goal);
+    let cfg = ArenaConfig {
+        reflex: tacsim::config::ReflexConfig {
+            // A search that cannot finish, so the machine steers straight at
+            // the node on the top with no route at all.
+            path_max_cells: 1,
+            ..tacsim::config::ReflexConfig::default()
+        },
+        ..ArenaConfig::default()
+    };
+    let mut arena = arena_over(
+        &catalog,
+        vec![under_reflex(blind(unit_of(
+            &catalog,
+            content::LINE_TANK,
+            RED,
+            Team::Red,
+            (130, 111),
+        )))],
+        definition,
+        &cfg,
+    );
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    let counters = run_logged(&mut arena, &mut wall, 500, 120, &mut bytes);
+    let events = ledger_of(&mut arena, &mut bytes);
+    assert!(
+        counters.path_failures > 0,
+        "the search never failed, so the machine was never routeless"
+    );
+    assert!(
+        counters.slope_refusals > 0,
+        "the one-cell test never refused the face"
+    );
+    assert!(
+        blocked_with_cause(&events, RED).is_empty(),
+        "the routeless machine was refused at the face: {:?}",
+        blocked_with_cause(&events, RED)
+    );
+    let (cell, z, _) = standing(&arena, RED);
+    assert!(
+        cell.0 <= 140 && z < 500,
+        "the machine got onto the top: {cell:?} at {z} cm"
+    );
+    assert_eq!(
+        arena.reflex.unit(RED).map(|row| row.avoid.is_empty()),
+        Some(true),
+        "a slope teaches the avoid list nothing"
+    );
+}
+
+/// **The reflex steers each machine on its own row, at every cadence** (16b cut
+/// AE.1; 16c `B-58`; 16b §11's cross-tempo property for the machine's half of
+/// the cut).
+///
+/// Every earlier AE.1 test that drives a machine drives a tank, so this one is
+/// the controller's own proof that it reads the unit's row — in the search, in
+/// the heuristic's scale, and in the routeless follower's openness tests
+/// (`first_step_is_open`, `way_ahead_is_open`). On level windows priced per row
+/// (`ArenaTerrain::priced`), each machine patrolling at one node at (40, 3):
+///
+/// * **routed**, the doctrine `x6_the_route_goes_round_what_motion_refuses`
+///   runs its edges on (think every 250 ms, re-plan whenever the route is
+///   gone) and the nimble helm: a walker plans *through* a thick-woods band
+///   across the whole window, which a tank's row has no route over at all; and
+///   a car plans *round* a rubble box by the gap on rows 6 and 7 (a road on row
+///   7): rubble is no ground of its row, so its route never enters a cell
+///   motion would refuse it. Neither search fails and neither machine is
+///   stopped;
+/// * **routeless** (`path_max_cells` 1, so every search fails on its budget and
+///   the machine steers straight at the node): the walker's one-cell test lets
+///   it into the woods and it walks through them; the car's refuses it the
+///   rubble wall across the window, so it is held short of it — no `blocked`
+///   line, and an empty avoid list;
+/// * and the car's first search expands exactly what `path_with` expands at
+///   the **wheeled** row's own scale (80, the road), which is not what it
+///   expands at the tracked 100 — the reflex scales its heuristic on the unit's
+///   row.
+///
+/// Each of the four scenes is replayed at 5,000, 1,000 and 500 ms, and the
+/// three replays are one event list, one hash sequence and one set of finals.
+#[test]
+fn ae1_a_machine_walker_and_a_machine_car_steer_on_their_own_rows_at_every_cadence() {
+    use tacsim::arena::CostRow;
+    const UNTIL: i64 = 60_000;
+
+    let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let routed = ArenaConfig {
+        reflex: tacsim::config::ReflexConfig {
+            decide_ms: 250,
+            repath_ms: 0,
+            ..tacsim::config::ReflexConfig::default()
+        },
+        ..ArenaConfig::default()
+    };
+    let routeless = ArenaConfig {
+        reflex: tacsim::config::ReflexConfig {
+            path_max_cells: 1,
+            ..tacsim::config::ReflexConfig::default()
+        },
+        ..ArenaConfig::default()
+    };
+    let woods: &[PricedBox] = &[((20, 27, 0, 7), TerrainClass::WoodsHeavy)];
+    let rubble_box: &[PricedBox] = &[
+        ((20, 27, 0, 5), TerrainClass::Rubble),
+        ((0, 47, 7, 7), TerrainClass::Road),
+    ];
+    let rubble_wall: &[PricedBox] = &[((20, 27, 0, 7), TerrainClass::Rubble)];
+    let start = (2_u16, 3_u16);
+    let node = (40_u16, 3_u16);
+    let open = |entry: &str, paint: &[PricedBox], cfg: &ArenaConfig| {
+        let mut definition = priced_window(paint);
+        definition.waypoints = relief_waypoint(node);
+        arena_over(
+            &catalog,
+            vec![nimble(under_reflex(blind(unit_of(
+                &catalog,
+                entry,
+                RED,
+                Team::Red,
+                start,
+            ))))],
+            definition,
+            cfg,
+        )
+    };
+
+    // One scene at three cadences: the same history, and where it ended.
+    let three = |entry: &str, paint: &[PricedBox], cfg: &ArenaConfig, row: CostRow| {
+        let mut runs: Vec<(i64, ReliefReplay, (u16, u16), bool)> = Vec::new();
+        for cadence in [5_000_i64, 1_000, 500] {
+            let mut arena = open(entry, paint, cfg);
+            assert_eq!(arena.unit(RED).map(|unit| unit.cost_row), Some(row));
+            let run = relief_replay(&mut arena, RED, cadence, UNTIL, &[]);
+            assert_eq!(arena.now_ms, UNTIL, "cadence {cadence} ran short");
+            let avoid_empty = arena
+                .reflex
+                .unit(RED)
+                .is_some_and(|machine| machine.avoid.is_empty());
+            runs.push((cadence, run, standing(&arena, RED).0, avoid_empty));
+        }
+        let Some((_, first, cell, avoid_empty)) = runs.first() else {
+            panic!("three replays");
+        };
+        for (cadence, run, _, _) in runs.iter().skip(1) {
+            assert_eq!(
+                run.events, first.events,
+                "{entry}: the event list differs at {cadence} ms"
+            );
+            assert_eq!(
+                run.hashes,
+                first.hashes,
+                "{entry}: the per-substep hash sequence differs at {cadence} ms ({} against {})",
+                run.hashes.len(),
+                first.hashes.len()
+            );
+            assert_eq!(
+                run.finals, first.finals,
+                "{entry}: a final pose, z, grade or speed differs at {cadence} ms"
+            );
+        }
+        let stops = first
+            .events
+            .iter()
+            .filter(|(_, kind, _, _)| kind.starts_with("{\"kind\":\"blocked\""))
+            .count();
+        (
+            first.reflex.path_queries,
+            first.reflex.path_failures,
+            stops,
+            *cell,
+            *avoid_empty,
+        )
+    };
+
+    // Routed: the walker plans through the woods.
+    let (queries, failures, stops, cell, _) =
+        three(content::BIPED_MK1, woods, &routed, CostRow::Legged);
+    assert!(queries > 0, "the walker asked for no route");
+    assert_eq!(
+        failures, 0,
+        "the walker's search found no way over the woods"
+    );
+    assert_eq!(stops, 0, "the walker was stopped");
+    assert!(
+        cell.0 >= 28,
+        "the walker never got past the woods: {cell:?}"
+    );
+
+    // Routed: the car plans round the rubble.
+    let (queries, failures, stops, cell, _) =
+        three(content::SCOUT_MK1, rubble_box, &routed, CostRow::Wheeled);
+    assert!(queries > 0, "the car asked for no route");
+    assert_eq!(
+        failures, 0,
+        "the car's search found no way round the rubble"
+    );
+    assert_eq!(stops, 0, "the car's route took it into the rubble");
+    assert!(cell.0 >= 28, "the car never got past the rubble: {cell:?}");
+
+    // Routeless: the walker's one-cell test lets it into the woods.
+    let (_, failures, stops, cell, _) =
+        three(content::BIPED_MK1, woods, &routeless, CostRow::Legged);
+    assert!(failures > 0, "the walker was never routeless");
+    assert_eq!(stops, 0, "the routeless walker was stopped");
+    assert!(
+        cell.0 >= 28,
+        "the routeless walker was held at the woods: {cell:?}"
+    );
+    // And it is never held on the way: the look-ahead (`way_ahead_is_open`)
+    // asks every cell within the walker's stopping distance on the walker's
+    // row, so it slows for the woods once, on the ground's own price, and walks
+    // through them at `1,000 × 100 / 200`. Asked on a tank's row, the woods two
+    // cells ahead hold it, it brakes, is let go, speeds up and is held again.
+    let mut arena = open(content::BIPED_MK1, woods, &routeless);
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    let near = speeds_in(&mut arena, &mut wall, 120, RED, 14..=19, &mut bytes);
+    let mut arena = open(content::BIPED_MK1, woods, &routeless);
+    let mut wall = 0_i64;
+    let deep = speeds_in(&mut arena, &mut wall, 120, RED, 22..=26, &mut bytes);
+    assert!(
+        !near.is_empty() && !deep.is_empty(),
+        "the routeless walker never came up to the woods and through them"
+    );
+    assert!(
+        near.windows(2)
+            .all(|pair| pair.get(1).copied() <= pair.first().copied()),
+        "the routeless walker was held short of the woods and let go: {near:?}"
+    );
+    assert!(
+        deep.iter().all(|speed| *speed == 1_000 * 100 / 200),
+        "the routeless walker was held in the woods: {deep:?}"
+    );
+
+    // Routeless: the car's refuses it the rubble, and it is held short of it.
+    let (_, failures, stops, cell, avoid_empty) = three(
+        content::SCOUT_MK1,
+        rubble_wall,
+        &routeless,
+        CostRow::Wheeled,
+    );
+    assert!(failures > 0, "the car was never routeless");
+    assert_eq!(stops, 0, "the routeless car drove into the rubble");
+    assert!(
+        cell.0 > start.0 && cell.0 < 20,
+        "the routeless car is not held short of the rubble: {cell:?}"
+    );
+    assert!(avoid_empty, "a held car learnt a stop it never had");
+
+    // The heuristic's scale: the car's first search, from its opening cell,
+    // expands what the wheeled row's own scale expands and not what the
+    // tracked row's would.
+    let definition = {
+        let mut definition = priced_window(rubble_box);
+        definition.waypoints = relief_waypoint(node);
+        definition
+    };
+    let terrain = definition.terrain.clone();
+    assert_eq!(
+        (
+            terrain.min_cost(CostRow::Tracked),
+            terrain.min_cost(CostRow::Wheeled)
+        ),
+        (100, 80)
+    );
+    let expanded = |scale: u32| {
+        tacsim::arena::path_with(
+            &terrain,
+            &mut tacsim::arena::PathScratch::default(),
+            start,
+            node,
+            tacsim::config::ReflexConfig::default().path_max_cells,
+            scale,
+            Some(25),
+            CostRow::Wheeled,
+            &[],
+        )
+        .map(|found| u64::from(found.expanded))
+        .expect("the car's route round the rubble")
+    };
+    let (own, tracked) = (expanded(80), expanded(100));
+    assert_ne!(
+        own, tracked,
+        "the two scales expand alike here, so this window cannot tell them apart"
+    );
+    let mut arena = open(content::SCOUT_MK1, rubble_box, &ArenaConfig::default());
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut first = None;
+    // The machine starts its engine first (ten seconds), and searches once it
+    // is online, from the cell it opened on.
+    for _ in 0..60 {
+        let counters = run_logged(&mut arena, &mut wall, 500, 1, &mut bytes);
+        if counters.path_queries > 0 {
+            first = Some(counters);
+            break;
+        }
+    }
+    let first = first.expect("the car searched within thirty seconds");
+    assert_eq!(
+        standing(&arena, RED).0,
+        start,
+        "it searched from its opening cell"
+    );
+    assert_eq!(first.path_queries, 1, "one search in the pulse");
+    assert_eq!(
+        first.path_cells, own,
+        "the reflex scaled the car's search on another row's cheapest cell"
+    );
 }

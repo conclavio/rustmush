@@ -329,6 +329,9 @@ pub fn place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     "Cell ({x}, {y}) is off the arena window."
                 )));
             }
+            // 16b cut AE.1: the tracked reading, on purpose — this world-side
+            // precheck knows no unit's row; the arena refuses the row's own case
+            // (`Arena::place_refusal`, `impassable`) when the place lands.
             if !ground.terrain.has_way_out(x, y) {
                 return Err(CmdError::msg(format!(
                     "Cell ({x}, {y}) is impassable, or has no way out."
@@ -863,6 +866,9 @@ pub fn pose(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "Cell ({x}, {y}) is off the arena window."
         )));
     }
+    // 16b cut AE.1: the tracked reading, on purpose — this precheck knows no
+    // unit's row; `opening_pose` judges the override on the unit's own row at
+    // the start and falls back to the zone when that row cannot use it.
     if !definition.terrain.has_way_out(x, y) {
         return Err(CmdError::msg(format!(
             "Cell ({x}, {y}) is impassable, or has no way out."

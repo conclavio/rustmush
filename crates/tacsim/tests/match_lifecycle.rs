@@ -1497,8 +1497,9 @@ async fn q8_sim_unit_lists_selects_and_clears_a_choice() {
     let said = rig.say(0, "sim unit");
     assert!(
         said.contains(
-            "Fieldable units: biped_mk1, line_tank, line_tank_eccm, line_tank_ecm, \
-             line_tank_laser, line_tank_thermal, target_mk1. Yours: line_tank."
+            "Fieldable units: biped_mk1, biped_mk2, heavy_mk1, line_tank, line_tank_eccm, \
+             line_tank_ecm, line_tank_laser, line_tank_thermal, scout_mk1, target_mk1. \
+             Yours: line_tank."
         ),
         "{said}"
     );
@@ -4355,6 +4356,100 @@ async fn u4_arena_pose_opens_a_slot_on_its_cell_for_the_next_match_and_no_later(
     assert!(said.contains("No opening cell is overridden."), "{said}");
 }
 
+/// **A scout car posed on rubble opens in its zone, and the match starts** (16b
+/// cut AE.1; 16c `B-58` and `T-14`).
+///
+/// `@arena/pose`'s world-side precheck knows no unit's row, so it asks the
+/// tracked one (`ArenaTerrain::has_way_out`), and rubble is a tank's ground: the
+/// override is set. The row is asked where the unit is known — `match_::start`
+/// reads the fielded unit's own row (`CostRow::read`) and hands it to
+/// `opening_pose`, which finds the cell no ground for a car and walks red's
+/// entry zone instead, exactly as it does for a cell somebody else took. Asked
+/// as a tank, the pose would have been kept and `Arena::new` would have refused
+/// the car `CellImpassable`: no match at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ae1_a_scout_car_posed_on_rubble_opens_in_its_zone_and_the_match_starts() {
+    use tacsim::arena::CostRow;
+
+    let mut rig = Rig::boot(2);
+    rig.tick_to(1);
+    let definition = match_::definition_for(
+        rig.tw.world(),
+        &smol_str::SmolStr::new_static(match_::CENTRE_ARENA),
+    )
+    .expect("the centre's ground builds")
+    .expect("the centre's arena");
+    // The shipped rubble patch, which the world-side precheck admits and a car
+    // cannot stand on.
+    let rubble = (106_u16, 66_u16);
+    assert_eq!(
+        definition
+            .terrain
+            .get(rubble.0, rubble.1)
+            .map(|cell| cell.class),
+        Some(mush_atlas::TerrainClass::Rubble)
+    );
+    assert!(definition.terrain.has_way_out(rubble.0, rubble.1));
+    assert!(
+        !definition
+            .terrain
+            .has_way_out_for(CostRow::Wheeled, rubble.0, rubble.1)
+    );
+    let said = rig.staff("@arena/pose RA=106 66");
+    assert!(
+        said.contains("RA opens at cell (106, 66) heading 90 for the next match."),
+        "{said}"
+    );
+
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    let said = rig.say(0, "sim unit scout_mk1");
+    assert!(said.contains("Slot red 1 will field scout_mk1."), "{said}");
+    let said = rig.say(0, "sim start");
+    assert!(
+        said.contains("Match 1 is boarding."),
+        "the start was refused: {said}"
+    );
+    for (n, entry) in [(0, match_::RED_ROOM_ENTRY), (1, match_::BLUE_ROOM_ENTRY)] {
+        let room = match_::centre_object(rig.tw.world(), entry).expect("a team room");
+        let pilot = rig.pilot(n);
+        rig.tw
+            .world_mut()
+            .move_to(pilot, room)
+            .expect("a pilot walks into their team room");
+        let said = rig.say(n, "board");
+        assert!(said.contains("climb into"), "{said}");
+    }
+    assert_eq!(
+        rig.state(),
+        MatchState::Running,
+        "the arena refused the check-out"
+    );
+    assert_eq!(
+        tank_schema(&rig, Team::Red, 1),
+        "tacsim.unit.scout_mk1",
+        "red 1 fields the car"
+    );
+
+    let ((x, y), heading) = opening_of_red_one(&mut rig).await;
+    assert_ne!((x, y), (106, 66), "the car opened on rubble");
+    let zone = definition
+        .entry_zones
+        .iter()
+        .find(|zone| zone.team == Team::Red)
+        .expect("red's entry zone");
+    let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+        panic!("the car opened off the window: ({x}, {y})");
+    };
+    assert!(
+        (zone.x0..=zone.x1).contains(&x) && (zone.y0..=zone.y1).contains(&y),
+        "the car opened outside red's zone: ({x}, {y})"
+    );
+    assert!(definition.terrain.has_way_out_for(CostRow::Wheeled, x, y));
+    assert_eq!(heading, 90_000, "red's own facing");
+    rig.end_match(tacsim::arena::EndReason::Abort);
+}
+
 // ---------------------------------------------------------------------------
 // 16b cut V.2 — the result names every unit and counts its tape
 // ---------------------------------------------------------------------------
@@ -5139,13 +5234,14 @@ async fn z3_a_version_two_arena_is_four_a_side_until_it_takes_version_three() {
         support::take_from_shelf(&mut rig.tw, GOD, "tacsim.pack.proving_ground");
     // 16b cut O.1: the shipped arena is version 4, so the version 2 world
     // takes version 4 in one step (the four tanks are Z.3's, the Hold
-    // declaration O.1's).
+    // declaration O.1's) — and version 5 since 16b cut AE.1 (The Bluff's key
+    // spot).
     assert!(
-        planned.contains("Plan for tacsim.pack.proving_ground@4: 0 create, 1 update, 0 retire"),
+        planned.contains("Plan for tacsim.pack.proving_ground@5: 0 create, 1 update, 0 retire"),
         "{planned}"
     );
     assert!(
-        applied.contains("Applied tacsim.pack.proving_ground@4"),
+        applied.contains("Applied tacsim.pack.proving_ground@5"),
         "{applied}"
     );
     assert!(!applied.contains("STOPPED"), "{applied}");
@@ -5306,15 +5402,16 @@ async fn z3_the_arena_pack_is_on_the_shelf() {
 // 16b cut O.1 — a standing world takes the Hold declaration
 // ---------------------------------------------------------------------------
 
-/// **A world booted at the arena's version 3 reads Hold at once and takes
-/// version 4 from the shelf** (16b cut O.1; `deploy/README.md`'s shelf
+/// **A world booted at the arena's version 3 reads Hold at once and takes the
+/// shipped version from the shelf** (16b cut O.1; `deploy/README.md`'s shelf
 /// paragraph). The arena catalog is compiled in and rebuilt at every boot, so
 /// `SIM MODE` lists `hold` and accepts it before the pack is taken; the shelf
 /// then plans the arena entry as one update, applies it with the centre idle,
 /// adopts the twelve standing tanks by roster and remakes none, and moves the
-/// latch to 4.
+/// latch to the shipped version — 4 at O.1, **5 since 16b cut AE.1**, which is
+/// one step from 3 as it was from 2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn o1_a_version_three_world_reads_hold_at_once_and_takes_version_four() {
+async fn o1_a_version_three_world_reads_hold_at_once_and_takes_version_five() {
     let mut rig = Rig::boot_on(
         1,
         support::roster_booting(fill_config(), support::boot_packs_at_arena_v3(true)),
@@ -5364,15 +5461,15 @@ async fn o1_a_version_three_world_reads_hold_at_once_and_takes_version_four() {
     let (planned, applied) =
         support::take_from_shelf(&mut rig.tw, GOD, "tacsim.pack.proving_ground");
     assert!(
-        planned.contains("Plan for tacsim.pack.proving_ground@4: 0 create, 1 update, 0 retire"),
+        planned.contains("Plan for tacsim.pack.proving_ground@5: 0 create, 1 update, 0 retire"),
         "{planned}"
     );
     assert!(
-        applied.contains("Applied tacsim.pack.proving_ground@4"),
+        applied.contains("Applied tacsim.pack.proving_ground@5"),
         "{applied}"
     );
     assert!(!applied.contains("STOPPED"), "{applied}");
-    assert_eq!(latch(&rig), Some(4));
+    assert_eq!(latch(&rig), Some(5));
     for (team, index, tank, cell) in &before {
         assert_eq!(
             match_::tank_for_slot(rig.tw.world(), *team, *index),
@@ -5583,3 +5680,215 @@ async fn o3_a_range_every_shooter_left_ends_itself_after_the_interval() {
         "{history}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut AE.1 — a standing world takes The Bluff
+// ---------------------------------------------------------------------------
+
+/// **A world at the atlas's version 1 and the arena's version 4 takes The Bluff
+/// from the shelf** (16b cut AE.1; `deploy/README.md`'s shelf paragraph, whose
+/// quoted plan line this pins).
+///
+/// The arena catalog is compiled in and rebuilt at every boot, so before either
+/// pack is taken `SIM UNIT` already lists the ten fieldable types and the
+/// definition a start would build already carries five key spots, the fifth
+/// lettered `F` — `VIEW`'s legend and its off-window line, rendered from that
+/// definition by the cockpit's own functions, both name `F The Bluff` — over
+/// flat ground, because the ground is the atlas pack's.
+/// Then, with the centre idle, the atlas plan for `tacsim.proving_ground` is one
+/// update and nothing else — `field.q1_0`, the quadrant the bluff stands in —
+/// and its apply replaces that heightfield in place; the arena plan is one
+/// update, and its apply moves the latch to 5 and adopts the twelve standing
+/// tanks by roster, remaking none (each slot's object is the one it had, and
+/// the world still carries twelve units). The definition the next start builds stands
+/// the top of The Bluff at 500 cm.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ae1_a_version_four_world_takes_the_bluff_from_the_shelf() {
+    let mut rig = Rig::boot_on(
+        1,
+        support::roster_booting(fill_config(), support::boot_packs_at_arena_v4(true)),
+    );
+    let latch = |rig: &Rig, pack: &str| {
+        rig.tw
+            .world()
+            .module_state::<mush_content::ContentState>()
+            .expect("content")
+            .latches
+            .applied(&mush_core::CanonicalId::new(pack).expect("an id"))
+            .map(mush_content::Applied::version)
+    };
+    let arena_pack = tacsim::definitions::content::PROVING_GROUND_PACK;
+    let atlas_pack = tacsim::definitions::content::PROVING_GROUND_ATLAS_PACK;
+    assert_eq!(
+        latch(&rig, arena_pack),
+        Some(4),
+        "the arena stands at version 4"
+    );
+    assert_eq!(
+        latch(&rig, atlas_pack),
+        Some(1),
+        "and the ground at version 1"
+    );
+    let next_ground = |rig: &Rig| {
+        match_::definition_for(
+            rig.tw.world(),
+            &smol_str::SmolStr::new(match_::PROVING_GROUND),
+        )
+        .expect("the proving ground's ground builds")
+        .expect("the proving ground is shipped")
+    };
+
+    // Compiled in: the ten types, and the fifth spot over flat ground.
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim unit");
+    assert!(
+        said.contains(
+            "Fieldable units: biped_mk1, biped_mk2, heavy_mk1, line_tank, line_tank_eccm, \
+             line_tank_ecm, line_tank_laser, line_tank_thermal, scout_mk1, target_mk1."
+        ),
+        "{said}"
+    );
+    rig.say(0, "sim leave");
+    assert_eq!(rig.state(), MatchState::Idle);
+    let before = next_ground(&rig);
+    assert_eq!(before.key_spots.len(), 5, "the catalog's five spots");
+    let fifth = before.key_spots.get(4).expect("the fifth spot");
+    assert_eq!(
+        (fifth.name.as_str(), fifth.x, fifth.y),
+        ("The Bluff", 144, 111)
+    );
+    assert_eq!(match_::cockpit::spot_letter(4), Some('F'));
+    // And what `VIEW` draws of it, rendered from that very definition by the
+    // cockpit's own two functions: a window over the whole ground puts `F` in
+    // the legend as The Bluff, and the red muster's window (x 0..38, which
+    // draws none of the five) names it last on its off-window line — 138 cells
+    // east and 14 north of (6, 97), 1390 m at 084°.
+    let (_, legend, drawn) = match_::cockpit::spot_markers(&before.key_spots, (0, 0), (256, 256));
+    assert!(
+        legend.contains(&serde_json::json!(["F", "The Bluff"])),
+        "the legend does not letter the fifth spot: {legend:?}"
+    );
+    assert_eq!(
+        drawn,
+        vec![0, 1, 2, 3, 4],
+        "every spot is on the whole ground"
+    );
+    let mut muster = mush_sim::data::Pose::at(
+        6 * 1_000 + 500,
+        97 * 1_000 + 500,
+        0,
+        mush_sim::data::passive_rules_value(serde_json::json!({})).expect("an empty posture blob"),
+    );
+    muster.heading_mdeg = 90_000;
+    let off_window = match_::cockpit::off_window_spots_line(
+        &before.key_spots,
+        &[],
+        &muster,
+        before.terrain.cell_cm(),
+    )
+    .expect("the red muster's window draws no spot");
+    assert!(
+        off_window.ends_with("; F The Bluff, 1390 m at 084°."),
+        "{off_window}"
+    );
+    assert_ne!(
+        before.terrain.get(144, 111).map(|cell| cell.elev_cm),
+        Some(500),
+        "the ground under F is still version 1's"
+    );
+
+    // A slot, its tank, and the tank's `(x_cm, y_cm, heading_mdeg)`.
+    type Standing = (Team, u8, ObjId, (i64, i64, u32));
+    let standing: Vec<Standing> = Team::ALL
+        .into_iter()
+        .flat_map(|team| (1..=match_::PODS_PER_SIDE).map(move |index| (team, index)))
+        .map(|(team, index)| {
+            let tank = match_::tank_for_slot(rig.tw.world(), team, index).expect("a v4 slot");
+            let (_, pose) = mush_sim::pose_of(rig.tw.world(), tank).expect("placed");
+            (team, index, tank, (pose.x_cm, pose.y_cm, pose.heading_mdeg))
+        })
+        .collect();
+    assert_eq!(standing.len(), 12, "version 4 made twelve tanks");
+    // Every object that carries a tactical unit: on this world, the twelve
+    // stock tanks and nothing else, so "none remade" is a count as well as an
+    // object id a slot.
+    let units = |rig: &Rig| {
+        rig.tw
+            .world()
+            .iter()
+            .filter(|object| !object.flags.contains(mush_core::Flags::GOING))
+            .filter(|object| mush_tactics::module::unit_of(rig.tw.world(), object.id).is_some())
+            .count()
+    };
+    assert_eq!(units(&rig), 12, "twelve tanks and no other unit");
+
+    // The ground first: one update, the quadrant the bluff stands in.
+    let (planned, applied) = support::take_from_shelf(&mut rig.tw, GOD, atlas_pack);
+    assert!(
+        planned.contains(AE1_ATLAS_PLAN_LINE),
+        "the atlas plan is one update: {planned}"
+    );
+    assert!(
+        planned.contains(" update   field.q1_0 (heightfield)"),
+        "{planned}"
+    );
+    for quadrant in ["field.q0_0", "field.q0_1", "field.q1_1"] {
+        assert!(!planned.contains(quadrant), "{quadrant} moved: {planned}");
+    }
+    assert!(
+        applied.contains(&format!("Applied {atlas_pack}@2")),
+        "{applied}"
+    );
+    assert!(!applied.contains("STOPPED"), "{applied}");
+    assert_eq!(latch(&rig, atlas_pack), Some(2));
+
+    // Then the arena: one update, the latch to 5, the twelve adopted.
+    let (planned, applied) = support::take_from_shelf(&mut rig.tw, GOD, arena_pack);
+    assert!(
+        planned.contains("Plan for tacsim.pack.proving_ground@5: 0 create, 1 update, 0 retire"),
+        "{planned}"
+    );
+    assert!(
+        applied.contains("Applied tacsim.pack.proving_ground@5"),
+        "{applied}"
+    );
+    assert!(!applied.contains("STOPPED"), "{applied}");
+    assert_eq!(latch(&rig, arena_pack), Some(5));
+    assert_eq!(
+        rig.tw.world().refused_namespace_writes(),
+        Vec::new(),
+        "the two applies wrote across a namespace they may not"
+    );
+    assert_eq!(units(&rig), 12, "the arena apply made no thirteenth unit");
+    for (team, index, tank, cell) in &standing {
+        assert_eq!(
+            match_::tank_for_slot(rig.tw.world(), *team, *index),
+            Some(*tank),
+            "{} slot {index} kept its object",
+            team.as_str()
+        );
+        let (_, pose) = mush_sim::pose_of(rig.tw.world(), *tank).expect("placed");
+        assert_eq!(
+            (pose.x_cm, pose.y_cm, pose.heading_mdeg),
+            *cell,
+            "{} slot {index} stands where it stood",
+            team.as_str()
+        );
+    }
+
+    // The next start fights on The Bluff.
+    let after = next_ground(&rig);
+    assert_eq!(after.key_spots.len(), 5);
+    assert_eq!(
+        after.terrain.get(144, 111).map(|cell| cell.elev_cm),
+        Some(500)
+    );
+    assert_eq!(
+        after.terrain.get(144, 119).map(|cell| cell.elev_cm),
+        Some(270)
+    );
+}
+
+/// The atlas plan line `deploy/README.md` quotes (16b cut AE.1).
+const AE1_ATLAS_PLAN_LINE: &str =
+    "Plan for tacsim.proving_ground@2: 0 create, 1 update, 0 retire, 5 unchanged";

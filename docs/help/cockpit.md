@@ -225,11 +225,12 @@ names every spot the window could not draw, with its range and bearing:
 `Off the window: C North Barn, 1390 m at 045°; E East Compound, 2080 m at 075°.`
 
 **Named ground.** The proving ground is surveyed, so its named places are yours
-from the moment you board: `A` The Ford, `B` The Crossroads, `C` North Barn and
-`E` East Compound. `RANGE` and `BEARING` take a spot's name or its letter —
-`RANGE The Ford`, `BEARING c` — whether or not it is in sight, and `STATUS`
-names the one nearest you. A name is the whole name, in any case; a word that is
-neither a contact you hold nor a spot's name is `No such contact.`, as ever.
+from the moment you board: `A` The Ford, `B` The Crossroads, `C` North Barn,
+`E` East Compound and `F` The Bluff. `RANGE` and `BEARING` take a spot's name
+or its letter — `RANGE The Ford`, `BEARING c` — whether or not it is in sight,
+and `STATUS` names the one nearest you. A name is the whole name, in any case; a
+word that is neither a contact you hold nor a spot's name is `No such
+contact.`, as ever.
 Before the panel has told you anything a spot answers `The panel has told you
 nothing yet.`, because what is missing is where you are.
 

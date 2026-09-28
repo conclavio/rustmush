@@ -569,8 +569,15 @@ async fn d1_the_bare_reads_and_the_claim_line_on_a_server_that_fields_machines()
 
     // A non-lead who holds a slot reads both, and is refused the SET with its
     // own sentence — not `SIM START`'s.
-    let listing = ask(&mut bo, "SIM UNIT", "Fieldable units: ").await;
-    assert!(listing.contains("Yours: "), "{listing}");
+    // 16b cut AE.1: ten types wrap the sentence, so the needle is its tail —
+    // one taken from its opening could return before the wrapped rest has
+    // arrived — and it is read as one line.
+    let listing = ask(&mut bo, "SIM UNIT", "Yours:").await;
+    assert!(
+        one_line(&listing).contains("Fieldable units: "),
+        "{listing}"
+    );
+    assert!(one_line(&listing).contains("Yours: "), "{listing}");
     say(&mut bo, "SIM AI", "AI fill: ").await;
     say(
         &mut bo,

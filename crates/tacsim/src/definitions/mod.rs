@@ -642,6 +642,9 @@ pub struct Minter<'a> {
 /// it moves no other definition: a `DefinitionRef` digest is a function of its
 /// own `(owner, kind, id, version, payload, references)` and of nothing the
 /// registry happens to hold beside it.
+///
+/// **16b cut AE.1** adds the fifth, for the wheeled mode, by the same rule and
+/// with the same consequence: no other definition moves.
 fn schema_payloads() -> Vec<(&'static str, serde_json::Value)> {
     let mode_rules = serde_json::json!({
         "carries": [
@@ -662,11 +665,14 @@ fn schema_payloads() -> Vec<(&'static str, serde_json::Value)> {
             }),
         ),
         (unit::TRACKED_RULES_SCHEMA, mode_rules.clone()),
-        (unit::LEGGED_RULES_SCHEMA, mode_rules),
+        (unit::LEGGED_RULES_SCHEMA, mode_rules.clone()),
         (
             unit::POWER_RULES_SCHEMA,
             serde_json::json!({ "carries": ["states", "state"], "read_by": "tacsim" }),
         ),
+        // 16b cut AE.1: the fifth, for the wheeled mode — added, as X.2 added
+        // the legged one, and nothing above it touched.
+        (unit::WHEELED_RULES_SCHEMA, mode_rules),
     ]
 }
 

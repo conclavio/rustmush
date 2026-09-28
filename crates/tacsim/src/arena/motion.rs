@@ -37,6 +37,14 @@
 //! second copy of it, because the reflex controller's A\* plans over exactly the
 //! same one. On level ground the surcharge is the identity and nothing moves.
 //!
+//! **16b cut AE.1 (16c `B-58`) made the price the unit's own.** Steps 2 and 4
+//! read the cell through [`ArenaTerrain::price`] and
+//! [`ArenaTerrain::passable_for`] with the unit's
+//! [`crate::arena::state::UnitState::cost_row`], so a walker crosses the thick
+//! woods a tank is refused and pays its own row's price for rubble. On a
+//! hand-built window every row reads the cell's `move_cost`, so every fixture
+//! runs the arithmetic it ran before.
+//!
 //! **The invariant: no unit ever occupies a cell that was not tested on entry.**
 //! It holds by construction rather than by inspection: a refused crossing clamps
 //! the unit back into the cell it already occupied (which was tested when it
@@ -99,7 +107,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::arena::index::SpatialIndex;
 use crate::arena::slope;
-use crate::arena::state::{ArenaTerrain, OccupiedHold, Power, Side, TerrainCell, UnitState};
+use crate::arena::state::{
+    ArenaTerrain, CostRow, OccupiedHold, Power, Side, TerrainCell, UnitState,
+};
 
 /// **The scale each axis of [`crate::arena::state::MotionCarry`] is measured in**
 /// (16b cut Q.6): the millisecond's thousand times [`SIN_ONE`]'s fixed point.
@@ -570,7 +580,10 @@ fn advance(
     // cost — step 4 needs it to price the edge it is about to cross, and fetching
     // it twice would be two reads of the same immutable window.
     let from_cell = cell.and_then(|(x, y)| terrain.get(x, y));
-    let move_cost = from_cell.map_or(0, |cell| cell.move_cost);
+    // **16b cut AE.1** (16c `B-58`): the price this unit's own row pays for the
+    // cell — the tracked `move_cost` for a tank and every engine fixture, the
+    // class table's for a car or a walker on priced ground.
+    let move_cost = from_cell.map_or(0, |cell| terrain.price(unit.cost_row, cell));
     // The slope the unit entered this cell by surcharges the cell's own cost: a
     // tank half way up a ramp is held below the flat ceiling. At grade zero the
     // surcharge is the identity, so level ground accelerates exactly as before.
@@ -643,7 +656,7 @@ fn advance(
             // three times below — by the refusal, by the elevation and by the
             // grade. Before this cut it was read in `enterable` and again for
             // `z_cm`.
-            let crossing = Crossing::between(terrain, from, to);
+            let crossing = Crossing::between(terrain, from, to, unit.cost_row);
             match refusal(unit, index, &crossing) {
                 None => {
                     // Doc 16 §3.2: `z_cm` is the cell's `elev_cm`, carried on entry.
@@ -959,14 +972,24 @@ struct Crossing<'a> {
     kind: Option<StepKind>,
     /// The window's cell size, centimetres — the slope's run.
     cell_cm: u32,
+    /// **Whether the crossing unit's own row may enter `to`** (16b cut AE.1):
+    /// [`ArenaTerrain::passable_for`] with the unit's row, answered once here
+    /// because the class table lives on the terrain and not on the cell.
+    to_passable: bool,
 }
 
 impl<'a> Crossing<'a> {
     /// **The crossing `from` to `to` over `terrain`**: the two cells fetched once,
     /// the [`StepKind`] and the window's `cell_cm`. One constructor for
     /// [`advance`] and for `step_refusal` (16b cut M.4), so the crossing a test
-    /// asks about is the crossing motion builds.
-    fn between(terrain: &'a ArenaTerrain, from: (u16, u16), to: (u16, u16)) -> Crossing<'a> {
+    /// asks about is the crossing motion builds. **16b cut AE.1**: and whether
+    /// `row` — the crossing unit's — may enter `to` at all.
+    fn between(
+        terrain: &'a ArenaTerrain,
+        from: (u16, u16),
+        to: (u16, u16),
+        row: CostRow,
+    ) -> Crossing<'a> {
         Crossing {
             from,
             to,
@@ -974,6 +997,7 @@ impl<'a> Crossing<'a> {
             to_cell: terrain.get(to.0, to.1),
             kind: slope::step_kind(from, to),
             cell_cm: u32::from(terrain.cell_cm()),
+            to_passable: terrain.passable_for(row, to.0, to.1),
         }
     }
 
@@ -1055,9 +1079,10 @@ fn refusal(
 ) -> Option<BlockedCause> {
     let (from, to) = (crossing.from, crossing.to);
     let one_step = from.0.abs_diff(to.0) <= 1 && from.1.abs_diff(to.1) <= 1;
-    let passable = crossing
-        .to_cell
-        .is_some_and(crate::arena::state::TerrainCell::passable);
+    // **16b cut AE.1** (16c `B-58`): passable **to this unit's row**. A cell the
+    // row prices impassable is the same word, the same ledger line and the same
+    // pilot's sentence as a tank at deep water: the ground will not take it.
+    let passable = crossing.to_cell.is_some() && crossing.to_passable;
     if !one_step || !passable {
         return Some(BlockedCause::Impassable);
     }
@@ -1095,7 +1120,11 @@ pub(crate) fn step_refusal(
     from: (u16, u16),
     to: (u16, u16),
 ) -> Option<BlockedCause> {
-    refusal(unit, index, &Crossing::between(terrain, from, to))
+    refusal(
+        unit,
+        index,
+        &Crossing::between(terrain, from, to, unit.cost_row),
+    )
 }
 
 /// Stop the unit at the boundary it could not cross: the pose is clamped into the

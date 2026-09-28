@@ -46,9 +46,11 @@
 //! scaled 60 to `TACSIM_SENSOR_CELLS`, 24; mesh 30 to `TACSIM_SHARE_CELLS`, 8),
 //! and `tacsim_harness_arena_authored_reach` at the reaches as authored; both
 //! asserted under `TACSIM_ASSERT` since 16b cut J.3b, the authored one at its own
-//! per-window lens ([`window_lens_ms`]). The terrain's move costs are still the
-//! harness's own one table (`harness_move_cost`): 16c `B-58`'s per-locomotion
-//! cost layer is not built.
+//! per-window lens ([`window_lens_ms`]). The terrain's move costs are the
+//! harness's own one table (`harness_move_cost`) for every row: the cohort's
+//! window is built through `ArenaTerrain::new`, which prices every row at the
+//! authored cell (16b cut AE.1), so the cohort measures the arena and not the
+//! shipped locomotion table.
 //!
 //! **The bounds since 16b cut U.2** (16c `T-36`, `T-29`, `T-30`). The CI lane
 //! asserts cell probes and jam checks per wake beside the traces; resident memory
@@ -1367,9 +1369,13 @@ fn tacsim_harness_reports_the_ground_pulse_baseline() {
 /// shipped decision.
 ///
 /// It is one table for every unit on the field: the cohort's modes differ in
-/// kinematics and in slope limit (16b cut U.1), and not in class costs, because
-/// 16c `B-58`'s per-locomotion cost layer is not built — the arena has one
-/// `move_cost` a cell, whoever crosses it.
+/// kinematics and in slope limit (16b cut U.1), and not in class costs. **16b
+/// cut AE.1** built the per-row prices (16c `B-58`) and kept this so on
+/// purpose: the window goes through `ArenaTerrain::new`, whose rule is that a
+/// fixture's authored number is its word about the cell for every unit, so every
+/// row pays `harness_move_cost` here. The cohort measures the arena and not the
+/// shipped table (Q-AE1); the lanes that build the shipped ground through
+/// `from_pack` — the sight differential and the lance lane — price per row.
 fn harness_move_cost(class: TerrainClass) -> u16 {
     match class {
         TerrainClass::Ground
@@ -3482,7 +3488,7 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             "seed": knobs.seed,
             "arena_ms": arena.now_ms,
             "pulses": wake_count,
-            "move_cost_table": "harness-local (harness_move_cost); 16c B-58's per-locomotion layer is not built",
+            "move_cost_table": "harness-local (harness_move_cost), one table for every row: the cohort measures the arena and not the shipped table (16b cut AE.1)",
         },
         "classes": class_counts,
         "setup_ms": {
@@ -6297,11 +6303,16 @@ async fn measure_fan_out(knobs: &Knobs) {
 // than the script holds under a live order; and that the sides fired. At the
 // lane's **defaults** (seed, `TACSIM_LANCE_UNITS`, `TACSIM_LANCE_ARENA_S`,
 // jitter nought — the field line's `at_defaults`) also the exact figures: the
-// span and the busiest commander minute each read the squads a side, at least
-// two `order_released` lines are on the tape (16b cut Z.2: each commander
-// releases its first squad at the ninetieth arena second), and the tape
-// carries the opening round and one full minute a side — the script landed and
-// no figure is vacuous. Off the defaults a lance may be wiped out,
+// span and the busiest commander minute each read the squads a side, each
+// commander's release is on the tape as `order_released` lines for its first
+// squad when that squad has a standing machine at the ninetieth arena second
+// (16b cut Z.2; 16b cut AE.1 re-stated it through the wrecks: since every
+// machine pays its own row, `blue-1` is all wrecks by then at the defaults and
+// a release refuses a wreck, so at least one line, red's), and the tape carries
+// the opening round and one full minute a side at every scripted wake whose
+// squad had a standing machine (seven orders at the defaults, pinned) — two
+// fact pins hold the defaults to that fight, so the script landed and no figure
+// is vacuous. Off the defaults a lance may be wiped out,
 // reach its crossroads or take a mark a wake late, so the fight decides those
 // figures and only the bounds bind them. **Timing is report-only** (the lead's rule
 // for this cohort): the per-wake p99 is printed beside 12 ms and the per-window
@@ -7199,6 +7210,13 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
     // journalling). This is the script's side of the ledger, so the ledger's
     // own tape can be held to it at any knob.
     let mut given: Vec<OrderedLine> = Vec::new();
+    // **Each scripted wake as the arena held it** (16b cut AE.1; 16c B-58): the
+    // wake's arena millisecond, the squad, whether it was an order (`true`) or
+    // the release (`false`), and how many of the squad's machines were standing
+    // — not wrecks — when phase 2 was handed it. Read off the arena the lane
+    // holds, never off the script: the at-defaults checks below require a line
+    // only where a machine stood to take it.
+    let mut marks: Vec<(i64, tacsim::deliberation::SquadId, bool, usize)> = Vec::new();
     let run = run_wakes(
         &mut stepper,
         until_ms,
@@ -7213,6 +7231,18 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                     commanders[1]
                 };
                 let sent = lance_intents(arena, order, issuer, &mut seq);
+                marks.push((
+                    arena.now_ms,
+                    order.squad,
+                    order.objective.is_some(),
+                    sent.iter()
+                        .filter(|intent| {
+                            arena
+                                .unit(intent.unit)
+                                .is_some_and(|state| !state.limits.wreck)
+                        })
+                        .count(),
+                ));
                 // 16b cut Z.2: a release journals `order_released`, never an
                 // `ordered` line, so the script's side of the tape skips it.
                 if order.objective.is_some() {
@@ -7545,8 +7575,9 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         // **At the lane's defaults, the exact figures** (the brief's equalities):
         // one commander holds a live order on every squad of its side, gave
         // exactly that many in its busiest sixty seconds, and the tape carries
-        // the opening round and one full minute a side — so neither W8 figure
-        // passes on nothing. Off the defaults the fight decides them (see
+        // the opening round and one full minute a side at every scripted wake
+        // whose squad had a standing machine (16b cut AE.1, below) — so neither
+        // W8 figure passes on nothing. Off the defaults the fight decides them (see
         // `at_defaults`), and the three checks above still hold.
         //
         // **16b cut Z.2 — what the span equality now rests on, stated.** Each
@@ -7568,6 +7599,25 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         // squad, from its own commander, at the mark** — a count of lines alone
         // could be filled by one side's machines while the other's release
         // landed on nothing.
+        //
+        // **16b cut AE.1 (16c B-58) — the release and the orders, re-stated
+        // through the wrecks, as the span already was.** Z.2 set these checks
+        // when every scripted squad was alive at every mark. Since every machine
+        // pays its own row, the lane's `biped_mk1` walks the grass at the legged
+        // 110 against the tracked 130 and the fight moves: at the defaults all
+        // four of `blue-1`'s machines are wrecks before its minute-one mark
+        // (71,500 ms) and before the release (90,000 ms). A wreck keeps the
+        // order it died under and a release refuses it (the rule above), so no
+        // `order_released` line is written for `blue-1` and its minute-one order
+        // lands on no machine — the tape carries seven orders, not eight. That
+        // is the fight doing what the content says, not a defect. So a side's
+        // release line is required only when its first squad had a standing
+        // machine at the release's wake, the order count is the scripted wakes
+        // at which a machine stood to take one, both read off the arena the lane
+        // held (`marks`), and two fact pins below hold the defaults to the fight
+        // these re-stated checks were set from — so none of them passes on
+        // nothing — and the order count is pinned at seven besides, since its
+        // re-stated equality follows from the tape-is-the-script check.
         if at_defaults {
             assert_eq!(
                 command.span_max, squads_per_side,
@@ -7576,17 +7626,58 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                  see above)",
                 command.span_max
             );
+            // How many of the squad's machines stood at the scripted wake at
+            // `t_ms` (`true` an order, `false` the release), or `None` when the
+            // script handed phase 2 no such wake.
+            let stood = |t_ms: i64, word: &str, order: bool| {
+                marks
+                    .iter()
+                    .find(|(at, squad, is_order, _)| {
+                        *at == t_ms && squad.to_string() == word && *is_order == order
+                    })
+                    .map(|(_, _, _, standing)| *standing)
+            };
+            // **The two fact pins** (16b cut AE.1; 16c B-58): at the defaults
+            // `blue-1` has no standing machine at its minute-one mark or at the
+            // release, and `red-1` has at least one at the release — the fight
+            // the re-stated checks below were set from, so each of them passes
+            // on a fact.
+            assert_eq!(
+                (
+                    stood(71_500, "blue-1", true),
+                    stood(LANCE_RELEASE_MS, "blue-1", false)
+                ),
+                (Some(0), Some(0)),
+                "16b cut AE.1: at the defaults blue-1 has no standing machine at 71,500 ms or \
+                 at {LANCE_RELEASE_MS} ms: {marks:?}"
+            );
             assert!(
-                counts.released >= 2,
-                "each side's release landed on its first squad: {} `order_released` lines",
+                stood(LANCE_RELEASE_MS, "red-1", false).is_some_and(|standing| standing >= 1),
+                "16b cut AE.1: at the defaults red-1 has a standing machine at \
+                 {LANCE_RELEASE_MS} ms: {marks:?}"
+            );
+            // The sides whose first squad had a standing machine at the release.
+            let stood_at_release: Vec<(ObjId, &str)> = commanders
+                .iter()
+                .copied()
+                .zip(["red-1", "blue-1"])
+                .filter(|(_, first)| {
+                    stood(LANCE_RELEASE_MS, first, false).is_some_and(|standing| standing > 0)
+                })
+                .collect();
+            assert!(
+                counts.released >= 1,
+                "the release landed on the first squad of each of the {} side(s) whose first \
+                 squad stood at {LANCE_RELEASE_MS} ms: {} `order_released` lines",
+                stood_at_release.len(),
                 counts.released
             );
-            for (commander, first) in commanders.iter().zip(["red-1", "blue-1"]) {
+            for (commander, first) in stood_at_release {
                 assert!(
                     counts
                         .released_lines
                         .iter()
-                        .any(|line| line.issuer == Some(*commander)
+                        .any(|line| line.issuer == Some(commander)
                             && line.squad == first
                             && line.t_ms == LANCE_RELEASE_MS),
                     "{first}'s commander {commander} released {first} at \
@@ -7609,11 +7700,38 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                  {squads_per_side}",
                 command.orders_per_commander_minute_max
             );
+            // The opening round and one minute's `squads_per_side` a side —
+            // `2 * (1 + squads_per_side)` when every squad stands at every mark
+            // — counted over the scripted wakes at which the ordered squad had
+            // a standing machine, one order per side per wake as
+            // `orders_on_tape` files them (16b cut AE.1: seven at the defaults,
+            // `blue-1`'s minute-one mark landing on no machine).
+            let stood_to_order: std::collections::BTreeSet<(bool, i64)> = marks
+                .iter()
+                .filter(|(_, _, is_order, standing)| *is_order && *standing > 0)
+                .map(|(at, squad, _, _)| (squad.team == Team::Red, *at))
+                .collect();
             assert_eq!(
                 command.orders,
-                2 * (1 + u64::try_from(squads_per_side).unwrap_or(u64::MAX)),
+                u64::try_from(stood_to_order.len()).unwrap_or(u64::MAX),
                 "W8: {} orders on the tape where the script gives the opening round and one \
-                 minute's {squads_per_side} a side",
+                 minute's {squads_per_side} a side, at the {} scripted wakes whose squad had a \
+                 standing machine",
+                command.orders,
+                stood_to_order.len()
+            );
+            // **The count itself, pinned** (16b cut AE.1): the equality above is
+            // the tape-is-the-script check read back through the marks (the
+            // `given` lines are one per standing machine at an order's wake, and
+            // `orders_on_tape` counts their distinct commander and millisecond),
+            // so it cannot fail on its own. The defaults' fight gives the opening
+            // round and one minute's `squads_per_side` a side less `blue-1`'s
+            // minute-one mark — seven — and a fight that moves again at the
+            // defaults moves this figure and says so.
+            assert_eq!(
+                command.orders,
+                u64::try_from(2 * (1 + squads_per_side) - 1).unwrap_or(u64::MAX),
+                "16b cut AE.1: at the defaults the tape carries the opening round and one                  minute's {squads_per_side} a side less blue-1's minute-one mark (71,500 ms),                  not {} orders",
                 command.orders
             );
         }

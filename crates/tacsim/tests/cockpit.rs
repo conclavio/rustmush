@@ -5450,8 +5450,14 @@ async fn v1_range_bearing_and_status_name_the_shipped_ground() {
             .iter()
             .map(|spot| spot.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["The Ford", "The Crossroads", "North Barn", "East Compound"],
-        "the shipped four, in authored order"
+        vec![
+            "The Ford",
+            "The Crossroads",
+            "North Barn",
+            "East Compound",
+            "The Bluff"
+        ],
+        "the shipped five, in authored order (the fifth is 16b cut AE.1's)"
     );
     assert_eq!(frame.cell, Some((6, 97)), "red slot 1 musters on the road");
 
@@ -5562,7 +5568,7 @@ async fn v1_a_spot_named_before_the_first_frame_says_the_panel_is_dark() {
 /// the panel, and says nothing about any unit.
 ///
 /// The red muster's 39 by 20 window is columns 0 to 38 and rows 87 to 106, and
-/// all four shipped spots are east of it, so all four are listed, in authored
+/// all five shipped spots are east of it, so all five are listed, in authored
 /// order, each with the range and bearing from the pilot's own pose.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v1_view_at_the_muster_names_every_spot_off_its_window() {
@@ -5586,11 +5592,15 @@ async fn v1_view_at_the_muster_names_every_spot_off_its_window() {
     );
     let said = rig.tw.seen_by(&events, rig.pilot(0)).join("\n");
     let expected = cockpit::off_window_spots_line(&spots, &[], &frame.pose, cell_cm)
-        .expect("four spots, none drawn");
+        .expect("five spots, none drawn");
+    // 16b cut AE.1: The Bluff (144, 111) is 138 cells east and 14 north of the
+    // muster's (6, 97): `isqrt` 138,708 cm (1,390 m to the ten) at
+    // `atan2(138, 14)` = 84.2°, so 084°.
     assert_eq!(
         expected,
         "Off the window: A The Ford, 580 m at 090°; B The Crossroads, 1230 m at 090°; \
-         C North Barn, 1390 m at 045°; E East Compound, 2080 m at 075°."
+         C North Barn, 1390 m at 045°; E East Compound, 2080 m at 075°; \
+         F The Bluff, 1390 m at 084°."
     );
     assert!(said.contains(&expected), "{said}");
     // Nothing about any unit: not the other tank's name, pilot or callsign.
@@ -5607,14 +5617,15 @@ async fn v1_view_at_the_muster_names_every_spot_off_its_window() {
 ///
 /// The red tank is stood on (60, 97) while the centre is `Boarding`, four cells
 /// west of The Ford (64, 97), so `VIEW`'s window holds the ford and none of the
-/// other three. What that proves, which the muster test cannot (its window
+/// other four. What that proves, which the muster test cannot (its window
 /// draws no spot at all):
 ///
 /// * the live panel's first marker is the `A` spot and the pilot's own marker —
 ///   found by its flag — follows it and carries the tank's display name, so
 ///   `view_frame_held` names the pilot and not the ford;
-/// * the off-window line is read against the drawing's own spots: it names B, C
-///   and E and not A. From (60,500, 97,500) cm: The Crossroads (129, 97) is
+/// * the off-window line is read against the drawing's own spots: it names B, C,
+///   E and (since 16b cut AE.1) F, and not A. From (60,500, 97,500) cm: The
+///   Crossroads (129, 97) is
 ///   69,000 cm due east, 690 m at 090°; North Barn (106, 194) is dx 46,000,
 ///   dy 97,000, `isqrt` 107,354 cm (1,070 m) at `atan2(46, 97)` = 25.4°, so
 ///   025°; East Compound (208, 148) is dx 148,000, dy 51,000, `isqrt` 156,541
@@ -5675,11 +5686,13 @@ async fn v1_view_beside_the_ford_draws_it_and_names_only_the_others_off_the_wind
 
     let said = rig.tw.seen_by(&events, rig.pilot(0)).join("\n");
     let expected = cockpit::off_window_spots_line(&spots, &[0], &frame.pose, cell_cm)
-        .expect("three spots undrawn");
+        .expect("five spots undrawn");
+    // 16b cut AE.1: The Bluff (144, 111) is dx 84,000, dy 14,000 from (60, 97):
+    // `isqrt` 85,158 cm (850 m) at `atan2(84, 14)` = 80.5°, so 080°.
     assert_eq!(
         expected,
         "Off the window: B The Crossroads, 690 m at 090°; C North Barn, 1070 m at 025°; \
-         E East Compound, 1570 m at 070°."
+         E East Compound, 1570 m at 070°; F The Bluff, 850 m at 080°."
     );
     // The one off-window line `VIEW` said is that sentence exactly: the drawn
     // ford is not in it.

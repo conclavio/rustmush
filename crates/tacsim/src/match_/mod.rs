@@ -872,8 +872,13 @@ pub fn start(
                 }),
                 None => world_pose,
             };
-            let pose = arena_def::opening_pose(&definition, side.team, offered.clone(), &mut taken)
-                .ok_or(StartError::NoEntryCell(side.team.as_str()))?;
+            // **16b cut AE.1** (16c `B-58`): the cell is judged on the unit's own
+            // row, read off the same record `Arena::new` will read it from, so a
+            // car left on rubble opens in its zone and is not refused there.
+            let row = crate::arena::state::CostRow::read(&cells);
+            let pose =
+                arena_def::opening_pose(&definition, side.team, offered.clone(), &mut taken, row)
+                    .ok_or(StartError::NoEntryCell(side.team.as_str()))?;
             if let Some(cell) = fielded.opening
                 && offered.as_ref() != Some(&pose)
             {

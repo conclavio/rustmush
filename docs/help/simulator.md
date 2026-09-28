@@ -72,9 +72,11 @@ and nowhere else.
 Each pod has a tank of its own, and that is what you fly unless you say
 otherwise. `SIM UNIT` says otherwise:
 
-  SIM UNIT                    Fieldable units: biped_mk1, line_tank,
-                              line_tank_eccm, line_tank_ecm, line_tank_laser,
-                              line_tank_thermal, target_mk1. Yours: line_tank.
+  SIM UNIT                    Fieldable units: biped_mk1, biped_mk2,
+                              heavy_mk1, line_tank, line_tank_eccm,
+                              line_tank_ecm, line_tank_laser,
+                              line_tank_thermal, scout_mk1, target_mk1.
+                              Yours: line_tank.
   SIM UNIT biped_mk1          Slot red 1 will field biped_mk1.
 
 It changes **your own** slot and only during selection, and everyone in the
@@ -114,6 +116,16 @@ What the shipped server can field:
                       and no engine speed. It is what `SIM RANGE` puts on the
                       other side's pods; you may pick it for your own slot, but
                       it can do nothing but stand there.
+  scout_mk1           a wheeled scout car: 108 kph on a road and quicker than
+                      a tank on the grass, thin, quick to turn. Rubble, rock
+                      and the thick woods stop it, it takes the ford slowly,
+                      and a slope a tank climbs can refuse it.
+  heavy_mk1           a heavy tank: the stock gun on nearly twice the armour, at
+                      two thirds the speed.
+  biped_mk2           a two-legged machine with the beam weapon in one arm and a
+                      thermal sight in its head. It makes heat, and it walks
+                      where a tank will not: the thick woods and a face a tank
+                      is refused. It pays less than a tank to cross rubble.
 
 Three things worth knowing before you pick one:
 
@@ -121,9 +133,30 @@ Three things worth knowing before you pick one:
   otherwise the first weapon it carries. The laser tank carries no cannon, so
   its bare `FIRE` is its beam; name the weapon (`FIRE laser`, `FIRE
   machine_gun`) and there is nothing to remember.
-* a legged machine still pays the tracked machine's price for crossing a cell.
-  That is a known gap, not a feature of the chassis.
+* every machine pays its own way across a cell. A walker takes the thick woods
+  that stop a tank and pays less than a tank for rubble; a wheeled car is
+  stopped by ground a tank crosses and is quickest on a road; and the slope
+  each will climb is its own. Nothing goes faster than its own top speed, a
+  road or not. Where you are held, the panel says so: `Held: the ground ahead
+  will not take the tank.` or `Held: the slope ahead is too steep for the
+  tank.`
 * the machines that fill the unclaimed pods always fly the pod's own tank.
+
+## The ground
+
+The proving ground is 2.56 km square: a river down its western third with one
+ford, an east-west road over the ford and the crossroads, a north-south road
+through the crossroads, three compounds, two woods and one bluff. `VIEW`
+letters the named ground and the legend names it: A The Ford, B The Crossroads,
+C North Barn, E East Compound, F The Bluff. `RANGE F` and `BEARING F` read them.
+
+The Bluff (F) is a mesa north-east of the crossroads, seven metres above the
+grass, with a ramp down its north side. Its west, south and east faces are too
+steep for a tank or a car — `Held: the slope ahead is too steep for the
+tank.` — and a walker climbs them. A tank takes the ramp. The map draws ground,
+not height: `F` marks the top; the ramp is the two rows past its north edge,
+eight and nine cells north of `F`, and a machine takes it from the north.
+From the top a sight looks over the crossroads and the road east of it.
 
 ## Modes
 
