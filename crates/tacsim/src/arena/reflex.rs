@@ -95,6 +95,7 @@ use std::collections::BTreeMap;
 
 use mush_atlas::Cover;
 use mush_core::ObjId;
+use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::arena::index::range_between;
@@ -251,7 +252,8 @@ pub const SUPPORT_STATION_CELLS: u16 = 5;
 // ---------------------------------------------------------------------------
 
 /// **Where one AI unit is in doc 16 §6's machine.**
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ReflexState {
     /// Cold: the only order it gives is `STARTUP`.
     #[default]
@@ -347,7 +349,8 @@ impl ReflexState {
 /// Every field is a fact the machine wrote and can re-derive from nothing else:
 /// which state it is in, where it is going, the route it is following and how far
 /// along it, which hostile it settled on, and when it last searched.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReflexUnit {
     /// Where it is in the machine.
     pub state: ReflexState,
@@ -577,9 +580,11 @@ impl ReflexCounters {
 /// It lives on [`Arena`] rather than on `UnitState` because the scratch is one
 /// half-megabyte buffer for the whole match rather than one per unit, and because
 /// a unit under a pilot carries no machine at all.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReflexMemory {
     units: BTreeMap<ObjId, ReflexUnit>,
+    #[serde(skip)]
     scratch: PathScratch,
     cfg: ReflexConfig,
     /// Which `decide_ms` window of arena time the budget below belongs to.

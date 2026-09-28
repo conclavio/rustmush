@@ -911,6 +911,11 @@ class (16b cut AE.3; doc 16 §2 W2): `{ drone = 1 }` by default, class words
 and your entries laid over the default, so write `drone = 24` to uncap drones
 and `drone = 0` to forbid them.
 
+`[tacsim.arena].snapshot_ms` (16b cut AF.1; default 5,000, `0` or 1,000 to 60,000)
+is how many arena milliseconds apart a running match is snapshotted; `0` turns
+snapshots off, and a server restart then voids every running match by name. Cut
+AF.1 only lands the key: nothing reads it until the snapshot message (cut AF.2).
+
 #### The cost run
 
 `crates/tacsim/tests/harness.rs::tacsim_harness_llm_cost_run` measures what

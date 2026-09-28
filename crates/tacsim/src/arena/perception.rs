@@ -164,6 +164,7 @@ use mush_atlas::TerrainClass;
 use mush_atlas::trace::{Eye, Sight};
 use mush_core::ObjId;
 use mush_tactics::TacticalUnit;
+use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::arena::index::range_cm;
@@ -184,7 +185,8 @@ pub const FULL_SIGNATURE_PERMILLE: u32 = 1_000;
 /// content decoder's type is `serde`-shaped and lives beside the pack loader,
 /// and the arena holds neither. Cut T's check-out copies the rows across
 /// ([`crate::match_::sensor_profile`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SignatureFactor {
     /// The ground the target stands on.
     pub class: TerrainClass,
@@ -199,7 +201,8 @@ pub struct SignatureFactor {
 /// Every field is an integer (D-16-4) and every one is the decoded form of a
 /// `sensor` definition row. A unit with `None` for this runs no pass at all,
 /// which is what an unmodelled hull and the unit tests of cut A have.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SensorProfile {
     /// The candidate radius at signature factor 1, in cells (doc 16 §3.6 step 1).
     pub max_range_cells: u16,
@@ -259,7 +262,8 @@ impl SensorProfile {
 /// A sight that authored no thermal channel has **no** `ThermalSignature` at all,
 /// which is what makes the term an `Option` test per candidate for every unit the
 /// game ships.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ThermalSignature {
     /// The factor a powered, stopped target presents, per mille.
     pub powered_permille: u32,
@@ -331,7 +335,8 @@ impl ThermalSignature {
 ///
 /// `radius_cm` and not `radius_cells`: the authored cell is in cells, and the
 /// window's own `cell_cm` is applied once here rather than on every pass.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Jammer {
     /// How far the bubble reaches from the pod, centimetres.
     pub radius_cm: u32,
@@ -404,7 +409,8 @@ impl Jammer {
 ///
 /// It sits on the **observer**: what it recovers, it recovers for the unit carrying
 /// it and for nothing else on the field (see [`Jamming::recovered`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Eccm {
     /// What it takes back off the summed cost against the observer's
     /// `max_attenuation`, on the atlas's 0-to-100 scale.
@@ -589,7 +595,8 @@ impl Jamming {
 /// whole of Q17's sentence. The cheap tightening, if the owner wants it, is to
 /// print a thresholded word (`degraded` / `severely degraded`) on `STATUS` and on
 /// the frame and to keep the integers off the wire; it is deliberately not built.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Receiver {
     /// The attenuation budget the last pass actually ran with —
     /// [`Jamming::budget`] of the sight's own `max_attenuation`.

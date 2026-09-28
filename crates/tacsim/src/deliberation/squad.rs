@@ -72,6 +72,7 @@ pub const MAX_SQUADS_PER_SIDE: usize = 32;
 /// which is what keeps two runs of the same match producing the same request
 /// order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SquadId {
     /// The side.
     pub team: Team,

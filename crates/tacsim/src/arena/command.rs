@@ -64,7 +64,8 @@ pub const MAX_SIGNAL_CONTACTS: usize = 12;
 /// Class and count and nothing else: a digest that moved because a contact's
 /// bearing changed by a degree would ask for a new order every pass, which is the
 /// floor doing all the work and the event-driven trigger doing none.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SquadDigest {
     /// Contacts held but not told apart.
     pub unknown: u16,
@@ -254,7 +255,8 @@ pub struct SquadSignal {
 /// example here until 16b cut M.2 folded it): it is not folded into the state
 /// hash, because it is a fact about what the world has been told and not about the
 /// match. Folding it would make the hash a function of the request cadence.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SquadWatch {
     /// The digest last reported.
     digest: SquadDigest,

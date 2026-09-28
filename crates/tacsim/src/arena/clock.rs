@@ -230,12 +230,94 @@ pub struct Clock {
     floor_changed: bool,
 }
 
+/// **What a snapshot carries of the clock** (16b cut AF.1; doc 16 §3.1 "Clock
+/// and lag"): the tempo, when it was entered, and when each trigger was last
+/// seen — the four fields [`Clock::evaluate`] decides the next tempo from, all
+/// in arena milliseconds. Built by [`Clock::to_state`], read back by
+/// [`Clock::from_state`], whose head says why nothing else is in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClockState {
+    tempo: Tempo,
+    tempo_since_ms: i64,
+    last_alert_signal_ms: Option<i64>,
+    last_engaged_signal_ms: Option<i64>,
+}
+
 impl Clock {
     /// A clock in [`Tempo::Quiet`] that has never seen a signal or a wall
     /// reading.
     #[must_use]
     pub fn new() -> Clock {
         Clock::default()
+    }
+
+    /// **The clock as a snapshot carries it** (16b cut AF.1): the four fields
+    /// of [`ClockState`], all arena time.
+    #[must_use]
+    pub const fn to_state(&self) -> ClockState {
+        ClockState {
+            tempo: self.tempo,
+            tempo_since_ms: self.tempo_since_ms,
+            last_alert_signal_ms: self.last_alert_signal_ms,
+            last_engaged_signal_ms: self.last_engaged_signal_ms,
+        }
+    }
+
+    /// **A clock back from a snapshot** (16b cut AF.1): the tempo and its two
+    /// hold clocks as they stood, and nothing else.
+    ///
+    /// What is **not** carried, and why:
+    ///
+    /// * `last_wall_ms` — the old process's wall reading, which means nothing to
+    ///   this one; the resume anchors a fresh one ([`Clock::reanchor`]), so arena
+    ///   time does not advance across the outage.
+    /// * `lagged` — a reading of the last [`Clock::advance`], not state: the
+    ///   first resumed pulse says its own.
+    /// * `pinned` — a test lever ([`Clock::pin_tempo_for_tests`]); a test that
+    ///   pins pins again, as its driver does every pulse.
+    /// * the three floor fields — the staff tempo floor is a lever set for a
+    ///   process that is gone (16c `Q-AF1` at its default): a resumed match runs
+    ///   unfloored, `@arena/status` shows none, and no `tempo_floor` line is
+    ///   journalled for the lift, because nobody lifted it.
+    #[must_use]
+    pub fn from_state(state: ClockState) -> Clock {
+        // Every field by name, so a field added to the clock is a compile error
+        // here until somebody decides whether a resume carries it.
+        let ClockState {
+            tempo,
+            tempo_since_ms,
+            last_alert_signal_ms,
+            last_engaged_signal_ms,
+        } = state;
+        Clock {
+            tempo,
+            tempo_since_ms,
+            last_alert_signal_ms,
+            last_engaged_signal_ms,
+            last_wall_ms: None,
+            lagged: false,
+            pinned: None,
+            floor_ms: None,
+            floor_at_last_wake: None,
+            floor_changed: false,
+        }
+    }
+
+    /// **Anchor the clock on this process's wall** (16b cut AF.1; doc 16 §3.1
+    /// "Clock and lag"): the next [`Clock::advance`] measures its `dt` from
+    /// `wall_now_ms`, reads as not lagged, and runs under no staff floor.
+    ///
+    /// Arena time does not advance across whatever came before — a restart's
+    /// outage is not time the match lived through — so no `lagged` line is
+    /// journalled for it; what moves arena time is only what this process's
+    /// wall does from here.
+    pub fn reanchor(&mut self, wall_now_ms: i64) {
+        self.last_wall_ms = Some(wall_now_ms);
+        self.lagged = false;
+        self.floor_ms = None;
+        self.floor_at_last_wake = None;
+        self.floor_changed = false;
     }
 
     /// The tempo the arena is in.
@@ -894,5 +976,41 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// **16b cut AF.1**: a clock back from its state keeps the tempo and the two
+    /// hold clocks and nothing of the old wall, and `reanchor` makes the next
+    /// `advance` measure from the new anchor — not lagged, however long the
+    /// outage was, and under no floor, whatever the old process had set.
+    #[test]
+    fn af1_a_reanchored_clock_measures_from_the_anchor_and_carries_no_floor() {
+        let cfg = ArenaConfig::default();
+        let mut old = Clock::new();
+        let _ = old.evaluate(3_000, &alert_signal(), &cfg.tempo);
+        let _ = old.evaluate(4_000, &engaged_signal(), &cfg.tempo);
+        old.set_floor(Some(5_000));
+        let _ = old.advance(10_000, &cfg);
+        let _ = old.advance(15_000, &cfg);
+        let state = old.to_state();
+
+        let mut resumed = Clock::from_state(state);
+        assert_eq!(resumed.to_state(), state, "the four fields come back");
+        assert_eq!(resumed.tempo(), old.tempo());
+        assert_eq!(resumed.tempo_since_ms(), old.tempo_since_ms());
+        assert_eq!(resumed.floor_ms(), None, "the staff floor is not carried");
+        assert!(!resumed.floored_now_or_then());
+        // A floor set on the resumed clock before the anchor is lifted by it too,
+        // and journals no line: nobody lifted it.
+        resumed.set_floor(Some(5_000));
+        resumed.reanchor(9_000_000);
+        assert_eq!(resumed.floor_ms(), None);
+        assert_eq!(resumed.take_floor_change(), None);
+        assert!(!resumed.lagged());
+        // The next reading is measured from the anchor: 500 ms of this process's
+        // wall is 500 ms of arena time, and the hours of outage before it are
+        // none of it.
+        let (dt, lagged) = resumed.advance(9_000_500, &cfg);
+        assert_eq!((dt, lagged), (500, false));
+        assert!(!resumed.lagged());
     }
 }

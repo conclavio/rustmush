@@ -247,6 +247,7 @@ max_catch_up_steps = 4             # periods of wall time one pulse may absorb b
 occupied_stop_ms = 2000
 deliberate_min_ms = 30000          # (16b cut N.2) the least ARENA time between two deliberation requests for one squad: the floor under the event-driven trigger
 squad_size = 4                     # (16b cut Z.1) the most machines one squad holds, 1 to 16: a side's machines are dealt into squads of sizes differing by at most one
+snapshot_ms = 5000                 # (16b cut AF.1) arena ms between two snapshots of a running match, 0 or 1000 to 60000; 0 turns them off and a restart then voids every running match (read from 16b cut AF.2)
 # (16b cut AE.3) the most machines of one class a SIDE fields, by class word (armour, walker, drone), 0 to 24; 0 means the class cannot be fielded; drone = 1 is the compiled default and stands unless you name it; a class you do not name has no cap
 max_units_by_class = { drone = 1 }
 

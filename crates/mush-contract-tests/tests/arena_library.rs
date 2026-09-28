@@ -11,7 +11,9 @@
 //!    handles and batches, the async runtime, the output sink and the world
 //!    handle. Cut T's `arena_task` owns all of those *outside* the library, which
 //!    is exactly the shape that makes the panic firewall and the void-the-match
-//!    rule implementable.
+//!    rule implementable. **16b cut AF.1** added one name that is not a way out
+//!    but a way to lose determinism: a hash map, whose order would be a byte of
+//!    the snapshot the library now writes of itself.
 //!
 //! 2. **The draw-label set is pinned.** Doc 16 §3.5: *every draw is
 //!    `draw(match_seed, label)` … with these labels and no others*, and *adding a
@@ -39,7 +41,7 @@ use tacsim::arena::rng::{DrawLabel, LABEL_KINDS};
 /// field and a doc comment all count — mentioning one is as reviewable as calling
 /// it, and a gate that can be talked around by putting the type behind an alias
 /// is not a gate.
-const FORBIDDEN: [(&str, &str); 7] = [
+const FORBIDDEN: [(&str, &str); 8] = [
     (
         "mush_store",
         "the persistence crate: the arena holds no store handle (D-16-3)",
@@ -61,6 +63,15 @@ const FORBIDDEN: [(&str, &str); 7] = [
     (
         "Ctx<",
         "a module context, which carries the world and the store with it (D-16-1)",
+    ),
+    // 16b cut AF.1: the snapshot serialises the state tree, so an unordered map
+    // anywhere in the library would be a byte of the document that differs from
+    // run to run. A float cannot be banned by a substring (`perception.rs` uses
+    // one inside a computation); `crates/tacsim/tests/arena.rs`'
+    // `af1_the_encoding_is_deterministic_and_integer` is the float guard.
+    (
+        "HashMap",
+        "a hash map: iteration order must never feed an outcome or a byte of the snapshot (doc 16 §3.1)",
     ),
 ];
 

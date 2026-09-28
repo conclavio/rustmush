@@ -61,6 +61,7 @@
 
 use mush_atlas::Cover;
 use mush_core::ObjId;
+use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::arena::motion::{SIN_ONE, sin_fx};
@@ -129,7 +130,8 @@ pub const MIN_ERROR_URAD: u32 = 1;
 /// [`crate::arena::weapons::WeaponBand`] is a copy of the weapon decoder's row:
 /// the content types are `serde`-shaped and live beside the pack loader, and the
 /// arena holds neither (D-16-1, D-16-3).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BandProfile {
     /// The band: `front`, `left`, `right`, `rear`, `top`. It is also a facet id,
     /// which is what lets a hit on a band find the armour it must pass.
@@ -146,7 +148,8 @@ pub struct BandProfile {
 /// **What a section's destruction does** (16b cut W.2; doc 16 §3.3's *Consequence
 /// at zero internals* column) — the arena's own copy of
 /// `crate::definitions::unit::Consequence`, a closed vocabulary over open ids.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Consequence {
     /// The unit becomes a wreck (doc 16 §3.3 "A wreck").
     DestroyUnit,
@@ -198,7 +201,8 @@ impl Consequence {
 /// armour cell), what happens at zero internals, and where a section with no
 /// armour of its own is struck through (doc 16 §3.3: the engine has *no facets;
 /// struck through `hull.rear`*).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SectionProfile {
     /// The section: `hull`, `turret`, `left_track`, `right_track`, `engine`.
     pub id: SmolStr,
@@ -217,7 +221,8 @@ pub struct SectionProfile {
 /// presents nothing, so its angular size is zero and doc 16 §3.5's *zero
 /// presented area is zero* answers — which is what keeps every cut-A and cut-S
 /// fixture running unchanged.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UnitProfile {
     /// The facet bands, in authored order.
     pub bands: Vec<BandProfile>,
@@ -330,7 +335,8 @@ fn band_toward(target: &SeenPose, x_cm: i64, y_cm: i64) -> &'static str {
 /// It is recorded on the [`crate::arena::weapons::Shot`] at acceptance and read
 /// again at the impact, so the black box and the re-validation agree on the
 /// arithmetic by construction rather than by running it twice.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Resolution {
     /// The facet band the target presented toward the shooter.
     pub band: SmolStr,

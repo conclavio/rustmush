@@ -121,6 +121,7 @@ impl ConditionBand {
 /// meaningful, so [`Condition::band`] can answer `None` for a slot that is not a
 /// section rather than `Green` for one that does not exist.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Condition {
     /// Two bits a section, lowest section first.
     pub bands: u32,
@@ -138,6 +139,7 @@ pub struct Condition {
 /// is, and a pilot who has driven out to 900 m is told that what they are reading
 /// is twenty seconds stale.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Reading {
     /// Arena milliseconds at the look.
     pub at_ms: i64,

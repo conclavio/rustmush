@@ -299,7 +299,8 @@ impl BlockedCause {
 /// and a machine still pushing at a wreck could not be told apart from one that
 /// had turned away, which is what its remembered stop is refreshed off
 /// (`Arena::reflex_tick`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Held {
     /// The refused cell's column.
     pub x: u16,

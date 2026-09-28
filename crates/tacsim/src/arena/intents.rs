@@ -49,6 +49,7 @@
 //! `place_refused` line on the tape instead, and is never said).
 
 use mush_core::ObjId;
+use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::arena::ledger::EventKind;
@@ -106,7 +107,8 @@ pub struct Control {
 }
 
 /// **One order** (doc 16 §3.1's `Intent`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum IntentKind {
     /// Steer to a bearing, millidegrees clockwise from north.
     Heading {
@@ -273,7 +275,8 @@ impl IntentKind {
 }
 
 /// One order with its authority and its place in the pilot's burst.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Intent {
     /// The unit ordered.
     pub unit: ObjId,

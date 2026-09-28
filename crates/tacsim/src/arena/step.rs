@@ -3047,6 +3047,29 @@ impl Arena {
         ))
     }
 
+    /// **Resume a decoded arena on this process's wall** (16b cut AF.1; doc 16
+    /// §3.1 "Clock and lag"; 16c N16), answering the first deadline the task
+    /// should wake at, in the caller's own wall milliseconds — exactly what a
+    /// pulse's [`StepOutput::next_due_ms`] would have answered at that wall.
+    ///
+    /// The clock is re-anchored ([`crate::arena::clock::Clock::reanchor`]):
+    /// **arena time does not advance across the outage**, the first resumed
+    /// pulse measures its `dt` from `wall_now_ms`, no `lagged` line is journalled
+    /// for the gap, and a staff floor the old process had set is gone (16c
+    /// `Q-AF1`). Everything that decides *when* something happens next — the
+    /// due heap, the shots in flight, the staggered sensor passes and reflex
+    /// ticks, the wake lattice itself — is carried integers in arena time, so
+    /// the deadline answered here is the one the match would have woken at, and
+    /// the cross-tempo property holds across a resume as it holds across a
+    /// pulse (`crates/tacsim/tests/arena.rs`'s `af1_*` tests; a round carried
+    /// in flight across a resume, at two cadences, is
+    /// `crates/tacsim/tests/shipped_scale.rs`'
+    /// `af1_the_shipped_centre_encodes_under_the_expectation`).
+    pub fn resume_at(&mut self, wall_now_ms: i64) -> i64 {
+        self.clock.reanchor(wall_now_ms);
+        self.next_due_ms(wall_now_ms)
+    }
+
     /// **When the task should step again**, in the wall milliseconds
     /// `wall_now_ms` was given in (doc 16 §3.1 phase 5; 16c Q25).
     ///

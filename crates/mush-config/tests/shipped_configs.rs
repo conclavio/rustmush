@@ -386,6 +386,12 @@ fn the_template_declares_every_section_the_deployed_boxes_lack() {
 /// `q7_the_rendered_instances_field_machines_and_the_example_does_not` reads
 /// four whether or not either file writes the key, and only the raw table can
 /// tell an operator's written lance from a compiled-in one.
+///
+/// **16b cut AF.1** (16c N16) put `[tacsim.arena].snapshot_ms` here on the same
+/// precedent: an integer knob with an operator meaning — `0` is the kill switch
+/// that makes a restart void every running match — whose default is the shipped
+/// five seconds, so only the raw table tells a written cadence from a compiled
+/// one.
 #[test]
 fn live_ground_sky_and_path_keys_are_explicit_in_every_shipped_config() {
     let mut configs = vec![(
@@ -403,6 +409,8 @@ fn live_ground_sky_and_path_keys_are_explicit_in_every_shipped_config() {
             ("tacsim.time.ephemeris.rate", 0),
             ("atlas.path_max_cells", 4096),
             ("tacsim.arena.squad_size", 4),
+            // 16b cut AF.1: the snapshot cadence, and its kill switch at `0`.
+            ("tacsim.arena.snapshot_ms", 5000),
             // 16b cut AE.3: `[tacsim.arena].max_units_by_class` is deliberately NOT
             // here — it is a map with a compiled default, like `[tacsim.arena.tempo]`'s
             // keys, not an integer knob, and the example writes it while the untouched
@@ -801,6 +809,13 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
             cfg.tacsim.arena.squad_size, 4,
             "{env_file}: 16b cut Z.1's squad size"
         );
+        // **16b cut AF.1** (16c N16): a snapshot every five seconds of arena time.
+        // The default is five seconds too, so this reads the parsed value only;
+        // that the key is *written* is `live_ground_sky_and_path_keys_are_explicit_…`'s.
+        assert_eq!(
+            cfg.tacsim.arena.snapshot_ms, 5_000,
+            "{env_file}: 16b cut AF.1's snapshot cadence"
+        );
         // **16b cut AE.3** (doc 16 §2 W2): one drone a side. The template writes
         // no key, so this is the compiled default read off the parsed struct.
         assert_eq!(
@@ -821,6 +836,8 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
     assert_eq!(example.tacsim.arena.reflex.search_ms, 60_000);
     assert_eq!(example.tacsim.arena.reflex.hunt_after_ms, 90_000);
     assert_eq!(example.tacsim.arena.squad_size, 4);
+    // 16b cut AF.1: the example writes the snapshot cadence at its default.
+    assert_eq!(example.tacsim.arena.snapshot_ms, 5_000);
     // 16b cut AE.3: the example writes `max_units_by_class = { drone = 1 }` inline
     // under `[tacsim.arena]` (no header of its own: the template declares none).
     assert_eq!(

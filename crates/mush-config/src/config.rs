@@ -73,6 +73,7 @@
 //! | `[tacsim.arena].deliberate_min_ms` | `30000` | **16b cut N.2** (doc 16 §6): the least ARENA time between two deliberation requests for one squad — the floor under the event-driven trigger |
 //! | `[tacsim.arena].squad_size` | `4` | 16b cut Z.1 (16c N6): the most machines one squad holds; a side's machines are dealt into `ceil(n / size)` squads of sizes differing by at most one |
 //! | `[tacsim.arena].max_units_by_class` | `{ drone = 1 }` | 16b cut AE.3 (doc 16 §2 W2): the most machines of one class a SIDE fields, by class word (`armour`, `walker`, `drone`), `0` to `24`; `0` means the class cannot be fielded; the operator's entries are laid over the compiled `drone = 1` (`walker = 2` alone leaves the drone at 1), and a class not named has no cap |
+//! | `[tacsim.arena].snapshot_ms` | `5000` | **16b cut AF.1** (16c N16; doc 16 §3.1 "Durability"): arena milliseconds between two snapshots of a running match; `0` turns snapshots off (a restart then voids every running match by name), else `1000` to `60000`. Read by nothing until 16b cut AF.2 |
 //! | `[tacsim.arena.intents].max_pending_per_unit` | `8` | **16b cut M.1** (`T-82`): discrete orders one seat may give a unit per arena second; also the size, per unit, of the world side's inbox and pre-pulse buffer |
 //! | `[tacsim.arena.ledger].summary_ms` | `5000` | arena milliseconds between `position_summary` ledger events (doc 16 §4) |
 //! | `[tacsim.arena.ledger].max_bytes` | `67108864` | 64 MiB: at 90% summaries stop, at 100% the match is stopped with `Timeout` |
@@ -997,6 +998,16 @@ pub struct TacsimArenaCfg {
     /// `1`, because a written table replaces this `serde(default)` map whole),
     /// and `tacsim::config::ArenaConfig::validate` bounds each value `0` to `24`.
     pub max_units_by_class: BTreeMap<String, u32>,
+    /// **Arena milliseconds between two snapshots of a running match**
+    /// (**16b cut AF.1**; 16c N16; doc 16 §3.1 "Durability"), taken by the arena
+    /// task after the pulse that crossed the boundary and written by the world
+    /// on the arena writer lane (16b cut AF.2 reads it). `0` turns snapshots
+    /// off, and a restart then voids every running match by name (16b cut
+    /// AF.3); otherwise `1000` to `60000`, refused by name outside it by
+    /// `tacsim::config::ArenaConfig::validate`. Nothing reads it in AF.1: it
+    /// lands with the snapshot's format because the snapshot carries the
+    /// arena's frozen block whole.
+    pub snapshot_ms: u32,
     /// `[tacsim.arena.intents]` — the per-unit intent inbox bound.
     pub intents: TacsimIntentsCfg,
     /// `[tacsim.arena.ledger]` — the match ledger's summary cadence and its two
@@ -1016,6 +1027,8 @@ impl Default for TacsimArenaCfg {
             deliberate_min_ms: 30_000,
             squad_size: 4,
             max_units_by_class: BTreeMap::from([("drone".to_owned(), 1)]),
+            // 16b cut AF.1: every five seconds of arena time (16c N16).
+            snapshot_ms: 5_000,
             intents: TacsimIntentsCfg::default(),
             ledger: TacsimLedgerCfg::default(),
             reflex: TacsimReflexCfg::default(),
@@ -2645,6 +2658,8 @@ scene_turn_dedline_secs = 30
             arena.max_units_by_class,
             BTreeMap::from([("drone".to_owned(), 1)])
         );
+        // 16b cut AF.1 (16c N16): a snapshot every five seconds of arena time.
+        assert_eq!(arena.snapshot_ms, 5_000);
         assert_eq!(arena.intents.max_pending_per_unit, 8);
         assert_eq!(
             (
@@ -2728,6 +2743,7 @@ scene_turn_dedline_secs = 30
              occupied_stop_ms = 1500\n\
              squad_size = 3\n\
              max_units_by_class = { drone = 2, walker = 4 }\n\
+             snapshot_ms = 2500\n\
              [tacsim.arena.tempo]\n\
              quiet_ms = 4000\n\
              alert_ms = 900\n\
@@ -2781,6 +2797,8 @@ scene_turn_dedline_secs = 30
             arena.max_units_by_class,
             BTreeMap::from([("drone".to_owned(), 2), ("walker".to_owned(), 4)])
         );
+        // 16b cut AF.1: the snapshot cadence, written out like the rest.
+        assert_eq!(arena.snapshot_ms, 2_500);
         assert_eq!(
             (
                 arena.tempo.quiet_ms,
@@ -2848,6 +2866,32 @@ scene_turn_dedline_secs = 30
             ),
             (900, 70, 4_096, 2_000, 30)
         );
+    }
+
+    /// **16b cut AF.1** (16c N16): `[tacsim.arena].snapshot_ms` reads the compiled
+    /// five seconds when a config does not name it, reads what it names —
+    /// `0`, the kill switch, included — and a misspelling of it refuses the
+    /// config under `deny_unknown_fields` rather than silently leaving the
+    /// default in force. The band is `tacsim::config::ArenaConfig::validate`'s.
+    #[test]
+    fn af1_snapshot_ms_absent_written_and_misspelt() {
+        let absent: Config =
+            toml::from_str("[tacsim.arena]\nsquad_size = 4\n").expect("a section without it");
+        assert_eq!(
+            absent.tacsim.arena.snapshot_ms, 5_000,
+            "the compiled default"
+        );
+        for written in [0_u32, 1_000, 60_000, 7] {
+            let cfg: Config = toml::from_str(&format!("[tacsim.arena]\nsnapshot_ms = {written}\n"))
+                .expect("the key parses");
+            assert_eq!(
+                cfg.tacsim.arena.snapshot_ms, written,
+                "what is written is read; the band is checked where the arena is mapped"
+            );
+        }
+        let typo = toml::from_str::<Config>("[tacsim.arena]\nsnapshots_ms = 5000\n")
+            .expect_err("a misspelt key refuses the config");
+        assert!(typo.to_string().contains("snapshots_ms"), "{typo}");
     }
 
     /// **16b cut AE.3**: `[tacsim.arena].max_units_by_class` round-trips in both

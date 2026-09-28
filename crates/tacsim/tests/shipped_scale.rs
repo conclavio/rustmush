@@ -993,3 +993,165 @@ fn m4_on_the_proving_ground_a_sees_b_exactly_when_b_sees_a() {
     // The ground is worth the property: both answers occur.
     assert!(blocked > 0 && open > 0, "{blocked} blocked, {open} not");
 }
+
+/// **16b cut AF.1: the shipped centre, snapshotted** (16c N16) — twelve stock
+/// tanks, the production roster's own six a side on the machine, on the
+/// proving ground, stepped at a one-second cadence past a minute and on to the
+/// first pulse boundary with a round in flight (the missile rack's 250 m/s
+/// round is airborne for seconds). The encoded state is under half a mebibyte
+/// and the figure is printed as `af1_shipped_bytes=` — the first data point for
+/// the bound 16b cut AF.2 measures on the harness and sets there; it holds the
+/// shot and no float anywhere (the stock units' own rules blobs are in it —
+/// the shipped content's float guard); and it decodes on the shipped ground,
+/// under the shipped locomotion table, to the arena that was encoded.
+///
+/// **And the round lands the same**: at 1,000 ms and again at 500 ms, the
+/// decoded arena resumed on the last wall and the uninterrupted arena (a clone
+/// of the one encoded) are stepped thirty seconds further side by side — one
+/// tape byte for byte, one per-substep hash sequence, one final state hash and
+/// one pair of ledger digests. The only arena-level proof that a `Shot`'s
+/// unhashed fields and its impact's due time ride a resume: the state hash
+/// folds only how many shots and due events there are.
+#[test]
+fn af1_the_shipped_centre_encodes_under_the_expectation() {
+    const CADENCE_MS: i64 = 1_000;
+    let world = booted_world();
+    let pods = tacsim::match_::PODS_PER_SIDE;
+    let red: Vec<Muster> = (1..=pods)
+        .map(|slot| Muster::reflex(Team::Red, slot))
+        .collect();
+    let blue: Vec<Muster> = (1..=pods)
+        .map(|slot| Muster::reflex(Team::Blue, slot))
+        .collect();
+    let mut arena = shipped_arena(&world, &[&red, &blue]);
+    assert_eq!(arena.units.len(), 12, "twelve stock tanks");
+    let mut wall = 0_i64;
+    loop {
+        let out = arena.step(wall, &[], &[]);
+        assert!(
+            out.ended.is_none(),
+            "the match ended at {} ms with no round in flight at a pulse boundary",
+            arena.now_ms
+        );
+        if arena.now_ms >= 60_000 && !arena.shots.is_empty() {
+            break;
+        }
+        assert!(
+            arena.now_ms < 300_000,
+            "no round was in flight at a pulse boundary in five minutes"
+        );
+        wall += CADENCE_MS;
+    }
+    let snapshot =
+        tacsim::arena::Snapshot::encode(&arena).expect("the shipped centre encodes between pulses");
+    let bytes = snapshot.bytes().len();
+    println!("af1_shipped_bytes={bytes} at_ms={}", arena.now_ms);
+    assert!(
+        bytes < 512 * 1024,
+        "the shipped centre's snapshot is {bytes} bytes, past the 512 KiB expectation"
+    );
+    let state: serde_json::Value =
+        serde_json::from_slice(snapshot.bytes()).expect("the state string is JSON");
+    assert!(
+        state
+            .get("shots")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|shots| !shots.is_empty()),
+        "the snapshot carries the round in flight"
+    );
+    let carried: Vec<u64> = arena.shots.keys().copied().collect();
+    let numbers = no_float(&state, "state");
+    assert!(numbers > 1_000, "{numbers} numbers is not a shipped state");
+    let decoded = tacsim::arena::Snapshot::decode(&snapshot.document, arena.definition.clone())
+        .expect("it decodes on the shipped ground");
+    assert_eq!(
+        tacsim::arena::hash::state_hash(&decoded),
+        snapshot.state_hash
+    );
+    for cadence in [CADENCE_MS, 500] {
+        let mut uninterrupted = arena.clone();
+        let mut resumed =
+            tacsim::arena::Snapshot::decode(&snapshot.document, arena.definition.clone())
+                .expect("it decodes again");
+        let _ = resumed.resume_at(wall);
+        let until = arena.now_ms + 30_000;
+        let reference = run_on(&mut uninterrupted, wall, cadence, until);
+        let continued = run_on(&mut resumed, wall, cadence, until);
+        // A round the snapshot carried in flight lands in the continuation.
+        let tape = String::from_utf8_lossy(&reference.0);
+        assert!(
+            carried.iter().any(|seq| {
+                let shot = format!("\"shot_seq\":{seq},");
+                tape.lines()
+                    .any(|line| line.contains("\"kind\":\"impact\"") && line.contains(&shot))
+            }),
+            "at {cadence} ms: no round the snapshot carried ({carried:?}) landed"
+        );
+        assert!(
+            continued == reference,
+            "at {cadence} ms the resumed centre is not the uninterrupted one \
+             (tape {} against {} bytes, {} against {} substeps)",
+            continued.0.len(),
+            reference.0.len(),
+            continued.1.len(),
+            reference.1.len()
+        );
+    }
+}
+
+/// **The rest of a shipped run from `wall`** (16b cut AF.1): stepped at
+/// `cadence_ms` until arena time reaches `until_ms`, then flushed — the tape it
+/// handed out, byte for byte, the per-substep hashes, the final state hash and
+/// the ledger's two running digests.
+fn run_on(
+    arena: &mut Arena,
+    wall: i64,
+    cadence_ms: i64,
+    until_ms: i64,
+) -> (Vec<u8>, Vec<u64>, u64, [u8; 32], [u8; 32]) {
+    let mut tape: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut wall = wall;
+    while arena.now_ms < until_ms {
+        wall += cadence_ms;
+        let out = arena.step(wall, &[], &[]);
+        for chunk in &out.ledger_chunks {
+            tape.extend_from_slice(&chunk.bytes);
+        }
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if out.ended.is_some() {
+            break;
+        }
+    }
+    arena.ledger.flush();
+    for chunk in arena.ledger.take_chunks() {
+        tape.extend_from_slice(&chunk.bytes);
+    }
+    (
+        tape,
+        hashes,
+        tacsim::arena::hash::state_hash(arena),
+        arena.ledger.digest(),
+        arena.ledger.shipped_digest(),
+    )
+}
+
+/// **No float anywhere in a JSON value** (16b cut AF.1): answers how many
+/// numbers it walked.
+fn no_float(value: &serde_json::Value, path: &str) -> usize {
+    match value {
+        serde_json::Value::Number(number) => {
+            assert!(!number.is_f64(), "{path} is a float: {number}");
+            1
+        }
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|item| no_float(item, &format!("{path}[]")))
+            .sum(),
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(key, item)| no_float(item, &format!("{path}.{key}")))
+            .sum(),
+        _ => 0,
+    }
+}

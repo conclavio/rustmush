@@ -27,15 +27,22 @@
 //! and there is no resume. The ledger's [`Ledger::digest`] and log id go on the
 //! result record, not the ledger itself. Per-pulse state durability is a
 //! requirement before IC play, not a cut-A one.
+//!
+//! **16b cut AF.1** gave the ledger the state a snapshot carries
+//! ([`LedgerState`], [`Ledger::to_state`], [`Ledger::from_state`]); the message
+//! that ships it is 16b cut AF.2's and the boot that resumes from it AF.3's, so
+//! until AF.3 lands the sentence above is still what a crash does.
 
 use std::collections::VecDeque;
 
 use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
+use sha2::digest::common::hazmat::{SerializableState, SerializedState};
 use sha2::{Digest as _, Sha256};
 use smol_str::SmolStr;
 
 use crate::arena::clock::Tempo;
+use crate::arena::snapshot::SnapshotError;
 use crate::arena::state::{ContactId, EndReason, Team};
 use crate::config::LedgerConfig;
 
@@ -643,6 +650,36 @@ pub struct Ledger {
     shipped: Sha256,
 }
 
+/// **What a snapshot carries of the ledger** (16b cut AF.1; doc 16 §3.1
+/// "Durability"): the counters, the chunk being filled, the closed chunks not
+/// yet handed to the egress, and the two SHA-256 running states — everything
+/// [`Ledger`] holds but its configuration, which the snapshot carries beside it
+/// in the frozen `[tacsim.arena.ledger]` block.
+///
+/// The open buffer and each closed chunk are `String`s because they are JSON
+/// lines, which are UTF-8 by construction; a snapshot whose text is not decodes
+/// nowhere (the state's own parse refuses it). The two digests are the
+/// `SerializableState` form of `sha2`'s running state, so a resumed ledger's
+/// [`Ledger::digest`] and [`Ledger::shipped_digest`] are the digests of every
+/// byte the match has appended and shipped since it opened, and not only of
+/// the ones this process saw.
+///
+/// It carries **the open chunk, not the tape**: the chunks already handed to
+/// the egress are the world's to keep (16b cut AF.2), and `flushed_upto` is
+/// carried as it stood (16b cut AF.3 sets it on the resume).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerState {
+    seq: u64,
+    open: String,
+    closed: Vec<(u64, String)>,
+    last_closed_seq: u64,
+    flushed_upto: u64,
+    bytes_total: u64,
+    digest: Vec<u8>,
+    shipped: Vec<u8>,
+}
+
 impl Clone for Ledger {
     fn clone(&self) -> Ledger {
         Ledger {
@@ -687,6 +724,73 @@ impl Ledger {
             digest: Sha256::new(),
             shipped: Sha256::new(),
         }
+    }
+
+    /// **The ledger as a snapshot carries it** (16b cut AF.1): see
+    /// [`LedgerState`]. It copies the open chunk and the closed queue, which
+    /// between two pulses is at most one chunk's worth each (the task takes the
+    /// closed ones after every pulse).
+    #[must_use]
+    pub fn to_state(&self) -> LedgerState {
+        LedgerState {
+            seq: self.seq,
+            // Every byte in here is a `serde_json` line or the `encode_failed`
+            // line `append` writes, all UTF-8, so the lossy branch is
+            // unreachable; it is spelled lossy only so that this is not a panic.
+            open: String::from_utf8_lossy(&self.open).into_owned(),
+            closed: self
+                .closed
+                .iter()
+                .map(|chunk| {
+                    (
+                        chunk.seq,
+                        String::from_utf8_lossy(&chunk.bytes).into_owned(),
+                    )
+                })
+                .collect(),
+            last_closed_seq: self.last_closed_seq,
+            flushed_upto: self.flushed_upto,
+            bytes_total: self.bytes_total,
+            digest: self.digest.serialize().to_vec(),
+            shipped: self.shipped.serialize().to_vec(),
+        }
+    }
+
+    /// **A ledger back from a snapshot** (16b cut AF.1), under `cfg` — the
+    /// frozen `[tacsim.arena.ledger]` block the snapshot carries beside it.
+    ///
+    /// # Errors
+    ///
+    /// [`SnapshotError::Malformed`] when either digest state is not one
+    /// `sha2`'s SHA-256 can resume from.
+    pub fn from_state(cfg: &LedgerConfig, state: LedgerState) -> Result<Ledger, SnapshotError> {
+        let LedgerState {
+            seq,
+            open,
+            closed,
+            last_closed_seq,
+            flushed_upto,
+            bytes_total,
+            digest,
+            shipped,
+        } = state;
+        Ok(Ledger {
+            cfg: cfg.clone(),
+            seq,
+            open: open.into_bytes(),
+            closed: closed
+                .into_iter()
+                .map(|(seq, bytes)| LedgerChunk {
+                    seq,
+                    bytes: bytes.into_bytes(),
+                })
+                .collect(),
+            last_closed_seq,
+            flushed_upto,
+            bytes_total,
+            digest: resume_sha256(&digest, "digest")?,
+            shipped: resume_sha256(&shipped, "shipped")?,
+        })
     }
 
     /// **Record one event**, answering its sequence number.
@@ -884,6 +988,22 @@ impl Ledger {
             bytes: std::mem::take(&mut self.open),
         });
     }
+}
+
+/// **A SHA-256 running state back from its serialised bytes** (16b cut AF.1):
+/// `sha2`'s own `SerializableState`, so the digest the snapshot resumes is the
+/// digest the match had been folding, byte for byte. `which` names the field
+/// in the refusal.
+fn resume_sha256(bytes: &[u8], which: &str) -> Result<Sha256, SnapshotError> {
+    let serialized: &SerializedState<Sha256> = bytes.try_into().map_err(|_| {
+        SnapshotError::Malformed(format!(
+            "the ledger's {which} state is {} bytes, not a SHA-256 state",
+            bytes.len()
+        ))
+    })?;
+    Sha256::deserialize(serialized).map_err(|_| {
+        SnapshotError::Malformed(format!("the ledger's {which} state is not a SHA-256 state"))
+    })
 }
 
 #[cfg(test)]
@@ -1443,6 +1563,102 @@ mod tests {
         log.flush();
         let _ = log.take_chunks();
         assert_eq!(log.shipped_digest(), log.digest());
+    }
+
+    /// **16b cut AF.1**: a ledger carried through its state across two chunk
+    /// closes — one taken and acknowledged, one closed and still waiting, and an
+    /// open chunk part-filled — is the ledger that was never carried. The state
+    /// crosses JSON on the way, as the snapshot's does; afterwards both are
+    /// given the same appends, and every counter, both digests and every chunk
+    /// the egress is handed after agree.
+    #[test]
+    fn af1_a_ledger_through_its_state_is_the_uninterrupted_ledger() {
+        let append = |log: &mut Ledger, n: i64| {
+            log.append(
+                n,
+                summary(12),
+                vec![(format!("hit:{n}"), 7)],
+                u64::try_from(n).unwrap_or(0),
+            )
+            .expect("room");
+        };
+        let mut straight = ledger(1 << 24, 4_096);
+        let mut carried = ledger(1 << 24, 4_096);
+        let mut n = 0_i64;
+        while carried.last_closed_seq() < 1 {
+            append(&mut straight, n);
+            append(&mut carried, n);
+            n += 1;
+        }
+        assert_eq!(straight.take_chunks(), carried.take_chunks());
+        straight.mark_flushed(1);
+        carried.mark_flushed(1);
+        while carried.last_closed_seq() < 2 {
+            append(&mut straight, n);
+            append(&mut carried, n);
+            n += 1;
+        }
+        // Two lines into the next chunk, so the open buffer is under test too.
+        for _ in 0..2 {
+            append(&mut straight, n);
+            append(&mut carried, n);
+            n += 1;
+        }
+
+        let state = carried.to_state();
+        assert!(!state.open.is_empty(), "the open chunk is carried");
+        assert_eq!(
+            state.closed.len(),
+            1,
+            "one closed chunk waits for the egress"
+        );
+        assert_eq!((state.last_closed_seq, state.flushed_upto), (2, 1));
+        let text = serde_json::to_string(&state).expect("the state encodes");
+        let back: LedgerState = serde_json::from_str(&text).expect("and decodes");
+        assert_eq!(back, state);
+        let defaulted = Ledger::from_state(&LedgerConfig::default(), back.clone())
+            .expect("the digest states resume");
+        // Under the configuration it is given, not one it carried.
+        assert_eq!(defaulted.max_bytes(), LedgerConfig::default().max_bytes);
+        let mut resumed = Ledger::from_state(
+            &LedgerConfig {
+                summary_ms: 5_000,
+                max_bytes: 1 << 24,
+                max_unflushed_chunks: 4_096,
+            },
+            back,
+        )
+        .expect("the digest states resume");
+
+        let same = |a: &Ledger, b: &Ledger| {
+            assert_eq!(a.digest(), b.digest());
+            assert_eq!(a.shipped_digest(), b.shipped_digest());
+            assert_eq!(a.seq(), b.seq());
+            assert_eq!(a.bytes_total(), b.bytes_total());
+            assert_eq!(a.last_closed_seq(), b.last_closed_seq());
+            assert_eq!(a.flushed_upto(), b.flushed_upto());
+        };
+        same(&straight, &resumed);
+        while straight.last_closed_seq() < 4 {
+            append(&mut straight, n);
+            append(&mut resumed, n);
+            n += 1;
+        }
+        same(&straight, &resumed);
+        assert_eq!(straight.take_chunks(), resumed.take_chunks());
+        straight.flush();
+        resumed.flush();
+        assert_eq!(straight.take_chunks(), resumed.take_chunks());
+        same(&straight, &resumed);
+        assert_eq!(resumed.digest(), resumed.shipped_digest(), "all of it left");
+
+        // A digest state of the wrong length is refused by name, never a panic.
+        let mut broken = carried.to_state();
+        broken.shipped.pop();
+        assert!(matches!(
+            Ledger::from_state(&LedgerConfig::default(), broken),
+            Err(SnapshotError::Malformed(message)) if message.contains("shipped")
+        ));
     }
 
     #[test]

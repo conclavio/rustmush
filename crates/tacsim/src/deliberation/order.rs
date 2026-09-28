@@ -398,7 +398,8 @@ impl Order {
 /// failed. Both drop the machine to doctrine, both journal one
 /// `crate::arena::ledger::EventKind::OrderExpired` line, and both reach the
 /// commander as `crate::arena::command::SignalReason::OrderExpired`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StandingOrder {
     /// The order.
     pub order: Order,

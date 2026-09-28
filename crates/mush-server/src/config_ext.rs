@@ -311,6 +311,10 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             // operator's entries laid over the compiled default — refused here,
             // before `validate` bounds the values, for a word that names no class.
             max_units_by_class: class_caps(&cfg.arena.max_units_by_class)?,
+            // 16b cut AF.1 (16c N16): the snapshot cadence, mapped straight
+            // across and banded by `validate` below. Nothing reads it until 16b
+            // cut AF.2; it is here because the snapshot carries this whole block.
+            snapshot_ms: cfg.arena.snapshot_ms,
             ledger: tacsim::config::LedgerConfig {
                 summary_ms: cfg.arena.ledger.summary_ms,
                 max_bytes: cfg.arena.ledger.max_bytes,
@@ -1003,6 +1007,7 @@ mod tests {
              deliberate_min_ms = 12000\n\
              squad_size = 3\n\
              max_units_by_class = { drone = 2, walker = 3 }\n\
+             snapshot_ms = 2500\n\
              [tacsim.arena.tempo]\n\
              quiet_ms = 4000\n\
              alert_ms = 900\n\
@@ -1093,6 +1098,8 @@ mod tests {
                     (tacsim::definitions::UnitClass::Walker, 3),
                     (tacsim::definitions::UnitClass::Drone, 2),
                 ]),
+                // 16b cut AF.1: the snapshot cadence, off its default of 5,000.
+                snapshot_ms: 2_500,
                 intents: tacsim::config::IntentsConfig {
                     max_pending_per_unit: 3
                 },
@@ -1350,6 +1357,20 @@ mod tests {
                 "max_units_by_class = { drone = 25 }\n",
                 "[tacsim.arena.max_units_by_class].drone must be 0 to 24",
                 "25",
+            ),
+            // 16b cut AF.1 (16c N16): a cadence under a second, and one past a
+            // minute; `0` (off) is legal and is not a row.
+            (
+                "[tacsim.arena]",
+                "snapshot_ms = 7\n",
+                "[tacsim.arena].snapshot_ms must be 0 or 1000 to 60000",
+                "7",
+            ),
+            (
+                "[tacsim.arena]",
+                "snapshot_ms = 60001\n",
+                "[tacsim.arena].snapshot_ms must be 0 or 1000 to 60000",
+                "60001",
             ),
             (
                 "[tacsim.arena.intents]",

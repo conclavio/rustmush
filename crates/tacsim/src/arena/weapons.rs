@@ -111,6 +111,7 @@ pub const DEFAULT_WEAPON: &str = "cannon";
 /// loader, and the arena holds neither (D-16-1, D-16-3). Cut T's check-out copies
 /// the rows across (`crate::match_::arena_def::weapon_summaries`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WeaponBand {
     /// The band's outer edge, centimetres. Everything inside it and outside the
     /// previous band's edge is in this band.
@@ -437,7 +438,8 @@ fn against_sight(weapon_cm: u64, sight_cm: u32) -> u64 {
 /// and they agree. Cut S.1's justification for reading the target here — *a held
 /// contact was refreshed within `sensors.pass_ms` or it would have expired* — was
 /// false by a factor of `sensors.lost_after_passes`, and is not the reason.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Shot {
     /// The shot's sequence within the match, from `1`, and the argument of its
     /// three draw labels (doc 16 §3.5).

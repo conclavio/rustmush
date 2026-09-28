@@ -463,6 +463,19 @@ thread_local! {
 /// point of every substep at every cadence, off the journal entries of that
 /// substep. The list is not a checklist: a write added to the scan is folded a
 /// substep late by construction, whether or not it is named here.
+///
+/// **What a snapshot keeps of all this** (16b cut AF.1; 16c N16;
+/// `crate::arena::snapshot`). What the snapshot carries is every field this
+/// function folds and every field that steers; what it re-derives is a
+/// function of the definition (whose digest the document records) and of
+/// compiled code (the locomotion table, like the slope rule — the document
+/// records its digest too), or a cache of state it carries (the index, the
+/// jamming memo, the cheapest cell per row); what it resets is a view or
+/// per-pulse scratch. The decode's digest and hash checks and
+/// `crates/tacsim/tests/arena.rs`' every-pulse resume are the proofs; a field
+/// added to the state must go in one of the three lists in `snapshot.rs`, whose
+/// exhaustive destructuring will not compile until it does. No fold here moved
+/// for it.
 #[must_use]
 pub fn state_hash(arena: &Arena) -> u64 {
     #[cfg(test)]

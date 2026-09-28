@@ -2591,18 +2591,10 @@ fn on_ended(
 }
 
 /// The ledger digest, as the 64 lowercase base-16 characters every other digest
-/// in the tree renders as.
-#[must_use]
-pub fn digest_text(digest: &[u8; 32]) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(64);
-    for byte in digest {
-        // `write!` into a `String` is infallible; the result is discarded rather
-        // than unwrapped, which is also what keeps this off the panic budget.
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
-}
+/// in the tree renders as — since 16b cut AF.1 the arena library's own
+/// ([`crate::arena::snapshot::digest_text`]), which the snapshot's head writes
+/// its two digests with; re-exported here so every caller is unchanged.
+pub use crate::arena::snapshot::digest_text;
 
 /// One line to every connected Wizard-or-better — the one staff audience the
 /// tree fans an alert out to.

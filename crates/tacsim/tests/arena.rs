@@ -33,6 +33,12 @@
 //!   event list and one hash sequence bar the one `tempo_floor` line's period, a
 //!   jittered floored run is the clean one, and the task's own wakes under a
 //!   floor are the floor apart in wall time and the clamp apart in arena time.
+//! - **(af1)** 16b cut AF.1's snapshot: a snapshot after every pulse decoded
+//!   and resumed is the uninterrupted run, byte for byte, at three cadences,
+//!   under the task's own wakes, across a drop and a reclaim and in a squadded
+//!   arena, its squad signals and its ledger's running digests included; every
+//!   refusal of the decode by name; the encoding deterministic and integer; and
+//!   its shape pinned over two unstepped fixtures.
 //!
 //! # Why the tempo is pinned, and pinned to `Quiet`
 //!
@@ -65,9 +71,10 @@ use tacsim::arena::intents::{Control, ControlState, Intent, IntentKind};
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
 use tacsim::arena::motion::BlockedCause;
 use tacsim::arena::rng::{DrawLabel, draw};
+use tacsim::arena::snapshot::{Snapshot, SnapshotError};
 use tacsim::arena::state::{
-    Arena, ArenaDefinition, ArenaTerrain, Channel, CustodyOut, CustodyUnit, EndReason, EntryZone,
-    Pilot, Power, StopReason, Team, TerrainCell, TrackedRules,
+    Arena, ArenaDefinition, ArenaError, ArenaTerrain, Channel, CustodyOut, CustodyUnit, EndReason,
+    EntryZone, Pilot, Power, StopReason, Team, TerrainCell, TrackedRules,
 };
 use tacsim::arena::step::{Frame, StepOutput};
 use tacsim::config::{ArenaConfig, MatchConfig, SensorsConfig};
@@ -393,6 +400,10 @@ type Final = (ObjId, i64, i64, i32, u32, i32, bool, bool);
 /// What one replay produced: the ledger, the per-substep hashes, the final poses,
 /// and the shape of the run.
 struct Replay {
+    /// **The tape itself** (16b cut AF.1): every byte of every chunk the run
+    /// was handed, in order — what [`Replay::events`] is parsed from, kept so a
+    /// resumed run can be held to the uninterrupted one byte for byte.
+    tape: Vec<u8>,
     /// Every ledger line, normalised.
     events: Vec<Line>,
     /// The state hash of every substep of the whole run, in order.
@@ -424,6 +435,11 @@ struct Replay {
     /// **16b cut I.4**: the arena time of every staff picture a pulse built,
     /// in order — empty unless the run was watched.
     observers: Vec<i64>,
+    /// **16b cut AF.1**: every squad signal a pulse handed the world
+    /// (`StepOutput::deliberation`), in order — the one output the squad watch
+    /// and the expired set steer, which neither the tape nor the hash sees.
+    /// Empty unless the arena has reflex squads.
+    deliberation: Vec<tacsim::arena::SquadSignal>,
 }
 
 impl Replay {
@@ -465,6 +481,10 @@ fn replay(
 /// time reaches `until_ms` or the readings run out. [`replay`] is this over
 /// `0, cadence, 2 × cadence, …`; the floor's jittered run hands it odd
 /// overshoots and an extra wake.
+///
+/// **16b cut AF.1**: [`replay_on_from`] from the script's first beat, then
+/// [`finish_replay`] — the flush that closes the open chunk, which a resume
+/// test must not do before it encodes.
 fn replay_on(
     arena: &mut Arena,
     walls: &mut dyn Iterator<Item = i64>,
@@ -472,18 +492,44 @@ fn replay_on(
     script: &[Beat],
     pin: &dyn Fn(i64) -> Tempo,
 ) -> Replay {
+    let (mut replay, _) = replay_on_from(arena, walls, until_ms, script, 0, pin);
+    finish_replay(arena, &mut replay);
+    replay
+}
+
+/// **[`replay_on`] from a script cursor, without the flush** (16b cut AF.1).
+///
+/// The cursor is the index of the first beat not yet delivered, and the answer
+/// carries the one it reached: a resumed segment handed the whole script from
+/// `0` would deliver again every beat its first segment consumed (a second
+/// `wound`, a stale-epoch control twice), so every resume test hands the second
+/// segment the first one's cursor. And it does **not** flush: a first segment
+/// that closed its open chunk before the snapshot would carry an empty
+/// `LedgerState.open` at every resume point, and on the two-tank script the
+/// whole tape is under one chunk, so that buffer is exactly the state a resume
+/// has to carry. [`Replay::tape`] and [`Replay::events`] are the bytes the
+/// pulses handed out so far; [`finish_replay`] adds the rest.
+fn replay_on_from(
+    arena: &mut Arena,
+    walls: &mut dyn Iterator<Item = i64>,
+    until_ms: i64,
+    script: &[Beat],
+    from: usize,
+    pin: &dyn Fn(i64) -> Tempo,
+) -> (Replay, usize) {
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
     let Some(mut wall) = walls.next() else {
         panic!("a replay needs at least its opening wall reading");
     };
-    let mut next = 0_usize;
+    let mut next = from;
     let mut pulses = 0_u32;
     let mut substeps = 0_u32;
     let mut told: Vec<String> = Vec::new();
     let mut pulses_seen: Vec<(i64, bool, bool)> = Vec::new();
     let mut catchups: Vec<(i64, tacsim::arena::Catchup)> = Vec::new();
     let mut observers: Vec<i64> = Vec::new();
+    let mut deliberation: Vec<tacsim::arena::SquadSignal> = Vec::new();
     loop {
         arena.clock.pin_tempo_for_tests(pin(arena.now_ms));
         let mut controls: Vec<Control> = Vec::new();
@@ -521,6 +567,7 @@ fn replay_on(
         pulses_seen.push(seen(arena, started, &out));
         catchups.extend(reported(started, &out));
         observers.extend(out.observer.as_ref().map(|picture| picture.now_ms));
+        deliberation.extend(out.deliberation.iter().cloned());
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
         }
@@ -529,36 +576,55 @@ fn replay_on(
         };
         wall = reading;
     }
+    (
+        Replay {
+            events: lines(&bytes),
+            tape: bytes,
+            hashes,
+            finals: finals_of(arena),
+            pulses,
+            substeps,
+            told,
+            pulses_seen,
+            catchups,
+            observers,
+            deliberation,
+        },
+        next,
+    )
+}
+
+/// Each unit's final pose, speed and condition, in unit-id order.
+fn finals_of(arena: &Arena) -> Vec<Final> {
+    arena
+        .units
+        .iter()
+        .map(|unit| {
+            (
+                unit.id,
+                unit.pose.x_cm,
+                unit.pose.y_cm,
+                unit.pose.z_cm,
+                unit.pose.heading_mdeg,
+                unit.speed_cms,
+                unit.blocked,
+                unit.linkdead,
+            )
+        })
+        .collect()
+}
+
+/// **The end of a run** (16b cut AF.1): flush the ledger, as the end of a match
+/// does, add the chunks it hands out to the tape, and read the events and the
+/// finals again — what [`replay_on`]'s tail always did, for a segment
+/// [`replay_on_from`] left open.
+fn finish_replay(arena: &mut Arena, replay: &mut Replay) {
     arena.ledger.flush();
     for chunk in arena.ledger.take_chunks() {
-        bytes.extend_from_slice(&chunk.bytes);
+        replay.tape.extend_from_slice(&chunk.bytes);
     }
-    Replay {
-        events: lines(&bytes),
-        hashes,
-        finals: arena
-            .units
-            .iter()
-            .map(|unit| {
-                (
-                    unit.id,
-                    unit.pose.x_cm,
-                    unit.pose.y_cm,
-                    unit.pose.z_cm,
-                    unit.pose.heading_mdeg,
-                    unit.speed_cms,
-                    unit.blocked,
-                    unit.linkdead,
-                )
-            })
-            .collect(),
-        pulses,
-        substeps,
-        told,
-        pulses_seen,
-        catchups,
-        observers,
-    }
+    replay.events = lines(&replay.tape);
+    replay.finals = finals_of(arena);
 }
 
 /// One [`Replay::pulses_seen`] row: the pulse's start, whether the mover's
@@ -938,13 +1004,33 @@ fn replay_as_the_task_floored(
     script: &[Beat],
     floor: Option<u32>,
 ) -> (Replay, Vec<i64>, Vec<i64>) {
+    let (mut replay, woke_at, walls, _) =
+        replay_as_the_task_from(arena, period_ms, until_ms, script, 0, floor, 0);
+    finish_replay(arena, &mut replay);
+    (replay, woke_at, walls)
+}
+
+/// **[`replay_as_the_task_floored`] from a script cursor and a wall, without
+/// the flush** (16b cut AF.1): [`replay_on_from`]'s shape for the task's own
+/// wake rule. `wall0` is the wall the first pulse steps at — `0` for a match's
+/// opening pulse, and for a resumed segment the deadline
+/// [`Arena::resume_at`] answered. The fourth answer is the cursor it reached.
+fn replay_as_the_task_from(
+    arena: &mut Arena,
+    period_ms: u32,
+    until_ms: i64,
+    script: &[Beat],
+    from: usize,
+    floor: Option<u32>,
+    wall0: i64,
+) -> (Replay, Vec<i64>, Vec<i64>, usize) {
     arena.arena_cfg.tempo.quiet_ms = period_ms;
     arena.clock.set_floor(floor);
     let mut walls: Vec<i64> = Vec::new();
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
-    let mut wall = 0_i64;
-    let mut next = 0_usize;
+    let mut wall = wall0;
+    let mut next = from;
     let mut pulses = 0_u32;
     let mut substeps = 0_u32;
     let mut told: Vec<String> = Vec::new();
@@ -952,6 +1038,7 @@ fn replay_as_the_task_floored(
     let mut pulses_seen: Vec<(i64, bool, bool)> = Vec::new();
     let mut catchups: Vec<(i64, tacsim::arena::Catchup)> = Vec::new();
     let mut observers: Vec<i64> = Vec::new();
+    let mut deliberation: Vec<tacsim::arena::SquadSignal> = Vec::new();
     loop {
         arena.clock.pin_tempo_for_tests(Tempo::Quiet);
         let mut controls: Vec<Control> = Vec::new();
@@ -970,7 +1057,9 @@ fn replay_as_the_task_floored(
             }
             next += 1;
         }
-        if pulses > 0 {
+        // Every pulse but a match's opening one is a wake; a resumed segment's
+        // first pulse is one (16b cut AF.1).
+        if pulses > 0 || wall0 != 0 {
             woke_at.push(arena.now_ms);
         }
         walls.push(wall);
@@ -984,6 +1073,7 @@ fn replay_as_the_task_floored(
         pulses_seen.push(seen(arena, started, &out));
         catchups.extend(reported(started, &out));
         observers.extend(out.observer.as_ref().map(|picture| picture.now_ms));
+        deliberation.extend(out.deliberation.iter().cloned());
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
         }
@@ -993,37 +1083,20 @@ fn replay_as_the_task_floored(
         );
         wall = out.next_due_ms;
     }
-    arena.ledger.flush();
-    for chunk in arena.ledger.take_chunks() {
-        bytes.extend_from_slice(&chunk.bytes);
-    }
     let replay = Replay {
         events: lines(&bytes),
+        tape: bytes,
         hashes,
-        finals: arena
-            .units
-            .iter()
-            .map(|unit| {
-                (
-                    unit.id,
-                    unit.pose.x_cm,
-                    unit.pose.y_cm,
-                    unit.pose.z_cm,
-                    unit.pose.heading_mdeg,
-                    unit.speed_cms,
-                    unit.blocked,
-                    unit.linkdead,
-                )
-            })
-            .collect(),
+        finals: finals_of(arena),
         pulses,
         substeps,
         told,
         pulses_seen,
         catchups,
         observers,
+        deliberation,
     };
-    (replay, woke_at, walls)
+    (replay, woke_at, walls, next)
 }
 
 /// **16b cut U.1's mandatory cross-tempo test** (16b §11; doc 16 §3.1 "Rate
@@ -4508,5 +4581,1002 @@ fn ae3_a_drone_on_the_spot_contests_nothing_at_three_cadences() {
         ends.iter()
             .all(|(_, kind)| kind.contains(r#"{"hold":{"winner":"red"}}"#)),
         "{ends:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (af1) the snapshot: 16b cut AF.1 (16c N16; doc 16 §3.1 "Durability")
+// ---------------------------------------------------------------------------
+
+/// **Rewrite a snapshot document's state and stamp its digest again** (16b cut
+/// AF.1): what a test does to move a field *past* the digest check, so the
+/// check under test is the one after it.
+fn restamp(document: &mut serde_json::Value, state: &str) {
+    use sha2::Digest as _;
+    document["state"] = serde_json::Value::String(state.to_owned());
+    document["state_digest"] = serde_json::Value::String(tacsim::arena::snapshot::digest_text(
+        &sha2::Sha256::digest(state.as_bytes()).into(),
+    ));
+}
+
+/// A snapshot's state string, parsed.
+fn state_of(snapshot: &Snapshot) -> serde_json::Value {
+    serde_json::from_slice(snapshot.bytes()).expect("the state string is JSON")
+}
+
+/// **Whether the ledger's open chunk rode in the snapshot** — the buffer a
+/// flush before the encode would have emptied.
+fn carries_open_chunk(snapshot: &Snapshot) -> bool {
+    state_of(snapshot)
+        .pointer("/ledger/open")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|open| !open.is_empty())
+}
+
+/// An empty run, for a resume taken after the last pulse: the continuation is
+/// nothing but [`finish_replay`]'s flush.
+fn empty_replay() -> Replay {
+    Replay {
+        tape: Vec::new(),
+        events: Vec::new(),
+        hashes: Vec::new(),
+        finals: Vec::new(),
+        pulses: 0,
+        substeps: 0,
+        told: Vec::new(),
+        pulses_seen: Vec::new(),
+        catchups: Vec::new(),
+        observers: Vec::new(),
+        deliberation: Vec::new(),
+    }
+}
+
+/// **Two segments as one run** (16b cut AF.1): the first segment's tape, hashes,
+/// notices, pulse rows and reports followed by the resumed one's, and the
+/// resumed one's finals.
+fn joined(first: &Replay, second: &Replay) -> Replay {
+    let mut tape = first.tape.clone();
+    tape.extend_from_slice(&second.tape);
+    Replay {
+        events: lines(&tape),
+        tape,
+        hashes: first.hashes.iter().chain(&second.hashes).copied().collect(),
+        finals: second.finals.clone(),
+        pulses: first.pulses + second.pulses,
+        substeps: first.substeps + second.substeps,
+        told: first.told.iter().chain(&second.told).cloned().collect(),
+        pulses_seen: first
+            .pulses_seen
+            .iter()
+            .chain(&second.pulses_seen)
+            .copied()
+            .collect(),
+        catchups: first
+            .catchups
+            .iter()
+            .chain(&second.catchups)
+            .cloned()
+            .collect(),
+        observers: first
+            .observers
+            .iter()
+            .chain(&second.observers)
+            .copied()
+            .collect(),
+        deliberation: first
+            .deliberation
+            .iter()
+            .chain(&second.deliberation)
+            .cloned()
+            .collect(),
+    }
+}
+
+/// What one resume produced: the two segments joined, whether the snapshot
+/// carried an open chunk, the snapshot's state, and the resumed ledger's two
+/// SHA-256 running digests at the end of the run (`digest`, `shipped_digest`) —
+/// what the result record signs, and what neither the tape nor the state hash
+/// can see.
+struct Resumed {
+    run: Replay,
+    open_chunk: bool,
+    state: serde_json::Value,
+    digests: ([u8; 32], [u8; 32]),
+}
+
+/// A ledger's two running digests, [`Resumed::digests`]' shape.
+fn digests_of(arena: &Arena) -> ([u8; 32], [u8; 32]) {
+    (arena.ledger.digest(), arena.ledger.shipped_digest())
+}
+
+/// **A match stepped to pulse `k` at `cadence_ms`, snapshotted, decoded and
+/// resumed** (16b cut AF.1): the first segment over the walls `0 … k ×
+/// cadence` from the script's first beat and without a flush; the encode, with
+/// the head's hash held to the arena's and the head read without its state;
+/// the decode on `ground`; `resume_at` on the last wall the first segment
+/// stepped at; and the rest of the script from the cursor the first segment
+/// reached, over the walls from `(k + 1) × cadence` to `until_ms`, then the
+/// flush. Asserts the script was consumed exactly once between the two.
+fn resume_at_pulse(
+    mut arena: Arena,
+    ground: ArenaDefinition,
+    cadence_ms: i64,
+    k: i64,
+    until_ms: i64,
+    script: &[Beat],
+    pin: &dyn Fn(i64) -> Tempo,
+) -> Resumed {
+    let (first, cursor) = replay_on_from(
+        &mut arena,
+        &mut (0..=k).map(|pulse| pulse * cadence_ms),
+        k * cadence_ms,
+        script,
+        0,
+        pin,
+    );
+    assert_eq!(
+        arena.now_ms,
+        k * cadence_ms,
+        "the first segment ran to pulse {k}"
+    );
+    let snapshot = Snapshot::encode(&arena).expect("an arena between two pulses encodes");
+    let head = Snapshot::head(&snapshot.document).expect("the head reads");
+    assert_eq!(head.state_hash, tacsim::arena::hash::state_hash(&arena));
+    assert_eq!(head.state_hash, snapshot.state_hash);
+    assert_eq!(
+        (head.at_ms, head.ledger_seq, head.chunk_seq),
+        (
+            arena.now_ms,
+            arena.ledger.seq(),
+            arena.ledger.last_closed_seq()
+        )
+    );
+    // The head is read without the state: a document whose state is not a
+    // state at all answers the same head.
+    let mut blind = snapshot.document.clone();
+    blind["state"] = serde_json::Value::String("x".to_owned());
+    assert_eq!(Snapshot::head(&blind), Ok(head));
+    let mut resumed = Snapshot::decode(&snapshot.document, ground).expect("the snapshot decodes");
+    // The fixed-cadence driver steps at its own walls and reads no deadline;
+    // `resume_at`'s answer is `af1_the_task_s_own_wakes_resume_on_the_lattice`'s.
+    let _first_due = resumed.resume_at(k * cadence_ms);
+    let (mut second, reached) = if resumed.now_ms < until_ms {
+        replay_on_from(
+            &mut resumed,
+            &mut ((k + 1)..).map(|pulse| pulse * cadence_ms),
+            until_ms,
+            script,
+            cursor,
+            pin,
+        )
+    } else {
+        (empty_replay(), cursor)
+    };
+    finish_replay(&mut resumed, &mut second);
+    assert_eq!(
+        reached,
+        script.len(),
+        "the two segments consumed the script exactly once (the first reached {cursor})"
+    );
+    Resumed {
+        run: joined(&first, &second),
+        open_chunk: carries_open_chunk(&snapshot),
+        state: state_of(&snapshot),
+        digests: digests_of(&resumed),
+    }
+}
+
+/// **Two runs are one match**: one tape, byte for byte and line by line, one
+/// per-substep hash sequence, one final state, one notice list, one substep
+/// count and one list of squad signals (what the carried squad watch and
+/// expired set steer). `what` names the resume in the message.
+///
+/// **The frame flags of `pulses_seen` are not compared**, deliberately:
+/// `Arena::last_frames` is a view the snapshot resets, so a resumed pilot's
+/// first frame is a keyframe even where the uninterrupted run's pulse sent a
+/// delta or nothing. That is what a pilot's client gets on any reclaim, and it
+/// moves no hash and no line — the tape comparison is the proof.
+fn same_match(resumed: &Replay, reference: &Replay, what: &str) {
+    assert_eq!(
+        resumed.tape, reference.tape,
+        "{what}: the tape is not byte-identical"
+    );
+    assert_eq!(
+        resumed.events,
+        reference.events,
+        "{what}: the event list differs: {:?} against {:?}",
+        resumed.kinds(),
+        reference.kinds()
+    );
+    assert_eq!(
+        resumed.hashes, reference.hashes,
+        "{what}: the per-substep hash sequence differs"
+    );
+    assert_eq!(
+        resumed.finals, reference.finals,
+        "{what}: the finals differ"
+    );
+    assert_eq!(resumed.told, reference.told, "{what}: the notices differ");
+    assert_eq!(
+        resumed.substeps, reference.substeps,
+        "{what}: a different number of substeps ran"
+    );
+    assert_eq!(
+        resumed.deliberation, reference.deliberation,
+        "{what}: the squad signals differ"
+    );
+}
+
+/// **16b cut AF.1's first proof** (16c N16; doc 16 §3.1 "Durability"): the (a)
+/// script at 5,000 ms, snapshotted after **every** pulse from the opening one
+/// to the last, each decoded on its ground and resumed, is the uninterrupted
+/// run — one tape byte for byte, one hash sequence, one final state, one notice
+/// list — and the script is consumed exactly once across the two segments.
+/// Items 1 to 5 of the cut: the module, the derives, the ledger's digest
+/// state, the pose checks and the clock's re-anchor.
+///
+/// A resume after the last pulse is the degenerate one: the continuation is
+/// only the flush, from a decoded ledger's open chunk.
+#[test]
+fn af1_a_snapshot_at_every_pulse_resumes_to_the_same_tape() {
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut reference_arena = scripted_arena();
+    let reference = replay(&mut reference_arena, 5_000, 60_000, &script(), &quiet);
+    assert_eq!(
+        reference.count("\"blocked\""),
+        2,
+        "the reference is (a)'s run"
+    );
+    let mut open_chunks = 0_u32;
+    for k in 0..=12_i64 {
+        let resumed = resume_at_pulse(
+            scripted_arena(),
+            definition(),
+            5_000,
+            k,
+            60_000,
+            &script(),
+            &quiet,
+        );
+        open_chunks += u32::from(resumed.open_chunk);
+        same_match(
+            &resumed.run,
+            &reference,
+            &format!("resumed after pulse {k}"),
+        );
+        assert_eq!(resumed.run.pulses, reference.pulses, "pulse {k}");
+        // The ledger's digest state: the two running SHA-256s the result
+        // record is signed with, which no line of the tape and no fold of the
+        // hash can see.
+        assert_eq!(
+            resumed.digests,
+            digests_of(&reference_arena),
+            "resumed after pulse {k}: the ledger's running digests differ"
+        );
+    }
+    // The two-tank tape is under one chunk, so every resume point carried the
+    // ledger's open buffer — the state a flush before the encode would have
+    // emptied. At least one is the claim; every one is what it is.
+    assert!(
+        open_chunks >= 1,
+        "no resume point carried the ledger's open chunk"
+    );
+}
+
+/// **16b cut AF.1's mandatory cross-tempo test** (16b §11; doc 16 §3.1 "Rate
+/// independence", D-16-2): test (af1)'s construction at 5,000, 1,000 and 500 ms,
+/// each cadence resumed after every pulse of its run — 12, 60 and 120 resume
+/// points — and every resumed run one event list, one hash sequence, one final
+/// state and one notice list with the uninterrupted run at 5,000 ms. The due
+/// heap, the staggered passes and the wake lattice are carried integers in
+/// arena time, so the cadence decides nothing across a resume either. The two
+/// tanks here carry no gun and no sensor, so no round is in flight at any of
+/// these resume points: a shot carried across a resume, at two cadences, is
+/// `crates/tacsim/tests/shipped_scale.rs`'
+/// `af1_the_shipped_centre_encodes_under_the_expectation`'s.
+#[test]
+fn af1_resumed_at_every_pulse_at_three_cadences_is_one_event_list_and_one_hash_sequence() {
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut reference_arena = scripted_arena();
+    let reference = replay(&mut reference_arena, 5_000, 60_000, &script(), &quiet);
+    for cadence in [5_000_i64, 1_000, 500] {
+        let pulses = 60_000 / cadence;
+        let mut open_chunks = 0_u32;
+        for k in 0..pulses {
+            let resumed = resume_at_pulse(
+                scripted_arena(),
+                definition(),
+                cadence,
+                k,
+                60_000,
+                &script(),
+                &quiet,
+            );
+            let what = format!("{cadence} ms, resumed after pulse {k}");
+            open_chunks += u32::from(resumed.open_chunk);
+            let run = &resumed.run;
+            assert_eq!(
+                run.events,
+                reference.events,
+                "{what}: {:?} against {:?}",
+                run.kinds(),
+                reference.kinds()
+            );
+            assert_eq!(run.hashes, reference.hashes, "{what}");
+            assert_eq!(run.finals, reference.finals, "{what}");
+            assert_eq!(run.told, reference.told, "{what}");
+            assert_eq!(run.substeps, reference.substeps, "{what}");
+            // The cadence really differed: the pulse count is the proof.
+            if cadence != 5_000 {
+                assert_ne!(run.pulses, reference.pulses, "{what} ran the same pulses");
+            }
+        }
+        assert!(
+            open_chunks >= 1,
+            "at {cadence} ms no resume point carried the ledger's open chunk"
+        );
+    }
+}
+
+/// **16b cut AF.1 under the task's own wake rule** (16b cut U.1's driver): at
+/// the `Quiet` period of 5,000, 1,000 and 500 ms the task is stopped at a
+/// lattice pulse (30,000 ms), snapshotted, decoded and resumed; `resume_at`'s
+/// answer is the wake the uninterrupted task took next, and the continued run
+/// — from the cursor, from that wall — is the uninterrupted one's walls and the
+/// fixed-cadence replay's events, hashes and finals.
+#[test]
+fn af1_the_task_s_own_wakes_resume_on_the_lattice() {
+    const STOP_MS: i64 = 30_000;
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut fixed_arena = scripted_arena();
+    let fixed = replay(&mut fixed_arena, 5_000, 60_000, &script(), &quiet);
+    let mut open_chunks = 0_u32;
+    for period in [5_000_u32, 1_000, 500] {
+        let mut whole_arena = scripted_arena();
+        let (whole, whole_woke, whole_walls) =
+            replay_as_the_task_floored(&mut whole_arena, period, 60_000, &script(), None);
+
+        let mut arena = scripted_arena();
+        let (first, first_woke, first_walls, cursor) =
+            replay_as_the_task_from(&mut arena, period, STOP_MS, &script(), 0, None, 0);
+        assert_eq!(arena.now_ms, STOP_MS, "the task stopped on the lattice");
+        let Some(&last_wall) = first_walls.last() else {
+            panic!("the first segment stepped");
+        };
+        let snapshot = Snapshot::encode(&arena).expect("the task's arena encodes");
+        open_chunks += u32::from(carries_open_chunk(&snapshot));
+        let mut resumed = Snapshot::decode(&snapshot.document, definition()).expect("and decodes");
+        let first_due = resumed.resume_at(last_wall);
+        let at = whole_walls
+            .iter()
+            .position(|wall| *wall == last_wall)
+            .expect("the uninterrupted task woke there too");
+        assert_eq!(
+            Some(&first_due),
+            whole_walls.get(at + 1),
+            "at a {period} ms period the resume wakes where the uninterrupted task did"
+        );
+        let (mut second, second_woke, second_walls, reached) = replay_as_the_task_from(
+            &mut resumed,
+            period,
+            60_000,
+            &script(),
+            cursor,
+            None,
+            first_due,
+        );
+        finish_replay(&mut resumed, &mut second);
+        assert_eq!(reached, script().len(), "the script, exactly once");
+        let walls: Vec<i64> = first_walls.iter().chain(&second_walls).copied().collect();
+        assert_eq!(walls, whole_walls, "at a {period} ms period");
+        let woke: Vec<i64> = first_woke.iter().chain(&second_woke).copied().collect();
+        assert_eq!(woke, whole_woke, "at a {period} ms period");
+        let run = joined(&first, &second);
+        same_match(&run, &whole, &format!("the task at a {period} ms period"));
+        assert_eq!(
+            digests_of(&resumed),
+            digests_of(&whole_arena),
+            "at a {period} ms period: the ledger's running digests differ"
+        );
+        assert_eq!(run.events, fixed.events, "at a {period} ms period");
+        assert_eq!(run.hashes, fixed.hashes, "at a {period} ms period");
+        assert_eq!(run.finals, fixed.finals, "at a {period} ms period");
+    }
+    assert!(
+        open_chunks >= 1,
+        "no stop on the lattice carried the ledger's open chunk"
+    );
+}
+
+/// **16b cut AF.1 across a drop and a reclaim** (16b cut Y.3/Y.4's script): the
+/// seat is released at 40 s and taken back at 55 s, and a snapshot taken
+/// between the two — at 40, 45 and 50 s — carries the `at_release` row, so the
+/// resumed run's catch-up report is the uninterrupted one's: one report, on the
+/// reclaim's own frame, counted from the `Linkdead`. The machine holds the tank
+/// in `[40 s, 55 s)` on both, and the tape is one tape.
+#[test]
+fn af1_a_drop_before_the_snapshot_and_a_reclaim_after_it_is_one_catch_up() {
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut reference_arena = scripted_arena();
+    let reference = replay(
+        &mut reference_arena,
+        5_000,
+        Y3_UNTIL_MS,
+        &y3_reclaim_script(),
+        &quiet,
+    );
+    assert_eq!(
+        reference
+            .catchups
+            .iter()
+            .map(|(at, _)| *at)
+            .collect::<Vec<i64>>(),
+        vec![Y3_LIVE_MS],
+        "the reference is Y.3's run"
+    );
+    let machine_between = |run: &Replay| {
+        run.pulses_seen
+            .iter()
+            .all(|(started, _, machine)| *machine == (Y3_RELEASED_MS..Y3_LIVE_MS).contains(started))
+    };
+    assert!(machine_between(&reference));
+    let mut open_chunks = 0_u32;
+    for k in [8_i64, 9, 10] {
+        let resumed = resume_at_pulse(
+            scripted_arena(),
+            definition(),
+            5_000,
+            k,
+            Y3_UNTIL_MS,
+            &y3_reclaim_script(),
+            &quiet,
+        );
+        let what = format!("resumed after pulse {k} ({} ms)", k * 5_000);
+        let rows = resumed
+            .state
+            .get("at_release")
+            .and_then(serde_json::Value::as_object)
+            .map_or(0, serde_json::Map::len);
+        assert_eq!(rows, 1, "{what}: the release row rode in the snapshot");
+        assert_eq!(resumed.run.catchups, reference.catchups, "{what}");
+        assert!(
+            machine_between(&resumed.run),
+            "{what}: {:?}",
+            resumed.run.pulses_seen
+        );
+        same_match(&resumed.run, &reference, &what);
+        assert_eq!(
+            resumed.digests,
+            digests_of(&reference_arena),
+            "{what}: the ledger's running digests differ"
+        );
+        open_chunks += u32::from(resumed.open_chunk);
+    }
+    assert!(
+        open_chunks >= 1,
+        "no resume point between the drop and the reclaim carried the ledger's open chunk"
+    );
+}
+
+/// [`definition`] with one cell's price moved — the ground a snapshot taken on
+/// [`definition`] must refuse.
+fn definition_repriced() -> ArenaDefinition {
+    let mut cells = vec![ground(); usize::from(SIDE) * usize::from(SIDE)];
+    for y in 0..SIDE {
+        if let Some(cell) = cells.get_mut(usize::from(y) * usize::from(SIDE) + usize::from(BAND_X))
+        {
+            cell.move_cost = 0;
+        }
+    }
+    if let Some(cell) = cells.get_mut(0) {
+        cell.move_cost = 150;
+    }
+    ArenaDefinition {
+        terrain: ArenaTerrain::new(SIDE, SIDE, CELL_CM, cells).expect("the test window"),
+        ..definition()
+    }
+}
+
+/// **Every refusal of the decode, by name** (16b cut AF.1): one document from
+/// the (a) script at 20 s, and one edit per refusal — the wrong ground, the
+/// wrong locomotion table, a field moved past the digest (the hash refuses it),
+/// the same field moved without a new digest (the digest refuses it), another
+/// format, another record, a pose off the window, two units in one cell, an
+/// unknown key and a `state_hash` that is not a number. And one edit that is
+/// **not** refused, pinning the brief's decision: a unit on a cell its row
+/// cannot enter, with the hash of the state it is. No lane of a running arena
+/// puts one there (motion does not, and since 16b cut AE.1 a staff
+/// `@arena/place` refuses it as `impassable`); `CellImpassable` is
+/// `Arena::new`'s rule for the world's hand-over, and the decode leaves the
+/// arena's own poses to the hash (`Snapshot::decode` says why).
+#[test]
+fn af1_a_snapshot_refuses_the_wrong_ground_the_wrong_physics_a_moved_field_a_moved_byte_and_another_format()
+ {
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut arena = scripted_arena();
+    let _ = replay_on_from(
+        &mut arena,
+        &mut (0..=4).map(|pulse| pulse * 5_000),
+        20_000,
+        &script(),
+        0,
+        &quiet,
+    );
+    let snapshot = Snapshot::encode(&arena).expect("the arena encodes");
+    let document = snapshot.document.clone();
+    assert!(
+        Snapshot::decode(&document, definition()).is_ok(),
+        "as taken, it decodes"
+    );
+    let state: serde_json::Value = state_of(&snapshot);
+    let decode =
+        |document: &serde_json::Value| Snapshot::decode(document, definition()).map(|_| ());
+    let edited = |edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut moved = state.clone();
+        edit(&mut moved);
+        let mut document = document.clone();
+        restamp(&mut document, &moved.to_string());
+        document
+    };
+
+    // The wrong ground: one cell's price moved, so the digest is another.
+    let repriced = definition_repriced();
+    let given = tacsim::arena::snapshot::digest_text(&repriced.digest());
+    assert_eq!(
+        Snapshot::decode(&document, repriced).map(|_| ()),
+        Err(SnapshotError::Definition {
+            recorded: snapshot.definition_digest.clone(),
+            given,
+        })
+    );
+    // The wrong physics.
+    let mut other_table = document.clone();
+    other_table["physics_digest"] = serde_json::Value::String("0".repeat(64));
+    assert_eq!(
+        decode(&other_table),
+        Err(SnapshotError::Physics {
+            recorded: "0".repeat(64),
+            loaded: mush_atlas::physics::LOCOMOTION_DIGEST.to_owned(),
+        })
+    );
+    // A moved field with its digest stamped again: the hash refuses it, and says
+    // both hashes — the one recorded and the moved arena's.
+    let later = edited(&|state| state["now_ms"] = serde_json::json!(20_001));
+    let mut twin = arena.clone();
+    twin.now_ms = 20_001;
+    assert_eq!(
+        decode(&later),
+        Err(SnapshotError::HashMismatch {
+            recorded: snapshot.state_hash,
+            decoded: tacsim::arena::hash::state_hash(&twin),
+        })
+    );
+    // The same edit without the new digest: the digest refuses it first.
+    let mut unstamped = document.clone();
+    unstamped["state"] = later["state"].clone();
+    assert!(matches!(
+        decode(&unstamped),
+        Err(SnapshotError::DigestMismatch { recorded, computed })
+            if recorded == document["state_digest"] && computed == later["state_digest"]
+    ));
+    // Another format, another record.
+    let mut format = document.clone();
+    format["format"] = serde_json::json!(2);
+    assert_eq!(
+        decode(&format),
+        Err(SnapshotError::Format {
+            found: 2,
+            expected: 1
+        })
+    );
+    let mut record = document.clone();
+    record["record"] = serde_json::json!("x");
+    assert_eq!(
+        decode(&record),
+        Err(SnapshotError::Record {
+            found: "x".to_owned()
+        })
+    );
+    // A pose off the window, and two units in one cell: `Arena::new`'s own
+    // refusals, before the hash is asked.
+    let off = edited(&|state| state["units"][0]["pose"]["x_cm"] = serde_json::json!(-1));
+    assert!(matches!(
+        decode(&off),
+        Err(SnapshotError::Refused(ArenaError::PoseOffWindow {
+            x_cm: -1,
+            ..
+        }))
+    ));
+    let stacked = edited(&|state| {
+        let first = state["units"][0]["pose"].clone();
+        state["units"][1]["pose"] = first;
+    });
+    assert!(matches!(
+        decode(&stacked),
+        Err(SnapshotError::Refused(ArenaError::CellOccupied { .. }))
+    ));
+    // **Not refused**: the mover on the impassable band, with the hash of the
+    // arena that is — a twin moved the same way.
+    let band_x_cm = i64::from(BAND_X) * i64::from(CELL_CM) + i64::from(CELL_CM) / 2;
+    let mut on_band =
+        edited(&|state| state["units"][0]["pose"]["x_cm"] = serde_json::json!(band_x_cm));
+    let mut twin = arena.clone();
+    if let Some(mover) = twin.unit_mut(MOVER) {
+        mover.pose.x_cm = band_x_cm;
+    }
+    on_band["state_hash"] =
+        serde_json::Value::String(tacsim::arena::hash::state_hash(&twin).to_string());
+    let placed = Snapshot::decode(&on_band, definition())
+        .expect("a unit on a cell its row cannot enter is left to the hash, which is its own");
+    assert_eq!(
+        placed.unit(MOVER).map(|unit| unit.pose.x_cm),
+        Some(band_x_cm)
+    );
+    // An unknown key, and a hash that is not a number.
+    let unknown = edited(&|state| state["surplus"] = serde_json::json!(1));
+    assert!(
+        matches!(decode(&unknown), Err(SnapshotError::Malformed(message)) if message.contains("surplus"))
+    );
+    let mut wordy = document.clone();
+    wordy["state_hash"] = serde_json::json!("x");
+    assert!(matches!(decode(&wordy), Err(SnapshotError::Malformed(_))));
+    // And a head that says something else than its state: a moved key outside
+    // the digest is a moved field too.
+    let mut late_head = document.clone();
+    late_head["at_ms"] = serde_json::json!(25_000);
+    assert!(
+        matches!(decode(&late_head), Err(SnapshotError::Malformed(message)) if message.contains("25000"))
+    );
+}
+
+/// Walk a JSON value: no number that is a float. Answers how many numbers it
+/// saw. (It checks no key order: a parsed `serde_json::Value`'s object is
+/// sorted by construction, so an order check here could not fail.)
+fn integer_only(value: &serde_json::Value, path: &str) -> usize {
+    match value {
+        serde_json::Value::Number(number) => {
+            assert!(!number.is_f64(), "{path} is a float: {number}");
+            1
+        }
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|item| integer_only(item, &format!("{path}[]")))
+            .sum(),
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(key, item)| integer_only(item, &format!("{path}.{key}")))
+            .sum(),
+        _ => 0,
+    }
+}
+
+/// **The encoding is deterministic and integer** (16b cut AF.1): an arena
+/// encoded twice is one string; encoded, decoded and encoded again it is still
+/// that string — the encode's borrowed state and the decode's owned one agree
+/// field for field; and the parsed state holds no float anywhere (the opaque
+/// units' rules blobs included). Those two equalities are the whole proof of
+/// the string's determinism. **The string is not key-sorted** and nothing here
+/// says it is: a struct writes its fields in declaration order and an
+/// enum-keyed map in the enum's order (`snapshot.rs`' module head).
+#[test]
+fn af1_the_encoding_is_deterministic_and_integer() {
+    // **The `preserve_order` canary**: `serde_json`'s object sorts whatever
+    // order it is built in. The one `Value` in the state — an opaque unit's
+    // rules blob — writes its keys in this order, so a `preserve_order`
+    // unified into the build would make those bytes follow insertion order.
+    let mut map = serde_json::Map::new();
+    map.insert("b".to_owned(), serde_json::json!(1));
+    map.insert("a".to_owned(), serde_json::json!(2));
+    assert_eq!(map.keys().collect::<Vec<_>>(), vec!["a", "b"]);
+
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut scripted = scripted_arena();
+    let _ = replay_on_from(
+        &mut scripted,
+        &mut (0..=5).map(|pulse| pulse * 5_000),
+        25_000,
+        &script(),
+        0,
+        &quiet,
+    );
+    let mut squadded = af1_squad_arena();
+    let _ = replay_on_from(
+        &mut squadded,
+        &mut (0..=5).map(|pulse| pulse * 5_000),
+        25_000,
+        &af1_squad_script(),
+        0,
+        &quiet,
+    );
+    for (name, arena, ground) in [
+        ("the scripted arena", &scripted, definition()),
+        ("the squadded arena", &squadded, definition()),
+    ] {
+        let once = Snapshot::encode(arena).expect("it encodes");
+        let twice = Snapshot::encode(arena).expect("it encodes again");
+        assert_eq!(
+            once.bytes(),
+            twice.bytes(),
+            "{name}: two encodes, two strings"
+        );
+        let decoded = Snapshot::decode(&once.document, ground).expect("it decodes");
+        let again = Snapshot::encode(&decoded).expect("the decoded arena encodes");
+        assert_eq!(
+            once.bytes(),
+            again.bytes(),
+            "{name}: encode, decode and encode again moved a byte"
+        );
+        assert_eq!(once.document, again.document, "{name}: and the head");
+        let numbers = integer_only(&state_of(&once), "state");
+        assert!(numbers > 100, "{name}: {numbers} numbers is not a state");
+    }
+}
+
+/// The squadded arena's second pair.
+const SQUAD_RED_B: ObjId = ObjId(5);
+const SQUAD_BLUE_B: ObjId = ObjId(10);
+
+/// **A squadded arena** (16b cut AF.1): four armed, sighted tanks on the
+/// reflex controller and no pilot — red's pair in the south, blue's ten cells
+/// north facing it — so `Arena::new` deals each side into one squad under its
+/// lowest id, two squads, and the first pulse fills the squad watch.
+fn af1_squad_arena() -> Arena {
+    let machine = |mut unit: CustodyUnit| {
+        unit.controller = tacsim::arena::state::Controller::Reflex;
+        unit
+    };
+    let facing_south = |mut unit: CustodyUnit| {
+        unit.pose.heading_mdeg = 180_000;
+        unit
+    };
+    Arena::new(
+        CustodyOut {
+            definition: definition(),
+            units: vec![
+                machine(watcher(MOVER, Team::Red, centre(5, 5))),
+                machine(watcher(SQUAD_RED_B, Team::Red, centre(7, 5))),
+                machine(facing_south(watcher(PARKED, Team::Blue, centre(5, 15)))),
+                machine(facing_south(watcher(
+                    SQUAD_BLUE_B,
+                    Team::Blue,
+                    centre(7, 15),
+                ))),
+            ],
+            pilots: Vec::new(),
+            resolution: tacsim::match_::stock_resolution(),
+            seed: 2_350,
+            mode: tacsim::arena::MatchMode::Skirmish,
+        },
+        &ArenaConfig::default(),
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the squadded arena")
+}
+
+/// **Red's commander orders its squad forward** at 5,000 ms, into the blue
+/// pair's sight, with a fifteen-second time to live — the way the bridge fans a
+/// commander's reply out, one order per unit. The four detect, classify, lock
+/// and fire on each other from about 20 s; the order runs out at 20,000 ms, the
+/// next tick of each red unit notes it, and the squad sits in `squads_expired`
+/// until the 30,000 ms floor lets the arena report it — so the snapshot after
+/// the pulse at 25,000 ms carries both tables.
+fn af1_squad_script() -> Vec<Beat> {
+    let order = tacsim::deliberation::Order {
+        squad: tacsim::deliberation::SquadId {
+            team: Team::Red,
+            index: 1,
+        },
+        objective: tacsim::deliberation::order::Objective::Advance { to: (6, 12) },
+        target: None,
+        horizon_ms: 60_000,
+        constraints: tacsim::deliberation::order::Constraints::default(),
+        ttl_ms: 15_000,
+        issued_ms: 1,
+        issuer: None,
+        spot: None,
+    };
+    vec![Beat::at(
+        5_000,
+        Vec::new(),
+        [MOVER, SQUAD_RED_B]
+            .into_iter()
+            .map(|unit| Intent {
+                unit,
+                channel: Channel::Helm,
+                epoch: 0,
+                kind: IntentKind::Order(Box::new(order.clone())),
+                seq: 1,
+            })
+            .collect(),
+    )]
+}
+
+/// **16b cut AF.1 on a squadded arena** (16c N16; the plan's second review,
+/// F1/AF-X1): every match with a reflex squad fills `Arena::squad_watch` at
+/// its first pulse, and its key is `SquadId`, a struct `serde_json` refuses as
+/// an object key at run time — so the table is written as pairs, and this is
+/// the test that would have failed on an AI-filled match's first snapshot. The
+/// squadded arena at 5,000 ms, snapshotted after every pulse: every resume is
+/// the uninterrupted run — its squad signals included, the one output the two
+/// carried views steer, with the expired order among them — and its ledger's
+/// running digests, and at least one resume point carries both the watch
+/// and a squad whose order ran out unreported, the watch as `[squad, watch]`
+/// pairs naming the squad's team and index.
+#[test]
+fn af1_a_squadded_arena_snapshots_after_its_first_pulse() {
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut reference_arena = af1_squad_arena();
+    assert_eq!(reference_arena.squads.len(), 2, "one squad a side");
+    let reference = replay(
+        &mut reference_arena,
+        5_000,
+        60_000,
+        &af1_squad_script(),
+        &quiet,
+    );
+    assert!(
+        reference.count("\"ordered\"") >= 2 && reference.count("\"order_expired\"") >= 2,
+        "the order landed and ran out: {:?}",
+        reference.kinds()
+    );
+    // The squad signals are what the carried watch and expired set steer, and
+    // `same_match` holds every resume to this list: it must hold the expiry the
+    // carried set reports.
+    assert!(
+        reference
+            .deliberation
+            .iter()
+            .any(|signal| signal.reason.as_str() == "order_expired"),
+        "the reference reported the expired order: {:?}",
+        reference
+            .deliberation
+            .iter()
+            .map(|signal| (signal.at_ms, signal.squad, signal.reason.as_str()))
+            .collect::<Vec<_>>()
+    );
+    let mut both = 0_u32;
+    let mut open_chunks = 0_u32;
+    for k in 0..=12_i64 {
+        let resumed = resume_at_pulse(
+            af1_squad_arena(),
+            definition(),
+            5_000,
+            k,
+            60_000,
+            &af1_squad_script(),
+            &quiet,
+        );
+        let what = format!("the squadded arena resumed after pulse {k}");
+        same_match(&resumed.run, &reference, &what);
+        assert_eq!(
+            resumed.digests,
+            digests_of(&reference_arena),
+            "{what}: the ledger's running digests differ"
+        );
+        open_chunks += u32::from(resumed.open_chunk);
+        let watch = resumed
+            .state
+            .get("squad_watch")
+            .and_then(serde_json::Value::as_array)
+            .expect("the squad watch is an array of pairs");
+        assert!(!watch.is_empty(), "{what}: the first pulse fills the watch");
+        for pair in watch {
+            let squad = pair.get(0).expect("a pair's squad");
+            assert!(
+                squad.get("team").is_some_and(serde_json::Value::is_string)
+                    && squad.get("index").is_some_and(serde_json::Value::is_u64),
+                "{what}: {pair}"
+            );
+        }
+        let expired = resumed
+            .state
+            .get("squads_expired")
+            .and_then(serde_json::Value::as_array)
+            .map_or(0, Vec::len);
+        both += u32::from(expired > 0);
+    }
+    assert!(
+        both >= 1,
+        "no resume point carried a squad whose order ran out unreported"
+    );
+    assert!(
+        open_chunks >= 1,
+        "no resume point of the squadded arena carried the ledger's open chunk"
+    );
+}
+
+/// One line per key path of a JSON value, `path: kind`, into `out`; an array is
+/// descended once, as one `[]` segment for all of its elements — so a pair's key
+/// and value, and a list whose elements differ in shape, each leave their own
+/// lines, and a list of a hundred alike leaves one set.
+fn shape(value: &serde_json::Value, path: &str, out: &mut std::collections::BTreeSet<String>) {
+    let kind = match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    };
+    out.insert(format!("{path}: {kind}"));
+    match value {
+        serde_json::Value::Array(items) => {
+            let at = format!("{path}.[]");
+            for item in items {
+                shape(item, &at, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (key, item) in map {
+                shape(item, &format!("{path}.{key}"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// **The structural pin**: SHA-256 of the sorted `path: kind` lines of an
+/// unstepped [`scripted_arena`]'s encoded state and an unstepped
+/// [`af1_squad_arena`]'s, one set, joined by newlines.
+const AF1_SHAPE_DIGEST: &str = "10c4a4ed24b1342e029999bac41e433bf87fe9e63950f073f0733f8de131e7bb";
+/// And how many lines that is.
+const AF1_SHAPE_LINES: usize = 378;
+
+/// **The snapshot's shape is pinned** (16b cut AF.1).
+///
+/// *This pin is structural: it moves only together with a `SNAPSHOT_FORMAT` bump
+/// and never alone, and a behaviour change never moves it (the tree at pulse
+/// zero is a function of the fixture and the shape, not of motion or
+/// perception). Two fixtures are walked, so the pin sees every path either of
+/// them fills: [`scripted_arena`]'s bare tanks and [`af1_squad_arena`]'s armed,
+/// sighted machines in two squads — its weapons, sensors, reflex rows and squad
+/// rosters are under the pin.*
+///
+/// *Its limit, read off the 378 lines (a collection empty or an option `None`
+/// at pulse zero leaves one line and none for its element): **not under it**
+/// are the contacts (`ShadowContact`, `SeenPose`, `OwnSighting`, `Reading`),
+/// the designator book's rows, the shots (`Shot`, `Resolution`), the pending
+/// intents (`Intent`), the release rows and catch-ups (`ReleaseSnapshot`,
+/// `Catchup`, `SectionWords`, `MachineWords`), the held losses, `spent_said`,
+/// the squad watch (`SquadWatch`, `SquadDigest`) and the expired set, `stop`,
+/// `ended` (`MatchEnd`), `hold` (`HoldState`), the ledger's closed queue, the
+/// clock's two signal times; on a unit `heat` (`HeatState`), `held` (`Held`),
+/// `lock`, `occupied_hold` (`OccupiedHold`), `thermal`, `jammer`, `eccm`,
+/// `receiver`, `slope_limit_pct`, the profile's bands and sections
+/// (`BandProfile`, `SectionProfile`) and the opaque unit's capabilities,
+/// components and mobility; on a reflex row its route, `avoid`, goal,
+/// waypoints, hunt, target, standing order (`StandingOrder`, `Order`) and its
+/// timers. A field added to or dropped from one of those moves nothing here:
+/// the format is then the author's to bump and the reviewer's to see, and a
+/// stale document is refused as `Malformed` — a missing field by the derive, a
+/// surplus one by `deny_unknown_fields` on the carried types — rather than by
+/// name as `Format`, and never silently resumed. The pin also moves
+/// without a shape change when a default map's keys change (a key is a path
+/// segment: `arena_cfg.max_units_by_class.drone`, `reflex.units.4`) or when
+/// `Arena::new` schedules a different set of due kinds at open. A cut that
+/// adds, renames or re-types a carried field re-blesses it and bumps the format
+/// in the same change, and a running match on a live box is voided at that
+/// reload (deploy/README.md).*
+#[test]
+fn af1_the_snapshot_shape_is_pinned() {
+    use sha2::Digest as _;
+    let mut lines = std::collections::BTreeSet::new();
+    for arena in [scripted_arena(), af1_squad_arena()] {
+        let snapshot = Snapshot::encode(&arena).expect("an unstepped arena encodes");
+        shape(&state_of(&snapshot), "state", &mut lines);
+    }
+    let joined = lines.iter().cloned().collect::<Vec<String>>().join("\n");
+    let digest =
+        tacsim::arena::snapshot::digest_text(&sha2::Sha256::digest(joined.as_bytes()).into());
+    assert_eq!(
+        tacsim::arena::snapshot::SNAPSHOT_FORMAT,
+        1,
+        "a format bump re-blesses the pin below in the same change"
+    );
+    assert_eq!(
+        (digest.as_str(), lines.len()),
+        (AF1_SHAPE_DIGEST, AF1_SHAPE_LINES),
+        "the snapshot's shape moved: bump SNAPSHOT_FORMAT and re-bless.\n{joined}"
     );
 }

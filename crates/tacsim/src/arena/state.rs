@@ -104,7 +104,13 @@ impl TerrainCell {
 /// else — a `hover` mode, a unit with no mobility profile, which is every
 /// engine fixture — reads [`CostRow::Tracked`], the price every unit paid
 /// before.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// **16b cut AF.1** gave it the snapshot's derive: [`UnitState::cost_row`] is
+/// carried whole, under the row's own word ([`CostRow::as_str`]).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum CostRow {
     /// The `tracked` row: a tank. The row [`TerrainCell::move_cost`] holds.
     #[default]
@@ -838,7 +844,10 @@ impl ArenaMode {
 /// **It reaches no pilot** (doc 16 §1, §5; plan item 10): the rule is public in
 /// selection — the board says it — and whether and since when a side holds the
 /// spot is told to nobody. No frame, no notice and no verb reads `held_by`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// **16b cut AF.1**: carried whole by the snapshot, the clock beside the rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HoldState {
     /// The key spot's cell.
     pub spot: (u16, u16),
@@ -1128,6 +1137,7 @@ impl ArenaDefinition {
 /// All-zero (the [`Default`]) is a unit that cannot move at all, which is what a
 /// wreck and an unmodelled hull get.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrackedRules {
     /// The forward ceiling, cm/s.
     pub max_speed_cms: u32,
@@ -1156,6 +1166,7 @@ impl TrackedRules {
 /// the M32 unit by the game crate and cached here so a substep of motion needs
 /// no section walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MotionLimits {
     /// The surviving fraction of the speed cap, per cent; `100` is no slow.
     pub slow_pct: u8,
@@ -1254,10 +1265,14 @@ impl MotionLimits {
 /// engine and every cold hull zeroes what it refused, which is
 /// [`crate::arena::heat`]'s own rule for a unit that has gone cold: a carry
 /// belongs to arena time that was actually spent moving.
-/// It carries **no serde derives**: [`UnitState`] itself has none, the carries
-/// have no chosen wire form, and nothing in the tree encodes one (16b cut Q.6,
-/// fixer). A cut that gives them one chooses the form then.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// **Its serde derive is the snapshot's** (16b cut AF.1): until then it carried
+/// none, because [`UnitState`] had none and nothing in the tree encoded one (16b
+/// cut Q.6, fixer). The snapshot carries every carry field by field, since each
+/// is authoritative state the hash folds; no wire form a pilot or a ledger reads
+/// carries one, and those keep their own words.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MotionCarry {
     /// Millidegrees × 1,000 not yet turned, in `0..1000`.
     pub turn: u32,
@@ -1298,9 +1313,12 @@ pub struct MotionCarry {
 /// at, so the maturity test is arena time on both sides and never a count of
 /// pulses (doc 16 §3.1, D-16-2).
 ///
-/// It carries no serde derives, for [`MotionCarry`]'s reason: [`UnitState`] has
-/// none and nothing in the tree encodes one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// **Its serde derive is the snapshot's** (16b cut AF.1), for
+/// [`MotionCarry`]'s reason: the hold is hashed state the snapshot carries, and
+/// no wire form a pilot or a ledger reads carries one — those keep their own
+/// words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OccupiedHold {
     /// The cell the crossing was refused, `(x, y)`.
     pub cell: (u16, u16),
@@ -1455,7 +1473,8 @@ fn fatal_section_mask(
 /// A unit whose content declares no ceiling has **no** `HeatState` at all, which
 /// is what makes the per-substep dissipation an `Option` test for every stock unit
 /// in the harness's field of 300.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HeatState {
     /// The section the `heat` and `heat_sink` cells sit on — found rather than
     /// derived, so the rule for *which* section lives in one place
@@ -1567,7 +1586,8 @@ fn heat_addr(section: &str, cell: &str) -> Option<mush_tactics::CellAddr> {
 /// The row is the **definition**, immutable for the life of the match; what a shot
 /// changes is the two live cells beside it on [`UnitState`]
 /// (`ready_at_ms` and `ammo`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WeaponSummary {
     /// The component id the pilot names in `FIRE <weapon>`.
     pub id: SmolStr,
@@ -1689,7 +1709,8 @@ pub struct CustodyUnit {
 }
 
 /// One seated pilot at check-out (doc 16 §3.1's `pilots[{unit, station, epoch}]`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Pilot {
     /// The tank the station is on (doc 16 §3.3 "Stations are on the tank").
     pub unit: ObjId,
@@ -1742,7 +1763,16 @@ pub struct CustodyOut {
 // ---------------------------------------------------------------------------
 
 /// One unit's arena state (doc 16 §4 "Arena state").
-#[derive(Clone, Debug)]
+///
+/// **16b cut AF.1: carried whole by its derive.** It has no re-derived and no
+/// reset field — the fit constants (`cost_row`, `class`, `slope_limit_pct`,
+/// `fatal_sections`, `jammer`, `eccm`), the hashed state, the per-substep
+/// `blocked` flag, the band cache `condition` and the opaque `TacticalUnit`
+/// alike — so a field added here is carried by the snapshot the day it is
+/// added. The one way to drop one is a `#[serde(skip)]`, which is grep-able,
+/// and the snapshot's own lists name it then (`crate::arena::snapshot`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UnitState {
     /// The world object the unit is. The units vector is sorted on it.
     pub id: ObjId,
@@ -2139,9 +2169,13 @@ pub const PROVISIONAL_PREFIX: char = 'X';
 /// "has been classified" bit would name a fresh blip by team and slot. See
 /// [`DesignatorBook`] and `Arena::designator_for`.
 ///
-/// No `serde`: it is a rendering of arena state, and every wire form carries the
-/// string [`std::fmt::Display`] produces.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// **Its serde derive is the snapshot's** (16b cut AF.1): a unit's callsign, a
+/// held loss's name and a release row's contact list are carried as
+/// `{"provisional": 3}` or `{"slot": {"team": "red", "slot": 1}}`. Every wire
+/// form a pilot, a frame or a ledger reads still carries the string
+/// [`std::fmt::Display`] produces, and never this one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Designator {
     /// A viewer-scoped number, from `1` (`X1`).
     Provisional(u16),
@@ -2186,6 +2220,66 @@ fn bijective_base26(slot: u16) -> String {
     }
     letters.reverse();
     letters.into_iter().collect()
+}
+
+/// **One unit's pose, as a check-out refuses it** (16b cut AF.1, extracted from
+/// [`Arena::new`] unchanged): a heading that is not a bearing is
+/// [`ArenaError::BadHeading`], and a pose off the window is
+/// [`ArenaError::PoseOffWindow`], in that order. Answers the cell the pose
+/// stands in.
+fn check_pose(terrain: &ArenaTerrain, unit: ObjId, pose: &Pose) -> Result<(u16, u16), ArenaError> {
+    if pose.heading_mdeg >= 360_000 {
+        return Err(ArenaError::BadHeading {
+            unit,
+            heading_mdeg: pose.heading_mdeg,
+        });
+    }
+    terrain.cell_of(pose).ok_or(ArenaError::PoseOffWindow {
+        unit,
+        x_cm: pose.x_cm,
+        y_cm: pose.y_cm,
+    })
+}
+
+/// **Doc 16 §3.4 step 5 at a check-out** (16b cut A.2's check, moved here
+/// unchanged by 16b cut AF.1): no two units stand in one cell, refused as
+/// [`ArenaError::CellOccupied`] naming the higher id as the unit that could not
+/// be placed and the lower as the one already there. A unit off the window
+/// stands in no cell and is [`check_pose`]'s to refuse.
+fn check_occupancy(terrain: &ArenaTerrain, units: &[UnitState]) -> Result<(), ArenaError> {
+    let mut cells: Vec<((u16, u16), ObjId)> = units
+        .iter()
+        .filter_map(|state| terrain.cell_of(&state.pose).map(|cell| (cell, state.id)))
+        .collect();
+    cells.sort_unstable();
+    if let Some(((x, y), unit, other)) = cells
+        .windows(2)
+        .find(|pair| pair.first().map(|(at, _)| *at) == pair.get(1).map(|(at, _)| *at))
+        .and_then(|pair| {
+            let (cell, lower) = *pair.first()?;
+            let (_, higher) = *pair.get(1)?;
+            Some((cell, higher, lower))
+        })
+    {
+        return Err(ArenaError::CellOccupied { unit, other, x, y });
+    }
+    Ok(())
+}
+
+/// **The pose refusals of [`Arena::new`] that a decoded snapshot is held to**
+/// (16b cut AF.1): [`check_pose`] for every unit in unit-id order, then
+/// [`check_occupancy`] — `BadHeading`, `PoseOffWindow` and `CellOccupied`, and
+/// deliberately **not** `CellImpassable`, which `crate::arena::snapshot`'s
+/// decode says why of.
+///
+/// # Errors
+///
+/// The first of the three refusals a unit meets.
+pub(crate) fn check_poses(terrain: &ArenaTerrain, units: &[UnitState]) -> Result<(), ArenaError> {
+    for unit in units {
+        check_pose(terrain, unit.id, &unit.pose)?;
+    }
+    check_occupancy(terrain, units)
 }
 
 /// **Give every unit its public callsign** (16b cut Q.1), over the sorted unit
@@ -2243,6 +2337,7 @@ fn resolve_callsigns(states: &mut [UnitState]) -> Result<(), ArenaError> {
 
 /// How much a viewer knows about what it is holding (doc 16 §3.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
 pub enum Classification {
     /// Held, not yet told apart from anything else.
@@ -2297,6 +2392,7 @@ impl Classification {
 /// five integers per refresh is the whole cost of the contact store knowing
 /// *where it saw something* rather than where that something now is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SeenPose {
     /// East, region centimetres.
     pub x_cm: i64,
@@ -2379,6 +2475,7 @@ impl SeenPose {
 /// the whole time-to-live). Both are answered here, in the store, rather than at
 /// every reader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ShadowContact {
     /// What is being held.
     pub target: ObjId,
@@ -2482,6 +2579,7 @@ pub struct ShadowContact {
 /// **One platform's own sighting of a target** (16b cut F.3): the moment, and
 /// where the target was at it. See [`ShadowContact::own_seen`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OwnSighting {
     /// Arena milliseconds at the sighting.
     pub at_ms: i64,
@@ -2584,7 +2682,8 @@ pub const SPENT_NOTICE_MS: i64 = 5_000;
 /// Cut A defined it and cut S.1's sensor pass fills it. It is a `BTreeMap` of
 /// `BTreeMap` rather than a hash map so that iteration order is the state hash's
 /// order and a replay cannot diverge on it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ShadowContacts {
     by_viewer: BTreeMap<ObjId, BTreeMap<ContactId, ShadowContact>>,
 }
@@ -2749,11 +2848,16 @@ impl ShadowContacts {
 /// **16b cut M.3** (16c `T-27`) gave it a running [`DesignatorBook::digest`],
 /// which is what the hash folds now in place of walking both maps every
 /// substep.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// **16b cut AF.1**: carried whole by the snapshot — `of` as pairs, its key
+/// being a tuple no JSON object can name (`crate::arena::snapshot::pairs`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DesignatorBook {
     /// The next number each viewer will issue, from `1`.
     next: BTreeMap<ObjId, u16>,
     /// `(viewer, target)` to the number that viewer gave that target.
+    #[serde(with = "crate::arena::snapshot::pairs")]
     of: BTreeMap<(ObjId, ObjId), u16>,
     /// **FNV-1a 64 over every mint, in the order it was made** (16b cut M.3):
     /// seeded at [`crate::arena::hash::FNV_OFFSET_BASIS`] and folded by
@@ -2902,8 +3006,13 @@ impl Channel {
 ///
 /// The table **never lowers**. A `Control` that arrives out of order, or twice,
 /// cannot reopen an epoch a later one closed.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// **16b cut AF.1**: carried by the snapshot as pairs, its key being a tuple no
+/// JSON object can name (`crate::arena::snapshot::pairs`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EpochTable {
+    #[serde(with = "crate::arena::snapshot::pairs")]
     epochs: BTreeMap<(ObjId, Channel), u64>,
 }
 
@@ -2969,7 +3078,8 @@ impl EpochTable {
 /// of a held loss's hysteresis, the two things that still happened at a pulse
 /// boundary — doc 16 §3.1's rate independence says everything in the arena
 /// happens at an arena timestamp.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum DueKind {
     /// `match.startup_ms` after `STARTUP` was accepted: power goes online.
     StartupComplete {
@@ -3078,7 +3188,8 @@ pub enum DueKind {
 /// The derived order is `(t_ms, seq, kind)`, and `seq` is unique per heap, so it
 /// is exactly doc 16 §3.1 phase 3(c)'s *timestamp order then event-sequence
 /// order* — total, and independent of how many pulses have run.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DueEvent {
     /// When, in arena milliseconds.
     pub t_ms: i64,
@@ -3094,7 +3205,12 @@ pub struct DueEvent {
 /// [`DueHeap::peek_due`] can hand out a reference to the minimum and
 /// [`DueHeap::iter`] can walk the schedule in order — both of which cut A.2's
 /// `step` and the frame builder want, and neither of which a binary heap gives.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// **16b cut AF.1**: carried whole — the events in `(t_ms, seq)` order and
+/// `next_seq` — so a resumed match numbers its next event where this one would
+/// have.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DueHeap {
     events: BTreeSet<DueEvent>,
     next_seq: u64,
@@ -3173,6 +3289,7 @@ impl DueHeap {
 
 /// Why the world asked the arena to stop (doc 16 §3.1's `Stop` message).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     /// `SIM ABORT`, or an empty side.
@@ -3203,6 +3320,7 @@ pub enum StopReason {
 
 /// How a match ended (doc 16 §4 "The result record").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
 pub enum EndReason {
     /// A side was eliminated; `None` is a draw (both sides gone at once).
@@ -3270,6 +3388,7 @@ pub enum EndReason {
 
 /// The end of a match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MatchEnd {
     /// Why.
     pub reason: EndReason,
@@ -3928,19 +4047,10 @@ impl Arena {
         };
         let mut states: Vec<UnitState> = Vec::with_capacity(units.len());
         for mut unit in units {
-            if unit.pose.heading_mdeg >= 360_000 {
-                return Err(ArenaError::BadHeading {
-                    unit: unit.id,
-                    heading_mdeg: unit.pose.heading_mdeg,
-                });
-            }
-            let Some(opening_cell) = definition.terrain.cell_of(&unit.pose) else {
-                return Err(ArenaError::PoseOffWindow {
-                    unit: unit.id,
-                    x_cm: unit.pose.x_cm,
-                    y_cm: unit.pose.y_cm,
-                });
-            };
+            // **16b cut AF.1**: the heading and the window, in one function the
+            // snapshot's decode calls too (`check_poses`), in the order they
+            // always ran.
+            let opening_cell = check_pose(&definition.terrain, unit.id, &unit.pose)?;
             // **16b cut AE.1**: the row this unit pays, read beside its slope
             // limit below and first because the opening test needs it.
             let cost_row = CostRow::read(&unit.unit);
@@ -4214,27 +4324,9 @@ impl Arena {
         // occupancy has two answers, which every later reader of the index would
         // have to carry a rule for. **16b cut A.2 added this check**; cut T's
         // check-out is its caller and places every tank it checks out on a cell of its own.
-        let mut cells: Vec<((u16, u16), ObjId)> = states
-            .iter()
-            .filter_map(|state| {
-                definition
-                    .terrain
-                    .cell_of(&state.pose)
-                    .map(|cell| (cell, state.id))
-            })
-            .collect();
-        cells.sort_unstable();
-        if let Some(((x, y), unit, other)) = cells
-            .windows(2)
-            .find(|pair| pair.first().map(|(at, _)| *at) == pair.get(1).map(|(at, _)| *at))
-            .and_then(|pair| {
-                let (cell, lower) = *pair.first()?;
-                let (_, higher) = *pair.get(1)?;
-                Some((cell, higher, lower))
-            })
-        {
-            return Err(ArenaError::CellOccupied { unit, other, x, y });
-        }
+        // **16b cut AF.1** moved it into `check_occupancy`, which the snapshot's
+        // decode calls too, unchanged.
+        check_occupancy(&definition.terrain, &states)?;
         let mut index = SpatialIndex::new(&definition.terrain);
         index.rebuild(&definition.terrain, &states);
         // 16b cut N.2: who is commanded, and by whom (see `squads` below).

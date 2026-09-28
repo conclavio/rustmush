@@ -64,6 +64,7 @@
 //! but that store is read.
 
 use mush_core::ObjId;
+use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::arena::reflex::ReflexUnit;
@@ -76,7 +77,8 @@ use crate::arena::state::{Arena, ContactId, Designator, Power};
 ///
 /// `internals` is `0` for a section whose content declares no internals cell;
 /// two readings of such a section compare equal, so it is never listed for it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SectionWords {
     /// The section's opaque condition, as M32 holds it (`intact`, `destroyed`,
     /// `wreck`).
@@ -89,7 +91,8 @@ pub struct SectionWords {
 
 /// **What a platform held and was when its pilot lost sight of it** (16b cut
 /// Y.4; doc 07 §1.3 step 5) — the baseline a [`Catchup`] is measured against.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReleaseSnapshot {
     /// The arena millisecond of the control that took it.
     pub at_ms: i64,
@@ -109,7 +112,8 @@ pub struct ReleaseSnapshot {
 
 /// **What the machine was doing when the pilot took the tank back** (16b cut
 /// Y.4) — the reflex row's own words, read before `set_controller` releases it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MachineWords {
     /// [`crate::arena::reflex::ReflexState::as_str`]'s word.
     pub state: SmolStr,
@@ -141,7 +145,8 @@ impl MachineWords {
 /// Every list is **capped** and the overflow counted beside it: combat-scale
 /// platforms carry up to ten sections and ten weapons, a long drop can see a
 /// field of contacts come and go, and neither panel's notices ring caps a line.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Catchup {
     /// Arena milliseconds from the snapshot to the re-seat.
     pub away_ms: i64,

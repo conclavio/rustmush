@@ -41,6 +41,8 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::definitions::UnitClass;
 use crate::pack::RulesPack;
 
@@ -177,7 +179,8 @@ pub const RECOVERY_INSURANCE_WORDS: [&str; 2] = ["approved_operations", "none"];
 
 /// The arena's clock, its intent inbox and its ledger bounds (**16b cut G**;
 /// doc 16 §3.1 and §4; the values are 16b §9's constants table).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArenaConfig {
     /// The adaptive tempo's periods and holds.
     pub tempo: TempoConfig,
@@ -253,6 +256,19 @@ pub struct ArenaConfig {
     /// ordered count, and the lobby reads one entry. `0..=`
     /// [`crate::definitions::arena::MAX_ARENA_UNITS`] by [`ArenaConfig::validate`].
     pub max_units_by_class: BTreeMap<UnitClass, u32>,
+    /// **Arena milliseconds between two snapshots of a running match** (16b cut
+    /// AF.1; 16c N16; doc 16 §3.1 "Durability"), taken by the arena task after
+    /// the pulse that crossed the boundary and written by the world on the arena
+    /// writer lane (16b cut AF.2 reads it). **`0` turns snapshots off**, and a
+    /// restart then voids every running match by name (16b cut AF.3).
+    ///
+    /// **Nothing reads it in cut AF.1.** It lands here, a sub-cut before its
+    /// reader, because the snapshot carries this whole block
+    /// (`crate::arena::snapshot`) and the host builds it by an exhaustive
+    /// literal: a field added in AF.2 would change every encoded state one
+    /// commit after format 1 was born. `0` or `1_000..=60_000` by
+    /// [`ArenaConfig::validate`].
+    pub snapshot_ms: u32,
     /// The match ledger's cadence and its two hard bounds.
     pub ledger: LedgerConfig,
     /// **The reflex controller's cadence, paths and doctrine** (16b cut N.1).
@@ -270,6 +286,8 @@ impl Default for ArenaConfig {
             squad_size: 4,
             // 16b cut AE.3: N15's "drones as content: one, capped".
             max_units_by_class: BTreeMap::from([(UnitClass::Drone, 1)]),
+            // 16b cut AF.1: 16c N16's default, every five seconds of arena time.
+            snapshot_ms: 5_000,
             ledger: LedgerConfig::default(),
             reflex: ReflexConfig::default(),
         }
@@ -289,7 +307,8 @@ impl Default for ArenaConfig {
 /// timestamp, so the controller runs the same number of times per arena second at
 /// every tempo — which is what lets the cross-tempo property hold with AI units
 /// on the field (doc 16 §3.1, D-16-2).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReflexConfig {
     /// Arena milliseconds between one AI unit's decisions, staggered by unit id.
     pub decide_ms: u32,
@@ -435,7 +454,8 @@ impl Default for ReflexConfig {
 /// The tempo decides only how often the arena steps and how its output is
 /// batched, never an outcome. Every value is arena milliseconds except
 /// `alert_range_cm`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TempoConfig {
     /// The `Quiet` period: no hostile contact held, no pending impact, no fire
     /// intent, no controller approaching.
@@ -485,7 +505,8 @@ impl Default for TempoConfig {
 
 /// The rate a seat's discrete orders are held to (**16b cut G**; doc 16 §3.1,
 /// pulse phase 2; a rate since **16b cut M.1**, `T-82`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntentsConfig {
     /// **The discrete orders one seat may give a unit per arena second; also the
     /// size, per unit, of the world side's inbox and pre-pulse buffer** (16b cut
@@ -505,7 +526,8 @@ impl Default for IntentsConfig {
 
 /// The match ledger's cadence and its two hard bounds (**16b cut G**; doc 16 §4,
 /// §3.1's egress paragraph).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LedgerConfig {
     /// Arena milliseconds between `position_summary` events — every unit, in
     /// every tempo.
@@ -531,7 +553,8 @@ impl Default for LedgerConfig {
 
 /// The match lifecycle's slots and timeouts (**16b cut G**; doc 16 §3.3
 /// "Startup", §3.8 "Lifecycle", §4).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MatchConfig {
     /// Milliseconds `STARTUP` takes to carry a unit's power from `starting` to
     /// `online`; until then motion and fire intents refuse.
@@ -639,7 +662,8 @@ impl Default for CommandConfig {
 
 /// The sensor pass's cadence and its signature ceiling (**16b cut G**; doc 16
 /// §3.6 "Perception").
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SensorsConfig {
     /// Arena milliseconds between one unit's sensor passes, staggered by unit id.
     pub pass_ms: u32,
@@ -986,6 +1010,15 @@ impl ArenaConfig {
                 crate::definitions::arena::MAX_ARENA_UNITS as u64,
                 u64::from(*cap),
             )?;
+        }
+        // **16b cut AF.1** (16c N16): off, or a cadence the harness can bound — a
+        // snapshot every pulse of the fastest tempo is an encode every 500 ms,
+        // and one a minute apart rewinds a resumed match by up to a minute.
+        if self.snapshot_ms != 0 && !(1_000..=60_000).contains(&self.snapshot_ms) {
+            return Err(format!(
+                "[tacsim.arena].snapshot_ms must be 0 or 1000 to 60000 (it is {})",
+                self.snapshot_ms
+            ));
         }
         at_least(
             "[tacsim.arena.intents].max_pending_per_unit",
@@ -1358,6 +1391,37 @@ mod tests {
                 }
                 .validate(),
                 Err(sentence.to_string())
+            );
+        }
+    }
+
+    /// **16b cut AF.1** (16c N16): `[tacsim.arena].snapshot_ms` ships at five
+    /// seconds, takes `0` (off) and both edges of `1000..=60000`, and refuses
+    /// either side of the band in Q.7's sentence.
+    #[test]
+    fn af1_the_snapshot_cadence_validates_by_name() {
+        assert_eq!(ArenaConfig::default().snapshot_ms, 5_000);
+        for legal in [0, 1_000, 60_000] {
+            assert_eq!(
+                ArenaConfig {
+                    snapshot_ms: legal,
+                    ..ArenaConfig::default()
+                }
+                .validate(),
+                Ok(()),
+                "{legal} is legal"
+            );
+        }
+        for value in [7, 999, 60_001] {
+            assert_eq!(
+                ArenaConfig {
+                    snapshot_ms: value,
+                    ..ArenaConfig::default()
+                }
+                .validate(),
+                Err(format!(
+                    "[tacsim.arena].snapshot_ms must be 0 or 1000 to 60000 (it is {value})"
+                ))
             );
         }
     }

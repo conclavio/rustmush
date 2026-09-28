@@ -199,6 +199,16 @@
 //! set. It is a type distinct from a pilot's [`crate::arena::step::Frame`] with no path into one
 //! (doc 16 §1), and the two fields that gate it are views no hash folds.
 //!
+//! # Cut AF.1: the snapshot
+//!
+//! [`crate::arena::snapshot`] is 16c N16's first third: one running arena,
+//! between two pulses, as one versioned document whose state is one digested
+//! string, and the same arena back out of it on the ground and under the
+//! locomotion table it was fought on — the decoded state hash equal to the
+//! recorded one on every decode. Its head says which of [`crate::arena::state::Arena`]'s
+//! fields it carries, re-derives and resets. It ships nothing and boots nothing:
+//! the message is 16b cut AF.2's and the boot AF.3's.
+//!
 //! What is still not here, and whose it is: deliberation, the order type, the
 //! squad grouping and the cost run are cut N.2's, and the task, the inbox, the
 //! egress, the timer and the unwind boundary are cut T's.
@@ -222,6 +232,7 @@ pub mod reflex;
 pub mod resolution;
 pub mod rng;
 pub mod slope;
+pub mod snapshot;
 pub mod state;
 pub mod step;
 pub mod weapons;
@@ -270,6 +281,7 @@ pub use rng::{DrawLabel, LABEL_KINDS, draw, draw_contact_id, draw_permille};
 pub use slope::{
     SlopeLimit, driving_mode, effective_cost, grade_pct, steepness_pct, step_kind, too_steep,
 };
+pub use snapshot::{Snapshot, SnapshotError, SnapshotHead, digest_text};
 pub use state::{
     Arena, ArenaDefinition, ArenaError, ArenaMode, ArenaTerrain, Channel, Classification,
     ContactId, Controller, CostRow, CustodyOut, CustodyUnit, DEFAULT_SENSOR_HEIGHT_CM, Designator,
