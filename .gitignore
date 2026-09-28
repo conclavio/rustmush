@@ -36,3 +36,7 @@ Thumbs.db
 # the CI job (16b cut U.3); the committed baselines live under
 # crates/tacsim/tests/harness_baseline/
 /harness*.json
+
+# Python bytecode caches (a guard test of scripts/prune_target.py left one under scripts/ on 2026-09-28)
+__pycache__/
+*.pyc
