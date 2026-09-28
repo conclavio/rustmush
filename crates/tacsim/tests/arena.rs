@@ -113,6 +113,12 @@ fn rules() -> RulesValue {
 
 /// The smallest M32 unit the arena can carry.
 fn tactical_unit(id: ObjId) -> TacticalUnit {
+    tactical_unit_ruled(id, rules())
+}
+
+/// [`tactical_unit`]'s one shape under any rules blob — **16b cut AE.3** reads
+/// a declared class off it (`UnitClass::read`), so a fixture can field a drone.
+fn tactical_unit_ruled(id: ObjId, rules: RulesValue) -> TacticalUnit {
     let spec = UnitSpec {
         definition: dref("unit", "tacsim.unit.line_tank"),
         sections: vec![SectionSpec {
@@ -139,7 +145,7 @@ fn tactical_unit(id: ObjId) -> TacticalUnit {
         components: Vec::new(),
         capabilities: Vec::new(),
         mobility: None,
-        rules: rules(),
+        rules,
     };
     TacticalUnit::from_spec(&spec, id).expect("a one-section unit")
 }
@@ -301,6 +307,13 @@ struct Beat {
     /// and they are folded into no state hash (the opaque unit is absent from
     /// it, `hash.rs`'s own argument), so the write moves no hash and no event.
     wound: Option<ObjId>,
+    /// **A unit wrecked at this beat** (16b cut AE.3), before the pulse steps:
+    /// `Arena::destroy_unit` at the beat's arena time, the rig's own direct
+    /// write (`step.rs`'s elimination backstop names it). These fixtures carry
+    /// no gun, so nothing in the match can wreck anything; what the AE.3
+    /// script needs is a side left with only its drone, at one arena time at
+    /// every cadence. `None` on every other beat.
+    wreck: Option<ObjId>,
 }
 
 impl Beat {
@@ -312,6 +325,7 @@ impl Beat {
             intents,
             stop: None,
             wound: None,
+            wreck: None,
         }
     }
 
@@ -323,6 +337,7 @@ impl Beat {
             intents: Vec::new(),
             stop: Some(stop),
             wound: None,
+            wreck: None,
         }
     }
 }
@@ -486,6 +501,13 @@ fn replay_on(
             // 16b cut Y.4: a hit, before this pulse steps.
             if let Some(unit) = beat.wound {
                 wound(arena, unit);
+            }
+            // 16b cut AE.3: a wreck, before this pulse steps, at the beat's
+            // own arena time.
+            if let Some(unit) = beat.wreck {
+                let at = arena.now_ms;
+                let mut journal = Vec::new();
+                arena.destroy_unit(unit, at, None, &mut journal);
             }
             next += 1;
         }
@@ -4149,4 +4171,342 @@ fn ae1_one_scripted_walk_over_the_thick_woods_at_three_cadences_is_one_event_lis
         );
         assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AE.3 — a drone a side, at three cadences
+// ---------------------------------------------------------------------------
+
+/// Red's drone: [`MOVER`], so its pilot is the one the replay driver hears.
+const AE3_RED_DRONE: ObjId = MOVER;
+/// Red's tank, behind it.
+const AE3_RED_TANK: ObjId = ObjId(5);
+/// Blue's drone: [`PARKED`].
+const AE3_BLUE_DRONE: ObjId = PARKED;
+/// Blue's tank, behind it.
+const AE3_BLUE_TANK: ObjId = ObjId(10);
+
+/// **A sensor on the mesh** (16b cut AE.3): [`short_sight`]'s rows at `cells`
+/// of reach and thirty cells of link, the shipped `share_range_cells`.
+fn ae3_sight(cells: u16) -> tacsim::arena::perception::SensorProfile {
+    tacsim::arena::perception::SensorProfile {
+        max_range_cells: cells,
+        share_range_cells: 30,
+        ..short_sight()
+    }
+}
+
+/// **A drone** (16b cut AE.3): [`tank`] with a five-cell sight on the mesh,
+/// no weapon, and a rules blob declaring `"class": "drone"` — the one fact
+/// `Arena::new` reads the class off.
+fn ae3_drone(id: ObjId, team: Team, at: Pose) -> CustodyUnit {
+    CustodyUnit {
+        sensor: Some(ae3_sight(5)),
+        unit: tactical_unit_ruled(
+            id,
+            RulesValue::new(
+                dref("schema", "tacsim.arena.test"),
+                serde_json::json!({ "class": "drone" }),
+            )
+            .expect("a rules blob"),
+        ),
+        ..tank(id, team, at)
+    }
+}
+
+/// The four units, seated: each side's drone five cells out in front of its
+/// tank, the drones in columns 5 and 7 so they pass each other, blue's facing
+/// south. The tanks see two cells, so everything they hold of the other side
+/// is what their drone shared.
+fn ae3_arena() -> Arena {
+    let mut blue_drone = ae3_drone(AE3_BLUE_DRONE, Team::Blue, centre(7, 30));
+    blue_drone.pose.heading_mdeg = 180_000;
+    let mut blue_tank = tank(AE3_BLUE_TANK, Team::Blue, centre(3, 35));
+    blue_tank.pose.heading_mdeg = 180_000;
+    blue_tank.sensor = Some(ae3_sight(2));
+    let mut red_tank = tank(AE3_RED_TANK, Team::Red, centre(3, 0));
+    red_tank.sensor = Some(ae3_sight(2));
+    arena_of(
+        vec![
+            ae3_drone(AE3_RED_DRONE, Team::Red, centre(5, 5)),
+            red_tank,
+            blue_drone,
+            blue_tank,
+        ],
+        &MatchConfig::default(),
+    )
+}
+
+/// The AE.3 script: every unit started at 0; the two drones driven at each
+/// other at 10,000 ms and stopped at 25,000, side by side and in each other's
+/// sight; red's tank wrecked at 40,000. Every beat a multiple of 5,000 ms.
+fn ae3_script() -> Vec<Beat> {
+    let all = [AE3_RED_DRONE, AE3_RED_TANK, AE3_BLUE_DRONE, AE3_BLUE_TANK];
+    let drones = [(AE3_RED_DRONE, 0_u32), (AE3_BLUE_DRONE, 180_000)];
+    vec![
+        Beat::at(
+            0,
+            Vec::new(),
+            all.into_iter()
+                .map(|unit| intent(unit, IntentKind::Startup, 1))
+                .collect(),
+        ),
+        Beat::at(
+            10_000,
+            Vec::new(),
+            drones
+                .into_iter()
+                .flat_map(|(unit, mdeg)| {
+                    [
+                        intent(unit, IntentKind::Heading { mdeg }, 2),
+                        intent(unit, IntentKind::Speed { cms: 1_000 }, 3),
+                    ]
+                })
+                .collect(),
+        ),
+        Beat::at(
+            25_000,
+            Vec::new(),
+            drones
+                .into_iter()
+                .map(|(unit, _)| intent(unit, IntentKind::Speed { cms: 0 }, 4))
+                .collect(),
+        ),
+        Beat {
+            wreck: Some(AE3_RED_TANK),
+            ..Beat::at(40_000, Vec::new(), Vec::new())
+        },
+    ]
+}
+
+/// **16b cut AE.3's mandatory cross-tempo test** (16b §11; doc 16 §3.1 "Rate
+/// independence", D-16-2; §2 W2): one scripted match with a drone and a tank a
+/// side, the drones scouting ahead, at 5,000, 1,000 and 500 ms is one event
+/// list, one per-substep hash sequence and one set of finals.
+///
+/// What the run does, asserted before the replays are compared so three runs
+/// that did nothing cannot compare equal: the drones find each other, each
+/// tank holds the other side's drone as the plot its own drone shared (its
+/// two-cell sight took nothing; the mesh's copy journals its own `detected`
+/// and `classified`, so four of each), and when
+/// red's tank is wrecked at 40,000 red has only its drone in action — so red is
+/// out and blue wins, one `match_ended` at 40,250, the end of the first
+/// substep after the wreck at every cadence.
+#[test]
+fn ae3_one_scripted_match_with_a_drone_a_side_at_three_cadences_is_one_event_list_and_one_hash_sequence()
+ {
+    use tacsim::definitions::UnitClass;
+
+    let quiet = |_: i64| Tempo::Quiet;
+
+    // The share, read before the wreck on one run of its own.
+    let mut scouted = ae3_arena();
+    assert_eq!(
+        [AE3_RED_DRONE, AE3_RED_TANK, AE3_BLUE_DRONE, AE3_BLUE_TANK]
+            .map(|id| scouted.unit(id).map(|unit| unit.class)),
+        [
+            Some(UnitClass::Drone),
+            Some(UnitClass::Armour),
+            Some(UnitClass::Drone),
+            Some(UnitClass::Armour)
+        ]
+    );
+    let _ = replay(&mut scouted, 500, 35_000, &ae3_script(), &quiet);
+    for (tank, drone) in [
+        (AE3_RED_TANK, AE3_BLUE_DRONE),
+        (AE3_BLUE_TANK, AE3_RED_DRONE),
+    ] {
+        let copy = scouted
+            .contacts
+            .id_of(tank, drone)
+            .and_then(|id| scouted.contacts.get(tank, id))
+            .copied()
+            .unwrap_or_else(|| panic!("{tank} holds nothing of {drone}"));
+        assert!(
+            copy.own_seen.is_none(),
+            "{tank}'s two-cell sight never saw {drone}: the plot is its drone's"
+        );
+    }
+    assert_eq!(scouted.eliminated(), None, "both tanks stand at 35,000");
+
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = ae3_arena();
+        let run = replay(&mut arena, cadence, 60_000, &ae3_script(), &quiet);
+        assert_eq!(
+            arena.ended.map(|end| (end.reason, end.t_ms)),
+            Some((
+                EndReason::Elimination {
+                    winner: Some(Team::Blue)
+                },
+                40_250
+            )),
+            "cadence {cadence}: red's guns are gone and its drone decides nothing"
+        );
+        assert!(
+            arena
+                .unit(AE3_RED_DRONE)
+                .is_some_and(|drone| !drone.limits.wreck && !drone.disabled),
+            "cadence {cadence}: the drone still runs"
+        );
+        runs.push((cadence, run));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+    // Four each: the two drones by their own sight, and the two tanks by the
+    // mesh — a shared plot opens the tank's row with its own `detected`.
+    let found: Vec<(u64, u64)> = first
+        .events
+        .iter()
+        .filter(|(_, kind, _, _)| kind.contains("\"kind\":\"detected\""))
+        .map(|(_, kind, _, _)| {
+            let line: serde_json::Value = serde_json::from_str(kind).unwrap_or_default();
+            let field = |name: &str| {
+                line.get(name)
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0)
+            };
+            (field("viewer"), field("target"))
+        })
+        .collect();
+    assert_eq!(
+        found,
+        vec![(9, 4), (4, 9), (10, 4), (5, 9)],
+        "each drone sees the other, and each tank holds the other drone through its own"
+    );
+    assert_eq!(first.count("\"classified\""), 4, "{:?}", first.kinds());
+    assert_eq!(first.count("match_ended"), 1, "{:?}", first.kinds());
+
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events,
+            first.events,
+            "the event list differs at {cadence} ms: {:?} against {:?}",
+            run.kinds(),
+            first.kinds()
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the finals differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.substeps, first.substeps,
+            "the substeps differ at {cadence} ms"
+        );
+        // `told` is compared line for line with ONE field masked: the drone
+        // pilot's `New contact X1: bearing NNN°, band.` takes its bearing and
+        // band from the frame's contact row (`cockpit::notice_line`), read
+        // where the drone stands when the frame is built — the end of the
+        // pulse — to the plot, and the two drones are passing each other, so
+        // that reading is the frame's and not the match's. Every other word of
+        // every line, and the order and count of the lines, is the match's
+        // and compared exactly.
+        assert_eq!(
+            ae3_masked(&run.told),
+            ae3_masked(&first.told),
+            "the pilot was told something different at {cadence} ms"
+        );
+        assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
+    assert!(
+        ae3_masked(&first.told)
+            .iter()
+            .any(|line| line.starts_with("New contact ") && line.ends_with(": bearing ___.")),
+        "the drone pilot was told of the other drone: {:?}",
+        first.told
+    );
+}
+
+/// **The pilot's lines with the frame-time reading masked** (16b cut AE.3):
+/// a `New contact …: bearing NNN°, band.` line keeps everything before
+/// `: bearing` and reads `: bearing ___.` — the bearing and the band are read
+/// off the frame's contact row at the end of the pulse, from a moving
+/// observer, so they are the frame's and not the match's. Every other line is
+/// returned untouched.
+fn ae3_masked(told: &[String]) -> Vec<String> {
+    told.iter()
+        .map(|line| match line.split_once(": bearing ") {
+            Some((head, _)) if line.starts_with("New contact ") => {
+                format!("{head}: bearing ___.")
+            }
+            _ => line.clone(),
+        })
+        .collect()
+}
+
+/// **16b cut AE.3's Hold half at three cadences** (16b §11; doc 16 §3.1,
+/// D-16-2; §2 W2): a blue drone parked inside the declared square, and O.1's
+/// red mover driving onto the spot. A drone holds nothing and contests
+/// nothing (`Arena::hold_presence`), so at 5,000, 1,000 and 500 ms the match
+/// is one event list, one hash sequence and one Hold clock, and red wins it
+/// at the SAME millisecond, with the same clock at every boundary, as O.1's
+/// first test where blue's tank stands forty cells off the spot. Before
+/// AE.3 the drone contested the square and the Hold never ended.
+#[test]
+fn ae3_a_drone_on_the_spot_contests_nothing_at_three_cadences() {
+    use tacsim::definitions::UnitClass;
+
+    // The reference: O.1's first match, blue's tank far off the spot.
+    let mut reference = o1_hold_arena(tank(O1_BLUE, Team::Blue, centre(50, 30)));
+    let reference = o1_run(&mut reference, 5_000, 60_000, &o1_red_orders());
+    assert_eq!(
+        reference.ended.map(|end| end.reason),
+        Some(EndReason::Hold { winner: Team::Red })
+    );
+
+    let mut runs: Vec<(i64, HoldRun)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        // Two cells south of the spot, off red's row, inside the square.
+        let mut arena = o1_hold_arena(ae3_drone(
+            O1_BLUE,
+            Team::Blue,
+            centre(O1_SPOT.0, O1_SPOT.1 + 2),
+        ));
+        assert_eq!(
+            arena.unit(O1_BLUE).map(|unit| unit.class),
+            Some(UnitClass::Drone)
+        );
+        let drone_cell = arena
+            .unit(O1_BLUE)
+            .and_then(|unit| arena.definition.terrain.cell_of(&unit.pose))
+            .expect("on the window");
+        assert!(
+            arena
+                .hold
+                .is_some_and(|hold| hold.square_contains(drone_cell)),
+            "the drone is parked at {drone_cell:?}, off the square"
+        );
+        let run = o1_run(&mut arena, cadence, 60_000, &o1_red_orders());
+        assert!(
+            arena
+                .unit(O1_BLUE)
+                .is_some_and(|drone| !drone.limits.wreck && !drone.disabled),
+            "cadence {cadence}: the drone is on the square to the end"
+        );
+        runs.push((cadence, run));
+    }
+    o1_same_match(&runs);
+    let Some((_, first)) = runs.first() else {
+        panic!("three runs");
+    };
+    assert_eq!(
+        first.clocks, reference.clocks,
+        "the drone on the square moved red's clock"
+    );
+    assert_eq!(
+        first.ended, reference.ended,
+        "red wins at the millisecond it wins with no drone on the square"
+    );
+    let ends = o1_ends(first);
+    assert_eq!(ends.len(), 1, "exactly one end: {ends:?}");
+    assert!(
+        ends.iter()
+            .all(|(_, kind)| kind.contains(r#"{"hold":{"winner":"red"}}"#)),
+        "{ends:?}"
+    );
 }

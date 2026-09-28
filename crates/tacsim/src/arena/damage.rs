@@ -80,7 +80,7 @@ use crate::arena::rng::{DrawLabel, draw};
 use crate::arena::state::{
     Arena, Controller, DueKind, EndReason, MatchEnd, Power, Team, UnitState,
 };
-use crate::definitions::unit::{ARMOR_CELL, INTERNALS_CELL};
+use crate::definitions::unit::{ARMOR_CELL, INTERNALS_CELL, UnitClass};
 
 // ---------------------------------------------------------------------------
 // The vocabulary
@@ -1239,21 +1239,50 @@ impl Arena {
     /// other in one substep. `None` is a match still worth running, which includes
     /// a side with no units at all: an empty side is `SIM START`'s refusal and the
     /// lobby's business, not a victory condition.
+    ///
+    /// **16b cut AE.3** (doc 16 §2 W2; §3.8's *disabled with no weapons*, read
+    /// for the side): a side is also **out** when every unit it still has in
+    /// action is a [`UnitClass::Drone`] **and** it fielded at least one unit that
+    /// is not — its guns are all wrecks or disabled hulks, and the drone that
+    /// still runs cannot decide anything, so it may neither hold the match open
+    /// for the hour nor be the side the timeout calls a draw for. Keyed on the
+    /// class and never on arms, on purpose: the clause bites only on a side that
+    /// has a drone standing, so every cut-A fixture side, the harness's movers,
+    /// the range's target side and the unarmed `tank()` fixtures — all `Armour`,
+    /// armed or not — read exactly as they did, and a side that fielded drones
+    /// alone (which the lobby refuses with `NoGun`) is still standing while one
+    /// runs. [`Arena::spent`] is unchanged: a drone was never armed at check-out.
     #[must_use]
     pub fn eliminated(&self) -> Option<Option<Team>> {
         let mut standing: Vec<Team> = Vec::new();
         let mut present: Vec<Team> = Vec::new();
+        // 16b cut AE.3: the sides that fielded a non-drone at all, and the ones
+        // with a non-drone still in action.
+        let mut fielded_gun: Vec<Team> = Vec::new();
+        let mut standing_gun: Vec<Team> = Vec::new();
         for unit in &self.units {
             if !present.contains(&unit.team) {
                 present.push(unit.team);
             }
-            if !self.out_of_action(unit.id) && !standing.contains(&unit.team) {
+            let drone = unit.class == UnitClass::Drone;
+            if !drone && !fielded_gun.contains(&unit.team) {
+                fielded_gun.push(unit.team);
+            }
+            if self.out_of_action(unit.id) {
+                continue;
+            }
+            if !standing.contains(&unit.team) {
                 standing.push(unit.team);
+            }
+            if !drone && !standing_gun.contains(&unit.team) {
+                standing_gun.push(unit.team);
             }
         }
         if present.len() < 2 {
             return None;
         }
+        // A side left with drones alone, having fielded something else, is out.
+        standing.retain(|team| standing_gun.contains(team) || !fielded_gun.contains(team));
         match standing.len() {
             0 => Some(None),
             1 => standing.first().copied().map(Some),
@@ -1358,13 +1387,21 @@ impl Arena {
     /// §3.8's own reading of *out of the fight*) and whose cell is on the window
     /// and inside [`crate::arena::state::HoldState::square_contains`].
     ///
+    /// **16b cut AE.3** (doc 16 §2 W2): and **a drone holds nothing and contests
+    /// nothing** — it is skipped as a wreck is, beside O.1's reading. A machine
+    /// that carries no gun and decides nothing may drive to the spot (the reflex
+    /// controller's `hold_goal` sends it there like any machine), but it can
+    /// neither win the square for its side nor deny it to the other. Keyed on
+    /// the class, so O.1's own tests, whose holders are the unarmed `Armour`
+    /// fixtures, read as they did.
+    ///
     /// One Chebyshev comparison per unit, in unit-id order, with no allocation.
     #[must_use]
     pub fn hold_presence(&self) -> Option<Team> {
         let hold = self.hold.as_ref()?;
         let mut alone: Option<Team> = None;
         for unit in &self.units {
-            if unit.limits.wreck || unit.disabled {
+            if unit.limits.wreck || unit.disabled || unit.class == UnitClass::Drone {
                 continue;
             }
             let Some(cell) = self.definition.terrain.cell_of(&unit.pose) else {
@@ -2284,5 +2321,92 @@ mod tests {
             "and nothing else moved"
         );
         assert_eq!(cell(&arena, RED, &internals("hull")), Some(200));
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut AE.3 — a drone cannot stall or steal a match
+    // -----------------------------------------------------------------------
+
+    /// **16b cut AE.3** (doc 16 §2 W2; §3.8 read for the side): a side whose
+    /// every unit in action is a drone, having fielded a gun, is out.
+    ///
+    /// Red's tank wrecked and its drone standing against a standing blue tank:
+    /// red is eliminated and blue wins. Red's tank dry and standing beside its
+    /// drone against a dry blue: `Spent`, the drone changing nothing (it was
+    /// never armed). A side of unarmed non-drone fixtures against a wrecked
+    /// armed side is the survivor it always was — the clause keys on the class,
+    /// not on arms. And a side of drones alone (which the lobby refuses) still
+    /// stands while one runs.
+    #[test]
+    fn ae3_a_side_left_with_only_its_drone_is_out() {
+        use crate::arena::test_support::{drone, tank};
+        const DRONE: ObjId = ObjId(5);
+        let three = || {
+            let mut arena = arena_of(vec![
+                line_tank(RED, Team::Red, pose(1_500, 1_500)),
+                drone(DRONE, Team::Red, pose(2_500, 1_500)),
+                line_tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+            ]);
+            for id in [RED, DRONE, BLUE] {
+                if let Some(state) = arena.unit_mut(id) {
+                    state.power = Power::Online;
+                }
+            }
+            arena
+        };
+        let mut arena = three();
+        assert_eq!(
+            arena.unit(DRONE).map(|unit| unit.class),
+            Some(UnitClass::Drone)
+        );
+        assert_eq!(arena.eliminated(), None, "both sides have a gun standing");
+        let mut journal = Vec::new();
+        arena.destroy_unit(RED, 100, None, &mut journal);
+        assert!(!arena.out_of_action(DRONE), "the drone still runs");
+        assert_eq!(
+            arena.eliminated(),
+            Some(Some(Team::Blue)),
+            "red's guns are gone; its drone decides nothing"
+        );
+        assert_eq!(
+            arena.settle_elimination().map(|end| end.reason),
+            Some(EndReason::Elimination {
+                winner: Some(Team::Blue)
+            })
+        );
+        // Both tanks dry and standing, red's drone beside its tank: spent.
+        let mut dry = three();
+        for id in [RED, BLUE] {
+            if let Some(state) = dry.unit_mut(id) {
+                state.ammo.insert(SmolStr::new("cannon"), 0);
+            }
+        }
+        assert_eq!(dry.eliminated(), None);
+        assert!(dry.spent(), "a drone was never armed and changes nothing");
+        assert_eq!(
+            dry.settle_spent().map(|end| end.reason),
+            Some(EndReason::Spent)
+        );
+        // Unarmed armour against a wrecked armed side: the old rule, untouched.
+        let mut unarmed = arena_of(vec![
+            tank(RED, Team::Red, pose(1_500, 1_500)),
+            line_tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+        ]);
+        unarmed.destroy_unit(BLUE, 100, None, &mut journal);
+        assert_eq!(
+            unarmed.eliminated(),
+            Some(Some(Team::Red)),
+            "an unarmed tank is armour, and armour stands"
+        );
+        // A side of drones alone against a tank is still standing.
+        let drones = arena_of(vec![
+            drone(RED, Team::Red, pose(1_500, 1_500)),
+            line_tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+        ]);
+        assert_eq!(
+            drones.eliminated(),
+            None,
+            "a side that fielded no gun is untouched by the clause"
+        );
     }
 }

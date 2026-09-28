@@ -8599,7 +8599,8 @@ const PACK_FILES_CHASSIS: [&str; 3] = [
 ///
 /// X.2's shape, one table: the pins and the writing branch; the stock game is
 /// the two weapons, one unit and one arena it always was, and every stock
-/// definition keeps its identity; the fielded catalog holds ten unit schemas.
+/// definition keeps its identity; the fielded catalog holds eleven unit schemas
+/// (ten at AE.1; AE.3's drone is the eleventh).
 /// Then each chassis as the production check-out reads it: the scout binds a
 /// `wheeled` mode under its own schema, is held to the wheeled row's 25 per cent
 /// ([`tacsim::arena::slope::SlopeLimit::read`]) and pays the wheeled row
@@ -8646,12 +8647,14 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
     assert_eq!(stock.specs.len(), 1, "one unit schema");
     assert_eq!(stock.arenas.len(), 1, "one arena");
 
-    // The fielded catalog: ten unit schemas, and no stock identity moved.
+    // The fielded catalog: eleven unit schemas since 16b cut AE.3's drone (ten
+    // at AE.1), and no stock identity moved.
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     assert_eq!(
         fielded.specs.len(),
-        10,
-        "the line tank, doc 16 section 9's five, the range's target and the three chassis"
+        11,
+        "the line tank, doc 16 section 9's five, the range's target, the three chassis and \
+         16b cut AE.3's drone"
     );
     for (id, reference) in &stock.references {
         assert_eq!(
@@ -10126,7 +10129,8 @@ const PACK_FILES_CARRIERS: [&str; 2] = ["units/scout_mk1.json", "units/heavy_mk1
 /// autocannon and the rack at version 1, the Mk2 still at 1; the stock game is
 /// the two weapons, two rounds, one unit and one arena it always was, and every
 /// stock definition keeps its identity; the fielded catalog holds five weapons,
-/// five rounds and ten unit schemas; [`tacsim::definitions::WeaponDef::check`]
+/// five rounds and eleven unit schemas (ten at AE.2; AE.3's drone is the
+/// eleventh); [`tacsim::definitions::WeaponDef::check`]
 /// accepts both new weapons; and each is read off its carrier exactly as the
 /// production check-out reads it, in component order — so the scout car's bare
 /// `FIRE` is its autocannon and the heavy's is still its cannon, by the one
@@ -10202,7 +10206,8 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
     assert_eq!(stock.ammunition.len(), 2, "the 105 and the ball");
     assert_eq!(stock.specs.len(), 1, "one unit schema");
 
-    // The fielded catalog: five weapons, five rounds, ten unit schemas, and no
+    // The fielded catalog: five weapons, five rounds, eleven unit schemas (ten
+    // at AE.2; AE.3's drone is the eleventh), and no
     // stock identity moved.
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     let ids = |keys: Vec<&CanonicalId>| -> Vec<String> {
@@ -10229,7 +10234,11 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
             "tacsim.ammunition.missile_round".to_owned(),
         ]
     );
-    assert_eq!(fielded.specs.len(), 10, "no unit schema of its own");
+    assert_eq!(
+        fielded.specs.len(),
+        11,
+        "no unit schema of its own: the ten AE.1 left and 16b cut AE.3's drone"
+    );
     for (id, reference) in &stock.references {
         assert_eq!(
             fielded.references.get(id),
@@ -10817,5 +10826,257 @@ fn ae2_the_round_is_traced_from_where_it_left() {
         (facet.as_str(), damage),
         ("rear", 350),
         "the round struck the face turned to where it left"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// AE.3 — one drone under W2's cap (16c N15; doc 16 §2 W2)
+// ---------------------------------------------------------------------------
+
+/// **The drone's digest pin** (16b cut AE.3; 16c N15), the way X.1 pins the
+/// laser's.
+const DIGESTS_DRONE: [(&str, &str); 1] = [(
+    "tacsim.pack.drone_mk1",
+    "f97b0a8bcad8d45c48b685d92a001d235dcdb475f757a8ea90b1fe745311cb16",
+)];
+
+/// The drone's pack file, by its path under `content/`.
+const PACK_FILES_DRONE: [&str; 1] = ["units/drone_mk1.json"];
+
+/// **The drone loads beside the stock game without moving it, and it is the
+/// one unit of class `drone`** (16b cut AE.3; 16c N15; doc 16 §2 W2).
+///
+/// X.2's shape, one table: the pin and the writing branch; the stock game is
+/// the two weapons, one unit and one arena it always was, and the shipped
+/// tank keeps [`LINE_TANK_DIGEST`] — the blob gains `class` only when a spec
+/// declares one, so no unit authored before the class moves, and every
+/// reference the fielded catalog held before the drone joined it is the same
+/// reference now. The fielded catalog holds eleven unit schemas; `class_of`
+/// reads eight `armour`, two `walker` and the one `drone`; a class word the
+/// enum does not name is refused through the loader; the drone binds with one
+/// section, no weapon, the visual sight and a 250 cm mast; and
+/// [`tacsim::definitions::UnitClass::read`] answers the same class off the
+/// bound units that `class_of` answers off the specs, and `Armour` off a
+/// profile-less, class-less engine fixture.
+#[test]
+fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
+    use tacsim::definitions::UnitClass;
+
+    if writing() {
+        for relative in PACK_FILES_DRONE {
+            resign(relative);
+        }
+        return;
+    }
+
+    // The pin.
+    let pinned: std::collections::BTreeMap<&str, &str> = DIGESTS_DRONE.into_iter().collect();
+    for (name, json) in content::EXTENSIONS_DRONE {
+        let pack = tacsim::pack::load_pack(json)
+            .unwrap_or_else(|error| panic!("{name} does not verify: {error}"));
+        let id = pack.manifest().id().to_string();
+        assert_eq!(
+            pinned.get(id.as_str()).copied(),
+            Some(pack.manifest().digest().to_hex().as_str()),
+            "{id}'s digest moved; re-review the content and re-pin it"
+        );
+        assert_eq!(pack.manifest().version(), 1, "{id}'s version");
+    }
+    assert_eq!(pinned.len(), content::EXTENSIONS_DRONE.len());
+
+    // The stock game is what it was.
+    let stock = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    assert_eq!(stock.weapons.len(), 2, "the cannon and the coaxial");
+    assert_eq!(stock.specs.len(), 1, "one unit schema");
+    assert_eq!(stock.arenas.len(), 1, "one arena");
+    let tank = CanonicalId::new(content::LINE_TANK).expect("a canonical id");
+    assert_eq!(
+        stock
+            .references
+            .get(&tank)
+            .map(|reference| reference.digest().to_hex())
+            .as_deref(),
+        Some(LINE_TANK_DIGEST),
+        "the shipped tank's definition moved: an undeclared class must write nothing"
+    );
+
+    // The fielded catalog: eleven unit schemas, and nothing fielded before the
+    // drone moved — the same references as the eight earlier tables give alone.
+    let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    assert_eq!(
+        fielded.specs.len(),
+        11,
+        "the line tank, doc 16 section 9's five, the range's target, the three chassis and \
+         the drone"
+    );
+    let earlier: Vec<(&str, &str)> = [
+        content::EXTENSIONS.as_slice(),
+        content::EXTENSIONS_BIPED.as_slice(),
+        content::EXTENSIONS_THERMAL.as_slice(),
+        content::EXTENSIONS_ECM.as_slice(),
+        content::EXTENSIONS_ECCM.as_slice(),
+        content::EXTENSIONS_TARGET.as_slice(),
+        content::EXTENSIONS_ORDNANCE.as_slice(),
+        content::EXTENSIONS_CHASSIS.as_slice(),
+    ]
+    .concat();
+    let before = catalog_of(&content::extension_sources_of(&earlier));
+    assert_eq!(before.specs.len(), 10, "the ten the fielded catalog held");
+    for (id, reference) in &before.references {
+        assert_eq!(
+            fielded.references.get(id),
+            Some(reference),
+            "{id} moved when the drone loaded; a persisted unit points at it"
+        );
+    }
+    let drone_key = CanonicalId::new(content::DRONE_MK1).expect("a canonical id");
+    assert!(!before.specs.contains_key(&drone_key));
+
+    // The class of every fielded spec.
+    let mut classes: std::collections::BTreeMap<UnitClass, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (id, spec) in &fielded.specs {
+        classes.entry(spec.class_of()).or_default().push(
+            id.as_str()
+                .rsplit('.')
+                .next()
+                .unwrap_or_default()
+                .to_owned(),
+        );
+    }
+    let mut armour = classes.get(&UnitClass::Armour).cloned().unwrap_or_default();
+    armour.sort();
+    assert_eq!(
+        armour,
+        vec![
+            "heavy_mk1",
+            "line_tank",
+            "line_tank_eccm",
+            "line_tank_ecm",
+            "line_tank_laser",
+            "line_tank_thermal",
+            "scout_mk1",
+            "target_mk1",
+        ],
+        "eight armoured machines, the scout car's wheels included"
+    );
+    let mut walkers = classes.get(&UnitClass::Walker).cloned().unwrap_or_default();
+    walkers.sort();
+    assert_eq!(walkers, vec!["biped_mk1", "biped_mk2"], "both bipeds walk");
+    assert_eq!(
+        classes.get(&UnitClass::Drone).cloned().unwrap_or_default(),
+        vec!["drone_mk1"],
+        "the drone alone declares its class"
+    );
+    for (id, spec) in &fielded.specs {
+        assert_eq!(
+            spec.class.is_some(),
+            *id == drone_key,
+            "{id}: only the drone writes a class word"
+        );
+    }
+
+    // A class word the enum does not name is refused through the loader: the
+    // drone's own pack, the word changed and the pack re-signed so the digest
+    // is not what refuses it.
+    let flier_raw = content::DRONE_MK1_JSON.replace("\"class\": \"drone\"", "\"class\": \"flier\"");
+    assert_ne!(flier_raw, content::DRONE_MK1_JSON, "the word was replaced");
+    let declared = mush_content::parse_pack(&flier_raw)
+        .expect("the pack parses")
+        .manifest()
+        .digest()
+        .to_hex();
+    let unsigned = flier_raw.replace(&declared, UNSIGNED);
+    let signed = mush_content::parse_pack(&unsigned)
+        .expect("the unsigned pack parses")
+        .computed_digest()
+        .expect("the pack digests")
+        .to_hex();
+    let flier = unsigned.replace(UNSIGNED, &signed);
+    let refusal = match tacsim::pack::load_pack(&flier) {
+        Err(error) => error.to_string(),
+        Ok(pack) => Catalog::build_game(
+            &[LoadedPack {
+                pack,
+                source: "<test flier>".to_owned(),
+            }],
+            tacsim::NS,
+        )
+        .err()
+        .map(|error| error.to_string())
+        .expect("a flier is refused"),
+    };
+    assert!(
+        refusal.contains("flier"),
+        "the refusal names the word it does not know: {refusal}"
+    );
+
+    // The drone, bound as production binds it.
+    let bound = |entry: &str, id: u32| {
+        let key = CanonicalId::new(entry).expect("a canonical id");
+        let spec = fielded.specs.get(&key).expect("the unit is fielded");
+        let binding = fielded.bindings.get(&key).expect("its binding");
+        tacsim::definitions::to_tactical_unit(spec, binding, mush_core::ObjId(id))
+            .unwrap_or_else(|why| panic!("{entry} instantiates: {why}"))
+    };
+    let drone = bound(content::DRONE_MK1, 31);
+    let body = mush_tactics::SectionId::new("body").expect("a section");
+    assert!(drone.section(&body).is_some(), "the body");
+    for other in ["hull", "turret", "mast"] {
+        let id = mush_tactics::SectionId::new(other).expect("a section");
+        assert!(drone.section(&id).is_none(), "no {other}: one section");
+    }
+    assert!(
+        tacsim::match_::weapon_summaries(&fielded, &drone).is_empty(),
+        "no gun"
+    );
+    assert!(
+        tacsim::match_::sensor_profile(&fielded, &drone).is_some(),
+        "the visual sight"
+    );
+    assert_eq!(tacsim::match_::sensor_height_cm(&fielded, &drone), 250);
+    assert_eq!(
+        drone.rules().data().get("class"),
+        Some(&serde_json::json!("drone")),
+        "the declared word rides the blob"
+    );
+    assert_eq!(UnitClass::read(&drone), UnitClass::Drone);
+    let biped = bound(content::BIPED_MK1, 32);
+    assert_eq!(
+        biped.rules().data().get("class"),
+        None,
+        "undeclared: derived"
+    );
+    assert_eq!(UnitClass::read(&biped), UnitClass::Walker);
+    assert_eq!(
+        UnitClass::read(&bound(content::LINE_TANK, 33)),
+        UnitClass::Armour
+    );
+    assert_eq!(
+        UnitClass::read(&bound(content::SCOUT_MK1, 34)),
+        UnitClass::Armour
+    );
+    assert_eq!(
+        UnitClass::read(&bare_tactical_unit(mush_core::ObjId(35))),
+        UnitClass::Armour,
+        "a fixture with no class word and no profile is armour"
+    );
+
+    // And it checks out as a drone with no weapon row: never armed.
+    let arena = arena_of(
+        &fielded,
+        vec![
+            unit_of(&fielded, content::DRONE_MK1, RED, Team::Red, RED_CELL),
+            unit_of(&fielded, content::LINE_TANK, BLUE, Team::Blue, BLUE_CELL),
+        ],
+        &[],
+    );
+    let state = arena.unit(RED).expect("the drone");
+    assert_eq!(state.class, UnitClass::Drone);
+    assert!(state.weapons.is_empty());
+    assert!(!state.armed_at_checkout());
+    assert_eq!(
+        arena.unit(BLUE).map(|unit| unit.class),
+        Some(UnitClass::Armour)
     );
 }

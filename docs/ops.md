@@ -905,6 +905,12 @@ live. It is asked for per squad, never per unit.
   can issue a bad *order* and nothing else — the same allowlist posture the NPC
   actions have.
 
+A side also fields at most `[tacsim.arena].max_units_by_class` machines of one
+class (16b cut AE.3; doc 16 §2 W2): `{ drone = 1 }` by default, class words
+`armour`, `walker` and `drone`, `0` to `24` each, a class left unnamed uncapped
+and your entries laid over the default, so write `drone = 24` to uncap drones
+and `drone = 0` to forbid them.
+
 #### The cost run
 
 `crates/tacsim/tests/harness.rs::tacsim_harness_llm_cost_run` measures what

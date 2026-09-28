@@ -22,7 +22,7 @@
 //! Cut L removed the unused hand-written dev2 lane. A second instance supplies
 //! another `instance.env` and joins [`SHIPPED`] when committed.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -403,6 +403,10 @@ fn live_ground_sky_and_path_keys_are_explicit_in_every_shipped_config() {
             ("tacsim.time.ephemeris.rate", 0),
             ("atlas.path_max_cells", 4096),
             ("tacsim.arena.squad_size", 4),
+            // 16b cut AE.3: `[tacsim.arena].max_units_by_class` is deliberately NOT
+            // here — it is a map with a compiled default, like `[tacsim.arena.tempo]`'s
+            // keys, not an integer knob, and the example writes it while the untouched
+            // template does not; its parsed value is asserted beside `squad_size`'s.
         ] {
             let mut found = Some(&raw);
             for key in path.split('.') {
@@ -797,6 +801,13 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
             cfg.tacsim.arena.squad_size, 4,
             "{env_file}: 16b cut Z.1's squad size"
         );
+        // **16b cut AE.3** (doc 16 §2 W2): one drone a side. The template writes
+        // no key, so this is the compiled default read off the parsed struct.
+        assert_eq!(
+            cfg.tacsim.arena.max_units_by_class,
+            BTreeMap::from([("drone".to_owned(), 1)]),
+            "{env_file}: 16b cut AE.3's class caps"
+        );
     }
     let example = Config::load(&root.join("mushd.toml.example"))
         .unwrap_or_else(|e| panic!("mushd.toml.example does not parse: {e}"));
@@ -810,6 +821,12 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
     assert_eq!(example.tacsim.arena.reflex.search_ms, 60_000);
     assert_eq!(example.tacsim.arena.reflex.hunt_after_ms, 90_000);
     assert_eq!(example.tacsim.arena.squad_size, 4);
+    // 16b cut AE.3: the example writes `max_units_by_class = { drone = 1 }` inline
+    // under `[tacsim.arena]` (no header of its own: the template declares none).
+    assert_eq!(
+        example.tacsim.arena.max_units_by_class,
+        BTreeMap::from([("drone".to_owned(), 1)])
+    );
 }
 
 /// **16b cut D.3 (`B-33`): every shipped configuration writes the unattended

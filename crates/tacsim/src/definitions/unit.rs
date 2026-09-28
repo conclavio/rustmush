@@ -629,6 +629,100 @@ const fn rules_of(def: TrackedDef) -> TrackedRules {
     }
 }
 
+/// **What kind of machine a unit is, for W2's cap** (16b cut AE.3; doc 16 §2
+/// W2: *no drone swarms; `arena.max_units_by_class`; class counts on the map
+/// obey the caps*).
+///
+/// A closed word, as the draw labels and the consequences are: the arena and the
+/// lobby count units by it, and a word they cannot count would be a cap nobody
+/// enforces. It is **declared** on a unit definition (`"class": "drone"`) or
+/// **derived** when absent — a unit whose driving mode walks is a
+/// [`UnitClass::Walker`], anything else [`UnitClass::Armour`] — so every unit
+/// authored before this cut keeps its class without a word written and without
+/// its `DefinitionRef` moving (`game_rules` emits `class` only when declared).
+///
+/// The derivation is [`UnitSpec::class_of`] on the authored spec and
+/// [`UnitClass::read`] on the bound M32 unit; the two agree for every unit the
+/// loader admits, because the blob carries the declared word and the profile
+/// carries the modes in the ladder's order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnitClass {
+    /// A tank, a car, a gun on tracks or wheels — every machine that is neither.
+    Armour,
+    /// A machine whose driving mode walks (the bipeds).
+    Walker,
+    /// A small unmanned platform: a sight and no gun (`drone_mk1`). W2's word,
+    /// capped at one a side by default.
+    Drone,
+}
+
+impl UnitClass {
+    /// Every class, in the enum's (and the `BTreeMap`'s) order.
+    pub const ALL: [UnitClass; 3] = [UnitClass::Armour, UnitClass::Walker, UnitClass::Drone];
+
+    /// The class word, as content and the operator's config write it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            UnitClass::Armour => "armour",
+            UnitClass::Walker => "walker",
+            UnitClass::Drone => "drone",
+        }
+    }
+
+    /// The class a word names, or `None` for a word that names none (the
+    /// config layer's refusal; the loader refuses through `serde`).
+    #[must_use]
+    pub fn parse(word: &str) -> Option<UnitClass> {
+        UnitClass::ALL
+            .into_iter()
+            .find(|class| class.as_str() == word)
+    }
+
+    /// **The noun a player reads**, singular when `count == 1` and plural
+    /// otherwise — the lobby's refusals (`A side fields at most 1 drone; …`,
+    /// `This server fields no drones; …`).
+    #[must_use]
+    pub const fn noun(self, count: u32) -> &'static str {
+        match (self, count == 1) {
+            (UnitClass::Armour, true) => "armoured machine",
+            (UnitClass::Armour, false) => "armoured machines",
+            (UnitClass::Walker, true) => "walker",
+            (UnitClass::Walker, false) => "walkers",
+            (UnitClass::Drone, true) => "drone",
+            (UnitClass::Drone, false) => "drones",
+        }
+    }
+
+    /// **The class of a bound M32 unit**, read at check-out (16b cut AE.3).
+    ///
+    /// The unit-level rules blob ([`TacticalUnit::rules`], the opaque payload
+    /// this crate alone decodes) read for a `"class"` word through
+    /// [`UnitClass::parse`]; when it carries none, [`UnitClass::Walker`] for a
+    /// unit whose driving mode is legged (the row
+    /// [`crate::arena::CostRow::read`] answers — the ladder, else the profile's
+    /// first mode) and [`UnitClass::Armour`] for anything else. So an engine
+    /// fixture with no blob word and no profile is `Armour`, and is never
+    /// counted against the drone's cap.
+    #[must_use]
+    pub fn read(unit: &TacticalUnit) -> UnitClass {
+        if let Some(class) = unit
+            .rules()
+            .data()
+            .get("class")
+            .and_then(serde_json::Value::as_str)
+            .and_then(UnitClass::parse)
+        {
+            return class;
+        }
+        match crate::arena::CostRow::read(unit) {
+            crate::arena::CostRow::Legged => UnitClass::Walker,
+            crate::arena::CostRow::Tracked | crate::arena::CostRow::Wheeled => UnitClass::Armour,
+        }
+    }
+}
+
 /// One unit schema (doc 16 §3.3's `line_tank`).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -664,6 +758,15 @@ pub struct UnitSpec {
     /// a unit that cools and cannot heat is a number nothing reads.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub heat_dissipation_per_s: u32,
+    /// **The declared class** (16b cut AE.3), or `None` to derive it
+    /// ([`UnitSpec::class_of`]).
+    ///
+    /// Absent is the default and keeps every unit authored before this cut
+    /// byte-identical: nothing is serialised and `game_rules` writes no
+    /// `class` into the blob, so no `DefinitionRef` moves. A word the enum does
+    /// not name (`"flier"`) is refused at decode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<UnitClass>,
     /// Why these numbers.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
@@ -676,6 +779,23 @@ fn is_zero(value: &u32) -> bool {
 }
 
 impl UnitSpec {
+    /// **This unit's class** (16b cut AE.3): the declared
+    /// [`UnitSpec::class`], else [`UnitClass::Walker`] when its driving mode —
+    /// [`MobilityDef::modes`]' first, which is the ladder's order: tracked,
+    /// wheeled, legged — is legged, else [`UnitClass::Armour`]. The lobby reads
+    /// it off the catalog; [`UnitClass::read`] is the same answer off the bound
+    /// unit.
+    #[must_use]
+    pub fn class_of(&self) -> UnitClass {
+        if let Some(class) = self.class {
+            return class;
+        }
+        match self.mobility.modes().first() {
+            Some(mode) if mode.locomotion == LEGGED => UnitClass::Walker,
+            _ => UnitClass::Armour,
+        }
+    }
+
     /// Every weapon definition this unit names, in component order.
     pub fn weapons(&self) -> impl Iterator<Item = &CanonicalId> {
         self.components.iter().filter_map(|c| match &c.role {
@@ -1640,6 +1760,11 @@ pub fn to_tactical_unit(
 }
 
 /// The opaque blob M32 carries and only this crate reads.
+///
+/// **16b cut AE.3**: `class` is written only when the spec declares one, so a
+/// unit authored before the class existed binds to the same blob — and the same
+/// `DefinitionRef` — as it did; [`UnitClass::read`] derives the class of such a
+/// unit from its profile instead.
 fn game_rules(spec: &UnitSpec) -> serde_json::Value {
     let consequences: Vec<serde_json::Value> = spec
         .sections
@@ -1652,14 +1777,18 @@ fn game_rules(spec: &UnitSpec) -> serde_json::Value {
             })
         })
         .collect();
-    serde_json::json!({
+    let mut rules = serde_json::json!({
         "facets": spec.facets,
         "silhouettes": spec.silhouettes,
         "sensor_height_cm": spec.sensor_height_cm,
         "consequences": consequences,
         "components": spec.components,
         "mobility": spec.mobility,
-    })
+    });
+    if let (Some(class), Some(map)) = (spec.class, rules.as_object_mut()) {
+        map.insert("class".to_owned(), serde_json::json!(class.as_str()));
+    }
+    rules
 }
 
 /// One `schema` reference the binding needs, or a refusal naming it.

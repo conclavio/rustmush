@@ -550,6 +550,16 @@ pub enum CockpitError {
     /// The unit carries no weapon by that name.
     #[error("That unit carries no weapon called `{0}`.")]
     NoSuchWeapon(String),
+    /// **A bare `FIRE` in a unit that carries no weapon at all** (16b cut AE.3):
+    /// a drone, or a tank whose every weapon has been shot off.
+    ///
+    /// The same sentence `WEAPONSTATUS` prints for an empty list. Before this
+    /// variant a bare `FIRE` answered [`CockpitError::NoSuchWeapon`] with
+    /// [`DEFAULT_WEAPON`] in it — "That unit carries no weapon called
+    /// `cannon`." — naming a gun the pilot never mentioned. A *named* weapon on
+    /// an empty list keeps `NoSuchWeapon`, because there the pilot did name one.
+    #[error("This unit carries no weapon.")]
+    NoWeapon,
     /// **The word names more than one of the platform's weapons** (16b cut D.2,
     /// `B-17`): a short name or a prefix that two rows answer to.
     #[error("`{word}` could be {ids}; say more.")]
@@ -3712,7 +3722,8 @@ fn fire(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> 
     // **16b cut D.2** (`B-16`): every one of these is `FIRE <weapon> refused. …`,
     // which is the sentence the arena's own refusal says a pulse later. The
     // `NoSuchWeapon` above is the one that is not: `choose_weapon` failed to find
-    // a weapon, so there is none to name.
+    // a weapon, so there is none to name — and (16b cut AE.3) neither is
+    // `NoWeapon`, a bare `FIRE` on a platform that carries none.
     let refused = |said: &CockpitError| fire_refused(&weapon.id, said);
     if held
         .as_ref()
@@ -5117,9 +5128,9 @@ pub fn weapons_of(w: &World, unit: ObjId) -> Vec<WeaponRow> {
 /// from the arena's own refusal. An empty list on a live frame is a **fact**: the
 /// arena is the single writer while a match runs (D-16-1), and what it says the
 /// platform carries is what the platform carries. `WEAPONSTATUS` then prints
-/// `This unit carries no weapon.` and `FIRE` refuses in the cockpit with
-/// [`CockpitError::NoSuchWeapon`], which is the same sentence and one pulse
-/// earlier.
+/// `This unit carries no weapon.` and a bare `FIRE` refuses in the cockpit with
+/// [`CockpitError::NoWeapon`] (16b cut AE.3), which is the same sentence, one
+/// pulse earlier.
 fn carried(w: &World, unit: ObjId, held: Option<&CockpitFrame>) -> Vec<WeaponRow> {
     match held {
         Some(held) => frame_weapons(&held.frame),
@@ -5190,7 +5201,9 @@ pub fn weapon_short_of(rows: &[WeaponRow], id: &str) -> Option<String> {
 ///
 /// Two or more candidates at a step is [`CockpitError::AmbiguousWeapon`] naming
 /// them, and no candidate at any step is the existing
-/// [`CockpitError::NoSuchWeapon`]. A step is not fallen through on ambiguity:
+/// [`CockpitError::NoSuchWeapon`]. A bare `FIRE` on a platform with no rows at
+/// all is [`CockpitError::NoWeapon`] (16b cut AE.3): the pilot named nothing, so
+/// the refusal names nothing. A step is not fallen through on ambiguity:
 /// `m` matching two short names must not quietly become a prefix search that
 /// matches the same two.
 ///
@@ -5228,7 +5241,7 @@ fn choose_weapon(rows: &[WeaponRow], rest: &str) -> Result<WeaponRow, CockpitErr
         .find(|weapon| weapon.id.as_str() == DEFAULT_WEAPON)
         .or_else(|| rows.first())
         .cloned()
-        .ok_or_else(|| CockpitError::NoSuchWeapon(DEFAULT_WEAPON.to_owned()))
+        .ok_or(CockpitError::NoWeapon)
 }
 
 /// **Both of a unit's speed ceilings in cm/s** (16b cut D.3, `T-60`): forward,
@@ -7089,6 +7102,18 @@ mod tests {
         // An empty word is the default weapon and never a search.
         assert_eq!(chosen(""), Ok(DEFAULT_WEAPON.to_owned()));
         assert_eq!(chosen("   "), Ok(DEFAULT_WEAPON.to_owned()));
+        // 16b cut AE.3: a platform with no rows at all (a drone) — a bare
+        // `FIRE` names nothing, so neither does the refusal; a named weapon
+        // keeps the sentence that names it.
+        assert_eq!(choose_weapon(&[], ""), Err(CockpitError::NoWeapon));
+        assert_eq!(
+            choose_weapon(&[], "  ").map_err(|err| err.to_string()),
+            Err("This unit carries no weapon.".to_owned())
+        );
+        assert_eq!(
+            choose_weapon(&[], "cannon").map_err(|err| err.to_string()),
+            Err("That unit carries no weapon called `cannon`.".to_owned())
+        );
         // Ambiguous at the SHORT-NAME step, and at the PREFIX step, each naming
         // the candidates in row order.
         let two = vec![weapon_row("machine_gun"), weapon_row("missile_gun")];

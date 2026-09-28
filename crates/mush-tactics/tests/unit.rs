@@ -252,6 +252,31 @@ fn a_unit_builds_from_its_schema() {
     assert!(u.mobility().is_some());
 }
 
+/// 16b cut AE.3: `rules()` answers the unit-level blob `from_spec` was given,
+/// byte for byte — the schema reference and the opaque data both — so a game
+/// can read its own facts (tacsim's unit class) off a bound unit.
+#[test]
+fn rules_answers_the_blob_from_spec_was_given() {
+    let mut spec = mech_spec();
+    spec.rules = RulesValue::new(
+        dref_as("schema", "tacsim.x"),
+        json!({ "class": "drone", "nested": { "n": 7, "list": [1, 2, 3] } }),
+    )
+    .unwrap();
+    let unit = TacticalUnit::from_spec(&spec, GOD).unwrap();
+    assert_eq!(unit.rules(), &spec.rules);
+    assert_eq!(unit.rules().schema(), spec.rules.schema());
+    assert_eq!(
+        serde_json::to_vec(unit.rules()).unwrap(),
+        serde_json::to_vec(&spec.rules).unwrap(),
+        "the blob is carried byte for byte"
+    );
+    assert_eq!(unit.rules().data()["class"], json!("drone"));
+    // And it survives the unit's own serde round trip unchanged.
+    let back: TacticalUnit = serde_json::from_slice(&serde_json::to_vec(&unit).unwrap()).unwrap();
+    assert_eq!(back.rules(), &spec.rules);
+}
+
 #[test]
 fn construction_rejects_structural_violations() {
     // No sections.

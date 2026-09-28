@@ -72,6 +72,7 @@
 //! | `[tacsim.arena].occupied_stop_ms` | `2000` | **16b cut E.3** (doc 16 §3.4 step 4): arena milliseconds a unit holds against another unit in its way, keeping its speed, before it stops and says so; `0` stops it at once. Ground, the window's edge and a slope are untouched |
 //! | `[tacsim.arena].deliberate_min_ms` | `30000` | **16b cut N.2** (doc 16 §6): the least ARENA time between two deliberation requests for one squad — the floor under the event-driven trigger |
 //! | `[tacsim.arena].squad_size` | `4` | 16b cut Z.1 (16c N6): the most machines one squad holds; a side's machines are dealt into `ceil(n / size)` squads of sizes differing by at most one |
+//! | `[tacsim.arena].max_units_by_class` | `{ drone = 1 }` | 16b cut AE.3 (doc 16 §2 W2): the most machines of one class a SIDE fields, by class word (`armour`, `walker`, `drone`), `0` to `24`; `0` means the class cannot be fielded; the operator's entries are laid over the compiled `drone = 1` (`walker = 2` alone leaves the drone at 1), and a class not named has no cap |
 //! | `[tacsim.arena.intents].max_pending_per_unit` | `8` | **16b cut M.1** (`T-82`): discrete orders one seat may give a unit per arena second; also the size, per unit, of the world side's inbox and pre-pulse buffer |
 //! | `[tacsim.arena.ledger].summary_ms` | `5000` | arena milliseconds between `position_summary` ledger events (doc 16 §4) |
 //! | `[tacsim.arena.ledger].max_bytes` | `67108864` | 64 MiB: at 90% summaries stop, at 100% the match is stopped with `Timeout` |
@@ -981,6 +982,21 @@ pub struct TacsimArenaCfg {
     /// the record's and the arena's — read it, so they cannot disagree. `1` to
     /// `16`, refused by name outside it.
     pub squad_size: u32,
+    /// **The most machines of one class a side fields**, by class word
+    /// (**16b cut AE.3**; doc 16 §2 W2: *no drone swarms;
+    /// `arena.max_units_by_class`*).
+    ///
+    /// Written as an inline table under `[tacsim.arena]`
+    /// (`max_units_by_class = { drone = 1 }`) or as its own
+    /// `[tacsim.arena.max_units_by_class]` header; both parse to this map. Per
+    /// side, not per map; `0` means the class cannot be fielded; a class not
+    /// named has no cap. This crate cannot see tacsim's class words, so it
+    /// checks nothing here: `mush_server::config_ext` refuses a word that is not
+    /// `armour`, `walker` or `drone`, lays the operator's entries **over** the
+    /// compiled default (so a table naming only `walker` leaves the drone at
+    /// `1`, because a written table replaces this `serde(default)` map whole),
+    /// and `tacsim::config::ArenaConfig::validate` bounds each value `0` to `24`.
+    pub max_units_by_class: BTreeMap<String, u32>,
     /// `[tacsim.arena.intents]` — the per-unit intent inbox bound.
     pub intents: TacsimIntentsCfg,
     /// `[tacsim.arena.ledger]` — the match ledger's summary cadence and its two
@@ -999,6 +1015,7 @@ impl Default for TacsimArenaCfg {
             occupied_stop_ms: 2_000,
             deliberate_min_ms: 30_000,
             squad_size: 4,
+            max_units_by_class: BTreeMap::from([("drone".to_owned(), 1)]),
             intents: TacsimIntentsCfg::default(),
             ledger: TacsimLedgerCfg::default(),
             reflex: TacsimReflexCfg::default(),
@@ -2623,6 +2640,11 @@ scene_turn_dedline_secs = 30
         assert_eq!(arena.occupied_stop_ms, 2_000);
         // 16b cut Z.1 (16c N6): lances of four.
         assert_eq!(arena.squad_size, 4);
+        // 16b cut AE.3 (doc 16 §2 W2): one drone a side.
+        assert_eq!(
+            arena.max_units_by_class,
+            BTreeMap::from([("drone".to_owned(), 1)])
+        );
         assert_eq!(arena.intents.max_pending_per_unit, 8);
         assert_eq!(
             (
@@ -2705,6 +2727,7 @@ scene_turn_dedline_secs = 30
              max_catch_up_steps = 2\n\
              occupied_stop_ms = 1500\n\
              squad_size = 3\n\
+             max_units_by_class = { drone = 2, walker = 4 }\n\
              [tacsim.arena.tempo]\n\
              quiet_ms = 4000\n\
              alert_ms = 900\n\
@@ -2753,6 +2776,11 @@ scene_turn_dedline_secs = 30
         assert_eq!(arena.occupied_stop_ms, 1_500);
         // 16b cut Z.1: the squad size, written out like the rest.
         assert_eq!(arena.squad_size, 3);
+        // 16b cut AE.3: the class caps, as the inline table the example writes.
+        assert_eq!(
+            arena.max_units_by_class,
+            BTreeMap::from([("drone".to_owned(), 2), ("walker".to_owned(), 4)])
+        );
         assert_eq!(
             (
                 arena.tempo.quiet_ms,
@@ -2820,6 +2848,66 @@ scene_turn_dedline_secs = 30
             ),
             (900, 70, 4_096, 2_000, 30)
         );
+    }
+
+    /// **16b cut AE.3**: `[tacsim.arena].max_units_by_class` round-trips in both
+    /// TOML spellings — the inline table the shipped example writes under
+    /// `[tacsim.arena]`, and its own `[tacsim.arena.max_units_by_class]` header —
+    /// to one map; a config that names nothing reads the compiled `drone = 1`;
+    /// and a written table **replaces** that default here (the merge over it is
+    /// `mush_server::config_ext`'s, where the class words are known), which is
+    /// what this layer promises and no more. Words are not checked here.
+    #[test]
+    fn ae3_max_units_by_class_parses_inline_or_under_its_own_header() {
+        let inline: Config = toml::from_str(
+            "[tacsim.arena]\n\
+             squad_size = 4\n\
+             max_units_by_class = { drone = 1 }\n",
+        )
+        .expect("the inline table parses");
+        assert_eq!(
+            inline.tacsim.arena.max_units_by_class,
+            BTreeMap::from([("drone".to_owned(), 1)])
+        );
+
+        let header: Config = toml::from_str(
+            "[tacsim.arena]\n\
+             squad_size = 4\n\
+             [tacsim.arena.max_units_by_class]\n\
+             drone = 3\n\
+             walker = 0\n",
+        )
+        .expect("the header spelling parses");
+        assert_eq!(
+            header.tacsim.arena.max_units_by_class,
+            BTreeMap::from([("drone".to_owned(), 3), ("walker".to_owned(), 0)])
+        );
+
+        let unnamed: Config = toml::from_str("[tacsim.arena]\nsquad_size = 4\n")
+            .expect("a section without the key parses");
+        assert_eq!(
+            unnamed.tacsim.arena.max_units_by_class,
+            BTreeMap::from([("drone".to_owned(), 1)]),
+            "the compiled default when the key is absent"
+        );
+
+        let walker_only: Config = toml::from_str(
+            "[tacsim.arena]\n\
+             max_units_by_class = { walker = 2 }\n",
+        )
+        .expect("a table naming another class parses");
+        assert_eq!(
+            walker_only.tacsim.arena.max_units_by_class,
+            BTreeMap::from([("walker".to_owned(), 2)]),
+            "this layer replaces; config_ext lays it over the default"
+        );
+
+        let flier: Config = toml::from_str(
+            "[tacsim.arena]\n\
+             max_units_by_class = { flier = 2 }\n",
+        )
+        .expect("an unknown word parses here and is refused by config_ext");
+        assert_eq!(flier.tacsim.arena.max_units_by_class.get("flier"), Some(&2));
     }
 
     /// Cut G's one enforced property: **a typo in any of the eight tables refuses

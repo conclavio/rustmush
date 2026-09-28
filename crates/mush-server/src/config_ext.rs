@@ -307,6 +307,10 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             // 16b cut Z.1 (16c N6): the most machines one squad holds, read by
             // both `squads_of` callers.
             squad_size: cfg.arena.squad_size,
+            // 16b cut AE.3 (doc 16 §2 W2): the class words mapped and the
+            // operator's entries laid over the compiled default — refused here,
+            // before `validate` bounds the values, for a word that names no class.
+            max_units_by_class: class_caps(&cfg.arena.max_units_by_class)?,
             ledger: tacsim::config::LedgerConfig {
                 summary_ms: cfg.arena.ledger.summary_ms,
                 max_bytes: cfg.arena.ledger.max_bytes,
@@ -464,6 +468,39 @@ pub fn atlas_config(
     // function over the same bytes cannot disagree.
     mush_atlas::verify_sources(&typed)?;
     Ok(typed)
+}
+
+/// **`[tacsim.arena].max_units_by_class`, typed** (16b cut AE.3; doc 16 §2 W2).
+///
+/// Two things happen here and nowhere else, because this is the one layer that
+/// sees both the operator's words and tacsim's closed [`tacsim::definitions::UnitClass`]:
+///
+/// 1. A word that names no class refuses the boot, naming it — `mush-config`
+///    cannot, since it depends on no tacsim crate, and a cap on a class nobody
+///    counts is a cap the operator believes is in force and is not.
+/// 2. **The operator's entries are laid over
+///    [`tacsim::config::ArenaConfig::default`]'s map** rather than replacing it.
+///    `TacsimArenaCfg` is `#[serde(default)]`, so a written table *replaces* the
+///    whole map at parse; without this a file that says only `walker = 2` would
+///    silently uncap drones. With it the drone's `1` stands unless the operator
+///    names the drone: `drone = 24` uncaps it and `drone = 0` forbids it.
+///
+/// The values are bounded afterwards by [`tacsim::config::ArenaConfig::validate`]
+/// (`0` to `24`), which names the key and the value like every other refusal.
+fn class_caps(
+    written: &std::collections::BTreeMap<String, u32>,
+) -> Result<std::collections::BTreeMap<tacsim::definitions::UnitClass, u32>, String> {
+    let mut caps = tacsim::config::ArenaConfig::default().max_units_by_class;
+    for (word, cap) in written {
+        let class = tacsim::definitions::UnitClass::parse(word).ok_or_else(|| {
+            format!(
+                "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
+                 drone: {word}"
+            )
+        })?;
+        caps.insert(class, *cap);
+    }
+    Ok(caps)
 }
 
 /// **16b cut G — the one float in `[tacsim]`, converted where converting it is a
@@ -965,6 +1002,7 @@ mod tests {
              occupied_stop_ms = 1500\n\
              deliberate_min_ms = 12000\n\
              squad_size = 3\n\
+             max_units_by_class = { drone = 2, walker = 3 }\n\
              [tacsim.arena.tempo]\n\
              quiet_ms = 4000\n\
              alert_ms = 900\n\
@@ -1050,6 +1088,11 @@ mod tests {
                 deliberate_min_ms: 12_000,
                 // 16b cut Z.1: the squad size, off its default of four.
                 squad_size: 3,
+                // 16b cut AE.3: the class caps, words mapped to the closed class.
+                max_units_by_class: std::collections::BTreeMap::from([
+                    (tacsim::definitions::UnitClass::Walker, 3),
+                    (tacsim::definitions::UnitClass::Drone, 2),
+                ]),
                 intents: tacsim::config::IntentsConfig {
                     max_pending_per_unit: 3
                 },
@@ -1158,6 +1201,49 @@ mod tests {
         );
     }
 
+    /// **16b cut AE.3: the operator's class caps are laid over the compiled
+    /// default, not in place of it** (doc 16 §2 W2).
+    ///
+    /// `TacsimArenaCfg` is `#[serde(default)]`, so a written table replaces the
+    /// parsed map whole; a file that names only `walker` must still leave the
+    /// drone at its `1`, or the operator uncapped drones by capping walkers.
+    /// Naming the drone is the only way to move it: `24` uncaps it, `0` forbids
+    /// it (legal: the class cannot be fielded), and the header spelling maps the
+    /// same way as the inline table.
+    #[test]
+    fn ae3_the_class_caps_merge_over_the_default_and_zero_is_legal() {
+        use tacsim::definitions::UnitClass;
+        let caps = |text: &str| {
+            tacsim_config(&tacsim_cfg(text))
+                .expect("the caps map")
+                .arena
+                .max_units_by_class
+        };
+        assert_eq!(
+            tacsim_config(&TacsimCfg::default())
+                .expect("the defaults map")
+                .arena
+                .max_units_by_class,
+            std::collections::BTreeMap::from([(UnitClass::Drone, 1)]),
+            "one drone a side when nothing is written"
+        );
+        assert_eq!(
+            caps("[tacsim.arena]\nmax_units_by_class = { walker = 2 }\n"),
+            std::collections::BTreeMap::from([(UnitClass::Walker, 2), (UnitClass::Drone, 1)]),
+            "walker = 2 leaves the drone at 1"
+        );
+        assert_eq!(
+            caps("[tacsim.arena]\nmax_units_by_class = { drone = 24 }\n"),
+            std::collections::BTreeMap::from([(UnitClass::Drone, 24)]),
+            "naming the drone moves it: 24 is every unit an arena places"
+        );
+        assert_eq!(
+            caps("[tacsim.arena.max_units_by_class]\ndrone = 0\narmour = 0\n"),
+            std::collections::BTreeMap::from([(UnitClass::Armour, 0), (UnitClass::Drone, 0)]),
+            "0 is legal and forbids the class; the header spelling maps the same"
+        );
+    }
+
     /// **16b cut Q.7: every value rule refuses by name, through the real
     /// mapper.**
     ///
@@ -1248,6 +1334,22 @@ mod tests {
                 "squad_size = 17\n",
                 "[tacsim.arena].squad_size",
                 "17",
+            ),
+            // 16b cut AE.3 (doc 16 §2 W2): a word that names no class, refused
+            // here where the words are known, and a cap past the arena's own
+            // 24-unit bound, refused by `ArenaConfig::validate`.
+            (
+                "[tacsim.arena]",
+                "max_units_by_class = { flier = 2 }\n",
+                "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
+                 drone",
+                "flier",
+            ),
+            (
+                "[tacsim.arena]",
+                "max_units_by_class = { drone = 25 }\n",
+                "[tacsim.arena.max_units_by_class].drone must be 0 to 24",
+                "25",
             ),
             (
                 "[tacsim.arena.intents]",

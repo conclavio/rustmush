@@ -537,6 +537,38 @@ pub enum SimError {
     /// A side has nobody.
     #[error("The {0} side has no pilots; a match takes at least one a side.")]
     EmptySide(&'static str),
+    /// **`SIM UNIT <type>` past the class cap** (16b cut AE.3; doc 16 §2 W2:
+    /// *no drone swarms; `arena.max_units_by_class`*).
+    ///
+    /// The caller's own side already fields `cap` of the chosen type's class in
+    /// its other claimed slots (by their effective types: the choice on a slot,
+    /// else its pod's authored type). The sentence names the class and the
+    /// number and nothing about the slots that hold them, so it tells the caller
+    /// nothing their own side's board does not. One variant, two sentences: a
+    /// cap of zero is the operator forbidding the class, and reads `This server
+    /// fields no drones; pick another type.` rather than a count of nought.
+    #[error("{}", class_cap_line(*.class, *.cap))]
+    ClassCap {
+        /// The chosen type's class.
+        class: crate::definitions::UnitClass,
+        /// `[tacsim.arena].max_units_by_class` for that class.
+        cap: u32,
+    },
+    /// **A side that fields no gun** (16b cut AE.3; plan §6 AE-X3).
+    ///
+    /// Every machine the side would fly carries no weapon component — a lone
+    /// drone — so the side could see and never shoot, and the match could only
+    /// end on the clock. Bound in `ready()`, where the sides are final (the
+    /// boarding deadline's drops and the fill are both behind it), so a drop
+    /// that leaves a side a lone drone is called off with `Match N could not
+    /// start: …`; and said early at `SIM START`, before anything is written,
+    /// through the same `side_fields_a_gun`. Never for the range's target
+    /// side, which is targets and shoots at nobody.
+    #[error("The {team} side fields no gun; a side needs a machine that carries one.")]
+    NoGun {
+        /// The side's word.
+        team: &'static str,
+    },
     /// **Nobody at all is playing** (16b cut Q.7), with the AI fill on.
     ///
     /// The fill lets one human fight the machines; it does not let a centre run
@@ -600,6 +632,23 @@ pub enum SimError {
     /// The check-out itself refused, with the reason cut T.3 gave.
     #[error("The match could not start: {0}")]
     Start(String),
+}
+
+/// **[`SimError::ClassCap`]'s sentence** (16b cut AE.3): the count, in the
+/// class's own noun, or — at a cap of zero — the class forbidden on this
+/// server.
+fn class_cap_line(class: crate::definitions::UnitClass, cap: u32) -> String {
+    if cap == 0 {
+        format!(
+            "This server fields no {}; pick another type.",
+            class.noun(0)
+        )
+    } else {
+        format!(
+            "A side fields at most {cap} {}; pick another type.",
+            class.noun(cap)
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1172,6 +1221,101 @@ pub fn authored_unit_type(w: &World, team: Team, index: u8) -> Option<SmolStr> {
         .map(|tank| SmolStr::new(tank.unit.as_str()))
 }
 
+/// **The class of one unit type** (16b cut AE.3), off the store's catalog:
+/// [`crate::definitions::UnitSpec::class_of`] for the spec `id` names, or
+/// `None` for an id the catalog does not carry.
+fn class_of_type(w: &World, id: &str) -> Option<crate::definitions::UnitClass> {
+    let key = mush_core::CanonicalId::new(id).ok()?;
+    let store = w.module_state::<crate::TacsimStore>()?;
+    store
+        .definitions()
+        .specs
+        .get(&key)
+        .map(crate::definitions::UnitSpec::class_of)
+}
+
+/// **Whether a side's machines carry a gun between them** (16b cut AE.3; plan
+/// §6 AE-X3), or [`SimError::NoGun`] naming the side.
+///
+/// `types` is every unit type the side will fly, as definition ids: the
+/// catalog spec each names is read for a weapon component
+/// ([`crate::definitions::UnitSpec::weapons`]), which is how the check-out
+/// itself reads a unit's weapons (`arena_def::weapon_summaries` off the spec
+/// the unit's schema names), so a type the catalog does not carry reads as
+/// carrying none, exactly as the arena would field it. An **empty** list
+/// answers `Ok`: a side with no machine at all is `EmptySide`'s or `NoUnit`'s
+/// refusal, not this one.
+///
+/// The one rule both callers use: [`ready`] over the final sides' fielded
+/// tanks, where it binds, and [`start`] over the claimed slots' effective
+/// types plus the pods the fill will add ([`fill_pods`]), as a courtesy before
+/// anything is written.
+fn side_fields_a_gun(w: &World, team: Team, types: &[SmolStr]) -> Result<(), SimError> {
+    if types.is_empty() {
+        return Ok(());
+    }
+    let Some(store) = w.module_state::<crate::TacsimStore>() else {
+        return Ok(());
+    };
+    let catalog = store.definitions();
+    let armed = types.iter().any(|id| {
+        mush_core::CanonicalId::new(id.as_str())
+            .ok()
+            .and_then(|key| catalog.specs.get(&key))
+            .is_some_and(|spec| spec.weapons().next().is_some())
+    });
+    if armed {
+        Ok(())
+    } else {
+        Err(SimError::NoGun {
+            team: team.as_str(),
+        })
+    }
+}
+
+/// **The unit type a tank is now fitted to**, off its M32 record's schema —
+/// what `SIM START`'s refit left on it, which is what the check-out reads.
+fn fitted_type(w: &World, tank: ObjId) -> Option<SmolStr> {
+    mush_tactics::module::unit_of(w, tank).map(|unit| SmolStr::new(unit.schema().key().id.as_str()))
+}
+
+/// **The pods the AI fill adds to one side** (16b cut N.1, sized by Q.7;
+/// factored by 16b cut AE.3 so [`ready`] and [`start`]'s courtesy cannot walk
+/// it two ways): the lowest unclaimed pods of `team` whose tanks exist, in pod
+/// order, until the side holds [`ai_side_size`] machines counting `fielded`
+/// (the tanks already on it). A pod whose tank is already fielded is skipped.
+/// The caller decides whether the fill runs at all (`[tacsim.match].ai_fill`,
+/// and never on a range).
+fn fill_pods(
+    w: &World,
+    centre: &Centre,
+    match_cfg: &MatchConfig,
+    team: Team,
+    fielded: &[ObjId],
+) -> Vec<(u8, ObjId)> {
+    let fill_to = usize::from(ai_side_size(w, centre, match_cfg));
+    let mut added: Vec<(u8, ObjId)> = Vec::new();
+    for index in 1..=slots_per_side(w, match_cfg) {
+        if fielded.len().saturating_add(added.len()) >= fill_to {
+            break;
+        }
+        if centre
+            .slots
+            .iter()
+            .any(|slot| slot.team == team && slot.index == index)
+        {
+            continue;
+        }
+        if let Some(tank) = centre::tank_for_slot(w, team, index)
+            && !fielded.contains(&tank)
+            && !added.iter().any(|(_, other)| *other == tank)
+        {
+            added.push((index, tank));
+        }
+    }
+    added
+}
+
 /// **`SIM UNIT [<type>]`** — read or choose the unit type the caller's own slot
 /// will field (16b cut Q.8).
 ///
@@ -1196,8 +1340,16 @@ pub fn authored_unit_type(w: &World, team: Team, index: u8) -> Option<SmolStr> {
 /// [`SimError::LayerOff`], [`SimError::OutsideCentre`],
 /// [`SimError::UnknownAccount`] and [`SimError::Unavailable`]; a choice then adds
 /// [`SimError::NoSlotToField`] for a caller holding no slot,
-/// [`SimError::WrongState`] outside `Selection`, and
-/// [`SimError::NoSuchUnitType`] for a word the catalog does not carry.
+/// [`SimError::WrongState`] outside `Selection`,
+/// [`SimError::NoSuchUnitType`] for a word the catalog does not carry, and
+/// (16b cut AE.3; doc 16 §2 W2) [`SimError::ClassCap`] for a type whose class
+/// the caller's own side already fields to `[tacsim.arena].max_units_by_class`
+/// in its other claimed slots — `A side fields at most 1 drone; pick another
+/// type.` at the shipped default, `This server fields no drones; pick another
+/// type.` at a cap of zero. Re-choosing a type of the class the caller's slot
+/// already holds is never refused: the count leaves the caller's own slot out.
+/// `Arena::new` is the final word (`ArenaError::ClassCap`); this is the refusal
+/// at the choice, where the pilot can still pick another type.
 pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError> {
     let actor = ctx.actor;
     require_layer(ctx.w)?;
@@ -1266,6 +1418,45 @@ pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError
         resolve_unit_type(ctx.w, ctx.reg, word).ok_or_else(|| SimError::NoSuchUnitType {
             word: word.to_owned(),
         })?;
+    // **16b cut AE.3** (doc 16 §2 W2): the class cap, at the choice, over the
+    // caller's own side and nothing else — the other claimed slots of the side
+    // by their **effective** type (the choice on the slot, else the pod's
+    // authored type, which is what `fit_fielded_units` will field), so a refusal
+    // tells the caller only what their own side's board already says.
+    let class = class_of_type(ctx.w, chosen.as_str());
+    let cap = class.and_then(|class| {
+        configs(ctx.w).and_then(|(arena_cfg, _, _)| {
+            arena_cfg
+                .max_units_by_class
+                .get(&class)
+                .map(|cap| (class, *cap))
+        })
+    });
+    if let Some((class, cap)) = cap {
+        let others: Vec<(u8, Option<SmolStr>)> = centre(ctx.w)
+            .map(|centre| {
+                centre
+                    .slots
+                    .iter()
+                    .filter(|slot| slot.team == held.team && slot.account != account)
+                    .map(|slot| (slot.index, slot.unit_type.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let fielded = others
+            .into_iter()
+            .filter(|(index, unit_type)| {
+                unit_type
+                    .clone()
+                    .or_else(|| authored_unit_type(ctx.w, held.team, *index))
+                    .and_then(|id| class_of_type(ctx.w, id.as_str()))
+                    == Some(class)
+            })
+            .count();
+        if u32::try_from(fielded).unwrap_or(u32::MAX) >= cap {
+            return Err(SimError::ClassCap { class, cap });
+        }
+    }
     let spelling = type_word(ctx.w, chosen.as_str());
     let stored =
         (authored.as_deref() != Some(chosen.as_str())).then(|| SmolStr::new(chosen.as_str()));
@@ -1433,6 +1624,53 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
                 });
             }
             locks.push((position, pod));
+        }
+    }
+    // **16b cut AE.3** (plan §6 AE-X3): a side that would field no gun, said
+    // now, with the other refusals and before the first write — over the
+    // claimed slots' effective types (their choice, else the pod's authored
+    // type, which is what the refit below fields) plus, with the fill on and no
+    // range, the authored types of the pods the fill will add ([`fill_pods`],
+    // the walk [`ready`] makes). A fill-on lone drone pilot starts when the
+    // fill brings its side a gun (`SIM AI 2`: a tank from the next pod); at the
+    // fill's own size of one — the larger side — the drone is its side's one
+    // machine and is refused here, as a fill-off one is. It is a courtesy:
+    // [`ready`] is where it binds, because the boarding deadline can still drop
+    // a slot and the fill tops the side up again there.
+    {
+        let Some(centre) = centre(ctx.w) else {
+            return Err(SimError::Unavailable);
+        };
+        let targets = range_sides(centre).map(|(_, targets)| targets);
+        for team in Team::ALL {
+            if targets == Some(team) {
+                continue;
+            }
+            let claimed: Vec<&Slot> = centre
+                .slots
+                .iter()
+                .filter(|slot| slot.team == team)
+                .collect();
+            let mut types: Vec<SmolStr> = claimed
+                .iter()
+                .filter_map(|slot| {
+                    slot.unit_type
+                        .clone()
+                        .or_else(|| authored_unit_type(ctx.w, team, slot.index))
+                })
+                .collect();
+            if match_cfg.ai_fill && targets.is_none() {
+                let fielded: Vec<ObjId> = claimed
+                    .iter()
+                    .filter_map(|slot| centre::tank_for_slot(ctx.w, team, slot.index))
+                    .collect();
+                types.extend(
+                    fill_pods(ctx.w, centre, &match_cfg, team, &fielded)
+                        .into_iter()
+                        .filter_map(|(index, _)| authored_unit_type(ctx.w, team, index)),
+                );
+            }
+            side_fields_a_gun(ctx.w, team, &types)?;
         }
     }
     // **16b cut Q.8**: the refits, after every refusal above and before a single
@@ -2033,9 +2271,17 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
     } = match ready(ctx) {
         Ok(ready) => ready,
         Err(error) => {
+            // **16b cut AE.3**: every `ready` refusal is a whole sentence with
+            // its own full stop (the arena's check-out errors below are not), so
+            // the stop is the sentence's and not doubled: `…carries one. The pods
+            // are free again.`, never `one.. The pods`.
+            let said = error.to_string();
             call_off(
                 ctx,
-                format!("Match {match_id} could not start: {error}. The pods are free again."),
+                format!(
+                    "Match {match_id} could not start: {}. The pods are free again.",
+                    said.trim_end_matches('.')
+                ),
             );
             return Err(error);
         }
@@ -2179,7 +2425,6 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
         } else {
             None
         };
-        let fill_to = ai_side_size(ctx.w, centre, &match_cfg);
         for team in Team::ALL {
             // **16b cut O.3**: the targets' side is its pods 1 to `n`, each a
             // `Fielded` with **no seated pilot** — which is what makes a unit the
@@ -2253,30 +2498,20 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
             // claimed slots ONLY — its unclaimed pods are left out whatever the
             // fill says, so a pilot on a range shoots at targets and nothing
             // shoots back.
+            //
+            // **16b cut AE.3**: the walk is [`fill_pods`], shared with `SIM
+            // START`'s courtesy so the two cannot differ.
             if match_cfg.ai_fill && range.is_none() {
-                for index in 1..=slots_per_side(ctx.w, &match_cfg) {
-                    if units.len() >= usize::from(fill_to) {
-                        break;
-                    }
-                    if centre
-                        .slots
-                        .iter()
-                        .any(|slot| slot.team == team && slot.index == index)
-                    {
-                        continue;
-                    }
+                let fielded: Vec<ObjId> = units.iter().map(|fielded| fielded.unit).collect();
+                for (index, tank) in fill_pods(ctx.w, centre, &match_cfg, team, &fielded) {
                     // 16b cut Q.1: an AI-filled pod carries its own index too, so
                     // a machine in red pod 3 is `RC`, exactly as a pilot in that
                     // pod would be.
-                    if let Some(tank) = centre::tank_for_slot(ctx.w, team, index)
-                        && !units.iter().any(|fielded| fielded.unit == tank)
-                    {
-                        units.push(crate::match_::Fielded {
-                            unit: tank,
-                            slot: index,
-                            opening: openings.get(&(team, index)).copied(),
-                        });
-                    }
+                    units.push(crate::match_::Fielded {
+                        unit: tank,
+                        slot: index,
+                        opening: openings.get(&(team, index)).copied(),
+                    });
                 }
             }
             // A side with no unit at all is still a side nobody can fight: with
@@ -2285,6 +2520,17 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
             if units.is_empty() {
                 return Err(SimError::EmptySide(team.as_str()));
             }
+            // **16b cut AE.3** (plan §6 AE-X3): and a side whose final machines
+            // carry no gun between them — a lone drone, after the deadline dropped
+            // its tank's pilot — is refused here, where the sides are final. `run`
+            // calls it off: `Match N could not start: The red side fields no gun;
+            // …`. The range's target side never reaches this line (`continue`
+            // above).
+            let types: Vec<SmolStr> = units
+                .iter()
+                .filter_map(|fielded| fitted_type(ctx.w, fielded.unit))
+                .collect();
+            side_fields_a_gun(ctx.w, team, &types)?;
             sides.push(Side { team, units });
         }
     }
@@ -3985,5 +4231,42 @@ mod tests {
         assert_eq!(targets_counted(1), "1 target");
         assert_eq!(targets_counted(2), "2 targets");
         assert_eq!(targets_counted(6), "6 targets");
+    }
+
+    /// **16b cut AE.3**: `SimError::ClassCap`'s one variant says two sentences
+    /// — a count in the class's own noun, and a cap of nought as the class
+    /// forbidden — and `SimError::NoGun` names the side and nothing in it.
+    #[test]
+    fn ae3_the_class_cap_and_no_gun_sentences() {
+        use crate::definitions::UnitClass;
+        let line = |class, cap| SimError::ClassCap { class, cap }.to_string();
+        assert_eq!(
+            line(UnitClass::Drone, 1),
+            "A side fields at most 1 drone; pick another type."
+        );
+        assert_eq!(
+            line(UnitClass::Drone, 3),
+            "A side fields at most 3 drones; pick another type."
+        );
+        assert_eq!(
+            line(UnitClass::Walker, 2),
+            "A side fields at most 2 walkers; pick another type."
+        );
+        assert_eq!(
+            line(UnitClass::Armour, 1),
+            "A side fields at most 1 armoured machine; pick another type."
+        );
+        assert_eq!(
+            line(UnitClass::Drone, 0),
+            "This server fields no drones; pick another type."
+        );
+        assert_eq!(
+            line(UnitClass::Armour, 0),
+            "This server fields no armoured machines; pick another type."
+        );
+        assert_eq!(
+            SimError::NoGun { team: "red" }.to_string(),
+            "The red side fields no gun; a side needs a machine that carries one."
+        );
     }
 }

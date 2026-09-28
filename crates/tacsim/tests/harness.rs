@@ -4881,7 +4881,17 @@ fn the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else() {
 /// order — so the figure is this host's noise, recorded as the worst asserted
 /// run; 20 ms still clears it by the 16 per cent spread (17.087 × 1.16 =
 /// 19.82).
-const AUTHORED_WINDOW_P99_WORST_RECORDED_MS: f64 = 17.087;
+///
+/// **16b cut AE.3 moved it to 17.108**: the first of AE.3's asserted weekly
+/// runs read 17.108 ms per window on the authored cohort and passed the 20 ms
+/// lens (the re-run, after that run's delta read a per-wake p99 timing past its
+/// 20 per cent, read 16.152 and a clean delta; the deterministic block was
+/// equal both times). AE.3 changes nothing the cohort runs — it fields no
+/// drone, the default cap touches no class the cohort fields, and the
+/// elimination clause needs a drone — so the figure is this host's noise;
+/// 20 ms still clears it by the 16 per cent spread (17.108 × 1.16 = 19.85),
+/// under the 17.241 guard.
+const AUTHORED_WINDOW_P99_WORST_RECORDED_MS: f64 = 17.108;
 
 /// **The lens is the cohort's own** (16b cut J.3b, moved by J.3c; 16c Q26): the
 /// CI cohort is held per window to [`ARENA_S_P99_MS`] exactly as before, the

@@ -85,14 +85,22 @@
 //! | `ammunition/missile_round.json` | `tacsim.pack.missile_round` | rules | never |
 //! | `weapons/missile_lr.json` | `tacsim.pack.missile_lr` | rules | never |
 //!
+//! **16b cut AE.3** adds the ground drone — a small tracked sight with no gun,
+//! the one unit of class `drone` (doc 16 §2 W2) — as [`EXTENSIONS_DRONE`], a
+//! ninth, fielded last:
+//!
+//! | file | pack | kind | applied |
+//! |---|---|---|---|
+//! | `units/drone_mk1.json` | `tacsim.pack.drone_mk1` | rules | never |
+//!
 //! # And what is **fielded**
 //!
 //! **16b cut Q.8** answers X.1 deviation 1's open question — *whether the
 //! extensions join the shipped catalog* — with **yes for the game, and no for
-//! the stock game**. [`fielded_sources`] is [`sources`] followed by all eight
+//! the stock game**. [`fielded_sources`] is [`sources`] followed by all nine
 //! extension tables in `requires` order — doc 16 §9's five, since 16b cut O.3
-//! the range's target, since 16b cut AE.2 the two weapons, and since 16b cut
-//! AE.1 the three chassis — and
+//! the range's target, since 16b cut AE.2 the two weapons, since 16b cut
+//! AE.1 the three chassis, and since 16b cut AE.3 the drone — and
 //! [`super::Catalog::build_fielded`] is what the three production sites build
 //! from, so `SIM UNIT` can offer a pilot a biped or a scout car, `@unit/create`
 //! can name a laser tank on a shipped server, and `SIM RANGE` can field a
@@ -405,6 +413,28 @@ pub const EXTENSIONS_CHASSIS: [(&str, &str); 3] = [
     ("tacsim/content/units/biped_mk2.json", BIPED_MK2_JSON),
 ];
 
+/// `crates/tacsim/content/units/drone_mk1.json` (16b cut AE.3).
+pub const DRONE_MK1_JSON: &str = include_str!("../../content/units/drone_mk1.json");
+
+/// **The ground drone** (16b cut AE.3; 16c N15; doc 16 §2 W2): a small tracked
+/// sensor platform on a 250 cm mast, one `body` section, **no gun** — what it
+/// sees its side sees through the mesh, and a laser kills it. The one unit
+/// that declares `"class": "drone"`, so `[tacsim.arena].max_units_by_class`
+/// caps it at one a side by default, and the end rules read it as the machine
+/// that decides nothing (`Arena::eliminated`, `Arena::hold_presence`).
+pub const DRONE_MK1: &str = "tacsim.unit.drone_mk1";
+
+/// **The drone of 16b cut AE.3**, one unit schema and no weapon, ammunition or
+/// sensor row of its own.
+///
+/// A table of its **own**, for the reason [`EXTENSIONS_BIPED`] gives: its
+/// acceptance states the whole of what it adds (one unit schema) and no earlier
+/// table's count moves. It requires only the stock sight, so it could go
+/// anywhere after [`SOURCES`]; it is fielded **last**, after
+/// [`EXTENSIONS_CHASSIS`], so every earlier table keeps its place.
+pub const EXTENSIONS_DRONE: [(&str, &str); 1] =
+    [("tacsim/content/units/drone_mk1.json", DRONE_MK1_JSON)];
+
 /// The extension packs as sources [`crate::verify_sources`] reads exactly as it
 /// reads an operator's.
 #[must_use]
@@ -475,8 +505,11 @@ pub fn sources() -> Vec<PackSource> {
 /// and the heavy's the missile rack, so both weapons (and the two rounds they
 /// fire, ahead of them in their own table) come first.
 ///
+/// **16b cut AE.3** appends a ninth, [`EXTENSIONS_DRONE`], last: it requires
+/// only the stock sight, and last moves no earlier table.
+///
 /// Named `<built-in …>` like [`sources`], and not `<extension …>` like
-/// [`extension_sources_of`]: through this route the eight are shipped content
+/// [`extension_sources_of`]: through this route the nine are shipped content
 /// and not an operator's file, and the name is what a refusal quotes.
 #[must_use]
 pub fn fielded_sources() -> Vec<PackSource> {
@@ -490,6 +523,7 @@ pub fn fielded_sources() -> Vec<PackSource> {
         EXTENSIONS_TARGET.as_slice(),
         EXTENSIONS_ORDNANCE.as_slice(),
         EXTENSIONS_CHASSIS.as_slice(),
+        EXTENSIONS_DRONE.as_slice(),
     ] {
         out.extend(table.iter().map(|(name, bytes)| PackSource {
             name: format!("<built-in {name}>"),

@@ -104,6 +104,12 @@ fn rules() -> RulesValue {
 /// armour cell of 10 and 8 internals — an eighteen-point tank, which is what
 /// makes test (d)'s arithmetic readable.
 fn tactical_unit(id: ObjId) -> TacticalUnit {
+    tactical_unit_ruled(id, rules())
+}
+
+/// [`tactical_unit`]'s one shape under any rules blob — **16b cut AE.3** reads
+/// a declared class off it (`UnitClass::read`), so a fixture can field a drone.
+fn tactical_unit_ruled(id: ObjId, rules: RulesValue) -> TacticalUnit {
     let spec = UnitSpec {
         definition: dref("unit", "tacsim.unit.line_tank"),
         sections: vec![SectionSpec {
@@ -130,7 +136,7 @@ fn tactical_unit(id: ObjId) -> TacticalUnit {
         components: Vec::new(),
         capabilities: Vec::new(),
         mobility: None,
-        rules: rules(),
+        rules,
     };
     TacticalUnit::from_spec(&spec, id).expect("a one-section unit")
 }
@@ -11312,4 +11318,278 @@ fn o3_an_inert_target_is_the_same_at_three_cadences() {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AE.3 — the drone under the machine
+// ---------------------------------------------------------------------------
+
+/// **A drone** (16b cut AE.3): [`tank`] with no weapon and a rules blob that
+/// declares `"class": "drone"`, so `Arena::new` reads it as the class the end
+/// rules key on — and nothing about the reflex controller reads the class at
+/// all, which is what the test below is about.
+fn ae3_drone(id: ObjId, team: Team, cell: (u16, u16), sight: u16, share: u16) -> CustodyUnit {
+    let mut unit = with_mesh(
+        tank(
+            id,
+            team,
+            centre(cell.0, cell.1),
+            Vec::new(),
+            Controller::Reflex,
+        ),
+        sight,
+        share,
+    );
+    unit.unit = tactical_unit_ruled(
+        id,
+        RulesValue::new(
+            dref("schema", "tacsim.arena.test"),
+            serde_json::json!({ "class": "drone" }),
+        )
+        .expect("a rules blob"),
+    );
+    unit
+}
+
+/// **A released drone patrols, hunts, withdraws hurt and shares what it sees
+/// — and never approaches, engages or fires** (16b cut AE.3; doc 16 §2 W2;
+/// 16c N15), under the existing rules and with no line of the controller
+/// changed.
+///
+/// Three fields, one claim each:
+///
+/// 1. **alone**, nothing held: startup, then `Patrol` towards a node of the
+///    graph, then — with nothing held for `hunt_after_ms` — the crossing to the
+///    far zone, and the arrival there. Its `fight_limit_cm` is nought (no gun),
+///    so the `Approach` gate never opens;
+/// 2. **on the mesh**: it holds a hostile its tank cannot see, never enters
+///    `Approach` or `Engage` for it and stages no `FIRE`, and the tank beside
+///    it holds the hostile as a shared plot (`own_seen` empty) — `share_ops`
+///    counted — which is what a drone is for;
+/// 3. **hurt**: under the health threshold it withdraws towards its own zone,
+///    and with no reach it has nothing to stand for.
+#[test]
+fn ae3_a_released_drone_patrols_hunts_and_shares_what_it_sees() {
+    use tacsim::definitions::UnitClass;
+    let never_fights = |arena: &Arena, unit: ObjId| {
+        let state = state_of(arena, unit);
+        assert!(
+            !matches!(state, Some(ReflexState::Approach | ReflexState::Engage)),
+            "a drone has no gun to close with: {state:?} at {} ms",
+            arena.now_ms
+        );
+        assert_eq!(
+            arena.unit(unit).and_then(|state| state.lock),
+            None,
+            "and it locks nothing"
+        );
+    };
+
+    // (1) Alone: the patrol, then the hunt, then the arrival.
+    let mut arena = arena_of(
+        vec![
+            ae3_drone(RED, Team::Red, (6, 3), E4_SIGHT_CELLS, 0),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(15, 15),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &e4_cfg(0, 3_000),
+        &[BLUE],
+    );
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.class),
+        Some(UnitClass::Drone)
+    );
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.fight_limit_cm(CELL_CM)),
+        Some(0),
+        "no gun, no reach"
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = arena.now_ms;
+    let mut patrolled: Option<(u16, u16)> = None;
+    let mut hunted: Option<(u16, u16)> = None;
+    while arena.now_ms < 20_000 {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        never_fights(&arena, RED);
+        if patrolled.is_none() && state_of(&arena, RED) == Some(ReflexState::Patrol) {
+            patrolled = goal_of(&arena, RED);
+        }
+        if let Some(cell) = hunt_of(&arena, RED) {
+            hunted = Some(cell);
+            break;
+        }
+        wall += 500;
+    }
+    let patrolled = patrolled.expect("the drone started itself up and walked");
+    assert!(
+        waypoint_cells().contains(&patrolled),
+        "its first goal is a node of the graph: {patrolled:?}"
+    );
+    let hunted = hunted.expect("a drone that holds nothing crosses to look");
+    assert_eq!(hunted.0, SIDE - 2, "the far zone's edge: {hunted:?}");
+    let until = arena.now_ms + 25_000;
+    let mut arrived = false;
+    while arena.now_ms < until {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        never_fights(&arena, RED);
+        if hunt_of(&arena, RED).is_none() {
+            arrived = true;
+            break;
+        }
+        wall += 500;
+    }
+    assert!(arrived, "and it crossed and arrived");
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "fired"), 0, "a drone fires nothing");
+
+    // (2) On the mesh: the drone sees what its tank cannot, and says so.
+    let mut arena = arena_of(
+        vec![
+            ae3_drone(RED, Team::Red, (8, 8), E4_SIGHT_CELLS, 10),
+            with_mesh(
+                tank(
+                    RED2,
+                    Team::Red,
+                    centre(3, 8),
+                    vec![cannon()],
+                    Controller::Pilot,
+                ),
+                2,
+                10,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(13, 11),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &e4_cfg(0, 0),
+        &[RED2, BLUE],
+    );
+    for id in [RED2, BLUE] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.power = Power::Online;
+        }
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = arena.now_ms;
+    let mut share_ops = 0_u32;
+    let mut shared = None;
+    while arena.now_ms < 6_000 {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        share_ops = share_ops.saturating_add(out.perception.share_ops);
+        never_fights(&arena, RED);
+        if hold_on(&arena, RED, BLUE).is_some()
+            && let Some(copy) = hold_on(&arena, RED2, BLUE)
+        {
+            shared = Some(copy);
+            break;
+        }
+        wall += 500;
+    }
+    let copy = shared.expect("the drone's contact reached its tank through the mesh");
+    assert!(share_ops > 0, "the mesh was asked: {share_ops}");
+    assert!(
+        copy.own_seen.is_none(),
+        "the tank's two-cell sight never saw it: this is the drone's plot"
+    );
+    let drone_holds = hold_on(&arena, RED, BLUE).expect("the drone holds it");
+    assert_eq!(
+        copy.seen_at, drone_holds.seen_at,
+        "the shared plot is the drone's sighting and no more"
+    );
+    // Held, and still never closed on: run on with the hostile in sight.
+    let until = arena.now_ms + 6_000;
+    while arena.now_ms < until {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        never_fights(&arena, RED);
+        wall += 500;
+    }
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "fired"), 0, "and it staged no FIRE");
+
+    // (3) Hurt: it breaks off for home, and has no reach to stand for.
+    hurt(&mut arena, RED);
+    assert!(
+        e4_run_until_state(&mut arena, RED, ReflexState::Withdraw, 5_000, &mut bytes),
+        "a hurt drone withdraws like any machine"
+    );
+    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    assert!(
+        row.goal.is_some_and(|(x, _)| x <= 1),
+        "towards its own entry zone: {:?}",
+        row.goal
+    );
+    never_fights(&arena, RED);
+
+    // (4) A Hold match: it drives to the spot like any machine — `hold_goal`
+    // is not gated on arms, and the pack note and the help say so — and on
+    // the square it holds nothing. O.1's field: the spot at (10, 8), three
+    // cells round it, an hour-long clock, and a blue tank standing cold out of
+    // the drone's three-cell sight at (15, 0).
+    let mut arena = o1_arena(
+        o1_ground(&[], (10, 8), 3, 3_600_000),
+        vec![
+            ae3_drone(RED, Team::Red, (1, 4), 3, 0),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(15, 0),
+                vec![cannon()],
+                Controller::Pilot,
+            ),
+        ],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = arena.now_ms;
+    let mut reached = false;
+    while arena.now_ms < 60_000 {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        never_fights(&arena, RED);
+        if o1_inside(&arena, RED) {
+            reached = true;
+            break;
+        }
+        wall += 500;
+    }
+    assert!(
+        reached,
+        "the drone never drove onto the square: it stands at {:?}",
+        arena
+            .unit(RED)
+            .and_then(|state| arena.definition.terrain.cell_of(&state.pose))
+    );
+    // On it, and on it for a while: no presence, no clock, no end.
+    let until = arena.now_ms + 20_000;
+    run(&mut arena, until, &mut bytes);
+    assert!(o1_inside(&arena, RED), "the drone left the square");
+    assert_eq!(
+        arena.hold_presence(),
+        None,
+        "a drone alone on the square holds nothing"
+    );
+    assert_eq!(
+        arena.hold.and_then(|hold| hold.held_by),
+        None,
+        "no Hold clock opened for red"
+    );
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "match_ended"), 0, "and nothing ended");
+    assert_eq!(count(&log, "fired"), 0, "a drone fires nothing");
 }

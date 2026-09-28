@@ -1497,9 +1497,9 @@ async fn q8_sim_unit_lists_selects_and_clears_a_choice() {
     let said = rig.say(0, "sim unit");
     assert!(
         said.contains(
-            "Fieldable units: biped_mk1, biped_mk2, heavy_mk1, line_tank, line_tank_eccm, \
-             line_tank_ecm, line_tank_laser, line_tank_thermal, scout_mk1, target_mk1. \
-             Yours: line_tank."
+            "Fieldable units: biped_mk1, biped_mk2, drone_mk1, heavy_mk1, line_tank, \
+             line_tank_eccm, line_tank_ecm, line_tank_laser, line_tank_thermal, scout_mk1, \
+             target_mk1. Yours: line_tank."
         ),
         "{said}"
     );
@@ -5738,13 +5738,15 @@ async fn ae1_a_version_four_world_takes_the_bluff_from_the_shelf() {
         .expect("the proving ground is shipped")
     };
 
-    // Compiled in: the ten types, and the fifth spot over flat ground.
+    // Compiled in: the eleven types (16b cut AE.3's drone among them), and the
+    // fifth spot over flat ground.
     rig.say(0, "sim team red");
     let said = rig.say(0, "sim unit");
     assert!(
         said.contains(
-            "Fieldable units: biped_mk1, biped_mk2, heavy_mk1, line_tank, line_tank_eccm, \
-             line_tank_ecm, line_tank_laser, line_tank_thermal, scout_mk1, target_mk1."
+            "Fieldable units: biped_mk1, biped_mk2, drone_mk1, heavy_mk1, line_tank, \
+             line_tank_eccm, line_tank_ecm, line_tank_laser, line_tank_thermal, scout_mk1, \
+             target_mk1."
         ),
         "{said}"
     );
@@ -5892,3 +5894,183 @@ async fn ae1_a_version_four_world_takes_the_bluff_from_the_shelf() {
 /// The atlas plan line `deploy/README.md` quotes (16b cut AE.1).
 const AE1_ATLAS_PLAN_LINE: &str =
     "Plan for tacsim.proving_ground@2: 0 create, 1 update, 0 retire, 5 unchanged";
+
+// ---------------------------------------------------------------------------
+// 16b cut AE.3 — a side needs a gun
+// ---------------------------------------------------------------------------
+
+/// The `NoGun` sentence for red, as `run` announces a `ready` refusal.
+const AE3_RED_NO_GUN: &str = "Match 1 could not start: The red side fields no gun; a side needs \
+                              a machine that carries one. The pods are free again.";
+
+/// **A boarding drop that leaves a side a lone drone calls the match off**
+/// (16b cut AE.3; plan §6 AE-X3).
+///
+/// `SIM START` passes its courtesy — red claims a drone and a tank, and the
+/// tank carries a gun — but red's tank pilot never boards, the deadline drops
+/// that slot, and the side `ready()` builds is the drone alone. `ready()` is
+/// where the sides are final, so that is where `NoGun` binds, and `run` calls
+/// the lobby off through the one funnel with the refusal in its sentence; the
+/// pods and the slots are free again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ae3_a_boarding_drop_that_leaves_a_lone_drone_calls_the_match_off() {
+    let mut rig = Rig::boot(3);
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim unit drone_mk1");
+    assert!(said.contains("Slot red 1 will field drone_mk1."), "{said}");
+    rig.say(1, "sim team red");
+    rig.say(2, "sim team blue");
+    let said = rig.say(0, "sim start");
+    assert!(
+        said.contains("boarding"),
+        "red fields a tank beside its drone, so the courtesy passes: {said}"
+    );
+    assert_eq!(
+        rig.schema_of(Team::Red, 1),
+        "tacsim.unit.drone_mk1",
+        "the refit put the drone in red pod 1"
+    );
+    // Red's drone and blue's tank board; red's tank pilot never does.
+    assert!(!rig.seat(0));
+    assert!(!rig.seat(2));
+    let heard = rig.tick_heard(10, 0);
+    assert!(heard.contains(AE3_RED_NO_GUN), "{heard}");
+    assert_eq!(rig.state(), MatchState::Aborted, "the lobby is called off");
+    assert!(rig.centre().slots.is_empty(), "the pods are free again");
+    let red_pod = match_::pod_object(rig.tw.world(), Team::Red, 1).expect("red pod 1");
+    assert_eq!(match_::pilot_of(rig.tw.world(), red_pod), None);
+    assert!(
+        !tacsim::match_::cockpit::in_a_pod(rig.tw.world(), rig.pilot(0)),
+        "the drone's pilot was left shut in the pod"
+    );
+    let drone = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    assert!(
+        mush_sim::deployed::mark_of(rig.tw.world(), drone).is_none(),
+        "nothing was checked out"
+    );
+}
+
+/// **With the fill on, a lone drone pilot starts when the fill brings a gun**
+/// (16b cut AE.3).
+///
+/// `SIM START`'s courtesy walks the pods the fill will add
+/// (`lobby::fill_pods`, the walk `ready()` makes). At the fill's own size — the
+/// larger side, one — the fill adds nothing to red's side beside its one
+/// claimed drone, so the courtesy refuses at once with the `NoGun` sentence and
+/// nothing is written. Asked for two a side (`SIM AI 2`), the fill brings red a
+/// tank from its lowest unclaimed pod, the start is accepted, and the match
+/// runs with the fill's tank beside the drone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ae3_with_the_fill_on_a_lone_drone_starts_beside_the_fills_tank() {
+    let mut rig = fill_rig(1);
+    rig.say(0, "sim team red");
+    rig.say(0, "sim unit drone_mk1");
+    let said = rig.say(0, "sim start");
+    assert!(
+        said.contains("The red side fields no gun; a side needs a machine that carries one."),
+        "a fill of one a side brings red nothing beside its drone: {said}"
+    );
+    assert_eq!(rig.state(), MatchState::Selection, "nothing was written");
+    assert!(rig.centre().match_id.is_none());
+    // Before the first write means before the refit too: red pod 1's tank is
+    // still the pod's own, not the drone the slot chose.
+    assert_eq!(
+        rig.schema_of(Team::Red, 1),
+        "tacsim.unit.line_tank",
+        "the refused start refitted red pod 1"
+    );
+
+    let said = rig.say(0, "sim ai 2");
+    assert!(said.contains('2'), "{said}");
+    let said = rig.say(0, "sim start");
+    assert!(said.contains("boarding"), "the fill brings a gun: {said}");
+    assert!(rig.seat(0), "the one pilot's seat starts it");
+    assert_eq!(rig.state(), MatchState::Running);
+    assert_eq!(
+        rig.match_units(),
+        vec![
+            (Team::Red, 1),
+            (Team::Red, 2),
+            (Team::Blue, 1),
+            (Team::Blue, 2)
+        ],
+        "the drone, the fill's tank beside it, and two machines a side"
+    );
+    assert_eq!(rig.schema_of(Team::Red, 1), "tacsim.unit.drone_mk1");
+    assert_eq!(rig.schema_of(Team::Red, 2), "tacsim.unit.line_tank");
+}
+
+/// A centre whose `[tacsim.arena].max_units_by_class` is `caps` (16b cut
+/// AE.3), the fill off as [`config`] ships it.
+fn ae3_capped_rig(pilots: usize, caps: &[(tacsim::definitions::UnitClass, u32)]) -> Rig {
+    let mut cfg = config();
+    cfg.arena.max_units_by_class = caps.iter().copied().collect();
+    Rig::boot_on(pilots, roster_with(cfg))
+}
+
+/// **The lobby's cap is per side, counts a slot by its effective type, and
+/// reads the operator's number** (16b cut AE.3; doc 16 §2 W2; plan Q-AE4).
+///
+/// 1. At the shipped default a red pilot and a blue pilot BOTH field a drone —
+///    the count is the caller's own side's — and a second red pilot is the one
+///    refused, with the cap's sentence, his slot keeping what it had.
+/// 2. A slot that chose nothing counts as its pod's own tank
+///    (`authored_unit_type`): under `armour = 1` a red pilot who never typed
+///    `SIM UNIT` already fields red's one armoured machine, so his teammate's
+///    `SIM UNIT line_tank` is refused and a walker is not.
+/// 3. `drone = 0` forbids the class outright, in the cap-0 sentence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ae3_the_lobby_cap_is_per_side_by_effective_type_and_reads_the_config() {
+    use tacsim::definitions::UnitClass;
+
+    // (1) Per side, not per map.
+    let mut rig = Rig::boot(3);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(2, "sim team red");
+    let said = rig.say(0, "sim unit drone_mk1");
+    assert!(said.contains("Slot red 1 will field drone_mk1."), "{said}");
+    let said = rig.say(1, "sim unit drone_mk1");
+    assert!(
+        said.contains("Slot blue 1 will field drone_mk1."),
+        "blue's drone is blue's first: {said}"
+    );
+    let said = rig.say(2, "sim unit drone_mk1");
+    assert!(
+        said.contains("A side fields at most 1 drone; pick another type."),
+        "red's second drone: {said}"
+    );
+    assert!(!said.contains("will field"), "{said}");
+    let board = rig.say(0, "sim status");
+    assert_eq!(
+        board.matches("[drone_mk1]").count(),
+        2,
+        "one drone a side: {board}"
+    );
+
+    // (2) The effective type: a slot with no choice is its pod's tank.
+    let mut rig = ae3_capped_rig(2, &[(UnitClass::Armour, 1)]);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    let said = rig.say(1, "sim unit line_tank");
+    assert!(
+        said.contains("A side fields at most 1 armoured machine; pick another type."),
+        "red slot 1 flies its pod's line tank without having chosen it: {said}"
+    );
+    let said = rig.say(1, "sim unit biped_mk1");
+    assert!(
+        said.contains("Slot red 2 will field biped_mk1."),
+        "a walker is another class: {said}"
+    );
+
+    // (3) Zero forbids the class.
+    let mut rig = ae3_capped_rig(1, &[(UnitClass::Drone, 0)]);
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim unit drone_mk1");
+    assert!(
+        said.contains("This server fields no drones; pick another type."),
+        "{said}"
+    );
+    let board = rig.say(0, "sim status");
+    assert!(!board.contains("[drone_mk1]"), "{board}");
+}

@@ -73,19 +73,23 @@ Each pod has a tank of its own, and that is what you fly unless you say
 otherwise. `SIM UNIT` says otherwise:
 
   SIM UNIT                    Fieldable units: biped_mk1, biped_mk2,
-                              heavy_mk1, line_tank, line_tank_eccm,
-                              line_tank_ecm, line_tank_laser,
+                              drone_mk1, heavy_mk1, line_tank,
+                              line_tank_eccm, line_tank_ecm, line_tank_laser,
                               line_tank_thermal, scout_mk1, target_mk1.
                               Yours: line_tank.
   SIM UNIT biped_mk1          Slot red 1 will field biped_mk1.
 
 It changes **your own** slot and only during selection, and everyone in the
 centre reads the line. `SIM UNIT line_tank` — the pod's own type — puts you back
-to the default. The pod's tank is actually refitted when `SIM START` runs, and
-it is put back to the pod's own type the moment your slot goes — you giving it
-up, the boarding deadline dropping you, the centre going idle after the match,
-or a staff `@arena/reset`. Every `SIM START` also puts back any pod that nobody
-has chosen for, so nobody ever inherits anybody else's choice.
+to the default. A side fields at most one drone: the second pilot to ask reads
+`A side fields at most 1 drone; pick another type.` And a side needs a gun:
+`SIM START` refuses a side of drones alone, and a match whose side is left with
+only a drone at the boarding deadline is called off. The pod's tank is actually
+refitted when `SIM START` runs, and it is put back to the pod's own type the
+moment your slot goes — you giving it up, the boarding deadline dropping you,
+the centre going idle after the match, or a staff `@arena/reset`. Every
+`SIM START` also puts back any pod that nobody has chosen for, so nobody ever
+inherits anybody else's choice.
 
 Once the match has started the board stops printing anybody's choice: by then
 the tanks have been refitted, and what another machine is remains something
@@ -126,6 +130,11 @@ What the shipped server can field:
                       thermal sight in its head. It makes heat, and it walks
                       where a tank will not: the thick woods and a face a tank
                       is refused. It pays less than a tank to cross rubble.
+  drone_mk1           a small tracked drone: a sight on a mast, no gun, quick
+                      and easy to kill. What it sees, its side sees. It holds
+                      no ground and decides nothing: a side whose guns are all
+                      gone is out of the match though its drone still runs, and
+                      a side fields at most one.
 
 Five things worth knowing before you pick one:
 

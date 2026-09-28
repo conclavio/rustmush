@@ -888,9 +888,10 @@ fn a_match_on_the_shipped_arena_is_fought_on_the_authored_ground() {
 // 16b cut Q.8 — the FIELDED catalog
 // ---------------------------------------------------------------------------
 
-/// Doc 16 §9's five items, the range's target (16b cut O.3) and the three
-/// chassis (16b cut AE.1), by the definition ids the extension packs declare.
-const FIELDED_EXTRAS: [&str; 9] = [
+/// Doc 16 §9's five items, the range's target (16b cut O.3), the three
+/// chassis (16b cut AE.1) and the drone (16b cut AE.3), by the definition ids
+/// the extension packs declare.
+const FIELDED_EXTRAS: [&str; 10] = [
     content::LINE_TANK_LASER,
     content::BIPED_MK1,
     content::LINE_TANK_THERMAL,
@@ -900,13 +901,15 @@ const FIELDED_EXTRAS: [&str; 9] = [
     content::SCOUT_MK1,
     content::HEAVY_MK1,
     content::BIPED_MK2,
+    content::DRONE_MK1,
 ];
 
 /// **The stock game is unmoved, and the fielded game is it plus the five** —
 /// and, since 16b cut O.3, the range's target, which adds one unit schema and
 /// no weapon, ammunition or sensor row, so the counts below are the five's.
 /// **16b cut AE.1**'s three chassis are the same: three unit schemas, and not
-/// one weapon, ammunition or sensor row of their own.
+/// one weapon, ammunition or sensor row of their own. So is **16b cut AE.3**'s
+/// drone: one unit schema, mounting the stock sight.
 ///
 /// The two assertions have to live beside each other, because the whole of
 /// Q.8's catalog design is that `build_game` keeps meaning "the stock game" —
@@ -1021,6 +1024,8 @@ fn q8_build_fielded_skips_an_extension_pack_offered_again_as_an_operator_pack() 
         // 16b cut AE.2: the ordnance the version-2 carriers require.
         content::EXTENSIONS_ORDNANCE.as_slice(),
         content::EXTENSIONS_CHASSIS.as_slice(),
+        // 16b cut AE.3: the drone, last.
+        content::EXTENSIONS_DRONE.as_slice(),
     ] {
         for source in content::extension_sources_of(table) {
             operator.push(tacsim::config::LoadedPack {

@@ -6390,3 +6390,229 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
     no_sixteen_digit_word(&strip_ansi(&ada.seen), "Ada's transcript");
     no_sixteen_digit_word(&strip_ansi(&bo.seen), "Bo's transcript");
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut AE.3 — the drone's refusals and its mesh, through the lens
+// ---------------------------------------------------------------------------
+
+/// The cap's refusal at the shipped default (16b cut AE.3).
+const AE3_CAP: &str = "A side fields at most 1 drone; pick another type.";
+
+/// The `NoGun` refusal for red (16b cut AE.3).
+const AE3_NO_GUN: &str = "The red side fields no gun; a side needs a machine that carries one.";
+
+/// Where the AE.3 witnesses stand, on the east-west road: Ada's drone 45 cells
+/// west of Bo's tank (inside the drone's 60-cell sight), Cy's tank 25 cells
+/// behind the drone (inside the mesh's 30-cell link) and 70 cells from Bo
+/// (outside every sight of its own), so whatever Cy holds of Bo is the plot
+/// the drone shared.
+const AE3_DRONE_POSE: &str = "@arena/pose RA=115 97 90";
+const AE3_TANK_POSE: &str = "@arena/pose RB=90 97 90";
+const AE3_BLUE_POSE: &str = "@arena/pose BA=160 97 270";
+
+/// **The drone's two refusals reach their caller alone, and its mesh is the
+/// mesh** (16b cut AE.3; doc 16 §1, §5 and §2 W2).
+///
+/// 1. **The cap.** Ada and Cy claim red and Ada chooses the drone; Cy's own
+///    `SIM UNIT drone_mk1` is refused with the cap's sentence, which reaches
+///    Cy alone and names no slot, no pilot and no object.
+/// 2. **`NoGun`.** Cy gives his slot up, leaving red a lone drone against Bo,
+///    and Ada's `SIM START` is refused with the `NoGun` sentence — hers alone,
+///    naming a side and nothing in it.
+/// 3. **The mesh.** Cy claims red again, staff poses the three machines on the
+///    road, and they board. Ada's drone holds Bo's tank on its own sight, and
+///    Cy's tank — 700 m from it, past its own 600 m — holds it too, as an
+///    ordinary row whose plot is further than its own sight: the shared plot,
+///    and nothing more than any teammate's share would give it. From the moment
+///    they climbed in, neither Bo nor Cy was sent the word `drone`, and no
+///    transcript carries a bare contact id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ae3_the_drones_refusals_are_the_callers_and_its_mesh_is_the_mesh() {
+    let server = boot("observer-ae3").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let listing = ask(&mut god, "@find Simulator Lobby", "END OF LIST").await;
+    let lobby = dbref_of(&listing, "Simulator Lobby");
+    for pilot in [ADA, BO, CY] {
+        say(
+            &mut god,
+            &format!("@teleport #{}=#{lobby}", pilot.0),
+            "Teleported",
+        )
+        .await;
+    }
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+
+    // ---- (1) the cap --------------------------------------------------------
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut cy, "SIM TEAM red", "takes red slot 2").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(
+        &mut ada,
+        "SIM UNIT drone_mk1",
+        "Slot red 1 will field drone_mk1.",
+    )
+    .await;
+    o1_drain(&mut ada).await;
+    o1_drain(&mut bo).await;
+    let (ada_from, bo_from) = (ada.mark(), bo.mark());
+    let seen = ask(&mut cy, "SIM UNIT drone_mk1", AE3_CAP).await;
+    let refusal = seen
+        .lines()
+        .find(|line| line.contains(AE3_CAP))
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_owned();
+    assert_eq!(refusal, AE3_CAP, "the refusal is the one sentence: {seen}");
+    for leak in ["Ada", "Bo", "slot", RED_TANK, BLUE_TANK, "#"] {
+        assert!(
+            !refusal.contains(leak),
+            "the cap's refusal named {leak:?}: {refusal}"
+        );
+    }
+    o1_drain(&mut ada).await;
+    o1_drain(&mut bo).await;
+    for (who, term, from) in [("Ada", &ada, ada_from), ("Bo", &bo, bo_from)] {
+        assert!(
+            !strip_ansi(&term.seen[from..]).contains(AE3_CAP),
+            "{who} was sent Cy's refusal"
+        );
+    }
+
+    // ---- (2) no gun ---------------------------------------------------------
+    say(&mut cy, "SIM LEAVE", "gives up red slot 2").await;
+    o1_drain(&mut bo).await;
+    o1_drain(&mut cy).await;
+    let (bo_from, cy_from) = (bo.mark(), cy.mark());
+    let seen = ask(&mut ada, "SIM START", AE3_NO_GUN).await;
+    let refusal = seen
+        .lines()
+        .find(|line| line.contains(AE3_NO_GUN))
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_owned();
+    assert_eq!(refusal, AE3_NO_GUN, "{seen}");
+    for leak in ["Ada", "Bo", "Cy", "drone", "slot", RED_TANK, "#"] {
+        assert!(
+            !refusal.contains(leak),
+            "the NoGun refusal named {leak:?}: {refusal}"
+        );
+    }
+    o1_drain(&mut bo).await;
+    o1_drain(&mut cy).await;
+    for (who, term, from) in [("Bo", &bo, bo_from), ("Cy", &cy, cy_from)] {
+        assert!(
+            !strip_ansi(&term.seen[from..]).contains(AE3_NO_GUN),
+            "{who} was sent Ada's refusal"
+        );
+    }
+
+    // ---- (3) the mesh -------------------------------------------------------
+    say(&mut cy, "SIM TEAM red", "takes red slot 2").await;
+    say(
+        &mut god,
+        AE3_DRONE_POSE,
+        "RA opens at cell (115, 97) heading 90 for the next match.",
+    )
+    .await;
+    say(
+        &mut god,
+        AE3_TANK_POSE,
+        "RB opens at cell (90, 97) heading 90 for the next match.",
+    )
+    .await;
+    say(
+        &mut god,
+        AE3_BLUE_POSE,
+        "BA opens at cell (160, 97) heading 270 for the next match.",
+    )
+    .await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut cy, "red", "Red Room").await;
+    say(&mut bo, "blue", "Blue Room").await;
+    let (bo_from, cy_from) = (bo.mark(), cy.mark());
+    say(&mut ada, "BOARD", "climb into").await;
+    say(&mut cy, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+    power_up(&mut ada).await;
+    power_up(&mut cy).await;
+    power_up(&mut bo).await;
+
+    // The drone holds BA on its own sight, and carries nothing that fires.
+    let mut drone_row = String::new();
+    wait_until(STEP_TIMEOUT, "the drone to tell BA apart", async || {
+        drone_row = ask_whole(&mut ada, "CONTACTS").await;
+        contact_range_m(&drone_row, "BA").is_some()
+    })
+    .await;
+    let drone_m = contact_range_m(&drone_row, "BA").expect("the drone's row");
+    assert!(
+        drone_m <= 600,
+        "the drone saw BA with its own 600 m sight: {drone_row}"
+    );
+    // Cy's tank holds it too — past its own sight, so through the mesh.
+    let mut tank_row = String::new();
+    wait_until(STEP_TIMEOUT, "the tank to hold BA", async || {
+        tank_row = ask_whole(&mut cy, "CONTACTS").await;
+        contact_range_m(&tank_row, "BA").is_some()
+    })
+    .await;
+    let tank_m = contact_range_m(&tank_row, "BA").expect("the tank's row");
+    assert!(
+        (600..=900).contains(&tank_m),
+        "a plot past the tank's own 600 m and inside one mesh hop is the drone's share: \
+         {tank_row}"
+    );
+    let row = strip_ansi(&tank_row)
+        .lines()
+        .find(|line| line.trim_start().starts_with("BA "))
+        .unwrap_or_default()
+        .to_owned();
+    for leak in ["drone", "Ada", "shared", "#"] {
+        assert!(
+            !row.contains(leak),
+            "the shared row says more than any teammate's share would ({leak:?}): {row}"
+        );
+    }
+    assert!(
+        !row.split_whitespace().any(|word| word == "RA"),
+        "the shared row names the teammate that shared it: {row}"
+    );
+
+    // Bo's tank holds the drone on its own sight (450 m of road, inside its
+    // 600 m): his row for it names a side and nothing of what the machine is.
+    let mut bo_row = String::new();
+    wait_until(STEP_TIMEOUT, "Bo's tank to tell RA apart", async || {
+        bo_row = ask_whole(&mut bo, "CONTACTS").await;
+        contact_range_m(&bo_row, "RA").is_some()
+    })
+    .await;
+    let row = strip_ansi(&bo_row)
+        .lines()
+        .find(|line| line.trim_start().starts_with("RA "))
+        .unwrap_or_default()
+        .to_owned();
+    for leak in ["drone", "Ada", "#"] {
+        assert!(
+            !row.contains(leak),
+            "Bo's row for the drone says {leak:?}: {row}"
+        );
+    }
+
+    // Everything sent to Bo and Cy since they climbed in, read to the end.
+    o1_drain(&mut bo).await;
+    o1_drain(&mut cy).await;
+    for (who, term, from) in [("Bo", &bo, bo_from), ("Cy", &cy, cy_from)] {
+        let seen = strip_ansi(&term.seen[from..]);
+        assert!(
+            !seen.contains("drone"),
+            "{who} was told the word `drone` once aboard: {seen}"
+        );
+    }
+    no_sixteen_digit_word(&strip_ansi(&ada.seen), "Ada's transcript");
+    no_sixteen_digit_word(&strip_ansi(&bo.seen), "Bo's transcript");
+    no_sixteen_digit_word(&strip_ansi(&cy.seen), "Cy's transcript");
+}

@@ -34,6 +34,7 @@ use crate::arena::step::FrameSlots;
 use crate::arena::weapons::{Shot, WeaponBand};
 use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
 use crate::definitions::resolution::ResolutionDef;
+use crate::definitions::unit::UnitClass;
 
 /// The digest domain of [`ArenaDefinition::digest`]. Length-prefixed fields
 /// follow it, so a definition's digest can never collide with another contract's
@@ -1798,6 +1799,21 @@ pub struct UnitState {
     /// reason: it never moves, and what it does is the poses the hash already
     /// folds.
     pub cost_row: CostRow,
+    /// **What kind of machine this is, for W2's cap and the end rules** (16b
+    /// cut AE.3; doc 16 §2 W2).
+    ///
+    /// Read off the M32 unit at check-out by [`UnitClass::read`] — the class the
+    /// unit's rules blob declares, else [`UnitClass::Walker`] for a legged
+    /// driving mode, else [`UnitClass::Armour`] (every engine fixture) — beside
+    /// [`UnitState::slope_limit_pct`] and [`UnitState::cost_row`] and for their
+    /// reasons: a fact about the fit that nothing in a match moves. `Arena::new`
+    /// counts it per side against `[tacsim.arena].max_units_by_class`;
+    /// [`Arena::eliminated`] and [`Arena::hold_presence`] read
+    /// [`UnitClass::Drone`] as the machine that decides nothing. **Not folded
+    /// into [`crate::arena::hash::state_hash`]**, for `slope_limit_pct`'s
+    /// reason: it never moves, and what it does — the end of a match, who holds
+    /// the spot — the hash already folds through the outcome and the hold.
+    pub class: UnitClass,
     /// **Which of this unit's sections kill it when they go**, one bit each (16b
     /// cut E.2, `B-45`).
     ///
@@ -3408,6 +3424,25 @@ pub enum ArenaError {
         /// The definition's id.
         arena: SmolStr,
     },
+    /// **16b cut AE.3** (doc 16 §2 W2: *no drone swarms; class counts on the
+    /// map obey the caps*) — one side was handed more units of a class than
+    /// `[tacsim.arena].max_units_by_class` lets a side field.
+    ///
+    /// The lobby refuses the second drone at `SIM UNIT` already; this is the
+    /// arena refusing to trust that, and the staff `@arena/start` path's one
+    /// guard. The sentence names a side, a class word and two numbers, all
+    /// public, and no object, for [`ArenaError::SubstepBound`]'s reason.
+    #[error("the {team} side fields {fielded} of class {class}; a side fields at most {cap}")]
+    ClassCap {
+        /// The side's word.
+        team: &'static str,
+        /// The class word ([`UnitClass::as_str`]).
+        class: &'static str,
+        /// How many of the class the side was handed.
+        fielded: u32,
+        /// The configured cap.
+        cap: u32,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -3909,6 +3944,9 @@ impl Arena {
             // **16b cut AE.1**: the row this unit pays, read beside its slope
             // limit below and first because the opening test needs it.
             let cost_row = CostRow::read(&unit.unit);
+            // **16b cut AE.3**: and its class, off the same record, for the cap
+            // counted below once every unit is in hand.
+            let class = UnitClass::read(&unit.unit);
             // **16b cut M.4** (16c `T-14`): and on a cell a unit may stand on —
             // **its own row** since 16b cut AE.1, so a car handed over on rubble
             // is refused here as a tank in deep water is. The announcement names
@@ -4006,6 +4044,7 @@ impl Arena {
                 mobility: unit.mobility,
                 slope_limit_pct,
                 cost_row,
+                class,
                 fatal_sections,
                 // A unit opens the match standing still, so it entered its cell by
                 // no edge at all: grade zero, which is the flat factor.
@@ -4103,6 +4142,31 @@ impl Arena {
             .map(|state| state.id)
         {
             return Err(ArenaError::DuplicateUnit { unit: duplicate });
+        }
+        // **16b cut AE.3** (doc 16 §2 W2: *class counts on the map obey the
+        // caps*): every unit counted per side and class, in the map's order, and
+        // the first side and class over `[tacsim.arena].max_units_by_class`
+        // refused before anything else is built — the invariant the staff
+        // `@arena/start` path meets here and the lobby's `SIM UNIT` meets at the
+        // choice. A class the map does not name is uncapped.
+        let mut fielded: BTreeMap<(Team, UnitClass), u32> = BTreeMap::new();
+        for state in &states {
+            let count = fielded.entry((state.team, state.class)).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+        if let Some(((team, class), count, cap)) = fielded.iter().find_map(|(key, count)| {
+            arena_cfg
+                .max_units_by_class
+                .get(&key.1)
+                .filter(|cap| *count > **cap)
+                .map(|cap| (*key, *count, *cap))
+        }) {
+            return Err(ArenaError::ClassCap {
+                team: team.as_str(),
+                class: class.as_str(),
+                fielded: count,
+                cap,
+            });
         }
         // **16b cut Q.1**: every unit's public callsign, resolved once, here —
         // after the sort, so the fallback order is unit-id order and a replay of
@@ -6054,6 +6118,190 @@ mod tests {
             arena.hold_presence(),
             None,
             "and the fresh read finds nobody"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut AE.3 — W2's cap, and a drone on the hold square
+    // -----------------------------------------------------------------------
+
+    /// An arena of `units` under `caps`, or its refusal.
+    fn capped(units: Vec<CustodyUnit>, caps: &[(UnitClass, u32)]) -> Result<Arena, ArenaError> {
+        let arena_cfg = ArenaConfig {
+            max_units_by_class: caps.iter().copied().collect(),
+            ..ArenaConfig::default()
+        };
+        Arena::new(
+            custody(units, Vec::new()),
+            &arena_cfg,
+            &MatchConfig::default(),
+            &SensorsConfig::default(),
+        )
+    }
+
+    /// **16b cut AE.3** (doc 16 §2 W2): `Arena::new` counts every unit per side
+    /// and class and refuses a side over its cap by name — two drones on red at
+    /// the default one — with nothing built; one a side is two drones on the
+    /// map and accepted (the cap is per side); `Drone: 2` admits red's two;
+    /// `Drone: 0` refuses even one; and a blob-less fixture reads `Armour` and
+    /// is never counted against the drone's cap, whatever it is.
+    #[test]
+    fn ae3_arena_new_refuses_a_side_over_its_class_cap() {
+        use crate::arena::test_support::drone;
+        let default_caps: Vec<(UnitClass, u32)> = ArenaConfig::default()
+            .max_units_by_class
+            .into_iter()
+            .collect();
+        assert_eq!(default_caps, vec![(UnitClass::Drone, 1)]);
+        let two_red = || {
+            vec![
+                drone(ObjId(4), Team::Red, pose(500, 500)),
+                drone(ObjId(5), Team::Red, pose(1_500, 500)),
+                tank(ObjId(9), Team::Blue, pose(7_500, 7_500)),
+            ]
+        };
+        let Err(error) = capped(two_red(), &default_caps) else {
+            panic!("two drones on one side opened under a cap of one");
+        };
+        assert_eq!(
+            error,
+            ArenaError::ClassCap {
+                team: "red",
+                class: "drone",
+                fielded: 2,
+                cap: 1,
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "the red side fields 2 of class drone; a side fields at most 1"
+        );
+        // One a side: per side, not per map.
+        let one_each = capped(
+            vec![
+                drone(ObjId(4), Team::Red, pose(500, 500)),
+                drone(ObjId(9), Team::Blue, pose(7_500, 7_500)),
+            ],
+            &default_caps,
+        )
+        .expect("one drone a side is legal");
+        assert!(
+            one_each
+                .units
+                .iter()
+                .all(|unit| unit.class == UnitClass::Drone)
+        );
+        // Raised, the two open.
+        capped(two_red(), &[(UnitClass::Drone, 2)]).expect("a cap of two admits two");
+        // Zero forbids the class outright.
+        assert_eq!(
+            capped(
+                vec![
+                    drone(ObjId(4), Team::Red, pose(500, 500)),
+                    tank(ObjId(9), Team::Blue, pose(7_500, 7_500)),
+                ],
+                &[(UnitClass::Drone, 0)],
+            )
+            .err()
+            .map(|error| error.to_string()),
+            Some("the red side fields 1 of class drone; a side fields at most 0".to_owned())
+        );
+        // The blob-less fixture is armour and never a drone.
+        let tanks = capped(
+            vec![
+                tank(ObjId(4), Team::Red, pose(500, 500)),
+                tank(ObjId(5), Team::Red, pose(1_500, 500)),
+                tank(ObjId(9), Team::Blue, pose(7_500, 7_500)),
+            ],
+            &[(UnitClass::Drone, 0)],
+        )
+        .expect("a drone cap of nought touches no tank");
+        assert!(
+            tanks
+                .units
+                .iter()
+                .all(|unit| unit.class == UnitClass::Armour)
+        );
+        // An armour cap binds the same way, on the tanks.
+        assert_eq!(
+            capped(
+                vec![
+                    tank(ObjId(4), Team::Red, pose(500, 500)),
+                    tank(ObjId(5), Team::Red, pose(1_500, 500)),
+                    tank(ObjId(9), Team::Blue, pose(7_500, 7_500)),
+                ],
+                &[(UnitClass::Armour, 1)],
+            )
+            .err()
+            .map(|error| error.to_string()),
+            Some("the red side fields 2 of class armour; a side fields at most 1".to_owned())
+        );
+    }
+
+    /// **16b cut AE.3**: `ArenaConfig::validate` bounds every cap `0..=24` by
+    /// name — 25 is refused with its sentence, and 0 (the class forbidden) and
+    /// 24 (every unit an arena places) are accepted.
+    #[test]
+    fn ae3_validate_bounds_the_class_caps() {
+        let with = |cap: u32| ArenaConfig {
+            max_units_by_class: BTreeMap::from([(UnitClass::Drone, cap)]),
+            ..ArenaConfig::default()
+        };
+        assert_eq!(
+            with(25).validate(),
+            Err("[tacsim.arena.max_units_by_class].drone must be 0 to 24 (it is 25)".to_owned())
+        );
+        assert_eq!(with(0).validate(), Ok(()));
+        assert_eq!(with(24).validate(), Ok(()));
+        assert_eq!(ArenaConfig::default().validate(), Ok(()));
+    }
+
+    /// **16b cut AE.3** (doc 16 §2 W2): a drone holds nothing and contests
+    /// nothing. Alone on the square it is nobody; beside its own tank the side
+    /// holds through the tank; and on the square with an enemy tank it does not
+    /// contest it. The O.1 tests above, whose holders are the unarmed `Armour`
+    /// fixtures, are untouched.
+    #[test]
+    fn ae3_a_drone_holds_nothing_and_contests_nothing() {
+        use crate::arena::test_support::drone;
+        let at = |x: i64, y: i64| pose(x * 1_000 + 500, y * 1_000 + 500);
+        let mut arena = hold_arena(vec![
+            drone(ObjId(4), Team::Red, at(4, 4)),
+            tank(ObjId(5), Team::Red, at(0, 0)),
+            tank(ObjId(9), Team::Blue, at(7, 7)),
+        ]);
+        assert_eq!(
+            arena.unit(ObjId(4)).map(|unit| unit.class),
+            Some(UnitClass::Drone)
+        );
+        assert_eq!(arena.hold_presence(), None, "a drone alone holds nothing");
+        let put = |arena: &mut Arena, id: u32, x: i64, y: i64| {
+            if let Some(unit) = arena.unit_mut(ObjId(id)) {
+                unit.pose = at(x, y);
+            }
+        };
+        put(&mut arena, 5, 3, 4);
+        assert_eq!(
+            arena.hold_presence(),
+            Some(Team::Red),
+            "beside its own tank, the side holds through the tank"
+        );
+        // The drone standing on the square does not contest a blue tank alone.
+        put(&mut arena, 5, 0, 0);
+        put(&mut arena, 9, 5, 5);
+        assert_eq!(
+            arena.hold_presence(),
+            Some(Team::Blue),
+            "a drone contests nothing"
+        );
+        arena.settle_hold_presence();
+        assert_eq!(
+            arena
+                .hold
+                .as_ref()
+                .and_then(|hold| hold.held_by)
+                .map(|(team, _)| team),
+            Some(Team::Blue)
         );
     }
 }

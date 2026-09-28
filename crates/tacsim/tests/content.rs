@@ -431,6 +431,11 @@ fn the_band_word_the_shipped_content_can_print() {
 /// **16b cut AE.2** gave the scout car its autocannon, first in component
 /// order: that is its bare `FIRE` and the one emptied, and dry it falls to its
 /// coaxial as every tank does — `(60_000, 60_000, 60_000)`.
+///
+/// **16b cut AE.3** fields an eleventh, the drone: a 60-cell visual sight and
+/// no gun, so it **sees** 600 m and fights at nothing — `(60_000, 0, 0)`,
+/// loaded and dry alike — and it has no default weapon to empty (a `None` row
+/// in the dry half, as the target's).
 #[test]
 fn e1_the_ranges_the_shipped_machines_fight_at() {
     use mush_core::ObjId;
@@ -443,9 +448,9 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
         tacsim::definitions::Catalog::build_fielded(&[], "tacsim").expect("the fielded content");
     assert_eq!(
         catalog.specs.len(),
-        10,
+        11,
         "the shipped unit schemas: the line tank, doc 16 §9's five extensions, \
-         the range's target and 16b cut AE.1's three chassis"
+         the range's target, 16b cut AE.1's three chassis and 16b cut AE.3's drone"
     );
     let definition = stock_definition(&SmolStr::new_static(STAND_IN)).expect("the stand-in window");
     let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
@@ -527,6 +532,9 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
             // 16b cut AE.1: the Mk2 sees with the thermal sight's 45 cells, and
             // its beam's 1.2 km first band is past it.
             ("tacsim.unit.biped_mk2".to_owned(), 45_000, 45_000, 45_000),
+            // 16b cut AE.3: the drone sees 600 m and carries no gun, so nothing
+            // is in its reach.
+            ("tacsim.unit.drone_mk1".to_owned(), 60_000, 0, 0),
             ("tacsim.unit.heavy_mk1".to_owned(), 60_000, 60_000, 60_000),
             ("tacsim.unit.line_tank".to_owned(), 60_000, 60_000, 60_000),
             (
@@ -655,6 +663,8 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
         vec![
             Some("cannon".to_owned()),
             Some("laser".to_owned()),
+            // 16b cut AE.3: the drone carries no gun.
+            None,
             Some("cannon".to_owned()),
             Some("cannon".to_owned()),
             Some("cannon".to_owned()),
@@ -666,7 +676,7 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
         ],
         "the weapon a bare `FIRE` fires: the cannon, or the first in component \
          order on a hull that carries none (the Mk2's beam, the scout's \
-         autocannon), and nothing on the range's target"
+         autocannon), and nothing on the drone or the range's target"
     );
     assert_eq!(
         table(&arena),
@@ -675,6 +685,8 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
             // 16b cut AE.1: the Mk2 falls from its beam to its coaxial, held to
             // its 45-cell sight as the thermal tank is.
             ("tacsim.unit.biped_mk2".to_owned(), 45_000, 45_000, 45_000),
+            // 16b cut AE.3: nothing to empty, so the drone's row is its loaded one.
+            ("tacsim.unit.drone_mk1".to_owned(), 60_000, 0, 0),
             ("tacsim.unit.heavy_mk1".to_owned(), 60_000, 60_000, 60_000),
             ("tacsim.unit.line_tank".to_owned(), 60_000, 60_000, 60_000),
             (
@@ -966,7 +978,8 @@ fn the_muster_stands_on_the_road_and_the_run_at_the_enemy_reaches_the_ford() {
 /// requires the laser (the first table) and the thermal sight (the third), both
 /// ahead of it — and, since **16b cut AE.2**, an eighth between the target and
 /// the chassis: the autocannon, the missile rack and their two rounds, which
-/// the scout car's and the heavy's version 2 require.
+/// the scout car's and the heavy's version 2 require — and, since **16b cut
+/// AE.3**, a ninth, last: the drone, which requires only the stock sight.
 ///
 /// The order claim is the one worth a test: [`content::SOURCES`] is authored as
 /// "a pack after every pack it names", the five extension tables each carry the
@@ -981,10 +994,10 @@ fn q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_ord
     let fielded = content::fielded_sources();
     assert_eq!(
         fielded.len(),
-        stock.len() + 18,
-        "eight shipped packs and eighteen extension files: doc 16 section 9's ten, \
-         the range's target, 16b cut AE.2's two weapons and their two rounds, and \
-         16b cut AE.1's three chassis"
+        stock.len() + 19,
+        "eight shipped packs and nineteen extension files: doc 16 section 9's ten, \
+         the range's target, 16b cut AE.2's two weapons and their two rounds, \
+         16b cut AE.1's three chassis and 16b cut AE.3's drone"
     );
     for (shipped, both) in stock.iter().zip(fielded.iter()) {
         assert_eq!(shipped.name, both.name, "the shipped prefix is unmoved");
@@ -1086,8 +1099,9 @@ fn m2_every_fielded_units_substep_divides_the_three_periods() {
         }
     }
     assert!(
-        checked >= 10,
-        "every fielded unit's modes were read, the three chassis' among them: {checked}"
+        checked >= 11,
+        "every fielded unit's modes were read, the three chassis' and the drone's among \
+         them: {checked}"
     );
     assert!(
         catalog.specs.contains_key(

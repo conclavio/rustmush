@@ -3600,13 +3600,19 @@ async fn d1_an_empty_weapon_list_on_a_live_frame_is_a_fact() {
         !said.contains("round(s)"),
         "a weapon the platform no longer carries was printed: {said}"
     );
-    // And `FIRE` refuses in the cockpit, one pulse earlier than the arena would.
+    // And `FIRE` refuses in the cockpit, one pulse earlier than the arena would —
+    // since 16b cut AE.3 with `WEAPONSTATUS`'s own sentence, since a bare `FIRE`
+    // names no gun (it read `That unit carries no weapon called `cannon`.`).
     let said = rig.say(0, "fire");
+    assert!(said.contains("This unit carries no weapon."), "{said}");
+    assert!(!said.contains("called `cannon`"), "{said}");
+    assert!(!said.contains("Firing"), "{said}");
+    // A named weapon on the empty list still names what the pilot typed.
+    let said = rig.say(0, "fire cannon");
     assert!(
         said.contains("That unit carries no weapon called `cannon`."),
         "{said}"
     );
-    assert!(!said.contains("Firing"), "{said}");
 }
 
 /// **`B-06`: `STARTUP` knows what it already did, and the hint has four ends**

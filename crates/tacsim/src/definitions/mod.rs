@@ -61,7 +61,7 @@ pub use arena::{ArenaBuildError, ArenaDef, arena_map_within_bound, from_pack};
 pub use resolution::ResolutionDef;
 pub use resources::ResourceTable;
 pub use sensor::SensorDef;
-pub use unit::{UnitBinding, UnitSpec, to_tactical_unit, tracked_rules};
+pub use unit::{UnitBinding, UnitClass, UnitSpec, to_tactical_unit, tracked_rules};
 pub use weapon::WeaponDef;
 
 /// The most bytes a human-facing label inside a definition may occupy — the

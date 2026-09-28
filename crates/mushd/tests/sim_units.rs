@@ -150,17 +150,25 @@ fn tacsim_config() -> tacsim::TacsimConfig {
 fn module_list(
     onboarding: &mush_core::OnboardingConfig,
     llm: &Arc<LlmService>,
+    cfg: tacsim::TacsimConfig,
 ) -> Vec<Box<dyn GameModule>> {
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
     mods.extend(modules::sheet_modules(onboarding, &Default::default()));
-    mods.push(modules::tacsim_module(tacsim_config()));
+    mods.push(modules::tacsim_module(cfg));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
 }
 
 async fn boot(tag: &str) -> Server {
+    boot_with(tag, tacsim_config()).await
+}
+
+/// **[`boot`] on a named `[tacsim]`** (16b cut AE.3): the drone can only board
+/// a match whose side also carries a gun, and with two pilots and the fill off
+/// that is no match at all, so one test boots with the fill on.
+async fn boot_with(tag: &str, cfg: tacsim::TacsimConfig) -> Server {
     let dir = scratch_dir(tag);
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     store
@@ -218,8 +226,8 @@ async fn boot(tag: &str) -> Server {
             .build(),
     );
 
-    let mut engine =
-        Engine::with_modules(world, registry, module_list(&onboarding, &llm)).expect("modules");
+    let mut engine = Engine::with_modules(world, registry, module_list(&onboarding, &llm, cfg))
+        .expect("modules");
     modules::boot_modules(&mut engine, &*store)
         .await
         .expect("module boot");
@@ -1350,4 +1358,163 @@ async fn ae2_a_heavy_on_the_range_fires_its_rack_and_the_round_lands_two_seconds
         "50,000 cm at 25,000 cm/s is 2,000 ms"
     );
     no_sixteen_digit_word(&strip_ansi(&ada.seen));
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AE.3 — one drone a side, and a side needs a gun (doc 16 §2 W2)
+// ---------------------------------------------------------------------------
+
+/// The cap's refusal at the shipped default, word for word.
+const AE3_CAP: &str = "A side fields at most 1 drone; pick another type.";
+
+/// The `NoGun` refusal for red, word for word.
+const AE3_NO_GUN: &str = "The red side fields no gun; a side needs a machine that carries one.";
+
+/// The drone's weapon line, in `WEAPONSTATUS` and for a bare `FIRE`.
+const AE3_NO_WEAPON: &str = "This unit carries no weapon.";
+
+/// **The lobby's two drone refusals over real SSH** (16b cut AE.3; doc 16 §2
+/// W2), with the fill off as the file ships it.
+///
+/// Ada and Bo both claim red. Ada's `SIM UNIT drone_mk1` is announced as any
+/// choice is; Bo's is refused with the cap's sentence, to Bo alone, and his
+/// slot keeps what it had. Bo moves to blue, which leaves red a lone drone,
+/// and Ada's `SIM START` is refused at once with the `NoGun` sentence — before
+/// anything is written, so the centre is still in `Selection`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ae3_the_second_drone_and_a_gunless_side_are_refused_at_the_lobby() {
+    let server = boot("sim-units-ae3-lobby").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM red", "takes red slot 2").await;
+    // The catalog lists the drone, in its sorted place.
+    let seen = ask_whole(&mut ada, "SIM UNIT").await;
+    assert!(
+        seen.split_whitespace()
+            .collect::<Vec<&str>>()
+            .join(" ")
+            .contains("biped_mk2, drone_mk1, heavy_mk1,"),
+        "{seen}"
+    );
+    say(
+        &mut ada,
+        "SIM UNIT drone_mk1",
+        "Slot red 1 will field drone_mk1.",
+    )
+    .await;
+    let mark = ada.mark();
+    let seen = ask(&mut bo, "SIM UNIT drone_mk1", AE3_CAP).await;
+    // Ada's own announcement may still be arriving in Bo's slice; his slot's is
+    // the one that must not.
+    assert!(!seen.contains("Slot red 2 will field"), "{seen}");
+    let board = ask_whole(&mut bo, "SIM STATUS").await;
+    assert!(
+        board.contains("[drone_mk1]"),
+        "Ada's choice stands: {board}"
+    );
+    assert_eq!(
+        board.matches("[drone_mk1]").count(),
+        1,
+        "and Bo's slot fields no second one: {board}"
+    );
+    // Re-choosing the class a slot already holds is never the cap's business.
+    say(
+        &mut ada,
+        "SIM UNIT drone_mk1",
+        "Slot red 1 will field drone_mk1.",
+    )
+    .await;
+    assert!(
+        !strip_ansi(&ada.seen[mark..]).contains(AE3_CAP),
+        "the refusal reached a pilot who did not ask"
+    );
+
+    // A lone drone, the fill off: refused before anything is written.
+    say(&mut bo, "SIM LEAVE", "gives up red slot 2").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    let mark = bo.mark();
+    let seen = ask(&mut ada, "SIM START", AE3_NO_GUN).await;
+    assert!(!seen.contains("is boarding"), "{seen}");
+    let board = ask_whole(&mut ada, "SIM STATUS").await;
+    assert!(board.contains("selection"), "nothing was written: {board}");
+    // Bo's own whole answer drains everything the server sent him since the
+    // mark, so the check below reads what he was actually told.
+    let bo_board = ask_whole(&mut bo, "SIM STATUS").await;
+    assert!(bo_board.contains("selection"), "{bo_board}");
+    let bo_seen = strip_ansi(&bo.seen[mark..]);
+    assert!(
+        !bo_seen.contains(AE3_NO_GUN) && !bo_seen.contains("fields no gun"),
+        "a refusal of SIM START is the caller's: {bo_seen}"
+    );
+}
+
+/// **A pilot flies the drone** (16b cut AE.3; 16c N15), on a server whose fill
+/// brings red a gun beside it (`SIM AI 2`).
+///
+/// Ada takes `SIM UNIT drone_mk1`, Bo the stock tank; both board. Ada's
+/// `STATUS` brackets the fitted type and prints the drone's one section;
+/// `WEAPONSTATUS` and a bare `FIRE` both read `This unit carries no weapon.`
+/// — the bare `FIRE` no longer names a cannon the pilot never mentioned — and
+/// Bo's cockpit never names the drone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ae3_a_pilot_flies_the_drone_and_it_carries_no_weapon() {
+    let mut cfg = tacsim_config();
+    cfg.match_.ai_fill = true;
+    let server = boot_with("sim-units-ae3-fly", cfg).await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(
+        &mut ada,
+        "SIM UNIT drone_mk1",
+        "Slot red 1 will field drone_mk1.",
+    )
+    .await;
+    say(&mut ada, "SIM AI 2", "AI fill set to 2 a side.").await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut bo, "blue", "Blue Room").await;
+    let mark = bo.mark();
+    say(&mut ada, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+
+    let seen = ask_whole(&mut ada, "STATUS").await;
+    assert!(seen.contains("[drone_mk1]"), "the bracket: {seen}");
+    assert!(seen.contains("  body  intact"), "its one section: {seen}");
+    assert!(!seen.contains("  turret  "), "it is not a tank: {seen}");
+    let seen = ask_whole(&mut ada, "WEAPONSTATUS").await;
+    assert!(seen.contains(AE3_NO_WEAPON), "{seen}");
+    assert!(!seen.contains("round(s)"), "{seen}");
+    let seen = ask_whole(&mut ada, "FIRE").await;
+    assert!(seen.contains(AE3_NO_WEAPON), "{seen}");
+    assert!(!seen.contains("called `cannon`"), "{seen}");
+    assert!(!seen.contains("Firing"), "{seen}");
+    // A named weapon still names what was typed.
+    let seen = ask_whole(&mut ada, "FIRE cannon").await;
+    assert!(
+        seen.contains("That unit carries no weapon called `cannon`."),
+        "{seen}"
+    );
+
+    // Bo's cockpit, from the moment he climbed in, never named the drone:
+    // his own `CONTACTS` (a whole answer, so everything sent to him before it
+    // has been read) and every frame and notice that reached him meanwhile.
+    let contacts = ask_whole(&mut bo, "CONTACTS").await;
+    assert!(!contacts.contains("drone"), "{contacts}");
+    let bo_seen = strip_ansi(&bo.seen[mark..]);
+    assert!(
+        !bo_seen.contains("drone"),
+        "the other side's machine was named: {bo_seen}"
+    );
+    no_sixteen_digit_word(&strip_ansi(&ada.seen));
+    no_sixteen_digit_word(&strip_ansi(&bo.seen));
 }

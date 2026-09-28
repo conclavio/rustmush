@@ -39,6 +39,9 @@
 //! is **campaign rate policy** that cuts 4/8/11 read; it reaches that function never,
 //! and nothing in this crate constructs a `GameClock` or a `WorldTimelineEpoch`.
 
+use std::collections::BTreeMap;
+
+use crate::definitions::UnitClass;
 use crate::pack::RulesPack;
 
 /// The default active-domain limit (10b §7's `MAX_ACTIVE_DOMAINS`). Inert in cut 1.
@@ -233,6 +236,23 @@ pub struct ArenaConfig {
     /// four; `1..=`[`crate::deliberation::SQUAD_SIZE_MAX`] by
     /// [`ArenaConfig::validate`].
     pub squad_size: u32,
+    /// **The most machines of one class a side fields** (16b cut AE.3; doc 16
+    /// §2 W2: *no drone swarms; `arena.max_units_by_class`; class counts on the
+    /// map obey the caps*).
+    ///
+    /// A side fields at most this many units of a class. **Per side and not per
+    /// map**, because both sides may field one (Q-AE4, an amendment to W2's "on
+    /// the map"); a class absent from the map is **uncapped**; and a value of
+    /// **zero** is legal and means the class cannot be fielded on this server.
+    /// The drone's `1` is the compiled default and stands unless the operator
+    /// names the drone: `mush_server::config_ext` lays the operator's entries
+    /// over [`ArenaConfig::default`]'s map, so a table naming only `walker`
+    /// does not lift it.
+    ///
+    /// A `BTreeMap` (never a `HashMap`): `Arena::new` walks it beside its own
+    /// ordered count, and the lobby reads one entry. `0..=`
+    /// [`crate::definitions::arena::MAX_ARENA_UNITS`] by [`ArenaConfig::validate`].
+    pub max_units_by_class: BTreeMap<UnitClass, u32>,
     /// The match ledger's cadence and its two hard bounds.
     pub ledger: LedgerConfig,
     /// **The reflex controller's cadence, paths and doctrine** (16b cut N.1).
@@ -248,6 +268,8 @@ impl Default for ArenaConfig {
             intents: IntentsConfig::default(),
             deliberate_min_ms: 30_000,
             squad_size: 4,
+            // 16b cut AE.3: N15's "drones as content: one, capped".
+            max_units_by_class: BTreeMap::from([(UnitClass::Drone, 1)]),
             ledger: LedgerConfig::default(),
             reflex: ReflexConfig::default(),
         }
@@ -955,6 +977,16 @@ impl ArenaConfig {
             u64::from(crate::deliberation::SQUAD_SIZE_MAX),
             u64::from(self.squad_size),
         )?;
+        // **16b cut AE.3** (doc 16 §2 W2): zero forbids the class on this
+        // server; past the arena's own unit bound a cap caps nothing.
+        for (class, cap) in &self.max_units_by_class {
+            between(
+                &format!("[tacsim.arena.max_units_by_class].{}", class.as_str()),
+                0,
+                crate::definitions::arena::MAX_ARENA_UNITS as u64,
+                u64::from(*cap),
+            )?;
+        }
         at_least(
             "[tacsim.arena.intents].max_pending_per_unit",
             1,

@@ -342,6 +342,21 @@ pub(crate) mod test_support {
     /// The smallest M32 unit the arena can carry: one hull section, one front
     /// facet, one armor cell.
     pub(crate) fn tactical_unit(id: ObjId) -> TacticalUnit {
+        tactical_unit_ruled(id, rules())
+    }
+
+    /// **[`tactical_unit`] with the rules blob `data`** (16b cut AE.3): the one
+    /// thing [`crate::definitions::UnitClass::read`] reads a declared class
+    /// off, so a fixture can field a drone without a catalog.
+    pub(crate) fn tactical_unit_with(id: ObjId, data: serde_json::Value) -> TacticalUnit {
+        tactical_unit_ruled(
+            id,
+            RulesValue::new(dref("schema", "tacsim.arena.test"), data).expect("a rules blob"),
+        )
+    }
+
+    /// [`tactical_unit`]'s one shape, under any rules blob.
+    fn tactical_unit_ruled(id: ObjId, rules: RulesValue) -> TacticalUnit {
         let spec = UnitSpec {
             definition: dref("unit", "tacsim.unit.line_tank"),
             sections: vec![SectionSpec {
@@ -368,7 +383,7 @@ pub(crate) mod test_support {
             components: Vec::new(),
             capabilities: Vec::new(),
             mobility: None,
-            rules: rules(),
+            rules,
         };
         TacticalUnit::from_spec(&spec, id).expect("a one-section unit")
     }
@@ -555,6 +570,16 @@ pub(crate) mod test_support {
             // lowest free slot of its team in unit-id order.
             slot: 0,
             unit: tactical_unit(id),
+        }
+    }
+
+    /// **A drone** (16b cut AE.3): [`tank`] — no sight, no weapon — whose rules
+    /// blob declares `"class": "drone"`, so `Arena::new` reads it as
+    /// [`crate::definitions::UnitClass::Drone`] and counts it against the cap.
+    pub(crate) fn drone(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+        CustodyUnit {
+            unit: tactical_unit_with(id, serde_json::json!({ "class": "drone" })),
+            ..tank(id, team, pose)
         }
     }
 

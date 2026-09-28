@@ -923,6 +923,15 @@ impl TacticalUnit {
     pub fn schema(&self) -> &DefinitionRef {
         &self.schema
     }
+    /// The unit-level rules blob the spec carried into [`TacticalUnit::from_spec`]:
+    /// the opaque game payload (with its schema reference) that the engine never
+    /// interprets. A game reads its own facts off it — tacsim's unit class is one
+    /// (16b cut AE.3) — the way [`TacticalUnit::capability`] hands a capability's
+    /// payload back. Read-only: nothing in the damage pipeline writes it.
+    #[must_use]
+    pub fn rules(&self) -> &RulesValue {
+        &self.rules
+    }
     /// Every exact definition required to interpret this instance, including
     /// its root unit definition. The ordered result is deduplicated for direct
     /// registry validation during boot.
