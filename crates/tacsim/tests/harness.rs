@@ -130,13 +130,22 @@
 //! *bump the lens up to 20 to give us some headroom but keep a reasonable
 //! boundary*). The J.3b gate's own run had read 16.298 ms per window, which
 //! 17.5 held by only 7.4 per cent, so a loaded week could have missed on noise
-//! alone; 20 ms ([`ARENA_AUTHORED_WINDOW_P99_MS`]) holds the worst asserted run
-//! on record by 22.7 per cent, is the figure the 300-unit harness gate was first
+//! alone; 20 ms ([`ARENA_AUTHORED_WINDOW_P99_MS`]) held the worst asserted run
+//! then on record, 16.298, by 22.7 per cent, is the figure the 300-unit harness
+//! gate was first
 //! proposed at on 2026-09-16 (before doc 16 set the finished arena's ceiling at
 //! 25), and stays under that 25 ms `engaged_p99_ms` ceiling — the check that
 //! keeps it a boundary, as the owner asked, pinned by
 //! [`the_lens_is_the_cohorts_own`]. Nothing else moved: no bound, no baseline
 //! (the CI report's `window_p99_ms` stays 12.0), no reach, no target.
+//!
+//! **The ratio check retired since 16b cut J.3d** (the owner, 2026-09-29): the
+//! guard that the lens clears the worst asserted run by the harness's 16 per
+//! cent spread could hold only while the record stayed under 17.241 ms, and
+//! cuts AE and AF read 17.6 to 18.0 under the 20 ms lens five times; the record
+//! now follows the worst asserted run that passed (18.022) and
+//! [`the_lens_is_the_cohorts_own`] holds of the record only that the lens is
+//! above it (its exact pins and the ceiling check stand).
 //!
 //! **The lance lane since 16b cut Z.1** (16c N6, *lances*). One more ignored
 //! lane, `tacsim_harness_lance`: `TACSIM_LANCE_UNITS` (24) units of the fielded
@@ -5209,11 +5218,12 @@ fn the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else() {
 /// authored lane has read since it began asserting (cut J.3's three weekly runs
 /// read 15.092, 14.997 and 14.108, its fourth 15.807, J.3b's three asserted
 /// runs 15.339, 14.057 and 14.732). [`ARENA_AUTHORED_WINDOW_P99_MS`] carries
-/// the harness's recorded 16 per cent spread over it and
-/// [`the_lens_is_the_cohorts_own`] holds that it does. Whoever records a worse
-/// asserted run moves this constant in the same diff and says why; if the lens
-/// then no longer clears it by 16 per cent, the lens is the owner's to move,
-/// never the builder's.
+/// the owner's headroom over it, reported here and never asserted since 16b cut
+/// J.3d ([`the_lens_is_the_cohorts_own`] holds only that the lens is above it).
+/// Whoever records a worse asserted run that still passed the lens moves this
+/// constant in the same diff and says why; a run past the lens is a failure the
+/// weekly script reports, and the lens is the owner's to move, never the
+/// builder's.
 ///
 /// **16b cut Z.2 moved it to 17.087**: the second of Z.2's asserted weekly runs
 /// read 17.087 ms per window on the authored cohort and passed the 20 ms lens
@@ -5231,18 +5241,31 @@ fn the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else() {
 /// elimination clause needs a drone — so the figure is this host's noise;
 /// 20 ms still clears it by the 16 per cent spread (17.108 × 1.16 = 19.85),
 /// under the 17.241 guard.
-const AUTHORED_WINDOW_P99_WORST_RECORDED_MS: f64 = 17.108;
+///
+/// **16b cut J.3d moved it to 18.022** (the owner, 2026-09-29): cuts AE.3 and AF
+/// read 17.623, 17.773, 17.579, 17.940 and 18.022 ms on the authored cohort with
+/// the deterministic block equal every time, all under the 20 ms lens and all
+/// past the 17.241 the retired ratio check could admit, so the record had frozen
+/// below the runs; the check is gone and the record is the worst asserted run
+/// that passed, 18.022 (cut AF's sweep). Twenty holds it by 11 per cent; the
+/// spread the lane shows on this host is what a review reads here.
+const AUTHORED_WINDOW_P99_WORST_RECORDED_MS: f64 = 18.022;
 
 /// **The lens is the cohort's own** (16b cut J.3b, moved by J.3c; 16c Q26): the
 /// CI cohort is held per window to [`ARENA_S_P99_MS`] exactly as before, the
 /// authored cohort to [`ARENA_AUTHORED_WINDOW_P99_MS`], which is the looser of
-/// the two; the authored lens is the owner's figure, 20 ms, holds the worst
-/// asserted run on record ([`AUTHORED_WINDOW_P99_WORST_RECORDED_MS`]) by the
-/// harness's 16 per cent spread, and stays under the 25 ms `engaged_p99_ms`
-/// ceiling doc 16 sets for the finished arena — the check that keeps it a
-/// boundary, as the owner asked. It pins that the lens is never quietly moved
-/// off the owner's figure, never sits inside the noise over a run it has
-/// already read, never reaches the ceiling, and never loosens the CI cohort's.
+/// the two; the authored lens is the owner's figure, 20 ms, stays ABOVE the worst
+/// asserted run on record ([`AUTHORED_WINDOW_P99_WORST_RECORDED_MS`]) and under
+/// the 25 ms `engaged_p99_ms` ceiling doc 16 sets for the finished arena — the
+/// check that keeps it a boundary, as the owner asked. It pins that the lens is
+/// never quietly moved off the owner's figure, never sits at or under a run it
+/// has already read, never reaches the ceiling, and never loosens the CI
+/// cohort's. **16b cut J.3d** (the owner, 2026-09-29) retired the check that the
+/// lens clears the worst run by the harness's 16 per cent spread: with the
+/// authored lane reading 17.6 to 18.0 ms five times in cuts AE and AF under a
+/// 20 ms lens the ratio could hold only by freezing the record below the runs,
+/// so the spread is reported in the constant's doc and never asserted; headroom
+/// is the owner's call at a review, on the figures.
 #[test]
 fn the_lens_is_the_cohorts_own() {
     let ci = window_lens_ms(Reach::Ci);
@@ -5268,9 +5291,9 @@ fn the_lens_is_the_cohorts_own() {
         "the authored lens {authored} is the looser of the two, over {ci}"
     );
     assert!(
-        authored >= AUTHORED_WINDOW_P99_WORST_RECORDED_MS * 1.16,
-        "the authored lens {authored} ms sits inside the harness's 16 per cent spread over the \
-         worst asserted run on record, {AUTHORED_WINDOW_P99_WORST_RECORDED_MS} ms: the owner's to move"
+        authored > AUTHORED_WINDOW_P99_WORST_RECORDED_MS,
+        "the authored lens {authored} ms is at or under the worst asserted run on record, \
+         {AUTHORED_WINDOW_P99_WORST_RECORDED_MS} ms: the owner's to move (16b cut J.3d)"
     );
     let ceiling = f64::from(tacsim::config::HarnessConfig::default().engaged_p99_ms);
     assert!(
