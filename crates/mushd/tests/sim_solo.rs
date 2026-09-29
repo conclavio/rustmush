@@ -314,6 +314,30 @@ async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
     strip_ansi(&term.seen[mark..])
 }
 
+/// The nonsense line [`ask_whole`] fences an answer with (16b cut AG.1), and the
+/// parser's refusal, which is its answer.
+const SENTINEL: &str = "zzq-solo-sentinel";
+/// As [`SENTINEL`].
+const HUH: &str = "Huh?";
+
+/// **A whole answer, never half of one** (16b cut AG.1; `observer_rule.rs`'s
+/// twin — a test binary cannot import another): the line, then [`SENTINEL`],
+/// and the slice runs to the sentinel's `Huh?`, so everything the line produced
+/// is in it and nothing is still in flight. A world mid-commit answers both
+/// lines with the transient, which is a retry.
+async fn ask_whole(term: &mut Term, line: &str) -> String {
+    for _ in 0..RETRY_BUDGET {
+        let mark = term.mark();
+        term.send_line(line).await;
+        term.send_line(SENTINEL).await;
+        if term.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
+            return strip_ansi(&term.seen[mark..]);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("`{line}` never produced a whole answer")
+}
+
 /// One object's dbref, out of an `@find` listing.
 fn dbref_of(listing: &str, name: &str) -> u32 {
     listing
@@ -505,6 +529,40 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
         !seen.contains("Blue Tank"),
         "the window never names another unit: {seen}"
     );
+    // **16b cut AG.1**: and the same window in sentences. Only what holds at
+    // any arena millisecond is asserted — the brief's shape and order (between
+    // the ground and the spots either the one `No contacts.` or contact
+    // sentences, never both: either sensor-stagger outcome), no line inside it
+    // that opened no sentence, no unit's name, and the closing off-window
+    // sentence, which reads only her own unpowered pose and the fixed spots:
+    // The Ford (64, 97) is 36 cells west of (100, 97) and off every window
+    // there. Nothing waits for a contact and no designator is compared across
+    // reads: the Q.1 rename and the fight's end both race such a wait. The
+    // `VIEW` above was read on its title, so the slice is measured from the
+    // brief's own header.
+    let seen = ask_whole(&mut ada, "VIEW BRIEF").await;
+    let at = seen
+        .find("Window around RA:")
+        .unwrap_or_else(|| panic!("the brief's header: {seen}"));
+    let brief = &seen[at..];
+    let sentences = support::brief_sentences(brief);
+    support::assert_brief_shape(&sentences, "the solo brief");
+    assert_eq!(
+        support::brief_strays(brief),
+        Vec::<String>::new(),
+        "a line inside the brief opened no sentence:\n{brief}"
+    );
+    assert!(
+        !brief.contains("Blue Tank"),
+        "the brief never names another unit: {brief}"
+    );
+    assert!(
+        sentences.last().is_some_and(
+            |sentence| sentence.starts_with("Off the window: A The Ford, 360 m at 270°")
+        ),
+        "the brief closes on its off-window sentence: {brief}"
+    );
+    no_sixteen_digit_word(brief);
 
     // ---- power, and the fight ----
     say(&mut ada, "STARTUP", "Startup sequence").await;

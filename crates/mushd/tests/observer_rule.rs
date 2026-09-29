@@ -947,6 +947,118 @@ fn names_nothing(seen: &str, red: u32, blue: u32, what: &str) {
     }
 }
 
+/// **The words `VIEW BRIEF` writes of its own** (16b cut AG.1): its closed
+/// prose vocabulary — the eight bearing words, the header's, the ground's
+/// joins and tails, the contact sentence's, the beyond line's, the spot lines'
+/// openers and every word of every `class_prose` value. Kept sorted; every
+/// other word of a brief must come from the pilot's own answers.
+const BRIEF_WORDS: &[&str] = &[
+    "CONTACTS",
+    "East",
+    "In",
+    "No",
+    "North",
+    "North-east",
+    "North-west",
+    "Off",
+    "South",
+    "South-east",
+    "South-west",
+    "West",
+    "Window",
+    "a",
+    "and",
+    "arena",
+    "around",
+    "at",
+    "bare",
+    "bearing",
+    "beyond",
+    "blue",
+    "by",
+    "cell",
+    "cells",
+    "close",
+    "contact",
+    "contacts",
+    "deep",
+    "doorway",
+    "east",
+    "edge",
+    "effective",
+    "far",
+    "floor",
+    "grass",
+    "ground",
+    "heading",
+    "heavy",
+    "ice",
+    "it",
+    "light",
+    "lists",
+    "m",
+    "north",
+    "nothing",
+    "of",
+    "old",
+    "paving",
+    "platform",
+    "plot",
+    "plots",
+    "red",
+    "regolith",
+    "rel",
+    "road",
+    "rock",
+    "rubble",
+    "s",
+    "sand",
+    "the",
+    "them",
+    "then",
+    "this",
+    "to",
+    "unknown",
+    "wall",
+    "water",
+    "window",
+    "woods",
+    "you",
+];
+
+/// **`VIEW BRIEF` names nothing its pilot's own answers do not** (16b cut
+/// AG.1): every token of every selected sentence — whitespace collapsed, split
+/// on whitespace, each trimmed of `,:;.()°` — is all digits, or a word of
+/// [`BRIEF_WORDS`], or a substring of the concatenated `sources` (that pilot's
+/// own `VIEW`, `CONTACTS` and `STATUS`). Panics naming `what`, the token and
+/// the sentence.
+///
+/// What it cannot see: an all-digit token passes on its own, and so do the side
+/// words (`red`, `blue`) and the band words, which are the brief's vocabulary.
+/// So the callers' direct checks cover exactly those: before detection no
+/// contact sentence and no side word (`names_side`); after it, one contact
+/// sentence per `CONTACTS` row under that row's own designator.
+fn brief_is_a_projection(sentences: &[String], sources: &[&str], what: &str) {
+    let sources = sources.concat();
+    for sentence in sentences {
+        let collapsed = sentence.split_whitespace().collect::<Vec<&str>>().join(" ");
+        for raw in collapsed.split_whitespace() {
+            let token = raw.trim_matches(|c: char| ",:;.()°".contains(c));
+            if token.is_empty()
+                || token.chars().all(|c| c.is_ascii_digit())
+                || BRIEF_WORDS.contains(&token)
+                || sources.contains(token)
+            {
+                continue;
+            }
+            panic!(
+                "{what}: the brief says {token:?}, which is neither its own word nor in the \
+                 pilot's own answers: {sentence}"
+            );
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     let server = boot("observer-rule").await;
@@ -1117,18 +1229,48 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // The pilot on the other side, before detection.
     let seen = ask(&mut bo, "CONTACTS", NO_CONTACTS).await;
     names_nothing(&seen, red, blue, "the other pilot's `CONTACTS`");
-    let seen = ask(&mut ada, "CONTACTS", NO_CONTACTS).await;
-    names_nothing(&seen, red, blue, "the pilot's `CONTACTS`");
+    // **16b cut AG.1**: and his `VIEW BRIEF`, the same window in sentences —
+    // his own callsign, his own ground, `No contacts.`, and no side's word. No
+    // projection for Bo: the battery makes no Bo `STATUS` read, and his own `BA`
+    // is in neither his `VIEW` nor his `CONTACTS`; Ada's two projections below
+    // are the proof.
+    let seen = ask_whole(&mut bo, "VIEW BRIEF").await;
+    names_nothing(&seen, red, blue, "the other pilot's `VIEW BRIEF`");
+    let sentences = support::brief_sentences(&seen);
+    support::assert_brief_shape(&sentences, "Bo before detection");
+    assert_eq!(
+        support::brief_strays(&seen),
+        Vec::<String>::new(),
+        "Bo before detection: a line inside the brief opened no sentence:\n{seen}"
+    );
+    assert!(
+        sentences.iter().any(|sentence| sentence == NO_CONTACTS),
+        "Bo's brief before detection:\n{seen}"
+    );
+    assert!(
+        sentences
+            .iter()
+            .any(|sentence| sentence.starts_with("Window around BA:")),
+        "Bo's brief names his own callsign:\n{seen}"
+    );
+    assert!(
+        !names_side(&seen, "red") && !names_side(&seen, "blue"),
+        "Bo's brief names a side before detection:\n{seen}"
+    );
+    let contacts = ask(&mut ada, "CONTACTS", NO_CONTACTS).await;
+    names_nothing(&contacts, red, blue, "the pilot's `CONTACTS`");
 
     // **16b cut V.1**: `STATUS` names the ground nearest her own pose — the ford,
     // twenty-six cells west of her re-posed cell on the same road. (Asked before
     // the battery's window below opens, because `STATUS` rightly names her own
     // tank, which `names_nothing` would refuse. Whole, fenced by the sentinel,
     // so its damage lines cannot spill into the battery's first answer.)
-    let seen = ask_whole(&mut ada, "STATUS").await;
+    // (16b cut AG.1 keeps it as `status`: it is one of the three answers her
+    // `VIEW BRIEF` below is held to be a projection of.)
+    let status = ask_whole(&mut ada, "STATUS").await;
     assert!(
-        seen.contains("nearest spot: The Ford (A), 260 m at 270°"),
-        "`STATUS` names the nearest spot:\n{seen}"
+        status.contains("nearest spot: The Ford (A), 260 m at 270°"),
+        "`STATUS` names the nearest spot:\n{status}"
     );
     // Everything she is sent from here to the end of the pre-detection battery
     // is held to `names_nothing` at the end of it.
@@ -1184,6 +1326,20 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         );
     }
     assert_eq!(first, NO_SUCH_CONTACT, "and the refusal is that sentence");
+    // **16b cut AG.1**: `VIEW` takes one second word, `BRIEF`, and refuses every
+    // other with one usage line — the slot designator of the tank out there and
+    // a designator of nothing are the same bytes, so the refusal is no oracle.
+    let usage = "VIEW [BRIEF]; BRIEF says the window in sentences.";
+    let a = ask(&mut ada, "VIEW BA", usage).await;
+    let b = ask(&mut ada, "VIEW ZZ", usage).await;
+    names_nothing(&a, red, blue, "`VIEW BA`");
+    names_nothing(&b, red, blue, "`VIEW ZZ`");
+    assert_eq!(
+        a.trim_start_matches("VIEW BA").trim(),
+        b.trim_start_matches("VIEW ZZ").trim(),
+        "one refusal for a tank out there and for nothing"
+    );
+    assert_eq!(a.trim_start_matches("VIEW BA").trim(), usage);
     // **16b cut Y.1: `ORDER` refuses the squad before it looks at a contact.**
     //
     // This match fields no machine, so nobody holds a squad, and authority is
@@ -1244,17 +1400,17 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // The line wraps, and a needle taken from its opening could return before
     // the wrapped rest has arrived, so the answer is read whole (to the
     // sentinel's refusal) and the sentence is cut at its one full stop.
-    let seen = ask_whole(&mut ada, "VIEW").await;
-    names_nothing(&seen, red, blue, "the pilot's `VIEW`");
+    let view = ask_whole(&mut ada, "VIEW").await;
+    names_nothing(&view, red, blue, "the pilot's `VIEW`");
     assert!(
-        !seen.contains(" x ") && !seen.contains("hostile"),
-        "no hostile marker before detection:\n{seen}"
+        !view.contains(" x ") && !view.contains("hostile"),
+        "no hostile marker before detection:\n{view}"
     );
     // The terminal wraps the line at eighty columns, so it is read back from
     // its opening to the end of the answer with the wraps undone.
-    let off = seen
+    let off = view
         .find("Off the window:")
-        .and_then(|at| seen.get(at..))
+        .and_then(|at| view.get(at..))
         .and_then(|rest| rest.find('.').and_then(|stop| rest.get(..=stop)))
         .unwrap_or_default()
         .split_whitespace()
@@ -1265,7 +1421,7 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         "Off the window: A The Ford, 260 m at 270°; B The Crossroads, 390 m at 090°; \
          C North Barn, 980 m at 009°; E East Compound, 1290 m at 066°; \
          F The Bluff, 560 m at 075°.",
-        "the off-window line names the spots, in authored order:\n{seen}"
+        "the off-window line names the spots, in authored order:\n{view}"
     );
     // Spots only: every clause is a spot's letter and name, and nothing else.
     for clause in off.trim_start_matches("Off the window: ").split("; ") {
@@ -1282,6 +1438,53 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
             "the off-window line named something that is not a spot: {clause:?}"
         );
     }
+    // **16b cut AG.1**: and the same window in sentences. The flood bucket is
+    // ten lines a second, thirty to a burst: the `VIEW` and its sentinel spent
+    // two, the brief and its sentinel spend two more and AE.1's `RANGE F` one
+    // after them, and a throttled sentinel answers `You're doing that too
+    // fast.`, which `ask_whole` does not retry — so the bucket is given a breath
+    // first.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let brief = ask_whole(&mut ada, "VIEW BRIEF").await;
+    let sentences = support::brief_sentences(&brief);
+    support::assert_brief_shape(&sentences, "before detection");
+    assert_eq!(
+        support::brief_strays(&brief),
+        Vec::<String>::new(),
+        "before detection: a line inside the brief opened no sentence:\n{brief}"
+    );
+    names_nothing(&brief, red, blue, "the pilot's `VIEW BRIEF`");
+    // Her pose has not moved since the `VIEW` above, so the brief closes on that
+    // `VIEW`'s own off-window sentence, byte for byte with the wraps undone — the
+    // one line after which a mis-worded opener would be dropped unseen.
+    assert_eq!(
+        sentences
+            .last()
+            .map(|last| last.split_whitespace().collect::<Vec<&str>>().join(" ")),
+        Some(off.clone()),
+        "the brief closes on `VIEW`'s own off-window line:\n{brief}"
+    );
+    assert!(
+        sentences.iter().any(|sentence| sentence == NO_CONTACTS),
+        "the brief before detection holds no contact:\n{brief}"
+    );
+    assert!(
+        sentences
+            .iter()
+            .any(|sentence| sentence.starts_with("Window around RA:")),
+        "the brief names the pilot's own callsign:\n{brief}"
+    );
+    assert!(
+        !sentences
+            .iter()
+            .any(|sentence| sentence.contains(": bearing ")),
+        "a contact sentence before detection:\n{brief}"
+    );
+    assert!(
+        !names_side(&brief, "blue") && !names_side(&brief, "red"),
+        "the brief names a side before detection:\n{brief}"
+    );
+    brief_is_a_projection(&sentences, &[&view, &contacts, &status], "before detection");
     // **16b cut AE.1**: the fifth spot, one letter, read from each pilot's own
     // pose. The Bluff (144, 111) is 54 cells east and 14 north of Ada at
     // (90, 97) — 557 m, 560 to the ten, at 075° — and 16 cells west and 14 north
@@ -1647,6 +1850,65 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         "the window never drew a marker for the contact it holds"
     );
     names_nothing(&window, red, blue, "the pilot's held `VIEW`");
+
+    // **16b cut AG.1**: the held window in sentences, read between a fresh
+    // `CONTACTS` and a fresh `STATUS` — the brief's contact sentences are the
+    // rows `CONTACTS` printed a breath earlier, one for one and under the same
+    // designators, and every word of it is a number, a word of the brief's own
+    // vocabulary, or a word of her own `VIEW`, `CONTACTS` and `STATUS`. (A
+    // breath for the flood bucket first: the wait above polled `VIEW` and its
+    // sentinel, and these are six lines more.)
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let contacts_now = ask_whole(&mut ada, "CONTACTS").await;
+    let brief = ask_whole(&mut ada, "VIEW BRIEF").await;
+    let status_now = ask_whole(&mut ada, "STATUS").await;
+    let sentences = support::brief_sentences(&brief);
+    support::assert_brief_shape(&sentences, "after detection");
+    assert_eq!(
+        support::brief_strays(&brief),
+        Vec::<String>::new(),
+        "after detection: a line inside the brief opened no sentence:\n{brief}"
+    );
+    names_nothing(&brief, red, blue, "the pilot's held `VIEW BRIEF`");
+    let contact_sentences: Vec<&String> = sentences
+        .iter()
+        .filter(|sentence| support::opens_contact_sentence(sentence))
+        .collect();
+    let rows: Vec<&str> = contacts_now
+        .lines()
+        .filter(|line| line.contains("(rel "))
+        .collect();
+    assert!(
+        rows.iter()
+            .any(|row| row.split_whitespace().next() == Some(renamed.as_str())),
+        "`CONTACTS` holds {renamed}:\n{contacts_now}"
+    );
+    assert!(
+        contact_sentences
+            .iter()
+            .any(|sentence| sentence.starts_with(&format!("{renamed}, "))),
+        "the brief holds {renamed}:\n{brief}"
+    );
+    assert_eq!(
+        contact_sentences.len(),
+        rows.len(),
+        "one contact sentence per `CONTACTS` row:\n{brief}\n{contacts_now}"
+    );
+    for sentence in &contact_sentences {
+        let designator = sentence
+            .split_once(", ")
+            .map_or("", |(designator, _)| designator);
+        assert!(
+            rows.iter()
+                .any(|row| row.split_whitespace().next() == Some(designator)),
+            "the brief's {designator} opens no `CONTACTS` row:\n{brief}\n{contacts_now}"
+        );
+    }
+    brief_is_a_projection(
+        &sentences,
+        &[&window, &contacts_now, &status_now],
+        "after detection",
+    );
 
     // The world is still told nothing.
     let seen = ask_whole(&mut god, "look").await;

@@ -894,7 +894,7 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 [[handler]]
 name = "view"
 category = "authoritative"
-note = "16b cut K.2 (doc 16 section 3.6 What a pilot sees, section 5; 16b section 8 cut K, K3). One of the twelve cockpit selectors, and one of the seven that only read: it renders the last `arena.cockpit` keyframe the arena sent this pilot (the world keeps one row per pilot on the ArenaRegistry, dropped with the match) and re-emits it on the same feed, so the ANSI renderer, the TUI and the web draw one structure. Contextual on a focused station of a deployed unit, refused elsewhere in one line by the tacsim module's CockpitGate. No document, no world mutation, no intent: it is a read of a mirror the arena wrote."
+note = "16b cut K.2 (doc 16 section 3.6 What a pilot sees, section 5; 16b section 8 cut K, K3). One of the twelve cockpit selectors, and one of the seven that only read: it renders the last `arena.cockpit` keyframe the arena sent this pilot (the world keeps one row per pilot on the ArenaRegistry, dropped with the match) and re-emits it on the same feed, so the ANSI renderer, the TUI and the web draw one structure. Contextual on a focused station of a deployed unit, refused elsewhere in one line by the tacsim module's CockpitGate. No document, no world mutation, no intent: it is a read of a mirror the arena wrote. 16b cut AG.1 gave it a `BRIEF` arm, a second word on the same read verb that says the same payload in sentences: no stanza of its own, no document, no intent."
 
 [[handler]]
 name = "weaponstatus"

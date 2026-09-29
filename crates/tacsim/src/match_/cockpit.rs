@@ -23,7 +23,7 @@
 //! STARTUP                    bring power up (idempotent)
 //! HEADING <0-359>            steer
 //! SPEED <kph>                make way (negative is reverse)
-//! VIEW                       the arena window, as a text map
+//! VIEW [BRIEF]               the arena window, as a text map; BRIEF says it in sentences
 //! CONTACTS                   what the platform holds
 //! LOCK <contact>             hold one of them
 //! RANGE [<contact>|<spot>]   how far away one of them plotted, or a named spot is
@@ -174,6 +174,10 @@ pub const EXIT_VERB: &str = "exit";
 ///
 /// **16b cut O.2** added `emcon`, the fourteenth: the jamming pod's switch (16c
 /// N12), a discrete intent on the sensors channel.
+///
+/// **16b cut AG.1** gave `view` a `BRIEF` arm — the same window said in
+/// sentences (16c N17) — and no fifteenth selector: a second word on a read
+/// verb is not a verb.
 pub const COCKPIT_VERBS: [&str; 14] = [
     "startup",
     "heading",
@@ -3632,24 +3636,465 @@ pub fn off_window_spots_line(
     pose: &mush_sim::data::Pose,
     cell_cm: u16,
 ) -> Option<String> {
+    // 16b cut AG.1: each clause through `spot_clause`, which the brief's
+    // in-window line shares, so the two lines cannot word a spot two ways.
     let parts: Vec<String> = spots
         .iter()
         .zip(SPOT_LETTERS)
         .enumerate()
         .filter(|(index, _)| !drawn.contains(index))
-        .map(|(_, (spot, letter))| {
-            format!(
-                "{letter} {}, {} m at {:03}°",
-                spot.name,
-                range_m_rounded(spot_range_cm(pose, spot, cell_cm), SPOT_RANGE_STEP_M),
-                spot_bearing_mdeg(pose, spot, cell_cm) / 1_000
-            )
-        })
+        .map(|(_, (spot, letter))| spot_clause(letter, spot, pose, cell_cm))
         .collect();
     if parts.is_empty() {
         return None;
     }
     Some(format!("Off the window: {}.", parts.join("; ")))
+}
+
+/// **One spot as `VIEW`'s spot lines word it** (16b cut V.1's clause, lifted out
+/// by 16b cut AG.1): `<letter> <name>, <range> m at <bearing>°` — the range 2-D
+/// to the cell centre ([`spot_range_cm`]) rounded to [`SPOT_RANGE_STEP_M`], the
+/// bearing absolute ([`spot_bearing_mdeg`]) in whole degrees. The off-window
+/// line and the brief's in-window line both call it.
+fn spot_clause(letter: char, spot: &KeySpot, pose: &mush_sim::data::Pose, cell_cm: u16) -> String {
+    format!(
+        "{letter} {}, {} m at {:03}°",
+        spot.name,
+        range_m_rounded(spot_range_cm(pose, spot, cell_cm), SPOT_RANGE_STEP_M),
+        spot_bearing_mdeg(pose, spot, cell_cm) / 1_000
+    )
+}
+
+// ---------------------------------------------------------------------------
+// The brief (16b cut AG.1; 16c N17)
+// ---------------------------------------------------------------------------
+//
+// `VIEW BRIEF` is a SECOND RENDERER OF THE ONE FRAME (doc 16 §5: one feed, and
+// every renderer draws the same structure): the payload `VIEW` would push now,
+// said as sentences for a screen reader or a pilot who would rather read. It
+// reads exactly what the grid draws — the payload's own rectangle from the
+// payload's own `@`, the contacts as `CONTACTS` words them, the spots the
+// legend names — and says nothing the grid would not draw or name. Every
+// function below is pure and world-free; `view`'s brief arm gathers the frame,
+// the ground and the payload and calls [`brief_lines`]. Nothing here crosses
+// the arena seam, runs per pulse or adds a frame key: the observer rule (doc
+// 16 §1) holds by construction, because every input is the pilot's own frame,
+// the surveyed ground (doc 16 §3.2) and a pure function of the two.
+
+/// **The eight bearings a brief walks, in compass order** (16b cut AG.1): the
+/// word, then the step in cells. `dy` positive is NORTH — arena y grows north,
+/// and `terrain_rows`' row 0 is the window's south edge.
+pub const BRIEF_BEARINGS: [(&str, i8, i8); 8] = [
+    ("North", 0, 1),
+    ("North-east", 1, 1),
+    ("East", 1, 0),
+    ("South-east", 1, -1),
+    ("South", 0, -1),
+    ("South-west", -1, -1),
+    ("West", -1, 0),
+    ("North-west", -1, 1),
+];
+
+/// **Root two, per mille** (16b cut AG.1): a diagonal step's length in straight
+/// steps, to three places — integer, as every figure in the cockpit is.
+pub const DIAGONAL_PER_MILLE: u64 = 1_414;
+
+/// **How far `steps` cells reach, centimetres** (16b cut AG.1):
+/// `steps × cell_cm`, times [`DIAGONAL_PER_MILLE`] / 1,000 on a diagonal,
+/// saturating. At 1,000 cm cells five diagonal steps are 7,070 cm, six 8,484,
+/// fifteen 21,210 and nineteen 26,866.
+#[must_use]
+pub fn ray_cm(steps: u32, cell_cm: u16, diagonal: bool) -> u64 {
+    let per_mille = if diagonal { DIAGONAL_PER_MILLE } else { 1_000 };
+    u64::from(steps)
+        .saturating_mul(u64::from(cell_cm))
+        .saturating_mul(per_mille)
+        / 1_000
+}
+
+/// **The step a brief's reaches are rounded to**, metres (16b cut AG.1):
+/// `cell_cm / 100`, clamped to `1 ..= SPOT_RANGE_STEP_M`.
+///
+/// At the shipped 1,000 cm cell, and every coarser one, that is the spot step,
+/// ten metres. Below it the step is the cell's own, because a run is at least
+/// one cell long and two runs may never read the same reach: at 500 cm cells a
+/// one-cell run is `5 m` and the next `10 m`, where a fixed ten would read both
+/// as `10 m`. The one size it cannot serve is 50 cm — the metre floor can merge
+/// two adjacent one-cell reaches — which `RESOLUTIONS_CM` admits and no shipped
+/// arena uses.
+#[must_use]
+pub fn brief_step_m(cell_cm: u16) -> u64 {
+    (u64::from(cell_cm) / 100).clamp(1, SPOT_RANGE_STEP_M)
+}
+
+/// **A terrain class as a brief says it** (16b cut AG.1): prose for a reader —
+/// `heavy woods`, `deep water`, `bare ground` — where the legend keeps
+/// `TerrainClass::label` (`woods_heavy`), which is a renderer's key to a glyph
+/// and not a word anyone reads aloud. This table is the one place the two
+/// vocabularies meet, and it is exhaustive: a new class fails to compile here
+/// until it is given its words.
+#[must_use]
+pub fn class_prose(class: mush_atlas::TerrainClass) -> &'static str {
+    use mush_atlas::TerrainClass;
+    match class {
+        TerrainClass::Void => "nothing",
+        TerrainClass::Paved => "paving",
+        TerrainClass::Ground => "bare ground",
+        TerrainClass::Grass => "grass",
+        TerrainClass::Water => "water",
+        TerrainClass::Floor => "floor",
+        TerrainClass::Rubble => "rubble",
+        TerrainClass::Road => "road",
+        TerrainClass::Sand => "sand",
+        TerrainClass::Rock => "rock",
+        TerrainClass::Wall => "wall",
+        TerrainClass::Door => "doorway",
+        TerrainClass::Platform => "platform",
+        TerrainClass::WoodsLight => "light woods",
+        TerrainClass::WoodsHeavy => "heavy woods",
+        TerrainClass::WaterDeep => "deep water",
+        TerrainClass::Ice => "ice",
+        TerrainClass::Regolith => "regolith",
+    }
+}
+
+/// **One run of one class along a bearing** (16b cut AG.1). `steps` is the
+/// CUMULATIVE count of steps from the pilot's cell at which the run ends, so a
+/// run's reach is [`ray_cm`] of it and the first run's reach is its length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroundRun {
+    /// The ground class of every cell in the run.
+    pub class: mush_atlas::TerrainClass,
+    /// The step from the pilot's cell at which the run ends.
+    pub steps: u32,
+}
+
+/// **What stopped a walk** (16b cut AG.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RayEnd {
+    /// The next cell is on the arena but outside the window: where the map
+    /// stops (`beyond the window`).
+    Window,
+    /// The next cell is off the arena: where the ground stops (`the edge of the
+    /// arena`).
+    Arena,
+}
+
+/// **The ground along one bearing, run by run** (16b cut AG.1).
+///
+/// From `from` — the pilot's cell, which is not described — the walk steps
+/// `step` one cell at a time (checked `i32` arithmetic, then `u16::try_from`).
+/// A cell inside the rectangle `origin.0 .. origin.0 + size.0` by
+/// `origin.1 .. origin.1 + size.1` AND on the terrain extends it: its class
+/// merges into the last run when equal, else opens a new one. The first cell
+/// that is not stops it — [`RayEnd::Arena`] when that cell is off the terrain
+/// (negative, or `terrain.get` is `None`), [`RayEnd::Window`] otherwise. A zero
+/// step walks nowhere and answers no runs and [`RayEnd::Window`]; no bearing of
+/// [`BRIEF_BEARINGS`] is one.
+///
+/// **The bounds are the clamped window's** ([`view_window`]). A pilot at the
+/// centre of a 39-by-20 window walks at most 19 cells east or west, **9 north
+/// and 10 south** (`you.dy` is 10: rows 0..=9 lie south of the pilot, 11..=19
+/// north). A pilot the clamp put at a window's edge walks the whole span — at
+/// most 38 cells straight and 19 diagonal — so a line holds at most 38 runs.
+/// And with a `view_window` payload a pilot stands on a window's edge only when
+/// that edge is the arena's: the clamp `x0 = (cx − 19).min(W − 39)` leaves `cx`
+/// on the window's east edge only at `cx = W − 1` and on its west only at
+/// `cx = 0`, and `cy` likewise, so a walk with no runs from production always
+/// ends [`RayEnd::Arena`].
+#[must_use]
+pub fn ground_ray(
+    terrain: &ArenaTerrain,
+    from: (u16, u16),
+    step: (i8, i8),
+    origin: (u16, u16),
+    size: (u16, u16),
+) -> (Vec<GroundRun>, RayEnd) {
+    let mut runs: Vec<GroundRun> = Vec::new();
+    if step == (0, 0) {
+        return (runs, RayEnd::Window);
+    }
+    let (west, south) = (i32::from(origin.0), i32::from(origin.1));
+    let east = west.saturating_add(i32::from(size.0));
+    let north = south.saturating_add(i32::from(size.1));
+    let (mut x, mut y) = (i32::from(from.0), i32::from(from.1));
+    let mut steps: u32 = 0;
+    loop {
+        let (Some(nx), Some(ny)) = (
+            x.checked_add(i32::from(step.0)),
+            y.checked_add(i32::from(step.1)),
+        ) else {
+            return (runs, RayEnd::Arena);
+        };
+        (x, y) = (nx, ny);
+        let cell = match (u16::try_from(x), u16::try_from(y)) {
+            (Ok(cx), Ok(cy)) => terrain.get(cx, cy),
+            _ => None,
+        };
+        let Some(cell) = cell else {
+            return (runs, RayEnd::Arena);
+        };
+        if x < west || x >= east || y < south || y >= north {
+            return (runs, RayEnd::Window);
+        }
+        steps = steps.saturating_add(1);
+        match runs.last_mut() {
+            Some(run) if run.class == cell.class => run.steps = steps,
+            _ => runs.push(GroundRun {
+                class: cell.class,
+                steps,
+            }),
+        }
+    }
+}
+
+/// **One bearing's sentence** (16b cut AG.1), verbatim:
+///
+/// `North: 50 m of grass, then road to 60 m, then grass to 150 m, then beyond
+/// the window.`
+///
+/// The first run states its own length, every later run the reach it ends at,
+/// each [`ray_cm`] of its cumulative steps rounded by [`range_m_rounded`] at
+/// [`brief_step_m`]; the tail is `then beyond the window.` for
+/// [`RayEnd::Window`] (where the map stops) or `then the edge of the arena.`
+/// for [`RayEnd::Arena`] (where the ground stops). With no runs at all it is
+/// `North: the edge of the arena.` — the one no-runs line a `view_window`
+/// payload can produce ([`ground_ray`]) — or `North: beyond the window.`,
+/// formatted for completeness over a synthetic rectangle and not one
+/// [`view_window`] makes.
+#[must_use]
+pub fn ground_line(
+    bearing: &str,
+    runs: &[GroundRun],
+    end: RayEnd,
+    cell_cm: u16,
+    diagonal: bool,
+) -> String {
+    use std::fmt::Write as _;
+    let step = brief_step_m(cell_cm);
+    let reach = |run: &GroundRun| range_m_rounded(ray_cm(run.steps, cell_cm, diagonal), step);
+    let tail = match end {
+        RayEnd::Window => "beyond the window.",
+        RayEnd::Arena => "the edge of the arena.",
+    };
+    let Some((first, later)) = runs.split_first() else {
+        return format!("{bearing}: {tail}");
+    };
+    let mut line = format!(
+        "{bearing}: {} m of {}",
+        reach(first),
+        class_prose(first.class)
+    );
+    for run in later {
+        // Writing to a `String` cannot fail.
+        let _ = write!(
+            line,
+            ", then {} to {} m",
+            class_prose(run.class),
+            reach(run)
+        );
+    }
+    let _ = write!(line, ", then {tail}");
+    line
+}
+
+/// **One contact as the brief says it** (16b cut AG.1), verbatim:
+///
+/// `BA, blue: bearing 045° (rel 000°), far, 450 m, 1 s old.`
+///
+/// The row's own fields and nothing else — the designator, the class word
+/// (`unknown` or the side), the bearing absolute and off the nose, the band,
+/// the range and the age in whole seconds — the very figures
+/// [`ContactRow::render`] prints for `CONTACTS`, in a sentence. No lock mark, no
+/// friendly mark, no condition, because `CONTACTS` prints none of them.
+#[must_use]
+pub fn contact_sentence(row: &ContactRow) -> String {
+    format!(
+        "{}, {}: bearing {:03}° (rel {:03}°), {}, {} m, {} s old.",
+        row.designator,
+        row.class,
+        row.bearing_deg,
+        row.relative_deg,
+        row.band,
+        row.range_m,
+        row.age_ms / 1_000
+    )
+}
+
+/// **The named spots the window shows** (16b cut AG.1), the mirror of
+/// [`off_window_spots_line`]: every authored index in `named`, in AUTHORED
+/// order (not `named`'s), each through the off-window line's own clause, joined
+/// by `; `:
+///
+/// `In the window: A The Ford, 190 m at 093°.`
+///
+/// `named` is the spots the window's LEGEND names — `view_window`'s owner rule,
+/// the letters a line client prints as `legend: … A The Ford` — and not every
+/// drawn spot: a spot drawn and then covered by a contact or the `@` is named
+/// in no legend, so the brief does not name it either (the brief says nothing
+/// the grid's legend does not; 16b cut AG.1's Q-AG2 default). Such a spot
+/// still reaches the pilot through `STATUS`'s nearest-spot line and
+/// `RANGE <spot>`. `None` when nothing is named.
+#[must_use]
+pub fn in_window_spots_line(
+    spots: &[KeySpot],
+    named: &[usize],
+    pose: &mush_sim::data::Pose,
+    cell_cm: u16,
+) -> Option<String> {
+    let parts: Vec<String> = spots
+        .iter()
+        .zip(SPOT_LETTERS)
+        .enumerate()
+        .filter(|(index, _)| named.contains(index))
+        .map(|(_, (spot, letter))| spot_clause(letter, spot, pose, cell_cm))
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!("In the window: {}.", parts.join("; ")))
+}
+
+/// **Where the window is, in one sentence** (16b cut AG.1), verbatim:
+///
+/// `Window around RA: cells 0 to 38 east and 0 to 19 north of 96 by 64; you at
+/// (6, 4), heading 045°; 10 m a cell.`
+///
+/// Read off the payload [`view_window`] wrote, never recomputed: `origin_cell`
+/// is the window's corner, `width` and `height` its size (the far cell is
+/// `corner + size − 1`, saturating), `extent` the arena's size, `origin_cell +
+/// you` the pilot's own cell, `cell_cm / 100` the metres a cell. These are the
+/// grid footer's facts (`mush_ansi::panel`'s `grid_lines`) in words on a
+/// terminal of at least 80 by 24; below that the line client clips the grid
+/// and prints the clipped viewport's footer, and the payload — so this
+/// header — is unclipped. The callsign and the heading are the frame's two
+/// facts, taken as primitives so a test can pin the sentence without a frame.
+/// A missing key reads as `0`; never a panic.
+#[must_use]
+pub fn brief_header(callsign: &str, heading_mdeg: u32, window: &serde_json::Value) -> String {
+    let (x0, y0) = window_pair(window, "origin_cell");
+    let (dx, dy) = window_pair(window, "you");
+    let (arena_w, arena_h) = window_pair(window, "extent");
+    let width = window_number(window, "width");
+    let height = window_number(window, "height");
+    let metres = window_number(window, "cell_cm") / 100;
+    format!(
+        "Window around {callsign}: cells {x0} to {} east and {y0} to {} north of {arena_w} by \
+         {arena_h}; you at ({}, {}), heading {:03}°; {metres} m a cell.",
+        x0.saturating_add(width).saturating_sub(1),
+        y0.saturating_add(height).saturating_sub(1),
+        x0.saturating_add(dx),
+        y0.saturating_add(dy),
+        heading_mdeg / 1_000
+    )
+}
+
+/// One whole-number key of a window payload, `0` when it is missing.
+fn window_number(window: &serde_json::Value, key: &str) -> u64 {
+    window
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
+}
+
+/// One `[a, b]` pair of a window payload, each `0` when missing.
+fn window_pair(window: &serde_json::Value, key: &str) -> (u64, u64) {
+    let pair = window.get(key).and_then(serde_json::Value::as_array);
+    let at = |n: usize| {
+        pair.and_then(|pair| pair.get(n))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    };
+    (at(0), at(1))
+}
+
+/// **The whole brief** (16b cut AG.1; 16c N17): the payload `VIEW` would push
+/// now, said as sentences, in this order —
+///
+/// 1. [`brief_header`];
+/// 2. the eight [`ground_line`]s over [`BRIEF_BEARINGS`], walked by
+///    [`ground_ray`] from the payload's own `origin_cell + you` — the cell the
+///    grid draws the `@` on, never `terrain.cell_of(&frame.pose)`, which is
+///    [`view_window`]'s business — to the payload's own `origin_cell`, `width`
+///    and `height`, a bearing diagonal when both its steps are non-zero;
+/// 3. one [`contact_sentence`] per row of [`frame_contacts_held`] in frame
+///    order, or `No contacts.` when there are none;
+/// 4. [`beyond_window_line`], when it says anything;
+/// 5. [`in_window_spots_line`] over the spots the payload's legend names;
+/// 6. [`off_window_spots_line`] over the spots the payload DREW, as `VIEW`
+///    reads it — so a covered spot is in neither spot line, as it is in
+///    neither of `VIEW`'s.
+///
+/// **Nothing else, ever.** The brief describes the payload's own rectangle
+/// from the payload's own `@`, names the legend's own spots, and says nothing
+/// the grid would not draw or name; the ground under a marker is surveyed
+/// ground the pulled `arena.map` carries, said where the grid draws the glyph.
+/// Every sentence is a function of the pilot's own frame, the surveyed ground
+/// and the payload, itself a pure function of those two — the observer rule
+/// (doc 16 §1) by construction. A payload missing a key reads it as `0` and
+/// lets the walk answer; the shape test in `VIEW` refuses such a payload
+/// before it gets here.
+///
+/// **Length**: at most `12 + C` lines for `C` contacts — one header, eight
+/// bearings, `max(C, 1)` contact lines, and at most one each of the beyond,
+/// in-window and off-window lines; twelve at `C = 0`. A platform holds at most
+/// one contact per other unit, so the centre's six a side bounds a brief at 23
+/// lines and 23 `Sys` events. **Width**: none. A brief is `Sys` prose that each
+/// renderer wraps at its own width; Q-I1's 78-column budget is the grid's, and
+/// nothing here is laid out to it. The longest line — 38 alternating one-cell
+/// runs from a window's edge — is about 800 characters and wraps as prose.
+#[must_use]
+pub fn brief_lines(
+    frame: &Frame,
+    terrain: &ArenaTerrain,
+    spots: &[KeySpot],
+    window: &serde_json::Value,
+    ranges: &BTreeMap<ContactId, u64>,
+) -> Vec<String> {
+    let cell_cm = terrain.cell_cm();
+    let cells = |value: u64| u16::try_from(value).unwrap_or(u16::MAX);
+    let (x0, y0) = window_pair(window, "origin_cell");
+    let (dx, dy) = window_pair(window, "you");
+    let origin = (cells(x0), cells(y0));
+    let size = (
+        cells(window_number(window, "width")),
+        cells(window_number(window, "height")),
+    );
+    let you = (cells(x0.saturating_add(dx)), cells(y0.saturating_add(dy)));
+    let mut lines = vec![brief_header(
+        &frame.callsign.to_string(),
+        frame.pose.heading_mdeg,
+        window,
+    )];
+    for (bearing, step_x, step_y) in BRIEF_BEARINGS {
+        let (runs, end) = ground_ray(terrain, you, (step_x, step_y), origin, size);
+        lines.push(ground_line(
+            bearing,
+            &runs,
+            end,
+            cell_cm,
+            step_x != 0 && step_y != 0,
+        ));
+    }
+    let rows = frame_contacts_held(frame, ranges);
+    if rows.is_empty() {
+        lines.push(NO_CONTACTS_LINE.to_owned());
+    }
+    lines.extend(rows.iter().map(contact_sentence));
+    lines.extend(beyond_window_line(frame, window));
+    lines.extend(in_window_spots_line(
+        spots,
+        &named_spots(window),
+        &frame.pose,
+        cell_cm,
+    ));
+    lines.extend(off_window_spots_line(
+        spots,
+        &drawn_spots(window),
+        &frame.pose,
+        cell_cm,
+    ));
+    lines
 }
 
 /// **The spot markers a window carries, the legend entries they would earn, and
@@ -3704,6 +4149,42 @@ pub fn spot_markers(
 /// off-window line counts the drawing's own spots and cannot drift from it, the
 /// way [`beyond_window_line`] counts its contacts.
 fn drawn_spots(window: &serde_json::Value) -> Vec<usize> {
+    spot_marker_walk(window)
+        .into_iter()
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// **The spots a composed window NAMED** (16b cut AG.1): [`drawn_spots`]' walk
+/// with one more filter — the markers whose `[id, name]` pair is an entry of the
+/// payload's `legend`, which is exactly the spots [`view_window`]'s owner rule
+/// named and a line client prints as `legend: … A The Ford`. A spot drawn and
+/// then covered by a later marker is in [`drawn_spots`] and NOT here.
+///
+/// The answer is **authored indexes**, by the marker's letter, never a marker's
+/// position in `units`: [`spot_markers`] pushes only the in-window spots, so
+/// near The Crossroads on the shipped ground `B` is `units[0]` and authored
+/// index 1.
+fn named_spots(window: &serde_json::Value) -> Vec<usize> {
+    let legend = window
+        .get("legend")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    spot_marker_walk(window)
+        .into_iter()
+        .filter(|(_, marker)| match (marker.get("id"), marker.get("name")) {
+            (Some(id), Some(name)) => legend.contains(&serde_json::json!([id, name])),
+            _ => false,
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// The one walk [`drawn_spots`] and [`named_spots`] share: every `spot: true`
+/// marker of a window's `units`, with the authored index its letter maps to
+/// through [`SPOT_LETTERS`]; a marker whose `id` is no spot letter is skipped.
+fn spot_marker_walk(window: &serde_json::Value) -> Vec<(usize, &serde_json::Value)> {
     window
         .get("units")
         .and_then(serde_json::Value::as_array)
@@ -3717,7 +4198,8 @@ fn drawn_spots(window: &serde_json::Value) -> Vec<usize> {
                         .and_then(serde_json::Value::as_str)?
                         .chars()
                         .next()?;
-                    SPOT_LETTERS.iter().position(|held| *held == letter)
+                    let index = SPOT_LETTERS.iter().position(|held| *held == letter)?;
+                    Some((index, unit))
                 })
                 .collect()
         })
@@ -3796,6 +4278,10 @@ fn fire(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> 
     Ok(())
 }
 
+/// What `CONTACTS` says of an empty scope — and, since 16b cut AG.1, what
+/// `VIEW BRIEF` says in its contacts' place: one string for both.
+const NO_CONTACTS_LINE: &str = "No contacts.";
+
 /// `CONTACTS` — what the platform holds (doc 16 §3.6 "What a pilot sees").
 fn contacts(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
     let held = last_frame(ctx.w, seat.driver);
@@ -3807,7 +4293,7 @@ fn contacts(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
         .unwrap_or_default();
     let mut lines: Vec<String> = Vec::new();
     if rows.is_empty() {
-        lines.push("No contacts.".to_owned());
+        lines.push(NO_CONTACTS_LINE.to_owned());
     }
     for row in &rows {
         lines.push(row.render());
@@ -4028,22 +4514,51 @@ pub fn section_lines(sections: &[crate::arena::step::FrameSection]) -> Vec<Strin
     lines
 }
 
+/// **What `VIEW` says to any second word but `BRIEF`** (16b cut AG.1): syntax
+/// first, in the voice of `SPEED <kph>; a negative speed reverses.`, and the
+/// same bytes for every word — a slot designator of a tank out there, a
+/// provisional number, a word naming nothing, sixteen digits — so the refusal
+/// is never an echo and never tells one word from another.
+pub const VIEW_USAGE: &str = "VIEW [BRIEF]; BRIEF says the window in sentences.";
+
+/// `VIEW` (either arm) with no frame held yet. A `const` since 16b cut AG.1,
+/// beside its twin below, so both arms say the one string.
+const WINDOW_DARK_UNTOLD: &str = "The window is dark: the panel has told you nothing yet.";
+
+/// `VIEW` (either arm) with a frame held but no grid to draw (16b cut B.4,
+/// `B-23`). A `const` since 16b cut AG.1, whose brief arm also says it when the
+/// ground has gone between the payload's read and the walk's.
+const WINDOW_DARK_NO_GROUND: &str =
+    "The window is dark: there is no ground under the panel to draw.";
+
 /// `VIEW` — the arena window, as the grid frame (doc 16 §3.6, §5).
 ///
 /// **16b cut Q.3**: the panel goes first and the one line that may follow it
 /// comes after, because the line is *about* the map the pilot has just been
 /// shown ([`beyond_window_line`]). **16b cut V.1** added a second such line,
 /// after the first: the named spots off the window ([`off_window_spots_line`]).
-fn view(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
+///
+/// **16b cut AG.1** (16c N17) gave it one second word. `rest` empty is the map,
+/// byte for byte as before; `BRIEF` (case-folded) is the same window said in
+/// sentences ([`brief_lines`]) — built off the very payload the map would push,
+/// and then NOT pushed: the brief goes through [`say_and_frame`] as `CONTACTS`
+/// does, so the one grid a pilot is sent is still the one a bare `VIEW` sends
+/// (16b cut Q.3's rule). Any other word is [`VIEW_USAGE`], the same bytes for
+/// every word and never an echo of it, so `VIEW BA` says nothing `VIEW ZZ` does
+/// not. The two dark-window lines are shared by both arms: the shape test runs
+/// before they diverge.
+fn view(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
+    let brief = match rest.trim() {
+        "" => false,
+        word if word.eq_ignore_ascii_case("brief") => true,
+        _ => return Err(CockpitError::Usage(VIEW_USAGE.to_owned())),
+    };
     let actor = ctx.actor;
     // The map is the frame's; a line client's renderer draws it. Nothing is said
     // twice.
     let Some(held) = last_frame(ctx.w, seat.driver) else {
-        ctx.out.sys_to_actor(
-            actor,
-            NOTICE_CATEGORY,
-            "The window is dark: the panel has told you nothing yet.",
-        );
+        ctx.out
+            .sys_to_actor(actor, NOTICE_CATEGORY, WINDOW_DARK_UNTOLD);
         return Ok(());
     };
     let payload = view_frame_held(ctx, held.match_id, &held.frame, &held.ranges);
@@ -4059,11 +4574,34 @@ fn view(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
         .and_then(serde_json::Value::as_str)
         != Some("grid")
     {
-        ctx.out.sys_to_actor(
-            actor,
-            NOTICE_CATEGORY,
-            "The window is dark: there is no ground under the panel to draw.",
-        );
+        ctx.out
+            .sys_to_actor(actor, NOTICE_CATEGORY, WINDOW_DARK_NO_GROUND);
+        return Ok(());
+    }
+    if brief {
+        // **16b cut AG.1**: the ground `view_frame_held` just read, read again
+        // for the walk. A ground gone between the two reads is the dark window
+        // above, never a panic.
+        let lines = ctx
+            .w
+            .module_state::<ArenaRegistry>()
+            .and_then(|registry| registry.arena_of(held.match_id))
+            .map(|ground| {
+                brief_lines(
+                    &held.frame,
+                    &ground.terrain,
+                    &ground.key_spots,
+                    &payload,
+                    &held.ranges,
+                )
+            });
+        let Some(lines) = lines else {
+            ctx.out
+                .sys_to_actor(actor, NOTICE_CATEGORY, WINDOW_DARK_NO_GROUND);
+            return Ok(());
+        };
+        // The lines, then the status keyframe re-pushed — never the grid.
+        say_and_frame(ctx, Some(&held), lines);
         return Ok(());
     }
     let beyond = beyond_window_line(&held.frame, &payload);
@@ -6334,7 +6872,8 @@ fn cockpit_command(ctx: &mut Ctx<'_>, verb: &'static str) -> Result<(), CmdError
         "startup" => startup(ctx, &seat),
         "heading" => heading(ctx, &seat, &rest),
         "speed" => speed(ctx, &seat, &rest),
-        "view" => view(ctx, &seat),
+        // 16b cut AG.1: and its one second word, `BRIEF`.
+        "view" => view(ctx, &seat, &rest),
         "contacts" => contacts(ctx, &seat),
         "lock" => lock(ctx, &seat, &rest),
         "fire" => fire(ctx, &seat, &rest),
@@ -6370,7 +6909,10 @@ fn cockpit_help(verb: &str) -> String {
         "speed" => "SPEED <kph>         make way at that speed; a negative speed reverses. \
                     Refused until power is online."
             .to_owned(),
-        "view" => "VIEW                the arena window around your platform, as a map.".to_owned(),
+        // 16b cut AG.1: and the same window in sentences, the help's own row.
+        "view" => "VIEW [BRIEF]        the arena window around your platform, as a map; BRIEF \
+                   says the same window in sentences."
+            .to_owned(),
         // 16b cut Q.1: the id is a designator now, and the help says so — a pilot
         // who reads `opaque id` will go looking for sixteen digits that are not
         // printed anywhere.
@@ -7725,6 +8267,501 @@ mod tests {
                 .as_deref(),
             Some("Off the window: B North Gate, 10 m at 090°.")
         );
+    }
+
+    // -- 16b cut AG.1: `VIEW BRIEF`, the window in sentences --------------------
+    //
+    // Pure pins over hand-painted ground: none of these builds a `Frame` (it
+    // derives `Clone` and `Debug` only and this module has no builder), so every
+    // test that needs one lives in `tests/cockpit.rs` over `fixture::frame()`.
+
+    /// One cell of `class`, passable, at the datum.
+    fn ag1_cell(class: mush_atlas::TerrainClass) -> crate::arena::state::TerrainCell {
+        crate::arena::state::TerrainCell {
+            class,
+            elev_cm: 0,
+            move_cost: 100,
+        }
+    }
+
+    /// A one-row yard, `width` cells at `cell_cm`, road on even columns and grass
+    /// on odd — so no two neighbouring cells merge into one run.
+    fn ag1_striped(width: u16, cell_cm: u16) -> ArenaTerrain {
+        let cells = (0..width)
+            .map(|x| {
+                ag1_cell(if x % 2 == 0 {
+                    mush_atlas::TerrainClass::Road
+                } else {
+                    mush_atlas::TerrainClass::Grass
+                })
+            })
+            .collect();
+        ArenaTerrain::new(width, 1, cell_cm, cells).expect("a one-row yard")
+    }
+
+    /// The fixture yard's shape, re-stated (a test binary's `support::yard`
+    /// cannot be imported here): 96 by 64 of grass at 1,000 cm, a road along
+    /// y = 10, water x 20..=29 by y 2..=5, a wall block x 12..=15 by y 6..=8,
+    /// light woods x 40..=59 by y 20..=29.
+    fn ag1_yard() -> ArenaTerrain {
+        use mush_atlas::TerrainClass;
+        let (width, height) = (96_u16, 64_u16);
+        let mut cells =
+            vec![ag1_cell(TerrainClass::Grass); usize::from(width) * usize::from(height)];
+        let mut paint = |xs: std::ops::Range<u16>, ys: std::ops::Range<u16>, class| {
+            for y in ys {
+                for x in xs.clone() {
+                    cells[usize::from(y) * usize::from(width) + usize::from(x)] = ag1_cell(class);
+                }
+            }
+        };
+        paint(0..96, 10..11, TerrainClass::Road);
+        paint(20..30, 2..6, TerrainClass::Water);
+        paint(12..16, 6..9, TerrainClass::Wall);
+        paint(40..60, 20..30, TerrainClass::WoodsLight);
+        ArenaTerrain::new(width, height, 1_000, cells).expect("the fixture yard's shape")
+    }
+
+    /// The eight sentences a pilot at `from` says of `terrain`'s window.
+    fn ag1_sentences(
+        terrain: &ArenaTerrain,
+        from: (u16, u16),
+        origin: (u16, u16),
+        size: (u16, u16),
+    ) -> Vec<(String, RayEnd)> {
+        BRIEF_BEARINGS
+            .iter()
+            .map(|(bearing, dx, dy)| {
+                let (runs, end) = ground_ray(terrain, from, (*dx, *dy), origin, size);
+                let line =
+                    ground_line(bearing, &runs, end, terrain.cell_cm(), *dx != 0 && *dy != 0);
+                (line, end)
+            })
+            .collect()
+    }
+
+    /// **The class words** (16b cut AG.1): every class has a prose word, and
+    /// none is a label's snake case. The exhaustive match is the compile-time
+    /// guard for a new class; this is the run-time one for an empty word.
+    #[test]
+    fn ag1_class_prose_covers_every_class_with_a_prose_word() {
+        for class in mush_atlas::TerrainClass::ALL {
+            let word = class_prose(class);
+            assert!(!word.trim().is_empty(), "{class:?} has no word");
+            assert!(!word.contains('_'), "{class:?} reads as a label: {word}");
+        }
+        assert_eq!(
+            class_prose(mush_atlas::TerrainClass::WoodsHeavy),
+            "heavy woods"
+        );
+        assert_eq!(
+            class_prose(mush_atlas::TerrainClass::WaterDeep),
+            "deep water"
+        );
+        assert_eq!(class_prose(mush_atlas::TerrainClass::Ground), "bare ground");
+        assert_eq!(class_prose(mush_atlas::TerrainClass::Door), "doorway");
+    }
+
+    /// **Cells to centimetres** (16b cut AG.1): `steps × cell_cm` straight, and
+    /// root two to three places on a diagonal, rounded at the brief's step.
+    #[test]
+    fn ag1_ray_cm_is_cells_at_the_cell_size_and_root_two_on_a_diagonal() {
+        let step = brief_step_m(1_000);
+        let straight: Vec<(u64, u64)> = [4, 5, 6, 15, 19]
+            .into_iter()
+            .map(|k| {
+                let cm = ray_cm(k, 1_000, false);
+                (cm, range_m_rounded(cm, step))
+            })
+            .collect();
+        assert_eq!(
+            straight,
+            vec![
+                (4_000, 40),
+                (5_000, 50),
+                (6_000, 60),
+                (15_000, 150),
+                (19_000, 190)
+            ]
+        );
+        let diagonal: Vec<(u64, u64)> = [4, 5, 6, 15, 19]
+            .into_iter()
+            .map(|k| {
+                let cm = ray_cm(k, 1_000, true);
+                (cm, range_m_rounded(cm, step))
+            })
+            .collect();
+        assert_eq!(
+            diagonal,
+            vec![
+                (5_656, 60),
+                (7_070, 70),
+                (8_484, 80),
+                (21_210, 210),
+                (26_866, 270)
+            ]
+        );
+        assert_eq!(ray_cm(0, 1_000, true), 0);
+        assert_eq!(
+            ray_cm(u32::MAX, u16::MAX, true),
+            u64::from(u32::MAX) * u64::from(u16::MAX) * 1_414 / 1_000
+        );
+    }
+
+    /// **The brief's step** (16b cut AG.1): the spot step at the shipped cell
+    /// and every coarser one, and no coarser than a cell below it — so at 500 cm
+    /// nineteen one-cell runs read nineteen different reaches.
+    #[test]
+    fn ag1_the_brief_step_is_the_spot_step_and_no_coarser_than_a_cell() {
+        let steps: Vec<u64> = [50, 100, 200, 500, 1_000, 2_500]
+            .into_iter()
+            .map(brief_step_m)
+            .collect();
+        assert_eq!(steps, vec![1, 1, 2, 5, 10, 10]);
+        let yard = ag1_striped(60, 500);
+        let (runs, end) = ground_ray(&yard, (19, 0), (1, 0), (0, 0), (39, 1));
+        assert_eq!(end, RayEnd::Window, "(39, 0) is on the arena");
+        let reaches: Vec<u64> = runs
+            .iter()
+            .map(|run| range_m_rounded(ray_cm(run.steps, 500, false), brief_step_m(500)))
+            .collect();
+        assert_eq!(reaches, (1..=19).map(|k| k * 5).collect::<Vec<u64>>());
+        assert!(
+            reaches.windows(2).all(|pair| pair[0] < pair[1]),
+            "every reach strictly past the last: {reaches:?}"
+        );
+    }
+
+    /// **One class is one run, to the window on every side** (16b cut AG.1): a
+    /// 60-by-40 grass yard and the window `view_window` computes for a pilot at
+    /// (29, 20) — origin (10, 10), 39 by 20 — which ends inside the arena every
+    /// way. Nine cells north, ten south (`you.dy` is 10), nineteen east and
+    /// west; nine diagonal steps are 12,726 cm (`130 m`), ten 14,140 (`140 m`).
+    #[test]
+    fn ag1_a_ray_over_one_class_is_one_run_to_the_window() {
+        let yard = ArenaTerrain::uniform(60, 40, 1_000, ag1_cell(mush_atlas::TerrainClass::Grass))
+            .expect("a uniform yard");
+        let said = ag1_sentences(&yard, (29, 20), (10, 10), (39, 20));
+        let lines: Vec<&str> = said.iter().map(|(line, _)| line.as_str()).collect();
+        assert_eq!(
+            lines,
+            vec![
+                "North: 90 m of grass, then beyond the window.",
+                "North-east: 130 m of grass, then beyond the window.",
+                "East: 190 m of grass, then beyond the window.",
+                "South-east: 140 m of grass, then beyond the window.",
+                "South: 100 m of grass, then beyond the window.",
+                "South-west: 140 m of grass, then beyond the window.",
+                "West: 190 m of grass, then beyond the window.",
+                "North-west: 130 m of grass, then beyond the window.",
+            ]
+        );
+        assert!(said.iter().all(|(_, end)| *end == RayEnd::Window));
+        let (runs, _) = ground_ray(&yard, (29, 20), (1, 1), (10, 10), (39, 20));
+        assert_eq!(
+            runs,
+            vec![GroundRun {
+                class: mush_atlas::TerrainClass::Grass,
+                steps: 9
+            }]
+        );
+    }
+
+    /// **Alternating classes merge nothing** (16b cut AG.1): nineteen one-cell
+    /// runs east, reaches 10 to 190 m, eighteen joins and the tail — nineteen
+    /// `then`s.
+    #[test]
+    fn ag1_a_ray_over_alternating_classes_merges_nothing() {
+        let yard = ag1_striped(60, 1_000);
+        let (runs, end) = ground_ray(&yard, (19, 0), (1, 0), (0, 0), (39, 1));
+        assert_eq!(runs.len(), 19, "cells 20..=38, one run each");
+        assert_eq!(end, RayEnd::Window, "(39, 0) is on the arena");
+        assert_eq!(
+            runs.iter().map(|run| run.steps).collect::<Vec<u32>>(),
+            (1..=19).collect::<Vec<u32>>()
+        );
+        let line = ground_line("East", &runs, end, 1_000, false);
+        assert!(
+            line.starts_with("East: 10 m of road, then grass to 20 m, then road to 30 m"),
+            "{line}"
+        );
+        assert!(
+            line.ends_with(", then road to 190 m, then beyond the window."),
+            "{line}"
+        );
+        assert_eq!(line.matches("then").count(), 19, "{line}");
+    }
+
+    /// **The arena's edge is said as the edge** (16b cut AG.1): the fixture
+    /// yard, the pilot at (6, 4) and the clamped window (0, 0), 39 by 20 — the
+    /// eight sentences of the fixture's golden, verbatim.
+    #[test]
+    fn ag1_a_ray_at_the_arena_edge_says_the_edge() {
+        let said = ag1_sentences(&ag1_yard(), (6, 4), (0, 0), (39, 20));
+        let lines: Vec<&str> = said.iter().map(|(line, _)| line.as_str()).collect();
+        assert_eq!(
+            lines,
+            vec![
+                "North: 50 m of grass, then road to 60 m, then grass to 150 m, then beyond the window.",
+                "North-east: 70 m of grass, then road to 80 m, then grass to 210 m, then beyond the \
+                 window.",
+                "East: 130 m of grass, then water to 230 m, then grass to 320 m, then beyond the \
+                 window.",
+                "South-east: 60 m of grass, then the edge of the arena.",
+                "South: 40 m of grass, then the edge of the arena.",
+                "South-west: 60 m of grass, then the edge of the arena.",
+                "West: 60 m of grass, then the edge of the arena.",
+                "North-west: 70 m of grass, then road to 80 m, then the edge of the arena.",
+            ]
+        );
+        let ends: Vec<RayEnd> = said.iter().map(|(_, end)| *end).collect();
+        assert_eq!(
+            ends,
+            vec![
+                RayEnd::Window,
+                RayEnd::Window,
+                RayEnd::Window,
+                RayEnd::Arena,
+                RayEnd::Arena,
+                RayEnd::Arena,
+                RayEnd::Arena,
+                RayEnd::Arena,
+            ]
+        );
+    }
+
+    /// **A pilot on the window's last cell says only the tail** (16b cut AG.1):
+    /// at (0, 0) of a window at (0, 0) — the one case production makes — west
+    /// and south are `the edge of the arena`. Then, a SYNTHETIC rectangle
+    /// `view_window` never produces (a pilot on a window edge that is not the
+    /// arena's): the north-east corner of a window inside a larger arena says
+    /// `beyond the window` with no run.
+    #[test]
+    fn ag1_a_pilot_on_the_window_s_last_cell_says_only_the_tail() {
+        let yard = ag1_yard();
+        let said = ag1_sentences(&yard, (0, 0), (0, 0), (39, 20));
+        let at = |bearing: &str| {
+            said.iter()
+                .map(|(line, _)| line.as_str())
+                .find(|line| line.starts_with(&format!("{bearing}:")))
+                .map(str::to_owned)
+        };
+        assert_eq!(at("West").as_deref(), Some("West: the edge of the arena."));
+        assert_eq!(
+            at("South").as_deref(),
+            Some("South: the edge of the arena.")
+        );
+        assert_eq!(
+            at("South-west").as_deref(),
+            Some("South-west: the edge of the arena.")
+        );
+        // Synthetic: view_window's clamp never leaves a pilot here.
+        let wide = ArenaTerrain::uniform(60, 40, 1_000, ag1_cell(mush_atlas::TerrainClass::Grass))
+            .expect("a uniform yard");
+        let corner = ag1_sentences(&wide, (48, 29), (10, 10), (39, 20));
+        let lines: Vec<&str> = corner.iter().map(|(line, _)| line.as_str()).collect();
+        assert_eq!(lines.first().copied(), Some("North: beyond the window."));
+        assert_eq!(
+            lines.get(1).copied(),
+            Some("North-east: beyond the window.")
+        );
+        assert_eq!(lines.get(2).copied(), Some("East: beyond the window."));
+    }
+
+    /// **A contact sentence is the row's own fields** (16b cut AG.1): the four
+    /// fixture contacts, with a friendly mark and an alias on two of them to
+    /// show that neither prints.
+    #[test]
+    fn ag1_the_contact_sentence_is_the_row_s_own_fields() {
+        use crate::arena::state::Team;
+        let row = |id: u64,
+                   designator: Designator,
+                   alias: Option<u16>,
+                   class: &str,
+                   (bearing_deg, relative_deg): (u32, u32),
+                   band: &str,
+                   range_m: u64,
+                   age_ms: i64,
+                   friendly: bool| ContactRow {
+            id: ContactId(id),
+            designator,
+            alias,
+            class: SmolStr::new(class),
+            bearing_deg,
+            relative_deg,
+            band: SmolStr::new(band),
+            range_m,
+            age_ms,
+            cell: None,
+            friendly,
+        };
+        let rows = [
+            row(
+                1,
+                Designator::Slot {
+                    team: Team::Blue,
+                    slot: 1,
+                },
+                Some(1),
+                "blue",
+                (45, 0),
+                "far",
+                450,
+                1_200,
+                false,
+            ),
+            row(
+                2,
+                Designator::Slot {
+                    team: Team::Red,
+                    slot: 2,
+                },
+                None,
+                "red",
+                (270, 225),
+                "close",
+                100,
+                400,
+                true,
+            ),
+            row(
+                3,
+                Designator::Provisional(3),
+                None,
+                "unknown",
+                (315, 270),
+                "effective",
+                200,
+                3_500,
+                false,
+            ),
+            row(
+                4,
+                Designator::Provisional(4),
+                None,
+                "unknown",
+                (30, 345),
+                "far",
+                600,
+                6_000,
+                false,
+            ),
+        ];
+        let said: Vec<String> = rows.iter().map(contact_sentence).collect();
+        assert_eq!(
+            said,
+            vec![
+                "BA, blue: bearing 045° (rel 000°), far, 450 m, 1 s old.",
+                "RB, red: bearing 270° (rel 225°), close, 100 m, 0 s old.",
+                "X3, unknown: bearing 315° (rel 270°), effective, 200 m, 3 s old.",
+                "X4, unknown: bearing 030° (rel 345°), far, 600 m, 6 s old.",
+            ]
+        );
+    }
+
+    /// **The in-window line names the named spots, in authored order** (16b cut
+    /// AG.1), with `spot_clause`'s figures: A The Ford from (6, 4) is 190 m at
+    /// 093°; B The Roof at (14, 7) is dx 8,000, dy 3,000, `isqrt` 8,544 cm (90 m
+    /// to the ten) at `atan2(8, 3)` = 69.4°, so 069°.
+    #[test]
+    fn ag1_in_window_spots_line_names_the_named_spots_in_authored_order() {
+        let pose = pose_on(6, 4, 45_000);
+        let spots = vec![
+            spot("The Ford", 25, 3),
+            spot("The Roof", 14, 7),
+            spot("The Woods", 50, 25),
+        ];
+        assert_eq!(in_window_spots_line(&spots, &[], &pose, 1_000), None);
+        assert_eq!(
+            in_window_spots_line(&spots, &[0], &pose, 1_000).as_deref(),
+            Some("In the window: A The Ford, 190 m at 093°.")
+        );
+        assert_eq!(
+            in_window_spots_line(&spots, &[1], &pose, 1_000).as_deref(),
+            Some("In the window: B The Roof, 90 m at 069°."),
+            "a named spot that is not authored index 0"
+        );
+        let both = Some("In the window: A The Ford, 190 m at 093°; B The Roof, 90 m at 069°.");
+        assert_eq!(
+            in_window_spots_line(&spots, &[0, 1], &pose, 1_000).as_deref(),
+            both
+        );
+        assert_eq!(
+            in_window_spots_line(&spots, &[1, 0], &pose, 1_000).as_deref(),
+            both,
+            "authored order, not the order of `named`"
+        );
+        assert_eq!(in_window_spots_line(&[], &[0], &pose, 1_000), None);
+    }
+
+    /// **The header is the footer's facts** (16b cut AG.1), read off the
+    /// payload: the fixture's window, and the one `view_window` produces for a
+    /// pilot at (76, 97) on the shipped 256-by-256 ground (`y0 = 97 − 10`).
+    #[test]
+    fn ag1_the_header_reads_the_footer_s_facts() {
+        let fixture = serde_json::json!({
+            "origin_cell": [0, 0],
+            "width": 39,
+            "height": 20,
+            "extent": [96, 64],
+            "you": [6, 4],
+            "cell_cm": 1000,
+        });
+        assert_eq!(
+            brief_header("RA", 45_000, &fixture),
+            "Window around RA: cells 0 to 38 east and 0 to 19 north of 96 by 64; you at (6, 4), \
+             heading 045°; 10 m a cell."
+        );
+        let shipped = serde_json::json!({
+            "origin_cell": [57, 87],
+            "width": 39,
+            "height": 20,
+            "extent": [256, 256],
+            "you": [19, 10],
+            "cell_cm": 1000,
+        });
+        assert_eq!(
+            brief_header("RA", 270_000, &shipped),
+            "Window around RA: cells 57 to 95 east and 87 to 106 north of 256 by 256; you at \
+             (76, 97), heading 270°; 10 m a cell."
+        );
+        // A payload with no keys at all reads as nought, and does not panic.
+        assert_eq!(
+            brief_header("RA", 0, &serde_json::json!({})),
+            "Window around RA: cells 0 to 0 east and 0 to 0 north of 0 by 0; you at (0, 0), \
+             heading 000°; 0 m a cell."
+        );
+    }
+
+    /// **`named_spots` is the legend's spots, in authored indexes** (16b cut
+    /// AG.1): a drawn-and-covered spot is drawn and not named; and with A off
+    /// the window, `B` is `units[0]` and authored index 1 — the case that tells
+    /// an authored index from a position in `units`.
+    #[test]
+    fn ag1_named_spots_are_the_legend_s_in_authored_indexes() {
+        let window = serde_json::json!({
+            "units": [
+                { "id": "A", "name": "The Ford", "cell": [25, 3], "glyph": "A", "you": false, "spot": true },
+                { "id": "B", "name": "The Roof", "cell": [14, 7], "glyph": "B", "you": false, "spot": true },
+                { "id": "#101", "cell": [6, 4], "glyph": "@", "you": true },
+                { "id": "X3", "name": "unknown", "cell": [14, 7], "glyph": "?", "you": false },
+            ],
+            "legend": [[".", "grass"], ["@", "you"], ["?", "unknown"], ["A", "The Ford"]],
+        });
+        assert_eq!(drawn_spots(&window), vec![0, 1]);
+        assert_eq!(named_spots(&window), vec![0]);
+        let crossroads = serde_json::json!({
+            "units": [
+                { "id": "B", "name": "The Roof", "cell": [3, 4], "glyph": "B", "you": false, "spot": true },
+                { "id": "C", "name": "The Woods", "cell": [9, 9], "glyph": "C", "you": false, "spot": true },
+                { "id": "#101", "cell": [19, 10], "glyph": "@", "you": true },
+                { "id": "X1", "name": "unknown", "cell": [3, 4], "glyph": "?", "you": false },
+            ],
+            "legend": [["@", "you"], ["?", "unknown"], ["C", "The Woods"]],
+        });
+        assert_eq!(drawn_spots(&crossroads), vec![1, 2]);
+        assert_eq!(named_spots(&crossroads), vec![2]);
+        assert!(named_spots(&serde_json::json!({})).is_empty());
     }
 
     // -----------------------------------------------------------------------

@@ -12,6 +12,7 @@ not parity — so there is exactly one set here, and no copies to drift. Rust
 | `arena_map.json` | the whole arena's terrain, feed `arena.map`, pulled and never pushed; since 16b cut V.1 it carries the ground's named `spots` (`{ letter, name, cell }`, authored order, arena cells) after `legend` | `tacsim::match_::cockpit::map_frame` |
 | `view_frame.json` | the 39×20-cell window `VIEW` sends, the two composed server-side, with `cell_columns: 2`, `origin_cell` and `extent` (16b cut B.4); since 16b cut V.1 its `units` open with the spot markers (`spot: true`) and its `legend` ends with `["A", "The Ford"]`; since 16b cut O.2 it carries `"ecm": null` with the rest of the status keys | `tacsim::match_::cockpit::view_window` |
 | `view_grid.txt` | the twenty map rows a line client prints of it, north-up, ONE glyph per cell (39 by 20; the line client prints each cell twice); the spot `A` is the letter at row 3 from the south, column 25, over the pond | `mush_ansi::panel::grid_lines` |
+| `view_brief.txt` | the sixteen lines `VIEW BRIEF` says of the scene (16b cut AG.1): the header, the ground on eight bearings from (6, 4), the four contacts as `CONTACTS` words them, the beyond-window line, the spots the legend names in the window (`A` alone: `B The Roof` is drawn under `X3` and named in no legend, so the brief does not name it either) and the off-window line; read by `tests/cockpit.rs` alone (the brief has one renderer; neither the TUI nor the web reads it) | `tacsim::match_::cockpit::brief_lines` |
 | `web_view_model.txt` | every line the web's cockpit screen prints for that frame (16b cut Q.5), composed at 78 by 20 — so its legend line is `x BA  + RB  ? X3  A The Ford` | `web/src/lib/cockpit.ts`'s `cockpitViewLines` |
 | `notice_lines.json` | the notices ring's wording: an array of `{ "notice": <one notice object as the wire sends it>, "line": "<the ring line>" }` (16b cut B.1) | **hand-written**; no bless variable |
 | `catchup_lines.json` | the catch-up report's wording (16b cut Y.4): an array of `{ "callsign": "RA", "catchup": <the frame's catchup object as the wire sends it>, "lines": ["<one line>", …] }` | **hand-written**; no bless variable |
@@ -76,10 +77,10 @@ named spot is held to:
   the web's default 128-cell view (the whole 96 by 64 ground) it is drawn and
   named: `x BA  + RB  ? X3  ? X4  A The Ford  C The Woods`.
 
-Re-bless the first four with `TACSIM_BLESS=1`:
+Re-bless the first five with `TACSIM_BLESS=1`:
 
 ```
-cargo test -p tacsim   --test cockpit   # the three JSON files
+cargo test -p tacsim   --test cockpit   # the three JSON files and view_brief.txt
 cargo test -p mush-ansi --test golden   # view_grid.txt
 ```
 

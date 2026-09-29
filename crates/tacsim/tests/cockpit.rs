@@ -2868,6 +2868,218 @@ fn the_canonical_cockpit_fixtures_are_what_the_builders_produce() {
     );
 }
 
+/// **16b cut AG.1**: the brief of the one scene, as `brief_lines` says it over
+/// the very window `view_frame.json` pins — one more reading of the one scene,
+/// and read by this test alone (the brief has one renderer; neither the TUI nor
+/// the web reads it). Joined by newlines with a trailing one, as the file holds
+/// it.
+fn fixture_brief() -> String {
+    let (_cockpit, _map, view) = fixture::payloads();
+    let lines = cockpit::brief_lines(
+        &fixture::frame(),
+        &fixture::terrain(),
+        &fixture::spots(),
+        &view,
+        &BTreeMap::new(),
+    );
+    let mut text = lines.join("\n");
+    text.push('\n');
+    text
+}
+
+/// **16b cut AG.1**: `view_brief.txt` is what `brief_lines` produces over the
+/// fixture scene, byte for byte (re-bless with `TACSIM_BLESS=1`).
+#[test]
+fn the_brief_golden_is_what_brief_lines_produces() {
+    fixture::pinned(
+        "view_brief.txt",
+        include_str!("../../../web/src/lib/fixtures/cockpit/view_brief.txt"),
+        &fixture_brief(),
+    );
+}
+
+/// **16b cut AG.1: the brief's order** — the header, the eight bearings in
+/// compass order, the contacts in frame order, the beyond-window line, the
+/// spots the legend names in the window, the spots off it — sixteen lines on the
+/// scene; and TWELVE with the scene's contacts cleared, over a window rebuilt
+/// from that cleared frame (a payload the server could send): `No contacts.`,
+/// no beyond line, and `B` The Roof named in the window now that nothing covers
+/// it.
+#[test]
+fn ag1_brief_lines_is_the_header_the_eight_rays_the_contacts_and_the_spots_in_that_order() {
+    let (_cockpit, _map, view) = fixture::payloads();
+    let lines = cockpit::brief_lines(
+        &fixture::frame(),
+        &fixture::terrain(),
+        &fixture::spots(),
+        &view,
+        &BTreeMap::new(),
+    );
+    assert_eq!(lines.len(), 16, "{lines:#?}");
+    let line = |n: usize| lines.get(n).map_or("", String::as_str);
+    assert!(line(0).starts_with("Window around RA:"), "{}", line(0));
+    for (n, (bearing, _, _)) in cockpit::BRIEF_BEARINGS.iter().enumerate() {
+        assert!(
+            line(n + 1).starts_with(&format!("{bearing}:")),
+            "line {} is not {bearing}: {}",
+            n + 1,
+            line(n + 1)
+        );
+    }
+    let contacts: Vec<String> = cockpit::frame_contacts(&fixture::frame())
+        .iter()
+        .map(cockpit::contact_sentence)
+        .collect();
+    assert_eq!(contacts.len(), 4);
+    for (n, sentence) in contacts.iter().enumerate() {
+        assert_eq!(line(9 + n), sentence, "the contacts in frame order");
+    }
+    assert_eq!(
+        line(13),
+        "1 contact plots beyond this window; CONTACTS lists it."
+    );
+    assert!(line(14).starts_with("In the window:"), "{}", line(14));
+    assert!(line(15).starts_with("Off the window:"), "{}", line(15));
+
+    let mut cleared = fixture::frame();
+    cleared.contacts.clear();
+    let window = cockpit::view_window(
+        cockpit::status_frame(fixture::MATCH, &cleared),
+        fixture::SURFACE,
+        &fixture::terrain(),
+        &fixture::spots(),
+        &cleared,
+    );
+    let quiet = cockpit::brief_lines(
+        &cleared,
+        &fixture::terrain(),
+        &fixture::spots(),
+        &window,
+        &BTreeMap::new(),
+    );
+    assert_eq!(quiet.len(), 12, "12 + C lines at C = 0: {quiet:#?}");
+    let quiet_line = |n: usize| quiet.get(n).map_or("", String::as_str);
+    assert_eq!(quiet_line(0), line(0), "the same window, the same header");
+    for n in 1..=8 {
+        assert_eq!(quiet_line(n), line(n), "the ground does not move");
+    }
+    assert_eq!(quiet_line(9), "No contacts.");
+    assert_eq!(
+        quiet_line(10),
+        "In the window: A The Ford, 190 m at 093°; B The Roof, 90 m at 069°."
+    );
+    assert_eq!(
+        quiet_line(11),
+        "Off the window: C The Woods, 490 m at 064°."
+    );
+}
+
+/// **16b cut AG.1: the brief names only what the grid drew**, checked over the
+/// fixture payload and the golden's own lines: every class word maps back to a
+/// class the legend lists; every designator is a marker the window drew, or the
+/// one contact the beyond line counts (`X4`); the in-window spot has its legend
+/// entry, the off-window spot no marker at all, and the covered `B` is in
+/// neither; and nothing is an object number.
+#[test]
+fn ag1_the_brief_names_only_what_the_grid_drew() {
+    let (_cockpit, _map, view) = fixture::payloads();
+    let brief = include_str!("../../../web/src/lib/fixtures/cockpit/view_brief.txt");
+    let lines: Vec<&str> = brief.lines().collect();
+    assert_eq!(lines.len(), 16, "the golden is the sixteen lines: {brief}");
+    let array = |key: &str| {
+        view.get(key)
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let legend = array("legend");
+    let units = array("units");
+
+    // The ground: every class word is a class the legend names by its label.
+    for line in lines.iter().skip(1).take(8) {
+        let (_, said) = line.split_once(": ").expect("a bearing and its ground");
+        for part in said.split(", then ") {
+            let word = if let Some((_, class)) = part.split_once(" m of ") {
+                class
+            } else if let Some((class, _)) = part.split_once(" to ") {
+                class
+            } else {
+                // The tail: `beyond the window.` or `the edge of the arena.`
+                assert!(
+                    part == "beyond the window." || part == "the edge of the arena.",
+                    "{line}"
+                );
+                continue;
+            };
+            let class = mush_atlas::TerrainClass::ALL
+                .into_iter()
+                .find(|class| cockpit::class_prose(*class) == word)
+                .unwrap_or_else(|| panic!("{word:?} is no class's prose: {line}"));
+            assert!(
+                legend
+                    .iter()
+                    .any(|entry| entry.get(1).and_then(serde_json::Value::as_str)
+                        == Some(class.label())),
+                "{word:?} ({}) is not in the window's legend: {line}",
+                class.label()
+            );
+        }
+    }
+
+    // The contacts: a drawn marker's id, or counted by the beyond line.
+    let ids: Vec<&str> = units
+        .iter()
+        .filter_map(|unit| unit.get("id").and_then(serde_json::Value::as_str))
+        .collect();
+    let undrawn: Vec<&str> = lines
+        .iter()
+        .filter(|line| line.contains(": bearing "))
+        .filter_map(|line| line.split_once(", ").map(|(designator, _)| designator))
+        .filter(|designator| !ids.contains(designator))
+        .collect();
+    assert_eq!(undrawn, vec!["X4"], "exactly one contact is off the window");
+    assert!(
+        lines.contains(&"1 contact plots beyond this window; CONTACTS lists it."),
+        "{brief}"
+    );
+
+    // The spots: the named one in the window, the undrawn one off it.
+    let in_window = lines
+        .iter()
+        .find(|line| line.starts_with("In the window:"))
+        .expect("the in-window line");
+    let off_window = lines
+        .iter()
+        .find(|line| line.starts_with("Off the window:"))
+        .expect("the off-window line");
+    assert_eq!(*in_window, "In the window: A The Ford, 190 m at 093°.");
+    assert!(legend.contains(&serde_json::json!(["A", "The Ford"])));
+    assert_eq!(*off_window, "Off the window: C The Woods, 490 m at 064°.");
+    assert!(
+        !units.iter().any(|unit| {
+            unit.get("spot").and_then(serde_json::Value::as_bool) == Some(true)
+                && unit.get("id").and_then(serde_json::Value::as_str) == Some("C")
+        }),
+        "C is not drawn"
+    );
+    for line in [in_window, off_window] {
+        assert!(
+            !line.contains("B The Roof"),
+            "the covered B is named: {line}"
+        );
+    }
+
+    // No object number, no sixteen digits.
+    for token in brief.split_whitespace() {
+        let token = token.trim_matches(|c: char| ",.;:()°".contains(c));
+        assert!(!token.contains('#'), "an object number: {token}");
+        assert!(
+            !(token.len() == 16 && token.chars().all(|c| c.is_ascii_hexdigit())),
+            "a sixteen-digit word: {token}"
+        );
+    }
+}
+
 /// What the scene was built to exercise, asserted on the payloads rather than
 /// left to a reader of the JSON: the clamp on two edges, a marker on a building,
 /// a contact off the window, a reading and a chassis that is only published
@@ -5715,6 +5927,178 @@ async fn v1_view_beside_the_ford_draws_it_and_names_only_the_others_off_the_wind
         vec![expected.as_str()],
         "a drawn spot is never listed off the window: {said}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AG.1: `VIEW BRIEF`, the window in sentences
+// ---------------------------------------------------------------------------
+
+/// The lines a command said to that pilot, without the panel frames the rig
+/// prints as `[panel …]`.
+fn ag1_said(rig: &Rig, events: &[(Audience, OutputEvent)]) -> Vec<String> {
+    rig.tw
+        .seen_by(events, rig.pilot(0))
+        .into_iter()
+        .flat_map(|said| said.lines().map(str::to_owned).collect::<Vec<String>>())
+        .filter(|line| !line.starts_with("[panel "))
+        .collect()
+}
+
+/// Whether any panel in a command's events is the grid (`schema.shape`).
+fn ag1_pushed_a_grid(events: &[(Audience, OutputEvent)]) -> bool {
+    events.iter().any(|(_, event)| match event {
+        OutputEvent::Panel { data, .. } => {
+            data.pointer("/schema/shape")
+                .and_then(serde_json::Value::as_str)
+                == Some("grid")
+        }
+        _ => false,
+    })
+}
+
+/// **16b cut AG.1: `VIEW BRIEF` at the muster** — the header naming the
+/// pilot's own callsign, the eight bearings in order, `No contacts.` (the blue
+/// tank is 2,430 m away against a 600 m sight), no in-window spot (the red
+/// window draws none of the five), and the off-window line `VIEW` itself says;
+/// then the status keyframe re-pushed and no grid, and nothing about any unit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ag1_view_brief_at_the_muster_is_the_window_in_sentences() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let frame = rig.held_frame(0);
+    let (spots, cell_cm) = shipped_spots(&rig);
+    let events = rig.events(0, "view brief");
+    let said = ag1_said(&rig, &events);
+    let joined = said.join("\n");
+    let line = |n: usize| said.get(n).map_or("", String::as_str);
+    assert!(
+        line(0).starts_with(&format!("Window around {}:", frame.callsign)),
+        "{joined}"
+    );
+    for (n, (bearing, _, _)) in cockpit::BRIEF_BEARINGS.iter().enumerate() {
+        assert!(
+            line(n + 1).starts_with(&format!("{bearing}:")),
+            "line {} is not {bearing}: {joined}",
+            n + 1
+        );
+    }
+    assert_eq!(line(9), "No contacts.", "{joined}");
+    assert!(
+        !said.iter().any(|line| line.starts_with("In the window:")),
+        "the muster window names no spot: {joined}"
+    );
+    let off = cockpit::off_window_spots_line(&spots, &[], &frame.pose, cell_cm)
+        .expect("the shipped spots, none drawn");
+    assert_eq!(line(10), off, "{joined}");
+    assert_eq!(said.len(), 11, "nothing else is said: {joined}");
+    // The status keyframe, as `CONTACTS` re-pushes it; never the grid.
+    let panel = Rig::panel(&events).expect("the brief re-pushes the status keyframe");
+    assert!(
+        panel.pointer("/schema/shape").is_none(),
+        "the re-pushed frame is the status keyframe: {panel}"
+    );
+    assert!(!ag1_pushed_a_grid(&events), "the brief pushes no grid");
+    // Nothing about any unit: not the other tank's name, pilot or callsign.
+    for leak in ["Blue Tank", "Pilot1", "BA"] {
+        assert!(
+            !joined.contains(leak),
+            "VIEW BRIEF leaked {leak:?}: {joined}"
+        );
+    }
+}
+
+/// **16b cut AG.1: beside the ford, the brief names it in the window** —
+/// the `v1_view_beside_the_ford_…` pose, four cells west of The Ford on
+/// (64, 97): 4,000 cm due east, `40 m at 090°` — and the other four off it,
+/// exactly as `VIEW`'s own off-window line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ag1_view_brief_beside_the_ford_names_it_in_the_window() {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    rig.place(rig.tank(0), (60, 97), 90_000);
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    let said = rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running, "{said}");
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let frame = rig.held_frame(0);
+    let (spots, cell_cm) = shipped_spots(&rig);
+    let events = rig.events(0, "VIEW BRIEF");
+    let said = ag1_said(&rig, &events);
+    let joined = said.join("\n");
+    let in_window: Vec<&str> = said
+        .iter()
+        .map(String::as_str)
+        .filter(|line| line.starts_with("In the window:"))
+        .collect();
+    assert_eq!(
+        in_window,
+        vec!["In the window: A The Ford, 40 m at 090°."],
+        "{joined}"
+    );
+    let expected = cockpit::off_window_spots_line(&spots, &[0], &frame.pose, cell_cm)
+        .expect("four spots undrawn");
+    let off: Vec<&str> = said
+        .iter()
+        .map(String::as_str)
+        .filter(|line| line.starts_with("Off the window:"))
+        .collect();
+    assert_eq!(off, vec![expected.as_str()], "{joined}");
+    assert!(!ag1_pushed_a_grid(&events), "the brief pushes no grid");
+}
+
+/// **16b cut AG.1: a second word on `VIEW` is one refusal** — a word of
+/// nothing, the slot designator of the tank out there (undetected), a
+/// provisional number, a designator of nothing and sixteen digits each answer
+/// exactly the usage line and push nothing — and a bare `VIEW` still draws.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ag1_a_second_word_on_view_is_refused_and_bare_view_still_draws() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    for line in [
+        "view nonsense",
+        "view ba",
+        "view x1",
+        "view zz",
+        "view ffffffffffffffff",
+    ] {
+        let events = rig.events(0, line);
+        assert_eq!(
+            rig.tw.seen_by(&events, rig.pilot(0)).join("\n"),
+            "VIEW [BRIEF]; BRIEF says the window in sentences.",
+            "{line}"
+        );
+        assert!(Rig::panel(&events).is_none(), "{line} pushed a frame");
+    }
+    assert_eq!(
+        cockpit::VIEW_USAGE,
+        "VIEW [BRIEF]; BRIEF says the window in sentences."
+    );
+    let events = rig.events(0, "view");
+    assert!(
+        ag1_pushed_a_grid(&events),
+        "a bare VIEW still draws the map"
+    );
+}
+
+/// **16b cut AG.1: before the first frame the brief is the dark window** —
+/// `VIEW`'s own line, and nothing else (no frame to re-push).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ag1_view_brief_before_the_first_frame_says_the_window_is_dark() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame(0).is_none(), "nothing has been pumped yet");
+    let events = rig.events(0, "view brief");
+    assert_eq!(
+        rig.tw.seen_by(&events, rig.pilot(0)),
+        vec!["The window is dark: the panel has told you nothing yet.".to_owned()]
+    );
+    assert!(Rig::panel(&events).is_none(), "nothing is pushed");
 }
 
 // ---------------------------------------------------------------------------

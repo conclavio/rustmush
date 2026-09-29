@@ -8,7 +8,8 @@ else — `help simulator` is how you get there.
                       refuse until it is online.
   HEADING <0-359>     steer to a bearing.
   SPEED <kph>         make way at that speed; a negative speed reverses.
-  VIEW                the arena window around your platform, as a map.
+  VIEW [BRIEF]        the arena window around your platform, as a map; BRIEF
+                      says the same window in sentences.
   CONTACTS            what your platform holds.
   LOCK <contact>      hold one of your contacts by the designator CONTACTS
                       prints. Bare, it answers
@@ -224,6 +225,17 @@ each cell printed two columns wide so the ground is square; a line under it
 says how many contacts plot beyond it, and `CONTACTS` lists them. A last line
 names every spot the window could not draw, with its range and bearing:
 `Off the window: C North Barn, 1390 m at 045°; E East Compound, 2080 m at 075°.`
+
+`VIEW BRIEF` says the same window in sentences, for a screen reader or a pilot
+who would rather read: where the window is, then the ground on eight bearings
+from your own cell, run by run —
+`North: 50 m of grass, then road to 60 m, then grass to 150 m, then beyond the window.`
+— then every contact as `CONTACTS` words it, the beyond-window line, and the
+named spots the window shows and the ones off it, with their range and bearing.
+It describes the window `VIEW` draws and nothing past it: `beyond the window` is
+where the map stops, `the edge of the arena` where the ground does. A diagonal
+is measured along the diagonal, so five cells read 70 m. `VIEW` takes no other
+word.
 
 **Named ground.** The proving ground is surveyed, so its named places are yours
 from the moment you board: `A` The Ford, `B` The Crossroads, `C` North Barn,

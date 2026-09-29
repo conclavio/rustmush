@@ -327,6 +327,30 @@ async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
     strip_ansi(&term.seen[mark..])
 }
 
+/// The nonsense line [`ask_whole`] fences an answer with (16b cut AG.1), and the
+/// parser's refusal, which is its answer.
+const SENTINEL: &str = "zzq-cockpit-sentinel";
+/// As [`SENTINEL`].
+const HUH: &str = "Huh?";
+
+/// **A whole answer, never half of one** (16b cut AG.1; `observer_rule.rs`'s
+/// twin — a test binary cannot import another): the line, then [`SENTINEL`],
+/// and the slice runs to the sentinel's `Huh?`, so everything the line produced
+/// is in it and nothing is still in flight. A world mid-commit answers both
+/// lines with the transient, which is a retry.
+async fn ask_whole(term: &mut Term, line: &str) -> String {
+    for _ in 0..RETRY_BUDGET {
+        let mark = term.mark();
+        term.send_line(line).await;
+        term.send_line(SENTINEL).await;
+        if term.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
+            return strip_ansi(&term.seen[mark..]);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("`{line}` never produced a whole answer")
+}
+
 /// One object's dbref, out of an `@find` listing.
 fn dbref_of(listing: &str, name: &str) -> u32 {
     listing
@@ -981,6 +1005,10 @@ async fn the_cockpit_verbs_are_contextual_and_the_window_is_a_map() {
         "FIRE",
         "WEAPONSTATUS",
         "STATUS",
+        // 16b cut AG.1: a second word on `VIEW` is behind the same seat gate,
+        // `BRIEF` or not.
+        "VIEW BRIEF",
+        "VIEW nonsense",
     ] {
         let seen = ask(&mut ada, verb, OUTSIDE_COCKPIT).await;
         assert!(seen.contains(OUTSIDE_COCKPIT), "{verb}: {seen}");
@@ -1005,6 +1033,54 @@ async fn the_cockpit_verbs_are_contextual_and_the_window_is_a_map() {
     assert!(
         seen.contains('@'),
         "the platform is drawn on the map: {seen}"
+    );
+
+    // **16b cut AG.1**: the same window in sentences, over the production
+    // composition. The `VIEW` above was read on the panel's title, so the head of
+    // this slice may still carry its `legend:` line and its two Sys lines; the
+    // world answers in order, so everything from the brief's header on is the
+    // brief's, and every assertion runs over that tail alone.
+    let seen = ask_whole(&mut ada, "VIEW BRIEF").await;
+    let at = seen
+        .find("Window around RA:")
+        .unwrap_or_else(|| panic!("the brief's header: {seen}"));
+    let brief = &seen[at..];
+    let sentences = support::brief_sentences(brief);
+    support::assert_brief_shape(&sentences, "the running match's brief");
+    assert_eq!(
+        support::brief_strays(brief),
+        Vec::<String>::new(),
+        "a line inside the brief opened no sentence:\n{brief}"
+    );
+    // The muster is 2,430 m across against a 600 m sight, and the match fields
+    // no machine.
+    assert!(
+        sentences.iter().any(|sentence| sentence == "No contacts."),
+        "{brief}"
+    );
+    // And the brief closes on its off-window sentence, the one line after which
+    // a mis-worded opener would be dropped unseen.
+    assert!(
+        sentences
+            .last()
+            .is_some_and(|sentence| sentence.starts_with("Off the window:")),
+        "{brief}"
+    );
+    // No grid pushed: the brief re-pushes the status keyframe, which a line
+    // client prints as nothing.
+    assert!(
+        !brief.contains("legend:") && !brief.contains("Arena window"),
+        "the brief pushed the map: {brief}"
+    );
+    let seen = ask(
+        &mut ada,
+        "VIEW nonsense",
+        "VIEW [BRIEF]; BRIEF says the window in sentences.",
+    )
+    .await;
+    assert!(
+        seen.contains("VIEW [BRIEF]; BRIEF says the window in sentences."),
+        "{seen}"
     );
 
     // And `WEAPONSTATUS` reads the tank's own components.
@@ -1174,4 +1250,88 @@ async fn b4_board_and_exit_show_the_room_after_the_sentence() {
     ada.expect_after(after_sentence, "Red Room").await;
     // The team room is shown whole, its exits and all.
     ada.expect_after(after_sentence, "Exits").await;
+}
+
+// ---------------------------------------------------------------------------
+// The brief's readers, held to the golden (16b cut AG.1)
+// ---------------------------------------------------------------------------
+
+/// The sixteen lines `VIEW BRIEF` says of the canonical scene, as
+/// `tacsim/tests/cockpit.rs` pins them.
+const BRIEF_GOLDEN: &str = include_str!("../../../web/src/lib/fixtures/cockpit/view_brief.txt");
+
+/// What an 80-column session does to a line: broken at the last space that
+/// keeps each row inside eighty, the way `support::brief_sentences` expects.
+fn wrapped(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        let mut row = String::new();
+        for word in line.split(' ') {
+            if !row.is_empty() && row.chars().count() + 1 + word.chars().count() > 80 {
+                out.push_str(&row);
+                out.push('\n');
+                row.clear();
+            }
+            if !row.is_empty() {
+                row.push(' ');
+            }
+            row.push_str(word);
+        }
+        out.push_str(&row);
+        out.push('\n');
+    }
+    out
+}
+
+/// **The readers are not vacuous**: over the golden, wrapped at eighty columns
+/// and fenced as `ask_whole` fences it, `brief_sentences` gives back the sixteen
+/// lines, `assert_brief_shape` holds and `brief_strays` is empty; a contact
+/// line whose opener a change mis-worded is a stray, not a silent skip.
+#[test]
+fn ag1_the_brief_readers_round_trip_the_golden_and_report_a_stray() {
+    let seen = format!(
+        "VIEW BRIEF\n{}zzq-cockpit-sentinel\nHuh?\n",
+        wrapped(BRIEF_GOLDEN)
+    );
+    let sentences = support::brief_sentences(&seen);
+    assert_eq!(
+        sentences,
+        BRIEF_GOLDEN.lines().map(str::to_owned).collect::<Vec<_>>(),
+        "the wraps are undone and every line is a sentence:\n{seen}"
+    );
+    support::assert_brief_shape(&sentences, "the golden");
+    assert_eq!(support::brief_strays(&seen), Vec::<String>::new());
+
+    // A notice before or after the brief is dropped and is no stray.
+    let noticed = format!("Held: something is in the way.\n{seen}Target destroyed.\n");
+    assert_eq!(support::brief_sentences(&noticed), sentences);
+    assert_eq!(support::brief_strays(&noticed), Vec::<String>::new());
+
+    // A mis-worded contact opener inside the brief is reported.
+    let misworded = BRIEF_GOLDEN.replace("RB, red: bearing", "RB red bearing");
+    let strays = support::brief_strays(&misworded);
+    assert_eq!(strays.len(), 1, "{strays:#?}");
+    assert!(strays[0].starts_with("RB red bearing"), "{strays:#?}");
+}
+
+/// **`No contacts.` beside a contact sentence is out of the brief's order.**
+#[test]
+#[should_panic(expected = "out of the brief's order")]
+fn ag1_no_contacts_beside_a_contact_fails_the_shape() {
+    let doubled = BRIEF_GOLDEN.replace("BA, blue:", "No contacts.\nBA, blue:");
+    support::assert_brief_shape(&support::brief_sentences(&doubled), "doubled");
+}
+
+/// **A spot line out of its place fails the shape**: the in-window line after
+/// the off-window one.
+#[test]
+#[should_panic(expected = "out of the brief's order")]
+fn ag1_a_spot_line_out_of_place_fails_the_shape() {
+    let mut reordered: Vec<&str> = BRIEF_GOLDEN.lines().collect();
+    assert_eq!(reordered.len(), 16, "the golden's sixteen lines");
+    reordered.swap(14, 15);
+    support::assert_brief_shape(
+        &support::brief_sentences(&reordered.join("\n")),
+        "reordered",
+    );
 }

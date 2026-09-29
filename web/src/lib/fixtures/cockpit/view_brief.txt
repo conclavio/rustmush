@@ -1,0 +1,16 @@
+Window around RA: cells 0 to 38 east and 0 to 19 north of 96 by 64; you at (6, 4), heading 045°; 10 m a cell.
+North: 50 m of grass, then road to 60 m, then grass to 150 m, then beyond the window.
+North-east: 70 m of grass, then road to 80 m, then grass to 210 m, then beyond the window.
+East: 130 m of grass, then water to 230 m, then grass to 320 m, then beyond the window.
+South-east: 60 m of grass, then the edge of the arena.
+South: 40 m of grass, then the edge of the arena.
+South-west: 60 m of grass, then the edge of the arena.
+West: 60 m of grass, then the edge of the arena.
+North-west: 70 m of grass, then road to 80 m, then the edge of the arena.
+BA, blue: bearing 045° (rel 000°), far, 450 m, 1 s old.
+RB, red: bearing 270° (rel 225°), close, 100 m, 0 s old.
+X3, unknown: bearing 315° (rel 270°), effective, 200 m, 3 s old.
+X4, unknown: bearing 030° (rel 345°), far, 600 m, 6 s old.
+1 contact plots beyond this window; CONTACTS lists it.
+In the window: A The Ford, 190 m at 093°.
+Off the window: C The Woods, 490 m at 064°.

@@ -782,3 +782,196 @@ pub fn names_side(line: &str, side: &str) -> bool {
         !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
     })
 }
+
+/// **The eight bearing words `VIEW BRIEF` walks, in compass order** (16b cut
+/// AG.1): `tacsim::match_::cockpit::BRIEF_BEARINGS`' words, re-stated because
+/// these tests read a terminal and not the crate.
+pub const BRIEF_BEARING_WORDS: [&str; 8] = [
+    "North",
+    "North-east",
+    "East",
+    "South-east",
+    "South",
+    "South-west",
+    "West",
+    "North-west",
+];
+
+/// Whether a line opens a brief bearing sentence: one of the eight words, then a
+/// colon (so `North Barn` is not `North`).
+fn opens_bearing_sentence(line: &str) -> bool {
+    BRIEF_BEARING_WORDS.iter().any(|word| {
+        line.strip_prefix(word)
+            .is_some_and(|rest| rest.starts_with(':'))
+    })
+}
+
+/// Whether a line opens a brief contact sentence (16b cut AG.1), by hand and
+/// with no regex: one or two ASCII capitals, then any ASCII digits (`BA`, `X3`,
+/// `X12`), then `, `, then the class word (`unknown`, `red` or `blue`), then
+/// `: bearing `.
+#[must_use]
+pub fn opens_contact_sentence(line: &str) -> bool {
+    let capitals = line.chars().take_while(char::is_ascii_uppercase).count();
+    if !(1..=2).contains(&capitals) {
+        return false;
+    }
+    let rest = &line[capitals..];
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    let Some(rest) = rest[digits..].strip_prefix(", ") else {
+        return false;
+    };
+    ["unknown", "red", "blue"].iter().any(|class| {
+        rest.strip_prefix(class)
+            .is_some_and(|tail| tail.starts_with(": bearing "))
+    })
+}
+
+/// Whether a line opens one of `VIEW BRIEF`'s sentences (16b cut AG.1).
+fn opens_brief_sentence(line: &str) -> bool {
+    line.starts_with("Window around ")
+        || opens_bearing_sentence(line)
+        || line == "No contacts."
+        || opens_contact_sentence(line)
+        || line.contains("beyond this window")
+        || line.starts_with("In the window:")
+        || line.starts_with("Off the window:")
+}
+
+/// Whether a trimmed terminal line is the reader's own traffic rather than
+/// anything the world said: the blank line, the typed echo (`VIEW BRIEF`), a
+/// sentinel line (every file's sentinel is a `zzq-…` word) and the parser's
+/// `Huh?` answering it.
+fn is_brief_traffic(line: &str) -> bool {
+    line.is_empty()
+        || line.eq_ignore_ascii_case("VIEW BRIEF")
+        || line.starts_with("zzq-")
+        || line == "Huh?"
+}
+
+/// The one walk [`brief_sentences`] and [`brief_strays`] share: the sentences,
+/// and every line it dropped with the number of sentences opened before it.
+fn brief_walk(seen: &str) -> (Vec<String>, Vec<(usize, String)>) {
+    let mut sentences: Vec<String> = Vec::new();
+    let mut dropped: Vec<(usize, String)> = Vec::new();
+    for raw in seen.lines() {
+        let line = raw.trim();
+        if is_brief_traffic(line) {
+            continue;
+        }
+        if opens_brief_sentence(line) {
+            sentences.push(line.to_owned());
+            continue;
+        }
+        match sentences.last_mut() {
+            Some(current) if !current.ends_with('.') => {
+                current.push(' ');
+                current.push_str(line);
+            }
+            _ => dropped.push((sentences.len(), line.to_owned())),
+        }
+    }
+    (sentences, dropped)
+}
+
+/// **`VIEW BRIEF`'s own sentences, picked out of a whole answer by shape**
+/// (16b cut AG.1), with the terminal's wraps undone.
+///
+/// `seen` is a slice of what a terminal printed around a `VIEW BRIEF` — an
+/// `ask_whole` answer, or the tail of one from the brief's header on. Each line
+/// is trimmed; the typed echo (`VIEW BRIEF`), a sentinel line (every file's
+/// sentinel is a `zzq-…` word) and the parser's `Huh?` are dropped. A line that
+/// **opens a brief sentence** — `Window around `, a bearing word and a colon,
+/// `No contacts.`, a contact sentence (one or two capitals, optional digits,
+/// `, `, a class word, `: bearing `), the beyond-window line (`beyond this
+/// window`), `In the window:` or `Off the window:` — starts a new sentence. A
+/// line that opens none is a wrapped continuation of the current sentence while
+/// that sentence does not yet end with `.` (the PTY is 80 by 24 and the session
+/// wraps at spaces), joined with one space; otherwise it is dropped — an arena
+/// notice that landed before the brief or after it (E.3's `Held: something is
+/// in the way.` while the two tanks close head-on on row 97, an acquisition
+/// notice, a damage line), or `VIEW`'s own `legend:` line ahead of the header
+/// in `sim_cockpit`. What is dropped from *inside* the brief is
+/// [`brief_strays`]' to report, never a silent skip.
+#[must_use]
+pub fn brief_sentences(seen: &str) -> Vec<String> {
+    brief_walk(seen).0
+}
+
+/// **The lines [`brief_sentences`] dropped from inside the brief** (16b cut
+/// AG.1): every line that opened no sentence and continued none, and sits after
+/// the brief's first sentence and before its last. The world is the one writer
+/// and says a verb's lines in one batch (`say_and_frame`), while an arena
+/// notice is a batch of its own drained on another turn of the world task, so
+/// a notice reaches the terminal before the brief or after it and never between
+/// two of its lines. A line dropped inside the brief is therefore a brief line
+/// whose opener a change mis-worded — a malformed contact sentence, a
+/// re-worded spot line — and every reader asserts this list is empty.
+///
+/// What it cannot see: a mis-worded line *after* the brief's last recognised
+/// sentence, which is indistinguishable from a notice landing after the brief.
+/// A reader that knows how its brief ends says so directly (`observer_rule`
+/// holds the last sentence to its own `VIEW`'s off-window line, `sim_solo` and
+/// `sim_cockpit` to an `Off the window:` sentence).
+#[must_use]
+pub fn brief_strays(seen: &str) -> Vec<String> {
+    let (sentences, dropped) = brief_walk(seen);
+    dropped
+        .into_iter()
+        .filter(|(opened, _)| *opened >= 1 && *opened < sentences.len())
+        .map(|(_, line)| line)
+        .collect()
+}
+
+/// **A brief has its shape, in its order** (16b cut AG.1; `brief_lines`'
+/// order): the header first and once; then the eight bearing sentences in
+/// compass order; then either the one `No contacts.` or one or more contact
+/// sentences, never both; then at most one beyond-window line, at most one
+/// `In the window:` and at most one `Off the window:`, in that order; and
+/// nothing after. Every sentence [`brief_sentences`] opened is placed by this
+/// walk, so a sentence out of its place, doubled, or a `No contacts.` beside a
+/// contact fails here. It reads sentences, so a line that opened none is
+/// [`brief_strays`]' to catch. Panics naming `what`.
+pub fn assert_brief_shape(sentences: &[String], what: &str) {
+    let mut rest = sentences.iter().map(String::as_str).peekable();
+    assert!(
+        rest.next()
+            .is_some_and(|header| header.starts_with("Window around ")),
+        "{what}: the brief opens with its header:\n{sentences:#?}"
+    );
+    for word in BRIEF_BEARING_WORDS {
+        assert!(
+            rest.next().is_some_and(|sentence| {
+                sentence
+                    .strip_prefix(word)
+                    .is_some_and(|tail| tail.starts_with(':'))
+            }),
+            "{what}: the {word} sentence, in compass order after the header:\n{sentences:#?}"
+        );
+    }
+    if rest
+        .next_if(|sentence| *sentence == "No contacts.")
+        .is_none()
+    {
+        let mut contacts = 0_usize;
+        while rest
+            .next_if(|sentence| opens_contact_sentence(sentence))
+            .is_some()
+        {
+            contacts += 1;
+        }
+        assert!(
+            contacts >= 1,
+            "{what}: `No contacts.` or a contact sentence after the bearings:\n{sentences:#?}"
+        );
+    }
+    let _beyond = rest.next_if(|sentence| sentence.contains("beyond this window"));
+    let _in_window = rest.next_if(|sentence| sentence.starts_with("In the window:"));
+    let _off_window = rest.next_if(|sentence| sentence.starts_with("Off the window:"));
+    let left: Vec<&str> = rest.collect();
+    assert!(
+        left.is_empty(),
+        "{what}: sentences out of the brief's order (a contact beside `No contacts.`, a \
+         line doubled or out of place): {left:#?}\n{sentences:#?}"
+    );
+}
