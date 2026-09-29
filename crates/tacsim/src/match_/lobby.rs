@@ -32,7 +32,8 @@
 //! rendered — and records the character that claimed it beside it, which is what
 //! every player-facing line names. The oracle answers `None` for an unmapped
 //! character, and the claim then **refuses**: doc 10 R3's fail-closed rule, and
-//! the same refusal `+focus` gives.
+//! the same refusal `+focus` gives. **16b cut AH.1** keys the first-time hints by
+//! the same account, for the same reason (`crate::match_::tutorial`).
 //!
 //! # What "released atomically" means here
 //!
@@ -1734,6 +1735,15 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
             match_cfg.board_timeout_ms / 1_000
         ),
     );
+    // **16b cut AH.1** (16c N18): the boarding point, after the announce so the
+    // hint reads under the line it follows, to every claimed slot's pilot —
+    // `tutorial::hint` decides, per account, whether it is said.
+    let pilots: Vec<ObjId> = centre(ctx.w)
+        .map(|centre| centre.slots.iter().map(|slot| slot.pilot).collect())
+        .unwrap_or_default();
+    for pilot in pilots {
+        crate::match_::tutorial::hint(ctx, pilot, crate::match_::tutorial::HintPoint::Boarding);
+    }
     Ok(())
 }
 

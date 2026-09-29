@@ -72,7 +72,7 @@ use mushd::staff::{StaffQueue, register_server_commands};
 use mushd::world_task::{self, PersistHandles, ServerDeps};
 use serde_json::Value;
 
-use support::{Term, play_client, scratch_dir, strip_ansi};
+use support::{Term, play_client, scratch_dir, strip_ansi, unwrapped};
 
 const GM_PASSWORD: &str = "gm-secret-1";
 const PILOT_PASSWORD: &str = "pilot-secret-1";
@@ -157,26 +157,43 @@ fn module_list(
 }
 
 async fn boot(tag: &str) -> Server {
+    boot_on(tag, None).await
+}
+
+/// [`boot`] over a store of its own, or — **16b cut AH.1** — over one a
+/// previous boot left (`arena_custody.rs`' shape): with `Some(store)` neither
+/// account nor Ada is made again, and `load_or_seed_world` loads the world the
+/// store holds.
+async fn boot_on(tag: &str, store: Option<Arc<dyn ObjectStore>>) -> Server {
     let dir = scratch_dir(tag);
-    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
-    store
-        .create_account(AccountRec {
-            id: None,
-            name: "boss".to_string(),
-            argon2_hash: hash_password(GM_PASSWORD).expect("a hash"),
-            created: 0,
-            characters: vec![CharacterRef {
-                id: GOD,
-                name: "God".to_string(),
-            }],
-            ssh_keys: vec![],
-            discord: None,
-        })
-        .await
-        .expect("the staff account");
+    let fresh = store.is_none();
+    let store: Arc<dyn ObjectStore> = match store {
+        Some(store) => store,
+        None => {
+            let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+            store
+                .create_account(AccountRec {
+                    id: None,
+                    name: "boss".to_string(),
+                    argon2_hash: hash_password(GM_PASSWORD).expect("a hash"),
+                    created: 0,
+                    characters: vec![CharacterRef {
+                        id: GOD,
+                        name: "God".to_string(),
+                    }],
+                    ssh_keys: vec![],
+                    discord: None,
+                })
+                .await
+                .expect("the staff account");
+            store
+        }
+    };
 
     let mut world = load_or_seed_world(&*store).await.expect("boot world");
-    for (id, name) in [(ADA, "Ada")] {
+    // A store a previous boot left already holds Ada and her account.
+    let pilots: &[(ObjId, &str)] = if fresh { &[(ADA, "Ada")] } else { &[] };
+    for &(id, name) in pilots {
         let made = world
             .create(ObjKind::Player, name, GOD, Some(LIMBO))
             .expect("a pilot");
@@ -822,13 +839,6 @@ async fn d3_the_match_a_lone_pilot_walks_out_of_ends_itself() {
 // 16b cut Y.1 — a lone pilot orders their wingman
 // ---------------------------------------------------------------------------
 
-/// Everything `seen` holds, with the terminal's wraps undone: one space for
-/// every run of whitespace, so a sentence longer than the eighty columns reads
-/// back whole.
-fn unwrapped(seen: &str) -> String {
-    seen.split_whitespace().collect::<Vec<&str>>().join(" ")
-}
-
 /// **16b cut Y.1**: over the production composition and the real front door, a
 /// lone pilot with the AI fill orders the machine beside her.
 ///
@@ -874,6 +884,10 @@ async fn y1_a_lone_pilot_orders_their_wingman() {
     say(&mut ada, "red", "Red Room").await;
     say(&mut ada, "BOARD", "climb into").await;
     ada.expect("Good hunting").await;
+    // **16b cut AH.1**: a fresh account reads the panel hint on its first frame,
+    // one pulse after `Good hunting`; fenced here so it cannot land inside the
+    // byte-exact slices below.
+    ada.expect("Hint: the panel").await;
 
     // A contact her platform does not hold: `LOCK ZZ`'s refusal, byte for byte.
     let mut answers: Vec<String> = Vec::new();
@@ -1100,4 +1114,240 @@ async fn i3_staff_place_the_machine_and_the_tape_records_it() {
     for word in ["Placing", "place"] {
         assert!(!heard.contains(word), "the pilot heard `{word}`: {heard}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AH.1 (16c N18) — the five first-time hints, once per account
+// ---------------------------------------------------------------------------
+
+/// Connect a **two-character** account and pick `character` off the menu
+/// (`front_door.rs`' walk): [`login`] waits only on `Connected as`, which a
+/// menu never prints until a name is typed.
+async fn login_picking(
+    addr: SocketAddr,
+    account: &str,
+    password: &str,
+    character: &str,
+) -> (russh::client::Handle<support::AcceptAll>, Term) {
+    let (handle, mut term) = play_client(addr).await;
+    term.expect("Welcome to the simulator.").await;
+    term.send_line(&format!("connect {account} {password}"))
+        .await;
+    term.expect(&format!("Characters on {account}:")).await;
+    term.send_line(character).await;
+    term.expect(&format!("Connected as {character}")).await;
+    (handle, term)
+}
+
+/// Every stored `tacsim:tutorial:` document, read straight from the store (not
+/// through `@tutorial`, which answers from RAM).
+async fn tutorial_documents(store: &Arc<dyn ObjectStore>) -> Vec<Value> {
+    let keys = store.module_keys("tacsim").await.expect("the store read");
+    let mut documents = Vec::new();
+    for key in keys
+        .iter()
+        .filter(|key| key.starts_with(tacsim::match_::tutorial::KEY_PREFIX))
+    {
+        if let Some(document) = store
+            .module_json_get("tacsim", key)
+            .await
+            .expect("the store read")
+        {
+            documents.push(document);
+        }
+    }
+    documents
+}
+
+/// Staff teleport one character into the Simulator Lobby, by name.
+async fn teleport_to_lobby(god: &mut Term, name: &str) {
+    let listing = ask(god, "@find Simulator Lobby", "END OF LIST").await;
+    let lobby = dbref_of(&listing, "Simulator Lobby");
+    let listing = ask(god, &format!("@find {name}"), "END OF LIST").await;
+    let who = dbref_of(&listing, name);
+    say(god, &format!("@teleport #{who}=#{lobby}"), "Teleported").await;
+}
+
+/// **16b cut AH.1**: over SSH on the production composition, a first account
+/// reads the five hints once, in order, across one short match; an alt made
+/// with `@newchar` on the same account reads none; and a reboot over the same
+/// store keeps the flags — the alt's `@tutorial off` is the account's.
+///
+/// Every wait on a hint is on a prefix narrower than the test PTY's eighty
+/// columns, and the audit is over the unwrapped transcript (`hints_read`),
+/// because four of the five sentences wrap. The enemy is parked seventy cells
+/// down the road, past the stock sight, as `y1` parks it: a hostile told apart
+/// before `STARTUP` would leave the contact point unspent for the whole match.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ah1_a_first_account_reads_five_hints_once_an_alt_none_and_a_restart_keeps_the_flags() {
+    let server = boot("sim-solo-hints-a").await;
+    // Ada first, so the staff teleport below is a move a live session sees.
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+    ada.expect("Hint: SIM TEAM").await;
+    let listing = ask(&mut god, "@find Proving Ground", "END OF LIST").await;
+    let ground = dbref_of(&listing, "Proving Ground");
+    let listing = ask(&mut god, "@find Blue Tank 1", "END OF LIST").await;
+    let blue = dbref_of(&listing, "Blue Tank 1");
+    say(
+        &mut god,
+        &format!(
+            "@spatial/place/domain #{blue}=#{ground},{{\"x_cm\":{},\"y_cm\":{ROW_Y_CM},\
+             \"heading_mdeg\":{WEST_MDEG}}}",
+            RED_X_CM + 70_000
+        ),
+        "Placed",
+    )
+    .await;
+
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    let mark = ada.mark();
+    say(&mut ada, "SIM START", "is boarding").await;
+    ada.expect_after(mark, "Hint: walk into").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+    ada.expect("Hint: the panel").await;
+    let mark = ada.mark();
+    say(&mut ada, "STARTUP", "Startup sequence").await;
+    ada.expect_after(mark, "Power online.").await;
+    ada.expect_after(mark, "Hint: VIEW draws").await;
+
+    // Drive at the machine and lock and fire, as the main test does, until the
+    // platform tells it apart. Every line waits on its own echo, which keeps
+    // the channel read.
+    say(&mut ada, "SPEED 54", "Making").await;
+    let start = ada.mark();
+    for _ in 0..60 {
+        for line in ["LOCK BA", "FIRE"] {
+            let mark = ada.mark();
+            ada.send_line(line).await;
+            ada.expect_after(mark, line).await;
+        }
+        let fight = strip_ansi(&ada.seen[start..]);
+        if fight.contains("identified: BA") || fight.contains("Locked on BA") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+    let fight = strip_ansi(&ada.seen[start..]);
+    assert!(
+        fight.contains("identified: BA") || fight.contains("Locked on BA"),
+        "the machine was never identified: {fight}"
+    );
+    ada.expect("Hint: LOCK").await;
+    let seen = ask_whole(&mut ada, "@tutorial").await;
+    assert!(
+        seen.contains("Hints are on; you have read 5 of 5."),
+        "{seen}"
+    );
+
+    // The end, as the main test ends it: sent unwaited, then the result
+    // document, so the centre is terminal before the alt walks in (a stopping
+    // centre would gate the lobby point and make the alt's silence vacuous).
+    ada.send_line("SIM ABORT").await;
+    let key = tacsim::match_::result_key(tacsim::arena_task::MatchId(1));
+    wait_until(
+        STEP_TIMEOUT,
+        "the hints match's result to persist",
+        async || {
+            server
+                .store
+                .module_json_get("tacsim", key.as_str())
+                .await
+                .expect("the store read")
+                .is_some()
+        },
+    )
+    .await;
+    let read = support::hints_read(&ada.seen);
+    assert_eq!(
+        read,
+        tacsim::match_::tutorial::HINT_LINES
+            .iter()
+            .map(|line| (*line).to_owned())
+            .collect::<Vec<_>>(),
+        "the five, once each, in order"
+    );
+    for line in &read {
+        assert!(!line.contains("Blue Tank"), "{line}");
+    }
+    no_sixteen_digit_word(&read.join("\n"));
+
+    // Each hint's OWN mark reaches the store, before any `@tutorial` switch
+    // rewrites a whole document from RAM: Ada's five were written by the
+    // lobby observer, `/start`, and `on_frames` (panel, power, contact), and
+    // God's lobby-only document by the lobby observer alone. The restart leg
+    // below cannot prove this — the alt's switch rewrites Ada's document.
+    let every_word = tacsim::match_::tutorial::HintPoint::ALL
+        .iter()
+        .map(|point| Value::from(point.as_str()))
+        .collect::<Vec<_>>();
+    let lobby_only = vec![Value::from(
+        tacsim::match_::tutorial::HintPoint::Lobby.as_str(),
+    )];
+    wait_until(STEP_TIMEOUT, "every hint's own mark to land", async || {
+        let documents = tutorial_documents(&server.store).await;
+        let holds = |shown: &[Value]| {
+            documents.iter().any(|document| {
+                document.get("off") == Some(&Value::Bool(false))
+                    && document
+                        .get("shown")
+                        .and_then(Value::as_array)
+                        .map(Vec::as_slice)
+                        == Some(shown)
+            })
+        };
+        holds(&every_word) && holds(&lobby_only)
+    })
+    .await;
+
+    // ---- the alt: the same person, who has read them all ----
+    say(&mut ada, "@newchar Ava", "created Ava").await;
+    let (_v, mut ava) = login_picking(server.addr, "ada", PILOT_PASSWORD, "Ava").await;
+    teleport_to_lobby(&mut god, "Ava").await;
+    let seen = ask_whole(&mut ava, "@tutorial").await;
+    assert!(
+        seen.contains("Hints are on; you have read 5 of 5."),
+        "{seen}"
+    );
+    assert!(
+        !strip_ansi(&ava.seen).contains("Hint:"),
+        "an alt read a hint: {}",
+        strip_ansi(&ava.seen)
+    );
+    say(&mut ava, "@tutorial off", "stay unsaid").await;
+    // The switch is the ACCOUNT's document; waited for by content, because
+    // God read the lobby hint in `open_the_centre` and holds one of his own.
+    let store = Arc::clone(&server.store);
+    wait_until(STEP_TIMEOUT, "the tutorial record to land", async || {
+        tutorial_documents(&store)
+            .await
+            .iter()
+            .any(|document| document.get("off") == Some(&Value::Bool(true)))
+    })
+    .await;
+    drop(ava);
+    drop(ada);
+    drop(god);
+    drop(server);
+
+    // ---- the restart: the flags are the store's ----
+    let server = boot_on("sim-solo-hints-b", Some(store)).await;
+    let (_a2, mut ada) = login_picking(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let seen = ask_whole(&mut ada, "@tutorial").await;
+    assert!(
+        seen.contains("Hints are off; you have read 5 of 5."),
+        "{seen}"
+    );
+    let (_g2, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    teleport_to_lobby(&mut god, "Ada").await;
+    let seen = ask_whole(&mut ada, "@tutorial").await;
+    assert!(seen.contains("Hints are off"), "{seen}");
+    assert!(
+        !strip_ansi(&ada.seen).contains("Hint:"),
+        "a hint after the restart: {}",
+        strip_ansi(&ada.seen)
+    );
 }

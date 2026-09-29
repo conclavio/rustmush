@@ -6,6 +6,7 @@
 //! | `tacsim:pack:{id}@{version}` | ledger | **skipped loudly**, and the world boots. The **key still counts**: a version whose row will not parse stays *published*, so it is never quietly treated as new. What is lost with the body is the **digest that version was first published under**, and there is no way to recover it — so boot repairs the row from the loaded pack and **pages level 2 naming the pack** (08c §4.6), because for that one version the in-place-re-publication gate below is disarmed until an operator re-checks it. A subject seeded under it still fails closed rather than floating onto a newer version |
 //! | `tacsim:seed:{pack}@{version}` | latch | **skipped loudly**, and the world boots — but the **key still bars a re-seed**. This is the one place where losing the body must not lose the fact: "we cannot read the latch" has to mean *do not seed again*, never *seed again* (§3.1 invariant (ii)). The cost is that the seeded objects' pack-local names are gone, so the corridor's routes cannot be re-materialized until `@tacsim/seed` is re-run against a fresh store; the objects themselves are untouched |
 //! | `tacsim:pin:{subject}` | pin | **skipped loudly**. A lost pin does **not** float its subject onto a newer version: resolution refuses, naming the pack, because §3.1 invariant (i)'s whole point is that a published contract's assumptions never shift underneath it |
+//! | `tacsim:tutorial:{account}` | per-account | **skipped loudly**; that account reads its hints again (16b cut AH.1: `crate::match_::tutorial`) |
 //! | `tacsim:meta` | allocators | tolerated field by field, floors re-derived from every **parsed key**, loaded or not (E6b's R8 finding). Losing it costs nothing |
 //!
 //! Nothing **in this loader** fails the boot, and the direction of each loss is
@@ -64,6 +65,12 @@ pub const PACK_PAGE: usize = 32;
 /// full at every boot and was invisible from the game. 10b §7 gives a cap to every
 /// other list in the programme; a pin is a per-subject migration decision, so this sits
 /// with the programme's other per-subject caps.
+///
+/// Unlike pins after B4, the tutorial family (`tacsim:tutorial:{account}`, 16b cut
+/// AH.1) deliberately has no cap and no `Del`, and answers B4 by construction: it is
+/// bounded one-to-one by accounts, which have no deletion path of their own, each
+/// document is one bool and at most five words, and every account can see its own from
+/// the game through `@tutorial`.
 pub const MAX_PINS: usize = 128;
 
 /// `tacsim:pack:{id}@{version}`.
@@ -184,6 +191,11 @@ pub struct TacsimStore {
     /// to look. Like `loaded` it is **not persisted**: it is a pure function of
     /// the pack files, and a world remembers a pack by its ledger row.
     pub(crate) definitions: std::sync::Arc<crate::definitions::Catalog>,
+    /// **16b cut AH.1** — `tacsim:tutorial:{account}`: each account's first-time
+    /// hints, whether they are switched off and which points it has read
+    /// ([`crate::match_::tutorial`]). Keyed by the immutable account id, never by a
+    /// character: an alt is the same person.
+    pub(crate) tutorials: BTreeMap<mush_core::AccountId, crate::match_::tutorial::TutorialRec>,
 }
 
 impl TacsimStore {
@@ -796,6 +808,27 @@ pub(crate) fn put_pack(ctx: &mut Ctx<'_>, record: PackRecord) {
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
+/// **Install one account's tutorial record into RAM and queue its document** — the
+/// single write path (16b cut AH.1). A whole-document post-image on the module's own
+/// lane, like every document here; there is no `Del` (see [`MAX_PINS`]).
+pub(crate) fn put_tutorial(
+    ctx: &mut Ctx<'_>,
+    account: mush_core::AccountId,
+    rec: crate::match_::tutorial::TutorialRec,
+) {
+    let value = rec.to_document(account);
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.tutorials.insert(account, rec);
+    }
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: crate::match_::tutorial::tutorial_key(account),
+            value,
+        },
+    );
+}
+
 /// Remove a pin from RAM and queue its document's deletion — the crate's one `Del`.
 ///
 /// Safe because no index floor is derived from a `tacsim:pin:` key: `reindex` floors
@@ -942,6 +975,21 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                     "tacsim: an arena roster is unreadable; that arena's unit slots cannot be \
                      resolved until it is applied again"
                 ),
+            }
+        } else if key.starts_with(crate::match_::tutorial::KEY_PREFIX) {
+            // 16b cut AH.1. A record that will not parse, or that disagrees
+            // with its own key, costs that account its hints — it reads them
+            // again — and nothing else. **Neither warning names the key**: its
+            // tail is the account's canonical hash, and `AccountId`'s contract
+            // is that it never reaches a journal.
+            match crate::match_::tutorial::TutorialRec::from_document(value) {
+                Some((account, rec)) if crate::match_::tutorial::tutorial_key(account) == key => {
+                    store.tutorials.insert(account, rec);
+                }
+                Some(_) => {
+                    tracing::warn!("tacsim: a tutorial record disagrees with its own key; skipped");
+                }
+                None => tracing::warn!("tacsim: a tutorial record did not parse; skipped"),
             }
         } else if key == META_KEY {
             load_meta(&mut store, value);

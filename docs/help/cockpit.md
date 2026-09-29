@@ -204,17 +204,34 @@ same way their plot does, and it is as old as *their* look; and a section you
 watched one of your own rounds take apart reads `destroyed` from that moment,
 without waiting for another look.
 
-**A tank on the move is seen from further away than a tank standing still.**
-Your signature is what the other side's sensors are working against, so rolling
-across open ground hands them a contact at a range that would have held nothing
-if you had stopped. Cover helps the tank that has stopped in it most: heavy
-woods halve what a tank standing still gives away and take only a fifth off a
-tank still rolling. Stop before you are found.
+**A tank on the move is seen from further away than a tank standing still.** A
+sight reaches its full distance only against a target that gives it something to
+see, and what you give it is the ground you stand on and whether you are moving.
+Against the stock sight's 600 m, with a clear line between you: on grass a
+stopped tank can be seen out to 80 per cent of that (480 m) and a moving one out
+to all of it; bare ground stops at 90 per cent; a road hides nothing either way;
+rubble stops at 70 per cent and moves at 95; light woods stop at 65 and move at
+90; heavy woods stop at 50 per cent (300 m) and move at 80. Those are ceilings: a
+canopy between you and the watcher hides you closer in than any of them. So cover
+helps the tank that has stopped in it most, and rolling across open ground hands
+the other side a contact at a range that would have held nothing had you stopped.
+A thermal sight reads your engine and not your outline, so the ground matters
+little to it and your power matters a lot: against its 450 m a tank under way can
+be seen out to 92 to 100 per cent whatever it stands in, a stopped tank with
+power up out to about two thirds of that (heavy woods: about 257 m), and one
+whose power is down out to about an eighth. Stop before you are found; against
+the thermal sight, shut down.
 
-**The facet you show decides what a hit costs you.** Armour is per facet, and
-the round lands on whichever face you are presenting — so a tank fought
-nose-on spends its thickest plate and a tank caught broadside or from behind
-spends its thinnest. Turn into the shot.
+**The facet you show decides what a hit costs you.** Armour is per facet and a
+round lands on the face it arrives at: from within 45 degrees of your bow it
+strikes the front, from within 45 degrees of your stern the rear, and from
+anywhere else a side — and a side is twice the target, 7 m of flank against 3.5
+m of bow. On the stock tank the hull carries 400 in front, 250 a side and 150
+behind, the turret 350, 220 and 140, and a side shot lands on that side's track
+— 120, and a slowed tank once it is gone — three times in ten; a round from
+behind can reach the engine through the hull's rear plate. So a tank fought
+nose-on spends its thickest plate, and one caught from behind spends its
+thinnest. Turn into the shot.
 
 `VIEW` draws the same picture as a map: terrain glyphs, `@` for you, `?` for a
 contact nothing has classified, `+` for your side and `x` for the other. `A`,

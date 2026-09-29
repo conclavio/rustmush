@@ -468,6 +468,12 @@ impl GameModule for TacsimRuleset {
         // exits and aliases still work). Beside the lobby and for the same
         // reason.
         match_::cockpit::register(reg)?;
+        // 16b cut AH.1 (16c N18): the first-time hints — `@tutorial` and the
+        // lobby's `Moved` observer, under the `LegacyPostImage` classification
+        // the cockpit hands back. Unconditional like its neighbours: the verb
+        // reads and throws its account's switch whether or not the layer is on,
+        // and `tutorial::hint` itself refuses to say a line while it is off.
+        match_::tutorial::register(reg)?;
         Ok(())
     }
 

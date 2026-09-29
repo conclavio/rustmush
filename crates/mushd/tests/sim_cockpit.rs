@@ -566,6 +566,14 @@ async fn two_pilots_board_fly_and_climb_out_twice_in_a_row() {
 
     for run in 1..=2 {
         take_off(&mut ada, &mut bo).await;
+        // **16b cut AH.1**: on the first run Ada is a fresh account, and her
+        // first frame — a pulse after `Good hunting` — carries the panel hint,
+        // `…STARTUP brings your power up.`, whose `power` is this `STATUS`'s
+        // needle. Fenced, so the answer below is the cockpit's and not the hint.
+        // The second run's account has read it, and nothing is said.
+        if run == 1 {
+            ada.expect("Hint: the panel").await;
+        }
 
         // A pilot in a pod is flying: the cockpit answers.
         let seen = ask(&mut ada, "STATUS", "power").await;

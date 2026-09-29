@@ -12221,3 +12221,363 @@ async fn af3_the_pilots_board_the_resumed_match_through_the_reclaim() {
         "a login after that reads Y.3's line alone"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut AH.1 (16c N18) — the three frame-borne hints
+// ---------------------------------------------------------------------------
+
+use tacsim::match_::tutorial::{HINT_LINES, HINT_PREFIX, HintPoint, SET_ON, frame_points};
+
+impl Rig {
+    /// **16b cut AH.1**: [`Rig::push_frame`] for an actor outside
+    /// [`Rig::pilots`]'s order — the same staging of one `ArenaOut::Frames`
+    /// through the real egress seam, addressed to `actor`.
+    fn push_frame_for(&mut self, actor: ObjId, frame: tacsim::arena::step::Frame) {
+        let match_id = self.centre().match_id.expect("a running match");
+        let Some(tasks) = self
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .map(|registry| registry.tasks().clone())
+        else {
+            panic!("the arena registry is composed");
+        };
+        assert!(
+            tasks.stage(tacsim::arena_task::ArenaOut::Frames {
+                match_id,
+                frames: vec![(actor, frame)],
+                now_ms: 0,
+                observer: None,
+            }),
+            "the egress staging table took the frame"
+        );
+        let out = self.tw.apply(mush_core::WorldCommand::ModuleAsyncDone {
+            module: smol_str::SmolStr::new_static(tacsim::arena_bridge::MODULE),
+            actor: GOD,
+            correlation: 0,
+            payload: tacsim::arena_bridge::EGRESS_PAYLOAD.to_owned(),
+        });
+        self.log.extend(out);
+    }
+
+    /// **16b cut AH.1**: rebind one pilot the way a reclaim does — the seat
+    /// dropped (and with it the held frame) and taken again — so the pilot's
+    /// next frame is a first frame of the match.
+    fn rebind(&mut self, pilot: ObjId, match_id: tacsim::arena_task::MatchId, unit: ObjId) {
+        let registry = self
+            .tw
+            .world_mut()
+            .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+            .expect("the arena registry is composed");
+        registry.unbind_pilot(pilot);
+        registry.bind_pilot(pilot, match_id, unit);
+    }
+}
+
+/// **16b cut AH.1**: every hint in `log` is `Sys` output on the arena's reply
+/// category — never the notice tag both panel rings drop — and no panel payload
+/// carries one: a hint never rides a frame.
+fn audit_hints(log: &[(Audience, OutputEvent)]) {
+    let mut hints = 0_usize;
+    for (audience, event) in log {
+        match event {
+            OutputEvent::Panel { feed, data, .. } => {
+                let payload = serde_json::to_string(data).expect("a panel payload serializes");
+                assert!(
+                    !payload.contains("Hint:"),
+                    "a hint rode the {feed} panel to {audience:?}"
+                );
+            }
+            OutputEvent::Sys(text) if text.to_plain_text().starts_with(HINT_PREFIX) => {
+                hints += 1;
+                let tags: Vec<Option<&str>> = text
+                    .spans()
+                    .iter()
+                    .map(|span| span.tag.as_deref())
+                    .collect();
+                assert_eq!(
+                    tags.first().copied().flatten(),
+                    Some(tacsim::arena_bridge::NOTICE_CATEGORY),
+                    "a hint is a reply on the arena's category: {tags:?}"
+                );
+                assert!(
+                    !tags.contains(&Some(tacsim::arena_bridge::NOTICE_SENTENCE_TAG)),
+                    "a hint is never a frame's own notice: {tags:?}"
+                );
+            }
+            _ => {}
+        }
+    }
+    assert!(hints > 0, "the audit read at least one hint");
+}
+
+/// What one actor was sent in `log`, in order: `Some(text)` for a `Sys` line,
+/// `None` for an `arena.cockpit` keyframe.
+fn ah1_stream(log: &[(Audience, OutputEvent)], actor: ObjId) -> Vec<Option<String>> {
+    log.iter()
+        .filter(|(audience, _)| *audience == Audience::Actor(actor))
+        .filter_map(|(_, event)| match event {
+            OutputEvent::Sys(text) => Some(Some(text.to_plain_text())),
+            OutputEvent::Panel { feed, .. }
+                if feed.as_str() == tacsim::arena_bridge::FRAME_FEED =>
+            {
+                Some(None)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every hint one actor was sent in `log`, in order.
+fn ah1_hints(log: &[(Audience, OutputEvent)], actor: ObjId) -> Vec<String> {
+    ah1_stream(log, actor)
+        .into_iter()
+        .flatten()
+        .filter(|line| line.starts_with(HINT_PREFIX))
+        .collect()
+}
+
+/// Where `line` sits in `stream`, insisting it is there.
+fn ah1_at(stream: &[Option<String>], line: &str) -> usize {
+    stream
+        .iter()
+        .position(|said| said.as_deref() == Some(line))
+        .unwrap_or_else(|| panic!("{line:?} was not said: {stream:?}"))
+}
+
+/// A `Contact` notice classifying one contact as `team`'s.
+fn ah1_classified(team: Team) -> tacsim::arena::perception::FrameNotice {
+    use tacsim::arena::perception::{FrameNotice, Named, NoticeKind};
+    use tacsim::arena::state::{Classification, ContactId, Designator};
+    FrameNotice::Contact {
+        kind: NoticeKind::Classified,
+        contact: Named {
+            id: ContactId(0x5555_5555_5555_5555),
+            designator: Designator::Slot { team, slot: 1 },
+        },
+        class: Classification::Classified { team },
+        was: None,
+    }
+}
+
+/// **16b cut AH.1**: the boarding hint at `SIM START`, the panel hint on the
+/// first frame AFTER its keyframe, and the power hint after `Power online.` and
+/// after that step's keyframe — each once, each on the reply tag.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ah1_the_first_frame_and_power_online_each_say_their_hint_once_after_the_keyframe() {
+    let mut rig = Rig::boot(2);
+    let p0 = rig.pilot(0);
+    rig.fly().await;
+    assert_eq!(
+        ah1_hints(&rig.log, p0),
+        vec![HINT_LINES[1]],
+        "SIM START said the boarding hint, and the move_to placement no lobby hint"
+    );
+    let mark = rig.log.len();
+    assert!(rig.frame_for(0).await, "the arena spoke to pilot 0");
+    let stream = ah1_stream(&rig.log[mark..], p0);
+    let panel_hint = ah1_at(&stream, HINT_LINES[2]);
+    assert!(
+        stream[..panel_hint].contains(&None),
+        "the panel hint follows the first keyframe: {stream:?}"
+    );
+    assert_eq!(
+        ah1_hints(&rig.log[mark..], p0),
+        vec![HINT_LINES[2]],
+        "{stream:?}"
+    );
+
+    let mark = rig.log.len();
+    rig.say(0, "startup");
+    assert!(rig.powered(0).await, "the power came up");
+    let stream = ah1_stream(&rig.log[mark..], p0);
+    let online = ah1_at(&stream, "Power online.");
+    let power_hint = ah1_at(&stream, HINT_LINES[3]);
+    assert!(online < power_hint, "{stream:?}");
+    assert!(
+        stream[online..power_hint].contains(&None),
+        "the power hint follows that step's keyframe: {stream:?}"
+    );
+    assert_eq!(
+        ah1_hints(&rig.log[mark..], p0),
+        vec![HINT_LINES[3]],
+        "{stream:?}"
+    );
+
+    let mark = rig.log.len();
+    for _ in 0..5 {
+        rig.pump();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(ah1_hints(&rig.log[mark..], p0), Vec::<String>::new());
+    let said = rig.say(0, "@tutorial");
+    assert!(
+        said.contains("Hints are on; you have read 3 of 5."),
+        "boarding, panel and power: {said}"
+    );
+    audit_hints(&rig.log);
+}
+
+/// **16b cut AH.1**: the contact hint waits for an ENEMY told apart, in a unit
+/// with a gun, with power up — and the panel hint for a first frame with power
+/// off; a bound seat that holds no centre slot reads neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ah1_the_contact_hint_waits_for_an_enemy_a_gun_and_power_and_the_panel_hint_for_power_off()
+{
+    use tacsim::arena::state::Power;
+
+    let mut rig = Rig::boot_with(3, config());
+    let (p0, p2) = (rig.pilot(0), rig.pilot(2));
+    let said = rig.say(0, "@tutorial off");
+    assert!(said.contains("Hints are off"), "{said}");
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena spoke to pilot 0");
+    assert_eq!(
+        ah1_hints(&rig.log, p0),
+        Vec::<String>::new(),
+        "off: no boarding and no panel hint"
+    );
+    let said = rig.say(0, "@tutorial on");
+    assert!(said.contains(SET_ON), "{said}");
+    let said = rig.say(0, "@tutorial");
+    assert!(
+        said.contains("Hints are on; you have read 0 of 5."),
+        "{said}"
+    );
+
+    // From here on nothing is pumped: every frame on_frames reads is staged.
+    let held = rig.held_frame(0);
+    assert!(!held.weapons.is_empty(), "the stock tank carries its guns");
+    let own = held.team;
+    let other = match own {
+        Team::Red => Team::Blue,
+        Team::Blue => Team::Red,
+    };
+    let frame = |power: Power, gun: bool, notices: Vec<tacsim::arena::perception::FrameNotice>| {
+        let mut frame = held.clone();
+        frame.power = power;
+        if !gun {
+            frame.weapons.clear();
+        }
+        frame.notices = notices;
+        frame
+    };
+    let quiet = |rig: &mut Rig, frame: tacsim::arena::step::Frame, why: &str| {
+        let mark = rig.log.len();
+        rig.push_frame(0, frame);
+        assert_eq!(
+            ah1_hints(&rig.log[mark..], p0),
+            Vec::<String>::new(),
+            "{why}"
+        );
+    };
+    quiet(
+        &mut rig,
+        frame(Power::Online, true, vec![ah1_classified(own)]),
+        "a friendly told apart",
+    );
+    quiet(
+        &mut rig,
+        frame(Power::Online, false, vec![ah1_classified(other)]),
+        "no gun to FIRE",
+    );
+    quiet(
+        &mut rig,
+        frame(Power::Off, true, vec![ah1_classified(other)]),
+        "FIRE would answer Power not online",
+    );
+    let mark = rig.log.len();
+    rig.push_frame(0, frame(Power::Online, true, vec![ah1_classified(other)]));
+    let stream = ah1_stream(&rig.log[mark..], p0);
+    let contact_hint = ah1_at(&stream, HINT_LINES[4]);
+    assert!(
+        stream[..contact_hint].contains(&None),
+        "after that step's keyframe: {stream:?}"
+    );
+    assert_eq!(ah1_hints(&rig.log[mark..], p0), vec![HINT_LINES[4]]);
+    quiet(
+        &mut rig,
+        frame(Power::Online, true, vec![ah1_classified(other)]),
+        "once",
+    );
+
+    // A reclaim's first frame: the held frame gone, the doctrine's power up.
+    let match_id = rig.centre().match_id.expect("a running match");
+    rig.rebind(p0, match_id, held.unit);
+    quiet(
+        &mut rig,
+        frame(Power::Online, true, vec![]),
+        "a first frame with power up is no panel point",
+    );
+    let said = rig.say(0, "@tutorial");
+    assert!(
+        said.contains("Hints are on; you have read 1 of 5."),
+        "{said}"
+    );
+    rig.rebind(p0, match_id, held.unit);
+    let mark = rig.log.len();
+    rig.push_frame(0, frame(Power::Off, true, vec![]));
+    assert_eq!(ah1_hints(&rig.log[mark..], p0), vec![HINT_LINES[2]]);
+
+    // The seat gate: a bound seat that holds no slot of the centre's.
+    if !rig.tw.world().has_live_conns(p2) {
+        rig.tw.world_mut().set_live_conns(p2, 1);
+    }
+    assert!(rig.tw.world().has_live_conns(p2));
+    assert!(
+        rig.centre().slot_of_pilot(p2).is_none(),
+        "pilot 2 claimed nothing"
+    );
+    rig.tw
+        .world_mut()
+        .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+        .expect("the arena registry is composed")
+        .bind_pilot(p2, match_id, held.unit);
+    let mark = rig.log.len();
+    rig.push_frame_for(p2, frame(Power::Online, true, vec![ah1_classified(other)]));
+    rig.rebind(p2, match_id, held.unit);
+    rig.push_frame_for(p2, frame(Power::Off, true, vec![]));
+    assert!(
+        ah1_stream(&rig.log[mark..], p2).contains(&None),
+        "the seat was sent its frames"
+    );
+    assert_eq!(
+        ah1_hints(&rig.log[mark..], p2),
+        Vec::<String>::new(),
+        "no slot, no hint"
+    );
+    let events = rig.events_of(p2, "@tutorial");
+    assert_eq!(
+        rig.tw.seen_by(&events, p2),
+        vec!["Hints are on; you have read 0 of 5.".to_owned()]
+    );
+    audit_hints(&rig.log);
+}
+
+/// **16b cut AH.1**: the committed cockpit scene earns exactly what its own
+/// fields earn — `cockpit_frame.json` is power `online`, a red unit with two
+/// weapons, and two notices (`acquired` of an unknown `X4`, and
+/// `target_section_lost` on `BA`), none a classification and none
+/// `power_online` — so no point; and the same scene as a first frame with its
+/// power off and no notices earns the panel point alone.
+#[test]
+fn ah1_the_fixture_frame_yields_the_points_its_own_fields_earn() {
+    use tacsim::arena::state::Power;
+
+    let scene = fixture::frame();
+    assert_eq!(scene.power, Power::Online);
+    assert_eq!(scene.team, Team::Red);
+    assert_eq!(scene.weapons.len(), 2);
+    assert_eq!(scene.notices.len(), 2);
+    assert_eq!(frame_points(false, &scene), Vec::<HintPoint>::new());
+    assert_eq!(
+        frame_points(true, &scene),
+        Vec::<HintPoint>::new(),
+        "power is up"
+    );
+    let mut cold = fixture::frame();
+    cold.power = Power::Off;
+    cold.notices = vec![];
+    assert_eq!(frame_points(true, &cold), vec![HintPoint::Panel]);
+    assert_eq!(frame_points(false, &cold), Vec::<HintPoint>::new());
+}

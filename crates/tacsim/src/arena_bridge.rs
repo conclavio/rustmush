@@ -2242,6 +2242,20 @@ fn on_frames(
                     if order.as_str() == IntentKind::Emcon { on: true }.as_str()
             )
         });
+        // **16b cut AH.1** (16c N18): the frame-borne hint points, read off this
+        // frame beside the two hints above and for the same reason — BEFORE the
+        // mirror is written, while the frame still carries its notices and while
+        // `last_frame` still says whether this pilot has had a frame of this
+        // match. `None` is a first frame; so is one held from another match, and
+        // a reclaim's or a resume's first frame (an unbind drops the held frame,
+        // a resume starts a fresh registry), where the doctrine has the power up
+        // and `frame_points` leaves the panel point alone.
+        let first_of_match = ctx
+            .w
+            .module_state::<ArenaRegistry>()
+            .and_then(|registry| registry.last_frame(pilot))
+            .is_none_or(|held| held.match_id != match_id);
+        let points = crate::match_::tutorial::frame_points(first_of_match, &frame);
         if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
             if confirmed || refused {
                 registry.clear_starting_hint(pilot);
@@ -2282,6 +2296,18 @@ fn on_frames(
             ctx.out.sys_to_actor(pilot, NOTICE_SENTENCE_TAG, line);
         }
         feed.keyframe_to(ctx, Audience::Actor(pilot), payload);
+        // **16b cut AH.1**: the points, AFTER the keyframe and in point order.
+        // After, so the frame's own notice lines print above the hint on the
+        // line client (`Power online.`, then what to do with it), both panels
+        // compose the frame's notices before they ring the hint, and the web's
+        // per-match ring reset at a match's first frame (16b cut B.2) cannot
+        // swallow the panel hint. Only to a pilot holding the centre's slot for
+        // THIS match — see [`holds_centre_slot`].
+        if holds_centre_slot(ctx.w, pilot, match_id) {
+            for point in points {
+                crate::match_::tutorial::hint(ctx, pilot, point);
+            }
+        }
         sent = sent.saturating_add(1);
     }
     if let Some(record) = ctx
@@ -2308,6 +2334,23 @@ fn on_frames(
             mirror.tempo = tempo;
         }
     }
+}
+
+/// **Whether `pilot` holds the simulator centre's slot for this match** (16b cut
+/// AH.1) — the one gate on the three frame-borne hint points.
+///
+/// **Both halves do work, and it is the slot half that keeps a staff seat out.**
+/// A staff match from `@arena/start` is a match the centre DOES hold —
+/// `lobby::adopt` binds the centre to it, `Running` with `match_id: Some(id)` —
+/// and it holds NO slot, so a staff seat passes the match-id test and fails
+/// `slot_of_pilot`. A later refactor must not narrow this to a match-id test. A
+/// watcher is fed by `on_observer`, a machine has no pilot and a replay never
+/// reaches `on_frames`, so none of them asks.
+fn holds_centre_slot(w: &mush_core::World, pilot: ObjId, match_id: MatchId) -> bool {
+    crate::match_::lobby::centre(w)
+        .filter(|centre| centre.match_id == Some(match_id))
+        .and_then(|centre| centre.slot_of_pilot(pilot))
+        .is_some()
 }
 
 /// **One staff picture, to the match's watchers** (16b cut I.4; 16c N10).

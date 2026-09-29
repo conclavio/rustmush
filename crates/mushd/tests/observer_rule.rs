@@ -1069,6 +1069,12 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     let mut web = web_session(&server, "boss", GM_PASSWORD, "God").await;
 
     let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
+    // **16b cut AH.1**: both pilots were teleported into the lobby with a live
+    // session, so each reads the lobby hint; Bo then switches his hints off, and
+    // the audit at the end holds each transcript to exactly what that earns.
+    ada.expect("Hint: SIM TEAM").await;
+    bo.expect("Hint: SIM TEAM").await;
+    say(&mut bo, "@tutorial off", "Hints are off").await;
 
     // -----------------------------------------------------------------
     // The control: before the match, every surface names the tanks.
@@ -1106,6 +1112,15 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // -----------------------------------------------------------------
     close_the_gap(&mut god, red, blue, domain).await;
     take_off_with_sensor(&mut ada, &mut bo, true).await;
+    // **16b cut AH.1**: the first frame, before the `STATUS` below. The arena's
+    // first frames reach the world only once the trigger's commit has resolved
+    // (the egress is not drained while a commit is pending), and a `STATUS`
+    // typed the moment `Good hunting` lands can be read first and answered
+    // `The panel has told you nothing yet.`, which never says `m east`: a race
+    // this probe always had, lost about one run in seven with or without the
+    // hints. Ada is a fresh account, so her first frame (power off) carries the
+    // panel hint in the same drain that writes her mirror — the fence.
+    ada.expect("Hint: the panel").await;
 
     // The placement took, which is what makes "before detection" true.
     let seen = ask(&mut ada, "STATUS", "m east").await;
@@ -1731,6 +1746,12 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     let mine = ask(&mut ada, &format!("LOCK {contact}"), "Locking").await;
     let unowned = ask(&mut ada, "LOCK ffffffffffffffff", NO_SUCH_CONTACT).await;
     let malformed = ask(&mut ada, "LOCK zzzz", NO_SUCH_CONTACT).await;
+    // **16b cut AH.1**: the contact hint lands on the frame that tells the
+    // return apart, `classify_after_ms` (15 s under this fixture's sensor) after
+    // the acquisition, and every byte-exact compare since the acquisition ends
+    // here — so the audit below holds the hint to having landed after this mark,
+    // which is what lets those compares stand without taking hints out.
+    let exact_compares_end = ada.mark();
     assert!(mine.contains("Locking"), "{mine}");
     assert_eq!(
         unowned.trim_start_matches("LOCK ffffffffffffffff").trim(),
@@ -1948,6 +1969,38 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         );
     }
     report_is_the_pilots_own(&report, red, blue, "Ada's report of the approach");
+
+    // **16b cut AH.1 (16c N18)**: the first-time hints, over the four
+    // transcripts. Ada walked in live, boarded, read her first frame with the
+    // power off, brought it up in `drive` and told Bo apart with it up: the
+    // five, in order. Bo read the lobby's and switched them off. The bystander
+    // and the staffer were teleported to the muster and never walked the
+    // lobby: none. Every one is one of the five fixed sentences and names
+    // nothing.
+    let hints = tacsim::match_::tutorial::HINT_LINES;
+    let ada_hints = support::hints_read(&ada.seen);
+    assert_eq!(
+        ada_hints,
+        hints
+            .iter()
+            .map(|line| (*line).to_owned())
+            .collect::<Vec<_>>(),
+        "Ada reads the five, once each, in order"
+    );
+    let bo_hints = support::hints_read(&bo.seen);
+    assert_eq!(bo_hints, vec![hints[0].to_owned()], "Bo reads the lobby's");
+    assert_eq!(support::hints_read(&cy.seen), Vec::<String>::new());
+    assert_eq!(support::hints_read(&god.seen), Vec::<String>::new());
+    for line in ada_hints.iter().chain(bo_hints.iter()) {
+        names_nothing(line, red, blue, "a first-time hint");
+        no_sixteen_digit_word(line, "a first-time hint");
+    }
+    // Measured, not assumed: the contact hint landed after the byte-exact
+    // compares that follow the acquisition.
+    assert!(
+        !support::unwrapped(&strip_ansi(&ada.seen[..exact_compares_end])).contains(hints[4]),
+        "the contact hint landed inside the byte-exact compares"
+    );
 }
 
 /// **The observer rule with the switch on** (16b cut Q.1;
@@ -1978,6 +2031,10 @@ async fn the_switch_names_a_contact_at_the_first_pass_over_the_real_composition(
     let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
     close_the_gap(&mut god, red, blue, domain).await;
     take_off_with_sensor(&mut ada, &mut bo, true).await;
+    // **16b cut AH.1**: a fresh account reads the panel hint at its first
+    // frame, a pulse after `Good hunting`; fenced so it cannot land inside the
+    // byte-exact slice below.
+    ada.expect("Hint: the panel").await;
 
     // Before anything is held, the refusal is what it always was: the switch
     // relaxes what a *held* contact is called and nothing else.
@@ -7052,6 +7109,18 @@ async fn af3_the_resume_names_nothing_a_pilot_or_a_bystander_may_not_read() {
     }
     for answer in &refusals {
         assert_eq!(answer, NO_SUCH_CONTACT, "{refusals:?}");
+    }
+    // **16b cut AH.1**: the resume re-boards nobody into a hint — the doctrine
+    // has the power up at the reclaim, a `Power online.` staged for a released
+    // seat is cleared each pulse, and the two tanks are seven hundred metres
+    // apart. (If one ever shows here the fix is a wait on it, never a
+    // suppression.)
+    for (who, term) in [("Ada", &ada), ("Bo", &bo), ("Cy", &cy)] {
+        assert!(
+            !strip_ansi(&term.seen).contains("Hint:"),
+            "{who} read a hint after the restart: {}",
+            strip_ansi(&term.seen)
+        );
     }
 
     // Staff read the resume; a pilot is refused as before.

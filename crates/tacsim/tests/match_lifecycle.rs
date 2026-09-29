@@ -8102,3 +8102,260 @@ async fn af3_the_boot_reset_keeps_a_resumed_match_s_tanks_quietly_and_resets_a_v
     )
     .await;
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut AH.1 (16c N18) — the lobby and boarding hints, and `@tutorial`
+// ---------------------------------------------------------------------------
+
+use tacsim::match_::tutorial::{HINT_LINES, HINT_PREFIX, NO_ACCOUNT, SET_OFF, SET_ON, USAGE};
+
+impl Rig {
+    /// **16b cut AH.1**: [`Rig::boot_on`] with some pilots SHARING an account —
+    /// for each `(a, b)`, pilot `b` is mapped to pilot `a`'s account, which is
+    /// what an alt made with `@newchar` is — and GOD on an account of its own,
+    /// so staff can walk the lobby as a person does.
+    fn boot_sharing(
+        pilots: usize,
+        shared: &[(usize, usize)],
+        modules: Vec<Box<dyn mush_core::GameModule>>,
+    ) -> Rig {
+        let mut rig = Rig::boot_on(pilots, modules);
+        let mut map = Accounts::default();
+        for n in 0..pilots {
+            map.0.insert(rig.pilot(n), account(n));
+        }
+        for (a, b) in shared {
+            map.0.insert(rig.pilot(*b), account(*a));
+        }
+        map.0
+            .insert(GOD, AccountId::mint("boss", 0).expect("an account id"));
+        *rig.tw
+            .world_mut()
+            .module_state_mut::<mush_sim::AccountOracle>()
+            .expect("the simulation is composed") = mush_sim::AccountOracle::new(Arc::new(map));
+        rig
+    }
+
+    /// **A staff `@teleport` of pilot `n` into the lobby** — a real
+    /// `WorldEvent::Moved`, which the rig's own `move_to` placement is not — and
+    /// everything pilot `n` saw of it.
+    fn teleport_in(&mut self, n: usize) -> String {
+        let pilot = self.pilot(n);
+        let lobby = match_::centre_object(self.tw.world(), match_::LOBBY_ENTRY).expect("the lobby");
+        let events = self
+            .tw
+            .run(GOD, &format!("@teleport #{}=#{}", pilot.0, lobby.0));
+        self.seen(pilot, &events)
+    }
+
+    /// Out to Limbo and back in by staff: the lobby point's occasion, once.
+    fn out_and_in(&mut self, n: usize) -> String {
+        self.send_to_limbo(n);
+        self.teleport_in(n)
+    }
+
+    /// **End the match from the lobby, as staff**: GOD walks in (a `move_to`,
+    /// so no lobby point is spent on him) and types `SIM ABORT`, and the rig
+    /// pumps until the centre is terminal.
+    fn end_by_staff(&mut self) {
+        let lobby = match_::centre_object(self.tw.world(), match_::LOBBY_ENTRY).expect("the lobby");
+        self.tw
+            .world_mut()
+            .move_to(GOD, lobby)
+            .expect("staff walk in");
+        let said = self.staff("sim abort");
+        assert!(said.contains("calls the match off"), "{said}");
+        for _ in 0..50 {
+            if self.state().is_terminal() {
+                return;
+            }
+            self.pump();
+        }
+        assert!(
+            self.state().is_terminal(),
+            "the match ended: {:?}",
+            self.state()
+        );
+    }
+}
+
+/// Every `Hint:` line one pilot read in one step's output.
+fn hints_in(said: &str) -> Vec<&str> {
+    said.lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(HINT_PREFIX))
+        .collect()
+}
+
+/// **16b cut AH.1**: the lobby hint is read once, on a real entry, the boarding
+/// hint once at `SIM START`, and an alt on the same account reads neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ah1_the_lobby_and_boarding_hints_are_read_once_per_account_and_an_alt_reads_none() {
+    let mut rig = Rig::boot_sharing(3, &[(1, 2)], roster_with(fill_config()));
+    let said = rig.out_and_in(1);
+    assert_eq!(hints_in(&said), vec![HINT_LINES[0]], "{said}");
+    let said = rig.out_and_in(1);
+    assert_eq!(hints_in(&said), Vec::<&str>::new(), "once: {said}");
+    let said = rig.say(1, "sim team red");
+    assert!(said.contains("red slot 1"), "{said}");
+    assert_eq!(hints_in(&said), Vec::<&str>::new(), "{said}");
+    let said = rig.say(1, "sim start");
+    assert!(said.contains("boarding"), "{said}");
+    assert_eq!(hints_in(&said), vec![HINT_LINES[1]], "{said}");
+    rig.end_by_staff();
+
+    // Pilot 2 is pilot 1's alt: the same person, who has read both.
+    let said = rig.out_and_in(2);
+    assert_eq!(hints_in(&said), Vec::<&str>::new(), "an alt: {said}");
+    let said = rig.say(2, "@tutorial");
+    assert!(
+        said.contains("Hints are on; you have read 2 of 5."),
+        "{said}"
+    );
+    // Pilot 0 is somebody else, and has read nothing.
+    let said = rig.say(0, "@tutorial");
+    assert!(
+        said.contains("Hints are on; you have read 0 of 5."),
+        "{said}"
+    );
+}
+
+/// **16b cut AH.1**: `off` silences the points not yet reached without
+/// spending them, and `on` starts them again without re-arming one read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ah1_off_silences_the_unreached_and_on_does_not_rearm_the_read() {
+    let mut rig = Rig::boot_sharing(2, &[], roster_with(fill_config()));
+    let said = rig.out_and_in(1);
+    assert_eq!(hints_in(&said), vec![HINT_LINES[0]], "{said}");
+    let said = rig.say(1, "@tutorial off");
+    assert!(said.contains(SET_OFF), "{said}");
+    let said = rig.say(1, "@tutorial OFF");
+    assert!(
+        said.contains(SET_OFF),
+        "a switch that changes nothing still answers: {said}"
+    );
+    assert_eq!(hints_in(&rig.out_and_in(1)), Vec::<&str>::new());
+    let said = rig.say(1, "sim team red");
+    assert_eq!(hints_in(&said), Vec::<&str>::new(), "{said}");
+    let said = rig.say(1, "sim start");
+    assert!(said.contains("boarding"), "{said}");
+    assert_eq!(hints_in(&said), Vec::<&str>::new(), "off: {said}");
+    rig.end_by_staff();
+
+    let said = rig.say(1, "@tutorial on");
+    assert!(said.contains(SET_ON), "{said}");
+    assert_eq!(
+        hints_in(&rig.out_and_in(1)),
+        Vec::<&str>::new(),
+        "read once stays read"
+    );
+    let said = rig.say(1, "sim team red");
+    assert_eq!(hints_in(&said), Vec::<&str>::new(), "{said}");
+    let said = rig.say(1, "sim start");
+    assert_eq!(
+        hints_in(&said),
+        vec![HINT_LINES[1]],
+        "a point refused by off was not spent: {said}"
+    );
+    let said = rig.say(1, "@tutorial");
+    assert!(
+        said.contains("Hints are on; you have read 2 of 5."),
+        "{said}"
+    );
+    let said = rig.say(1, "@tutorial sideways");
+    assert!(said.contains(USAGE), "{said}");
+    rig.end_by_staff();
+}
+
+/// **16b cut AH.1**: the lobby point waits for a centre that would take a
+/// claim, for an account that holds no slot, and for a live layer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ah1_the_lobby_hint_waits_for_a_claimable_centre_a_free_account_and_a_live_layer() {
+    // (i) The centre: boarding takes no claim, a terminal centre does.
+    let mut rig = Rig::boot_sharing(3, &[], roster_with(fill_config()));
+    rig.say(1, "sim team red");
+    let said = rig.say(1, "sim start");
+    assert!(said.contains("boarding"), "{said}");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    let said = rig.out_and_in(2);
+    assert_eq!(hints_in(&said), Vec::<&str>::new(), "boarding: {said}");
+    let said = rig.say(2, "@tutorial");
+    assert!(
+        said.contains("Hints are on; you have read 0 of 5."),
+        "{said}"
+    );
+    rig.end_by_staff();
+    let said = rig.out_and_in(2);
+    assert_eq!(hints_in(&said), vec![HINT_LINES[0]], "terminal: {said}");
+
+    // (ii) The claim: a slot holder walking back in is not told to claim.
+    let mut rig = Rig::boot_sharing(2, &[], roster_with(fill_config()));
+    let said = rig.say(1, "sim team red");
+    assert!(said.contains("red slot 1"), "{said}");
+    assert_eq!(hints_in(&said), Vec::<&str>::new(), "{said}");
+    let said = rig.out_and_in(1);
+    assert_eq!(hints_in(&said), Vec::<&str>::new(), "holds a slot: {said}");
+    let said = rig.say(1, "@tutorial");
+    assert!(
+        said.contains("Hints are on; you have read 0 of 5."),
+        "{said}"
+    );
+    let said = rig.say(1, "sim leave");
+    assert_eq!(hints_in(&said), Vec::<&str>::new(), "{said}");
+    let said = rig.out_and_in(1);
+    assert_eq!(
+        hints_in(&said),
+        vec![HINT_LINES[0]],
+        "after SIM LEAVE: {said}"
+    );
+
+    // (iii) The layer: off, nothing is said, and the verb still answers.
+    let mut rig = Rig::boot_on(1, roster_with_the_layer_off());
+    let said = rig.out_and_in(0);
+    assert_eq!(hints_in(&said), Vec::<&str>::new(), "layer off: {said}");
+    let said = rig.say(0, "@tutorial");
+    assert!(
+        said.contains("Hints are on; you have read 0 of 5."),
+        "{said}"
+    );
+}
+
+/// **16b cut AH.1**: a character the account oracle does not map reads no
+/// hint, and the verb says why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ah1_an_unmapped_character_reads_no_hint() {
+    let mut rig = Rig::boot(1);
+    let stray = rig.tw.spawn_player("Stray");
+    rig.pilots.push(stray);
+    let said = rig.out_and_in(1);
+    assert_eq!(hints_in(&said), Vec::<&str>::new(), "{said}");
+    let said = rig.say(1, "@tutorial");
+    assert!(said.contains(NO_ACCOUNT), "{said}");
+    let said = rig.say(1, "@tutorial off");
+    assert!(said.contains(NO_ACCOUNT), "{said}");
+}
+
+/// **16b cut AH.1**: a hint waits for a live connection. A pilot with none —
+/// linkdead, still `is_connected` — is neither told nor marked, and reads the
+/// point at its next occasion with a connection back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ah1_a_hint_waits_for_a_live_connection() {
+    let mut rig = Rig::boot(2);
+    let p1 = rig.pilot(1);
+    assert!(
+        rig.tw.world().has_live_conns(p1),
+        "a spawned player is attached"
+    );
+    rig.tw.world_mut().set_live_conns(p1, 0);
+    assert!(rig.tw.world().is_connected(p1), "the linkdead shape");
+    let said = rig.out_and_in(1);
+    assert_eq!(hints_in(&said), Vec::<&str>::new(), "{said}");
+    let said = rig.say(1, "@tutorial");
+    assert!(
+        said.contains("Hints are on; you have read 0 of 5."),
+        "{said}"
+    );
+    rig.tw.world_mut().set_live_conns(p1, 1);
+    let said = rig.out_and_in(1);
+    assert_eq!(hints_in(&said), vec![HINT_LINES[0]], "{said}");
+}

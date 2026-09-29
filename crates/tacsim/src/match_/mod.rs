@@ -79,6 +79,11 @@ pub mod report;
 /// transition each is reset to its `UnitSpec` by one `UnitMutationPlan`*.
 pub mod reset;
 pub mod sim;
+// 16b cut AH.1 (16c N18): the first-time hints — five fixed lines, each said
+// once per ACCOUNT at its point of a first match, the `tacsim:tutorial:`
+// record that remembers them, `@tutorial` and the lobby's `Moved` observer.
+// Documented by its own module doc.
+pub mod tutorial;
 mod verbs;
 
 pub use arena_def::{

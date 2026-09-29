@@ -277,6 +277,10 @@ If you claim into a centre that is still showing the last match's result, your
 claim clears the board first and puts the tanks back at muster. You do not need
 staff for a rematch.
 
+Two things cost the first pilots most of their duels: a tank on the move is seen
+from further off than one that has stopped, and the face you show a shot decides
+which plate takes it — the numbers are under Seeing in `help cockpit`.
+
 ## Boarding
 
 `SIM START` answers `Match N is boarding.` Walk into your own team room (`red`
@@ -403,6 +407,17 @@ not recorded.` On both, `u` moves the focus to the next tank and `x` closes.
 
 The next `SIM TEAM` clears the board, puts every tank back at spec, back at
 muster and back to their own types, and opens selection again.
+
+## Hints
+
+The first time an account plays, the simulator says one line at five points —
+walking into the lobby, when boarding opens, when the panel wakes, when power
+comes up, and when your sensors first tell an enemy apart — naming the verb to
+type next. Each opens `Hint:` and is said once per account, so an alt does not
+read them again. `@tutorial off` stops the ones you have not reached;
+`@tutorial on` starts them again, and the ones you have read stay read; bare
+`@tutorial` says where you stand. A hint is advice about a verb and never a
+word about the other side.
 
 ## When there is no simulator
 

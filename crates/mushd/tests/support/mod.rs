@@ -975,3 +975,51 @@ pub fn assert_brief_shape(sentences: &[String], what: &str) {
          line doubled or out of place): {left:#?}\n{sentences:#?}"
     );
 }
+
+/// Everything `seen` holds, with the terminal's wraps undone: one space for
+/// every run of whitespace, so a sentence longer than the eighty columns reads
+/// back whole. (Moved here from `sim_solo.rs` by 16b cut AH.1, which reads the
+/// first-time hints — four of the five are wider than the test PTY — in two
+/// files.)
+#[must_use]
+pub fn unwrapped(seen: &str) -> String {
+    seen.split_whitespace().collect::<Vec<&str>>().join(" ")
+}
+
+/// **Every first-time hint a transcript read, in order** (16b cut AH.1; 16c
+/// N18): `seen` is stripped of ANSI and unwrapped, split at every `Hint: `, and
+/// every piece after the first must open with the rest of one of
+/// `tacsim::match_::tutorial::HINT_LINES` — a hint the terminal printed whole,
+/// which is the only kind there is. Answers the matched lines verbatim.
+///
+/// Panics on a piece that opens with none: a `Hint: ` that is not one of the
+/// five fixed sentences is a hint that interpolated something, or a sentence
+/// the table does not hold.
+#[must_use]
+pub fn hints_read(seen: &str) -> Vec<String> {
+    let flat = unwrapped(&strip_ansi(seen));
+    let prefix = tacsim::match_::tutorial::HINT_PREFIX;
+    flat.split(prefix)
+        .skip(1)
+        .map(|piece| {
+            tacsim::match_::tutorial::HINT_LINES
+                .iter()
+                .find(|line| piece.starts_with(line.trim_start_matches(prefix)))
+                .map(|line| (*line).to_owned())
+                .unwrap_or_else(|| panic!("a `{prefix}` that is none of the five: {piece:?}"))
+        })
+        .collect()
+}
+
+/// **A slice with the first-time hints taken out** (16b cut AH.1): unwrapped,
+/// then every occurrence of each of the five sentences removed — for a
+/// byte-exact compare of two answers whose window a hint's occasion can
+/// straddle. Never a wider needle: the answers themselves are compared whole.
+#[must_use]
+pub fn without_hints(slice: &str) -> String {
+    let mut flat = unwrapped(slice);
+    for line in tacsim::match_::tutorial::HINT_LINES {
+        flat = flat.replace(line, "");
+    }
+    unwrapped(&flat)
+}
