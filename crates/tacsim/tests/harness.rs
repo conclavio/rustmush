@@ -219,6 +219,10 @@ struct Knobs {
     engaged_p99_ms: u32,
     max_traces_per_pulse: u32,
     max_path_queries_per_pulse: u32,
+    /// **16b cut AI.1** (16c `B-84`): A* cells one wake's path searches may
+    /// expand, found or failed — asserted beside the queries bound, and a
+    /// `thresholds` key.
+    max_path_cells_per_pulse: u64,
     /// **16b cut S.1** — contact-share operations one pulse may make.
     max_share_ops_per_pulse: u32,
     max_ledger_bytes: u64,
@@ -285,6 +289,7 @@ impl Knobs {
             engaged_p99_ms: cfg.engaged_p99_ms,
             max_traces_per_pulse: cfg.max_traces_per_pulse,
             max_path_queries_per_pulse: cfg.max_path_queries_per_pulse,
+            max_path_cells_per_pulse: cfg.max_path_cells_per_pulse,
             max_share_ops_per_pulse: cfg.max_share_ops_per_pulse,
             max_ledger_bytes: cfg.max_ledger_bytes,
             max_cell_probes_per_pulse: cfg.max_cell_probes_per_pulse,
@@ -3001,6 +3006,11 @@ fn run_wakes(
         reflex_peak.intents = reflex_peak.intents.max(out.reflex.intents);
         reflex_peak.shots = reflex_peak.shots.max(out.reflex.shots);
         reflex_peak.slope_refusals = reflex_peak.slope_refusals.max(out.reflex.slope_refusals);
+        // 16b cut AI.1 (16c `B-84`): the two new counters, each wake's worst.
+        reflex_peak.path_refused_unchanged = reflex_peak
+            .path_refused_unchanged
+            .max(out.reflex.path_refused_unchanged);
+        reflex_peak.corner_refusals = reflex_peak.corner_refusals.max(out.reflex.corner_refusals);
         run.substeps.push(out.substeps);
         #[allow(clippy::cast_precision_loss)]
         run.frames.push(out.frames.len() as f64);
@@ -3629,7 +3639,7 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
     );
 
     println!(
-        "harness_arena_reflex: cohort={cohort} waypoint_nodes={waypoint_nodes} decide_ms={} path_max_cells={} max_path_queries={} repath_ms={} ticks={} intents={} shots={} path_queries={} path_deferred={} path_cells={} path_failures={} traces={} slope_refusals={} peak_ticks={} peak_path_queries={} peak_path_cells={} peak_traces={}",
+        "harness_arena_reflex: cohort={cohort} waypoint_nodes={waypoint_nodes} decide_ms={} path_max_cells={} max_path_queries={} repath_ms={} ticks={} intents={} shots={} path_queries={} path_deferred={} path_cells={} path_failures={} traces={} slope_refusals={} path_refused_unchanged={} corner_refusals={} peak_ticks={} peak_path_queries={} peak_path_cells={} peak_traces={}",
         arena_cfg.reflex.decide_ms,
         arena_cfg.reflex.path_max_cells,
         arena_cfg.reflex.max_path_queries,
@@ -3643,6 +3653,8 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         reflex_total.path_failures,
         reflex_total.traces,
         reflex_total.slope_refusals,
+        reflex_total.path_refused_unchanged,
+        reflex_total.corner_refusals,
         reflex_peak.ticks,
         reflex_peak.path_queries,
         reflex_peak.path_cells,
@@ -3740,12 +3752,13 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         "report-only"
     };
     println!(
-        "harness_arena_thresholds: cohort={cohort} assert={asserting} lens={lens} cut_a_p99_ms={ARENA_P99_MS} cut_s_p99_ms={ARENA_S_P99_MS} window_p99_ms={} engaged_p99_ms={} max_traces_per_pulse={} max_share_ops_per_pulse={} max_path_queries_per_pulse={} max_cell_probes_per_pulse={} max_jam_checks_per_pulse={} max_ledger_bytes={}",
+        "harness_arena_thresholds: cohort={cohort} assert={asserting} lens={lens} cut_a_p99_ms={ARENA_P99_MS} cut_s_p99_ms={ARENA_S_P99_MS} window_p99_ms={} engaged_p99_ms={} max_traces_per_pulse={} max_share_ops_per_pulse={} max_path_queries_per_pulse={} max_path_cells_per_pulse={} max_cell_probes_per_pulse={} max_jam_checks_per_pulse={} max_ledger_bytes={}",
         window_lens_ms(reach),
         knobs.engaged_p99_ms,
         knobs.max_traces_per_pulse,
         knobs.max_share_ops_per_pulse,
         knobs.max_path_queries_per_pulse,
+        knobs.max_path_cells_per_pulse,
         knobs.max_cell_probes_per_pulse,
         knobs.max_jam_checks_per_pulse,
         knobs.max_ledger_bytes
@@ -3920,6 +3933,9 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
                 "path_failures": reflex_total.path_failures,
                 "traces": reflex_total.traces,
                 "slope_refusals": reflex_total.slope_refusals,
+                // 16b cut AI.1 (16c `B-84`).
+                "path_refused_unchanged": reflex_total.path_refused_unchanged,
+                "corner_refusals": reflex_total.corner_refusals,
             },
             "peak_per_pulse": {
                 "ticks": reflex_peak.ticks,
@@ -3931,6 +3947,9 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
                 "intents": reflex_peak.intents,
                 "shots": reflex_peak.shots,
                 "slope_refusals": reflex_peak.slope_refusals,
+                // 16b cut AI.1 (16c `B-84`).
+                "path_refused_unchanged": reflex_peak.path_refused_unchanged,
+                "corner_refusals": reflex_peak.corner_refusals,
             },
             "states_at_end": tacsim::arena::reflex::ReflexState::ALL
                 .iter()
@@ -3971,6 +3990,8 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             "max_traces_per_pulse": knobs.max_traces_per_pulse,
             "max_share_ops_per_pulse": knobs.max_share_ops_per_pulse,
             "max_path_queries_per_pulse": knobs.max_path_queries_per_pulse,
+            // 16b cut AI.1 (16c `B-84`).
+            "max_path_cells_per_pulse": knobs.max_path_cells_per_pulse,
             "max_cell_probes_per_pulse": knobs.max_cell_probes_per_pulse,
             "max_jam_checks_per_pulse": knobs.max_jam_checks_per_pulse,
             "max_ledger_bytes": knobs.max_ledger_bytes,
@@ -4074,6 +4095,17 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             "path queries in one wake {} is past harness.max_path_queries_per_pulse {}",
             reflex_peak.path_queries,
             knobs.max_path_queries_per_pulse
+        );
+        // **16b cut AI.1** (16c `B-84`): and what they cost. A search counts
+        // every cell it expanded, found or failed — a `Budget` failure is
+        // `path_max_cells` of them and a `NoRoute` the whole reachable region —
+        // so the queries bound alone bounds nothing about a wake's search time.
+        // A threshold, never a throttle: the arena searches what it searches.
+        assert!(
+            reflex_peak.path_cells <= knobs.max_path_cells_per_pulse,
+            "A* cells expanded in one wake {} is past harness.max_path_cells_per_pulse {}",
+            reflex_peak.path_cells,
+            knobs.max_path_cells_per_pulse
         );
         // **16b cut Y.2** (doc 16 §2 W8): the span of control and the orders
         // per commander per minute, bounded by `[tacsim.command]`.
@@ -7703,12 +7735,16 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         // both).
         format!(
             "harness_lance_goal_cost: cohort={cohort} ticks={} path_queries={} path_deferred={} \
-             path_cells={} path_failures={} (report-only)",
+             path_cells={} path_failures={} peak_path_cells={} path_refused_unchanged={} \
+             corner_refusals={} (report-only)",
             run.reflex_total.ticks,
             run.reflex_total.path_queries,
             run.reflex_total.path_deferred,
             run.reflex_total.path_cells,
-            run.reflex_total.path_failures
+            run.reflex_total.path_failures,
+            run.reflex_peak.path_cells,
+            run.reflex_total.path_refused_unchanged,
+            run.reflex_total.corner_refusals
         ),
         format!(
             "harness_lance_perception_total: cohort={cohort} passes={} candidates={} traces={} \
@@ -7730,11 +7766,13 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
              cut_a_p99_ms={ARENA_P99_MS} cut_s_p99_ms={ARENA_S_P99_MS} \
              window_p99_ms={window_lens} (report-only for timing) engaged_p99_ms={} \
              max_traces_per_pulse={} max_share_ops_per_pulse={} max_path_queries_per_pulse={} \
-             max_cell_probes_per_pulse={} max_jam_checks_per_pulse={} max_ledger_bytes={}",
+             max_path_cells_per_pulse={} max_cell_probes_per_pulse={} max_jam_checks_per_pulse={} \
+             max_ledger_bytes={}",
             knobs.engaged_p99_ms,
             knobs.max_traces_per_pulse,
             knobs.max_share_ops_per_pulse,
             knobs.max_path_queries_per_pulse,
+            knobs.max_path_cells_per_pulse,
             knobs.max_cell_probes_per_pulse,
             knobs.max_jam_checks_per_pulse,
             knobs.max_ledger_bytes
@@ -7812,6 +7850,8 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             "max_traces_per_pulse": knobs.max_traces_per_pulse,
             "max_share_ops_per_pulse": knobs.max_share_ops_per_pulse,
             "max_path_queries_per_pulse": knobs.max_path_queries_per_pulse,
+            // 16b cut AI.1 (16c `B-84`): report-only on this lane.
+            "max_path_cells_per_pulse": knobs.max_path_cells_per_pulse,
             "max_cell_probes_per_pulse": knobs.max_cell_probes_per_pulse,
             "max_jam_checks_per_pulse": knobs.max_jam_checks_per_pulse,
             "max_ledger_bytes": knobs.max_ledger_bytes,
@@ -7947,12 +7987,34 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         // these re-stated checks were set from — so none of them passes on
         // nothing — and the order count is pinned at seven besides, since its
         // re-stated equality follows from the tape-is-the-script check.
+        //
+        // **16b cut AI.1 (16c B-84) — the span at the defaults is
+        // `squads_per_side - 1`, re-pinned from the fight.** The steer that stops
+        // the machines circling moves every track, and with it who is lost when.
+        // At the defaults `red-1`'s one loss before the release is its
+        // commander's own hull, #100000, and it is **disabled** (in `Withdraw`,
+        // at 76 s) five seconds before it is wrecked (81 s): the `Disabled` edge
+        // at the top of `decide` resets the row of a hull that is disabled and
+        // not yet a wreck, order and all, so the wreck it becomes holds none —
+        // only `Arena::damage`'s adoption of a unit wrecked outright keeps the
+        // order it died under. Its three other machines stand at 90,000 ms and
+        // are released (three `order_released` lines where HEAD's fight wrote
+        // two), so no row of `red-1` holds an order when the span is read at
+        // 119,000 ms. `blue-1`'s wrecks keep the opening order, which expired
+        // at 101,500 ms, as it did before this cut. So each commander holds its
+        // second and third squads: the span reads 2, which is the shape the
+        // paragraph above names for a released side. Before this cut it read
+        // 3 (`red-1`'s wrecks kept its 71,500 ms order). The four fact pins
+        // below did not move: `blue-1` stood none at 71,500 and at the release,
+        // `red-1` stood three at the release, and the tape carries seven orders.
         if at_defaults {
             assert_eq!(
-                command.span_max, squads_per_side,
+                command.span_max,
+                squads_per_side - 1,
                 "W8: the span read {} where the script holds {squads_per_side} squads under \
-                 one commander (a released first squad is counted through its wrecks' rows; \
-                 see above)",
+                 one commander and each side's first squad holds no order at the read (red-1 \
+                 released with no wreck under its order, blue-1's order expired; 16b cut \
+                 AI.1, see above)",
                 command.span_max
             );
             // How many of the squad's machines stood at the scripted wake at

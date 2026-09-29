@@ -861,6 +861,30 @@ pub struct HarnessConfig {
     /// the next MiB (16b cut J.3b's precedent); the CI cohort measured
     /// 3,897,681 on the same run.
     pub max_snapshot_bytes: u64,
+    /// **The most A\* cells one wake's path searches may expand, found or
+    /// failed** (16b cut AI.1; 16c `B-84`), asserted against the worst wake's
+    /// `crate::arena::reflex::ReflexCounters::path_cells` on both cohorts,
+    /// beside [`HarnessConfig::max_path_queries_per_pulse`]. It bounds what the
+    /// queries bound does not: a search's cost, which a `Budget` failure
+    /// (`path_max_cells` expansions) and a `NoRoute` flood (the whole reachable
+    /// region) are the two dearest of — both counted since the same cut.
+    ///
+    /// Like every other key in this block it is a **threshold the harness
+    /// asserts**, never a throttle the arena applies: a controller that stopped
+    /// searching when a per-wake budget ran out would make a route a function of
+    /// the tempo, which D-16-2 forbids.
+    ///
+    /// 48,128 since 16b cut AI.1, **measured before it was set**: the largest
+    /// `peak_path_cells` of both arena lanes at seeds 2350 to 2353 after the
+    /// cut — 41,279, the authored lane at 2352 — times 1.16 (47,884), rounded
+    /// up to the next multiple of 1,024. The eight peaks were 28,722, 19,636,
+    /// 31,143 and 28,201 on the CI cohort and 31,200, 28,037, 41,279 and 24,102
+    /// on the authored one. The cut's first measurement read 50,439 to 59,508,
+    /// each wake dominated by one search into a pocket its closed corners had
+    /// sealed that flooded the 50,400-odd cells it could reach; the goal-side
+    /// probe (`crate::arena::path::POCKET_PROBE_CELLS`) answers those for the
+    /// pocket, and the bound was sized after it.
+    pub max_path_cells_per_pulse: u64,
 }
 
 impl Default for HarnessConfig {
@@ -889,6 +913,9 @@ impl Default for HarnessConfig {
             // 16b cut AF.2: the authored lane's 4,198,651 bytes, three halves
             // of it rounded up to the next MiB (7 MiB).
             max_snapshot_bytes: 7_340_032,
+            // 16b cut AI.1: the eight-run peak, 41,279, times 1.16, rounded up to
+            // the next multiple of 1,024.
+            max_path_cells_per_pulse: 48_128,
         }
     }
 }
@@ -1297,6 +1324,8 @@ impl HarnessConfig {
             ),
             // 16b cut AF.2.
             ("max_snapshot_bytes", self.max_snapshot_bytes),
+            // 16b cut AI.1.
+            ("max_path_cells_per_pulse", self.max_path_cells_per_pulse),
         ] {
             at_least(&format!("[tacsim.harness].{key}"), 1, value)?;
         }

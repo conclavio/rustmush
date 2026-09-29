@@ -362,6 +362,7 @@ fighting = 24                      # how many of those are fighting
 engaged_p99_ms = 25                # the per-pulse p99 ceiling, ms, in Engaged tempo
 max_traces_per_pulse = 4000        # line-of-sight traces one pulse may make (perception has no cross-observer cache)
 max_path_queries_per_pulse = 64    # path queries one pulse may make
+max_path_cells_per_pulse = 48128   # (16b cut AI.1) A* cells one wake's path searches may expand, found or failed; a threshold, never a throttle; sized on the four-seed measurement with the harness's 16 per cent spread
 max_share_ops_per_pulse = 768      # (16b cut S.1) contact-share operations one pulse may make: one (sharer, teammate) pair each; 768 since 16b cut J.3b on the authored lane's 452 peak
 max_ledger_bytes = 67108864        # 64 MiB the streamed ledger must stay under over an hour of arena time
 # (16b cut U.2) Five more, each a THRESHOLD THE HARNESS ASSERTS and never a throttle

@@ -927,6 +927,13 @@ N ms of arena time` under each match once one has been written.
 `[tacsim.harness].max_snapshot_bytes` (16b cut AF.2; default 7,340,032) is the
 largest snapshot the harness's 30-second lane may encode — see the weekly harness
 below.
+`[tacsim.harness].max_path_cells_per_pulse` (16b cut AI.1; default 48,128) is
+the most A* cells one wake's path searches may expand, found or failed — a search
+that runs out of budget or finds no route costs every cell it expanded, and counts
+them. It was sized on the machines' own searches over four seeds of both arena
+lanes, with the harness's 16 per cent spread. It is a threshold the weekly harness
+asserts against the worst wake of both cohorts, beside
+`max_path_queries_per_pulse`; the arena never throttles on it.
 
 #### The cost run
 

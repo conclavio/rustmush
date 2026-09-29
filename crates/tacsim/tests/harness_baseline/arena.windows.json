@@ -1,7 +1,7 @@
 {
   "blessed": {
-    "commit": "58640e65f3efbea504445819ff64d2573223c030",
-    "date": "2026-09-28T04:06:45Z",
+    "commit": "d9fbac85c96a7e8a7c124c87f25fc7742b87e80c",
+    "date": "2026-09-29T06:15:23Z",
     "host": {
       "cpus": 32,
       "hostname": "ALIEN18",
@@ -39,21 +39,21 @@
   "counters": {
     "blocked_causes": {
       "edge": 0,
-      "impassable": 192,
+      "impassable": 85,
       "occupied": 18,
-      "too_steep": 2
+      "too_steep": 0
     },
-    "blocked_events": 212,
-    "blocked_impassable": 192,
-    "blocked_interior_passable": 20,
+    "blocked_events": 103,
+    "blocked_impassable": 85,
+    "blocked_interior_passable": 18,
     "blocked_ring_passable": 0,
     "ended": null,
-    "frames_per_pulse_mean": 19.525,
-    "held_at_end": 14,
+    "frames_per_pulse_mean": 18.867,
+    "held_at_end": 7,
     "lagged_pulses": 0,
-    "ledger_bytes_streamed": 3403452,
-    "ledger_chunks": 211,
-    "moving_at_end": 124
+    "ledger_bytes_streamed": 3511534,
+    "ledger_chunks": 218,
+    "moving_at_end": 141
   },
   "loop": {
     "arena_s": 30.0,
@@ -66,41 +66,41 @@
   },
   "memory": {
     "horizon_bytes": 26112,
-    "rss_end_kib": 45412,
-    "rss_start_kib": 22676,
+    "rss_end_kib": 49272,
+    "rss_start_kib": 23792,
     "vmrss_end_kib": null,
     "vmrss_start_kib": null
   },
   "perception": {
     "alert_range_cm": 362000,
-    "contacts_at_end": 699,
+    "contacts_at_end": 665,
     "lost_after_passes": 3,
     "pass_ms": 1000,
     "peak_per_pulse": {
-      "candidates": 753,
-      "cell_probes": 2817,
-      "classified": 25,
-      "detected": 23,
-      "horizon_probes": 2834,
-      "jam_checks": 383,
+      "candidates": 760,
+      "cell_probes": 2821,
+      "classified": 24,
+      "detected": 22,
+      "horizon_probes": 2845,
+      "jam_checks": 386,
       "lost": 37,
       "passes": 94,
-      "share_ops": 59,
-      "traces": 570
+      "share_ops": 63,
+      "traces": 565
     },
     "sensor_cells": 24,
     "share_cells": 8,
     "total": {
-      "candidates": 71224,
-      "cell_probes": 242903,
+      "candidates": 73028,
+      "cell_probes": 251625,
       "classified": 654,
-      "detected": 897,
-      "horizon_probes": 249689,
-      "jam_checks": 34363,
-      "lost": 951,
-      "passes": 8652,
-      "share_ops": 5641,
-      "traces": 49782
+      "detected": 978,
+      "horizon_probes": 256016,
+      "jam_checks": 34323,
+      "lost": 1083,
+      "passes": 8748,
+      "share_ops": 5440,
+      "traces": 50930
     }
   },
   "reflex": {
@@ -108,35 +108,39 @@
     "max_path_queries_per_window": 64,
     "path_max_cells": 65536,
     "peak_per_pulse": {
+      "corner_refusals": 346,
       "intents": 234,
-      "path_cells": 26194,
+      "path_cells": 28722,
       "path_deferred": 28,
       "path_failures": 1,
       "path_queries": 32,
-      "shots": 43,
-      "slope_refusals": 316,
+      "path_refused_unchanged": 0,
+      "shots": 44,
+      "slope_refusals": 184,
       "ticks": 94,
       "traces": 7
     },
     "repath_ms": 4000,
     "states_at_end": {
-      "approach": 11,
-      "disabled": 35,
-      "engage": 117,
-      "patrol": 118,
+      "approach": 7,
+      "disabled": 25,
+      "engage": 132,
+      "patrol": 115,
       "startup": 0,
-      "withdraw": 19
+      "withdraw": 21
     },
     "total": {
-      "intents": 21324,
-      "path_cells": 182969,
-      "path_deferred": 391,
-      "path_failures": 1,
-      "path_queries": 713,
-      "shots": 3967,
-      "slope_refusals": 856,
-      "ticks": 8652,
-      "traces": 328
+      "corner_refusals": 3098,
+      "intents": 21727,
+      "path_cells": 287129,
+      "path_deferred": 148,
+      "path_failures": 19,
+      "path_queries": 460,
+      "path_refused_unchanged": 0,
+      "shots": 4121,
+      "slope_refusals": 954,
+      "ticks": 8748,
+      "traces": 322
     },
     "waypoint_nodes": 256,
     "waypoint_pitch_cells": 16
@@ -160,20 +164,44 @@
     ]
   },
   "setup_ms": {
-    "arena_open": 1.742,
-    "boot": 29.79,
-    "generate": 3.852,
+    "arena_open": 1.498,
+    "boot": 31.537,
+    "generate": 3.899,
     "killed_warming": 0,
-    "pack_apply": 22.226,
-    "terrain_convert": 1.423,
+    "pack_apply": 21.291,
+    "terrain_convert": 1.49,
     "warm_pulses": 47,
-    "warm_up": 57.874,
-    "window_open": 12.653
+    "warm_up": 59.87,
+    "window_open": 12.238
   },
   "slope": {
-    "refusals": 877,
+    "refusals": 975,
     "units_at_45": 262,
     "units_at_70": 38
+  },
+  "snapshot": {
+    "at_ms": [
+      11750,
+      15000,
+      20000,
+      25000,
+      30000,
+      35000,
+      40000
+    ],
+    "bytes_max": 3909596,
+    "bytes_mean": 3863060,
+    "count": 7,
+    "decode_ms_max": 24.72,
+    "encode_ms": {
+      "max": 13.112,
+      "p50": 12.12,
+      "p99": 12.654
+    },
+    "every_ms": 5000,
+    "hash_ok": true,
+    "max_snapshot_bytes": 7340032,
+    "wake_plus_encode_ms_max": 15.869
   },
   "substeps": {
     "per_wake_max": 1,
@@ -183,11 +211,11 @@
   },
   "tempos": [
     {
-      "max_ms": 11.574,
+      "max_ms": 9.178,
       "name": "arena_engaged",
-      "p50_ms": 2.624,
-      "p95_ms": 4.455,
-      "p99_ms": 5.904,
+      "p50_ms": 2.673,
+      "p95_ms": 5.706,
+      "p99_ms": 6.549,
       "period_ms": 500,
       "pulses": 120
     }
@@ -201,38 +229,39 @@
     "max_cell_probes_per_pulse": 32000,
     "max_jam_checks_per_pulse": 2048,
     "max_ledger_bytes": 67108864,
+    "max_path_cells_per_pulse": 48128,
     "max_path_queries_per_pulse": 64,
     "max_share_ops_per_pulse": 768,
     "max_traces_per_pulse": 4000,
     "window_p99_ms": 12.0
   },
   "weapons": {
-    "armed_units": 245,
-    "disabled_at_end": 3,
-    "fired_events": 4183,
-    "hits": 3991,
-    "impact_events": 4172,
-    "in_flight_at_end": 11,
-    "locked_events": 480,
-    "misses": 181,
-    "rounds_left": 597127,
+    "armed_units": 254,
+    "disabled_at_end": 4,
+    "fired_events": 4337,
+    "hits": 4139,
+    "impact_events": 4327,
+    "in_flight_at_end": 10,
+    "locked_events": 462,
+    "misses": 188,
+    "rounds_left": 595830,
     "rounds_loaded": 629480,
-    "rounds_spent": 25409,
-    "sections_destroyed": 91,
-    "shot_seq_at_end": 4183,
-    "units_destroyed": 33,
-    "wrecks_at_end": 33
+    "rounds_spent": 27803,
+    "sections_destroyed": 85,
+    "shot_seq_at_end": 4337,
+    "units_destroyed": 25,
+    "wrecks_at_end": 25
   },
   "what": "16b cut U.2: `Arena::step` at the harness's scale, the fielded catalog on the reflex controller, woken where the task wakes it, with the cell-probe and jam-check bounds asserted",
   "window": {
-    "cell_probes_peak": 4858,
-    "horizon_probes_peak": 4842,
-    "jam_checks_peak": 688,
-    "ms_max": 15.036,
-    "ms_p50": 5.339,
-    "ms_p95": 8.334,
-    "ms_p99": 10.458,
-    "share_ops_peak": 107,
+    "cell_probes_peak": 4881,
+    "horizon_probes_peak": 4928,
+    "jam_checks_peak": 668,
+    "ms_max": 12.464,
+    "ms_p50": 5.489,
+    "ms_p95": 9.508,
+    "ms_p99": 10.561,
+    "share_ops_peak": 108,
     "traces_peak": 952,
     "window_ms": 500,
     "windows": 60

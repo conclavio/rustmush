@@ -57,6 +57,40 @@
 //! finds is a crossing `crate::arena::motion::step_refusal` accepts; a property
 //! test over fixed-seed reliefs and limits holds it.
 //!
+//! **16b cut AI.1 (16c `B-84`) closed the class gap under a limit.** A diagonal
+//! is, at motion's cadence, a crossing into one of its two shoulders — a unit
+//! crosses one boundary a substep, at most 375 cm of a 1,000 cm cell — so a
+//! corner **neither** of whose shoulders is open ground to the row (off the
+//! window, impassable to it, or a cell the caller was stopped at) is a corner
+//! motion stops a tank at, `impassable`, on the shoulder. With a limit in force
+//! such a corner is no edge (`ShoulderVerdict::Closed`, counted in
+//! [`PathScratch::corner_refusals`]); without one ([`path`]) no shoulder is read
+//! at all and every answer is what it was, because the follower's own rule
+//! (`crate::arena::reflex`, the drivable step) covers an unlimited unit at run
+//! time. `shoulder_state` is the one rule, and the search, the follower's
+//! one-cell test and its steer are its three readers.
+//!
+//! **What closing the gap costs, and the probe that pays for it** (16b cut
+//! AI.1's repair). A corner refused under the limit seals ground the search
+//! used to reach through it — a patrol node in a nine-cell hollow walled in at
+//! its corners, a stand-off cell in a 141-cell one; pockets of 8 to 751 cells
+//! on the harness relief at seeds 2350 to 2353. A search **into** such a
+//! pocket from the open ground is a [`PathFailure::NoRoute`], and A\* learns
+//! that only by expanding everything it can reach — 50,000 cells of the
+//! harness's 51,258 — so on the gate's first run the harness seed paid nineteen
+//! of them where HEAD paid one and the CI cohort's per-wake p99 went from 6 to
+//! 13 ms. So under a limit a search that has expanded [`POCKET_PROBE_CELLS`]
+//! nodes without closing the goal floods **the goal's side** once, under the
+//! same edge rule, up to [`POCKET_PROBE_CELLS`] cells (`goal_pocket`): a flood
+//! that runs out of ground without meeting the start has enumerated a pocket
+//! the start is not in, and the answer is the `NoRoute` the full expansion
+//! would have given, for at most 2,049 cells of work. A flood that meets the start, or
+//! the cap, proves nothing and the search carries on exactly as it was. The
+//! probe decides no route and no outcome — every found route is the one A\*
+//! finds, node for node, and a sealed goal was a `NoRoute` either way — it
+//! changes what a failure costs, and [`PathScratch::last_expanded`] counts its
+//! cells with the search's. [`path`] reads no limit and runs no probe.
+//!
 //! The one named residual against `mush_atlas::physics::move_cost` is the
 //! diagonal constant — 181/128 here against the atlas's 141/100 — which predates
 //! this cut and is left alone; [`crate::arena::slope`]'s own tests pin the
@@ -79,6 +113,20 @@ pub const DIAGONAL_NUM: u32 = 181;
 
 /// The denominator of the diagonal step's cost multiplier.
 pub const DIAGONAL_DEN: u32 = 128;
+
+/// **When a limited search looks at the goal's side, and how far** (16b cut
+/// AI.1's repair; the module head's "the probe that pays for it"): after this
+/// many expansions without closing the goal, [`path_with`] under a limit floods
+/// the goal's side up to this many cells, once.
+///
+/// Measured, not guessed. The largest pocket a closed corner sealed on the
+/// harness relief at seeds 2350 to 2353 was 751 cells, so a flood of 1,024
+/// enumerates every one of them; and of the 530 searches the CI cohort's seed
+/// 2350 found, 504 closed their goal inside 1,024 expansions and never reach
+/// the probe, so the flood is paid by the long routes alone — at most 1,025
+/// cells on a search that has already expanded 1,024. A pocket larger than
+/// this is found the old way, by expanding everything.
+pub const POCKET_PROBE_CELLS: u32 = 1_024;
 
 /// The eight neighbours of a cell, in a fixed order: the four orthogonals first,
 /// then the four diagonals, each pair in ascending `(dy, dx)`.
@@ -148,6 +196,18 @@ pub struct PathScratch {
     /// Edges the last search refused by the slope rule (16b cut U.1): see
     /// [`PathScratch::slope_refusals`].
     slope_refused: u32,
+    /// Diagonals the last search refused as a corner closed on both shoulders
+    /// (16b cut AI.1): see [`PathScratch::corner_refusals`].
+    corner_refused: u32,
+    /// Nodes the last search expanded, found or failed (16b cut AI.1): see
+    /// [`PathScratch::last_expanded`].
+    last_expanded: u32,
+    /// **The goal-side probe's visit stamps** (16b cut AI.1's repair): one per
+    /// cell, current when equal to `generation`, so the probe's flood shares
+    /// the search's free reuse and never touches the search's own `stamp`.
+    probe: Vec<u32>,
+    /// The probe's open cells, reused like `heap`.
+    probe_open: Vec<u32>,
 }
 
 impl PartialEq for PathScratch {
@@ -174,31 +234,76 @@ impl PathScratch {
             self.g = vec![0; cells];
             self.from = vec![0; cells];
             self.stamp = vec![0; cells];
+            self.probe = vec![0; cells];
             self.generation = 0;
         }
         self.generation = self.generation.wrapping_add(1);
         // Generation `0` is "never visited", so a wrap has to skip it — and the
         // stamps have to be cleared once, because a stale `1` from four billion
-        // searches ago would otherwise read as fresh.
+        // searches ago would otherwise read as fresh. The probe's too.
         if self.generation == 0 {
             self.stamp.iter_mut().for_each(|slot| *slot = 0);
+            self.probe.iter_mut().for_each(|slot| *slot = 0);
             self.generation = 1;
         }
         self.heap.clear();
         self.slope_refused = 0;
+        self.corner_refused = 0;
+        self.last_expanded = 0;
     }
 
     /// **How many edges the last search refused by the slope rule** (16b cut
     /// U.1; 16c `T-35`): an edge too steep either way for the caller's limit, or
-    /// a diagonal the shoulder rule refused. Counted once per refusal as the
+    /// a diagonal the shoulder rule refused as too steep
+    /// (`ShoulderVerdict::TooSteep`). Counted once per refusal as the
     /// search meets it, so an edge met from two expansions is two; reset at the
     /// start of every search, and nought for a search with no limit, which reads
     /// no slope. It is a cost figure for the harness's report and the reflex
     /// controller's [`crate::arena::reflex::ReflexCounters::slope_refusals`], not
     /// state: [`PathScratch`]'s equality ignores it with the rest of the buffers.
+    ///
+    /// **16b cut AI.1**: a diagonal refused because **no** shoulder is open —
+    /// `ShoulderVerdict::Closed` — is not a slope refusal and is not counted
+    /// here, but in [`PathScratch::corner_refusals`]: the harness asserts this
+    /// figure non-zero as the proof its cohort met the relief, and a wall
+    /// corner is not relief.
     #[must_use]
     pub fn slope_refusals(&self) -> u32 {
         self.slope_refused
+    }
+
+    /// **How many diagonals the last search refused as a corner closed on both
+    /// shoulders** (16b cut AI.1; 16c `B-84`): `ShoulderVerdict::Closed`,
+    /// under a limit, counted once per refusal as the search meets it; reset at
+    /// the start of every search, and nought for a search with no limit, which
+    /// reads no shoulder. A cost figure for the report and
+    /// `crate::arena::reflex::ReflexCounters::corner_refusals`, not state.
+    #[must_use]
+    pub fn corner_refusals(&self) -> u32 {
+        self.corner_refused
+    }
+
+    /// **How many nodes the last search expanded, whichever way it ended** (16b
+    /// cut AI.1; 16c `B-84`): the route's [`PathResult::expanded`] when one was
+    /// found, `budget + 1` after a [`PathFailure::Budget`] (the expansion that
+    /// broke it is counted, as the loop counts it), everything the search could
+    /// reach after a [`PathFailure::NoRoute`], and nought for an
+    /// [`PathFailure::OffGround`] or a start that is the goal, which expand
+    /// nothing. A failed search is the most expensive search there is, and a
+    /// bound on what one wake's searches cost that could not see it would bound
+    /// nothing: the reflex follower adds this to
+    /// `crate::arena::reflex::ReflexCounters::path_cells` after every search.
+    ///
+    /// **Plus the goal-side probe's cells, when one ran** (16b cut AI.1's
+    /// repair; [`POCKET_PROBE_CELLS`]): a limited search past that many
+    /// expansions floods the goal's side once, and those cells are this
+    /// search's cost too, found or failed — so after a probe this is more than
+    /// [`PathResult::expanded`], which counts A\*'s expansions alone (what the
+    /// budget counts), and a `NoRoute` the probe proved is the expansions so far
+    /// and the pocket.
+    #[must_use]
+    pub fn last_expanded(&self) -> u32 {
+        self.last_expanded
     }
 
     fn at(&self, x: u16, y: u16) -> Option<usize> {
@@ -225,7 +330,9 @@ impl PathScratch {
 /// entered and never expanded, which is the same rule motion's step 4 applies.
 ///
 /// This is [`path_with`] with **no limit**, which is the whole of the difference:
-/// no edge is refused for being too steep, and no shoulder is read. On level
+/// no edge is refused for being too steep, and no shoulder is read — **16b cut
+/// AI.1's** closed corner included, so this search answers cell for cell and
+/// node for node what it answered before that cut. On level
 /// ground the surcharge is the identity, so every flat window answers exactly
 /// what it answered before cut X.6; on relief the unlimited search pays the
 /// climb it plans over, as it must, or it would promise a route motion prices
@@ -288,9 +395,23 @@ pub fn path(
 /// shoulders are a cliff is a corner nothing drives through, and a route that
 /// took one would send a tank along the ridge line beside it. So with a limit in
 /// force a diagonal is refused when a shoulder that exists and is passable is
-/// unreachable from here, or cannot reach the neighbour. A missing or impassable
-/// shoulder is **skipped**: the class gap there predates this cut, and closing it
-/// would change every route on every window with a wall in it.
+/// unreachable from here, or cannot reach the neighbour
+/// (`ShoulderVerdict::TooSteep`, counted as a slope refusal).
+///
+/// **16b cut AI.1 (16c `B-84`) closed the class gap under the limit.** A
+/// missing or impassable shoulder used to be skipped, so a corner **both** of
+/// whose shoulders were walls was an edge — and at motion's cadence a diagonal
+/// is a crossing into one of its shoulders, so a route over such a corner was a
+/// tank stopped `impassable` on a shoulder and the same route searched again
+/// every `repath_ms` for the rest of the match. With a limit in force a
+/// diagonal with **no** open shoulder (`shoulder_state`: a shoulder off the
+/// window, impassable to the row or on `avoid` is absent) is not an edge
+/// (`ShoulderVerdict::Closed`, counted in [`PathScratch::corner_refusals`]);
+/// one open shoulder is enough, because motion drives the corner through it.
+/// Without a limit the gap stays open and no shoulder is read: [`path`] is the
+/// search the harness times and every engine fixture's, and an unlimited unit is
+/// covered at run time by the follower's own rule (the reflex controller's
+/// drivable step, which a corner with no open shoulder fails).
 ///
 /// With `slope_limit` `None` neither test runs, and the surcharge is the
 /// identity on level ground, so [`path`] is exactly what it was.
@@ -308,8 +429,9 @@ pub fn path(
 /// unit's own refusals, and the occupant may be a unit this platform has not
 /// detected (doc 16 §3.6's observer rule). A goal that is itself on the list is
 /// an ordinary [`PathFailure::NoRoute`] — nothing enters it, so nothing closes
-/// it — and the `unreachable` edge takes it from there. `&[]` is exactly what
-/// the search was before.
+/// it (under a limit, past [`POCKET_PROBE_CELLS`] expansions, the goal-side
+/// probe finds it a pocket of one) — and the `unreachable` edge takes it from
+/// there. `&[]` is exactly what the search was before.
 ///
 /// **The row** (16b cut AE.1; 16c `B-58`): `row` is the caller's
 /// [`CostRow`], and every price the search reads — the start and the goal's
@@ -344,8 +466,11 @@ pub fn path_with(
     // The refusal count is this search's, whichever way it ends: the two early
     // answers below return before `fit`, and a caller that reads
     // `slope_refusals()` after every search (the reflex follower does) would
-    // otherwise count the previous search's refusals a second time.
+    // otherwise count the previous search's refusals a second time. **16b cut
+    // AI.1**: the corner count and the expansions the same way.
     scratch.slope_refused = 0;
+    scratch.corner_refused = 0;
+    scratch.last_expanded = 0;
     let passable = |x: u16, y: u16| terrain.passable_for(row, x, y);
     let cell_cm = u32::from(terrain.cell_cm());
     if !passable(start.0, start.1) || !passable(goal.0, goal.1) {
@@ -388,6 +513,8 @@ pub fn path_with(
         u32::try_from(start_at).unwrap_or(u32::MAX),
     )));
     let mut expanded = 0_u32;
+    // **16b cut AI.1's repair**: the goal-side probe's cells, when one ran.
+    let mut probed = 0_u32;
     let width = scratch.width;
     let mut closed_goal = false;
     while let Some(Reverse((estimate, node))) = scratch.heap.pop() {
@@ -410,7 +537,24 @@ pub fn path_with(
         }
         expanded = expanded.saturating_add(1);
         if expanded > budget {
+            // **16b cut AI.1**: a failure costs what it expanded, and says so.
+            scratch.last_expanded = expanded.saturating_add(probed);
             return Err(PathFailure::Budget);
+        }
+        // **16b cut AI.1's repair — the goal's pocket** (the module head): a
+        // limited search this long without the goal floods the goal's side once.
+        // A pocket the start is not in is the `NoRoute` the rest of this loop
+        // would have reached by expanding everything; anything else leaves the
+        // search exactly as it was.
+        if expanded == POCKET_PROBE_CELLS
+            && let Some(limit) = slope_limit
+        {
+            let (cells, sealed) = goal_pocket(terrain, scratch, start, goal, limit, row, avoid);
+            probed = cells;
+            if sealed {
+                scratch.last_expanded = expanded.saturating_add(probed);
+                return Err(PathFailure::NoRoute);
+            }
         }
         // 16b cut X.6: the expanding node's own cell, read once per expansion and
         // not once per neighbour — it is the `from` of all eight edges.
@@ -463,8 +607,9 @@ pub fn path_with(
                         scratch.slope_refused = scratch.slope_refused.saturating_add(1);
                         continue;
                     }
-                    if kind == StepKind::Diagonal
-                        && shoulder_refuses(
+                    if kind == StepKind::Diagonal {
+                        // **16b cut AI.1**: the one shoulder rule, three ways.
+                        match shoulder_refuses(
                             terrain,
                             Some(limit),
                             row,
@@ -472,10 +617,18 @@ pub fn path_with(
                             cell,
                             (x, y),
                             (nx, ny),
-                        )
-                    {
-                        scratch.slope_refused = scratch.slope_refused.saturating_add(1);
-                        continue;
+                            avoid,
+                        ) {
+                            ShoulderVerdict::Passes => {}
+                            ShoulderVerdict::TooSteep => {
+                                scratch.slope_refused = scratch.slope_refused.saturating_add(1);
+                                continue;
+                            }
+                            ShoulderVerdict::Closed => {
+                                scratch.corner_refused = scratch.corner_refused.saturating_add(1);
+                                continue;
+                            }
+                        }
                     }
                 }
                 grade = slope::grade_pct(here_cell, cell, kind, cell_cm);
@@ -518,6 +671,9 @@ pub fn path_with(
             )));
         }
     }
+    // **16b cut AI.1**: every exit from here on expanded exactly this many (and
+    // the probe's cells, when one ran).
+    scratch.last_expanded = expanded.saturating_add(probed);
     if !closed_goal {
         return Err(PathFailure::NoRoute);
     }
@@ -550,23 +706,230 @@ pub fn path_with(
     Ok(PathResult { cells, expanded })
 }
 
-/// **The shoulder rule** (16b cut X.6): whether either shoulder of a diagonal
-/// step refuses it.
+/// **The goal's side, flooded** (16b cut AI.1's repair; the module head's "the
+/// probe that pays for it"): the cells from which `goal` can be reached under
+/// [`path_with`]'s own edge rule for `limit`, `row` and `avoid`, up to
+/// [`POCKET_PROBE_CELLS`] of them. Answers the cells visited and whether the
+/// flood **sealed** — ran out of ground without meeting `start` — which proves
+/// the goal unreachable from it.
 ///
-/// The two shoulders of the corner `here → to` are `(to.0, here.1)` and
-/// `(here.0, to.1)`. A shoulder that is off the window or impassable is skipped
-/// — motion cuts that corner today and this cut does not close the gap — and one
-/// that is there and passable must be reachable from `here` and able to reach
-/// `to`, both as **orthogonal** steps, or the corner is a cliff edge and the
-/// route goes another way.
+/// **Why a flood from the goal is the search's question asked backwards.**
+/// [`path_with`] enters `b` from `a` when `b` is priced passable to the row and
+/// is not on `avoid`, the edge is within the limit (`steepness_pct` is the
+/// steeper of the two ways, so an edge is one either way round), and on a
+/// diagonal the shoulders pass (`shoulder_refuses` reads the same two
+/// shoulders, the same legs and the same `avoid` whichever end it starts
+/// from). So the flood keeps only cells it may **enter** — the goal first:
+/// one on `avoid` is a pocket of one, since nothing enters it — and asks each
+/// edge into them with the same two tests; the start is met when an edge from
+/// it passes, whatever the start's own price, because the search never enters
+/// the cell it starts in. No refusal is counted: the search's counters are the
+/// search's.
+///
+/// Integers, the scratch's own generation stamps and a fixed neighbour order,
+/// so the flood and its cost are the same on every run; its answer decides
+/// nothing but how soon a `NoRoute` is returned.
+#[allow(clippy::too_many_arguments)]
+fn goal_pocket(
+    terrain: &ArenaTerrain,
+    scratch: &mut PathScratch,
+    start: (u16, u16),
+    goal: (u16, u16),
+    limit: u32,
+    row: CostRow,
+    avoid: &[(u16, u16)],
+) -> (u32, bool) {
+    if avoid.contains(&goal) {
+        return (1, true);
+    }
+    let Some(goal_at) = scratch.at(goal.0, goal.1) else {
+        return (0, false);
+    };
+    let cell_cm = u32::from(terrain.cell_cm());
+    let generation = scratch.generation;
+    let width = usize::from(scratch.width.max(1));
+    scratch.probe_open.clear();
+    if let Some(stamp) = scratch.probe.get_mut(goal_at) {
+        *stamp = generation;
+    }
+    scratch
+        .probe_open
+        .push(u32::try_from(goal_at).unwrap_or(u32::MAX));
+    let mut visited = 1_u32;
+    while let Some(node) = scratch.probe_open.pop() {
+        let at = usize::try_from(node).unwrap_or(usize::MAX);
+        let (bx, by) = (
+            u16::try_from(at % width).unwrap_or(0),
+            u16::try_from(at / width).unwrap_or(0),
+        );
+        let Some(entered) = terrain.get(bx, by) else {
+            continue;
+        };
+        for (dx, dy) in NEIGHBOURS {
+            let (Some(ax), Some(ay)) = (
+                u16::try_from(i32::from(bx).saturating_add(dx)).ok(),
+                u16::try_from(i32::from(by).saturating_add(dy)).ok(),
+            ) else {
+                continue;
+            };
+            let Some(from) = terrain.get(ax, ay) else {
+                continue;
+            };
+            let kind = if dx != 0 && dy != 0 {
+                StepKind::Diagonal
+            } else {
+                StepKind::Orthogonal
+            };
+            if slope::too_steep(
+                Some(limit),
+                slope::steepness_pct(from, entered, kind, cell_cm),
+            ) {
+                continue;
+            }
+            if kind == StepKind::Diagonal
+                && shoulder_refuses(
+                    terrain,
+                    Some(limit),
+                    row,
+                    from,
+                    entered,
+                    (ax, ay),
+                    (bx, by),
+                    avoid,
+                ) != ShoulderVerdict::Passes
+            {
+                continue;
+            }
+            if (ax, ay) == start {
+                return (visited, false);
+            }
+            if terrain.price(row, from) == 0 || avoid.contains(&(ax, ay)) {
+                continue;
+            }
+            let Some(next) = scratch.at(ax, ay) else {
+                continue;
+            };
+            match scratch.probe.get_mut(next) {
+                Some(stamp) if *stamp != generation => *stamp = generation,
+                _ => continue,
+            }
+            visited = visited.saturating_add(1);
+            if visited > POCKET_PROBE_CELLS {
+                return (visited, false);
+            }
+            scratch
+                .probe_open
+                .push(u32::try_from(next).unwrap_or(u32::MAX));
+        }
+    }
+    (visited, true)
+}
+
+/// **One shoulder of a diagonal step, as this unit reads it** (16b cut AI.1;
+/// 16c `B-84`): see [`shoulder_state`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Shoulder {
+    /// Off the window, impassable to the row, or a cell the caller was stopped
+    /// at: no ground the corner can be driven through.
+    Absent,
+    /// There and passable, but one of its two orthogonal legs — `here →
+    /// shoulder` or `shoulder → to` — is too steep for the limit, either way.
+    Steep,
+    /// Ground the unit may drive through: both legs are crossings motion
+    /// accepts on slope and class.
+    Open,
+}
+
+/// **The shoulder rule, in one place** (16b cut X.6's rule; 16b cut AI.1 gave
+/// it this shape): the two shoulders of the corner `here → to`, `(to.0,
+/// here.1)` and `(here.0, to.1)`, each read as a [`Shoulder`] for a unit of
+/// `row` under `limit` that has been stopped at the cells on `avoid`.
+///
+/// A shoulder is [`Shoulder::Absent`] when it is off the window, when the row
+/// prices it impassable (16b cut AE.1: a shoulder impassable **to this row** is
+/// no shoulder, as a wall is none), or when it is on `avoid` (16b cut Q.7's
+/// remembered stop, which the search already treats as a wall);
+/// [`Shoulder::Steep`] when it is there but either orthogonal leg is too steep
+/// for `limit` either way (`crate::arena::slope::too_steep` over
+/// `steepness_pct`, exactly the test cut X.6 wrote); and [`Shoulder::Open`]
+/// otherwise. With `limit` `None` no shoulder is ever steep.
+///
+/// **Why a diagonal is read through its shoulders at all**: at motion's cadence
+/// — one boundary a substep, at most 375 cm of a 1,000 cm cell at the fastest
+/// tank — a diagonal step is a crossing into one of the two shoulders, and
+/// `crate::arena::motion`'s refusal tests the cell entered. A corner with no
+/// open shoulder is therefore a corner motion stops the unit at, on a shoulder.
+///
+/// **One rule, three readers** (16b cut Q.7's reason: two implementations of
+/// the shoulder rule would be two rules with one name): the search
+/// ([`shoulder_refuses`], inside [`path_with`] under a limit); the follower's
+/// one-cell edge test (`crate::arena::reflex`'s `edge_verdict`, through
+/// [`shoulder_refuses`]); and the follower's steer — its drivable step (at least
+/// one shoulder [`Shoulder::Open`]), its open line (both), and its aim at the
+/// one open shoulder of a corner whose other shoulder is not.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn shoulder_state(
+    terrain: &ArenaTerrain,
+    limit: Option<u32>,
+    row: CostRow,
+    here_cell: &TerrainCell,
+    to_cell: &TerrainCell,
+    here: (u16, u16),
+    to: (u16, u16),
+    avoid: &[(u16, u16)],
+) -> [Shoulder; 2] {
+    let cell_cm = u32::from(terrain.cell_cm());
+    [(to.0, here.1), (here.0, to.1)].map(|(sx, sy)| {
+        let Some(shoulder) = terrain.get(sx, sy) else {
+            return Shoulder::Absent;
+        };
+        if terrain.price(row, shoulder) == 0 || avoid.contains(&(sx, sy)) {
+            return Shoulder::Absent;
+        }
+        if slope::too_steep(
+            limit,
+            slope::steepness_pct(here_cell, shoulder, StepKind::Orthogonal, cell_cm),
+        ) || slope::too_steep(
+            limit,
+            slope::steepness_pct(shoulder, to_cell, StepKind::Orthogonal, cell_cm),
+        ) {
+            return Shoulder::Steep;
+        }
+        Shoulder::Open
+    })
+}
+
+/// **What the search makes of a diagonal's shoulders** (16b cut AI.1): see
+/// [`shoulder_refuses`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShoulderVerdict {
+    /// At least one shoulder is open and neither is steep: the corner is an
+    /// edge.
+    Passes,
+    /// A shoulder is there and passable and a leg of it is a cliff: 16b cut
+    /// X.6's refusal, unchanged, counted as a slope refusal.
+    TooSteep,
+    /// **No shoulder is open** (16b cut AI.1; 16c `B-84`): a corner nothing
+    /// drives through, counted as a corner refusal.
+    Closed,
+}
+
+/// **The shoulder rule, as the search asks it** (16b cut X.6; the verdict 16b
+/// cut AI.1's): [`shoulder_state`] read into a [`ShoulderVerdict`] —
+/// [`ShoulderVerdict::TooSteep`] when any shoulder is [`Shoulder::Steep`]
+/// (the corner is a cliff edge and the route goes another way — cut X.6's
+/// refusal, exactly), [`ShoulderVerdict::Closed`] when **no** shoulder is
+/// [`Shoulder::Open`], and [`ShoulderVerdict::Passes`] otherwise.
+///
+/// Only ever asked under a limit: [`path_with`] with `None` reads no shoulder,
+/// so [`path`] is byte-identical to what it was before either cut, and so is the
+/// follower's `edge_verdict` for an unlimited unit.
 ///
 /// **16b cut Q.7** made it `pub(crate)`: the follower's own one-cell test
 /// ([`crate::arena::reflex`]) has to ask the edge question *exactly* as the
-/// search asks it, and a second implementation of the shoulder rule beside this
-/// one would be two rules with one name.
-///
-/// **16b cut AE.1** gave it the caller's `row`: a shoulder impassable **to
-/// this row** is no shoulder, and is skipped as a wall is.
+/// search asks it. **16b cut AE.1** gave it the caller's `row`, and **16b cut
+/// AI.1** the caller's `avoid` list: an avoided shoulder is no shoulder, as it
+/// is no cell to the search.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn shoulder_refuses(
     terrain: &ArenaTerrain,
@@ -576,26 +939,16 @@ pub(crate) fn shoulder_refuses(
     to_cell: &TerrainCell,
     here: (u16, u16),
     to: (u16, u16),
-) -> bool {
-    let cell_cm = u32::from(terrain.cell_cm());
-    for (sx, sy) in [(to.0, here.1), (here.0, to.1)] {
-        let Some(shoulder) = terrain.get(sx, sy) else {
-            continue;
-        };
-        if terrain.price(row, shoulder) == 0 {
-            continue;
-        }
-        if slope::too_steep(
-            limit,
-            slope::steepness_pct(here_cell, shoulder, StepKind::Orthogonal, cell_cm),
-        ) || slope::too_steep(
-            limit,
-            slope::steepness_pct(shoulder, to_cell, StepKind::Orthogonal, cell_cm),
-        ) {
-            return true;
-        }
+    avoid: &[(u16, u16)],
+) -> ShoulderVerdict {
+    let shoulders = shoulder_state(terrain, limit, row, here_cell, to_cell, here, to, avoid);
+    if shoulders.contains(&Shoulder::Steep) {
+        ShoulderVerdict::TooSteep
+    } else if !shoulders.contains(&Shoulder::Open) {
+        ShoulderVerdict::Closed
+    } else {
+        ShoulderVerdict::Passes
     }
-    false
 }
 
 #[cfg(test)]
@@ -1183,10 +1536,26 @@ mod tests {
         // 100 it was held to over plain ground before 16b cut AE.1 — so a
         // change that leaves any row nearly routeless shows here instead of
         // passing on a sliver of cases.
+        //
+        // **16b cut AI.1 re-measured them** (16c `B-84`): under a limit a
+        // diagonal with no open shoulder is no longer an edge, so on these
+        // reliefs every row is nearer 4-connected, and the wheeled row — which
+        // refuses rubble, rock, heavy woods and wall, about four in ten of the
+        // painted cells — most of all, close to where a 4-connected grid stops
+        // percolating: `[285, 22, 439]` routes with `[1661, 98, 2067]` diagonal
+        // steps. The floors are four fifths of those again; the property itself
+        // is unchanged. **Accepted knowingly, and recorded**: 22 wheeled routes
+        // of the 540 pairs asked (six reliefs, three limits, thirty pairs) is
+        // the sliver the paragraph above exists to catch — on these reliefs the
+        // wheeled row is at the percolation edge under a limit once closed
+        // corners are refused, so the wheeled floor measures the painted
+        // fixture as much as the search. It moves with the closed-corner rule
+        // (16b cut AI.1's §2) if that rule is revised; a later relief change
+        // may need the fixture repainted rather than the floor lowered again.
         println!("m4 per row: routes {routes:?}, diagonal steps {diagonals:?}");
         for (row, least_routes, least_diagonals) in [
-            (CostRow::Tracked, 250_u32, 1_500_u32),
-            (CostRow::Wheeled, 75, 600),
+            (CostRow::Tracked, 225_u32, 1_300_u32),
+            (CostRow::Wheeled, 17, 75),
             (CostRow::Legged, 350, 1_600),
         ] {
             let (found, cut) = (
@@ -1259,5 +1628,253 @@ mod tests {
             Ok(vec![(0, 1), (1, 1)]),
             "the tank's rubble shoulder is ten metres up, so it goes round"
         );
+    }
+
+    /// **16b cut AI.1 (16c `B-84`): under a limit, a corner closed on both
+    /// shoulders is not an edge.** Two walls diagonal to each other pinch the
+    /// corner `(3, 3) → (4, 4)`: with a limit the search goes round and counts
+    /// the corner in [`PathScratch::corner_refusals`] (and not as a slope
+    /// refusal — the ground is level); with none, [`path`] reads no shoulder
+    /// and answers exactly the one diagonal step it always answered. A shoulder
+    /// on the caller's avoid list is as closed as a wall; one open shoulder is
+    /// enough; and a corner that is the only way out is no way out.
+    #[test]
+    fn ai1_a_corner_closed_on_both_shoulders_is_not_an_edge_under_a_limit() {
+        let pinch = window(8, 8, &[(4, 3), (3, 4)]);
+        let mut scratch = PathScratch::default();
+        let limited = |terrain: &ArenaTerrain,
+                       scratch: &mut PathScratch,
+                       start: (u16, u16),
+                       goal: (u16, u16),
+                       avoid: &[(u16, u16)]| {
+            path_with(
+                terrain,
+                scratch,
+                start,
+                goal,
+                4_096,
+                min_move_cost(terrain),
+                Some(45),
+                CostRow::Tracked,
+                avoid,
+            )
+        };
+        let found = limited(&pinch, &mut scratch, (3, 3), (4, 4), &[]).expect("a way round");
+        assert!(
+            found.cells.len() > 1 && found.cells.first() != Some(&(4, 4)),
+            "the route took the closed corner: {:?}",
+            found.cells
+        );
+        assert!(scratch.corner_refusals() > 0, "no corner was refused");
+        assert_eq!(scratch.slope_refusals(), 0, "a wall corner is not a slope");
+        assert_eq!(scratch.last_expanded(), found.expanded);
+        // Without a limit: cell for cell what it was.
+        let unlimited = path(
+            &pinch,
+            &mut scratch,
+            (3, 3),
+            (4, 4),
+            4_096,
+            min_move_cost(&pinch),
+        )
+        .expect("the diagonal");
+        assert_eq!(unlimited.cells, vec![(4, 4)]);
+        assert_eq!(scratch.corner_refusals(), 0, "no limit reads no shoulder");
+
+        // One wall and one avoided shoulder: closed.
+        let one = window(8, 8, &[(4, 3)]);
+        let found = limited(&one, &mut scratch, (3, 3), (4, 4), &[(3, 4)]).expect("a way round");
+        assert!(
+            found.cells.first() != Some(&(4, 4)),
+            "an avoided shoulder was taken for ground: {:?}",
+            found.cells
+        );
+        assert!(scratch.corner_refusals() > 0);
+        // One wall and one open shoulder: the corner is an edge.
+        let found = limited(&one, &mut scratch, (3, 3), (4, 4), &[]).expect("the diagonal");
+        assert_eq!(found.cells, vec![(4, 4)]);
+
+        // The window's own corner, pinched: nothing else exists.
+        let sealed = window(8, 8, &[(1, 0), (0, 1)]);
+        assert_eq!(
+            limited(&sealed, &mut scratch, (0, 0), (1, 1), &[]),
+            Err(PathFailure::NoRoute)
+        );
+        assert!(scratch.corner_refusals() > 0);
+        assert_eq!(
+            path(
+                &sealed,
+                &mut scratch,
+                (0, 0),
+                (1, 1),
+                4_096,
+                min_move_cost(&sealed)
+            )
+            .map(|found| found.cells),
+            Ok(vec![(1, 1)])
+        );
+    }
+
+    /// **16b cut AI.1 (16c `B-84`): a failed search reports what it expanded.**
+    /// A budget failure expanded one more node than its budget — the expansion
+    /// that broke it is counted, as the loop counts it — and a search with no
+    /// route expanded every cell it could reach; an off-ground search expanded
+    /// nothing. The reflex follower adds this to its `path_cells` whichever way
+    /// the search ended.
+    #[test]
+    fn ai1_a_failed_search_reports_its_expansions() {
+        let mut scratch = PathScratch::default();
+        let open = window(32, 32, &[]);
+        assert_eq!(
+            path(
+                &open,
+                &mut scratch,
+                (0, 0),
+                (31, 31),
+                5,
+                min_move_cost(&open)
+            ),
+            Err(PathFailure::Budget)
+        );
+        assert_eq!(scratch.last_expanded(), 6, "the budget plus one");
+
+        // A wall down column 4: the west half, 4 by 8 = 32 cells, is all the
+        // search can reach.
+        let wall: Vec<(u16, u16)> = (0..8).map(|y| (4_u16, y)).collect();
+        let halved = window(8, 8, &wall);
+        assert_eq!(
+            path(
+                &halved,
+                &mut scratch,
+                (0, 0),
+                (7, 7),
+                4_096,
+                min_move_cost(&halved)
+            ),
+            Err(PathFailure::NoRoute)
+        );
+        assert_eq!(scratch.last_expanded(), 32, "the reachable region");
+
+        assert_eq!(
+            path(
+                &halved,
+                &mut scratch,
+                (0, 0),
+                (4, 4),
+                4_096,
+                min_move_cost(&halved)
+            ),
+            Err(PathFailure::OffGround)
+        );
+        assert_eq!(
+            scratch.last_expanded(),
+            0,
+            "an off-ground search expands nothing"
+        );
+
+        let found = path(
+            &open,
+            &mut scratch,
+            (0, 0),
+            (5, 5),
+            4_096,
+            min_move_cost(&open),
+        )
+        .expect("a route");
+        assert_eq!(scratch.last_expanded(), found.expanded);
+    }
+
+    /// **16b cut AI.1's repair: a goal sealed in a pocket costs the pocket, not
+    /// the window.** A goal whose four orthogonal neighbours are walls is reached
+    /// only across corners closed on both shoulders, so under a limit it is a
+    /// pocket of one: past [`POCKET_PROBE_CELLS`] expansions the goal-side probe
+    /// proves it and the search answers the `NoRoute` it would have reached by
+    /// expanding all 4,091 cells it can reach, for 1,025. A goal on the avoid
+    /// list is the same pocket of one. Without a limit [`path`] reads no
+    /// shoulder and runs no probe: it takes the diagonal, node for node as ever.
+    /// And a search the probe cannot answer — the goal on open ground behind a
+    /// long wall — finds the route it finds without one, paying at most the
+    /// probe's cap on top.
+    #[test]
+    fn ai1_a_goal_sealed_in_a_pocket_is_refused_for_the_pocket() {
+        let limited = |terrain: &ArenaTerrain,
+                       scratch: &mut PathScratch,
+                       start: (u16, u16),
+                       goal: (u16, u16),
+                       avoid: &[(u16, u16)]| {
+            path_with(
+                terrain,
+                scratch,
+                start,
+                goal,
+                65_536,
+                min_move_cost(terrain),
+                Some(45),
+                CostRow::Tracked,
+                avoid,
+            )
+        };
+        let mut scratch = PathScratch::default();
+        let hollow = window(64, 64, &[(40, 39), (39, 40), (41, 40), (40, 41)]);
+        assert_eq!(
+            limited(&hollow, &mut scratch, (0, 0), (40, 40), &[]),
+            Err(PathFailure::NoRoute)
+        );
+        assert_eq!(
+            scratch.last_expanded(),
+            POCKET_PROBE_CELLS + 1,
+            "the expansions up to the probe and the one cell of the pocket"
+        );
+        assert!(scratch.corner_refusals() > 0, "the hollow's corners");
+        let unlimited = path(
+            &hollow,
+            &mut scratch,
+            (0, 0),
+            (40, 40),
+            65_536,
+            min_move_cost(&hollow),
+        )
+        .expect("no limit, no closed corner");
+        assert_eq!(unlimited.cells.last(), Some(&(40, 40)));
+        assert_eq!(
+            scratch.last_expanded(),
+            unlimited.expanded,
+            "no limit runs no probe"
+        );
+
+        let open = window(64, 64, &[]);
+        assert_eq!(
+            limited(&open, &mut scratch, (0, 0), (40, 40), &[(40, 40)]),
+            Err(PathFailure::NoRoute)
+        );
+        assert_eq!(
+            scratch.last_expanded(),
+            POCKET_PROBE_CELLS + 1,
+            "an avoided goal is a pocket of one"
+        );
+
+        // A wall down column 32 with one gap at the top: the goal's side is 1,984
+        // cells, so the probe runs out of cap or meets the start through the gap
+        // — either way it proves nothing and the route is A*'s own.
+        let wall: Vec<(u16, u16)> = (0..63).map(|y| (32_u16, y)).collect();
+        let long = window(64, 64, &wall);
+        let found = limited(&long, &mut scratch, (0, 0), (63, 0), &[]).expect("round the wall");
+        assert!(found.expanded > POCKET_PROBE_CELLS, "the probe was reached");
+        let cost = scratch.last_expanded();
+        assert!(
+            cost > found.expanded && cost <= found.expanded + POCKET_PROBE_CELLS + 1,
+            "the probe's cells are counted, and no more than its cap: {cost} against {}",
+            found.expanded
+        );
+        let plain = path(
+            &long,
+            &mut scratch,
+            (0, 0),
+            (63, 0),
+            65_536,
+            min_move_cost(&long),
+        )
+        .expect("round the wall");
+        assert_eq!(found, plain, "the probe changed a route");
     }
 }

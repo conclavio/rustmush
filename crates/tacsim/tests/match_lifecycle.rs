@@ -7674,10 +7674,17 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
         &mut m,
         |image| {
             if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
-                document["format"] = serde_json::json!(2);
+                // 16b cut AI.1: against the constant, so the next bump
+                // breaks neither arm.
+                document["format"] =
+                    serde_json::json!(tacsim::arena::snapshot::SNAPSHOT_FORMAT + 1);
             }
         },
-        Reason::Exact("the snapshot does not decode: snapshot format 2 is not 1".to_owned()),
+        Reason::Exact(format!(
+            "the snapshot does not decode: snapshot format {} is not {}",
+            tacsim::arena::snapshot::SNAPSHOT_FORMAT + 1,
+            tacsim::arena::snapshot::SNAPSHOT_FORMAT
+        )),
     )
     .await;
 

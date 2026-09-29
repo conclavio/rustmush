@@ -120,6 +120,7 @@
 //! | `[tacsim.harness].max_rss_growth_kib` | `65536` | **16b cut U.2**: how far resident memory may grow over the harness's long run, KiB |
 //! | `[tacsim.harness].max_frame_bytes` | `16384` | **16b cut U.2**: the largest encoded `arena.cockpit` keyframe the fan-out lane may see; the lane measures the opening with no enemy in sight, so a combat frame is unmeasured |
 //! | `[tacsim.harness].max_snapshot_bytes` | `7340032` | **16b cut AF.2** (16c N16): the largest arena snapshot state the harness's 30-second lane may encode, bytes, asserted on both cohorts' `harness_arena_snapshot` line; measured before it was set — the authored lane's 4,198,651 bytes, three halves of it rounded up to the next MiB; the lane's own bound, kept out of the compared block |
+//! | `[tacsim.harness].max_path_cells_per_pulse` | `48128` | **16b cut AI.1** (16c `B-84`): A star cells one wake's path searches expand, found or failed; sized on the four-seed measurement with the harness's 16 per cent spread |
 //! | `[tacsim.harness].max_output_events_per_pulse` | `512` | **16b cut U.2**: the most output events one arena pulse may produce through the world's output path; sized against the fan-out lane's measured acquisition burst (24 panels + 11 contact-notice lines per pilot = 288), 512 so a 24-pilot burst has headroom — whoever moves it next must say why; that burst is teammates only, so an engaged pulse is unmeasured |
 //! | `[game].starter_area` | `true` | S1: apply the shipped starter area (the lot, the OOC Area, the Staff Lobby) at a world's first boot; static content, no LLM call; never re-applied |
 //! | `[atlas].tile_max_cells` | `65536` | S1: the most cells one map tile holds; a larger footprint rasterizes coarser |
@@ -1526,6 +1527,15 @@ pub struct TacsimHarnessCfg {
     /// match. 7 MiB, measured before it was set: the authored lane's 4,198,651
     /// bytes, three halves of it rounded up to the next MiB.
     pub max_snapshot_bytes: u64,
+    /// **The most A\* cells one wake's path searches may expand, found or
+    /// failed** (16b cut AI.1; 16c `B-84`), asserted by the harness against the
+    /// worst wake beside `max_path_queries_per_pulse`: a `Budget` failure and a
+    /// `NoRoute` flood are the two dearest searches, and both count. A threshold
+    /// the harness asserts, never a throttle the arena applies (D-16-2).
+    /// 48,128, measured before it was set: the largest `peak_path_cells` of
+    /// both arena lanes at seeds 2350 to 2353, 41,279, times 1.16, rounded up to
+    /// the next multiple of 1,024.
+    pub max_path_cells_per_pulse: u64,
 }
 
 impl Default for TacsimHarnessCfg {
@@ -1553,6 +1563,8 @@ impl Default for TacsimHarnessCfg {
             // 16b cut AF.2: the authored lane's 4,198,651 bytes, three halves of
             // it rounded up to the next MiB.
             max_snapshot_bytes: 7_340_032,
+            // 16b cut AI.1: the eight-run peak, 41,279, times 1.16, rounded up.
+            max_path_cells_per_pulse: 48_128,
         }
     }
 }
@@ -2742,6 +2754,8 @@ scene_turn_dedline_secs = 30
         );
         // 16b cut AF.2: 7 MiB, measured.
         assert_eq!(h.max_snapshot_bytes, 7_340_032);
+        // 16b cut AI.1 (16c `B-84`): the four-seed measurement, sized.
+        assert_eq!(h.max_path_cells_per_pulse, 48_128);
     }
 
     /// Cut G: every key of all eight tables parses to what it says. Written as
@@ -2795,7 +2809,8 @@ scene_turn_dedline_secs = 30
              max_rss_growth_kib = 4096\n\
              max_frame_bytes = 2000\n\
              max_output_events_per_pulse = 30\n\
-             max_snapshot_bytes = 4096\n",
+             max_snapshot_bytes = 4096\n\
+             max_path_cells_per_pulse = 5000\n",
         )
         .expect("the written-out blocks parse");
 
@@ -2881,6 +2896,8 @@ scene_turn_dedline_secs = 30
         );
         // 16b cut AF.2: the snapshot bound, written out like the rest.
         assert_eq!(h.max_snapshot_bytes, 4_096);
+        // 16b cut AI.1: the cell bound, written out like the rest.
+        assert_eq!(h.max_path_cells_per_pulse, 5_000);
     }
 
     /// **16b cut AF.2** (16c N16): `[tacsim.harness].max_snapshot_bytes` reads

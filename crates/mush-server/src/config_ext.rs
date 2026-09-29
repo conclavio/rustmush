@@ -406,6 +406,9 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             // 16b cut AF.2 (16c N16): the 30-second lane's snapshot bound,
             // measured before it was set; mapped straight across.
             max_snapshot_bytes: cfg.harness.max_snapshot_bytes,
+            // 16b cut AI.1 (16c `B-84`): the per-wake A* cell bound, found or
+            // failed, sized on the four-seed measurement; mapped straight across.
+            max_path_cells_per_pulse: cfg.harness.max_path_cells_per_pulse,
         },
     };
     // **16b cut Q.7**: the arena's own values, checked here and nowhere else.
@@ -1074,7 +1077,8 @@ mod tests {
              max_rss_growth_kib = 4096\n\
              max_frame_bytes = 2000\n\
              max_output_events_per_pulse = 30\n\
-             max_snapshot_bytes = 4096\n",
+             max_snapshot_bytes = 4096\n\
+             max_path_cells_per_pulse = 5000\n",
         );
         let typed = tacsim_config(&cfg).expect("the blocks map");
 
@@ -1193,6 +1197,8 @@ mod tests {
                 max_output_events_per_pulse: 30,
                 // 16b cut AF.2: mapped like the rest.
                 max_snapshot_bytes: 4_096,
+                // 16b cut AI.1: mapped like the rest.
+                max_path_cells_per_pulse: 5_000,
             }
         );
 
@@ -1564,6 +1570,14 @@ mod tests {
                 "[tacsim.harness]",
                 "max_snapshot_bytes = 0\n",
                 "[tacsim.harness].max_snapshot_bytes",
+                "0",
+            ),
+            // 16b cut AI.1 (16c `B-84`): a cell bound of nought fails both
+            // cohorts on their first search.
+            (
+                "[tacsim.harness]",
+                "max_path_cells_per_pulse = 0\n",
+                "[tacsim.harness].max_path_cells_per_pulse",
                 "0",
             ),
             // 16b cut D.3 (`B-33`): off, or a lull and not a hiccup.

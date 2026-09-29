@@ -12,7 +12,7 @@
 //!
 //! # The document
 //!
-//! `{"record": "tacsim.snapshot", "format": 1, "arena": <definition id>,
+//! `{"record": "tacsim.snapshot", "format": 2, "arena": <definition id>,
 //! "arena_definition_digest": <64 lowercase base-16 characters>,
 //! "physics_digest": <the compiled locomotion table's digest>, "at_ms",
 //! "ledger_seq", "chunk_seq", "state_hash": <the u64 as a decimal string>,
@@ -173,7 +173,12 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// MEANING changes; the structural pin (`crates/tacsim/tests/arena.rs`,
 /// `af1_the_snapshot_shape_is_pinned`) moves with it and never alone, and a
 /// behaviour change moves neither.
-pub const SNAPSHOT_FORMAT: u32 = 1;
+///
+/// **2 since 16b cut AI.1** (16c `B-84`): `ReflexUnit` gained `searched_from`
+/// and `refused` (a `Refusal`), carried by the reflex rows' derive — a shape
+/// change, so a format-1 document is refused by name rather than decoded with
+/// the two fields defaulted and then voided on the hash.
+pub const SNAPSHOT_FORMAT: u32 = 2;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///

@@ -16,8 +16,11 @@
 //!   `arena.reflex.withdraw_permille` and it breaks off toward its **own** entry
 //!   zone, holding its fire;
 //! - **(e)** `→ Disabled`: a wreck orders nothing at all;
-//! - **(f)** the `blocked` edge: a tank held against an impassable band throws its
-//!   route away and searches again;
+//! - **(f)** the `blocked` edge: a tank held against an impassable band keeps or
+//!   re-plans its route and never gives up (16b cut AI.1: a stop beside the route
+//!   keeps it — the band's gap is now crossed without a stop, and the stop
+//!   itself, with the route kept, is `AI1_BESIDE`'s in
+//!   `ai1_the_orbit_the_corner_and_a_stop_beside_the_route_are_one_log_at_three_cadences`);
 //! - **(g)** the `lost` edge: a contact that expires drops it back to `Patrol`;
 //! - **(h)** the `unreachable` edge: a goal behind a sealed wall falls back to the
 //!   nearest waypoint, and the search is counted as a failure;
@@ -37,6 +40,8 @@
 //! at a health figure* and not how it got there; **(g)** and **(h)** write the
 //! shadow contact store, because the claim is about the machine's edges and not
 //! about how the sensor pass minted a contact — that is `perception.rs`'s test.
+
+use std::collections::BTreeMap;
 
 use mush_core::{DefinitionDigest, DefinitionId, DefinitionKey, DefinitionKind, ObjId, OwnerId};
 use mush_sim::data::Pose;
@@ -953,10 +958,19 @@ fn a_wreck_and_a_disabled_tank_order_nothing_at_all() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_tank_held_against_a_band_throws_its_route_away_and_searches_again() {
+fn a_tank_held_against_a_band_keeps_or_re_plans_its_route_and_never_gives_up() {
     // An impassable band down column 4 with one gap at row 0: `west` is reachable
     // round it, and a tank that drives into the band is stopped (doc 16 §3.4 step
     // 4's `blocked`).
+    //
+    // **16b cut AI.1** (16c `B-84`): renamed — a stop by the ground no longer
+    // throws every route away (a stop beside the route keeps it), and the gap's
+    // corner is now driven through its open shoulder, so the tank that used to
+    // be stopped there is not. What the test says is unchanged — it never sits
+    // against the band — and it now says it exactly: through the gap, no stop,
+    // under way at the end. A ground stop that keeps its route is proved, at
+    // three cadences, by `AI1_BESIDE` in
+    // `ai1_the_orbit_the_corner_and_a_stop_beside_the_route_are_one_log_at_three_cadences`.
     let band: Vec<(u16, u16, TerrainCell)> = (1..SIDE).map(|y| (4_u16, y, wall())).collect();
     let mut arena = arena_of(
         vec![tank(
@@ -971,15 +985,56 @@ fn a_tank_held_against_a_band_throws_its_route_away_and_searches_again() {
         &[],
     );
     let mut bytes: Vec<u8> = Vec::new();
-    let counters = run(&mut arena, 30_000, &mut bytes);
+    // **16b cut AI.1**: where it got to is read pulse by pulse, not only at the
+    // end. Through the gap without a stop, the tank reaches `west` at about 19 s
+    // and is back east of the band on its way to `east` by 30 s, so a reading
+    // taken at the end alone would miss the crossing it exists to see.
+    let mut counters = tacsim::arena::reflex::ReflexCounters::default();
+    let mut west_most = i64::MAX;
+    let mut wall_ms = arena.now_ms;
+    while arena.now_ms < 30_000 {
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        counters.absorb(&out.reflex);
+        west_most = west_most.min(arena.unit(RED).map_or(i64::MAX, |unit| unit.pose.x_cm));
+        wall_ms += 500;
+    }
     // It found its way round the band rather than sitting against it: the route
     // goes through the gap at row 0.
     assert!(counters.path_queries > 0, "{counters:?}");
     let log = events(&mut arena, &mut bytes);
     let blocked = count(&log, "blocked");
+    // **16b cut AI.1**: the claim is now the stronger one, and exact. It got
+    // past the band — through the gap, west of column 4 — and it was never
+    // stopped doing so: the gap's corner (one shoulder the band, one open) is
+    // stepped through its open shoulder rather than driven into the band.
+    // (Measured: west to 1,501 cm, no `blocked` line.)
     assert!(
-        arena.unit(RED).is_some_and(|unit| unit.pose.x_cm < 4_000) || blocked > 0,
-        "either it got past the band or it was stopped by it at least once"
+        west_most < 4_000,
+        "it never got past the band: west-most {west_most} cm, {blocked} stops"
+    );
+    assert_eq!(
+        blocked, 0,
+        "it was stopped on its way through the gap: {blocked} stops"
+    );
+    // And at the end of the run it is not sitting against the band: it is
+    // under way on a route (measured: back east of the band at 1,000 cm/s,
+    // bound for its next node).
+    assert!(
+        arena
+            .unit(RED)
+            .is_some_and(|unit| unit.speed_cms > 0 && unit.desired_speed_cms > 0),
+        "the run ended with the machine standing: {:?}",
+        arena
+            .unit(RED)
+            .map(|unit| (unit.pose.x_cm, unit.pose.y_cm, unit.speed_cms))
+    );
+    assert!(
+        arena
+            .reflex
+            .unit(RED)
+            .is_some_and(|row| !row.route.is_empty()),
+        "the run ended with the machine routeless"
     );
     // Whatever happened, the machine never gave up: it is still patrolling toward
     // a goal it has a route to.
@@ -5745,9 +5800,26 @@ fn a_wreck_in_the_ford_is_held_against_for_two_seconds_and_then_learned() {
         })
         .map(|event| event.t_ms)
         .collect();
+    // **16b cut AI.1** (16c `B-84`): one wreck is one stop **per remembered
+    // stop**. The machine no longer circles the gap's corners, so it now
+    // finishes its patrol leg inside the minute, and back at the wreck after the
+    // cell has aged off its list ([`tacsim::arena::reflex::REFLEX_AVOID_TTL_MS`])
+    // it is stopped once more — by design, a remembered stop is thirty seconds
+    // and not for ever (measured: 5,500 and 47,250 ms). What stays pinned is
+    // exact: **two** stops in the minute, the second no sooner than the memory
+    // of the first has lapsed — so exactly one inside the memory's lifetime,
+    // and the hold adds none. A third stop, or a return inside the thirty
+    // seconds, fails here.
     assert_eq!(
         stops.len(),
-        1,
+        2,
+        "one wreck is one stop per remembered stop, and the minute holds two: {stops:?}"
+    );
+    assert!(
+        stops.windows(2).all(|pair| match pair {
+            [a, b] => b - a >= tacsim::arena::reflex::REFLEX_AVOID_TTL_MS,
+            _ => true,
+        }),
         "one wreck is one stop, and the hold does not add another: {stops:?}"
     );
     assert!(
@@ -11592,4 +11664,1042 @@ fn ae3_a_released_drone_patrols_hunts_and_shares_what_it_sees() {
     let log = events(&mut arena, &mut bytes);
     assert_eq!(count(&log, "match_ended"), 0, "and nothing ended");
     assert_eq!(count(&log, "fired"), 0, "a drone fires nothing");
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AI.1 — the machines stop searching in circles (16c `B-84`)
+// ---------------------------------------------------------------------------
+
+/// **A tank on the shipped line tank's numbers** (16b cut AI.1): 1,500 cm/s at
+/// 30,000 mdeg/s, 100 / 200 cm/s² — a turning circle of 2,865 cm at speed, so a
+/// neighbour cell can be inside it. The stock [`tank`] turns at 180 degrees a
+/// second (318 cm at speed), inside which no neighbour cell ever falls, so every
+/// stock-tank fixture above keeps its geometry.
+fn slow_tank(
+    id: ObjId,
+    team: Team,
+    pose: Pose,
+    weapons: Vec<WeaponSummary>,
+    controller: Controller,
+) -> CustodyUnit {
+    CustodyUnit {
+        mobility: TrackedRules {
+            max_speed_cms: 1_500,
+            accel_cms2: 100,
+            brake_cms2: 200,
+            turn_rate_mdeg_s: 30_000,
+            reverse_factor_pct: 40,
+        },
+        ..tank(id, team, pose, weapons, controller)
+    }
+}
+
+/// **A window of `width` by `height`** (16b cut AI.1): a turning circle of
+/// 29 m needs more room than [`SIDE`]'s sixteen cells, and a graph of `nodes`
+/// **joined to nothing**: each node is a goal of its own, which the machine that
+/// stands nearest it makes for, arrives at and stays on — so a fixture of several
+/// machines gives each exactly one goal and one search.
+fn ai1_window(
+    width: u16,
+    height: u16,
+    paint: &[(u16, u16, TerrainCell)],
+    nodes: &[(u16, u16)],
+) -> ArenaDefinition {
+    let mut cells = vec![ground(); usize::from(width) * usize::from(height)];
+    for (x, y, cell) in paint {
+        if let Some(slot) = cells.get_mut(usize::from(*y) * usize::from(width) + usize::from(*x)) {
+            *slot = *cell;
+        }
+    }
+    let ids: Vec<SmolStr> = (0..nodes.len())
+        .map(|n| SmolStr::new(format!("n{n}")))
+        .collect();
+    let points = nodes
+        .iter()
+        .zip(&ids)
+        .map(|((x, y), id)| Waypoint {
+            id: id.clone(),
+            x: *x,
+            y: *y,
+        })
+        .collect();
+    let edges: Vec<(SmolStr, SmolStr)> = Vec::new();
+    ArenaDefinition {
+        id: SmolStr::new("tacsim.arena.reflex.ai1"),
+        terrain: ArenaTerrain::new(width, height, CELL_CM, cells).expect("the AI.1 window"),
+        entry_zones: vec![
+            EntryZone {
+                team: Team::Red,
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: height - 1,
+            },
+            EntryZone {
+                team: Team::Blue,
+                x0: width - 2,
+                y0: 0,
+                x1: width - 1,
+                y1: height - 1,
+            },
+        ],
+        key_spots: Vec::new(),
+        waypoints: Waypoints::new(points, &edges),
+        modes: Vec::new(),
+    }
+}
+
+/// The doctrine the AI.1 fixtures run on: a tick every 500 ms and the stock
+/// `repath_ms`, so a search spent is a search counted and a route kept is a
+/// search saved.
+fn ai1_cfg() -> ArenaConfig {
+    arena_cfg(ReflexConfig {
+        decide_ms: 500,
+        repath_ms: 4_000,
+        ..ReflexConfig::default()
+    })
+}
+
+/// **Put `unit` online and at full speed on `heading_mdeg`** before the first
+/// pulse — a machine that is already driving when its first tick decides, which
+/// is where the turning circle matters.
+fn at_speed(arena: &mut Arena, unit: ObjId, heading_mdeg: u32) {
+    if let Some(state) = arena.unit_mut(unit) {
+        state.power = Power::Online;
+        state.pose.heading_mdeg = heading_mdeg;
+        state.desired_heading_mdeg = heading_mdeg;
+        state.speed_cms = i32::try_from(state.mobility.max_speed_cms).unwrap_or(0);
+        state.desired_speed_cms = state.speed_cms;
+    }
+}
+
+/// What one AI.1 run leaves: the counters, the cell track pulse by pulse, the
+/// easting pulse by pulse, and the `blocked` lines.
+struct Ai1Run {
+    counters: tacsim::arena::reflex::ReflexCounters,
+    track: Vec<(u16, u16)>,
+    xs: Vec<i64>,
+    blocked: usize,
+}
+
+/// Step `arena` to `until_ms` at 500 ms, recording `unit`'s cell after every
+/// pulse and running `script` after each.
+fn ai1_run(
+    arena: &mut Arena,
+    unit: ObjId,
+    until_ms: i64,
+    script: &mut dyn FnMut(&mut Arena),
+) -> Ai1Run {
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = arena.now_ms;
+    let mut counters = tacsim::arena::reflex::ReflexCounters::default();
+    let mut track: Vec<(u16, u16)> = Vec::new();
+    let mut xs: Vec<i64> = Vec::new();
+    while arena.now_ms < until_ms {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        counters.absorb(&out.reflex);
+        if let Some(cell) = cell_of_unit(arena, unit)
+            && track.last() != Some(&cell)
+        {
+            track.push(cell);
+        }
+        if let Some(state) = arena.unit(unit) {
+            xs.push(state.pose.x_cm);
+        }
+        script(arena);
+        wall += 500;
+    }
+    let log = events(arena, &mut bytes);
+    Ai1Run {
+        counters,
+        track,
+        xs,
+        blocked: count(&log, "blocked"),
+    }
+}
+
+/// Whether `unit` stands within [`tacsim::arena::reflex::ARRIVE_CELLS`] of
+/// `goal`.
+fn arrived_at(arena: &Arena, unit: ObjId, goal: (u16, u16)) -> bool {
+    cell_of_unit(arena, unit).is_some_and(|(x, y)| {
+        x.abs_diff(goal.0).max(y.abs_diff(goal.1)) <= tacsim::arena::reflex::ARRIVE_CELLS
+    })
+}
+
+/// Whether a cell track ever comes back to a cell it has left.
+fn revisits(track: &[(u16, u16)]) -> Option<(u16, u16)> {
+    track
+        .iter()
+        .enumerate()
+        .find(|(at, cell)| track.iter().skip(at + 1).any(|later| later == *cell))
+        .map(|(_, cell)| *cell)
+}
+
+/// **16b cut AI.1 (16c `B-84`, the orbit)**: a machine at full speed whose goal
+/// is behind it. Its route's first cells are behind it, and every one it turns
+/// toward comes inside its 29 m circle on the way round: before this cut it
+/// steered at the first route cell at full speed, circled it, drifted more than
+/// a cell off it and threw the route and its search stamp away — a fresh search
+/// every tick for as long as the orbit lasted. Now it keeps its route while it
+/// is inside the circle, aims at a route cell it can turn onto, slows for one
+/// it cannot, and arrives on its one search.
+#[test]
+fn ai1_a_follower_inside_its_circle_keeps_its_route_and_arrives() {
+    let goal = (4_u16, 16_u16);
+    let mut arena = arena_on(
+        ai1_window(32, 32, &[], &[goal]),
+        vec![slow_tank(
+            RED,
+            Team::Red,
+            centre(20, 16),
+            Vec::new(),
+            Controller::Reflex,
+        )],
+        &ai1_cfg(),
+        &[],
+    );
+    at_speed(&mut arena, RED, 90_000);
+    let run = ai1_run(&mut arena, RED, 40_000, &mut |_| {});
+    assert!(
+        arrived_at(&arena, RED, goal),
+        "the machine never arrived: it stands at {:?} after {:?}; {:?}",
+        cell_of_unit(&arena, RED),
+        run.track,
+        run.counters
+    );
+    assert!(
+        run.counters.path_queries <= 2,
+        "the machine searched {} times for one goal: {:?}",
+        run.counters.path_queries,
+        run.counters
+    );
+    assert!(
+        run.counters.path_deferred <= 4,
+        "the machine sat routeless tick after tick: {:?}",
+        run.counters
+    );
+    assert_eq!(run.blocked, 0, "nothing stands in its way");
+}
+
+/// **16b cut AI.1, the orbit's two ordinary shapes**: a 90° bend round a wall
+/// taken at speed, and a machine pushed a cell off a straight route at speed.
+/// Each arrives on at most two searches, and neither turns back along its
+/// route to a cell it has passed.
+#[test]
+fn ai1_a_bend_at_speed_and_a_push_beside_the_route_never_turn_back() {
+    // The bend: a wall down column 8 from row 0 to row 20, the machine at (4, 4)
+    // driving north, the goal at (20, 24) past the wall's end. Its route runs
+    // north beside the wall and turns east round its end.
+    let goal = (20_u16, 24_u16);
+    let wall_cells: Vec<(u16, u16, TerrainCell)> = (0..=20).map(|y| (8_u16, y, wall())).collect();
+    let mut arena = arena_on(
+        ai1_window(32, 32, &wall_cells, &[goal]),
+        vec![slow_tank(
+            RED,
+            Team::Red,
+            centre(4, 4),
+            Vec::new(),
+            Controller::Reflex,
+        )],
+        &ai1_cfg(),
+        &[],
+    );
+    at_speed(&mut arena, RED, 0);
+    let run = ai1_run(&mut arena, RED, 40_000, &mut |_| {});
+    assert!(
+        arrived_at(&arena, RED, goal),
+        "the bend: never arrived, at {:?} after {:?}; {:?}",
+        cell_of_unit(&arena, RED),
+        run.track,
+        run.counters
+    );
+    assert!(
+        run.counters.path_queries <= 2,
+        "the bend: {:?}",
+        run.counters
+    );
+    assert_eq!(
+        revisits(&run.track),
+        None,
+        "the bend: the machine came back to a cell it had left: {:?}",
+        run.track
+    );
+    assert_eq!(run.blocked, 0, "the bend: the wall stopped it");
+
+    // The push: the machine drives east along row 16 at speed to (28, 16); at
+    // 4 s it is shoved one cell north, beside its route. It carries on east.
+    let goal = (28_u16, 16_u16);
+    let mut arena = arena_on(
+        ai1_window(32, 32, &[], &[goal]),
+        vec![slow_tank(
+            RED,
+            Team::Red,
+            centre(4, 16),
+            Vec::new(),
+            Controller::Reflex,
+        )],
+        &ai1_cfg(),
+        &[],
+    );
+    at_speed(&mut arena, RED, 90_000);
+    let mut shoved = false;
+    let run = ai1_run(&mut arena, RED, 40_000, &mut |arena: &mut Arena| {
+        if !shoved && arena.now_ms >= 4_000 {
+            shoved = true;
+            if let Some(state) = arena.unit_mut(RED) {
+                state.pose.y_cm += i64::from(CELL_CM);
+            }
+        }
+    });
+    assert!(
+        arrived_at(&arena, RED, goal),
+        "the push: never arrived, at {:?} after {:?}; {:?}",
+        cell_of_unit(&arena, RED),
+        run.track,
+        run.counters
+    );
+    assert!(
+        run.counters.path_queries <= 2,
+        "the push: {:?}",
+        run.counters
+    );
+    assert!(
+        run.xs.windows(2).all(|pair| match pair {
+            [a, b] => b >= a,
+            _ => true,
+        }),
+        "the push: the machine turned back west along its route: {:?}",
+        run.xs
+    );
+}
+
+/// Make `unit` a limited one — the stock locomotion's 45 per cent — the way
+/// every shipped chassis is (a fixture's hand-made unit declares no mobility, so
+/// it is written on here rather than read off a spec; the
+/// `the_follower_holds_rather_than_drive_at_a_bluff` pattern).
+fn limited(arena: &mut Arena, unit: ObjId) {
+    if let Some(state) = arena.unit_mut(unit) {
+        state.slope_limit_pct = Some(45);
+    }
+}
+
+/// How many `blocked` lines of `unit` the log holds for `cause`, or for every
+/// cause but `Occupied` with `None`.
+fn stops_of(
+    events: &[LedgerEvent],
+    unit: ObjId,
+    cause: Option<tacsim::arena::motion::BlockedCause>,
+) -> Vec<(i64, (u16, u16))> {
+    events
+        .iter()
+        .filter_map(|event| match event.kind {
+            tacsim::arena::ledger::EventKind::Blocked {
+                unit: who,
+                x,
+                y,
+                cause: why,
+            } if who == unit
+                && cause.map_or(
+                    why != tacsim::arena::motion::BlockedCause::Occupied,
+                    |cause| why == cause,
+                ) =>
+            {
+                Some((event.t_ms, (x, y)))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// **The corner of `B-84`** (16b cut AI.1): the route's first step is the
+/// diagonal `(15, 9)` from `(16, 8)`, whose west shoulder `(15, 8)` is a wall
+/// and whose north shoulder `(16, 9)` is open, and the machine stands with its
+/// `x_cm` exactly on the column boundary — the shape the AE sweep found unit
+/// 100164 in, at `x_cm` 206,000. Any line from there toward the diagonal cell
+/// enters the wall first.
+fn ai1_corner(at_speed_north: bool) -> Arena {
+    let goal = (6_u16, 18_u16);
+    let pose = if at_speed_north {
+        // Driving north up the boundary at full speed; its first tick finds it
+        // still in (16, 8).
+        pose(16_000, 8_000)
+    } else {
+        pose(16_000, 8_500)
+    };
+    let mut arena = arena_on(
+        ai1_window(32, 32, &[(15, 8, wall())], &[goal]),
+        vec![slow_tank(
+            RED,
+            Team::Red,
+            pose,
+            Vec::new(),
+            Controller::Reflex,
+        )],
+        &ai1_cfg(),
+        &[],
+    );
+    limited(&mut arena, RED);
+    if at_speed_north {
+        at_speed(&mut arena, RED, 0);
+    } else if let Some(state) = arena.unit_mut(RED) {
+        // At rest, online, facing north.
+        state.power = Power::Online;
+    }
+    arena
+}
+
+/// **16b cut AI.1 (16c `B-84`, the corner cut)**: a limited machine on a
+/// corner one of whose shoulders is a wall steps through the open shoulder.
+///
+/// Before this cut the follower steered at the diagonal cell's centre, the
+/// line crossed the west boundary first, motion stopped the machine
+/// `impassable` on the wall shoulder, `note_blocked` threw the route away, and
+/// after `repath_ms` the identical route was searched and driven into the same
+/// wall. Now the follower aims at the open shoulder's centre: no `blocked`
+/// line, one search, the open shoulder entered first, and no cell entered twice
+/// — from rest, and driving up the boundary at full speed.
+#[test]
+fn ai1_a_unit_on_a_corner_steps_through_the_open_shoulder() {
+    for at_speed_north in [false, true] {
+        let mut arena = ai1_corner(at_speed_north);
+        let run = ai1_run(&mut arena, RED, 30_000, &mut |_| {});
+        let how = if at_speed_north {
+            "at speed"
+        } else {
+            "from rest"
+        };
+        assert_eq!(
+            run.blocked, 0,
+            "{how}: the machine was stopped on the corner: {:?}",
+            run.track
+        );
+        assert_eq!(
+            run.counters.path_queries, 1,
+            "{how}: {:?} after {:?}",
+            run.counters, run.track
+        );
+        assert_eq!(
+            run.track.get(1).copied(),
+            Some((16, 9)),
+            "{how}: the first cell it entered was not the open shoulder: {:?}",
+            run.track
+        );
+        assert!(
+            !run.track.contains(&(15, 8)),
+            "{how}: it entered the wall: {:?}",
+            run.track
+        );
+        assert_eq!(
+            revisits(&run.track),
+            None,
+            "{how}: a lap round the shoulder: {:?}",
+            run.track
+        );
+        assert!(
+            arrived_at(&arena, RED, (6, 18)),
+            "{how}: never arrived: {:?}",
+            run.track
+        );
+    }
+}
+
+/// **16b cut AI.1**: a corner closed on both shoulders, and an unlimited machine
+/// whose search (which reads no shoulder without a limit) plans straight
+/// across it. The follower's own rule refuses the step — neither shoulder is
+/// open, so motion would stop it on one — and an unlimited machine **holds**:
+/// its route kept, no search spent, nothing remembered, never past the
+/// boundary.
+///
+/// Then the same corner closed by two **parked** tanks: the machine is stopped
+/// against one shoulder (`Occupied`, remembered), steps through the other and
+/// is stopped against that too, and holds with both remembered. When one tank
+/// drives off, the machine proceeds once its memory of that cell has aged out
+/// ([`tacsim::arena::reflex::REFLEX_AVOID_TTL_MS`]) — through the shoulder that
+/// is now empty.
+#[test]
+fn ai1_a_corner_closed_on_both_shoulders_holds_an_unlimited_unit_and_ages_an_avoided_one() {
+    let goal = (12_u16, 12_u16);
+    // The walls.
+    let mut arena = arena_on(
+        ai1_window(16, 16, &[(6, 5, wall()), (5, 6, wall())], &[goal]),
+        vec![tank(
+            RED,
+            Team::Red,
+            centre(5, 5),
+            Vec::new(),
+            Controller::Reflex,
+        )],
+        &ai1_cfg(),
+        &[],
+    );
+    let run = ai1_run(&mut arena, RED, 10_000, &mut |_| {});
+    assert_eq!(run.counters.path_queries, 1, "{:?}", run.counters);
+    assert_eq!(run.counters.path_refused_unchanged, 0, "{:?}", run.counters);
+    assert_eq!(run.blocked, 0);
+    assert_eq!(
+        run.track,
+        vec![(5, 5)],
+        "the machine went past the boundary"
+    );
+    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    assert_eq!(
+        row.route.first().copied(),
+        Some((6, 6)),
+        "the route across the corner is kept: {:?}",
+        row.route
+    );
+    assert!(row.avoid.is_empty());
+    assert_eq!(row.refused, None);
+
+    // The parked tanks. The machine is posed south-east of its cell's centre, so
+    // its line to the diagonal enters the east shoulder first. The traffic hold
+    // is off (`occupied_stop_ms` 0, the rule before 16b cut E.3): a held machine
+    // slides along the boundary and can cross the corner diagonally in one
+    // substep — motion tests the diagonal cell alone — and this fixture is about
+    // the stops.
+    let mut cfg = ai1_cfg();
+    cfg.occupied_stop_ms = 0;
+    let mut arena = arena_on(
+        ai1_window(16, 16, &[], &[goal]),
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                pose(5_800, 5_200),
+                Vec::new(),
+                Controller::Reflex,
+            ),
+            tank(RED2, Team::Red, centre(6, 5), Vec::new(), Controller::Pilot),
+            tank(BLUE, Team::Red, centre(5, 6), Vec::new(), Controller::Pilot),
+        ],
+        &cfg,
+        &[],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall_ms = 0_i64;
+    let mut both_learned_at: Option<i64> = None;
+    let mut held_both: Vec<(i64, (u16, u16))> = Vec::new();
+    while arena.now_ms < 30_000 {
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        let learned = avoided(&arena, RED);
+        if both_learned_at.is_none() && learned.contains(&(6, 5)) && learned.contains(&(5, 6)) {
+            both_learned_at = Some(arena.now_ms);
+        }
+        if both_learned_at.is_some()
+            && let Some(cell) = cell_of_unit(&arena, RED)
+        {
+            held_both.push((arena.now_ms, cell));
+        }
+        wall_ms += 500;
+    }
+    let both_learned_at = both_learned_at.expect("the machine never learned both shoulders");
+    let log = events(&mut arena, &mut bytes);
+    let occupied = stops_of(
+        &log,
+        RED,
+        Some(tacsim::arena::motion::BlockedCause::Occupied),
+    );
+    assert_eq!(
+        occupied.iter().map(|(_, cell)| *cell).collect::<Vec<_>>(),
+        vec![(6, 5), (5, 6)],
+        "stopped once against each parked tank: {occupied:?}"
+    );
+    assert!(
+        held_both.iter().all(|(_, cell)| *cell == (5, 5)),
+        "with both shoulders remembered it held: {held_both:?}"
+    );
+    assert_eq!(
+        arena
+            .reflex
+            .unit(RED)
+            .and_then(|row| row.route.first().copied()),
+        Some((6, 6)),
+        "and held with its route"
+    );
+    // One tank drives off; the machine's memory of its cell ages out and it
+    // proceeds through the empty shoulder.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(1, 14);
+    }
+    let until = both_learned_at + tacsim::arena::reflex::REFLEX_AVOID_TTL_MS + 20_000;
+    let run = ai1_run(&mut arena, RED, until, &mut |_| {});
+    assert!(
+        arrived_at(&arena, RED, goal),
+        "the machine never proceeded: {:?}; {:?}",
+        run.track,
+        run.counters
+    );
+}
+
+/// **16b cut AI.1 (16c `B-84`, the wander rule)**: a machine shoved two cells
+/// off its route at full speed is inside its turning circle's diameter of the
+/// route (`2 r + cell_cm` = 6,730 cm at 1,500 cm/s) and keeps the route: no
+/// search for `repath_ms`. Shoved nine cells it is not, and its next tick
+/// searches.
+#[test]
+fn ai1_a_shove_inside_the_circle_keeps_the_route_and_beyond_it_re_plans() {
+    for (cells, searches) in [(2_i64, 0_u32), (9, 1)] {
+        let goal = (28_u16, 8_u16);
+        let mut arena = arena_on(
+            ai1_window(32, 32, &[], &[goal]),
+            vec![slow_tank(
+                RED,
+                Team::Red,
+                centre(3, 8),
+                Vec::new(),
+                Controller::Reflex,
+            )],
+            &ai1_cfg(),
+            &[],
+        );
+        at_speed(&mut arena, RED, 90_000);
+        // To the shove: the one search of the run, and the route.
+        let before = ai1_run(&mut arena, RED, 4_000, &mut |_| {});
+        assert_eq!(before.counters.path_queries, 1, "{:?}", before.counters);
+        if let Some(state) = arena.unit_mut(RED) {
+            state.pose.y_cm += cells * i64::from(CELL_CM);
+        }
+        let window = if searches == 0 {
+            // `repath_ms`: a search inside it would be the wander rule's.
+            4_000 + i64::from(ai1_cfg().reflex.repath_ms)
+        } else {
+            // One decide tick, and the pulse that carries it.
+            4_000 + i64::from(ai1_cfg().reflex.decide_ms) + 500
+        };
+        let after = ai1_run(&mut arena, RED, window, &mut |_| {});
+        assert_eq!(
+            after.counters.path_queries, searches,
+            "shoved {cells} cells: {:?} after {:?}",
+            after.counters, after.track
+        );
+    }
+}
+
+// ---- the cross-tempo field (16b §11: mandatory) -----------------------------
+
+/// The orbiting follower of the AI.1 field.
+const AI1_ORBIT: ObjId = ObjId(21);
+/// The corner unit.
+const AI1_CORNER: ObjId = ObjId(22);
+/// The pinch unit.
+const AI1_PINCH: ObjId = ObjId(23);
+/// The unit stopped by the ground beside its route.
+const AI1_BESIDE: ObjId = ObjId(24);
+/// The seated tank they detect.
+const AI1_SEATED: ObjId = ObjId(25);
+
+/// **The AI.1 field** (16b cut AI.1): one window, four machines each with a
+/// goal of its own, and a seated tank.
+///
+/// - [`AI1_ORBIT`], the follower of `ai1_a_follower_inside_its_circle_…`: at
+///   full speed, its goal behind it.
+/// - [`AI1_CORNER`], limited, on the corner of
+///   `ai1_a_unit_on_a_corner_steps_through_the_open_shoulder`, at rest.
+/// - [`AI1_PINCH`], limited, at a two-wall pinch on the window's south edge:
+///   walls east and north of it and its goal two cells east, so the search
+///   refuses the corner between the walls and plans round — west, north, and
+///   back **beside its start** at the corner's far cell, across the closed
+///   corner.
+/// - [`AI1_BESIDE`], cold, a few centimetres below its cell's north boundary,
+///   heading 30° with a wall to its north and its goal to the east: its first
+///   substeps under power carry it into the wall while its heading turns toward
+///   the route (the M.2 shape), which is one `impassable` stop **beside** its
+///   route, and the route is kept.
+/// - [`AI1_SEATED`], a seated tank of the other side, parked where the orbit
+///   follower arrives, so the run detects and classifies.
+fn ai1_field() -> Arena {
+    let paint = [
+        // The corner.
+        (51_u16, 8_u16, wall()),
+        // The pinch.
+        (11, 0, wall()),
+        (10, 1, wall()),
+        // Beside the route.
+        (10, 31, wall()),
+    ];
+    let nodes = [(28_u16, 56_u16), (42, 18), (12, 0), (20, 30)];
+    let mut arena = arena_on(
+        ai1_window(64, 64, &paint, &nodes),
+        vec![
+            slow_tank(
+                AI1_ORBIT,
+                Team::Red,
+                centre(44, 56),
+                Vec::new(),
+                Controller::Reflex,
+            ),
+            slow_tank(
+                AI1_CORNER,
+                Team::Red,
+                pose(52_000, 8_500),
+                Vec::new(),
+                Controller::Reflex,
+            ),
+            slow_tank(
+                AI1_PINCH,
+                Team::Red,
+                centre(10, 0),
+                Vec::new(),
+                Controller::Reflex,
+            ),
+            slow_tank(
+                AI1_BESIDE,
+                Team::Red,
+                pose(10_500, 30_990),
+                Vec::new(),
+                Controller::Reflex,
+            ),
+            tank(
+                AI1_SEATED,
+                Team::Blue,
+                centre(26, 59),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &ai1_cfg(),
+        &[AI1_SEATED],
+    );
+    at_speed(&mut arena, AI1_ORBIT, 90_000);
+    for unit in [AI1_CORNER, AI1_PINCH] {
+        limited(&mut arena, unit);
+    }
+    if let Some(state) = arena.unit_mut(AI1_PINCH) {
+        state.pose.heading_mdeg = 315_000;
+    }
+    if let Some(state) = arena.unit_mut(AI1_BESIDE) {
+        state.pose.heading_mdeg = 30_000;
+    }
+    arena
+}
+
+/// **16b cut AI.1's cross-tempo proof** (16b §11, mandatory; doc 16 §3.1's
+/// D-16-2): the orbit, the corner, the pinch and a stop beside the route, in one
+/// field, are one event list, one per-substep hash sequence and one set of
+/// finals at 5,000, 1,000 and 500 ms — and the run is worth comparing.
+#[test]
+fn ai1_the_orbit_the_corner_and_a_stop_beside_the_route_are_one_log_at_three_cadences() {
+    let runs: Vec<Replay> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| {
+            replay_with(
+                cadence,
+                40_000,
+                ai1_field(),
+                &|_, _| Vec::new(),
+                &mut |_| {},
+            )
+        })
+        .collect();
+    let first = runs.first().expect("three replays");
+    for (at, run) in runs.iter().enumerate().skip(1) {
+        let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
+        assert_eq!(
+            run.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the field ended differently at {cadence} ms"
+        );
+        assert_ne!(
+            run.pulses, first.pulses,
+            "three cadences, three pulse counts"
+        );
+    }
+
+    // Worth comparing. The run again at 500 ms, watched pulse by pulse: the
+    // counters, each machine's searches (a pulse at this cadence holds at most
+    // one tick of each), and where each arrived.
+    let mut arena = ai1_field();
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    let mut counters = tacsim::arena::reflex::ReflexCounters::default();
+    let mut searches: BTreeMap<ObjId, u32> = BTreeMap::new();
+    let mut stamps: BTreeMap<ObjId, Option<i64>> = BTreeMap::new();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall_ms = 0_i64;
+    while arena.now_ms < 40_000 {
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        counters.absorb(&out.reflex);
+        for unit in [AI1_ORBIT, AI1_CORNER, AI1_PINCH, AI1_BESIDE] {
+            let stamp = arena.reflex.unit(unit).and_then(|row| row.searched_ms);
+            if stamp.is_some() && stamps.get(&unit).copied().flatten() != stamp {
+                *searches.entry(unit).or_default() += 1;
+            }
+            stamps.insert(unit, stamp);
+        }
+        wall_ms += 500;
+    }
+    let log = events(&mut arena, &mut bytes);
+    assert!(counters.path_queries >= 1, "{counters:?}");
+    // The counter is the field's, and it is the pinch's: the pinch's two walls
+    // are the only pair on the window diagonal to each other, so no other
+    // machine's search or one-cell test can meet a corner closed on both
+    // shoulders.
+    assert!(
+        counters.corner_refusals > 0,
+        "the pinch unit's search refused no corner: {counters:?}"
+    );
+    assert_eq!(counters.path_refused_unchanged, 0, "{counters:?}");
+    assert!(
+        arrived_at(&arena, AI1_ORBIT, (28, 56)) || arrived_at(&arena, AI1_BESIDE, (20, 30)),
+        "no machine arrived"
+    );
+    for unit in [AI1_ORBIT, AI1_CORNER, AI1_PINCH] {
+        assert!(
+            searches.get(&unit).copied().unwrap_or(0) <= 2,
+            "#{} searched {:?} times",
+            unit.0,
+            searches.get(&unit)
+        );
+    }
+    // The stop beside the route, and it is `AI1_BESIDE`'s: exactly one
+    // `impassable` line, on the wall to its north, at one arena millisecond at
+    // all three cadences (the event lists are equal) — and the route it was
+    // stopped beside is **kept**, so that one stop costs no second search.
+    let beside = stops_of(
+        &log,
+        AI1_BESIDE,
+        Some(tacsim::arena::motion::BlockedCause::Impassable),
+    );
+    assert_eq!(
+        beside.iter().map(|(_, cell)| *cell).collect::<Vec<_>>(),
+        vec![(10, 31)],
+        "the unit beside its route was not stopped once on the wall to its north: {beside:?}"
+    );
+    assert_eq!(
+        stops_of(&log, AI1_BESIDE, None),
+        beside,
+        "the unit beside its route was stopped by something else too"
+    );
+    assert_eq!(
+        searches.get(&AI1_BESIDE).copied(),
+        Some(1),
+        "the stop beside the route threw the route away and bought a second search: {beside:?}"
+    );
+    // The corner and the pinch are never stopped by the ground: the corner
+    // unit steps through its open shoulder and the pinch unit leaves by the
+    // open side — a stop on a wall shoulder there would be `B-84`'s corner
+    // stop, kept silent by the route-keeping rule above.
+    for unit in [AI1_CORNER, AI1_PINCH] {
+        assert!(
+            stops_of(&log, unit, None).is_empty(),
+            "#{} was stopped by the ground: {:?}",
+            unit.0,
+            stops_of(&log, unit, None)
+        );
+    }
+    for unit in [AI1_ORBIT, AI1_CORNER, AI1_PINCH, AI1_BESIDE] {
+        assert!(
+            stops_of(
+                &log,
+                unit,
+                Some(tacsim::arena::motion::BlockedCause::TooSteep)
+            )
+            .is_empty(),
+            "#{} was stopped `too_steep`",
+            unit.0
+        );
+    }
+    // A machine's own action at its own tick: the cold ones' `startup` lines
+    // (16b cut M.2's stamp; the heading and speed orders journal no line).
+    let decide = i64::from(ai1_cfg().reflex.decide_ms);
+    let stamped = log
+        .iter()
+        .filter(|event| event.kind.as_str() == "startup")
+        .filter(|event| {
+            startup_unit(event)
+                .is_some_and(|unit| event.t_ms.rem_euclid(decide) == stagger_ms(SEED, unit, decide))
+        })
+        .count();
+    assert!(stamped >= 1, "no machine's order was stamped at its tick");
+    for kind in ["detected", "classified"] {
+        assert!(
+            first.events.iter().any(|(_, json, _)| json.contains(kind)),
+            "the field never journalled a {kind}"
+        );
+    }
+}
+
+/// The unit a `startup` line names.
+fn startup_unit(event: &LedgerEvent) -> Option<ObjId> {
+    match event.kind {
+        tacsim::arena::ledger::EventKind::Startup { unit, .. } => Some(unit),
+        _ => None,
+    }
+}
+
+/// **The two routes that come back beside their start** (16b cut AI.1): a
+/// limited machine at a two-wall pinch on the window's south edge (walls east
+/// and north, its goal two cells east), and a limited machine at the foot of an
+/// 800 cm plateau whose only way up is a 400 cm ramp cell to its north-west.
+fn ai1_come_back() -> Arena {
+    // The pinch, at (10, 0).
+    let mut paint = vec![(11_u16, 0_u16, wall()), (10, 1, wall())];
+    // The plateau: columns 29 to 36, rows 11 to 17, 800 cm up, with the ramp
+    // at (29, 11), 400 cm up. The foot is (30, 10).
+    for x in 29..=36_u16 {
+        for y in 11..=17_u16 {
+            let elev_cm = if (x, y) == (29, 11) { 400 } else { 800 };
+            paint.push((
+                x,
+                y,
+                TerrainCell {
+                    elev_cm,
+                    ..ground()
+                },
+            ));
+        }
+    }
+    let nodes = [(12_u16, 0_u16), (32, 11)];
+    let mut arena = arena_on(
+        ai1_window(48, 48, &paint, &nodes),
+        vec![
+            slow_tank(
+                AI1_PINCH,
+                Team::Red,
+                centre(10, 0),
+                Vec::new(),
+                Controller::Reflex,
+            ),
+            slow_tank(
+                AI1_CORNER,
+                Team::Red,
+                centre(30, 10),
+                Vec::new(),
+                Controller::Reflex,
+            ),
+        ],
+        &ai1_cfg(),
+        &[],
+    );
+    for unit in [AI1_PINCH, AI1_CORNER] {
+        limited(&mut arena, unit);
+    }
+    if let Some(state) = arena.unit_mut(AI1_PINCH) {
+        state.pose.heading_mdeg = 315_000;
+    }
+    arena
+}
+
+/// **16b cut AI.1: a route that comes back beside its start across an edge the
+/// search refused is followed, not shortened.** A\* detours to an adjacent cell
+/// exactly when the direct edge is refused, so a follower that drained its
+/// route to any adjacent later cell would aim across the closed corner (and
+/// re-plan every tick) or up the bluff (and be stopped `too_steep` at its
+/// route's own next cell). Neither is: each machine searches once, leaves its
+/// cell by the open side, is never stopped by the ground, and arrives — at
+/// 5,000, 1,000 and 500 ms alike.
+#[test]
+fn ai1_a_limited_unit_whose_route_comes_back_beside_it_does_not_re_search() {
+    let runs: Vec<Replay> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| {
+            replay_with(
+                cadence,
+                30_000,
+                ai1_come_back(),
+                &|_, _| Vec::new(),
+                &mut |_| {},
+            )
+        })
+        .collect();
+    let first = runs.first().expect("three replays");
+    for (at, run) in runs.iter().enumerate().skip(1) {
+        let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
+        assert_eq!(
+            run.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the field ended differently at {cadence} ms"
+        );
+    }
+
+    let mut arena = ai1_come_back();
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    // The routes as first planned, to prove the premise: each comes back beside
+    // its start.
+    let mut planned: BTreeMap<ObjId, Vec<(u16, u16)>> = BTreeMap::new();
+    let mut searches: BTreeMap<ObjId, u32> = BTreeMap::new();
+    let mut stamps: BTreeMap<ObjId, Option<i64>> = BTreeMap::new();
+    let mut tracks: BTreeMap<ObjId, Vec<(u16, u16)>> = BTreeMap::new();
+    let mut counters = tacsim::arena::reflex::ReflexCounters::default();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall_ms = 0_i64;
+    while arena.now_ms < 30_000 {
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        counters.absorb(&out.reflex);
+        for unit in [AI1_PINCH, AI1_CORNER] {
+            let row = arena.reflex.unit(unit).cloned().unwrap_or_default();
+            if row.searched_ms.is_some() && stamps.get(&unit).copied().flatten() != row.searched_ms
+            {
+                *searches.entry(unit).or_default() += 1;
+                planned.entry(unit).or_insert_with(|| row.route.clone());
+            }
+            stamps.insert(unit, row.searched_ms);
+            if let Some(cell) = cell_of_unit(&arena, unit) {
+                let track = tracks.entry(unit).or_default();
+                if track.last() != Some(&cell) {
+                    track.push(cell);
+                }
+            }
+        }
+        wall_ms += 500;
+    }
+    let log = events(&mut arena, &mut bytes);
+    // The premises: a route cell adjacent to the start across a refused edge.
+    let pinch = planned.get(&AI1_PINCH).cloned().unwrap_or_default();
+    assert!(
+        pinch.contains(&(11, 1)),
+        "the pinch's route does not come back beside its start: {pinch:?}"
+    );
+    let plateau = planned.get(&AI1_CORNER).cloned().unwrap_or_default();
+    assert!(
+        plateau.contains(&(29, 11)) && plateau.contains(&(30, 11)),
+        "the plateau's route does not climb the ramp and come back above its start: {plateau:?}"
+    );
+    assert!(counters.corner_refusals > 0, "{counters:?}");
+    for (unit, goal, open) in [
+        (AI1_PINCH, (12, 0), (9, 0)),
+        (AI1_CORNER, (32, 11), (29, 10)),
+    ] {
+        assert_eq!(
+            searches.get(&unit).copied(),
+            Some(1),
+            "#{} searched more than once: {counters:?}",
+            unit.0
+        );
+        assert!(
+            stops_of(&log, unit, None).is_empty(),
+            "#{} was stopped by the ground: {:?}",
+            unit.0,
+            stops_of(&log, unit, None)
+        );
+        let track = tracks.get(&unit).cloned().unwrap_or_default();
+        assert_eq!(
+            track.get(1).copied(),
+            Some(open),
+            "#{} did not leave its cell by the open side: {track:?}",
+            unit.0
+        );
+        assert!(
+            arrived_at(&arena, unit, goal),
+            "#{} never arrived: {track:?}",
+            unit.0
+        );
+    }
 }

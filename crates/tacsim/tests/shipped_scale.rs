@@ -101,7 +101,16 @@ fn centre_of(cell: (u16, u16)) -> (i64, i64) {
 ///   machines at each other's entry zones at 90 s of arena time instead of
 ///   leaving them on their waypoint loops, so they meet on different ground and
 ///   the tick the edge is crossed on is a different one. The bounds are
-///   unchanged and both readings still sit well inside them.)
+///   unchanged and both readings still sit well inside them.) **16b cut AI.1**
+///   (16c `B-84`) took the orbit out of the approach, so the duel now closes
+///   head-on at 3,000 cm/s and the shot leaves at a measured 1,208 cm/s; by the
+///   programme lead's ruling the first claim is asserted at its intent — below
+///   the machine's own ceiling and slower than at its previous pulse — and not
+///   at E.3's `1,200` literal, which the orbit's slow closure had made room for.
+///   The seven-second horizon stands and is now opened at the pulse that
+///   carried the shot, where every other reading is made: 1,208 cm/s at the
+///   stock brake is six seconds, and the first zero is read 7,000 ms after that
+///   pulse (7,406 ms after the shot's own millisecond, 406 ms inside it).
 /// * **(c)** no machine is ever in `Engage` at a plot range past `release_cm`
 ///   plus one tick of a target opening the range, plus a cell.
 /// * **(d) `T-32`**: the match spends time in more than one tempo, which it
@@ -117,6 +126,19 @@ fn e1_two_stock_machines_close_to_their_real_reach_and_fight() {
             &[Muster::reflex(Team::Blue, 1)],
         ],
     );
+    // Each machine's own forward ceiling, off its decoded profile, read before
+    // the run so a hull wrecked in it is still answered: (b)'s "below its
+    // ceiling" names the profile's figure and not a literal.
+    let ceilings: Vec<(mush_core::ObjId, i32)> = arena
+        .units
+        .iter()
+        .map(|unit| {
+            (
+                unit.id,
+                i32::try_from(unit.mobility.max_speed_cms).unwrap_or(i32::MAX),
+            )
+        })
+        .collect();
     let opened = std::time::Instant::now();
 
     // The pulse-by-pulse lens. `skip_next` is review E-03's exclusion: `follow`'s
@@ -245,31 +267,81 @@ fn e1_two_stock_machines_close_to_their_real_reach_and_fight() {
         at_the_shot.desired_speed_cms, 0,
         "the machine was still ordered to drive when it fired: {at_the_shot:?}"
     );
-    // **16b cut E.3 tightened the two claims E.1 left here.**
+    // **16b cut E.3 tightened the two claims E.1 left here; 16b cut AI.1 (16c
+    // `B-84`) re-states the first at its intent, by the programme lead's
+    // ruling of 2026-09-28.**
     //
     // The first shot is fired *braking*, not at full speed and not stopped. The
     // machine fires on the tick it crosses `engage_cm`, and that tick is a couple
     // of cells short of its stand-off cell, so `B-42`'s profile has had a tick or
     // two to bite and no more — the stock tank sheds two metres a second squared.
-    // **Measured: 1,097 cm/s of a 1,500 cm/s tank** at the pulse that carried the
-    // shot, against the whole 1,500 before this cut. What is asserted is
-    // therefore *below the ceiling with room to spare*, and not a figure the
-    // arithmetic cannot reach: a machine that fired at its ceiling did not brake
-    // for its band at all.
+    // E.3 measured 1,097 cm/s of a 1,500 cm/s tank at the pulse that carried the
+    // shot and pinned it as `<= 1_200`, "below the ceiling with room to spare".
+    // **That room was the B-84 orbit's.** Before AI.1 the duel met on ground the
+    // machines were circling route cells over, so the closure was slow and the
+    // brake had four `Approach` ticks to work in. With the orbit gone both
+    // machines drive the ford road straight at 1,500 cm/s each, a 3,000 cm/s
+    // closure; they detect each other at about 500 m, and the `Engage` edge at
+    // 420 m arrives about a second before the brake toward the stand-off cell
+    // would have finished: **measured 1,208 cm/s**, ordered 0 and falling
+    // (1,500, 1,458, 1,408 at the three `Approach` ticks). The steer orders
+    // exactly what E.3's follower ordered on a straight line — the aim dead
+    // ahead, no turn-speed cap in play, `braking_speed_cms` to the goal — so what
+    // moved is the fight's geometry, not the brake.
+    //
+    // So "braking into its band" is asserted as what it means, at the pulse that
+    // carried the shot: ordered to 0 (above), **below the machine's own ceiling**
+    // (its decoded profile's `max_speed_cms`), and **decelerating** (slower than
+    // at its previous pulse). A machine that fired at its ceiling, or that was
+    // still gaining or holding speed, did not brake for its band at all.
+    let ceiling = ceilings
+        .iter()
+        .find(|(unit, _)| *unit == shooter)
+        .map(|(_, ceiling)| *ceiling)
+        .unwrap_or_else(|| panic!("#{} was on the field at the opening", shooter.0));
     assert!(
-        at_the_shot.speed_cms <= 1_200,
-        "the first shot was fired at {} cm/s, which is not a machine braking into its band: \
-         {at_the_shot:?}",
+        at_the_shot.speed_cms < ceiling,
+        "the first shot was fired at {} cm/s, the machine's whole {ceiling} cm/s ceiling, which \
+         is not a machine braking into its band: {at_the_shot:?}",
         at_the_shot.speed_cms
+    );
+    let before_the_shot = seen
+        .iter()
+        .filter(|row| row.unit == shooter && row.at_ms < at_the_shot.at_ms)
+        .max_by_key(|row| row.at_ms)
+        .unwrap_or_else(|| panic!("the pulse before the one that carried the shot"));
+    println!(
+        "e1_shipped_duel: the shooter rolled {} cm/s at {} ms and {} cm/s at the shot's pulse, \
+         against its {ceiling} cm/s ceiling",
+        before_the_shot.speed_cms, before_the_shot.at_ms, at_the_shot.speed_cms
+    );
+    assert!(
+        at_the_shot.speed_cms < before_the_shot.speed_cms,
+        "the first shot was fired at {} cm/s, no slower than the {} cm/s of the pulse before, \
+         which is not a machine braking into its band: {at_the_shot:?}",
+        at_the_shot.speed_cms,
+        before_the_shot.speed_cms
     );
     // And it really does come to a stop, and then stays stopped for as long as it
     // holds the band. **The window is the stock tank's own physics and not a
-    // round number**: 1,097 cm/s at 200 cm/s² is five and a half seconds of
-    // braking, and the `speed 0` order was itself given at the tick before the
-    // shot, so the measured shot-to-stop figure is 6,750 ms and the horizon is
-    // seven seconds. The window is scoped to the shot rather than to the match,
-    // so a stop the machine made half a minute earlier is not what satisfies it.
-    let until_ms = first.t_ms + 7_000;
+    // round number**: E.3 measured 1,097 cm/s, which at 200 cm/s² is five and a
+    // half seconds of braking, and the `speed 0` order was itself given at the
+    // tick before the shot, so the measured shot-to-stop figure was 6,750 ms and
+    // the horizon is seven seconds. The window is scoped to the shot rather than
+    // to the match, so a stop the machine made half a minute earlier is not what
+    // satisfies it.
+    //
+    // **16b cut AI.1 (16c `B-84`) anchors those seven seconds at the pulse that
+    // carried the shot**, the reading every claim above is made at, and not at
+    // the shot's own millisecond inside it: speeds are read at pulse ends, so a
+    // window opened mid-pulse and closed on a pulse end is up to a pulse short
+    // of the physics it names. With the orbit gone the shot's pulse reads the
+    // accepted 1,208 cm/s (above), which is 6.04 s at 200 cm/s² — the tank
+    // physically stops about 6,450 ms after the shot at 141,594 ms, inside
+    // seven seconds, but 40 ms after the pulse end at 148,000 ms, so the first
+    // zero is read at 149,000 ms: 7,406 ms after the shot and exactly 7,000 ms
+    // after its pulse. The horizon itself does not move.
+    let until_ms = at_the_shot.at_ms + 7_000;
     let after: Vec<&Seen> = seen
         .iter()
         .filter(|row| row.unit == shooter && row.at_ms > first.t_ms)
@@ -295,8 +367,8 @@ fn e1_two_stock_machines_close_to_their_real_reach_and_fight() {
             .collect();
         assert!(
             !stopped.is_empty(),
-            "seven seconds after its first shot the machine is still engaged and has never read \
-             zero: it is fighting rolling"
+            "seven seconds after the pulse that carried its first shot the machine is still \
+             engaged and has never read zero: it is fighting rolling"
         );
         // From the first zero until it leaves `Engage` it never reads above zero:
         // a machine that holds its band holds it standing still.
@@ -488,6 +560,18 @@ fn e1_the_rig_poses_its_units_the_way_the_check_out_does() {
 /// the one piece of ground the match has to use, and the east-most reading moved
 /// from 130,288 cm to 238,528 cm. `far_entry_cell`'s clamp keeps each of them on
 /// its own row; the two claims below are what says the pair of rules works.
+///
+/// **16b cut AI.1 (16c `B-84`) moved what this test proves, again without
+/// touching an assertion.** Before AI.1 the pass was partly the orbit's: the two
+/// machines wandered off the road row as they circled their route cells. With
+/// the orbit gone both drive road row 97 to the far zone and the clamp hands
+/// them **one** cell, so the first there turns back into the second — four
+/// `Occupied` stops between 231,750 and 234,750 ms. By the programme lead's
+/// ruling the property stands and doctrine was corrected: `far_entry_cell`'s
+/// fan keeps a hunter's cell `HUNT_FAN_ROWS` clear of every hunt cell its side
+/// already holds, so the second machine is fanned off the first's row. This
+/// test is that fan's integration proof on the shipped ground; the clamp alone
+/// no longer passes it.
 #[test]
 fn e3_two_machines_of_one_side_cross_the_ford_without_stopping_each_other() {
     let world = booted_world();

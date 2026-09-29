@@ -131,7 +131,12 @@ thread_local! {
 ///    byte, then the cell's two `u16` and the plot's `i64` stamp),
 ///    `unheld_since_ms` (a presence byte then an `i64`) and `hunt` (a presence
 ///    byte then the cell's two `u16`); then, from **16b cut O.1**,
-///    `hold_retry_ms` (a presence byte then an `i64`).
+///    `hold_retry_ms` (a presence byte then an `i64`); then, from **16b cut
+///    AI.1**, `searched_from` (a presence byte, then the cell's two `u16`) and
+///    `refused` (`[0]` alone for none; else `[1]`, the stand cell's and the
+///    refused cell's two `u16` each, the cause's code byte, the goal's two
+///    `u16` and the `i64` it lapses at) — decisions with no line of their own
+///    that gate a later search, the O.1 argument once more.
 /// 4. **The shadow contact store** (16b cut S.1), in its own iteration order —
 ///    viewer object number ascending, then contact id ascending, which is what
 ///    the two `BTreeMap`s give: per contact the viewer's `u32`, the contact id's
@@ -684,6 +689,34 @@ pub fn state_hash(arena: &Arena) -> u64 {
         // a decision the controller made, written and read at arena timestamps,
         // exactly as the hunt's clock beside it is.
         hash = fold_stamp(hash, row.hold_retry_ms);
+        // **16b cut AI.1** (16c `B-84`): the cell the last search started from,
+        // and the stop the machine remembers. Neither has a line of its own, and
+        // each gates a later search — `searched_from` whether a refusal is
+        // recorded, `refused` whether a search is spent — so each would reach a
+        // pose several substeps after the decision. Written at the tick's `t_ms`
+        // or the `blocked` line's own millisecond, read at a tick.
+        match row.searched_from {
+            Some((x, y)) => {
+                hash = fnv1a64_update(hash, &[1_u8]);
+                hash = fnv1a64_update(hash, &x.to_le_bytes());
+                hash = fnv1a64_update(hash, &y.to_le_bytes());
+            }
+            None => hash = fnv1a64_update(hash, &[0_u8]),
+        }
+        match row.refused {
+            Some(refusal) => {
+                hash = fnv1a64_update(hash, &[1_u8]);
+                hash = fnv1a64_update(hash, &refusal.at.0.to_le_bytes());
+                hash = fnv1a64_update(hash, &refusal.at.1.to_le_bytes());
+                hash = fnv1a64_update(hash, &refusal.cell.0.to_le_bytes());
+                hash = fnv1a64_update(hash, &refusal.cell.1.to_le_bytes());
+                hash = fnv1a64_update(hash, &[refusal.cause.code()]);
+                hash = fnv1a64_update(hash, &refusal.goal.0.to_le_bytes());
+                hash = fnv1a64_update(hash, &refusal.goal.1.to_le_bytes());
+                hash = fnv1a64_update(hash, &refusal.until_ms.to_le_bytes());
+            }
+            None => hash = fnv1a64_update(hash, &[0_u8]),
+        }
     }
     for (viewer, id, held) in arena.contacts.all() {
         hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
@@ -1545,6 +1578,80 @@ mod tests {
         );
         if let Some(row) = machine.reflex.unit_mut(ObjId(4)) {
             row.hold_retry_ms = None;
+        }
+        assert_eq!(state_hash(&machine), adopted);
+    }
+
+    /// **16b cut AI.1's extension** (item 3): the cell a machine's last search
+    /// started from, and the stop it remembers, each move the hash — and every
+    /// field of the stop does, so a fold that wrote only its presence would be
+    /// caught — and resetting either is the same state again.
+    #[test]
+    fn ai1_the_hash_folds_the_search_start_and_the_refusal_memory() {
+        use crate::arena::motion::BlockedCause;
+        use crate::arena::reflex::{ReflexState, Refusal};
+        let mut machine = two_tanks();
+        machine.reflex.adopt(ObjId(4), ReflexState::Patrol);
+        let adopted = state_hash(&machine);
+
+        if let Some(row) = machine.reflex.unit_mut(ObjId(4)) {
+            row.searched_from = Some((1, 1));
+        }
+        let from = state_hash(&machine);
+        assert_ne!(from, adopted, "`searched_from` went unhashed");
+        if let Some(row) = machine.reflex.unit_mut(ObjId(4)) {
+            row.searched_from = Some((1, 2));
+        }
+        assert_ne!(
+            state_hash(&machine),
+            from,
+            "`searched_from`'s cell went unhashed"
+        );
+        if let Some(row) = machine.reflex.unit_mut(ObjId(4)) {
+            row.searched_from = None;
+        }
+        assert_eq!(state_hash(&machine), adopted);
+
+        let base = Refusal {
+            at: (1, 1),
+            cell: (2, 2),
+            cause: BlockedCause::Impassable,
+            goal: (6, 4),
+            until_ms: 31_000,
+        };
+        let mut seen: Vec<u64> = vec![adopted];
+        for refusal in [
+            base,
+            Refusal { at: (1, 2), ..base },
+            Refusal {
+                cell: (2, 1),
+                ..base
+            },
+            Refusal {
+                cause: BlockedCause::Edge,
+                ..base
+            },
+            Refusal {
+                goal: (6, 5),
+                ..base
+            },
+            Refusal {
+                until_ms: 31_001,
+                ..base
+            },
+        ] {
+            if let Some(row) = machine.reflex.unit_mut(ObjId(4)) {
+                row.refused = Some(refusal);
+            }
+            let hash = state_hash(&machine);
+            assert!(
+                !seen.contains(&hash),
+                "`refused` {refusal:?} folded the same bytes as an earlier state"
+            );
+            seen.push(hash);
+        }
+        if let Some(row) = machine.reflex.unit_mut(ObjId(4)) {
+            row.refused = None;
         }
         assert_eq!(state_hash(&machine), adopted);
     }

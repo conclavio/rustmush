@@ -825,6 +825,13 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
             cfg.tacsim.harness.max_snapshot_bytes, 7_340_032,
             "{env_file}: 16b cut AF.2's snapshot bound"
         );
+        // **16b cut AI.1** (16c `B-84`): the harness's per-wake A* cell bound,
+        // sized on the four-seed measurement, written by the template beside the
+        // queries bound; this reads the rendered value.
+        assert_eq!(
+            cfg.tacsim.harness.max_path_cells_per_pulse, 48_128,
+            "{env_file}: 16b cut AI.1's cell bound"
+        );
         // **16b cut AE.3** (doc 16 §2 W2): one drone a side. The template writes
         // no key, so this is the compiled default read off the parsed struct.
         assert_eq!(
@@ -849,6 +856,8 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
     assert_eq!(example.tacsim.arena.snapshot_ms, 5_000);
     // 16b cut AF.2: and the harness's measured snapshot bound.
     assert_eq!(example.tacsim.harness.max_snapshot_bytes, 7_340_032);
+    // 16b cut AI.1: and the harness's measured per-wake A* cell bound.
+    assert_eq!(example.tacsim.harness.max_path_cells_per_pulse, 48_128);
     // 16b cut AE.3: the example writes `max_units_by_class = { drone = 1 }` inline
     // under `[tacsim.arena]` (no header of its own: the template declares none).
     assert_eq!(

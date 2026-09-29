@@ -71,7 +71,7 @@ use tacsim::arena::intents::{Control, ControlState, Intent, IntentKind};
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
 use tacsim::arena::motion::BlockedCause;
 use tacsim::arena::rng::{DrawLabel, draw};
-use tacsim::arena::snapshot::{Snapshot, SnapshotError};
+use tacsim::arena::snapshot::{SNAPSHOT_FORMAT, Snapshot, SnapshotError};
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaError, ArenaTerrain, Channel, CustodyOut, CustodyUnit, EndReason,
     EntryZone, Pilot, Power, StopReason, Team, TerrainCell, TrackedRules,
@@ -5159,14 +5159,15 @@ fn af1_a_snapshot_refuses_the_wrong_ground_the_wrong_physics_a_moved_field_a_mov
         Err(SnapshotError::DigestMismatch { recorded, computed })
             if recorded == document["state_digest"] && computed == later["state_digest"]
     ));
-    // Another format, another record.
+    // Another format, another record. (16b cut AI.1: written against the
+    // constant, so the next bump breaks neither arm.)
     let mut format = document.clone();
-    format["format"] = serde_json::json!(2);
+    format["format"] = serde_json::json!(SNAPSHOT_FORMAT + 1);
     assert_eq!(
         decode(&format),
         Err(SnapshotError::Format {
-            found: 2,
-            expected: 1
+            found: SNAPSHOT_FORMAT + 1,
+            expected: SNAPSHOT_FORMAT
         })
     );
     let mut record = document.clone();
@@ -5519,9 +5520,13 @@ fn shape(value: &serde_json::Value, path: &str, out: &mut std::collections::BTre
 /// **The structural pin**: SHA-256 of the sorted `path: kind` lines of an
 /// unstepped [`scripted_arena`]'s encoded state and an unstepped
 /// [`af1_squad_arena`]'s, one set, joined by newlines.
-const AF1_SHAPE_DIGEST: &str = "10c4a4ed24b1342e029999bac41e433bf87fe9e63950f073f0733f8de131e7bb";
+///
+/// **Re-blessed by 16b cut AI.1 with `SNAPSHOT_FORMAT` 2**: `ReflexUnit` gained
+/// `searched_from` and `refused`, one `null` line each on the squad arena's four
+/// reflex rows — 378 lines to 386.
+const AF1_SHAPE_DIGEST: &str = "6fddd6157a763098941c4b75a7ddf5f1991c6b41c00feec9a1c2f8f5b0adabb5";
 /// And how many lines that is.
-const AF1_SHAPE_LINES: usize = 378;
+const AF1_SHAPE_LINES: usize = 386;
 
 /// **The snapshot's shape is pinned** (16b cut AF.1).
 ///
@@ -5533,7 +5538,7 @@ const AF1_SHAPE_LINES: usize = 378;
 /// sighted machines in two squads — its weapons, sensors, reflex rows and squad
 /// rosters are under the pin.*
 ///
-/// *Its limit, read off the 378 lines (a collection empty or an option `None`
+/// *Its limit, read off the 386 lines (a collection empty or an option `None`
 /// at pulse zero leaves one line and none for its element): **not under it**
 /// are the contacts (`ShadowContact`, `SeenPose`, `OwnSighting`, `Reading`),
 /// the designator book's rows, the shots (`Shot`, `Resolution`), the pending
@@ -5546,8 +5551,9 @@ const AF1_SHAPE_LINES: usize = 378;
 /// `receiver`, `slope_limit_pct`, the profile's bands and sections
 /// (`BandProfile`, `SectionProfile`) and the opaque unit's capabilities,
 /// components and mobility; on a reflex row its route, `avoid`, goal,
-/// waypoints, hunt, target, standing order (`StandingOrder`, `Order`) and its
-/// timers. A field added to or dropped from one of those moves nothing here:
+/// waypoints, hunt, target, standing order (`StandingOrder`, `Order`), its
+/// timers and — **16b cut AI.1** — its `searched_from` and its remembered stop
+/// (`refused`, a `Refusal`), both `None` at pulse zero. A field added to or dropped from one of those moves nothing here:
 /// the format is then the author's to bump and the reviewer's to see, and a
 /// stale document is refused as `Malformed` — a missing field by the derive, a
 /// surplus one by `deny_unknown_fields` on the carried types — rather than by
@@ -5571,7 +5577,7 @@ fn af1_the_snapshot_shape_is_pinned() {
         tacsim::arena::snapshot::digest_text(&sha2::Sha256::digest(joined.as_bytes()).into());
     assert_eq!(
         tacsim::arena::snapshot::SNAPSHOT_FORMAT,
-        1,
+        2,
         "a format bump re-blesses the pin below in the same change"
     );
     assert_eq!(
