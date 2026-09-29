@@ -6,6 +6,7 @@
 //! shared behavior is compared through the game interface, not shared planning.
 pub mod activity;
 pub mod analysis;
+pub mod arena;
 pub mod attention;
 pub mod blind_review;
 pub mod budget;

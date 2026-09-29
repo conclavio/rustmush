@@ -422,6 +422,20 @@ until this cut both sides needed a seated pilot to get one.
 """
 
 [[site]]
+path = "crates/mush-bot/tests/support/arena.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Cut AJ.1's rig for the external bot's arena lanes, performing the same
+post-composition wiring sim_solo's row above performs and for the same reason: a
+pilot claims, boards and fights, and a simulator slot belongs to an ACCOUNT. The
+rig boots the production composition inside the bot's own test binary (the
+line-format contract's live half, and the later sub-cuts' end-to-end lanes);
+this is its one site, and the bot's runtime graph carries no game crate.
+"""
+
+[[site]]
 path = "crates/mushd/tests/sim_units.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

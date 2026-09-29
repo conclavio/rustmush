@@ -41,6 +41,14 @@ mush-proto.workspace = true
 mush-ansi.workspace = true
 # Supplies mock SERVER @gen responses; the bot model is a separate HTTP stub.
 mush-llm.workspace = true
+# Cut AJ.1: server-under-test fixture and the line-format contract; never in the
+# runtime graph. `tacsim` is the simulator the arena rig boots and the crate
+# whose own cockpit formatters `tests/arena_contract.rs` feeds through the
+# bot's parser; `mush-sim` and `mush-server` wire the account oracle the
+# simulator's slots are keyed on, as `crates/mushd/tests/sim_solo.rs` does.
+tacsim.workspace = true
+mush-sim.workspace = true
+mush-server.workspace = true
 
 [lints]
 workspace = true

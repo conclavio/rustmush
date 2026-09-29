@@ -44,6 +44,15 @@ own model calls to a separate HTTP stub. None of those server dependencies are i
 the bot's runtime or build dependency graph. The package's
 [maintenance instructions](../crates/mush-bot/AGENTS.md) preserve this separation.
 
+The simulator pilot (cut AJ) holds to the same line. It reads only the text a
+seated line-mode pilot is sent — the answers to its own `CONTACTS`,
+`WEAPONSTATUS` and `STATUS`, the cockpit's notices and the centre's
+announcements — and builds its picture of the match from nothing else. Its
+format-contract test takes the game's own formatters as a **development**
+dependency, so a changed line breaks a test and not a match. Nothing of the
+machines' own controller is read, imported or mirrored: the pilot's tactics are
+written from the player help (`help simulator`, `help cockpit`) alone.
+
 The first version uses RustMUSH's **SSH line interface** with a real PTY. TUI
 screen navigation is a future adapter; `@tui` is rejected so a terminal repaint
 cannot silently corrupt the bot's observations. The runner shows explicit action
