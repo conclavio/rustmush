@@ -575,7 +575,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
   matches resume (default: yes, it is the cheapest proof). Re-read `deliberation/mod.rs:54-88` when this
   lands, because its second argument stops being true.
 
-### N17. `VIEW BRIEF`
+### N17. `VIEW BRIEF` — landed AG.1
 
 - **Pitch.** The frame in sentences, for a screen reader and for a pilot who would rather read.
 - **Sketch.** The ground on eight bearings, run-length described, then the contacts as `CONTACTS` words
@@ -980,6 +980,8 @@ not move. The arena still holds no store handle. Size: extra large, three sub-cu
 
 ### Cut AG: `VIEW BRIEF`
 
+Landed 2026-09-29 at `e7ccb469`; see 16b section 9, row AG. Built as one sub-cut, committed and pushed on its own green gate (AG.1 `e7ccb469`), then the full sweep in one round with no repair (its one failure, `mush-gateway --test supervision_abandoned`, a load flake on the known list, green alone on the first rerun); N17 closed at its default and `Q-AG1` to `Q-AG4` assumed at their defaults (section 5); no harness run was owed and none was made by the sub-cut, the sweep's weekly run read the deterministic block equal on 109 fields, and no baseline row is added. Deferred, none of them a 16c item: the brief as a TUI or web pane of its own (`Q-AG4`; it reaches both as text), `BRIEF` on `SIM REPLAY`, an elevation word, and the test debts the AG row's Deviations cell lists (the brief arm's own no-ground path, a brief read in the provisional phase of the observer battery, `cockpit_help("view")` unpinned by any test).
+
 **When it lands.** The frame in sentences: the ground on eight bearings, run-length described, then the
 contacts as `CONTACTS` words them, then the key spots; a second renderer of one frame, nothing new
 across the seam.
@@ -1102,6 +1104,10 @@ debts, plus the four feature choices that change the most.
 | Q-AF3 | May the snapshot cadence be shortened under `Engaged`? (raised by cut AF's plan, not assumed) | No: one cadence in arena time (`snapshot_ms`), because the encode cost is the field's size and not the tempo's, and `harness_arena_snapshot` says what it costs (about 12 to 14 ms on the task thread per snapshot of a 300-unit field). Built on this default (AF.2). | AF, open |
 | Q-AF4 | A resume rewinds the match to its last snapshot (up to `snapshot_ms` of arena time plus the egress latency): a hit, a lock or a wreck a pilot read in the abandoned seconds un-happens, and the tape keeps those seconds only as an abandoned tail behind a marker; a planned reload rewinds too, because no final snapshot is taken on the way down (`arena_shutdown` runs after the world task has stopped). Accepted? (raised by cut AF's plan, not assumed) | Accepted: a pilot whose seat the resume released reads one line, `The server restarted and the match resumed from its last save; what happened after that save did not count.`, before the doctrine line. A final snapshot at shutdown is a later cut. Built on this default (AF.3). | AF, open |
 | Q-AF5 | Does the inline encode's cache cost on the wake after it move a lens? (conditional, raised by cut AF's plan, to be asked only if AF.2's off-and-on measurement showed it) | Not raised: off against on (per wake / per window p99) read CI 5.625 / 10.059 off and 6.226 / 10.562 on, authored 11.254 / 16.550 off and 10.401 / 15.958 on, no lens move attributable to the encode; the figure itself (p50 11.2 to 13.5 ms, wake plus encode up to 21.2 ms, the encode cloning every unit's opaque `TacticalUnit` once through `UnitRepr`) is the owner's to see, a borrowing `UnitRepr` serialiser or an incremental snapshot being the lever if it costs. | AF, closed at its default |
+| Q-AG1 | Should the brief's terrain words be the legend's labels (`woods_heavy`) rather than prose (`heavy woods`)? (raised by cut AG's plan, not assumed) | Prose, from one pinned exhaustive table (`class_prose`); the legend keeps its labels, the renderer's key to a glyph, and the pinned table is the one place the two vocabularies meet. Built on this default (AG.1). | AG, open |
+| Q-AG2 | Should a covered spot (drawn under a contact or the `@`) be named `In the window` as surveyed ground, although `VIEW`'s legend does not name it? (raised by cut AG's plan, not assumed) | No: the brief names the spots the legend names and nothing else, the owner rule read strictly, so a covered spot is named by neither spot line as by neither of `VIEW`'s; a pilot who wants it has `RANGE <spot>` and `STATUS`'s nearest-spot line. Built on this default (AG.1). | AG, open |
+| Q-AG3 | Should `VIEW <other word>` keep drawing the map, as it silently did before AG? (raised by cut AG's plan, not assumed) | No: one syntax-first usage line, `VIEW [BRIEF]; BRIEF says the window in sentences.`, the same bytes for every word and never an echo, so a stray designator says nothing a stray word does not. Built on this default (AG.1). | AG, open |
+| Q-AG4 | Should the brief reach a screen (a pane of its own in the TUI, a web pane)? (raised by cut AG's plan, not assumed) | Not in AG: line-mode text rung as `CONTACTS` is; it reaches the TUI notices pane and the web ring as `Sys` text by construction, and a pane of its own is a gateway-half and `web/` cut of its own. Built on this default (AG.1). | AG, open |
 
 ---
 
