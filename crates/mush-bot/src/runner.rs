@@ -74,6 +74,7 @@ pub const REPL_HELP: &str = "Local controls:\n\
   /step model           Produce a decision and hold it before applying\n\
   /step command | /commit Apply the held decision if observations are unchanged\n\
   /step observation     Pause and wait for current command output to settle\n\
+  /arena [red|blue [n]|stop]  Fly the simulator: claim, board and fight n matches; bare shows the picture\n\
   /help | /quit          Show these controls or disconnect\n\
 An unprefixed line is a game command, just like /send. Use SSH config for login.";
 
@@ -90,6 +91,11 @@ pub struct Options {
     pub campaign_epoch: Option<String>,
     pub restore_bot: Option<PathBuf>,
     pub campaign_quota: Option<usize>,
+    /// `--arena <red|blue>`: fly the simulator for that side (cut AJ.2).
+    pub arena: Option<crate::arena::Side>,
+    /// `--matches <n>`: how many matches `--arena` plays (1..=100); else
+    /// `[arena].matches`.
+    pub matches: Option<u32>,
 }
 
 pub enum Control {
@@ -150,6 +156,9 @@ pub struct Report {
     /// Canonical input record, including defaulted timeouts, for reproducibility.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub script: Option<Scenario>,
+    /// The simulator pilot's matches (cut AJ.2), when it flew.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arena: Option<crate::arena::report::Report>,
 }
 
 struct Log {
@@ -297,7 +306,30 @@ struct App {
     speech: Option<PreparedSpeech>,
     next_intent: u64,
     floor_fault: Option<&'static str>,
+    /// The simulator pilot's lane (cut AJ.2): while it flies, every tick is its.
+    arena: Option<crate::arena::Lane>,
+    /// The lane's result has been written into the state.
+    arena_reported: bool,
+    /// When the last `arena-picture` record was written.
+    arena_picture_ms: u64,
 }
+
+/// The pilot's name for itself (cut AJ.2): the character part of an
+/// `account+Character` SSH username, else the character sheet's name. The lane
+/// replaces it with the name in `Connected as {name} (` when it reads one.
+fn arena_me(username: &str, character: &Character) -> String {
+    match username.split_once('+') {
+        Some((_, name)) if !name.trim().is_empty() => name.trim().to_owned(),
+        _ => character.name.clone(),
+    }
+}
+
+/// The refusal for an arena pilot under a mission contract.
+const ARENA_MISSION: &str =
+    "the arena pilot does not run under a mission contract; use a memory namespace without one";
+/// The refusal for an arena pilot in a session that sends its own lines.
+const ARENA_SESSION: &str = "--arena cannot be combined with --script, --paused, --managed-floor, \
+                             --replay, --studio, --harness or a campaign session";
 
 struct Boundary {
     path: PathBuf,
@@ -418,9 +450,23 @@ pub async fn run_controlled(
     let selected_model = models.initial()?;
     if options.headless
         && scenario.is_none()
+        && options.arena.is_none()
         && (config.agent.goal.is_empty() || selected_model.is_none())
     {
-        return Err("headless play requires a goal and [model], or --script".into());
+        return Err("headless play requires a goal and [model], --arena, or --script".into());
+    }
+    if options.arena.is_some()
+        && (scenario.is_some()
+            || options.paused
+            || options.managed_floor
+            || options.campaign_epoch.is_some()
+            || restore.is_some())
+    {
+        return Err(ARENA_SESSION.into());
+    }
+    let arena_matches = options.matches.unwrap_or(config.arena.matches);
+    if !(1..=100).contains(&arena_matches) {
+        return Err("--matches takes a number from 1 to 100".into());
     }
     if options.headless && options.paused {
         return Err("--paused and headless/script mode cannot be combined".into());
@@ -504,6 +550,9 @@ pub async fn run_controlled(
             &config.ssh,
             options.campaign_epoch.is_some() && options.test_controls,
         )?;
+        if options.arena.is_some() {
+            return Err(ARENA_MISSION.into());
+        }
     }
     let mut activity = memories.activity()?;
     if restore.is_none() {
@@ -577,7 +626,8 @@ pub async fn run_controlled(
     memories.expect_arrival();
     let now = Instant::now();
     let started = log.started;
-    let active = !options.paused && (!config.agent.goal.is_empty() || scenario.is_some());
+    let active = !options.paused
+        && (!config.agent.goal.is_empty() || scenario.is_some() || options.arena.is_some());
     let state = State {
         status: if active {
             "running"
@@ -605,6 +655,16 @@ pub async fn run_controlled(
         log.event("scenario", &scenario.name)?;
     }
     let script = scenario.clone();
+    let arena = options.arena.map(|side| {
+        crate::arena::Lane::new(
+            side,
+            crate::arena::settings::Settings {
+                matches: arena_matches,
+                ..config.arena.clone()
+            },
+            arena_me(&config.ssh.username, &character),
+        )
+    });
     let mut app = App {
         activity,
         activity_tick: now,
@@ -613,7 +673,8 @@ pub async fn run_controlled(
         resume_status: None,
         // A replay sends exactly the commands in its source record. Login output
         // is still collected, but agent bootstrap belongs to autonomous play.
-        bootstrap: if script.is_some() {
+        // The arena pilot types its own `look`.
+        bootstrap: if script.is_some() || arena.is_some() {
             VecDeque::new()
         } else {
             config.agent.bootstrap.clone().into()
@@ -682,11 +743,21 @@ pub async fn run_controlled(
         speech: None,
         next_intent: 1,
         floor_fault: None,
+        arena,
+        arena_reported: false,
+        arena_picture_ms: 0,
     };
     if let Some(snapshot) = restore {
         app.restore(snapshot)?;
     }
     let result = app.drive().await;
+    // The one `SIM LEAVE`, when it is due, before the session closes.
+    let arena_result = if result.is_ok() {
+        app.arena_finish().await
+    } else {
+        Ok(())
+    };
+    let result = result.and(arena_result);
     let memory_result = app.memories.flush();
     let cancel_result = app.cancel_model();
     app.session.close().await;
@@ -722,6 +793,7 @@ pub async fn run_controlled(
         probe_results: app.probe_results.clone(),
         probe_results_omitted: app.probe_results_omitted,
         inherited_probe_results: app.inherited_probe_results,
+        arena: app.arena.as_ref().map(crate::arena::Lane::report),
     };
     app.log.record("result", serde_json::to_value(&report)?)?;
     if let Some(file) = report_file {
@@ -1355,13 +1427,25 @@ impl App {
                                 if self.log.echo { print!("{text}"); std::io::stdout().flush()?; }
                                 self.observation_revision += 1;
                                 self.cancel_speech("new game output invalidated the unsent reply")?;
-                                let watch = self.debug.observation_match(&self.state.recent, &text).map(str::to_owned);
+                                // The arena pilot's polls and acks stay out of memory, attention
+                                // and the recent window; the transcript keeps the raw text whole.
+                                let now = self.elapsed_ms();
+                                let seen = match self.arena.as_mut() {
+                                    Some(lane) => {
+                                        let journal = lane.feed(now, &text).journal;
+                                        if journal.is_empty() { journal } else { journal + "\n" }
+                                    }
+                                    None => text.clone(),
+                                };
+                                let watch = if seen.is_empty() { None } else { self.debug.observation_match(&self.state.recent, &seen).map(str::to_owned) };
                                 self.log.record("observation", json!(text))?;
-                                self.memories.observe(&text)?;
-                                self.attention.feed(&text);
-                                self.notice_attention()?;
-                                self.state.recent.push_str(&text);
-                                self.state.recent = tail(&self.state.recent, self.config.agent.context_bytes).to_owned();
+                                if !seen.is_empty() {
+                                    self.memories.observe(&seen)?;
+                                    self.attention.feed(&seen);
+                                    self.notice_attention()?;
+                                    self.state.recent.push_str(&seen);
+                                    self.state.recent = tail(&self.state.recent, self.config.agent.context_bytes).to_owned();
+                                }
                                 if let Some(pending) = &mut self.pending {
                                     if pending.text.len() + text.len() > 1_000_000 { return Err("single observation exceeded 1 MB".into()); }
                                     pending.text.push_str(&text);
@@ -1446,10 +1530,211 @@ impl App {
         Ok(())
     }
 
+    // -- the simulator pilot (cut AJ.2) -----------------------------------------
+
+    /// Whether this tick is the lane's: it flies and the run is running, its one
+    /// `SIM LEAVE` is due, or its result is not yet written.
+    fn arena_due(&self) -> bool {
+        let now = self.elapsed_ms();
+        self.arena.as_ref().is_some_and(|lane| {
+            (lane.flying() && self.state.status == "running")
+                || lane.leave_pending(now)
+                || (!self.arena_reported && !lane.stopped() && lane.result().is_some())
+        })
+    }
+
+    /// The lane's tick: its lines, its events, its picture record and its
+    /// result. No speech, scenario, activity, social or goal model turn runs
+    /// while it flies.
+    async fn arena_tick(&mut self) -> Result<()> {
+        let now = self.elapsed_ms();
+        let Some(lane) = self.arena.as_mut() else {
+            return Ok(());
+        };
+        let sends = lane.tick(now);
+        let events = lane.events();
+        let result = (!self.arena_reported && !lane.stopped())
+            .then(|| lane.result().cloned())
+            .flatten();
+        let running = matches!(
+            lane.picture().phase,
+            crate::arena::picture::Phase::Running { .. }
+        );
+        let picture = (running && now >= self.arena_picture_ms.saturating_add(5_000))
+            .then(|| lane.picture_json());
+        for send in sends {
+            self.arena_send(send).await?;
+        }
+        self.arena_events(events)?;
+        if let Some(picture) = picture {
+            self.arena_picture_ms = now;
+            self.log.record("arena-picture", picture)?;
+        }
+        if let Some(result) = result {
+            self.arena_reported = true;
+            self.state.status = result.status.clone();
+            self.state.outcome = result.outcome.clone();
+            self.log.event(&result.status, &result.outcome)?;
+        }
+        Ok(())
+    }
+
+    /// Type one lane line. Walk and lobby lines are echoed to the terminal;
+    /// the cockpit's are only recorded. None of them is a memory.
+    async fn arena_send(&mut self, send: crate::arena::Send) -> Result<()> {
+        self.session.send(&send.line).await?;
+        self.state.commands_sent += 1;
+        self.log.record(
+            "arena-send",
+            json!({"line": send.line, "purpose": send.purpose, "lane_ms": send.lane_ms}),
+        )?;
+        if matches!(
+            send.purpose,
+            crate::arena::Purpose::Walk | crate::arena::Purpose::Lobby
+        ) {
+            self.log.event("send", &send.line)?;
+        }
+        Ok(())
+    }
+
+    fn arena_events(&mut self, events: Vec<crate::arena::LaneEvent>) -> Result<()> {
+        for event in events {
+            match event {
+                crate::arena::LaneEvent::Said(text) => self.log.event("arena", &text)?,
+                crate::arena::LaneEvent::State(record) => self
+                    .log
+                    .record("arena-state", serde_json::to_value(&record)?)?,
+                // Each match has the whole run-time limit to itself.
+                crate::arena::LaneEvent::Claimed => self.goal_started = Instant::now(),
+            }
+        }
+        Ok(())
+    }
+
+    /// At the run's end: stop the lane and let it type its one `SIM LEAVE`,
+    /// waiting at most 3 s for the answer.
+    async fn arena_finish(&mut self) -> Result<()> {
+        let Some(lane) = self.arena.as_mut() else {
+            return Ok(());
+        };
+        lane.stop();
+        let deadline = Instant::now()
+            + Duration::from_millis(crate::arena::lobby::LEAVE_WAIT_MS.saturating_add(500));
+        let mut decoder = Decoder::default();
+        loop {
+            let now = self.elapsed_ms();
+            let (sends, events) = match self.arena.as_mut() {
+                Some(lane) => (lane.tick(now), lane.events()),
+                None => return Ok(()),
+            };
+            for send in sends {
+                self.arena_send(send).await?;
+            }
+            self.arena_events(events)?;
+            let now = self.elapsed_ms();
+            if !self
+                .arena
+                .as_ref()
+                .is_some_and(|lane| lane.leave_pending(now))
+                || Instant::now() >= deadline
+            {
+                return Ok(());
+            }
+            match tokio::time::timeout(Duration::from_millis(50), self.session.channel.wait()).await
+            {
+                Ok(Some(ChannelMsg::Data { data }))
+                | Ok(Some(ChannelMsg::ExtendedData { data, .. })) => {
+                    let text = decoder.feed(&data);
+                    if !text.is_empty() {
+                        self.log.record("observation", json!(text))?;
+                        let now = self.elapsed_ms();
+                        if let Some(lane) = self.arena.as_mut() {
+                            lane.feed(now, &text);
+                        }
+                    }
+                }
+                Ok(None) | Ok(Some(ChannelMsg::Close)) | Ok(Some(ChannelMsg::Eof)) => {
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// `/arena red|blue [n]`, `/arena stop`, bare `/arena`.
+    fn arena_control(&mut self, arg: &str) -> Result<()> {
+        let words: Vec<&str> = arg.split_whitespace().collect();
+        match words.as_slice() {
+            [] => {
+                let lane = self
+                    .arena
+                    .as_ref()
+                    .ok_or("no arena pilot yet; /arena red or /arena blue starts one")?;
+                let lines = lane.picture().summary_lines(self.elapsed_ms());
+                self.log.event("arena", &lines.join("\n"))
+            }
+            ["stop"] => {
+                let lane = self.arena.as_mut().ok_or("no arena pilot is flying")?;
+                lane.stop();
+                let events = lane.events();
+                self.arena_events(events)?;
+                self.pause()?;
+                self.log
+                    .event("arena", "Arena pilot stopped; the tank is yours.")
+            }
+            [side, rest @ ..] if rest.len() <= 1 => {
+                let usage =
+                    "/arena takes red or blue, then an optional number of matches from 1 to 100";
+                let side = crate::arena::Side::parse(side).ok_or(usage)?;
+                let matches = match rest.first() {
+                    Some(n) => n
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|n| (1..=100).contains(n))
+                        .ok_or(usage)?,
+                    None => self.config.arena.matches,
+                };
+                if self.mission.spec.is_some() {
+                    return Err(ARENA_MISSION.into());
+                }
+                if self.scenario.is_some()
+                    || self.options.campaign_epoch.is_some()
+                    || self.options.managed_floor
+                {
+                    return Err(ARENA_SESSION.into());
+                }
+                if self.arena.as_ref().is_some_and(crate::arena::Lane::flying) {
+                    return Err("the arena pilot is already flying; /arena stop first".into());
+                }
+                self.cancel_model()?;
+                let me = arena_me(&self.config.ssh.username, &self.character);
+                self.arena = Some(crate::arena::Lane::new(
+                    side,
+                    crate::arena::settings::Settings {
+                        matches,
+                        ..self.config.arena.clone()
+                    },
+                    me,
+                ));
+                self.arena_reported = false;
+                self.arena_picture_ms = 0;
+                self.state.status = "running".into();
+                self.state.outcome.clear();
+                self.goal_started = Instant::now();
+                Ok(())
+            }
+            _ => Err("use /arena, /arena red|blue [n] or /arena stop".into()),
+        }
+    }
+
     fn fail(&mut self, message: &str) -> Result<()> {
         self.pause()?;
         self.state.status = "blocked".into();
         self.state.outcome = message.to_owned();
+        // A stopped lane still types its one `SIM LEAVE` when it is due.
+        if let Some(lane) = self.arena.as_mut() {
+            lane.stop();
+        }
         self.log.event("blocked", message)
     }
 
@@ -1650,6 +1935,9 @@ impl App {
         }
         if self.checkpoint_tick().await? {
             return Ok(());
+        }
+        if self.arena_due() {
+            return self.arena_tick().await;
         }
         if self.speech.is_some() {
             self.dispatch_speech().await?;
@@ -2412,6 +2700,7 @@ impl App {
                 )?;
             }
             "/help" => self.log.event("help", REPL_HELP)?,
+            "/arena" => self.arena_control(arg)?,
             "/state" => self
                 .log
                 .event("state", &serde_json::to_string_pretty(&self.snapshot()?)?)?,
@@ -2442,7 +2731,10 @@ impl App {
                 self.state.outcome.clear();
                 self.state.status = if verb == "/step" {
                     "paused"
-                } else if self.state.goal.trim().is_empty() && self.attention_enabled {
+                } else if self.state.goal.trim().is_empty()
+                    && self.attention_enabled
+                    && !self.arena.as_ref().is_some_and(crate::arena::Lane::flying)
+                {
                     "listening"
                 } else {
                     "running"
@@ -2662,5 +2954,23 @@ impl App {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_arena_pilot_names_itself_from_the_ssh_username_else_the_sheet() {
+        let sheet = Character {
+            name: "Rosebot".into(),
+            ..Character::default()
+        };
+        assert_eq!(arena_me("rose+Rose", &sheet), "Rose");
+        assert_eq!(arena_me("rose+ Rose ", &sheet), "Rose");
+        assert_eq!(arena_me("rose", &sheet), "Rosebot");
+        assert_eq!(arena_me("rose+ ", &sheet), "Rosebot");
+        assert_eq!(arena_me("rose+", &sheet), "Rosebot");
     }
 }

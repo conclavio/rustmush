@@ -405,6 +405,52 @@ impl Client {
     }
 }
 
+/// **Staff re-pose a tank for the next match** (cut AJ.2): `@arena/pose
+/// {callsign}={x} {y} {heading}` typed by God's client, waited for its answer.
+/// It is refused only while a match runs, it survives a player's claim (which
+/// puts the tanks back at muster but keeps the openings), and the match that
+/// uses it clears it. The stock muster is 2 430 m apart against a 600 m sight,
+/// so every live arena lane poses the two tanks inside each other's sight.
+pub async fn pose(god: &mut Client, spec: &str) {
+    god.say(&format!("@arena/pose {spec}"), "opens at cell")
+        .await;
+}
+
+/// **The bot's config for this rig** (cut AJ.2): `[ssh]` at the pinned host key
+/// as `username` with the password in [`PASSWORD_ENV`], no `[model]`, memory
+/// and costs session-only, the run bounded at 150 s, then `extra` (more
+/// tables). Written under the bot's own working directory.
+pub fn bot_config(rig: &Rig, username: &str, extra: &str) -> PathBuf {
+    let home = rig.dir.join("bot");
+    std::fs::create_dir_all(&home).expect("the bot's working directory");
+    let config = format!(
+        r#"[ssh]
+host = "127.0.0.1"
+port = {}
+username = "{username}"
+password_env = "{PASSWORD_ENV}"
+host_key_sha256 = "{}"
+
+[agent]
+max_seconds = 150
+settle_ms = 100
+observation_ms = 1000
+
+[memory]
+persistent = false
+
+[costs]
+persistent = false
+{extra}
+"#,
+        rig.addr.port(),
+        rig.pin
+    );
+    let path = home.join("arena.toml");
+    std::fs::write(&path, config).expect("the bot's config");
+    path
+}
+
 /// **The bot binary as a child of this rig** (for AJ.2 and AJ.4): `--config
 /// config`, its working directory a directory of its own under the rig's scratch
 /// directory holding an **empty `.env`** (the bot's `dotenvy::dotenv()` walks up
@@ -415,12 +461,18 @@ impl Client {
 /// variable removed, and the one password variable the rig's configs name
 /// ([`PASSWORD_ENV`]) set on the child only.
 pub fn bot_command(rig: &Rig, config: &Path, password: &str) -> std::process::Command {
-    let home = rig.dir.join("bot");
-    std::fs::create_dir_all(&home).expect("the bot's working directory");
+    bot_command_in(&rig.dir.join("bot"), config, password)
+}
+
+/// [`bot_command`] in a working directory of the caller's (cut AJ.2): the same
+/// empty `.env`, the same removed keys and the same one password variable, for
+/// a child that never reaches a server (the command line's own refusals).
+pub fn bot_command_in(home: &Path, config: &Path, password: &str) -> std::process::Command {
+    std::fs::create_dir_all(home).expect("the bot's working directory");
     std::fs::write(home.join(".env"), "").expect("the bot's empty .env");
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_mush-bot"));
     command
-        .current_dir(&home)
+        .current_dir(home)
         .arg("--config")
         .arg(config)
         .env_remove("OPENROUTER_API_KEY")

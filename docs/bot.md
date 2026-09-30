@@ -257,6 +257,9 @@ pause/goal changes remain available while it is thinking or waiting for the game
 | `/model use careful` | Switch to a named profile and pause, retaining memory and budget |
 | `/cost` | Show session and all-session costs, grouped by model, profile and purpose |
 | `/budget` | Show session limits, remaining amounts and blocking reasons; load/save/set JSON policies |
+| `/arena red` or `/arena blue 3` | Fly the simulator for that side: claim, board and fight one (or `n`) matches; see [Arena pilot](#arena-pilot) |
+| `/arena stop` | Stop the pilot (giving the slot up if no match has started) and pause; the tank is yours |
+| `/arena` | Show the pilot's picture: phase, own tank, lock, weapons, contacts, spots, tally |
 | `/help` | List controls |
 | `/quit` | Disconnect and save the result |
 
@@ -268,6 +271,98 @@ no goal, the bot listens for engagement. Otherwise it starts paused. After compl
 interactive mode stays connected and, by default, can respond to conversation.
 Blockers stop autonomous action until the runner resumes it.
 EOF or Ctrl-C closes the session; headless mode ignores stdin entirely.
+
+## Arena pilot
+
+`mush-bot --arena red` (or `--arena blue`), or `/arena red` at the prompt, flies
+the simulator (`help simulator`, `help cockpit`) for that side with no model at
+all. `--matches 3` (or `/arena red 3`, or `[arena] matches` in the config) plays
+three before it reports. `--headless --arena red` is a complete run: it needs no
+`[model]` and no goal.
+
+```powershell
+$env:MUSH_BOT_PASSWORD = "your-game-password"
+cargo run -p mush-bot -- --config mush-bot.local.toml --arena red --matches 3 --transcript arena.jsonl
+```
+
+**From where.** The pilot starts from Limbo, the Welcome Hall or any room of the
+simulator centre: it types `look`, then `ooc` and `simulator` as the room needs,
+reads the board with `SIM STATUS`, and waits (reading it again every ten
+seconds, up to `[arena] wait_start_s`) while another match is boarding or
+running. Anywhere else it stops with `The simulator is not reachable from here:
+the pilot starts from Limbo, the Welcome Hall or the simulator centre.`
+
+**What it types.** A closed list and nothing else: `look`, `ooc`, `simulator`,
+`red`/`blue`, `SIM STATUS`, `SIM TEAM red|blue`, `SIM START`, `BOARD`,
+`STARTUP` and `SIM LEAVE` in the centre, and `CONTACTS`, `STATUS`,
+`WEAPONSTATUS`, `RANGE`, `BEARING B`, `HEADING`, `SPEED`, `LOCK` and `FIRE` in
+the pod. It never types `SIM AI`, `SIM UNIT`, `SIM MODE`, `SIM RANGE`,
+`SIM CONCEDE`, `SIM ABORT`, `ORDER` or `EXIT`. It types **at most four lines a
+second** (`[arena] max_lines_per_s`, 1 to 4), every purpose together, well under
+the server's flood limit and the cockpit's eight pending orders. A line-mode
+pilot is sent no running picture, so it polls: `CONTACTS` once a second while it
+holds anything (every five seconds otherwise, and a quarter-second after any
+contact notice), `STATUS` every two seconds, `WEAPONSTATUS` a second after each
+shot until it knows that gun's cycle, then every few seconds, the lock's `RANGE`
+after every second `CONTACTS` (a lock reads finer than the scope), and
+`BEARING B` while it searches. When the four slots are short, the order is: the
+first `STATUS` and `WEAPONSTATUS` after the power comes up (nothing can be aimed
+before they are read), then the main gun's shot, the lock, `CONTACTS`, the other
+guns' shots, the heading and the speed, and then the remaining polls.
+
+**Live-box etiquette.** It leads its side only when it is the first on it — the
+centre's own rule, read off the `takes … slot` and `gives up … slot` lines — and
+only the lead types `SIM START`. As lead it waits `[arena] lead_start_grace_ms`
+(three seconds) after its claim before starting, and it starts that wait again
+whenever anybody else claims or gives a slot up, so a person joining gets the
+time to. When it stops before a match has started (a blocker, `/arena stop`,
+the end of the run) and still holds a slot, it gives the slot up with one
+`SIM LEAVE` (typed again only when the server answers it as busy, and only
+within the three seconds it waits for the answer), so it never leaves a centre
+locked behind it; it never types it while a match is boarding or running. When a drop or a server restart hands its
+tank to the machines (`flown by doctrine`), it types `BOARD` every three seconds
+until the tank is its own again, then starts it if it went dark.
+
+**How it fights.** Written from the player help alone — nothing of the machines'
+own controller is read, imported or mirrored. It locks the nearest identified
+hostile with a fresh plot (never an unidentified contact, never a friend) and
+keeps that lock unless another is at least 100 m nearer; it fires each gun,
+main gun first, when the gun is believed ready and the lock's plot is fresh. It
+circles its target at `[arena] band_m` (450 m: just outside the 420 m a machine
+closes to, inside the 480 m a stopped tank is seen at), bending toward the band
+when off it; it circles toward the target's rear when its plots show the target
+moving, and otherwise reverses every twenty seconds so the machine's plot of it
+goes stale. Hurt to half its hull, or with a plate at a quarter, it withdraws
+for ten seconds and then circles 150 m wider (at most 600 m) for the rest of
+the match. Held by the ground, it turns 45° for three seconds. With no
+identified hostile held for five seconds (an unidentified contact does not
+count) it drives for The Crossroads (`B`), 800 m past it, and back. Its first `SPEED` order is `999`, which makes the tank say its own top
+speeds.
+
+**The report and the exit code.** The JSON report gains an `arena` block: the
+side, the matches asked for, one entry a match (the match number, the callsign,
+whether it led, the centre's own result word, shots that left, orders refused,
+hits, misses, kills, hits taken, sections lost, whether the tank was destroyed,
+reclaims and time away, the match's length) and the wins, losses, draws,
+timeouts and others. The run is `done`, and a headless run exits 0, **only when
+every match it flew ended on its own side's word**; anything else — a loss, a
+draw, a timeout, an abort, a blocker — is `blocked` and exits 2. The outcome
+reads `Won match 3 for red as RA: 7 shot(s), 4 hit(s), 1 kill(s); took 2 hit(s).`
+or `Match 3 ended (timeout); the bot flew RA for red: …`, and for several
+matches `Won 2 of 3 matches for red (lost 1, drew 0, timed out 0, other 0).`
+
+**What it remembers.** The transcript keeps every byte the game sent, and each
+line the pilot typed as an `arena-send` record with the lane's own clock
+(`lane_ms`, the clock the four-a-second limit runs on); `arena-state` records its
+phase, lead and seat on every change, `arena-picture` its picture every five
+seconds while a match runs, and `arena` events say what it did in sentences. Its
+memory, attention and the recent window see only the lines worth remembering:
+the poll replies, the acknowledgements of its own orders and the echo of its own
+typing are left out.
+
+`/pause` stops the pilot typing and `/resume` starts it again; `/arena stop`
+ends it and hands you the tank. It will not fly under a mission contract, a
+script, a managed floor or a campaign session.
 
 ## Character, personality and voice
 

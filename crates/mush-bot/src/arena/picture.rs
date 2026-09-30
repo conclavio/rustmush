@@ -258,6 +258,12 @@ pub struct Spot {
     pub range_m: Option<u32>,
     pub bearing_deg: Option<u32>,
     pub read_ms: u64,
+    /// Where the spot lies, whole metres east and north (cut AJ.2): worked out
+    /// only from a `STATUS` block that read the tank's own position and this
+    /// spot as the nearest together, so its range and bearing were taken from
+    /// the same place. A `RANGE` or `BEARING` answer changes one figure of the
+    /// pair at a time and never moves it; the ground does not move either.
+    pub plotted_m: Option<(i64, i64)>,
 }
 
 /// What the pilot's own shooting and the tank's own damage came to.
@@ -344,6 +350,8 @@ pub struct WeaponsReply {
 pub struct StatusBlock {
     pub sections: BTreeMap<String, Section>,
     pub last_ms: u64,
+    /// The block's own position row, for the nearest spot's row after it.
+    pub pos_m: Option<(f64, f64)>,
 }
 
 /// The replies being read now.
@@ -644,6 +652,9 @@ impl Picture {
                 self.own.pos_m = Some((*x_m as f64, *y_m as f64));
                 self.own.pos_read_ms = now_ms;
                 self.own.scope = *scope;
+                if let Some(block) = self.open.status.as_mut() {
+                    block.pos_m = self.own.pos_m;
+                }
                 self.status_row(now_ms);
             }
             Line::StatusNearestSpot {
@@ -653,6 +664,22 @@ impl Picture {
                 bearing_deg,
             } => {
                 journal = false;
+                // Range and bearing from the block's own position: where the
+                // spot lies. Without that row, the spot keeps what it had.
+                let plotted_m = self
+                    .open
+                    .status
+                    .as_ref()
+                    .and_then(|block| block.pos_m)
+                    .map(|(x, y)| {
+                        let range = f64::from(*range_m);
+                        let bearing = f64::from(*bearing_deg).to_radians();
+                        (
+                            (x + range * bearing.sin()).round() as i64,
+                            (y + range * bearing.cos()).round() as i64,
+                        )
+                    })
+                    .or_else(|| self.spots.get(letter).and_then(|spot| spot.plotted_m));
                 self.spots.insert(
                     *letter,
                     Spot {
@@ -660,6 +687,7 @@ impl Picture {
                         range_m: Some(*range_m),
                         bearing_deg: Some(*bearing_deg),
                         read_ms: now_ms,
+                        plotted_m,
                     },
                 );
                 self.status_row(now_ms);
@@ -1493,6 +1521,7 @@ impl Picture {
             range_m: None,
             bearing_deg: None,
             read_ms: now_ms,
+            plotted_m: None,
         });
         spot.name = name.to_owned();
         spot.read_ms = now_ms;
@@ -1951,6 +1980,8 @@ mod tests {
         assert_eq!(own.sections["hull"].facets["right"], (240, 250));
         assert_eq!(own.sections["left_track"].condition, "destroyed");
         assert_eq!(p.spots[&'A'].range_m, Some(120));
+        // 120 m at 045 from (-40, 975): where The Ford lies.
+        assert_eq!(p.spots[&'A'].plotted_m, Some((45, 1060)));
         // A head without HELD clears it; one with it keeps a known cause.
         feed(
             &mut p,

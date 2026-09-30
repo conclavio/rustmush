@@ -15,6 +15,13 @@
 //! runner's monotonic session milliseconds, and returns data; the runner does the
 //! reading and the sending.
 //!
+//! **What flies** (cut AJ.2): [`lane::Lane`] ties the picture to the
+//! [`lobby::Lobby`] (the walk, the claim, the start, the board and the
+//! re-board, in a closed vocabulary) and to the [`pilot::Pilot`] (a
+//! deterministic tactician), types at most four lines a second, and reports
+//! ([`report::Report`]) on the centre's own result words. The `[arena]` table is
+//! [`settings::Settings`].
+//!
 //! **The tempo this is sized to**, as the server ships it (plain facts, not
 //! links: the game crates are not dependencies):
 //!
@@ -32,9 +39,15 @@
 //!   pulse away and a notice is at most one quiet pulse late.
 use serde::{Deserialize, Serialize};
 
+pub mod lane;
 pub mod lines;
+pub mod lobby;
 pub mod picture;
+pub mod pilot;
+pub mod report;
+pub mod settings;
 
+pub use lane::{Fed, Lane, LaneEvent, LaneResult, Purpose, Send};
 pub use lines::{Assembler, Line, classify};
 pub use picture::Picture;
 

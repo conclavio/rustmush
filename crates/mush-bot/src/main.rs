@@ -24,6 +24,7 @@ Usage: mush-bot --config <file> [--goal <text>] [--role <text>]\n\
                 [--conversation <file.json>]\n\
                 [--login <account+character>] [--model-tape <file.json>]\n\
                 [--test-controls] [--isolate-memory <new-directory>]\n\
+                [--arena <red|blue> [--matches <n>]]\n\
        mush-bot --config <file> --replay <capture.json> --report <new.json> [--model <profile>]\n\
        mush-bot --config <file> --studio <concept.json> --output <new-directory> [--tui | --headless]\n\
        mush-bot --config <file> --studio-session <session.json> --output <new-directory> [--tui]\n\
@@ -399,6 +400,20 @@ fn launch() -> Result<u8> {
                 )
             }
             "--paused" => options.paused = true,
+            // Cut AJ.2: fly the simulator.
+            "--arena" => {
+                let word = args.next().ok_or("--arena takes red or blue")?;
+                options.arena =
+                    Some(mush_bot::arena::Side::parse(&word).ok_or("--arena takes red or blue")?);
+            }
+            "--matches" => {
+                options.matches = Some(
+                    args.next()
+                        .and_then(|n| n.parse::<u32>().ok())
+                        .filter(|n| (1..=100).contains(n))
+                        .ok_or("--matches takes a number from 1 to 100")?,
+                );
+            }
             "--campaign-epoch" => {
                 options.campaign_epoch =
                     Some(args.next().ok_or("--campaign-epoch requires a token")?)
@@ -414,6 +429,31 @@ fn launch() -> Result<u8> {
                 options.restore_bot = Some(args.next().ok_or("--restore-bot requires JSON")?.into())
             }
             _ => return Err(format!("unknown option {arg}; use --help").into()),
+        }
+    }
+    if options.matches.is_some() && options.arena.is_none() && goal.is_none() {
+        return Err("--matches requires --arena or --goal".into());
+    }
+    if options.arena.is_some() {
+        if goal.is_some() {
+            return Err("--arena flies now and --goal lets the model decide; choose one".into());
+        }
+        if options.scenario.is_some()
+            || options.paused
+            || options.managed_floor
+            || replay.is_some()
+            || studio.is_some()
+            || studio_session.is_some()
+            || harness.is_some()
+            || options.campaign_epoch.is_some()
+            || options.restore_bot.is_some()
+            || options.campaign_quota.is_some()
+        {
+            return Err(
+                "--arena cannot be combined with --script, --paused, --managed-floor, \
+                        --replay, --studio, --harness or a campaign session"
+                    .into(),
+            );
         }
     }
     let offline_modes = [

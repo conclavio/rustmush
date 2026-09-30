@@ -27,6 +27,8 @@ pub struct Config {
     pub agent: Agent,
     pub memory: Memory,
     pub knowledge: Vec<PathBuf>,
+    /// The simulator pilot's table (cut AJ.2): `--arena` and `/arena`.
+    pub arena: crate::arena::settings::Settings,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -205,6 +207,7 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         self.attention.validate()?;
         self.costs.validate()?;
+        self.arena.validate()?;
         let a = &self.agent;
         if self.memory.namespace.trim().is_empty()
             || self.memory.namespace.len() > 200
