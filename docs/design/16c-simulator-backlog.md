@@ -606,7 +606,7 @@ line of work, with the scale target's one blocker (`N5`) placed where its depend
 ## 4. Execution order
 
 Fourteen serial cuts and a tail. Ledger letters used before this document: R G P H A T C K S W N X F Q;
-the twelve below use the rest of the alphabet, and the review cut AA (after E) opens the second series, the owner's ruling cut AB (after Y) follows it, and the owner's fix cut AC (after I, before the 2026-09-26 dev1 redeploy) follows that; the tail's five cuts AD to AH (after O, started on the owner's word of 2026-09-27) close the second series, with the fix cut AI (`B-84`, from cut AE's sweep) placed after AF, and the owner's bot cut AJ (the external bot flies a pod, 2026-09-29) after AI.
+the twelve below use the rest of the alphabet, and the review cut AA (after E) opens the second series, the owner's ruling cut AB (after Y) follows it, and the owner's fix cut AC (after I, before the 2026-09-26 dev1 redeploy) follows that; the tail's five cuts AD to AH (after O, started on the owner's word of 2026-09-27) close the second series, with the fix cut AI (`B-84`, from cut AE's sweep) placed after AF, and the owner's bot cut AJ (the external bot flies a pod, 2026-09-29) after AI, and its follow-up AK (the bot finishes what it starts, 2026-09-30) after AJ.
 Each cut is a functional boundary of roughly cut F's size: three to five sub-cuts of 1.5k to 3k lines
 with their tests. 16b §0's build discipline applies unchanged: the workspace green at every sub-cut, the
 gates re-blessed in the commit that moves them, a reviewer that did not write the cut, one commit and one
@@ -1049,6 +1049,22 @@ Measured before the cut (2026-09-29, owner's ask; a 1.2 KB picture and a five-fi
 
 Depends on nothing of the simulator's (the bot reads the shipped text). Gateway: no. Packs: none. Hash: no. Server code: none expected; a test-support helper in `mushd` at most. Size: medium to large, four sub-cuts.
 
+---
+
+### Cut AK: the bot finishes what it starts
+
+Not yet built. Added 2026-09-30 on the owner's word ("run AK and keep chasing tail items as they appear"), from the AJ win-rate reading and the lead's live commander smoke.
+
+**Why.** AJ's ten-match lane (no model, 1 v 1, tanks posed 500 m apart, the lane's own 180 s match cap) read 4 won, 1 lost, 5 timed out; every timeout was one-sided (38 to 65 hits scored against 34 to 48 taken, no kill), because a machine that is losing falls back out of the 600 m sight and the pilot does not follow it. The lead's live smoke on 2026-09-29 (the same rig, five matches, `bots/arena/commander.toml`'s real `deepseek/deepseek-v4.1-flash` pinned to Together) read 1 won, 1 lost, 3 timed out; 370 commander calls, 368 answered, 1 late, 2 transport errors, 0.0706 US dollars in all (about 1.4 cents a match), about 410 ms a call; and the commander chose `withdraw` for 238 of its 367 doctrines (65 per cent), most of them on a lost contact ("no contacts and lock lost ... withdraw to 900 m to rebuild the picture"), which sends the tank away from the fight it is winning. AJ's residuals add the pilot's own causes: the fall-back band equals the sight's edge, a held state that stays held at 0 kph, about 46 per cent of `FIRE` lines refused as still cycling, a fall back read from any facet of any section, and a `withdraw` doctrine with no time bound that outlives a commander that stopped.
+
+**When it lands.** A bot that is winning finishes the match: it follows a contact it lost to the last plot and along its estimated course, sweeps when the trail runs out, and re-engages; it falls back only on its own failing hull and never past its sight; it types a `FIRE` only when its own clock says the weapon is ready; the commander hunts rather than withdraws on a lost contact; and the ten-match figure is re-measured on a cap long enough to tell a win from a timeout.
+
+- **AK.1** The pilot finishes: a hunt state (lost contact: drive to the last plot, then along the estimated course, then a bounded sweep, back to engage on the first fresh plot; never past the arena's edge, a `Held:` line ends a leg), the fall-back band held inside the sight with margin and fall back read from the struck facets of the own hull only, the held-at-0-kph state released, and fire lines scheduled from each weapon's own cycle clock (the `Still cycling: N s to go` refusal and `WEAPONSTATUS` both feed it) so a refused `FIRE` is the exception; offline tests for each on the `Picture` and the tactician.
+- **AK.2** The commander hunts: the doctrine gains a `hunt` stance; `withdraw` expires (a bounded hold, then the pilot's default) and is cleared when the commander stops for any reason; the commander's system prompt is rewritten from the measured failure (a lost contact is a reason to hunt, a withdrawal is for a failing hull, the band stays inside the sight), with the prompt's guidance pinned by an offline test over recorded pictures; the doctrine clamp refuses a band beyond the sight.
+- **AK.3** The re-measure: the win-rate lane's match cap raised so a finished fight is not cut off (default below), the lane made to finish its report when the bot ends early, and an opt-in live commander lane (ignored, run only when `MUSH_BOT_LIVE_COMMANDER=1` and `OPENROUTER_API_KEY` are both set, never by CI) that flies five matches with `bots/arena/commander.toml`'s model block and prints its figure, calls, late answers and cost; the builder runs the no-model lane (at most three tuning rounds of AK.1's constants, each run and its figure recorded) and the lead runs the live lane once after the cut.
+
+Depends on AJ. Server, arena, packs, gateway and `web/`: none (crates/mush-bot/AGENTS.md holds; the tactics stay the bot's own, written from what a pilot reads, never from `reflex`). Hash: no. Size: medium, three sub-cuts.
+
 ## 5. Open questions for the owner
 
 Each has a default, and the build proceeds on the default unless the owner says otherwise before the cut
@@ -1140,6 +1156,11 @@ debts, plus the four feature choices that change the most.
 | Q-AJ3 | May the bot lead a side? | Only when it is first on the side; under a human lead it never types `SIM START`, `SIM AI`, `SIM UNIT` or `SIM CONCEDE`. Built on this default (AJ.2 and AJ.4): the lead is the side's first claimant still holding a slot, `SIM START` waits a grace, and the wingman test proves the bot never starts under a human lead. | AJ, open |
 | Q-AJ4 | How fast may the bot type? | At most 4 lines a second, well under the session flood bucket (10 a second, 30 burst) and the cockpit's 8 pending intents a tank. Built on this default (AJ.2): a ring limiter on the lane's own clock, `[arena].max_lines_per_s` 4 (1 to 4). | AJ, open |
 | Q-AJ5 | What becomes of what the bot learns about beating the machines? | Recorded in the AJ row as input for a later machine cut; AJ changes nothing in `reflex`. Built on this default (AJ.4): the reading is in the AJ row's Landed and Deviations cells; `reflex` is unchanged. | AJ, open |
+| Q-AK1 | How far may the bot chase a contact it has lost? (raised by cut AK's entry) | To the last plot, then along the contact's estimated course for as long as the plot is younger than a bound, then one bounded sweep; never past the arena's edge; any fresh plot of a hostile ends the hunt and engages. | AK, open |
+| Q-AK2 | May the commander still order a withdrawal? | Yes, but a `withdraw` doctrine is a bounded hold (the planner sets the bound, at most 30 s) that the pilot drops when it lapses or the commander stops, and its prompt says withdrawal is for a failing hull, never for a lost contact. | AK, open |
+| Q-AK3 | What match cap does the win-rate lane measure on? | 420 s a match (the game's own default is an hour); a timeout is reported as its own column, never as a loss, and the lane's bound grows to match. | AK, open |
+| Q-AK4 | May a test spend real model money? | Only an ignored lane that runs when `MUSH_BOT_LIVE_COMMANDER=1` and a real `OPENROUTER_API_KEY` are both set by the person running it; CI never sets them, and no builder runs it. | AK, open |
+| Q-AK5 | What figure counts as AK working? | Report-only as in Q-AJ1: the no-model lane's target stays seven wins in ten, now on the 420 s cap; the figure, each tuning round's figure and the lead's live commander figure are recorded in the AK row. | AK, open |
 
 ---
 
