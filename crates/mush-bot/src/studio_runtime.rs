@@ -490,6 +490,7 @@ pub fn prepare(
     if let Some(t) = model.settings.temperature {
         payload["temperature"] = json!(t);
     }
+    model.settings.extra_body(&mut payload);
     let capture = Capture {
         version: 1,
         question: false,

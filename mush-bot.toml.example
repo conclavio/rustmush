@@ -93,6 +93,9 @@ timeout_secs = 90
 max_tokens = 2048
 # temperature = 0.3 # omit to use the provider/model default
 # cost_currency = "USD" # needed for generic endpoints reporting usage.cost; OpenRouter is inferred
+# Objects passed through verbatim in every request (each at most 2048 bytes, 4 deep):
+# reasoning = { enabled = false }
+# provider = { order = ["Together"], allow_fallbacks = false }
 # A local keyless endpoint can omit api_key_env.
 
 [agent]
@@ -119,3 +122,16 @@ bootstrap = ["help", "look"] # sent once after login in agent mode; scripts list
 # wait_start_s = 300         # the longest wait for a busy centre, for a lead to start, or for a claim on the other side (10..3600)
 # band_m = 450               # the orbit's radius around the target, metres (150..900)
 # step_timeout_ms = 15000    # the longest one lobby line may go unanswered (2000..60000)
+# The optional model commander sets the pilot's doctrine (where it goes, what it
+# hunts); the pilot still locks, fires and steers. docs/bot.md "The commander".
+# commander = true           # a commander flies when a commander model resolves
+# commander_ms = 1500        # asks again this long after each answer or error (1000..10000)
+# commander_max_calls = 400  # the most commander calls in one match (1..10000)
+# commander_from_session = false # true lets the session's [model] command when no table below is given
+# [arena.commander_model]    # the commander's own model; the same keys as [model]
+# endpoint = "https://openrouter.ai/api/v1/chat/completions"
+# name = "deepseek/deepseek-v4.1-flash"
+# api_key_env = "OPENROUTER_API_KEY"
+# max_tokens = 200
+# reasoning = { enabled = false }  # a reasoning model must not think: answers go stale
+# provider = { order = ["Together"], allow_fallbacks = false }

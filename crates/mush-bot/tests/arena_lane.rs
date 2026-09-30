@@ -12,11 +12,13 @@
 use std::collections::BTreeMap;
 
 use mush_bot::arena::{
-    Lane, LaneEvent, Purpose, Send, Side,
+    CommanderReply, Doctrine, Lane, LaneEvent, Purpose, Send, Side,
+    commander::{OFF_BUDGET, OFF_DESTROYED, OFF_MATCH_OVER, OFF_STALE, Stance},
     lobby::{Centre, Step},
     picture::Power,
     settings::Settings,
 };
+use serde_json::{Value, json};
 
 /// The fake clock's step, and the runner's tick.
 const STEP_MS: u64 = 10;
@@ -343,6 +345,8 @@ struct Run {
     sent: Vec<Send>,
     journal: Vec<String>,
     said: Vec<String>,
+    /// The lane's transcript records (cut AJ.3's commander).
+    records: Vec<(String, Value)>,
 }
 
 impl Run {
@@ -354,6 +358,7 @@ impl Run {
             sent: Vec::new(),
             journal: Vec::new(),
             said: Vec::new(),
+            records: Vec::new(),
         }
     }
 
@@ -372,8 +377,10 @@ impl Run {
             }
         }
         for event in self.lane.events() {
-            if let LaneEvent::Said(text) = event {
-                self.said.push(text);
+            match event {
+                LaneEvent::Said(text) => self.said.push(text),
+                LaneEvent::Record { kind, data } => self.records.push((kind, data)),
+                _ => {}
             }
         }
     }
@@ -854,4 +861,370 @@ fn the_report_says_won_lost_draw_timeout_and_blocked() {
     assert_eq!(result.status, "blocked");
     assert_eq!(result.outcome, "This server has no simulator centre.");
     assert!(run.lane.report().matches.is_empty());
+}
+
+// -- the commander (cut AJ.3) ----------------------------------------------------
+
+/// A doctrine answer.
+fn answer(stance: &str) -> CommanderReply {
+    CommanderReply::Answer(
+        json!({"target":"BA","stance":stance,"band_m":450,"sense":"auto","note":"test"})
+            .to_string(),
+    )
+}
+
+impl Run {
+    /// Step the clock to `at`.
+    fn advance_to(&mut self, at: u64) {
+        while self.now < at {
+            self.step();
+        }
+    }
+
+    /// Step until the commander has an ask due, at most `limit_ms`; its view.
+    fn ask(&mut self, limit_ms: u64) -> Option<Value> {
+        let end = self.now + limit_ms;
+        loop {
+            if let Some(view) = self.lane.commander_due(self.now) {
+                return Some(view);
+            }
+            if self.now >= end {
+                return None;
+            }
+            self.step();
+        }
+    }
+
+    /// Hand the lane a reply now, and collect what it records.
+    fn reply(&mut self, reply: CommanderReply) {
+        self.lane.commander_reply(self.now, reply);
+        self.step();
+    }
+
+    fn records_of(&self, kind: &str) -> Vec<&Value> {
+        self.records
+            .iter()
+            .filter(|(k, _)| k == kind)
+            .map(|(_, data)| data)
+            .collect()
+    }
+}
+
+/// The commander asks every ten seconds, so an ask inside that is an event's.
+fn slow() -> Settings {
+    Settings {
+        commander_ms: 10_000,
+        ..Settings::default()
+    }
+}
+
+#[test]
+fn the_commander_asks_at_power_online_one_call_at_a_time_on_its_cadence() {
+    let mut run = to_the_fight(Settings::default());
+    let view = run.ask(200).expect("the first ask at power online");
+    assert!(serde_json::to_vec(&view).expect("json").len() <= 2_048);
+    assert_eq!(view["own"]["power"], "online");
+    assert!(run.lane.commander_in_flight());
+    // One call in flight: nothing more is due until it answers.
+    run.until(3_000, |_| false);
+    assert!(run.lane.commander_due(run.now).is_none());
+    let answered = run.now;
+    run.reply(answer("close"));
+    assert!(!run.lane.commander_in_flight());
+    // Searching when it asked: 3 s is inside twice the 5 s contact period.
+    assert_eq!(run.lane.doctrine().stance, Stance::Close);
+    assert_eq!(run.records_of("arena-doctrine").len(), 1);
+    assert_eq!(run.records_of("arena-doctrine")[0]["stance"], "close");
+    // The next ask is commander_ms after the answer.
+    run.advance_to(answered + 1_490);
+    assert!(run.lane.commander_due(run.now).is_none());
+    run.advance_to(answered + 1_500);
+    assert!(run.lane.commander_due(run.now).is_some());
+}
+
+#[test]
+fn an_identified_hostile_and_a_lost_section_ask_at_once() {
+    let mut run = to_the_fight(slow());
+    run.ask(200).expect("first");
+    run.reply(answer("orbit"));
+    // The hostile is told apart: an ask at once, not in ten seconds.
+    sight_a_hostile(&mut run);
+    run.step();
+    let identified = run.now;
+    assert!(
+        run.lane.commander_due(run.now).is_some(),
+        "asked on the identification"
+    );
+    // A section lost while that call is in flight asks as soon as it returns.
+    run.server
+        .say(0, "The left_track is destroyed: the tank is slowed.");
+    run.step();
+    assert!(run.lane.commander_due(run.now).is_none(), "one in flight");
+    run.reply(answer("orbit"));
+    assert!(
+        run.lane.commander_due(run.now).is_some(),
+        "the lost section's ask, straight after the reply"
+    );
+    assert!(run.now < identified + 1_000);
+}
+
+#[test]
+fn a_lock_broken_and_not_held_again_for_three_seconds_asks_at_once() {
+    let mut run = to_the_fight(slow());
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    run.ask(200).expect("an ask");
+    run.reply(answer("orbit"));
+    run.server.contacts.clear();
+    run.server.locked = None;
+    run.server.now = run.now;
+    run.server
+        .say(0, "Lock on BA broken: contact gone.\nContact BA lost.");
+    assert!(run.until(500, |run| run.lane.picture().lock.is_none()));
+    let broken = run.now;
+    let ask = run.ask(5_000).expect("an ask after the lock broke");
+    assert!(
+        run.now >= broken + 2_950,
+        "not before three seconds: {}",
+        run.now
+    );
+    assert!(run.now <= broken + 3_100, "at three seconds: {}", run.now);
+    assert_eq!(ask["lock"], Value::Null);
+}
+
+#[test]
+fn a_withdraw_doctrine_turns_the_ordered_heading_about() {
+    let mut run = to_the_fight(slow());
+    sight_a_hostile(&mut run);
+    // Orbiting BA at its band: a tangent, east or west.
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    run.until(2_000, |_| false);
+    let heading = |run: &Run, from: u64| -> Vec<u32> {
+        run.sent
+            .iter()
+            .filter(|s| s.lane_ms >= from)
+            .filter_map(|s| s.line.strip_prefix("HEADING "))
+            .filter_map(|deg| deg.parse().ok())
+            .collect()
+    };
+    let orbit = heading(&run, 0);
+    assert!(
+        orbit.last().is_some_and(|deg| !(150..=210).contains(deg)),
+        "orbiting, not heading away: {orbit:?}"
+    );
+    run.ask(12_000).expect("an ask");
+    let applied = run.now;
+    run.reply(answer("withdraw"));
+    assert_eq!(run.lane.doctrine().stance, Stance::Withdraw);
+    run.until(2_000, |_| false);
+    // Straight away from BA, due north of the tank: south, give or take the
+    // few degrees the tank's own dead-reckoned drift since its STATUS makes.
+    let away = heading(&run, applied);
+    assert!(
+        away.first().is_some_and(|deg| (170..=190).contains(deg)),
+        "{away:?}"
+    );
+}
+
+#[test]
+fn an_invalid_answer_keeps_the_doctrine() {
+    let mut run = to_the_fight(Settings::default());
+    run.ask(200).expect("an ask");
+    let before = run.lane.doctrine().clone();
+    run.reply(CommanderReply::Answer("Orbit BA, please.".into()));
+    assert_eq!(run.lane.doctrine(), &before);
+    assert_eq!(run.records_of("commander-invalid").len(), 1);
+    assert!(run.records_of("commander-invalid")[0]["error"].is_string());
+}
+
+#[test]
+fn late_answers_are_dropped_at_twice_the_contact_period_and_five_stop_the_commander() {
+    // Searching (no contact held): the bound is 10 000 ms.
+    let mut run = to_the_fight(Settings::default());
+    run.ask(200).expect("an ask");
+    assert!(run.lane.picture().contacts.is_empty());
+    run.until(9_000, |_| false);
+    run.reply(answer("close"));
+    assert_eq!(run.lane.doctrine().stance, Stance::Close, "9 s is timely");
+    // Holding a contact: the bound is 2 000 ms, and five late in a row stop it.
+    sight_a_hostile(&mut run);
+    for _ in 0..5 {
+        run.ask(12_000).expect("an ask");
+        run.until(2_100, |_| false);
+        run.reply(answer("orbit"));
+    }
+    assert_eq!(run.lane.doctrine().stance, Stance::Close, "none applied");
+    let stale = run.records_of("commander-stale");
+    assert_eq!(stale.len(), 5);
+    assert!(stale.iter().all(|r| r["age_ms"].as_u64() > Some(2_000)));
+    assert_eq!(
+        run.records_of("commander-off"),
+        vec![&json!({"reason": OFF_STALE, "match": 1})]
+    );
+    assert!(run.ask(20_000).is_none(), "off for the match");
+    run.server.end(run.now, "red");
+    assert!(run.until(5_000, |run| run.lane.result().is_some()));
+    let flown = &run.lane.report().matches[0];
+    assert_eq!(
+        (
+            flown.commander_calls,
+            flown.commander_applied,
+            flown.commander_stale
+        ),
+        (6, 1, 5)
+    );
+    assert_eq!(flown.commander_off.as_deref(), Some(OFF_STALE));
+}
+
+#[test]
+fn the_tank_destroyed_voids_the_call_and_stops_the_commander() {
+    let mut run = to_the_fight(Settings::default());
+    run.ask(200).expect("an ask");
+    run.server.say(
+        0,
+        "Your tank is destroyed. The match runs on without you: stay to watch, or EXIT.",
+    );
+    run.step();
+    assert!(!run.lane.commander_in_flight(), "the call is voided");
+    assert_eq!(
+        run.records_of("commander-off"),
+        vec![&json!({"reason": OFF_DESTROYED, "match": 1})]
+    );
+    run.reply(answer("close"));
+    assert_ne!(run.lane.doctrine().stance, Stance::Close, "a voided answer");
+    run.server.end(run.now, "blue");
+    assert!(run.until(5_000, |run| run.lane.result().is_some()));
+    let flown = &run.lane.report().matches[0];
+    assert_eq!(flown.commander_off.as_deref(), Some(OFF_DESTROYED));
+    assert_eq!(run.records_of("commander-off").len(), 1, "once");
+}
+
+#[test]
+fn the_match_end_stops_the_commander_and_the_next_match_starts_it_again() {
+    let settings = Settings {
+        matches: 2,
+        ..Settings::default()
+    };
+    let mut run = to_the_fight(settings);
+    let first = run.ask(200).expect("an ask");
+    let first_power = run.lane.picture().power_ms.expect("power online read");
+    assert_eq!(first["t_s"], 0, "asked at power online");
+    // Match 1 flies a withdraw on BA...
+    run.reply(answer("withdraw"));
+    assert_eq!(run.lane.doctrine().stance, Stance::Withdraw);
+    assert_eq!(run.lane.doctrine().target.as_deref(), Some("BA"));
+    run.until(3_000, |_| false);
+    assert!(run.ask(2_000).is_some(), "asked again on its cadence");
+    run.server.end(run.now, "red");
+    run.step();
+    assert!(!run.lane.commander_in_flight());
+    assert_eq!(
+        run.records_of("commander-off"),
+        vec![&json!({"reason": OFF_MATCH_OVER, "match": 1})]
+    );
+    assert!(run.until(60_000, Run::fighting), "the second match flies");
+    // ...and match 2 starts on the pilot's own defaults: no target carried
+    // over, and `t_s` counting from this match's power online, not match 1's.
+    let view = run.ask(200).expect("asked again at its power online");
+    assert_eq!(view["doctrine"]["stance"], "orbit");
+    assert_eq!(view["doctrine"]["target"], Value::Null);
+    assert_eq!(
+        run.lane.doctrine(),
+        &Doctrine::pilot_default(&Settings {
+            matches: 2,
+            ..Settings::default()
+        })
+    );
+    assert_eq!(view["t_s"], 0, "{view}");
+    assert!(run.lane.picture().power_ms.expect("power online read") > first_power);
+    run.reply(answer("stand_off"));
+    run.server.end(run.now, "red");
+    assert!(run.until(5_000, |run| run.lane.result().is_some()));
+    let report = run.lane.report();
+    assert_eq!(report.matches[0].commander_calls, 2);
+    assert_eq!(report.matches[0].commander_applied, 1);
+    assert_eq!(report.matches[0].commander_off, None, "it ran to the end");
+    assert_eq!(
+        (
+            report.matches[1].commander_calls,
+            report.matches[1].commander_applied
+        ),
+        (1, 1)
+    );
+}
+
+#[test]
+fn no_commander_means_no_ask() {
+    let mut run = to_the_fight(Settings {
+        commander: false,
+        ..Settings::default()
+    });
+    assert!(run.ask(5_000).is_none());
+    run.server.end(run.now, "red");
+    assert!(run.until(5_000, |run| run.lane.result().is_some()));
+    assert_eq!(run.lane.report().matches[0].commander_calls, 0);
+}
+
+#[test]
+fn the_budget_stop_holds_for_the_rest_of_the_lane() {
+    let settings = Settings {
+        matches: 2,
+        ..Settings::default()
+    };
+    let mut run = to_the_fight(settings);
+    // The runner's order: an ask would be due, the budget refuses it, and the
+    // ask is never taken, so it is never counted as a call.
+    let end = run.now + 200;
+    while !run.lane.commander_ready(run.now) {
+        assert!(run.now < end, "an ask is due at power online");
+        run.step();
+    }
+    assert!(!run.lane.commander_in_flight(), "ready marks nothing");
+    run.lane.commander_off(OFF_BUDGET);
+    run.step();
+    assert!(!run.lane.commander_in_flight());
+    assert!(!run.lane.commander_ready(run.now));
+    run.server.end(run.now, "red");
+    assert!(run.until(60_000, Run::fighting), "the second match flies");
+    assert!(run.ask(5_000).is_none(), "still off");
+    run.server.end(run.now, "red");
+    assert!(run.until(5_000, |run| run.lane.result().is_some()));
+    let report = run.lane.report();
+    assert_eq!(report.matches.len(), 2);
+    for flown in &report.matches {
+        assert_eq!(
+            flown.commander_off.as_deref(),
+            Some("the session budget is spent")
+        );
+        assert_eq!(flown.commander_calls, 0, "no request reached the ledger");
+    }
+    assert_eq!(run.records_of("commander-off").len(), 1, "once");
+}
+
+#[test]
+fn a_lane_started_after_the_sessions_budget_block_never_asks() {
+    // The runner switches a later lane's commander off at its start: the block
+    // holds for the session, not only for the lane that met it.
+    let mut run = Run::new(Settings::default());
+    run.lane.commander_off(OFF_BUDGET);
+    for event in run.lane.events() {
+        if let LaneEvent::Record { kind, data } = event {
+            run.records.push((kind, data));
+        }
+    }
+    assert!(
+        run.until(60_000, Run::fighting),
+        "the pilot flies on its defaults"
+    );
+    assert!(run.ask(5_000).is_none(), "no ask in the match");
+    run.server.end(run.now, "red");
+    assert!(run.until(5_000, |run| run.lane.result().is_some()));
+    let flown = &run.lane.report().matches[0];
+    assert_eq!(flown.commander_calls, 0);
+    assert_eq!(flown.commander_off.as_deref(), Some(OFF_BUDGET));
+    assert_eq!(
+        run.records_of("commander-off"),
+        vec![&json!({"reason": OFF_BUDGET, "match": null})],
+        "once, before any match"
+    );
 }

@@ -205,6 +205,9 @@ pub enum PromptType {
     DecisionReplay,
     CharacterAuthoring,
     GroupAuthoring,
+    /// The arena pilot's commander setting its doctrine (cut AJ.3):
+    /// `arena_commander` in `by_prompt_type`.
+    ArenaCommander,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

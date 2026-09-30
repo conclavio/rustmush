@@ -312,6 +312,20 @@ struct App {
     arena_reported: bool,
     /// When the last `arena-picture` record was written.
     arena_picture_ms: u64,
+    /// The arena commander's client (cut AJ.3), when a commander model
+    /// resolves: `[arena.commander_model]`, or the session's own only with
+    /// `commander_from_session`. It shares the session's tape.
+    commander: Option<Brain>,
+    /// That model and where it came from; its selection is the one the cost
+    /// ledger records.
+    commander_model: Option<crate::arena::commander::Resolved>,
+    /// The commander's one call in flight, beside `model_task`.
+    commander_task: Option<JoinHandle<Result<Reply>>>,
+    /// Its ledger request.
+    commander_request: Option<u64>,
+    /// The session's budget has blocked a commander call: it holds for the
+    /// rest of the session, so every later lane starts with its commander off.
+    commander_budget_off: bool,
 }
 
 /// The pilot's name for itself (cut AJ.2): the character part of an
@@ -330,6 +344,9 @@ const ARENA_MISSION: &str =
 /// The refusal for an arena pilot in a session that sends its own lines.
 const ARENA_SESSION: &str = "--arena cannot be combined with --script, --paused, --managed-floor, \
                              --replay, --studio, --harness or a campaign session";
+/// The refusal for a second arena pilot while one flies (`/arena`, and the goal
+/// loop's `arena` action, which declines with it).
+const ARENA_FLYING: &str = "the arena pilot is already flying; /arena stop first";
 
 struct Boundary {
     path: PathBuf,
@@ -579,6 +596,17 @@ pub async fn run_controlled(
     } else {
         None
     };
+    // The arena commander's model (cut AJ.3), its credentials checked here
+    // with the goal model's; a script never flies.
+    let commander_model = if scenario.is_none() {
+        crate::arena::commander::resolve(&config.arena, selected_model.as_ref())
+    } else {
+        None
+    };
+    let commander = commander_model
+        .as_ref()
+        .map(|r| crate::arena::commander::brain(r, tape.clone()))
+        .transpose()?;
     let costs = Arc::new(Mutex::new(Ledger::open(
         &config.costs,
         &config.ssh,
@@ -655,16 +683,6 @@ pub async fn run_controlled(
         log.event("scenario", &scenario.name)?;
     }
     let script = scenario.clone();
-    let arena = options.arena.map(|side| {
-        crate::arena::Lane::new(
-            side,
-            crate::arena::settings::Settings {
-                matches: arena_matches,
-                ..config.arena.clone()
-            },
-            arena_me(&config.ssh.username, &character),
-        )
-    });
     let mut app = App {
         activity,
         activity_tick: now,
@@ -674,7 +692,7 @@ pub async fn run_controlled(
         // A replay sends exactly the commands in its source record. Login output
         // is still collected, but agent bootstrap belongs to autonomous play.
         // The arena pilot types its own `look`.
-        bootstrap: if script.is_some() || arena.is_some() {
+        bootstrap: if script.is_some() || options.arena.is_some() {
             VecDeque::new()
         } else {
             config.agent.bootstrap.clone().into()
@@ -743,12 +761,20 @@ pub async fn run_controlled(
         speech: None,
         next_intent: 1,
         floor_fault: None,
-        arena,
+        arena: None,
         arena_reported: false,
         arena_picture_ms: 0,
+        commander,
+        commander_model,
+        commander_task: None,
+        commander_request: None,
+        commander_budget_off: false,
     };
     if let Some(snapshot) = restore {
         app.restore(snapshot)?;
+    }
+    if let Some(side) = app.options.arena {
+        app.arena_start(side, arena_matches)?;
     }
     let result = app.drive().await;
     // The one `SIM LEAVE`, when it is due, before the session closes.
@@ -1307,7 +1333,31 @@ impl App {
         self.stage_next = false;
         self.asking = false;
         self.single_step = false;
+        self.cancel_commander()?;
         self.cancel_request()
+    }
+
+    /// Abort the arena commander's call in flight and cancel its ledger
+    /// request, as `cancel_request` does the goal loop's (cut AJ.3). The lane
+    /// hears `Cancelled` and asks again when it next may.
+    fn cancel_commander(&mut self) -> Result<()> {
+        if let Some(task) = self.commander_task.take() {
+            task.abort();
+        }
+        if let Some(id) = self.commander_request.take() {
+            self.costs
+                .lock()
+                .map_err(|_| "cost ledger lock poisoned")?
+                .cancel(id)?;
+            self.commander_record(id, "model-cancelled", json!({"request_id":id}))?;
+            let now = self.elapsed_ms();
+            if let Some(lane) = self.arena.as_mut() {
+                lane.commander_reply(now, crate::arena::CommanderReply::Cancelled);
+                let events = lane.events();
+                self.arena_events(events)?;
+            }
+        }
+        Ok(())
     }
 
     fn pause(&mut self) -> Result<()> {
@@ -1462,6 +1512,11 @@ impl App {
                         _ => {}
                     }
                 }
+                reply = async { self.commander_task.as_mut().unwrap().await }, if self.commander_task.is_some() => {
+                    self.commander_task = None;
+                    let request = self.commander_request.take();
+                    self.commander_answer(request, reply.map_err(|e| -> crate::Error { e.into() }).and_then(|r| r))?;
+                }
                 reply = async { self.model_task.as_mut().unwrap().await }, if self.model_task.is_some() => {
                     self.model_task = None;
                     self.request_id = None;
@@ -1566,6 +1621,7 @@ impl App {
             self.arena_send(send).await?;
         }
         self.arena_events(events)?;
+        self.commander_tick()?;
         if let Some(picture) = picture {
             self.arena_picture_ms = now;
             self.log.record("arena-picture", picture)?;
@@ -1606,6 +1662,9 @@ impl App {
                     .record("arena-state", serde_json::to_value(&record)?)?,
                 // Each match has the whole run-time limit to itself.
                 crate::arena::LaneEvent::Claimed => self.goal_started = Instant::now(),
+                // The commander's `arena-doctrine`, `commander-stale`,
+                // `commander-invalid` and `commander-off` (cut AJ.3).
+                crate::arena::LaneEvent::Record { kind, data } => self.log.record(&kind, data)?,
             }
         }
         Ok(())
@@ -1704,20 +1763,10 @@ impl App {
                     return Err(ARENA_SESSION.into());
                 }
                 if self.arena.as_ref().is_some_and(crate::arena::Lane::flying) {
-                    return Err("the arena pilot is already flying; /arena stop first".into());
+                    return Err(ARENA_FLYING.into());
                 }
                 self.cancel_model()?;
-                let me = arena_me(&self.config.ssh.username, &self.character);
-                self.arena = Some(crate::arena::Lane::new(
-                    side,
-                    crate::arena::settings::Settings {
-                        matches,
-                        ..self.config.arena.clone()
-                    },
-                    me,
-                ));
-                self.arena_reported = false;
-                self.arena_picture_ms = 0;
+                self.arena_start(side, matches)?;
                 self.state.status = "running".into();
                 self.state.outcome.clear();
                 self.goal_started = Instant::now();
@@ -1725,6 +1774,181 @@ impl App {
             }
             _ => Err("use /arena, /arena red|blue [n] or /arena stop".into()),
         }
+    }
+
+    /// Start a lane for `side` and `matches` (`--arena`, `/arena`, the goal
+    /// loop's `arena` action): its first sentence, then the commander's.
+    fn arena_start(&mut self, side: crate::arena::Side, matches: u32) -> Result<()> {
+        let me = arena_me(&self.config.ssh.username, &self.character);
+        let mut lane = crate::arena::Lane::new(
+            side,
+            crate::arena::settings::Settings {
+                matches,
+                commander: self.commander.is_some(),
+                ..self.config.arena.clone()
+            },
+            me,
+        );
+        let events = lane.events();
+        self.arena = Some(lane);
+        self.arena_reported = false;
+        self.arena_picture_ms = 0;
+        self.arena_events(events)?;
+        self.log.event(
+            "arena",
+            &crate::arena::commander::start_line(self.commander_model.as_ref()),
+        )?;
+        // A budget block holds for the session: a later lane's commander is
+        // off from its start (its `commander-off`, no second `budget-blocked`).
+        if self.commander_budget_off
+            && self.commander.is_some()
+            && let Some(lane) = self.arena.as_mut()
+        {
+            lane.commander_off(crate::arena::commander::OFF_BUDGET);
+            let events = lane.events();
+            self.arena_events(events)?;
+        }
+        Ok(())
+    }
+
+    /// **The commander's call** (cut AJ.3), when the lane has an ask due and
+    /// none is in flight. A call the lane no longer waits for is aborted
+    /// first. The budget is checked in the commander model's own currency; a
+    /// block is recorded once and switches the commander off for the lane.
+    /// Commander calls are not goal turns: they never count against
+    /// `agent.max_steps` or `state.model_calls`, and the cost ledger files them
+    /// under `arena_commander`.
+    fn commander_tick(&mut self) -> Result<()> {
+        if self.commander_task.is_some()
+            && !self
+                .arena
+                .as_ref()
+                .is_some_and(crate::arena::Lane::commander_in_flight)
+        {
+            self.cancel_commander()?;
+        }
+        if self.commander_task.is_some() {
+            return Ok(());
+        }
+        let now = self.elapsed_ms();
+        let (Some(brain), Some(resolved), Some(lane)) = (
+            self.commander.as_ref(),
+            self.commander_model.as_ref(),
+            self.arena.as_mut(),
+        ) else {
+            return Ok(());
+        };
+        // The budget before the ask is taken, so a refused ask is never
+        // counted as a call.
+        if !lane.commander_ready(now) {
+            let events = lane.events();
+            return self.arena_events(events);
+        }
+        let mut brain = brain.clone();
+        let selection = resolved.selection.clone();
+        let status = crate::arena::commander::budget_status(
+            &self.budget,
+            &self.total_usage()?,
+            &selection.settings,
+        )?;
+        if !status.allowed {
+            self.log
+                .record("budget-blocked", self.budget_record(&status))?;
+            self.commander_budget_off = true;
+            if let Some(lane) = self.arena.as_mut() {
+                lane.commander_off(crate::arena::commander::OFF_BUDGET);
+                let events = lane.events();
+                self.arena_events(events)?;
+            }
+            return Ok(());
+        }
+        let Some(lane) = self.arena.as_mut() else {
+            return Ok(());
+        };
+        let Some(view) = lane.commander_due(now) else {
+            let events = lane.events();
+            return self.arena_events(events);
+        };
+        let capture = match crate::arena::commander::capture(&selection.settings, &view) {
+            Ok(capture) => capture,
+            Err(error) => {
+                // Nothing was sent: an error with its cause
+                // (`commander-error`), not a call.
+                if let Some(lane) = self.arena.as_mut() {
+                    lane.commander_reply(
+                        now,
+                        crate::arena::CommanderReply::Unsent(error.to_string()),
+                    );
+                    let events = lane.events();
+                    self.arena_events(events)?;
+                }
+                return Ok(());
+            }
+        };
+        let request = crate::arena::commander::admit(&self.costs, selection, &capture)?;
+        brain.reserve_tape()?;
+        self.commander_record(request.id, "model-input", serde_json::to_value(&capture)?)?;
+        self.commander_record(request.id, "model-request", serde_json::to_value(&request)?)?;
+        self.commander_request = Some(request.id);
+        self.commander_task = Some(tokio::spawn(crate::arena::commander::call(
+            brain,
+            capture,
+            self.costs.clone(),
+            request.id,
+        )));
+        if let Some(lane) = self.arena.as_mut() {
+            let events = lane.events();
+            self.arena_events(events)?;
+        }
+        Ok(())
+    }
+
+    /// The commander's call came back: its records as the goal loop's are
+    /// written, under its own request's envelope, then the lane hears it (a
+    /// failure's cause reaches the transcript as `commander-error`).
+    fn commander_answer(&mut self, request: Option<u64>, reply: Result<Reply>) -> Result<()> {
+        let reply = match reply {
+            Ok(reply) => {
+                if let Some(id) = request {
+                    self.commander_record(
+                        id,
+                        "model-reply",
+                        json!({"content":reply.content,"error":reply.error}),
+                    )?;
+                    self.commander_record(id, "usage", reply.usage)?;
+                    self.commander_record(
+                        id,
+                        "cost-receipt",
+                        serde_json::to_value(&reply.receipt)?,
+                    )?;
+                }
+                match reply.error {
+                    Some(error) => crate::arena::CommanderReply::Error(error),
+                    None => crate::arena::CommanderReply::Answer(reply.content),
+                }
+            }
+            Err(error) => crate::arena::CommanderReply::Error(error.to_string()),
+        };
+        let now = self.elapsed_ms();
+        if let Some(lane) = self.arena.as_mut() {
+            lane.commander_reply(now, reply);
+            let events = lane.events();
+            self.arena_events(events)?;
+        }
+        Ok(())
+    }
+
+    /// A commander model record (`model-input`, `model-request`,
+    /// `model-reply`, `usage`, `cost-receipt`, `model-cancelled`) under its own
+    /// request's envelope, as `start_model` stamps the goal loop's; the goal
+    /// loop's `log.request` is put back after, so a trace never files a
+    /// commander call under a goal decision, nor a goal record under a
+    /// commander call.
+    fn commander_record(&mut self, request: u64, kind: &str, data: Value) -> Result<()> {
+        let goal = self.log.request.replace(request);
+        let result = self.log.record(kind, data);
+        self.log.request = goal;
+        result
     }
 
     fn fail(&mut self, message: &str) -> Result<()> {
@@ -1989,6 +2213,7 @@ impl App {
                     memory: None,
                     wait_ms: 0,
                     query: None,
+                    side: None,
                     beliefs: None,
                     social: None,
                     learning: None,
@@ -2247,6 +2472,42 @@ impl App {
                         &self.context_settings.recall,
                     ))?,
                 )?;
+            }
+            Action::Arena => {
+                // A social turn never starts the lane: declined, as `done` is.
+                if self.social_turn {
+                    self.conversation.declined = true;
+                    self.conversation.reason = decision.summary.clone();
+                    self.log.event("conversation", &decision.summary)?;
+                    return Ok(());
+                }
+                if self.mission.spec.is_some() {
+                    return self.fail(ARENA_MISSION);
+                }
+                if self.options.campaign_epoch.is_some() || self.options.managed_floor {
+                    return self.fail(ARENA_SESSION);
+                }
+                let side = decision
+                    .side
+                    .as_deref()
+                    .and_then(crate::arena::Side::parse)
+                    .ok_or("arena action requires side red or blue")?;
+                // A lane still flying (reached through `/step`) or still
+                // typing its `SIM LEAVE` is never replaced: its slot, its
+                // report and its commander are its own. Declined, as `/arena`
+                // refuses it; the lane flies on.
+                let now = self.elapsed_ms();
+                if self
+                    .arena
+                    .as_ref()
+                    .is_some_and(|lane| lane.flying() || lane.leave_pending(now))
+                {
+                    return self.log.event("arena", ARENA_FLYING);
+                }
+                let matches = self.options.matches.unwrap_or(self.config.arena.matches);
+                // The goal stays running; the lane's result ends it as
+                // `--arena`'s does.
+                self.arena_start(side, matches)?;
             }
             Action::Done | Action::Blocked => {
                 if self.social_turn {

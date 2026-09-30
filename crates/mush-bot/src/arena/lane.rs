@@ -46,6 +46,22 @@
 //! every line [`Picture::apply`] marks `journal: false` (read replies, acks,
 //! transients, `OUTSIDE_COCKPIT`) is left out of [`Fed::journal`]. The runner's
 //! transcript still records the raw text whole.
+//!
+//! **The commander** (cut AJ.3; [`super::commander`]). The lane owns its
+//! [`Schedule`]; the runner owns the call. [`Lane::commander_ready`] says an
+//! ask would be due (the runner checks the budget then),
+//! [`Lane::commander_due`] hands the runner the picture to send when an ask is
+//! due and none is in flight,
+//! [`Lane::commander_reply`] takes what came back (a valid doctrine is flown
+//! from the next tick), and [`Lane::commander_off`] is the runner's budget
+//! stop. The lane feeds the schedule its triggers from the lines it reads (a
+//! contact identified to the other side, an own section destroyed) and the
+//! lock from the picture, begins it at each match's `Power online.`, and stops
+//! it at the match's end, when the tank is destroyed and when the pilot stops.
+//! The stale bound is twice the `CONTACTS` period in force at the ask — the
+//! poll that refreshes a line-mode pilot's picture, which is never refreshed by
+//! the arena's pulse. What the schedule records reaches the runner as
+//! [`LaneEvent::Record`].
 use std::collections::{BTreeMap, VecDeque};
 
 use serde::Serialize;
@@ -53,10 +69,11 @@ use serde_json::{Value, json};
 
 use super::{
     Assembler, Side, classify,
+    commander::{CommanderReply, Doctrine, OFF_DESTROYED, OFF_MATCH_OVER, OFF_STOPPED, Schedule},
     lines::Line,
     lobby::{Lobby, Step},
     picture::{Phase, Picture, Power},
-    pilot::{Doctrine, Orders, Pilot},
+    pilot::{Orders, Pilot},
     report::Report,
     settings::Settings,
 };
@@ -141,6 +158,10 @@ pub enum LaneEvent {
     State(StateRecord),
     /// The pilot claimed a slot: the run's time limit starts over.
     Claimed,
+    /// A transcript record (cut AJ.3's commander): `arena-doctrine`,
+    /// `commander-stale`, `commander-invalid`, `commander-error` or
+    /// `commander-off`, and its data.
+    Record { kind: String, data: Value },
 }
 
 /// How the lane ended.
@@ -218,6 +239,8 @@ pub struct Lane {
     /// The match the pilot's state belongs to.
     pilot_match: Option<u64>,
     doctrine: Doctrine,
+    /// When the commander asks, and what it has done this match.
+    commander: Schedule,
     /// When each of the last `max_lines_per_s` lines went.
     ring: VecDeque<u64>,
     /// The last lines typed, for the echo.
@@ -244,6 +267,7 @@ impl Lane {
             side,
             lobby: Lobby::new(side, settings.clone(), &me),
             doctrine: Doctrine::pilot_default(&settings),
+            commander: Schedule::new(&settings),
             settings,
             assembler: Assembler::default(),
             picture: Picture::default(),
@@ -303,13 +327,18 @@ impl Lane {
         self.lobby.leave_pending(now_ms)
     }
 
-    /// The run's `arena` report block.
+    /// The run's `arena` report block, each match with its commander counts.
     pub fn report(&self) -> Report {
-        Report::new(
-            self.side,
-            self.settings.matches,
-            self.lobby.matches().to_vec(),
-        )
+        let matches = self
+            .lobby
+            .matches()
+            .iter()
+            .map(|result| match self.commander.tally(result.match_id) {
+                Some(tally) => result.clone().with_commander(tally),
+                None => result.clone(),
+            })
+            .collect();
+        Report::new(self.side, self.settings.matches, matches)
     }
 
     /// What happened since the last call, for the runner to log.
@@ -363,7 +392,112 @@ impl Lane {
         let now = self.picture.last_ms;
         self.lobby.stop(now, &self.picture);
         self.fight = None;
+        self.commander_sync(now);
         self.events.extend(self.lobby.take_events());
+        self.commander_records();
+    }
+
+    // -- the commander (cut AJ.3) ----------------------------------------------
+
+    /// **An ask is due**: the picture to send ([`Picture::commander_view`]),
+    /// when the pilot is flying, the commander is on and no call is in flight.
+    /// The ask is then in flight, with the `CONTACTS` period in force (1 000 ms
+    /// holding a contact, 5 000 ms searching; the stale bound is twice it).
+    pub fn commander_due(&mut self, now_ms: u64) -> Option<Value> {
+        self.commander_sync(now_ms);
+        let due = if self.fighting() {
+            let held = !self.picture.contacts.is_empty();
+            self.commander.due(now_ms, held)
+        } else {
+            None
+        };
+        self.commander_records();
+        due.map(|_| self.picture.commander_view(now_ms, &self.doctrine))
+    }
+
+    /// **Would an ask be due now?** [`Lane::commander_due`] without marking or
+    /// counting anything ([`Schedule::ready`]): the runner asks this first,
+    /// then checks the budget, then takes the ask.
+    pub fn commander_ready(&mut self, now_ms: u64) -> bool {
+        self.commander_sync(now_ms);
+        self.commander_records();
+        self.fighting() && self.commander.ready(now_ms)
+    }
+
+    /// **What came back** for the call in flight: a timely valid doctrine is
+    /// flown from the next tick; everything else keeps the doctrine. A reply
+    /// to a call the lane no longer waits for is ignored.
+    pub fn commander_reply(&mut self, now_ms: u64, reply: CommanderReply) {
+        if let Some(doctrine) = self.commander.reply(now_ms, reply) {
+            self.doctrine = doctrine;
+        }
+        self.commander_records();
+    }
+
+    /// **Off for the rest of this lane** (the runner's budget stop, after
+    /// [`Lane::commander_ready`] and before the ask is taken, or at the start
+    /// of a lane after the session's budget has blocked), with its reason,
+    /// once.
+    pub fn commander_off(&mut self, why: &str) {
+        self.commander.stop_for_good(why);
+        self.commander_records();
+    }
+
+    /// A commander call is in flight and the lane still waits for it. The
+    /// runner aborts a call the lane has stopped waiting for (the match's end,
+    /// the tank destroyed, the pilot stopped).
+    pub fn commander_in_flight(&self) -> bool {
+        self.commander.in_flight().is_some()
+    }
+
+    /// The commander's schedule (for tests and `/arena`).
+    pub fn commander(&self) -> &Schedule {
+        &self.commander
+    }
+
+    /// Begin the schedule at a match's `Power online.`, feed it the lock, and
+    /// stop it at the match's end, when the tank is destroyed, and when the
+    /// pilot stops or its part of the match ends early.
+    fn commander_sync(&mut self, now_ms: u64) {
+        if let Some(match_id) = self.commander.match_id()
+            && !self.commander.off()
+        {
+            let over = matches!(
+                &self.picture.phase,
+                Phase::Over { match_id: m, .. } if *m == match_id
+            );
+            let ours = self.picture.following == Some(match_id);
+            if over {
+                self.commander.stop(OFF_MATCH_OVER, false);
+            } else if ours && self.picture.own.destroyed {
+                self.commander.stop(OFF_DESTROYED, true);
+            } else if self.stopped
+                || self.lobby.closed()
+                || !ours
+                || self.lobby.matches().iter().any(|m| m.match_id == match_id)
+            {
+                self.commander.stop(OFF_STOPPED, true);
+            }
+        }
+        if self.fighting()
+            && let Phase::Running { match_id } = self.picture.phase
+        {
+            if self.commander.begin(match_id, now_ms) {
+                // A new match's contacts are new: the last match's doctrine
+                // (its target above all) means nothing in it.
+                self.doctrine = Doctrine::pilot_default(&self.settings);
+            }
+            if self.commander.match_id() == Some(match_id) {
+                self.commander.lock(self.picture.lock.is_some(), now_ms);
+            }
+        }
+    }
+
+    /// Hand the schedule's records on as events.
+    fn commander_records(&mut self) {
+        for (kind, data) in self.commander.take_records() {
+            self.events.push(LaneEvent::Record { kind, data });
+        }
     }
 
     // -- the lines in ---------------------------------------------------------
@@ -375,6 +509,8 @@ impl Lane {
         for raw in self.assembler.feed(now_ms, text) {
             self.line(now_ms, &raw, &mut journal);
         }
+        // The match's end or the tank's loss voids the commander's call at once.
+        self.commander_sync(now_ms);
         self.after(now_ms);
         Fed {
             journal: journal.join("\n"),
@@ -388,6 +524,14 @@ impl Lane {
             return;
         }
         let line = classify(raw);
+        // The commander's events: it asks at once (cut AJ.3).
+        match &line {
+            Line::Identified { side, .. } if *side == self.side.other() => {
+                self.commander.trigger();
+            }
+            Line::SectionLost { .. } => self.commander.trigger(),
+            _ => {}
+        }
         if let Some(fight) = self.fight.as_mut() {
             match &line {
                 Line::ContactRow(_) | Line::NoContacts => fight.contacts_open = true,
@@ -473,6 +617,7 @@ impl Lane {
             self.lobby.poll(now_ms, &mut self.picture);
         }
         self.sync(now_ms);
+        self.commander_sync(now_ms);
         let mut orders = if self.fighting() {
             self.pilot.decide(&self.picture, &self.doctrine, now_ms)
         } else {
@@ -689,6 +834,7 @@ impl Lane {
     /// result.
     fn after(&mut self, _now_ms: u64) {
         self.events.extend(self.lobby.take_events());
+        self.commander_records();
         let record = StateRecord {
             phase: phase_word(&self.picture.phase).to_owned(),
             match_id: self.picture.following,

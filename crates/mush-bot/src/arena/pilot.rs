@@ -46,12 +46,11 @@
 //! or with a struck facet at a quarter of its plate, it withdraws for 10 s and
 //! then orbits 150 m wider (at most 600 m, the stock sight) for the rest of the
 //! match.
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::{
     Side,
     picture::{Contact, EventKind, Phase, Picture, Power, bearing_deg, distance_m},
-    settings::Settings,
 };
 
 /// "Full ahead" before the tank's own ceilings are read.
@@ -103,56 +102,9 @@ pub const HEADING_REFRESH_MS: u64 = 4_000;
 /// The spot the search drives for (`help simulator`, "The ground").
 pub const SEARCH_SPOT: char = 'B';
 
-/// How the pilot fights its target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Stance {
-    /// Circle the target at the band.
-    Orbit,
-    /// Drive straight in to 200 m, then circle there.
-    Close,
-    /// Hold the band's distance, stopped.
-    StandOff,
-    /// Drive straight away.
-    Withdraw,
-}
-
-/// Which way the orbit circles.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Sense {
-    Cw,
-    Ccw,
-    /// Toward the target's rear when it has a track, else reversing every 20 s.
-    Auto,
-}
-
-/// What the pilot is asked to do (AJ.3's commander sets it; AJ.2 flies the
-/// default).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Doctrine {
-    /// A contact to prefer, when it is held and classified to the other side.
-    pub target: Option<String>,
-    pub stance: Stance,
-    /// The band, metres.
-    pub band_m: u32,
-    pub sense: Sense,
-    /// Why, in a few words.
-    pub note: String,
-}
-
-impl Doctrine {
-    /// The pilot's own doctrine: orbit the nearest hostile at `[arena].band_m`.
-    pub fn pilot_default(settings: &Settings) -> Doctrine {
-        Doctrine {
-            target: None,
-            stance: Stance::Orbit,
-            band_m: settings.band_m,
-            sense: Sense::Auto,
-            note: String::new(),
-        }
-    }
-}
+// The doctrine the pilot flies moved to the commander's module (cut AJ.3),
+// which parses and clamps the model's answer into it; these names stay here.
+pub use super::commander::{Doctrine, Sense, Stance};
 
 /// What to type this tick; everything optional.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -728,6 +680,7 @@ mod tests {
     use crate::arena::{
         classify,
         picture::{Event, Fix, Section, Track, Weapon},
+        settings::Settings,
     };
 
     const NOW: u64 = 100_000;

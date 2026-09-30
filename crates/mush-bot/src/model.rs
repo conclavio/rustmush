@@ -31,10 +31,11 @@ memory replaces your previous notes, so preserve useful discoveries; omit it or 
 unchanged. Use an empty string only to deliberately clear your notes. Older terminal history expires.\n\
 If a command fails, adjust your approach instead of repeating indefinitely. Delayed world replies may\n\
 require a wait. A successful purchase requires actual world confirmation, not your own narration.\n\
-Return ONLY one JSON object with fields: action, command, summary, memory, wait_ms; optional query and beliefs.\n\
-action is command, wait, recall, done, or blocked. command is one line when action=command, otherwise null.\n\
+Return ONLY one JSON object with fields: action, command, summary, memory, wait_ms; optional query, side and beliefs.\n\
+action is command, wait, recall, arena, done, or blocked. command is one line when action=command, otherwise null.\n\
 Use recall with query to search older experiences before guessing; it sends no game command.\n\
 Use an exact remembered place name as the query to also retrieve a route there, or #record-id to inspect evidence.\n\
+Use action arena with side red or blue to hand the character to the runner's simulator pilot: from Limbo, the Welcome Hall or the simulator centre it claims a slot, fights the match to its end and reports the result, which ends this goal. Use it only when the goal is to fight in the simulator.\n\
 summary is a short user-facing action explanation or evidence-based outcome; do not provide private\n\
 chain-of-thought. memory is a concise string or null; wait_ms is 100..30000 for wait, otherwise 0.\n\
 If wait_ms is omitted on a wait action, the runner waits 1000 ms. For example:\n\
@@ -56,6 +57,10 @@ pub enum Action {
     Command,
     Wait,
     Recall,
+    /// Hand the character to the runner's simulator pilot for `side` (cut
+    /// AJ.3): the arena lane claims, boards and fights, and its result ends
+    /// the goal as `--arena` does.
+    Arena,
     Done,
     Blocked,
 }
@@ -71,6 +76,10 @@ pub struct Decision {
     #[serde(default = "default_wait_ms")]
     pub wait_ms: u64,
     pub query: Option<String>,
+    /// `red` or `blue`, on an `arena` action only (cut AJ.3). Skipped when
+    /// absent, so every recorded decision without it reads byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<String>,
     /// Auxiliary annotations are validated separately so a misshapen belief
     /// cannot discard an otherwise valid, safe decision.
     pub beliefs: Option<Value>,
@@ -129,6 +138,17 @@ impl Decision {
             }
         } else if result.query.is_some() {
             return Err("only a recall action may include query".into());
+        }
+        if result.action == Action::Arena {
+            if result
+                .side
+                .as_deref()
+                .is_none_or(|side| crate::arena::Side::parse(side).is_none())
+            {
+                return Err("arena action requires side red or blue".into());
+            }
+        } else if result.side.is_some() {
+            return Err("only an arena action may include side".into());
         }
         Ok(result)
     }
@@ -201,9 +221,12 @@ impl Capture {
                 .as_u64()
                 .is_none_or(|n| n == 0 || n > u32::MAX as u64)
             || self.payload.as_object().is_none_or(|p| {
-                p.keys().any(|k| {
-                    !["messages", "stream", "model", "max_tokens", "temperature"]
-                        .contains(&k.as_str())
+                p.iter().any(|(k, v)| match k.as_str() {
+                    "messages" | "stream" | "model" | "max_tokens" | "temperature" => false,
+                    // The model's pass-through objects (cut AJ.3), held to the
+                    // bounds `Model::validate` holds the profile to.
+                    "reasoning" | "provider" => !crate::config::extra_body_ok(v),
+                    _ => true,
                 })
             })
             || self.request_revision != revision(&serde_json::to_vec(&self.payload)?)
@@ -252,14 +275,14 @@ impl Capture {
         let mut result = self.clone();
         result.payload["model"] = json!(model.name);
         result.payload["max_tokens"] = json!(model.max_tokens);
-        result
-            .payload
-            .as_object_mut()
-            .unwrap()
-            .remove("temperature");
+        let payload = result.payload.as_object_mut().unwrap();
+        for key in ["temperature", "reasoning", "provider"] {
+            payload.remove(key);
+        }
         if let Some(t) = model.temperature {
             result.payload["temperature"] = json!(t);
         }
+        model.extra_body(&mut result.payload);
         result.request_revision = revision(&serde_json::to_vec(&result.payload)?);
         Ok(result)
     }
@@ -357,6 +380,7 @@ impl Brain {
         if let Some(temperature) = self.config.temperature {
             payload["temperature"] = json!(temperature);
         }
+        self.config.extra_body(&mut payload);
         Ok(Capture {
             version: if composition.is_some() { 2 } else { 1 },
             question: is_question,
@@ -535,5 +559,167 @@ mod tests {
         ] {
             assert!(Decision::parse(text).is_err());
         }
+    }
+
+    #[test]
+    fn the_arena_action_takes_a_side_and_nothing_else_may() {
+        let red = Decision::parse(r#"{"action":"arena","side":"red","summary":"Fight for red."}"#)
+            .unwrap();
+        assert_eq!(red.action, Action::Arena);
+        assert_eq!(red.side.as_deref(), Some("red"));
+        assert!(red.command.is_none());
+        assert_eq!(red.wait_ms, 0);
+        let blue =
+            Decision::parse(r#"{"action":"arena","side":"Blue","summary":"Fight for blue."}"#)
+                .unwrap();
+        assert_eq!(blue.side.as_deref(), Some("Blue"));
+        for (text, error) in [
+            (
+                r#"{"action":"wait","side":"red","summary":"Wait."}"#,
+                "only an arena action may include side",
+            ),
+            (
+                r#"{"action":"arena","summary":"Fight."}"#,
+                "arena action requires side red or blue",
+            ),
+            (
+                r#"{"action":"arena","side":"green","summary":"Fight."}"#,
+                "arena action requires side red or blue",
+            ),
+            (
+                r#"{"action":"arena","side":"red","command":"SIM TEAM red","summary":"Fight."}"#,
+                "only a command action may include a command",
+            ),
+        ] {
+            assert_eq!(
+                Decision::parse(text).unwrap_err().to_string(),
+                error,
+                "{text}"
+            );
+        }
+        // A recorded decision without a side reads byte-identical.
+        let wait = Decision::parse(r#"{"action":"wait","summary":"Wait."}"#).unwrap();
+        assert!(serde_json::to_value(&wait).unwrap().get("side").is_none());
+        assert_eq!(serde_json::to_value(&red).unwrap()["action"], "arena");
+    }
+
+    #[test]
+    fn the_goal_policy_names_the_arena_action() {
+        let system = Brain::system(false);
+        assert!(system.contains(
+            "Return ONLY one JSON object with fields: action, command, summary, memory, wait_ms; optional query, side and beliefs."
+        ));
+        assert!(system.contains("action is command, wait, recall, arena, done, or blocked."));
+        assert!(system.contains("Use action arena with side red or blue to hand the character to the runner's simulator pilot: from Limbo, the Welcome Hall or the simulator centre it claims a slot, fights the match to its end and reports the result, which ends this goal. Use it only when the goal is to fight in the simulator."));
+    }
+
+    fn model(extra: Value) -> Model {
+        let mut value = json!({"endpoint":"http://127.0.0.1","name":"first"});
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn prepared(model: &Model) -> Capture {
+        Brain::new(model)
+            .unwrap()
+            .prepare(
+                json!({"terminal_history":"Arena"}),
+                None,
+                &Prompts::default(),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn the_pass_through_objects_ride_only_when_set_and_move_the_fingerprint() {
+        let plain = prepared(&model(json!({})));
+        assert!(plain.payload.get("reasoning").is_none());
+        assert!(plain.payload.get("provider").is_none());
+        let routed = model(json!({"reasoning":{"enabled":false},
+            "provider":{"order":["Together"],"allow_fallbacks":false}}));
+        let carried = prepared(&routed);
+        carried.validate().unwrap();
+        assert_eq!(carried.payload["reasoning"], json!({"enabled":false}));
+        assert_eq!(
+            carried.payload["provider"],
+            json!({"order":["Together"],"allow_fallbacks":false})
+        );
+        assert_eq!(carried.payload["messages"], plain.payload["messages"]);
+        assert_ne!(carried.request_revision, plain.request_revision);
+        // Either object alone moves the request's recorded revision.
+        let reasoning_only = prepared(&model(json!({"reasoning":{"enabled":false}})));
+        let reasoning_on = prepared(&model(json!({"reasoning":{"enabled":true}})));
+        let provider_only = prepared(&model(json!({"provider":{"order":["Together"]}})));
+        let revisions: std::collections::BTreeSet<_> = [
+            &plain,
+            &carried,
+            &reasoning_only,
+            &reasoning_on,
+            &provider_only,
+        ]
+        .iter()
+        .map(|c| c.request_revision.clone())
+        .collect();
+        assert_eq!(revisions.len(), 5);
+        // The model's own serialisation stays byte-identical without them.
+        let bare = serde_json::to_string(&model(json!({}))).unwrap();
+        assert!(!bare.contains("reasoning") && !bare.contains("provider"));
+    }
+
+    #[test]
+    fn a_capture_may_carry_the_two_objects_and_no_third_key() {
+        let carried = prepared(&model(json!({"reasoning":{"enabled":false},
+            "provider":{"order":["Together"]}})));
+        carried.validate().unwrap();
+        let reseal = |mut capture: Capture, key: &str, value: Value| {
+            capture.payload[key] = value;
+            capture.request_revision = revision(&serde_json::to_vec(&capture.payload).unwrap());
+            capture
+        };
+        for (key, value) in [
+            ("tools", json!([])),
+            ("reasoning_effort", json!("low")),
+            ("reasoning", json!("off")),
+            ("provider", json!(["Together"])),
+            ("reasoning", json!({"a":{"b":{"c":{"d":{}}}}})),
+            ("provider", json!({"note":"x".repeat(2_100)})),
+        ] {
+            assert!(
+                reseal(carried.clone(), key, value.clone())
+                    .validate()
+                    .is_err(),
+                "{key}: {value}"
+            );
+        }
+        // A capture saved before the keys existed validates unchanged.
+        let before: Capture = serde_json::from_value(
+            serde_json::to_value(prepared(&model(json!({"temperature":0.2})))).unwrap(),
+        )
+        .unwrap();
+        before.validate().unwrap();
+        assert!(before.payload.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn with_model_swaps_the_pass_through_objects() {
+        let carried = prepared(&model(json!({"reasoning":{"enabled":false},
+            "provider":{"order":["Together"]}})));
+        let stripped = carried.with_model(&model(json!({}))).unwrap();
+        stripped.validate().unwrap();
+        assert!(stripped.payload.get("reasoning").is_none());
+        assert!(stripped.payload.get("provider").is_none());
+        assert_eq!(
+            stripped.request_revision,
+            prepared(&model(json!({}))).request_revision
+        );
+        let other = model(json!({"provider":{"order":["Fireworks"]}}));
+        let swapped = stripped.with_model(&other).unwrap();
+        swapped.validate().unwrap();
+        assert!(swapped.payload.get("reasoning").is_none());
+        assert_eq!(swapped.payload["provider"], json!({"order":["Fireworks"]}));
+        assert_eq!(swapped.request_revision, prepared(&other).request_revision);
     }
 }

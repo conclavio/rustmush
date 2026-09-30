@@ -139,8 +139,28 @@ and optional temperature. Omit temperature for the provider's default.
 }
 ```
 
+A profile (and `[model]`) may also carry two objects that are passed through
+verbatim into every request body: `reasoning` and `provider`. They are how an
+OpenRouter request switches a reasoning model's thinking off and pins its
+routing, for example in TOML
+
+```toml
+reasoning = { enabled = false }
+provider = { order = ["Together"], allow_fallbacks = false }
+```
+
+or in a JSON profile `"reasoning": {"enabled": false}, "provider": {"order":
+["Together"], "allow_fallbacks": false}`. Each must be a JSON object of at most
+2048 bytes, nested at most four levels deep, or the profile is refused. They
+are part of every request's recorded revision (the SHA-256 the cost ledger,
+`/capture`, `--replay` and `--compare-captures` read), `--replay` records the
+ones the captured request carried, and replaying under another profile
+(`--replay` with `--model <profile>`) swaps them for that profile's. Unset, nothing about a
+request or a record changes.
+
 Catalog files are JSON only, at most 128 KB, with 1..64 profiles. Profile names
-use letters, digits, `_` and `-`; `configured` is reserved for the TOML model.
+use letters, digits, `_` and `-`; `configured` is reserved for the TOML model
+and `arena_commander` for the arena commander's `[arena.commander_model]`.
 The JSON `default` selects the starting profile. A top-level TOML `model_profile`
 overrides it, and CLI `--model <profile>` overrides that. CLI
 `--models <profiles.json>` chooses the catalog file. Config paths are relative
@@ -363,6 +383,129 @@ typing are left out.
 `/pause` stops the pilot typing and `/resume` starts it again; `/arena stop`
 ends it and hands you the tank. It will not fly under a mission contract, a
 script, a managed floor or a campaign session.
+
+**From a goal.** A plain `--goal` can hand the character to the pilot: the goal
+model may answer with the action `arena` and a `side` (`red` or `blue`, in any
+case), for example
+`{"action":"arena","side":"red","summary":"Fight for red in the simulator."}`.
+The runner then flies exactly as `--arena` does, for `--matches` (or
+`[arena] matches`) matches, from Limbo, the Welcome Hall or the simulator
+centre, and the lane's result ends the goal the same way: `done` only when
+every match ended on the bot's own side's word. An `arena` action without a
+side, or a `side` on any other action, is an invalid decision; an `arena`
+action with a `command` is refused like any other non-command action with one.
+Under a mission contract it blocks the goal with the same sentence `--arena`
+refuses with, and in a managed-floor or campaign session with that refusal. A
+conversational turn never starts the pilot: an `arena` answer there is a
+declined turn, like `done`. Nor does an `arena` answer replace a pilot that is
+still flying or still leaving its slot (reached by stepping the goal model with
+`/step` mid-match): the bot says `the arena pilot is already flying; /arena stop
+first`, as `/arena` does, and the pilot flies on.
+
+### The commander
+
+An optional model commander sets the pilot's **doctrine** — where it goes and
+what it hunts — and nothing else. The deterministic pilot keeps the lock, the
+fire cadence and the steering; the commander never types a line, never fires
+and never aims. Without a commander the pilot flies its own default doctrine
+(orbit the nearest hostile at `[arena] band_m`).
+
+**Its model.** `[arena.commander_model]`, a model table with the same keys as
+`[model]`, when it is given; else the session's own selected model, but **only
+with `commander_from_session = true`**; else there is no commander. The session
+model is off by default because a `--goal` user's `[model]` may be slow or a
+reasoning model, and would be paid for up to `commander_max_calls` late answers
+a match that the pilot throws away. As the lane starts, the bot says which:
+`Commander: {name} from [arena.commander_model].`,
+`Commander: {name}, the session's model.` or
+`No commander; the pilot flies on its defaults.` It shares the session's model
+tape when one is configured.
+
+```toml
+[arena]
+commander = true            # a commander flies when a model resolves
+commander_ms = 1500         # asks again this long after each answer or error (1000..10000)
+commander_max_calls = 400   # the most calls in one match (1..10000)
+commander_from_session = false # the session's model commands only when true
+
+[arena.commander_model]
+endpoint = "https://openrouter.ai/api/v1/chat/completions"
+name = "deepseek/deepseek-v4.1-flash"
+api_key_env = "OPENROUTER_API_KEY"
+max_tokens = 200
+reasoning = { enabled = false }
+provider = { order = ["Together"], allow_fallbacks = false }
+```
+
+**What it is sent and what it answers.** One system message (the commander's
+own instructions) and one user message: the pilot's picture as compact JSON of
+at most 2 KB — seconds since the power came on, the own tank (callsign, power,
+speed, heading, position, each section's condition and plate, each weapon's
+readiness, rounds and chance), the six nearest contacts (designator, side,
+bearing, range, plot age, and course and speed when the plots show it moving),
+the lock, the doctrine in force and the six latest events. It holds nothing
+the pilot's own screen did not say. The answer is one JSON object,
+`{"target": "BA" | null, "stance": "orbit" | "close" | "stand_off" | "withdraw",
+"band_m": 150..900, "sense": "cw" | "ccw" | "auto", "note": "…"}`; every field
+but `note` is required and nothing else is allowed. The band is clamped into
+150..900, the note cut to 160 characters, and a target that is not 1 to 4 of
+`A-Z0-9` reads as none (the pilot ignores a target it does not hold as hostile
+anyway). An answer that does not read keeps the doctrine and is recorded as
+`commander-invalid`; one that does is flown from the next tick
+(`arena-doctrine`).
+
+**When it asks.** Never more than one call at a time. The first at
+`Power online.`; the next `commander_ms` after the last answer or error; and at
+once — or as soon as the call in flight returns — when a contact is identified
+to the other side, when one of the tank's own sections is destroyed, and when
+the lock breaks and is not held again for three seconds.
+
+**Late answers.** An answer that arrives more than **twice the contact refresh
+period in force when it was asked** is dropped (`commander-stale`): two seconds
+while the pilot holds a contact (it reads `CONTACTS` every second), ten seconds
+while it searches (every five). A line-mode pilot's picture is refreshed by its
+own polls, never by the arena's pulse, so that is what "two refreshes of the
+picture" means here.
+
+**When it stops** (the pilot flies on, on the last doctrine it applied): at the
+match's end; when the tank is destroyed; after `commander_max_calls` in the
+match; after five errors in a row; after **five late answers in a row**
+(`answers arrive too late to use`; a timely answer, readable or not, resets the
+count); when the pilot stops; and when the session budget blocks a call. Each
+writes one `commander-off` record with its reason. The next match starts it
+again, except after the budget, which holds for the rest of the session: every
+later match of that pilot, and every pilot started later in the run (by
+`/arena` or a goal's `arena` action), flies without a commander and names the
+budget as the reason. A failed call records its cause as `commander-error`
+(the transport's error, the provider's status, or a request that could not be
+built).
+
+**What it costs.** Every call is recorded like any other model request
+(`model-input`, `model-request`, `model-reply`, `usage`, `cost-receipt`), filed
+in the cost ledger under the purpose `arena_commander`, and under the profile
+`arena_commander` when it came from `[arena.commander_model]` (a profile file
+may not take that name). It is gated by the session budget **in the commander
+model's own currency** — a budget that names only EUR refuses a USD commander,
+and a commander-only run with no `[model]` is not refused for want of a
+currency — and a block is recorded once as `budget-blocked`. The budget is
+checked before an ask is taken, so a refused ask is never counted as a call.
+Each call's records carry its own ledger request id as their `request_id`,
+never the goal decision's. Commander calls
+are not goal turns: they never count against `[agent] max_steps`. Each match in
+the report's `arena` block counts `commander_calls` (the requests the cost
+ledger holds), `commander_applied`,
+`commander_stale`, `commander_invalid` and `commander_errors`, and names
+`commander_off` when it stopped before the match's end.
+
+**Why reasoning must be off.** Measured before this was built, on a picture of
+about 1.2 KB and a five-field answer: `deepseek/deepseek-v4.1-flash` through
+OpenRouter with reasoning off answered in a median 1 342 ms on default routing
+(313 to 1 597 ms, eight of eight valid) and 333 ms pinned to Together (295 to
+479 ms, ten of ten valid). With `reasoning = { effort = "low" }` the median was
+10.6 s, the slowest 56.8 s, and five answers in eight spent the whole 1 500-token
+budget thinking and returned nothing. A commander answer is useful only inside
+the picture's own refresh, so send `reasoning = { enabled = false }` (and pin a
+fast provider when the latency matters).
 
 ## Character, personality and voice
 

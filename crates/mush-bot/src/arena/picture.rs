@@ -393,6 +393,9 @@ pub struct Picture {
     pub reclaims: u32,
     /// How long the last drop lasted.
     pub away_ms: u64,
+    /// When `Power online.` first came this match (cut AJ.3: the commander's
+    /// picture counts its seconds from it).
+    pub power_ms: Option<u64>,
     pub own: Own,
     pub contacts: BTreeMap<String, Contact>,
     pub lock: Option<String>,
@@ -1099,6 +1102,7 @@ impl Picture {
             Line::PowerOnline => {
                 self.own.power = Power::Online;
                 self.aboard = true;
+                self.power_ms.get_or_insert(now_ms);
                 self.touch();
                 event = Some(self.event(now_ms, EventKind::PowerOnline, "Power online.".into()));
             }
@@ -1473,6 +1477,7 @@ impl Picture {
         self.tally = Tally::default();
         self.reclaims = 0;
         self.away_ms = 0;
+        self.power_ms = None;
         self.aboard = false;
         self.open = Open::default();
         self.touch();

@@ -60,6 +60,9 @@ pub async fn run(
     actual_selection.settings.name = capture.payload["model"].as_str().unwrap().into();
     actual_selection.settings.max_tokens = capture.payload["max_tokens"].as_u64().unwrap() as u32;
     actual_selection.settings.temperature = capture.payload["temperature"].as_f64();
+    // The pass-through objects the request actually carries (cut AJ.3).
+    actual_selection.settings.reasoning = capture.payload["reasoning"].as_object().cloned();
+    actual_selection.settings.provider = capture.payload["provider"].as_object().cloned();
     let currency = actual_selection.settings.currency();
     let budget_before = budget.evaluate(&costs.session_usage()?, currency.as_deref())?;
     if !budget_before.allowed {
@@ -117,4 +120,85 @@ pub async fn run(
         "budget":{"settings":budget,"revision":budget.revision(),"status":budget.evaluate(&costs.session_usage()?,currency.as_deref())?}});
     serde_json::to_writer_pretty(file, &report)?;
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::experiment::{Prompts, save_json};
+
+    fn directory() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let directory = std::env::temp_dir().join(format!(
+            "mush-bot-replay-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&directory).expect("directory");
+        directory
+    }
+
+    #[tokio::test]
+    async fn a_replay_records_the_pass_through_objects_the_request_carried() {
+        let directory = directory();
+        let tape = directory.join("tape.json");
+        std::fs::write(
+            &tape,
+            json!({"version":1,"replies":[
+                {"content":"{\"action\":\"wait\",\"summary\":\"Wait.\"}"},
+                {"content":"{\"action\":\"wait\",\"summary\":\"Wait.\"}"}]})
+            .to_string(),
+        )
+        .expect("tape");
+        let routed: crate::config::Model = serde_json::from_value(json!({
+            "endpoint":"http://127.0.0.1","name":"routed","cost_currency":"USD",
+            "reasoning":{"enabled":false},"provider":{"order":["Together"]}}))
+        .expect("model");
+        let capture = Brain::new(&routed)
+            .expect("brain")
+            .prepare(
+                json!({"terminal_history":"Limbo"}),
+                None,
+                &Prompts::default(),
+            )
+            .expect("capture");
+        let source = directory.join("capture.json");
+        save_json(&source, &capture).expect("saved");
+        // The session's profile carries neither object: what the replay records
+        // is what the captured request carried.
+        let mut config = Config::default();
+        config.costs.persistent = false;
+        config.model_tape = Some(tape);
+        config.model = Some(
+            serde_json::from_value(
+                json!({"endpoint":"http://127.0.0.1","name":"plain","cost_currency":"USD"}),
+            )
+            .expect("model"),
+        );
+        let report = run(&config, &source, &directory.join("as-captured.json"), false)
+            .await
+            .expect("replay");
+        assert_eq!(report["success"], true, "{report}");
+        let settings = &report["request"]["model"]["settings"];
+        assert_eq!(settings["name"], "routed");
+        assert_eq!(settings["reasoning"], json!({"enabled":false}));
+        assert_eq!(settings["provider"], json!({"order":["Together"]}));
+        assert_eq!(
+            report["capture"]["request_revision"],
+            capture.request_revision
+        );
+        // Replayed under the session's model, the request carries neither.
+        let report = run(&config, &source, &directory.join("overridden.json"), true)
+            .await
+            .expect("replay");
+        let settings = &report["request"]["model"]["settings"];
+        assert_eq!(settings["name"], "plain");
+        assert!(settings.get("reasoning").is_none(), "{settings}");
+        assert!(report["capture"]["payload"].get("provider").is_none());
+        let _ = std::fs::remove_dir_all(&directory);
+    }
 }

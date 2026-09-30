@@ -86,7 +86,7 @@ impl Default for Ssh {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Model {
     /// Full chat-completions endpoint, including /v1/chat/completions.
@@ -100,10 +100,68 @@ pub struct Model {
     pub temperature: Option<f64>,
     /// Currency of usage.cost for endpoints other than OpenRouter.
     pub cost_currency: Option<String>,
+    /// Passed through verbatim as the request's `reasoning` object (cut AJ.3):
+    /// OpenRouter's `{ enabled = false }` keeps a reasoning model from spending
+    /// its whole token budget thinking. Bounded by [`Model::validate`] and part
+    /// of every request's recorded revision. Skipped when unset, so every
+    /// earlier ledger line, profile, capture and report reads unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Passed through verbatim as the request's `provider` object (cut AJ.3):
+    /// OpenRouter's routing, e.g. `{ order = ["Together"], allow_fallbacks =
+    /// false }`. Bounded and recorded as `reasoning` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// The most a `reasoning` or `provider` object may serialise to.
+pub const EXTRA_BODY_MAX_BYTES: usize = 2_048;
+/// The deepest a `reasoning` or `provider` object may nest (objects and
+/// arrays; the object itself is level 1).
+pub const EXTRA_BODY_MAX_DEPTH: usize = 4;
+
+/// How deep `value` nests: 0 for a scalar, 1 for an object or array of
+/// scalars, one more for each level inside.
+fn nesting(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Object(map) => 1 + map.values().map(nesting).max().unwrap_or(0),
+        serde_json::Value::Array(items) => 1 + items.iter().map(nesting).max().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// A `reasoning` or `provider` value a request may carry: a JSON object of at
+/// most [`EXTRA_BODY_MAX_BYTES`] serialised, nested at most
+/// [`EXTRA_BODY_MAX_DEPTH`] deep. [`Model::validate`] and
+/// `model::Capture::validate` both hold a request to it.
+pub fn extra_body_ok(value: &serde_json::Value) -> bool {
+    value.is_object()
+        && serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= EXTRA_BODY_MAX_BYTES)
+        && nesting(value) <= EXTRA_BODY_MAX_DEPTH
 }
 
 impl Model {
+    /// Insert the pass-through `reasoning` and `provider` objects into a
+    /// request payload, when set. Every request the bot builds calls it after
+    /// the temperature: the goal loop's (`Brain::prepare`), the studio's and
+    /// the arena commander's; `Capture::with_model` re-inserts them.
+    pub fn extra_body(&self, payload: &mut serde_json::Value) {
+        if let Some(reasoning) = &self.reasoning {
+            payload["reasoning"] = serde_json::Value::Object(reasoning.clone());
+        }
+        if let Some(provider) = &self.provider {
+            payload["provider"] = serde_json::Value::Object(provider.clone());
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
+        if [&self.reasoning, &self.provider].into_iter().any(|extra| {
+            extra
+                .as_ref()
+                .is_some_and(|map| !extra_body_ok(&serde_json::Value::Object(map.clone())))
+        }) {
+            return Err("invalid model reasoning/provider: each must be a JSON object of at most 2048 bytes, nested at most 4 deep".into());
+        }
         let url = reqwest::Url::parse(&self.endpoint)?;
         if !matches!(url.scheme(), "http" | "https")
             || self.name.trim().is_empty()
@@ -248,4 +306,94 @@ pub fn secret(name: &Option<String>) -> Result<Option<String>> {
                 .map_err(|_| format!("required environment variable {name} is unset").into())
         })
         .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    const ROUTED: &str = "endpoint = \"https://openrouter.ai/api/v1/chat/completions\"\n\
+        name = \"deepseek/deepseek-v4.1-flash\"\n\
+        reasoning = { enabled = false }\n\
+        provider = { order = [\"Together\"], allow_fallbacks = false }\n";
+
+    fn with(key: &str, value: Value) -> Model {
+        serde_json::from_value(json!({"endpoint":"http://127.0.0.1","name":"m", key: value}))
+            .expect("a model")
+    }
+
+    #[test]
+    fn the_pass_through_objects_read_from_toml_inline_tables() {
+        let model: Model = toml::from_str(ROUTED).expect("a model");
+        model.validate().expect("valid");
+        assert_eq!(
+            Value::Object(model.reasoning.clone().expect("reasoning")),
+            json!({"enabled": false})
+        );
+        assert_eq!(
+            Value::Object(model.provider.clone().expect("provider")),
+            json!({"order": ["Together"], "allow_fallbacks": false})
+        );
+        let mut payload = json!({"model": "m"});
+        model.extra_body(&mut payload);
+        assert_eq!(payload["reasoning"], json!({"enabled": false}));
+        assert_eq!(payload["provider"]["order"], json!(["Together"]));
+        // Unset, a payload carries neither.
+        let bare: Model =
+            toml::from_str("endpoint = \"http://127.0.0.1\"\nname = \"m\"\n").expect("a model");
+        let mut payload = json!({"model": "m"});
+        bare.extra_body(&mut payload);
+        assert_eq!(payload, json!({"model": "m"}));
+    }
+
+    #[test]
+    fn a_pass_through_object_is_bounded_in_bytes_and_depth() {
+        const REFUSAL: &str = "invalid model reasoning/provider: each must be a JSON object of at most 2048 bytes, nested at most 4 deep";
+        for key in ["reasoning", "provider"] {
+            // `{"k":"…"}` is eight bytes around the string.
+            let fits = with(key, json!({"k": "x".repeat(2_040)}));
+            assert_eq!(
+                serde_json::to_vec(&fits.reasoning.clone().or(fits.provider.clone()))
+                    .unwrap()
+                    .len(),
+                2_048
+            );
+            fits.validate().expect("2048 bytes");
+            let over = with(key, json!({"k": "x".repeat(2_041)}));
+            assert_eq!(over.validate().expect_err("2049").to_string(), REFUSAL);
+            with(key, json!({"a": {"b": {"c": {"d": 1}}}}))
+                .validate()
+                .expect("depth 4");
+            with(key, json!({"a": [[[1]]]}))
+                .validate()
+                .expect("depth 4 by arrays");
+            for deep in [
+                json!({"a": {"b": {"c": {"d": {}}}}}),
+                json!({"a": [[[[1]]]]}),
+            ] {
+                assert_eq!(
+                    with(key, deep).validate().expect_err("depth 5").to_string(),
+                    REFUSAL
+                );
+            }
+            // Not an object: refused as the value is read.
+            for bad in [json!("off"), json!([1]), json!(true)] {
+                assert!(
+                    serde_json::from_value::<Model>(
+                        json!({"endpoint":"http://127.0.0.1","name":"m", key: bad})
+                    )
+                    .is_err()
+                );
+            }
+            assert!(
+                toml::from_str::<Model>(&format!(
+                    "endpoint = \"http://127.0.0.1\"\nname = \"m\"\n{key} = \"off\"\n"
+                ))
+                .is_err()
+            );
+        }
+        assert!(!extra_body_ok(&json!(["not", "an", "object"])));
+        assert!(extra_body_ok(&json!({})));
+    }
 }

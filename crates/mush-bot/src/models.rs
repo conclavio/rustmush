@@ -7,6 +7,16 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
+/// The profile name the TOML `[model]` is recorded under.
+pub const CONFIGURED: &str = "configured";
+/// The profile name `[arena.commander_model]` is recorded under in the cost
+/// ledger and the transcript (cut AJ.3).
+pub const ARENA_COMMANDER: &str = "arena_commander";
+/// Names a profile file may not take: each is the recorded name of a model
+/// that comes from the TOML, and a profile sharing it would merge its cost
+/// rows with that model's.
+pub const RESERVED: [&str; 2] = [CONFIGURED, ARENA_COMMANDER];
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Selection {
@@ -41,9 +51,9 @@ impl Catalog {
             catalog.profiles = source.profiles;
         }
         if let Some(model) = &config.model {
-            catalog.profiles.insert("configured".into(), model.clone());
+            catalog.profiles.insert(CONFIGURED.into(), model.clone());
             if catalog.initial.is_none() {
-                catalog.initial = Some("configured".into());
+                catalog.initial = Some(CONFIGURED.into());
             }
         }
         if let Some(profile) = &config.model_profile {
@@ -78,7 +88,7 @@ impl Catalog {
             || source.profiles.len() > 64
             || !source.profiles.contains_key(&source.default)
             || source.profiles.keys().any(|name| {
-                name == "configured"
+                RESERVED.contains(&name.as_str())
                     || name.is_empty()
                     || name.len() > 64
                     || !name
@@ -86,7 +96,7 @@ impl Catalog {
                         .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
             })
         {
-            return Err("invalid model profiles: version 1, 1..64 named profiles and a matching default are required; configured is reserved".into());
+            return Err("invalid model profiles: version 1, 1..64 named profiles and a matching default are required; configured and arena_commander are reserved".into());
         }
         for model in source.profiles.values() {
             model.validate()?;
@@ -120,5 +130,91 @@ impl Catalog {
                 settings: settings.clone(),
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A profiles file in its own directory.
+    fn profiles(name: &str, body: serde_json::Value) -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let directory = std::env::temp_dir().join(format!(
+            "mush-bot-models-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&directory).expect("directory");
+        let path = directory.join(format!("{name}.json"));
+        std::fs::write(&path, body.to_string()).expect("profiles");
+        path
+    }
+
+    fn catalog(path: std::path::PathBuf) -> Result<Catalog> {
+        let config = Config {
+            model_profiles: Some(path),
+            ..Config::default()
+        };
+        Catalog::from_config(&config)
+    }
+
+    #[test]
+    fn a_json_profile_carries_the_pass_through_objects() {
+        let path = profiles(
+            "routed",
+            json!({"version":1,"default":"flash","profiles":{"flash":{
+                "endpoint":"https://openrouter.ai/api/v1/chat/completions",
+                "name":"deepseek/deepseek-v4.1-flash","max_tokens":200,
+                "reasoning":{"enabled":false},
+                "provider":{"order":["Together"],"allow_fallbacks":false}}}}),
+        );
+        let selection = catalog(path)
+            .expect("catalog")
+            .initial()
+            .expect("select")
+            .expect("a selection");
+        assert_eq!(
+            serde_json::to_value(&selection.settings).expect("json")["provider"],
+            json!({"order":["Together"],"allow_fallbacks":false})
+        );
+        assert_eq!(
+            serde_json::to_value(&selection.settings).expect("json")["reasoning"],
+            json!({"enabled":false})
+        );
+        let deep = profiles(
+            "deep",
+            json!({"version":1,"default":"deep","profiles":{"deep":{
+                "endpoint":"http://127.0.0.1","name":"m",
+                "reasoning":{"a":{"b":{"c":{"d":{}}}}}}}}),
+        );
+        assert!(catalog(deep).is_err());
+    }
+
+    #[test]
+    fn a_profile_may_not_take_a_reserved_name() {
+        for reserved in RESERVED {
+            let path = profiles(
+                reserved,
+                json!({"version":1,"default":reserved,"profiles":{reserved:{
+                    "endpoint":"http://127.0.0.1","name":"m"}}}),
+            );
+            assert_eq!(
+                catalog(path).err().expect("refused").to_string(),
+                "invalid model profiles: version 1, 1..64 named profiles and a matching default are required; configured and arena_commander are reserved",
+                "{reserved}"
+            );
+        }
+        let fine = profiles(
+            "fine",
+            json!({"version":1,"default":"arena","profiles":{"arena":{
+                "endpoint":"http://127.0.0.1","name":"m"}}}),
+        );
+        assert!(catalog(fine).is_ok());
     }
 }

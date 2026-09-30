@@ -45,6 +45,27 @@ pub struct MatchResult {
     pub away_ms: u64,
     /// From `Match {n} is running.` to the pilot's end of it; 0 if it never ran.
     pub duration_ms: u64,
+    /// Commander calls sent this match — the requests the cost ledger holds;
+    /// an ask the budget refused or whose request could not be built is not
+    /// one (cut AJ.3; the lane fills these in).
+    #[serde(default)]
+    pub commander_calls: u32,
+    /// Timely valid answers: doctrines applied.
+    #[serde(default)]
+    pub commander_applied: u32,
+    /// Answers dropped as later than twice the contact period at the ask.
+    #[serde(default)]
+    pub commander_stale: u32,
+    /// Timely answers that were not a doctrine.
+    #[serde(default)]
+    pub commander_invalid: u32,
+    /// Calls that failed, and asks whose request could not be built (each
+    /// with its `commander-error` record).
+    #[serde(default)]
+    pub commander_errors: u32,
+    /// Why the commander stopped before the match's end, when it did.
+    #[serde(default)]
+    pub commander_off: Option<String>,
 }
 
 impl MatchResult {
@@ -79,7 +100,24 @@ impl MatchResult {
             reclaims,
             away_ms,
             duration_ms,
+            commander_calls: 0,
+            commander_applied: 0,
+            commander_stale: 0,
+            commander_invalid: 0,
+            commander_errors: 0,
+            commander_off: None,
         }
+    }
+
+    /// Fold in the commander's counts of this match.
+    pub fn with_commander(mut self, tally: &super::commander::Tally) -> MatchResult {
+        self.commander_calls = tally.calls;
+        self.commander_applied = tally.applied;
+        self.commander_stale = tally.stale;
+        self.commander_invalid = tally.invalid;
+        self.commander_errors = tally.errors;
+        self.commander_off = tally.off.clone();
+        self
     }
 
     /// `won`, `lost`, `drawn` or `ended`, from the pilot's side.
@@ -200,6 +238,12 @@ mod tests {
             reclaims: 0,
             away_ms: 0,
             duration_ms: 60_000,
+            commander_calls: 0,
+            commander_applied: 0,
+            commander_stale: 0,
+            commander_invalid: 0,
+            commander_errors: 0,
+            commander_off: None,
         }
     }
 

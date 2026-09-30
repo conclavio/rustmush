@@ -22,6 +22,11 @@
 //! ([`report::Report`]) on the centre's own result words. The `[arena]` table is
 //! [`settings::Settings`].
 //!
+//! **Who commands** (cut AJ.3): optionally a model, through
+//! [`commander`] — it sets the pilot's [`Doctrine`] (where it goes and what it
+//! hunts) about once a second and at once on events, one call at a time, and
+//! never pulls a trigger. The lane owns its schedule; the runner owns the call.
+//!
 //! **The tempo this is sized to**, as the server ships it (plain facts, not
 //! links: the game crates are not dependencies):
 //!
@@ -39,6 +44,7 @@
 //!   pulse away and a notice is at most one quiet pulse late.
 use serde::{Deserialize, Serialize};
 
+pub mod commander;
 pub mod lane;
 pub mod lines;
 pub mod lobby;
@@ -47,6 +53,7 @@ pub mod pilot;
 pub mod report;
 pub mod settings;
 
+pub use commander::{CommanderReply, Doctrine};
 pub use lane::{Fed, Lane, LaneEvent, LaneResult, Purpose, Send};
 pub use lines::{Assembler, Line, classify};
 pub use picture::Picture;
