@@ -294,15 +294,43 @@ EOF or Ctrl-C closes the session; headless mode ignores stdin entirely.
 
 ## Arena pilot
 
-`mush-bot --arena red` (or `--arena blue`), or `/arena red` at the prompt, flies
-the simulator (`help simulator`, `help cockpit`) for that side with no model at
-all. `--matches 3` (or `/arena red 3`, or `[arena] matches` in the config) plays
-three before it reports. `--headless --arena red` is a complete run: it needs no
-`[model]` and no goal.
+The bot can fly a tank in the simulator centre (`help simulator`,
+`help cockpit`) over the same line-mode SSH session a person would use, with no
+model at all. There are three ways to start it:
+
+- **`--arena red`** (or `--arena blue`) on the command line flies that side at
+  once. `--matches 3` (or `[arena] matches` in the config) plays three before
+  it reports. `--headless --arena red` is a complete run: it needs no
+  `[model]` and no goal.
+- **`/arena red`** (or `/arena blue 3`) at the prompt of an interactive
+  session starts the same pilot; bare `/arena` shows its picture, and
+  `/arena stop` ends it and hands you the tank.
+- **A goal's `arena` action**: a plain `--goal` whose model decides the goal is
+  a fight hands the character to the pilot (below, "From a goal").
 
 ```powershell
 $env:MUSH_BOT_PASSWORD = "your-game-password"
 cargo run -p mush-bot -- --config mush-bot.local.toml --arena red --matches 3 --transcript arena.jsonl
+```
+
+**The example configs.** `bots/arena/` holds two configs to copy or run as
+they are once `[ssh]` names your server and character:
+
+- `bots/arena/pilot.toml` — the pilot alone, no model: `[agent] max_seconds =
+  900` (each match's own limit), no bootstrap lines, `[memory] persistent =
+  false` under the namespace `arena` (a pilot needs nothing across runs; its
+  matches are in the report and the transcript), a persistent cost ledger, and
+  every `[arena]` key written out at its default with what it does.
+- `bots/arena/commander.toml` — the same plus a model commander
+  (`[arena.commander_model]`, `deepseek/deepseek-v4.1-flash` through OpenRouter
+  with reasoning off and pinned to Together; see "The commander").
+
+```powershell
+$env:MUSH_BOT_PASSWORD = "your-game-password"
+cargo run -p mush-bot -- --config bots/arena/pilot.toml --arena red
+cargo run -p mush-bot -- --config bots/arena/pilot.toml --arena red --matches 3 --headless --report arena.json
+# The commander also needs OPENROUTER_API_KEY in the environment or the nearest .env.
+cargo run -p mush-bot -- --config bots/arena/commander.toml --arena blue --transcript arena.jsonl
 ```
 
 **From where.** The pilot starts from Limbo, the Welcome Hall or any room of the
@@ -330,18 +358,46 @@ first `STATUS` and `WEAPONSTATUS` after the power comes up (nothing can be aimed
 before they are read), then the main gun's shot, the lock, `CONTACTS`, the other
 guns' shots, the heading and the speed, and then the remaining polls.
 
-**Live-box etiquette.** It leads its side only when it is the first on it — the
-centre's own rule, read off the `takes … slot` and `gives up … slot` lines — and
-only the lead types `SIM START`. As lead it waits `[arena] lead_start_grace_ms`
-(three seconds) after its claim before starting, and it starts that wait again
+**Lead or wingman.** The centre's own rule (`help simulator`) is that whoever
+claims a side first leads it, and only a side's lead (or staff) may start the
+match. The pilot follows it exactly. It keeps a claim window for each side,
+filled in order by every `{name} takes {side} slot {i}.` line it hears and
+emptied by every `{name} gives up {side} slot {i}.`, opened afresh by anything
+that clears the board and by a `SIM STATUS` read of the side's row. It **leads
+only while nobody stands ahead of it** in its side's window, and only then
+types `SIM START`. Anything it cannot read only ever withholds `SIM START`, and
+the server's `Only a side's lead or staff can start the match.` closes the
+window. Under a human lead it is a **wingman**: it claims its slot, waits (up
+to `[arena] wait_start_s`) for the lead to start, boards when the match boards,
+powers up and fights its own tank. It never starts, aborts or concedes the
+match, never adds or changes machines, and never gives orders to its side's
+machines (`SIM START`, `SIM ABORT`, `SIM CONCEDE`, `SIM AI`, `SIM UNIT`,
+`ORDER`; 16c Q-AJ2 and Q-AJ3). A result a human lead calls (an abort, a
+concession) is reported as what it is: not a win.
+
+**Live-box etiquette.** As lead it waits `[arena] lead_start_grace_ms` (three
+seconds) after its claim before starting, and it starts that wait again
 whenever anybody else claims or gives a slot up, so a person joining gets the
 time to. When it stops before a match has started (a blocker, `/arena stop`,
 the end of the run) and still holds a slot, it gives the slot up with one
 `SIM LEAVE` (typed again only when the server answers it as busy, and only
 within the three seconds it waits for the answer), so it never leaves a centre
-locked behind it; it never types it while a match is boarding or running. When a drop or a server restart hands its
-tank to the machines (`flown by doctrine`), it types `BOARD` every three seconds
-until the tank is its own again, then starts it if it went dark.
+locked behind it; it never types it while a match is boarding or running.
+Every centre room hears every match's announcements, so it moves only on the
+lines of the match it claimed in, and it waits out another match that is
+boarding or running before it claims.
+
+**Taking the tank back.** When a dropped connection or a server restart hands
+its tank to the machines (`… is flying on doctrine; BOARD takes it back.`), or
+a cockpit verb answers `You are not at the station of a deployed unit.`, it
+types `BOARD` every three seconds until the tank is its own again
+(`Back aboard {callsign} after {duration} away.`), then types `STARTUP` if the
+tank went dark. The report counts each reclaim and the time away. A tank the
+server says was left for good (`… it cannot be taken back.`) ends that match
+for the pilot. A run whose own process ended (its SSH connection closed) does
+not come back by itself: start it again for the same side and it walks to the
+centre, reads its own row on the board as `flown by doctrine`, follows that
+match, and boards back from its team room as above.
 
 **How it fights.** Written from the player help alone — nothing of the machines'
 own controller is read, imported or mirrored. It locks the nearest identified
@@ -363,8 +419,9 @@ speeds.
 side, the matches asked for, one entry a match (the match number, the callsign,
 whether it led, the centre's own result word, shots that left, orders refused,
 hits, misses, kills, hits taken, sections lost, whether the tank was destroyed,
-reclaims and time away, the match's length) and the wins, losses, draws,
-timeouts and others. The run is `done`, and a headless run exits 0, **only when
+reclaims and time away, the match's length, and the commander's calls, applied,
+late, invalid and failed answers and why it stopped) and the wins, losses,
+draws, timeouts and others. The run is `done`, and a headless run exits 0, **only when
 every match it flew ended on its own side's word**; anything else — a loss, a
 draw, a timeout, an abort, a blocker — is `blocked` and exits 2. The outcome
 reads `Won match 3 for red as RA: 7 shot(s), 4 hit(s), 1 kill(s); took 2 hit(s).`
@@ -378,11 +435,44 @@ phase, lead and seat on every change, `arena-picture` its picture every five
 seconds while a match runs, and `arena` events say what it did in sentences. Its
 memory, attention and the recent window see only the lines worth remembering:
 the poll replies, the acknowledgements of its own orders and the echo of its own
-typing are left out.
+typing are left out. With `[memory] persistent = false` (as in
+`bots/arena/`) nothing of that outlives the run but the transcript and the
+report; with a persistent memory the journal lines are kept like any other
+observation, under the config's namespace.
 
 `/pause` stops the pilot typing and `/resume` starts it again; `/arena stop`
 ends it and hands you the tank. It will not fly under a mission contract, a
 script, a managed floor or a campaign session.
+
+**What it never does.** It never types a line outside its closed list, and
+never more than four in a second. It never starts a match it does not lead,
+and never aborts, concedes, reconfigures (`SIM AI`, `SIM UNIT`, `SIM MODE`,
+`SIM RANGE`) or leaves a match (`EXIT`), nor gives `ORDER`s to machines. It
+never reads the server's state, logs or the machines' controller: everything
+it knows is what its own session was sent, so it holds nothing about a unit its
+own tank has not detected. It never locks a friend or an unidentified contact.
+While it flies, no goal turn runs: the only model it may ask is its
+commander, and a commander's answer changes only the doctrine, never a line.
+
+**How well it flies against the machine.** Measured by an ignored lane,
+`cargo test -p mush-bot --test arena_win_rate -- --ignored --nocapture`: ten
+1 v 1 matches in one run (`--arena red --matches 10`, no model) against one
+blue machine, both tanks posed 500 m apart on the road before every match,
+three minutes a match at most. It prints `WIN RATE: {w} of 10 for red against
+one machine at 1 v 1 (…)` and one line a match, and fails only when fewer than
+ten matches finish: the owner's target is seven in ten, and the lane reports
+the figure rather than failing on it. CI runs it only by hand (the
+`bot-win-rate` job, `workflow_dispatch`, about forty minutes); read the figure
+off the job's log. Its first run, on 2026-09-29, read `WIN RATE: 4 of 10 for
+red against one machine at 1 v 1 (lost 1, drew 0, timed out 5, other 0)`. The
+pilot hit with most of its shots. Every timeout ended with the machine, its
+turret gone, out of sight: in four of them it drew off past the 600 m sight and
+the pilot's search did not find it again inside the three minutes; in the
+fifth the pilot's own engine was gone and it could not search. The pilot's
+flying played a part too: its fallen-back band reaches 600 m, the edge of the
+sight, where it lost contacts; ground held it in place in four matches; and
+nearly half its `FIRE` lines were refused as still cycling. The reading of the
+ten transcripts is recorded with cut AJ (16c Q-AJ5).
 
 **From a goal.** A plain `--goal` can hand the character to the pilot: the goal
 model may answer with the action `arena` and a `side` (`red` or `blue`, in any
@@ -505,7 +595,11 @@ OpenRouter with reasoning off answered in a median 1 342 ms on default routing
 10.6 s, the slowest 56.8 s, and five answers in eight spent the whole 1 500-token
 budget thinking and returned nothing. A commander answer is useful only inside
 the picture's own refresh, so send `reasoning = { enabled = false }` (and pin a
-fast provider when the latency matters).
+fast provider when the latency matters). `bots/arena/commander.toml` does both;
+pinned to Together at `commander_ms = 1500` a five-minute match makes about 200
+calls for about three US cents. On default routing the median answer (1.3 s,
+the slowest measured 1.6 s) is inside the two-second bound with little room to
+spare, and five late answers in a row switch the commander off for the match.
 
 ## Character, personality and voice
 

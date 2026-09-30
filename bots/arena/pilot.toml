@@ -1,0 +1,58 @@
+# The simulator pilot, no model (docs/bot.md "Arena pilot").
+#
+# Copy this file beside your own settings (or run it as it is after editing
+# [ssh]) and fly one side of the simulator centre:
+#
+#   cargo run -p mush-bot -- --config bots/arena/pilot.toml --arena red
+#   cargo run -p mush-bot -- --config bots/arena/pilot.toml --arena red --matches 3
+#
+# Add --headless for an unattended run (it exits 0 only when every match ended
+# on its own side's word, 2 otherwise) and --transcript arena.jsonl --report
+# arena.json to keep what it saw and did.
+#
+# On a live box it leads its side only when it is the first on it, waits
+# (lead_start_grace_ms, again after every other claim) for others to join
+# before SIM START, and gives its slot up with one SIM LEAVE when it stops.
+#
+# The password comes from the environment (MUSH_BOT_PASSWORD here) or the
+# nearest .env, never this file.
+
+[ssh]
+host = "127.0.0.1"
+port = 2222
+username = "pilot+Pilot" # existing account + character
+password_env = "MUSH_BOT_PASSWORD"
+# Defaults to ~/.ssh/known_hosts. Connect with ssh normally and verify/trust the
+# game's key first, or supply an independently verified SHA256 fingerprint here.
+# known_hosts = "C:/Users/you/.ssh/known_hosts"
+# host_key_sha256 = "SHA256:..."
+timeout_secs = 15
+
+[agent]
+role = "A simulator pilot."
+max_seconds = 900 # wall time per match in arena mode (each claim starts it again)
+bootstrap = []    # the pilot types its own walk; nothing is sent before it
+
+[memory]
+# A pilot needs no memory across runs: its matches are in the report and the
+# transcript. A goal run that wants memory uses its own config.
+persistent = false
+namespace = "arena"
+
+[costs]
+# The cost ledger, relative to this file. Nothing is spent without a model;
+# commander.toml's calls land here.
+persistent = true
+
+[arena]
+# Every key at its default; each may be left out.
+matches = 1                  # matches --arena plays before it reports (1..100); --matches overrides
+max_lines_per_s = 4          # lines typed in any one second, every purpose together (1..4)
+lead_start_grace_ms = 3000   # the lead waits this after its claim before SIM START; any other claim restarts it (0..60000)
+wait_start_s = 300           # the longest wait for a busy centre, for a lead to start, or for a claim on the other side (10..3600)
+band_m = 450                 # the orbit's radius around the target, metres (150..900)
+step_timeout_ms = 15000      # the longest one lobby line may go unanswered (2000..60000)
+commander = true             # a commander flies only when a commander model resolves; none does here
+commander_ms = 1500          # asks again this long after each answer or error (1000..10000)
+commander_max_calls = 400    # the most commander calls in one match (1..10000)
+commander_from_session = false # true would let a [model] command; there is none here

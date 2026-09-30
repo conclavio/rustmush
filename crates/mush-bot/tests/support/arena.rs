@@ -393,6 +393,52 @@ impl Client {
         panic!("`{line}` was refused as transient {RETRY_BUDGET} times running");
     }
 
+    /// **Send `line` and wait for any of `needles`** (cut AJ.4), sending it
+    /// again after 200 ms on a transient as [`Client::say`] does: the index of
+    /// the needle that came and everything decoded since the last send, or
+    /// `None` and that text when nothing came inside [`STEP_TIMEOUT`]. Never
+    /// panics on a refusal, so a caller can print one and carry on.
+    pub async fn answer(&mut self, line: &str, needles: &[&str]) -> (Option<usize>, String) {
+        let mut all: Vec<&str> = needles.to_vec();
+        all.extend(TRANSIENTS);
+        for _ in 0..RETRY_BUDGET {
+            self.send(line).await;
+            let from = self.mark;
+            match self.until(from, &all, STEP_TIMEOUT).await {
+                Some(index) if index < needles.len() => {
+                    return (Some(index), self.seen.get(from..).unwrap_or("").to_owned());
+                }
+                Some(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+                None => return (None, self.seen.get(from..).unwrap_or("").to_owned()),
+            }
+        }
+        (
+            None,
+            format!("`{line}` was refused as transient {RETRY_BUDGET} times running"),
+        )
+    }
+
+    /// **Wait for `needle` anywhere after byte `from`** of [`Client::seen`]
+    /// (cut AJ.4), reading as it goes: whether it came inside `timeout`. A
+    /// long watch is a loop of short ones, so the caller can look at a child
+    /// process between them.
+    pub async fn watch(&mut self, from: usize, needle: &str, timeout: Duration) -> bool {
+        self.until(from, &[needle], timeout).await.is_some()
+    }
+
+    /// **Keep reading for `span`** (cut AJ.4): a client that sits in a pod
+    /// still drains what it is sent, so nothing backs up behind it.
+    pub async fn idle(&mut self, span: Duration) {
+        let deadline = tokio::time::Instant::now() + span;
+        loop {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            self.pump(left).await;
+        }
+    }
+
     /// Everything decoded since the last drain.
     pub fn drain(&mut self) -> String {
         let text = self.seen.get(self.drained..).unwrap_or("").to_owned();
@@ -416,11 +462,41 @@ pub async fn pose(god: &mut Client, spec: &str) {
         .await;
 }
 
+/// **Re-pose a tank between matches** (cut AJ.4, the win-rate lane): as
+/// [`pose`], but a refusal is the answer's text, not a panic, so a lane that
+/// re-poses before every match can print it and carry on. `Ok` holds the
+/// `opens at cell` answer.
+pub async fn try_pose(god: &mut Client, spec: &str) -> Result<String, String> {
+    match god
+        .answer(&format!("@arena/pose {spec}"), &["opens at cell"])
+        .await
+    {
+        (Some(_), text) => Ok(text),
+        (None, text) => Err(text),
+    }
+}
+
+/// **Walk a line client from Limbo to the Simulator Lobby** (cut AJ.4): `ooc`
+/// to the Welcome Hall, `simulator` to the lobby, as a person types it. God
+/// stands there to hear the centre's announcements; the human wingman claims
+/// from there.
+pub async fn walk_to_lobby(client: &mut Client) {
+    client.say("ooc", "Welcome Hall").await;
+    client.say("simulator", "Simulator Lobby").await;
+}
+
 /// **The bot's config for this rig** (cut AJ.2): `[ssh]` at the pinned host key
 /// as `username` with the password in [`PASSWORD_ENV`], no `[model]`, memory
 /// and costs session-only, the run bounded at 150 s, then `extra` (more
 /// tables). Written under the bot's own working directory.
 pub fn bot_config(rig: &Rig, username: &str, extra: &str) -> PathBuf {
+    bot_config_with(rig, username, 150, extra)
+}
+
+/// [`bot_config`] with `[agent] max_seconds` of the caller's (cut AJ.4): in
+/// arena mode it bounds each match (a claim starts it again), which the
+/// win-rate lane's three-minute matches need longer than 150 s.
+pub fn bot_config_with(rig: &Rig, username: &str, max_seconds: u64, extra: &str) -> PathBuf {
     let home = rig.dir.join("bot");
     std::fs::create_dir_all(&home).expect("the bot's working directory");
     let config = format!(
@@ -432,7 +508,7 @@ password_env = "{PASSWORD_ENV}"
 host_key_sha256 = "{}"
 
 [agent]
-max_seconds = 150
+max_seconds = {max_seconds}
 settle_ms = 100
 observation_ms = 1000
 
@@ -462,6 +538,221 @@ persistent = false
 /// ([`PASSWORD_ENV`]) set on the child only.
 pub fn bot_command(rig: &Rig, config: &Path, password: &str) -> std::process::Command {
     bot_command_in(&rig.dir.join("bot"), config, password)
+}
+
+/// **A bot child in flight** (cut AJ.4): its output collected on a task of its
+/// own from the moment it starts, so its pipes never fill while the test drives
+/// God and the human wingman beside it; where its transcript and report go.
+pub struct Flight {
+    pub task: tokio::task::JoinHandle<std::io::Result<std::process::Output>>,
+    pub transcript: PathBuf,
+    pub report: PathBuf,
+}
+
+/// **What a bot child left** (cut AJ.4): its exit code, its stdout and stderr,
+/// its JSON report (whole and as text) and every transcript record.
+pub struct Landed {
+    pub code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub report: serde_json::Value,
+    pub report_text: String,
+    pub records: Vec<serde_json::Value>,
+}
+
+impl Landed {
+    /// Every line the lane typed, in order: `(line, purpose, lane_ms)`.
+    pub fn sends(&self) -> Vec<(String, String, u64)> {
+        self.records
+            .iter()
+            .filter(|record| record["kind"] == "arena-send")
+            .map(|record| {
+                (
+                    record["data"]["line"].as_str().expect("a line").to_owned(),
+                    record["data"]["purpose"]
+                        .as_str()
+                        .expect("a purpose")
+                        .to_owned(),
+                    record["data"]["lane_ms"].as_u64().expect("a lane stamp"),
+                )
+            })
+            .collect()
+    }
+
+    /// The text of every `kind` event, in order (`arena`, `send`, …).
+    pub fn events(&self, kind: &str) -> Vec<String> {
+        self.records
+            .iter()
+            .filter(|record| record["kind"] == kind)
+            .filter_map(|record| record["data"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    /// The report's `arena.matches`, or a panic that shows the run.
+    pub fn matches(&self) -> &Vec<serde_json::Value> {
+        self.report["arena"]["matches"]
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!(
+                    "the arena block: {}\nstdout:\n{}\nstderr:\n{}",
+                    self.report_text, self.stdout, self.stderr
+                )
+            })
+    }
+}
+
+/// **Start the bot binary against this rig** (cut AJ.4): `--config config`,
+/// `args`, `--headless`, and a transcript and report named `{name}` under the
+/// bot's working directory, through [`bot_command`] (the empty `.env`, no model
+/// key, the password on the child only).
+pub fn launch(rig: &Rig, config: &Path, name: &str, args: &[&str]) -> Flight {
+    let transcript = rig.dir.join("bot").join(format!("{name}.jsonl"));
+    let report = rig.dir.join("bot").join(format!("{name}.json"));
+    let mut command = tokio::process::Command::from(bot_command(rig, config, PILOT_PASSWORD));
+    command
+        .args(args)
+        .arg("--headless")
+        .arg("--transcript")
+        .arg(&transcript)
+        .arg("--report")
+        .arg(&report)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let child = command.spawn().expect("the bot starts");
+    Flight {
+        task: tokio::spawn(child.wait_with_output()),
+        transcript,
+        report,
+    }
+}
+
+/// **Wait for the bot to finish**, at most `bound`, and read what it left.
+pub async fn land(flight: Flight, bound: Duration) -> Landed {
+    let output = tokio::time::timeout(bound, flight.task)
+        .await
+        .unwrap_or_else(|_| panic!("the bot finishes inside {} s", bound.as_secs()))
+        .expect("the bot's task")
+        .expect("the bot runs");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let report_text = std::fs::read_to_string(&flight.report).unwrap_or_else(|error| {
+        panic!("the report ({error}); stdout:\n{stdout}\nstderr:\n{stderr}")
+    });
+    let report = serde_json::from_str(&report_text).expect("the report is JSON");
+    let records = std::fs::read_to_string(&flight.transcript)
+        .expect("the transcript")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a transcript record"))
+        .collect();
+    Landed {
+        code: output.status.code(),
+        stdout,
+        stderr,
+        report,
+        report_text,
+        records,
+    }
+}
+
+/// **Wait for `needle` in `client`'s stream after byte `from` while the bot
+/// flies** (cut AJ.4), at most `limit`: the byte just past it. A bot that ends
+/// first fails the wait with its own output, so a blocker reads as itself and
+/// not as a timeout.
+pub async fn await_line(
+    client: &mut Client,
+    from: usize,
+    needle: &str,
+    flight: &mut Flight,
+    limit: Duration,
+) -> usize {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        if client.watch(from, needle, Duration::from_secs(1)).await {
+            let at = client
+                .seen
+                .get(from..)
+                .and_then(|tail| tail.find(needle))
+                .unwrap_or(0);
+            return from + at + needle.len();
+        }
+        if flight.task.is_finished() {
+            ended(flight, &format!("{needle:?}")).await;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "no {needle:?} inside {} s; since the mark:\n{}",
+                limit.as_secs(),
+                client.seen.get(from..).unwrap_or("")
+            );
+        }
+    }
+}
+
+impl Flight {
+    /// **Whether the bot has typed a `FIRE` yet** (cut AJ.4), read from its
+    /// transcript as it is written (one flushed record a line; a torn last
+    /// line is skipped until it is whole).
+    pub fn fired(&self) -> bool {
+        let Ok(text) = std::fs::read_to_string(&self.transcript) else {
+            return false;
+        };
+        text.split_inclusive('\n')
+            .filter(|line| line.ends_with('\n'))
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .any(|record| {
+                record["kind"] == "arena-send"
+                    && record["data"]["line"]
+                        .as_str()
+                        .is_some_and(|line| line.starts_with("FIRE "))
+            })
+    }
+}
+
+/// **Keep `client` reading until the bot has fired** (cut AJ.4), at most
+/// `limit`: whether it did. A test that calls a match off once the proof it
+/// needs is in never races the machine for the match's own end (the first
+/// `FIRE` comes about five seconds after `is running`; the machine has ended a
+/// posed 1 v 1 in about thirty). A bot that ends first fails the wait with its
+/// own output.
+pub async fn await_fire(client: &mut Client, flight: &mut Flight, limit: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        if flight.fired() {
+            return true;
+        }
+        if flight.task.is_finished() {
+            ended(flight, "its first FIRE").await;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        client.idle(Duration::from_millis(250)).await;
+    }
+}
+
+/// **The match is still running**, as `client` heard it after byte `from`
+/// (cut AJ.4): a test about to call a match off fails here, saying so, when
+/// the centre already announced its end, rather than on the abort's refusal.
+pub fn still_running(client: &Client, from: usize) {
+    let since = client.seen.get(from..).unwrap_or("");
+    assert!(
+        !since.contains(" is over ("),
+        "the match ended before the test called it off:\n{since}"
+    );
+}
+
+/// The bot ended before `what`: fail with its own output.
+async fn ended(flight: &mut Flight, what: &str) -> ! {
+    let output = (&mut flight.task).await;
+    let (stdout, stderr) = match &output {
+        Ok(Ok(output)) => (
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ),
+        other => (format!("{other:?}"), String::new()),
+    };
+    panic!("the bot ended before {what}; stdout:\n{stdout}\nstderr:\n{stderr}");
 }
 
 /// [`bot_command`] in a working directory of the caller's (cut AJ.2): the same

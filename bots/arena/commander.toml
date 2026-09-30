@@ -1,0 +1,77 @@
+# The simulator pilot with a model commander (docs/bot.md "Arena pilot" and
+# "The commander"). The pilot still locks, fires and steers; the commander only
+# sets its doctrine (which hostile, what stance, how far out, which way round).
+#
+#   cargo run -p mush-bot -- --config bots/arena/commander.toml --arena red
+#   cargo run -p mush-bot -- --config bots/arena/commander.toml --arena red --matches 3
+#
+# Add --headless for an unattended run (exit 0 only when every match ended on
+# its own side's word, 2 otherwise) and --transcript arena.jsonl --report
+# arena.json to keep what it saw, what the commander was asked and answered,
+# and what it cost.
+#
+# On a live box it leads its side only when it is the first on it, waits
+# (lead_start_grace_ms, again after every other claim) for others to join
+# before SIM START, and gives its slot up with one SIM LEAVE when it stops.
+#
+# Both secrets come from the environment or the nearest .env, never this file:
+# MUSH_BOT_PASSWORD (the game) and OPENROUTER_API_KEY (the commander).
+
+[ssh]
+host = "127.0.0.1"
+port = 2222
+username = "pilot+Pilot" # existing account + character
+password_env = "MUSH_BOT_PASSWORD"
+# Defaults to ~/.ssh/known_hosts. Connect with ssh normally and verify/trust the
+# game's key first, or supply an independently verified SHA256 fingerprint here.
+# known_hosts = "C:/Users/you/.ssh/known_hosts"
+# host_key_sha256 = "SHA256:..."
+timeout_secs = 15
+
+[agent]
+role = "A simulator pilot."
+max_seconds = 900 # wall time per match in arena mode (each claim starts it again)
+bootstrap = []    # the pilot types its own walk; nothing is sent before it
+
+[memory]
+# A pilot needs no memory across runs: its matches are in the report and the
+# transcript. A goal run that wants memory uses its own config.
+persistent = false
+namespace = "arena"
+
+[costs]
+# The cost ledger, relative to this file: every commander call is filed under
+# the purpose and profile arena_commander, across runs.
+persistent = true
+
+[arena]
+matches = 1                  # matches --arena plays before it reports (1..100); --matches overrides
+max_lines_per_s = 4          # lines typed in any one second, every purpose together (1..4)
+lead_start_grace_ms = 3000   # the lead waits this after its claim before SIM START; any other claim restarts it (0..60000)
+wait_start_s = 300           # the longest wait for a busy centre, for a lead to start, or for a claim on the other side (10..3600)
+band_m = 450                 # the orbit's radius the doctrine starts from, metres (150..900)
+step_timeout_ms = 15000      # the longest one lobby line may go unanswered (2000..60000)
+commander = true             # fly the commander below
+commander_ms = 1500          # asks again this long after each answer or error (1000..10000)
+commander_max_calls = 400    # the most commander calls in one match (1..10000)
+# Stays false: a [model] added to this file for a goal is never used as the
+# commander by accident. Only the table below commands.
+commander_from_session = false
+
+# Measured by the programme lead on 2026-09-29, a picture of about 1.2 KB and a
+# five-field answer: with reasoning off this model answered in a median 1 342 ms
+# on OpenRouter's default routing and 333 ms pinned to Together. With reasoning
+# on the median was 10.6 s and many answers came back empty after thinking
+# through the whole token budget. An answer is dropped as late after two
+# seconds while a contact is held, and five late answers in a row switch the
+# commander off for the match, so never enable reasoning here. Pinned to
+# Together a five-minute match makes about 200 calls for about three US cents.
+[arena.commander_model]
+endpoint = "https://openrouter.ai/api/v1/chat/completions"
+name = "deepseek/deepseek-v4.1-flash"
+api_key_env = "OPENROUTER_API_KEY" # read from the environment or the nearest .env
+timeout_secs = 5
+max_tokens = 200
+temperature = 0.2
+reasoning = { enabled = false }
+provider = { order = ["Together"], allow_fallbacks = false }

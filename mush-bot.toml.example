@@ -115,6 +115,7 @@ bootstrap = ["help", "look"] # sent once after login in agent mode; scripts list
 
 # The simulator pilot (`--arena red|blue`, `/arena`; docs/bot.md "Arena pilot").
 # It needs no [model]. Every key is optional; these are the defaults.
+# Ready-to-run pilot and commander configs are in bots/arena/.
 # [arena]
 # matches = 1                # matches --arena plays before it reports (1..100)
 # max_lines_per_s = 4        # lines typed in any one second, every purpose together (1..4)
