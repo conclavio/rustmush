@@ -121,7 +121,7 @@ bootstrap = ["help", "look"] # sent once after login in agent mode; scripts list
 # max_lines_per_s = 4        # lines typed in any one second, every purpose together (1..4)
 # lead_start_grace_ms = 3000 # the side's lead waits this after its claim before SIM START; any other claim restarts it (0..60000)
 # wait_start_s = 300         # the longest wait for a busy centre, for a lead to start, or for a claim on the other side (10..3600)
-# band_m = 450               # the orbit's radius around the target, metres (150..900)
+# band_m = 450               # the orbit's radius around the target, metres (150..450)
 # step_timeout_ms = 15000    # the longest one lobby line may go unanswered (2000..60000)
 # The optional model commander sets the pilot's doctrine (where it goes, what it
 # hunts); the pilot still locks, fires and steers. docs/bot.md "The commander".

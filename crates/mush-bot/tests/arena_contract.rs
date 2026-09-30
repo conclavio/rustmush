@@ -1454,7 +1454,7 @@ async fn live_centre() {
     live.say("SPEED 10", "Making").await;
     assert!(live.lines.contains(&Line::Making { kph: 10 }));
     let now = live.now();
-    live.picture.sent_fire(now);
+    live.picture.sent_fire(now, "cannon");
     live.say("FIRE cannon", "refused").await;
     assert!(
         live.lines.iter().any(|line| matches!(
@@ -1643,7 +1643,7 @@ async fn live_centre() {
     assert_eq!(live.picture.lock.as_deref(), Some(target.as_str()));
     assert!(!live.picture.lock_friendly);
     let now = live.now();
-    live.picture.sent_fire(now);
+    live.picture.sent_fire(now, "cannon");
     live.say("FIRE cannon", "Firing cannon.").await;
     assert!(live.lines.contains(&Line::Firing {
         weapon: "cannon".into()

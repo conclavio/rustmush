@@ -39,7 +39,12 @@
 //! `SPEED` or `LOCK` not acknowledged (`Steering to`, `Making`, `Locking`)
 //! within 1 500 ms is forgotten and so re-sent when re-decided; a `FIRE`
 //! refused with `Too many orders at once; try that again.` waits 1 000 ms. No
-//! pipelined reply is ever matched to the line that asked for it.
+//! pipelined reply is ever matched to the line that asked for it; each `FIRE`
+//! is marked with the weapon it names ([`Picture::sent_fire`]), so the
+//! picture tells the cockpit's pre-check of that gun from the arena's refusal
+//! of another's shot. What the pilot says of what it does (a hunt, a fall
+//! back, a held tank turned further; [`Pilot::take_notes`]) goes to the runner
+//! as [`LaneEvent::Said`] every tick.
 //!
 //! **The journal filter.** The lane remembers the last 32 lines it typed; a line
 //! equal to one of them is the terminal's echo and is not read at all, and
@@ -73,7 +78,7 @@ use super::{
     lines::Line,
     lobby::{Lobby, Step},
     picture::{Phase, Picture, Power},
-    pilot::{Orders, Pilot},
+    pilot::{HuntLeg, Orders, Pilot},
     report::Report,
     settings::Settings,
 };
@@ -368,6 +373,17 @@ impl Lane {
                     "cycle_ms": w.cycle_ms})
             })
             .collect();
+        // The pilot's own state for a reader of the transcript (cut AK.1): the
+        // hunt (whom, which leg, how old its plot), the fall back, the stall.
+        let hunt = self.pilot.hunt.as_ref().map(|hunt| {
+            json!({"d": hunt.trail.designator,
+                "leg": match hunt.leg {
+                    HuntLeg::ToPlot => "to_plot",
+                    HuntLeg::Along => "along",
+                    HuntLeg::Sweep { .. } => "sweep",
+                },
+                "age_s": p.last_ms.saturating_sub(hunt.trail.plot_ms) / 1_000})
+        });
         json!({"phase": phase_word(&p.phase), "match": p.following, "step": self.lobby.step(),
             "lead": self.lobby.lead(), "aboard": p.aboard,
             "own": {"callsign": own.callsign, "power": own.power.as_str(), "kph": own.speed_kph,
@@ -376,7 +392,14 @@ impl Lane {
                 "held": own.held.is_some(), "immobile": own.immobile, "disabled": own.disabled,
                 "destroyed": own.destroyed},
             "lock": p.lock, "lock_percent": p.lock_percent, "contacts": contacts,
-            "weapons": weapons, "tally": p.tally, "doctrine": self.doctrine})
+            "weapons": weapons, "tally": p.tally, "doctrine": self.doctrine,
+            "pilot": {"hunt": hunt, "fallen_back": self.pilot.fallen_back,
+                "stall": self.pilot.stall_level}})
+    }
+
+    /// The pilot's own state (for tests and `/arena`).
+    pub fn pilot(&self) -> &Pilot {
+        &self.pilot
     }
 
     // -- stopping -------------------------------------------------------------
@@ -623,6 +646,11 @@ impl Lane {
         } else {
             Orders::default()
         };
+        // What the pilot said (a hunt, a fall back, a held tank): `arena`
+        // events, not journalled (cut AK.1).
+        for note in self.pilot.take_notes() {
+            self.events.push(LaneEvent::Said(note));
+        }
         let mut out = Vec::new();
         while self.slot_free(now_ms) {
             let Some((line, purpose)) = self.next(now_ms, &mut orders) else {
@@ -753,7 +781,7 @@ impl Lane {
         {
             let weapon = orders.fire.remove(index);
             fight.last_fire.insert(weapon.clone(), now_ms);
-            self.picture.sent_fire(now_ms);
+            self.picture.sent_fire(now_ms, &weapon);
             return Some((format!("FIRE {weapon}"), Purpose::Order));
         }
         // 2. The lock.
@@ -780,7 +808,7 @@ impl Lane {
         if let Some(index) = orders.fire.iter().position(|w| can_fire(fight, w)) {
             let weapon = orders.fire.remove(index);
             fight.last_fire.insert(weapon.clone(), now_ms);
-            self.picture.sent_fire(now_ms);
+            self.picture.sent_fire(now_ms, &weapon);
             return Some((format!("FIRE {weapon}"), Purpose::Order));
         }
         // 5. The heading, 6. the speed.

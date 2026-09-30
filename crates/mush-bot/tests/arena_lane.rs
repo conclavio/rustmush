@@ -9,13 +9,23 @@
 //! hold is the lane: its limiter on its own clock, its closed vocabulary, its
 //! poll cadence and priority, its journal filter, its re-sends, its re-board,
 //! its rematch, its one `SIM LEAVE` and its report.
+//!
+//! Three knobs of the scripted server (cut AK.1), all off by default so every
+//! older test runs as before, are set through [`to_the_fight_with`]:
+//! `pulse_ms` (a `FIRE` that passes starts its cycle at the next pulse, and the
+//! cockpit reads the frame of the last one), `magazine` (rounds that count down
+//! one a shot) and `held` (a [`HeldKnob`]: ground that holds the tank until a
+//! turn far enough from where it stopped, or a reverse, frees it — an
+//! assumption about the server, written from the help and the bot's own
+//! transcripts).
 use std::collections::BTreeMap;
 
 use mush_bot::arena::{
     CommanderReply, Doctrine, Lane, LaneEvent, Purpose, Send, Side,
     commander::{OFF_BUDGET, OFF_DESTROYED, OFF_MATCH_OVER, OFF_STALE, Stance},
     lobby::{Centre, Step},
-    picture::Power,
+    picture::{FIRE_SLACK_MAX_MS, Power, bearing_deg},
+    pilot::{HELD_TURN_DEG, STALL_MS, clamp_arena},
     settings::Settings,
 };
 use serde_json::{Value, json};
@@ -74,6 +84,25 @@ fn limiter_holds(sent: &[Send], n: usize) -> bool {
         .all(|w| w[n].lane_ms >= w[0].lane_ms + 1_000)
 }
 
+/// **The held knob** (cut AK.1). **An assumption about the server, not a copy
+/// of it**: modelled on `help cockpit` — "Ground a tank cannot enter stops it,
+/// and the cockpit says so once per stop", "`STATUS` carries `HELD` until you
+/// order something that frees it", "a negative speed reverses" — and on what
+/// the bot's own transcripts show (a held tank turns in place; a `HEADING` well
+/// away from where it stopped freed it; a 45° turn and back did not). Nothing
+/// of the game's own code decides it.
+struct HeldKnob {
+    /// A `HEADING` at least this far from the heading the tank was stopped on
+    /// frees it.
+    free_off_deg: u32,
+}
+
+/// The smaller angle between two whole headings.
+fn angle_between(a: u32, b: u32) -> u32 {
+    let d = a.abs_diff(b) % 360;
+    d.min(360 - d)
+}
+
 /// **The scripted server.**
 struct Server {
     now: u64,
@@ -96,7 +125,28 @@ struct Server {
     /// `SIM STATUS` answers the no-centre refusal.
     no_centre: bool,
     heading: u32,
+    /// The speed last ordered; a stop on held ground zeroes it, and a held
+    /// tank reads 0 whatever it is.
     speed: i32,
+    /// The arena's pulse (cut AK.1): a `FIRE` that passes starts its cycle at
+    /// the next multiple of it after it arrives, and the cockpit's pre-check
+    /// and the `WEAPONSTATUS` rows read the frame of the last multiple at or
+    /// before now (a frame before the shot's pulse shows the gun ready, its
+    /// round unspent: the pre-shot frame the picture's guard exists for).
+    /// Unset, both are now.
+    pulse_ms: Option<u64>,
+    /// A magazine of this many rounds a gun, counting down one a shot (so the
+    /// picture's rounds rule runs); unset, the rows print `30 of 40`.
+    magazine: Option<u32>,
+    rounds: BTreeMap<String, u32>,
+    /// See [`HeldKnob`]; unset, nothing holds the tank.
+    held: Option<HeldKnob>,
+    /// The heading the tank was stopped on, while it is held.
+    held_from: Option<u32>,
+    /// `FIRE` lines answered, shots that left, and `Still cycling` refusals.
+    fire_lines: u32,
+    shots: BTreeMap<String, u32>,
+    cycling_refusals: u32,
 }
 
 impl Server {
@@ -117,7 +167,33 @@ impl Server {
             no_centre: false,
             heading: 90,
             speed: 0,
+            pulse_ms: None,
+            magazine: None,
+            rounds: BTreeMap::new(),
+            held: None,
+            held_from: None,
+            fire_lines: 0,
+            shots: BTreeMap::new(),
+            cycling_refusals: 0,
         }
+    }
+
+    /// The frame the cockpit reads: the last pulse at or before now.
+    fn frame(&self) -> u64 {
+        match self.pulse_ms {
+            Some(pulse) => self.now / pulse * pulse,
+            None => self.now,
+        }
+    }
+
+    /// Stop the tank on ground it cannot enter (the `held` knob must be set):
+    /// the notice, once, and the speed gone — freed, the tank makes only a
+    /// speed ordered after the stop.
+    fn hold_tank(&mut self) {
+        assert!(self.held.is_some(), "the held knob is off");
+        self.held_from = Some(self.heading);
+        self.speed = 0;
+        self.say(0, "Held: the ground ahead will not take the tank.");
     }
 
     fn say(&mut self, delay: u64, text: &str) {
@@ -137,10 +213,46 @@ impl Server {
         due.into_iter().map(|(_, text)| text).collect()
     }
 
+    /// A gun's cycle, as the scripted guns have it.
+    fn cycle_ms(weapon: &str) -> u64 {
+        if weapon == "cannon" { 6_000 } else { 1_000 }
+    }
+
+    /// Whether the gun's last shot is still waiting for its pulse: as of the
+    /// frame the cockpit reads, it has not left yet.
+    fn pending(&self, weapon: &str) -> bool {
+        self.fired
+            .get(weapon)
+            .is_some_and(|start| self.frame() < *start)
+    }
+
+    /// What is left of the gun's cycle as of the frame the cockpit reads. A
+    /// frame before the shot's pulse shows the gun as it was then: ready (the
+    /// `FIRE` passed the pre-check on it), its round not yet gone.
     fn cycle_left(&self, weapon: &str) -> Option<u64> {
-        let cycle = if weapon == "cannon" { 6_000 } else { 1_000 };
+        let cycle = Server::cycle_ms(weapon);
         let fired = *self.fired.get(weapon)?;
-        (self.now < fired + cycle).then(|| fired + cycle - self.now)
+        let at = self.frame();
+        (fired <= at && at < fired + cycle).then(|| fired + cycle - at)
+    }
+
+    /// The pre-check a `FIRE` meets: the cycle as of the frame, and — an
+    /// assumption, the stricter reading — a shot still waiting for its pulse
+    /// counts as cycling from that frame, so a second `FIRE` of the gun inside
+    /// one pulse is refused.
+    fn pre_check_left(&self, weapon: &str) -> Option<u64> {
+        if self.pending(weapon) {
+            let fired = self.fired.get(weapon).copied().unwrap_or(0);
+            return Some(fired + Server::cycle_ms(weapon) - self.frame());
+        }
+        self.cycle_left(weapon)
+    }
+
+    /// The rounds the frame shows: a shot waiting for its pulse has not
+    /// spent its round yet.
+    fn rounds_shown(&self, weapon: &str, size: u32) -> u32 {
+        let left = self.rounds.get(weapon).copied().unwrap_or(size);
+        left + u32::from(self.pending(weapon))
     }
 
     fn weapon_row(&self, weapon: &str, short: &str) -> String {
@@ -153,7 +265,11 @@ impl Server {
         } else {
             ""
         };
-        format!("{weapon}{short}  {state}  30 of 40 round(s){chance}")
+        let rounds = match self.magazine {
+            Some(size) => format!("{} of {size}", self.rounds_shown(weapon, size)),
+            None => "30 of 40".into(),
+        };
+        format!("{weapon}{short}  {state}  {rounds} round(s){chance}")
     }
 
     /// The answer to one typed line: its echo first, as the PTY does.
@@ -245,11 +361,17 @@ impl Server {
                 }
             }
             "STATUS" => {
-                let (heading, speed) = (self.heading, self.speed);
+                // Held, the tank reads 0 kph and `HELD` on the heading it last
+                // turned to in place.
+                let (speed, held) = match self.held_from {
+                    Some(_) => (0, ", HELD"),
+                    None => (self.speed, ""),
+                };
+                let heading = self.heading;
                 self.say(
                     3,
                     &format!(
-                        "Callsign RA.\nRed Tank 1: power online, {speed} kph, heading {heading:03}°\n  at 60 m east, 970 m north; scope holds a hostile\n  nearest spot: The Ford (A), 400 m at 090°\n  hull  intact  internals 60/60\n    front 400/400  left 250/250  right 250/250  rear 150/150\n  turret  intact\n    front 350/350  left 220/220  right 220/220  rear 140/140"
+                        "Callsign RA.\nRed Tank 1: power online, {speed} kph, heading {heading:03}°{held}\n  at 60 m east, 970 m north; scope holds a hostile\n  nearest spot: The Ford (A), 400 m at 090°\n  hull  intact  internals 60/60\n    front 400/400  left 250/250  right 250/250  rear 150/150\n  turret  intact\n    front 350/350  left 220/220  right 220/220  rear 140/140"
                     ),
                 );
             }
@@ -271,6 +393,13 @@ impl Server {
             _ => {
                 if let Some(deg) = line.strip_prefix("HEADING ") {
                     self.heading = deg.parse().unwrap_or(0);
+                    // Far enough from where it stopped, the turn frees it;
+                    // anything nearer leaves it held, silently.
+                    if let (Some(from), Some(knob)) = (self.held_from, &self.held)
+                        && angle_between(self.heading, from) >= knob.free_off_deg
+                    {
+                        self.held_from = None;
+                    }
                     self.say(3, &format!("Steering to {deg}°."));
                 } else if let Some(kph) = line.strip_prefix("SPEED ") {
                     let kph: i32 = kph.parse().unwrap_or(0);
@@ -281,6 +410,10 @@ impl Server {
                         );
                     } else {
                         self.speed = kph;
+                        // Astern frees a held tank; ahead does not.
+                        if kph < 0 {
+                            self.held_from = None;
+                        }
                         self.say(3, &format!("Making {kph} kph."));
                     }
                 } else if let Some(target) = line.strip_prefix("LOCK ") {
@@ -288,12 +421,14 @@ impl Server {
                     self.locked = Some(target.to_owned());
                     self.say(500, &format!("Locked on {target}, 62% to hit."));
                 } else if let Some(weapon) = line.strip_prefix("FIRE ") {
+                    self.fire_lines += 1;
                     if self.locked.is_none() {
                         self.say(
                             3,
                             &format!("FIRE {weapon} refused. No lock: LOCK a contact first."),
                         );
-                    } else if let Some(left) = self.cycle_left(weapon) {
+                    } else if let Some(left) = self.pre_check_left(weapon) {
+                        self.cycling_refusals += 1;
                         self.say(
                             3,
                             &format!(
@@ -302,7 +437,18 @@ impl Server {
                             ),
                         );
                     } else {
-                        self.fired.insert(weapon.to_owned(), self.now);
+                        // The arena fires on its pulse: the cycle starts at
+                        // the next one.
+                        let start = match self.pulse_ms {
+                            Some(pulse) => (self.now / pulse + 1) * pulse,
+                            None => self.now,
+                        };
+                        self.fired.insert(weapon.to_owned(), start);
+                        *self.shots.entry(weapon.to_owned()).or_default() += 1;
+                        if let Some(size) = self.magazine {
+                            let left = self.rounds.entry(weapon.to_owned()).or_insert(size);
+                            *left = left.saturating_sub(1);
+                        }
                         self.say(3, &format!("Firing {weapon}."));
                         let lock = self.locked.clone().unwrap_or_default();
                         if weapon == "cannon" {
@@ -334,6 +480,8 @@ impl Server {
         self.locked = None;
         self.contacts.clear();
         self.fired.clear();
+        self.rounds.clear();
+        self.held_from = None;
     }
 }
 
@@ -415,7 +563,13 @@ impl Run {
 }
 
 fn to_the_fight(settings: Settings) -> Run {
+    to_the_fight_with(settings, |_| {})
+}
+
+/// To the fight against a server whose knobs `knobs` sets first.
+fn to_the_fight_with(settings: Settings, knobs: impl FnOnce(&mut Server)) -> Run {
     let mut run = Run::new(settings);
+    knobs(&mut run.server);
     assert!(
         run.until(60_000, Run::fighting),
         "never reached the fight; sent {:?}, said {:?}",
@@ -473,13 +627,22 @@ fn the_walk_from_limbo_to_power_online() {
 /// The hostile the scripted scope holds: an unknown first, told apart three
 /// seconds later.
 fn sight_a_hostile(run: &mut Run) {
-    run.server.contacts = vec!["X1  unknown  bearing 000° (rel 270°)  far  450 m  1 s".into()];
+    sight(run, "X1");
+}
+
+/// `BA` sighted as the unknown `unknown`, told apart three seconds later.
+fn sight(run: &mut Run, unknown: &str) {
+    run.server.contacts = vec![format!(
+        "{unknown}  unknown  bearing 000° (rel 270°)  far  450 m  1 s"
+    )];
     run.server.now = run.now;
-    run.server.say(0, "New contact X1: bearing 000°, far.");
+    run.server
+        .say(0, &format!("New contact {unknown}: bearing 000°, far."));
     run.until(3_000, |_| false);
     run.server.contacts = vec!["BA  blue  bearing 000° (rel 270°)  far  450 m  1 s".into()];
     run.server.now = run.now;
-    run.server.say(0, "Contact X1 identified: BA, blue.");
+    run.server
+        .say(0, &format!("Contact {unknown} identified: BA, blue."));
 }
 
 #[test]
@@ -1227,4 +1390,301 @@ fn a_lane_started_after_the_sessions_budget_block_never_asks() {
         vec![&json!({"reason": OFF_BUDGET, "match": null})],
         "once, before any match"
     );
+}
+
+// -- cut AK.1: the gun's own clock, the held tank, the hunt -----------------------
+
+/// How late the lane may read a gun's readiness: one poll of its picture.
+const POLL_MS: u64 = 500;
+
+/// A whole heading from degrees.
+fn whole(deg: f64) -> u32 {
+    (deg.rem_euclid(360.0).round() as u32) % 360
+}
+
+/// Every `HEADING` typed from `from`: when, and which.
+fn heading_sends(run: &Run, from: u64) -> Vec<(u64, u32)> {
+    run.sent
+        .iter()
+        .filter(|s| s.lane_ms >= from)
+        .filter_map(|s| {
+            let deg = s.line.strip_prefix("HEADING ")?.parse().ok()?;
+            Some((s.lane_ms, deg))
+        })
+        .collect()
+}
+
+/// **A refused `FIRE` is the exception** (cut AK.1): against an arena that
+/// fires on its 500 ms pulse and a magazine that counts down, locked for two
+/// minutes, at most one `FIRE` line in twenty is refused as still cycling, and
+/// each gun fires at least once a cycle, a pulse, the slack's ceiling and a
+/// poll.
+#[test]
+fn a_refused_fire_is_the_exception() {
+    const PULSE_MS: u64 = 500;
+    let mut run = to_the_fight_with(Settings::default(), |server| {
+        server.pulse_ms = Some(PULSE_MS);
+        server.magazine = Some(200);
+    });
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    let (lines, refusals) = (run.server.fire_lines, run.server.cycling_refusals);
+    let shots = run.server.shots.clone();
+    run.until(120_000, |_| false);
+    assert_eq!(
+        run.lane.picture().lock.as_deref(),
+        Some("BA"),
+        "locked throughout"
+    );
+    let lines = run.server.fire_lines - lines;
+    let refusals = run.server.cycling_refusals - refusals;
+    assert!(
+        refusals * 20 <= lines,
+        "{refusals} of {lines} FIRE lines refused as still cycling"
+    );
+    for weapon in ["cannon", "machine_gun"] {
+        let fired = run.server.shots.get(weapon).copied().unwrap_or(0)
+            - shots.get(weapon).copied().unwrap_or(0);
+        let floor = 120_000 / (Server::cycle_ms(weapon) + PULSE_MS + FIRE_SLACK_MAX_MS + POLL_MS);
+        assert!(
+            u64::from(fired) >= floor,
+            "{weapon}: {fired} shots in two minutes, at least {floor}"
+        );
+    }
+    let mg = run
+        .lane
+        .picture()
+        .weapons
+        .iter()
+        .find(|w| w.id == "machine_gun")
+        .expect("the machine gun");
+    assert!(mg.rounds < 200, "the magazine counted down");
+}
+
+/// Searching on 090 at full speed, then held by the ground: the run, when the
+/// notice was said, and the heading it stopped on.
+fn held_in_the_search(free_off_deg: u32) -> (Run, u64, u32) {
+    let mut run = to_the_fight_with(Settings::default(), |server| {
+        server.held = Some(HeldKnob { free_off_deg });
+    });
+    assert!(run.until(10_000, |run| run.lines().contains(&"SPEED 54")));
+    run.until(2_500, |_| false);
+    let from = run.server.heading;
+    assert_eq!(run.lane.picture().own.heading_deg, from);
+    run.server.now = run.now;
+    run.server.hold_tank();
+    let held_at = run.now;
+    (run, held_at, from)
+}
+
+/// The held turn `k` quarter-turns of `HELD_TURN_DEG` from `from`, by `sense`.
+fn turned(from: u32, k: u32, sense: i8) -> u32 {
+    whole(f64::from(from) + HELD_TURN_DEG * f64::from(k) * f64::from(sense))
+}
+
+#[test]
+fn a_held_tank_makes_way_again() {
+    let (mut run, held_at, from) = held_in_the_search(30);
+    assert!(run.until(1_000, |run| run.lane.picture().own.held.is_some()));
+    let read = run.now;
+    run.until(TICK_MS, |_| false);
+    let sense = run.lane.pilot().sense;
+    // Within one tick of the notice: the turn and the speed again.
+    let tick: Vec<&Send> = run
+        .sent
+        .iter()
+        .filter(|s| s.lane_ms > held_at && s.lane_ms <= read + TICK_MS)
+        .collect();
+    let lines: Vec<&str> = tick.iter().map(|s| s.line.as_str()).collect();
+    assert!(
+        lines.contains(&format!("HEADING {}", turned(from, 1, sense)).as_str()),
+        "{lines:?}"
+    );
+    assert!(lines.contains(&"SPEED 54"), "{lines:?}");
+    // The next `STATUS` reads a speed.
+    let turn_at = heading_sends(&run, held_at + 1)
+        .first()
+        .map(|(at, _)| *at)
+        .unwrap_or(read);
+    assert!(run.until(3_000, |run| {
+        run.sends_of("STATUS", turn_at + 1)
+            .first()
+            .is_some_and(|at| run.now > at + 20)
+    }));
+    let own = &run.lane.picture().own;
+    assert!(own.held.is_none() && own.speed_kph == 54, "{own:?}");
+}
+
+#[test]
+fn a_tank_held_again_escalates_then_backs_off() {
+    // A turn 135° from where it stopped frees it; 45° and 90° do not.
+    let (mut run, held_at, from) = held_in_the_search(100);
+    // The transcript's picture record shows the stall rising while it is held.
+    assert!(
+        run.until(60_000, |run| {
+            run.lane.picture_json()["pilot"]["stall"]
+                .as_u64()
+                .is_some_and(|level| level >= 1)
+        }),
+        "a stall of level 1 or more in the picture record"
+    );
+    assert!(run.server.held_from.is_some(), "still held at level 1");
+    assert!(
+        run.until(60_000, |run| run.server.held_from.is_none()),
+        "freed"
+    );
+    let sense = run.lane.pilot().sense;
+    let sends = heading_sends(&run, held_at);
+    let first = |deg: u32| {
+        sends
+            .iter()
+            .find(|(_, d)| *d == deg)
+            .map(|(at, _)| *at)
+            .unwrap_or_else(|| panic!("no HEADING {deg}: {sends:?}"))
+    };
+    let (one, two, three) = (
+        first(turned(from, 1, sense)),
+        first(turned(from, 2, sense)),
+        first(turned(from, 3, sense)),
+    );
+    assert!(one < two && two + STALL_MS <= three, "{sends:?}");
+    for k in [2, 3] {
+        let sentence = format!("Held at 0 kph: turning to {:03}°.", turned(from, k, sense));
+        assert!(run.said.contains(&sentence), "{sentence}: {:?}", run.said);
+    }
+    assert!(
+        run.sends_of("SPEED -27", held_at).is_empty(),
+        "no back-off needed"
+    );
+    run.until(3_000, |_| false);
+    assert!(
+        run.lane.picture().own.held.is_none(),
+        "the STATUS reads it free"
+    );
+    // Only a reverse frees it: every turn is under 181° from where it stopped.
+    let (mut run, held_at, _) = held_in_the_search(181);
+    assert!(
+        run.until(90_000, |run| run.server.held_from.is_none()),
+        "freed"
+    );
+    assert!(!run.sends_of("SPEED -27", held_at).is_empty());
+    assert!(
+        run.said.iter().any(|s| s == "Held at 0 kph: backing off."),
+        "{:?}",
+        run.said
+    );
+    run.until(3_000, |_| false);
+    assert!(
+        run.lane.picture().own.held.is_none(),
+        "the STATUS reads it free"
+    );
+}
+
+#[test]
+fn a_lost_contact_is_hunted_in_the_lane() {
+    let mut run = to_the_fight(Settings::default());
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    run.until(2_000, |_| false);
+    // The scope loses BA: `CONTACTS` answers `No contacts.` from now on.
+    // (The notices come after any reply already on its way, which still
+    // names BA.)
+    run.server.contacts.clear();
+    run.server.locked = None;
+    run.server.now = run.now;
+    run.server
+        .say(20, "Lock on BA broken: contact gone.\nContact BA lost.");
+    let lost_at = run.now + 20;
+    // (A reply that crossed the identification can already have hunted BA
+    // for a moment; only what is said from here counts.)
+    let said_from = run.said.len();
+    assert!(run.until(1_000, |run| {
+        run.said[said_from..]
+            .iter()
+            .any(|s| s.starts_with("Hunting BA: its last plot, "))
+    }));
+    let trail_plot = run
+        .lane
+        .pilot()
+        .hunt
+        .as_ref()
+        .unwrap_or_else(|| panic!("hunting: {:?}", run.said))
+        .trail
+        .plot_m;
+    // The plot is where the scripted scope drew BA: 450 m (the lock's
+    // `RANGE` says 440) due north of the `STATUS` fix at 60 m east, 970 m
+    // north — not merely where the pilot decided to drive.
+    let drawn = (60.0, 970.0 + 450.0);
+    let off = (trail_plot.0 - drawn.0).hypot(trail_plot.1 - drawn.1);
+    assert!(off <= 60.0, "the plot {trail_plot:?} is {off:.0} m off BA");
+    let plot = clamp_arena(trail_plot);
+    // The transcript's picture record says so too.
+    let view = run.lane.picture_json();
+    assert_eq!(
+        (&view["pilot"]["hunt"]["d"], &view["pilot"]["hunt"]["leg"]),
+        (&json!("BA"), &json!("to_plot")),
+        "{view}"
+    );
+    let age_s = view["pilot"]["hunt"]["age_s"]
+        .as_u64()
+        .expect("whole seconds");
+    assert!(age_s <= 10, "the plot is {age_s} s old");
+    assert_eq!(view["pilot"]["fallen_back"], json!(false));
+    // Within a second, a `HEADING` toward the last plot.
+    run.advance_to(lost_at + 1_000);
+    let toward = heading_sends(&run, lost_at + 1)
+        .into_iter()
+        .filter(|(at, _)| *at <= lost_at + 1_000)
+        .any(|(at, deg)| {
+            let own = run.lane.picture().own_pos_at(at).expect("a position");
+            angle_between(deg, whole(bearing_deg(own, plot))) <= 10
+        });
+    assert!(toward, "{:?}", heading_sends(&run, lost_at));
+    // Sighted again (an unknown first, which does not end the hunt).
+    sight(&mut run, "X2");
+    assert!(
+        run.lane.pilot().hunt.is_some(),
+        "an unknown does not end it"
+    );
+    let said_from = run.said.len();
+    assert!(run.until(2_000, |run| {
+        run.said[said_from..]
+            .iter()
+            .any(|s| s == "The hunt for BA ends: BA is in sight.")
+    }));
+    assert_eq!(run.lane.picture_json()["pilot"]["hunt"], Value::Null);
+    // Orbiting BA again: the heading it settles on within two seconds.
+    let ended = run.now;
+    run.until(2_000, |_| false);
+    let (_, orbit) = *heading_sends(&run, ended)
+        .last()
+        .expect("a heading after the hunt");
+    assert!(
+        angle_between(orbit, 0) >= 25,
+        "an orbit round BA (due north), not a drive at it: {orbit}"
+    );
+    // Every designator a hunt sentence names, the stream named.
+    let named = ["X1", "X2", "BA"];
+    for said in &run.said {
+        let Some(rest) = said
+            .strip_prefix("Hunting ")
+            .or_else(|| said.strip_prefix("The hunt for "))
+            .or_else(|| said.strip_prefix("Sweeping for "))
+        else {
+            continue;
+        };
+        // A designator: a capital letter, then capitals and digits.
+        let words: Vec<&str> = rest
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| {
+                w.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                    && w.chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            })
+            .collect();
+        assert!(!words.is_empty(), "{said}");
+        for word in words {
+            assert!(named.contains(&word), "{said}: {word}");
+        }
+    }
 }

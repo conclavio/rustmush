@@ -12,8 +12,11 @@
 //!   the 420 m a machine closes to (`help simulator`, "Fighting the machines")
 //!   and inside the 480 m a stopped tank on grass is seen at (`help cockpit`,
 //!   "Seeing"), so the pilot keeps a stopped machine in view while making it
-//!   turn. The range 150..=900 keeps it inside the stock gun's reach and outside
-//!   a collision.
+//!   turn. The range 150..=450 keeps it outside a collision and never past
+//!   that sight (cut AK.1): the machines stop to shoot, so 450 m, the stopped
+//!   tank's 480 m less a margin for the scope's rounding and the tank's drift,
+//!   is the ceiling of every band the pilot flies
+//!   ([`SIGHT_BAND_MAX_M`]).
 //!
 //! **The commander's keys** (cut AJ.3; [`super::commander`]): `commander`
 //! switches the optional model commander on, `commander_ms` is how long after
@@ -28,6 +31,7 @@
 //! would be paid for up to `commander_max_calls` discarded answers a match.
 use serde::{Deserialize, Serialize};
 
+use super::pilot::SIGHT_BAND_MAX_M;
 use crate::{Result, config::Model};
 
 /// The `[arena]` table.
@@ -45,7 +49,8 @@ pub struct Settings {
     /// How long the pilot waits for a busy centre, for a lead to start the
     /// match, or for somebody to claim the other side (10..=3 600 seconds).
     pub wait_start_s: u64,
-    /// The orbit's radius around the target, metres (150..=900).
+    /// The orbit's radius around the target, metres (150..=450, the
+    /// ceiling [`SIGHT_BAND_MAX_M`]).
     pub band_m: u32,
     /// How long one lobby line may go unanswered (2 000..=60 000).
     pub step_timeout_ms: u64,
@@ -92,7 +97,7 @@ impl Settings {
             || !(1..=4).contains(&self.max_lines_per_s)
             || self.lead_start_grace_ms > 60_000
             || !(10..=3_600).contains(&self.wait_start_s)
-            || !(150..=900).contains(&self.band_m)
+            || !(150..=SIGHT_BAND_MAX_M).contains(&self.band_m)
             || !(2_000..=60_000).contains(&self.step_timeout_ms)
             || !(1_000..=10_000).contains(&self.commander_ms)
             || !(1..=10_000).contains(&self.commander_max_calls)
@@ -152,6 +157,10 @@ mod tests {
                 ..Settings::default()
             },
             Settings {
+                band_m: 451,
+                ..Settings::default()
+            },
+            Settings {
                 band_m: 901,
                 ..Settings::default()
             },
@@ -202,7 +211,7 @@ mod tests {
                 max_lines_per_s: 4,
                 lead_start_grace_ms: 60_000,
                 wait_start_s: 3_600,
-                band_m: 900,
+                band_m: 450,
                 step_timeout_ms: 60_000,
                 commander_ms: 10_000,
                 commander_max_calls: 10_000,
@@ -211,6 +220,25 @@ mod tests {
         ] {
             assert!(edge.validate().is_ok());
         }
+    }
+
+    /// **The band stops at the sight's ceiling** (cut AK.1): 450 m is legal,
+    /// 451 m is refused with the table's one sentence.
+    #[test]
+    fn the_band_stops_at_the_sight() {
+        assert_eq!(super::SIGHT_BAND_MAX_M, 450);
+        let at = |band_m: u32| {
+            Settings {
+                band_m,
+                ..Settings::default()
+            }
+            .validate()
+        };
+        assert!(at(450).is_ok());
+        assert_eq!(
+            at(451).expect_err("past the sight").to_string(),
+            "invalid [arena] settings (see mush-bot.toml.example)"
+        );
     }
 
     #[test]

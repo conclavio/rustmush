@@ -403,17 +403,48 @@ match, and boards back from its team room as above.
 own controller is read, imported or mirrored. It locks the nearest identified
 hostile with a fresh plot (never an unidentified contact, never a friend) and
 keeps that lock unless another is at least 100 m nearer; it fires each gun,
-main gun first, when the gun is believed ready and the lock's plot is fresh. It
-circles its target at `[arena] band_m` (450 m: just outside the 420 m a machine
-closes to, inside the 480 m a stopped tank is seen at), bending toward the band
-when off it; it circles toward the target's rear when its plots show the target
-moving, and otherwise reverses every twenty seconds so the machine's plot of it
-goes stale. Hurt to half its hull, or with a plate at a quarter, it withdraws
-for ten seconds and then circles 150 m wider (at most 600 m) for the rest of
-the match. Held by the ground, it turns 45° for three seconds. With no
-identified hostile held for five seconds (an unidentified contact does not
-count) it drives for The Crossroads (`B`), 800 m past it, and back. Its first `SPEED` order is `999`, which makes the tank say its own top
-speeds.
+main gun first, when the lock's plot is fresh and the gun is ready **on the
+gun's own clock**: the shot's acknowledgement starts it, one cycle and a slack
+long. The seconds the cockpit prints in `cycling (N s)` and `Still cycling: N s
+to go.` are rounded up, so it counts them whole, and the slack starts at one
+engaged pulse (half a second, since "you and the arena are a pulse apart") and
+grows a quarter-second each time the cockpit still says cycling to its own
+`FIRE`, shrinking back a little with each shot that leaves. It circles its
+target at `[arena] band_m` (150 to 450 m; 450 m by default: just outside the
+420 m a machine closes to, inside the 480 m a stopped tank is seen at, and the
+widest band it ever flies), bending toward the band when off it; it circles
+toward the target's rear when its plots show the target moving, and otherwise
+reverses every twenty seconds so the machine's plot of it goes stale.
+
+It falls back only on its own hull: its internals at half, or a hull plate at a
+quarter or gone (a turret or track plate does not count). It breaks away from
+the target for ten seconds, or until it has opened to its widened band if that
+is sooner. The widened band is 150 m wider than its band, never narrower than
+it and never wider than 450 m, so at the default band the fall back is a
+break-away and a return inside the sight. After that it flies its doctrine
+again at the widened band, a `close` flown as a circle there.
+
+When it loses a hostile it hunts it rather than waiting: it drives to the
+contact's last plot, then along its estimated course (the plots' course when
+they showed one, else the way the range was opening) while that plot is under
+45 seconds old, then sweeps once in a box of four 300 m legs (at most a
+minute). It never drives past the proving ground's edge: the course leg ends
+where its next 100 m would cross it, or once the tank is that far past the
+estimate. A fresh hostile ends the hunt at once. A hostile the cockpit said was
+destroyed is never hunted, targeted or shot at, and its row, still listed until
+it expires, neither holds off nor ends a hunt for another.
+Only after the hunt, with no identified hostile held for five seconds (an
+unidentified contact does not count), does it drive for The Crossroads (`B`),
+800 m past it, and back.
+
+Held by the ground, it turns 45° for three seconds and orders its speed again.
+Still held at 0 kph, it turns further from the heading it stopped on (90°, then
+135°, then 180°, each judged four seconds after the last), and at last backs
+off for three seconds. It says what it does in `arena` events: `Hunting BA:
+its last plot, 380 m away.`, `Falling back to 450 m: the hull is at half.`,
+`Held at 0 kph: turning to 180°.` and their kin, and the `arena-picture` record
+carries its hunt, its fall back and its stall. Its first `SPEED` order is
+`999`, which makes the tank say its own top speeds.
 
 **The report and the exit code.** The JSON report gains an `arena` block: the
 side, the matches asked for, one entry a match (the match number, the callsign,

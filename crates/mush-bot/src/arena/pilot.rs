@@ -1,15 +1,19 @@
-//! The pilot (cut AJ.2): a deterministic tactician over the [`Picture`].
+//! The pilot (cut AJ.2; cut AK.1): a deterministic tactician over the
+//! [`Picture`].
 //!
 //! [`Pilot::decide`] reads the picture and a [`Doctrine`] and says what to type
 //! next — a heading, a speed, a lock, the guns to fire, whether to ask where The
 //! Crossroads lies. No I/O and no clock: `now_ms` is the runner's session clock,
 //! and the lane decides which of the orders go out this tick and tells the pilot
-//! ([`Pilot::sent_heading`], [`Pilot::sent_speed`], [`Pilot::sent_lock`]).
+//! ([`Pilot::sent_heading`], [`Pilot::sent_speed`], [`Pilot::sent_lock`]). What
+//! it did in words ([`Pilot::take_notes`]) the lane hands the runner as `arena`
+//! events.
 //!
 //! **Written from the player help alone.** Nothing of the machines' own
 //! controller is read, imported or mirrored. Every number below is a sentence
-//! of `help simulator` ("Fighting the machines") or `help cockpit` ("Driving",
-//! "Seeing", "Shooting"):
+//! of `help simulator` ("Fighting the machines", "The ground") or `help cockpit`
+//! ("Driving", "Seeing", "Shooting", "Refusals"), or a reading of the bot's own
+//! transcripts:
 //!
 //! * a machine "closes: to about seven tenths of what its own sight and its
 //!   gun's inner band allow (420 m for the stock tank), where it stops, turns
@@ -17,7 +21,11 @@
 //! * "on grass a stopped tank can be seen out to 80 per cent of that (480 m)
 //!   and a moving one out to all of it" (600 m) — so the orbit's default radius,
 //!   **450 m**, sits just outside the stand-off and inside the stopped-tank
-//!   sight: the pilot keeps a stopped machine in view while making it turn;
+//!   sight: the pilot keeps a stopped machine in view while making it turn. The
+//!   machines stop to shoot, so the stopped tank's 480 m, less a margin for the
+//!   scope's 50 m rounding and the tank's own drift, is the **ceiling** of every
+//!   band the pilot flies ([`SIGHT_BAND_MAX_M`], 450 m), the fall back's
+//!   included: the moving sight's 600 m is where it loses them;
 //! * "a side is twice the target, 7 m of flank against 3.5 m of bow", and "one
 //!   caught from behind spends its thinnest" plate — so the orbit circles toward
 //!   the target's **rear** when the picture holds a track on it;
@@ -35,22 +43,77 @@
 //!   is at least 100 m nearer;
 //! * "Past a gun's last band the chance is 0%: the round is still fired and
 //!   spent" — so a gun whose last read said 0% is not fired;
+//! * **each gun fires on its own clock** ([`super::picture`]'s module head): the
+//!   seconds of `cycling (N s)` and `Still cycling: N s to go.` are rounded up
+//!   and the real cycle begins up to a pulse after the ack (both read from the
+//!   bot's own transcript; "you and the arena are a pulse apart"), so a gun is
+//!   believed ready only when its one clock, [`super::picture::Weapon`]'s
+//!   `next_ready_ms`, says so, or — with no clock yet — when its row says
+//!   `ready` well after the ack;
 //! * "Ground a tank cannot enter stops it, and the cockpit says so once per
-//!   stop" — so a `Held:` notice turns the tank 45° and holds that for 3 s;
+//!   stop", and "`STATUS` carries `HELD` until you order something that frees
+//!   it" — so a `Held:` notice turns the tank 45° for 3 s and orders the speed
+//!   again (insurance: no transcript shows a `SPEED` freeing a held tank), and a
+//!   tank `STATUS` still reads held at 0 kph is turned further **from the
+//!   heading it was stopped on** (90°, 135°, 180°, each judged a whole
+//!   [`STALL_MS`] later, above the 3.1 s p90 and 4.0 s longest lag the bot's
+//!   own transcript shows from `Steering to D°.` to a `STATUS` reading D), and
+//!   at last backs off ("a negative speed reverses", `help cockpit`);
+//! * "Hurt badly enough it breaks off for its own entry zone", "Open the range
+//!   past its sight and it comes after you again", and "A machine that loses you
+//!   goes to where it last saw you" — so a lost hostile is **hunted**: to its
+//!   last plot, then along its estimated course (its track, or the way the
+//!   range was opening) while the plot is young, then one bounded sweep, and
+//!   only then the search. "The proving ground is 2.56 km square" and `STATUS`
+//!   counts `at {x} m east, {y} m north` from its south-west corner (the bot's
+//!   own transcripts read a tank on cell (100, 97) at (1005, 974)), so no hunt
+//!   aim ever lies past the edge, and the course leg, driven on along the
+//!   course once level with its moving aim, ends where the course's next
+//!   100 m would cross the edge or once it is that far past the aim; a wreck
+//!   is never hunted, targeted or shot at (its row stays listed until it
+//!   expires);
 //! * "A machine that loses you … crosses to the other side's entry zone to
 //!   look", and the proving ground's roads meet at The Crossroads (B) — so with
 //!   no identified hostile held for 5 s (an unidentified contact does not
-//!   count) the pilot drives for `B`, past it 800 m, and back.
+//!   count) and no hunt left, the pilot drives for `B`, past it 800 m, and back.
 //!
-//! The pilot's own rule above any doctrine: hurt to half its hull's internals,
-//! or with a struck facet at a quarter of its plate, it withdraws for 10 s and
-//! then orbits 150 m wider (at most 600 m, the stock sight) for the rest of the
-//! match.
+//! **The pilot's own rule above any doctrine.** Hurt to half its hull's
+//! internals, or with a plate **of its hull** at a quarter or gone, it falls
+//! back: away from the target for 10 s or until it has opened to its widened
+//! band, whichever is first; the widened band is 150 m wider than the
+//! doctrine's, never narrower than it and never past [`SIGHT_BAND_MAX_M`]. After
+//! that it flies its doctrine again at the widened band, `close` flown as
+//! `orbit` there (a failing hull does not drive in to 200 m).
+//!
+//! **One stance precedence** (`Pilot::motion`), each step returning when it
+//! applies: (1) the held turn and the stall; (2) the pilot's own fall-back
+//! withdrawal; (3) a doctrine `withdraw`; (4) the doctrine's stance round a
+//! hostile whose plot is younger than [`HUNT_STALE_PLOT_MS`]; (5) the hunt;
+//! (4 again) the doctrine's stance round an older row never seen fresh; (6) the
+//! search.
+//!
+//! **What a tuning round may move** (cut AK.3, between its measurement runs,
+//! and nothing else): [`FALL_BACK_WIDEN_M`] 0..=150, [`WITHDRAW_MS`]
+//! 3 000..=10 000, [`FALL_BACK_FACET_DIVISOR`] 4..=8, [`HUNT_TRAIL_MS`]
+//! 20 000..=90 000, [`HUNT_ASSUMED_MPS`] 5.0..=12.0, [`HUNT_ALONG_MAX_M`]
+//! 600..=1 800, [`HUNT_SWEEP_LEGS`] 2..=8, [`HUNT_SWEEP_LEG_M`] 200..=500,
+//! [`HUNT_SWEEP_MS`] 30 000..=120 000, [`STALL_MS`] 4 000..=6 000,
+//! [`HELD_REVERSE_MS`] 2 000..=5 000, and in the picture
+//! [`super::picture::FIRE_SLACK_START_MS`] 500..=1 000 and
+//! [`super::picture::FIRE_SLACK_UP_MS`] 100..=500. Not tunable:
+//! [`SIGHT_BAND_MAX_M`] and [`FALL_BACK_MAX_M`] (a ruling),
+//! [`HUNT_STALE_PLOT_MS`] (a guard: no live row read older than 2 s),
+//! [`super::picture::FIRE_SLACK_MIN_MS`] (one pulse),
+//! [`super::picture::FIRE_SLACK_DOWN_MS`] and
+//! [`super::picture::FIRE_SLACK_MAX_MS`]. Every test asserts through these
+//! names, so a round inside the bounds breaks none.
+use std::collections::BTreeSet;
+
 use serde::Serialize;
 
 use super::{
     Side,
-    picture::{Contact, EventKind, Phase, Picture, Power, bearing_deg, distance_m},
+    picture::{Contact, EventKind, Phase, Picture, Power, Track, bearing_deg, distance_m},
 };
 
 /// "Full ahead" before the tank's own ceilings are read.
@@ -79,16 +142,36 @@ pub const STAND_OFF_SLACK_M: f64 = 50.0;
 pub const FLIP_EVERY_MS: u64 = 20_000;
 /// A track is advanced by its plot's age, at most this far.
 pub const TRACK_LEAD_MAX_MS: u64 = 3_000;
-/// Falling back: the withdrawal's length…
+/// **The widest band the pilot flies** (cut AK.1): the 480 m at which a
+/// stopped tank on grass is seen (`help cockpit`, "Seeing"), less a margin for
+/// the scope's 50 m rounding and the tank's own drift. The machines stop to
+/// shoot ("where it stops, turns onto you and shoots", `help simulator`), so
+/// the moving sight's 600 m is the wrong ceiling. A ruling, not a tuning
+/// constant: `[arena] band_m` is refused above it.
+pub const SIGHT_BAND_MAX_M: u32 = 450;
+/// Falling back: the withdrawal's longest length (it ends sooner once the
+/// target is at the widened band)…
 pub const WITHDRAW_MS: u64 = 10_000;
 /// …the band's widening after it…
 pub const FALL_BACK_WIDEN_M: u32 = 150;
-/// …and the widest band it widens to (the stock sight).
-pub const FALL_BACK_MAX_M: u32 = 600;
+/// …and the widest band it widens to: the sight's own ceiling (not tunable).
+pub const FALL_BACK_MAX_M: u32 = SIGHT_BAND_MAX_M;
+/// A plate of the hull at or under `1 / FALL_BACK_FACET_DIVISOR` of its
+/// armour falls the pilot back.
+pub const FALL_BACK_FACET_DIVISOR: i64 = 4;
 /// A `Held:` notice turns the tank this far…
 pub const HELD_TURN_DEG: f64 = 45.0;
 /// …and holds the new heading this long.
 pub const HELD_FOR_MS: u64 = 3_000;
+/// A tank still held at 0 kph this long after the stall was last judged is
+/// turned further (see the module head for the lag it sits above).
+pub const STALL_MS: u64 = 4_000;
+/// The back-off's length, astern, when three turns have not freed the tank.
+pub const HELD_REVERSE_MS: u64 = 3_000;
+/// Astern before `SPEED`'s usage line has read the tank's own ceiling: a slow
+/// reverse, well inside any tank's. The ceilings are asked first thing
+/// (`SPEED 999`), so it is rarely used.
+pub const UNKNOWN_ASTERN_KPH: i32 = 10;
 /// With no hostile held this long the pilot searches.
 pub const SEARCH_AFTER_MS: u64 = 5_000;
 /// Within this of The Crossroads the search drives on past it…
@@ -101,6 +184,32 @@ pub const HEADING_STEP_DEG: u32 = 8;
 pub const HEADING_REFRESH_MS: u64 = 4_000;
 /// The spot the search drives for (`help simulator`, "The ground").
 pub const SEARCH_SPOT: char = 'B';
+/// **A hostile row older than this is not held** for the hunt's purposes: it
+/// is hunted rather than orbited round a stale plot, and it no longer counts
+/// as a hostile held for the search. A guard, not a tuning constant: in the
+/// live smoke no `CONTACTS` row read older than 2 s (a contact goes as
+/// `Contact BA lost.`).
+pub const HUNT_STALE_PLOT_MS: u64 = 6_000;
+/// A hunt starts only from a trail whose plot is at most this old; the course
+/// leg runs while it is younger.
+pub const HUNT_TRAIL_MS: u64 = 45_000;
+/// The estimated speed of a contact lost with no published track.
+pub const HUNT_ASSUMED_MPS: f64 = 8.0;
+/// The course leg's aim runs at most this far past the last plot.
+pub const HUNT_ALONG_MAX_M: f64 = 1_200.0;
+/// Within this of a leg's aim the leg is done.
+pub const HUNT_ARRIVE_M: f64 = 100.0;
+/// The sweep's legs…
+pub const HUNT_SWEEP_LEGS: u8 = 4;
+/// …each this long…
+pub const HUNT_SWEEP_LEG_M: f64 = 300.0;
+/// …and the whole sweep at most this long.
+pub const HUNT_SWEEP_MS: u64 = 60_000;
+/// "The proving ground is 2.56 km square" (`help simulator`, "The ground"),
+/// counted from its south-west corner as `STATUS` counts.
+pub const ARENA_SIDE_M: f64 = 2_560.0;
+/// No hunt aim lies nearer the edge than this.
+pub const EDGE_MARGIN_M: f64 = 60.0;
 
 // The doctrine the pilot flies moved to the commander's module (cut AJ.3),
 // which parses and clamps the model's answer into it; these names stay here.
@@ -130,6 +239,63 @@ pub enum SearchLeg {
     },
 }
 
+/// Why the pilot falls back ([`fall_back_due`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub enum FallBackWhy {
+    /// The hull's internals are at half or less ([`hull_failing`]).
+    HullHalf,
+    /// A plate of the hull is at a quarter (`gone: false`) or gone.
+    Plate { facet: String, gone: bool },
+}
+
+/// The last hostile the pilot held, as its own scope last plotted it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Trail {
+    /// A designator the stream named (a contact row the pilot targeted),
+    /// never invented.
+    pub designator: String,
+    /// The last plot: the contact's last fix, else its row from where the
+    /// pilot was.
+    pub plot_m: (f64, f64),
+    /// When that plot was taken: the row's read less its printed age.
+    pub plot_ms: u64,
+    /// The picture's published track at the last fresh read.
+    pub track: Option<Track>,
+    /// Where the pilot was when that plot was read.
+    pub seen_from_m: Option<(f64, f64)>,
+}
+
+/// The hunt's leg.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub enum HuntLeg {
+    /// To the last plot.
+    ToPlot,
+    /// Along the estimated course from the last plot, while the plot is young.
+    Along,
+    /// One leg of the sweep: from `origin` on `heading_deg`.
+    Sweep {
+        leg: u8,
+        origin: (f64, f64),
+        heading_deg: f64,
+    },
+}
+
+/// A hunt for a lost hostile.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Hunt {
+    pub trail: Trail,
+    pub leg: HuntLeg,
+    /// When the hunt began.
+    pub since_ms: u64,
+    /// When the current leg began.
+    pub leg_since_ms: u64,
+    /// The estimated course and speed, fixed at the start.
+    pub course_deg: f64,
+    pub speed_mps: f64,
+    /// When the sweep began, once it has.
+    pub sweep_since_ms: Option<u64>,
+}
+
 /// The pilot's own state. One per match.
 #[derive(Clone, Debug, Serialize)]
 pub struct Pilot {
@@ -139,7 +305,8 @@ pub struct Pilot {
     pub orbit_since_ms: Option<u64>,
     /// When the sense last reversed (or the orbit began).
     pub last_flip_ms: u64,
-    /// Withdrawing until then (falling back).
+    /// Withdrawing until then (falling back), unless the target reaches the
+    /// widened band first.
     pub withdraw_until_ms: Option<u64>,
     /// The pilot has fallen back; its band is widened for the match.
     pub fallen_back: bool,
@@ -148,6 +315,20 @@ pub struct Pilot {
     pub held_heading: Option<u32>,
     /// The newest `Held:` event already turned for.
     pub held_seen_ms: u64,
+    /// The heading the tank was stopped on at the last `Held:` notice.
+    pub held_from_deg: Option<u32>,
+    /// The stall watchdog: when the stall was last opened or raised…
+    pub stall_since_ms: Option<u64>,
+    /// …how far it has escalated (1 to 3 turned further, 4 backed off)…
+    pub stall_level: u8,
+    /// …the heading it holds…
+    pub stall_heading: Option<u32>,
+    /// …the `STATUS` read (its position's time) it last judged…
+    pub stall_status_ms: u64,
+    /// …the stall heading kept until then after the tank was freed…
+    pub stall_clear_until_ms: u64,
+    /// …and backing off until then.
+    pub reverse_until_ms: u64,
     pub search: SearchLeg,
     /// The own position at `Power online.` (the first `STATUS` after it).
     pub start_pos: Option<(f64, f64)>,
@@ -158,14 +339,32 @@ pub struct Pilot {
     pub spot_b_pos: Option<(f64, f64)>,
     /// When power came online, as the pilot first saw it.
     pub power_ms: Option<u64>,
-    /// The last time a hostile contact was held.
+    /// The last time a hostile row no older than [`HUNT_STALE_PLOT_MS`] was
+    /// held.
     pub last_hostile_ms: Option<u64>,
+    /// The last hostile held fresh, as last plotted.
+    pub trail: Option<Trail>,
+    /// The hunt in progress.
+    pub hunt: Option<Hunt>,
+    /// Every designator the pilot has held fresh this match: a row of one of
+    /// them gone stale with no hunt left is not orbited but searched for.
+    pub trailed: BTreeSet<String>,
+    /// Designators the stream said were destroyed: never trailed or hunted.
+    pub wrecks: BTreeSet<String>,
+    /// The newest kill event already read.
+    pub kill_seen_ms: u64,
+    /// The last lock the picture held (an unnamed `Target destroyed.` names
+    /// it).
+    pub lock_seen: Option<String>,
     /// The last heading ordered, and when.
     pub last_heading_order: Option<(u32, u64)>,
     pub last_speed_order: Option<i32>,
     pub last_lock_order_ms: Option<u64>,
     /// `SPEED 999` has gone out (or the ceilings were known).
     pub ceilings_asked: bool,
+    /// What the pilot said since [`Pilot::take_notes`].
+    #[serde(skip)]
+    notes: Vec<String>,
 }
 
 impl Default for Pilot {
@@ -179,15 +378,29 @@ impl Default for Pilot {
             held_until_ms: 0,
             held_heading: None,
             held_seen_ms: 0,
+            held_from_deg: None,
+            stall_since_ms: None,
+            stall_level: 0,
+            stall_heading: None,
+            stall_status_ms: 0,
+            stall_clear_until_ms: 0,
+            reverse_until_ms: 0,
             search: SearchLeg::ToB,
             start_pos: None,
             spot_b_pos: None,
             power_ms: None,
             last_hostile_ms: None,
+            trail: None,
+            hunt: None,
+            trailed: BTreeSet::new(),
+            wrecks: BTreeSet::new(),
+            kill_seen_ms: 0,
+            lock_seen: None,
             last_heading_order: None,
             last_speed_order: None,
             last_lock_order_ms: None,
             ceilings_asked: false,
+            notes: Vec::new(),
         }
     }
 }
@@ -215,19 +428,97 @@ fn along(pos: (f64, f64), bearing: f64, metres: f64) -> (f64, f64) {
     (pos.0 + metres * r.sin(), pos.1 + metres * r.cos())
 }
 
-/// Whether a weapon is believed ready now.
-fn believed_ready(weapon: &super::picture::Weapon, now_ms: u64) -> bool {
-    let read_ready = weapon.ready
-        && weapon.read_ms > 0
-        && weapon
-            .fired_ms
-            .is_none_or(|fired| weapon.read_ms > fired.saturating_add(READY_AFTER_ACK_MS));
-    let due = weapon.next_ready_ms.is_some_and(|at| now_ms >= at);
-    let cycled = match (weapon.cycle_ms, weapon.fired_ms) {
-        (Some(cycle), Some(fired)) => now_ms >= fired.saturating_add(cycle),
-        _ => false,
+/// **Never past the edge**: a point clamped into the proving ground, at least
+/// [`EDGE_MARGIN_M`] inside each side of its [`ARENA_SIDE_M`] square.
+pub fn clamp_arena(p: (f64, f64)) -> (f64, f64) {
+    let (lo, hi) = (EDGE_MARGIN_M, ARENA_SIDE_M - EDGE_MARGIN_M);
+    (p.0.clamp(lo, hi), p.1.clamp(lo, hi))
+}
+
+/// Whether [`clamp_arena`] moves `p`.
+fn past_the_edge(p: (f64, f64)) -> bool {
+    let inside = EDGE_MARGIN_M..=ARENA_SIDE_M - EDGE_MARGIN_M;
+    !inside.contains(&p.0) || !inside.contains(&p.1)
+}
+
+/// **The hull is failing**: the `hull` section's internals `(left, max)` are
+/// at half or less (`max > 0 && left * 2 <= max`). The fall back's first rule,
+/// and the one a commander's `withdraw` is kept on (cut AK.2).
+pub fn hull_failing(picture: &Picture) -> bool {
+    picture
+        .own
+        .sections
+        .get("hull")
+        .and_then(|section| section.internals)
+        .is_some_and(|(left, max)| max > 0 && left.saturating_mul(2) <= max)
+}
+
+/// **Whether the pilot falls back, and why**: [`hull_failing`], or else the
+/// first facet **of the `hull` section only** whose plate is gone (`left ==
+/// 0`, which also reads a `(0, 0)` stored by an `armour gone` line on a facet
+/// never read) or at a quarter (`max > 0 && left * FALL_BACK_FACET_DIVISOR <=
+/// max`). A turret's or a track's facet never falls it back.
+pub fn fall_back_due(picture: &Picture) -> Option<FallBackWhy> {
+    if hull_failing(picture) {
+        return Some(FallBackWhy::HullHalf);
+    }
+    let hull = picture.own.sections.get("hull")?;
+    hull.facets.iter().find_map(|(facet, (left, max))| {
+        let gone = *left == 0;
+        (gone || (*max > 0 && left.saturating_mul(FALL_BACK_FACET_DIVISOR) <= *max)).then(|| {
+            FallBackWhy::Plate {
+                facet: facet.clone(),
+                gone,
+            }
+        })
+    })
+}
+
+/// **The widened band** after a fall back: [`FALL_BACK_WIDEN_M`] wider than
+/// `band_m`, never past [`FALL_BACK_MAX_M`], and never narrower than `band_m`.
+pub fn widened_band(band_m: u32) -> u32 {
+    band_m.max(
+        band_m
+            .saturating_add(FALL_BACK_WIDEN_M)
+            .min(FALL_BACK_MAX_M),
+    )
+}
+
+/// A leg's aim, clamped into the ground, and whether the clamp moved it.
+fn leg_aim(hunt: &Hunt, now_ms: u64) -> ((f64, f64), bool) {
+    let raw = match &hunt.leg {
+        HuntLeg::ToPlot => hunt.trail.plot_m,
+        HuntLeg::Along => {
+            let run_m = hunt.speed_mps * now_ms.saturating_sub(hunt.trail.plot_ms) as f64 / 1_000.0;
+            along(
+                hunt.trail.plot_m,
+                hunt.course_deg,
+                run_m.min(HUNT_ALONG_MAX_M),
+            )
+        }
+        HuntLeg::Sweep {
+            origin,
+            heading_deg,
+            ..
+        } => along(*origin, *heading_deg, HUNT_SWEEP_LEG_M),
     };
-    read_ready || due || cycled
+    (clamp_arena(raw), past_the_edge(raw))
+}
+
+/// Whether a weapon is believed ready now: its one clock
+/// ([`super::picture::Weapon::next_ready_ms`]) when anything has set it, else
+/// a `ready` row read well after the last ack.
+fn believed_ready(weapon: &super::picture::Weapon, now_ms: u64) -> bool {
+    match weapon.next_ready_ms {
+        Some(at) => now_ms >= at,
+        None => {
+            weapon.ready
+                && weapon.read_ms > 0
+                && weapon
+                    .fired_ms
+                    .is_none_or(|fired| weapon.read_ms > fired.saturating_add(READY_AFTER_ACK_MS))
+        }
+    }
 }
 
 impl Pilot {
@@ -252,13 +543,14 @@ impl Pilot {
         };
         let other = side.other();
         // The doctrine's own sense, when it names one, is `s` everywhere — the
-        // orbit and a `Held:` turn alike; `Auto` keeps the pilot's running one.
+        // orbit, a `Held:` turn, the stall and the sweep alike; `Auto` keeps
+        // the pilot's running one.
         match doctrine.sense {
             Sense::Cw => self.sense = -1,
             Sense::Ccw => self.sense = 1,
             Sense::Auto => {}
         }
-        self.observe(picture, other, now_ms);
+        self.observe(picture, doctrine, other, now_ms);
 
         // Rule 3: the target.
         let target = self.target(picture, doctrine, other);
@@ -285,6 +577,7 @@ impl Pilot {
         if picture.own.max_ahead_kph.is_some() {
             self.ceilings_asked = true;
         }
+        self.follow(picture, doctrine, other, target.as_deref(), now_ms);
         let full = picture.own.max_ahead_kph.unwrap_or(UNKNOWN_FULL_KPH);
         let motion = self.motion(picture, doctrine, target.as_deref(), full, now_ms);
         let (heading, mut speed, ask) = motion;
@@ -346,19 +639,33 @@ impl Pilot {
         self.last_speed_order = None;
     }
 
+    /// **What the pilot said** since the last call, oldest first, verbatim
+    /// (the lane hands each to the runner as an `arena` event): a hunt's
+    /// start, legs and end, a fall back and its reason, a held tank turned
+    /// further or backed off. Designators in them are ones the stream named.
+    pub fn take_notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notes)
+    }
+
     // -- internals -------------------------------------------------------------
+
+    fn note(&mut self, text: String) {
+        self.notes.push(text);
+    }
 
     /// Fold in what the picture has learned since the last decision: when power
     /// came up, where the pilot started, where The Crossroads is, whether a
-    /// hostile is held, a `Held:` notice, and the fall-back rule.
-    fn observe(&mut self, picture: &Picture, other: Side, now_ms: u64) {
+    /// hostile is held, a `Held:` notice, the stall watchdog, and the fall-back
+    /// rule.
+    fn observe(&mut self, picture: &Picture, doctrine: &Doctrine, other: Side, now_ms: u64) {
         let power_ms = *self.power_ms.get_or_insert(now_ms);
         if self.last_hostile_ms.is_none() {
             self.last_hostile_ms = Some(power_ms);
         }
-        if self.held_seen_ms < power_ms {
-            self.held_seen_ms = power_ms;
-        }
+        // Events from before this match's power came up are not this
+        // pilot's (the picture's ring outlives a match).
+        self.held_seen_ms = self.held_seen_ms.max(power_ms);
+        self.kill_seen_ms = self.kill_seen_ms.max(power_ms);
         if self.start_pos.is_none()
             && let Some(pos) = picture.own.pos_m
             && picture.own.pos_read_ms >= power_ms
@@ -375,7 +682,16 @@ impl Pilot {
         {
             self.spot_b_pos = Some((x as f64, y as f64));
         }
-        if picture.contacts.values().any(|c| c.side == Some(other)) {
+        // A kill, before anything reads the contacts: its wreck is no hostile.
+        self.take_kills(picture);
+        // Only a row young enough to be held counts (cut AK.1): a stale row
+        // still listed after a failed hunt does not keep the search away, and
+        // nor does a wreck's row, listed until it expires.
+        if picture
+            .contacts
+            .values()
+            .any(|c| self.live_hostile(c, other) && c.age_ms <= HUNT_STALE_PLOT_MS)
+        {
             self.last_hostile_ms = Some(now_ms);
         }
         if let Some(held) = picture
@@ -386,52 +702,138 @@ impl Pilot {
             .max()
         {
             self.held_seen_ms = held;
+            // The heading the tank was stopped on: every further turn is
+            // measured from it, never from a later reading.
+            self.held_from_deg = Some(picture.own.heading_deg);
             self.held_heading = Some(whole(
                 f64::from(picture.own.heading_deg) + HELD_TURN_DEG * f64::from(self.sense),
             ));
             self.held_until_ms = now_ms.saturating_add(HELD_FOR_MS);
+            // Insurance, not the fix: the speed goes again straight after the
+            // turn (no transcript shows a `SPEED` freeing a held tank).
+            self.forget_speed();
+            // A new stop is a new episode: any stall starts again from level
+            // 0, measured from this stop's heading.
+            self.stall_since_ms = None;
+            self.stall_level = 0;
+            self.stall_heading = None;
+            self.stall_clear_until_ms = 0;
         }
-        if !self.fallen_back {
-            let hull_half = picture
-                .own
-                .sections
-                .get("hull")
-                .and_then(|section| section.internals)
-                .is_some_and(|(left, max)| max > 0 && left.saturating_mul(2) <= max);
-            let facet_quarter = picture
-                .own
-                .sections
-                .values()
-                .flat_map(|section| section.facets.values())
-                .any(|(left, max)| *max > 0 && left.saturating_mul(4) <= *max);
-            if hull_half || facet_quarter {
-                self.fallen_back = true;
-                self.withdraw_until_ms = Some(now_ms.saturating_add(WITHDRAW_MS));
+        // The back-off is over: the forward speed goes again, and the stall
+        // closes at level 0.
+        if self.reverse_until_ms > 0 && now_ms >= self.reverse_until_ms {
+            self.reverse_until_ms = 0;
+            self.forget_speed();
+            self.stall_level = 0;
+            self.stall_since_ms = None;
+        }
+        self.watch_stall(picture, now_ms);
+        if !self.fallen_back
+            && let Some(why) = fall_back_due(picture)
+        {
+            self.fallen_back = true;
+            self.withdraw_until_ms = Some(now_ms.saturating_add(WITHDRAW_MS));
+            let band = widened_band(doctrine.band_m);
+            self.note(match why {
+                FallBackWhy::HullHalf => format!("Falling back to {band} m: the hull is at half."),
+                FallBackWhy::Plate { facet, gone: false } => {
+                    format!("Falling back to {band} m: the hull's {facet} plate is at a quarter.")
+                }
+                FallBackWhy::Plate { facet, gone: true } => {
+                    format!("Falling back to {band} m: the hull's {facet} plate is gone.")
+                }
+            });
+        }
+    }
+
+    /// **The stall watchdog**, judged once per new `STATUS` read. Held at
+    /// 0 kph after the held turn (and any back-off) opens a stall; still held
+    /// [`STALL_MS`] or more after it was opened or last raised raises it: levels
+    /// 1 to 3 turn to 90°, 135° and 180° from the heading the tank was stopped
+    /// on, level 4 backs off for [`HELD_REVERSE_MS`] and closes it at level 0.
+    /// A read that is not held at 0 kph closes it, keeping a turned heading
+    /// [`HELD_FOR_MS`] more to clear the ground.
+    fn watch_stall(&mut self, picture: &Picture, now_ms: u64) {
+        if picture.own.pos_read_ms <= self.stall_status_ms {
+            return;
+        }
+        self.stall_status_ms = picture.own.pos_read_ms;
+        let held = picture.own.held.is_some() && picture.own.speed_kph == 0;
+        if !held {
+            if self.stall_level >= 1 && self.stall_heading.is_some() {
+                self.stall_clear_until_ms = now_ms.saturating_add(HELD_FOR_MS);
             }
+            // Free on a read taken after the held turn (a read inside it may
+            // be a frame from before the stop — "you and the arena are a pulse
+            // apart"): the episode is over, and a later stall with no notice
+            // read is measured from its own heading, not this one's.
+            if picture.own.pos_read_ms >= self.held_until_ms {
+                self.held_from_deg = None;
+            }
+            self.stall_since_ms = None;
+            self.stall_level = 0;
+            return;
+        }
+        match self.stall_since_ms {
+            None => {
+                if now_ms >= self.held_until_ms && now_ms >= self.reverse_until_ms {
+                    self.stall_since_ms = Some(now_ms);
+                    // Held with no notice read (a re-board, say): the heading
+                    // it reads now is the one it was stopped on.
+                    self.held_from_deg.get_or_insert(picture.own.heading_deg);
+                }
+            }
+            Some(since) if now_ms >= since.saturating_add(STALL_MS) => {
+                self.stall_level = self.stall_level.saturating_add(1);
+                self.stall_since_ms = Some(now_ms);
+                self.forget_speed();
+                if self.stall_level <= 3 {
+                    let from = self.held_from_deg.unwrap_or(picture.own.heading_deg);
+                    let deg = whole(
+                        f64::from(from)
+                            + HELD_TURN_DEG
+                                * f64::from(self.stall_level + 1)
+                                * f64::from(self.sense),
+                    );
+                    self.stall_heading = Some(deg);
+                    self.forget_heading();
+                    self.note(format!("Held at 0 kph: turning to {deg:03}°."));
+                } else {
+                    // Level 4 stands while the tank backs off; the back-off's
+                    // end closes the stall (in `observe`).
+                    self.reverse_until_ms = now_ms.saturating_add(HELD_REVERSE_MS);
+                    self.stall_heading = None;
+                    self.stall_since_ms = None;
+                    self.note("Held at 0 kph: backing off.".to_owned());
+                }
+            }
+            Some(_) => {}
         }
     }
 
     /// Rule 3: the doctrine's target when it is a held hostile; else the nearest
     /// fresh hostile, keeping the lock's contact unless another is at least
-    /// 100 m nearer. Never an unidentified contact, never a friend.
+    /// 100 m nearer. Never an unidentified contact, never a friend, never a
+    /// wreck (cut AK.1: its row stays listed until it expires, and the pilot
+    /// neither orbits nor shoots it).
     fn target(&self, picture: &Picture, doctrine: &Doctrine, other: Side) -> Option<String> {
         if let Some(wanted) = &doctrine.target
             && picture
                 .contacts
                 .get(wanted)
-                .is_some_and(|c| c.side == Some(other))
+                .is_some_and(|c| self.live_hostile(c, other))
         {
             return Some(wanted.clone());
         }
         let best = picture
             .contacts
             .values()
-            .filter(|c| c.side == Some(other))
+            .filter(|c| self.live_hostile(c, other))
             .min_by_key(|c| (c.age_ms > FRESH_PLOT_MS, c.range_m.unwrap_or(u32::MAX)))?;
         if let Some(lock) = &picture.lock
             && !picture.lock_friendly
             && let Some(held) = picture.contacts.get(lock)
-            && held.side == Some(other)
+            && self.live_hostile(held, other)
         {
             let held_range = held.range_m.unwrap_or(u32::MAX);
             let best_range = best.range_m.unwrap_or(u32::MAX);
@@ -442,7 +844,266 @@ impl Pilot {
         Some(best.designator.clone())
     }
 
-    /// Rule 6: `(heading, speed, ask the bearing to B)`.
+    /// A contact of the other side that is not a wreck this match has seen
+    /// destroyed.
+    fn live_hostile(&self, contact: &Contact, other: Side) -> bool {
+        contact.side == Some(other) && !self.wrecks.contains(&contact.designator)
+    }
+
+    /// **The kills** since the last decision, `{d} destroyed.` or `Target
+    /// destroyed.` of the lock: each wreck is remembered for the match (never
+    /// targeted, trailed or hunted again), and a kill of the trail's hostile
+    /// drops the trail and ends any hunt.
+    fn take_kills(&mut self, picture: &Picture) {
+        let lock = picture.lock.clone().or_else(|| self.lock_seen.clone());
+        let kills: Vec<(u64, String)> = picture
+            .events
+            .iter()
+            .filter(|event| event.kind == EventKind::Kill && event.at_ms > self.kill_seen_ms)
+            .map(|event| (event.at_ms, event.text.clone()))
+            .collect();
+        for (at_ms, text) in kills {
+            self.kill_seen_ms = self.kill_seen_ms.max(at_ms);
+            let wreck = if text == "Target destroyed." {
+                lock.clone()
+            } else {
+                text.strip_suffix(" destroyed.").map(str::to_owned)
+            };
+            let Some(wreck) = wreck else {
+                continue;
+            };
+            if self
+                .trail
+                .as_ref()
+                .is_some_and(|trail| trail.designator == wreck)
+            {
+                self.trail = None;
+                if let Some(hunt) = self.hunt.take() {
+                    let d = hunt.trail.designator;
+                    self.note(format!("The hunt for {d} ends; searching."));
+                }
+            }
+            self.wrecks.insert(wreck);
+        }
+        if picture.lock.is_some() {
+            self.lock_seen = picture.lock.clone();
+        }
+    }
+
+    /// **The hunt's bookkeeping**, every decision: a fresh hostile target
+    /// refreshes the trail; a fresh hostile ends a hunt; a `Held:` notice ends
+    /// its leg; and with no hostile held young, a live trail and no withdrawal
+    /// flying, a hunt starts at the last plot. An unidentified contact neither
+    /// starts nor ends one, and nor does a wreck (the kills are taken in
+    /// `observe`).
+    fn follow(
+        &mut self,
+        picture: &Picture,
+        doctrine: &Doctrine,
+        other: Side,
+        target: Option<&str>,
+        now_ms: u64,
+    ) {
+        // The trail: the target's last plot while that plot is fresh.
+        if let Some(designator) = target
+            && !self.wrecks.contains(designator)
+            && let Some(contact) = picture.contacts.get(designator)
+            && contact.side == Some(other)
+            && contact.age_ms <= FRESH_PLOT_MS
+            && let Some(plot_m) = last_plot(picture, contact)
+        {
+            self.trail = Some(Trail {
+                designator: designator.to_owned(),
+                plot_m,
+                plot_ms: contact.read_ms.saturating_sub(contact.age_ms),
+                track: contact.track.clone(),
+                seen_from_m: picture.own_pos_at(contact.read_ms),
+            });
+            self.trailed.insert(designator.to_owned());
+        }
+        // A fresh hostile ends the hunt: the pilot engages it as ever.
+        if let Some(hunt) = &self.hunt {
+            let fresh = |c: &Contact| self.live_hostile(c, other) && c.age_ms <= FRESH_PLOT_MS;
+            let seen = target
+                .filter(|t| picture.contacts.get(*t).is_some_and(fresh))
+                .map(str::to_owned)
+                .or_else(|| {
+                    picture
+                        .contacts
+                        .values()
+                        .find(|c| fresh(c))
+                        .map(|c| c.designator.clone())
+                });
+            if let Some(seen) = seen {
+                let d = hunt.trail.designator.clone();
+                self.hunt = None;
+                self.note(format!("The hunt for {d} ends: {seen} is in sight."));
+            }
+        }
+        let own = picture.own_pos_at(now_ms);
+        // A `Held:` notice newer than the leg ends the leg (the held turn
+        // still happens).
+        if let Some(hunt) = &self.hunt
+            && self.held_seen_ms > hunt.leg_since_ms
+            && let Some(own) = own
+        {
+            self.next_leg(own, now_ms);
+        }
+        // The start.
+        let held_young = picture
+            .contacts
+            .values()
+            .any(|c| self.live_hostile(c, other) && c.age_ms <= HUNT_STALE_PLOT_MS);
+        let withdrawing = self.withdraw_until_ms.is_some_and(|until| now_ms < until)
+            || doctrine.stance == Stance::Withdraw;
+        if self.hunt.is_none()
+            && !held_young
+            && !withdrawing
+            && let Some(trail) = &self.trail
+            && now_ms.saturating_sub(trail.plot_ms) <= HUNT_TRAIL_MS
+            && let Some(own) = own
+        {
+            let trail = trail.clone();
+            // The estimated course, fixed now: the track's; else the way the
+            // range was opening when it was lost; else the own heading.
+            let (course_deg, speed_mps) = match &trail.track {
+                Some(track) => (track.course_deg, track.speed_mps),
+                None => match trail.seen_from_m {
+                    Some(from) if distance_m(from, trail.plot_m) > 1.0 => {
+                        (bearing_deg(from, trail.plot_m), HUNT_ASSUMED_MPS)
+                    }
+                    _ => (f64::from(picture.own.heading_deg), HUNT_ASSUMED_MPS),
+                },
+            };
+            let away = distance_m(own, clamp_arena(trail.plot_m)).round();
+            self.note(format!(
+                "Hunting {}: its last plot, {away:.0} m away.",
+                trail.designator
+            ));
+            self.hunt = Some(Hunt {
+                trail,
+                leg: HuntLeg::ToPlot,
+                since_ms: now_ms,
+                leg_since_ms: now_ms,
+                course_deg,
+                speed_mps,
+                sweep_since_ms: None,
+            });
+        }
+    }
+
+    /// The hunt's next leg: the plot → along the course → the sweep's legs, a
+    /// quarter turn by the pilot's sense each → the end (the trail dropped,
+    /// the search next).
+    fn next_leg(&mut self, own: (f64, f64), now_ms: u64) {
+        let sense = f64::from(self.sense);
+        let Some(hunt) = self.hunt.as_mut() else {
+            return;
+        };
+        let d = hunt.trail.designator.clone();
+        let next = match &hunt.leg {
+            HuntLeg::ToPlot => {
+                let course = whole(hunt.course_deg);
+                self.notes.push(format!(
+                    "Hunting {d}: along {course:03}° from its last plot."
+                ));
+                Some(HuntLeg::Along)
+            }
+            HuntLeg::Along => {
+                hunt.sweep_since_ms = Some(now_ms);
+                self.notes.push(format!("Sweeping for {d}."));
+                Some(HuntLeg::Sweep {
+                    leg: 0,
+                    origin: clamp_arena(own),
+                    heading_deg: norm(hunt.course_deg + 90.0 * sense),
+                })
+            }
+            HuntLeg::Sweep {
+                leg, heading_deg, ..
+            } => (leg.saturating_add(1) < HUNT_SWEEP_LEGS).then(|| HuntLeg::Sweep {
+                leg: leg.saturating_add(1),
+                origin: clamp_arena(own),
+                heading_deg: norm(heading_deg + 90.0 * sense),
+            }),
+        };
+        match next {
+            Some(leg) => {
+                hunt.leg = leg;
+                hunt.leg_since_ms = now_ms;
+            }
+            None => self.end_hunt(),
+        }
+    }
+
+    /// The hunt is over with nothing found: the trail goes, the search follows.
+    fn end_hunt(&mut self) {
+        if let Some(hunt) = self.hunt.take() {
+            self.trail = None;
+            let d = hunt.trail.designator;
+            self.note(format!("The hunt for {d} ends; searching."));
+        }
+    }
+
+    /// The hunt's heading now, advancing its legs as they are done; `None`
+    /// once it has ended.
+    fn hunt_heading(&mut self, own: (f64, f64), now_ms: u64) -> Option<f64> {
+        // Each pass either returns or moves the hunt one leg on (or ends it).
+        for _ in 0..=usize::from(HUNT_SWEEP_LEGS) + 2 {
+            let hunt = self.hunt.as_ref()?;
+            match hunt.leg {
+                HuntLeg::Along if now_ms.saturating_sub(hunt.trail.plot_ms) > HUNT_TRAIL_MS => {
+                    self.next_leg(own, now_ms);
+                    continue;
+                }
+                HuntLeg::Sweep { .. }
+                    if hunt
+                        .sweep_since_ms
+                        .is_some_and(|since| now_ms >= since.saturating_add(HUNT_SWEEP_MS)) =>
+                {
+                    self.end_hunt();
+                    return None;
+                }
+                _ => {}
+            }
+            let (aim, clamped) = leg_aim(hunt, now_ms);
+            let d = distance_m(own, aim);
+            let along_leg = hunt.leg == HuntLeg::Along;
+            // The course leg's aim moves; it is done only where the clamp
+            // stopped it (the edge).
+            if d <= HUNT_ARRIVE_M && (!along_leg || clamped) {
+                self.next_leg(own, now_ms);
+                continue;
+            }
+            if along_leg && !clamped {
+                let r = hunt.course_deg.to_radians();
+                let (dx, dy) = (own.0 - aim.0, own.1 - aim.1);
+                let ahead = dx * r.sin() + dy * r.cos();
+                let aside = (dx * r.cos() - dy * r.sin()).abs();
+                // Past the moving aim by more than the arrival: the estimate
+                // is behind, and the course leg is done.
+                if ahead > HUNT_ARRIVE_M && aside <= HUNT_ARRIVE_M {
+                    self.next_leg(own, now_ms);
+                    continue;
+                }
+                // Caught up with it, or level with it and at most the arrival
+                // ahead: drive on along the course rather than turn back to it
+                // — never past the edge (the course's own next
+                // `HUNT_ARRIVE_M` would cross it: that is the edge reached).
+                if d <= HUNT_ARRIVE_M || (ahead >= 0.0 && aside <= HUNT_ARRIVE_M) {
+                    if past_the_edge(along(own, hunt.course_deg, HUNT_ARRIVE_M)) {
+                        self.next_leg(own, now_ms);
+                        continue;
+                    }
+                    return Some(hunt.course_deg);
+                }
+            }
+            return Some(bearing_deg(own, aim));
+        }
+        None
+    }
+
+    /// Rule 6: `(heading, speed, ask the bearing to B)`, by the one stance
+    /// precedence of the module head.
     fn motion(
         &mut self,
         picture: &Picture,
@@ -454,43 +1115,99 @@ impl Pilot {
         let Some(own) = picture.own_pos_at(now_ms) else {
             return (None, None, false);
         };
-        // A `Held:` notice outranks everything for its three seconds.
+        // 1. A `Held:` notice outranks everything for its three seconds; then
+        // the back-off; then a stall's turn while it is open, and after it
+        // frees the tank until the ground is cleared.
         if now_ms < self.held_until_ms
             && let Some(held) = self.held_heading
         {
             return (Some(f64::from(held)), Some(full), false);
         }
-        let withdrawing = self.withdraw_until_ms.is_some_and(|until| now_ms < until);
-        let (stance, band) = if withdrawing {
-            (Stance::Withdraw, f64::from(doctrine.band_m))
-        } else if self.fallen_back {
-            (
-                Stance::Orbit,
-                f64::from(
-                    doctrine
-                        .band_m
-                        .saturating_add(FALL_BACK_WIDEN_M)
-                        .min(FALL_BACK_MAX_M),
-                ),
-            )
+        if now_ms < self.reverse_until_ms {
+            let astern = picture.own.max_astern_kph.unwrap_or(UNKNOWN_ASTERN_KPH);
+            return (None, Some(-astern), false);
+        }
+        if let Some(stall) = self.stall_heading {
+            if self.stall_level >= 1 || now_ms < self.stall_clear_until_ms {
+                return (Some(f64::from(stall)), Some(full), false);
+            }
+            self.stall_heading = None;
+        }
+        let contact = target.and_then(|t| picture.contacts.get(t));
+        let aim = contact.and_then(|c| target_pos(picture, c, now_ms));
+        let away = |aim: Option<(f64, f64)>| match aim {
+            Some(aim) => (Some(bearing_deg(own, aim) + 180.0), Some(full), false),
+            None => (None, Some(full), false),
+        };
+        // 2. The pilot's own fall-back withdrawal: until its time is up or the
+        // target is out at the widened band.
+        if let Some(until) = self.withdraw_until_ms {
+            let widened = f64::from(widened_band(doctrine.band_m));
+            let opened = aim.is_some_and(|aim| distance_m(own, aim) >= widened);
+            if now_ms >= until || opened {
+                self.withdraw_until_ms = None;
+            } else {
+                self.orbit_since_ms = None;
+                return away(aim);
+            }
+        }
+        // 3. A doctrine `withdraw`, ahead of the widened band.
+        if doctrine.stance == Stance::Withdraw {
+            self.orbit_since_ms = None;
+            return away(aim);
+        }
+        // 4. A hostile held young: the doctrine's stance.
+        if let (Some(contact), Some(aim)) = (contact, aim)
+            && contact.age_ms <= HUNT_STALE_PLOT_MS
+        {
+            return self.engage(doctrine, contact, aim, own, full, now_ms);
+        }
+        // 5. The hunt, before any stance round a stale row.
+        if self.hunt.is_some()
+            && let Some(heading) = self.hunt_heading(own, now_ms)
+        {
+            self.orbit_since_ms = None;
+            return (Some(heading), Some(full), false);
+        }
+        // 4, for an older row the pilot never held fresh (nothing to hunt).
+        if let (Some(contact), Some(aim)) = (contact, aim)
+            && !self.trailed.contains(&contact.designator)
+        {
+            return self.engage(doctrine, contact, aim, own, full, now_ms);
+        }
+        // 6. Nothing to fly at: the search, after five quiet seconds. A stale
+        // row whose hunt is spent is nothing to fly at.
+        self.orbit_since_ms = None;
+        let spent = contact.is_some_and(|c| self.trailed.contains(&c.designator));
+        let quiet_since = self.last_hostile_ms.unwrap_or(now_ms);
+        if (target.is_none() || spent) && now_ms >= quiet_since.saturating_add(SEARCH_AFTER_MS) {
+            return self.search(picture, own, full);
+        }
+        (None, None, false)
+    }
+
+    /// The doctrine's stance round a held hostile: after the fall back at the
+    /// widened band, and `close` flown as `orbit` there.
+    fn engage(
+        &mut self,
+        doctrine: &Doctrine,
+        contact: &Contact,
+        aim: (f64, f64),
+        own: (f64, f64),
+        full: i32,
+        now_ms: u64,
+    ) -> (Option<f64>, Option<i32>, bool) {
+        // A hostile is held: the next search starts over.
+        self.search = SearchLeg::ToB;
+        let (stance, band) = if self.fallen_back {
+            let stance = match doctrine.stance {
+                Stance::Close => Stance::Orbit,
+                stance => stance,
+            };
+            (stance, f64::from(widened_band(doctrine.band_m)))
         } else {
             (doctrine.stance, f64::from(doctrine.band_m))
         };
-        let contact = target.and_then(|t| picture.contacts.get(t));
-        let aim = contact.and_then(|c| target_pos(picture, c, now_ms));
-        let (Some(contact), Some(aim)) = (contact, aim) else {
-            self.orbit_since_ms = None;
-            if withdrawing {
-                return (None, Some(full), false);
-            }
-            let quiet_since = self.last_hostile_ms.unwrap_or(now_ms);
-            if target.is_none() && now_ms >= quiet_since.saturating_add(SEARCH_AFTER_MS) {
-                return self.search(picture, own, full);
-            }
-            return (None, None, false);
-        };
-        // A hostile is held: the next search starts over.
-        self.search = SearchLeg::ToB;
         let d = distance_m(own, aim);
         let beta = bearing_deg(own, aim);
         match stance {
@@ -617,18 +1334,24 @@ impl Pilot {
     }
 }
 
+/// A contact's last plot: its last fix, else its row's range and bearing from
+/// where the pilot was when the row was read.
+fn last_plot(picture: &Picture, contact: &Contact) -> Option<(f64, f64)> {
+    match contact.fixes.back() {
+        Some(fix) => Some(fix.pos_m),
+        None => Some(along(
+            picture.own_pos_at(contact.read_ms)?,
+            f64::from(contact.bearing_deg),
+            f64::from(contact.range_m?),
+        )),
+    }
+}
+
 /// Where the target is now, as best the picture says: its last plot (a fix, or
 /// the row's range and bearing from where the pilot was), advanced along a
 /// published track by the plot's age, at most 3 s.
 pub fn target_pos(picture: &Picture, contact: &Contact, now_ms: u64) -> Option<(f64, f64)> {
-    let plot = match contact.fixes.back() {
-        Some(fix) => fix.pos_m,
-        None => along(
-            picture.own_pos_at(contact.read_ms)?,
-            f64::from(contact.bearing_deg),
-            f64::from(contact.range_m?),
-        ),
-    };
+    let plot = last_plot(picture, contact)?;
     Some(match &contact.track {
         Some(track) => {
             let age_ms = contact
@@ -708,7 +1431,18 @@ mod tests {
 
     /// A contact at `bearing`/`range` from the origin, read now, fresh.
     fn contact(designator: &str, side: Option<Side>, bearing: u32, range: u32) -> Contact {
-        let pos = along((0.0, 0.0), f64::from(bearing), f64::from(range));
+        contact_from((0.0, 0.0), designator, side, bearing, range)
+    }
+
+    /// A contact at `bearing`/`range` from `from`, read now, fresh.
+    fn contact_from(
+        from: (f64, f64),
+        designator: &str,
+        side: Option<Side>,
+        bearing: u32,
+        range: u32,
+    ) -> Contact {
+        let pos = along(from, f64::from(bearing), f64::from(range));
         Contact {
             designator: designator.into(),
             was: None,
@@ -863,10 +1597,16 @@ mod tests {
         assert_eq!(senses, [1, 1, -1, -1, 1]);
     }
 
-    #[test]
-    fn falling_back_on_half_the_hull_withdraws_then_widens_the_band() {
-        let (mut picture, mut pilot) = flying();
-        hold(&mut picture, contact("BA", Some(Side::Blue), 0, 450));
+    /// The orbit's heading at `d` from a target at `beta`, circling by `s` at
+    /// `band`, computed from the named constants.
+    fn orbit_heading(beta: f64, d: f64, band: u32, s: f64) -> u32 {
+        let offset = ((d - f64::from(band)) / ORBIT_CORRECTION_SPAN_M).clamp(-1.0, 1.0)
+            * ORBIT_CORRECTION_DEG;
+        whole(beta + s * (90.0 - offset))
+    }
+
+    /// Half the hull's internals gone.
+    fn half_hull(picture: &mut Picture) {
         picture.own.sections.insert(
             "hull".into(),
             Section {
@@ -875,15 +1615,31 @@ mod tests {
                 facets: Default::default(),
             },
         );
+    }
+
+    #[test]
+    fn falling_back_on_half_the_hull_withdraws_then_widens_the_band() {
+        // A band of 300 widens toward the sight's ceiling.
+        let band = 300;
+        let widened = widened_band(band);
+        assert_eq!(
+            widened,
+            band.saturating_add(FALL_BACK_WIDEN_M).min(FALL_BACK_MAX_M)
+        );
+        let (mut picture, mut pilot) = flying();
+        // Inside the band, and so inside the widened band.
+        hold(&mut picture, contact("BA", Some(Side::Blue), 0, 250));
+        half_hull(&mut picture);
         let doctrine = Doctrine {
             sense: Sense::Ccw,
+            band_m: band,
             ..doctrine()
         };
         let orders = pilot.decide(&picture, &doctrine, NOW);
         assert!(pilot.fallen_back);
         assert_eq!(heading(&orders), 180, "withdrawing: straight away");
-        // Ten seconds on it orbits at min(450 + 150, 600) = 600: at 450 that is
-        // inside the band, so the heading opens past the tangent.
+        // `WITHDRAW_MS` on it orbits at the widened band: at 250 m that is
+        // inside it, so the heading opens past the tangent.
         let mut later = picture.clone();
         let at = NOW + WITHDRAW_MS;
         later.own.pos_read_ms = at;
@@ -891,41 +1647,49 @@ mod tests {
             c.read_ms = at;
         }
         let orders = pilot.decide(&later, &doctrine, at);
-        assert_eq!(heading(&orders), 150, "the band is 600: 150 m inside it");
-        // A band of 500 falls back to the 600 m ceiling, not 650: with the
-        // target at 600 m that is the tangent (090), where a 650 m band would
-        // still close 20° (110).
-        let mut at_600 = later.clone();
-        hold(&mut at_600, contact("BA", Some(Side::Blue), 0, 600));
-        if let Some(c) = at_600.contacts.get_mut("BA") {
+        assert_eq!(pilot.withdraw_until_ms, None);
+        assert_eq!(heading(&orders), orbit_heading(0.0, 250.0, widened, 1.0));
+        // A band of 450 stays 450, the sight's ceiling: with the target at
+        // 450 m that is the tangent (090), not a wider band's closing turn.
+        assert_eq!(widened_band(450), 450);
+        let mut at_450 = later.clone();
+        hold(&mut at_450, contact("BA", Some(Side::Blue), 0, 450));
+        if let Some(c) = at_450.contacts.get_mut("BA") {
             c.read_ms = at;
         }
         let wide = Doctrine {
-            band_m: 500,
+            band_m: 450,
             ..doctrine.clone()
         };
-        let orders = pilot.decide(&at_600, &wide, at);
-        assert_eq!(heading(&orders), 90, "the band is 600, not 650");
+        let orders = pilot.decide(&at_450, &wide, at);
+        assert_eq!(heading(&orders), 90, "the band stays 450");
     }
 
     #[test]
     fn falling_back_on_a_quarter_facet_from_a_hit_line() {
+        let quarter = 400 / FALL_BACK_FACET_DIVISOR;
         let (mut picture, mut pilot) = flying();
-        hold(&mut picture, contact("BA", Some(Side::Blue), 0, 450));
+        // Inside the widened band, so the withdrawal runs its time.
+        hold(&mut picture, contact("BA", Some(Side::Blue), 0, 300));
         picture.apply(
             NOW,
-            &classify("Hit on the hull's front facet: 100 of 400 armour left."),
+            &classify(&format!(
+                "Hit on the hull's front facet: {quarter} of 400 armour left."
+            )),
         );
         let orders = decide(&picture, &mut pilot);
         assert!(pilot.fallen_back);
         assert_eq!(pilot.withdraw_until_ms, Some(NOW + WITHDRAW_MS));
         assert_eq!(heading(&orders), 180);
-        // 101 of 400 is not a quarter.
+        // One more is not a quarter.
         let (mut picture, mut pilot) = flying();
-        hold(&mut picture, contact("BA", Some(Side::Blue), 0, 450));
+        hold(&mut picture, contact("BA", Some(Side::Blue), 0, 300));
         picture.apply(
             NOW,
-            &classify("Hit on the hull's front facet: 101 of 400 armour left."),
+            &classify(&format!(
+                "Hit on the hull's front facet: {} of 400 armour left.",
+                quarter + 1
+            )),
         );
         decide(&picture, &mut pilot);
         assert!(!pilot.fallen_back);
@@ -1088,13 +1852,17 @@ mod tests {
         assert_eq!(decide(&picture, &mut pilot).fire, ["machine_gun"]);
         picture.weapons[1].fired_ms = Some(NOW - 2_000);
         assert_eq!(decide(&picture, &mut pilot).fire, ["cannon", "machine_gun"]);
-        // A cycle not yet elapsed; then elapsed.
+        // A cycle not yet elapsed; then elapsed — on the one clock, which the
+        // ack sets from the cycle. A shot and a cycle with no clock set are
+        // no clock: the row is read, and it says not ready.
         let (mut picture, mut pilot) = armed();
         picture.weapons[1].ready = false;
         picture.weapons[1].fired_ms = Some(NOW - 4_000);
-        picture.weapons[1].cycle_ms = Some(6_000);
-        assert_eq!(decide(&picture, &mut pilot).fire, ["machine_gun"]);
         picture.weapons[1].cycle_ms = Some(4_000);
+        assert_eq!(decide(&picture, &mut pilot).fire, ["machine_gun"]);
+        picture.weapons[1].next_ready_ms = Some(NOW - 4_000 + 6_000);
+        assert_eq!(decide(&picture, &mut pilot).fire, ["machine_gun"]);
+        picture.weapons[1].next_ready_ms = Some(NOW - 4_000 + 4_000);
         assert_eq!(decide(&picture, &mut pilot).fire, ["cannon", "machine_gun"]);
         // `next_ready_ms` from a cycling row.
         let (mut picture, mut pilot) = armed();
@@ -1294,5 +2062,940 @@ mod tests {
             &classify("That unit makes 54 kph ahead and 27 astern; SPEED -27 to 54."),
         );
         assert_eq!(decide(&picture, &mut pilot).speed, Some(54));
+    }
+
+    // -- cut AK.1: the hunt ------------------------------------------------------
+
+    /// Mid-field, where no hunt aim of these tests meets the edge.
+    const MID: (f64, f64) = (1_280.0, 1_000.0);
+
+    /// `flying()`, the tank at `pos`.
+    fn flying_at(pos: (f64, f64)) -> (Picture, Pilot) {
+        let (mut picture, pilot) = flying();
+        picture.own.pos_m = Some(pos);
+        (picture, pilot)
+    }
+
+    /// The own tank read at `pos` at `at`.
+    fn read_at(picture: &mut Picture, pos: (f64, f64), at: u64) {
+        picture.own.pos_m = Some(pos);
+        picture.own.pos_read_ms = at;
+    }
+
+    /// A fresh `BA` at `bearing`/`range` from `from`, decided on at `NOW`, then
+    /// gone from the scope a second later: the pilot's orders then.
+    fn lost(
+        from: (f64, f64),
+        bearing: u32,
+        range: u32,
+        track: Option<Track>,
+    ) -> (Picture, Pilot, Orders) {
+        let (mut picture, mut pilot) = flying_at(from);
+        let mut ba = contact_from(from, "BA", Some(Side::Blue), bearing, range);
+        ba.track = track;
+        hold(&mut picture, ba);
+        decide(&picture, &mut pilot);
+        picture.contacts.clear();
+        let orders = pilot.decide(&picture, &doctrine(), NOW + 1_000);
+        (picture, pilot, orders)
+    }
+
+    fn hunt_of(pilot: &Pilot) -> Hunt {
+        pilot.hunt.clone().expect("hunting")
+    }
+
+    fn held_event(picture: &mut Picture, at_ms: u64) {
+        picture.events.push_back(Event {
+            at_ms,
+            kind: EventKind::Held,
+            text: "Held: the ground ahead will not take the tank.".into(),
+        });
+    }
+
+    #[test]
+    fn a_lost_hostile_is_hunted_to_its_last_plot() {
+        let plot = along(MID, 0.0, 450.0);
+        for track in [
+            None,
+            Some(Track {
+                course_deg: 90.0,
+                speed_mps: 8.0,
+            }),
+            // Coursing back at the pilot: the first leg is still the plot.
+            Some(Track {
+                course_deg: 180.0,
+                speed_mps: 8.0,
+            }),
+        ] {
+            let (_, mut pilot, orders) = lost(MID, 0, 450, track.clone());
+            let hunt = hunt_of(&pilot);
+            assert_eq!(hunt.leg, HuntLeg::ToPlot, "{track:?}");
+            assert_eq!(hunt.trail.designator, "BA");
+            assert!(distance_m(hunt.trail.plot_m, plot) < 1e-6);
+            assert_eq!(hunt.trail.track, track);
+            assert_eq!(heading(&orders), whole(bearing_deg(MID, plot)));
+            assert_eq!(orders.speed, Some(54), "full ahead");
+            assert_eq!(
+                pilot.take_notes(),
+                ["Hunting BA: its last plot, 450 m away."]
+            );
+        }
+    }
+
+    #[test]
+    fn a_tracked_hostile_is_hunted_along_its_course() {
+        let track = Track {
+            course_deg: 90.0,
+            speed_mps: 8.0,
+        };
+        // West of mid-field, so the capped aim stays inside the ground.
+        let from = (300.0, 1_000.0);
+        let (mut picture, mut pilot, _) = lost(from, 0, 450, Some(track.clone()));
+        pilot.take_notes();
+        let hunt = hunt_of(&pilot);
+        let plot = hunt.trail.plot_m;
+        assert_eq!((hunt.course_deg, hunt.speed_mps), (90.0, 8.0));
+        // At the plot, ten seconds after it was taken: 80 m on along 090.
+        let t = hunt.trail.plot_ms + 10_000;
+        read_at(&mut picture, plot, t);
+        let orders = pilot.decide(&picture, &doctrine(), t);
+        let hunt = hunt_of(&pilot);
+        assert_eq!(hunt.leg, HuntLeg::Along);
+        let (aim, clamped) = leg_aim(&hunt, t);
+        assert!(!clamped);
+        assert!(distance_m(aim, (plot.0 + 80.0, plot.1)) < 1e-6, "{aim:?}");
+        assert_eq!(heading(&orders), 90);
+        assert_eq!(
+            pilot.take_notes(),
+            ["Hunting BA: along 090° from its last plot."]
+        );
+        // Far enough on, the aim stops `HUNT_ALONG_MAX_M` past the plot.
+        let far =
+            hunt.trail.plot_ms + (HUNT_ALONG_MAX_M / track.speed_mps * 1_000.0) as u64 + 5_000;
+        let (aim, clamped) = leg_aim(&hunt, far);
+        assert!(!clamped);
+        assert!(
+            distance_m(aim, (plot.0 + HUNT_ALONG_MAX_M, plot.1)) < 1e-6,
+            "{aim:?}"
+        );
+    }
+
+    #[test]
+    fn the_hunt_never_aims_past_the_arena_edge() {
+        let edge = ARENA_SIDE_M - EDGE_MARGIN_M;
+        let track = Track {
+            course_deg: 90.0,
+            speed_mps: 8.0,
+        };
+        // A plot 200 m east of a tank at 2 300 m east: at the edge's margin,
+        // coursing east.
+        let (mut picture, mut pilot, _) = lost((2_300.0, 1_000.0), 90, 200, Some(track));
+        let hunt = hunt_of(&pilot);
+        let plot = hunt.trail.plot_m;
+        let t = hunt.trail.plot_ms + 10_000;
+        let course_leg = Hunt {
+            leg: HuntLeg::Along,
+            ..hunt.clone()
+        };
+        let (aim, clamped) = leg_aim(&course_leg, t);
+        assert!(clamped, "the course runs past the edge");
+        assert!(aim.0 <= edge, "{aim:?}");
+        // Arriving there ends the course leg: the sweep, inside the ground.
+        read_at(&mut picture, plot, t);
+        pilot.decide(&picture, &doctrine(), t);
+        let hunt = hunt_of(&pilot);
+        assert!(
+            matches!(hunt.leg, HuntLeg::Sweep { leg: 0, .. }),
+            "{hunt:?}"
+        );
+        let (aim, _) = leg_aim(&hunt, t);
+        assert!((EDGE_MARGIN_M..=edge).contains(&aim.0) && (EDGE_MARGIN_M..=edge).contains(&aim.1));
+        // A plot outside the square: the leg to it aims inside.
+        let (_, pilot, orders) = lost((2_000.0, 1_000.0), 90, 900, None);
+        let hunt = hunt_of(&pilot);
+        assert!(hunt.trail.plot_m.0 > ARENA_SIDE_M);
+        let (aim, clamped) = leg_aim(&hunt, NOW + 1_000);
+        assert!(clamped);
+        assert!(aim.0 <= edge && aim.0 >= EDGE_MARGIN_M, "{aim:?}");
+        assert_eq!(heading(&orders), 90);
+    }
+
+    /// The course leg, driven on along the course once level with its moving
+    /// aim, never runs the tank past the edge (its aim still short of the
+    /// clamp), nor on far past the aim: either ends the leg in the sweep.
+    #[test]
+    fn the_course_leg_ends_at_the_edge_or_past_its_aim() {
+        let edge = ARENA_SIDE_M - EDGE_MARGIN_M;
+        // A plot 250 m short of the edge's margin, coursing east at the speed
+        // that puts the aim 50 m behind a tank 50 m short of it at half the
+        // trail's life.
+        let (plot, own_x) = (edge - 250.0, edge - 50.0);
+        let half = HUNT_TRAIL_MS / 2;
+        let speed = (own_x - 50.0 - plot) / (half as f64 / 1_000.0);
+        let course = |speed_mps| Track {
+            course_deg: 90.0,
+            speed_mps,
+        };
+        let on_the_course = |from_x: f64, speed_mps: f64| {
+            let (mut picture, mut pilot, _) =
+                lost((from_x - 200.0, 1_000.0), 90, 200, Some(course(speed_mps)));
+            let hunt = hunt_of(&pilot);
+            let t = NOW + 2_000;
+            read_at(&mut picture, hunt.trail.plot_m, t);
+            pilot.decide(&picture, &doctrine(), t);
+            assert_eq!(hunt_of(&pilot).leg, HuntLeg::Along);
+            pilot.take_notes();
+            (picture, pilot, hunt.trail.plot_ms)
+        };
+        let (mut picture, mut pilot, plot_ms) = on_the_course(plot, speed);
+        let t = plot_ms + half;
+        let (aim, clamped) = leg_aim(&hunt_of(&pilot), t);
+        assert!(!clamped && (aim.0 - (own_x - 50.0)).abs() < 1e-6, "{aim:?}");
+        // Level with the aim, 50 m ahead of it: the course's next 100 m
+        // crosses the edge, so the leg is done there.
+        read_at(&mut picture, (own_x, 1_000.0), t);
+        let orders = pilot.decide(&picture, &doctrine(), t);
+        let hunt = hunt_of(&pilot);
+        let HuntLeg::Sweep {
+            leg: 0,
+            heading_deg,
+            origin,
+        } = hunt.leg
+        else {
+            panic!("the sweep at the edge: {hunt:?}");
+        };
+        assert_ne!(heading(&orders), 90, "not on toward the edge");
+        assert_eq!(heading(&orders), whole(heading_deg));
+        assert!(origin.0 <= edge);
+        assert_eq!(pilot.take_notes(), ["Sweeping for BA."]);
+        // Mid-field: level with the aim and at most `HUNT_ARRIVE_M` ahead, it
+        // drives on along the course; further ahead, the estimate is behind
+        // it and the leg is done.
+        let track = course(8.0);
+        let (mut picture, mut pilot, plot_ms) = on_the_course(MID.0, track.speed_mps);
+        let t = plot_ms + 10_000;
+        let (aim, clamped) = leg_aim(&hunt_of(&pilot), t);
+        assert!(!clamped);
+        read_at(&mut picture, (aim.0 + HUNT_ARRIVE_M - 10.0, aim.1), t);
+        let orders = pilot.decide(&picture, &doctrine(), t);
+        assert_eq!(hunt_of(&pilot).leg, HuntLeg::Along);
+        assert_eq!(heading(&orders), 90, "on along the course");
+        let t = t + 1_000;
+        let (aim, _) = leg_aim(&hunt_of(&pilot), t);
+        read_at(&mut picture, (aim.0 + HUNT_ARRIVE_M + 50.0, aim.1), t);
+        pilot.decide(&picture, &doctrine(), t);
+        assert!(
+            matches!(hunt_of(&pilot).leg, HuntLeg::Sweep { leg: 0, .. }),
+            "past the aim: the sweep"
+        );
+    }
+
+    #[test]
+    fn a_held_line_ends_a_hunt_leg() {
+        let (mut picture, mut pilot, _) = lost(MID, 0, 450, None);
+        let t = NOW + 2_000;
+        held_event(&mut picture, t - 10);
+        let orders = pilot.decide(&picture, &doctrine(), t);
+        assert_eq!(hunt_of(&pilot).leg, HuntLeg::Along);
+        assert_eq!(
+            orders.heading, pilot.held_heading,
+            "the held turn still happens"
+        );
+        let t = t + 1_000;
+        held_event(&mut picture, t - 10);
+        pilot.decide(&picture, &doctrine(), t);
+        assert!(matches!(hunt_of(&pilot).leg, HuntLeg::Sweep { leg: 0, .. }));
+        assert!(pilot.take_notes().contains(&"Sweeping for BA.".to_owned()));
+    }
+
+    /// Drive a hunt on `track` from mid-field to its sweep; the time then.
+    fn to_the_sweep(picture: &mut Picture, pilot: &mut Pilot) -> u64 {
+        let hunt = hunt_of(pilot);
+        let plot = hunt.trail.plot_m;
+        read_at(picture, plot, NOW + 5_000);
+        pilot.decide(picture, &doctrine(), NOW + 5_000);
+        assert_eq!(hunt_of(pilot).leg, HuntLeg::Along);
+        let t = hunt.trail.plot_ms + HUNT_TRAIL_MS + 1;
+        read_at(picture, plot, t);
+        pilot.decide(picture, &doctrine(), t);
+        assert!(matches!(hunt_of(pilot).leg, HuntLeg::Sweep { leg: 0, .. }));
+        t
+    }
+
+    #[test]
+    fn the_hunt_sweeps_then_hands_over_to_the_search() {
+        let track = Track {
+            course_deg: 90.0,
+            speed_mps: 8.0,
+        };
+        let (mut picture, mut pilot, _) = lost(MID, 0, 450, Some(track.clone()));
+        let mut now = to_the_sweep(&mut picture, &mut pilot);
+        pilot.take_notes();
+        // Each leg a quarter turn on by the pilot's running sense, from the
+        // course.
+        let sense = f64::from(pilot.sense);
+        for k in 0..HUNT_SWEEP_LEGS {
+            let orders = pilot.decide(&picture, &doctrine(), now);
+            let hunt = hunt_of(&pilot);
+            let HuntLeg::Sweep {
+                leg, heading_deg, ..
+            } = hunt.leg
+            else {
+                panic!("sweeping: {hunt:?}");
+            };
+            assert_eq!(leg, k);
+            let expected = whole(track.course_deg + 90.0 * sense * f64::from(k + 1));
+            assert_eq!(whole(heading_deg), expected);
+            assert_eq!(heading(&orders), expected, "leg {k}");
+            let (aim, _) = leg_aim(&hunt, now);
+            now += 1_000;
+            read_at(&mut picture, aim, now);
+        }
+        let orders = pilot.decide(&picture, &doctrine(), now);
+        assert!(pilot.hunt.is_none() && pilot.trail.is_none());
+        assert_eq!(pilot.take_notes(), ["The hunt for BA ends; searching."]);
+        assert!(orders.ask_spot_b, "the search asks for B");
+        // Separately: the sweep ends `HUNT_SWEEP_MS` after it began.
+        let (mut picture, mut pilot, _) = lost(MID, 0, 450, Some(track));
+        let began = to_the_sweep(&mut picture, &mut pilot);
+        pilot.decide(&picture, &doctrine(), began + HUNT_SWEEP_MS - 1);
+        assert!(pilot.hunt.is_some());
+        let orders = pilot.decide(&picture, &doctrine(), began + HUNT_SWEEP_MS);
+        assert!(pilot.hunt.is_none());
+        assert!(
+            pilot
+                .take_notes()
+                .contains(&"The hunt for BA ends; searching.".to_owned())
+        );
+        assert!(orders.ask_spot_b);
+    }
+
+    #[test]
+    fn a_fresh_hostile_ends_the_hunt() {
+        let (mut picture, mut pilot, _) = lost(MID, 0, 450, None);
+        pilot.take_notes();
+        let t = NOW + 2_000;
+        let mut bb = contact_from(MID, "BB", Some(Side::Blue), 90, 450);
+        bb.read_ms = t;
+        hold(&mut picture, bb);
+        let doctrine = Doctrine {
+            sense: Sense::Ccw,
+            ..doctrine()
+        };
+        let orders = pilot.decide(&picture, &doctrine, t);
+        assert!(pilot.hunt.is_none());
+        assert_eq!(
+            pilot.take_notes(),
+            ["The hunt for BA ends: BB is in sight."]
+        );
+        assert_eq!(heading(&orders), 180, "the tangent round BB, at 090");
+    }
+
+    /// A stale `BA` row, the plot `HUNT_STALE_PLOT_MS` and more old, read at `t`.
+    fn stale_ba(picture: &mut Picture, t: u64) {
+        let mut stale = contact_from(MID, "BA", Some(Side::Blue), 0, 450);
+        stale.age_ms = HUNT_STALE_PLOT_MS + 1;
+        stale.read_ms = t;
+        hold(picture, stale);
+    }
+
+    #[test]
+    fn a_stale_hostile_is_hunted_not_orbited() {
+        let (mut picture, mut pilot) = flying_at(MID);
+        hold(
+            &mut picture,
+            contact_from(MID, "BA", Some(Side::Blue), 0, 450),
+        );
+        decide(&picture, &mut pilot);
+        let t = NOW + HUNT_STALE_PLOT_MS + 2_000;
+        stale_ba(&mut picture, t);
+        let orders = pilot.decide(&picture, &doctrine(), t);
+        assert_eq!(hunt_of(&pilot).leg, HuntLeg::ToPlot);
+        assert_eq!(
+            heading(&orders),
+            0,
+            "the bearing to its plot, not a tangent"
+        );
+        // A row that is already that old at its first sight has no trail and
+        // is nothing to hunt: it is flown round like a young one.
+        let doctrine = Doctrine {
+            sense: Sense::Ccw,
+            ..doctrine()
+        };
+        let (mut picture, mut pilot) = flying_at(MID);
+        stale_ba(&mut picture, NOW);
+        let orders = pilot.decide(&picture, &doctrine, NOW);
+        assert!(pilot.trail.is_none() && pilot.hunt.is_none());
+        assert_eq!(
+            heading(&orders),
+            orbit_heading(0.0, 450.0, doctrine.band_m, 1.0),
+            "the orbit's tangent"
+        );
+        assert!(!orders.ask_spot_b);
+    }
+
+    #[test]
+    fn a_stale_row_does_not_block_the_search_after_a_hunt() {
+        let (mut picture, mut pilot) = flying_at(MID);
+        hold(
+            &mut picture,
+            contact_from(MID, "BA", Some(Side::Blue), 0, 450),
+        );
+        decide(&picture, &mut pilot);
+        let plot = pilot.trail.clone().expect("a trail").plot_m;
+        // Hunted to the plot, along, into the sweep and out of it, the stale
+        // row listed all the while.
+        let mut t = NOW + HUNT_STALE_PLOT_MS + 2_000;
+        for (pos, at) in [(MID, t), (plot, t + 1_000), (plot, NOW + HUNT_TRAIL_MS + 1)] {
+            t = at;
+            stale_ba(&mut picture, t);
+            read_at(&mut picture, pos, t);
+            pilot.decide(&picture, &doctrine(), t);
+        }
+        assert!(matches!(hunt_of(&pilot).leg, HuntLeg::Sweep { .. }));
+        t += HUNT_SWEEP_MS;
+        stale_ba(&mut picture, t);
+        let orders = pilot.decide(&picture, &doctrine(), t);
+        assert!(pilot.hunt.is_none());
+        assert_eq!(
+            pilot.last_hostile_ms,
+            Some(NOW),
+            "the stale row does not count as held"
+        );
+        assert!(t >= NOW + SEARCH_AFTER_MS);
+        assert!(orders.ask_spot_b, "searching, not orbiting the stale plot");
+        assert_eq!(pilot.orbit_since_ms, None);
+    }
+
+    #[test]
+    fn a_kill_drops_the_trail() {
+        let (mut picture, mut pilot) = flying_at(MID);
+        hold(
+            &mut picture,
+            contact_from(MID, "BA", Some(Side::Blue), 0, 450),
+        );
+        decide(&picture, &mut pilot);
+        assert!(pilot.trail.is_some());
+        picture.events.push_back(Event {
+            at_ms: NOW + 100,
+            kind: EventKind::Kill,
+            text: "BA destroyed.".into(),
+        });
+        // The wreck is still listed, fresh: it is not trailed again.
+        pilot.decide(&picture, &doctrine(), NOW + 200);
+        assert!(pilot.trail.is_none());
+        assert!(pilot.wrecks.contains("BA"));
+        picture.contacts.clear();
+        picture.events.push_back(Event {
+            at_ms: NOW + 900,
+            kind: EventKind::Lost,
+            text: "Contact BA lost.".into(),
+        });
+        pilot.decide(&picture, &doctrine(), NOW + 1_000);
+        assert!(pilot.hunt.is_none());
+        assert!(pilot.take_notes().is_empty(), "no hunt started");
+        // An unnamed kill of the lock.
+        let (mut picture, mut pilot) = flying_at(MID);
+        hold(
+            &mut picture,
+            contact_from(MID, "BA", Some(Side::Blue), 0, 450),
+        );
+        picture.lock = Some("BA".into());
+        decide(&picture, &mut pilot);
+        picture.lock = None;
+        picture.events.push_back(Event {
+            at_ms: NOW + 100,
+            kind: EventKind::Kill,
+            text: "Target destroyed.".into(),
+        });
+        picture.contacts.clear();
+        pilot.decide(&picture, &doctrine(), NOW + 1_000);
+        assert!(pilot.trail.is_none() && pilot.hunt.is_none());
+    }
+
+    /// A wreck's row, still listed fresh, is no hostile: it neither holds off
+    /// nor ends the hunt for another, is never targeted, locked or shot at,
+    /// and does not keep the search away.
+    #[test]
+    fn a_wreck_neither_holds_nor_ends_a_hunt() {
+        let (mut picture, mut pilot) = flying_at(MID);
+        hold(
+            &mut picture,
+            contact_from(MID, "BB", Some(Side::Blue), 0, 300),
+        );
+        hold(
+            &mut picture,
+            contact_from(MID, "BA", Some(Side::Blue), 90, 450),
+        );
+        decide(&picture, &mut pilot);
+        assert_eq!(
+            pilot.trail.as_ref().map(|t| t.designator.as_str()),
+            Some("BB")
+        );
+        // BA is destroyed (its row stays, fresh), and BB drops out of sight.
+        picture.lock = Some("BA".into());
+        picture.events.push_back(Event {
+            at_ms: NOW + 100,
+            kind: EventKind::Kill,
+            text: "BA destroyed.".into(),
+        });
+        picture.contacts.remove("BB");
+        let wreck = |picture: &mut Picture, t: u64| {
+            if let Some(ba) = picture.contacts.get_mut("BA") {
+                ba.read_ms = t;
+            }
+        };
+        let t = NOW + 1_000;
+        wreck(&mut picture, t);
+        let orders = pilot.decide(&picture, &doctrine(), t);
+        assert_eq!(hunt_of(&pilot).trail.designator, "BB", "the hunt starts");
+        assert_eq!(
+            pilot.take_notes(),
+            [format!(
+                "Hunting BB: its last plot, {:.0} m away.",
+                distance_m(MID, along(MID, 0.0, 300.0))
+            )]
+        );
+        assert!(
+            orders.fire.is_empty() && orders.lock.is_none(),
+            "{orders:?}"
+        );
+        assert_eq!(heading(&orders), 0, "to BB's plot, not round the wreck");
+        // Still listed, still fresh: the hunt goes on, nothing is said.
+        let t = t + 1_000;
+        wreck(&mut picture, t);
+        pilot.decide(&picture, &doctrine(), t);
+        assert!(pilot.hunt.is_some());
+        assert!(pilot.take_notes().is_empty());
+        assert_eq!(pilot.last_hostile_ms, Some(NOW), "the wreck is not held");
+    }
+
+    #[test]
+    fn an_unidentified_contact_neither_starts_nor_ends_a_hunt() {
+        // An unknown alone is never trailed, so it is never hunted.
+        let (mut picture, mut pilot) = flying_at(MID);
+        hold(&mut picture, contact_from(MID, "X1", None, 0, 450));
+        decide(&picture, &mut pilot);
+        assert!(pilot.trail.is_none());
+        picture.contacts.clear();
+        pilot.decide(&picture, &doctrine(), NOW + 1_000);
+        assert!(pilot.hunt.is_none());
+        // A hunt starts with a fresh unknown held, and one does not end it.
+        let (mut picture, mut pilot) = flying_at(MID);
+        hold(
+            &mut picture,
+            contact_from(MID, "BA", Some(Side::Blue), 0, 450),
+        );
+        decide(&picture, &mut pilot);
+        picture.contacts.clear();
+        for t in [NOW + 1_000, NOW + 2_000] {
+            let mut x2 = contact_from(MID, "X2", None, 90, 300);
+            x2.read_ms = t;
+            hold(&mut picture, x2);
+            pilot.decide(&picture, &doctrine(), t);
+            assert_eq!(hunt_of(&pilot).trail.designator, "BA");
+        }
+    }
+
+    /// **The bot-side observer rule for the new state**: fed through
+    /// [`Picture::apply`], the trail and the hunt name only a designator a
+    /// contact row or a contact notice named.
+    #[test]
+    fn the_trail_names_only_a_designator_the_stream_named() {
+        let (mut picture, mut pilot) = flying();
+        let lines = [
+            (NOW, "Callsign RA."),
+            (NOW, "Red Tank 1: power online, 0 kph, heading 000°"),
+            (NOW, "  at 1280 m east, 1000 m north; scope holds a hostile"),
+            (NOW + 10, "New contact X1: bearing 000°, far."),
+            (NOW + 20, "Contact X1 identified: BA, blue."),
+            (
+                NOW + 30,
+                "BA  blue  bearing 000° (rel 000°)  far  450 m  0 s",
+            ),
+            (NOW + 40, "No such contact."),
+        ];
+        let mut named = BTreeSet::new();
+        let mut read = |picture: &mut Picture, lines: &[(u64, &str)]| {
+            for (at, text) in lines {
+                let line = classify(text);
+                match &line {
+                    crate::arena::Line::ContactRow(row) => {
+                        named.insert(row.designator.clone());
+                    }
+                    crate::arena::Line::NewContact { designator, .. }
+                    | crate::arena::Line::ContactLost { designator } => {
+                        named.insert(designator.clone());
+                    }
+                    crate::arena::Line::Identified {
+                        was, designator, ..
+                    } => {
+                        named.insert(was.clone());
+                        named.insert(designator.clone());
+                    }
+                    _ => {}
+                }
+                picture.apply(*at, &line);
+            }
+        };
+        read(&mut picture, &lines);
+        pilot.decide(&picture, &doctrine(), NOW + 50);
+        let trail = pilot.trail.clone().expect("a trail");
+        read(&mut picture, &[(NOW + 1_000, "Contact BA lost.")]);
+        pilot.decide(&picture, &doctrine(), NOW + 1_010);
+        let hunt = hunt_of(&pilot);
+        assert!(named.contains(&trail.designator), "{named:?}");
+        assert!(named.contains(&hunt.trail.designator));
+        for note in pilot.take_notes() {
+            let who = note
+                .strip_prefix("Hunting ")
+                .and_then(|rest| rest.split(':').next())
+                .expect("a hunt sentence");
+            assert!(named.contains(who), "{note}");
+        }
+    }
+
+    #[test]
+    fn only_the_hulls_own_plates_fall_back() {
+        let quarter = 400 / FALL_BACK_FACET_DIVISOR;
+        let plate = |section: &str, left: i64, max: i64| {
+            let (mut picture, _) = flying();
+            picture.own.sections.insert(
+                section.into(),
+                Section {
+                    condition: "damaged".into(),
+                    internals: None,
+                    facets: [("front".to_owned(), (left, max))].into_iter().collect(),
+                },
+            );
+            fall_back_due(&picture)
+        };
+        assert_eq!(plate("turret", quarter, 400), None, "a turret plate");
+        assert_eq!(plate("left_track", 0, 100), None, "a track plate");
+        // Nor does the pilot, deciding: it flies exactly as an unhurt tank
+        // would, no withdrawal and nothing said.
+        let flown = |plate: Option<(&str, i64, i64)>| {
+            let (mut picture, mut pilot) = flying();
+            hold(&mut picture, contact("BA", Some(Side::Blue), 0, 300));
+            if let Some((section, left, max)) = plate {
+                picture.own.sections.insert(
+                    section.into(),
+                    Section {
+                        condition: "damaged".into(),
+                        internals: None,
+                        facets: [("front".to_owned(), (left, max))].into_iter().collect(),
+                    },
+                );
+            }
+            let orders = decide(&picture, &mut pilot);
+            (orders.heading, pilot.fallen_back, pilot.take_notes())
+        };
+        let unhurt = flown(None);
+        assert_ne!(unhurt.0, Some(180), "an orbit, not a withdrawal");
+        assert!(!unhurt.1 && unhurt.2.is_empty(), "{unhurt:?}");
+        for hurt in [("turret", quarter, 400), ("left_track", 0, 100)] {
+            assert_eq!(flown(Some(hurt)), unhurt, "{hurt:?}");
+        }
+        assert_eq!(
+            plate("hull", quarter, 400),
+            Some(FallBackWhy::Plate {
+                facet: "front".into(),
+                gone: false
+            })
+        );
+        // Each that does falls back once, with its sentence.
+        let (mut picture, mut pilot) = flying();
+        hold(&mut picture, contact("BA", Some(Side::Blue), 0, 300));
+        picture.apply(
+            NOW,
+            &classify(&format!(
+                "Hit on the hull's front facet: {quarter} of 400 armour left."
+            )),
+        );
+        decide(&picture, &mut pilot);
+        let band = widened_band(doctrine().band_m);
+        assert_eq!(
+            pilot.take_notes(),
+            [format!(
+                "Falling back to {band} m: the hull's front plate is at a quarter."
+            )]
+        );
+        // A plate the `STATUS` never read, gone: stored as (0, 0).
+        let (mut picture, mut pilot) = flying();
+        hold(&mut picture, contact("BA", Some(Side::Blue), 0, 300));
+        picture.apply(
+            NOW,
+            &classify("Hit on the hull's rear facet: armour gone, 140 of 200 inside."),
+        );
+        assert_eq!(picture.own.sections["hull"].facets["rear"], (0, 0));
+        assert!(!hull_failing(&picture));
+        decide(&picture, &mut pilot);
+        assert!(pilot.fallen_back);
+        assert_eq!(
+            pilot.take_notes(),
+            [format!(
+                "Falling back to {band} m: the hull's rear plate is gone."
+            )]
+        );
+        let (mut picture, mut pilot) = flying();
+        half_hull(&mut picture);
+        assert!(hull_failing(&picture));
+        assert_eq!(fall_back_due(&picture), Some(FallBackWhy::HullHalf));
+        decide(&picture, &mut pilot);
+        assert_eq!(
+            pilot.take_notes(),
+            [format!("Falling back to {band} m: the hull is at half.")]
+        );
+        decide(&picture, &mut pilot);
+        assert!(pilot.take_notes().is_empty(), "once a match");
+    }
+
+    #[test]
+    fn the_fall_back_band_never_narrows_and_stays_inside_the_sight() {
+        for band in (150..=SIGHT_BAND_MAX_M).step_by(10) {
+            let widened = widened_band(band);
+            assert!(band <= widened && widened <= SIGHT_BAND_MAX_M, "{band}");
+        }
+        assert_eq!(FALL_BACK_MAX_M, SIGHT_BAND_MAX_M);
+        // The withdrawal ends once the target is out at the widened band,
+        // before its time.
+        let band = 300;
+        let widened = widened_band(band);
+        let doctrine = Doctrine {
+            sense: Sense::Ccw,
+            band_m: band,
+            ..doctrine()
+        };
+        let (mut picture, mut pilot) = flying();
+        hold(&mut picture, contact("BA", Some(Side::Blue), 0, 100));
+        half_hull(&mut picture);
+        assert_eq!(heading(&pilot.decide(&picture, &doctrine, NOW)), 180);
+        let t = NOW + 1_000;
+        assert!(t < NOW + WITHDRAW_MS);
+        let mut out = contact("BA", Some(Side::Blue), 0, widened);
+        out.read_ms = t;
+        hold(&mut picture, out);
+        let orders = pilot.decide(&picture, &doctrine, t);
+        assert_eq!(pilot.withdraw_until_ms, None);
+        assert_eq!(heading(&orders), 90, "the tangent at the widened band");
+    }
+
+    #[test]
+    fn after_the_fall_back_the_doctrine_still_steers() {
+        let band = 300;
+        let widened = widened_band(band);
+        let fly = |stance: Stance| {
+            let doctrine = Doctrine {
+                stance: Stance::Orbit,
+                sense: Sense::Ccw,
+                band_m: band,
+                ..doctrine()
+            };
+            let (mut picture, mut pilot) = flying();
+            hold(&mut picture, contact("BA", Some(Side::Blue), 0, 100));
+            half_hull(&mut picture);
+            pilot.decide(&picture, &doctrine, NOW);
+            assert!(pilot.fallen_back);
+            let t = NOW + WITHDRAW_MS;
+            let mut at = contact("BA", Some(Side::Blue), 0, widened);
+            at.read_ms = t;
+            hold(&mut picture, at);
+            let orders = pilot.decide(&picture, &Doctrine { stance, ..doctrine }, t);
+            (orders.heading, orders.speed)
+        };
+        // Stand off at the widened band: at it, stopped facing the target.
+        assert_eq!(fly(Stance::StandOff), (Some(0), Some(0)));
+        // Close is flown as an orbit there (not straight in to 200 m).
+        assert_eq!(fly(Stance::Close), (Some(90), Some(54)));
+        // A doctrine withdraw turns away, ahead of the widened orbit.
+        assert_eq!(fly(Stance::Withdraw), (Some(180), Some(54)));
+    }
+
+    // -- cut AK.1: the held tank ---------------------------------------------------
+
+    #[test]
+    fn a_held_stop_orders_speed_again() {
+        let (mut picture, mut pilot) = flying();
+        hold(&mut picture, contact("BA", Some(Side::Blue), 0, 450));
+        picture.own.heading_deg = 100;
+        pilot.sent_speed(54);
+        assert_eq!(decide(&picture, &mut pilot).speed, None, "already ordered");
+        held_event(&mut picture, NOW);
+        let orders = pilot.decide(&picture, &doctrine(), NOW + 10);
+        assert_eq!(orders.heading, Some(whole(100.0 + HELD_TURN_DEG)));
+        assert_eq!(orders.speed, Some(54), "the speed goes again");
+        assert_eq!(pilot.held_from_deg, Some(100));
+    }
+
+    /// A `STATUS` read at `t`: held at 0 kph on `heading`, the contact read
+    /// with it.
+    fn held_read(picture: &mut Picture, t: u64, heading: u32) {
+        picture.own.held = Some(super::super::picture::HeldCause::Impassable);
+        picture.own.speed_kph = 0;
+        picture.own.heading_deg = heading;
+        picture.own.pos_read_ms = t;
+        for contact in picture.contacts.values_mut() {
+            contact.read_ms = t;
+        }
+    }
+
+    #[test]
+    fn a_tank_still_held_turns_further_from_where_it_stopped_then_backs_off() {
+        // Orbiting BA counter-clockwise: the doctrine's heading is 090 or so,
+        // never the stall's.
+        let doctrine = Doctrine {
+            sense: Sense::Ccw,
+            ..doctrine()
+        };
+        let stopped = 90;
+        let start = |picture: &mut Picture, pilot: &mut Pilot| {
+            hold(picture, contact_from(MID, "BA", Some(Side::Blue), 0, 450));
+            picture.own.heading_deg = stopped;
+            held_event(picture, NOW - 10);
+            let orders = pilot.decide(picture, &doctrine, NOW);
+            assert_eq!(
+                orders.heading,
+                Some(whole(f64::from(stopped) + HELD_TURN_DEG))
+            );
+            // The held turn is over; the tank still reads held: a stall opens.
+            let t0 = NOW + HELD_FOR_MS;
+            held_read(picture, t0, stopped + 45);
+            pilot.decide(picture, &doctrine, t0);
+            assert_eq!((pilot.stall_since_ms, pilot.stall_level), (Some(t0), 0));
+            t0
+        };
+        let (mut picture, mut pilot) = flying_at(MID);
+        let t0 = start(&mut picture, &mut pilot);
+        // A read inside `STALL_MS` does not escalate.
+        held_read(&mut picture, t0 + STALL_MS - 1, 200);
+        let orders = pilot.decide(&picture, &doctrine, t0 + STALL_MS - 1);
+        assert_eq!(pilot.stall_level, 0);
+        assert_eq!(orders.heading, Some(90), "the doctrine still steers");
+        pilot.take_notes();
+        // Each read `STALL_MS` on turns further from 090, whatever it read.
+        let mut t = t0;
+        for level in 1..=3_u8 {
+            t += STALL_MS;
+            held_read(&mut picture, t, 17 * u32::from(level));
+            let orders = pilot.decide(&picture, &doctrine, t);
+            let expected = whole(f64::from(stopped) + HELD_TURN_DEG * f64::from(level + 1));
+            assert_eq!(pilot.stall_level, level);
+            assert_eq!(orders.heading, Some(expected), "level {level}");
+            assert_eq!(orders.speed, Some(54));
+            assert_eq!(
+                pilot.take_notes(),
+                [format!("Held at 0 kph: turning to {expected:03}°.")]
+            );
+            // Kept against the doctrine between reads.
+            let orders = pilot.decide(&picture, &doctrine, t + 10);
+            assert_eq!(orders.heading, Some(expected));
+        }
+        // The fourth: backing off, astern, for `HELD_REVERSE_MS`.
+        t += STALL_MS;
+        held_read(&mut picture, t, 270);
+        let orders = pilot.decide(&picture, &doctrine, t);
+        assert_eq!((orders.heading, orders.speed), (None, Some(-27)));
+        assert_eq!(pilot.take_notes(), ["Held at 0 kph: backing off."]);
+        assert_eq!(pilot.stall_level, 4);
+        let orders = pilot.decide(&picture, &doctrine, t + HELD_REVERSE_MS - 1);
+        assert_eq!(orders.speed, Some(-27));
+        let orders = pilot.decide(&picture, &doctrine, t + HELD_REVERSE_MS);
+        assert_eq!(pilot.stall_level, 0, "closed when the back-off ends");
+        assert_eq!(orders.speed, Some(54), "forward again");
+        assert_eq!(orders.heading, Some(90), "the doctrine again");
+        // A `STATUS` at speed closes the stall; its heading is kept
+        // `HELD_FOR_MS` more to clear the ground.
+        let (mut picture, mut pilot) = flying_at(MID);
+        let t0 = start(&mut picture, &mut pilot);
+        let t = t0 + STALL_MS;
+        held_read(&mut picture, t, 135);
+        let turned = pilot.decide(&picture, &doctrine, t).heading;
+        assert_eq!(
+            turned,
+            Some(whole(f64::from(stopped) + 2.0 * HELD_TURN_DEG))
+        );
+        let freed = t + 2_000;
+        picture.own.held = None;
+        picture.own.speed_kph = 54;
+        picture.own.pos_read_ms = freed;
+        pilot.decide(&picture, &doctrine, freed);
+        assert_eq!(pilot.stall_level, 0);
+        let orders = pilot.decide(&picture, &doctrine, freed + HELD_FOR_MS - 1);
+        assert_eq!(orders.heading, turned, "still clearing the ground");
+        let orders = pilot.decide(&picture, &doctrine, freed + HELD_FOR_MS);
+        assert_ne!(orders.heading, turned, "the doctrine again");
+        // A new stop is a new episode: its own held turn, the stall from 0.
+        let (mut picture, mut pilot) = flying_at(MID);
+        let t0 = start(&mut picture, &mut pilot);
+        let t = t0 + STALL_MS;
+        held_read(&mut picture, t, 135);
+        pilot.decide(&picture, &doctrine, t);
+        assert_eq!(pilot.stall_level, 1);
+        picture.own.heading_deg = 200;
+        held_event(&mut picture, t + 500);
+        let orders = pilot.decide(&picture, &doctrine, t + 600);
+        assert_eq!(pilot.stall_level, 0);
+        assert_eq!(pilot.held_from_deg, Some(200));
+        assert_eq!(orders.heading, Some(whole(200.0 + HELD_TURN_DEG)));
+        // Freed, then held again with no notice read (a re-board, say): the
+        // new stall turns from the heading it is held on now, not from the
+        // last episode's stop.
+        let (mut picture, mut pilot) = flying_at(MID);
+        let t0 = start(&mut picture, &mut pilot);
+        let freed = t0 + 1_000;
+        picture.own.held = None;
+        picture.own.speed_kph = 54;
+        picture.own.pos_read_ms = freed;
+        pilot.decide(&picture, &doctrine, freed);
+        assert_eq!(pilot.held_from_deg, None, "the episode is over");
+        let again = freed + 20_000;
+        held_read(&mut picture, again, 220);
+        pilot.decide(&picture, &doctrine, again);
+        assert_eq!(pilot.held_from_deg, Some(220));
+        held_read(&mut picture, again + STALL_MS, 220);
+        let orders = pilot.decide(&picture, &doctrine, again + STALL_MS);
+        assert_eq!(pilot.stall_level, 1);
+        assert_eq!(orders.heading, Some(whole(220.0 + 2.0 * HELD_TURN_DEG)));
+    }
+
+    // -- cut AK.1: the fire clock --------------------------------------------------
+
+    #[test]
+    fn after_a_shot_the_weapon_waits_for_its_own_clock() {
+        let (mut picture, mut pilot) = flying();
+        hold(&mut picture, contact("BA", Some(Side::Blue), 0, 450));
+        picture.lock = Some("BA".into());
+        // An earlier row left the clock in the past (the smoke's case).
+        picture.weapons = vec![Weapon {
+            id: "cannon".into(),
+            ready: false,
+            rounds: 10,
+            rounds_max: 40,
+            read_ms: NOW - 5_000,
+            cycle_ms: Some(6_000),
+            next_ready_ms: Some(NOW - 1_000),
+            slack_ms: crate::arena::picture::FIRE_SLACK_START_MS,
+            ..Weapon::default()
+        }];
+        assert_eq!(decide(&picture, &mut pilot).fire, ["cannon"]);
+        let a = NOW;
+        picture.apply(a, &classify("Firing cannon."));
+        let slack = picture.weapons[0].slack_ms;
+        assert_eq!(
+            slack,
+            crate::arena::picture::FIRE_SLACK_START_MS
+                .saturating_sub(crate::arena::picture::FIRE_SLACK_DOWN_MS)
+                .max(crate::arena::picture::FIRE_SLACK_MIN_MS)
+        );
+        let gap = a + crate::arena::lane::FIRE_GAP_MS;
+        assert!(!believed_ready(&picture.weapons[0], gap));
+        assert!(pilot.decide(&picture, &doctrine(), gap).fire.is_empty());
+        let due = a + 6_000 + slack;
+        assert!(!believed_ready(&picture.weapons[0], due - 1));
+        assert!(believed_ready(&picture.weapons[0], due));
+        if let Some(c) = picture.contacts.get_mut("BA") {
+            c.read_ms = due;
+        }
+        assert_eq!(pilot.decide(&picture, &doctrine(), due).fire, ["cannon"]);
     }
 }

@@ -22,6 +22,28 @@
 //!   runner reported ([`Picture::sent_fire`]) is that `FIRE`'s own pre-check,
 //!   never paired.
 //!
+//! **The fire clock** (cut AK.1). [`Weapon::next_ready_ms`] is the one clock a
+//! gun's readiness is read from; `None` means "no evidence yet: read the row".
+//! Two facts set it, both read from the bot's own live transcript (cut AJ's
+//! smoke), not from anything of the server's:
+//!
+//! * the seconds in `cycling (N s)` and `Still cycling: N s to go.` are
+//!   **rounded up** — twenty cannon refusals 1.00 to 1.25 s after that gun's
+//!   ack read `6 s to go` on a 6 s gun, where a truncated figure would say 5 —
+//!   so `N s` is an upper bound, counted whole;
+//! * the real cycle begins **up to a pulse after the ack** — fourteen refusals
+//!   6.0 to 6.5 s after a 6 s gun's ack still read `1 s` — which is the help's
+//!   "you and the arena are a pulse apart" (`help cockpit`, "Refusals").
+//!
+//! So the ack sets the clock to the ack plus the learned cycle plus a
+//! per-weapon slack ([`Weapon::slack_ms`]) whose floor is one engaged pulse
+//! ([`FIRE_SLACK_MIN_MS`]); a `cycling` row or a `Still cycling` refusal sets it
+//! to its own reading time plus the whole seconds plus the slack; an accepted
+//! `ready` row sets it to the row's own time (the row is the evidence); and an
+//! arena refusal of an acked shot that is not `Still cycling` (the shot never
+//! left) sets it to now. The cockpit's own pre-check refusal of a `FIRE` this
+//! runner typed raises the slack; every ack lowers it toward the floor.
+//!
 //! **The observer rule, bot side.** The picture holds only designators the
 //! stream named; it never invents a contact, a side or a section, and no line but
 //! a contact row or a contact notice ever adds a contact.
@@ -60,6 +82,24 @@ pub const TRACK_MIN_FIXES: usize = 4;
 pub const TRACK_MIN_MPS: f64 = 3.0;
 /// The widest line [`Picture::summary_lines`] writes (the terminal-width floor).
 pub const SUMMARY_COLUMNS: usize = 120;
+/// A weapon's slack before any ack or refusal has moved it (cut AK.1).
+pub const FIRE_SLACK_START_MS: u64 = 500;
+/// The slack grows this much on each `Still cycling` answer to a `FIRE` this
+/// runner typed (the cockpit's own pre-check: the clock was early)…
+pub const FIRE_SLACK_UP_MS: u64 = 250;
+/// …and shrinks this much on each ack…
+pub const FIRE_SLACK_DOWN_MS: u64 = 25;
+/// …never below one engaged pulse. The real cycle begins up to a pulse after
+/// the ack (the transcript's still-cycling refusals 6.0 to 6.5 s after a 6 s
+/// gun's ack), and an additive loop that sits above its floor settles where
+/// refusals are about DOWN / (UP + DOWN) of the `FIRE` lines (some 9 %), so
+/// the floor itself must already cover the ack-to-pulse delay: the slack then
+/// rests at the floor and rises only on a real miss.
+pub const FIRE_SLACK_MIN_MS: u64 = 500;
+/// …and never above this.
+pub const FIRE_SLACK_MAX_MS: u64 = 1_500;
+const _: () =
+    assert!(FIRE_SLACK_MIN_MS <= FIRE_SLACK_START_MS && FIRE_SLACK_START_MS <= FIRE_SLACK_MAX_MS);
 
 /// Where the pilot is in the simulator's life cycle.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -233,7 +273,14 @@ pub struct Weapon {
     pub fired_ms: Option<u64>,
     /// The shortest cycle learned from `cycling` rows (an upper bound).
     pub cycle_ms: Option<u64>,
+    /// **The one readiness clock** (cut AK.1): ready at this time; `None` when
+    /// nothing has set it yet, and then the row's own `ready` is read (see the
+    /// module head).
     pub next_ready_ms: Option<u64>,
+    /// What the clock adds to a cycle for the pulse between the pilot and the
+    /// arena ([`FIRE_SLACK_START_MS`] for a weapon this picture made; see
+    /// [`FIRE_SLACK_MIN_MS`]).
+    pub slack_ms: u64,
     /// `Firing` acks not yet paired with a refusal, oldest first.
     pub acks: VecDeque<u64>,
     /// `Firing` acks since this weapon's last row was applied, less the ones a
@@ -243,11 +290,20 @@ pub struct Weapon {
 }
 
 impl Weapon {
+    /// Every weapon the picture holds is made here, so each starts with its
+    /// slack at [`FIRE_SLACK_START_MS`] (`Default` gives 0).
     fn new(id: &str) -> Weapon {
         Weapon {
             id: id.to_owned(),
+            slack_ms: FIRE_SLACK_START_MS,
             ..Weapon::default()
         }
+    }
+
+    /// Whether `name` (as a `FIRE` line, an ack or a refusal named it) is this
+    /// weapon: its id or its short name.
+    fn named(&self, name: &str) -> bool {
+        self.id == name || self.short.as_deref() == Some(name)
     }
 }
 
@@ -368,11 +424,12 @@ pub struct Open {
     /// Set by the block's first line and cleared by the first line that is
     /// neither one of its rows (`Other`) nor that row.
     pub catchup: bool,
-    /// When each `FIRE` the runner wrote ([`Picture::sent_fire`]) went out,
-    /// oldest first, while its own answer — `Firing {w}.` or the cockpit's
-    /// pre-check `FIRE {w} refused. …` — has not been read. A mark lapses after
-    /// [`ACK_PAIR_MS`].
-    pub fire_sent: VecDeque<u64>,
+    /// Each `FIRE` the runner wrote ([`Picture::sent_fire`]): the weapon it
+    /// named and when it went out, oldest first, while its own answer —
+    /// `Firing {w}.` or the cockpit's pre-check `FIRE {w} refused. …` — has not
+    /// been read. An answer takes the oldest mark **of its own weapon** (cut
+    /// AK.1). A mark lapses after [`ACK_PAIR_MS`].
+    pub fire_sent: VecDeque<(String, u64)>,
 }
 
 /// The pilot's picture of the match.
@@ -850,13 +907,25 @@ impl Picture {
             | Line::EmconAck { .. } => journal = false,
             Line::Firing { weapon } => {
                 journal = false;
-                // The ack is the answer to the oldest `FIRE` still waiting for one.
-                self.lapse_fire_sent(now_ms);
-                self.open.fire_sent.pop_front();
+                // The ack is the answer to the oldest `FIRE` of this weapon
+                // still waiting for one.
+                self.take_fire_mark(now_ms, Some(weapon));
                 self.tally.shots = self.tally.shots.saturating_add(1);
                 let entry = self.weapon_mut(weapon);
                 entry.fired_ms = Some(now_ms);
                 entry.ready = false;
+                // The one clock (cut AK.1): the ack lowers the slack toward its
+                // floor, then the gun is ready one learned cycle and that slack
+                // on — never sooner, whatever an earlier row left behind. With
+                // no cycle learned yet, the row is read.
+                entry.slack_ms = entry
+                    .slack_ms
+                    .saturating_sub(FIRE_SLACK_DOWN_MS)
+                    .max(FIRE_SLACK_MIN_MS);
+                let slack = entry.slack_ms;
+                entry.next_ready_ms = entry
+                    .cycle_ms
+                    .map(|cycle| now_ms.saturating_add(cycle).saturating_add(slack));
                 entry.shots_since_read = entry.shots_since_read.saturating_add(1);
                 entry.acks.push_back(now_ms);
                 while entry.acks.len() > MAX_ACKS {
@@ -1280,10 +1349,15 @@ impl Picture {
     /// an ack, as before. A picture that is never told falls back to the
     /// pairing alone. A mark lapses after [`ACK_PAIR_MS`] (a `FIRE` answered by
     /// something else: a transient, `This unit carries no weapon.`).
-    pub fn sent_fire(&mut self, now_ms: u64) {
+    ///
+    /// Marks are kept per weapon (cut AK.1): `weapon` is the name the runner
+    /// typed, and an answer takes only a mark of its own weapon, so a cannon's
+    /// refusal read while only the machine gun's `FIRE` is outstanding is the
+    /// arena's refusal of the cannon's acked shot, not a pre-check.
+    pub fn sent_fire(&mut self, now_ms: u64, weapon: &str) {
         self.last_ms = self.last_ms.max(now_ms);
         self.lapse_fire_sent(now_ms);
-        self.open.fire_sent.push_back(now_ms);
+        self.open.fire_sent.push_back((weapon.to_owned(), now_ms));
         while self.open.fire_sent.len() > MAX_ACKS {
             self.open.fire_sent.pop_front();
         }
@@ -1489,10 +1563,30 @@ impl Picture {
             .open
             .fire_sent
             .front()
-            .is_some_and(|at| now_ms.saturating_sub(*at) > ACK_PAIR_MS)
+            .is_some_and(|(_, at)| now_ms.saturating_sub(*at) > ACK_PAIR_MS)
         {
             self.open.fire_sent.pop_front();
         }
+    }
+
+    /// Take the oldest outstanding `FIRE` mark of `weapon` (its id or its short
+    /// name, either way round), after lapsing the old ones; whether there was
+    /// one. An answer that names no weapon takes the oldest mark of any.
+    fn take_fire_mark(&mut self, now_ms: u64, weapon: Option<&str>) -> bool {
+        self.lapse_fire_sent(now_ms);
+        let index = match weapon {
+            None => (!self.open.fire_sent.is_empty()).then_some(0),
+            Some(name) => {
+                let carried = self.weapons.iter().find(|w| w.named(name));
+                self.open
+                    .fire_sent
+                    .iter()
+                    .position(|(sent, _)| sent == name || carried.is_some_and(|w| w.named(sent)))
+            }
+        };
+        index
+            .and_then(|index| self.open.fire_sent.remove(index))
+            .is_some()
     }
 
     fn clear_lock(&mut self, now_ms: u64) {
@@ -1651,12 +1745,22 @@ impl Picture {
                 weapon.band = row.band;
                 weapon.percent = row.percent;
                 weapon.read_ms = read_ms;
+                // The one clock (cut AK.1): an accepted `ready` row is the
+                // evidence, ready from its own time (so a machine gun whose
+                // row lands inside the guard, its rounds showing the shot has
+                // left, is ready now, not at the next row); a `cycling` row's
+                // seconds are rounded up, so they are counted whole, plus the
+                // slack; any other row leaves nothing to count but the row.
                 match row.cycling_s {
+                    None if row.ready => weapon.next_ready_ms = Some(read_ms),
                     None => weapon.next_ready_ms = None,
                     Some(secs) => {
                         let left_ms = u64::from(secs) * 1_000;
-                        weapon.next_ready_ms =
-                            Some(read_ms.saturating_add(left_ms).saturating_sub(500));
+                        weapon.next_ready_ms = Some(
+                            read_ms
+                                .saturating_add(left_ms)
+                                .saturating_add(weapon.slack_ms),
+                        );
                         if let Some(fired) = weapon.fired_ms {
                             let cycle = read_ms.saturating_sub(fired).saturating_add(left_ms);
                             weapon.cycle_ms =
@@ -1698,7 +1802,14 @@ impl Picture {
         if refine && let Some(origin) = origin {
             let range = f64::from(range_m);
             let reckoned_s = row_read.saturating_sub(origin_status) as f64 / 1_000.0;
-            let base = if plotted_s.is_some() { 20.0 } else { 10.0 };
+            // As fine as the plot is fresh (`help cockpit`, "Seeing"): "a fresh
+            // one reads to 10 m, a one-second plot to 20, and a plot a couple
+            // of seconds old reads no better than the rest of the scope".
+            let base = match plotted_s {
+                None | Some(0) => 10.0,
+                Some(1) => 20.0,
+                Some(_) => 50.0,
+            };
             let at_ms = contact.row_plot_ms();
             contact.fixes.pop_back();
             contact.push_fix(Fix {
@@ -1727,12 +1838,10 @@ impl Picture {
         cycling_s: Option<u32>,
     ) {
         let mut paired = false;
-        // A `FIRE` the runner wrote and has not yet seen answered: this refusal
-        // is that answer, the cockpit's pre-check ([`Picture::sent_fire`]).
-        let answers_a_send = order == "FIRE" && {
-            self.lapse_fire_sent(now_ms);
-            self.open.fire_sent.pop_front().is_some()
-        };
+        // A `FIRE` of this weapon the runner wrote and has not yet seen
+        // answered: this refusal is that answer, the cockpit's pre-check
+        // ([`Picture::sent_fire`]).
+        let answers_a_send = order == "FIRE" && self.take_fire_mark(now_ms, weapon);
         let carried = self
             .weapons
             .iter()
@@ -1756,12 +1865,28 @@ impl Picture {
                 }
             }
             if let Some(secs) = cycling_s {
+                // The one clock (cut AK.1). The cockpit's own pre-check of a
+                // `FIRE` this runner typed means the clock was early: the
+                // slack grows first. The seconds are rounded up, so counted
+                // whole.
+                if answers_a_send {
+                    entry.slack_ms = entry
+                        .slack_ms
+                        .saturating_add(FIRE_SLACK_UP_MS)
+                        .min(FIRE_SLACK_MAX_MS);
+                }
                 entry.ready = false;
                 entry.next_ready_ms = Some(
                     now_ms
                         .saturating_add(u64::from(secs) * 1_000)
-                        .saturating_sub(500),
+                        .saturating_add(entry.slack_ms),
                 );
+            } else if paired {
+                // The arena refused an acked shot for something other than its
+                // cycle (`Too many orders at once`, `No lock: …`): the shot
+                // never left and the cockpit's pre-check had passed it, so the
+                // gun is ready now; the lane's own wait governs the retry.
+                entry.next_ready_ms = Some(now_ms);
             }
         }
         if paired {
@@ -2313,7 +2438,14 @@ mod tests {
         assert_eq!(p.tally.refused_shots, 1);
         assert_eq!(p.tally.fired(), 0);
         let cannon = p.weapons.iter().find(|w| w.id == "cannon").unwrap();
-        assert_eq!(cannon.next_ready_ms, Some(1_500 + 4_000 - 500));
+        // The ack lowered the slack, held at its floor; the arena's refusal of
+        // the acked shot answers no mark of the runner's, so it does not raise
+        // it. `4 s` is rounded up: counted whole, plus that slack.
+        let slack = FIRE_SLACK_START_MS
+            .saturating_sub(FIRE_SLACK_DOWN_MS)
+            .max(FIRE_SLACK_MIN_MS);
+        assert_eq!(cannon.slack_ms, slack);
+        assert_eq!(cannon.next_ready_ms, Some(1_500 + 4_000 + slack));
         // Two refusals with nothing to pair never underflow.
         feed(
             &mut p,
@@ -2390,6 +2522,7 @@ mod tests {
             "a ready row 800 ms after the ack is the pre-shot frame"
         );
         assert_eq!(cannon.cycle_ms, None);
+        assert_eq!(cannon.next_ready_ms, None, "and it sets no clock");
         feed(
             &mut p,
             &[
@@ -2409,8 +2542,35 @@ mod tests {
         );
         let cannon = &p.weapons[0];
         assert!(cannon.ready);
-        assert_eq!(cannon.next_ready_ms, None);
+        assert_eq!(
+            cannon.next_ready_ms,
+            Some(7_000),
+            "a ready row: ready from its own time"
+        );
         assert_eq!(cannon.cycle_ms, Some(6_000));
+        // The next shot's ack sets the clock from the learned cycle; the
+        // pre-shot frame read after it (rounds unchanged, inside the guard)
+        // leaves that clock alone — the gun is not ready at that row.
+        feed(&mut p, &[(8_000, "Firing cannon.")]);
+        let due = p.weapons[0].next_ready_ms;
+        assert_eq!(
+            due,
+            Some(8_000 + 6_000 + p.weapons[0].slack_ms),
+            "the ack's clock"
+        );
+        feed(
+            &mut p,
+            &[
+                (8_300, "cannon  ready  39 of 40 round(s)"),
+                (8_301, "Power online."),
+            ],
+        );
+        let cannon = &p.weapons[0];
+        assert!(!cannon.ready);
+        assert_eq!(
+            cannon.next_ready_ms, due,
+            "the pre-shot frame sets no clock"
+        );
     }
 
     #[test]
@@ -2604,9 +2764,9 @@ mod tests {
     #[test]
     fn a_refusal_that_answers_a_sent_fire_is_the_pre_check() {
         let mut p = Picture::default();
-        p.sent_fire(0);
+        p.sent_fire(0, "machine_gun");
         feed(&mut p, &[(20, "Firing machine_gun.")]);
-        p.sent_fire(1_000);
+        p.sent_fire(1_000, "machine_gun");
         feed(
             &mut p,
             &[(1_020, "FIRE machine_gun refused. Still cycling: 1 s to go.")],
@@ -2619,7 +2779,14 @@ mod tests {
         let mg = &p.weapons[0];
         assert_eq!(mg.fired_ms, Some(20), "the cycle anchor is kept");
         assert_eq!(mg.acks.len(), 1);
-        assert_eq!(mg.next_ready_ms, Some(1_020 + 1_000 - 500));
+        // The pre-check says the clock was early: the slack (lowered by the
+        // ack, held at its floor) grows before the rounded-up second counts.
+        let slack = (FIRE_SLACK_START_MS
+            .saturating_sub(FIRE_SLACK_DOWN_MS)
+            .max(FIRE_SLACK_MIN_MS)
+            + FIRE_SLACK_UP_MS)
+            .min(FIRE_SLACK_MAX_MS);
+        assert_eq!(mg.next_ready_ms, Some(1_020 + 1_000 + slack));
         // With no `FIRE` outstanding, the same sentence is the arena's refusal
         // of the acked shot, as before.
         feed(
@@ -2630,7 +2797,7 @@ mod tests {
         // A mark lapses after two seconds: a `FIRE` answered by something else
         // (a transient, then re-sent) does not turn a later arena refusal into
         // a pre-check.
-        p.sent_fire(3_000);
+        p.sent_fire(3_000, "machine_gun");
         feed(
             &mut p,
             &[(
@@ -2638,7 +2805,7 @@ mod tests {
                 "The world is committing another action; please retry in a moment.",
             )],
         );
-        p.sent_fire(3_050);
+        p.sent_fire(3_050, "machine_gun");
         feed(
             &mut p,
             &[
@@ -2654,8 +2821,8 @@ mod tests {
             (2, 2, 1),
             "the ack took one mark, the other lapsed at 5 050: the refusal is the arena's"
         );
-        p.sent_fire(10_000);
-        p.sent_fire(10_010);
+        p.sent_fire(10_000, "machine_gun");
+        p.sent_fire(10_010, "machine_gun");
         feed(
             &mut p,
             &[(
@@ -2686,6 +2853,10 @@ mod tests {
         let mg = &p.weapons[0];
         assert!(!mg.ready, "the pre-shot frame is ignored");
         assert_eq!((mg.rounds, mg.shots_since_read), (500, 1));
+        assert_eq!(
+            mg.next_ready_ms, None,
+            "nor does it set the clock (the ack left none: no cycle known)"
+        );
         feed(
             &mut p,
             &[
@@ -2723,6 +2894,241 @@ mod tests {
         );
         assert!(p.weapons[0].ready);
         assert_eq!(p.weapons[0].rounds, 497);
+    }
+
+    /// The slack an ack leaves behind a weapon whose slack was `slack`.
+    fn after_ack(slack: u64) -> u64 {
+        slack
+            .saturating_sub(FIRE_SLACK_DOWN_MS)
+            .max(FIRE_SLACK_MIN_MS)
+    }
+
+    /// **An ack sets the one clock from the learned cycle** (cut AK.1): the
+    /// ack plus the cycle plus the slack the ack leaves; with no cycle learned
+    /// yet there is no clock, and the row is read.
+    #[test]
+    fn an_ack_sets_the_clock_from_the_learned_cycle() {
+        let mut p = Picture::default();
+        feed(&mut p, &[(0, "Firing cannon.")]);
+        let cannon = &p.weapons[0];
+        assert_eq!(cannon.cycle_ms, None);
+        assert_eq!(cannon.next_ready_ms, None, "no cycle learned: read the row");
+        assert_eq!(cannon.slack_ms, after_ack(FIRE_SLACK_START_MS));
+        feed(
+            &mut p,
+            &[
+                (1_000, "cannon  cycling (5 s)  39 of 40 round(s)"),
+                (1_001, "Power online."),
+            ],
+        );
+        assert_eq!(p.weapons[0].cycle_ms, Some(6_000));
+        // A row left the clock in the past; the next ack moves it on, whatever
+        // that row said.
+        feed(
+            &mut p,
+            &[
+                (7_000, "cannon  ready  39 of 40 round(s)"),
+                (7_001, "Power online."),
+            ],
+        );
+        assert_eq!(p.weapons[0].next_ready_ms, Some(7_000));
+        feed(&mut p, &[(10_000, "Firing cannon.")]);
+        let cannon = &p.weapons[0];
+        let slack = after_ack(after_ack(FIRE_SLACK_START_MS));
+        assert_eq!(cannon.slack_ms, slack);
+        assert_eq!(cannon.next_ready_ms, Some(10_000 + 6_000 + slack));
+        assert!(!cannon.ready);
+    }
+
+    /// **The seconds of a `cycling` row and of a `Still cycling` refusal are
+    /// rounded up** (the bot's own transcript: `6 s to go` a whole second into
+    /// a 6 s cycle), so they are counted whole, plus the slack — never less
+    /// half a second.
+    #[test]
+    fn a_cycling_row_and_a_refusal_count_the_rounded_up_seconds() {
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (2_000, "cannon  cycling (4 s)  39 of 40 round(s)"),
+                (2_001, "Power online."),
+            ],
+        );
+        let slack = FIRE_SLACK_START_MS;
+        assert_eq!(p.weapons[0].slack_ms, slack);
+        assert_eq!(p.weapons[0].next_ready_ms, Some(2_000 + 4_000 + slack));
+        // A refusal no `FIRE` of the runner's is waiting on: the seconds, the
+        // slack unmoved.
+        feed(
+            &mut p,
+            &[(5_000, "FIRE cannon refused. Still cycling: 3 s to go.")],
+        );
+        assert_eq!(p.weapons[0].slack_ms, slack);
+        assert_eq!(p.weapons[0].next_ready_ms, Some(5_000 + 3_000 + slack));
+        assert!(!p.weapons[0].ready);
+    }
+
+    /// **The slack rises on the cockpit's own refusal and falls on an ack**,
+    /// never past [`FIRE_SLACK_MAX_MS`] or below [`FIRE_SLACK_MIN_MS`].
+    #[test]
+    fn the_slack_rises_on_its_own_refusal_and_falls_on_an_ack() {
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (0, "cannon  ready  40 of 40 round(s)"),
+                (1, "Power online."),
+            ],
+        );
+        let mut at = 1_000;
+        let mut expected = FIRE_SLACK_START_MS;
+        let rises = (FIRE_SLACK_MAX_MS - FIRE_SLACK_MIN_MS) / FIRE_SLACK_UP_MS + 2;
+        for _ in 0..rises {
+            p.sent_fire(at, "cannon");
+            feed(
+                &mut p,
+                &[(at + 10, "FIRE cannon refused. Still cycling: 2 s to go.")],
+            );
+            expected = (expected + FIRE_SLACK_UP_MS).min(FIRE_SLACK_MAX_MS);
+            assert_eq!(p.weapons[0].slack_ms, expected);
+            assert_eq!(p.weapons[0].next_ready_ms, Some(at + 10 + 2_000 + expected));
+            at += 3_000;
+        }
+        assert_eq!(p.weapons[0].slack_ms, FIRE_SLACK_MAX_MS, "held at the top");
+        let falls = (FIRE_SLACK_MAX_MS - FIRE_SLACK_MIN_MS) / FIRE_SLACK_DOWN_MS + 2;
+        for _ in 0..falls {
+            feed(&mut p, &[(at, "Firing cannon.")]);
+            expected = after_ack(expected);
+            assert_eq!(p.weapons[0].slack_ms, expected);
+            at += 3_000;
+        }
+        assert_eq!(
+            p.weapons[0].slack_ms, FIRE_SLACK_MIN_MS,
+            "held at the floor"
+        );
+    }
+
+    /// **`FIRE` marks are kept per weapon** (cut AK.1): a cannon refusal read
+    /// while only the machine gun's `FIRE` is outstanding is not the cannon's
+    /// pre-check but the arena's refusal of the cannon's acked shot.
+    #[test]
+    fn fire_marks_are_kept_per_weapon() {
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (0, "cannon  ready  40 of 40 round(s)"),
+                (1, "machine_gun (mg)  ready  500 of 500 round(s)"),
+                (2, "Power online."),
+                (1_000, "Firing cannon."),
+            ],
+        );
+        p.sent_fire(1_100, "machine_gun");
+        feed(
+            &mut p,
+            &[(1_200, "FIRE cannon refused. Still cycling: 5 s to go.")],
+        );
+        let t = &p.tally;
+        assert_eq!(
+            (t.shots, t.refused_shots, t.refused_orders),
+            (1, 1, 0),
+            "paired with the cannon's ack"
+        );
+        assert_eq!(p.open.fire_sent.len(), 1, "the machine gun's mark stands");
+        assert_eq!(
+            p.weapons[0].slack_ms,
+            after_ack(FIRE_SLACK_START_MS),
+            "the arena's refusal does not raise the slack"
+        );
+        // The machine gun's own answer takes its mark, by its short name too.
+        feed(&mut p, &[(1_250, "Firing mg.")]);
+        assert!(p.open.fire_sent.is_empty());
+    }
+
+    /// **A shot the arena refused for something other than its cycle leaves
+    /// the gun ready now** (it never left; the lane's own wait governs the
+    /// retry).
+    #[test]
+    fn a_shot_the_arena_refused_leaves_the_gun_ready() {
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (0, "Firing cannon."),
+                (1_000, "cannon  cycling (5 s)  39 of 40 round(s)"),
+                (1_001, "Power online."),
+                (10_000, "Firing cannon."),
+            ],
+        );
+        assert_eq!(p.weapons[0].cycle_ms, Some(6_000));
+        assert!(
+            p.weapons[0].next_ready_ms > Some(16_000),
+            "a whole cycle on"
+        );
+        feed(
+            &mut p,
+            &[(
+                10_300,
+                "FIRE cannon refused. Too many orders at once; try that again.",
+            )],
+        );
+        assert_eq!(p.tally.refused_shots, 1, "paired with the ack");
+        assert_eq!(p.weapons[0].next_ready_ms, Some(10_300));
+    }
+
+    /// **A `ready` row accepted inside the guard is ready now**: the machine
+    /// gun's row whose rounds show the shot has left is the evidence, so the
+    /// clock is the row's own time.
+    #[test]
+    fn a_ready_row_inside_the_guard_is_ready_now() {
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (100, "machine_gun (mg)  ready  500 of 500 round(s)"),
+                (101, "Power online."),
+                (1_000, "Firing machine_gun."),
+                (2_200, "machine_gun (mg)  ready  499 of 500 round(s)"),
+                (2_201, "Power online."),
+            ],
+        );
+        const { assert!(2_200 - 1_000 < READY_AFTER_ACK_MS, "inside the guard") };
+        let mg = &p.weapons[0];
+        assert!(mg.ready);
+        assert_eq!(mg.next_ready_ms, Some(2_200));
+    }
+
+    /// **A lock's fix is as fine as its plot is fresh** (`help cockpit`,
+    /// "Seeing"): the refined fix's base is 10 m with no `plotted` clause, 20 m
+    /// a second old, and the scope's 50 m older than that.
+    #[test]
+    fn a_lock_fix_is_as_fine_as_its_plot_is_fresh() {
+        for (range_line, base) in [
+            ("Range to BA: 440 m.", 10.0),
+            ("Range to BA: 440 m, plotted 1 s ago.", 20.0),
+            ("Range to BA: 440 m, plotted 4 s ago.", 50.0),
+        ] {
+            let mut p = Picture::default();
+            feed(
+                &mut p,
+                &[
+                    (0, "Locked on BA."),
+                    (10_000, "Callsign RA."),
+                    (10_000, "Red Tank 1: power online, 0 kph, heading 000°"),
+                    (10_000, "  at 0 m east, 0 m north; scope holds a hostile"),
+                    (10_100, &row_line("BA", "blue", 90, 450, 0)),
+                    (10_300, range_line),
+                ],
+            );
+            let fix = p.contacts["BA"].fixes.back().expect("a fix").clone();
+            assert!(fix.from_lock, "{range_line}");
+            let expected = base + 440.0 * 0.5_f64.to_radians() + 3.0 * 0.1;
+            assert!(
+                (fix.sigma_m - expected).abs() < 1e-9,
+                "{range_line}: {} against {expected}",
+                fix.sigma_m
+            );
+        }
     }
 
     /// **The `journal` flag is a contract** AJ.2's journal and AJ.3's commander
