@@ -427,7 +427,7 @@ again at the widened band, a `close` flown as a circle there.
 When it loses a hostile it hunts it rather than waiting: it drives to the
 contact's last plot, then along its estimated course (the plots' course when
 they showed one, else the way the range was opening) while that plot is under
-45 seconds old, then sweeps once in a box of four 300 m legs (at most a
+90 seconds old, then sweeps once in a box of four 300 m legs (at most a
 minute). It never drives past the proving ground's edge: the course leg ends
 where its next 100 m would cross it, or once the tank is that far past the
 estimate. A fresh hostile ends the hunt at once. A hostile the cockpit said was
@@ -489,21 +489,81 @@ commander, and a commander's answer changes only the doctrine, never a line.
 `cargo test -p mush-bot --test arena_win_rate -- --ignored --nocapture`: ten
 1 v 1 matches in one run (`--arena red --matches 10`, no model) against one
 blue machine, both tanks posed 500 m apart on the road before every match,
-three minutes a match at most. It prints `WIN RATE: {w} of 10 for red against
-one machine at 1 v 1 (…)` and one line a match, and fails only when fewer than
-ten matches finish: the owner's target is seven in ten, and the lane reports
-the figure rather than failing on it. CI runs it only by hand (the
-`bot-win-rate` job, `workflow_dispatch`, about forty minutes); read the figure
-off the job's log. Its first run, on 2026-09-29, read `WIN RATE: 4 of 10 for
-red against one machine at 1 v 1 (lost 1, drew 0, timed out 5, other 0)`. The
-pilot hit with most of its shots. Every timeout ended with the machine, its
-turret gone, out of sight: in four of them it drew off past the 600 m sight and
-the pilot's search did not find it again inside the three minutes; in the
-fifth the pilot's own engine was gone and it could not search. The pilot's
-flying played a part too: its fallen-back band reaches 600 m, the edge of the
-sight, where it lost contacts; ground held it in place in four matches; and
-nearly half its `FIRE` lines were refused as still cycling. The reading of the
-ten transcripts is recorded with cut AJ (16c Q-AJ5).
+**seven minutes (420 s) a match at most**. The cap is that long so a finished
+fight is not cut off: on a three-minute cap half the matches timed out, every
+one of them one-sided. A timeout is its own column, never a loss. A run takes
+about seventy-five minutes when every match runs long (the runs of 2026-09-30
+took 24 to 32 minutes, most matches ending well inside the cap), and the whole
+flight has one deadline of 100 minutes. It prints `WIN RATE: {w} of 10 for red
+against one machine at 1 v 1 (…)` and one line a match, and fails only when
+fewer than ten matches finish: the owner's target is seven in ten, and the lane
+reports the figure rather than failing on it. CI runs it only by hand (the `bot-win-rate` job,
+`workflow_dispatch`); read the figure off the job's log.
+
+**It always reports.** Set `MUSH_BOT_WIN_RATE_KEEP` to a directory and the
+run's transcript and report are kept there (`win-rate.jsonl`, `win-rate.json`)
+before anything is printed, however the run ended. When the bot left no
+report, the figure is counted from the lobby's own `Match {n} is over (…)`
+lines, and `NO REPORT: the figure is from the lobby's match-end lines.`
+follows it. A run that stopped early says so after the match lines:
+`EARLY END: {why} after {n} match(es).`, where the reason is `the bot ended`,
+`no match end inside 600 s` or `the 100-minute deadline`. A refused pose
+answers at once, and the match it was for (the next one by the centre's own
+match number) flew from the 2 430 m muster: its line ends ` (unposed)` and
+`UNPOSED: {u} of {n} match(es) flew from muster.` counts them.
+
+**What it measured.** The first run, on 2026-09-29 on the three-minute cap
+(before the pilot hunted, fell back inside the sight, turned out of held
+ground and fired on each gun's own clock), read `WIN RATE: 4 of 10 for red
+against one machine at 1 v 1 (lost 1, drew 0, timed out 5, other 0)`: every
+timeout ended with the machine, its turret gone, out of sight, and nearly half
+the pilot's `FIRE` lines were refused as still cycling. It was re-measured on
+the seven-minute cap on 2026-09-30, three runs, each changing one hunting
+constant from the one before:
+
+- with the constants the hunt first shipped with (a 45 s trail, a 60 s sweep):
+  `WIN RATE: 2 of 10 for red against one machine at 1 v 1 (lost 5, drew 0,
+  timed out 3, other 0)`;
+- with the trail at 90 s (`HUNT_TRAIL_MS`), the sweep still 60 s:
+  `WIN RATE: 4 of 10 for red against one machine at 1 v 1 (lost 5, drew 0,
+  timed out 1, other 0)`, **selected from 3 runs**, and the constants the
+  pilot ships with;
+- with the trail at 90 s and the sweep at 30 s (`HUNT_SWEEP_MS`):
+  `WIN RATE: 4 of 10 for red against one machine at 1 v 1 (lost 4, drew 0,
+  timed out 2, other 0)`.
+
+In all three, 0 to 10 per cent of the `FIRE` lines in a match were refused as
+still cycling, and every held stop was cleared inside its match (the longest
+held stretch 18 s). The losses are the exchange of fire: the machine hit about
+once a second from first contact, and in every lost match the pilot took more
+hits than it scored. Every timeout was a tank with a track shot away: two
+could not move at all, and the rest hunted at a crawl, the plot about 600 m
+off taking 88 to 211 s to reach, so the course leg never ran and the sweep
+barely moved; twice the search after the sweep found the machine again and
+the pilot won.
+
+**The live commander lane.** A second ignored lane,
+`crates/mush-bot/tests/arena_live_commander.rs`, flies the same rig, poses and
+seven-minute cap for five matches with `bots/arena/commander.toml`'s commander
+and its real model. It prints `LIVE COMMANDER: {w} of 5 for red against one
+machine at 1 v 1 (…)`, one line a match with the commander's calls and what
+became of them (applied, late, overruled, invalid, errors, and why it stopped
+if it did), and a `COST:` line from the cost ledger. **It spends real money**:
+the lead's live smoke of 2026-09-29 made 370 calls over five matches for 0.0706
+US dollars, about 1.4 US cents a match, about 410 ms a call. So CI never runs
+it and never sets its variables; the lead runs it by hand:
+
+```sh
+export OPENROUTER_API_KEY=...
+MUSH_BOT_LIVE_COMMANDER=1 cargo test -p mush-bot --test arena_live_commander -- --ignored --nocapture
+```
+
+The key must be **exported into the shell**: the test reads its own process
+environment, not `.env`, and hands the key to the bot it starts and nothing
+else. Opted in without the key, the lane fails rather than skips; without
+`MUSH_BOT_LIVE_COMMANDER=1` it prints a skip line and passes. An offline test
+in the same file, run with the bot's other tests, proves that the config it
+writes loads, validates and resolves its commander from the table.
 
 **From a goal.** A plain `--goal` can hand the character to the pilot: the goal
 model may answer with the action `arena` and a `side` (`red` or `blue`, in any
@@ -670,10 +730,12 @@ OpenRouter with reasoning off answered in a median 1 342 ms on default routing
 budget thinking and returned nothing. A commander answer is useful only inside
 the picture's own refresh, so send `reasoning = { enabled = false }` (and pin a
 fast provider when the latency matters). `bots/arena/commander.toml` does both;
-pinned to Together at `commander_ms = 1500` a five-minute match makes about 200
-calls for about three US cents. On default routing the median answer (1.3 s,
-the slowest measured 1.6 s) is inside the two-second bound with little room to
-spare, and five late answers in a row switch the commander off for the match.
+pinned to Together at `commander_ms = 1500`, the lead's live smoke of
+2026-09-29 made 370 calls over five matches for 0.0706 US dollars (about 1.4
+US cents a match, about 410 ms a call). On default routing the median answer
+(1.3 s, the slowest measured 1.6 s) is inside the two-second bound with little
+room to spare, and five late answers in a row switch the commander off for the
+match.
 
 ## Character, personality and voice
 

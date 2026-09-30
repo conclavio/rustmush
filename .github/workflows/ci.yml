@@ -377,14 +377,14 @@ jobs:
   # every match. REPORT-ONLY: it asserts only that ten matches finished; the
   # figure is the `WIN RATE:` line and one `match` line each in the log (the
   # owner's target is seven in ten; below it is input for a later machine cut,
-  # 16c Q-AJ5, not a failure). About forty minutes, so it runs on demand only,
-  # never on push or on the weekly schedule. It is the only job that runs
-  # `arena_win_rate`, which is `#[ignore]` for exactly that reason.
+  # 16c Q-AJ5, not a failure). About seventy-five minutes, so it runs on
+  # demand only, never on push or on the weekly schedule. It is the only job
+  # that runs `arena_win_rate`, which is `#[ignore]` for exactly that reason.
   bot-win-rate:
     name: Bot win rate against the machine (report-only)
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain (pinned by rust-toolchain.toml)
@@ -393,6 +393,12 @@ jobs:
           rustup toolchain install
           rustc --version
       - uses: Swatinem/rust-cache@v2
+      # The live commander lane `arena_live_commander_five_matches`
+      # (crates/mush-bot/tests/arena_live_commander.rs) is deliberately run by
+      # no job: it spends real money and CI never sets its variables (16c
+      # Q-AK4); naming it here is what the gated-test inventory asks of every
+      # ignored test. The lead runs it by hand with the key exported:
+      # MUSH_BOT_LIVE_COMMANDER=1 cargo test -p mush-bot --test arena_live_commander -- --ignored --nocapture
       - name: Bot win rate
         run: cargo test -p mush-bot --test arena_win_rate -- --ignored --nocapture
 

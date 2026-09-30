@@ -19,6 +19,12 @@
 //! The real bot binary still logs in at the SSH layer, with the password on the
 //! child's environment only ([`bot_command`]).
 //!
+//! **The posed lanes** (cut AK.3) — the win-rate lane and the live commander
+//! lane — fly through one function here, [`fly_posed`]: the same rig, the same
+//! two poses before every match, the same 420 s cap, one deadline for the
+//! whole flight, and a result ([`Posed`]) that always holds what there is to
+//! print and keep, however the flight ended.
+//!
 //! **The one cross-crate state-slot site** of the bot's tests is in [`boot`]: the
 //! account oracle installed into its module-state slot after composition, as
 //! every simulator lens does, because a simulator slot belongs to an ACCOUNT
@@ -26,6 +32,7 @@
 #![allow(dead_code)]
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
@@ -462,17 +469,34 @@ pub async fn pose(god: &mut Client, spec: &str) {
         .await;
 }
 
+/// The answers `@arena/pose` refuses with, one needle each (cut AK.3), read
+/// from the verb's own refusal sentences as text: the centre running, a cell
+/// off the window, a cell that is impassable or has no way out, a cell already
+/// another tank's opening cell, a heading out of range, a malformed line, and
+/// a server without the arena.
+pub const POSE_REFUSALS: [&str; 7] = [
+    "The simulator centre is running; set opening cells",
+    "is off the arena window.",
+    "is impassable, or has no way out.",
+    "opening cell.",
+    "Heading is 0 to 359.",
+    "Usage: ",
+    "The arena is not available on this server.",
+];
+
 /// **Re-pose a tank between matches** (cut AJ.4, the win-rate lane): as
 /// [`pose`], but a refusal is the answer's text, not a panic, so a lane that
 /// re-poses before every match can print it and carry on. `Ok` holds the
-/// `opens at cell` answer.
+/// `opens at cell` answer. **A refusal answers at once** (cut AK.3): any of
+/// [`POSE_REFUSALS`] ends the wait as `Err` with the answer's text, so a
+/// refused pose never costs the whole [`STEP_TIMEOUT`]; no answer inside it is
+/// an `Err` too.
 pub async fn try_pose(god: &mut Client, spec: &str) -> Result<String, String> {
-    match god
-        .answer(&format!("@arena/pose {spec}"), &["opens at cell"])
-        .await
-    {
-        (Some(_), text) => Ok(text),
-        (None, text) => Err(text),
+    let mut needles = vec!["opens at cell"];
+    needles.extend(POSE_REFUSALS);
+    match god.answer(&format!("@arena/pose {spec}"), &needles).await {
+        (Some(0), text) => Ok(text),
+        (_, text) => Err(text),
     }
 }
 
@@ -606,9 +630,27 @@ impl Landed {
 /// bot's working directory, through [`bot_command`] (the empty `.env`, no model
 /// key, the password on the child only).
 pub fn launch(rig: &Rig, config: &Path, name: &str, args: &[&str]) -> Flight {
+    launch_env(rig, config, name, args, &[])
+}
+
+/// [`launch`] with variables of the caller's on the child (cut AK.3): each
+/// `env` pair is set **after** [`bot_command`]'s removals, so it wins over
+/// them. The live commander lane passes its model key this way and nothing
+/// else does; the value is never printed.
+pub fn launch_env(
+    rig: &Rig,
+    config: &Path,
+    name: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Flight {
     let transcript = rig.dir.join("bot").join(format!("{name}.jsonl"));
     let report = rig.dir.join("bot").join(format!("{name}.json"));
-    let mut command = tokio::process::Command::from(bot_command(rig, config, PILOT_PASSWORD));
+    let mut child = bot_command(rig, config, PILOT_PASSWORD);
+    for (key, value) in env {
+        child.env(key, value);
+    }
+    let mut command = tokio::process::Command::from(child);
     command
         .args(args)
         .arg("--headless")
@@ -655,10 +697,116 @@ pub async fn land(flight: Flight, bound: Duration) -> Landed {
     }
 }
 
+/// **What a bot child left, whatever happened** (cut AK.3): as [`Landed`], but
+/// nothing is required. `code`, `stdout` and `stderr` are empty (`None`) when
+/// the child was stopped at [`try_land`]'s bound; `report` is `None` when there
+/// is no report or it does not read as JSON; the transcript is its raw text,
+/// a torn last line and all.
+pub struct Partial {
+    pub code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub transcript_text: String,
+    pub report_text: Option<String>,
+    pub report: Option<serde_json::Value>,
+}
+
+/// **Wait for the bot to finish, and never panic** (cut AK.3): at most
+/// `bound`; at the bound the flight's task is aborted, which drops the child
+/// (`kill_on_drop`, so it dies), and what exists on disk is read. A lane that
+/// must print its figure and keep its transcript whatever went wrong lands
+/// here; [`land`] stays for the tests that want a whole run or a failure.
+pub async fn try_land(flight: Flight, bound: Duration) -> Partial {
+    let Flight {
+        mut task,
+        transcript,
+        report,
+    } = flight;
+    let (code, stdout, stderr) = match tokio::time::timeout(bound, &mut task).await {
+        Ok(Ok(Ok(output))) => (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ),
+        Ok(Ok(Err(error))) => (None, String::new(), format!("the bot did not run: {error}")),
+        Ok(Err(error)) => (None, String::new(), format!("the bot's task: {error}")),
+        Err(_) => {
+            task.abort();
+            let _ = task.await;
+            (None, String::new(), String::new())
+        }
+    };
+    let transcript_text = std::fs::read_to_string(&transcript).unwrap_or_default();
+    let report_text = std::fs::read_to_string(&report).ok();
+    let report = report_text
+        .as_deref()
+        .and_then(|text| serde_json::from_str(text).ok());
+    Partial {
+        code,
+        stdout,
+        stderr,
+        transcript_text,
+        report_text,
+        report,
+    }
+}
+
+/// Why a wait for a line while the bot flies ended without it (cut AK.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ended {
+    /// The bot's own task finished first.
+    Bot,
+    /// The wait's limit came first.
+    Timeout,
+}
+
+/// **Wait for `needle` in `client`'s stream after byte `from` while the bot
+/// flies, and never panic** (cut AK.3), at most `limit`: the byte just past
+/// it, `Err(Ended::Bot)` when the bot's task finished first, or
+/// `Err(Ended::Timeout)` at the limit. The flight's task is only looked at,
+/// never consumed, so the caller can still land it. A bot that finished is
+/// given one short last look, so a line it saw as it exited is not lost to
+/// the race between its exit and God's own copy of the announcement.
+pub async fn try_await_line(
+    client: &mut Client,
+    from: usize,
+    needle: &str,
+    flight: &mut Flight,
+    limit: Duration,
+) -> Result<usize, Ended> {
+    let past = |client: &Client| {
+        let at = client
+            .seen
+            .get(from..)
+            .and_then(|tail| tail.find(needle))
+            .unwrap_or(0);
+        from + at + needle.len()
+    };
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if client
+            .watch(from, needle, left.min(Duration::from_secs(1)))
+            .await
+        {
+            return Ok(past(client));
+        }
+        if flight.task.is_finished() {
+            if client.watch(from, needle, Duration::from_secs(2)).await {
+                return Ok(past(client));
+            }
+            return Err(Ended::Bot);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Ended::Timeout);
+        }
+    }
+}
+
 /// **Wait for `needle` in `client`'s stream after byte `from` while the bot
 /// flies** (cut AJ.4), at most `limit`: the byte just past it. A bot that ends
 /// first fails the wait with its own output, so a blocker reads as itself and
-/// not as a timeout.
+/// not as a timeout. [`try_await_line`] with its two ends made panics.
 pub async fn await_line(
     client: &mut Client,
     from: usize,
@@ -666,26 +814,14 @@ pub async fn await_line(
     flight: &mut Flight,
     limit: Duration,
 ) -> usize {
-    let deadline = tokio::time::Instant::now() + limit;
-    loop {
-        if client.watch(from, needle, Duration::from_secs(1)).await {
-            let at = client
-                .seen
-                .get(from..)
-                .and_then(|tail| tail.find(needle))
-                .unwrap_or(0);
-            return from + at + needle.len();
-        }
-        if flight.task.is_finished() {
-            ended(flight, &format!("{needle:?}")).await;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!(
-                "no {needle:?} inside {} s; since the mark:\n{}",
-                limit.as_secs(),
-                client.seen.get(from..).unwrap_or("")
-            );
-        }
+    match try_await_line(client, from, needle, flight, limit).await {
+        Ok(past) => past,
+        Err(Ended::Bot) => ended(flight, &format!("{needle:?}")).await,
+        Err(Ended::Timeout) => panic!(
+            "no {needle:?} inside {} s; since the mark:\n{}",
+            limit.as_secs(),
+            client.seen.get(from..).unwrap_or("")
+        ),
     }
 }
 
@@ -772,4 +908,324 @@ pub fn bot_command_in(home: &Path, config: &Path, password: &str) -> std::proces
         .env(PASSWORD_ENV, password)
         .stdin(std::process::Stdio::null());
     command
+}
+
+// ---------------------------------------------------------------------------
+// Cut AK.3: the posed lanes (the win-rate lane and the live commander lane).
+// ---------------------------------------------------------------------------
+
+/// **Each posed match's length** before the centre calls it a timeout (cut
+/// AK.3, 16c Q-AK3): 420 s, so a fight the pilot is winning is finished
+/// rather than cut off (on AJ's 180 s cap five of ten timed out, every one
+/// one-sided). A timeout is its own column, never a loss.
+pub const MAX_DURATION_MS: u32 = 420_000;
+/// `[agent] max_seconds` in a posed lane's config: in arena mode it bounds
+/// each match (a claim starts it again), so it sits above the cap.
+pub const MAX_SECONDS: u64 = 540;
+/// The longest God waits for one match's end, boarding and startup included.
+pub const MATCH_WAIT: Duration = Duration::from_secs(600);
+/// The two poses, 500 m apart on the east-west road, facing each other.
+pub const POSES: [&str; 2] = ["RA=100 97 90", "BA=150 97 270"];
+/// The variable naming a directory a posed lane keeps its transcript
+/// (`{name}.jsonl`) and report (`{name}.json`) in (the rig's own directory
+/// is removed).
+pub const KEEP_ENV: &str = "MUSH_BOT_WIN_RATE_KEEP";
+
+/// What a posed lane flies: the flight's name (and the kept files' stem), how
+/// many matches, the whole flight's deadline measured from the launch, the
+/// config's extra tables, and variables for the child ([`launch_env`]).
+pub struct PosedPlan<'a> {
+    pub name: &'a str,
+    pub matches: usize,
+    pub deadline: Duration,
+    pub extra: &'a str,
+    pub env: &'a [(&'a str, &'a str)],
+}
+
+/// **What a posed flight left**, however it ended (cut AK.3).
+pub struct Posed {
+    /// What the bot left ([`try_land`]).
+    pub partial: Partial,
+    /// God's own `Match {n} is over ({word})` lines since the launch, by id.
+    pub ends: BTreeMap<u64, String>,
+    /// The match ends God waited for and heard.
+    pub heard: usize,
+    /// Why the flight ended before its last match's end, when it did:
+    /// `the bot ended`, `no match end inside 600 s` or `the {m}-minute
+    /// deadline`.
+    pub early: Option<String>,
+    /// Each refused pose: `None` before the launch, `Some(n)` after God heard
+    /// match `n` end.
+    pub refused: Vec<Option<u64>>,
+}
+
+impl Posed {
+    /// The report's `arena.matches`, in the order flown; none without a report.
+    pub fn flown(&self) -> &[serde_json::Value] {
+        self.partial
+            .report
+            .as_ref()
+            .and_then(|report| report["arena"]["matches"].as_array())
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// **The matches flown from muster**, keyed by id rather than by flying
+    /// order: a pose refused before the launch flags the first match flown,
+    /// and one refused after match `n` ended flags the first match flown whose
+    /// id is greater than `n` (the one those poses were for).
+    pub fn unposed(&self) -> BTreeSet<u64> {
+        let ids: Vec<u64> = self
+            .flown()
+            .iter()
+            .filter_map(|flown| flown["match"].as_u64())
+            .collect();
+        self.refused
+            .iter()
+            .filter_map(|after| match after {
+                None => ids.first().copied(),
+                Some(n) => ids.iter().copied().find(|id| id > n),
+            })
+            .collect()
+    }
+
+    /// `UNPOSED: {u} of {n} match(es) flew from muster.`, when any did.
+    pub fn unposed_line(&self) -> Option<String> {
+        let unposed = self.unposed().len();
+        (unposed > 0).then(|| {
+            format!(
+                "UNPOSED: {unposed} of {} match(es) flew from muster.",
+                self.flown().len()
+            )
+        })
+    }
+
+    /// `EARLY END: {why} after {n} match(es).`, when the flight ended early.
+    pub fn early_line(&self) -> Option<String> {
+        self.early
+            .as_ref()
+            .map(|why| format!("EARLY END: {why} after {} match(es).", self.heard))
+    }
+
+    /// The results, from the report when there is one, else from God's own
+    /// match-end lines.
+    pub fn outcome(&self) -> Outcome {
+        match &self.partial.report {
+            Some(report) => Outcome::from_report(report),
+            None => Outcome::from_lobby(&self.ends),
+        }
+    }
+}
+
+/// The line printed under the results line when the bot left no report.
+pub const NO_REPORT: &str = "NO REPORT: the figure is from the lobby's match-end lines.";
+
+/// **A posed lane's results** for red (cut AK.3): won, lost, drew, timed out,
+/// and anything else.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Outcome {
+    pub won: u64,
+    pub lost: u64,
+    pub drew: u64,
+    pub timed_out: u64,
+    pub other: u64,
+}
+
+impl Outcome {
+    /// From the report's `arena` block (`wins`, `losses`, `draws`,
+    /// `timeouts`, `other`).
+    pub fn from_report(report: &serde_json::Value) -> Outcome {
+        let count = |key: &str| report["arena"][key].as_u64().unwrap_or(0);
+        Outcome {
+            won: count("wins"),
+            lost: count("losses"),
+            drew: count("draws"),
+            timed_out: count("timeouts"),
+            other: count("other"),
+        }
+    }
+
+    /// From God's `Match {n} is over ({word})` lines: `red` a win, `blue` a
+    /// loss, `draw` a draw, `timeout` a timeout, anything else other.
+    pub fn from_lobby(ends: &BTreeMap<u64, String>) -> Outcome {
+        let mut outcome = Outcome::default();
+        for word in ends.values() {
+            match word.as_str() {
+                "red" => outcome.won += 1,
+                "blue" => outcome.lost += 1,
+                "draw" => outcome.drew += 1,
+                "timeout" => outcome.timed_out += 1,
+                _ => outcome.other += 1,
+            }
+        }
+        outcome
+    }
+
+    /// `{head}: {w} of {of} for red against one machine at 1 v 1 (lost {l},
+    /// drew {d}, timed out {t}, other {o})` — AJ's `WIN RATE` format exactly.
+    pub fn line(&self, head: &str, of: usize) -> String {
+        format!(
+            "{head}: {} of {of} for red against one machine at 1 v 1 (lost {}, drew {}, timed out {}, other {})",
+            self.won, self.lost, self.drew, self.timed_out, self.other
+        )
+    }
+}
+
+/// The match id of a `Match {n} is over (` line whose needle begins at the end
+/// of `before`: the digits after the last `Match ` in it.
+fn ended_id(before: &str) -> Option<u64> {
+    let at = before.rfind("Match ")?;
+    before.get(at + "Match ".len()..)?.trim().parse().ok()
+}
+
+/// **Every `Match {n} is over ({word})` line in `text`**, by id: the centre's
+/// own announcement, as God heard it in the lobby.
+pub fn match_ends(text: &str) -> BTreeMap<u64, String> {
+    const NEEDLE: &str = " is over (";
+    let mut ends = BTreeMap::new();
+    for (at, _) in text.match_indices(NEEDLE) {
+        let Some(id) = text.get(..at).and_then(ended_id) else {
+            continue;
+        };
+        let Some(word) = text
+            .get(at + NEEDLE.len()..)
+            .and_then(|tail| tail.split_once(')'))
+            .map(|(word, _)| word)
+        else {
+            continue;
+        };
+        if !word.is_empty() && word.chars().all(|c| c.is_ascii_alphanumeric()) {
+            ends.insert(id, word.to_owned());
+        }
+    }
+    ends
+}
+
+/// **Why a posed flight ended early** (cut AK.3), from how its last wait
+/// ended: `the bot ended`; at a wait whose `limit` was cut short of
+/// [`MATCH_WAIT`] by the flight's own `deadline`, `the {m}-minute deadline`;
+/// otherwise `no match end inside 600 s`.
+pub fn early_why(ended: Ended, limit: Duration, deadline: Duration) -> String {
+    match ended {
+        Ended::Bot => "the bot ended".to_owned(),
+        Ended::Timeout if limit < MATCH_WAIT => {
+            format!("the {}-minute deadline", deadline.as_secs() / 60)
+        }
+        Ended::Timeout => format!("no match end inside {} s", MATCH_WAIT.as_secs()),
+    }
+}
+
+/// **Fly a posed lane** (cut AK.3; both posed lanes call it): boot the rig
+/// with the AI fill and a [`MAX_DURATION_MS`] cap; God poses `RA` and `BA`
+/// ([`POSES`]) and walks to the Simulator Lobby; the bot flies `--arena red
+/// --matches {n}` on `[agent] max_seconds` [`MAX_SECONDS`] and the plan's
+/// extra tables; and after each `Match {n} is over (` God hears, God poses
+/// both tanks again for the next (the end consumed and cleared the last ones,
+/// the new ones survive the bot's re-claim a second later, and the lanes'
+/// `lead_start_grace_ms` of 5 s keeps its `SIM START` behind them).
+///
+/// **One deadline, measured from the launch**: each wait's limit is the
+/// lesser of [`MATCH_WAIT`] and what is left of it, so running out ends the
+/// loop like any other early end. The loop never panics: a bot that ends, a
+/// match that never ends and the deadline each end it, remembered in
+/// [`Posed::early`]. Then the bot is landed ([`try_land`], 120 s), and when
+/// [`KEEP_ENV`] names a directory its transcript (raw) and report (when there
+/// is one) are copied there **before** anything is printed or asserted.
+/// A refused pose is printed and recorded ([`Posed::refused`]), and the
+/// flight carries on.
+pub async fn fly_posed(plan: &PosedPlan<'_>) -> Posed {
+    let mut cfg = arena_config();
+    cfg.match_.startup_ms = 2_000;
+    cfg.match_.board_timeout_ms = 60_000;
+    cfg.match_.max_duration_ms = MAX_DURATION_MS;
+    let rig = boot(cfg, &[("pilot", "Pilot")]).await;
+
+    let mut god = Client::login(&rig, GOD_ACCOUNT, GOD_PASSWORD, "God").await;
+    let mut refused = Vec::new();
+    for spec in POSES {
+        if let Err(answer) = try_pose(&mut god, spec).await {
+            println!(
+                "the pose {spec} before the first match was refused: {}",
+                answer.trim()
+            );
+            refused.push(None);
+        }
+    }
+    walk_to_lobby(&mut god).await;
+
+    let config = bot_config_with(&rig, "pilot+Pilot", MAX_SECONDS, plan.extra);
+    let launched = god.seen.len();
+    let mut from = launched;
+    let count = plan.matches.to_string();
+    let start = tokio::time::Instant::now();
+    let mut flight = launch_env(
+        &rig,
+        &config,
+        plan.name,
+        &["--arena", "red", "--matches", &count],
+        plan.env,
+    );
+
+    // Each match's end, then the poses for the next.
+    let mut heard = 0;
+    let mut early = None;
+    while heard < plan.matches {
+        let left = plan.deadline.saturating_sub(start.elapsed());
+        let limit = left.min(MATCH_WAIT);
+        match try_await_line(&mut god, from, " is over (", &mut flight, limit).await {
+            Ok(past) => {
+                heard += 1;
+                let ended = god.seen.get(..past - " is over (".len()).and_then(ended_id);
+                from = past;
+                if heard == plan.matches {
+                    break;
+                }
+                for spec in POSES {
+                    if let Err(answer) = try_pose(&mut god, spec).await {
+                        match ended {
+                            Some(n) => {
+                                println!(
+                                    "the pose {spec} after match {n} was refused: {}",
+                                    answer.trim()
+                                );
+                                refused.push(Some(n));
+                            }
+                            // The centre's line always names its match; one
+                            // that did not cannot key a flag.
+                            None => println!(
+                                "the pose {spec} after an unnumbered match end was refused: {}",
+                                answer.trim()
+                            ),
+                        }
+                    }
+                }
+            }
+            Err(why) => {
+                early = Some(early_why(why, limit, plan.deadline));
+                break;
+            }
+        }
+    }
+
+    let partial = try_land(flight, Duration::from_secs(120)).await;
+    if let Some(keep) = std::env::var_os(KEEP_ENV) {
+        let keep = PathBuf::from(keep);
+        let _ = std::fs::create_dir_all(&keep);
+        let _ = std::fs::write(
+            keep.join(format!("{}.jsonl", plan.name)),
+            &partial.transcript_text,
+        );
+        if let Some(text) = &partial.report_text {
+            let _ = std::fs::write(keep.join(format!("{}.json", plan.name)), text);
+        }
+    }
+    let ends = match_ends(god.seen.get(launched..).unwrap_or(""));
+    god.close().await;
+    drop(rig);
+    Posed {
+        partial,
+        ends,
+        heard,
+        early,
+        refused,
+    }
 }

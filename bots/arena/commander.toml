@@ -65,8 +65,9 @@ commander_from_session = false
 # through the whole token budget. An answer is dropped as late after two
 # seconds while a contact is held, and the call is given up there, and five
 # late answers in a row switch the commander off for the match, so never
-# enable reasoning here. Pinned to Together a five-minute match makes about
-# 200 calls for about three US cents.
+# enable reasoning here. Pinned to Together, the lead's live smoke of
+# 2026-09-29 made 370 calls over five matches for 0.0706 US dollars: about
+# 1.4 US cents a match, about 410 ms a call.
 [arena.commander_model]
 endpoint = "https://openrouter.ai/api/v1/chat/completions"
 name = "deepseek/deepseek-v4.1-flash"

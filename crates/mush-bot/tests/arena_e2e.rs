@@ -31,6 +31,9 @@
 //!   hands the pod to the pilot, which flies from the walk to `FIRE` with no
 //!   commander and never asks that model anything again.
 //!
+//! And (cut AK.3) **a refused pose answers at once**: `try_pose` comes back
+//! with the verb's refusal sentence, not after the whole step timeout.
+//!
 //! No test here calls a model API: every model is a `wiremock` stub, and every
 //! child runs from a directory holding an empty `.env` with every model key
 //! removed ([`arena_rig::bot_command`]).
@@ -791,6 +794,49 @@ cost_currency = "USD"
     assert_eq!(matches[0]["result"], "abort");
     assert_eq!(landed.report["success"], false);
     assert_eq!(landed.code, Some(2), "stderr:\n{}", landed.stderr);
+    god.close().await;
+    drop(rig);
+}
+
+/// **A refused pose answers at once** (cut AK.3): `arena_rig::try_pose` ends
+/// its wait on the verb's own refusal sentence rather than sitting out the
+/// whole `STEP_TIMEOUT`, so a posed lane that re-poses before every match
+/// loses a moment, not twenty seconds and its match's opening, to a refusal.
+/// A cell off the window and a heading out of range each come back as `Err`
+/// with the verb's sentence well inside a quarter of the step timeout (the
+/// old wait, which knew only `opens at cell`, took all of it); a good pose
+/// still comes back `Ok`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_pose_answers_at_once() {
+    let _one_world = ARENA.lock().await;
+    tokio::time::timeout(Duration::from_secs(90), refuse_poses())
+        .await
+        .expect("the poses are answered inside 90 s");
+}
+
+async fn refuse_poses() {
+    let rig = arena_rig::boot(arena_rig::arena_config(), &[("pilot", "Pilot")]).await;
+    let mut god =
+        arena_rig::Client::login(&rig, arena_rig::GOD_ACCOUNT, arena_rig::GOD_PASSWORD, "God")
+            .await;
+    for (spec, sentence) in [
+        ("RA=5000 5000 90", "is off the arena window."),
+        ("RA=100 97 400", "Heading is 0 to 359."),
+    ] {
+        let asked = Instant::now();
+        let answer = arena_rig::try_pose(&mut god, spec).await;
+        let took = asked.elapsed();
+        let text = answer.expect_err(spec);
+        assert!(text.contains(sentence), "{spec}: {text}");
+        assert!(
+            took < arena_rig::STEP_TIMEOUT / 4,
+            "{spec} was refused after {took:?}, not at once: {text}"
+        );
+    }
+    let text = arena_rig::try_pose(&mut god, "RA=100 97 90")
+        .await
+        .expect("a pose on the road is taken");
+    assert!(text.contains("opens at cell"), "{text}");
     god.close().await;
     drop(rig);
 }

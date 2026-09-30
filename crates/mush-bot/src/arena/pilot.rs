@@ -196,8 +196,12 @@ pub const SEARCH_SPOT: char = 'B';
 /// `Contact BA lost.`).
 pub const HUNT_STALE_PLOT_MS: u64 = 6_000;
 /// A hunt starts only from a trail whose plot is at most this old; the course
-/// leg runs while it is younger.
-pub const HUNT_TRAIL_MS: u64 = 45_000;
+/// leg runs while it is younger. At its ceiling since the re-measure, which
+/// raised it from 45 s after a tank slowed by a lost track took 88 s to reach
+/// its plot; the course leg still never ran at 90 s (every hunting tank took
+/// 88 to 211 s to reach its plot), so the value was kept on the tie-breakers
+/// of three runs (fewer timeouts), not on a measured effect.
+pub const HUNT_TRAIL_MS: u64 = 90_000;
 /// The estimated speed of a contact lost with no published track.
 pub const HUNT_ASSUMED_MPS: f64 = 8.0;
 /// The course leg's aim runs at most this far past the last plot.
