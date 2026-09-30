@@ -133,6 +133,7 @@ bootstrap = ["help", "look"] # sent once after login in agent mode; scripts list
 # endpoint = "https://openrouter.ai/api/v1/chat/completions"
 # name = "deepseek/deepseek-v4.1-flash"
 # api_key_env = "OPENROUTER_API_KEY"
+# timeout_secs = 5           # the commander's own timeout is at most 10 s whatever this says
 # max_tokens = 200
 # reasoning = { enabled = false }  # a reasoning model must not think: answers go stale
 # provider = { order = ["Together"], allow_fallbacks = false }

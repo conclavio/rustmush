@@ -1,0 +1,726 @@
+[
+  {
+    "req": 83,
+    "class": "lost_contact_sound_hull",
+    "view": {
+      "contacts": [],
+      "doctrine": {
+        "band_m": 420,
+        "note": "BA is the only hostile and already damaged (turret, engine hits); orbiting at 420 m keeps both weapons cycling while avoiding a clean front shot, since our rear",
+        "sense": "auto",
+        "stance": "orbit",
+        "target": "BA"
+      },
+      "events": [
+        "Miss on BA: the round went wide.",
+        "FIRE machine_gun refused. Still cycling: 1 s to go.",
+        "Hit on BA: engine.",
+        "Lock on BA broken.",
+        "Hit.",
+        "Contact BA lost."
+      ],
+      "lock": null,
+      "own": {
+        "cs": "RA",
+        "hdg": 141,
+        "kph": 41,
+        "pos": [
+          491,
+          676
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 111/120",
+          "hull": "intact 191/200; front 400/400, left 226/250, rear 0/150, right 250/250, top 100/100",
+          "left_track": "intact 100/100; left 0/120",
+          "right_track": "intact 100/100; right 120/120",
+          "turret": "intact 150/150; front 350/350, left 202/220, rear 98/140, right 220/220"
+        },
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": 36,
+            "ready": false,
+            "rounds": 29
+          },
+          {
+            "id": "machine_gun",
+            "pct": 17,
+            "ready": false,
+            "rounds": 1620
+          }
+        ]
+      },
+      "t_s": 79
+    },
+    "reply": "{\"target\":null,\"stance\":\"withdraw\",\"band_m\":900,\"sense\":\"auto\",\"note\":\"BA contact lost and lock broken; no valid target to orbit. Weapons cycling and hull rear/left track already zeroed, so break away to reset and reacquire rather than drive blind.\"}",
+    "expect": "hunt"
+  },
+  {
+    "req": 123,
+    "class": "lost_contact_sound_hull",
+    "view": {
+      "contacts": [],
+      "doctrine": {
+        "band_m": 900,
+        "note": "No contacts, lock broken, hull rear and left track zeroed; disengage to reset and reacquire.",
+        "sense": "auto",
+        "stance": "withdraw",
+        "target": null
+      },
+      "events": [
+        "FIRE machine_gun refused. Still cycling: 1 s to go.",
+        "Hit on BA: engine.",
+        "Lock on BA broken.",
+        "Hit.",
+        "Contact BA lost.",
+        "Held: the ground ahead will not take the tank."
+      ],
+      "lock": null,
+      "own": {
+        "cs": "RA",
+        "hdg": 72,
+        "kph": 0,
+        "pos": [
+          619,
+          759
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 111/120",
+          "hull": "intact 191/200; front 400/400, left 226/250, rear 0/150, right 250/250, top 100/100",
+          "left_track": "intact 100/100; left 0/120",
+          "right_track": "intact 100/100; right 120/120",
+          "turret": "intact 150/150; front 350/350, left 202/220, rear 98/140, right 220/220"
+        },
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": null,
+            "ready": true,
+            "rounds": 29
+          },
+          {
+            "id": "machine_gun",
+            "pct": null,
+            "ready": true,
+            "rounds": 1610
+          }
+        ]
+      },
+      "t_s": 116
+    },
+    "reply": "{\"target\":null,\"stance\":\"withdraw\",\"band_m\":900,\"sense\":\"auto\",\"note\":\"No contacts and lock broken; hull rear and left track zeroed, so disengage to reset and reacquire.\"}",
+    "expect": "hunt"
+  },
+  {
+    "req": 171,
+    "class": "lost_contact_sound_hull",
+    "view": {
+      "contacts": [],
+      "doctrine": {
+        "band_m": 900,
+        "note": "No contacts and lock broken; immobilized with rear and left track zeroed, so withdraw to reset and reacquire.",
+        "sense": "auto",
+        "stance": "withdraw",
+        "target": null
+      },
+      "events": [
+        "FIRE machine_gun refused. Still cycling: 1 s to go.",
+        "Hit on BA: engine.",
+        "Lock on BA broken.",
+        "Hit.",
+        "Contact BA lost.",
+        "Held: the ground ahead will not take the tank."
+      ],
+      "lock": null,
+      "own": {
+        "cs": "RA",
+        "hdg": 72,
+        "kph": 0,
+        "pos": [
+          619,
+          759
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 111/120",
+          "hull": "intact 191/200; front 400/400, left 226/250, rear 0/150, right 250/250, top 100/100",
+          "left_track": "intact 100/100; left 0/120",
+          "right_track": "intact 100/100; right 120/120",
+          "turret": "intact 150/150; front 350/350, left 202/220, rear 98/140, right 220/220"
+        },
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": null,
+            "ready": true,
+            "rounds": 29
+          },
+          {
+            "id": "machine_gun",
+            "pct": null,
+            "ready": true,
+            "rounds": 1610
+          }
+        ]
+      },
+      "t_s": 161
+    },
+    "reply": "{\"target\":null,\"stance\":\"withdraw\",\"band_m\":900,\"sense\":\"auto\",\"note\":\"No contacts and lock broken; immobilized with rear and left track zeroed, so withdraw to reset and reacquire.\"}",
+    "expect": "hunt"
+  },
+  {
+    "req": 305,
+    "class": "lost_contact_sound_hull",
+    "view": {
+      "contacts": [],
+      "doctrine": {
+        "band_m": 900,
+        "note": "BA lost with no lock; left track destroyed and left/rear/right armor gone, so keep withdrawing to stay out of the fight.",
+        "sense": "auto",
+        "stance": "withdraw",
+        "target": null
+      },
+      "events": [
+        "Miss on BA: the round went wide.",
+        "Miss on BA: the round went wide.",
+        "FIRE machine_gun refused. Still cycling: 1 s to go.",
+        "Lock on BA broken.",
+        "Miss.",
+        "Contact BA lost."
+      ],
+      "lock": null,
+      "own": {
+        "cs": "RA",
+        "hdg": 27,
+        "kph": 20,
+        "pos": [
+          830,
+          917
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 84/120",
+          "hull": "intact 108/200; front 253/400, left 46/250, rear 0/150, right 0/250, top 100/100",
+          "left_track": "destroyed 0/100; left 0/120",
+          "right_track": "intact 100/100; right 6/120",
+          "turret": "intact 140/150; front 323/350, left 49/220, rear 0/140, right 127/220"
+        },
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": null,
+            "ready": true,
+            "rounds": 25
+          },
+          {
+            "id": "machine_gun",
+            "pct": null,
+            "ready": true,
+            "rounds": 1450
+          }
+        ]
+      },
+      "t_s": 107
+    },
+    "reply": "{\"target\":null,\"stance\":\"withdraw\",\"band_m\":900,\"sense\":\"auto\",\"note\":\"No lock and BA lost; left track destroyed, rear/right armor gone, so keep withdrawing to stay out of the fight.\"}",
+    "expect": "hunt"
+  },
+  {
+    "req": 621,
+    "class": "lost_contact_sound_hull",
+    "view": {
+      "contacts": [],
+      "doctrine": {
+        "band_m": 900,
+        "note": "No contacts and lock lost; left hull at 58/250 and both weapons cycling, so withdraw to 900 m to rebuild the picture and reload.",
+        "sense": "auto",
+        "stance": "withdraw",
+        "target": null
+      },
+      "events": [
+        "FIRE machine_gun refused. Still cycling: 1 s to go.",
+        "FIRE machine_gun refused. Still cycling: 1 s to go.",
+        "Miss on BA: the round went wide.",
+        "Lock on BA broken.",
+        "FIRE machine_gun refused. No lock: LOCK a contact first.",
+        "Contact BA lost."
+      ],
+      "lock": null,
+      "own": {
+        "cs": "RA",
+        "hdg": 39,
+        "kph": 27,
+        "pos": [
+          1020,
+          640
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 120/120",
+          "hull": "intact 200/200; front 400/400, left 58/250, rear 81/150, right 250/250, top 100/100",
+          "left_track": "intact 100/100; left 105/120",
+          "right_track": "intact 100/100; right 120/120",
+          "turret": "intact 150/150; front 350/350, left 214/220, rear 137/140, right 220/220"
+        },
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": null,
+            "ready": true,
+            "rounds": 34
+          },
+          {
+            "id": "machine_gun",
+            "pct": null,
+            "ready": true,
+            "rounds": 1790
+          }
+        ]
+      },
+      "t_s": 55
+    },
+    "reply": "{\"target\":null,\"stance\":\"withdraw\",\"band_m\":900,\"sense\":\"auto\",\"note\":\"No contacts and lock lost; left hull at 58/250 and both weapons cycling, so withdraw to 900 m to rebuild the picture and reload.\"}",
+    "expect": "hunt"
+  },
+  {
+    "req": 735,
+    "class": "lost_contact_sound_hull",
+    "view": {
+      "contacts": [],
+      "doctrine": {
+        "band_m": 900,
+        "note": "No valid hostile contact; BA lock lost and no red designator, so hold fire and open range to 900 m while weapons cycle.",
+        "sense": "auto",
+        "stance": "withdraw",
+        "target": null
+      },
+      "events": [
+        "Hit on BA: hull.",
+        "FIRE machine_gun refused. Still cycling: 1 s to go.",
+        "FIRE machine_gun refused. Still cycling: 1 s to go.",
+        "Miss on BA: the line was blocked.",
+        "Lock on BA broken.",
+        "Contact BA lost."
+      ],
+      "lock": null,
+      "own": {
+        "cs": "RA",
+        "hdg": 212,
+        "kph": 21,
+        "pos": [
+          1866,
+          744
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 120/120",
+          "hull": "intact 200/200; front 400/400, left 58/250, rear 81/150, right 250/250, top 100/100",
+          "left_track": "intact 100/100; left 105/120",
+          "right_track": "intact 100/100; right 120/120",
+          "turret": "intact 150/150; front 350/350, left 214/220, rear 137/140, right 220/220"
+        },
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": null,
+            "ready": true,
+            "rounds": 32
+          },
+          {
+            "id": "machine_gun",
+            "pct": null,
+            "ready": true,
+            "rounds": 1710
+          }
+        ]
+      },
+      "t_s": 161
+    },
+    "reply": "{\"target\":null,\"stance\":\"withdraw\",\"band_m\":900,\"sense\":\"auto\",\"note\":\"No hostile contact and lock lost; hold fire and open range to 900 m while weapons cycle.\"}",
+    "expect": "hunt"
+  },
+  {
+    "req": 7,
+    "class": "hostile_held_sound_hull",
+    "view": {
+      "contacts": [
+        {
+          "age": 0,
+          "brg": 89,
+          "course": null,
+          "d": "BA",
+          "mps": null,
+          "rng": 500,
+          "side": "blue"
+        }
+      ],
+      "doctrine": {
+        "band_m": 450,
+        "note": "Contact BA is blue, same side as me (RA); no hostile designator exists, so hold orbit at 450 m and keep sensors on it without committing to an attack.",
+        "sense": "auto",
+        "stance": "orbit",
+        "target": "BA"
+      },
+      "events": [
+        "phase: running (match 1)",
+        "New contact X1.",
+        "Power online.",
+        "Contact X1 identified: BA, blue.",
+        "Locked on BA, 53% to hit.",
+        "Miss on BA: the round went wide."
+      ],
+      "lock": "BA",
+      "own": {
+        "cs": "RA",
+        "hdg": 119,
+        "kph": 3,
+        "pos": [
+          1005,
+          974
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 120/120",
+          "hull": "intact 200/200; front 400/400, left 250/250, rear 150/150, right 250/250, top 100/100",
+          "left_track": "intact 100/100; left 120/120",
+          "right_track": "intact 100/100; right 120/120",
+          "turret": "intact 150/150; front 350/350, left 220/220, rear 140/140, right 220/220"
+        },
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": null,
+            "ready": false,
+            "rounds": 40
+          },
+          {
+            "id": "machine_gun",
+            "pct": null,
+            "ready": false,
+            "rounds": 2000
+          }
+        ]
+      },
+      "t_s": 2
+    },
+    "reply": "{\"target\":null,\"stance\":\"withdraw\",\"band_m\":900,\"sense\":\"auto\",\"note\":\"BA is blue, same side as me (RA); no hostile designator exists, so disengage to 900 m and break lock rather than fire on a friendly.\"}",
+    "expect": "orbit"
+  },
+  {
+    "req": 9,
+    "class": "hostile_held_sound_hull",
+    "view": {
+      "contacts": [
+        {
+          "age": 0,
+          "brg": 89,
+          "course": null,
+          "d": "BA",
+          "mps": null,
+          "rng": 500,
+          "side": "blue"
+        }
+      ],
+      "doctrine": {
+        "band_m": 900,
+        "note": "BA is blue, same side as me (RA); no hostile designator exists, so disengage to 900 m and break lock rather than fire on a friendly.",
+        "sense": "auto",
+        "stance": "withdraw",
+        "target": null
+      },
+      "events": [
+        "New contact X1.",
+        "Power online.",
+        "Contact X1 identified: BA, blue.",
+        "Locked on BA, 53% to hit.",
+        "Miss on BA: the round went wide.",
+        "Hit on BA: turret."
+      ],
+      "lock": "BA",
+      "own": {
+        "cs": "RA",
+        "hdg": 187,
+        "kph": 11,
+        "pos": [
+          1006,
+          970
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 120/120",
+          "hull": "intact 200/200; front 400/400, left 250/250, rear 150/150, right 250/250, top 100/100",
+          "left_track": "intact 100/100; left 120/120",
+          "right_track": "intact 100/100; right 120/120",
+          "turret": "intact 150/150; front 350/350, left 220/220, rear 140/140, right 220/220"
+        },
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": 52,
+            "ready": false,
+            "rounds": 39
+          },
+          {
+            "id": "machine_gun",
+            "pct": 25,
+            "ready": false,
+            "rounds": 1990
+          }
+        ]
+      },
+      "t_s": 4
+    },
+    "reply": "{\"target\":null,\"stance\":\"withdraw\",\"band_m\":900,\"sense\":\"auto\",\"note\":\"Only contact BA is blue, same side as RA; no hostile designator exists, so disengage to 900 m and break lock rather than keep firing on a friendly.\"}",
+    "expect": "orbit"
+  },
+  {
+    "req": 269,
+    "class": "hostile_held_sound_hull",
+    "view": {
+      "contacts": [
+        {
+          "age": 0,
+          "brg": 79,
+          "course": null,
+          "d": "BA",
+          "mps": null,
+          "rng": 600,
+          "side": "blue"
+        }
+      ],
+      "doctrine": {
+        "band_m": 900,
+        "note": "Mobility crippled (left track destroyed, right track damaged) and left/right/rear hull armor gone, so cannot maneuver to present a side or front; withdraw to 90",
+        "sense": "auto",
+        "stance": "withdraw",
+        "target": "BA"
+      },
+      "events": [
+        "Hit on the hull.",
+        "Hit on BA: hull.",
+        "FIRE machine_gun refused. Still cycling: 1 s to go.",
+        "Hit on the hull.",
+        "FIRE machine_gun refused. Still cycling: 1 s to go.",
+        "Hit on BA: hull."
+      ],
+      "lock": "BA",
+      "own": {
+        "cs": "RA",
+        "hdg": 24,
+        "kph": 20,
+        "pos": [
+          841,
+          868
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 93/120",
+          "hull": "intact 117/200; front 394/400, left 70/250, rear 0/150, right 0/250, top 100/100",
+          "left_track": "destroyed 0/100; left 0/120",
+          "right_track": "intact 100/100; right 6/120",
+          "turret": "intact 149/150; front 335/350, left 190/220, rear 0/140, right 151/220"
+        },
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": 42,
+            "ready": false,
+            "rounds": 29
+          },
+          {
+            "id": "machine_gun",
+            "pct": 19,
+            "ready": false,
+            "rounds": 1610
+          }
+        ]
+      },
+      "t_s": 73
+    },
+    "reply": "{\"target\":\"BA\",\"stance\":\"withdraw\",\"band_m\":900,\"sense\":\"auto\",\"note\":\"Mobility crippled (left track destroyed, right damaged) and left/right/rear hull armor gone; cannot maneuver to show a side or front, so withdraw to keep range and avoid further hits.\"}",
+    "expect": "orbit"
+  },
+  {
+    "req": 497,
+    "class": "failing_hull",
+    "view": {
+      "contacts": [
+        {
+          "age": 2,
+          "brg": 80,
+          "course": null,
+          "d": "BA",
+          "mps": null,
+          "rng": 600,
+          "side": "blue"
+        }
+      ],
+      "doctrine": {
+        "band_m": 450,
+        "note": "BA is the only contact and locked; keep orbiting at 450 m so our zeroed right side and 11/140 turret rear stay off his gun line while the cannon finishes cyclin",
+        "sense": "auto",
+        "stance": "orbit",
+        "target": "BA"
+      },
+      "events": [
+        "Hit on the hull.",
+        "Hit on the hull.",
+        "FIRE machine_gun refused. Still cycling: 1 s to go.",
+        "Hit on BA: turret.",
+        "Hit on the turret.",
+        "Lock on BA broken."
+      ],
+      "lock": null,
+      "own": {
+        "cs": "RA",
+        "hdg": 348,
+        "kph": 41,
+        "pos": [
+          819,
+          877
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 120/120",
+          "hull": "intact 57/200; front 400/400, left 172/250, rear 75/150, right 0/250, top 100/100",
+          "left_track": "intact 100/100; left 120/120",
+          "right_track": "intact 100/100; right 99/120",
+          "turret": "intact 150/150; front 350/350, left 184/220, rear 11/140, right 169/220"
+        },
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": 38,
+            "ready": false,
+            "rounds": 33
+          },
+          {
+            "id": "machine_gun",
+            "pct": 7,
+            "ready": false,
+            "rounds": 1760
+          }
+        ]
+      },
+      "t_s": 46
+    },
+    "reply": "{\"target\":\"BA\",\"stance\":\"withdraw\",\"band_m\":900,\"sense\":\"auto\",\"note\":\"Right side armor is gone and lock is broken; break away to 900 m to reopen range and rebuild the lock before re-engaging.\"}",
+    "expect": "withdraw"
+  },
+  {
+    "req": 499,
+    "class": "failing_hull",
+    "view": {
+      "contacts": [],
+      "doctrine": {
+        "band_m": 900,
+        "note": "Right side armor is gone and lock is broken; break away to 900 m to reopen range and rebuild the lock before re-engaging.",
+        "sense": "auto",
+        "stance": "withdraw",
+        "target": "BA"
+      },
+      "events": [
+        "FIRE machine_gun refused. Still cycling: 1 s to go.",
+        "Hit on BA: turret.",
+        "Hit on the turret.",
+        "Lock on BA broken.",
+        "Miss.",
+        "Contact BA lost."
+      ],
+      "lock": null,
+      "own": {
+        "cs": "RA",
+        "hdg": 348,
+        "kph": 41,
+        "pos": [
+          815,
+          897
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 120/120",
+          "hull": "intact 57/200; front 400/400, left 172/250, rear 75/150, right 0/250, top 100/100",
+          "left_track": "intact 100/100; left 120/120",
+          "right_track": "intact 100/100; right 99/120",
+          "turret": "intact 150/150; front 350/350, left 184/220, rear 11/140, right 169/220"
+        },
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": 38,
+            "ready": false,
+            "rounds": 33
+          },
+          {
+            "id": "machine_gun",
+            "pct": 7,
+            "ready": false,
+            "rounds": 1760
+          }
+        ]
+      },
+      "t_s": 48
+    },
+    "reply": "{\"target\":null,\"stance\":\"withdraw\",\"band_m\":900,\"sense\":\"auto\",\"note\":\"Lock broken and BA lost; right hull is at 0/250 and turret rear at 11/140, so break contact to 900 m to rebuild the lock and avoid exposing the thin rear while weapons cycle.\"}",
+    "expect": "withdraw"
+  },
+  {
+    "req": 501,
+    "class": "failing_hull",
+    "view": {
+      "contacts": [],
+      "doctrine": {
+        "band_m": 900,
+        "note": "Lock broken and BA lost; right hull is at 0/250 and turret rear at 11/140, so break contact to 900 m to rebuild the lock and avoid exposing the thin rear while ",
+        "sense": "auto",
+        "stance": "withdraw",
+        "target": null
+      },
+      "events": [
+        "FIRE machine_gun refused. Still cycling: 1 s to go.",
+        "Hit on BA: turret.",
+        "Hit on the turret.",
+        "Lock on BA broken.",
+        "Miss.",
+        "Contact BA lost."
+      ],
+      "lock": null,
+      "own": {
+        "cs": "RA",
+        "hdg": 348,
+        "kph": 41,
+        "pos": [
+          815,
+          897
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 120/120",
+          "hull": "intact 57/200; front 400/400, left 172/250, rear 75/150, right 0/250, top 100/100",
+          "left_track": "intact 100/100; left 120/120",
+          "right_track": "intact 100/100; right 99/120",
+          "turret": "intact 150/150; front 350/350, left 184/220, rear 11/140, right 169/220"
+        },
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": 38,
+            "ready": false,
+            "rounds": 33
+          },
+          {
+            "id": "machine_gun",
+            "pct": 7,
+            "ready": false,
+            "rounds": 1760
+          }
+        ]
+      },
+      "t_s": 49
+    },
+    "reply": "{\"target\":null,\"stance\":\"withdraw\",\"band_m\":900,\"sense\":\"auto\",\"note\":\"Lock broken and BA lost; right hull at 0/250 and turret rear at 11/140, so break contact to 900 m to rebuild the lock and avoid exposing the thin rear while weapons cycle.\"}",
+    "expect": "withdraw"
+  }
+]

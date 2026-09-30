@@ -1663,7 +1663,9 @@ impl App {
                 // Each match has the whole run-time limit to itself.
                 crate::arena::LaneEvent::Claimed => self.goal_started = Instant::now(),
                 // The commander's `arena-doctrine`, `commander-stale`,
-                // `commander-invalid` and `commander-off` (cut AJ.3).
+                // `commander-invalid`, `commander-error` and `commander-off`
+                // (cut AJ.3), `commander-overruled` and `doctrine-lapsed`
+                // (cut AK.2).
                 crate::arena::LaneEvent::Record { kind, data } => self.log.record(&kind, data)?,
             }
         }

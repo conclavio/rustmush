@@ -451,7 +451,10 @@ pub struct Picture {
     /// How long the last drop lasted.
     pub away_ms: u64,
     /// When `Power online.` first came this match (cut AJ.3: the commander's
-    /// picture counts its seconds from it).
+    /// picture counts its seconds from it) — or, after a resume into a powered
+    /// tank, the first of `Power is already online.`, a `Back aboard` block's
+    /// `  Power online.` row, or a running match's `STATUS` head reading
+    /// `power online` (cut AK.2).
     pub power_ms: Option<u64>,
     pub own: Own,
     pub contacts: BTreeMap<String, Contact>,
@@ -699,6 +702,11 @@ impl Picture {
                 self.own.name = Some(head.name.clone());
                 self.own.chassis = head.chassis.clone();
                 self.own.power = head.power;
+                // The tank's own panel says the power is up in a running
+                // match (cut AK.2): a resume read no `Power online.`.
+                if head.power == Power::Online && matches!(self.phase, Phase::Running { .. }) {
+                    self.power_ms.get_or_insert(now_ms);
+                }
                 self.own.speed_kph = head.kph;
                 self.own.heading_deg = head.heading_deg;
                 self.own.held = head
@@ -889,6 +897,9 @@ impl Picture {
             Line::PowerAlreadyOnline => {
                 journal = false;
                 self.own.power = Power::Online;
+                // A resume into a powered tank (cut AK.2): the commander's
+                // `t_s` counts from here when no `Power online.` was read.
+                self.power_ms.get_or_insert(now_ms);
                 self.touch();
             }
             Line::PowerNotOnline => {
@@ -961,6 +972,9 @@ impl Picture {
             Line::CatchupPower { power } => {
                 if std::mem::replace(&mut self.open.catchup, false) {
                     self.own.power = *power;
+                    if *power == Power::Online {
+                        self.power_ms.get_or_insert(now_ms);
+                    }
                     self.touch();
                 }
             }
@@ -3398,6 +3412,81 @@ mod tests {
         assert_eq!(p.own.power, Power::Starting);
         feed(&mut p, &[(40, "No contacts."), (41, "  Power online.")]);
         assert_eq!(p.own.power, Power::Starting);
+    }
+
+    #[test]
+    fn power_ms_is_set_by_every_sentence_that_says_power_is_up() {
+        let running = || Picture {
+            phase: Phase::Running { match_id: 1 },
+            following: Some(1),
+            side: Some(Side::Red),
+            ..Picture::default()
+        };
+        // `Power online.` itself, the ordinary start.
+        let mut p = running();
+        feed(&mut p, &[(1_500, "Power online.")]);
+        assert_eq!(p.power_ms, Some(1_500));
+        // `Power is already online.` (a `STARTUP` into a powered tank).
+        let mut p = running();
+        feed(&mut p, &[(1_000, "Power is already online.")]);
+        assert_eq!(p.power_ms, Some(1_000));
+        // The first sentence counts; a later one does not move it.
+        feed(&mut p, &[(2_000, "Power online.")]);
+        assert_eq!(p.power_ms, Some(1_000));
+        // The `Back aboard` block's own row, and only inside the block.
+        let mut p = running();
+        feed(&mut p, &[(1_000, "  Power online.")]);
+        assert_eq!(p.power_ms, None, "the row alone is not the tank's");
+        feed(
+            &mut p,
+            &[
+                (2_000, "Back aboard RA after 45 s away."),
+                (2_000, "  The machine had no state."),
+                (2_010, "  Power online."),
+            ],
+        );
+        assert_eq!(p.power_ms, Some(2_010));
+        let mut p = running();
+        feed(
+            &mut p,
+            &[
+                (2_000, "Back aboard RA after 45 s away."),
+                (2_010, "  Power starting."),
+            ],
+        );
+        assert_eq!(p.power_ms, None, "starting is not up");
+        // A running match's `STATUS` head reading `power online`.
+        let mut p = running();
+        feed(
+            &mut p,
+            &[
+                (3_000, "Callsign RA."),
+                (3_000, "Red Tank 1: power online, 30 kph, heading 090°"),
+            ],
+        );
+        assert_eq!(p.power_ms, Some(3_000));
+        // …and not before the match runs, nor with the power off.
+        let mut seated = Picture {
+            phase: Phase::Seated { match_id: 1 },
+            ..running()
+        };
+        feed(
+            &mut seated,
+            &[
+                (3_000, "Callsign RA."),
+                (3_000, "Red Tank 1: power online, 30 kph, heading 090°"),
+            ],
+        );
+        assert_eq!(seated.power_ms, None);
+        let mut p = running();
+        feed(
+            &mut p,
+            &[
+                (3_000, "Callsign RA."),
+                (3_000, "Red Tank 1: power off, 0 kph, heading 090°"),
+            ],
+        );
+        assert_eq!(p.power_ms, None);
     }
 
     #[test]

@@ -17,15 +17,20 @@
 //! one a shot) and `held` (a [`HeldKnob`]: ground that holds the tank until a
 //! turn far enough from where it stopped, or a reverse, frees it — an
 //! assumption about the server, written from the help and the bot's own
-//! transcripts).
+//! transcripts). A fourth, cut AK.2's `hull_internals`, is the hull's
+//! internals `STATUS` prints: `(60, 60)` unless a test sets it, before the
+//! fight or during it.
 use std::collections::BTreeMap;
 
 use mush_bot::arena::{
     CommanderReply, Doctrine, Lane, LaneEvent, Purpose, Send, Side,
-    commander::{OFF_BUDGET, OFF_DESTROYED, OFF_MATCH_OVER, OFF_STALE, Stance},
+    commander::{
+        ERRORS_IN_ROW, HOLD_MAX_S, OFF_BUDGET, OFF_DESTROYED, OFF_ERRORS, OFF_MATCH_OVER,
+        OFF_STALE, Stance,
+    },
     lobby::{Centre, Step},
     picture::{FIRE_SLACK_MAX_MS, Power, bearing_deg},
-    pilot::{HELD_TURN_DEG, STALL_MS, clamp_arena},
+    pilot::{HELD_TURN_DEG, STALL_MS, WITHDRAW_MS, clamp_arena, hull_failing},
     settings::Settings,
 };
 use serde_json::{Value, json};
@@ -143,6 +148,9 @@ struct Server {
     held: Option<HeldKnob>,
     /// The heading the tank was stopped on, while it is held.
     held_from: Option<u32>,
+    /// The hull's internals `STATUS` prints, `(left, max)` (cut AK.2);
+    /// `(60, 60)` unless a test sets it, at any time.
+    hull_internals: (u32, u32),
     /// `FIRE` lines answered, shots that left, and `Still cycling` refusals.
     fire_lines: u32,
     shots: BTreeMap<String, u32>,
@@ -172,6 +180,7 @@ impl Server {
             rounds: BTreeMap::new(),
             held: None,
             held_from: None,
+            hull_internals: (60, 60),
             fire_lines: 0,
             shots: BTreeMap::new(),
             cycling_refusals: 0,
@@ -368,10 +377,12 @@ impl Server {
                     None => (self.speed, ""),
                 };
                 let heading = self.heading;
+                let (left, max) = self.hull_internals;
+                let condition = if left < max { "damaged" } else { "intact" };
                 self.say(
                     3,
                     &format!(
-                        "Callsign RA.\nRed Tank 1: power online, {speed} kph, heading {heading:03}°{held}\n  at 60 m east, 970 m north; scope holds a hostile\n  nearest spot: The Ford (A), 400 m at 090°\n  hull  intact  internals 60/60\n    front 400/400  left 250/250  right 250/250  rear 150/150\n  turret  intact\n    front 350/350  left 220/220  right 220/220  rear 140/140"
+                        "Callsign RA.\nRed Tank 1: power online, {speed} kph, heading {heading:03}°{held}\n  at 60 m east, 970 m north; scope holds a hostile\n  nearest spot: The Ford (A), 400 m at 090°\n  hull  {condition}  internals {left}/{max}\n    front 400/400  left 250/250  right 250/250  rear 150/150\n  turret  intact\n    front 350/350  left 220/220  right 220/220  rear 140/140"
                     ),
                 );
             }
@@ -1073,6 +1084,27 @@ impl Run {
     }
 }
 
+/// The hull's internals at half (cut AK.2: the only hull a commander's
+/// `withdraw` is kept on): the pilot's own fall back is seen, and its
+/// withdrawal let run out. The scripted range never changes, so it ends on
+/// time.
+fn fall_back_and_let_it_run_out(run: &mut Run) {
+    run.server.hull_internals = (30, 60);
+    assert!(
+        run.until(5_000, |run| run.lane.pilot().fallen_back),
+        "{:?}",
+        run.said
+    );
+    assert!(hull_failing(run.lane.picture()));
+    let fell = run.now;
+    run.advance_to(fell + WITHDRAW_MS);
+    assert_eq!(
+        run.lane.pilot().withdraw_until_ms,
+        None,
+        "its withdrawal is over"
+    );
+}
+
 /// The commander asks every ten seconds, so an ask inside that is an event's.
 fn slow() -> Settings {
     Settings {
@@ -1159,8 +1191,13 @@ fn a_lock_broken_and_not_held_again_for_three_seconds_asks_at_once() {
 fn a_withdraw_doctrine_turns_the_ordered_heading_about() {
     let mut run = to_the_fight(slow());
     sight_a_hostile(&mut run);
-    // Orbiting BA at its band: a tangent, east or west.
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    // A failing hull: a withdraw on a sound one is flown as a hunt or an orbit
+    // (cut AK.2; that has its own test). So the pilot falls back on its own
+    // first, heading away; its withdrawal is let run out, so a heading away
+    // after it is the doctrine's alone.
+    fall_back_and_let_it_run_out(&mut run);
+    // Orbiting BA at its band: a tangent, east or west.
     run.until(2_000, |_| false);
     let heading = |run: &Run, from: u64| -> Vec<u32> {
         run.sent
@@ -1210,16 +1247,28 @@ fn late_answers_are_dropped_at_twice_the_contact_period_and_five_stop_the_comman
     run.reply(answer("close"));
     assert_eq!(run.lane.doctrine().stance, Stance::Close, "9 s is timely");
     // Holding a contact: the bound is 2 000 ms, and five late in a row stop it.
+    // Each ask is given up at its bound, before its answer comes (cut AK.2),
+    // and the answer that comes after it applies nothing.
     sight_a_hostile(&mut run);
     for _ in 0..5 {
         run.ask(12_000).expect("an ask");
         run.until(2_100, |_| false);
+        assert!(!run.lane.commander_in_flight(), "given up at the bound");
         run.reply(answer("orbit"));
     }
     assert_eq!(run.lane.doctrine().stance, Stance::Close, "none applied");
     let stale = run.records_of("commander-stale");
     assert_eq!(stale.len(), 5);
     assert!(stale.iter().all(|r| r["age_ms"].as_u64() > Some(2_000)));
+    assert!(
+        stale.iter().all(|r| r["abandoned"] == json!(true)),
+        "{stale:?}"
+    );
+    assert_eq!(
+        run.records_of("arena-doctrine").len(),
+        1,
+        "only the timely one"
+    );
     assert_eq!(
         run.records_of("commander-off"),
         vec![&json!({"reason": OFF_STALE, "match": 1})]
@@ -1272,10 +1321,15 @@ fn the_match_end_stops_the_commander_and_the_next_match_starts_it_again() {
     let first = run.ask(200).expect("an ask");
     let first_power = run.lane.picture().power_ms.expect("power online read");
     assert_eq!(first["t_s"], 0, "asked at power online");
-    // Match 1 flies a withdraw on BA...
+    // Match 1 answers a withdraw on BA, which the pilot's rule flies as a
+    // hunt: the hull is sound and nothing is held (cut AK.2)...
     run.reply(answer("withdraw"));
-    assert_eq!(run.lane.doctrine().stance, Stance::Withdraw);
+    assert_eq!(run.lane.doctrine().stance, Stance::Hunt);
     assert_eq!(run.lane.doctrine().target.as_deref(), Some("BA"));
+    assert_eq!(
+        run.records_of("commander-overruled"),
+        vec![&json!({"from": "withdraw", "to": "hunt", "why": "the hull is sound"})]
+    );
     run.until(3_000, |_| false);
     assert!(run.ask(2_000).is_some(), "asked again on its cadence");
     run.server.end(run.now, "red");
@@ -1687,4 +1741,258 @@ fn a_lost_contact_is_hunted_in_the_lane() {
             assert!(named.contains(&word), "{said}: {word}");
         }
     }
+}
+
+// -- cut AK.2: the pilot's rule on a withdraw, the bounded hold ------------------
+
+/// A `withdraw` answer on `BA` holding `hold_s` seconds.
+fn withdraw_for(hold_s: u32) -> CommanderReply {
+    CommanderReply::Answer(
+        json!({"target":"BA","stance":"withdraw","band_m":450,"sense":"auto","hold_s":hold_s})
+            .to_string(),
+    )
+}
+
+/// Every `HEADING` typed in `from..to`: the degrees.
+fn headings_between(run: &Run, from: u64, to: u64) -> Vec<u32> {
+    heading_sends(run, from)
+        .into_iter()
+        .filter(|(at, _)| *at < to)
+        .map(|(_, deg)| deg)
+        .collect()
+}
+
+#[test]
+fn a_withdraw_on_a_sound_hull_is_flown_as_a_hunt() {
+    let mut run = to_the_fight(Settings::default());
+    assert!(run.until(3_000, |run| {
+        run.lane.picture().own.sections.contains_key("hull")
+    }));
+    assert!(!hull_failing(run.lane.picture()), "60 of 60");
+    assert!(run.lane.picture().contacts.is_empty(), "nothing held");
+    run.ask(200).expect("an ask");
+    run.reply(answer("withdraw"));
+    let doctrine = run.lane.doctrine().clone();
+    assert_eq!(doctrine.stance, Stance::Hunt);
+    assert_eq!(
+        (doctrine.target.as_deref(), doctrine.band_m, doctrine.hold_s),
+        (Some("BA"), 450, None)
+    );
+    // The answer is recorded as read, and the rule's flight of it beside it.
+    assert_eq!(run.records_of("arena-doctrine")[0]["stance"], "withdraw");
+    assert_eq!(
+        run.records_of("commander-overruled"),
+        vec![&json!({"from": "withdraw", "to": "hunt", "why": "the hull is sound"})]
+    );
+    run.server.end(run.now, "red");
+    assert!(run.until(5_000, |run| run.lane.result().is_some()));
+    let flown = &run.lane.report().matches[0];
+    assert_eq!((flown.commander_applied, flown.commander_overruled), (1, 1));
+    assert!(
+        run.records_of("doctrine-lapsed").is_empty(),
+        "no withdraw stood"
+    );
+}
+
+/// **A kept withdraw holds, then lapses** (cut AK.2), built so that only the
+/// doctrine can turn the heading: the pilot's own fall back has run out and it
+/// orbits BA when the commander answers `withdraw` for longer than the pilot's
+/// own withdrawal. The tank heads away for the hold, counted from the first
+/// withdraw however often it is answered again; then the pilot's default
+/// orbit again; and a withdraw in the rest after it is flown as an orbit.
+#[test]
+fn a_withdraw_on_a_failing_hull_holds_then_lapses() {
+    const HOLD_S: u32 = 20;
+    let hold_ms = u64::from(HOLD_S) * 1_000;
+    assert!(
+        hold_ms > WITHDRAW_MS,
+        "longer than the pilot's own withdrawal"
+    );
+    let mut run = to_the_fight(slow());
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    fall_back_and_let_it_run_out(&mut run);
+    run.until(2_000, |_| false);
+    // The heading last ordered (the pilot re-orders only a change).
+    let orbit = headings_between(&run, 0, run.now + 1);
+    assert!(
+        orbit.last().is_some_and(|deg| !(150..=210).contains(deg)),
+        "orbiting after the pilot's own withdrawal, not heading away: {orbit:?}"
+    );
+
+    // The first withdraw: kept, for its twenty seconds.
+    run.ask(12_000).expect("an ask");
+    let first = run.now;
+    run.reply(withdraw_for(HOLD_S));
+    assert_eq!(run.lane.doctrine().stance, Stance::Withdraw);
+    assert_eq!(run.lane.doctrine().hold_s, Some(HOLD_S));
+    assert!(run.records_of("commander-overruled").is_empty());
+    // A second about ten seconds in (the commander's cadence): applied, but
+    // the lapse does not move.
+    run.ask(12_000).expect("the next ask on its cadence");
+    assert!(
+        run.now < first + hold_ms,
+        "inside the hold: {}",
+        run.now - first
+    );
+    run.reply(withdraw_for(HOLD_MAX_S));
+    assert_eq!(run.lane.doctrine().stance, Stance::Withdraw);
+    assert_eq!(run.lane.doctrine().hold_s, Some(HOLD_MAX_S));
+    assert_eq!(run.records_of("arena-doctrine").len(), 2);
+    // Straight away from BA (due north) through the hold.
+    run.advance_to(first + hold_ms - TICK_MS);
+    assert_eq!(run.lane.doctrine().stance, Stance::Withdraw, "still held");
+    let away = headings_between(&run, first, run.now + 1);
+    assert!(!away.is_empty());
+    assert!(away.iter().all(|deg| (170..=190).contains(deg)), "{away:?}");
+    assert!(run.records_of("doctrine-lapsed").is_empty());
+    // Twenty seconds after the first, not the second: the pilot's own again.
+    run.advance_to(first + hold_ms + TICK_MS);
+    assert_eq!(
+        run.lane.doctrine(),
+        &Doctrine::pilot_default(&slow()),
+        "the hold ran out"
+    );
+    let lapsed = run.records_of("doctrine-lapsed");
+    assert_eq!(lapsed.len(), 1, "{lapsed:?}");
+    assert_eq!(lapsed[0]["why"], "the hold ran out");
+    assert_eq!(lapsed[0]["was"]["stance"], "withdraw");
+    assert_eq!(lapsed[0]["was"]["hold_s"], HOLD_MAX_S);
+    // Orbiting BA again.
+    let lapse = run.now;
+    run.until(3_000, |_| false);
+    let again = headings_between(&run, first + hold_ms - TICK_MS, run.now + 1);
+    assert!(
+        again.last().is_some_and(|deg| !(150..=210).contains(deg)),
+        "orbiting again after the lapse: {again:?}"
+    );
+    // A third withdraw inside the rest: the hold is spent, and BA is held, so
+    // it is flown as an orbit.
+    run.ask(12_000).expect("an ask");
+    assert!(run.now < lapse + u64::from(HOLD_MAX_S) * 1_000);
+    run.reply(withdraw_for(HOLD_S));
+    assert_eq!(run.lane.doctrine().stance, Stance::Orbit);
+    assert_eq!(
+        run.records_of("commander-overruled"),
+        vec![&json!({"from": "withdraw", "to": "orbit", "why": "the hold is spent"})]
+    );
+    // The rest over, a withdraw on the failing hull is kept again.
+    run.advance_to(lapse + u64::from(HOLD_MAX_S) * 1_000);
+    run.ask(12_000).expect("an ask");
+    run.reply(withdraw_for(HOLD_S));
+    assert_eq!(
+        run.lane.doctrine().stance,
+        Stance::Withdraw,
+        "the rest ended"
+    );
+    assert_eq!(run.records_of("commander-overruled").len(), 1, "no new one");
+    run.server.end(run.now, "red");
+    assert!(run.until(5_000, |run| run.lane.result().is_some()));
+    assert_eq!(run.lane.report().matches[0].commander_overruled, 1);
+}
+
+/// **An episode ends at its time whatever stands then** (cut AK.2): a
+/// commander that answers `orbit` inside a hold ends nothing early, so
+/// alternating `withdraw` and `orbit` still keeps the tank away at most half
+/// of any minute. Nothing lapses at the hold's end (no withdraw stands), but
+/// the rest begins; after the rest a new episode holds its own full length.
+#[test]
+fn a_withdraw_episode_answered_away_early_still_ends_on_time_and_rests() {
+    const HOLD_S: u32 = 20;
+    let hold_ms = u64::from(HOLD_S) * 1_000;
+    let rest_ms = u64::from(HOLD_MAX_S) * 1_000;
+    let mut run = to_the_fight(slow());
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    fall_back_and_let_it_run_out(&mut run);
+    // A kept withdraw, then an orbit about ten seconds into its hold.
+    run.ask(12_000).expect("an ask");
+    let first = run.now;
+    run.reply(withdraw_for(HOLD_S));
+    assert_eq!(run.lane.doctrine().stance, Stance::Withdraw);
+    run.ask(12_000).expect("the next ask on its cadence");
+    assert!(run.now < first + hold_ms, "inside the hold");
+    run.reply(answer("orbit"));
+    assert_eq!(run.lane.doctrine().stance, Stance::Orbit);
+    // The hold's time: the orbit stands, nothing lapses, the rest begins.
+    run.advance_to(first + hold_ms + TICK_MS);
+    let end = run.now;
+    assert_eq!(run.lane.doctrine().stance, Stance::Orbit);
+    assert!(run.records_of("doctrine-lapsed").is_empty());
+    run.ask(12_000).expect("an ask");
+    assert!(run.now < end + rest_ms, "inside the rest");
+    run.reply(withdraw_for(HOLD_S));
+    assert_eq!(run.lane.doctrine().stance, Stance::Orbit);
+    assert_eq!(
+        run.records_of("commander-overruled"),
+        vec![&json!({"from": "withdraw", "to": "orbit", "why": "the hold is spent"})]
+    );
+    // After the rest, a new episode: kept, and held its own full length (the
+    // old episode's end is not inherited).
+    run.advance_to(end + rest_ms);
+    run.ask(12_000).expect("an ask");
+    let second = run.now;
+    run.reply(withdraw_for(HOLD_S));
+    assert_eq!(run.lane.doctrine().stance, Stance::Withdraw);
+    run.advance_to(second + hold_ms - TICK_MS);
+    assert_eq!(run.lane.doctrine().stance, Stance::Withdraw, "its own hold");
+    assert!(run.records_of("doctrine-lapsed").is_empty());
+    run.advance_to(second + hold_ms + TICK_MS);
+    let lapsed = run.records_of("doctrine-lapsed");
+    assert_eq!(lapsed.len(), 1, "{lapsed:?}");
+    assert_eq!(lapsed[0]["why"], "the hold ran out");
+    assert_eq!(run.records_of("commander-overruled").len(), 1);
+}
+
+#[test]
+fn a_withdraw_is_cleared_when_the_commander_stops() {
+    /// A kept withdraw on a failing hull, the run's doctrine then.
+    fn withdrawn() -> Run {
+        let mut run = to_the_fight(Settings::default());
+        run.server.hull_internals = (30, 60);
+        assert!(run.until(5_000, |run| hull_failing(run.lane.picture())));
+        run.ask(200).expect("an ask");
+        run.reply(withdraw_for(HOLD_MAX_S));
+        assert_eq!(run.lane.doctrine().stance, Stance::Withdraw);
+        run
+    }
+    fn cleared(run: &Run) {
+        assert_eq!(
+            run.lane.doctrine(),
+            &Doctrine::pilot_default(&Settings::default())
+        );
+        let lapsed = run.records_of("doctrine-lapsed");
+        assert_eq!(lapsed.len(), 1, "{lapsed:?}");
+        assert_eq!(lapsed[0]["why"], "the commander stopped");
+        assert_eq!(lapsed[0]["was"]["stance"], "withdraw");
+    }
+    // Five errors in a row.
+    let mut run = withdrawn();
+    for _ in 0..ERRORS_IN_ROW {
+        assert_eq!(run.lane.doctrine().stance, Stance::Withdraw);
+        run.ask(12_000).expect("an ask");
+        run.reply(CommanderReply::Error("HTTP 500".into()));
+    }
+    assert_eq!(
+        run.records_of("commander-off"),
+        vec![&json!({"reason": OFF_ERRORS, "match": 1})]
+    );
+    cleared(&run);
+    // The session budget.
+    let mut run = withdrawn();
+    run.lane.commander_off(OFF_BUDGET);
+    run.step();
+    assert_eq!(
+        run.records_of("commander-off"),
+        vec![&json!({"reason": OFF_BUDGET, "match": 1})]
+    );
+    cleared(&run);
+    // Any other stance survives a stop: the pilot flies on the last doctrine.
+    let mut run = to_the_fight(Settings::default());
+    run.ask(200).expect("an ask");
+    run.reply(answer("stand_off"));
+    run.lane.commander_off(OFF_BUDGET);
+    run.step();
+    assert_eq!(run.lane.doctrine().stance, Stance::StandOff);
+    assert!(run.records_of("doctrine-lapsed").is_empty());
 }

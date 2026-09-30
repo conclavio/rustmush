@@ -63,9 +63,10 @@ commander_from_session = false
 # on OpenRouter's default routing and 333 ms pinned to Together. With reasoning
 # on the median was 10.6 s and many answers came back empty after thinking
 # through the whole token budget. An answer is dropped as late after two
-# seconds while a contact is held, and five late answers in a row switch the
-# commander off for the match, so never enable reasoning here. Pinned to
-# Together a five-minute match makes about 200 calls for about three US cents.
+# seconds while a contact is held, and the call is given up there, and five
+# late answers in a row switch the commander off for the match, so never
+# enable reasoning here. Pinned to Together a five-minute match makes about
+# 200 calls for about three US cents.
 [arena.commander_model]
 endpoint = "https://openrouter.ai/api/v1/chat/completions"
 name = "deepseek/deepseek-v4.1-flash"

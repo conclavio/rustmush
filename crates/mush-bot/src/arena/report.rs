@@ -63,6 +63,10 @@ pub struct MatchResult {
     /// with its `commander-error` record).
     #[serde(default)]
     pub commander_errors: u32,
+    /// Applied `withdraw`s the pilot's rule flew as `hunt` or `orbit` (cut
+    /// AK.2; each with its `commander-overruled` record). Always written.
+    #[serde(default)]
+    pub commander_overruled: u32,
     /// Why the commander stopped before the match's end, when it did.
     #[serde(default)]
     pub commander_off: Option<String>,
@@ -105,6 +109,7 @@ impl MatchResult {
             commander_stale: 0,
             commander_invalid: 0,
             commander_errors: 0,
+            commander_overruled: 0,
             commander_off: None,
         }
     }
@@ -116,6 +121,7 @@ impl MatchResult {
         self.commander_stale = tally.stale;
         self.commander_invalid = tally.invalid;
         self.commander_errors = tally.errors;
+        self.commander_overruled = tally.overruled;
         self.commander_off = tally.off.clone();
         self
     }
@@ -243,6 +249,7 @@ mod tests {
             commander_stale: 0,
             commander_invalid: 0,
             commander_errors: 0,
+            commander_overruled: 0,
             commander_off: None,
         }
     }
@@ -298,6 +305,31 @@ mod tests {
         );
         assert_eq!(flown(1, "draw").verdict(Side::Red), "drawn");
         assert_eq!(flown(1, "abort").verdict(Side::Red), "ended");
+    }
+
+    #[test]
+    fn commander_overruled_is_written_and_folded_from_the_tally() {
+        let value = serde_json::to_value(flown(1, "red")).expect("json");
+        assert_eq!(value["commander_overruled"], 0, "always written");
+        let tally = crate::arena::commander::Tally {
+            calls: 9,
+            applied: 7,
+            overruled: 4,
+            ..Default::default()
+        };
+        let folded = flown(1, "red").with_commander(&tally);
+        assert_eq!(folded.commander_overruled, 4);
+        assert_eq!(
+            serde_json::to_value(&folded).expect("json")["commander_overruled"],
+            4
+        );
+        // A report written before the field reads as none overruled.
+        let mut old = value;
+        old.as_object_mut()
+            .expect("an object")
+            .remove("commander_overruled");
+        let read: MatchResult = serde_json::from_value(old).expect("reads");
+        assert_eq!(read.commander_overruled, 0);
     }
 
     #[test]

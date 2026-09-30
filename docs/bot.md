@@ -451,7 +451,7 @@ side, the matches asked for, one entry a match (the match number, the callsign,
 whether it led, the centre's own result word, shots that left, orders refused,
 hits, misses, kills, hits taken, sections lost, whether the tank was destroyed,
 reclaims and time away, the match's length, and the commander's calls, applied,
-late, invalid and failed answers and why it stopped) and the wins, losses,
+late, invalid, failed and overruled answers and why it stopped) and the wins, losses,
 draws, timeouts and others. The run is `done`, and a headless run exits 0, **only when
 every match it flew ended on its own side's word**; anything else — a loss, a
 draw, a timeout, an abort, a blocker — is `blocked` and exits 2. The outcome
@@ -553,6 +553,7 @@ commander_from_session = false # the session's model commands only when true
 endpoint = "https://openrouter.ai/api/v1/chat/completions"
 name = "deepseek/deepseek-v4.1-flash"
 api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 5            # the commander's timeout is at most 10 s whatever this says
 max_tokens = 200
 reasoning = { enabled = false }
 provider = { order = ["Together"], allow_fallbacks = false }
@@ -560,20 +561,53 @@ provider = { order = ["Together"], allow_fallbacks = false }
 
 **What it is sent and what it answers.** One system message (the commander's
 own instructions) and one user message: the pilot's picture as compact JSON of
-at most 2 KB — seconds since the power came on, the own tank (callsign, power,
-speed, heading, position, each section's condition and plate, each weapon's
-readiness, rounds and chance), the six nearest contacts (designator, side,
-bearing, range, plot age, and course and speed when the plots show it moving),
-the lock, the doctrine in force and the six latest events. It holds nothing
-the pilot's own screen did not say. The answer is one JSON object,
-`{"target": "BA" | null, "stance": "orbit" | "close" | "stand_off" | "withdraw",
-"band_m": 150..900, "sense": "cw" | "ccw" | "auto", "note": "…"}`; every field
-but `note` is required and nothing else is allowed. The band is clamped into
-150..900, the note cut to 160 characters, and a target that is not 1 to 4 of
-`A-Z0-9` reads as none (the pilot ignores a target it does not hold as hostile
-anyway). An answer that does not read keeps the doctrine and is recorded as
-`commander-invalid`; one that does is flown from the next tick
-(`arena-doctrine`).
+at most 2 KB — seconds since the power came on (or, after taking a powered tank
+back, since the panel first said the power was up), the own tank (callsign,
+**its own side**, power, speed, heading, position, each section's condition
+and plate, each weapon's readiness, rounds and chance), the six nearest
+contacts (designator, side, bearing, range, plot age, and course and speed
+when the plots show it moving), the lock, the doctrine in force (without its
+note: the model's own last reason, sent back to it, only made it repeat
+itself) and the six latest events. It holds nothing the pilot's own screen did
+not say. The answer is one JSON object,
+`{"target": "BA" | null, "stance": "orbit" | "close" | "stand_off" | "hunt" |
+"withdraw", "band_m": 150..450, "sense": "cw" | "ccw" | "auto", "hold_s":
+5..30, "note": "…"}`; every field but `hold_s` and `note` is required and
+nothing else is allowed. The band is clamped into 150..450 (450 m is the
+widest band the pilot flies: a band past it loses a machine that stops to
+shoot), a withdraw's `hold_s` into 5..30 (10 when it gives none; any other
+stance's is dropped), the note cut to 160 characters, and a target that is not
+1 to 4 of `A-Z0-9` reads as none (the pilot ignores a target it does not hold
+as hostile anyway). An answer that does not read keeps the doctrine and is
+recorded as `commander-invalid`; one that does is recorded as read
+(`arena-doctrine`) and flown from the next tick, by the pilot's rule below.
+
+**Hunt.** `hunt` drives straight at the target until its band and then
+circles it there, but only while its plot is fresh (three seconds); with no
+hostile in sight it hunts the last one lost at once, as the pilot does on its
+own (its last plot, its course, one sweep), and with nothing to hunt it
+searches. A `null` target and the lost contact's own designator both mean
+that one.
+
+**The pilot's rule on a withdraw.** The model adjudicates, the pilot enforces.
+In the lead's live smoke of 2026-09-29 the commander answered `withdraw` for
+238 of 367 doctrines, most of them on a lost contact and some on a hostile it
+had read as a friend, and only 33 on a hull at half or less. So a `withdraw`
+answered while the tank's hull is sound (its internals above half) is flown as
+`hunt` when no hostile with a fresh plot is held and as `orbit` when one is,
+keeping its target, band and sense; the transcript records it as
+`commander-overruled` (`{"from": "withdraw", "to": "hunt", "why": "the hull is
+sound"}`) and the report counts it. A withdraw on a failing hull is kept, as
+**one bounded hold**: `hold_s` seconds counted from the first withdraw of the
+episode, however often the commander answers withdraw again (a later answer
+may move its target or band, never its end). Then the pilot's own doctrine
+flies again (`doctrine-lapsed`, `"the hold ran out"`), and for the next 30
+seconds any withdraw is flown as the sound hull flies it (`"why": "the hold is
+spent"`), so the commander keeps the tank away at most half of any minute. An
+episode ends at its time whatever stands then: if the commander has answered
+another stance meanwhile, nothing lapses, but the rest follows all the same. A
+kept withdraw outranks the pilot's own wider circling after it has fallen
+back, so it is what turns the tank away for its hold.
 
 **When it asks.** Never more than one call at a time. The first at
 `Power online.`; the next `commander_ms` after the last answer or error; and at
@@ -586,14 +620,22 @@ period in force when it was asked** is dropped (`commander-stale`): two seconds
 while the pilot holds a contact (it reads `CONTACTS` every second), ten seconds
 while it searches (every five). A line-mode pilot's picture is refreshed by its
 own polls, never by the arena's pulse, so that is what "two refreshes of the
-picture" means here.
+picture" means here. A call still unanswered at that bound is **given up**
+there: counted late, recorded `commander-stale` with `"abandoned": true`, and
+aborted, so a provider that hangs never holds the one call for longer; an
+answer that still comes is ignored. And the commander's own HTTP timeout is at
+most ten seconds (the longest bound), whatever `timeout_secs` its model says: a
+model table's default is 90 seconds, and the session's model, under
+`commander_from_session`, keeps its own for the goal loop.
 
-**When it stops** (the pilot flies on, on the last doctrine it applied): at the
-match's end; when the tank is destroyed; after `commander_max_calls` in the
-match; after five errors in a row; after **five late answers in a row**
-(`answers arrive too late to use`; a timely answer, readable or not, resets the
-count); when the pilot stops; and when the session budget blocks a call. Each
-writes one `commander-off` record with its reason. The next match starts it
+**When it stops** (the pilot flies on, on the last doctrine it applied, except
+a withdraw, which gives way to the pilot's own doctrine with `doctrine-lapsed`,
+`"the commander stopped"`): at the match's end; when the tank is destroyed;
+after `commander_max_calls` in the match; after five errors in a row; after
+**five late answers in a row** (`answers arrive too late to use`; a timely
+answer, readable or not, resets the count, and a call given up counts); when
+the pilot stops; and when the session budget blocks a call. Each writes one
+`commander-off` record with its reason. The next match starts it
 again, except after the budget, which holds for the rest of the session: every
 later match of that pilot, and every pilot started later in the run (by
 `/arena` or a goal's `arena` action), flies without a commander and names the
@@ -615,8 +657,9 @@ never the goal decision's. Commander calls
 are not goal turns: they never count against `[agent] max_steps`. Each match in
 the report's `arena` block counts `commander_calls` (the requests the cost
 ledger holds), `commander_applied`,
-`commander_stale`, `commander_invalid` and `commander_errors`, and names
-`commander_off` when it stopped before the match's end.
+`commander_stale`, `commander_invalid`, `commander_errors` and
+`commander_overruled` (the withdraws the pilot's rule flew as a hunt or an
+orbit), and names `commander_off` when it stopped before the match's end.
 
 **Why reasoning must be off.** Measured before this was built, on a picture of
 about 1.2 KB and a five-field answer: `deepseek/deepseek-v4.1-flash` through

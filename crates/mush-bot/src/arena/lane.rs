@@ -65,8 +65,21 @@
 //! it at the match's end, when the tank is destroyed and when the pilot stops.
 //! The stale bound is twice the `CONTACTS` period in force at the ask — the
 //! poll that refreshes a line-mode pilot's picture, which is never refreshed by
-//! the arena's pulse. What the schedule records reaches the runner as
-//! [`LaneEvent::Record`].
+//! the arena's pulse — and an ask still in flight past it is given up on the
+//! next feed or tick ([`Schedule::expire`], cut AK.2), so the runner aborts it.
+//! What the schedule records reaches the runner as [`LaneEvent::Record`].
+//!
+//! **The pilot's rule on a `withdraw`** (cut AK.2; the commander's module head
+//! has the smoke's figures). Every applied doctrine goes through
+//! [`super::commander::vet`]: a `withdraw` on a sound hull, or in the rest
+//! after a hold, is flown as `hunt` or `orbit` (`commander-overruled`). A kept
+//! `withdraw` is one hold per episode: the episode's first sets
+//! `doctrine_until_ms` to `hold_s` on, a later one while it runs replaces the
+//! doctrine but never moves it; when it passes a standing `withdraw` becomes
+//! the pilot's default (`doctrine-lapsed`, `"the hold ran out"`) and a rest of
+//! [`super::commander::HOLD_MAX_S`] begins (`rest_until_ms`). Any stop of the
+//! commander clears a standing `withdraw` the same way (`"the commander
+//! stopped"`); every other stance survives a stop.
 use std::collections::{BTreeMap, VecDeque};
 
 use serde::Serialize;
@@ -74,7 +87,11 @@ use serde_json::{Value, json};
 
 use super::{
     Assembler, Side, classify,
-    commander::{CommanderReply, Doctrine, OFF_DESTROYED, OFF_MATCH_OVER, OFF_STOPPED, Schedule},
+    commander::{
+        CommanderReply, Doctrine, HOLD_DEFAULT_S, HOLD_MAX_S, LAPSED_COMMANDER_STOPPED,
+        LAPSED_HOLD_RAN_OUT, OFF_DESTROYED, OFF_MATCH_OVER, OFF_STOPPED, Schedule, Stance, Vetted,
+        vet,
+    },
     lines::Line,
     lobby::{Lobby, Step},
     picture::{Phase, Picture, Power},
@@ -164,8 +181,9 @@ pub enum LaneEvent {
     /// The pilot claimed a slot: the run's time limit starts over.
     Claimed,
     /// A transcript record (cut AJ.3's commander): `arena-doctrine`,
-    /// `commander-stale`, `commander-invalid`, `commander-error` or
-    /// `commander-off`, and its data.
+    /// `commander-stale`, `commander-invalid`, `commander-error`,
+    /// `commander-off`, and (cut AK.2) `commander-overruled` and
+    /// `doctrine-lapsed`, and its data.
     Record { kind: String, data: Value },
 }
 
@@ -244,6 +262,11 @@ pub struct Lane {
     /// The match the pilot's state belongs to.
     pilot_match: Option<u64>,
     doctrine: Doctrine,
+    /// The end of the running `withdraw` episode (cut AK.2): set by its first
+    /// kept `withdraw`, never moved by a later one.
+    doctrine_until_ms: Option<u64>,
+    /// No `withdraw` is kept before then: the rest after a hold.
+    rest_until_ms: u64,
     /// When the commander asks, and what it has done this match.
     commander: Schedule,
     /// When each of the last `max_lines_per_s` lines went.
@@ -272,6 +295,8 @@ impl Lane {
             side,
             lobby: Lobby::new(side, settings.clone(), &me),
             doctrine: Doctrine::pilot_default(&settings),
+            doctrine_until_ms: None,
+            rest_until_ms: 0,
             commander: Schedule::new(&settings),
             settings,
             assembler: Assembler::default(),
@@ -434,6 +459,8 @@ impl Lane {
         } else {
             None
         };
+        // The call limit may have stopped it.
+        self.withdraw_rule(now_ms);
         self.commander_records();
         due.map(|_| self.picture.commander_view(now_ms, &self.doctrine))
     }
@@ -447,23 +474,78 @@ impl Lane {
         self.fighting() && self.commander.ready(now_ms)
     }
 
-    /// **What came back** for the call in flight: a timely valid doctrine is
-    /// flown from the next tick; everything else keeps the doctrine. A reply
-    /// to a call the lane no longer waits for is ignored.
+    /// **What came back** for the call in flight: a timely valid doctrine goes
+    /// through the pilot's rule ([`vet`]; an overrule is recorded
+    /// `commander-overruled` and counted) and is flown from the next tick;
+    /// everything else keeps the doctrine. The first kept `withdraw` of an
+    /// episode starts its hold, `hold_s` long; a later one while the hold runs
+    /// replaces the doctrine but never moves its end. A reply to a call the
+    /// lane no longer waits for is ignored.
     pub fn commander_reply(&mut self, now_ms: u64, reply: CommanderReply) {
+        // A hold already over is closed first, so its rest is in force for
+        // this answer.
+        self.withdraw_rule(now_ms);
         if let Some(doctrine) = self.commander.reply(now_ms, reply) {
+            let may_hold = now_ms >= self.rest_until_ms;
+            let Vetted {
+                doctrine,
+                overruled,
+            } = vet(doctrine, &self.picture, may_hold);
+            if let Some((from, to, why)) = overruled {
+                self.commander.overruled(from, to, why);
+            }
+            if doctrine.stance == Stance::Withdraw && self.doctrine_until_ms.is_none() {
+                let hold_s = u64::from(doctrine.hold_s.unwrap_or(HOLD_DEFAULT_S));
+                self.doctrine_until_ms = Some(now_ms.saturating_add(hold_s.saturating_mul(1_000)));
+            }
             self.doctrine = doctrine;
         }
+        // Five errors or five stale answers may have stopped it.
+        self.withdraw_rule(now_ms);
         self.commander_records();
     }
 
     /// **Off for the rest of this lane** (the runner's budget stop, after
     /// [`Lane::commander_ready`] and before the ask is taken, or at the start
     /// of a lane after the session's budget has blocked), with its reason,
-    /// once.
+    /// once. A standing `withdraw` is cleared.
     pub fn commander_off(&mut self, why: &str) {
         self.commander.stop_for_good(why);
+        let now = self.picture.last_ms;
+        self.withdraw_rule(now);
         self.commander_records();
+    }
+
+    /// **The bounded withdraw** (cut AK.2), after every place the commander
+    /// can stop or time can pass: a standing `withdraw` is cleared to the
+    /// pilot's default when the commander is off (`"the commander stopped"`)
+    /// or when its episode's hold has run out (`"the hold ran out"`); the end
+    /// of an episode, whatever stands then, begins the rest.
+    fn withdraw_rule(&mut self, now_ms: u64) {
+        if self.doctrine.stance == Stance::Withdraw && self.commander.off() {
+            self.lapse(now_ms, LAPSED_COMMANDER_STOPPED);
+            return;
+        }
+        if let Some(until) = self.doctrine_until_ms
+            && now_ms >= until
+        {
+            if self.doctrine.stance == Stance::Withdraw {
+                self.lapse(now_ms, LAPSED_HOLD_RAN_OUT);
+            } else {
+                self.doctrine_until_ms = None;
+                self.rest_until_ms = now_ms.saturating_add(u64::from(HOLD_MAX_S) * 1_000);
+            }
+        }
+    }
+
+    /// A standing `withdraw` gives way to the pilot's own doctrine
+    /// (`doctrine-lapsed` `{"why", "was"}`), and the rest begins.
+    fn lapse(&mut self, now_ms: u64, why: &str) {
+        let was = std::mem::replace(&mut self.doctrine, Doctrine::pilot_default(&self.settings));
+        self.commander
+            .record("doctrine-lapsed", json!({"why": why, "was": was}));
+        self.doctrine_until_ms = None;
+        self.rest_until_ms = now_ms.saturating_add(u64::from(HOLD_MAX_S) * 1_000);
     }
 
     /// A commander call is in flight and the lane still waits for it. The
@@ -480,7 +562,8 @@ impl Lane {
 
     /// Begin the schedule at a match's `Power online.`, feed it the lock, and
     /// stop it at the match's end, when the tank is destroyed, and when the
-    /// pilot stops or its part of the match ends early.
+    /// pilot stops or its part of the match ends early; give up an ask at its
+    /// stale bound; and hold the bounded withdraw to its bounds.
     fn commander_sync(&mut self, now_ms: u64) {
         if let Some(match_id) = self.commander.match_id()
             && !self.commander.off()
@@ -502,18 +585,24 @@ impl Lane {
                 self.commander.stop(OFF_STOPPED, true);
             }
         }
+        // An ask still in flight past its stale bound is given up (cut AK.2).
+        self.commander.expire(now_ms);
         if self.fighting()
             && let Phase::Running { match_id } = self.picture.phase
         {
             if self.commander.begin(match_id, now_ms) {
                 // A new match's contacts are new: the last match's doctrine
-                // (its target above all) means nothing in it.
+                // (its target above all) means nothing in it, and nor does
+                // its hold or rest.
                 self.doctrine = Doctrine::pilot_default(&self.settings);
+                self.doctrine_until_ms = None;
+                self.rest_until_ms = 0;
             }
             if self.commander.match_id() == Some(match_id) {
                 self.commander.lock(self.picture.lock.is_some(), now_ms);
             }
         }
+        self.withdraw_rule(now_ms);
     }
 
     /// Hand the schedule's records on as events.

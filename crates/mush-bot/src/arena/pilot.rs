@@ -90,7 +90,12 @@
 //! withdrawal; (3) a doctrine `withdraw`; (4) the doctrine's stance round a
 //! hostile whose plot is younger than [`HUNT_STALE_PLOT_MS`]; (5) the hunt;
 //! (4 again) the doctrine's stance round an older row never seen fresh; (6) the
-//! search.
+//! search. A doctrine `withdraw` reaches step 3 only as a bounded hold on a
+//! failing hull (the lane enforces it, cut AK.2), and it outranks the widened
+//! orbit after a fall back, so it is what turns the tank away for its hold. A
+//! doctrine `hunt` (cut AK.2) drives straight at a hostile until its band and
+//! circles it there, but only while its plot is fresh ([`FRESH_PLOT_MS`]): past
+//! that it hunts at once from the trail, and with no trail it searches.
 //!
 //! **What a tuning round may move** (cut AK.3, between its measurement runs,
 //! and nothing else): [`FALL_BACK_WIDEN_M`] 0..=150, [`WITHDRAW_MS`]
@@ -505,6 +510,18 @@ fn leg_aim(hunt: &Hunt, now_ms: u64) -> ((f64, f64), bool) {
     (clamp_arena(raw), past_the_edge(raw))
 }
 
+/// **How old a hostile's plot may be and still be fought** rather than hunted:
+/// [`HUNT_STALE_PLOT_MS`], or under a `hunt` doctrine (cut AK.2) only a fresh
+/// plot, [`FRESH_PLOT_MS`] — a commander that says hunt wants the last one
+/// lost hunted at once, not a row a few seconds old circled.
+fn held_limit_ms(doctrine: &Doctrine) -> u64 {
+    if doctrine.stance == Stance::Hunt {
+        FRESH_PLOT_MS
+    } else {
+        HUNT_STALE_PLOT_MS
+    }
+}
+
 /// Whether a weapon is believed ready now: its one clock
 /// ([`super::picture::Weapon::next_ready_ms`]) when anything has set it, else
 /// a `ready` row read well after the last ack.
@@ -811,17 +828,22 @@ impl Pilot {
         }
     }
 
-    /// Rule 3: the doctrine's target when it is a held hostile; else the nearest
-    /// fresh hostile, keeping the lock's contact unless another is at least
-    /// 100 m nearer. Never an unidentified contact, never a friend, never a
-    /// wreck (cut AK.1: its row stays listed until it expires, and the pilot
-    /// neither orbits nor shoots it).
+    /// Rule 3: the doctrine's target when it is a held hostile young enough to
+    /// be fought ([`held_limit_ms`]), or when no other hostile is; else the
+    /// nearest fresh hostile, keeping the lock's contact unless another is at
+    /// least 100 m nearer. Never an unidentified contact, never a friend, never
+    /// a wreck (cut AK.1: its row stays listed until it expires, and the pilot
+    /// neither orbits nor shoots it). A doctrine naming a row gone stale while
+    /// another hostile is in sight (cut AK.2) would otherwise leave the pilot
+    /// with nothing to fly at: too old to fight, its trail not hunted while
+    /// the other is held, and the search kept away by the other.
     fn target(&self, picture: &Picture, doctrine: &Doctrine, other: Side) -> Option<String> {
+        let young =
+            |c: &Contact| self.live_hostile(c, other) && c.age_ms <= held_limit_ms(doctrine);
         if let Some(wanted) = &doctrine.target
-            && picture
-                .contacts
-                .get(wanted)
-                .is_some_and(|c| self.live_hostile(c, other))
+            && let Some(contact) = picture.contacts.get(wanted)
+            && self.live_hostile(contact, other)
+            && (young(contact) || !picture.contacts.values().any(young))
         {
             return Some(wanted.clone());
         }
@@ -949,11 +971,12 @@ impl Pilot {
         {
             self.next_leg(own, now_ms);
         }
-        // The start.
+        // The start. A `hunt` doctrine (cut AK.2) hunts as soon as no plot is
+        // fresh, rather than flying round a row a few seconds old.
         let held_young = picture
             .contacts
             .values()
-            .any(|c| self.live_hostile(c, other) && c.age_ms <= HUNT_STALE_PLOT_MS);
+            .any(|c| self.live_hostile(c, other) && c.age_ms <= held_limit_ms(doctrine));
         let withdrawing = self.withdraw_until_ms.is_some_and(|until| now_ms < until)
             || doctrine.stance == Stance::Withdraw;
         if self.hunt.is_none()
@@ -1156,9 +1179,10 @@ impl Pilot {
             self.orbit_since_ms = None;
             return away(aim);
         }
-        // 4. A hostile held young: the doctrine's stance.
+        // 4. A hostile held young: the doctrine's stance (a `hunt` doctrine's
+        // only while its plot is fresh).
         if let (Some(contact), Some(aim)) = (contact, aim)
-            && contact.age_ms <= HUNT_STALE_PLOT_MS
+            && contact.age_ms <= held_limit_ms(doctrine)
         {
             return self.engage(doctrine, contact, aim, own, full, now_ms);
         }
@@ -1235,6 +1259,17 @@ impl Pilot {
                     (Some(beta), Some(0), false)
                 }
             }
+            // Hunt (cut AK.2): straight at it until the band, then round it
+            // there.
+            Stance::Hunt if d > band + STAND_OFF_SLACK_M => {
+                self.orbit_since_ms = None;
+                (Some(beta), Some(full), false)
+            }
+            Stance::Hunt => (
+                Some(self.orbit(doctrine, contact, aim, own, d, beta, band, now_ms)),
+                Some(full),
+                false,
+            ),
             Stance::Withdraw => {
                 self.orbit_since_ms = None;
                 (Some(beta + 180.0), Some(full), false)
@@ -2809,6 +2844,162 @@ mod tests {
         assert_eq!(fly(Stance::Close), (Some(90), Some(54)));
         // A doctrine withdraw turns away, ahead of the widened orbit.
         assert_eq!(fly(Stance::Withdraw), (Some(180), Some(54)));
+        // A hunt flies at the widened band too: at it, round it.
+        assert_eq!(fly(Stance::Hunt), (Some(90), Some(54)));
+    }
+
+    // -- cut AK.2: the hunt stance ---------------------------------------------------
+
+    fn hunting(band_m: u32) -> Doctrine {
+        Doctrine {
+            stance: Stance::Hunt,
+            sense: Sense::Ccw,
+            band_m,
+            ..doctrine()
+        }
+    }
+
+    #[test]
+    fn the_hunt_stance_drives_in_to_the_band_then_orbits() {
+        let band = 300;
+        let fly = |range: u32| {
+            let (mut picture, mut pilot) = flying();
+            hold(&mut picture, contact("BA", Some(Side::Blue), 0, range));
+            let orders = pilot.decide(&picture, &hunting(band), NOW);
+            (orders.heading, orders.speed)
+        };
+        // Outside the band and its slack: straight at it, full ahead.
+        assert_eq!(fly(900), (Some(0), Some(54)));
+        let slack = STAND_OFF_SLACK_M as u32;
+        assert_eq!(fly(band + slack + 10), (Some(0), Some(54)));
+        // At the band: the orbit's tangent; inside the slack, the orbit bent
+        // toward the band, as `orbit` flies it.
+        assert_eq!(fly(band), (Some(90), Some(54)));
+        assert_eq!(
+            fly(band + slack).0,
+            Some(orbit_heading(0.0, f64::from(band + slack), band, 1.0))
+        );
+        assert_eq!(
+            fly(band - 100).0,
+            Some(orbit_heading(0.0, f64::from(band - 100), band, 1.0))
+        );
+        // A fresh friend is never hunted: nothing to fly at yet.
+        let (mut picture, mut pilot) = flying();
+        hold(&mut picture, contact("RB", Some(Side::Red), 0, 900));
+        assert_eq!(pilot.decide(&picture, &hunting(band), NOW).heading, None);
+    }
+
+    #[test]
+    fn the_hunt_stance_with_nothing_held_hunts_the_trail_at_once() {
+        // BA held fresh, then its row four seconds old: under an orbit
+        // doctrine it is still circled; under a hunt it is hunted at once.
+        let stale = |doctrine: &Doctrine| {
+            let (mut picture, mut pilot) = flying_at(MID);
+            hold(
+                &mut picture,
+                contact_from(MID, "BA", Some(Side::Blue), 0, 450),
+            );
+            pilot.decide(&picture, doctrine, NOW);
+            assert!(pilot.hunt.is_none());
+            let t = NOW + 1_000;
+            if let Some(ba) = picture.contacts.get_mut("BA") {
+                ba.age_ms = FRESH_PLOT_MS + 1_000;
+                ba.read_ms = t;
+            }
+            const { assert!(FRESH_PLOT_MS + 1_000 <= HUNT_STALE_PLOT_MS) };
+            read_at(&mut picture, MID, t);
+            let orders = pilot.decide(&picture, doctrine, t);
+            (pilot, orders)
+        };
+        // What is flown tells the two limits apart: the orbit's tangent round
+        // the four-second row (BA due north at the band), not its last plot.
+        let (pilot, orders) = stale(&doctrine());
+        assert!(pilot.hunt.is_none(), "an orbit circles it");
+        assert!(
+            [90, 270].contains(&heading(&orders)),
+            "the tangent: {orders:?}"
+        );
+        for target in [None, Some("BA".to_owned())] {
+            let doctrine = Doctrine {
+                target,
+                ..hunting(450)
+            };
+            let (mut pilot, orders) = stale(&doctrine);
+            let hunt = hunt_of(&pilot);
+            assert_eq!(hunt.leg, HuntLeg::ToPlot);
+            assert_eq!(hunt.trail.designator, "BA");
+            // Toward its last plot, due north, full ahead — not round the row.
+            assert_eq!((orders.heading, orders.speed), (Some(0), Some(54)));
+            assert!(
+                pilot
+                    .take_notes()
+                    .iter()
+                    .any(|n| n.starts_with("Hunting BA: its last plot, "))
+            );
+        }
+        // The row gone altogether: the same hunt, at once.
+        let (mut picture, mut pilot) = flying_at(MID);
+        hold(
+            &mut picture,
+            contact_from(MID, "BA", Some(Side::Blue), 0, 450),
+        );
+        pilot.decide(&picture, &hunting(450), NOW);
+        picture.contacts.clear();
+        let orders = pilot.decide(&picture, &hunting(450), NOW + 1_000);
+        assert_eq!(hunt_of(&pilot).leg, HuntLeg::ToPlot);
+        assert_eq!(heading(&orders), 0, "toward its last plot, due north");
+        // With no trail, the search as ever: the power came up ten seconds
+        // ago with nothing held since, more than five quiet seconds.
+        let (picture, mut pilot) = flying_at(MID);
+        assert!(NOW >= pilot.power_ms.expect("power") + SEARCH_AFTER_MS);
+        let orders = pilot.decide(&picture, &hunting(450), NOW);
+        assert!(pilot.hunt.is_none());
+        assert!(orders.ask_spot_b, "the search");
+    }
+
+    #[test]
+    fn a_doctrine_naming_a_row_too_old_to_fight_gives_way_to_a_fresh_hostile() {
+        // BA held fresh (so trailed) due north, then its row four seconds old,
+        // while BB is fresh 500 m due south: the doctrine still names BA.
+        let fly = |doctrine: &Doctrine| {
+            let (mut picture, mut pilot) = flying_at(MID);
+            hold(
+                &mut picture,
+                contact_from(MID, "BA", Some(Side::Blue), 0, 450),
+            );
+            pilot.decide(&picture, doctrine, NOW);
+            assert!(pilot.trailed.contains("BA"));
+            let t = NOW + 1_000;
+            if let Some(ba) = picture.contacts.get_mut("BA") {
+                ba.age_ms = FRESH_PLOT_MS + 1_000;
+                ba.read_ms = t;
+            }
+            let mut bb = contact_from(MID, "BB", Some(Side::Blue), 180, 500);
+            bb.read_ms = t;
+            hold(&mut picture, bb);
+            read_at(&mut picture, MID, t);
+            let orders = pilot.decide(&picture, doctrine, t);
+            (pilot, orders)
+        };
+        // A hunt fights only a fresh plot: BA is too old, so the pilot flies
+        // at BB (outside the band) rather than at nothing.
+        let hunt = Doctrine {
+            target: Some("BA".to_owned()),
+            ..hunting(300)
+        };
+        let (pilot, orders) = fly(&hunt);
+        assert!(pilot.hunt.is_none(), "BB is in sight");
+        assert_eq!((orders.heading, orders.speed), (Some(180), Some(54)));
+        // An orbit still fights a four-second row: BA is circled as named.
+        let orbit = Doctrine {
+            target: Some("BA".to_owned()),
+            ..doctrine()
+        };
+        let (_, orders) = fly(&orbit);
+        assert!(
+            [90, 270].contains(&heading(&orders)),
+            "round BA: {orders:?}"
+        );
     }
 
     // -- cut AK.1: the held tank ---------------------------------------------------
