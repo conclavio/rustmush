@@ -1,7 +1,19 @@
 //! **The live commander lane** (cut AK.3, 16c Q-AK4): the win-rate lane's
-//! rig, poses and 420 s cap (the rig's `fly_posed`, which both lanes call),
+//! rig, poses and 420 s cap (the rig's `fly_lane`, which every lane calls),
 //! five matches, `--arena red --matches 5`, with `bots/arena/commander.toml`'s
 //! own commander and its **real model**.
+//!
+//! **From the muster** (cut AN.1): with `MUSH_BOT_LIVE_FROM_MUSTER=1` as well,
+//! it flies the muster lane's match instead — no pose, the shipped muster, a
+//! 600 s cap — on a 90-minute deadline; unset or `0` flies posed as before,
+//! and anything else panics before the launch ([`from_muster`]). **The cost**:
+//! the commander asks every `commander_ms` whatever the picture holds, and the
+//! live lane read posed about one call each two seconds (31 to 97 calls in 60
+//! to 196 s matches). From the muster a match of up to 600 s, much of it with
+//! nothing in sight, costs up to about 300 calls, under the 400 a match that
+//! `commander_max_calls` allows, and five matches up to about 1 500. It prints
+//! first `FLOWN FROM: the muster (600 s cap)` or `FLOWN FROM: posed 500 m
+//! apart (420 s cap)`.
 //!
 //! **It spends real money, so nothing runs it but the lead, by hand.** It is
 //! `#[ignore]`, and even under `--ignored` it only prints
@@ -21,19 +33,27 @@
 //! MUSH_BOT_LIVE_COMMANDER=1 cargo test -p mush-bot --test arena_live_commander -- --ignored --nocapture
 //! ```
 //!
-//! It prints `LIVE COMMANDER: {w} of 5 for red against one machine at 1 v 1
-//! (…)`, one line a match with the commander's tally, the win-rate lane's
-//! reading lines (cut AL.3: the rig's `Reading::lines`, `ENGAGEMENT` with the
-//! stances flown, `FIRE GAP`, `SHOT GAP`, `STILL CYCLING`, `HITS TAKEN BY
-//! FACET`), and one `COST:` line from the report's cost ledger
+//! and, to fly it from the muster,
+//!
+//! ```text
+//! MUSH_BOT_LIVE_COMMANDER=1 MUSH_BOT_LIVE_FROM_MUSTER=1 cargo test -p mush-bot --test arena_live_commander -- --ignored --nocapture
+//! ```
+//!
+//! After `FLOWN FROM`, it prints `LIVE COMMANDER: {w} of 5 for red against one
+//! machine at 1 v 1 (…)`, one line a match with the commander's tally, the
+//! win-rate lane's reading lines (cut AL.3: the rig's `Reading::lines`,
+//! `ENGAGEMENT` with the stances flown, `FIRE GAP`, `SHOT GAP`, `STILL
+//! CYCLING`, `HITS TAKEN BY FACET`, and cut AN.1's `SEEN FIRST`, `OPENING` and
+//! `FRONT SHARE`), and one `COST:` line from the report's cost ledger
 //! ([`live_lines`]), and asserts only that five matches finished. `MUSH_BOT_WIN_RATE_KEEP` keeps `live-commander.jsonl` and
 //! `live-commander.json` as it keeps the win-rate lane's.
 //!
 //! **Its setup is proved offline**, with no key and no model:
 //! [`the_live_lane_config_loads_and_resolves`] loads the config the lane
 //! writes ([`live_commander_extra`]) through the bot's own `Config::load`,
-//! resolves its commander from the table, and formats a hand-written report
-//! through [`live_lines`].
+//! resolves its commander from the table, formats a hand-written report
+//! through [`live_lines`], and reads `MUSH_BOT_LIVE_FROM_MUSTER`'s three
+//! answers through [`from_muster`].
 use std::time::Duration;
 
 use mush_bot::{
@@ -50,8 +70,24 @@ const LIVE_MATCHES: usize = 5;
 /// The whole flight's deadline, from the launch: five matches of 420 s with
 /// boarding and startup are about 38 minutes.
 const DEADLINE: Duration = Duration::from_secs(60 * 60);
+/// The deadline from the muster (cut AN.1): five matches of up to 600 s with
+/// boarding and startup are about 55 minutes.
+const MUSTER_DEADLINE: Duration = Duration::from_secs(90 * 60);
 /// The variable that opts the lead in.
 const OPT_IN: &str = "MUSH_BOT_LIVE_COMMANDER";
+/// The variable that flies the lane from the muster (cut AN.1).
+const FROM_MUSTER: &str = "MUSH_BOT_LIVE_FROM_MUSTER";
+
+/// **Whether the live lane flies from the muster** (cut AN.1), from
+/// [`FROM_MUSTER`]'s value: unset or `0` → posed, `1` → the muster, and
+/// anything else a panic, before anything is launched.
+fn from_muster(value: Option<&str>) -> bool {
+    match value {
+        None | Some("0") => false,
+        Some("1") => true,
+        Some(other) => panic!("MUSH_BOT_LIVE_FROM_MUSTER is 0 or 1, not {other}"),
+    }
+}
 /// The commander's key, as `bots/arena/commander.toml` names it.
 const KEY_ENV: &str = "OPENROUTER_API_KEY";
 
@@ -79,15 +115,45 @@ async fn arena_live_commander_five_matches() {
         );
     }
 
+    // Read after the opt-in, so the skip path is unchanged (cut AN.1).
+    let value = std::env::var_os(FROM_MUSTER).map(|v| v.to_string_lossy().into_owned());
+    let muster = from_muster(value.as_deref());
+
     let extra = live_commander_extra();
-    let posed = arena_rig::fly_posed(&arena_rig::PosedPlan {
-        name: "live-commander",
-        matches: LIVE_MATCHES,
-        deadline: DEADLINE,
-        extra: &extra,
-        env: &[(KEY_ENV, key)],
-    })
-    .await;
+    let env = [(KEY_ENV, key)];
+    let plan = if muster {
+        arena_rig::LanePlan {
+            name: "live-commander",
+            matches: LIVE_MATCHES,
+            deadline: MUSTER_DEADLINE,
+            extra: &extra,
+            env: &env,
+            poses: &[],
+            max_duration_ms: arena_rig::MUSTER_DURATION_MS,
+            max_seconds: arena_rig::MUSTER_MAX_SECONDS,
+        }
+    } else {
+        arena_rig::LanePlan {
+            name: "live-commander",
+            matches: LIVE_MATCHES,
+            deadline: DEADLINE,
+            extra: &extra,
+            env: &env,
+            poses: &arena_rig::POSES,
+            max_duration_ms: arena_rig::MAX_DURATION_MS,
+            max_seconds: arena_rig::MAX_SECONDS,
+        }
+    };
+    // First, before anything the flight prints (cut AN.1).
+    println!(
+        "{}",
+        if muster {
+            "FLOWN FROM: the muster (600 s cap)"
+        } else {
+            "FLOWN FROM: posed 500 m apart (420 s cap)"
+        }
+    );
+    let posed = arena_rig::fly_lane(&plan).await;
 
     // The lead's reading (cut AL.3), after the match lines and before the cost.
     let reading = arena_rig::reading(
@@ -237,8 +303,10 @@ fn live_lines(report: &Value) -> Vec<String> {
 /// [`live_commander_extra`] — loads through the bot's own `Config::load` and
 /// validates; its commander resolves from `[arena.commander_model]` with
 /// `commander.toml`'s own model name, timeout, reasoning off and provider
-/// order; `lead_start_grace_ms` is the posed lanes' 5 s; and [`live_lines`]
-/// turns a hand-written report of two matches into the three line shapes.
+/// order; `lead_start_grace_ms` is the posed lanes' 5 s; [`live_lines`]
+/// turns a hand-written report of two matches into the three line shapes;
+/// and (cut AN.1) [`from_muster`] reads unset and `0` as posed, `1` as the
+/// muster, and refuses anything else with its sentence.
 #[test]
 fn the_live_lane_config_loads_and_resolves() {
     let dir = std::env::temp_dir().join(format!("mush-bot-live-lane-{}", std::process::id()));
@@ -341,5 +409,15 @@ persistent = false
             "match 2: timeout; 20 shots, 11 hits, took 6; 420 s; commander 150 calls, 149 applied, 0 late, 0 overruled, 1 invalid, 0 errors, off: answers arrive too late to use",
             "COST: 230 request(s), 229 answered, 1 error(s), 0 cancelled, 0.0321 USD",
         ]
+    );
+
+    // The muster variable's three readings, and its refusal (cut AN.1).
+    assert!(!from_muster(None));
+    assert!(!from_muster(Some("0")));
+    assert!(from_muster(Some("1")));
+    let refused = std::panic::catch_unwind(|| from_muster(Some("yes"))).expect_err("refused");
+    assert_eq!(
+        refused.downcast_ref::<String>().map(String::as_str),
+        Some("MUSH_BOT_LIVE_FROM_MUSTER is 0 or 1, not yes")
     );
 }

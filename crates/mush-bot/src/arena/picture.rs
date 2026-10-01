@@ -465,6 +465,23 @@ pub struct Tally {
     /// hit with no facet counts only there. What the facet you show cost.
     pub hits_taken_by_facet: BTreeMap<String, u32>,
     pub sections_lost: Vec<String>,
+    /// **When the scope first held something this match** (cut AN.1), on the
+    /// lane clock: the first `New contact` notice, identification or applied
+    /// `CONTACTS` row (an unknown included) read while the match runs, of a
+    /// contact not read as the own side — a row or identification naming the
+    /// own side sets nothing, and a notice sets it only when its designator
+    /// is not held as the own side, so a wingman's report of its teammate is
+    /// never the first contact. Set once. It names nothing: the bot's own
+    /// observer rule.
+    pub first_contact_ms: Option<u64>,
+    /// **When the first hit was taken this match** (cut AN.1), on the lane
+    /// clock: the first hit line on the own tank read while the match runs.
+    /// Set once.
+    pub first_hit_taken_ms: Option<u64>,
+    /// **When the first hit was scored this match** (cut AN.1), on the lane
+    /// clock: the first `Hit on …` line read while the match runs that is not
+    /// marked `(FRIENDLY)`. Set once. It names nothing.
+    pub first_hit_scored_ms: Option<u64>,
 }
 
 impl Tally {
@@ -1255,6 +1272,10 @@ impl Picture {
                 bearing_deg,
                 band,
             } => {
+                // Cut AN.1: the side the notice's designator is held as, if
+                // any (a teammate a wingman reported is held as the own side).
+                let held = self.contacts.get(designator).and_then(|c| c.side);
+                self.first_contact(now_ms, held);
                 let contact = self
                     .contacts
                     .entry(designator.clone())
@@ -1277,6 +1298,7 @@ impl Picture {
                 designator,
                 side,
             } => {
+                self.first_contact(now_ms, Some(*side));
                 self.rekey(now_ms, was, designator, Some(*side));
                 event = Some(self.event(
                     now_ms,
@@ -1314,10 +1336,15 @@ impl Picture {
             }
             Line::HitScored {
                 designator,
+                friendly,
                 section,
                 ..
             } => {
                 self.tally.hits_scored = self.tally.hits_scored.saturating_add(1);
+                // Cut AN.1: the first hit scored on the other side.
+                if !*friendly && self.running() {
+                    self.tally.first_hit_scored_ms.get_or_insert(now_ms);
+                }
                 self.touch();
                 let text = match (designator, section) {
                     (Some(d), Some(s)) => format!("Hit on {d}: {s}."),
@@ -1364,6 +1391,10 @@ impl Picture {
                 already_destroyed,
             } => {
                 self.tally.hits_taken = self.tally.hits_taken.saturating_add(1);
+                // Cut AN.1: the first hit taken.
+                if self.running() {
+                    self.tally.first_hit_taken_ms.get_or_insert(now_ms);
+                }
                 let plate = through.as_ref().unwrap_or(section).clone();
                 if let Some(facet) = facet {
                     // Cut AL.2: the facet split, and the newest facet hit for
@@ -2106,9 +2137,27 @@ impl Picture {
         self.touch();
     }
 
+    /// The followed match is running (cut AN.1: the report's first times are
+    /// set only then).
+    fn running(&self) -> bool {
+        matches!(self.phase, Phase::Running { .. })
+    }
+
+    /// **The first contact of a running match** (cut AN.1): set once, at
+    /// `now_ms`, for a contact whose side is `side` — never one read as the
+    /// own side ([`Picture::side`]); an unknown (`None`) always counts.
+    fn first_contact(&mut self, now_ms: u64, side: Option<Side>) {
+        let own = side.is_some() && side == self.side;
+        if self.running() && !own {
+            self.tally.first_contact_ms.get_or_insert(now_ms);
+        }
+    }
+
     /// One `CONTACTS` row folded in: its contact updated or added, with its
     /// fix (unless the same plot was read again), its track and read time.
     fn contact_row(&mut self, now_ms: u64, row: &ContactRow, read_ms: u64) {
+        // Cut AN.1: any row not of the own side, an unknown included.
+        self.first_contact(now_ms, row.side);
         let fix = self.row_fix(row, read_ms);
         let mut contact = self
             .contacts
@@ -4626,6 +4675,122 @@ mod tests {
             ],
         );
         assert_eq!(p.power_ms, None);
+    }
+
+    /// **The report's first times** (cut AN.1): each is set once, only while
+    /// the followed match runs; a contact read as the own side, a teammate's
+    /// identification and a friendly hit set nothing; a new match clears all
+    /// three.
+    #[test]
+    fn the_first_times_are_set_once_in_a_running_match() {
+        let mut p = Picture::default();
+        p.claimed(Side::Red, 1);
+        feed(
+            &mut p,
+            &[
+                (100, "Match 9 is boarding. Every pilot: BOARD your pod."),
+                // Before the match runs: nothing.
+                (500, "New contact X1: bearing 000°, far."),
+                (600, "Hit on the hull's left facet: 200 of 250 armour left."),
+                (700, "Hit on X1: turret."),
+            ],
+        );
+        assert_eq!(p.following, Some(9));
+        assert_eq!(p.tally.first_contact_ms, None, "not running yet");
+        assert_eq!(p.tally.first_hit_taken_ms, None);
+        assert_eq!(p.tally.first_hit_scored_ms, None);
+        feed(&mut p, &[(1_000, "Match 9 is running. Good hunting.")]);
+        assert!(matches!(p.phase, Phase::Running { match_id: 9 }));
+        // A row of the own side, a teammate identified as the own side, and a
+        // notice of a designator held as the own side: nothing.
+        feed(
+            &mut p,
+            &[(2_000, "RB  red  bearing 180° (rel 090°)  close  100 m  0 s")],
+        );
+        p.settle(2_200);
+        assert!(p.contacts.contains_key("RB"));
+        assert_eq!(p.tally.first_contact_ms, None, "the own side's row");
+        feed(
+            &mut p,
+            &[
+                (2_300, "Contact X5 identified: RC, red."),
+                (2_400, "New contact RB: bearing 180°, close."),
+            ],
+        );
+        assert_eq!(p.tally.first_contact_ms, None, "the own side, named");
+        // A friendly hit scored is not the first hit scored.
+        feed(&mut p, &[(2_500, "Hit on RB (FRIENDLY): turret.")]);
+        assert_eq!(p.tally.hits_scored, 2, "the one before the run counted too");
+        assert_eq!(p.tally.first_hit_scored_ms, None, "a friendly hit");
+        // The first row of anything else — an unknown — sets it, at its
+        // apply; a later notice does not move it.
+        feed(
+            &mut p,
+            &[(
+                3_000,
+                "X2  unknown  bearing 090° (rel 000°)  far  450 m  0 s",
+            )],
+        );
+        p.settle(3_200);
+        assert_eq!(p.tally.first_contact_ms, Some(3_200));
+        feed(
+            &mut p,
+            &[
+                (4_000, "New contact X3: bearing 270°, far."),
+                (4_100, "Contact X2 identified: BA, blue."),
+            ],
+        );
+        assert_eq!(p.tally.first_contact_ms, Some(3_200), "set once");
+        // The first hit taken and the first hit scored, each once.
+        feed(
+            &mut p,
+            &[
+                (
+                    5_000,
+                    "Hit on the hull's left facet: 200 of 250 armour left.",
+                ),
+                (6_000, "Hit on BA: turret."),
+                (
+                    7_000,
+                    "Hit on the hull's front facet: 300 of 400 armour left.",
+                ),
+                (8_000, "Hit on BA: hull."),
+            ],
+        );
+        assert_eq!(p.tally.first_hit_taken_ms, Some(5_000));
+        assert_eq!(p.tally.first_hit_scored_ms, Some(6_000));
+        // A notice is a first contact when nothing came before it.
+        let mut q = Picture {
+            phase: Phase::Running { match_id: 1 },
+            following: Some(1),
+            side: Some(Side::Red),
+            ..Picture::default()
+        };
+        feed(&mut q, &[(1_500, "New contact X1: bearing 000°, far.")]);
+        assert_eq!(q.tally.first_contact_ms, Some(1_500));
+        // …and so is an identification of the other side.
+        let mut q = Picture {
+            phase: Phase::Running { match_id: 1 },
+            following: Some(1),
+            side: Some(Side::Red),
+            ..Picture::default()
+        };
+        feed(&mut q, &[(1_700, "Contact X1 identified: BA, blue.")]);
+        assert_eq!(q.tally.first_contact_ms, Some(1_700));
+        // A new match clears all three.
+        feed(
+            &mut p,
+            &[(9_000, "Match 9 is over (red). Its units are checked in.")],
+        );
+        p.claimed(Side::Red, 1);
+        feed(
+            &mut p,
+            &[(10_000, "Match 10 is boarding. Every pilot: BOARD your pod.")],
+        );
+        assert_eq!(p.following, Some(10));
+        assert_eq!(p.tally.first_contact_ms, None);
+        assert_eq!(p.tally.first_hit_taken_ms, None);
+        assert_eq!(p.tally.first_hit_scored_ms, None);
     }
 
     #[test]

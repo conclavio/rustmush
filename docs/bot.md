@@ -646,9 +646,9 @@ about seventy-five minutes when every match runs long (the runs of 2026-09-30
 took 24 to 32 minutes, most matches ending well inside the cap), and the whole
 flight has one deadline of 100 minutes. It prints `WIN RATE: {w} of 10 for red
 against one machine at 1 v 1 (…)` and one line a match, and fails only when
-fewer than ten matches finish: the owner's target is seven in ten, and the lane
-reports the figure rather than failing on it. CI runs it only by hand (the `bot-win-rate` job,
-`workflow_dispatch`); read the figure off the job's log.
+fewer than ten matches finish: the target is seven in ten, and the lane
+reports the figure rather than failing on it. CI runs it only by hand (the
+`bot-win-rate` job, `workflow_dispatch`); read the figure off the job's log.
 
 **The engagement it flies.** `MUSH_BOT_WIN_RATE_ENGAGEMENT` picks the pilot's
 own engagement, written into the bot's config as `[arena] engagement`: unset or
@@ -750,10 +750,13 @@ above one in ten.
 **The live commander lane.** A second ignored lane,
 `crates/mush-bot/tests/arena_live_commander.rs`, flies the same rig, poses and
 seven-minute cap for five matches with `bots/arena/commander.toml`'s commander
-and its real model. It prints `LIVE COMMANDER: {w} of 5 for red against one
-machine at 1 v 1 (…)`, one line a match with the commander's calls and what
-became of them (applied, late, overruled, invalid, errors, and why it stopped
-if it did), and a `COST:` line from the cost ledger. **It spends real money**:
+and its real model (or, with `MUSH_BOT_LIVE_FROM_MUSTER=1`, from the muster:
+see below). It prints first which it flew, `FLOWN FROM: posed 500 m apart
+(420 s cap)` or `FLOWN FROM: the muster (600 s cap)`, then `LIVE COMMANDER:
+{w} of 5 for red against one machine at 1 v 1 (…)`, one line a match with the
+commander's calls and what became of them (applied, late, overruled, invalid,
+errors, and why it stopped if it did), the reading's lines, and a `COST:` line
+from the cost ledger. **It spends real money**:
 a live smoke on 2026-09-29 made 370 calls over five matches for 0.0706
 US dollars, about 1.4 US cents a match, about 410 ms a call. So CI never runs
 it and never sets its variables; it is run by hand:
@@ -769,6 +772,77 @@ else. Opted in without the key, the lane fails rather than skips; without
 `MUSH_BOT_LIVE_COMMANDER=1` it prints a skip line and passes. An offline test
 in the same file, run with the bot's other tests, proves that the config it
 writes loads, validates and resolves its commander from the table.
+
+**From the muster.** The posed lane is a duel from its first second: both
+tanks start inside each other's sight. The match a person plays starts at the
+muster, about 2.4 km apart, and a third ignored lane flies exactly that: ten
+matches, no pose, from the muster, **ten minutes (600 s) a match at most**,
+with no model.
+
+```sh
+cargo test -p mush-bot --test arena_muster_rate -- --ignored --nocapture
+```
+
+Its `WIN RATE FROM THE MUSTER: {w} of 10 for red against one machine at 1 v 1
+(…)` is **the figure of record**; the posed lane stays as the duel benchmark.
+CI runs it only by hand too (the `bot-muster-rate` job). A run takes up to
+about two hours, under one deadline of 140 minutes; `MUSH_BOT_WIN_RATE_KEEP`
+keeps `win-rate-muster.jsonl` and `win-rate-muster.json`, and
+`MUSH_BOT_WIN_RATE_ENGAGEMENT` picks the engagement, as for the posed lane.
+Each match line ends with the match's first contact, first hit taken and
+first hit scored, in whole seconds after its `Power online.` (or `none`).
+The report carries the same three times for each match (`first_contact_ms`,
+`first_hit_taken_ms`, `first_hit_scored_ms`), in milliseconds after that
+match's `Power online.`; they carry no designator and name nothing of the
+other side. Every lane now ends its reading with three more lines:
+
+- `SEEN FIRST: contact before hit {a}, hit before contact {b}, neither {c} of
+  {n} matches; lead p10 … / p50 … / p90 … s over {k}; shot first {s}, shot at
+  first {t}`. The bot cannot know when the machine saw it. The machine closes
+  to about 420 m before it shoots, and both sights reach past that, so the bot
+  almost always has a contact before its first hit taken, and that count alone
+  says little. What it can measure is **the lead**: the seconds from its own
+  first contact to its first hit taken. A long lead is the bot seeing first; a
+  short one is the machine finding it first. `shot first` counts the matches
+  where the bot scored before it was hit, `shot at first` the others that saw
+  a hit taken.
+- `OPENING: first contact p10 … / p50 … / p90 … s after power online over {k}
+  matches; first hit taken p50 … s over {j}`: how long the opening took
+  (`OPENING: no contact in {n} matches` when nothing was ever seen).
+- `FRONT SHARE: {f} of {h} facet hits taken on a front facet`: how much of the
+  punishment the front took.
+
+The live commander lane flies from the muster too with
+`MUSH_BOT_LIVE_FROM_MUSTER=1` beside `MUSH_BOT_LIVE_COMMANDER=1` (`0` or unset
+flies it posed; anything else stops it before it starts), its first line then
+`FLOWN FROM: the muster (600 s cap)`:
+
+```sh
+MUSH_BOT_LIVE_COMMANDER=1 MUSH_BOT_LIVE_FROM_MUSTER=1 cargo test -p mush-bot --test arena_live_commander -- --ignored --nocapture
+```
+
+The commander is asked about every two seconds whatever the tank can see, so a
+muster match of up to ten minutes, much of it with nothing in sight, costs up
+to about 300 calls (under the 400 a match `commander_max_calls` allows), and
+five matches up to about 1 500.
+
+Ten matches are a small sample: three runs of one unchanged bot on the posed
+lane read 5, 5 and 4 of 10, so a difference of one or two wins between runs is
+not a finding.
+
+**From the muster, measured.** The first run, on 2026-10-01, with the pilot as
+it shipped then (the hold, nothing changed for the muster), took 28 minutes
+and read `WIN RATE FROM THE MUSTER: 4 of 10 for red against one machine at 1 v
+1 (lost 6, drew 0, timed out 0, other 0)`. Every match opened the same way:
+the pilot drove east along the road at full speed, and the first contact came
+83 to 86 s after power online, about 550 to 600 m off dead ahead. The first hit
+taken followed 7 to 12 s later, 7 to 9 s in nine matches of ten (`SEEN FIRST:
+contact before hit 10, hit before contact 0, neither 0 of 10 matches; lead p10
+7 / p50 8 / p90 9 s over 10; shot first 10, shot at first 0`; the p90 by its
+index rule leaves out the longest of ten). The pilot scored first in every
+match, and every hit that named a facet struck a front one (`FRONT SHARE: 408
+of 408 facet hits taken on a front facet`); the matches lasted 114 to 229 s,
+none near the cap.
 
 **From a goal.** A plain `--goal` can hand the character to the pilot: the goal
 model may answer with the action `arena` and a `side` (`red` or `blue`, in any

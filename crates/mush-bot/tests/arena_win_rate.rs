@@ -25,7 +25,7 @@
 //! back at muster, so without a pose the figure would measure the search. God,
 //! standing in the Simulator Lobby, poses `RA` and `BA` 500 m apart on the road
 //! before the first match and again on each `Match {n} is over (` line (the
-//! rig's `fly_posed`, which the live commander lane flies too). **A refused
+//! rig's `fly_lane`, which the live commander lane flies too). **A refused
 //! pose answers at once and flags its match by id**: the first match flown
 //! whose id is greater than the `n` of the end the poses followed (the first
 //! match flown, for a pose refused before the launch). Its line ends
@@ -48,11 +48,17 @@
 //! (`win-rate.jsonl`) and report (`win-rate.json`) there for reading after (the
 //! rig's own directory is removed).
 //!
+//! **The duel benchmark** (cut AN.1): posed 500 m apart, every match here is a
+//! duel from the first second. The match a person plays starts at the shipped
+//! muster, and its figure of record is the sibling lane `arena_muster_rate`
+//! (CI's `bot-muster-rate`), flown through the same rig (`fly_lane`).
+//!
 //! **The engagement** (cut AL.3): `MUSH_BOT_WIN_RATE_ENGAGEMENT` picks the
 //! pilot's own engagement, written into the bot's config as `[arena]
-//! engagement` ([`extra`]): unset or `hold` flies the hold (the default),
-//! `orbit` the orbit (the comparison run); anything else panics before the
-//! launch with `MUSH_BOT_WIN_RATE_ENGAGEMENT is hold or orbit, not {value}`.
+//! engagement` (the rig's `extra`, cut AN.1): unset or `hold` flies the hold
+//! (the default), `orbit` the orbit (the comparison run); anything else panics
+//! before the launch with `MUSH_BOT_WIN_RATE_ENGAGEMENT is hold or orbit, not
+//! {value}`.
 //! No code is edited between the runs.
 //!
 //! **The lead's reading** (cut AL.3; the rig's `reading` over the kept
@@ -60,8 +66,9 @@
 //! of {n} picture records` (the stances the picture records flew), then the
 //! `WIN RATE` line and the match lines as before, then `FIRE GAP {w}: …` (the
 //! lead's count of the `FIRE` lines), `SHOT GAP {w}: …` (the shots that left),
-//! `STILL CYCLING {w}: {k} of {n} FIRE lines` and `HITS TAKEN BY FACET: …`,
-//! and only then `UNPOSED`, `NO REPORT` and `EARLY END`. The offline
+//! `STILL CYCLING {w}: {k} of {n} FIRE lines`, `HITS TAKEN BY FACET: …` and
+//! (cut AN.1) `SEEN FIRST: …`, `OPENING: …` and `FRONT SHARE: …`, and only
+//! then `UNPOSED`, `NO REPORT` and `EARLY END`. The offline
 //! `the_reading_lines_are_the_leads_count` (not ignored) proves the reading on
 //! a hand-written transcript and report.
 use std::time::Duration;
@@ -75,38 +82,23 @@ const MATCHES: usize = 10;
 /// boarding and startup are about 76 minutes, and the rest is room for slow
 /// boards.
 const DEADLINE: Duration = Duration::from_secs(100 * 60);
-/// The variable that picks the engagement the lane flies (cut AL.3).
-const ENGAGEMENT_ENV: &str = "MUSH_BOT_WIN_RATE_ENGAGEMENT";
-
-/// **The engagement the lane flies** (cut AL.3), from
-/// [`ENGAGEMENT_ENV`]'s value: unset or `hold` → `hold`, `orbit` → `orbit`,
-/// and anything else a panic, before anything is launched.
-fn engagement(value: Option<&str>) -> &'static str {
-    match value {
-        None | Some("hold") => "hold",
-        Some("orbit") => "orbit",
-        Some(other) => panic!("MUSH_BOT_WIN_RATE_ENGAGEMENT is hold or orbit, not {other}"),
-    }
-}
-
-/// **The bot's extra config** for the engagement `e` (cut AL.3): the posed
-/// lanes' 5 s start grace, and `[arena] engagement`.
-fn extra(e: &str) -> String {
-    format!("\n[arena]\nlead_start_grace_ms = 5000\nengagement = \"{e}\"\n")
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "report-only, about seventy-five minutes: CI's manual bot-win-rate job runs it (16c Q-AJ1, Q-AK3)"]
 async fn arena_win_rate_over_ten_matches() {
-    let value = std::env::var_os(ENGAGEMENT_ENV).map(|v| v.to_string_lossy().into_owned());
-    let flying = engagement(value.as_deref());
-    let extra = extra(flying);
-    let posed = arena_rig::fly_posed(&arena_rig::PosedPlan {
+    let value =
+        std::env::var_os(arena_rig::ENGAGEMENT_ENV).map(|v| v.to_string_lossy().into_owned());
+    let flying = arena_rig::engagement(value.as_deref());
+    let extra = arena_rig::extra(flying);
+    let posed = arena_rig::fly_lane(&arena_rig::LanePlan {
         name: "win-rate",
         matches: MATCHES,
         deadline: DEADLINE,
         extra: &extra,
         env: &[],
+        poses: &arena_rig::POSES,
+        max_duration_ms: arena_rig::MAX_DURATION_MS,
+        max_seconds: arena_rig::MAX_SECONDS,
     })
     .await;
 
@@ -237,6 +229,7 @@ fn the_lane_reads_the_lobby_and_flags_a_match_by_its_id() {
             Ended::Timeout,
             Duration::from_secs(90),
             DEADLINE,
+            arena_rig::MATCH_WAIT,
         )),
         refused: vec![None, Some(3)],
     };
@@ -279,20 +272,35 @@ fn the_lane_reads_the_lobby_and_flags_a_match_by_its_id() {
     // match's; the bot's own end is the bot's whatever the limit; and (cut
     // AM.3) God's own session closing is the watcher's, whatever the limit.
     assert_eq!(
-        arena_rig::early_why(Ended::Timeout, arena_rig::MATCH_WAIT, DEADLINE),
+        arena_rig::early_why(
+            Ended::Timeout,
+            arena_rig::MATCH_WAIT,
+            DEADLINE,
+            arena_rig::MATCH_WAIT
+        ),
         "no match end inside 600 s"
     );
     assert_eq!(
-        arena_rig::early_why(Ended::Timeout, Duration::from_secs(1), DEADLINE),
+        arena_rig::early_why(
+            Ended::Timeout,
+            Duration::from_secs(1),
+            DEADLINE,
+            arena_rig::MATCH_WAIT
+        ),
         "the 100-minute deadline"
     );
     assert_eq!(
-        arena_rig::early_why(Ended::Bot, Duration::from_secs(1), DEADLINE),
+        arena_rig::early_why(
+            Ended::Bot,
+            Duration::from_secs(1),
+            DEADLINE,
+            arena_rig::MATCH_WAIT
+        ),
         "the bot ended"
     );
     for limit in [Duration::from_secs(1), arena_rig::MATCH_WAIT] {
         assert_eq!(
-            arena_rig::early_why(Ended::Closed, limit, DEADLINE),
+            arena_rig::early_why(Ended::Closed, limit, DEADLINE, arena_rig::MATCH_WAIT),
             "the watching session closed"
         );
     }
@@ -304,6 +312,7 @@ fn the_lane_reads_the_lobby_and_flags_a_match_by_its_id() {
             Ended::Closed,
             Duration::from_secs(90),
             DEADLINE,
+            arena_rig::MATCH_WAIT,
         )),
         refused: Vec::new(),
     };
@@ -320,8 +329,11 @@ fn the_lane_reads_the_lobby_and_flags_a_match_by_its_id() {
 /// (with an echo of a `FIRE` beside them), and a torn last line — and a
 /// hand-written report with two matches' facet maps give exactly the reading's
 /// line shapes; a report whose facet maps are empty gives `none`, and no
-/// report `no report`. The engagement knob reads `hold` and `orbit` and
-/// refuses anything else, and the bot's extra config names it.
+/// report `no report`. Cut AN.1: the two matches carry their first times (one
+/// whose contact came 12 s before its first hit taken, one hit before any
+/// contact), read into `SEEN FIRST`, `OPENING` and `FRONT SHARE`. The
+/// engagement knob (the rig's) reads `hold` and `orbit` and refuses anything
+/// else, and the bot's extra config names it.
 #[test]
 fn the_reading_lines_are_the_leads_count() {
     use serde_json::json;
@@ -380,9 +392,13 @@ fn the_reading_lines_are_the_leads_count() {
     // A torn last line: the transcript as a killed child leaves it.
     records.push_str("\n{\"kind\":\"arena-send\",\"data\":{\"lane_ms\":50000,\"line\":\"FIRE can");
     let report = json!({"arena": {"matches": [
-        {"match": 1, "hits_taken_by_facet": {"hull left": 3, "hull front": 1}},
+        {"match": 1, "hits_taken_by_facet": {"hull left": 3, "hull front": 1},
+         "first_contact_ms": 41_500, "first_hit_taken_ms": 53_900,
+         "first_hit_scored_ms": 50_200},
         {"match": 2, "hits_taken_by_facet":
-            {"hull left": 2, "turret rear": 1, "right_track right": 1}}
+            {"hull left": 2, "turret rear": 1, "right_track right": 1},
+         "first_contact_ms": 30_000, "first_hit_taken_ms": 29_000,
+         "first_hit_scored_ms": null}
     ]}});
     let reading = arena_rig::reading(&records, Some(&report));
     assert_eq!(reading.pictures, 5);
@@ -397,6 +413,9 @@ fn the_reading_lines_are_the_leads_count() {
             "STILL CYCLING cannon: 1 of 5 FIRE lines",
             "STILL CYCLING machine_gun: 1 of 5 FIRE lines",
             "HITS TAKEN BY FACET: hull left 5, hull front 1, right_track right 1, turret rear 1",
+            "SEEN FIRST: contact before hit 1, hit before contact 1, neither 0 of 2 matches; lead p10 12 / p50 12 / p90 12 s over 1; shot first 1, shot at first 1",
+            "OPENING: first contact p10 30 / p50 30 / p90 30 s after power online over 2 matches; first hit taken p50 29 s over 2",
+            "FRONT SHARE: 1 of 8 facet hits taken on a front facet",
         ]
     );
     // Empty facet maps: none. No report: no report. The engagement is the
@@ -409,25 +428,38 @@ fn the_reading_lines_are_the_leads_count() {
         Some("ENGAGEMENT: orbit; flown hold 3, hunt 1, orbit 1 of 5 picture records")
     );
     assert_eq!(
-        lines.last().map(String::as_str),
+        lines.get(7).map(String::as_str),
         Some("HITS TAKEN BY FACET: none")
+    );
+    assert_eq!(
+        lines.last().map(String::as_str),
+        Some("FRONT SHARE: 0 of 0 facet hits taken on a front facet")
     );
     let lines = arena_rig::reading(&records, None).lines("hold");
     assert_eq!(
-        lines.last().map(String::as_str),
+        lines.get(7).map(String::as_str),
         Some("HITS TAKEN BY FACET: no report")
     );
-    assert_eq!(lines.len(), 8);
-    // Nothing read: one line for what was flown, one for the facets.
+    assert_eq!(
+        lines.last().map(String::as_str),
+        Some("FRONT SHARE: no report")
+    );
+    assert_eq!(lines.len(), 11);
+    // Nothing read: one line for what was flown, one for the facets, and the
+    // three of who saw whom first, the opening and the front.
     assert_eq!(
         arena_rig::reading("", None).lines("hold"),
         [
             "ENGAGEMENT: hold; flown nothing of 0 picture records",
             "HITS TAKEN BY FACET: no report",
+            "SEEN FIRST: no report",
+            "OPENING: no report",
+            "FRONT SHARE: no report",
         ]
     );
 
-    // The knob, and the config it writes.
+    // The knob, and the config it writes (the rig's, cut AN.1).
+    use arena_rig::{engagement, extra};
     assert_eq!(engagement(None), "hold");
     assert_eq!(engagement(Some("hold")), "hold");
     assert_eq!(engagement(Some("orbit")), "orbit");

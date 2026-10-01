@@ -164,6 +164,23 @@ pub struct MatchResult {
     /// Why the commander stopped before the match's end, when it did.
     #[serde(default)]
     pub commander_off: Option<String>,
+    /// **The first contact, in milliseconds after this match's `Power
+    /// online.`** (cut AN.1; the picture's `power_ms`): the first `New
+    /// contact` notice, identification or `CONTACTS` row of anything not read
+    /// as the own side. `None` when none came or power never came up. It
+    /// names nothing of the other side (the bot's observer rule). A report
+    /// written before it reads as `None`.
+    #[serde(default)]
+    pub first_contact_ms: Option<u64>,
+    /// **The first hit taken, in milliseconds after this match's `Power
+    /// online.`** (cut AN.1). `None` when none came or power never came up.
+    #[serde(default)]
+    pub first_hit_taken_ms: Option<u64>,
+    /// **The first hit scored on the other side, in milliseconds after this
+    /// match's `Power online.`** (cut AN.1; a friendly hit is not one). `None`
+    /// when none came or power never came up. It names nothing.
+    #[serde(default)]
+    pub first_hit_scored_ms: Option<u64>,
 }
 
 impl MatchResult {
@@ -181,6 +198,11 @@ impl MatchResult {
         duration_ms: u64,
     ) -> MatchResult {
         let tally = &picture.tally;
+        // Cut AN.1: a lane-clock instant as milliseconds after power online.
+        let after_power = |at: Option<u64>| {
+            at.zip(picture.power_ms)
+                .map(|(at, power)| at.saturating_sub(power))
+        };
         MatchResult {
             match_id,
             callsign,
@@ -206,6 +228,9 @@ impl MatchResult {
             commander_errors: 0,
             commander_overruled: 0,
             commander_off: None,
+            first_contact_ms: after_power(tally.first_contact_ms),
+            first_hit_taken_ms: after_power(tally.first_hit_taken_ms),
+            first_hit_scored_ms: after_power(tally.first_hit_scored_ms),
         }
     }
 
@@ -366,6 +391,9 @@ mod tests {
             commander_errors: 0,
             commander_overruled: 0,
             commander_off: None,
+            first_contact_ms: None,
+            first_hit_taken_ms: None,
+            first_hit_scored_ms: None,
         }
     }
 
@@ -601,6 +629,86 @@ mod tests {
             .remove("hits_taken_by_facet");
         let read: MatchResult = serde_json::from_value(old).expect("reads");
         assert!(read.hits_taken_by_facet.is_empty());
+    }
+
+    /// **The first times are after power online** (cut AN.1): a picture
+    /// driven through a running match — `Power online.` at 10 000, a contact
+    /// notice at 25 000, a hit taken at 31 000 and one scored at 33 000 —
+    /// gives 15 000, 21 000 and 23 000; with power never up, all `None`. They
+    /// round-trip, and a report written before them reads them as `None`.
+    #[test]
+    fn the_first_times_are_after_power_online() {
+        let drive = |power: bool| {
+            let mut picture = Picture::default();
+            picture.claimed(Side::Red, 1);
+            let mut lines = vec![
+                (1_000, "Match 4 is boarding. Every pilot: BOARD your pod."),
+                (2_000, "Match 4 is running. Good hunting."),
+            ];
+            if power {
+                lines.push((10_000, "Power online."));
+            }
+            lines.extend([
+                (25_000, "New contact X1: bearing 090°, far."),
+                (
+                    31_000,
+                    "Hit on the hull's front facet: 300 of 400 armour left.",
+                ),
+                (33_000, "Hit on X1: turret."),
+            ]);
+            for (at, line) in lines {
+                picture.apply(at, &crate::arena::classify(line));
+            }
+            MatchResult::from_picture(
+                &picture,
+                Side::Red,
+                4,
+                "RA".into(),
+                true,
+                "red",
+                0,
+                0,
+                60_000,
+            )
+        };
+        let result = drive(true);
+        assert_eq!(result.first_contact_ms, Some(15_000));
+        assert_eq!(result.first_hit_taken_ms, Some(21_000));
+        assert_eq!(result.first_hit_scored_ms, Some(23_000));
+        let dark = drive(false);
+        assert_eq!(
+            (
+                dark.first_contact_ms,
+                dark.first_hit_taken_ms,
+                dark.first_hit_scored_ms
+            ),
+            (None, None, None),
+            "power never came up"
+        );
+        let written = serde_json::to_value(&result).expect("json");
+        assert_eq!(written["first_contact_ms"], 15_000);
+        assert_eq!(written["first_hit_taken_ms"], 21_000);
+        assert_eq!(written["first_hit_scored_ms"], 23_000);
+        let read: MatchResult = serde_json::from_value(written.clone()).expect("reads");
+        assert_eq!(read, result);
+        let mut old = written;
+        let object = old.as_object_mut().expect("an object");
+        for key in [
+            "first_contact_ms",
+            "first_hit_taken_ms",
+            "first_hit_scored_ms",
+        ] {
+            object.remove(key);
+        }
+        let read: MatchResult = serde_json::from_value(old).expect("reads");
+        assert_eq!(
+            (
+                read.first_contact_ms,
+                read.first_hit_taken_ms,
+                read.first_hit_scored_ms
+            ),
+            (None, None, None)
+        );
     }
 
     #[test]

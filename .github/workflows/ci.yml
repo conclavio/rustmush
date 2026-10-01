@@ -380,6 +380,7 @@ jobs:
   # 16c Q-AJ5, not a failure). About seventy-five minutes, so it runs on
   # demand only, never on push or on the weekly schedule. It is the only job
   # that runs `arena_win_rate`, which is `#[ignore]` for exactly that reason.
+  # Its sibling bot-muster-rate (below) flies the same bot from the muster.
   bot-win-rate:
     name: Bot win rate against the machine (report-only)
     if: github.event_name == 'workflow_dispatch'
@@ -401,6 +402,31 @@ jobs:
       # MUSH_BOT_LIVE_COMMANDER=1 cargo test -p mush-bot --test arena_live_commander -- --ignored --nocapture
       - name: Bot win rate
         run: cargo test -p mush-bot --test arena_win_rate -- --ignored --nocapture
+
+  # 16b cut AN.1 (16c Q-AN2): the bot's win rate from the shipped muster: ten
+  # 1 v 1 matches flown by the real mush-bot binary, no model, no pose, on a
+  # 600 s cap. This is the figure of record from cut AN on; the posed lane
+  # above stays as the duel benchmark. REPORT-ONLY: it asserts only that ten
+  # matches finished; the figure is the `WIN RATE FROM THE MUSTER:` line, one
+  # `match` line each and the reading lines in the log. Up to about two hours,
+  # so it runs on demand only, never on push or on the weekly schedule. It is
+  # the only job that runs `arena_muster_rate`, which is `#[ignore]` for exactly
+  # that reason.
+  bot-muster-rate:
+    name: Bot win rate from the muster (report-only)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+      - name: Bot win rate from the muster
+        run: cargo test -p mush-bot --test arena_muster_rate -- --ignored --nocapture
 
   # 16b cut H (§5, H3): the TacSim scale harness — doc 16 §1's A2 acceptance.
   # It composes the production composition root in a memory-store test world,

@@ -19,11 +19,13 @@
 //! The real bot binary still logs in at the SSH layer, with the password on the
 //! child's environment only ([`bot_command`]).
 //!
-//! **The posed lanes** (cut AK.3) — the win-rate lane and the live commander
-//! lane — fly through one function here, [`fly_posed`]: the same rig, the same
-//! two poses before every match, the same 420 s cap, one deadline for the
-//! whole flight, and a result ([`Posed`]) that always holds what there is to
-//! print and keep, however the flight ended.
+//! **The lanes** (cut AK.3; generalised in cut AN.1) — the posed win-rate
+//! lane, the muster lane and the live commander lane — fly through one
+//! function here, [`fly_lane`]: the same rig, the plan's poses before every
+//! match (the posed lanes' two, 500 m apart, or none for the muster lane,
+//! which flies the shipped match from the muster), the plan's cap, one
+//! deadline for the whole flight, and a result ([`Posed`]) that always holds
+//! what there is to print and keep, however the flight ended.
 //!
 //! **The one cross-crate state-slot site** of the bot's tests is in [`boot`]: the
 //! account oracle installed into its module-state slot after composition, as
@@ -1044,7 +1046,8 @@ pub fn bot_command_in(home: &Path, config: &Path, password: &str) -> std::proces
 }
 
 // ---------------------------------------------------------------------------
-// Cut AK.3: the posed lanes (the win-rate lane and the live commander lane).
+// Cut AK.3 and cut AN.1: the lanes (the posed win-rate lane, the muster lane
+// and the live commander lane).
 // ---------------------------------------------------------------------------
 
 /// **Each posed match's length** before the centre calls it a timeout (cut
@@ -1055,27 +1058,77 @@ pub const MAX_DURATION_MS: u32 = 420_000;
 /// `[agent] max_seconds` in a posed lane's config: in arena mode it bounds
 /// each match (a claim starts it again), so it sits above the cap.
 pub const MAX_SECONDS: u64 = 540;
-/// The longest God waits for one match's end, boarding and startup included.
+/// The longest God waits for one posed match's end, boarding and startup
+/// included: [`match_wait`] of [`MAX_DURATION_MS`].
 pub const MATCH_WAIT: Duration = Duration::from_secs(600);
+/// **Each muster match's length** before the centre calls it a timeout (cut
+/// AN.1): 600 s. From the muster, 2 430 m apart against a 600 m sight, the
+/// opening alone can take minutes before anything is in sight.
+pub const MUSTER_DURATION_MS: u32 = 600_000;
+/// `[agent] max_seconds` in the muster lane's config: above its cap, as
+/// [`MAX_SECONDS`] is above the posed one.
+pub const MUSTER_MAX_SECONDS: u64 = 720;
+
+/// **The longest God waits for one match's end** on a cap of
+/// `max_duration_ms` (cut AN.1): the cap and 180 s for boarding and startup.
+/// 600 s for the posed cap (so [`MATCH_WAIT`] is the posed lanes' wait), 780 s
+/// for the muster's.
+pub fn match_wait(max_duration_ms: u32) -> Duration {
+    Duration::from_millis(u64::from(max_duration_ms)) + Duration::from_secs(180)
+}
 /// The two poses, 500 m apart on the east-west road, facing each other.
 pub const POSES: [&str; 2] = ["RA=100 97 90", "BA=150 97 270"];
-/// The variable naming a directory a posed lane keeps its transcript
+/// The variable naming a directory a lane keeps its transcript
 /// (`{name}.jsonl`) and report (`{name}.json`) in (the rig's own directory
 /// is removed).
 pub const KEEP_ENV: &str = "MUSH_BOT_WIN_RATE_KEEP";
+/// The variable that picks the engagement the win-rate lanes fly (cut AL.3;
+/// moved into the rig in cut AN.1, where the posed and the muster lane both
+/// read it).
+pub const ENGAGEMENT_ENV: &str = "MUSH_BOT_WIN_RATE_ENGAGEMENT";
 
-/// What a posed lane flies: the flight's name (and the kept files' stem), how
-/// many matches, the whole flight's deadline measured from the launch, the
-/// config's extra tables, and variables for the child ([`launch_env`]).
-pub struct PosedPlan<'a> {
+/// **The engagement a win-rate lane flies** (cut AL.3), from
+/// [`ENGAGEMENT_ENV`]'s value: unset or `hold` → `hold`, `orbit` → `orbit`,
+/// and anything else a panic, before anything is launched.
+pub fn engagement(value: Option<&str>) -> &'static str {
+    match value {
+        None | Some("hold") => "hold",
+        Some("orbit") => "orbit",
+        Some(other) => panic!("MUSH_BOT_WIN_RATE_ENGAGEMENT is hold or orbit, not {other}"),
+    }
+}
+
+/// **The bot's extra config** for the engagement `e` (cut AL.3): the lanes'
+/// 5 s start grace, and `[arena] engagement`.
+pub fn extra(e: &str) -> String {
+    format!("\n[arena]\nlead_start_grace_ms = 5000\nengagement = \"{e}\"\n")
+}
+
+/// What a lane flies (cut AK.3's posed plan, generalised in cut AN.1): the
+/// flight's name (and the kept files' stem), how many matches, the whole
+/// flight's deadline measured from the launch, the config's extra tables,
+/// variables for the child ([`launch_env`]), the poses God types before the
+/// first match and after each end, the centre's cap on a match, and the
+/// bot's `[agent] max_seconds`.
+pub struct LanePlan<'a> {
     pub name: &'a str,
     pub matches: usize,
     pub deadline: Duration,
     pub extra: &'a str,
     pub env: &'a [(&'a str, &'a str)],
+    /// `@arena/pose` specs: `&POSES` for the posed lanes, `&[]` for the
+    /// muster lane (nothing typed between matches).
+    pub poses: &'a [&'a str],
+    /// `match.max_duration_ms` on the rig: [`MAX_DURATION_MS`] posed,
+    /// [`MUSTER_DURATION_MS`] from the muster.
+    pub max_duration_ms: u32,
+    /// `[agent] max_seconds`: [`MAX_SECONDS`] posed, [`MUSTER_MAX_SECONDS`]
+    /// from the muster.
+    pub max_seconds: u64,
 }
 
-/// **What a posed flight left**, however it ended (cut AK.3).
+/// **What a lane's flight left**, however it ended (cut AK.3). A flight with
+/// no poses never has a refused one.
 pub struct Posed {
     /// What the bot left ([`try_land`]).
     pub partial: Partial,
@@ -1084,8 +1137,9 @@ pub struct Posed {
     /// The match ends God waited for and heard.
     pub heard: usize,
     /// Why the flight ended before its last match's end, when it did:
-    /// `the bot ended`, `no match end inside 600 s`, `the {m}-minute
-    /// deadline` or `the watching session closed`.
+    /// `the bot ended`, `no match end inside {n} s` (600 posed, 780 from
+    /// the muster), `the {m}-minute deadline` or `the watching session
+    /// closed`.
     pub early: Option<String>,
     /// Each refused pose: `None` before the launch, `Some(n)` after God heard
     /// match `n` end.
@@ -1152,7 +1206,7 @@ impl Posed {
 /// The line printed under the results line when the bot left no report.
 pub const NO_REPORT: &str = "NO REPORT: the figure is from the lobby's match-end lines.";
 
-/// **A posed lane's results** for red (cut AK.3): won, lost, drew, timed out,
+/// **A lane's results** for red (cut AK.3): won, lost, drew, timed out,
 /// and anything else.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Outcome {
@@ -1233,34 +1287,44 @@ pub fn match_ends(text: &str) -> BTreeMap<u64, String> {
     ends
 }
 
-/// **Why a posed flight ended early** (cut AK.3), from how its last wait
+/// **Why a lane's flight ended early** (cut AK.3), from how its last wait
 /// ended: `the bot ended`; at a wait whose `limit` was cut short of
-/// [`MATCH_WAIT`] by the flight's own `deadline`, `the {m}-minute deadline`;
+/// `match_wait` (the flight's whole wait for one match, [`match_wait`] of its
+/// cap; cut AN.1) by the flight's own `deadline`, `the {m}-minute deadline`;
 /// `the watching session closed` when God's own session did (cut AM.3);
-/// otherwise `no match end inside 600 s`.
-pub fn early_why(ended: Ended, limit: Duration, deadline: Duration) -> String {
+/// otherwise `no match end inside {s} s`, `s` being `match_wait`'s seconds.
+pub fn early_why(
+    ended: Ended,
+    limit: Duration,
+    deadline: Duration,
+    match_wait: Duration,
+) -> String {
     match ended {
         Ended::Bot => "the bot ended".to_owned(),
         Ended::Closed => "the watching session closed".to_owned(),
-        Ended::Timeout if limit < MATCH_WAIT => {
+        Ended::Timeout if limit < match_wait => {
             format!("the {}-minute deadline", deadline.as_secs() / 60)
         }
-        Ended::Timeout => format!("no match end inside {} s", MATCH_WAIT.as_secs()),
+        Ended::Timeout => format!("no match end inside {} s", match_wait.as_secs()),
     }
 }
 
-/// **Fly a posed lane** (cut AK.3; both posed lanes call it): boot the rig
-/// with the AI fill and a [`MAX_DURATION_MS`] cap; God poses `RA` and `BA`
-/// ([`POSES`]) and walks to the Simulator Lobby; the bot flies `--arena red
-/// --matches {n}` on `[agent] max_seconds` [`MAX_SECONDS`] and the plan's
-/// extra tables; and after each `Match {n} is over (` God hears, God poses
-/// both tanks again for the next (the end consumed and cleared the last ones,
-/// the new ones survive the bot's re-claim a second later, and the lanes'
-/// `lead_start_grace_ms` of 5 s keeps its `SIM START` behind them).
+/// **Fly a lane** (cut AK.3's posed flight, generalised in cut AN.1; every
+/// lane calls it): boot the rig with the AI fill and the plan's cap
+/// ([`LanePlan::max_duration_ms`]); God types the plan's poses (the posed
+/// lanes' `RA` and `BA`, [`POSES`]; none from the muster) and walks to the
+/// Simulator Lobby; the bot flies `--arena red --matches {n}` on the plan's
+/// `[agent] max_seconds` and extra tables; and after each `Match {n} is over
+/// (` God hears, God types the poses again for the next (the end consumed and
+/// cleared the last ones, the new ones survive the bot's re-claim a second
+/// later, and the lanes' `lead_start_grace_ms` of 5 s keeps its `SIM START`
+/// behind them). With no poses God types nothing between matches: the bot's
+/// own claim puts the tanks back at muster from the second match on, and the
+/// world is fresh for the first.
 ///
 /// **One deadline, measured from the launch**: each wait's limit is the
-/// lesser of [`MATCH_WAIT`] and what is left of it, so running out ends the
-/// loop like any other early end. The loop never panics: a bot that ends, a
+/// lesser of [`match_wait`] of the plan's cap and what is left of it, so
+/// running out ends the loop like any other early end. The loop never panics: a bot that ends, a
 /// match that never ends, the deadline and (cut AM.3) God's own session
 /// closing each end it, remembered in [`Posed::early`], and a pose on a closed
 /// session is refused, not a panic ([`try_pose`]). Then the bot is landed ([`try_land`], 120 s), and when
@@ -1268,16 +1332,17 @@ pub fn early_why(ended: Ended, limit: Duration, deadline: Duration) -> String {
 /// is one) are copied there **before** anything is printed or asserted.
 /// A refused pose is printed and recorded ([`Posed::refused`]), and the
 /// flight carries on.
-pub async fn fly_posed(plan: &PosedPlan<'_>) -> Posed {
+pub async fn fly_lane(plan: &LanePlan<'_>) -> Posed {
     let mut cfg = arena_config();
     cfg.match_.startup_ms = 2_000;
     cfg.match_.board_timeout_ms = 60_000;
-    cfg.match_.max_duration_ms = MAX_DURATION_MS;
+    cfg.match_.max_duration_ms = plan.max_duration_ms;
     let rig = boot(cfg, &[("pilot", "Pilot")]).await;
+    let wait = match_wait(plan.max_duration_ms);
 
     let mut god = Client::login(&rig, GOD_ACCOUNT, GOD_PASSWORD, "God").await;
     let mut refused = Vec::new();
-    for spec in POSES {
+    for spec in plan.poses {
         if let Err(answer) = try_pose(&mut god, spec).await {
             println!(
                 "the pose {spec} before the first match was refused: {}",
@@ -1288,7 +1353,7 @@ pub async fn fly_posed(plan: &PosedPlan<'_>) -> Posed {
     }
     walk_to_lobby(&mut god).await;
 
-    let config = bot_config_with(&rig, "pilot+Pilot", MAX_SECONDS, plan.extra);
+    let config = bot_config_with(&rig, "pilot+Pilot", plan.max_seconds, plan.extra);
     let launched = god.seen.len();
     let mut from = launched;
     let count = plan.matches.to_string();
@@ -1306,7 +1371,7 @@ pub async fn fly_posed(plan: &PosedPlan<'_>) -> Posed {
     let mut early = None;
     while heard < plan.matches {
         let left = plan.deadline.saturating_sub(start.elapsed());
-        let limit = left.min(MATCH_WAIT);
+        let limit = left.min(wait);
         match try_await_line(&mut god, from, " is over (", &mut flight, limit).await {
             Ok(past) => {
                 heard += 1;
@@ -1315,7 +1380,7 @@ pub async fn fly_posed(plan: &PosedPlan<'_>) -> Posed {
                 if heard == plan.matches {
                     break;
                 }
-                for spec in POSES {
+                for spec in plan.poses {
                     if let Err(answer) = try_pose(&mut god, spec).await {
                         match ended {
                             Some(n) => {
@@ -1336,7 +1401,7 @@ pub async fn fly_posed(plan: &PosedPlan<'_>) -> Posed {
                 }
             }
             Err(why) => {
-                early = Some(early_why(why, limit, plan.deadline));
+                early = Some(early_why(why, limit, plan.deadline, wait));
                 break;
             }
         }
@@ -1367,12 +1432,15 @@ pub async fn fly_posed(plan: &PosedPlan<'_>) -> Posed {
 }
 
 // ---------------------------------------------------------------------------
-// Cut AL.3: the lead's reading of a posed flight.
+// Cut AL.3: the lead's reading of a lane's flight (cut AN.1: and who saw whom
+// first, the opening, the front's share).
 // ---------------------------------------------------------------------------
 
-/// **What a posed flight's transcript and report say** (cut AL.3), as the lead
-/// reads a run: what was flown, the guns' cadence and what the facet shown
-/// cost. Printed by both posed lanes ([`Reading::lines`]).
+/// **What a lane's transcript and report say** (cut AL.3), as the lead reads
+/// a run: what was flown, the guns' cadence and what the facet shown cost;
+/// and (cut AN.1) who saw whom first, how long the opening took and how much
+/// of the punishment the front took. Printed by every lane
+/// ([`Reading::lines`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Reading {
     /// The `arena-picture` records, counted by their `data.doctrine.stance`…
@@ -1393,9 +1461,18 @@ pub struct Reading {
     /// The report's `arena.matches[*].hits_taken_by_facet`, summed; `None`
     /// when there is no report.
     pub facets: Option<BTreeMap<String, u32>>,
+    /// **Each match's first times** (cut AN.1), in the report's order:
+    /// `(first_contact_ms, first_hit_taken_ms, first_hit_scored_ms)`, each
+    /// milliseconds after the match's power online, a missing key (or a
+    /// `null`) read as `None`; `None` when there is no report.
+    pub firsts: Option<Vec<FirstTimes>>,
 }
 
-/// **Read a posed flight** (cut AL.3): `transcript` is the raw JSON-lines
+/// One match's `(first_contact_ms, first_hit_taken_ms, first_hit_scored_ms)`
+/// (cut AN.1).
+pub type FirstTimes = (Option<u64>, Option<u64>, Option<u64>);
+
+/// **Read a lane's flight** (cut AL.3): `transcript` is the raw JSON-lines
 /// transcript (a torn line, the last one above all, is skipped), `report` the
 /// bot's report when it left one.
 pub fn reading(transcript: &str, report: Option<&serde_json::Value>) -> Reading {
@@ -1477,7 +1554,127 @@ pub fn reading(transcript: &str, report: Option<&serde_json::Value>) -> Reading 
         }
         facets
     });
+    reading.firsts = report.map(|report| {
+        report["arena"]["matches"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .map(|flown| {
+                (
+                    flown["first_contact_ms"].as_u64(),
+                    flown["first_hit_taken_ms"].as_u64(),
+                    flown["first_hit_scored_ms"].as_u64(),
+                )
+            })
+            .collect()
+    });
     reading
+}
+
+/// **Percentiles in whole seconds** (cut AN.1): the 10th, 50th and 90th of
+/// `ms`, each the sorted values' element at `floor(q × (len − 1))` (the rule
+/// of `mush_bot::arena::report::GapStats`), as milliseconds / 1 000, floored;
+/// `None` for no value.
+fn seconds_p10_p50_p90(mut ms: Vec<u64>) -> Option<(u64, u64, u64)> {
+    ms.sort_unstable();
+    let last = ms.len().checked_sub(1)?;
+    let at = |tenths: usize| ms.get(last * tenths / 10).copied().unwrap_or(0) / 1_000;
+    Some((at(1), at(5), at(9)))
+}
+
+/// **The `SEEN FIRST` line** (cut AN.1) over each match's first times.
+///
+/// **Why the lead.** The bot cannot know when the machine saw it. The machine
+/// closes to about 420 m before it shoots (`help simulator`) and both sights
+/// reach past that, so a contact before the first hit taken is nearly certain
+/// and a count of it alone saturates. What the bot can measure is the lead:
+/// the seconds from its own first contact to its first hit taken. A long lead
+/// is the bot seeing first; a short one is the machine finding it first.
+///
+/// `contact before hit` is a match whose first contact came before its first
+/// hit taken (or with none taken), `hit before contact` one whose first hit
+/// taken came at or before its first contact (or with no contact), `neither`
+/// one with neither; the lead's percentiles are over the matches with both
+/// and the contact first (`lead none` with none); `shot first` is a match
+/// whose first hit scored came before its first hit taken (or with none
+/// taken), `shot at first` one whose first hit taken came at or before its
+/// first hit scored (or with none scored). A match with neither hit is in
+/// neither of the last two counts.
+fn seen_first_line(firsts: &[FirstTimes]) -> String {
+    let (mut before, mut after, mut neither, mut first, mut at_first) = (0, 0, 0, 0, 0);
+    let mut leads = Vec::new();
+    for &(contact, taken, scored) in firsts {
+        match (contact, taken) {
+            (Some(c), Some(h)) if c < h => {
+                before += 1;
+                leads.push(h - c);
+            }
+            (Some(_), None) => before += 1,
+            (_, Some(_)) => after += 1,
+            (None, None) => neither += 1,
+        }
+        match (scored, taken) {
+            (Some(s), Some(h)) if s < h => first += 1,
+            (Some(_), None) => first += 1,
+            (_, Some(_)) => at_first += 1,
+            (None, None) => {}
+        }
+    }
+    let k = leads.len();
+    let lead = match seconds_p10_p50_p90(leads) {
+        Some((p10, p50, p90)) => format!("lead p10 {p10} / p50 {p50} / p90 {p90} s over {k}"),
+        None => "lead none".to_owned(),
+    };
+    format!(
+        "SEEN FIRST: contact before hit {before}, hit before contact {after}, neither {neither} of {} matches; {lead}; shot first {first}, shot at first {at_first}",
+        firsts.len()
+    )
+}
+
+/// **The `OPENING` line** (cut AN.1): how long from power online to the
+/// first contact (p10 / p50 / p90 over the matches that had one) and to the
+/// first hit taken (p50 over the matches that took one), in whole seconds.
+fn opening_line(firsts: &[FirstTimes]) -> String {
+    let contacts: Vec<u64> = firsts.iter().filter_map(|f| f.0).collect();
+    let taken: Vec<u64> = firsts.iter().filter_map(|f| f.1).collect();
+    let k = contacts.len();
+    let j = taken.len();
+    let Some((p10, p50, p90)) = seconds_p10_p50_p90(contacts) else {
+        return format!("OPENING: no contact in {} matches", firsts.len());
+    };
+    let tail = match seconds_p10_p50_p90(taken) {
+        Some((_, hit, _)) => format!("first hit taken p50 {hit} s over {j}"),
+        None => "first hit taken none".to_owned(),
+    };
+    format!(
+        "OPENING: first contact p10 {p10} / p50 {p50} / p90 {p90} s after power online over {k} matches; {tail}"
+    )
+}
+
+/// **One muster match's line** (cut AN.1), from a report's
+/// `arena.matches[*]`: `match {n}: {result}; {shots} shots, {hits} hits,
+/// {kills} kills, took {t}; {s} s; first contact {c}, first hit taken {h},
+/// first hit scored {x}`, the posed lane's match line with the match's three
+/// first times, each `{whole seconds} s` after power online or `none`.
+pub fn muster_match_line(flown: &serde_json::Value) -> String {
+    let time = |key: &str| {
+        flown[key]
+            .as_u64()
+            .map_or_else(|| "none".to_owned(), |ms| format!("{} s", ms / 1_000))
+    };
+    format!(
+        "match {}: {}; {} shots, {} hits, {} kills, took {}; {} s; first contact {}, first hit taken {}, first hit scored {}",
+        flown["match"],
+        flown["result"].as_str().unwrap_or("?"),
+        flown["shots"],
+        flown["hits_scored"],
+        flown["kills"],
+        flown["hits_taken"],
+        flown["duration_ms"].as_u64().unwrap_or(0) / 1_000,
+        time("first_contact_ms"),
+        time("first_hit_taken_ms"),
+        time("first_hit_scored_ms"),
+    )
 }
 
 /// `{key} {n}, …` by count, highest first, then by key.
@@ -1507,7 +1704,24 @@ impl Reading {
     /// * `STILL CYCLING {w}: {k} of {n} FIRE lines`, one per weapon by id;
     /// * `HITS TAKEN BY FACET: {key} {n}, …` by count, highest first, then by
     ///   key; `HITS TAKEN BY FACET: none` when the report holds no facet hit,
-    ///   `HITS TAKEN BY FACET: no report` when there is no report.
+    ///   `HITS TAKEN BY FACET: no report` when there is no report;
+    /// * (cut AN.1) `SEEN FIRST: contact before hit {a}, hit before contact
+    ///   {b}, neither {c} of {n} matches; lead p10 {x} / p50 {y} / p90 {z} s
+    ///   over {k}; shot first {s}, shot at first {t}` (`lead none` with no
+    ///   lead): who saw whom first, read through the lead
+    ///   ([`seen_first_line`]);
+    /// * (cut AN.1) `OPENING: first contact p10 {a} / p50 {b} / p90 {c} s
+    ///   after power online over {k} matches; first hit taken p50 {d} s over
+    ///   {j}` (`first hit taken none` with none taken; `OPENING: no contact
+    ///   in {n} matches` with no contact at all), percentiles by index in
+    ///   whole seconds ([`opening_line`]);
+    /// * (cut AN.1) `FRONT SHARE: {f} of {h} facet hits taken on a front
+    ///   facet`, `h` the facet hits taken in all and `f` those on a key
+    ///   ending ` front`.
+    ///
+    /// With no report the last three read `SEEN FIRST: no report`,
+    /// `OPENING: no report` and `FRONT SHARE: no report`. None of them names
+    /// anything of the other side.
     pub fn lines(&self, engagement: &str) -> Vec<String> {
         let flown = if self.stances.is_empty() {
             "nothing".to_owned()
@@ -1542,6 +1756,28 @@ impl Reading {
             None => "HITS TAKEN BY FACET: no report".to_owned(),
             Some(facets) if facets.is_empty() => "HITS TAKEN BY FACET: none".to_owned(),
             Some(facets) => format!("HITS TAKEN BY FACET: {}", by_count(facets)),
+        });
+        match &self.firsts {
+            None => {
+                lines.push("SEEN FIRST: no report".to_owned());
+                lines.push("OPENING: no report".to_owned());
+            }
+            Some(firsts) => {
+                lines.push(seen_first_line(firsts));
+                lines.push(opening_line(firsts));
+            }
+        }
+        lines.push(match &self.facets {
+            None => "FRONT SHARE: no report".to_owned(),
+            Some(facets) => {
+                let all: u64 = facets.values().map(|n| u64::from(*n)).sum();
+                let front: u64 = facets
+                    .iter()
+                    .filter(|(key, _)| key.ends_with(" front"))
+                    .map(|(_, n)| u64::from(*n))
+                    .sum();
+                format!("FRONT SHARE: {front} of {all} facet hits taken on a front facet")
+            }
         });
         lines
     }

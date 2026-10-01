@@ -37,6 +37,11 @@
 //! own transcript), with a log of each `STATUS` heading printed and each
 //! `HEADING` answered.
 //!
+//! Cut AM.3 renders a `CONTACTS` reply when the server hands it out, not when
+//! the line arrives ([`Chunk`]): its rows are the scope as it is then, as the
+//! game prints a reply from its frame when it prints it, so an identification
+//! handed out before the reply is in its rows and one after it follows it.
+//!
 //! Cut AM.1 adds, off by default too: `fire_transient` (guns whose next `FIRE`
 //! is answered `please retry in a moment` instead of its ack, once),
 //! `leave_answer_ms` (how long `SIM LEAVE`'s answer takes: 3 ms unless set),
@@ -162,10 +167,36 @@ fn angle_between(a: u32, b: u32) -> u32 {
     d.min(360 - d)
 }
 
+/// **One chunk the scripted server has queued** (cut AM.3): text fixed when
+/// it was queued, or a reply rendered from the server's state when
+/// [`Server::due`] hands it out, as the game prints a reply from its frame
+/// when it prints it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Chunk {
+    /// Text, its line ends written.
+    Text(String),
+    /// A `CONTACTS` reply: the rows [`Server::contacts`] holds at delivery
+    /// (BA's from [`Server::ba_at`]), or `No contacts.`.
+    Contacts,
+    /// An identification: at delivery the scope holds `row` alone, and the
+    /// chunk is `Contact {was} identified: BA, blue.`.
+    Identify { was: String, row: String },
+}
+
+impl Chunk {
+    /// A text chunk's text; a rendered one has none until it is handed out.
+    fn text(&self) -> &str {
+        match self {
+            Chunk::Text(text) => text,
+            Chunk::Contacts | Chunk::Identify { .. } => "",
+        }
+    }
+}
+
 /// **The scripted server.**
 struct Server {
     now: u64,
-    queue: Vec<(u64, String)>,
+    queue: Vec<(u64, Chunk)>,
     me: String,
     /// The board's state word.
     board: String,
@@ -408,7 +439,56 @@ impl Server {
             chunk.push_str(line);
             chunk.push_str("\r\n");
         }
+        self.queue.push((self.now + delay, Chunk::Text(chunk)));
+    }
+
+    /// Queue a chunk rendered at delivery (cut AM.3), `delay` on; the
+    /// `chatter` knob goes in front of it as its own text, once.
+    fn queue_rendered(&mut self, delay: u64, chunk: Chunk) {
+        if let Some(chatter) = self.chatter.take() {
+            self.queue
+                .push((self.now + delay, Chunk::Text(format!("{chatter}\r\n"))));
+        }
         self.queue.push((self.now + delay, chunk));
+    }
+
+    /// Lines ended as [`Server::say`] ends them.
+    fn lines_ended(text: &str) -> String {
+        text.lines().map(|line| format!("{line}\r\n")).collect()
+    }
+
+    /// **A chunk as it is handed out at `at`** (cut AM.3): text as queued; a
+    /// `CONTACTS` reply from the scope as it is then (BA's row from where the
+    /// knob puts it, its `rel` from the heading the tank has then); an
+    /// identification swaps the scope's rows for its one row, then says so.
+    fn render(&mut self, at: u64, chunk: Chunk) -> String {
+        match chunk {
+            Chunk::Text(text) => text,
+            Chunk::Contacts => {
+                let asked = self.now;
+                self.now = at;
+                let rows: Vec<String> = self
+                    .contacts
+                    .iter()
+                    .map(|row| match self.ba_at {
+                        Some((bearing, range)) if row.starts_with("BA ") => {
+                            self.ba_row(bearing, range)
+                        }
+                        _ => row.clone(),
+                    })
+                    .collect();
+                self.now = asked;
+                if rows.is_empty() {
+                    Server::lines_ended("No contacts.")
+                } else {
+                    Server::lines_ended(&rows.join("\n"))
+                }
+            }
+            Chunk::Identify { was, row } => {
+                self.contacts = vec![row];
+                Server::lines_ended(&format!("Contact {was} identified: BA, blue."))
+            }
+        }
     }
 
     fn due(&mut self, now: u64) -> Vec<String> {
@@ -416,13 +496,18 @@ impl Server {
     }
 
     /// [`Server::due`] with the time each chunk was due (cut AM.1: the
-    /// [`Wire`] carries each from then).
+    /// [`Wire`] carries each from then). Each chunk is rendered as it is
+    /// handed out, in delivery-time order (cut AM.3), so a swap due before a
+    /// `CONTACTS` reply in the same call is seen by it: the rig steps 10 ms,
+    /// and only this keeps a 1 ms offset exact.
     fn due_at(&mut self, now: u64) -> Vec<(u64, String)> {
         let (due, later): (Vec<_>, Vec<_>) = self.queue.drain(..).partition(|(at, _)| *at <= now);
         self.queue = later;
         let mut due = due;
         due.sort_by_key(|(at, _)| *at);
-        due
+        due.into_iter()
+            .map(|(at, chunk)| (at, self.render(at, chunk)))
+            .collect()
     }
 
     /// A gun's cycle, as the scripted guns have it.
@@ -579,25 +664,9 @@ impl Server {
                 self.say(self.leave_answer_ms, &format!("{me} gives up red slot 1."));
             }
             _ if self.outside => self.say(3, "You are not at the station of a deployed unit."),
-            "CONTACTS" => {
-                // BA's row from where the knob puts it (cut AL.2).
-                let rows: Vec<String> = self
-                    .contacts
-                    .iter()
-                    .map(|row| match self.ba_at {
-                        Some((bearing, range)) if row.starts_with("BA ") => {
-                            self.ba_row(bearing, range)
-                        }
-                        _ => row.clone(),
-                    })
-                    .collect();
-                if rows.is_empty() {
-                    self.say(3, "No contacts.");
-                } else {
-                    let rows = rows.join("\n");
-                    self.say(3, &rows);
-                }
-            }
+            // The reply's rows are read from the scope when it is handed out
+            // (cut AM.3), BA's from where the knob puts it (cut AL.2).
+            "CONTACTS" => self.queue_rendered(3, Chunk::Contacts),
             "STATUS" => {
                 // Held, the tank reads 0 kph and `HELD` on the heading it last
                 // turned to in place.
@@ -816,8 +885,8 @@ struct Wire {
     up: VecDeque<(u64, String)>,
     down: VecDeque<(u64, String)>,
     /// The chunks the server had queued before the wire went on: each the
-    /// old way, at its own time.
-    direct: Vec<(u64, String)>,
+    /// old way, at its own time, rendered by the server then (cut AM.3).
+    direct: Vec<(u64, Chunk)>,
     started: bool,
     /// Split chunks with no `Callsign ` line, for the injections.
     eligible: u32,
@@ -974,16 +1043,24 @@ impl Wire {
         self.carried.push((status, injected));
     }
 
-    /// The pieces delivered by `now`: the chunks queued before the wire went
-    /// on, the old way, then the wire's own, in order.
-    fn delivered(&mut self, now: u64) -> Vec<String> {
+    /// The chunks queued before the wire went on that are due by `now`, in
+    /// order, for the server to render as it hands them out (cut AM.3); they
+    /// go in front of [`Wire::delivered`]'s.
+    fn direct_due(&mut self, now: u64) -> Vec<(u64, Chunk)> {
         let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.direct)
             .into_iter()
             .partition(|(at, _)| *at <= now);
         self.direct = later;
         let mut due = due;
         due.sort_by_key(|(at, _)| *at);
-        let mut out: Vec<String> = due.into_iter().map(|(_, text)| text).collect();
+        due
+    }
+
+    /// The pieces delivered by `now`: the wire's own, in order (the chunks
+    /// queued before the wire went on come first, from
+    /// [`Wire::direct_due`]).
+    fn delivered(&mut self, now: u64) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
         while self.down.front().is_some_and(|(at, _)| *at <= now) {
             if let Some((at, text)) = self.down.pop_front() {
                 self.deliveries.push(at);
@@ -1065,10 +1142,17 @@ impl Run {
                 for (arrive, line) in wire.arrived(self.now) {
                     self.server.answer(arrive, &line);
                 }
+                // The old way first, rendered as the server hands them out.
+                let mut texts: Vec<String> = wire
+                    .direct_due(self.now)
+                    .into_iter()
+                    .map(|(at, chunk)| self.server.render(at, chunk))
+                    .collect();
                 for (at, chunk) in self.server.due_at(self.now) {
                     wire.carry(at, chunk);
                 }
-                wire.delivered(self.now)
+                texts.extend(wire.delivered(self.now));
+                texts
             }
         };
         for text in texts {
@@ -2918,6 +3002,17 @@ fn leaves_the_guns_a_slot(picture: &Picture, before: &[&Send], now: u64, max: us
     })
 }
 
+/// **Where in each second [`a_crowded_minute`] says its contact notice**
+/// (cut AN.1), in milliseconds past the second. A multiple of [`STEP_MS`], the
+/// clock's step, or the notice never fires. Every value from 0 to 990 was
+/// flown: 0 to 40 and 850 to 990 hold no `STATUS` back at the settings' own
+/// limiter; 550 to 790 hold back 13 to 21 ticks, 600 among the most, with a
+/// `STATUS` falling due while the machine gun is due inside the second and
+/// the window already full.
+const CROWDED_NOTICE_PHASE_MS: u64 = 600;
+const _: () =
+    assert!(CROWDED_NOTICE_PHASE_MS.is_multiple_of(STEP_MS) && CROWDED_NOTICE_PHASE_MS < 1_000);
+
 /// What a crowded minute came to: whether both cycles were learned before
 /// it, ticks with the ring full, ticks a due `STATUS` was held back, of those
 /// the ones the reservation alone held (a slot free), polls that went
@@ -2939,19 +3034,23 @@ struct Crowded {
 /// slot for a gun due inside the next second, unless it was `POLL_STARVE_MS`
 /// overdue; a `STATUS` held back with a slot free was held by the rule; and a
 /// gun that may fire is never passed over in a tick with a slot free for it.
+///
+/// **Its phase** (cut AN.1): the notice is said [`CROWDED_NOTICE_PHASE_MS`]
+/// into each second, which phases the `CONTACTS` it brings on and the lock's
+/// `RANGE` after it so that a `STATUS` falls due while a gun is due with the
+/// window full, the case the reservation exists for. The old reply order
+/// phased it by a crossing hunt (a reply that crossed the identification
+/// started one, whose `HEADING` and `SPEED` lines shifted `STATUS` onto a
+/// gun's due time); with replies rendered at delivery no hunt starts, and the
+/// notice on the second leaves `STATUS` on a cadence that never meets a due
+/// gun.
 fn a_crowded_minute(max: usize) -> Crowded {
     let settings = Settings {
         max_lines_per_s: u32::try_from(max).unwrap_or(u32::MAX),
         ..Settings::default()
     };
     let mut run = to_the_fight(settings);
-    // Cut AL.3: BA is one the pilot has hurt, so the moment's hunt a reply
-    // crossing the identification can start drives at once, as it always did,
-    // rather than waiting stopped (the minute's lines were measured so).
-    run.server.now = run.now;
-    run.server.say(0, "BA's turret is destroyed.");
     sight_a_hostile(&mut run);
-    assert!(run.lane.pilot().hurt.contains("BA"));
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
     // Fewer lines a second may leave the post-shot read no slot inside the
     // cannon's first second; then the minute checks `STATUS` alone (a
@@ -2975,7 +3074,7 @@ fn a_crowded_minute(max: usize) -> Crowded {
         last_poll.insert(send.line.clone(), send.lane_ms);
     }
     while run.now < start + 60_000 {
-        if run.now.is_multiple_of(1_000) {
+        if run.now % 1_000 == CROWDED_NOTICE_PHASE_MS {
             run.server.now = run.now;
             run.server.say(0, "New contact X7: bearing 180°, far.");
         }
@@ -3106,7 +3205,8 @@ fn a_crowded_minute(max: usize) -> Crowded {
 /// is fuller and the reservation, not the limiter, is what holds a poll back
 /// in many ticks: there a `STATUS` is held with a slot free in at least one
 /// tick in 250 of the minute (6 to 28 such ticks were seen across the tuning
-/// bounds, where the settings' own limiter shows 0 to 5). (At fewer lines the
+/// bounds, where the settings' own limiter shows 0 to 5; at the minute's
+/// re-phased notice, cut AN.1, 49 and 1). (At fewer lines the
 /// escape lifts only the reservation: the lines ahead of `STATUS` may hold it
 /// longer.)
 #[test]
@@ -3132,6 +3232,83 @@ fn a_due_gun_keeps_its_slot_from_a_poll() {
         u64::from(fewer.reserved) * 250 >= ticks,
         "the reservation itself held a STATUS with a slot free: {fewer:?}"
     );
+}
+
+/// **An identification never starts a hunt** (cut AM.3), at every offset
+/// from a `CONTACTS` reply. In a fresh fight for each `d` from 0 to 20 ms:
+/// the scope holds the unknown X1 and the lane has read its `New contact`
+/// notice; on the step the lane types a `CONTACTS` (at `t`, its reply handed
+/// out at `t + 3`), the identification is queued at `t + d` ([`Chunk::Identify`],
+/// the swap and its sentence rendered when it is handed out). Offsets 0 to 2
+/// put it before the reply, which then prints BA's row; offsets 3 to 20 after
+/// it, the reply naming X1, and the identification closes that reply first.
+/// Both are orders the game prints. After 10 s no `Hunting ` note was said
+/// and BA is held. The lane is never locked on X1 here (the pilot never locks
+/// an unknown, so it is asserted, not branched on); a lock carried across a
+/// rename is the picture's own proof,
+/// `a_rename_and_back_keep_the_fixes_and_the_lock` (cut AN.1).
+#[test]
+fn an_identification_never_starts_a_hunt() {
+    const X1_ROW: &str = "X1  unknown  bearing 000° (rel 270°)  far  450 m  1 s";
+    const BA_ROW: &str = "BA  blue  bearing 000° (rel 270°)  far  450 m  1 s";
+    for d in 0..=20u64 {
+        let mut run = to_the_fight(Settings::default());
+        run.server.contacts = vec![X1_ROW.into()];
+        run.server.now = run.now;
+        run.server.say(0, "New contact X1: bearing 000°, far.");
+        assert!(
+            run.until(2_000, |run| run.lane.picture().contacts.contains_key("X1")),
+            "{d}: the lane read X1"
+        );
+        let from = run.now + 1;
+        assert!(
+            run.until(10_000, |run| !run.sends_of("CONTACTS", from).is_empty()),
+            "{d}: a CONTACTS typed"
+        );
+        let t = run.sends_of("CONTACTS", from)[0];
+        assert_eq!(t, run.now, "{d}: on the step it was typed");
+        assert_ne!(
+            run.lane.picture().lock.as_deref(),
+            Some("X1"),
+            "{d}: an unknown is never locked"
+        );
+        run.server.queue.push((
+            t + d,
+            Chunk::Identify {
+                was: "X1".into(),
+                row: BA_ROW.into(),
+            },
+        ));
+        // From the step the identification is handed out on, the lane holds
+        // BA and never X1 again: no reply naming X1 is read after it.
+        let (end, mut crossed) = (run.now + 10_000, Vec::new());
+        while run.now < end {
+            run.step();
+            let handed_out = !run
+                .server
+                .queue
+                .iter()
+                .any(|(_, chunk)| matches!(chunk, Chunk::Identify { .. }));
+            let held = &run.lane.picture().contacts;
+            if handed_out && (held.contains_key("X1") || !held.contains_key("BA")) {
+                crossed.push(run.now);
+            }
+        }
+        assert!(
+            crossed.is_empty(),
+            "{d} ms: X1 held or BA not after the identification, at {crossed:?}"
+        );
+        let hunts: Vec<&String> = run
+            .said
+            .iter()
+            .filter(|s| s.starts_with("Hunting "))
+            .collect();
+        assert!(hunts.is_empty(), "{d} ms: {hunts:?}");
+        let picture = run.lane.picture();
+        let held: Vec<&str> = picture.contacts.keys().map(String::as_str).collect();
+        assert!(held.contains(&"BA"), "{d} ms: {held:?}");
+        assert_ne!(picture.lock.as_deref(), Some("X1"), "{d} ms");
+    }
 }
 
 /// Locked with both cycles learned on a rig whose pulse is `pulse_ms` (and,
@@ -4330,7 +4507,7 @@ fn a_chain_ends_with_its_output() {
         .server
         .queue
         .iter_mut()
-        .find(|(_, text)| text.contains("is running"))
+        .find(|(_, chunk)| chunk.text().contains("is running"))
         .expect("the start queued");
     running.0 += 3_000;
     let at = running.0;
@@ -4368,9 +4545,9 @@ fn a_full_width_channel_line_never_swallows_a_lock_line_or_a_claim() {
         .server
         .queue
         .iter_mut()
-        .find(|(_, text)| text.contains("takes red slot 1"))
+        .find(|(_, chunk)| chunk.text().contains("takes red slot 1"))
         .expect("the claim queued");
-    claim.1 = format!("{}\r\n{}", channel_line(116), claim.1);
+    claim.1 = Chunk::Text(format!("{}\r\n{}", channel_line(116), claim.1.text()));
     assert!(run.until(1_000, |run| run.lane.lobby().slot().is_some()));
     assert!(
         run.said
@@ -4390,9 +4567,9 @@ fn a_full_width_channel_line_never_swallows_a_lock_line_or_a_claim() {
         .server
         .queue
         .iter_mut()
-        .find(|(_, text)| text.starts_with("Locked on BA, 62% to hit."))
+        .find(|(_, chunk)| chunk.text().starts_with("Locked on BA, 62% to hit."))
         .expect("the locked reply queued");
-    reply.1 = format!("{}\r\n{}", channel_line(116), reply.1);
+    reply.1 = Chunk::Text(format!("{}\r\n{}", channel_line(116), reply.1.text()));
     let end = run.now + 2_000;
     while run.now < end {
         run.step();
@@ -4443,13 +4620,13 @@ fn a_wrapped_board_row_never_swallows_a_claim() {
         .server
         .queue
         .iter_mut()
-        .find(|(_, text)| text.contains("takes red slot 1"))
+        .find(|(_, chunk)| chunk.text().contains("takes red slot 1"))
         .expect("the claim queued");
-    claim.1 = format!(
+    claim.1 = Chunk::Text(format!(
         "Simulator centre: selection\r\n  red: nobody\r\n{}\r\n{}",
         row.replace('\n', "\r\n"),
-        claim.1
-    );
+        claim.1.text()
+    ));
     assert!(run.until(1_000, |run| run.lane.lobby().slot().is_some()));
     assert!(
         run.said
