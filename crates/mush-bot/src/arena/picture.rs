@@ -2,13 +2,21 @@
 //! pilot is told, folded into one structure.
 //!
 //! [`Picture::apply`] takes one classified [`Line`] and says whether it belongs
-//! in the bot's journal; [`Picture::settle`] commits a reply whose last row has
-//! gone quiet. Nothing here reads anything but the pilot's own session text, and
-//! the numbers each rule uses come from the player help:
+//! in the bot's journal. **A read reply's rows apply as they come** (cut AM.1):
+//! [`Picture::settle`] folds them in [`SNAPSHOT_SETTLE_MS`] after the last
+//! one, as a merge, and a line of chatter does the same; **what a reply says
+//! by leaving something out applies only at its end**, the first line after it
+//! that is neither one of its rows nor chatter. A pause never ends a reply: on
+//! a distant box one reply arrives in pieces. The game prints a reply's lines
+//! back to back from one ordered outbox, so a notice read after the rows was
+//! printed after them, and the reply closes before that notice is applied: a
+//! reply never undoes it. Nothing here reads anything but the pilot's own
+//! session text, and the numbers each rule uses come from the player help:
 //!
 //! * a `CONTACTS` reply is the platform's **whole** list ("`CONTACTS` is your
-//!   platform's own picture and nothing else"), so a contact missing from the
-//!   next reply is gone;
+//!   platform's own picture and nothing else"), so a contact missing from a
+//!   reply is gone once that reply has ended (and a held lock on it with it);
+//!   until then its rows only update or add contacts;
 //! * a row's range is rounded to 50 m and held, its bearing is whole degrees,
 //!   and it is where the contact **was last seen** ("A contact is drawn where it
 //!   was last seen, not where it is now, and the age is how stale that is"), so
@@ -39,7 +47,14 @@
 //!   1 500 ms after a cannon ack read `5 s` 30 times of 38 (and rows 250 to
 //!   500 ms after a machine-gun ack still read `ready` 11 times of 49: the frame
 //!   before the shot left). So the cycle ([`Weapon::cycle_ms`]) is learned only
-//!   from a `cycling` row read under [`CYCLE_READ_WITHIN_MS`] after the ack;
+//!   from a `cycling` row read under [`CYCLE_READ_WITHIN_MS`] after the ack.
+//!   **On a wire the row is bounded by the send of that gun's `FIRE`, not by
+//!   its ack** (cut AM.1; [`Weapon::fired_sent_ms`]): the bot reads its two
+//!   legs only as their sum, and only the send bounds the row's age at print
+//!   whatever each leg took. Above a steady round trip of about 250 ms (the
+//!   `FIRE`'s and the poll's together under the half second the post-shot read
+//!   leaves), the cycle stays unlearned and the gun fires from its rows, rather
+//!   than being learned a second short;
 //! * **(c)** the arena's own notices arrive on a **250 ms lattice** within a
 //!   match, and a gun is ready one cycle after the first lattice point after
 //!   its ack: every machine-gun refusal came before +150 ms of that instant and
@@ -80,11 +95,12 @@ use serde::Serialize;
 pub use super::lines::{HeldCause, Power, ResultWord, Scope};
 use super::{
     Side,
-    lines::{ContactRow, Line, WeaponRow, is_centre_room},
+    lines::{AskKind, ContactRow, Line, STALE_TAIL_MS, WeaponRow, is_centre_room},
 };
 
-/// How long an open reply may sit after its last row before [`Picture::settle`]
-/// commits it.
+/// **An open reply's rows are applied this long after its last row; a reply
+/// is closed only by the first line after it that is not one of its rows and
+/// not chatter** ([`Picture::apply`]; cut AM.1).
 pub const SNAPSHOT_SETTLE_MS: u64 = 150;
 /// Fixes kept per contact.
 pub const MAX_FIXES: usize = 12;
@@ -361,11 +377,17 @@ pub struct Weapon {
     pub chance_ms: u64,
     /// The last `Firing` ack not un-counted by a paired refusal.
     pub fired_ms: Option<u64>,
+    /// **When the `FIRE` that ack answered was typed** (cut AM.1): the send
+    /// time of the mark the last counted ack took ([`Picture::sent_fire`]), or
+    /// `None` when the ack took no mark (a picture never told of its `FIRE`s).
+    /// Set and cleared with [`Weapon::fired_ms`]; it bounds the cycle's read.
+    pub fired_sent_ms: Option<u64>,
     /// **The gun's cycle** (cut AL.1): the whole seconds of a `cycling (N s)`
-    /// row read under [`CYCLE_READ_WITHIN_MS`] after this gun's ack, which
-    /// prints the whole cycle (fact (b) of the module head); the largest such
-    /// figure when more than one is read (they agree). A row read later, a
-    /// `ready` row, an ack and a refusal never set it.
+    /// row read under [`CYCLE_READ_WITHIN_MS`] after this gun's `FIRE` went out
+    /// (cut AM.1: [`Weapon::fired_sent_ms`], or the ack when no send is known),
+    /// which prints the whole cycle (fact (b) of the module head); the largest
+    /// such figure when more than one is read (they agree). A row read later,
+    /// a `ready` row, an ack and a refusal never set it.
     pub cycle_ms: Option<u64>,
     /// **The one readiness clock** (cut AK.1): ready at this time; `None` when
     /// nothing has set it yet, and then the row's own `ready` is read (see the
@@ -489,6 +511,28 @@ pub struct Applied {
     /// `OUTSIDE_COCKPIT`, transients, and a lock line that tells nothing new).
     pub journal: bool,
     pub event: Option<Event>,
+    /// **The read reply this line begins** (cut AM.1), for the lane's answer
+    /// ledger: `Contacts` on a `CONTACTS` row that begins a reply (none open,
+    /// or a designator the open one already holds) and on `No contacts.`;
+    /// `Weapons` on a `WEAPONSTATUS` row that begins one (none open, or a gun
+    /// the open one already holds) and on `This unit carries no weapon.`;
+    /// `Status` on `Callsign {c}.` and on the untold head; else `None`.
+    pub opened: Option<AskKind>,
+}
+
+/// **Lines that are never part of a reply and change no contact, gun or
+/// lock** (cut AM.1): chatter and every other line read as [`Line::Other`] (a
+/// wrapped continuation among them), a hint, and the receiver's two notices.
+/// Neutral for an open `CONTACTS` or `WEAPONSTATUS` reply only: such a line
+/// applies that reply's rows read so far and leaves it open, and it keeps a
+/// lock line heading the rows after it. **No line is neutral for `STATUS`**:
+/// its rows are indented, and a page's or a say's hanging-indent continuation
+/// would read as a facet run, so a `STATUS` block survives only a pause.
+pub fn neutral(line: &Line) -> bool {
+    matches!(
+        line,
+        Line::Other(_) | Line::Hint(_) | Line::ReceiverDegraded | Line::ReceiverClear
+    )
 }
 
 /// An open `CONTACTS` reply: rows with the time each was read.
@@ -496,15 +540,20 @@ pub struct Applied {
 pub struct ContactsReply {
     pub rows: Vec<(ContactRow, u64)>,
     pub last_ms: u64,
+    /// The rows already folded into [`Picture::contacts`] (cut AM.1): a merge
+    /// at each apply point; the reply's close drops what it never named.
+    pub applied: usize,
 }
 
 /// An open `WEAPONSTATUS` reply.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct WeaponsReply {
-    /// A lock line came immediately before the first row.
+    /// A lock line headed the first row (across a pause or chatter, cut AM.1).
     pub locked: bool,
     pub rows: Vec<(WeaponRow, u64)>,
     pub last_ms: u64,
+    /// The rows already folded into [`Picture::weapons`] (cut AM.1).
+    pub applied: usize,
 }
 
 /// An open `STATUS` block: its sections, staged until it closes.
@@ -514,6 +563,9 @@ pub struct StatusBlock {
     pub last_ms: u64,
     /// The block's own position row, for the nearest spot's row after it.
     pub pos_m: Option<(f64, f64)>,
+    /// The block's sections as they stand are merged into the tank's (cut
+    /// AM.1): set by an apply, cleared by every section or facet row after it.
+    pub applied: bool,
 }
 
 /// The replies being read now.
@@ -522,7 +574,10 @@ pub struct Open {
     pub contacts: Option<ContactsReply>,
     pub weapons: Option<WeaponsReply>,
     pub status: Option<StatusBlock>,
-    /// The line before this one was a lock line.
+    /// **A lock line was read and no `WEAPONSTATUS` row has taken it yet**
+    /// (cut AM.1): kept across [`neutral`] lines and a pause, cleared by any
+    /// other line, lapsed [`STALE_TAIL_MS`] after it was read (one output's
+    /// pieces arrive at most that far apart).
     pub lock_line: bool,
     /// The section the next facet run belongs to.
     pub section: Option<String>,
@@ -564,6 +619,11 @@ pub struct Picture {
     pub power_ms: Option<u64>,
     pub own: Own,
     pub contacts: BTreeMap<String, Contact>,
+    /// **`CONTACTS` replies read** (cut AM.1), each counted once at its first
+    /// apply or its close, whichever comes first (`No contacts.` counts): the
+    /// instant the whole reply used to be committed, so the lane's lock
+    /// `RANGE` keeps its window.
+    pub contacts_read: u64,
     pub lock: Option<String>,
     pub lock_friendly: bool,
     pub lock_percent: Option<u32>,
@@ -575,9 +635,10 @@ pub struct Picture {
     pub struck: BTreeSet<String>,
     /// **Every gun is in doubt since then** (cut AL.1): set by a lost section
     /// whose cost is `its weapons are gone`, and cleared by the next
-    /// `WEAPONSTATUS` reply to commit, by `This unit carries no weapon.` and by
-    /// a new match. While it is set the pilot fires nothing, and the lane asks
-    /// `WEAPONSTATUS` once for it at once.
+    /// `WEAPONSTATUS` reply to close (cut AM.1: not by its rows applying), by
+    /// `This unit carries no weapon.` and by a new match. While it is set the
+    /// pilot fires nothing, and the lane asks `WEAPONSTATUS` once for it at
+    /// once.
     pub weapons_doubt: Option<u64>,
     pub spots: BTreeMap<char, Spot>,
     pub tally: Tally,
@@ -714,20 +775,37 @@ impl Picture {
     /// was read.
     pub fn apply(&mut self, now_ms: u64, line: &Line) -> Applied {
         self.last_ms = self.last_ms.max(now_ms);
-        // A reply ends at the first line that is not one of its rows.
-        if !matches!(line, Line::ContactRow(_)) {
-            self.commit_contacts(now_ms);
+        // **A reply ends at the first line after it that is not one of its
+        // rows** (cut AM.1: and, for `CONTACTS` and `WEAPONSTATUS`, not
+        // chatter, a hint or a receiver notice; a pause never ends one). It
+        // closes here, before the line's own effect: the game prints a reply's
+        // lines back to back, so a notice read after the rows was printed after
+        // them, and the reply's whole-list rule never undoes it.
+        let neutral = neutral(line);
+        if !neutral && !matches!(line, Line::ContactRow(_)) {
+            self.close_contacts(now_ms);
         }
-        if !matches!(line, Line::WeaponRow(_)) {
-            self.commit_weapons(now_ms);
+        if !neutral && !matches!(line, Line::WeaponRow(_)) {
+            self.close_weapons(now_ms);
         }
         if !is_status_form(line) {
             self.close_status();
         }
+        // Chatter inside a reply is read as itself: the rows so far apply, and
+        // the reply stays open for the rest.
+        if neutral {
+            self.apply_contacts(now_ms);
+            self.apply_weapons();
+        }
         if !matches!(line, Line::Other(_) | Line::CatchupPower { .. }) {
             self.open.catchup = false;
         }
-        let lock_line_before = std::mem::replace(&mut self.open.lock_line, false);
+        // The lock line heads the first `WEAPONSTATUS` row after it across a
+        // pause and chatter; any other line ends it (cut AM.1).
+        let lock_line_before = self.open.lock_line;
+        if !neutral {
+            self.open.lock_line = false;
+        }
         // A `STATUS` row is one only inside the block its `Callsign` line
         // opened: a row read anywhere else (a four-space facet run is what a
         // three-letter speaker's wrapped speech looks like) is someone else's
@@ -739,14 +817,28 @@ impl Picture {
             return Applied {
                 journal: true,
                 event: None,
+                opened: None,
             };
         }
         let mut journal = true;
         let mut event = None;
+        let mut opened = None;
         match line {
             // -- read replies ------------------------------------------------
             Line::ContactRow(row) => {
                 journal = false;
+                // A designator the open reply already holds begins the next
+                // reply (two back to back, nothing between): the first closes.
+                if self.open.contacts.as_ref().is_some_and(|open| {
+                    open.rows
+                        .iter()
+                        .any(|(held, _)| held.designator == row.designator)
+                }) {
+                    self.close_contacts(now_ms);
+                }
+                if self.open.contacts.is_none() {
+                    opened = Some(AskKind::Contacts);
+                }
                 let open = self
                     .open
                     .contacts
@@ -756,8 +848,10 @@ impl Picture {
             }
             Line::NoContacts => {
                 journal = false;
+                opened = Some(AskKind::Contacts);
+                // The empty form is a whole reply of its own.
                 self.open.contacts = Some(ContactsReply::default());
-                self.commit_contacts(now_ms);
+                self.close_contacts(now_ms);
             }
             Line::Lock {
                 designator,
@@ -789,6 +883,18 @@ impl Picture {
             }
             Line::WeaponRow(row) => {
                 journal = false;
+                // A gun the open reply already holds begins the next reply.
+                if self
+                    .open
+                    .weapons
+                    .as_ref()
+                    .is_some_and(|open| open.rows.iter().any(|(held, _)| held.id == row.id))
+                {
+                    self.close_weapons(now_ms);
+                }
+                if self.open.weapons.is_none() {
+                    opened = Some(AskKind::Weapons);
+                }
                 let open = self.open.weapons.get_or_insert_with(|| WeaponsReply {
                     locked: lock_line_before,
                     ..WeaponsReply::default()
@@ -798,6 +904,7 @@ impl Picture {
             }
             Line::NoWeapon => {
                 journal = false;
+                opened = Some(AskKind::Weapons);
                 self.weapons.clear();
                 // It says what is left (cut AL.1): nothing, so nothing is in
                 // doubt.
@@ -830,6 +937,8 @@ impl Picture {
             }
             Line::StatusCallsign { callsign } => {
                 journal = false;
+                opened = Some(AskKind::Status);
+                // A second `Callsign` begins the next block: the first closes.
                 self.close_status();
                 self.own.callsign = Some(callsign.clone());
                 // What the block does not print it no longer has.
@@ -935,6 +1044,7 @@ impl Picture {
                 journal = false;
                 // Staged in the open block (the guard above holds one open).
                 if let Some(block) = self.open.status.as_mut() {
+                    block.applied = false;
                     block.sections.insert(
                         id.clone(),
                         Section {
@@ -950,11 +1060,10 @@ impl Picture {
             Line::StatusFacets { facets } => {
                 journal = false;
                 if let Some(id) = self.open.section.clone()
-                    && let Some(section) = self
-                        .open
-                        .status
-                        .as_mut()
-                        .and_then(|block| block.sections.get_mut(&id))
+                    && let Some(section) = self.open.status.as_mut().and_then(|block| {
+                        block.applied = false;
+                        block.sections.get_mut(&id)
+                    })
                 {
                     for (facet, left, max) in facets {
                         section.facets.insert(facet.clone(), (*left, *max));
@@ -964,6 +1073,7 @@ impl Picture {
             }
             Line::StatusUntold { name } => {
                 journal = false;
+                opened = Some(AskKind::Status);
                 self.own.name = Some(name.clone());
                 self.own.power = Power::Off;
                 self.touch();
@@ -1066,11 +1176,13 @@ impl Picture {
             Line::Firing { weapon } => {
                 journal = false;
                 // The ack is the answer to the oldest `FIRE` of this weapon
-                // still waiting for one.
-                self.take_fire_mark(now_ms, Some(weapon));
+                // still waiting for one; that `FIRE`'s send bounds the cycle's
+                // read (cut AM.1).
+                let sent = self.take_fire_mark(now_ms, Some(weapon));
                 self.tally.shots = self.tally.shots.saturating_add(1);
                 let entry = self.weapon_mut(weapon);
                 entry.fired_ms = Some(now_ms);
+                entry.fired_sent_ms = sent;
                 entry.ready = false;
                 // The one clock (cut AK.1; cut AL.1): the ack lowers the slack
                 // toward nothing, then the gun is ready one learned cycle and
@@ -1483,23 +1595,31 @@ impl Picture {
             | Line::Hint(_)
             | Line::Other(_) => {}
         }
-        Applied { journal, event }
+        Applied {
+            journal,
+            event,
+            opened,
+        }
     }
 
-    /// Commit any open reply whose last row is [`SNAPSHOT_SETTLE_MS`] old.
+    /// **Apply** (cut AM.1) the rows of any open reply whose last row is
+    /// [`SNAPSHOT_SETTLE_MS`] old: a merge that drops nothing, clears no lock
+    /// and leaves the doubt; the reply stays open for a later row, however
+    /// late, and only its close applies the whole-list rule. A lock line not
+    /// taken by a row lapses [`STALE_TAIL_MS`] after it was read.
     pub fn settle(&mut self, now_ms: u64) {
         self.last_ms = self.last_ms.max(now_ms);
         let due = |last: u64| now_ms >= last.saturating_add(SNAPSHOT_SETTLE_MS);
         if self.open.contacts.as_ref().is_some_and(|o| due(o.last_ms)) {
-            self.commit_contacts(now_ms);
+            self.apply_contacts(now_ms);
         }
         if self.open.weapons.as_ref().is_some_and(|o| due(o.last_ms)) {
-            self.commit_weapons(now_ms);
+            self.apply_weapons();
         }
         if self.open.status.as_ref().is_some_and(|o| due(o.last_ms)) {
-            self.close_status();
+            self.apply_status();
         }
-        if self.open.lock_line && now_ms >= self.lock_read_ms.saturating_add(SNAPSHOT_SETTLE_MS) {
+        if self.open.lock_line && now_ms >= self.lock_read_ms.saturating_add(STALE_TAIL_MS) {
             self.open.lock_line = false;
         }
         let mut changed = false;
@@ -1560,6 +1680,24 @@ impl Picture {
             self.last_ms.saturating_sub(*at) <= ACK_PAIR_MS
                 && (sent == weapon || carried.is_some_and(|w| w.named(sent)))
         })
+    }
+
+    /// Whether `a` and `b`, each a name a `FIRE` line, an ack or a refusal
+    /// gave a gun, are one gun: equal, or the carried gun named `a` (by its id
+    /// or its short name) is named `b`, either way round — the matching
+    /// [`Picture::fire_pending`] does (cut AM.1, for the lane's answer ledger).
+    pub fn same_gun(&self, a: &str, b: &str) -> bool {
+        a == b || self.weapons.iter().any(|w| w.named(a) && w.named(b))
+    }
+
+    /// **A `FIRE` of `weapon` was answered `please retry in a moment`** (cut
+    /// AM.1; the lane's answer ledger says which line a transient answered):
+    /// its oldest mark is taken, so the gun is typed again on its own clock
+    /// rather than held until the mark lapses. Nothing else moves: the shot
+    /// never left, so the gun's clock, rounds and the tally are as they were.
+    /// Whether there was a mark to take.
+    pub fn fire_answered_by_transient(&mut self, now_ms: u64, weapon: &str) -> bool {
+        self.take_fire_mark(now_ms, Some(weapon)).is_some()
     }
 
     /// **What the picture said of the guns** since the last call (cut AL.1),
@@ -1747,8 +1885,14 @@ impl Picture {
         self.set_phase(now_ms, Phase::Over { match_id, result })
     }
 
-    /// A new followed match starts from a clean tank, scope and tally.
+    /// A new followed match starts from a clean tank, scope and tally. Any
+    /// reply still open closes first (cut AM.1; the line that brought the
+    /// match in has closed them already, being no reply's row).
     fn new_match(&mut self) {
+        let now = self.last_ms;
+        self.close_contacts(now);
+        self.close_weapons(now);
+        self.close_status();
         self.own = Own::default();
         self.contacts.clear();
         self.lock = None;
@@ -1780,9 +1924,11 @@ impl Picture {
     }
 
     /// Take the oldest outstanding `FIRE` mark of `weapon` (its id or its short
-    /// name, either way round), after lapsing the old ones; whether there was
-    /// one. An answer that names no weapon takes the oldest mark of any.
-    fn take_fire_mark(&mut self, now_ms: u64, weapon: Option<&str>) -> bool {
+    /// name, either way round), after lapsing the old ones; when that `FIRE`
+    /// was typed, or `None` when there was no mark (cut AM.1: it was whether
+    /// there was one). An answer that names no weapon takes the oldest mark
+    /// of any.
+    fn take_fire_mark(&mut self, now_ms: u64, weapon: Option<&str>) -> Option<u64> {
         self.lapse_fire_sent(now_ms);
         let index = match weapon {
             None => (!self.open.fire_sent.is_empty()).then_some(0),
@@ -1796,7 +1942,7 @@ impl Picture {
         };
         index
             .and_then(|index| self.open.fire_sent.remove(index))
-            .is_some()
+            .map(|(_, sent_ms)| sent_ms)
     }
 
     fn clear_lock(&mut self, now_ms: u64) {
@@ -1814,6 +1960,24 @@ impl Picture {
         self.touch();
     }
 
+    /// **Apply** an open `STATUS` block (cut AM.1): each section it names
+    /// replaces that section of the tank's; the block stays open.
+    fn apply_status(&mut self) {
+        let Some(block) = self.open.status.as_mut() else {
+            return;
+        };
+        if block.applied {
+            return;
+        }
+        block.applied = true;
+        for (id, section) in &block.sections {
+            self.own.sections.insert(id.clone(), section.clone());
+        }
+        self.touch();
+    }
+
+    /// **Close** an open `STATUS` block: the tank's sections are the block's
+    /// (when it printed any), and the next facet run belongs to no section.
     fn close_status(&mut self) {
         if let Some(block) = self.open.status.take() {
             if !block.sections.is_empty() {
@@ -1887,36 +2051,53 @@ impl Picture {
         })
     }
 
-    fn commit_contacts(&mut self, now_ms: u64) {
+    /// **Apply** an open `CONTACTS` reply (cut AM.1): every row from
+    /// `applied` on updates or adds its contact (its fix, track and read
+    /// time). Nothing is removed and the lock is untouched; the reply stays
+    /// open. The reply's first apply counts it in [`Picture::contacts_read`].
+    fn apply_contacts(&mut self, now_ms: u64) {
+        let Some(reply) = self.open.contacts.as_mut() else {
+            return;
+        };
+        if reply.applied >= reply.rows.len() {
+            return;
+        }
+        // A reply opened by a row has one, so `applied` is 0 only before its
+        // first apply.
+        let first = reply.applied == 0;
+        let rows: Vec<(ContactRow, u64)> = reply.rows.iter().skip(reply.applied).cloned().collect();
+        reply.applied = reply.rows.len();
+        if first {
+            self.contacts_read = self.contacts_read.saturating_add(1);
+        }
+        for (row, read_ms) in rows {
+            self.contact_row(now_ms, &row, read_ms);
+        }
+        self.touch();
+    }
+
+    /// **Close** an open `CONTACTS` reply: what is left applies, then the
+    /// whole-list rule — a reply is the platform's whole list, so a contact it
+    /// did not name is gone, and a lock on one with it. A reply closed before
+    /// any apply (`No contacts.` always is) is counted in
+    /// [`Picture::contacts_read`] here.
+    fn close_contacts(&mut self, now_ms: u64) {
         let Some(reply) = self.open.contacts.take() else {
             return;
         };
-        let mut held = BTreeMap::new();
-        for (row, read_ms) in reply.rows {
-            let fix = self.row_fix(&row, read_ms);
-            let mut contact = self
-                .contacts
-                .remove(&row.designator)
-                .unwrap_or_else(|| Contact::new(&row.designator, read_ms));
-            // The same plot read again has only aged: it is not a second fix.
-            let same_plot = contact.range_m == Some(row.range_m)
-                && contact.bearing_deg == row.bearing_deg
-                && u64::from(row.age_s) * 1_000 > contact.age_ms;
-            contact.side = row.side;
-            contact.bearing_deg = row.bearing_deg;
-            contact.rel_deg = row.rel_deg;
-            contact.band = row.band.clone();
-            contact.range_m = Some(row.range_m);
-            contact.age_ms = u64::from(row.age_s) * 1_000;
-            contact.read_ms = read_ms;
-            if !same_plot && let Some(fix) = fix {
-                contact.push_fix(fix);
-            }
-            contact.track = fit_track(&contact.fixes, now_ms);
-            held.insert(row.designator.clone(), contact);
+        if reply.applied == 0 {
+            self.contacts_read = self.contacts_read.saturating_add(1);
         }
-        // A reply is the platform's whole list: what it does not name is gone.
-        self.contacts = held;
+        for (row, read_ms) in reply.rows.iter().skip(reply.applied) {
+            self.contact_row(now_ms, row, *read_ms);
+        }
+        let named: BTreeSet<&str> = reply
+            .rows
+            .iter()
+            .map(|(row, _)| row.designator.as_str())
+            .collect();
+        self.contacts
+            .retain(|designator, _| named.contains(designator.as_str()));
         if let Some(lock) = &self.lock
             && !self.contacts.contains_key(lock)
         {
@@ -1925,81 +2106,67 @@ impl Picture {
         self.touch();
     }
 
-    fn commit_weapons(&mut self, now_ms: u64) {
+    /// One `CONTACTS` row folded in: its contact updated or added, with its
+    /// fix (unless the same plot was read again), its track and read time.
+    fn contact_row(&mut self, now_ms: u64, row: &ContactRow, read_ms: u64) {
+        let fix = self.row_fix(row, read_ms);
+        let mut contact = self
+            .contacts
+            .remove(&row.designator)
+            .unwrap_or_else(|| Contact::new(&row.designator, read_ms));
+        // The same plot read again has only aged: it is not a second fix.
+        let same_plot = contact.range_m == Some(row.range_m)
+            && contact.bearing_deg == row.bearing_deg
+            && u64::from(row.age_s) * 1_000 > contact.age_ms;
+        contact.side = row.side;
+        contact.bearing_deg = row.bearing_deg;
+        contact.rel_deg = row.rel_deg;
+        contact.band = row.band.clone();
+        contact.range_m = Some(row.range_m);
+        contact.age_ms = u64::from(row.age_s) * 1_000;
+        contact.read_ms = read_ms;
+        if !same_plot && let Some(fix) = fix {
+            contact.push_fix(fix);
+        }
+        contact.track = fit_track(&contact.fixes, now_ms);
+        self.contacts.insert(row.designator.clone(), contact);
+    }
+
+    /// **Apply** an open `WEAPONSTATUS` reply (cut AM.1): every row from
+    /// `applied` on updates or adds its gun ([`Picture::weapon_row`]: the
+    /// stale-ready guard and the cycle included). Nothing is removed, and the
+    /// lock and the doubt are untouched; the reply stays open.
+    fn apply_weapons(&mut self) {
+        let Some(reply) = self.open.weapons.as_mut() else {
+            return;
+        };
+        if reply.applied >= reply.rows.len() {
+            return;
+        }
+        let rows: Vec<(WeaponRow, u64)> = reply.rows.iter().skip(reply.applied).cloned().collect();
+        reply.applied = reply.rows.len();
+        for (row, read_ms) in rows {
+            self.weapon_row(&row, read_ms);
+        }
+        self.touch();
+    }
+
+    /// **Close** an open `WEAPONSTATUS` reply: what is left applies, then the
+    /// tank carries exactly the guns it named, in its order (a struck gun
+    /// never comes back); the doubt is over, and a reply no lock line headed
+    /// means no lock.
+    fn close_weapons(&mut self, now_ms: u64) {
         let Some(reply) = self.open.weapons.take() else {
             return;
         };
+        for (row, read_ms) in reply.rows.iter().skip(reply.applied) {
+            self.weapon_row(row, *read_ms);
+        }
         let mut carried = Vec::new();
-        for (row, read_ms) in reply.rows {
-            // A gun the tank said it does not carry stays struck this match
-            // (cut AL.1).
-            if self.struck.contains(&row.id)
-                || row.short.as_ref().is_some_and(|s| self.struck.contains(s))
-            {
-                continue;
+        for (row, _) in &reply.rows {
+            if let Some(index) = self.weapons.iter().position(|w| w.id == row.id) {
+                carried.push(self.weapons.remove(index));
             }
-            let mut weapon = match self.weapons.iter().position(|w| w.id == row.id) {
-                Some(index) => self.weapons.remove(index),
-                None => Weapon::new(&row.id),
-            };
-            // A `ready` row this soon after the ack may be the pre-shot frame —
-            // unless its rounds show every acked shot has left since the last
-            // row (a machine gun cycles in a second, well inside the guard).
-            let shots_left = weapon.read_ms > 0
-                && row.rounds.saturating_add(weapon.shots_since_read) <= weapon.rounds;
-            let stale_ready = row.ready
-                && !shots_left
-                && weapon
-                    .fired_ms
-                    .is_some_and(|fired| read_ms.saturating_sub(fired) < READY_AFTER_ACK_MS);
-            // The chance is the target's, not the shot's (cut AL.1): a row the
-            // guard holds still reads it, against the lock its reply was read
-            // under.
-            weapon.band = row.band;
-            weapon.percent = row.percent;
-            weapon.chance_ms = read_ms;
-            if !stale_ready {
-                weapon.shots_since_read = 0;
-                weapon.short = row.short.clone();
-                weapon.ready = row.ready;
-                weapon.cycling_s = row.cycling_s;
-                weapon.rounds = row.rounds;
-                weapon.rounds_max = row.rounds_max;
-                weapon.read_ms = read_ms;
-                // The one clock (cut AK.1; cut AL.1): an accepted `ready` row
-                // is the evidence, ready from its own time (so a machine gun
-                // whose row lands inside the guard, its rounds showing the
-                // shot has left, is ready now, not at the next row); a
-                // `cycling (N s)` row's seconds are rounded up (fact (a)), so
-                // the gun is ready after `N − 1` whole seconds and by `N` and
-                // the slack: the row bounds the ack's clock both ways, and
-                // with no clock it is the later bound; any other row leaves
-                // nothing to count but the row.
-                match row.cycling_s {
-                    None if row.ready => weapon.next_ready_ms = Some(read_ms),
-                    None => weapon.next_ready_ms = None,
-                    Some(secs) => {
-                        let left_ms = u64::from(secs) * 1_000;
-                        let lo = read_ms.saturating_add(left_ms.saturating_sub(1_000));
-                        let hi = read_ms
-                            .saturating_add(left_ms)
-                            .saturating_add(weapon.slack_ms);
-                        weapon.next_ready_ms =
-                            Some(weapon.next_ready_ms.unwrap_or(hi).max(lo).min(hi));
-                        // The cycle (fact (b)): only a row read inside the
-                        // first second after this gun's ack prints it whole.
-                        if left_ms > 0
-                            && weapon.fired_ms.is_some_and(|fired| {
-                                read_ms.saturating_sub(fired) < CYCLE_READ_WITHIN_MS
-                            })
-                        {
-                            weapon.cycle_ms =
-                                Some(weapon.cycle_ms.map_or(left_ms, |held| held.max(left_ms)));
-                        }
-                    }
-                }
-            }
-            carried.push(weapon);
         }
         self.weapons = carried;
         // A reply says what is left (cut AL.1): the doubt is over.
@@ -2009,6 +2176,87 @@ impl Picture {
             self.clear_lock(now_ms);
         }
         self.touch();
+    }
+
+    /// One `WEAPONSTATUS` row folded in: its gun updated or added (a gun the
+    /// tank said it does not carry stays struck, cut AL.1), its chance read,
+    /// and — unless the stale-ready guard holds the row — its readiness,
+    /// rounds, clock and cycle.
+    fn weapon_row(&mut self, row: &WeaponRow, read_ms: u64) {
+        if self.struck.contains(&row.id)
+            || row.short.as_ref().is_some_and(|s| self.struck.contains(s))
+        {
+            return;
+        }
+        let index = match self.weapons.iter().position(|w| w.id == row.id) {
+            Some(index) => index,
+            None => {
+                self.weapons.push(Weapon::new(&row.id));
+                self.weapons.len() - 1
+            }
+        };
+        let weapon = &mut self.weapons[index];
+        // A `ready` row this soon after the ack may be the pre-shot frame —
+        // unless its rounds show every acked shot has left since the last
+        // row (a machine gun cycles in a second, well inside the guard).
+        let shots_left = weapon.read_ms > 0
+            && row.rounds.saturating_add(weapon.shots_since_read) <= weapon.rounds;
+        let stale_ready = row.ready
+            && !shots_left
+            && weapon
+                .fired_ms
+                .is_some_and(|fired| read_ms.saturating_sub(fired) < READY_AFTER_ACK_MS);
+        // The chance is the target's, not the shot's (cut AL.1): a row the
+        // guard holds still reads it, against the lock its reply was read
+        // under.
+        weapon.band = row.band;
+        weapon.percent = row.percent;
+        weapon.chance_ms = read_ms;
+        if stale_ready {
+            return;
+        }
+        weapon.shots_since_read = 0;
+        weapon.short = row.short.clone();
+        weapon.ready = row.ready;
+        weapon.cycling_s = row.cycling_s;
+        weapon.rounds = row.rounds;
+        weapon.rounds_max = row.rounds_max;
+        weapon.read_ms = read_ms;
+        // The one clock (cut AK.1; cut AL.1): an accepted `ready` row is the
+        // evidence, ready from its own time (so a machine gun whose row lands
+        // inside the guard, its rounds showing the shot has left, is ready
+        // now, not at the next row); a `cycling (N s)` row's seconds are
+        // rounded up (fact (a)), so the gun is ready after `N − 1` whole
+        // seconds and by `N` and the slack: the row bounds the ack's clock
+        // both ways, and with no clock it is the later bound; any other row
+        // leaves nothing to count but the row.
+        match row.cycling_s {
+            None if row.ready => weapon.next_ready_ms = Some(read_ms),
+            None => weapon.next_ready_ms = None,
+            Some(secs) => {
+                let left_ms = u64::from(secs) * 1_000;
+                let lo = read_ms.saturating_add(left_ms.saturating_sub(1_000));
+                let hi = read_ms
+                    .saturating_add(left_ms)
+                    .saturating_add(weapon.slack_ms);
+                weapon.next_ready_ms = Some(weapon.next_ready_ms.unwrap_or(hi).max(lo).min(hi));
+                // The cycle (fact (b)): only a row read inside the first
+                // second after this gun's shot prints it whole — counted from
+                // the send of its `FIRE` (cut AM.1), which bounds the row's
+                // age at print whatever each leg of the wire took; from the
+                // ack only when no send is known.
+                let fired_sent_ms = weapon.fired_sent_ms;
+                if left_ms > 0
+                    && weapon.fired_ms.is_some_and(|fired| {
+                        read_ms.saturating_sub(fired_sent_ms.unwrap_or(fired))
+                            < CYCLE_READ_WITHIN_MS
+                    })
+                {
+                    weapon.cycle_ms =
+                        Some(weapon.cycle_ms.map_or(left_ms, |held| held.max(left_ms)));
+                }
+            }
+        }
     }
 
     /// A `RANGE` answer: the contact's figure, and — for the lock read just
@@ -2073,7 +2321,7 @@ impl Picture {
         // A `FIRE` of this weapon the runner wrote and has not yet seen
         // answered: this refusal is that answer, the cockpit's pre-check
         // ([`Picture::sent_fire`]).
-        let answers_a_send = order == "FIRE" && self.take_fire_mark(now_ms, weapon);
+        let answers_a_send = order == "FIRE" && self.take_fire_mark(now_ms, weapon).is_some();
         let carried = self
             .weapons
             .iter()
@@ -2094,6 +2342,7 @@ impl Picture {
                 entry.shots_since_read = entry.shots_since_read.saturating_sub(1);
                 if entry.fired_ms == Some(at) {
                     entry.fired_ms = None;
+                    entry.fired_sent_ms = None;
                 }
             }
             if let Some(secs) = cycling_s {
@@ -2198,7 +2447,8 @@ mod tests {
         assert_eq!(p.contacts["BA"].side, Some(Side::Blue));
         assert_eq!(p.contacts["BA"].range_m, Some(450));
         assert_eq!(p.contacts["X2"].side, None);
-        // The next reply drops what it does not name; a non-row line commits.
+        // The next reply drops what it does not name; the next game line
+        // closes it.
         feed(
             &mut p,
             &[
@@ -2252,10 +2502,11 @@ mod tests {
         assert!(!applied[0].journal);
         p.settle(1_200);
         assert_eq!(p.lock_percent, Some(58));
-        // A reply with no lock line in front means no lock.
+        // The cannon row begins the next reply (a gun the open one holds):
+        // the first closes, locked, cannon only.
         feed(&mut p, &[(2_000, "cannon  ready  40 of 40 round(s)")]);
         p.settle(2_200);
-        assert_eq!(p.lock, None);
+        assert_eq!(p.lock.as_deref(), Some("BA"), "applied, not yet closed");
         assert_eq!(
             p.weapons.len(),
             1,
@@ -4394,5 +4645,494 @@ mod tests {
         );
         let json = serde_json::to_string(&p).unwrap();
         assert!(json.contains("\"B\""));
+    }
+
+    // -- cut AM.1: a reply read whole on a slow wire ---------------------------
+
+    /// The sorted designators the picture holds.
+    fn held(p: &Picture) -> Vec<&str> {
+        p.contacts.keys().map(String::as_str).collect()
+    }
+
+    /// The guns the picture holds, in its order.
+    fn guns(p: &Picture) -> Vec<&str> {
+        p.weapons.iter().map(|w| w.id.as_str()).collect()
+    }
+
+    /// **A pause never ends a reply** (cut AM.1): the rows read before a
+    /// 400 ms gap apply at the settle, the row after it joins the same reply,
+    /// nothing is dropped at any settle, and only the next game line closes
+    /// it — dropping what it never named.
+    #[test]
+    fn a_reply_split_by_a_gap_keeps_its_contacts() {
+        let mut p = Picture::default();
+        // A contact held before the reply, and not in it.
+        feed(
+            &mut p,
+            &[
+                (0, &row_line("X9", "unknown", 200, 600, 0)),
+                (1, "Steering to 90°."),
+            ],
+        );
+        assert_eq!(held(&p), ["X9"]);
+        feed(
+            &mut p,
+            &[
+                (100, &row_line("BA", "blue", 90, 450, 0)),
+                (101, &row_line("X2", "unknown", 300, 250, 0)),
+            ],
+        );
+        assert_eq!(held(&p), ["X9"], "rows are not applied as they are read");
+        p.settle(101 + SNAPSHOT_SETTLE_MS);
+        assert_eq!(held(&p), ["BA", "X2", "X9"], "applied at the settle");
+        p.settle(500);
+        assert_eq!(held(&p), ["BA", "X2", "X9"], "a pause drops nothing");
+        assert!(p.open.contacts.is_some(), "and the reply stays open");
+        // The third row, 400 ms after the second: the same reply.
+        let applied = feed(&mut p, &[(501, &row_line("RB", "red", 180, 500, 0))]);
+        assert_eq!(applied[0].opened, None, "it begins nothing");
+        p.settle(501 + SNAPSHOT_SETTLE_MS);
+        assert_eq!(held(&p), ["BA", "RB", "X2", "X9"]);
+        // The next game line closes it: exactly its three rows.
+        feed(&mut p, &[(700, "Steering to 90°.")]);
+        assert_eq!(held(&p), ["BA", "RB", "X2"]);
+        assert_eq!(p.contacts_read, 2, "the first reply and this one");
+    }
+
+    /// **Chatter inside a reply is read as itself** (cut AM.1): a receiver
+    /// notice and a channel line between two rows are journalled and applied
+    /// in their own right, the rows around them are one reply, and nothing is
+    /// dropped before the next game line — for `CONTACTS` and for
+    /// `WEAPONSTATUS`, whose lock line still heads its rows.
+    #[test]
+    fn chatter_inside_a_reply_is_read_as_itself() {
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (0, &row_line("X9", "unknown", 200, 600, 0)),
+                (1, "Steering to 90°."),
+                (2, "Receiver degraded: something is jamming the sight."),
+            ],
+        );
+        assert!(p.own.jammed);
+        let applied = feed(
+            &mut p,
+            &[
+                (100, &row_line("BA", "blue", 90, 450, 0)),
+                (110, "Receiver clear."),
+                (120, "[RedNet] Ada: on your left"),
+                (130, &row_line("X2", "unknown", 300, 250, 0)),
+            ],
+        );
+        assert!(applied[1].journal && applied[2].journal, "both journalled");
+        assert!(!p.own.jammed, "the notice is applied");
+        assert_eq!(applied[3].opened, None, "the second row is the same reply");
+        assert_eq!(
+            held(&p),
+            ["BA", "X9"],
+            "the first row applied at the chatter"
+        );
+        p.settle(130 + SNAPSHOT_SETTLE_MS);
+        assert_eq!(
+            held(&p),
+            ["BA", "X2", "X9"],
+            "nothing dropped before the end"
+        );
+        feed(&mut p, &[(400, "Steering to 90°.")]);
+        assert_eq!(held(&p), ["BA", "X2"]);
+        // The same for `WEAPONSTATUS`.
+        let mut p = Picture::default();
+        rows_at(&mut p, 0, &["rocket  ready  4 of 4 round(s)"]);
+        assert_eq!(guns(&p), ["rocket"]);
+        let applied = feed(
+            &mut p,
+            &[
+                (100, "Locked on BA, 62% to hit."),
+                (
+                    101,
+                    "cannon  ready  40 of 40 round(s)  band 1 of 2  62% to hit",
+                ),
+                (110, "Receiver clear."),
+                (120, "[RedNet] Ada: on your left"),
+                (
+                    130,
+                    "machine_gun (mg)  ready  500 of 500 round(s)  21% to hit",
+                ),
+            ],
+        );
+        assert!(applied[2].journal && applied[3].journal);
+        assert_eq!(applied[1].opened, Some(AskKind::Weapons));
+        assert_eq!(applied[4].opened, None);
+        p.settle(130 + SNAPSHOT_SETTLE_MS);
+        assert_eq!(guns(&p), ["rocket", "cannon", "machine_gun"]);
+        assert_eq!(p.lock.as_deref(), Some("BA"));
+        feed(&mut p, &[(400, "Steering to 90°.")]);
+        assert_eq!(guns(&p), ["cannon", "machine_gun"]);
+        assert_eq!(
+            p.lock.as_deref(),
+            Some("BA"),
+            "the lock line headed the rows"
+        );
+    }
+
+    /// **A designator already read begins the next reply** (cut AM.1): two
+    /// `CONTACTS` replies back to back with no line between are two, so the
+    /// second's close drops what only the first named.
+    #[test]
+    fn a_second_reply_starts_at_a_designator_already_read() {
+        let mut p = Picture::default();
+        let applied = feed(
+            &mut p,
+            &[
+                (0, &row_line("BA", "blue", 90, 450, 0)),
+                (1, &row_line("X2", "unknown", 300, 250, 0)),
+                (2, &row_line("BA", "blue", 90, 450, 0)),
+            ],
+        );
+        let opened: Vec<Option<AskKind>> = applied.iter().map(|a| a.opened).collect();
+        assert_eq!(
+            opened,
+            [Some(AskKind::Contacts), None, Some(AskKind::Contacts)]
+        );
+        // The first reply closed at the second BA row: it named both.
+        assert_eq!(held(&p), ["BA", "X2"]);
+        assert_eq!(p.contacts_read, 1);
+        feed(&mut p, &[(3, "Steering to 90°.")]);
+        assert_eq!(held(&p), ["BA"], "the second reply named BA alone");
+        assert_eq!(p.contacts_read, 2);
+    }
+
+    /// **Only the close drops, clears and replaces** (cut AM.1): at a settle a
+    /// reply's rows are merged and every provisional thing stands; the next
+    /// game line applies the whole-list rule — guns, the lock and the doubt;
+    /// contacts; and a `STATUS` block's sections, which close at chatter too.
+    #[test]
+    fn only_the_close_drops_clears_and_replaces() {
+        // Guns, the lock and the doubt.
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (0, "Locked on BA."),
+                (1, "cannon  ready  40 of 40 round(s)"),
+                (2, "machine_gun (mg)  ready  500 of 500 round(s)"),
+                (3, "Steering to 90°."),
+                (10, "The turret is destroyed: its weapons are gone."),
+            ],
+        );
+        assert_eq!(p.lock.as_deref(), Some("BA"));
+        assert_eq!(guns(&p).len(), 2);
+        assert_eq!(p.weapons_doubt, Some(10));
+        feed(&mut p, &[(1_000, "cannon  ready  40 of 40 round(s)")]);
+        p.settle(1_000 + SNAPSHOT_SETTLE_MS);
+        assert_eq!(p.lock.as_deref(), Some("BA"), "provisional: the lock");
+        assert_eq!(
+            guns(&p),
+            ["cannon", "machine_gun"],
+            "provisional: both guns"
+        );
+        assert_eq!(p.weapons_doubt, Some(10), "provisional: the doubt");
+        feed(&mut p, &[(1_200, "Steering to 90°.")]);
+        assert_eq!(p.lock, None, "no lock line headed the rows");
+        assert_eq!(guns(&p), ["cannon"]);
+        assert_eq!(p.weapons_doubt, None);
+        // Contacts.
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (0, &row_line("BA", "blue", 90, 450, 0)),
+                (1, &row_line("X2", "unknown", 300, 250, 0)),
+                (2, "Steering to 90°."),
+                (1_000, &row_line("BA", "blue", 90, 450, 1)),
+            ],
+        );
+        p.settle(1_000 + SNAPSHOT_SETTLE_MS);
+        assert_eq!(held(&p), ["BA", "X2"], "provisional: both");
+        feed(&mut p, &[(1_200, "Steering to 90°.")]);
+        assert_eq!(held(&p), ["BA"]);
+        // A `STATUS` block naming two of three sections.
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (0, "Callsign RA."),
+                (0, "Red Tank 1: power online, 0 kph, heading 000°"),
+                (0, "  hull  intact  internals 60/60"),
+                (0, "  turret  intact"),
+                (0, "  left_track  intact  internals 24/24"),
+                (1, "No contacts."),
+                (1_000, "Callsign RA."),
+                (1_000, "Red Tank 1: power online, 0 kph, heading 000°"),
+                (1_000, "  hull  damaged  internals 50/60"),
+                (1_000, "    front 300/400"),
+                (1_000, "  turret  intact"),
+            ],
+        );
+        p.settle(1_000 + SNAPSHOT_SETTLE_MS);
+        let ids: Vec<&str> = p.own.sections.keys().map(String::as_str).collect();
+        assert_eq!(ids, ["hull", "left_track", "turret"], "provisional: merged");
+        assert_eq!(p.own.sections["hull"].condition, "damaged");
+        assert_eq!(p.own.sections["hull"].facets["front"], (300, 400));
+        // Chatter closes a `STATUS` block: no line is neutral for it.
+        feed(&mut p, &[(1_300, "Ada pages: hi")]);
+        let ids: Vec<&str> = p.own.sections.keys().map(String::as_str).collect();
+        assert_eq!(ids, ["hull", "turret"], "replaced at the close");
+    }
+
+    /// **A notice read after a reply stands** (cut AM.1): the game prints a
+    /// reply's lines back to back, so a notice after the rows came after them;
+    /// the reply closes before it is applied, and never undoes it.
+    #[test]
+    fn in_order_notices_after_a_reply_stand() {
+        // An identification after a reply naming the unknown it renames.
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (0, "Locked on X1."),
+                (10, &row_line("X1", "unknown", 90, 450, 0)),
+            ],
+        );
+        p.settle(10 + SNAPSHOT_SETTLE_MS);
+        feed(
+            &mut p,
+            &[
+                (300, "Contact X1 identified: BA, blue."),
+                (400, "Steering to 90°."),
+            ],
+        );
+        assert_eq!(held(&p), ["BA"]);
+        assert_eq!(p.lock.as_deref(), Some("BA"));
+        // `Locked on` after an unlocked `WEAPONSTATUS` reply.
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (0, "Locked on BA."),
+                (1, "cannon  ready  40 of 40 round(s)"),
+                (2, "Steering to 90°."),
+                (1_000, "cannon  ready  40 of 40 round(s)"),
+            ],
+        );
+        p.settle(1_000 + SNAPSHOT_SETTLE_MS);
+        assert_eq!(p.lock.as_deref(), Some("BA"));
+        feed(
+            &mut p,
+            &[(1_300, "Locked on X2."), (1_400, "Steering to 90°.")],
+        );
+        assert_eq!(p.lock.as_deref(), Some("X2"));
+        // A section lost after a `STATUS` block that named it intact.
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (0, "Callsign RA."),
+                (0, "Red Tank 1: power online, 0 kph, heading 000°"),
+                (0, "  hull  intact  internals 60/60"),
+                (0, "  left_track  intact  internals 24/24"),
+            ],
+        );
+        p.settle(SNAPSHOT_SETTLE_MS);
+        feed(
+            &mut p,
+            &[
+                (300, "The left_track is destroyed: the tank is slowed."),
+                (400, "Steering to 90°."),
+            ],
+        );
+        assert_eq!(p.own.sections["left_track"].condition, "destroyed");
+        // A new contact after a reply that did not name it.
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (0, &row_line("BA", "blue", 90, 450, 0)),
+                (10, "New contact X3: bearing 090°, far."),
+                (20, "Steering to 90°."),
+            ],
+        );
+        assert_eq!(held(&p), ["BA", "X3"]);
+    }
+
+    /// **A page never writes `STATUS` rows** (cut AM.1): no line is neutral
+    /// for `STATUS`, so a page closes the block, and the four-space run its
+    /// wrapped tail would make is someone else's words.
+    #[test]
+    fn a_page_never_writes_status_rows() {
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (0, "Callsign RA."),
+                (0, "Red Tank 1: power online, 0 kph, heading 000°"),
+                (0, "  hull  intact  internals 60/60"),
+                (0, "    front 400/400"),
+            ],
+        );
+        let block = p.open.status.clone().expect("open").sections;
+        feed(
+            &mut p,
+            &[
+                (10, "Ada pages: a long page"),
+                (11, "    front 20/20  left 20/20"),
+            ],
+        );
+        assert_eq!(p.own.sections, block);
+        assert_eq!(p.own.sections["hull"].facets.len(), 1);
+    }
+
+    /// **A lock line heads the first row after it across a pause and
+    /// chatter** (cut AM.1), lapses [`STALE_TAIL_MS`] after it was read, and
+    /// back-to-back locked replies each take their own.
+    #[test]
+    fn a_lock_line_split_from_its_rows_still_heads_them() {
+        let mut p = Picture::default();
+        feed(&mut p, &[(0, "Locked on BA, 62% to hit.")]);
+        p.settle(200);
+        p.settle(400);
+        feed(
+            &mut p,
+            &[
+                (400, "Receiver clear."),
+                (
+                    410,
+                    "cannon  ready  40 of 40 round(s)  band 1 of 2  62% to hit",
+                ),
+                (
+                    411,
+                    "machine_gun (mg)  ready  500 of 500 round(s)  21% to hit",
+                ),
+            ],
+        );
+        assert!(p.open.weapons.as_ref().is_some_and(|w| w.locked));
+        feed(&mut p, &[(500, "Steering to 90°.")]);
+        assert_eq!(p.lock.as_deref(), Some("BA"));
+        // `STALE_TAIL_MS` of silence: the rows after it are read unlocked.
+        feed(&mut p, &[(1_000, "Locked on BA, 62% to hit.")]);
+        p.settle(1_000 + STALE_TAIL_MS - 1);
+        assert!(p.open.lock_line, "still heading what comes");
+        p.settle(1_000 + STALE_TAIL_MS);
+        feed(
+            &mut p,
+            &[
+                (1_010 + STALE_TAIL_MS, "cannon  ready  40 of 40 round(s)"),
+                (1_100 + STALE_TAIL_MS, "Steering to 90°."),
+            ],
+        );
+        assert_eq!(p.lock, None, "read unlocked");
+        // Two locked replies back to back: each takes its own lock line.
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (0, "Locked on BA."),
+                (1, "cannon  ready  40 of 40 round(s)"),
+            ],
+        );
+        assert!(p.open.weapons.as_ref().is_some_and(|w| w.locked));
+        feed(
+            &mut p,
+            &[
+                (2, "Locked on X2."),
+                (3, "cannon  ready  40 of 40 round(s)"),
+            ],
+        );
+        assert!(p.open.weapons.as_ref().is_some_and(|w| w.locked));
+        assert_eq!(p.lock.as_deref(), Some("X2"));
+        feed(&mut p, &[(4, "Steering to 90°.")]);
+        assert_eq!(p.lock.as_deref(), Some("X2"));
+    }
+
+    /// **The cycle is bounded by the `FIRE`'s send, not its ack** (cut AM.1):
+    /// a `cycling` row read inside a second of the ack but past a second of
+    /// the `FIRE` teaches nothing.
+    #[test]
+    fn the_cycle_is_bounded_by_the_fire_not_the_ack() {
+        // 550 ms after the ack, 1 150 after the `FIRE`.
+        let mut p = Picture::default();
+        p.sent_fire(0, "cannon");
+        feed(&mut p, &[(600, "Firing cannon.")]);
+        assert_eq!(weapon(&p, "cannon").fired_sent_ms, Some(0));
+        rows_at(&mut p, 1_150, &["cannon  cycling (6 s)  39 of 40 round(s)"]);
+        assert_eq!(weapon(&p, "cannon").cycle_ms, None);
+        // The `FIRE` sent at 200: 950 ms before the row, learned.
+        let mut p = Picture::default();
+        p.sent_fire(200, "cannon");
+        feed(&mut p, &[(600, "Firing cannon.")]);
+        rows_at(&mut p, 1_150, &["cannon  cycling (6 s)  39 of 40 round(s)"]);
+        assert_eq!(weapon(&p, "cannon").cycle_ms, Some(6_000));
+        // A row 950 ms after the ack and 1 200 after the `FIRE` reading a
+        // second short never sets it.
+        let mut p = Picture::default();
+        p.sent_fire(0, "cannon");
+        feed(&mut p, &[(250, "Firing cannon.")]);
+        rows_at(&mut p, 1_200, &["cannon  cycling (5 s)  39 of 40 round(s)"]);
+        assert_eq!(weapon(&p, "cannon").cycle_ms, None);
+        // An ack that took no mark is bounded by itself, as before.
+        let mut p = Picture::default();
+        feed(&mut p, &[(250, "Firing cannon.")]);
+        assert_eq!(weapon(&p, "cannon").fired_sent_ms, None);
+        rows_at(&mut p, 1_200, &["cannon  cycling (6 s)  39 of 40 round(s)"]);
+        assert_eq!(weapon(&p, "cannon").cycle_ms, Some(6_000));
+    }
+
+    /// **A transient takes its gun's mark** (cut AM.1) and nothing else: the
+    /// shot never left.
+    #[test]
+    fn a_transient_takes_its_guns_mark() {
+        let mut p = Picture::default();
+        rows_at(
+            &mut p,
+            0,
+            &[
+                "cannon  ready  40 of 40 round(s)",
+                "machine_gun (mg)  ready  500 of 500 round(s)",
+            ],
+        );
+        p.sent_fire(1_000, "cannon");
+        p.sent_fire(1_010, "machine_gun");
+        let (tally, weapons) = (p.tally.clone(), p.weapons.clone());
+        assert!(p.fire_answered_by_transient(1_020, "cannon"));
+        assert!(!p.fire_pending("cannon"));
+        assert!(p.fire_pending("machine_gun"));
+        assert_eq!(p.tally, tally);
+        assert_eq!(
+            p.weapons, weapons,
+            "the clock, rounds and slack as they were"
+        );
+        assert!(
+            !p.fire_answered_by_transient(1_030, "cannon"),
+            "no mark left to take"
+        );
+    }
+
+    /// **Each `CONTACTS` reply counts once** (cut AM.1), at its first apply or
+    /// its close: rows across two settles, the empty form, and a reply closed
+    /// before any settle.
+    #[test]
+    fn contacts_read_counts_each_reply_once() {
+        let mut p = Picture::default();
+        feed(&mut p, &[(0, &row_line("BA", "blue", 90, 450, 0))]);
+        assert_eq!(p.contacts_read, 0);
+        p.settle(SNAPSHOT_SETTLE_MS);
+        assert_eq!(p.contacts_read, 1);
+        feed(&mut p, &[(300, &row_line("X2", "unknown", 300, 250, 0))]);
+        p.settle(300 + SNAPSHOT_SETTLE_MS);
+        feed(&mut p, &[(600, "Steering to 90°.")]);
+        assert_eq!(p.contacts_read, 1, "one reply across two settles");
+        feed(&mut p, &[(1_000, "No contacts.")]);
+        assert_eq!(p.contacts_read, 2);
+        feed(
+            &mut p,
+            &[
+                (2_000, &row_line("BA", "blue", 90, 450, 0)),
+                (2_001, "Steering to 90°."),
+            ],
+        );
+        assert_eq!(p.contacts_read, 3, "closed before any settle");
+        p.settle(10_000);
+        assert_eq!(p.contacts_read, 3);
     }
 }

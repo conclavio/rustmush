@@ -50,13 +50,32 @@
 //! **Orders are closed-loop.** The pilot re-decides every tick. A `HEADING`,
 //! `SPEED` or `LOCK` not acknowledged (`Steering to`, `Making`, `Locking`)
 //! within 1 500 ms is forgotten and so re-sent when re-decided; a `FIRE`
-//! refused with `Too many orders at once; try that again.` waits 1 000 ms. No
-//! pipelined reply is ever matched to the line that asked for it; each `FIRE`
-//! is marked with the weapon it names ([`Picture::sent_fire`]), so the
-//! picture tells the cockpit's pre-check of that gun from the arena's refusal
-//! of another's shot. What the pilot says of what it does (a hunt, a fall
-//! back, a held tank turned further; [`Pilot::take_notes`]) goes to the runner
-//! as [`LaneEvent::Said`] every tick.
+//! refused with `Too many orders at once; try that again.` waits 1 000 ms; a
+//! `FIRE` answered `please retry in a moment` is typed again on the gun's own
+//! clock. Each `FIRE` is marked with the weapon it names
+//! ([`Picture::sent_fire`]), so the picture tells the cockpit's pre-check of
+//! that gun from the arena's refusal of another's shot. **The answer ledger**
+//! ([`Unanswered`], cut AM.1) keeps every line the lane typed, the lobby's
+//! too, until a line read answers it, and matches answers to lines for three
+//! things alone: which `FIRE` a transient answered (that gun is re-armed,
+//! [`Picture::fire_answered_by_transient`]), whether a transient answered a
+//! lobby line or a cockpit line (only the lobby's own reach it as a
+//! transient), and whether a line is an expected answer (never read as a
+//! channel line's continuation). The picture's state never comes from it.
+//! What the pilot says of what it does (a hunt, a fall back, a held tank
+//! turned further; [`Pilot::take_notes`]) goes to the runner as
+//! [`LaneEvent::Said`] every tick.
+//!
+//! **A channel line's continuation** (cut AM.1). A channel line (`[RedNet]
+//! Ada: …`) wraps flush at the PTY's 120 columns, so a teammate could pad one
+//! until a game sentence starts the next line. A line read within
+//! [`lines::STALE_TAIL_MS`] of a channel line (or of such a continuation) that
+//! could not have fit on it ([`lines::continues`], on the untrimmed width the
+//! [`Assembler`] counts) is read as chatter — unless it is an answer the lane
+//! is waiting for ([`Unanswered::expects`]: a reply or an order's answer, the
+//! lock line heading a `WEAPONSTATUS` reply, any game line while a lobby line
+//! awaits its answer). The chain is decided from the wrap alone, so it runs on
+//! through an echo, an indented piece or an expected answer.
 //!
 //! **The journal filter.** The lane remembers the last 32 lines it typed; a line
 //! equal to one of them is the terminal's echo and is not read at all, and
@@ -106,7 +125,7 @@ use super::{
         LAPSED_HOLD_RAN_OUT, OFF_DESTROYED, OFF_MATCH_OVER, OFF_STOPPED, Schedule, Stance, Vetted,
         vet,
     },
-    lines::Line,
+    lines::{self, AnswerTo, AskKind, Line, answer_to},
     lobby::{Lobby, Step},
     picture::{self, Phase, Picture, Power},
     pilot::{HuntLeg, Orders, Pilot, Turn, live_turn},
@@ -171,6 +190,260 @@ pub const ACK_WAIT_MS: u64 = 1_500;
 pub const FIRE_GAP_MS: u64 = 250;
 /// A `FIRE` refused as too many orders waits this long.
 pub const FIRE_BUSY_WAIT_MS: u64 = 1_000;
+/// **An answer this reader does not know never pops its line; it lapses with
+/// the `FIRE` marks** (cut AM.1): a cockpit line still unanswered this long is
+/// dropped from the answer ledger. The lobby's own lines never lapse here:
+/// they follow the lobby ([`Unanswered::sync_lobby`]).
+pub const ANSWER_LAPSE_MS: u64 = picture::ACK_PAIR_MS;
+
+/// **One line the lane typed and has read no answer to** (cut AM.1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Asked {
+    pub kind: AskKind,
+    /// The gun a `FIRE` named.
+    pub weapon: Option<String>,
+    pub sent_ms: u64,
+}
+
+/// **The answer ledger** (cut AM.1): every line the lane typed, oldest first,
+/// until a line read answers it. The game answers one session's lines in the
+/// order they were typed, so an answer pops its own line and every cockpit
+/// line before it. Read for three things only (the module head): which line a
+/// transient answered, a transient's `FIRE`, and whether a line is expected.
+#[derive(Debug, Default)]
+pub struct Unanswered {
+    lines: VecDeque<Asked>,
+}
+
+impl Unanswered {
+    /// The lane typed `send` at `now_ms`: a cockpit read or order by its verb
+    /// (`CONTACTS`, `WEAPONSTATUS`, `STATUS`, `RANGE`, `BEARING B`, `LOCK`,
+    /// `HEADING`, `SPEED`, and `FIRE` with its gun), and every walk and lobby
+    /// line as [`AskKind::Lobby`].
+    pub fn typed(&mut self, now_ms: u64, send: &Send) {
+        self.lapse(now_ms);
+        let (kind, weapon) = match send.purpose {
+            Purpose::Walk | Purpose::Lobby => (AskKind::Lobby, None),
+            Purpose::Poll | Purpose::Order => {
+                let (verb, rest) = send
+                    .line
+                    .split_once(' ')
+                    .unwrap_or((send.line.as_str(), ""));
+                let kind = match verb {
+                    "CONTACTS" => AskKind::Contacts,
+                    "WEAPONSTATUS" => AskKind::Weapons,
+                    "STATUS" => AskKind::Status,
+                    "RANGE" => AskKind::Range,
+                    "BEARING" => AskKind::Bearing,
+                    "LOCK" => AskKind::Lock,
+                    "HEADING" => AskKind::Heading,
+                    "SPEED" => AskKind::Speed,
+                    "FIRE" => AskKind::Fire,
+                    _ => return,
+                };
+                let weapon = (kind == AskKind::Fire).then(|| rest.trim().to_owned());
+                (kind, weapon)
+            }
+        };
+        self.lines.push_back(Asked {
+            kind,
+            weapon,
+            sent_ms: now_ms,
+        });
+    }
+
+    /// Drop the cockpit lines older than [`ANSWER_LAPSE_MS`]; the lobby's
+    /// stay.
+    pub fn lapse(&mut self, now_ms: u64) {
+        self.lines.retain(|asked| {
+            asked.kind == AskKind::Lobby || now_ms.saturating_sub(asked.sent_ms) <= ANSWER_LAPSE_MS
+        });
+    }
+
+    /// **Follow the lobby**: with no lobby line awaiting its answer, every
+    /// lobby line is answered — dropped, and with them every cockpit line
+    /// older than the newest of them (answers come in order, so those were
+    /// answered too); with one awaiting, every lobby line but the newest is
+    /// dropped.
+    pub fn sync_lobby(&mut self, awaiting: bool) {
+        let newest = self
+            .lines
+            .iter()
+            .rposition(|asked| asked.kind == AskKind::Lobby);
+        let Some(newest) = newest else {
+            return;
+        };
+        if awaiting {
+            let mut index = 0;
+            self.lines.retain(|asked| {
+                let keep = asked.kind != AskKind::Lobby || index == newest;
+                index += 1;
+                keep
+            });
+        } else {
+            self.lines.drain(..=newest);
+        }
+    }
+
+    /// Whether `line` is an answer the lane is waiting for: one
+    /// [`Unanswered::answer`] would pop a line for (taking a read reply's
+    /// opener — a contact row, a gun row, `Callsign`, the untold head and the
+    /// empty forms — as the reply it would begin); the lock line that heads a
+    /// `WEAPONSTATUS` reply, while one waits; and any game line at all while a
+    /// lobby line awaits its answer (the lobby reads its own answers, which
+    /// this ledger does not tell apart). Pure: the channel continuation asks
+    /// it, and an expected answer is never read as chatter.
+    pub fn expects(&self, line: &Line, picture: &Picture) -> bool {
+        if let Some(kind) = opener(line)
+            && self.cockpit(|asked| asked.kind == kind).is_some()
+        {
+            return true;
+        }
+        if matches!(line, Line::Lock { .. })
+            && self
+                .cockpit(|asked| asked.kind == AskKind::Weapons)
+                .is_some()
+        {
+            return true;
+        }
+        if !picture::neutral(line) && self.lines.iter().any(|asked| asked.kind == AskKind::Lobby) {
+            return true;
+        }
+        match answer_to(line) {
+            None => false,
+            Some(AnswerTo::Oldest) => !self.lines.is_empty(),
+            Some(answer) => self.find(&answer, picture).is_some(),
+        }
+    }
+
+    /// **The line `line` answers**, popped (after the lapse) and returned:
+    /// a read reply's opener (`opened`), a `Kinds` answer and a gun's `Fire`
+    /// answer pop the oldest cockpit line they answer and every cockpit line
+    /// before it (the lobby's are left to the lobby); `Oldest` pops the oldest
+    /// line of any kind; a refusal pops the oldest line of its verb (a `FIRE`
+    /// refusal, of its gun) only when one waits — else it is the arena's own
+    /// notice — and nothing before it. A line that answers nothing pops
+    /// nothing.
+    pub fn answer(
+        &mut self,
+        now_ms: u64,
+        line: &Line,
+        opened: Option<AskKind>,
+        picture: &Picture,
+    ) -> Option<Asked> {
+        self.lapse(now_ms);
+        if let Some(kind) = opened {
+            let index = self.cockpit(|asked| asked.kind == kind)?;
+            return self.pop_through(index);
+        }
+        let answer = answer_to(line)?;
+        match answer {
+            AnswerTo::Oldest => self.lines.pop_front(),
+            AnswerTo::Refusal { .. } => {
+                let index = self.find(&answer, picture)?;
+                self.lines.remove(index)
+            }
+            AnswerTo::Kinds(_) | AnswerTo::Fire(_) => {
+                let index = self.find(&answer, picture)?;
+                self.pop_through(index)
+            }
+        }
+    }
+
+    /// The lines waiting, oldest first (for tests and `/arena`).
+    pub fn iter(&self) -> impl Iterator<Item = &Asked> {
+        self.lines.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.lines.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+
+    /// The oldest cockpit line `matches` holds for.
+    fn cockpit(&self, matches: impl Fn(&Asked) -> bool) -> Option<usize> {
+        self.lines
+            .iter()
+            .position(|asked| asked.kind != AskKind::Lobby && matches(asked))
+    }
+
+    /// The oldest cockpit line `answer` (not `Oldest`) answers.
+    fn find(&self, answer: &AnswerTo, picture: &Picture) -> Option<usize> {
+        let gun = |asked: &Asked, weapon: &str| {
+            asked.kind == AskKind::Fire
+                && asked
+                    .weapon
+                    .as_deref()
+                    .is_some_and(|typed| picture.same_gun(typed, weapon))
+        };
+        match answer {
+            AnswerTo::Kinds(kinds) => self.cockpit(|asked| kinds.contains(&asked.kind)),
+            AnswerTo::Fire(weapon) => self.cockpit(|asked| gun(asked, weapon)),
+            AnswerTo::Refusal { order, weapon } => match order.as_str() {
+                "FIRE" => {
+                    let weapon = weapon.as_deref()?;
+                    self.cockpit(|asked| gun(asked, weapon))
+                }
+                verb => {
+                    let kind = match verb {
+                        "HEADING" => AskKind::Heading,
+                        "SPEED" => AskKind::Speed,
+                        "LOCK" => AskKind::Lock,
+                        "RANGE" => AskKind::Range,
+                        "BEARING" => AskKind::Bearing,
+                        _ => return None,
+                    };
+                    self.cockpit(|asked| asked.kind == kind)
+                }
+            },
+            AnswerTo::Oldest => (!self.lines.is_empty()).then_some(0),
+        }
+    }
+
+    /// Pop the line at `index` and every cockpit line before it; the lobby's
+    /// before it stay. The line at `index`.
+    fn pop_through(&mut self, index: usize) -> Option<Asked> {
+        let mut seen = 0;
+        let mut popped = None;
+        self.lines.retain(|asked| {
+            let at = seen;
+            seen += 1;
+            if at == index {
+                popped = Some(asked.clone());
+                return false;
+            }
+            at > index || asked.kind == AskKind::Lobby
+        });
+        popped
+    }
+}
+
+/// The read reply a line would begin, as [`super::picture::Applied::opened`]
+/// reports it.
+fn opener(line: &Line) -> Option<AskKind> {
+    match line {
+        Line::ContactRow(_) | Line::NoContacts => Some(AskKind::Contacts),
+        Line::WeaponRow(_) | Line::NoWeapon => Some(AskKind::Weapons),
+        Line::StatusCallsign { .. } | Line::StatusUntold { .. } => Some(AskKind::Status),
+        _ => None,
+    }
+}
+
+/// **The line read before** (cut AM.1), for the channel continuation: its
+/// untrimmed width, whether it began or carried on a channel chain (a column-0
+/// `[…` line, or a line that could only be the rest of one, read or not), and
+/// when it was read: the renderer writes a wrapped line's pieces in one
+/// output, which arrive at most [`lines::STALE_TAIL_MS`] apart, so a chain
+/// never reaches a line read later than that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Prev {
+    pub cols: usize,
+    pub chain: bool,
+    pub read_ms: u64,
+}
 
 /// Why a line went out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -246,7 +519,10 @@ struct Fight {
     last_range: Option<u64>,
     last_bearing: Option<u64>,
     contacts_soon: Option<u64>,
-    contacts_open: bool,
+    /// [`Picture::contacts_read`] as this fight last counted it (cut AM.1):
+    /// seeded when the fight is made, so a re-board or a restart while locked
+    /// never counts a reply it did not just read.
+    contacts_seen: u64,
     contacts_commits: u32,
     range_until: Option<u64>,
     /// The post-shot `WEAPONSTATUS`, per gun (cut AL.1): each gun whose cycle
@@ -326,6 +602,11 @@ pub struct Lane {
     last_state: Option<StateRecord>,
     result: Option<LaneResult>,
     stopped: bool,
+    /// **The answer ledger** (cut AM.1): on the lane, not the fight, so it
+    /// outlives the fight's end and the stop.
+    asked: Unanswered,
+    /// The line read before, for the channel continuation (cut AM.1).
+    prev: Option<Prev>,
 }
 
 impl Lane {
@@ -357,6 +638,8 @@ impl Lane {
             last_state: None,
             result: None,
             stopped: false,
+            asked: Unanswered::default(),
+            prev: None,
         }
     }
 
@@ -488,6 +771,11 @@ impl Lane {
     /// The pilot's own state (for tests and `/arena`).
     pub fn pilot(&self) -> &Pilot {
         &self.pilot
+    }
+
+    /// The answer ledger (cut AM.1; for tests and `/arena`).
+    pub fn asked(&self) -> &Unanswered {
+        &self.asked
     }
 
     // -- stopping -------------------------------------------------------------
@@ -688,8 +976,8 @@ impl Lane {
     /// journal out.
     pub fn feed(&mut self, now_ms: u64, text: &str) -> Fed {
         let mut journal = std::mem::take(&mut self.held_journal);
-        for raw in self.assembler.feed(now_ms, text) {
-            self.line(now_ms, &raw, &mut journal);
+        for (raw, cols) in self.assembler.feed_cols(now_ms, text) {
+            self.line(now_ms, &raw, cols, &mut journal);
         }
         // The match's end or the tank's loss voids the commander's call at once.
         self.commander_sync(now_ms);
@@ -699,13 +987,47 @@ impl Lane {
         }
     }
 
-    fn line(&mut self, now_ms: u64, raw: &str, journal: &mut Vec<String>) {
+    /// Read one line, `cols` its untrimmed width (cut AM.1): the echo is
+    /// dropped, a channel line's continuation is read as chatter, and the rest
+    /// goes to the picture, the answer ledger and the lobby, in that order.
+    fn line(&mut self, now_ms: u64, raw: &str, cols: usize, journal: &mut Vec<String>) {
         let trimmed = raw.trim();
+        // **The channel continuation** (cut AM.1): a line read straight after
+        // a channel line (or the rest of one) that could not have held its
+        // first word is the rest of that line. Decided from the wrap alone,
+        // before the line is read, so whatever the piece says (one equal to a
+        // line the lane typed, one indented, one the lane expects) the chain
+        // runs on through it to the next piece.
+        let wrapped = self.prev.is_some_and(|prev| {
+            prev.chain
+                && now_ms.saturating_sub(prev.read_ms) <= lines::STALE_TAIL_MS
+                && lines::continues(prev.cols, raw)
+        });
         // The terminal's echo of a line the lane typed: not the game's words.
         if !trimmed.is_empty() && self.recent.iter().any(|sent| sent == trimmed) {
+            self.prev = Some(Prev {
+                cols,
+                chain: wrapped,
+                read_ms: now_ms,
+            });
             return;
         }
-        let line = classify(raw);
+        // A continuation is chatter unless the lane is waiting for it: a pad
+        // can delay nothing the bot asked for. A column-0 `[…` line always
+        // reads as chatter (`classify`) and begins a chain.
+        let read = classify(raw);
+        let continuation = wrapped && !self.asked.expects(&read, &self.picture);
+        let line = if continuation {
+            Line::Other(trimmed.to_owned())
+        } else {
+            read
+        };
+        let chain = wrapped || (raw.starts_with('[') && matches!(line, Line::Other(_)));
+        self.prev = Some(Prev {
+            cols,
+            chain,
+            read_ms: now_ms,
+        });
         // The commander's events: it asks at once (cut AJ.3).
         match &line {
             Line::Identified { side, .. } if *side == self.side.other() => {
@@ -716,7 +1038,6 @@ impl Lane {
         }
         if let Some(fight) = self.fight.as_mut() {
             match &line {
-                Line::ContactRow(_) | Line::NoContacts => fight.contacts_open = true,
                 Line::Steering { .. } => fight.heading_ack = None,
                 Line::Making { .. } | Line::SpeedLimits { .. } => fight.speed_ack = None,
                 Line::Immobile => {
@@ -763,22 +1084,48 @@ impl Lane {
             }
         }
         let applied = self.picture.apply(now_ms, &line);
-        self.lobby.on_line(now_ms, raw, &line, &mut self.picture);
+        // After the picture, which says which read reply the line begins.
+        let answered = self
+            .asked
+            .answer(now_ms, &line, applied.opened, &self.picture);
+        // **A transient goes to the line it answered** (cut AM.1): one that
+        // answered a `FIRE` re-arms that gun, and one that answered any
+        // cockpit line reaches the lobby as plain text; only one answering
+        // the lobby's own line (or nothing the ledger holds) is the lobby's
+        // transient.
+        let handed = match (&line, &answered) {
+            (Line::Transient(text), Some(asked)) if asked.kind != AskKind::Lobby => {
+                if let (AskKind::Fire, Some(weapon)) = (asked.kind, asked.weapon.as_deref()) {
+                    self.picture.fire_answered_by_transient(now_ms, weapon);
+                }
+                Some(Line::Other(text.clone()))
+            }
+            _ => None,
+        };
+        self.lobby.on_line(
+            now_ms,
+            raw,
+            handed.as_ref().unwrap_or(&line),
+            &mut self.picture,
+        );
+        self.asked.sync_lobby(self.lobby.awaiting(now_ms));
         self.check_commit(now_ms);
         if applied.journal && !trimmed.is_empty() {
             journal.push(raw.to_owned());
         }
     }
 
-    /// A `CONTACTS` reply just committed: every second one while locked asks
+    /// A `CONTACTS` reply was just read ([`Picture::contacts_read`], counted
+    /// at its first apply or its close): every second one while locked asks
     /// for the lock's `RANGE`.
     fn check_commit(&mut self, now_ms: u64) {
         let locked = self.picture.lock.is_some();
+        let read = self.picture.contacts_read;
         let Some(fight) = self.fight.as_mut() else {
             return;
         };
-        if fight.contacts_open && self.picture.open.contacts.is_none() {
-            fight.contacts_open = false;
+        if read > fight.contacts_seen {
+            fight.contacts_seen = read;
             if locked {
                 fight.contacts_commits = fight.contacts_commits.saturating_add(1);
                 if fight.contacts_commits.is_multiple_of(2) {
@@ -793,9 +1140,9 @@ impl Lane {
     /// **What to type now.** The runner calls it every 50 ms and sends every
     /// line in order.
     pub fn tick(&mut self, now_ms: u64) -> Vec<Send> {
-        if let Some(tail) = self.assembler.flush_stale(now_ms) {
+        if let Some((tail, cols)) = self.assembler.flush_stale_cols(now_ms) {
             let mut journal = std::mem::take(&mut self.held_journal);
-            self.line(now_ms, &tail, &mut journal);
+            self.line(now_ms, &tail, cols, &mut journal);
             self.held_journal = journal;
         }
         self.picture.settle(now_ms);
@@ -832,11 +1179,16 @@ impl Lane {
             while self.recent.len() > RECENT_SENT {
                 self.recent.pop_front();
             }
-            out.push(Send {
+            let send = Send {
                 line,
                 purpose,
                 lane_ms: now_ms,
-            });
+            };
+            // Every line typed goes into the answer ledger, which then follows
+            // the lobby's `sent` (cut AM.1).
+            self.asked.typed(now_ms, &send);
+            self.asked.sync_lobby(self.lobby.awaiting(now_ms));
+            out.push(send);
         }
         self.after(now_ms);
         out
@@ -883,7 +1235,12 @@ impl Lane {
                 // …and a one-track commit or a turn into a hit (cut AL.2) is
                 // not the tank's now either, nor a hit taken meanwhile.
                 self.pilot.forget_turns(&self.picture);
-                self.fight = Some(Fight::default());
+                // The replies read before this fight are not its own (cut
+                // AM.1): its `RANGE` count starts from the next one.
+                self.fight = Some(Fight {
+                    contacts_seen: self.picture.contacts_read,
+                    ..Fight::default()
+                });
             }
         } else {
             self.fight = None;
@@ -1182,5 +1539,197 @@ impl Lane {
     /// The step the lobby is on (for tests and `/arena`).
     pub fn step(&self) -> Step {
         self.lobby.step()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn send(line: &str, purpose: Purpose) -> Send {
+        Send {
+            line: line.into(),
+            purpose,
+            lane_ms: 0,
+        }
+    }
+
+    fn kinds(asked: &Unanswered) -> Vec<AskKind> {
+        asked.iter().map(|a| a.kind).collect()
+    }
+
+    /// **The answer ledger** (cut AM.1): an answer pops its own line and every
+    /// cockpit line before it, a transient the oldest line of any kind, a
+    /// refusal only a line of its own that waits; a cockpit line lapses at
+    /// [`ANSWER_LAPSE_MS`]; and the lobby's lines follow the lobby.
+    #[test]
+    fn the_ledger_pops_in_order_lapses_and_follows_the_lobby() {
+        use AskKind as K;
+        let p = Picture::default();
+        let mut u = Unanswered::default();
+        u.typed(0, &send("CONTACTS", Purpose::Poll));
+        u.typed(10, &send("FIRE cannon", Purpose::Order));
+        u.typed(20, &send("HEADING 90", Purpose::Order));
+        u.typed(30, &send("FIRE machine_gun", Purpose::Order));
+        assert_eq!(kinds(&u), [K::Contacts, K::Fire, K::Heading, K::Fire]);
+        assert!(u.expects(&classify("Firing cannon."), &p));
+        assert!(!u.expects(&classify("Making 27 kph."), &p));
+        assert!(u.expects(
+            &classify("BA  blue  bearing 087° (rel 032°)  far  450 m  2 s"),
+            &p
+        ));
+        // `Steering` answers the `HEADING` and the two lines before it.
+        let popped = u.answer(40, &classify("Steering to 90°."), None, &p);
+        assert_eq!(popped.as_ref().map(|a| a.kind), Some(K::Heading));
+        assert_eq!(kinds(&u), [K::Fire]);
+        assert_eq!(
+            u.iter().next().and_then(|a| a.weapon.as_deref()),
+            Some("machine_gun")
+        );
+        // A transient pops the oldest line, whatever it was.
+        u.typed(50, &send("CONTACTS", Purpose::Poll));
+        let transient =
+            classify("The world is committing another action; please retry in a moment.");
+        let popped = u.answer(60, &transient, None, &p);
+        assert_eq!(
+            popped,
+            Some(Asked {
+                kind: K::Fire,
+                weapon: Some("machine_gun".into()),
+                sent_ms: 30,
+            })
+        );
+        assert_eq!(kinds(&u), [K::Contacts]);
+        // A `FIRE` refusal with no `FIRE` of that gun waiting is the arena's
+        // own notice: it pops nothing.
+        let refusal = classify("FIRE cannon refused. Still cycling: 1 s to go.");
+        assert!(!u.expects(&refusal, &p));
+        assert_eq!(u.answer(70, &refusal, None, &p), None);
+        assert_eq!(kinds(&u), [K::Contacts]);
+        // A read reply's opener pops its line.
+        u.typed(80, &send("WEAPONSTATUS", Purpose::Poll));
+        let row = classify("cannon  ready  40 of 40 round(s)");
+        let popped = u.answer(90, &row, Some(K::Weapons), &p);
+        assert_eq!(popped.map(|a| a.kind), Some(K::Weapons));
+        assert!(u.is_empty(), "the `CONTACTS` before it went with it");
+        // A cockpit line lapses with the `FIRE` marks.
+        u.typed(100, &send("CONTACTS", Purpose::Poll));
+        u.lapse(100 + ANSWER_LAPSE_MS);
+        assert_eq!(u.len(), 1);
+        u.lapse(101 + ANSWER_LAPSE_MS);
+        assert!(u.is_empty());
+        // The lobby's lines: a `FIRE`, then a lobby line awaiting its answer.
+        let mut u = Unanswered::default();
+        u.typed(0, &send("FIRE cannon", Purpose::Order));
+        u.typed(10, &send("SIM LEAVE", Purpose::Lobby));
+        u.sync_lobby(true);
+        assert_eq!(kinds(&u), [K::Fire, K::Lobby]);
+        // The first transient answers the `FIRE`…
+        let popped = u.answer(20, &transient, None, &p);
+        assert_eq!(popped.map(|a| a.kind), Some(K::Fire));
+        // …and with the `FIRE` answered, the next answers the lobby's line.
+        let popped = u.answer(30, &transient, None, &p);
+        assert_eq!(popped.map(|a| a.kind), Some(K::Lobby));
+        assert!(u.is_empty());
+        // An answer never pops the lobby's line before its own.
+        u.typed(40, &send("SIM STATUS", Purpose::Lobby));
+        u.typed(50, &send("HEADING 90", Purpose::Order));
+        u.answer(60, &classify("Steering to 90°."), None, &p);
+        assert_eq!(kinds(&u), [K::Lobby]);
+        // Two lobby lines awaiting: only the newest stays.
+        u.typed(70, &send("SIM TEAM red", Purpose::Lobby));
+        u.sync_lobby(true);
+        assert_eq!(u.iter().map(|a| a.sent_ms).collect::<Vec<_>>(), [70]);
+        // None awaiting: the lobby's lines are answered, and every cockpit
+        // line older than the newest of them with them.
+        u.typed(80, &send("CONTACTS", Purpose::Poll));
+        u.typed(90, &send("SIM START", Purpose::Lobby));
+        u.typed(100, &send("STATUS", Purpose::Poll));
+        u.sync_lobby(false);
+        assert_eq!(kinds(&u), [K::Status]);
+        // A lobby line never lapses here.
+        u.typed(110, &send("look", Purpose::Walk));
+        u.lapse(10_000);
+        assert_eq!(kinds(&u), [K::Lobby]);
+        // A lobby line awaiting its answer, then a cockpit line: a transient
+        // answers the lobby's line (it was typed first), never the cockpit's.
+        let mut u = Unanswered::default();
+        u.typed(0, &send("SIM TEAM red", Purpose::Lobby));
+        u.typed(10, &send("HEADING 90", Purpose::Order));
+        u.sync_lobby(true);
+        assert_eq!(kinds(&u), [K::Lobby, K::Heading]);
+        let popped = u.answer(20, &transient, None, &p);
+        assert_eq!(popped.map(|a| a.kind), Some(K::Lobby));
+        assert_eq!(kinds(&u), [K::Heading]);
+    }
+
+    /// **What the continuation never swallows** (cut AM.1, review): beyond
+    /// the answers [`Unanswered::answer`] pops, the lock line heading a
+    /// `WEAPONSTATUS` reply while one waits, and any game line while a lobby
+    /// line awaits its answer — never chatter, a hint or a receiver notice.
+    #[test]
+    fn the_ledger_expects_the_lock_line_and_the_lobbys_answers() {
+        let p = Picture::default();
+        let lock = classify("Locked on BA, 62% to hit.");
+        let claim = classify("Pilot takes red slot 1. `SIM START` begins the match.");
+        let chat = classify("[RedNet] Ada: on your left");
+        let mut u = Unanswered::default();
+        assert!(!u.expects(&lock, &p));
+        u.typed(0, &send("HEADING 90", Purpose::Order));
+        assert!(!u.expects(&lock, &p), "a lock line answers no HEADING");
+        u.typed(10, &send("WEAPONSTATUS", Purpose::Poll));
+        assert!(u.expects(&lock, &p), "it heads the reply asked for");
+        assert!(!u.expects(&claim, &p));
+        let mut u = Unanswered::default();
+        u.typed(0, &send("SIM TEAM red", Purpose::Lobby));
+        u.sync_lobby(true);
+        assert!(u.expects(&claim, &p));
+        assert!(u.expects(&classify("Match 1 is boarding."), &p));
+        for neutral in [
+            chat,
+            classify("Receiver clear."),
+            classify("Hint: SIM START begins the match."),
+        ] {
+            assert!(!u.expects(&neutral, &p), "{neutral:?}");
+        }
+        u.sync_lobby(false);
+        assert!(!u.expects(&claim, &p), "answered: nothing awaits");
+    }
+
+    /// **A chain is one output** (cut AM.1, review): a line read straight
+    /// after a full-width channel line that could not have fit on it is the
+    /// rest of that line; read later than [`lines::STALE_TAIL_MS`] after it,
+    /// it is the game's own. An echo carries the chain on.
+    #[test]
+    fn a_chain_lasts_one_output_and_runs_through_an_echo() {
+        let channel = format!("[RedNet] Ada: {}", "x".repeat(102));
+        assert_eq!(channel.chars().count(), 116);
+        let end = "Match 1 is over (blue). Its units are checked in.";
+        let mut lane = Lane::new(Side::Red, Settings::default(), "Pilot".into());
+        let mut journal = Vec::new();
+        lane.line(0, &channel, 116, &mut journal);
+        assert!(lane.prev.is_some_and(|prev| prev.chain));
+        lane.line(10, end, end.len(), &mut journal);
+        assert_eq!(
+            lane.prev,
+            Some(Prev {
+                cols: end.len(),
+                chain: true,
+                read_ms: 10,
+            }),
+            "read as the rest of the channel line"
+        );
+        // The same line read past the bound starts no chain of its own.
+        lane.line(20, &channel, 116, &mut journal);
+        lane.line(21 + lines::STALE_TAIL_MS, end, end.len(), &mut journal);
+        assert!(lane.prev.is_some_and(|prev| !prev.chain));
+        // An echo of a line the lane typed carries the chain on.
+        lane.recent.push_back("CONTACTS".into());
+        let word = "y".repeat(115);
+        lane.line(30_000, &channel, 116, &mut journal);
+        lane.line(30_000, "CONTACTS", 8, &mut journal);
+        assert!(lane.prev.is_some_and(|prev| prev.chain));
+        lane.line(30_000, &word, 115, &mut journal);
+        assert!(lane.prev.is_some_and(|prev| prev.chain));
     }
 }

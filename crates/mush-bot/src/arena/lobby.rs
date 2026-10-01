@@ -430,6 +430,14 @@ impl Lobby {
         }
     }
 
+    /// **A lobby line awaits its answer** (cut AM.1, for the lane's answer
+    /// ledger): a line is in flight, or `SIM LEAVE` was typed and its 3 s are
+    /// not over.
+    pub(crate) fn awaiting(&self, now_ms: u64) -> bool {
+        self.flight.is_some()
+            || matches!(self.leave, Leave::Sent(first) if now_ms < first.saturating_add(LEAVE_WAIT_MS))
+    }
+
     /// What the machine said since the last call.
     pub fn take_events(&mut self) -> Vec<LaneEvent> {
         std::mem::take(&mut self.events)

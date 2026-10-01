@@ -13,6 +13,11 @@ use crate::{
     config::{Ssh, secret},
 };
 
+/// **The width the bot's PTY asks for** (cut AM.1): the terminal-width floor;
+/// the game wraps flush lines at it. The arena lane's channel continuation
+/// ([`crate::arena::lines::continues`]) reads a line's width against it.
+pub const PTY_COLUMNS: u32 = 120;
+
 pub struct HostCheck {
     config: Ssh,
     failure: Arc<Mutex<Option<String>>>,
@@ -96,7 +101,7 @@ impl Session {
             // RustMUSH requires a PTY even for line mode. TERM=dumb requests
             // plain text; no alternate screen or privileged structured feed.
             channel
-                .request_pty(true, "dumb", 120, 40, 0, 0, &[])
+                .request_pty(true, "dumb", PTY_COLUMNS, 40, 0, 0, &[])
                 .await?;
             channel.request_shell(true).await?;
             Ok(Self { channel, handle })

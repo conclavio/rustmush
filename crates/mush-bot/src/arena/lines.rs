@@ -20,10 +20,15 @@
 use serde::{Deserialize, Serialize};
 
 use super::Side;
+use crate::transport::PTY_COLUMNS;
 
-/// How long an unterminated tail may sit before [`Assembler::flush_stale`]
-/// hands it out as a line (a prompt with no newline).
-pub const STALE_TAIL_MS: u64 = 300;
+/// **A line whose pieces arrive apart is whole up to two seconds; in play
+/// only a prompt has no newline, and the lane acts on none** (cut AM.1). How
+/// long an unterminated tail may sit before [`Assembler::flush_stale`] hands
+/// it out as a line. It was 300 ms, which on a distant box cut a row split
+/// mid-line by a pause into two broken lines. The picture's lock line lapses
+/// on the same figure (one output's pieces arrive at most this far apart).
+pub const STALE_TAIL_MS: u64 = 2_000;
 /// The longest tail kept waiting for its newline; a longer one is a line.
 pub const MAX_TAIL_BYTES: usize = 16 * 1024;
 
@@ -39,6 +44,19 @@ impl Assembler {
     /// complete line's trailing `\r` and trailing spaces, and keep the
     /// unterminated tail with the time it was last extended.
     pub fn feed(&mut self, now_ms: u64, text: &str) -> Vec<String> {
+        self.feed_cols(now_ms, text)
+            .into_iter()
+            .map(|(line, _)| line)
+            .collect()
+    }
+
+    /// [`Assembler::feed`], each line with its **untrimmed column count** (cut
+    /// AM.1): its `char`s once the `\r` is removed and before the trailing
+    /// spaces are trimmed. The renderer writes a wrapped line with whatever
+    /// run of spaces stood at the break (it splits on single spaces and keeps
+    /// runs), so the untrimmed count is the width it measured; the channel
+    /// continuation ([`continues`]) reads it. The text is still trimmed.
+    pub fn feed_cols(&mut self, now_ms: u64, text: &str) -> Vec<(String, usize)> {
         let mut out = Vec::new();
         if text.is_empty() {
             return out;
@@ -46,10 +64,10 @@ impl Assembler {
         self.tail.push_str(text);
         while let Some(end) = self.tail.find('\n') {
             let line: String = self.tail.drain(..=end).collect();
-            out.push(clean_end(&line[..line.len() - 1]));
+            out.push(clean_end_cols(&line[..line.len() - 1]));
         }
         if self.tail.len() > MAX_TAIL_BYTES {
-            out.push(clean_end(&std::mem::take(&mut self.tail)));
+            out.push(clean_end_cols(&std::mem::take(&mut self.tail)));
         }
         if !self.tail.is_empty() {
             self.tail_ms = now_ms;
@@ -60,16 +78,53 @@ impl Assembler {
     /// The tail as a line once it has sat [`STALE_TAIL_MS`] unextended and is
     /// not blank.
     pub fn flush_stale(&mut self, now_ms: u64) -> Option<String> {
+        self.flush_stale_cols(now_ms).map(|(line, _)| line)
+    }
+
+    /// [`Assembler::flush_stale`] with the line's untrimmed column count (see
+    /// [`Assembler::feed_cols`]).
+    pub fn flush_stale_cols(&mut self, now_ms: u64) -> Option<(String, usize)> {
         if self.tail.is_empty() || now_ms < self.tail_ms.saturating_add(STALE_TAIL_MS) {
             return None;
         }
-        let line = clean_end(&std::mem::take(&mut self.tail));
-        (!line.trim().is_empty()).then_some(line)
+        let (line, cols) = clean_end_cols(&std::mem::take(&mut self.tail));
+        (!line.trim().is_empty()).then_some((line, cols))
     }
 }
 
-fn clean_end(line: &str) -> String {
-    line.trim_end_matches(['\r', ' ']).to_owned()
+/// The line with its `\r` and trailing spaces trimmed, and its column count
+/// with only the `\r` removed.
+fn clean_end_cols(line: &str) -> (String, usize) {
+    let cols = line.trim_end_matches('\r').chars().count();
+    (line.trim_end_matches(['\r', ' ']).to_owned(), cols)
+}
+
+/// **Whether `line` is the rest of a full-width channel line** (cut AM.1): the
+/// line before it (`prev_cols` columns, untrimmed) could not have held its
+/// first word. That is the renderer's own break rule (`mush-ansi`'s
+/// `wrap_indent`, which splits on single spaces): a word goes to a new line
+/// when `width + 1 + word > {PTY_COLUMNS}`, the width the bot's PTY asks for.
+/// A line with a leading space continues only a line already at the width:
+/// the renderer starts a line with a space only where a run of spaces
+/// straddles a break, and an empty word breaks only a full line. Widths are
+/// `char`s (`°` is one column).
+///
+/// Pure, and only half the rule: the caller decides whether the line before
+/// began a channel chain (a column-0 `[{channel}] …` line, or itself a
+/// continuation) and was read just before. Speech, poses, pages and whispers
+/// need no rule: their continuations carry a hanging indent and already read
+/// as [`Line::Other`]. A channel line wraps **flush**, so a teammate can pad
+/// one until a game sentence starts the next line at column 0. The rule
+/// cannot tell a wrapped channel line from an unwrapped one 110 to 120
+/// columns long, which is why the lane never reads a line it expects (an
+/// answer to a line it typed) as a continuation.
+pub fn continues(prev_cols: usize, line: &str) -> bool {
+    let width = usize::try_from(PTY_COLUMNS).unwrap_or(usize::MAX);
+    if line.starts_with(' ') {
+        return prev_cols >= width;
+    }
+    let word = line.split(' ').next().unwrap_or("").chars().count();
+    prev_cols.saturating_add(1).saturating_add(word) > width
 }
 
 // ---------------------------------------------------------------------------
@@ -712,6 +767,14 @@ pub fn classify(line: &str) -> Line {
             _ => None,
         };
         return indented.unwrap_or_else(|| Line::Other(body.to_owned()));
+    }
+    // **A column-0 `[…` line is another player's** (cut AM.1): a channel line
+    // (`render_channel`: `[{channel}] …`) or a notice's `[{category}] …`; no
+    // game sentence this reader knows starts with `[`. So a teammate's channel
+    // line that ends `please retry in a moment.` is never a transient, and it
+    // always begins a channel chain ([`continues`]).
+    if body.starts_with('[') {
+        return Line::Other(body.to_owned());
     }
     // First-time advice (cut AH), before anything else reads the words in it.
     if let Some(text) = body.strip_prefix("Hint: ") {
@@ -1717,6 +1780,187 @@ fn room(body: &str) -> Option<Line> {
         _ => body,
     };
     (ROOMS.contains(&name) || pod_number(name).is_some()).then(|| Line::Room(name.to_owned()))
+}
+
+// ---------------------------------------------------------------------------
+// What a line answers (cut AM.1): the lane's answer ledger reads this
+// ---------------------------------------------------------------------------
+
+/// **The kind of line the lane types**, for the answer ledger (cut AM.1):
+/// the cockpit's reads and orders by verb, and every line of the lobby's
+/// (`look`, the walks, `SIM …`, `BOARD`, `STARTUP`) as one kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AskKind {
+    Contacts,
+    Weapons,
+    Status,
+    Range,
+    Bearing,
+    Lock,
+    Heading,
+    Speed,
+    Fire,
+    Lobby,
+}
+
+/// **Which typed cockpit line a line read starts the answer to**, from the
+/// line alone ([`answer_to`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AnswerTo {
+    /// The first line of the answer to a line of one of these kinds.
+    Kinds(&'static [AskKind]),
+    /// The answer to that gun's `FIRE`.
+    Fire(String),
+    /// `{ORDER} [{w}] refused. …`: that order's answer when one waits, else the
+    /// arena's own notice.
+    Refusal {
+        order: String,
+        weapon: Option<String>,
+    },
+    /// Whatever line is oldest, the lobby's included.
+    Oldest,
+}
+
+/// **What a line answers, for the lane's answer ledger only** (cut AM.1). The
+/// picture never consults it: a read reply's end is the picture's own rule
+/// ([`super::picture::Picture::apply`]), and a read reply's opener is reported
+/// there ([`super::picture::Applied::opened`]).
+///
+/// | Line | `answer_to` |
+/// |---|---|
+/// | `Steering` | `Kinds([Heading])` |
+/// | `Making`, `SpeedLimits` | `Kinds([Speed])` |
+/// | `Immobile` | `Kinds([Heading, Speed])` |
+/// | `Locking` | `Kinds([Lock])` |
+/// | `Range`, `SpotRange` | `Kinds([Range])` |
+/// | `Bearing`, `SpotBearing` | `Kinds([Bearing])` |
+/// | `NoLockOrName`, `NoFrameYet` | `Kinds([Range, Bearing])` |
+/// | `NoLock` | `Kinds([Fire])` |
+/// | `NoSuchContact` | `Kinds([Lock, Range, Bearing])` |
+/// | `Firing { weapon }`, `NoSuchWeapon { weapon }` | `Fire(weapon)` |
+/// | `Refused { order, weapon, .. }` | `Refusal { order, weapon }` |
+/// | `Transient`, `PowerNotOnline`, `PowerStarting`, `DestroyedNoOrders`, `OutsideCockpit`, `NotStartedYet` | `Oldest` |
+/// | everything else | `None` |
+///
+/// "Everything else" is the read replies' rows and openers, `Lock` (which is
+/// also the arena's own `Locked` notice), every notice, board, lobby, room,
+/// hint and `Other` line, and the answers to the lobby's own verbs: the
+/// ledger's lobby entries follow the lobby's own state, not this table. The
+/// match names every variant, so one added later must be placed.
+pub fn answer_to(line: &Line) -> Option<AnswerTo> {
+    use AskKind as K;
+    match line {
+        Line::Steering { .. } => Some(AnswerTo::Kinds(&[K::Heading])),
+        Line::Making { .. } | Line::SpeedLimits { .. } => Some(AnswerTo::Kinds(&[K::Speed])),
+        Line::Immobile => Some(AnswerTo::Kinds(&[K::Heading, K::Speed])),
+        Line::Locking { .. } => Some(AnswerTo::Kinds(&[K::Lock])),
+        Line::Range { .. } | Line::SpotRange { .. } => Some(AnswerTo::Kinds(&[K::Range])),
+        Line::Bearing { .. } | Line::SpotBearing { .. } => Some(AnswerTo::Kinds(&[K::Bearing])),
+        Line::NoLockOrName | Line::NoFrameYet => Some(AnswerTo::Kinds(&[K::Range, K::Bearing])),
+        Line::NoLock => Some(AnswerTo::Kinds(&[K::Fire])),
+        Line::NoSuchContact => Some(AnswerTo::Kinds(&[K::Lock, K::Range, K::Bearing])),
+        Line::Firing { weapon } | Line::NoSuchWeapon { weapon } => {
+            Some(AnswerTo::Fire(weapon.clone()))
+        }
+        Line::Refused { order, weapon, .. } => Some(AnswerTo::Refusal {
+            order: order.clone(),
+            weapon: weapon.clone(),
+        }),
+        Line::Transient(_)
+        | Line::PowerNotOnline
+        | Line::PowerStarting
+        | Line::DestroyedNoOrders
+        | Line::OutsideCockpit
+        | Line::NotStartedYet => Some(AnswerTo::Oldest),
+        // The read replies: the picture reports their openers.
+        Line::ContactRow(_)
+        | Line::NoContacts
+        | Line::WeaponRow(_)
+        | Line::NoWeapon
+        | Line::StatusCallsign { .. }
+        | Line::StatusHead(_)
+        | Line::StatusPosition { .. }
+        | Line::StatusNearestSpot { .. }
+        | Line::StatusHeat { .. }
+        | Line::StatusReceiver { .. }
+        | Line::StatusEmcon { .. }
+        | Line::StatusSection { .. }
+        | Line::StatusFacets { .. }
+        | Line::StatusUntold { .. } => None,
+        // `WEAPONSTATUS`'s head and the arena's `Locked` notice: one sentence.
+        Line::Lock { .. } => None,
+        // Acks and readings no cockpit line the lane types asks for.
+        Line::EmconReading { .. }
+        | Line::StartupBegun
+        | Line::PowerAlreadyOnline
+        | Line::EmconAck { .. } => None,
+        // The unseated, reclaim and resume sentences: the lobby's.
+        Line::NotInAPod
+        | Line::OutsideTeamRoom
+        | Line::AlreadyAboard
+        | Line::HandingOver { .. }
+        | Line::LeftForGood { .. }
+        | Line::BackAboard { .. }
+        | Line::CatchupPower { .. }
+        | Line::ClimbBack { .. }
+        | Line::BackAtStation { .. }
+        | Line::ClimbOut { .. }
+        | Line::Resumed
+        | Line::Doctrine { .. }
+        | Line::Connected { .. } => None,
+        // The arena's notices.
+        Line::NewContact { .. }
+        | Line::Identified { .. }
+        | Line::Unidentified { .. }
+        | Line::LockBroken { .. }
+        | Line::ContactLost { .. }
+        | Line::HitScored { .. }
+        | Line::Missed { .. }
+        | Line::Killed { .. }
+        | Line::TargetSectionLost { .. }
+        | Line::HitTaken { .. }
+        | Line::SectionLost { .. }
+        | Line::OwnDestroyed
+        | Line::OwnDisabled
+        | Line::PowerOnline
+        | Line::Held { .. }
+        | Line::ReceiverDegraded
+        | Line::ReceiverClear
+        | Line::EmconSwitched { .. } => None,
+        // The lobby and the centre.
+        Line::Board { .. }
+        | Line::BoardSide { .. }
+        | Line::AiFill { .. }
+        | Line::BoardNext
+        | Line::Claimed { .. }
+        | Line::GaveUp { .. }
+        | Line::Boarding { .. }
+        | Line::ClimbIn { .. }
+        | Line::ClimbsIn { .. }
+        | Line::Running { .. }
+        | Line::Over { .. }
+        | Line::Aborted { .. }
+        | Line::CouldNotStart { .. }
+        | Line::AllLeft { .. }
+        | Line::CallsOff { .. }
+        | Line::AbortsMatch { .. }
+        | Line::HatchOpen { .. }
+        | Line::BoardCleared
+        | Line::AlreadyHold { .. }
+        | Line::SideFull { .. }
+        | Line::NotLead
+        | Line::EmptySide { .. }
+        | Line::WrongCentreState { .. }
+        | Line::NoCentre
+        | Line::LayerOff
+        | Line::NobodyPlaying
+        | Line::OutsideCentre
+        | Line::NoSlot
+        | Line::NothingToAbort => None,
+        // Rooms, hints and chatter.
+        Line::Room(_) | Line::Hint(_) | Line::Other(_) => None,
+    }
 }
 
 #[cfg(test)]
@@ -3219,24 +3463,203 @@ mod tests {
         assert_eq!(a.feed(0, "Callsign R"), Vec::<String>::new());
         assert_eq!(a.feed(10, "A.\r\nNo cont"), vec!["Callsign RA.".to_owned()]);
         assert_eq!(
-            a.flush_stale(300),
+            a.flush_stale(STALE_TAIL_MS),
             None,
-            "extended at 10, so not stale until 310"
+            "extended at 10, so not stale until 10 + STALE_TAIL_MS"
         );
         assert_eq!(a.feed(20, "acts.   \n"), vec!["No contacts.".to_owned()]);
         assert_eq!(a.flush_stale(10_000), None, "nothing waiting");
         assert_eq!(a.feed(100, "> "), Vec::<String>::new());
-        assert_eq!(a.flush_stale(399), None);
-        assert_eq!(a.flush_stale(400), Some(">".to_owned()));
-        assert_eq!(a.flush_stale(900), None);
+        assert_eq!(a.flush_stale(100 + STALE_TAIL_MS - 1), None);
+        assert_eq!(a.flush_stale(100 + STALE_TAIL_MS), Some(">".to_owned()));
+        assert_eq!(a.flush_stale(600 + STALE_TAIL_MS), None);
         // Blank lines are lines; a blank tail is never flushed.
-        assert_eq!(a.feed(1_000, "\n\n"), vec![String::new(), String::new()]);
-        assert_eq!(a.feed(1_000, "   "), Vec::<String>::new());
-        assert_eq!(a.flush_stale(2_000), None);
+        let blank = 1_000 + STALE_TAIL_MS;
+        assert_eq!(a.feed(blank, "\n\n"), vec![String::new(), String::new()]);
+        assert_eq!(a.feed(blank, "   "), Vec::<String>::new());
+        assert_eq!(a.flush_stale(blank + STALE_TAIL_MS), None);
         // An overlong tail is a line.
-        let lines = a.feed(3_000, &"y".repeat(MAX_TAIL_BYTES + 1));
+        let long = blank + 2 * STALE_TAIL_MS;
+        let lines = a.feed(long, &"y".repeat(MAX_TAIL_BYTES + 1));
         assert_eq!(lines.len(), 1);
-        assert_eq!(a.flush_stale(10_000), None);
+        assert_eq!(a.flush_stale(long + 10 * STALE_TAIL_MS), None);
+        // Cut AM.1: a line whose pieces arrive apart is whole up to
+        // `STALE_TAIL_MS` — a tail extended at 0 and completed just inside it
+        // is one line, never two broken ones.
+        let mut a = Assembler::default();
+        assert_eq!(
+            a.feed(0, "cannon  cycling (6 s)  39 "),
+            Vec::<String>::new()
+        );
+        assert_eq!(a.flush_stale(STALE_TAIL_MS - 1), None);
+        assert_eq!(
+            a.feed(STALE_TAIL_MS - 1, "of 40 round(s)\r\n"),
+            vec!["cannon  cycling (6 s)  39 of 40 round(s)".to_owned()]
+        );
+        // The figure itself, not only its relations: a row cut by a pause of
+        // up to two seconds (the old 300 ms broke one cut by 300) is whole.
+        const { assert!(STALE_TAIL_MS >= 2_000) };
+        assert_eq!(a.feed(0, "machine_gun  ready  "), Vec::<String>::new());
+        assert_eq!(a.flush_stale(1_999), None, "1 999 ms apart is one line");
+        assert_eq!(
+            a.feed(1_999, "200 of 200 round(s)\r\n"),
+            vec!["machine_gun  ready  200 of 200 round(s)".to_owned()]
+        );
+    }
+
+    /// **What each cockpit answer answers** (cut AM.1): one literal sentence
+    /// per row of [`answer_to`]'s table, read through [`classify`].
+    #[test]
+    fn answer_to_maps_every_cockpit_answer() {
+        use AskKind as K;
+        let kinds = |ks: &'static [AskKind]| Some(AnswerTo::Kinds(ks));
+        let cases: Vec<(&str, Option<AnswerTo>)> = vec![
+            ("Steering to 90°.", kinds(&[K::Heading])),
+            ("Making 27 kph.", kinds(&[K::Speed])),
+            (
+                "That unit makes 54 kph ahead and 27 astern; SPEED -27 to 54.",
+                kinds(&[K::Speed]),
+            ),
+            ("Your tank cannot move.", kinds(&[K::Heading, K::Speed])),
+            ("Locking BA.", kinds(&[K::Lock])),
+            ("Range to BA: 440 m.", kinds(&[K::Range])),
+            ("Range to The Ford (A): 430 m.", kinds(&[K::Range])),
+            ("Bearing to BA: 087° (rel 357°).", kinds(&[K::Bearing])),
+            (
+                "Bearing to The Ford (A): 270° (rel 180°).",
+                kinds(&[K::Bearing]),
+            ),
+            (
+                "No lock: LOCK a contact first, or name one.",
+                kinds(&[K::Range, K::Bearing]),
+            ),
+            (
+                "The panel has told you nothing yet.",
+                kinds(&[K::Range, K::Bearing]),
+            ),
+            ("No lock: LOCK a contact first.", kinds(&[K::Fire])),
+            ("No such contact.", kinds(&[K::Lock, K::Range, K::Bearing])),
+            ("Firing cannon.", Some(AnswerTo::Fire("cannon".into()))),
+            (
+                "That unit carries no weapon called `cannon`.",
+                Some(AnswerTo::Fire("cannon".into())),
+            ),
+            (
+                "FIRE cannon refused. Still cycling: 4 s to go.",
+                Some(AnswerTo::Refusal {
+                    order: "FIRE".into(),
+                    weapon: Some("cannon".into()),
+                }),
+            ),
+            (
+                "HEADING refused. Your tank cannot move.",
+                Some(AnswerTo::Refusal {
+                    order: "HEADING".into(),
+                    weapon: None,
+                }),
+            ),
+            (
+                "The world is committing another action; please retry in a moment.",
+                Some(AnswerTo::Oldest),
+            ),
+            ("Power not online: STARTUP first.", Some(AnswerTo::Oldest)),
+            ("Power is still coming up; hold on.", Some(AnswerTo::Oldest)),
+            (
+                "Your tank is destroyed and takes no orders. EXIT leaves the pod.",
+                Some(AnswerTo::Oldest),
+            ),
+            (
+                "You are not at the station of a deployed unit.",
+                Some(AnswerTo::Oldest),
+            ),
+            (
+                "The panel is dark until the match starts; the simulator is still waiting for the other pods.",
+                Some(AnswerTo::Oldest),
+            ),
+            // Everything else: the read replies (the picture reports their
+            // openers), the lock line, notices, lobby lines, hints, chatter.
+            ("BA  blue  bearing 087° (rel 032°)  far  450 m  2 s", None),
+            ("No contacts.", None),
+            ("cannon  ready  40 of 40 round(s)", None),
+            ("Callsign RA.", None),
+            ("Locked on BA, 62% to hit.", None),
+            ("New contact X2: bearing 090°, far.", None),
+            ("Match 1 is over (blue). Its units are checked in.", None),
+            (
+                "Pilot takes red slot 1. `SIM START` begins the match.",
+                None,
+            ),
+            ("Hint: STARTUP brings your power up.", None),
+            ("[RedNet] Ada: on your left", None),
+        ];
+        for (sentence, expected) in cases {
+            let read = classify(sentence);
+            assert!(
+                !matches!(read, Line::Other(_)) || expected.is_none(),
+                "{sentence} read as {read:?}"
+            );
+            assert_eq!(answer_to(&read), expected, "{sentence}");
+        }
+    }
+
+    /// **A line that would not fit continues a full-width channel line** (cut
+    /// AM.1): the renderer's own break rule on the untrimmed width, `°` one
+    /// column, an indented line only after a line at the width (a run of
+    /// spaces straddling the break), and a column-0 `[…` line never a game
+    /// sentence.
+    #[test]
+    fn a_line_that_would_not_fit_continues_a_full_width_channel_line() {
+        let end = "Match 1 is over (blue). Its units are checked in.";
+        assert!(continues(116, end), "116 + 1 + `Match` is past 120");
+        assert!(!continues(100, end));
+        assert!(!continues(114, end), "114 + 1 + 5 is 120: it fit");
+        assert!(continues(115, end));
+        // A column-0 `[…` line is another player's whatever it ends with, so
+        // it begins a chain and is never a transient.
+        for chat in [
+            "[RedNet] Ada: the world is busy; please retry in a moment.",
+            "[RedNet] Ada: That cockpit will not wake for you: control state unknown",
+        ] {
+            assert_eq!(classify(chat), Line::Other(chat.to_owned()));
+            assert_eq!(answer_to(&classify(chat)), None);
+        }
+        assert!(
+            !continues(119, &format!(" {end}")),
+            "an indented line never continues one short of the width"
+        );
+        // …but a run of spaces that straddles a break at exactly the width
+        // starts the next line with a space (an empty word breaks only a full
+        // line), so a line at the width is continued by an indented one too.
+        let full = format!("[RedNet] Ada: {}", "x".repeat(106));
+        assert_eq!(full.chars().count(), 120);
+        let wrapped = mush_ansi::wrap_indent(&format!("{full}   {end}"), 120, 0);
+        assert_eq!(wrapped.len(), 2, "{wrapped:?}");
+        assert_eq!(wrapped[0].chars().count(), 120);
+        assert!(wrapped[1].starts_with(' '), "{wrapped:?}");
+        assert!(continues(120, &wrapped[1]));
+        let short = mush_ansi::wrap_indent(&format!("{}     {end}", &full[..117]), 120, 0);
+        assert_eq!(short[0].chars().count(), 120, "the run fills the line");
+        assert!(short[1].starts_with(' '), "{short:?}");
+        assert!(continues(120, &short[1]));
+        // A line with degree signs counts each as one column.
+        let mut a = Assembler::default();
+        let bearing = "Bearing to BA: 087° (rel 357°).";
+        let lines = a.feed_cols(0, &format!("{bearing}\r\n"));
+        assert_eq!(lines, vec![(bearing.to_owned(), 31)]);
+        assert!(bearing.len() > 31, "bytes are not columns");
+        // A wrapped channel line keeps the run of spaces at its break: the
+        // untrimmed count is the width the renderer measured.
+        let padded = format!("[RedNet] Ada: {}{}", "x".repeat(86), " ".repeat(20));
+        let lines = a.feed_cols(10, &format!("{padded}\r\n"));
+        assert_eq!(lines, vec![(padded.trim_end().to_owned(), 120)]);
+        assert!(continues(120, end));
+        assert!(!continues(100, end), "the trimmed width would let it pass");
+        // The stale flush counts the same way.
+        assert_eq!(a.feed(20, "[RedNet] Ada: hi   "), Vec::<String>::new());
+        assert_eq!(
+            a.flush_stale_cols(20 + STALE_TAIL_MS),
+            Some(("[RedNet] Ada: hi".to_owned(), 19))
+        );
     }
 
     #[test]

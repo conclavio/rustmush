@@ -36,7 +36,24 @@
 //! turned the live way at 30° a second — an assumption modelled on the bot's
 //! own transcript), with a log of each `STATUS` heading printed and each
 //! `HEADING` answered.
-use std::collections::{BTreeMap, BTreeSet};
+//!
+//! Cut AM.1 adds, off by default too: `fire_transient` (guns whose next `FIRE`
+//! is answered `please retry in a moment` instead of its ack, once),
+//! `leave_answer_ms` (how long `SIM LEAVE`'s answer takes: 3 ms unless set),
+//! `chatter` (a line said in front of the next chunk the server queues, once)
+//! and `lobby_transient` (the next line typed equal to it is answered with the
+//! transient, once). It also adds **the latency rig**, [`Wire`]: a seeded
+//! model of a distant box between the lane and the server (TCP: ordered,
+//! delayed, split), switched on with `run.wire = Some(Wire::new(seed))`; with
+//! `None` (every older test) the run is the loopback it always was. **The
+//! scripted server can reorder answers**: its per-line delays answer a later
+//! line before an earlier one when the earlier one's delay is longer, so a
+//! test whose proof depends on the order answers come in keeps them in the
+//! order typed and asserts that order.
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    ops::RangeInclusive,
+};
 
 use mush_bot::arena::{
     CommanderReply, Doctrine, Lane, LaneEvent, Purpose, Send, Side,
@@ -48,10 +65,12 @@ use mush_bot::arena::{
         FIRE_GAP_MS, LIMIT_WINDOW_MS, POLL_GAP_MS, POLL_STARVE_MS, STATUS_EVERY_MS,
         WEAPONS_AFTER_SHOT_MS, WEAPONS_IDLE_MS, WEAPONS_LEARNED_MS, WEAPONS_LOCKED_MS,
     },
-    lobby::{Centre, Step},
+    lines::AskKind,
+    lobby::{Centre, Step, TRANSIENT_RETRY_MS},
     picture::{
-        CYCLE_READ_WITHIN_MS, FIRE_RETRY_MS, FIRE_SLACK_MAX_MS, FIRE_SLACK_START_MS,
-        FIRE_SLACK_UP_MS, Picture, Power, Weapon, bearing_deg,
+        ACK_PAIR_MS, CYCLE_READ_WITHIN_MS, FIRE_RETRY_MS, FIRE_SLACK_MAX_MS, FIRE_SLACK_START_MS,
+        FIRE_SLACK_UP_MS, Phase, Picture, Power, ResultWord, SNAPSHOT_SETTLE_MS, Weapon,
+        bearing_deg,
     },
     pilot::{
         FRESH_PLOT_MS, FRESH_READ_MS, HEADING_STEP_DEG, HELD_FOR_MS, HELD_MARK_AHEAD_M,
@@ -229,7 +248,20 @@ struct Server {
     /// Each `HEADING` answered (cut AL.2): when, the heading the tank had,
     /// and the heading ordered.
     heading_log: Vec<(u64, u32, u32)>,
+    /// Guns whose next `FIRE` is answered with [`TRANSIENT`] instead of its
+    /// ack, once each, after `fire_answer_ms` (cut AM.1). Empty unless set.
+    fire_transient: BTreeSet<String>,
+    /// How long `SIM LEAVE`'s answer takes (cut AM.1): 3 ms unless set.
+    leave_answer_ms: u64,
+    /// Said in front of the next chunk the server queues, once (cut AM.1).
+    chatter: Option<String>,
+    /// The next line typed equal to this is answered with [`TRANSIENT`],
+    /// once (cut AM.1).
+    lobby_transient: Option<String>,
 }
+
+/// The transient the cut AM.1 knobs answer with.
+const TRANSIENT: &str = "The world is committing another action; please retry in a moment.";
 
 impl Server {
     fn new() -> Server {
@@ -271,6 +303,10 @@ impl Server {
             turning: None,
             status_log: Vec::new(),
             heading_log: Vec::new(),
+            fire_transient: BTreeSet::new(),
+            leave_answer_ms: 3,
+            chatter: None,
+            lobby_transient: None,
         }
     }
 
@@ -342,6 +378,11 @@ impl Server {
 
     fn say(&mut self, delay: u64, text: &str) {
         let mut chunk = String::new();
+        // The `chatter` knob (cut AM.1): in front of this chunk, once.
+        if let Some(chatter) = self.chatter.take() {
+            chunk.push_str(&chatter);
+            chunk.push_str("\r\n");
+        }
         for line in text.lines() {
             chunk.push_str(line);
             chunk.push_str("\r\n");
@@ -350,11 +391,17 @@ impl Server {
     }
 
     fn due(&mut self, now: u64) -> Vec<String> {
+        self.due_at(now).into_iter().map(|(_, text)| text).collect()
+    }
+
+    /// [`Server::due`] with the time each chunk was due (cut AM.1: the
+    /// [`Wire`] carries each from then).
+    fn due_at(&mut self, now: u64) -> Vec<(u64, String)> {
         let (due, later): (Vec<_>, Vec<_>) = self.queue.drain(..).partition(|(at, _)| *at <= now);
         self.queue = later;
         let mut due = due;
         due.sort_by_key(|(at, _)| *at);
-        due.into_iter().map(|(_, text)| text).collect()
+        due
     }
 
     /// A gun's cycle, as the scripted guns have it.
@@ -436,6 +483,11 @@ impl Server {
             self.say(3, &transient);
             return;
         }
+        if self.lobby_transient.as_deref() == Some(line) {
+            self.lobby_transient = None;
+            self.say(3, TRANSIENT);
+            return;
+        }
         let me = self.me.clone();
         let id = self.match_id;
         match line {
@@ -493,7 +545,7 @@ impl Server {
             }
             "SIM LEAVE" => {
                 self.board = "idle".into();
-                self.say(3, &format!("{me} gives up red slot 1."));
+                self.say(self.leave_answer_ms, &format!("{me} gives up red slot 1."));
             }
             _ if self.outside => self.say(3, "You are not at the station of a deployed unit."),
             "CONTACTS" => {
@@ -605,6 +657,12 @@ impl Server {
                 } else if let Some(weapon) = line.strip_prefix("FIRE ") {
                     self.fire_lines += 1;
                     *self.fire_lines_by.entry(weapon.to_owned()).or_default() += 1;
+                    // The `fire_transient` knob (cut AM.1): the line did not
+                    // commit, so nothing of the gun moves.
+                    if self.fire_transient.remove(weapon) {
+                        self.say(self.fire_answer_ms, TRANSIENT);
+                        return;
+                    }
                     let empty = self
                         .magazine
                         .is_some_and(|_| self.rounds.get(weapon) == Some(&0));
@@ -695,6 +753,244 @@ impl Server {
     }
 }
 
+/// The latency rig's base delay each way (cut AM.1)…
+const WIRE_BASE_MS: u64 = 40;
+/// …its jitter on top, each way…
+const WIRE_JITTER_MS: u64 = 300;
+/// …and how far apart the pieces of one split chunk arrive.
+const WIRE_SPLIT_GAP_MS: RangeInclusive<u64> = 160..=300;
+
+/// **The latency rig** (cut AM.1): a model of a distant box between the lane
+/// and the scripted server — TCP: ordered, delayed and split — and not of the
+/// game. Seeded (the xorshift64 of `lines.rs`'s fuzz test), on the fake clock.
+///
+/// * **Up**: each line the lane types reaches the server [`WIRE_BASE_MS`] and
+///   up to [`WIRE_JITTER_MS`] after it was typed, never before the line typed
+///   before it; the server answers it then.
+/// * **Down**: each chunk the server queues leaves the same delay after it was
+///   due, never before the chunk before it. A chunk of two or more lines is
+///   split at one line boundary and one mid-line `char` boundary into three
+///   pieces, [`WIRE_SPLIT_GAP_MS`] apart, still in order.
+/// * **Injection**: every third such chunk that holds no `Callsign ` line
+///   (never a `STATUS` block, where a page's continuation would read as a
+///   facet run, and the game never puts a line inside a reply) carries one
+///   line at a line boundary inside it, alternately `[RedNet] Ada: on your
+///   left` and `Receiver clear.`: both neutral.
+struct Wire {
+    seed: u64,
+    /// When the last line typed reached the server, and when the last piece
+    /// left down the wire.
+    up_last: u64,
+    down_last: u64,
+    up: VecDeque<(u64, String)>,
+    down: VecDeque<(u64, String)>,
+    /// The chunks the server had queued before the wire went on: each the
+    /// old way, at its own time.
+    direct: Vec<(u64, String)>,
+    started: bool,
+    /// Split chunks with no `Callsign ` line, for the injections.
+    eligible: u32,
+    chatter_next: bool,
+    chunks: u32,
+    split_chunks: u32,
+    splits: u32,
+    mid_line_splits: u32,
+    gaps_over_settle: u32,
+    injections: u32,
+    up_delay_ms: Vec<u64>,
+    down_delay_ms: Vec<u64>,
+    /// Each line's arrival up, and each piece's delivery down, in order.
+    arrivals: Vec<u64>,
+    deliveries: Vec<u64>,
+    /// Each chunk carried: whether it held a `Callsign ` line, and whether a
+    /// line was injected into it.
+    carried: Vec<(bool, bool)>,
+}
+
+impl Wire {
+    fn new(seed: u64) -> Wire {
+        Wire {
+            seed: seed.max(1),
+            up_last: 0,
+            down_last: 0,
+            up: VecDeque::new(),
+            down: VecDeque::new(),
+            direct: Vec::new(),
+            started: false,
+            eligible: 0,
+            chatter_next: true,
+            chunks: 0,
+            split_chunks: 0,
+            splits: 0,
+            mid_line_splits: 0,
+            gaps_over_settle: 0,
+            injections: 0,
+            up_delay_ms: Vec::new(),
+            down_delay_ms: Vec::new(),
+            arrivals: Vec::new(),
+            deliveries: Vec::new(),
+            carried: Vec::new(),
+        }
+    }
+
+    fn next(&mut self) -> u64 {
+        self.seed ^= self.seed << 13;
+        self.seed ^= self.seed >> 7;
+        self.seed ^= self.seed << 17;
+        self.seed
+    }
+
+    fn rand(&mut self, range: RangeInclusive<u64>) -> u64 {
+        let (lo, hi) = (*range.start(), *range.end());
+        lo + self.next() % (hi - lo + 1)
+    }
+
+    fn delay(&mut self) -> u64 {
+        WIRE_BASE_MS + self.rand(0..=WIRE_JITTER_MS)
+    }
+
+    /// The lane typed `line` at `sent`.
+    fn send(&mut self, sent: u64, line: &str) {
+        let arrive = (sent + self.delay()).max(self.up_last);
+        self.up_last = arrive;
+        self.up_delay_ms.push(arrive - sent);
+        self.up.push_back((arrive, line.to_owned()));
+    }
+
+    /// The lines that have reached the server by `now`, each with its time.
+    fn arrived(&mut self, now: u64) -> Vec<(u64, String)> {
+        let mut out = Vec::new();
+        while self.up.front().is_some_and(|(at, _)| *at <= now) {
+            if let Some((at, line)) = self.up.pop_front() {
+                self.arrivals.push(at);
+                out.push((at, line));
+            }
+        }
+        out
+    }
+
+    /// The server's chunk, due at `queued`, onto the wire.
+    fn carry(&mut self, queued: u64, chunk: String) {
+        self.chunks += 1;
+        let leave = (queued + self.delay()).max(self.down_last);
+        self.down_delay_ms.push(leave - queued);
+        let status = chunk.contains("Callsign ");
+        let mut lines: Vec<String> = chunk.split_inclusive('\n').map(str::to_owned).collect();
+        let mut injected = false;
+        if lines.len() < 2 {
+            self.down.push_back((leave, chunk));
+            self.down_last = leave;
+            self.carried.push((status, injected));
+            return;
+        }
+        self.split_chunks += 1;
+        if !status {
+            self.eligible += 1;
+            if self.eligible.is_multiple_of(3) {
+                let at = self.rand(1..=(lines.len() - 1) as u64) as usize;
+                let line = if self.chatter_next {
+                    "[RedNet] Ada: on your left"
+                } else {
+                    "Receiver clear."
+                };
+                self.chatter_next = !self.chatter_next;
+                lines.insert(at, format!("{line}\r\n"));
+                injected = true;
+                self.injections += 1;
+            }
+        }
+        // The cuts: after one line, and inside one line's own text.
+        let n = lines.len() as u64;
+        let starts: Vec<usize> = lines
+            .iter()
+            .scan(0, |at, line| {
+                let start = *at;
+                *at += line.len();
+                Some(start)
+            })
+            .collect();
+        let boundary = self.rand(1..=n - 1) as usize;
+        let mut cuts = vec![starts[boundary]];
+        let k = self.rand(0..=n - 1) as usize;
+        let text = lines[k].trim_end_matches(['\r', '\n']);
+        let chars = text.chars().count() as u64;
+        if chars >= 2 {
+            let j = self.rand(1..=chars - 1) as usize;
+            let offset = text.char_indices().nth(j).map_or(0, |(i, _)| i);
+            cuts.push(starts[k] + offset);
+            self.mid_line_splits += 1;
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        let whole: String = lines.concat();
+        let mut at = leave;
+        let mut from = 0;
+        for cut in cuts.iter().copied().chain([whole.len()]) {
+            if cut > from {
+                if from > 0 {
+                    let gap = self.rand(WIRE_SPLIT_GAP_MS);
+                    if gap > SNAPSHOT_SETTLE_MS {
+                        self.gaps_over_settle += 1;
+                    }
+                    at += gap;
+                }
+                self.down.push_back((at, whole[from..cut].to_owned()));
+                from = cut;
+            }
+        }
+        self.splits += cuts.len() as u32;
+        self.down_last = at;
+        self.carried.push((status, injected));
+    }
+
+    /// The pieces delivered by `now`: the chunks queued before the wire went
+    /// on, the old way, then the wire's own, in order.
+    fn delivered(&mut self, now: u64) -> Vec<String> {
+        let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.direct)
+            .into_iter()
+            .partition(|(at, _)| *at <= now);
+        self.direct = later;
+        let mut due = due;
+        due.sort_by_key(|(at, _)| *at);
+        let mut out: Vec<String> = due.into_iter().map(|(_, text)| text).collect();
+        while self.down.front().is_some_and(|(at, _)| *at <= now) {
+            if let Some((at, text)) = self.down.pop_front() {
+                self.deliveries.push(at);
+                out.push(text);
+            }
+        }
+        out
+    }
+
+    fn mean(delays: &[u64]) -> u64 {
+        delays.iter().sum::<u64>() / (delays.len() as u64).max(1)
+    }
+
+    /// The mean round trip: the mean delay up and the mean delay down.
+    fn mean_round_trip_ms(&self) -> u64 {
+        Wire::mean(&self.up_delay_ms) + Wire::mean(&self.down_delay_ms)
+    }
+
+    fn report(&self) -> String {
+        format!(
+            "wire: {} chunk(s), {} split into pieces ({} cut(s), {} mid-line), {} gap(s) over \
+             {SNAPSHOT_SETTLE_MS} ms, {} injection(s); mean up {} ms (max {}), mean down {} ms \
+             (max {}; the chunk behind a split one waits for its pieces), mean round trip {} ms",
+            self.chunks,
+            self.split_chunks,
+            self.splits,
+            self.mid_line_splits,
+            self.gaps_over_settle,
+            self.injections,
+            Wire::mean(&self.up_delay_ms),
+            self.up_delay_ms.iter().max().copied().unwrap_or(0),
+            Wire::mean(&self.down_delay_ms),
+            self.down_delay_ms.iter().max().copied().unwrap_or(0),
+            self.mean_round_trip_ms(),
+        )
+    }
+}
+
 /// The lane, the server and the clock.
 struct Run {
     lane: Lane,
@@ -705,6 +1001,9 @@ struct Run {
     said: Vec<String>,
     /// The lane's transcript records (cut AJ.3's commander).
     records: Vec<(String, Value)>,
+    /// The latency rig between the lane and the server (cut AM.1); `None`
+    /// is the loopback every older test runs on.
+    wire: Option<Wire>,
 }
 
 impl Run {
@@ -717,12 +1016,31 @@ impl Run {
             journal: Vec::new(),
             said: Vec::new(),
             records: Vec::new(),
+            wire: None,
         }
     }
 
     fn step(&mut self) {
         self.now += STEP_MS;
-        for text in self.server.due(self.now) {
+        let texts = match self.wire.as_mut() {
+            None => self.server.due(self.now),
+            Some(wire) => {
+                // What the server had queued when the wire went on goes the
+                // old way.
+                if !wire.started {
+                    wire.started = true;
+                    wire.direct = std::mem::take(&mut self.server.queue);
+                }
+                for (arrive, line) in wire.arrived(self.now) {
+                    self.server.answer(arrive, &line);
+                }
+                for (at, chunk) in self.server.due_at(self.now) {
+                    wire.carry(at, chunk);
+                }
+                wire.delivered(self.now)
+            }
+        };
+        for text in texts {
             let fed = self.lane.feed(self.now, &text);
             if !fed.journal.is_empty() {
                 self.journal.push(fed.journal);
@@ -730,7 +1048,10 @@ impl Run {
         }
         if self.now.is_multiple_of(TICK_MS) {
             for send in self.lane.tick(self.now) {
-                self.server.answer(self.now, &send.line);
+                match self.wire.as_mut() {
+                    Some(wire) => wire.send(self.now, &send.line),
+                    None => self.server.answer(self.now, &send.line),
+                }
                 self.sent.push(send);
             }
         }
@@ -3677,5 +3998,695 @@ fn an_overruled_withdraw_is_flown_as_the_lanes_engagement() {
             vec![&json!({"from": "withdraw", "to": word, "why": "the hull is sound"})],
             "{word}"
         );
+    }
+}
+
+// -- cut AM.1: replies on a slow wire --------------------------------------------
+
+/// **A transient answering a `FIRE` re-arms that gun** (cut AM.1): the
+/// machine gun's next `FIRE` goes on its own clock, inside a lattice step and
+/// the limiter's window of the one the transient answered — not after the
+/// mark lapses two seconds on — and no lobby line answers it.
+#[test]
+fn a_transient_answer_to_fire_rearms_that_gun() {
+    const {
+        assert!(
+            FIRE_GAP_MS + LIMIT_WINDOW_MS < ACK_PAIR_MS,
+            "the bound discriminates"
+        )
+    };
+    let mut run = to_the_fight(Settings::default());
+    locked_and_learned(&mut run);
+    let from = run.now;
+    run.server.fire_transient.insert("machine_gun".into());
+    assert!(
+        run.until(10_000, |run| run.server.fire_transient.is_empty()),
+        "the machine gun fired"
+    );
+    let answered = run.sends_of("FIRE machine_gun", from)[0];
+    assert!(
+        run.until(5_000, |run| run.sends_of("FIRE machine_gun", from).len()
+            >= 2)
+    );
+    let next = run.sends_of("FIRE machine_gun", from)[1];
+    assert!(
+        next - answered < FIRE_GAP_MS + LIMIT_WINDOW_MS,
+        "typed again {} ms after the FIRE the transient answered",
+        next - answered
+    );
+    assert!(
+        run.sent
+            .iter()
+            .filter(|s| s.lane_ms >= from)
+            .all(|s| matches!(s.purpose, Purpose::Poll | Purpose::Order)),
+        "no lobby line answers it: {:?}",
+        run.sent
+            .iter()
+            .filter(|s| s.lane_ms >= from && !matches!(s.purpose, Purpose::Poll | Purpose::Order))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// **A transient answering the lobby's own line is the lobby's** (cut
+/// AM.1): the claim answered `please retry in a moment` is typed again
+/// [`TRANSIENT_RETRY_MS`] later, it then lands, and the run reaches the fight;
+/// the claim waited in the ledger as the lobby's own line, and the transient
+/// popped it.
+#[test]
+fn a_lobby_transient_never_reaches_the_cockpit() {
+    let mut run = Run::new(Settings::default());
+    run.server.lobby_transient = Some("SIM TEAM red".into());
+    // Between the transient's queueing and its read, the claim waits in the
+    // ledger as the lobby's own line, at its head (the ledger's unit test has
+    // a transient pop such a line ahead of a later cockpit line); the
+    // transient pops it.
+    let mut claim_waiting = false;
+    let mut popped = false;
+    while run.now < 60_000 && !run.fighting() {
+        let waiting = run.server.lobby_transient.is_none()
+            && run.sends_of("SIM TEAM red", 0).len() < 2
+            && run
+                .lane
+                .asked()
+                .iter()
+                .next()
+                .is_some_and(|a| a.kind == AskKind::Lobby);
+        claim_waiting |= waiting;
+        run.step();
+        popped |= waiting && run.lane.asked().is_empty();
+    }
+    assert!(
+        run.fighting(),
+        "the run reached the fight: {:?}",
+        run.lines()
+    );
+    let claims = run.sends_of("SIM TEAM red", 0);
+    assert_eq!(claims.len(), 2, "{:?}", run.lines());
+    // Typed again at the first tick past both the retry (the transient is
+    // read at the next step) and the limiter's free slot: the walk's lines
+    // fill the second before it.
+    let before: Vec<u64> = run
+        .sent
+        .iter()
+        .map(|s| s.lane_ms)
+        .filter(|at| *at < claims[1])
+        .collect();
+    let max = usize::try_from(Settings::default().max_lines_per_s).unwrap_or(usize::MAX);
+    let slot = before
+        .len()
+        .checked_sub(max)
+        .map_or(0, |i| before[i] + LIMIT_WINDOW_MS);
+    let due = (claims[0] + STEP_MS + TRANSIENT_RETRY_MS).max(slot);
+    let tick = due.div_ceil(TICK_MS) * TICK_MS;
+    assert!(
+        claims[1] >= claims[0] + TRANSIENT_RETRY_MS && claims[1] == tick,
+        "typed again at {} after {}: due {due}, the slot {slot}",
+        claims[1],
+        claims[0]
+    );
+    assert!(
+        claim_waiting,
+        "the claim waited in the ledger as the lobby's line"
+    );
+    assert!(popped, "the transient popped it");
+    assert!(
+        run.said
+            .iter()
+            .any(|s| s == "Claimed red slot 1 (RA), leading the side.")
+    );
+}
+
+/// A channel line `len` columns long: `[RedNet] Ada: ` and `x`s.
+fn channel_line(len: usize) -> String {
+    let head = "[RedNet] Ada: ";
+    format!("{head}{}", "x".repeat(len - head.len()))
+}
+
+/// **A padded channel line never ends the match** (cut AM.1): a teammate's
+/// channel line that runs to the width puts `Match 1 is over (…)` at the start
+/// of the next line, flush; the lane reads it as the rest of that line. The
+/// same when the pad is a run of spaces at the break (the renderer keeps it on
+/// the wire, so the untrimmed width is the one measured). A short channel line
+/// followed by the real end still ends the match.
+#[test]
+fn a_padded_channel_line_never_ends_the_match() {
+    let end = "Match 1 is over (blue). Its units are checked in.";
+    let mut run = to_the_fight(Settings::default());
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    let running = run.lane.picture().phase.clone();
+    assert!(matches!(running, Phase::Running { match_id: 1 }));
+    // A 116-column channel line, and the sentence on the next line.
+    let padded = channel_line(116);
+    assert_eq!(
+        mush_ansi::wrap_indent(&format!("{padded} {end}"), 120, 0),
+        [padded.clone(), end.to_owned()],
+        "the renderer breaks it there"
+    );
+    // A run of spaces at the break: one channel line, wrapped as the renderer
+    // wraps it, whose first line ends in the spaces.
+    let spaced = format!("{} {}{end}", channel_line(100), " ".repeat(19));
+    let wrapped = mush_ansi::wrap_indent(&spaced, 120, 0);
+    assert_eq!(wrapped.len(), 2, "{wrapped:?}");
+    assert!(wrapped[1].starts_with("Match 1 is over"), "{wrapped:?}");
+    assert!(
+        wrapped[0].trim_end().chars().count() == 100 && wrapped[0].chars().count() > 115,
+        "{wrapped:?}"
+    );
+    for chunk in [format!("{padded}\n{end}"), wrapped.join("\n")] {
+        let typed = run.sent.len();
+        run.server.now = run.now;
+        run.server.say(0, &chunk);
+        run.until(3_000, |_| false);
+        assert_eq!(run.lane.picture().phase, running, "{chunk}");
+        assert!(
+            !run.said.iter().any(|s| s.starts_with("Match 1 is over")),
+            "{:?}",
+            run.said
+        );
+        assert!(run.sent.len() > typed + 4, "the lane keeps typing");
+    }
+    // A short channel line, then the real end.
+    run.server.now = run.now;
+    run.server.say(0, &channel_line(60));
+    run.server.end(run.now, "blue");
+    assert!(run.until(5_000, |run| run.lane.result().is_some()));
+    assert_eq!(
+        run.lane.picture().phase,
+        Phase::Over {
+            match_id: 1,
+            result: ResultWord::Blue
+        }
+    );
+    assert!(
+        run.said
+            .iter()
+            .any(|s| s.starts_with("Match 1 is over (blue)")),
+        "{:?}",
+        run.said
+    );
+}
+
+/// **A full-width channel line never swallows an expected answer** (cut
+/// AM.1): a 119-column channel line the renderer would not wrap, read just
+/// before the ack of a `FIRE` the lane typed — `Firing cannon.` would not fit
+/// on it, but it is the answer the lane waits for, so it is the ack.
+#[test]
+fn a_full_width_channel_line_never_swallows_an_expected_answer() {
+    let long = channel_line(119);
+    assert_eq!(
+        mush_ansi::wrap_indent(&long, 120, 0),
+        std::slice::from_ref(&long)
+    );
+    let mut run = to_the_fight_with(Settings::default(), |server| server.fire_answer_ms = 20);
+    locked_and_learned(&mut run);
+    // A `FIRE cannon` the server acks (one it refused is tried again).
+    let mut acked = false;
+    for _ in 0..5 {
+        let from = run.now + 1;
+        assert!(run.until(15_000, |run| !run.sends_of("FIRE cannon", from).is_empty()));
+        let shots = run.lane.picture().tally.shots;
+        assert!(run.lane.picture().fire_pending("cannon"));
+        if run.server.acks.last() != Some(&(run.now + 20, "cannon".to_owned())) {
+            continue;
+        }
+        // The echo at +1, the channel line at +10, the ack at +20.
+        run.server.now = run.now;
+        run.server.say(10, &long);
+        assert!(
+            run.until(100, |run| run.lane.picture().tally.shots > shots),
+            "the ack was read as the ack"
+        );
+        assert!(!run.lane.picture().fire_pending("cannon"), "its mark taken");
+        acked = true;
+        break;
+    }
+    assert!(acked, "the server acked a FIRE cannon");
+}
+
+/// **A chain runs on through whatever its pieces read** (cut AM.1, review):
+/// one padded channel line, wrapped as the renderer wraps it, whose middle
+/// piece is the echo of a line the lane typed, an indented piece (a run of
+/// spaces straddling a break at the width), an answer the lane expects (a
+/// transient-shaped piece while a typed line waits), or whose first line
+/// itself ends `please retry in a moment.` — the sentence on the last piece is
+/// still the rest of that channel line, and the match runs on.
+#[test]
+fn a_chain_runs_on_through_whatever_its_pieces_read() {
+    let end = "Match 1 is over (blue). Its units are checked in.";
+    let mut run = to_the_fight(Settings::default());
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    let running = run.lane.picture().phase.clone();
+    assert!(matches!(running, Phase::Running { match_id: 1 }));
+    let wrap = |message: &str| mush_ansi::wrap_indent(message, 120, 0);
+    // (a) The second piece is `CONTACTS`, the echo of a line the lane types.
+    let echoed = wrap(&format!(
+        "{} CONTACTS {} {end}",
+        channel_line(115),
+        "y".repeat(115)
+    ));
+    assert_eq!(echoed.len(), 4, "{echoed:?}");
+    assert_eq!(echoed[1], "CONTACTS");
+    // (b) A run of spaces at a full line starts the second piece indented.
+    let indented = wrap(&format!(
+        "{}   {} {end}",
+        channel_line(120),
+        "z".repeat(114)
+    ));
+    assert_eq!(indented.len(), 3, "{indented:?}");
+    assert!(indented[1].starts_with(' ') && indented[1].chars().count() >= 115);
+    // (c) The second piece reads as a transient.
+    let busy = format!("{} please retry in a moment.", "w".repeat(89));
+    let expected = wrap(&format!("{} {busy} {end}", channel_line(115)));
+    assert_eq!(expected.len(), 3, "{expected:?}");
+    assert_eq!(expected[1], busy);
+    // (d) The channel line itself ends as a transient does.
+    let retry = format!("{} please retry in a moment.", channel_line(90));
+    let own = wrap(&format!("{retry} {end}"));
+    assert_eq!(own, [retry.clone(), end.to_owned()]);
+    for pieces in [echoed, indented, expected, own] {
+        assert_eq!(pieces.last().map(String::as_str), Some(end));
+        // Said just after a line the lane typed, before its answer: that
+        // line waits in the ledger when the chunk is read.
+        assert!(run.until(2_000, |run| {
+            run.sent.last().is_some_and(|s| s.lane_ms == run.now)
+        }));
+        let typed = run.sent.len();
+        run.server.now = run.now;
+        run.server.say(2, &pieces.join("\n"));
+        run.until(3_000, |_| false);
+        assert_eq!(run.lane.picture().phase, running, "{pieces:?}");
+        assert!(
+            !run.said.iter().any(|s| s.starts_with("Match 1 is over")),
+            "{pieces:?}: {:?}",
+            run.said
+        );
+        assert!(run.sent.len() > typed + 4, "the lane keeps typing");
+    }
+}
+
+/// **A chain ends with its output** (cut AM.1, review): the renderer writes a
+/// wrapped line's pieces in one output, so a line read seconds after a
+/// full-width channel line, with nothing between, is the game's own — here
+/// `Match 1 is running.` three seconds after a teammate's 116-column line,
+/// while the seated pilot types nothing.
+#[test]
+fn a_chain_ends_with_its_output() {
+    let mut run = Run::new(Settings::default());
+    assert!(run.until(30_000, |run| run.lines().contains(&"BOARD")));
+    let running = run
+        .server
+        .queue
+        .iter_mut()
+        .find(|(_, text)| text.contains("is running"))
+        .expect("the start queued");
+    running.0 += 3_000;
+    let at = running.0;
+    run.server.now = run.now;
+    run.server.say(50, &channel_line(116));
+    let typed = run.sent.len();
+    assert!(
+        run.until(5_000, |run| matches!(
+            run.lane.picture().phase,
+            Phase::Running { .. }
+        )),
+        "{:?}",
+        run.said
+    );
+    assert!(run.now >= at);
+    assert!(
+        run.sent[typed..]
+            .iter()
+            .all(|s| s.line != "STARTUP" || s.lane_ms >= at),
+        "nothing typed between the channel line and the start but the start's own"
+    );
+}
+
+/// **A full-width channel line never swallows a lock line or a claim** (cut
+/// AM.1, review): the lock line that heads a `WEAPONSTATUS` reply the lane
+/// asked for is part of that answer, and so is every line the centre says
+/// while a lobby line awaits its answer — a 116-column channel line read just
+/// before either leaves it read as itself.
+#[test]
+fn a_full_width_channel_line_never_swallows_a_lock_line_or_a_claim() {
+    // The claim, straight after a channel line `Pilot` would not fit on.
+    let mut run = Run::new(Settings::default());
+    assert!(run.until(10_000, |run| run.lines().contains(&"SIM TEAM red")));
+    let claim = run
+        .server
+        .queue
+        .iter_mut()
+        .find(|(_, text)| text.contains("takes red slot 1"))
+        .expect("the claim queued");
+    claim.1 = format!("{}\r\n{}", channel_line(116), claim.1);
+    assert!(run.until(1_000, |run| run.lane.lobby().slot().is_some()));
+    assert!(
+        run.said
+            .iter()
+            .any(|s| s == "Claimed red slot 1 (RA), leading the side."),
+        "{:?}",
+        run.said
+    );
+    // The lock line, straight after one `Locked` would not fit on.
+    let mut run = to_the_fight(Settings::default());
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.as_deref()
+        == Some("BA")));
+    let from = run.now + 1;
+    assert!(run.until(10_000, |run| !run.sends_of("WEAPONSTATUS", from).is_empty()));
+    let reply = run
+        .server
+        .queue
+        .iter_mut()
+        .find(|(_, text)| text.starts_with("Locked on BA, 62% to hit."))
+        .expect("the locked reply queued");
+    reply.1 = format!("{}\r\n{}", channel_line(116), reply.1);
+    let end = run.now + 2_000;
+    while run.now < end {
+        run.step();
+        assert_eq!(
+            run.lane.picture().lock.as_deref(),
+            Some("BA"),
+            "the lock held at {}",
+            run.now
+        );
+    }
+    assert!(
+        run.journal.iter().any(|j| j.contains(&channel_line(116))),
+        "the channel line was read as itself"
+    );
+}
+
+/// **A wrapped board row never swallows a claim** (cut AM.1): a chain starts
+/// only at a channel line, so a `SIM STATUS` side row that wraps flush, its
+/// last piece 115 to 120 columns (past which `Pilot` would not fit), leaves
+/// the claim after it read as the claim.
+#[test]
+fn a_wrapped_board_row_never_swallows_a_claim() {
+    // A blue side row whose wrapped tail is 110 to 120 columns.
+    let (row, tail) = (1..=6)
+        .flat_map(|pilots| (0..40).map(move |pad| (pilots, pad)))
+        .find_map(|(pilots, pad)| {
+            let entries: Vec<String> = (1..=pilots)
+                .map(|i| {
+                    let letter = char::from(b'A' + i as u8 - 1);
+                    format!(
+                        "{i} (B{letter}): Pilot{}{i}, pod Blue Pod {i}, seated",
+                        "z".repeat(pad)
+                    )
+                })
+                .collect();
+            let row = format!("  blue: {}", entries.join("; "));
+            let wrapped = mush_ansi::wrap_indent(&row, 120, 0);
+            let tail = wrapped.last()?.clone();
+            (wrapped.len() >= 2 && (115..=120).contains(&tail.chars().count()))
+                .then(|| (wrapped.join("\n"), tail))
+        })
+        .expect("a row whose tail is 115 to 120 columns");
+    assert!(!tail.starts_with(' ') && !tail.starts_with('['), "{tail}");
+    let mut run = Run::new(Settings::default());
+    assert!(run.until(10_000, |run| run.lines().contains(&"SIM TEAM red")));
+    // The claim's answer comes straight after the wrapped row.
+    let claim = run
+        .server
+        .queue
+        .iter_mut()
+        .find(|(_, text)| text.contains("takes red slot 1"))
+        .expect("the claim queued");
+    claim.1 = format!(
+        "Simulator centre: selection\r\n  red: nobody\r\n{}\r\n{}",
+        row.replace('\n', "\r\n"),
+        claim.1
+    );
+    assert!(run.until(1_000, |run| run.lane.lobby().slot().is_some()));
+    assert!(
+        run.said
+            .iter()
+            .any(|s| s == "Claimed red slot 1 (RA), leading the side."),
+        "{:?}",
+        run.said
+    );
+}
+
+/// **A re-board while locked types no early `RANGE`** (cut AM.1): the
+/// fight's reply count is seeded when the fight is made, so the lock's
+/// `RANGE` follows the second reply read after it, never one read before.
+#[test]
+fn a_reboard_while_locked_types_no_early_range() {
+    let mut run = to_the_fight(Settings::default());
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    run.until(5_000, |_| false);
+    assert!(
+        !run.sends_of("RANGE", 0).is_empty(),
+        "RANGE before the drop"
+    );
+    run.server.outside = true;
+    assert!(run.until(5_000, |run| run.lane.step() == Step::Reboard));
+    assert!(run.until(10_000, |run| run.lane.step() == Step::Fight));
+    let back = run.now;
+    assert_eq!(
+        run.lane.picture().lock.as_deref(),
+        Some("BA"),
+        "still locked"
+    );
+    run.until(5_000, |_| false);
+    let contacts = run.sends_of("CONTACTS", back);
+    let ranges = run.sends_of("RANGE", back);
+    assert!(
+        contacts.len() >= 3 && !ranges.is_empty(),
+        "{contacts:?} {ranges:?}"
+    );
+    // Each reply comes 3 ms after its line: read at the next 10 ms step.
+    assert!(
+        ranges[0] > contacts[1],
+        "the first RANGE ({}) follows the second reply after the re-board ({contacts:?})",
+        ranges[0]
+    );
+}
+
+/// To the fight with BA at 450 m east and the friendly RB held, locked on BA.
+fn locked_with_a_friend() -> Run {
+    let mut run = to_the_fight_with(Settings::default(), |server| {
+        server.ba_at = Some((90, 450));
+    });
+    sight(&mut run, "X1");
+    run.server
+        .contacts
+        .push("RB  red  bearing 180° (rel 090°)  far  500 m  1 s".into());
+    assert!(run.until(5_000, |run| run.lane.picture().lock.as_deref()
+        == Some("BA")));
+    run
+}
+
+/// The seed the slow-wire minutes run on.
+const WIRE_SEED: u64 = 0x5eed_0a11_cafe_f00d;
+
+/// **The wire does what it says** (cut AM.1): one seed gives one schedule,
+/// nothing arrives before the line or piece before it, no line is injected
+/// into a `STATUS` chunk, and a minute of fight splits, cuts mid-line, pauses
+/// past the settle and injects at least ten times each.
+#[test]
+fn the_wire_is_ordered_seeded_and_does_what_it_says() {
+    let schedule = |seed: u64| {
+        let mut wire = Wire::new(seed);
+        let mut up = Vec::new();
+        let mut down = Vec::new();
+        for i in 0..40u64 {
+            wire.send(i * 100, &format!("LINE {i}"));
+            wire.carry(i * 100 + 5, format!("a {i}\r\nb {i}°\r\nc {i}\r\n"));
+            up.extend(wire.arrived(i * 100 + 50));
+            down.extend(wire.delivered(i * 100 + 50));
+        }
+        up.extend(wire.arrived(u64::MAX));
+        down.extend(wire.delivered(u64::MAX));
+        (up, down, wire.arrivals.clone(), wire.deliveries.clone())
+    };
+    let one = schedule(7);
+    assert_eq!(one, schedule(7), "one seed, one schedule");
+    assert_ne!(one, schedule(8));
+    assert_eq!(one.1.concat().matches("\r\n").count(), 40 * 3 + 40 / 3);
+    // A minute of fight on the wire.
+    let mut run = locked_with_a_friend();
+    run.wire = Some(Wire::new(WIRE_SEED));
+    run.until(60_000, |_| false);
+    let wire = run.wire.as_ref().expect("the wire");
+    println!("{}", wire.report());
+    assert!(
+        wire.arrivals.windows(2).all(|w| w[0] <= w[1]),
+        "up in order"
+    );
+    assert!(
+        wire.deliveries.windows(2).all(|w| w[0] <= w[1]),
+        "down in order"
+    );
+    assert!(
+        wire.carried.iter().any(|(status, _)| *status),
+        "STATUS blocks were carried"
+    );
+    assert!(
+        !wire
+            .carried
+            .iter()
+            .any(|(status, injected)| *status && *injected),
+        "nothing injected into a STATUS block"
+    );
+    for (what, count) in [
+        ("split chunks", wire.split_chunks),
+        ("mid-line cuts", wire.mid_line_splits),
+        ("gaps over the settle", wire.gaps_over_settle),
+        ("injections", wire.injections),
+    ] {
+        assert!(count >= 10, "{what}: {count}; {}", wire.report());
+    }
+}
+
+/// A minute on the slow wire after [`locked_with_a_friend`], `each` called
+/// after every step from the switch on (with the switch's time). The run,
+/// and how many sentences it had said at the switch.
+fn a_minute_on_the_wire(mut each: impl FnMut(&Run, u64)) -> (Run, usize) {
+    let mut run = locked_with_a_friend();
+    let switched = run.now;
+    let said = run.said.len();
+    run.wire = Some(Wire::new(WIRE_SEED));
+    while run.now < switched + 60_000 {
+        run.step();
+        each(&run, switched);
+    }
+    println!("{}", run.wire.as_ref().expect("the wire").report());
+    (run, said)
+}
+
+/// **The picture holds on a slow wire** (cut AM.1): a minute on the latency
+/// rig — a mean round trip of about 820 ms on [`WIRE_SEED`] (up about 200 ms;
+/// down about 625 ms, up to 1.7 s, the chunk behind a split one waiting for
+/// its pieces), every chunk of two or more lines split in three pieces
+/// [`WIRE_SPLIT_GAP_MS`] apart (each gap past a settle), a line of chatter or
+/// a receiver notice inside every third such chunk that is not a `STATUS`
+/// block (the rig's report prints the figures) — and from the first
+/// `CONTACTS` reply typed after the switch the picture holds BA and RB and
+/// the lock on BA at every tick; no hunt is said, the guns are never in doubt
+/// and both stay carried.
+#[test]
+fn the_picture_holds_on_a_slow_wire() {
+    let mut armed: Option<(u64, u64)> = None;
+    let mut checked = 0;
+    let (run, said_before) = a_minute_on_the_wire(|run, switched| {
+        let picture = run.lane.picture();
+        // The first `CONTACTS` typed after the switch, and the count then.
+        if armed.is_none()
+            && let Some(at) = run.sends_of("CONTACTS", switched).first()
+        {
+            armed = Some((*at, picture.contacts_read));
+        }
+        let Some((_, read_then)) = armed else {
+            return;
+        };
+        assert!(picture.weapons_doubt.is_none(), "at {}", run.now);
+        if picture.contacts_read <= read_then || !run.now.is_multiple_of(TICK_MS) {
+            return;
+        }
+        checked += 1;
+        let held: Vec<&str> = picture.contacts.keys().map(String::as_str).collect();
+        assert!(
+            held.contains(&"BA") && held.contains(&"RB"),
+            "at {}: {held:?}",
+            run.now
+        );
+        assert_eq!(picture.lock.as_deref(), Some("BA"), "at {}", run.now);
+        assert!(
+            gun(picture, "cannon").is_some() && gun(picture, "machine_gun").is_some(),
+            "at {}: {:?}",
+            run.now,
+            picture.weapons
+        );
+    });
+    assert!(checked > 1_000, "{checked} ticks checked");
+    let hunts: Vec<&String> = run.said[said_before..]
+        .iter()
+        .filter(|s| s.starts_with("Hunting "))
+        .collect();
+    assert!(hunts.is_empty(), "{hunts:?}");
+}
+
+/// **The fire clock holds on a slow wire** (cut AM.1): over the same minute
+/// a learned cycle is never short of the gun's own, each gun's shots are at
+/// least one a cycle and three seconds, and at most one `FIRE` line in ten of
+/// each gun is refused as still cycling. Prints each gun's lines, acks,
+/// refusals, learned cycle and learned fraction (the share of its post-shot
+/// rows that taught a cycle: the first row after each ack, teaching when it
+/// reads `cycling` inside a second of that ack's `FIRE`), and the rig's mean
+/// round trip.
+#[test]
+fn the_fire_clock_holds_on_a_slow_wire() {
+    // Per gun: the rows read after each ack (each ack's first, `ready` or
+    // `cycling`), and of those the ones that could teach the cycle: a
+    // `cycling` row read inside a second of that ack's `FIRE`.
+    let mut post_shot: BTreeMap<&str, (u32, u32)> = BTreeMap::new();
+    let mut last_row: BTreeMap<&str, u64> = BTreeMap::new();
+    let mut counted_ack: BTreeMap<&str, u64> = BTreeMap::new();
+    let mut lines_at = BTreeMap::new();
+    let mut refusals_at = BTreeMap::new();
+    let mut shots_at = BTreeMap::new();
+    let mut first = true;
+    let (run, _) = a_minute_on_the_wire(|run, _| {
+        if first {
+            first = false;
+            for weapon in GUNS {
+                lines_at.insert(weapon, count(&run.server.fire_lines_by, weapon));
+                refusals_at.insert(weapon, count(&run.server.cycling_refusals_by, weapon));
+                shots_at.insert(weapon, count(&run.server.shots, weapon));
+            }
+        }
+        for weapon in GUNS {
+            let Some(w) = gun(run.lane.picture(), weapon) else {
+                continue;
+            };
+            assert!(
+                w.cycle_ms.is_none_or(|c| c == Server::cycle_ms(weapon)),
+                "{weapon} learned {:?} at {}",
+                w.cycle_ms,
+                run.now
+            );
+            // A new row applied since the last step.
+            if last_row.get(weapon) == Some(&w.read_ms) {
+                continue;
+            }
+            last_row.insert(weapon, w.read_ms);
+            let Some(fired) = w.fired_ms else {
+                continue;
+            };
+            if w.read_ms <= fired || counted_ack.get(weapon) == Some(&fired) {
+                continue;
+            }
+            counted_ack.insert(weapon, fired);
+            let entry = post_shot.entry(weapon).or_default();
+            entry.0 += 1;
+            let sent = w.fired_sent_ms.unwrap_or(fired);
+            if w.cycling_s.is_some() && w.read_ms - sent < CYCLE_READ_WITHIN_MS {
+                entry.1 += 1;
+            }
+        }
+    });
+    let wire = run.wire.as_ref().expect("the wire");
+    for weapon in GUNS {
+        let lines = count(&run.server.fire_lines_by, weapon) - lines_at[weapon];
+        let refused = count(&run.server.cycling_refusals_by, weapon) - refusals_at[weapon];
+        let acks = count(&run.server.shots, weapon) - shots_at[weapon];
+        let learned = gun(run.lane.picture(), weapon).and_then(|w| w.cycle_ms);
+        let (rows, teaching) = post_shot.get(weapon).copied().unwrap_or((0, 0));
+        println!(
+            "slow wire: {weapon}: {lines} FIRE line(s), {acks} ack(s), {refused} refused as still \
+             cycling, cycle learned {learned:?}, learned fraction {teaching} of {rows} post-shot \
+             row(s); mean round trip {} ms",
+            wire.mean_round_trip_ms()
+        );
+        let floor = 60_000 / (Server::cycle_ms(weapon) + 3_000);
+        assert!(
+            acks as u64 >= floor,
+            "{weapon}: {acks} shots, at least {floor}"
+        );
+        assert!(refused * 10 <= lines, "{weapon}: {refused} of {lines}");
     }
 }

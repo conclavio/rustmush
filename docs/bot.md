@@ -579,6 +579,23 @@ typing are left out. With `[memory] persistent = false` (as in
 report; with a persistent memory the journal lines are kept like any other
 observation, under the config's namespace.
 
+**On a slow wire.** Flown against a distant server, a reply reaches the pilot in
+pieces, and it is still read whole however it arrives. Its rows count as they
+come; what a reply says by leaving something out (a contact gone, a gun gone,
+the lock gone, a section's state) is taken at the first game line after it,
+never from a pause in the stream. A line of chat in the middle of a contact or
+weapon list is read as itself, and so is any line that begins with `[`. A line
+that arrives straight after a full-width channel line, where the game wraps it,
+is read as the rest of that line, never as a game sentence, unless it answers
+something the pilot just typed (a reply or an order's answer, the lock line
+heading a weapon list, or anything at all while a line typed in the centre
+awaits its answer). A line whose end arrives late is whole for up to two
+seconds. A `FIRE` answered `please retry in a moment` is typed again on the
+gun's own clock. A gun's cycle is learned only from a row read within a second
+of typing its `FIRE`: on a round trip over about a quarter of a second the
+cycle stays unlearned and the gun fires from its rows, rather than a second
+early.
+
 `/pause` stops the pilot typing and `/resume` starts it again; `/arena stop`
 ends it and hands you the tank. It will not fly under a mission contract, a
 script, a managed floor or a campaign session.
