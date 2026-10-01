@@ -25,19 +25,21 @@
 //! transcript (`win-rate-muster.jsonl`) and report (`win-rate-muster.json`)
 //! there for reading after (the rig's own directory is removed).
 //! `MUSH_BOT_WIN_RATE_ENGAGEMENT` (`hold`, the default, or `orbit`) picks the
-//! pilot's engagement as it does for the posed lane, and (cut AN.2)
-//! `MUSH_BOT_WIN_RATE_OFF` turns the pilot's own knobs off for an ablation as
-//! it does there.
+//! pilot's engagement as it does for the posed lane, and (cut AN.2; cut
+//! AN.3) `MUSH_BOT_WIN_RATE_OFF` turns the pilot's own knobs off for an
+//! ablation as it does there.
 //!
 //! **What it prints**, in this order: the reading's `ENGAGEMENT` line; (cut
-//! AN.2) `KNOBS: opening {wait|search}, reapproach {on|off}`; `WIN
+//! AN.2; cut AN.3) `KNOBS: opening {wait|search}, reapproach {on|off}, follow
+//! {on|off}, lattice {on|off}`; `WIN
 //! RATE FROM THE MUSTER: {w} of 10 for red against one machine at 1 v 1 (…)`;
 //! one line a match with its three first times (the rig's
 //! `muster_match_line`: `first contact`, `first hit taken` and `first hit
 //! scored`, each whole seconds after that match's power online, or `none`);
 //! the rest of the reading (`FIRE GAP`, `SHOT GAP`, `STILL CYCLING`, `HITS
 //! TAKEN BY FACET`, `SEEN FIRST`, `OPENING`, `FRONT SHARE`, and cut AN.2's
-//! `PILOT RULES`); then `NO REPORT`
+//! `PILOT RULES`, with cut AN.3's follow, return wait and lattice counts);
+//! then `NO REPORT`
 //! and `EARLY END` when they apply. Nothing between the launch and the last
 //! line panics. The offline [`the_muster_lane_reads_its_match_lines`] (not
 //! ignored) proves the lines on hand-written matches.

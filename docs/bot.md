@@ -436,6 +436,48 @@ cycling is tried again a quarter-second into the last second it was told
 inside the second it was refused for. A gun is never fired again while its last
 `FIRE` is unanswered.
 
+**Its guns on the arena's lattice.** A line-mode gun fires no faster than one
+cycle and one quarter-second step apart: the arena's own notices — every hit,
+miss, contact notice and `Held:` — arrive on a 250 ms lattice within a match,
+and a shot goes on the first lattice point after its acknowledgement. The
+acknowledgement answers the `FIRE` within a few milliseconds, so it says
+nothing of where that lattice lies; the notices do. So by default (`[arena]
+lattice = true`) the pilot reads **the lattice's phase from the arena's own
+notices** (the last 24 it read in a running match; at least 8 of them, and
+three in four, in one 50 ms bin; never an acknowledgement, a refusal or a
+reply), and **the round trip** from each acknowledgement less the moment its
+`FIRE` went (the median of the last eight). Once a gun's cycle is learned, it
+types that gun's next `FIRE` a **guard** of 175 ms past the instant the gun is
+ready — the next lattice point after the acknowledgement and one cycle on —
+**less the round trip**: a lattice point it reads is late by the wire's down
+leg, and its `FIRE` takes the up leg to arrive, so the guard is measured where
+the arena stands. (The edges this rests on were read from the bot's own
+transcripts on a local server, where the round trip was a few milliseconds:
+every `FIRE` arriving before 50 ms past that instant was refused, and every
+one from 150 ms on accepted. Anyone reading a transcript from a distant
+server must read it net of its round trip.) The guard is meant to land the
+shot on that floor, a cycle and one lattice step after the last — but see
+"From the muster, measured with its own rules" below: on the local server of
+2026-10-01 the arena accepted a `FIRE` reliably only from about 250 ms past
+that instant, so the lattice clock was refused about half the time and
+benched often, and the machine gun stayed about 1.5 s between shots. Two refusals as still
+cycling of one gun's own `FIRE`s inside 30 seconds put that gun back on the
+clock above for 30 seconds (`The machine_gun is off the lattice clock for 30
+s: refused twice.`). It says `Firing on the arena's lattice: phase 5 ms, round
+trip 40 ms.` once a match, the first time it uses it. **On a slow wire** it
+changes nothing: above a round trip of 200 ms the lattice is off and the clock
+above flies, and above about 250 ms no cycle is learned at all, so on a
+distant enough server the pilot types exactly what it types with the lattice
+off. On the offline lattice rig (an arena firing on its quarter-second pulse
+that accepts a `FIRE` only 100 ms past the ready instant) the machine gun's
+shots went a median and a p90 of 1 250 ms apart with no `FIRE` line refused,
+against a median of 1 350 ms and five lines in ninety-two refused with the
+lattice off. On the same rig accepting a `FIRE` only 225 ms past the ready
+instant (past the guard, as the live arena was measured) the guns were
+benched, the machine gun's shots went a median of 1 500 ms apart with the
+lattice on or off, and the lattice clock cost more refused lines: 17 of 93
+against 10 of 88.
+
 **It fights nose-on.** `help cockpit` says the facet you show decides what a
 hit costs: a hit from within 45 degrees of the bow strikes the front, a side is
 twice the target of the bow, and the stock hull carries 400 in front against
@@ -594,12 +636,45 @@ with half a minute's rest between, never while falling back or under an
 wait the pilot hunts the machine only if its last plot is still young enough,
 else it searches.
 
-**Its two keys.** `[arena] opening = "wait"` (the default) opens as above;
+**It follows a broken machine home.** `help simulator` says that a machine
+"Hurt badly enough … breaks off for its own entry zone", that on the way home
+it fights only what is close (inside about 200 m) while it has armour left,
+and that once home it shoots back at whatever comes for it and, after twenty
+quiet seconds with nothing hostile in sight, comes back in, once. So a
+hostile the cockpit said lost a section (`BA's turret is destroyed.`), or one
+the pilot has hit eight times this match, whose plots show it **driving away**
+(its course within 60 degrees of the bearing to it) is **followed**: bow on,
+held 350 m behind it — outside the 200 m it turns to fight at, inside the
+480 m a stopped tank is seen at — and fired at from behind. It is **never
+followed into its entry zone**. The help names the entry zone but not its
+shape, so the pilot keeps out of a band across the whole approach: a line
+through the other side's entry, square to the line from its own muster to
+it. Once the machine is within 400 m of that line, or the pilot within 750 m,
+the pilot **backs out of its sight**, in reverse with its bow on the
+machine's last plot, to 650 m from that plot (past the 600 m a moving tank is
+seen at; at most 45 seconds), then **waits** there, stopped and facing it, up
+to 90 seconds for its one return. A hostile that comes on inside the sight is
+fired on from the halt; a hit ends the wait; at its end the pilot drops the
+machine's trail and searches, because a hunt would drive at its last plot,
+near its entry line, and on into the entry zone. A followed machine lost goes
+the same way, to the backing off; one whose plots stop showing it moving for
+five seconds has stopped, and the pilot fights it as before; one the pilot
+turns from to fight another hostile is no longer followed. A machine that
+breaks off while the pilot is opening the range on it or firing at it from
+the halt is followed at once, and that rule ends. No hunt starts, and no re-approach
+begins, while it follows or waits. It follows only from a muster it saw: a pilot that
+joined a running match has no entry line, and fights a broken machine as
+before.
+
+**Its keys.** `[arena] opening = "wait"` (the default) opens as above;
 `"search"` drives for The Crossroads after five quiet seconds, as the pilot did
 before (any other word is refused). `[arena] reapproach = true` (the default)
-opens the range as above; `false` never does. Both are written out in
-`bots/arena/pilot.toml`, `bots/arena/commander.toml` and
-`mush-bot.toml.example`.
+opens the range as above; `false` never does. `[arena] follow_broken = true`
+(the default) follows a broken machine home as above; `false` holds and hunts
+it as before. `[arena] lattice = true` (the default) fires on the arena's
+lattice as above; `false` keeps the clock that adds a learned slack to each
+acknowledgement. All four are written out in `bots/arena/pilot.toml`,
+`bots/arena/commander.toml` and `mush-bot.toml.example`.
 
 Held by the ground, it turns 45° for three seconds and orders its speed again.
 Still held at 0 kph, it turns further from the heading it stopped on (90°, then
@@ -629,15 +704,22 @@ over; hunting on.`, `Opening: stepping off the road to the north (35 m).`,
 off.`, `The halt is over: BA has stopped.`, `Opening the range on BA: 10 hits
 taken to 4 scored in 20 s; backing off bow on.`, `Out of BA's sight at 650 m
 from its last plot; waiting for it to come on.`, `No approach from BA in 45 s;
-moving on.` and their kin, and the `arena-picture` record carries its
+moving on.`, `Following BA home: it is hurt and driving away; holding 350 m
+behind it.`, `Not following BA into its entry zone; backing off out of its
+sight.`, `Waiting for BA to come back, 650 m from its last plot.`, `No return
+from BA in 90 s; searching.`, `Firing on the arena's lattice: phase 5 ms,
+round trip 40 ms.` and their kin, and the `arena-picture` record carries its
 hunt, its fall back and its stall, the turn into a hit (its bearing and the
 seconds left), the live turn with a track gone (`cw` or `ccw`), how many marks
 it holds, what its hold is doing (`stopped`, `ahead` or `astern`), the wait it
 is in (whom it is for and the seconds left, or `null`), the rule of its own in
-force (`rule`: `opening`, `halt`, `reapproach`, `approach_wait` or `null`), the
-hits taken and scored in the last twenty seconds (`exchange`), where the
-opening is (`opening`: `fresh`, `brief`, `step`, `hold` or `done`), the start
-it kept (`start_m`), each gun's cycle and slack, the guns struck and whether
+force (`rule`: `opening`, `halt`, `reapproach`, `approach_wait`, `follow`,
+`return_back`, `return_wait` or `null`), the hits taken and scored in the
+last twenty seconds (`exchange`), where the opening is (`opening`: `fresh`,
+`brief`, `step`, `hold` or `done`), the start it kept (`start_m`), the
+lattice's phase and round trip as it reads them (`lattice`: `phase`,
+`rtt_ms`, each a figure or `null`), each gun's cycle and slack and whether
+its last shot set the lattice clock (`lattice`), the guns struck and whether
 every gun is held. Its first `SPEED`
 order is `999`, which makes the tank say its own top speeds.
 
@@ -742,15 +824,19 @@ MUSH_BOT_WIN_RATE_ENGAGEMENT=orbit cargo test -p mush-bot --test arena_win_rate 
 
 **The knobs it flies.** `MUSH_BOT_WIN_RATE_OFF` turns the pilot's own rules off
 for a comparison run, on either win-rate lane: a comma list of `opening`,
-`reapproach` or `all`, written into the bot's config as `[arena] opening =
-"search"` and `reapproach = false`; unset, both stay on. Anything else stops
-the lane before it starts (`MUSH_BOT_WIN_RATE_OFF names opening, reapproach or
-all, not …`). Both lanes print `KNOBS: opening {wait|search}, reapproach
-{on|off}` straight after the `ENGAGEMENT` line, and every lane's reading ends
-with `PILOT RULES: opening {a}, off the road {b}, halt {c}, reapproach {d},
-approach wait {e}`: how many times the pilot held near its entry, stepped off
-the road, fired from the halt, opened the range and waited for the machine to
-come on, counted from its own `arena` sentences.
+`reapproach`, `follow`, `lattice` or `all` (all four), written into the bot's
+config as `[arena] opening = "search"`, `reapproach = false`, `follow_broken =
+false` and `lattice = false`; unset, all stay on. Anything else stops the lane
+before it starts (`MUSH_BOT_WIN_RATE_OFF names opening, reapproach, follow,
+lattice or all, not …`). Both lanes print `KNOBS: opening {wait|search},
+reapproach {on|off}, follow {on|off}, lattice {on|off}` straight after the
+`ENGAGEMENT` line, and every lane's reading ends with `PILOT RULES: opening
+{a}, off the road {b}, halt {c}, reapproach {d}, approach wait {e}, follow
+{f}, return wait {g}, lattice {h}`: how many times the pilot held near its
+entry, stepped off the road, fired from the halt, opened the range, waited
+for the machine to come on, followed a broken machine, waited for its return
+and (once a match at most) put its guns on the lattice, counted from its own
+`arena` sentences.
 
 ```sh
 MUSH_BOT_WIN_RATE_OFF=reapproach cargo test -p mush-bot --test arena_muster_rate -- --ignored --nocapture
@@ -940,6 +1026,59 @@ match, and every hit that named a facet struck a front one (`FRONT SHARE: 408
 of 408 facet hits taken on a front facet`); the matches lasted 114 to 229 s,
 none near the cap.
 
+**From the muster, measured with its own rules.** On 2026-10-01, with the
+opening, the halt, the re-approach, the follow of a broken machine and the
+lattice clock all on (the shipped defaults): one run as shipped, then two
+runs each moving one constant and keeping it only if the line it was meant to
+move moved that way and the wins did not fall; neither move was kept, so the
+pilot ships with the values of the first run. Then one run with the
+re-approach off, because the third run lost more matches than the run before
+the opening (below) and re-approached in it; and one posed duel. These runs
+were flown before a broken machine could end a re-approach or a halt in force
+(see the follow below).
+
+| run | result | `SEEN FIRST` | `OPENING` | `FRONT SHARE` | machine gun `SHOT GAP` |
+|---|---|---|---|---|---|
+| before the opening (the first measured run) | `WIN RATE FROM THE MUSTER: 4 of 10 … (lost 6, drew 0, timed out 0, other 0)` | `contact before hit 10, hit before contact 0, neither 0 of 10 matches; lead p10 7 / p50 8 / p90 9 s over 10; shot first 10, shot at first 0` | `first contact p10 83 / p50 85 / p90 86 s after power online over 10 matches; first hit taken p50 94 s over 10` | `408 of 408` | `p10 1444 / p50 1500 / p90 1887 ms over 305 gaps` |
+| as shipped | `WIN RATE FROM THE MUSTER: 7 of 10 … (lost 3, drew 0, timed out 0, other 0)` | `… lead p10 12 / p50 13 / p90 14 s over 10; shot first 10, shot at first 0` | `first contact p10 156 / p50 158 / p90 158 s …; first hit taken p50 171 s over 10` | `382 of 382` | `p10 1352 / p50 1497 / p90 1807 ms over 406 gaps` |
+| lattice guard 200 ms (not kept) | `WIN RATE FROM THE MUSTER: 5 of 10 … (lost 5, drew 0, timed out 0, other 0)` | `… lead p10 12 / p50 13 / p90 14 s over 10; shot first 10, shot at first 0` | `first contact p10 156 / p50 158 / p90 159 s …; first hit taken p50 172 s over 10` | `362 of 362` | `p10 1390 / p50 1499 / p90 1793 ms over 343 gaps` |
+| re-approach margin 8 (not kept) | `WIN RATE FROM THE MUSTER: 2 of 10 … (lost 8, drew 0, timed out 0, other 0)` | `… lead p10 12 / p50 12 / p90 13 s over 10; shot first 10, shot at first 0` | `first contact p10 157 / p50 158 / p90 159 s …; first hit taken p50 171 s over 10` | `391 of 391` | `p10 1407 / p50 1499 / p90 1895 ms over 300 gaps` |
+| as shipped, re-approach off | `WIN RATE FROM THE MUSTER: 8 of 10 … (lost 2, drew 0, timed out 0, other 0)` | `… lead p10 12 / p50 13 / p90 14 s over 10; shot first 10, shot at first 0` | `first contact p10 156 / p50 158 / p90 158 s …; first hit taken p50 171 s over 10` | `384 of 384` | `p10 1428 / p50 1499 / p90 1785 ms over 433 gaps` |
+| posed duel, as shipped | `WIN RATE: 4 of 10 … (lost 6, drew 0, timed out 0, other 0)` | `… lead p10 12 / p50 13 / p90 14 s over 10; shot first 10, shot at first 0` | `first contact p10 0 / p50 0 / p90 0 s …; first hit taken p50 13 s over 10` | `353 of 353` | `p10 1393 / p50 1500 / p90 1961 ms over 386 gaps` |
+
+What the lines show. **The opening** worked every match: the pilot stepped
+off the road, held, and saw the machine first — the machine came to it about
+158 s after power online, the pilot scored first in every match, and its first
+hit taken came 12 to 14 s after its first contact against 7 to 9 before. Every
+facet hit still struck a front one. **The re-approach** began six to nine
+times a run on an exchange of about 17 hits taken to 13 scored and never
+reached its wait: every one that ended said `Could not open the range on BA in
+45 s; holding.`, and the run with it off won 8 of 10. The machine did not
+re-close on it: the tank backed at most some 65 m from where it held, to the
+arena's west edge, and stopped there (`Held ground marked at 0 m east, …`)
+with the machine's row still 400 to 450 m off; held that near its own entry,
+it has no room behind it to back out to 650 m, and the range opened only when
+the machine itself left. (The second tuning move, a wider margin before a
+re-approach begins, was made on the reading that the machine re-closed.)
+**The follow** ran none to three times a run, and the return's wait as often
+except in the first run, whose one return was still backing off when the
+match ended. In six matches of the first two runs a re-approach was in force
+when the machine broke off for home, and once lost it was hunted at its last
+plot into its entry zone: in one the machine was seen driving away and the
+follow could not begin while the re-approach was in force (it now ends the
+re-approach); in the other five, and once in the run with the re-approach
+off, the machine published no track as it went, so it was never judged
+broken. **The lattice clock**
+was used every match and benched 22 to 36 times a run: read against the
+lattice the pilot learned, a `FIRE` arriving 175 to 250 ms past the instant the
+gun was ready was refused about as often as it was accepted, and one arriving
+250 ms or more past it almost always accepted — the arena's edge on that day
+lay past the guard's 200 ms ceiling, so the machine gun's shots stayed a
+median of 1.5 s apart and about a fifth of its `FIRE` lines were refused. Ten
+matches are a small sample (one unchanged bot read 5, 5 and 4 of 10 on the
+posed lane), so these figures are read beside the mechanism lines, never
+alone.
+
 **From a goal.** A plain `--goal` can hand the character to the pilot: the goal
 model may answer with the action `arena` and a `side` (`red` or `blue`, in any
 case), for example
@@ -999,8 +1138,8 @@ provider = { order = ["Together"], allow_fallbacks = false }
 own instructions) and one user message: the pilot's picture as compact JSON of
 at most 2 KB — seconds since the power came on (or, after taking a powered tank
 back, since the panel first said the power was up), the pilot's own rule in
-force (`rule`: `opening`, `halt`, `reapproach`, `approach_wait` or `null`;
-below), the own tank (callsign,
+force (`rule`: `opening`, `halt`, `reapproach`, `approach_wait`, `follow`,
+`return_back`, `return_wait` or `null`; below), the own tank (callsign,
 **its own side**, power, speed, heading, position, each section's condition
 and plate, each weapon's readiness, rounds and chance), the six nearest
 contacts (designator, side, bearing, `rel` — the contact row's own bearing from
@@ -1041,14 +1180,16 @@ against a mover's 600 m, so the tank that stops before it is found sees first,
 and a hunt first waits, stopped, for a machine it has not hurt; and each
 contact's `rel` is its bearing from the bow. It calls neither the hold nor the
 orbit the pilot's own default: `[arena] engagement` decides that. It also
-tells the model that the pilot keeps **three rules of its own** that no stance
+tells the model that the pilot keeps **four rules of its own** that no stance
 moves while they are in force, and that `rule` in the picture names the one in
 force: in a skirmish flown from the muster, the wait near its own entry, off
 the road and bow toward the other side's entry, until a hostile is in sight; a
 hostile first seen in that wait fired on from the halt until it stops, comes
-to `band_m` or finds the tank; and the backing away from a stopped machine that
+to `band_m` or finds the tank; the backing away from a stopped machine that
 out-hits it, past the machine's sight of where it last saw it, then a wait for
-it to come on.
+it to come on; and a hurt machine driving away followed outside 200 m and
+inside the sight and fired at from behind, never into its entry zone, then a
+wait out of its sight for its one return.
 
 **Hunt.** `hunt` drives straight at the target until its band and then
 holds it there, bow on, but only while its plot is fresh (three seconds); with no

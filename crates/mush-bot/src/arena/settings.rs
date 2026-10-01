@@ -48,6 +48,18 @@
 //! when it out-hits the pilot, then waits for it to come on. Any other
 //! `opening` word is refused when the table is read.
 //!
+//! **`follow_broken` and `lattice`** (cut AN.3; [`super::pilot`]'s and
+//! [`super::picture`]'s module heads have the rules): `help simulator` says a
+//! machine "Hurt badly enough … breaks off for its own entry zone", fights on
+//! the way home "only what is close (inside about 200 m)", and "after twenty
+//! quiet seconds with nothing hostile in sight it turns round and comes back
+//! in, once". So `follow_broken = true` (the default) follows such a machine
+//! home from behind, outside 200 m, never into its entry zone, then backs out
+//! of its sight and waits for its return. `lattice = true` (the default) fires
+//! each gun on the arena's 250 ms lattice, read from the arena's own notices,
+//! once that gun's cycle is learned and while the round trip is short;
+//! `false` keeps the clock that adds a learned slack to each acknowledgement.
+//!
 //! **The commander's keys** (cut AJ.3; [`super::commander`]): `commander`
 //! switches the optional model commander on, `commander_ms` is how long after
 //! each answer it asks again (1 000 ms is the machines' own decision interval,
@@ -132,6 +144,13 @@ pub struct Settings {
     /// Back away past a stopped machine's sight when it out-hits the pilot,
     /// then wait for it to come on (cut AN.2; on by default).
     pub reapproach: bool,
+    /// Follow a hurt machine driving away home from behind, never into its
+    /// entry zone, then wait for its return (cut AN.3; on by default).
+    pub follow_broken: bool,
+    /// Fire on the arena's 250 ms lattice once each gun's cycle is learned
+    /// (cut AN.3; on by default). The lane writes it into the picture
+    /// ([`super::picture::Picture::set_lattice`]).
+    pub lattice: bool,
     /// How long one lobby line may go unanswered (2 000..=60 000).
     pub step_timeout_ms: u64,
     /// The model commander sets the pilot's doctrine when a commander model
@@ -162,6 +181,8 @@ impl Default for Settings {
             engagement: Engagement::Hold,
             opening: Opening::Wait,
             reapproach: true,
+            follow_broken: true,
+            lattice: true,
             step_timeout_ms: 15_000,
             commander: true,
             commander_ms: 1_500,
@@ -173,12 +194,14 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// **The pilot's knobs** (cut AN.2): `opening` and `reapproach` as the
-    /// pilot reads them.
+    /// **The pilot's knobs** (cut AN.2): `opening`, `reapproach` and (cut
+    /// AN.3) `follow_broken` as the pilot reads them. `lattice` is the
+    /// picture's, not the pilot's.
     pub fn knobs(&self) -> Knobs {
         Knobs {
             opening: self.opening,
             reapproach: self.reapproach,
+            follow_broken: self.follow_broken,
         }
     }
 
@@ -393,8 +416,10 @@ mod tests {
         assert_eq!(defaults.knobs(), Knobs::on());
         let read: Settings = toml::from_str("").expect("a table");
         assert_eq!(read.knobs(), Knobs::on(), "left out: the defaults");
+        // Cut AN.3: `Knobs::off` is the follow off too.
         let read: Settings =
-            toml::from_str("opening = \"search\"\nreapproach = false\n").expect("a table");
+            toml::from_str("opening = \"search\"\nreapproach = false\nfollow_broken = false\n")
+                .expect("a table");
         assert_eq!(read.opening, Opening::Search);
         assert!(!read.reapproach);
         assert_eq!(read.knobs(), Knobs::off());
@@ -408,6 +433,31 @@ mod tests {
             );
         }
         assert!(toml::from_str::<Settings>("reapproach = \"yes\"\n").is_err());
+    }
+
+    /// **`follow_broken` and `lattice`** (cut AN.3): both booleans, both on by
+    /// default; `follow_broken` is the pilot's knob, `lattice` is not.
+    #[test]
+    fn the_follow_and_the_lattice_read_and_refuse() {
+        use super::Knobs;
+        let defaults = Settings::default();
+        assert!(defaults.follow_broken);
+        assert!(defaults.lattice);
+        let read: Settings = toml::from_str("").expect("a table");
+        assert!(read.follow_broken && read.lattice, "left out: on");
+        let read: Settings =
+            toml::from_str("follow_broken = false\nlattice = false\n").expect("a table");
+        assert!(!read.follow_broken && !read.lattice);
+        assert_eq!(
+            read.knobs(),
+            Knobs {
+                follow_broken: false,
+                ..Knobs::on()
+            }
+        );
+        assert!(read.validate().is_ok());
+        assert!(toml::from_str::<Settings>("follow_broken = \"yes\"\n").is_err());
+        assert!(toml::from_str::<Settings>("lattice = 1\n").is_err());
     }
 
     /// **`engagement`** (cut AL.2): `hold` by default, `orbit` read, and any

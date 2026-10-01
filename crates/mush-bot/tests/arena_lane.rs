@@ -66,8 +66,21 @@
 //! answered with; unset, a header, eight bearings of grass and `No
 //! contacts.`), and answers `VIEW BRIEF` as the cockpit line it is. **Every
 //! older test flies [`base`]**, the pilot as it was before cut AN.2 (`opening
-//! = "search"`, `reapproach = false`); AN.2's own tests fly the shipped
-//! defaults.
+//! = "search"`, `reapproach = false`; and since cut AN.3 `follow_broken =
+//! false`, `lattice = false`); AN.2's and AN.3's own tests fly the shipped
+//! defaults, or `base` with the one knob they measure.
+//!
+//! Cut AN.3 adds, off by default too, beside the AL and AM knobs:
+//! `lattice_notices` (with `pulse_ms` set, a shot's outcome line is said at
+//! the lattice point the shot went on plus 5 ms, rather than 600 ms after its
+//! `FIRE`: the arena's own notices on its lattice, as the bot's transcripts
+//! read them), `accept_lag_ms` (a `FIRE` passes the pre-check only at `now ≥
+//! start + cycle + accept_lag_ms`: the floor test uses 100, inside the
+//! "+50 to +150" an earlier reading of the bot's transcripts put past each
+//! gun's ready instant; the measured runs from the muster read the live
+//! edge nearer +250, and one test flies 225, past the guard) and
+//! [`Wire::steady`] (a wire with a fixed delay each way: no jitter, no split,
+//! no injection, TCP order kept).
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     ops::RangeInclusive,
@@ -91,11 +104,11 @@ use mush_bot::arena::{
         bearing_deg,
     },
     pilot::{
-        EXCHANGE_MARGIN, EXCHANGE_MIN_TAKEN, EXCHANGE_WINDOW_MS, FRESH_PLOT_MS, FRESH_READ_MS,
-        HEADING_STEP_DEG, HELD_FOR_MS, HELD_MARK_AHEAD_M, HELD_MARK_HALF_WIDTH_M, HELD_MARK_NEAR_M,
-        HELD_TURN_DEG, HOLD_BOW_DEG, HOLD_SLACK_M, ONE_TRACK_COMMIT_MS, ONE_TRACK_DEADBAND_DEG,
-        OPENING_COVER_M, REAPPROACH_OPEN_M, REAPPROACH_WAIT_MS, STALL_MS, UNIDENTIFIED_WAIT_MS,
-        WITHDRAW_MS, clamp_arena, hull_failing,
+        ENTRY_KEEP_OUT_M, EXCHANGE_MARGIN, EXCHANGE_MIN_TAKEN, EXCHANGE_WINDOW_MS, FOLLOW_BAND_M,
+        FRESH_PLOT_MS, FRESH_READ_MS, HEADING_STEP_DEG, HELD_FOR_MS, HELD_MARK_AHEAD_M,
+        HELD_MARK_HALF_WIDTH_M, HELD_MARK_NEAR_M, HELD_TURN_DEG, HOLD_BOW_DEG, HOLD_SLACK_M,
+        ONE_TRACK_COMMIT_MS, ONE_TRACK_DEADBAND_DEG, OPENING_COVER_M, REAPPROACH_OPEN_M,
+        REAPPROACH_WAIT_MS, STALL_MS, UNIDENTIFIED_WAIT_MS, WITHDRAW_MS, clamp_arena, hull_failing,
     },
     report::{self, GapStats},
     settings::{Engagement, Opening, Settings},
@@ -109,6 +122,8 @@ fn base() -> Settings {
     Settings {
         opening: Opening::Search,
         reapproach: false,
+        follow_broken: false,
+        lattice: false,
         ..Settings::default()
     }
 }
@@ -333,6 +348,17 @@ struct Server {
     /// window.` and `No contacts.`. The server never moves the tank: a test
     /// that needs the opening's step to arrive moves `pos` itself.
     brief: Vec<String>,
+    /// **The arena's notices on its lattice** (cut AN.3): with `pulse_ms`
+    /// set, a shot's `Hit on {lock}: turret.` / `Miss on {lock}: the target
+    /// moved.` is said at the pulse the shot went on plus 5 ms, not 600 ms
+    /// after its `FIRE`. Off unless a test sets it.
+    lattice_notices: bool,
+    /// **The acceptance lag** (cut AN.3): a `FIRE` passes the pre-check only
+    /// at `now ≥ start + cycle + accept_lag_ms` of the gun's last shot as
+    /// well (an earlier reading of the transcripts put the live edge at +50
+    /// to +150; the muster runs read it nearer +250); 0, the rule as before,
+    /// unless a test sets it.
+    accept_lag_ms: u64,
 }
 
 /// The transient the cut AM.1 knobs answer with.
@@ -387,6 +413,8 @@ impl Server {
             look_answer_ms: 3,
             look_room: None,
             brief: Vec::new(),
+            lattice_notices: false,
+            accept_lag_ms: 0,
         }
     }
 
@@ -570,7 +598,17 @@ impl Server {
             let fired = self.fired.get(weapon).copied().unwrap_or(0);
             return Some(fired + Server::cycle_ms(weapon) - self.frame());
         }
-        self.cycle_left(weapon)
+        let left = self.cycle_left(weapon);
+        // Cut AN.3: the acceptance lag past the ready instant.
+        if self.accept_lag_ms > 0
+            && let Some(start) = self.fired.get(weapon)
+        {
+            let accepted = start + Server::cycle_ms(weapon) + self.accept_lag_ms;
+            if self.now < accepted {
+                return Some(left.unwrap_or(0).max(accepted - self.now));
+            }
+        }
+        left
     }
 
     /// The rounds the frame shows: a shot waiting for its pulse has not
@@ -872,10 +910,15 @@ impl Server {
                         self.acks
                             .push((self.now + self.fire_answer_ms, weapon.to_owned()));
                         let lock = self.locked.clone().unwrap_or_default();
+                        // Cut AN.3: on the lattice point the shot went on.
+                        let outcome = match (self.lattice_notices, self.pulse_ms) {
+                            (true, Some(_)) => start + 5 - self.now,
+                            _ => 600,
+                        };
                         if weapon == "cannon" {
-                            self.say(600, &format!("Hit on {lock}: turret."));
+                            self.say(outcome, &format!("Hit on {lock}: turret."));
                         } else {
-                            self.say(600, &format!("Miss on {lock}: the target moved."));
+                            self.say(outcome, &format!("Miss on {lock}: the target moved."));
                         }
                     }
                 }
@@ -934,6 +977,9 @@ const WIRE_SPLIT_GAP_MS: RangeInclusive<u64> = 160..=300;
 ///   left` and `Receiver clear.`: both neutral.
 struct Wire {
     seed: u64,
+    /// **A steady wire** (cut AN.3; [`Wire::steady`]): this delay each way,
+    /// and no jitter, no split, no injection.
+    steady: Option<u64>,
     /// When the last line typed reached the server, and when the last piece
     /// left down the wire.
     up_last: u64,
@@ -967,6 +1013,7 @@ impl Wire {
     fn new(seed: u64) -> Wire {
         Wire {
             seed: seed.max(1),
+            steady: None,
             up_last: 0,
             down_last: 0,
             up: VecDeque::new(),
@@ -989,6 +1036,15 @@ impl Wire {
         }
     }
 
+    /// **A steady wire** (cut AN.3): `one_way_ms` each way, every time; no
+    /// jitter, no split, no injection; TCP order kept.
+    fn steady(one_way_ms: u64) -> Wire {
+        Wire {
+            steady: Some(one_way_ms),
+            ..Wire::new(1)
+        }
+    }
+
     fn next(&mut self) -> u64 {
         self.seed ^= self.seed << 13;
         self.seed ^= self.seed >> 7;
@@ -1002,7 +1058,10 @@ impl Wire {
     }
 
     fn delay(&mut self) -> u64 {
-        WIRE_BASE_MS + self.rand(0..=WIRE_JITTER_MS)
+        match self.steady {
+            Some(one_way_ms) => one_way_ms,
+            None => WIRE_BASE_MS + self.rand(0..=WIRE_JITTER_MS),
+        }
     }
 
     /// The lane typed `line` at `sent`.
@@ -1033,7 +1092,7 @@ impl Wire {
         let status = chunk.contains("Callsign ");
         let mut lines: Vec<String> = chunk.split_inclusive('\n').map(str::to_owned).collect();
         let mut injected = false;
-        if lines.len() < 2 {
+        if lines.len() < 2 || self.steady.is_some() {
             self.down.push_back((leave, chunk));
             self.down_last = leave;
             self.carried.push((status, injected));
@@ -4729,7 +4788,12 @@ fn a_reboard_while_locked_types_no_early_range() {
 
 /// To the fight with BA at 450 m east and the friendly RB held, locked on BA.
 fn locked_with_a_friend() -> Run {
-    let mut run = to_the_fight_with(base(), |server| {
+    locked_with_a_friend_in(base())
+}
+
+/// [`locked_with_a_friend`] flying `settings` (cut AN.3).
+fn locked_with_a_friend_in(settings: Settings) -> Run {
+    let mut run = to_the_fight_with(settings, |server| {
         server.ba_at = Some((90, 450));
     });
     sight(&mut run, "X1");
@@ -4806,8 +4870,13 @@ fn the_wire_is_ordered_seeded_and_does_what_it_says() {
 /// A minute on the slow wire after [`locked_with_a_friend`], `each` called
 /// after every step from the switch on (with the switch's time). The run,
 /// and how many sentences it had said at the switch.
-fn a_minute_on_the_wire(mut each: impl FnMut(&Run, u64)) -> (Run, usize) {
-    let mut run = locked_with_a_friend();
+fn a_minute_on_the_wire(each: impl FnMut(&Run, u64)) -> (Run, usize) {
+    a_minute_on_the_wire_in(base(), each)
+}
+
+/// [`a_minute_on_the_wire`] flying `settings` (cut AN.3).
+fn a_minute_on_the_wire_in(settings: Settings, mut each: impl FnMut(&Run, u64)) -> (Run, usize) {
+    let mut run = locked_with_a_friend_in(settings);
     let switched = run.now;
     let said = run.said.len();
     run.wire = Some(Wire::new(WIRE_SEED));
@@ -5637,4 +5706,389 @@ fn with_the_knobs_off_the_lane_is_as_it_was() {
     assert!(said_starting(&run, "Opening").is_empty());
     assert_eq!(run.lane.picture_json()["pilot"]["opening"], "done");
     assert_eq!(run.lane.picture_json()["pilot"]["rule"], Value::Null);
+}
+
+// ---------------------------------------------------------------------------
+// Cut AN.3: the lattice clock on the rig, the slow and the steady wire, and the
+// broken machine on the scripted server
+// ---------------------------------------------------------------------------
+
+/// **The lattice rig** (cut AN.3): the arena fires on its 250 ms pulse,
+/// says each shot's outcome on the lattice point it went on
+/// (`lattice_notices`) and accepts a gun's `FIRE` only `accept_lag_ms` past
+/// its ready instant (100 at the floor: inside the "+50 to +150" an earlier
+/// reading of the transcripts gave; the muster runs read the live edge nearer
+/// +250); a 200-round magazine. Locked on BA with both cycles learned first,
+/// then two minutes. Prints each gun's two gap counts and its refusals; the
+/// run, when the two minutes began, and each gun's `FIRE` lines and
+/// still-cycling refusals in them.
+fn at_the_lattice_floor(
+    lattice: bool,
+    accept_lag_ms: u64,
+) -> (Run, u64, Vec<(&'static str, u32, u32)>) {
+    let mut run = to_the_fight_with(Settings { lattice, ..base() }, |server| {
+        server.pulse_ms = Some(LATTICE_MS);
+        server.lattice_notices = true;
+        server.accept_lag_ms = accept_lag_ms;
+        server.magazine = Some(200);
+    });
+    locked_and_learned(&mut run);
+    let start = run.now;
+    let lines = run.server.fire_lines_by.clone();
+    let refusals = run.server.cycling_refusals_by.clone();
+    run.until(120_000, |_| false);
+    assert_eq!(
+        run.lane.picture().lock.as_deref(),
+        Some("BA"),
+        "locked throughout"
+    );
+    assert!(cycles_learned(&run), "{:?}", run.lane.picture().weapons);
+    let (fire, shot) = both_gaps(&run, start);
+    let mut counts = Vec::new();
+    for weapon in GUNS {
+        let lines = count(&run.server.fire_lines_by, weapon) - count(&lines, weapon);
+        let refused = count(&run.server.cycling_refusals_by, weapon) - count(&refusals, weapon);
+        println!(
+            "lag {accept_lag_ms}, lattice {}: {weapon}: FIRE lines {:?}; shots {:?}; {refused} of \
+             {lines} FIRE lines refused as still cycling",
+            if lattice { "on" } else { "off" },
+            fire.get(weapon),
+            shot.get(weapon),
+        );
+        counts.push((weapon, lines, refused));
+    }
+    (run, start, counts)
+}
+
+/// **Full rate at the lattice floor** (cut AN.3): with the lattice on, the
+/// machine gun's shots are a median of at most a cycle and a lattice step
+/// apart (its line-mode floor) and a p90 of at most two steps, the cannon's
+/// median at most its cycle and a step, at most one `FIRE` line in ten of
+/// each gun refused as still cycling, and the lattice said once. The same
+/// rig with the lattice off prints its figures for the record.
+#[test]
+fn full_rate_at_the_lattice_floor() {
+    let (run, start, counts) = at_the_lattice_floor(true, 100);
+    let (_, shot) = both_gaps(&run, start);
+    let mg = shot.get("machine_gun").expect("machine-gun shots");
+    assert!(mg.p50_ms <= 1_000 + LATTICE_MS, "{shot:?}");
+    assert!(mg.p90_ms <= 1_000 + 2 * LATTICE_MS, "{shot:?}");
+    let cannon = shot.get("cannon").expect("cannon shots");
+    assert!(cannon.p50_ms <= 6_000 + LATTICE_MS, "{shot:?}");
+    for (weapon, lines, refused) in counts {
+        assert!(refused * 10 <= lines, "{weapon}: {refused} of {lines}");
+    }
+    assert!(
+        gun(run.lane.picture(), "machine_gun").is_some_and(|w| w.on_lattice),
+        "{:?}",
+        run.lane.picture().weapons
+    );
+    assert_eq!(
+        said_starting(&run, "Firing on the arena's lattice").len(),
+        1,
+        "{:?}",
+        run.said
+    );
+    let json = run.lane.picture_json();
+    assert!(json["pilot"]["lattice"]["phase"].is_u64(), "{json}");
+    assert!(
+        json["weapons"]
+            .as_array()
+            .is_some_and(|guns| guns.iter().any(|g| g["lattice"] == true)),
+        "{json}"
+    );
+    // The lattice off, for the record: no assertion.
+    let (off, off_start, _) = at_the_lattice_floor(false, 100);
+    let (_, off_shot) = both_gaps(&off, off_start);
+    println!("lattice off: shots {off_shot:?}");
+    assert!(said_starting(&off, "Firing on the arena's lattice").is_empty());
+}
+
+/// **Past the guard, the bench** (cut AN.3): the same rig with the arena
+/// accepting a `FIRE` only 225 ms past the ready instant, past the lattice
+/// clock's guard, as the muster runs read the live arena. The clock's sends
+/// are refused, each gun is benched (its note said) and flies AL's clock
+/// through the bench. Prints both guns' figures with the lattice on and off
+/// for the record; asserts only the bench, and that the machine gun's median
+/// shot gap with the lattice on is no worse than off by more than a lattice
+/// step (the clock tried again after each bench costs a refusal or two).
+#[test]
+fn past_the_guard_the_bench() {
+    let (on, on_start, on_counts) = at_the_lattice_floor(true, 225);
+    let (off, off_start, off_counts) = at_the_lattice_floor(false, 225);
+    let (_, on_shot) = both_gaps(&on, on_start);
+    let (_, off_shot) = both_gaps(&off, off_start);
+    println!("lag 225: shots on {on_shot:?}; off {off_shot:?}");
+    println!("lag 225: FIRE lines and refusals on {on_counts:?}; off {off_counts:?}");
+    let benched = said_starting(&on, "The machine_gun is off the lattice clock");
+    assert!(!benched.is_empty(), "{:?}", on.said);
+    assert!(
+        benched.iter().all(
+            |note| *note == "The machine_gun is off the lattice clock for 30 s: refused twice."
+        ),
+        "{benched:?}"
+    );
+    assert!(said_starting(&off, "The machine_gun is off the lattice clock").is_empty());
+    let mg_on = on_shot.get("machine_gun").expect("machine-gun shots, on");
+    let mg_off = off_shot.get("machine_gun").expect("machine-gun shots, off");
+    assert!(
+        mg_on.p50_ms <= mg_off.p50_ms + LATTICE_MS,
+        "on {on_shot:?}; off {off_shot:?}"
+    );
+}
+
+/// **The slow wire is as it was with the lattice** (cut AN.3): AM.1's
+/// latency rig on [`WIRE_SEED`] (a mean round trip of about 820 ms), flown
+/// with the lattice on and with it off, types the same lines at the same
+/// times, and no gun is ever on the lattice: over `LATTICE_RTT_MAX_MS` the
+/// lattice is off, and above a round trip of about 250 ms no cycle is
+/// learned.
+#[test]
+fn the_slow_wire_is_as_it_was_with_the_lattice() {
+    let fly = |settings: Settings| {
+        let mut on_lattice = false;
+        let (run, _) = a_minute_on_the_wire_in(settings, |run, _| {
+            on_lattice |= run.lane.picture().weapons.iter().any(|w| w.on_lattice);
+        });
+        (run, on_lattice)
+    };
+    let (on, on_lattice) = fly(Settings {
+        lattice: true,
+        ..base()
+    });
+    let (off, _) = fly(base());
+    assert!(!on_lattice, "a gun on the lattice on the slow wire");
+    let sends = |run: &Run| {
+        run.sent
+            .iter()
+            .map(|send| (send.lane_ms, send.line.clone()))
+            .collect::<Vec<_>>()
+    };
+    for weapon in GUNS {
+        println!(
+            "slow wire, lattice on: {weapon}: cycle learned {:?}; round trip {:?}",
+            gun(on.lane.picture(), weapon).and_then(|w| w.cycle_ms),
+            on.lane.picture().lattice.rtt()
+        );
+    }
+    assert_eq!(sends(&on), sends(&off));
+    assert!(said_starting(&on, "Firing on the arena's lattice").is_empty());
+}
+
+/// **A steady wire learns the lattice** (cut AN.3): 80 ms each way on the
+/// lattice rig (no acceptance lag): both cycles are learned, the machine gun
+/// is on the lattice, the round trip read is the wire's (150 to 200 ms), and
+/// the machine gun's shots are a median of at most a cycle, a lattice step
+/// and a tick apart.
+#[test]
+fn a_steady_wire_learns_the_lattice() {
+    let mut run = to_the_fight_with(
+        Settings {
+            lattice: true,
+            ..base()
+        },
+        |server| {
+            server.pulse_ms = Some(LATTICE_MS);
+            server.lattice_notices = true;
+            server.magazine = Some(200);
+        },
+    );
+    run.wire = Some(Wire::steady(80));
+    locked_and_learned(&mut run);
+    let start = run.now;
+    run.until(60_000, |_| false);
+    let picture = run.lane.picture();
+    assert!(cycles_learned(&run), "{:?}", picture.weapons);
+    assert!(
+        gun(picture, "machine_gun").is_some_and(|w| w.on_lattice),
+        "{:?}",
+        picture.weapons
+    );
+    let rtt = picture.lattice.rtt();
+    assert!(rtt.is_some_and(|r| (150..=200).contains(&r)), "{rtt:?}");
+    let (fire, shot) = both_gaps(&run, start);
+    println!("steady wire: FIRE lines {fire:?}; shots {shot:?}; round trip {rtt:?}");
+    let mg = shot.get("machine_gun").expect("machine-gun shots");
+    assert!(mg.p50_ms <= 1_000 + LATTICE_MS + TICK_MS, "{shot:?}");
+}
+
+/// The keep-out's note on BA, as the pilot says it.
+const NOT_FOLLOWING_BA: &str =
+    "Not following BA into its entry zone; backing off out of its sight.";
+
+/// **BA at its own world point** (cut AN.3): `ba_at` is range and bearing
+/// from the tank, so the test keeps BA's world point and the tank's (`x`,
+/// metres east on the 970 m line) and re-computes the row from the two; past
+/// a mover's 600 m the row goes, with `Contact BA lost.` said once.
+fn place_ba(run: &mut Run, x: f64, ba: f64, seen: &mut bool) {
+    run.server.pos.0 = x.round() as i32;
+    let range = (ba - x).round();
+    if range > 600.0 {
+        if *seen {
+            *seen = false;
+            run.server.contacts.clear();
+            run.server.ba_at = None;
+            run.server.now = run.now;
+            run.server.say(0, "Contact BA lost.");
+        }
+    } else if *seen {
+        run.server.ba_at = Some((90, range as u32));
+    }
+}
+
+/// **A broken machine is followed on the scripted server** (cut AN.3): from a
+/// muster at (300, 970) (the other side's entry (2 260, 970) mirrored), BA is
+/// sighted 450 m east, its turret destroyed, and drives east for home at
+/// 15 m/s (the stock tank's 54 kph: the scope's 50 m rows and the lock's finer
+/// ranges carry a track at that). The pilot follows it with a positive `SPEED`
+/// toward it; once BA is within `ENTRY_KEEP_OUT_M` of the entry line (or the
+/// tank within that and the band), it says so, reverses (a negative `SPEED`),
+/// and stops (`SPEED 0`) out of BA's sight to wait; no `Hunting ` is said.
+#[test]
+fn a_broken_machine_is_followed_on_the_scripted_server() {
+    let mut run = to_the_fight_with(Settings::default(), |server| server.pos = (300, 970));
+    assert!(
+        run.until(10_000, |run| !said_starting(run, "Opening: holding")
+            .is_empty()),
+        "{:?}",
+        run.said
+    );
+    let line_x = 2_560.0 - 300.0;
+    let home = line_x - ENTRY_KEEP_OUT_M + 60.0;
+    let mut x = 300.0_f64;
+    let mut ba = 750.0_f64;
+    let mut seen = true;
+    run.server.contacts = vec!["BA  blue  bearing 090° (rel 000°)  far  450 m  1 s".into()];
+    place_ba(&mut run, x, ba, &mut seen);
+    run.server.now = run.now;
+    run.server.say(0, "New contact BA: bearing 090°, far.");
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    run.server.now = run.now;
+    run.server.say(0, "BA's turret is destroyed.");
+    let driving = run.now;
+    let mut kept_out = None;
+    let mut stopped = None;
+    // The farthest east the tank came, and whether it drove ahead with the
+    // follow the rule flown.
+    let mut max_x = x;
+    let mut ahead_following = false;
+    for _ in 0..300 {
+        if ba < home {
+            ba = (ba + 15.0).min(home);
+        }
+        let kph = run.lane.pilot().last_speed_order.unwrap_or(0);
+        x += f64::from(kph) / 3.6;
+        max_x = max_x.max(x);
+        place_ba(&mut run, x, ba, &mut seen);
+        run.until(1_000, |_| false);
+        ahead_following |= run.lane.pilot().rule() == Some("follow")
+            && run.lane.pilot().last_speed_order.is_some_and(|kph| kph > 0);
+        if kept_out.is_none() && run.said.iter().any(|s| s == NOT_FOLLOWING_BA) {
+            kept_out = Some(run.now);
+        }
+        if let Some(from) = kept_out
+            && !run.sends_of("SPEED 0", from).is_empty()
+        {
+            stopped = Some(run.now);
+            break;
+        }
+    }
+    let following = format!(
+        "Following BA home: it is hurt and driving away; holding {FOLLOW_BAND_M:.0} m behind it."
+    );
+    assert!(run.said.contains(&following), "{:?}", run.said);
+    let kept_out = kept_out.unwrap_or_else(|| panic!("never kept out: {:?}", run.said));
+    let ahead = speed_sends(&run, driving, kept_out);
+    assert!(ahead.iter().any(|(_, kph)| *kph > 0), "{ahead:?}");
+    assert!(ahead_following, "never ahead on the follow: {ahead:?}");
+    let back = speed_sends(&run, kept_out - 1_000, run.now);
+    let reversed = back
+        .iter()
+        .position(|(_, kph)| *kph < 0)
+        .unwrap_or_else(|| panic!("no reverse: {back:?}"));
+    assert!(
+        back.iter().skip(reversed).any(|(_, kph)| *kph == 0),
+        "{back:?}"
+    );
+    assert!(stopped.is_some(), "{back:?}; said {:?}", run.said);
+    assert!(
+        said_starting(&run, "Waiting for BA to come back, ").len() == 1,
+        "{:?}",
+        run.said
+    );
+    assert!(said_starting(&run, "Hunting ").is_empty(), "{:?}", run.said);
+    let json = run.lane.picture_json();
+    assert_eq!(json["pilot"]["rule"], "return_wait", "{json}");
+    // Short of the entry line: the tank never went past the keep-out with
+    // the band by more than one step's travel at full ahead (15 m: the
+    // keep-out is judged on the step after the line is crossed), however far
+    // it then backed off.
+    println!(
+        "farthest east {max_x:.0} m; the own keep-out at {:.0} m",
+        line_x - ENTRY_KEEP_OUT_M - FOLLOW_BAND_M
+    );
+    assert!(
+        max_x <= line_x - ENTRY_KEEP_OUT_M - FOLLOW_BAND_M + 15.0,
+        "{max_x}"
+    );
+    assert!(x < max_x, "backed off: {x} from {max_x}");
+}
+
+/// **A start into a running match follows nothing** (cut AN.3): `STARTUP`
+/// into a tank already powered mid-match leaves no muster and so no entry
+/// line; a hurt BA driving away is held as before, and nothing says
+/// `Following `.
+#[test]
+fn a_start_into_a_running_match_follows_nothing() {
+    let mut run = Run::new(Settings::default());
+    run.server.pos = (300, 970);
+    assert!(
+        run.until(60_000, |run| run.lines().contains(&"STARTUP")),
+        "{:?}",
+        run.lines()
+    );
+    for (_, chunk) in &mut run.server.queue {
+        let text = chunk.text().to_owned();
+        if text.contains("Startup sequence begun") {
+            *chunk = Chunk::Text(String::new());
+        } else if text.contains("Power online.") {
+            *chunk = Chunk::Text("Power is already online.\r\n".to_owned());
+        }
+    }
+    assert!(run.until(10_000, Run::fighting), "{:?}", run.lines());
+    run.until(2_000, |_| false);
+    assert_eq!(run.lane.pilot().muster_m, None);
+    let mut x = 300.0_f64;
+    let mut ba = 750.0_f64;
+    let mut seen = true;
+    run.server.contacts = vec!["BA  blue  bearing 090° (rel 000°)  far  450 m  1 s".into()];
+    place_ba(&mut run, x, ba, &mut seen);
+    run.server.now = run.now;
+    run.server.say(0, "New contact BA: bearing 090°, far.");
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    run.server.now = run.now;
+    run.server.say(0, "BA's turret is destroyed.");
+    let mut tracked = false;
+    for _ in 0..40 {
+        ba += 15.0;
+        let kph = run.lane.pilot().last_speed_order.unwrap_or(0);
+        x += f64::from(kph) / 3.6;
+        place_ba(&mut run, x, ba, &mut seen);
+        run.until(1_000, |_| false);
+        tracked |= run
+            .lane
+            .picture()
+            .contacts
+            .get("BA")
+            .is_some_and(|c| c.track.is_some());
+    }
+    assert!(tracked, "BA was seen driving away, a track published");
+    assert!(run.lane.pilot().hurt.contains("BA"));
+    assert!(
+        said_starting(&run, "Following ").is_empty(),
+        "{:?}",
+        run.said
+    );
+    assert_eq!(run.lane.pilot().follow, None);
+    assert_eq!(run.lane.pilot().ret, None);
 }

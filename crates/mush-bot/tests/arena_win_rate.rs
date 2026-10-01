@@ -61,13 +61,15 @@
 //! {value}`.
 //! No code is edited between the runs.
 //!
-//! **The knobs** (cut AN.2): `MUSH_BOT_WIN_RATE_OFF` is a comma list of
-//! `opening`, `reapproach` or `all`, the pilot's own knobs to turn off for an
-//! ablation (written into the bot's config as `[arena] opening = "search"`
-//! and `reapproach = false`); anything else panics before the launch with
-//! `MUSH_BOT_WIN_RATE_OFF names opening, reapproach or all, not {word}`. Both
-//! win-rate lanes print `KNOBS: opening {wait|search}, reapproach {on|off}`
-//! straight after the `ENGAGEMENT` line.
+//! **The knobs** (cut AN.2; cut AN.3): `MUSH_BOT_WIN_RATE_OFF` is a comma
+//! list of `opening`, `reapproach`, `follow`, `lattice` or `all` (all four),
+//! the pilot's own knobs to turn off for an ablation (written into the bot's
+//! config as `[arena] opening = "search"`, `reapproach = false`,
+//! `follow_broken = false` and `lattice = false`); anything else panics
+//! before the launch with `MUSH_BOT_WIN_RATE_OFF names opening, reapproach,
+//! follow, lattice or all, not {word}`. Both win-rate lanes print `KNOBS:
+//! opening {wait|search}, reapproach {on|off}, follow {on|off}, lattice
+//! {on|off}` straight after the `ENGAGEMENT` line.
 //!
 //! **The lead's reading** (cut AL.3; the rig's `reading` over the kept
 //! transcript and the report): first `ENGAGEMENT: {e}; flown {stance} {k}, …
@@ -77,8 +79,9 @@
 //! `STILL CYCLING {w}: {k} of {n} FIRE lines`, `HITS TAKEN BY FACET: …` and
 //! (cut AN.1) `SEEN FIRST: …`, `OPENING: …` and `FRONT SHARE: …`, (cut AN.2)
 //! `PILOT RULES: opening {a}, off the road {b}, halt {c}, reapproach {d},
-//! approach wait {e}` (what the pilot's own rules did, counted from its
-//! `arena` sentences), and only then `UNPOSED`, `NO REPORT` and `EARLY END`. The offline
+//! approach wait {e}` and (cut AN.3) `, follow {f}, return wait {g}, lattice
+//! {h}` (what the pilot's own rules did, counted from its `arena`
+//! sentences), and only then `UNPOSED`, `NO REPORT` and `EARLY END`. The offline
 //! `the_reading_lines_are_the_leads_count` (not ignored) proves the reading on
 //! a hand-written transcript and report.
 use std::time::Duration;
@@ -432,7 +435,7 @@ fn the_reading_lines_are_the_leads_count() {
             "SEEN FIRST: contact before hit 1, hit before contact 1, neither 0 of 2 matches; lead p10 12 / p50 12 / p90 12 s over 1; shot first 1, shot at first 1",
             "OPENING: first contact p10 30 / p50 30 / p90 30 s after power online over 2 matches; first hit taken p50 29 s over 2",
             "FRONT SHARE: 1 of 8 facet hits taken on a front facet",
-            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0",
+            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0",
         ]
     );
     // Empty facet maps: none. No report: no report. The engagement is the
@@ -463,7 +466,9 @@ fn the_reading_lines_are_the_leads_count() {
     );
     assert_eq!(
         lines.last().map(String::as_str),
-        Some("PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0")
+        Some(
+            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0"
+        )
     );
     assert_eq!(lines.len(), 12);
     // Nothing read: one line for what was flown, one for the facets, and the
@@ -476,7 +481,7 @@ fn the_reading_lines_are_the_leads_count() {
             "SEEN FIRST: no report",
             "OPENING: no report",
             "FRONT SHARE: no report",
-            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0",
+            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0",
         ]
     );
 
@@ -496,11 +501,11 @@ fn the_reading_lines_are_the_leads_count() {
     );
 }
 
-/// **The knob variable, offline** (cut AN.2): `MUSH_BOT_WIN_RATE_OFF` reads
-/// nothing off when unset, both knobs for `opening,reapproach` and for `all`,
-/// and refuses any other word with its sentence; the bot's extra config is
-/// byte for byte what it was with nothing off and names only the knobs turned
-/// off; the `KNOBS` line says them; and the reading's `PILOT RULES` counts a
+/// **The knob variable, offline** (cut AN.2; cut AN.3): `MUSH_BOT_WIN_RATE_OFF`
+/// reads nothing off when unset, the knobs it names, all four for `all`, and
+/// refuses any other word with its sentence; the bot's extra config is byte
+/// for byte what it was with nothing off and names only the knobs turned off;
+/// the `KNOBS` line says them; and the reading's `PILOT RULES` counts a
 /// hand-written transcript's `arena` sentences — two of each rule — and
 /// counts the lobby's `Out of the tank; boarding again.` nowhere.
 #[test]
@@ -514,17 +519,28 @@ fn the_knob_variable_reads_and_refuses() {
     assert!(knobs_off(Some("")).is_empty());
     let both: BTreeSet<&str> = ["opening", "reapproach"].into_iter().collect();
     assert_eq!(knobs_off(Some("opening,reapproach")), both);
-    assert_eq!(knobs_off(Some("all")), both);
+    // Cut AN.3: `all` is all four.
+    let all: BTreeSet<&str> = ["opening", "reapproach", "follow", "lattice"]
+        .into_iter()
+        .collect();
+    assert_eq!(knobs_off(Some("all")), all);
+    assert_eq!(knobs_off(Some("opening, reapproach,follow,lattice")), all);
     assert_eq!(
         knobs_off(Some("opening")),
         ["opening"].into_iter().collect::<BTreeSet<_>>()
     );
-    let refused = std::panic::catch_unwind(|| knobs_off(Some("lattice"))).expect_err("refused");
+    for knob in ["follow", "lattice"] {
+        assert_eq!(
+            knobs_off(Some(knob)),
+            [knob].into_iter().collect::<BTreeSet<_>>()
+        );
+    }
+    let refused = std::panic::catch_unwind(|| knobs_off(Some("halt"))).expect_err("refused");
     assert_eq!(
         refused.downcast_ref::<String>().map(String::as_str),
-        Some("MUSH_BOT_WIN_RATE_OFF names opening, reapproach or all, not lattice")
+        Some("MUSH_BOT_WIN_RATE_OFF names opening, reapproach, follow, lattice or all, not halt")
     );
-    assert!(std::panic::catch_unwind(|| knobs_off(Some("opening,lattice"))).is_err());
+    assert!(std::panic::catch_unwind(|| knobs_off(Some("opening,follow_broken"))).is_err());
     // Nothing off: today's bytes.
     let none = BTreeSet::new();
     assert_eq!(
@@ -540,21 +556,45 @@ fn the_knob_variable_reads_and_refuses() {
         "\n[arena]\nlead_start_grace_ms = 5000\nengagement = \"orbit\"\nopening = \
          \"search\"\nreapproach = false\n"
     );
+    assert_eq!(
+        extra("hold", &all),
+        "\n[arena]\nlead_start_grace_ms = 5000\nengagement = \"hold\"\nopening = \
+         \"search\"\nreapproach = false\nfollow_broken = false\nlattice = false\n"
+    );
+    assert_eq!(
+        extra("hold", &knobs_off(Some("lattice"))),
+        "\n[arena]\nlead_start_grace_ms = 5000\nengagement = \"hold\"\nlattice = false\n"
+    );
     // The extra tables read as the pilot's settings.
     let read: mush_bot::arena::settings::Settings = toml::from_str(
-        extra("hold", &both)
+        extra("hold", &all)
             .trim_start()
             .trim_start_matches("[arena]\n"),
     )
     .expect("the [arena] table");
     assert_eq!(read.knobs(), mush_bot::arena::pilot::Knobs::off());
+    assert!(!read.lattice);
     // The `KNOBS` line.
-    assert_eq!(knobs_line(&none), "KNOBS: opening wait, reapproach on");
+    assert_eq!(
+        knobs_line(&none),
+        "KNOBS: opening wait, reapproach on, follow on, lattice on"
+    );
     assert_eq!(
         knobs_line(&knobs_off(Some("reapproach"))),
-        "KNOBS: opening wait, reapproach off"
+        "KNOBS: opening wait, reapproach off, follow on, lattice on"
     );
-    assert_eq!(knobs_line(&both), "KNOBS: opening search, reapproach off");
+    assert_eq!(
+        knobs_line(&both),
+        "KNOBS: opening search, reapproach off, follow on, lattice on"
+    );
+    assert_eq!(
+        knobs_line(&knobs_off(Some("follow,lattice"))),
+        "KNOBS: opening wait, reapproach on, follow off, lattice off"
+    );
+    assert_eq!(
+        knobs_line(&all),
+        "KNOBS: opening search, reapproach off, follow off, lattice off"
+    );
     // `PILOT RULES` over a hand-written transcript.
     let said = |text: &str| json!({"kind": "arena", "elapsed_ms": 1, "data": text}).to_string();
     let transcript = [
@@ -568,7 +608,16 @@ fn the_knob_variable_reads_and_refuses() {
         "Opening the range on BA: 9 hits taken to 2 scored in 20 s; backing off bow on.",
         "Out of BA's sight at 650 m from its last plot; waiting for it to come on.",
         "Out of BA's sight at 652 m from its last plot; waiting for it to come on.",
+        "Following BA home: it is hurt and driving away; holding 350 m behind it.",
+        "Following BB home: it is hurt and driving away; holding 350 m behind it.",
+        "Waiting for BA to come back, 650 m from its last plot.",
+        "Waiting for BB to come back, 655 m from its last plot.",
+        "Firing on the arena's lattice: phase 5 ms, round trip 40 ms.",
+        "Firing on the arena's lattice: phase 245 ms, round trip 38 ms.",
         "Out of the tank; boarding again.",
+        "Not following BA into its entry zone; backing off out of its sight.",
+        "No return from BA in 90 s; searching.",
+        "The machine_gun is off the lattice clock for 30 s: refused twice.",
         "Opening over: BA is in sight after 95 s.",
         "The halt is over: BA is at the band.",
     ]
@@ -579,7 +628,10 @@ fn the_knob_variable_reads_and_refuses() {
     let reading = arena_rig::reading(&transcript, None);
     assert_eq!(
         reading.lines("hold").last().map(String::as_str),
-        Some("PILOT RULES: opening 2, off the road 2, halt 2, reapproach 2, approach wait 2")
+        Some(
+            "PILOT RULES: opening 2, off the road 2, halt 2, reapproach 2, approach wait 2, \
+             follow 2, return wait 2, lattice 2"
+        )
     );
     // No transcript: zeros.
     assert_eq!(
@@ -587,6 +639,8 @@ fn the_knob_variable_reads_and_refuses() {
             .lines("hold")
             .last()
             .map(String::as_str),
-        Some("PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0")
+        Some(
+            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0"
+        )
     );
 }

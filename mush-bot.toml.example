@@ -125,6 +125,8 @@ bootstrap = ["help", "look"] # sent once after login in agent mode; scripts list
 # engagement = "hold"        # hold (stop at the band, bow on) or orbit (circle it); hold is the default
 # opening = "wait"          # wait (hold stopped near our entry until a hostile is in sight) or search (drive for The Crossroads)
 # reapproach = true         # back away past a stopped machine's sight when it out-hits us, then wait for it to come on
+# follow_broken = true      # follow a hurt machine home from behind, never into its entry zone, then wait for its return
+# lattice = true            # fire on the arena's 250 ms lattice once each gun's cycle is learned
 # step_timeout_ms = 15000    # the longest one lobby line may go unanswered (2000..60000)
 # The optional model commander sets the pilot's doctrine (where it goes, what it
 # hunts); the pilot still locks, fires and steers. docs/bot.md "The commander".

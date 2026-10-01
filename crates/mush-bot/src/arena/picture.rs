@@ -75,6 +75,61 @@
 //! is the evidence); and an arena refusal of an acked shot that is not `Still
 //! cycling` (the shot never left) sets it to now.
 //!
+//! **The lattice clock** (cut AN.3; [`Lattice`], `[arena] lattice`, on by
+//! default). AL's clock cannot see where the arena's next lattice point is, so
+//! its slack climbs and every shot pays a second lattice step (AL.3's runs:
+//! machine-gun shots a median 1 497 to 1 499 ms apart against a line-mode floor
+//! of about 1 250, and 58 to 75 of 412 to 434 `FIRE` lines refused). A `Firing
+//! {w}.` ack answers its `FIRE` within a few milliseconds and **carries no
+//! phase**; the arena's own notices do. So:
+//!
+//! * **The phase** is read from the arena's notices (fact (c): within a match
+//!   every hit, miss, contact notice and `Held:` falls in one 50 ms bin on a
+//!   250 ms lattice): the read times of the last [`LATTICE_SAMPLES`] `New
+//!   contact`, identification, `Contact … lost.`, hit scored, miss, hit taken
+//!   and `Held:` lines of a running match — never an ack, a refusal, a reply
+//!   row or a lobby line — and the densest [`LATTICE_BIN_MS`] window of them
+//!   on the [`LATTICE_MS`] lattice, read as its earliest sample
+//!   ([`Lattice::phase`]).
+//! * **The round trip** is each ack's read time less the send of the `FIRE` it
+//!   answered, the median of the last [`LATTICE_RTT_SAMPLES`]
+//!   ([`Lattice::rtt`]). In the read frame a lattice point is the true one plus
+//!   the down leg, so sending at `L_read + cycle + guard − (up + down)` arrives
+//!   at `L_true + cycle + guard`: the round trip comes off.
+//! * **The clock**: an ack read at `a`, on a gun whose cycle `c` is learned,
+//!   with the phase `p` and a round trip `r` at most [`LATTICE_RTT_MAX_MS`]
+//!   known and the gun not benched, is ready at `next_lattice(a, p) + c +`
+//!   [`LATTICE_GUARD_MS`]` − r` ([`next_lattice`]; [`Weapon::on_lattice`]);
+//!   otherwise AL's clock as before.
+//! * **Why the guard** (the frame of the evidence): AL's transcript reading
+//!   measured each `FIRE`'s **send** time against the lattice read from the
+//!   notices' **read** times, on local runs whose round trip was a few
+//!   milliseconds, where send and arrival, read frame and true frame,
+//!   coincide. Below +50 ms of the instant the shot is ready every send was
+//!   refused, +50 to +150 was mixed, and from +150 every one was accepted. The
+//!   bot takes those as arrival-frame edges, which is why the round trip comes
+//!   off. **Anyone re-reading live transcripts** (a round trip of 35 to 48 ms
+//!   on the dev box) **must read them net of the round trip**, or it is taken
+//!   off twice. With the runner's 50 ms tick, +175 lands the arrival between
+//!   +150 (every send accepted) and +250 (the next lattice point), so the shot
+//!   goes on the floor: one cycle and one lattice step apart. **Measured
+//!   from the muster (cut AN.3's runs, local, a round trip of 1 to 2 ms)**
+//!   that edge did not hold: read against the phase learned here, a `FIRE`
+//!   175 to 250 ms past the ready instant was refused about as often as it
+//!   was accepted, and from +250 almost always accepted (AN.1's run, on AL's
+//!   clock, reads the same) — past this guard's bound, so the bench kept most
+//!   guns on AL's clock and the machine gun's shots stayed a median of about
+//!   1 500 ms apart.
+//! * **The bench**: two `Still cycling` answers to a lattice-clocked gun's own
+//!   `FIRE` inside [`LATTICE_BENCH_MS`] put that gun back on AL's clock for
+//!   that long ([`LATTICE_MISSES_OFF`]; `The {w} is off the lattice clock for
+//!   30 s: refused twice.`); the retry is AL's.
+//! * **On a slow wire** nothing changes: above [`LATTICE_RTT_MAX_MS`] the
+//!   lattice is off and AL's clock flies, and above a round trip of about
+//!   250 ms no cycle is learned at all (fact (b)), so no lattice clock is ever
+//!   set there; on the slow rig (a mean round trip of about 820 ms) the bot
+//!   types exactly what it types with the lattice off.
+//!
 //! **A gun the tank has lost** (cut AL.1; the bot's own transcripts again: once
 //! the turret went, every `FIRE` of its guns for seconds was answered ``That
 //! unit carries no weapon called `cannon`.``). That answer strikes the gun
@@ -183,6 +238,114 @@ pub const FIRE_SLACK_MAX_MS: u64 = ENGAGED_PULSE_MS;
 /// lands one lattice step on inside the second it was refused for, not a whole
 /// second later (cut AL.1; AL.3 may tune it within 150..=500).
 pub const FIRE_RETRY_MS: u64 = 250;
+/// **The arena's lattice** (cut AN.3; fact (c): the bot's own transcripts read
+/// every notice of a match on it). Not tunable.
+pub const LATTICE_MS: u64 = 250;
+/// The bin a lattice point's notices fall in (the transcripts' 50 ms). Not
+/// tunable.
+pub const LATTICE_BIN_MS: u64 = 50;
+/// The notices kept for the phase, newest last. Not tunable.
+pub const LATTICE_SAMPLES: usize = 24;
+/// The phase is read only from at least this many in its bin… Not tunable.
+pub const LATTICE_MIN_SAMPLES: usize = 8;
+/// …and at least this share of the kept notices, per mille. Not tunable.
+pub const LATTICE_SHARE_PER_MILLE: usize = 750;
+/// **The guard** (cut AN.3): a lattice-clocked gun is typed this long past
+/// the instant it is ready, net of the round trip (the module head: AL's
+/// accepted-from-+150 edge, under the next lattice point at +250, with the
+/// runner's 50 ms tick). Tunable 150..=200.
+pub const LATTICE_GUARD_MS: u64 = 175;
+/// Above this round trip the lattice is off and AL's clock flies. Not
+/// tunable.
+pub const LATTICE_RTT_MAX_MS: u64 = 200;
+/// The round trips kept, newest last. Not tunable.
+pub const LATTICE_RTT_SAMPLES: usize = 8;
+/// This many `Still cycling` answers to a lattice-clocked gun's own `FIRE`…
+/// Not tunable.
+pub const LATTICE_MISSES_OFF: usize = 2;
+/// …inside this long bench the gun from the lattice clock for this long. Not
+/// tunable.
+pub const LATTICE_BENCH_MS: u64 = 30_000;
+const _: () = assert!(LATTICE_BIN_MS < LATTICE_MS && LATTICE_GUARD_MS < LATTICE_MS);
+
+/// **The next lattice point after `at`** (cut AN.3): the smallest `L > at`
+/// with `L % LATTICE_MS == p` (`p` is taken modulo [`LATTICE_MS`]).
+pub fn next_lattice(at: u64, p: u64) -> u64 {
+    let p = p % LATTICE_MS;
+    let base = at - at % LATTICE_MS + p;
+    if base > at {
+        base
+    } else {
+        base.saturating_add(LATTICE_MS)
+    }
+}
+
+/// **The lattice, as the pilot's own session reads it** (cut AN.3; the module
+/// head): whether it is used, the read times of the arena's own notices, the
+/// round trips of the guns' `FIRE`s, and whether this match's first lattice
+/// clock has been said. Times and figures only: it names nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Lattice {
+    /// `[arena] lattice` ([`Picture::set_lattice`]); off by default.
+    pub on: bool,
+    /// The read times of the last [`LATTICE_SAMPLES`] notices of a running
+    /// match, oldest first.
+    pub samples: VecDeque<u64>,
+    /// The last [`LATTICE_RTT_SAMPLES`] round trips, oldest first.
+    pub rtts: VecDeque<u64>,
+    /// `Firing on the arena's lattice: …` has been said this match.
+    pub said: bool,
+}
+
+impl Lattice {
+    /// **The phase** (cut AN.3): for each `p` in `0, 10, … 240`, the samples
+    /// whose offset past `p` on the lattice is under [`LATTICE_BIN_MS`]; the
+    /// window with the most (the smallest `p` on a tie), read as **its
+    /// earliest sample** — a tie-broken window can start up to 45 ms before
+    /// its cluster, and that would eat the guard. `None` unless that window
+    /// holds at least [`LATTICE_MIN_SAMPLES`] and
+    /// [`LATTICE_SHARE_PER_MILLE`] of the samples.
+    pub fn phase(&self) -> Option<u64> {
+        let offset = |s: u64, p: u64| (s % LATTICE_MS + LATTICE_MS - p) % LATTICE_MS;
+        let mut best: Option<(u64, usize)> = None;
+        for p in (0..LATTICE_MS).step_by(10) {
+            let count = self
+                .samples
+                .iter()
+                .filter(|s| offset(**s, p) < LATTICE_BIN_MS)
+                .count();
+            if best.is_none_or(|(_, most)| count > most) {
+                best = Some((p, count));
+            }
+        }
+        let (p, count) = best?;
+        if count < LATTICE_MIN_SAMPLES
+            || count.saturating_mul(1_000)
+                < self.samples.len().saturating_mul(LATTICE_SHARE_PER_MILLE)
+        {
+            return None;
+        }
+        let earliest = self
+            .samples
+            .iter()
+            .map(|s| offset(*s, p))
+            .filter(|o| *o < LATTICE_BIN_MS)
+            .min()?;
+        Some((p + earliest) % LATTICE_MS)
+    }
+
+    /// **The round trip** (cut AN.3): with at least three, the median of the
+    /// kept round trips by the index rule (`floor(0.5 × (n − 1))` of the
+    /// sorted list).
+    pub fn rtt(&self) -> Option<u64> {
+        if self.rtts.len() < 3 {
+            return None;
+        }
+        let mut sorted: Vec<u64> = self.rtts.iter().copied().collect();
+        sorted.sort_unstable();
+        sorted.get((sorted.len() - 1) / 2).copied()
+    }
+}
 // The floor is nothing today, which the lint reads as always true; the
 // assertion stays written for the bounds a tuning round moves within.
 #[allow(clippy::absurd_extreme_comparisons)]
@@ -417,6 +580,15 @@ pub struct Weapon {
     /// paired refusal un-counted: the rounds a row must be short of the last
     /// row's figure before it shows every one of them has left.
     pub shots_since_read: u32,
+    /// **The last ack set the lattice clock** (cut AN.3; the module head):
+    /// set or cleared by every ack.
+    pub on_lattice: bool,
+    /// The `Still cycling` answers to this gun's own `FIRE` while it was
+    /// lattice-clocked, inside the last [`LATTICE_BENCH_MS`] (cut AN.3).
+    pub lattice_misses: VecDeque<u64>,
+    /// Off the lattice clock until then (cut AN.3): [`LATTICE_MISSES_OFF`]
+    /// misses benched it.
+    pub lattice_bench_until_ms: Option<u64>,
 }
 
 impl Weapon {
@@ -748,6 +920,9 @@ pub struct Picture {
     /// aboard` block's row or a running `STATUS` head, which a bot restarted
     /// or attached into a running match reads. Cleared by a new match.
     pub powered_here: bool,
+    /// **The arena's lattice** (cut AN.3): the knob, its samples and round
+    /// trips ([`Lattice`]).
+    pub lattice: Lattice,
     pub tally: Tally,
     pub events: VecDeque<Event>,
     /// Bumped on every change.
@@ -1355,6 +1530,17 @@ impl Picture {
                 // read (cut AM.1).
                 let sent = self.take_fire_mark(now_ms, Some(weapon));
                 self.tally.shots = self.tally.shots.saturating_add(1);
+                // Cut AN.3: the round trip, and the lattice as it stands.
+                if let Some(sent) = sent {
+                    self.lattice.rtts.push_back(now_ms.saturating_sub(sent));
+                    while self.lattice.rtts.len() > LATTICE_RTT_SAMPLES {
+                        self.lattice.rtts.pop_front();
+                    }
+                }
+                let lattice = self
+                    .lattice
+                    .on
+                    .then(|| self.lattice.phase().zip(self.lattice.rtt()));
                 let entry = self.weapon_mut(weapon);
                 entry.fired_ms = Some(now_ms);
                 entry.fired_sent_ms = sent;
@@ -1370,10 +1556,38 @@ impl Picture {
                 entry.next_ready_ms = entry
                     .cycle_ms
                     .map(|cycle| now_ms.saturating_add(cycle).saturating_add(slack));
+                // Cut AN.3: on the lattice, when the knob is on, the cycle is
+                // learned, the phase and a round trip short enough are known,
+                // and the gun is not benched — the next lattice point after
+                // the ack, the cycle and the guard, less the round trip.
+                let benched = entry
+                    .lattice_bench_until_ms
+                    .is_some_and(|until| now_ms < until);
+                let on_lattice = match (lattice.flatten(), entry.cycle_ms) {
+                    (Some((p, r)), Some(cycle)) if r <= LATTICE_RTT_MAX_MS && !benched => {
+                        entry.next_ready_ms = Some(
+                            next_lattice(now_ms, p)
+                                .saturating_add(cycle)
+                                .saturating_add(LATTICE_GUARD_MS)
+                                .saturating_sub(r),
+                        );
+                        Some((p, r))
+                    }
+                    _ => None,
+                };
+                entry.on_lattice = on_lattice.is_some();
                 entry.shots_since_read = entry.shots_since_read.saturating_add(1);
                 entry.acks.push_back(now_ms);
                 while entry.acks.len() > MAX_ACKS {
                     entry.acks.pop_front();
+                }
+                if let Some((p, r)) = on_lattice
+                    && !self.lattice.said
+                {
+                    self.lattice.said = true;
+                    self.notes.push(format!(
+                        "Firing on the arena's lattice: phase {p} ms, round trip {r} ms."
+                    ));
                 }
                 self.touch();
             }
@@ -1430,6 +1644,7 @@ impl Picture {
                 bearing_deg,
                 band,
             } => {
+                self.lattice_sample(now_ms);
                 // Cut AN.1: the side the notice's designator is held as, if
                 // any (a teammate a wingman reported is held as the own side).
                 let held = self.contacts.get(designator).and_then(|c| c.side);
@@ -1456,6 +1671,7 @@ impl Picture {
                 designator,
                 side,
             } => {
+                self.lattice_sample(now_ms);
                 self.first_contact(now_ms, Some(*side));
                 self.rekey(now_ms, was, designator, Some(*side));
                 event = Some(self.event(
@@ -1481,6 +1697,7 @@ impl Picture {
                 ));
             }
             Line::ContactLost { designator } => {
+                self.lattice_sample(now_ms);
                 self.contacts.remove(designator);
                 if self.lock.as_deref() == Some(designator.as_str()) {
                     self.clear_lock(now_ms);
@@ -1498,6 +1715,7 @@ impl Picture {
                 section,
                 ..
             } => {
+                self.lattice_sample(now_ms);
                 self.tally.hits_scored = self.tally.hits_scored.saturating_add(1);
                 // Cut AN.1: the first hit scored on the other side.
                 if !*friendly && self.running() {
@@ -1515,6 +1733,7 @@ impl Picture {
                 event = Some(self.event(now_ms, EventKind::HitScored, text));
             }
             Line::Missed { designator, words } => {
+                self.lattice_sample(now_ms);
                 self.tally.misses = self.tally.misses.saturating_add(1);
                 self.touch();
                 let text = match (designator, words) {
@@ -1551,6 +1770,7 @@ impl Picture {
                 internals,
                 already_destroyed,
             } => {
+                self.lattice_sample(now_ms);
                 self.tally.hits_taken = self.tally.hits_taken.saturating_add(1);
                 // Cut AN.1: the first hit taken.
                 if self.running() {
@@ -1672,6 +1892,7 @@ impl Picture {
                 event = Some(self.event(now_ms, EventKind::PowerOnline, "Power online.".into()));
             }
             Line::Held { cause } => {
+                self.lattice_sample(now_ms);
                 self.own.held = Some(*cause);
                 self.touch();
                 let words = match cause {
@@ -1852,6 +2073,13 @@ impl Picture {
         self.touch();
     }
 
+    /// **Use the arena's lattice** (cut AN.3; `[arena] lattice`, which the lane
+    /// sets once, at its construction): off by default, so a picture made
+    /// anywhere else keeps AL's clock.
+    pub fn set_lattice(&mut self, on: bool) {
+        self.lattice.on = on;
+    }
+
     /// The runner wrote a `FIRE` line (a re-send included) at `now_ms`.
     ///
     /// Every `FIRE` is answered at once by exactly one line of its own —
@@ -1912,7 +2140,9 @@ impl Picture {
     /// each a sentence for an `arena` event: `No {w} aboard any more: struck
     /// from the fire schedule.`, `The {section}'s weapons are gone: no FIRE
     /// until WEAPONSTATUS says what is left.`, `The {w} is empty: struck from
-    /// the fire schedule.`
+    /// the fire schedule.`; and (cut AN.3) `Firing on the arena's lattice:
+    /// phase {p} ms, round trip {r} ms.` (once a match) and `The {w} is off
+    /// the lattice clock for 30 s: refused twice.`
     pub fn take_notes(&mut self) -> Vec<String> {
         std::mem::take(&mut self.notes)
     }
@@ -2118,6 +2348,11 @@ impl Picture {
         // is the board's, said for this match.
         self.ground = None;
         self.powered_here = false;
+        // Cut AN.3: the lattice is learned afresh each match (the knob is
+        // the table's, kept).
+        self.lattice.samples.clear();
+        self.lattice.rtts.clear();
+        self.lattice.said = false;
         self.aboard = false;
         self.open = Open::default();
         self.touch();
@@ -2318,6 +2553,18 @@ impl Picture {
         self.touch();
     }
 
+    /// **A lattice sample** (cut AN.3): the read time of one of the arena's
+    /// own notices, while the match runs, at most [`LATTICE_SAMPLES`] kept.
+    fn lattice_sample(&mut self, now_ms: u64) {
+        if !self.running() {
+            return;
+        }
+        self.lattice.samples.push_back(now_ms);
+        while self.lattice.samples.len() > LATTICE_SAMPLES {
+            self.lattice.samples.pop_front();
+        }
+    }
+
     /// The followed match is running (cut AN.1: the report's first times are
     /// set only then).
     fn running(&self) -> bool {
@@ -2466,9 +2713,14 @@ impl Picture {
             Some(secs) => {
                 let left_ms = u64::from(secs) * 1_000;
                 let lo = read_ms.saturating_add(left_ms.saturating_sub(1_000));
-                let hi = read_ms
-                    .saturating_add(left_ms)
-                    .saturating_add(weapon.slack_ms);
+                // Cut AN.3: a lattice-clocked gun's upper bound carries at
+                // least the guard, so a row never pulls that clock early.
+                let pad = if weapon.on_lattice {
+                    weapon.slack_ms.max(LATTICE_GUARD_MS)
+                } else {
+                    weapon.slack_ms
+                };
+                let hi = read_ms.saturating_add(left_ms).saturating_add(pad);
                 weapon.next_ready_ms = Some(weapon.next_ready_ms.unwrap_or(hi).max(lo).min(hi));
                 // The cycle (fact (b)): only a row read inside the first
                 // second after this gun's shot prints it whole — counted from
@@ -2548,6 +2800,7 @@ impl Picture {
         cycling_s: Option<u32>,
     ) {
         let mut paired = false;
+        let mut bench_note = None;
         // A `FIRE` of this weapon the runner wrote and has not yet seen
         // answered: this refusal is that answer, the cockpit's pre-check
         // ([`Picture::sent_fire`]).
@@ -2587,6 +2840,28 @@ impl Picture {
                         .slack_ms
                         .saturating_add(FIRE_SLACK_UP_MS)
                         .min(FIRE_SLACK_MAX_MS);
+                    // Cut AN.3: a lattice-clocked gun refused twice inside
+                    // the bench's span goes back to AL's clock for as long.
+                    if entry.on_lattice {
+                        entry.lattice_misses.push_back(now_ms);
+                        while entry
+                            .lattice_misses
+                            .front()
+                            .is_some_and(|at| now_ms.saturating_sub(*at) > LATTICE_BENCH_MS)
+                        {
+                            entry.lattice_misses.pop_front();
+                        }
+                        if entry.lattice_misses.len() >= LATTICE_MISSES_OFF {
+                            entry.lattice_misses.clear();
+                            entry.lattice_bench_until_ms =
+                                Some(now_ms.saturating_add(LATTICE_BENCH_MS));
+                            bench_note = Some(format!(
+                                "The {} is off the lattice clock for {} s: refused twice.",
+                                entry.id,
+                                LATTICE_BENCH_MS / 1_000
+                            ));
+                        }
+                    }
                 }
                 entry.ready = false;
                 entry.next_ready_ms = Some(
@@ -2616,6 +2891,9 @@ impl Picture {
                 // gun is ready now; the lane's own wait governs the retry.
                 entry.next_ready_ms = Some(now_ms);
             }
+        }
+        if let Some(note) = bench_note {
+            self.notes.push(note);
         }
         if paired {
             self.tally.refused_shots = self.tally.refused_shots.saturating_add(1);
@@ -5836,5 +6114,388 @@ mod tests {
                 "Hit on RB (FRIENDLY)."
             ]
         );
+    }
+
+    // -- cut AN.3: the lattice ----------------------------------------------------
+
+    /// A running picture with the lattice knob `on`.
+    fn lattice_picture(on: bool) -> Picture {
+        let mut p = Picture {
+            phase: Phase::Running { match_id: 1 },
+            following: Some(1),
+            side: Some(Side::Red),
+            ..Picture::default()
+        };
+        p.set_lattice(on);
+        p
+    }
+
+    /// Ten of the arena's notices on its lattice at phase 5: `Hit on BA:
+    /// turret.` read at 1 005 + 250k.
+    fn notices_at_phase_five(p: &mut Picture) {
+        for k in 0..10 {
+            feed(p, &[(1_005 + 250 * k, "Hit on BA: turret.")]);
+        }
+    }
+
+    /// The machine gun's `FIRE` typed `rtt_ms` before its ack read at `ack`.
+    fn mg_shot(p: &mut Picture, ack: u64, rtt_ms: u64) {
+        p.sent_fire(ack - rtt_ms, "machine_gun");
+        feed(p, &[(ack, "Firing machine_gun.")]);
+    }
+
+    /// The machine gun's cycle (1 000 ms) learned from two shots whose
+    /// round trips were `rtt_ms`, each read whole half a second on: two round
+    /// trips kept, so the third ack is the first that may set a lattice clock.
+    fn mg_learned(p: &mut Picture, rtt_ms: u64) {
+        for ack in [4_000, 6_000] {
+            mg_shot(p, ack, rtt_ms);
+            rows_at(
+                p,
+                ack + 500,
+                &["machine_gun (mg)  cycling (1 s)  480 of 500 round(s)"],
+            );
+        }
+        assert_eq!(weapon(p, "machine_gun").cycle_ms, Some(1_000));
+    }
+
+    /// **The phase is read from the arena's notices** (cut AN.3): the densest
+    /// 50 ms bin on the 250 ms lattice, read as its earliest sample; acks,
+    /// reply rows, refusals and lobby lines add nothing; too few, or too small
+    /// a share, read nothing.
+    #[test]
+    fn the_lattice_phase_is_read_from_the_arenas_notices() {
+        // Ten notices at 1 005 + 250k and two of noise 120 ms on.
+        let mut p = lattice_picture(true);
+        notices_at_phase_five(&mut p);
+        feed(
+            &mut p,
+            &[
+                (1_125, "Miss on BA: the target moved."),
+                (1_375, "New contact X1: bearing 000°, far."),
+            ],
+        );
+        assert_eq!(p.lattice.samples.len(), 12);
+        assert_eq!(p.lattice.phase(), Some(5));
+        // A cluster at 245 + 250k is read at 245, not at the tie-broken
+        // window's start, 200.
+        let mut p = lattice_picture(true);
+        for k in 0..10 {
+            feed(&mut p, &[(245 + 250 * k, "Held: something is in the way.")]);
+        }
+        assert_eq!(p.lattice.phase(), Some(245));
+        // Every kind the phase reads counts: a contact notice, an
+        // identification, a loss, a hit scored, a miss, a hit taken, a stop.
+        let mut p = lattice_picture(true);
+        feed(
+            &mut p,
+            &[
+                (1_005, "New contact X1: bearing 000°, far."),
+                (1_255, "Contact X1 identified: BA, blue."),
+                (1_505, "Contact BA lost."),
+                (1_755, "Hit on BA: turret."),
+                (2_005, "Miss on BA: the round went wide."),
+                (
+                    2_255,
+                    "Hit on the hull's front facet: 300 of 400 armour left.",
+                ),
+                (2_505, "Held: the ground ahead will not take the tank."),
+            ],
+        );
+        assert_eq!(p.lattice.samples.len(), 7);
+        // Acks, reply rows, refusals, lock lines and the lobby add no
+        // sample; nor does a notice of a match not running.
+        p.sent_fire(2_600, "machine_gun");
+        feed(
+            &mut p,
+            &[
+                (2_610, "Firing machine_gun."),
+                (2_620, "FIRE cannon refused. Still cycling: 3 s to go."),
+                (2_630, "Locked on BA, 62% to hit."),
+                (2_640, "BA  blue  bearing 090° (rel 000°)  far  450 m  0 s"),
+                (
+                    2_650,
+                    "machine_gun (mg)  cycling (1 s)  499 of 500 round(s)",
+                ),
+                (2_660, "Callsign RA."),
+                (2_670, "Red Tank 1: power online, 0 kph, heading 090°"),
+                (2_680, "Steering to 90°."),
+                (2_690, "Match 2 is boarding. Every pilot: BOARD your pod."),
+            ],
+        );
+        assert_eq!(p.lattice.samples.len(), 7, "{:?}", p.lattice.samples);
+        // Seven samples, however clustered, read nothing.
+        assert_eq!(p.lattice.phase(), None);
+        let mut q = lattice_picture(true);
+        for k in 0..7 {
+            feed(&mut q, &[(1_005 + 250 * k, "Hit on BA: turret.")]);
+        }
+        assert_eq!(q.lattice.phase(), None, "seven");
+        feed(&mut q, &[(1_005 + 250 * 7, "Hit on BA: turret.")]);
+        assert_eq!(q.lattice.phase(), Some(5), "eight");
+        let mut idle = Picture::default();
+        feed(&mut idle, &[(1_005, "Hit on BA: turret.")]);
+        assert!(idle.lattice.samples.is_empty(), "not running");
+        // Nine in the bin of fifteen (60 per cent) read nothing; the other six
+        // spread 30 ms apart, no two of them within one bin of the cluster.
+        let mut q = lattice_picture(true);
+        for k in 0..9 {
+            feed(&mut q, &[(1_005 + 250 * k, "Hit on BA: turret.")]);
+        }
+        for (k, offset) in [80, 110, 140, 170, 200, 230].into_iter().enumerate() {
+            feed(
+                &mut q,
+                &[(
+                    5_000 + 250 * k as u64 + offset,
+                    "Miss on BA: the target moved.",
+                )],
+            );
+        }
+        assert_eq!(q.lattice.samples.len(), 15);
+        assert_eq!(q.lattice.phase(), None, "60 per cent");
+        // At most the last 24 are kept.
+        for k in 0..30 {
+            feed(&mut q, &[(20_005 + 250 * k, "Hit on BA: turret.")]);
+        }
+        assert_eq!(q.lattice.samples.len(), LATTICE_SAMPLES);
+        assert_eq!(q.lattice.phase(), Some(5));
+        // The next lattice point is strictly after.
+        assert_eq!(next_lattice(10_102, 5), 10_255);
+        assert_eq!(next_lattice(10_005, 5), 10_255);
+        assert_eq!(next_lattice(10_004, 5), 10_005);
+        assert_eq!(next_lattice(10_249, 245), 10_495);
+        assert_eq!(next_lattice(0, 0), LATTICE_MS);
+    }
+
+    /// **A learned gun fires a guard past the next lattice point** (cut AN.3):
+    /// with the cycle 1 000, the phase 5 and round trips of 40 ms, an ack read
+    /// at 10 102 is ready at `next_lattice(10 102, 5) + 1 000 + guard − 40`,
+    /// on the lattice; the note is said once a match; and the round trip is
+    /// each ack's read less its `FIRE`'s send, the median of the last eight.
+    #[test]
+    fn a_learned_gun_fires_a_guard_past_the_next_lattice_point() {
+        let mut p = lattice_picture(true);
+        notices_at_phase_five(&mut p);
+        mg_learned(&mut p, 40);
+        assert_eq!(p.lattice.rtt(), None, "two round trips");
+        assert!(!weapon(&p, "machine_gun").on_lattice);
+        assert!(p.take_notes().is_empty());
+        mg_shot(&mut p, 10_102, 40);
+        assert_eq!(p.lattice.rtt(), Some(40));
+        let mg = weapon(&p, "machine_gun");
+        let ready = next_lattice(10_102, 5) + 1_000 + LATTICE_GUARD_MS - 40;
+        assert_eq!(ready, 10_255 + 1_000 + LATTICE_GUARD_MS - 40);
+        assert_eq!(mg.next_ready_ms, Some(ready));
+        assert!(mg.on_lattice);
+        assert_eq!(
+            p.take_notes(),
+            ["Firing on the arena's lattice: phase 5 ms, round trip 40 ms."]
+        );
+        // The next lattice-clocked ack says nothing more.
+        mg_shot(&mut p, 12_102, 40);
+        assert!(weapon(&p, "machine_gun").on_lattice);
+        assert!(p.take_notes().is_empty(), "once a match");
+        // The median by the index rule: of 40, 40, 40, 40, 60, 90 the lower
+        // middle; at most eight kept.
+        for (ack, rtt) in [(14_102, 60), (16_102, 90)] {
+            mg_shot(&mut p, ack, rtt);
+        }
+        assert_eq!(p.lattice.rtts.len(), 6);
+        assert_eq!(p.lattice.rtt(), Some(40));
+        for k in 0..6 {
+            mg_shot(&mut p, 20_102 + 2_000 * k, 120);
+        }
+        assert_eq!(p.lattice.rtts.len(), LATTICE_RTT_SAMPLES);
+        assert_eq!(p.lattice.rtt(), Some(120));
+        // An ack with no send of its own (a picture never told of the `FIRE`)
+        // keeps no round trip.
+        feed(&mut p, &[(40_000, "Firing machine_gun.")]);
+        assert_eq!(p.lattice.rtts.len(), LATTICE_RTT_SAMPLES);
+    }
+
+    /// **A slow round trip, an unlearned cycle or the knob off keeps AL's
+    /// clock** (cut AN.3).
+    #[test]
+    fn a_slow_round_trip_or_an_unlearned_cycle_keeps_als_clock() {
+        // Round trips of 250 ms: over the bound.
+        let mut p = lattice_picture(true);
+        notices_at_phase_five(&mut p);
+        mg_learned(&mut p, 250);
+        mg_shot(&mut p, 10_102, 250);
+        assert_eq!(p.lattice.rtt(), Some(250));
+        const { assert!(250 > LATTICE_RTT_MAX_MS) };
+        let mg = weapon(&p, "machine_gun");
+        assert!(!mg.on_lattice);
+        assert_eq!(mg.next_ready_ms, Some(10_102 + 1_000 + mg.slack_ms));
+        assert!(p.take_notes().is_empty());
+        // At the bound itself, the lattice.
+        let mut p = lattice_picture(true);
+        notices_at_phase_five(&mut p);
+        mg_learned(&mut p, LATTICE_RTT_MAX_MS);
+        mg_shot(&mut p, 10_102, LATTICE_RTT_MAX_MS);
+        assert!(weapon(&p, "machine_gun").on_lattice);
+        // No cycle learned: no clock at all, as AL left it.
+        let mut p = lattice_picture(true);
+        notices_at_phase_five(&mut p);
+        for ack in [4_000, 6_000, 10_102] {
+            mg_shot(&mut p, ack, 40);
+        }
+        assert_eq!(p.lattice.rtt(), Some(40));
+        let mg = weapon(&p, "machine_gun");
+        assert_eq!(
+            (mg.cycle_ms, mg.next_ready_ms, mg.on_lattice),
+            (None, None, false)
+        );
+        // No phase (too few notices): AL's clock.
+        let mut p = lattice_picture(true);
+        mg_learned(&mut p, 40);
+        mg_shot(&mut p, 10_102, 40);
+        let mg = weapon(&p, "machine_gun");
+        assert!(!mg.on_lattice);
+        assert_eq!(mg.next_ready_ms, Some(10_102 + 1_000 + mg.slack_ms));
+        // The knob off: AL's clock, whatever is known.
+        let mut p = lattice_picture(false);
+        notices_at_phase_five(&mut p);
+        mg_learned(&mut p, 40);
+        mg_shot(&mut p, 10_102, 40);
+        assert_eq!(p.lattice.phase(), Some(5));
+        assert_eq!(p.lattice.rtt(), Some(40));
+        let mg = weapon(&p, "machine_gun");
+        assert!(!mg.on_lattice);
+        assert_eq!(mg.next_ready_ms, Some(10_102 + 1_000 + mg.slack_ms));
+        assert!(p.take_notes().is_empty());
+    }
+
+    /// **Two refusals bench the gun** (cut AN.3): two `Still cycling` answers
+    /// to a lattice-clocked gun's own `FIRE`s inside 30 s put it on AL's clock
+    /// for 30 s, said once; the retry is AL's; after the bench, the lattice.
+    #[test]
+    fn two_refusals_bench_the_gun() {
+        let mut p = lattice_picture(true);
+        notices_at_phase_five(&mut p);
+        mg_learned(&mut p, 40);
+        mg_shot(&mut p, 10_102, 40);
+        assert!(weapon(&p, "machine_gun").on_lattice);
+        p.take_notes();
+        let refuse = |p: &mut Picture, at: u64| {
+            p.sent_fire(at - 40, "machine_gun");
+            feed(
+                p,
+                &[(at, "FIRE machine_gun refused. Still cycling: 1 s to go.")],
+            );
+        };
+        // One refusal: the retry is AL's, and no bench.
+        refuse(&mut p, 11_300);
+        let mg = weapon(&p, "machine_gun");
+        assert_eq!(mg.next_ready_ms, Some(11_300 + FIRE_RETRY_MS));
+        assert_eq!(mg.lattice_misses.len(), 1);
+        assert_eq!(mg.lattice_bench_until_ms, None);
+        assert!(p.take_notes().is_empty());
+        // The retry acked, on the lattice again; a second refusal inside the
+        // bench's span benches it.
+        mg_shot(&mut p, 11_600, 40);
+        assert!(weapon(&p, "machine_gun").on_lattice);
+        refuse(&mut p, 12_800);
+        let mg = weapon(&p, "machine_gun");
+        assert_eq!(mg.lattice_bench_until_ms, Some(12_800 + LATTICE_BENCH_MS));
+        assert_eq!(mg.next_ready_ms, Some(12_800 + FIRE_RETRY_MS));
+        assert_eq!(
+            p.take_notes(),
+            ["The machine_gun is off the lattice clock for 30 s: refused twice."]
+        );
+        // Benched: AL's clock on every ack until it lapses.
+        mg_shot(&mut p, 13_100, 40);
+        let mg = weapon(&p, "machine_gun");
+        assert!(!mg.on_lattice);
+        assert_eq!(mg.next_ready_ms, Some(13_100 + 1_000 + mg.slack_ms));
+        mg_shot(&mut p, 12_800 + LATTICE_BENCH_MS - 1, 40);
+        assert!(!weapon(&p, "machine_gun").on_lattice);
+        mg_shot(&mut p, 12_800 + LATTICE_BENCH_MS + 1_000, 40);
+        assert!(weapon(&p, "machine_gun").on_lattice, "the bench lapsed");
+        assert!(p.take_notes().is_empty(), "the lattice said once a match");
+        // Two refusals more than 30 s apart bench nothing; an AL-clocked
+        // gun's refusals count for nothing.
+        let mut p = lattice_picture(true);
+        notices_at_phase_five(&mut p);
+        mg_learned(&mut p, 40);
+        mg_shot(&mut p, 10_102, 40);
+        refuse(&mut p, 11_300);
+        mg_shot(&mut p, 11_600, 40);
+        refuse(&mut p, 11_300 + LATTICE_BENCH_MS + 1);
+        assert_eq!(weapon(&p, "machine_gun").lattice_bench_until_ms, None);
+        let mut p = lattice_picture(false);
+        mg_learned(&mut p, 40);
+        mg_shot(&mut p, 10_102, 40);
+        refuse(&mut p, 11_300);
+        refuse(&mut p, 11_800);
+        let mg = weapon(&p, "machine_gun");
+        assert!(mg.lattice_misses.is_empty());
+        assert_eq!(mg.lattice_bench_until_ms, None);
+    }
+
+    /// **A cycling row never pulls a lattice clock early** (cut AN.3): the
+    /// row's upper bound carries at least the guard on a lattice-clocked gun,
+    /// where a gun on AL's clock with no slack left is pulled to the row's
+    /// whole seconds.
+    #[test]
+    fn a_cycling_row_never_pulls_a_lattice_clock_early() {
+        let at_10_102 = |on: bool| {
+            let mut p = lattice_picture(on);
+            notices_at_phase_five(&mut p);
+            mg_learned(&mut p, 40);
+            if let Some(mg) = p.weapons.iter_mut().find(|w| w.id == "machine_gun") {
+                mg.slack_ms = 0;
+            }
+            mg_shot(&mut p, 10_102, 40);
+            p
+        };
+        let mut p = at_10_102(true);
+        let clock = 10_255 + 1_000 + LATTICE_GUARD_MS - 40;
+        assert_eq!(weapon(&p, "machine_gun").next_ready_ms, Some(clock));
+        assert_eq!(weapon(&p, "machine_gun").slack_ms, 0);
+        rows_at(
+            &mut p,
+            10_250,
+            &["machine_gun (mg)  cycling (1 s)  478 of 500 round(s)"],
+        );
+        assert_eq!(weapon(&p, "machine_gun").next_ready_ms, Some(clock));
+        // The same clock on a gun off the lattice with no slack left: the
+        // row pulls it to the row's whole second.
+        let mut p = at_10_102(false);
+        if let Some(mg) = p.weapons.iter_mut().find(|w| w.id == "machine_gun") {
+            assert!(!mg.on_lattice);
+            mg.next_ready_ms = Some(clock);
+        }
+        rows_at(
+            &mut p,
+            10_250,
+            &["machine_gun (mg)  cycling (1 s)  478 of 500 round(s)"],
+        );
+        assert_eq!(weapon(&p, "machine_gun").next_ready_ms, Some(11_250));
+    }
+
+    /// **The lattice is forgotten at a new match** (cut AN.3): the samples,
+    /// the round trips and the note go; the knob stays.
+    #[test]
+    fn the_lattice_is_forgotten_at_a_new_match() {
+        let mut p = lattice_picture(true);
+        notices_at_phase_five(&mut p);
+        mg_learned(&mut p, 40);
+        mg_shot(&mut p, 10_102, 40);
+        assert!(p.lattice.said);
+        assert!(p.lattice.phase().is_some() && p.lattice.rtt().is_some());
+        p.claimed(Side::Red, 1);
+        feed(
+            &mut p,
+            &[(20_000, "Match 2 is boarding. Every pilot: BOARD your pod.")],
+        );
+        assert_eq!(p.following, Some(2));
+        assert!(p.lattice.on, "the knob is the table's");
+        assert!(p.lattice.samples.is_empty() && p.lattice.rtts.is_empty());
+        assert!(!p.lattice.said);
+        assert_eq!((p.lattice.phase(), p.lattice.rtt()), (None, None));
+        assert!(p.weapons.is_empty(), "the guns with it");
+        // The default is off.
+        assert!(!Picture::default().lattice.on);
     }
 }

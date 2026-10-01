@@ -642,6 +642,10 @@ impl Lane {
             side.as_str(),
             settings.matches
         ))];
+        // Cut AN.3: the picture fires on the arena's lattice when the table
+        // says so.
+        let mut picture = Picture::default();
+        picture.set_lattice(settings.lattice);
         Lane {
             side,
             lobby: Lobby::new(side, settings.clone(), &me),
@@ -653,7 +657,7 @@ impl Lane {
             commander: Schedule::new(&settings),
             settings,
             assembler: Assembler::default(),
-            picture: Picture::default(),
+            picture,
             pilot_match: None,
             ring: VecDeque::new(),
             recent: VecDeque::new(),
@@ -797,7 +801,7 @@ impl Lane {
             .iter()
             .map(|w| {
                 json!({"id": w.id, "ready": w.ready, "rounds": w.rounds, "percent": w.percent,
-                    "cycle_ms": w.cycle_ms, "slack_ms": w.slack_ms})
+                    "cycle_ms": w.cycle_ms, "slack_ms": w.slack_ms, "lattice": w.on_lattice})
             })
             .collect();
         // The pilot's own state for a reader of the transcript (cut AK.1): the
@@ -827,7 +831,11 @@ impl Lane {
         // Cut AN.2: the rule flown at the last decision (a word), the
         // exchange over its window (counts), the opening's stage (a word) and
         // the start the pilot kept (the end-to-end measures the step from it).
+        // Cut AN.3: the lattice's phase and round trip as the picture reads
+        // them (figures, or null), and each gun's `lattice` (its last ack set
+        // the lattice clock).
         let (taken, scored) = self.pilot.exchange_counts(p.last_ms);
+        let lattice = json!({"phase": p.lattice.phase(), "rtt_ms": p.lattice.rtt()});
         json!({"phase": phase_word(&p.phase), "match": p.following, "step": self.lobby.step(),
             "lead": self.lobby.lead(), "aboard": p.aboard,
             "own": {"callsign": own.callsign, "power": own.power.as_str(), "kph": own.speed_kph,
@@ -846,7 +854,8 @@ impl Lane {
                 "rule": self.pilot.rule(),
                 "exchange": {"taken": taken, "scored": scored},
                 "opening": self.pilot.opening.word(),
-                "start_m": self.pilot.start_pos.map(|(x, y)| [x.round(), y.round()])}})
+                "start_m": self.pilot.start_pos.map(|(x, y)| [x.round(), y.round()]),
+                "lattice": lattice}})
     }
 
     /// The pilot's own state (for tests and `/arena`).

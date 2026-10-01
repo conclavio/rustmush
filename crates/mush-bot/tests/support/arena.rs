@@ -1099,12 +1099,17 @@ pub fn engagement(value: Option<&str>) -> &'static str {
 }
 
 /// The variable naming the pilot's knobs a win-rate lane turns off (cut
-/// AN.2): a comma list of `opening`, `reapproach` or `all`.
+/// AN.2): a comma list of `opening`, `reapproach`, (cut AN.3) `follow`,
+/// `lattice` or `all`.
 pub const KNOBS_OFF_ENV: &str = "MUSH_BOT_WIN_RATE_OFF";
 
+/// The knobs a lane can turn off, in the `KNOBS` line's order (cut AN.3).
+pub const KNOBS: [&str; 4] = ["opening", "reapproach", "follow", "lattice"];
+
 /// **The knobs a lane turns off** (cut AN.2), from [`KNOBS_OFF_ENV`]'s value:
-/// unset (or naming nothing) turns none off; `opening` and `reapproach` that
-/// knob, `all` both; any other word is a panic, before anything is launched.
+/// unset (or naming nothing) turns none off; `opening`, `reapproach`, (cut
+/// AN.3) `follow` and `lattice` that knob, `all` all four; any other word is
+/// a panic, before anything is launched.
 pub fn knobs_off(value: Option<&str>) -> BTreeSet<&'static str> {
     let mut off = BTreeSet::new();
     for word in value
@@ -1114,19 +1119,16 @@ pub fn knobs_off(value: Option<&str>) -> BTreeSet<&'static str> {
         .filter(|word| !word.is_empty())
     {
         match word {
-            "opening" => {
-                off.insert("opening");
-            }
-            "reapproach" => {
-                off.insert("reapproach");
-            }
-            "all" => {
-                off.insert("opening");
-                off.insert("reapproach");
-            }
-            other => {
-                panic!("MUSH_BOT_WIN_RATE_OFF names opening, reapproach or all, not {other}")
-            }
+            "all" => off.extend(KNOBS),
+            other => match KNOBS.iter().find(|knob| **knob == other) {
+                Some(knob) => {
+                    off.insert(*knob);
+                }
+                None => panic!(
+                    "MUSH_BOT_WIN_RATE_OFF names opening, reapproach, follow, lattice or all, not \
+                     {other}"
+                ),
+            },
         }
     }
     off
@@ -1134,8 +1136,9 @@ pub fn knobs_off(value: Option<&str>) -> BTreeSet<&'static str> {
 
 /// **The bot's extra config** for the engagement `e` (cut AL.3): the lanes'
 /// 5 s start grace, and `[arena] engagement`; and (cut AN.2) `opening =
-/// "search"` and `reapproach = false` for the knobs `off` names, in that
-/// order. With none named it is byte for byte what it was.
+/// "search"` and `reapproach = false`, (cut AN.3) `follow_broken = false`
+/// and `lattice = false` for the knobs `off` names, in that order. With none
+/// named it is byte for byte what it was.
 pub fn extra(e: &str, off: &BTreeSet<&str>) -> String {
     let mut extra = format!("\n[arena]\nlead_start_grace_ms = 5000\nengagement = \"{e}\"\n");
     if off.contains("opening") {
@@ -1144,24 +1147,30 @@ pub fn extra(e: &str, off: &BTreeSet<&str>) -> String {
     if off.contains("reapproach") {
         extra.push_str("reapproach = false\n");
     }
+    if off.contains("follow") {
+        extra.push_str("follow_broken = false\n");
+    }
+    if off.contains("lattice") {
+        extra.push_str("lattice = false\n");
+    }
     extra
 }
 
 /// **The `KNOBS` line** both win-rate lanes print after `ENGAGEMENT` (cut
-/// AN.2): `KNOBS: opening {wait|search}, reapproach {on|off}`.
+/// AN.2; cut AN.3): `KNOBS: opening {wait|search}, reapproach {on|off},
+/// follow {on|off}, lattice {on|off}`.
 pub fn knobs_line(off: &BTreeSet<&str>) -> String {
+    let on_off = |knob: &str| if off.contains(knob) { "off" } else { "on" };
     format!(
-        "KNOBS: opening {}, reapproach {}",
+        "KNOBS: opening {}, reapproach {}, follow {}, lattice {}",
         if off.contains("opening") {
             "search"
         } else {
             "wait"
         },
-        if off.contains("reapproach") {
-            "off"
-        } else {
-            "on"
-        }
+        on_off("reapproach"),
+        on_off("follow"),
+        on_off("lattice")
     )
 }
 
@@ -1532,7 +1541,8 @@ pub struct Reading {
     /// `Opening: stepping off the road`, `Firing from the halt at `, `Opening
     /// the range on ` and `Out of ` (only with `'s sight at ` in it: the
     /// lobby's `Out of the tank; boarding again.` is an `arena` record too),
-    /// counted in that order ([`PilotRules`]).
+    /// and (cut AN.3) `Following `, `Waiting for ` and `Firing on the arena's
+    /// lattice`, counted in that order ([`PilotRules`]).
     pub rules: PilotRules,
 }
 
@@ -1544,6 +1554,11 @@ pub struct PilotRules {
     pub halt: usize,
     pub reapproach: usize,
     pub approach_wait: usize,
+    /// Cut AN.3: broken machines followed, returns waited for, and matches
+    /// whose guns went on the arena's lattice.
+    pub follow: usize,
+    pub return_wait: usize,
+    pub lattice: usize,
 }
 
 impl PilotRules {
@@ -1559,15 +1574,29 @@ impl PilotRules {
             self.reapproach += 1;
         } else if text.starts_with("Out of ") && text.contains("'s sight at ") {
             self.approach_wait += 1;
+        } else if text.starts_with("Following ") {
+            self.follow += 1;
+        } else if text.starts_with("Waiting for ") {
+            self.return_wait += 1;
+        } else if text.starts_with("Firing on the arena's lattice") {
+            self.lattice += 1;
         }
     }
 
     /// `PILOT RULES: opening {a}, off the road {b}, halt {c}, reapproach
-    /// {d}, approach wait {e}`.
+    /// {d}, approach wait {e}, follow {f}, return wait {g}, lattice {h}`.
     pub fn line(&self) -> String {
         format!(
-            "PILOT RULES: opening {}, off the road {}, halt {}, reapproach {}, approach wait {}",
-            self.opening, self.off_the_road, self.halt, self.reapproach, self.approach_wait
+            "PILOT RULES: opening {}, off the road {}, halt {}, reapproach {}, approach wait {}, \
+             follow {}, return wait {}, lattice {}",
+            self.opening,
+            self.off_the_road,
+            self.halt,
+            self.reapproach,
+            self.approach_wait,
+            self.follow,
+            self.return_wait,
+            self.lattice
         )
     }
 }
@@ -1828,7 +1857,8 @@ impl Reading {
     ///   facet`, `h` the facet hits taken in all and `f` those on a key
     ///   ending ` front`;
     /// * (cut AN.2) `PILOT RULES: opening {a}, off the road {b}, halt {c},
-    ///   reapproach {d}, approach wait {e}` ([`PilotRules::line`]), from the
+    ///   reapproach {d}, approach wait {e}` and (cut AN.3) `, follow {f},
+    ///   return wait {g}, lattice {h}` ([`PilotRules::line`]), from the
     ///   transcript alone (zeros with no `arena` record).
     ///
     /// With no report the last three read `SEEN FIRST: no report`,
