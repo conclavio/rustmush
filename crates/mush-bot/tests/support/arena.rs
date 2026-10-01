@@ -282,6 +282,10 @@ pub async fn boot(cfg: tacsim::TacsimConfig, pilots: &[(&str, &str)]) -> Rig {
     }
 }
 
+/// What [`Client::try_send`] and [`Client::answer`] say once the session has
+/// closed (cut AM.3).
+pub const SESSION_CLOSED: &str = "the session is closed: the channel has closed";
+
 /// **An in-process line client**: the bot's own SSH session, and everything it
 /// has been sent, decoded by the bot's own `terminal::Decoder`.
 pub struct Client {
@@ -293,6 +297,13 @@ pub struct Client {
     mark: usize,
     /// Where the last [`Client::drain`] stopped.
     drained: usize,
+    /// **The session has closed** (cut AM.3): set by [`Client::until`] (and so
+    /// [`Client::pump`]) when the channel answers nothing more, `Close` or
+    /// `Eof`. While it is set no wait waits: `until` answers `None` at once,
+    /// [`Client::idle`] returns at once and [`Client::try_send`] refuses, so a
+    /// lane whose watcher has gone ends its wait instead of spinning to its
+    /// limit.
+    pub closed: bool,
 }
 
 impl Client {
@@ -309,6 +320,7 @@ impl Client {
             seen: String::new(),
             mark: 0,
             drained: 0,
+            closed: false,
         };
         client.expect(BANNER, STEP_TIMEOUT).await;
         client.mark = client.seen.len();
@@ -325,20 +337,53 @@ impl Client {
     }
 
     /// Send one line through the bot's own `Session::send` and mark where its
-    /// answer begins.
+    /// answer begins. Panics when the line cannot be sent: for the set-ups
+    /// that want a dead session to fail the test; a lane that must carry on
+    /// uses [`Client::try_send`].
     pub async fn send(&mut self, line: &str) {
         self.mark = self.seen.len();
         self.session.send(line).await.expect("the line is sent");
     }
 
+    /// **Send one line, and never panic** (cut AM.3): as [`Client::send`], but
+    /// a closed session ([`Client::closed`]) or a line that cannot be sent is
+    /// `Err("the session is closed: {error}")`.
+    pub async fn try_send(&mut self, line: &str) -> Result<(), String> {
+        self.mark = self.seen.len();
+        if self.closed {
+            return Err(SESSION_CLOSED.to_owned());
+        }
+        self.session
+            .send(line)
+            .await
+            .map_err(|error| format!("the session is closed: {error}"))
+    }
+
+    /// **Type `QUIT`** (cut AM.3), the server's own disconnect, straight onto
+    /// the channel as [`Client::login`] writes its `connect` line: the bot's
+    /// own `Session::send` refuses the session verbs, as it must.
+    pub async fn quit(&mut self) {
+        self.mark = self.seen.len();
+        self.session
+            .channel
+            .data(&b"QUIT\r"[..])
+            .await
+            .expect("the QUIT line is written");
+    }
+
     /// Wait until one of `needles` has arrived since `from`; its index, or
-    /// `None` at the deadline or when the channel closes.
+    /// `None` at the deadline or when the channel closes. A needle already
+    /// read still counts after the close; otherwise a closed session answers
+    /// `None` at once (cut AM.3).
     async fn until(&mut self, from: usize, needles: &[&str], timeout: Duration) -> Option<usize> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let tail = self.seen.get(from..).unwrap_or("");
             if let Some(index) = needles.iter().position(|needle| tail.contains(needle)) {
                 return Some(index);
+            }
+            if self.closed {
+                return None;
             }
             let left = deadline.saturating_duration_since(tokio::time::Instant::now());
             if left.is_zero() {
@@ -350,8 +395,13 @@ impl Client {
                     let text = self.decoder.feed(&data);
                     self.seen.push_str(&text);
                 }
+                // The server closed the session: nothing more will come.
+                Ok(None) | Ok(Some(ChannelMsg::Close)) | Ok(Some(ChannelMsg::Eof)) => {
+                    self.closed = true;
+                    return None;
+                }
                 Ok(Some(_)) => {}
-                Ok(None) | Err(_) => return None,
+                Err(_) => return None,
             }
         }
     }
@@ -404,18 +454,33 @@ impl Client {
     /// again after 200 ms on a transient as [`Client::say`] does: the index of
     /// the needle that came and everything decoded since the last send, or
     /// `None` and that text when nothing came inside [`STEP_TIMEOUT`]. Never
-    /// panics on a refusal, so a caller can print one and carry on.
+    /// panics on a refusal, so a caller can print one and carry on; nor (cut
+    /// AM.3) on a closed session, which answers `None` and
+    /// [`Client::try_send`]'s `the session is closed: …` at once — whether it
+    /// was seen closed before the send or closed while its answer was awaited
+    /// (then with what came before the close after it).
     pub async fn answer(&mut self, line: &str, needles: &[&str]) -> (Option<usize>, String) {
         let mut all: Vec<&str> = needles.to_vec();
         all.extend(TRANSIENTS);
         for _ in 0..RETRY_BUDGET {
-            self.send(line).await;
+            if let Err(closed) = self.try_send(line).await {
+                return (None, closed);
+            }
             let from = self.mark;
             match self.until(from, &all, STEP_TIMEOUT).await {
                 Some(index) if index < needles.len() => {
                     return (Some(index), self.seen.get(from..).unwrap_or("").to_owned());
                 }
                 Some(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+                None if self.closed => {
+                    return (
+                        None,
+                        format!(
+                            "{SESSION_CLOSED}; since `{line}` was sent:\n{}",
+                            self.seen.get(from..).unwrap_or("")
+                        ),
+                    );
+                }
                 None => return (None, self.seen.get(from..).unwrap_or("").to_owned()),
             }
         }
@@ -434,12 +499,13 @@ impl Client {
     }
 
     /// **Keep reading for `span`** (cut AJ.4): a client that sits in a pod
-    /// still drains what it is sent, so nothing backs up behind it.
+    /// still drains what it is sent, so nothing backs up behind it. A closed
+    /// session has nothing to read, so it returns at once (cut AM.3).
     pub async fn idle(&mut self, span: Duration) {
         let deadline = tokio::time::Instant::now() + span;
         loop {
             let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if left.is_zero() {
+            if left.is_zero() || self.closed {
                 return;
             }
             self.pump(left).await;
@@ -470,11 +536,13 @@ pub async fn pose(god: &mut Client, spec: &str) {
 }
 
 /// The answers `@arena/pose` refuses with, one needle each (cut AK.3), read
-/// from the verb's own refusal sentences as text: the centre running, a cell
-/// off the window, a cell that is impassable or has no way out, a cell already
-/// another tank's opening cell, a heading out of range, a malformed line, and
-/// a server without the arena.
-pub const POSE_REFUSALS: [&str; 7] = [
+/// from the verb's own refusal sentences as text: an unknown callsign (`There
+/// is no slot {X} on this centre.`, the verb's first refusal; cut AM.3), the
+/// centre running, a cell off the window, a cell that is impassable or has no
+/// way out, a cell already another tank's opening cell, a heading out of
+/// range, a malformed line, and a server without the arena.
+pub const POSE_REFUSALS: [&str; 8] = [
+    "There is no slot ",
     "The simulator centre is running; set opening cells",
     "is off the arena window.",
     "is impassable, or has no way out.",
@@ -490,7 +558,8 @@ pub const POSE_REFUSALS: [&str; 7] = [
 /// `opens at cell` answer. **A refusal answers at once** (cut AK.3): any of
 /// [`POSE_REFUSALS`] ends the wait as `Err` with the answer's text, so a
 /// refused pose never costs the whole [`STEP_TIMEOUT`]; no answer inside it is
-/// an `Err` too.
+/// an `Err` too, and so (cut AM.3) is a closed session, at once and without a
+/// panic ([`Client::try_send`]).
 pub async fn try_pose(god: &mut Client, spec: &str) -> Result<String, String> {
     let mut needles = vec!["opens at cell"];
     needles.extend(POSE_REFUSALS);
@@ -518,8 +587,9 @@ pub fn bot_config(rig: &Rig, username: &str, extra: &str) -> PathBuf {
 }
 
 /// [`bot_config`] with `[agent] max_seconds` of the caller's (cut AJ.4): in
-/// arena mode it bounds each match (a claim starts it again), which the
-/// win-rate lane's three-minute matches need longer than 150 s.
+/// arena mode it bounds each match (a claim starts it again), and the
+/// win-rate lane's seven-minute matches ([`MAX_DURATION_MS`]) need longer than
+/// 150 s.
 pub fn bot_config_with(rig: &Rig, username: &str, max_seconds: u64, extra: &str) -> PathBuf {
     bot_config_agent(rig, username, max_seconds, 100, 1_000, extra)
 }
@@ -809,15 +879,20 @@ pub enum Ended {
     Bot,
     /// The wait's limit came first.
     Timeout,
+    /// The watching session closed (cut AM.3): nothing more can be heard.
+    Closed,
 }
 
 /// **Wait for `needle` in `client`'s stream after byte `from` while the bot
 /// flies, and never panic** (cut AK.3), at most `limit`: the byte just past
-/// it, `Err(Ended::Bot)` when the bot's task finished first, or
-/// `Err(Ended::Timeout)` at the limit. The flight's task is only looked at,
-/// never consumed, so the caller can still land it. A bot that finished is
-/// given one short last look, so a line it saw as it exited is not lost to
-/// the race between its exit and God's own copy of the announcement.
+/// it, `Err(Ended::Bot)` when the bot's task finished first,
+/// `Err(Ended::Timeout)` at the limit, or (cut AM.3) `Err(Ended::Closed)` as
+/// soon as the watching client's session has closed — looked at before the
+/// bot's task, so a closed watcher is never read as the bot ending. The
+/// flight's task is only looked at, never consumed, so the caller can still
+/// land it. A bot that finished is given one short last look, so a line it
+/// saw as it exited is not lost to the race between its exit and God's own
+/// copy of the announcement.
 pub async fn try_await_line(
     client: &mut Client,
     from: usize,
@@ -842,6 +917,9 @@ pub async fn try_await_line(
         {
             return Ok(past(client));
         }
+        if client.closed {
+            return Err(Ended::Closed);
+        }
         if flight.task.is_finished() {
             if client.watch(from, needle, Duration::from_secs(2)).await {
                 return Ok(past(client));
@@ -857,7 +935,7 @@ pub async fn try_await_line(
 /// **Wait for `needle` in `client`'s stream after byte `from` while the bot
 /// flies** (cut AJ.4), at most `limit`: the byte just past it. A bot that ends
 /// first fails the wait with its own output, so a blocker reads as itself and
-/// not as a timeout. [`try_await_line`] with its two ends made panics.
+/// not as a timeout. [`try_await_line`] with its three ends made panics.
 pub async fn await_line(
     client: &mut Client,
     from: usize,
@@ -868,6 +946,10 @@ pub async fn await_line(
     match try_await_line(client, from, needle, flight, limit).await {
         Ok(past) => past,
         Err(Ended::Bot) => ended(flight, &format!("{needle:?}")).await,
+        Err(Ended::Closed) => panic!(
+            "the watching session closed before {needle:?}; since the mark:\n{}",
+            client.seen.get(from..).unwrap_or("")
+        ),
         Err(Ended::Timeout) => panic!(
             "no {needle:?} inside {} s; since the mark:\n{}",
             limit.as_secs(),
@@ -1002,8 +1084,8 @@ pub struct Posed {
     /// The match ends God waited for and heard.
     pub heard: usize,
     /// Why the flight ended before its last match's end, when it did:
-    /// `the bot ended`, `no match end inside 600 s` or `the {m}-minute
-    /// deadline`.
+    /// `the bot ended`, `no match end inside 600 s`, `the {m}-minute
+    /// deadline` or `the watching session closed`.
     pub early: Option<String>,
     /// Each refused pose: `None` before the launch, `Some(n)` after God heard
     /// match `n` end.
@@ -1154,10 +1236,12 @@ pub fn match_ends(text: &str) -> BTreeMap<u64, String> {
 /// **Why a posed flight ended early** (cut AK.3), from how its last wait
 /// ended: `the bot ended`; at a wait whose `limit` was cut short of
 /// [`MATCH_WAIT`] by the flight's own `deadline`, `the {m}-minute deadline`;
+/// `the watching session closed` when God's own session did (cut AM.3);
 /// otherwise `no match end inside 600 s`.
 pub fn early_why(ended: Ended, limit: Duration, deadline: Duration) -> String {
     match ended {
         Ended::Bot => "the bot ended".to_owned(),
+        Ended::Closed => "the watching session closed".to_owned(),
         Ended::Timeout if limit < MATCH_WAIT => {
             format!("the {}-minute deadline", deadline.as_secs() / 60)
         }
@@ -1177,8 +1261,9 @@ pub fn early_why(ended: Ended, limit: Duration, deadline: Duration) -> String {
 /// **One deadline, measured from the launch**: each wait's limit is the
 /// lesser of [`MATCH_WAIT`] and what is left of it, so running out ends the
 /// loop like any other early end. The loop never panics: a bot that ends, a
-/// match that never ends and the deadline each end it, remembered in
-/// [`Posed::early`]. Then the bot is landed ([`try_land`], 120 s), and when
+/// match that never ends, the deadline and (cut AM.3) God's own session
+/// closing each end it, remembered in [`Posed::early`], and a pose on a closed
+/// session is refused, not a panic ([`try_pose`]). Then the bot is landed ([`try_land`], 120 s), and when
 /// [`KEEP_ENV`] names a directory its transcript (raw) and report (when there
 /// is one) are copied there **before** anything is printed or asserted.
 /// A refused pose is printed and recorded ([`Posed::refused`]), and the

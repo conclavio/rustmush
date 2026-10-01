@@ -38,7 +38,8 @@
 //! `Match {n} is over ({word})` lines, with `NO REPORT: the figure is from the
 //! lobby's match-end lines.` under it; a flight that ended early says
 //! `EARLY END: {the bot ended | no match end inside 600 s | the 100-minute
-//! deadline} after {n} match(es).`; and only then is the count of finished
+//! deadline | the watching session closed} after {n} match(es).`; and only
+//! then is the count of finished
 //! matches asserted. Those reads run only on the run that goes wrong, so the
 //! offline `the_lane_reads_the_lobby_and_flags_a_match_by_its_id` (not
 //! ignored) proves them on hand-written lobby text and a hand-written report.
@@ -273,9 +274,10 @@ fn the_lane_reads_the_lobby_and_flags_a_match_by_its_id() {
     assert_eq!(bare.early_line(), None);
     assert_eq!(bare.outcome(), lobby_outcome);
 
-    // (4) The three early ends, each by its own cause: a wait the deadline cut
+    // (4) The four early ends, each by its own cause: a wait the deadline cut
     // short of the whole match wait is the deadline's; a full wait is the
-    // match's; the bot's own end is the bot's whatever the limit.
+    // match's; the bot's own end is the bot's whatever the limit; and (cut
+    // AM.3) God's own session closing is the watcher's, whatever the limit.
     assert_eq!(
         arena_rig::early_why(Ended::Timeout, arena_rig::MATCH_WAIT, DEADLINE),
         "no match end inside 600 s"
@@ -287,6 +289,27 @@ fn the_lane_reads_the_lobby_and_flags_a_match_by_its_id() {
     assert_eq!(
         arena_rig::early_why(Ended::Bot, Duration::from_secs(1), DEADLINE),
         "the bot ended"
+    );
+    for limit in [Duration::from_secs(1), arena_rig::MATCH_WAIT] {
+        assert_eq!(
+            arena_rig::early_why(Ended::Closed, limit, DEADLINE),
+            "the watching session closed"
+        );
+    }
+    let closed = Posed {
+        partial: partial(None),
+        ends: BTreeMap::new(),
+        heard: 4,
+        early: Some(arena_rig::early_why(
+            Ended::Closed,
+            Duration::from_secs(90),
+            DEADLINE,
+        )),
+        refused: Vec::new(),
+    };
+    assert_eq!(
+        closed.early_line().as_deref(),
+        Some("EARLY END: the watching session closed after 4 match(es).")
     );
 }
 

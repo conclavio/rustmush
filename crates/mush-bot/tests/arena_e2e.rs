@@ -39,6 +39,13 @@
 //! until `/resume`), and after `/resume` the pilot types again at once while
 //! that command's output is still being collected.
 //!
+//! And (cut AM.3) **the commander runs through the runner**: over two
+//! matches on a session budget of three requests, the third call (held by
+//! the stub) is cancelled by the abort or the lane's own stale bound, the
+//! budget blocks once at the first ask after three admissions and switches
+//! the commander off for the run, every model record carries its own
+//! request's id, no goal call is counted, and the pilot flies on.
+//!
 //! No test here calls a model API: every model is a `wiremock` stub, and every
 //! child runs from a directory holding an empty `.env` with every model key
 //! removed ([`arena_rig::bot_command`]).
@@ -46,11 +53,17 @@
 //! Every arena test in this file holds one file-wide async mutex, so two arena
 //! worlds never run at once in this binary.
 use std::{
-    sync::{Arc, LazyLock, Mutex},
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
-use mush_bot::arena::{Line, Side, classify, commander::COMMANDER_POLICY};
+use mush_bot::arena::{
+    Line, Side, classify,
+    commander::{COMMANDER_POLICY, OFF_BUDGET},
+};
 use serde_json::{Value, json};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate, matchers::method};
 
@@ -379,8 +392,10 @@ async fn fly_as_wingman() {
     // calls it off, well before two machines could end it on their own.
     ada.say("SIM START", "is boarding").await;
     ada.say("red", "Red Room").await;
-    ada.say("BOARD", "You climb into").await;
+    // The mark before `BOARD` (cut AM.3): a `Good hunting` that comes in the
+    // same chunk as her own climb-in is after it.
     let from = ada.seen.len();
+    ada.say("BOARD", "You climb into").await;
     let hunting = arena_rig::await_line(
         &mut ada,
         from,
@@ -671,6 +686,406 @@ provider = {{ order = ["Together"], allow_fallbacks = false }}
     drop(rig);
 }
 
+/// How long the stub commander holds its third request: past the lane's stale
+/// bound and the match, so only the bot can end that call.
+const STUB_HOLD: Duration = Duration::from_secs(60);
+
+/// The model records of a run, each filed under its own request's envelope.
+const MODEL_RECORDS: [&str; 6] = [
+    "model-input",
+    "model-request",
+    "model-reply",
+    "usage",
+    "cost-receipt",
+    "model-cancelled",
+];
+
+/// **Each record's match**: the `match` of the last `arena-state` record at
+/// or before it that names one.
+fn match_of(records: &[Value]) -> Vec<Option<u64>> {
+    let mut current = None;
+    records
+        .iter()
+        .map(|record| {
+            if record["kind"] == "arena-state"
+                && let Some(id) = record["data"]["match"].as_u64()
+            {
+                current = Some(id);
+            }
+            current
+        })
+        .collect()
+}
+
+/// The matches the records name, in the order they first appear.
+fn matches_named(records: &[Value]) -> Vec<u64> {
+    let mut named: Vec<u64> = Vec::new();
+    for id in match_of(records).into_iter().flatten() {
+        if !named.contains(&id) {
+            named.push(id);
+        }
+    }
+    named
+}
+
+/// Where the run's one `budget-blocked` record is, and the `FIRE` typed in
+/// the second match after it, once both are written.
+fn blocked_then_fired(records: &[Value]) -> Option<(usize, usize)> {
+    let blocked = records
+        .iter()
+        .position(|record| record["kind"] == "budget-blocked")?;
+    let second = *matches_named(records).get(1)?;
+    let of = match_of(records);
+    let fired = records
+        .iter()
+        .enumerate()
+        .skip(blocked)
+        .find(|(index, record)| {
+            record["kind"] == "arena-send"
+                && record["data"]["line"]
+                    .as_str()
+                    .is_some_and(|line| line.starts_with("FIRE "))
+                && of[*index] == Some(second)
+        })
+        .map(|(index, _)| index)?;
+    Some((blocked, fired))
+}
+
+/// **The commander runs through the runner** (cut AM.3; wall clock,
+/// generously bounded at 240 s). The bot flies `--arena red --matches 2`
+/// alone against one machine posed 500 m off, with `[arena] commander` on a
+/// `wiremock` stub and a session budget of `max_requests` 3 (no currency
+/// limit) named by the config's top-level `budget`. The stub answers its
+/// first two requests with a priced doctrine after 300 ms and **holds its
+/// third 60 s**; God calls match 1 off as soon as the stub has heard that
+/// third request, poses both tanks again (the lead's 5 s grace keeps the
+/// bot's `SIM START` behind the poses), and calls match 2 off once the bot has
+/// typed a `FIRE` after the budget's block.
+///
+/// The third call is cancelled by whichever comes first, the match's end or
+/// the lane's own 2 s stale bound (`commander-stale` with `"abandoned":
+/// true`); the test accepts either and prints which. The ledger counts every
+/// request it admitted, a cancelled one included, and the budget blocks at
+/// `requests >= max_requests`, so the block falls at the first ask after
+/// three admissions — match 2's first when the abort won, match 1's next when
+/// the stale bound did — and holds for the run: exactly one `budget-blocked`
+/// record, the commander off with the budget's reason, and no fourth request.
+/// Every model record carries the id its own `model-request` names, and each
+/// request has its own records under it (the answered two their reply, usage
+/// and receipt; the held third its cancel and no reply); the matches count
+/// three commander calls, so the ask the budget refused was never counted
+/// (the budget is checked before the ask is taken); the ledger files the calls
+/// as `arena_commander` and none as a goal decision; no goal call is counted;
+/// and both matches are reported as `abort`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_commander_runs_through_the_runner() {
+    let _one_world = ARENA.lock().await;
+    tokio::time::timeout(Duration::from_secs(240), command_through_the_runner())
+        .await
+        .expect("the two commanded matches finish inside 240 s");
+}
+
+async fn command_through_the_runner() {
+    let started = Instant::now();
+    // Each request's body and arrival, and how many there were; the third is
+    // held, every other answered after STUB_DELAY.
+    let arrivals: Arc<Mutex<Vec<(Instant, Value)>>> = Arc::default();
+    let heard = Arc::new(AtomicUsize::new(0));
+    let stub = MockServer::start().await;
+    let (kept, count) = (Arc::clone(&arrivals), Arc::clone(&heard));
+    Mock::given(method("POST"))
+        .respond_with(move |request: &Request| {
+            let body: Value = request.body_json().unwrap_or(Value::Null);
+            kept.lock()
+                .expect("the arrivals")
+                .push((Instant::now(), body));
+            let n = count.fetch_add(1, Ordering::SeqCst) + 1;
+            ResponseTemplate::new(200)
+                .set_delay(if n == 3 { STUB_HOLD } else { STUB_DELAY })
+                .set_body_json(json!({
+                    "id": format!("gen-commander-{n}"), "model": "deepseek/deepseek-v4.1-flash",
+                    "provider": "Together",
+                    "choices": [{"message": {"content": STUB_DOCTRINE}, "finish_reason": "stop"}],
+                    "usage": {"cost": 0.00015, "prompt_tokens": 400, "completion_tokens": 30,
+                        "total_tokens": 430}
+                }))
+        })
+        .mount(&stub)
+        .await;
+
+    let mut cfg = arena_rig::arena_config();
+    cfg.match_.startup_ms = 2_000;
+    cfg.match_.board_timeout_ms = 60_000;
+    cfg.match_.max_duration_ms = 100_000;
+    let rig = arena_rig::boot(cfg, &[("pilot", "Pilot")]).await;
+    let mut god =
+        arena_rig::Client::login(&rig, arena_rig::GOD_ACCOUNT, arena_rig::GOD_PASSWORD, "God")
+            .await;
+    for spec in arena_rig::POSES {
+        arena_rig::pose(&mut god, spec).await;
+    }
+    arena_rig::walk_to_lobby(&mut god).await;
+
+    let config = arena_rig::bot_config(
+        &rig,
+        "pilot+Pilot",
+        &format!(
+            r#"
+[arena]
+commander = true
+commander_ms = 1000
+lead_start_grace_ms = 5000
+
+[arena.commander_model]
+endpoint = "{}/v1/chat/completions"
+name = "deepseek/deepseek-v4.1-flash"
+max_tokens = 200
+cost_currency = "USD"
+reasoning = {{ enabled = false }}
+provider = {{ order = ["Together"], allow_fallbacks = false }}
+"#,
+            stub.uri()
+        ),
+    );
+    // The session budget beside the config, named by its top-level `budget`
+    // (a top-level key must come before the first table).
+    std::fs::write(
+        rig.dir.join("bot").join("budget.json"),
+        r#"{"version": 1, "max_requests": 3, "max_cost_by_currency": {}, "unknown_cost": "block"}"#,
+    )
+    .expect("the budget");
+    let text = std::fs::read_to_string(&config).expect("the config");
+    std::fs::write(&config, format!("budget = \"budget.json\"\n{text}"))
+        .expect("the config names the budget");
+
+    let from = god.seen.len();
+    let mut flight = arena_rig::launch(
+        &rig,
+        &config,
+        "runner",
+        &["--arena", "red", "--matches", "2"],
+    );
+    let hunting = arena_rig::await_line(
+        &mut god,
+        from,
+        "Good hunting",
+        &mut flight,
+        Duration::from_secs(60),
+    )
+    .await;
+
+    // Match 1: called off as soon as the stub has heard its third request.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while heard.load(Ordering::SeqCst) < 3 {
+        assert!(
+            Instant::now() < deadline,
+            "the stub heard {} request(s) in 30 s",
+            heard.load(Ordering::SeqCst)
+        );
+        assert!(!flight.task.is_finished(), "the bot ended mid-match");
+        god.idle(Duration::from_millis(20)).await;
+    }
+    arena_rig::still_running(&god, hunting);
+    god.say("@arena/abort", "is stopping").await;
+    let over = arena_rig::await_line(
+        &mut god,
+        hunting,
+        " is over (",
+        &mut flight,
+        Duration::from_secs(30),
+    )
+    .await;
+    // The end cleared the poses: both tanks again, for match 2.
+    for spec in arena_rig::POSES {
+        arena_rig::pose(&mut god, spec).await;
+    }
+
+    // Until the budget's block and a `FIRE` of match 2 after it (90 s at
+    // most); the stub's count then.
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let at_block = loop {
+        if blocked_then_fired(&records_now(&flight.transcript)).is_some() {
+            break heard.load(Ordering::SeqCst);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no budget block and FIRE in match 2 inside 90 s"
+        );
+        assert!(
+            !flight.task.is_finished(),
+            "the bot ended before match 2's FIRE"
+        );
+        god.idle(Duration::from_millis(100)).await;
+    };
+    arena_rig::still_running(&god, over);
+    god.say("@arena/abort", "is stopping").await;
+
+    let landed = arena_rig::land(flight, Duration::from_secs(60)).await;
+    let wall = started.elapsed();
+    let records = &landed.records;
+    let total = heard.load(Ordering::SeqCst);
+
+    // The block: once, the commander off for the budget, and no request after.
+    let blocked: Vec<usize> = records
+        .iter()
+        .enumerate()
+        .filter(|(_, record)| record["kind"] == "budget-blocked")
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(blocked.len(), 1, "one budget-blocked record: {blocked:?}");
+    let off = records
+        .iter()
+        .find(|record| record["kind"] == "commander-off" && record["data"]["reason"] == OFF_BUDGET)
+        .unwrap_or_else(|| panic!("the commander off for the budget: {}", landed.report_text));
+    assert_eq!(at_block, 3, "the stub had heard three at the block");
+    assert_eq!(
+        total, at_block,
+        "no request reached the stub after the block"
+    );
+
+    // The request ids: three admitted, each model record under its own.
+    let ids: Vec<u64> = records
+        .iter()
+        .filter(|record| record["kind"] == "model-request")
+        .map(|record| record["data"]["id"].as_u64().expect("a request id"))
+        .collect();
+    assert_eq!(ids.len(), 3, "three requests admitted: {ids:?}");
+    for record in records
+        .iter()
+        .filter(|record| MODEL_RECORDS.contains(&record["kind"].as_str().unwrap_or("")))
+    {
+        let id = record["request_id"].as_u64();
+        assert!(
+            id.is_some_and(|id| ids.contains(&id)),
+            "a {} record under {}, not one of {ids:?}",
+            record["kind"],
+            record["request_id"]
+        );
+    }
+    // …and each request's own records under it, and no other's: the two
+    // answered calls each its input, request, reply, usage and receipt; the
+    // held third its input, request and cancel, and no reply. (Call 3 is asked
+    // only after call 2's answer, so a reply filed under the wrong request
+    // shows here as a count off by one.)
+    for (n, id) in ids.iter().enumerate() {
+        let answered = usize::from(n < 2);
+        let expected = [1, 1, answered, answered, answered, 1 - answered];
+        let counts: Vec<usize> = MODEL_RECORDS
+            .iter()
+            .map(|kind| {
+                records
+                    .iter()
+                    .filter(|record| record["kind"] == *kind && record["request_id"] == *id)
+                    .count()
+            })
+            .collect();
+        assert_eq!(
+            counts,
+            expected,
+            "request {} (id {id}): {MODEL_RECORDS:?} filed under it",
+            n + 1
+        );
+    }
+    for record in records
+        .iter()
+        .filter(|record| record["kind"] == "model-request")
+    {
+        assert_eq!(
+            record["request_id"], record["data"]["id"],
+            "a model-request under its own id"
+        );
+    }
+
+    // The cancel: the third request, by the abort or the stale bound.
+    let third = ids[2];
+    let asked_at = records
+        .iter()
+        .position(|record| record["kind"] == "model-request" && record["data"]["id"] == third)
+        .expect("the third model-request");
+    let cancelled_at = records
+        .iter()
+        .position(|record| {
+            record["kind"] == "model-cancelled"
+                && record["data"]["request_id"] == third
+                && record["request_id"] == third
+        })
+        .unwrap_or_else(|| panic!("the third request cancelled: {}", landed.report_text));
+    assert!(cancelled_at > asked_at);
+    let by = if records[asked_at..cancelled_at]
+        .iter()
+        .any(|record| record["kind"] == "commander-stale" && record["data"]["abandoned"] == true)
+    {
+        "the lane's stale bound"
+    } else {
+        "the abort"
+    };
+    let named = matches_named(records);
+    let block_match = off["data"]["match"].as_u64();
+    let block_in = match named.iter().position(|id| Some(*id) == block_match) {
+        Some(0) => "match 1",
+        Some(1) => "match 2",
+        _ => "neither match",
+    };
+
+    // The ledger: every request the stub heard, plus at most one cancelled
+    // before it reached it; at least one cancelled; no goal decision.
+    let filed = &landed.report["costs"]["session"]["by_prompt_type"]["arena_commander"];
+    let requests = filed["requests"].as_u64().expect("requests");
+    let cancelled = filed["cancelled"].as_u64().unwrap_or(0);
+    let heard_n = u64::try_from(total).expect("a count");
+    assert!(
+        requests >= heard_n && requests <= heard_n + 1,
+        "{requests} filed against {heard_n} heard: {filed}"
+    );
+    assert!(cancelled >= 1, "the third call filed cancelled: {filed}");
+    assert!(
+        landed.report["costs"]["session"]["by_prompt_type"]["goal_decision"].is_null(),
+        "no goal turn was asked"
+    );
+    assert_eq!(
+        landed.report["state"]["model_calls"], 0,
+        "no commander call counted as a goal call: {}",
+        landed.report_text
+    );
+
+    // The pilot flew on without the commander: a `FIRE` in match 2 after the
+    // block.
+    assert!(
+        blocked_then_fired(records).is_some_and(|(at, _)| at == blocked[0]),
+        "a FIRE in match 2 after the block"
+    );
+
+    // Two matches, both called off.
+    let matches = landed.matches();
+    assert_eq!(matches.len(), 2, "{}", landed.report_text);
+    for flown in matches {
+        assert_eq!(flown["result"], "abort", "{}", landed.report_text);
+    }
+    // The budget before the ask: the matches' commander calls are the three
+    // requests admitted, so the ask the budget refused was never counted as a
+    // call (a runner that took the ask before the budget would count four).
+    let calls: u64 = matches
+        .iter()
+        .map(|flown| flown["commander_calls"].as_u64().expect("commander_calls"))
+        .sum();
+    assert_eq!(
+        calls,
+        u64::try_from(ids.len()).expect("a count"),
+        "the matches' commander calls are the admitted requests: {}",
+        landed.report_text
+    );
+    assert_eq!(landed.report["success"], false);
+    assert_eq!(landed.code, Some(2), "stderr:\n{}", landed.stderr);
+    println!(
+        "COMMANDER THROUGH THE RUNNER: the stub heard {total}; the third call was cancelled by \
+         {by}; the budget blocked in {block_in}; {requests} filed ({cancelled} cancelled); \
+         wall {:.1} s",
+        wall.as_secs_f64()
+    );
+    god.close().await;
+    drop(rig);
+}
+
 /// **A plain goal hands the pod to the pilot** (cut AJ.3's `arena` action, end
 /// to end). The goal model (a `wiremock` stub) answers its first request with
 /// `arena` for red; the pilot then flies from the walk to `FIRE` alone against
@@ -807,10 +1222,18 @@ cost_currency = "USD"
 /// its wait on the verb's own refusal sentence rather than sitting out the
 /// whole `STEP_TIMEOUT`, so a posed lane that re-poses before every match
 /// loses a moment, not twenty seconds and its match's opening, to a refusal.
-/// A cell off the window and a heading out of range each come back as `Err`
-/// with the verb's sentence well inside a quarter of the step timeout (the
-/// old wait, which knew only `opens at cell`, took all of it); a good pose
-/// still comes back `Ok`.
+/// A cell off the window, a heading out of range and (cut AM.3) a callsign
+/// the centre has no slot for each come back as `Err` with the verb's
+/// sentence well inside a quarter of the step timeout (the old wait, which
+/// knew only `opens at cell`, took all of it); a good pose still comes back
+/// `Ok`.
+///
+/// **And a closed session ends every wait at once** (cut AM.3), on the same
+/// rig: God types `QUIT`, the server's own disconnect; a pose typed straight
+/// behind it, whose wait meets the close, is an `Err` saying the session is
+/// closed (inside 10 s); once the channel has closed (read for 10 s at most),
+/// `try_pose` is an `Err` saying the session is closed, and `try_await_line` over a flight whose bot never ends is
+/// `Err(Ended::Closed)`, each inside 2 s and neither a panic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refused_pose_answers_at_once() {
     let _one_world = ARENA.lock().await;
@@ -827,6 +1250,7 @@ async fn refuse_poses() {
     for (spec, sentence) in [
         ("RA=5000 5000 90", "is off the arena window."),
         ("RA=100 97 400", "Heading is 0 to 359."),
+        ("ZZ=100 97 90", "There is no slot ZZ on this centre."),
     ] {
         let asked = Instant::now();
         let answer = arena_rig::try_pose(&mut god, spec).await;
@@ -842,6 +1266,60 @@ async fn refuse_poses() {
         .await
         .expect("a pose on the road is taken");
     assert!(text.contains("opens at cell"), "{text}");
+
+    // The closing tail: God quits, and every wait on the closed session ends
+    // at once.
+    god.quit().await;
+    // A pose typed straight behind `QUIT`, before the close was read, goes
+    // out (or is refused by the dying channel) and its wait meets the close:
+    // that too is the closed session's `Err`, never an empty or stray answer.
+    let asked = Instant::now();
+    let text = arena_rig::try_pose(&mut god, "RA=100 97 90")
+        .await
+        .expect_err("a pose behind QUIT is refused");
+    let took = asked.elapsed();
+    assert!(text.contains("the session is closed"), "{text}");
+    assert!(took < Duration::from_secs(10), "refused after {took:?}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !god.closed && Instant::now() < deadline {
+        god.pump(deadline.saturating_duration_since(Instant::now()))
+            .await;
+    }
+    assert!(
+        god.closed,
+        "the session closed after QUIT:\n{}",
+        god.drain()
+    );
+    let asked = Instant::now();
+    let text = arena_rig::try_pose(&mut god, "RA=100 97 90")
+        .await
+        .expect_err("a pose on a closed session is refused");
+    let took = asked.elapsed();
+    assert!(text.contains("the session is closed"), "{text}");
+    assert!(took < Duration::from_secs(2), "refused after {took:?}");
+    // A flight whose bot never ends: only the closed watcher can end the
+    // wait (the paths are never read).
+    let mut flight = arena_rig::Flight {
+        task: tokio::spawn(std::future::pending()),
+        transcript: rig.dir.join("never.jsonl"),
+        report: rig.dir.join("never.json"),
+    };
+    // From the end of what was read, so no earlier text can hold the needle.
+    let from = god.seen.len();
+    let asked = Instant::now();
+    let ended = arena_rig::try_await_line(
+        &mut god,
+        from,
+        "never",
+        &mut flight,
+        Duration::from_secs(60),
+    )
+    .await;
+    let took = asked.elapsed();
+    assert_eq!(ended, Err(arena_rig::Ended::Closed));
+    assert!(took < Duration::from_secs(2), "ended after {took:?}");
+    assert!(!flight.task.is_finished(), "the bot's task was never read");
+    flight.task.abort();
     god.close().await;
     drop(rig);
 }

@@ -44,7 +44,7 @@ own model calls to a separate HTTP stub. None of those server dependencies are i
 the bot's runtime or build dependency graph. The package's
 [maintenance instructions](../crates/mush-bot/AGENTS.md) preserve this separation.
 
-The simulator pilot (cut AJ) holds to the same line. It reads only the text a
+The simulator pilot holds to the same line. It reads only the text a
 seated line-mode pilot is sent — the answers to its own `CONTACTS`,
 `WEAPONSTATUS` and `STATUS`, the cockpit's notices and the centre's
 announcements — and builds its picture of the match from nothing else. Its
@@ -380,7 +380,7 @@ to `[arena] wait_start_s`) for the lead to start, boards when the match boards,
 powers up and fights its own tank. It never starts, aborts or concedes the
 match, never adds or changes machines, and never gives orders to its side's
 machines (`SIM START`, `SIM ABORT`, `SIM CONCEDE`, `SIM AI`, `SIM UNIT`,
-`ORDER`; 16c Q-AJ2 and Q-AJ3). A result a human lead calls (an abort, a
+`ORDER`). A result a human lead calls (an abort, a
 concession) is reported as what it is: not a win.
 
 **Live-box etiquette.** As lead it waits `[arena] lead_start_grace_ms` (three
@@ -631,8 +631,9 @@ and never aborts, concedes, reconfigures (`SIM AI`, `SIM UNIT`, `SIM MODE`,
 never reads the server's state, logs or the machines' controller: everything
 it knows is what its own session was sent, so it holds nothing about a unit its
 own tank has not detected. It never locks a friend or an unidentified contact.
-While it flies, no goal turn runs: the only model it may ask is its
-commander, and a commander's answer changes only the doctrine, never a line.
+While it flies, no goal turn runs unless you take one with `/step` (which asks
+the goal model); on its own the only model it asks is its commander, and a
+commander's answer changes only the doctrine, never a line.
 
 **How well it flies against the machine.** Measured by an ignored lane,
 `cargo test -p mush-bot --test arena_win_rate -- --ignored --nocapture`: ten
@@ -661,7 +662,7 @@ MUSH_BOT_WIN_RATE_ENGAGEMENT=orbit cargo test -p mush-bot --test arena_win_rate 
 
 **What it prints.** First `ENGAGEMENT: {hold|orbit}; flown hold 164 of 164
 picture records` (the stances the transcript's picture records actually flew,
-most first), then the `WIN RATE` line and one line a match, then the lead's
+most first), then the `WIN RATE` line and one line a match, then a
 reading of the transcript and the report: `FIRE GAP {gun}: p10 … / p50 … / p90
 … ms over {n} gaps` (the gaps between one gun's `FIRE` lines, each under 20 s),
 `SHOT GAP {gun}: …` (the same between the shots that left, `Firing {gun}.`, so a
@@ -678,7 +679,8 @@ report, the figure is counted from the lobby's own `Match {n} is over (…)`
 lines, and `NO REPORT: the figure is from the lobby's match-end lines.`
 follows it. A run that stopped early says so after the match lines:
 `EARLY END: {why} after {n} match(es).`, where the reason is `the bot ended`,
-`no match end inside 600 s` or `the 100-minute deadline`. A refused pose
+`no match end inside 600 s`, `the 100-minute deadline` or `the watching
+session closed` (the lane's own staff session dropped). A refused pose
 answers at once, and the match it was for (the next one by the centre's own
 match number) flew from the 2 430 m muster: its line ends ` (unposed)` and
 `UNPOSED: {u} of {n} match(es) flew from muster.` counts them.
@@ -752,9 +754,9 @@ and its real model. It prints `LIVE COMMANDER: {w} of 5 for red against one
 machine at 1 v 1 (…)`, one line a match with the commander's calls and what
 became of them (applied, late, overruled, invalid, errors, and why it stopped
 if it did), and a `COST:` line from the cost ledger. **It spends real money**:
-the lead's live smoke of 2026-09-29 made 370 calls over five matches for 0.0706
+a live smoke on 2026-09-29 made 370 calls over five matches for 0.0706
 US dollars, about 1.4 US cents a match, about 410 ms a call. So CI never runs
-it and never sets its variables; the lead runs it by hand:
+it and never sets its variables; it is run by hand:
 
 ```sh
 export OPENROUTER_API_KEY=...
@@ -860,7 +862,7 @@ the system message gives the model the help's own figures: a round from within
 side 250 or 220 and is twice the target, three side hits in ten land on that
 side's track, and a round from behind strikes the thinnest plate and can reach
 the engine — so **turn into the shot**; circling did not stop the machines'
-cannon and machine guns hitting (in the lead's live run on the orbit it still
+cannon and machine guns hitting (in a live run on the orbit it still
 chose the orbit a quarter of the time, and of 494 hits the tank took on a named
 facet only 32 struck a front one); a stopped tank on grass is seen at 480 m
 against a mover's 600 m, so the tank that stops before it is found sees first,
@@ -876,7 +878,7 @@ searches. A `null` target and the lost contact's own designator both mean
 that one.
 
 **The pilot's rule on a withdraw.** The model adjudicates, the pilot enforces.
-In the lead's live smoke of 2026-09-29 the commander answered `withdraw` for
+In a live smoke on 2026-09-29 the commander answered `withdraw` for
 238 of 367 doctrines, most of them on a lost contact and some on a hostile it
 had read as a friend, and only 33 on a hull at half or less. So a `withdraw`
 answered while the tank's hull is sound (its internals above half) is flown as
@@ -958,7 +960,7 @@ OpenRouter with reasoning off answered in a median 1 342 ms on default routing
 budget thinking and returned nothing. A commander answer is useful only inside
 the picture's own refresh, so send `reasoning = { enabled = false }` (and pin a
 fast provider when the latency matters). `bots/arena/commander.toml` does both;
-pinned to Together at `commander_ms = 1500`, the lead's live smoke of
+pinned to Together at `commander_ms = 1500`, a live smoke on
 2026-09-29 made 370 calls over five matches for 0.0706 US dollars (about 1.4
 US cents a match, about 410 ms a call). On default routing the median answer
 (1.3 s, the slowest measured 1.6 s) is inside the two-second bound with little
