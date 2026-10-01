@@ -44,12 +44,18 @@
 //! * "Past a gun's last band the chance is 0%: the round is still fired and
 //!   spent" — so a gun whose last read said 0% is not fired;
 //! * **each gun fires on its own clock** ([`super::picture`]'s module head): the
-//!   seconds of `cycling (N s)` and `Still cycling: N s to go.` are rounded up
-//!   and the real cycle begins up to a pulse after the ack (both read from the
-//!   bot's own transcript; "you and the arena are a pulse apart"), so a gun is
-//!   believed ready only when its one clock, [`super::picture::Weapon`]'s
-//!   `next_ready_ms`, says so, or — with no clock yet — when its row says
-//!   `ready` well after the ack;
+//!   seconds of `cycling (N s)` and `Still cycling: N s to go.` are rounded up,
+//!   a row read inside the first second after the ack prints the whole cycle,
+//!   and the shot goes on the arena's next 250 ms lattice point after the ack
+//!   (all read from the bot's own transcripts; "you and the arena are a pulse
+//!   apart"), so a gun is believed ready only when its one clock,
+//!   [`super::picture::Weapon`]'s `next_ready_ms`, says so, or — with no clock
+//!   yet — when its row says `ready` well after the ack;
+//! * a gun the tank says it does not carry, a gun whose rounds the picture
+//!   counts down to none ([`super::picture::Weapon::rounds_left`]), and every
+//!   gun while a lost section's `its weapons are gone` waits for `WEAPONSTATUS`
+//!   are not fired (cut AL.1; the bot's own transcripts typed `FIRE` at guns
+//!   lost with the turret for seconds);
 //! * "Ground a tank cannot enter stops it, and the cockpit says so once per
 //!   stop", and "`STATUS` carries `HELD` until you order something that frees
 //!   it" — so a `Held:` notice turns the tank 45° for 3 s and orders the speed
@@ -97,21 +103,38 @@
 //! circles it there, but only while its plot is fresh ([`FRESH_PLOT_MS`]): past
 //! that it hunts at once from the trail, and with no trail it searches.
 //!
-//! **What a tuning round may move** (cut AK.3, between its measurement runs,
-//! and nothing else): [`FALL_BACK_WIDEN_M`] 0..=150, [`WITHDRAW_MS`]
-//! 3 000..=10 000, [`FALL_BACK_FACET_DIVISOR`] 4..=8, [`HUNT_TRAIL_MS`]
-//! 20 000..=90 000, [`HUNT_ASSUMED_MPS`] 5.0..=12.0, [`HUNT_ALONG_MAX_M`]
-//! 600..=1 800, [`HUNT_SWEEP_LEGS`] 2..=8, [`HUNT_SWEEP_LEG_M`] 200..=500,
-//! [`HUNT_SWEEP_MS`] 30 000..=120 000, [`STALL_MS`] 4 000..=6 000,
-//! [`HELD_REVERSE_MS`] 2 000..=5 000, and in the picture
-//! [`super::picture::FIRE_SLACK_START_MS`] 500..=1 000 and
-//! [`super::picture::FIRE_SLACK_UP_MS`] 100..=500. Not tunable:
-//! [`SIGHT_BAND_MAX_M`] and [`FALL_BACK_MAX_M`] (a ruling),
-//! [`HUNT_STALE_PLOT_MS`] (a guard: no live row read older than 2 s),
-//! [`super::picture::FIRE_SLACK_MIN_MS`] (one pulse),
-//! [`super::picture::FIRE_SLACK_DOWN_MS`] and
-//! [`super::picture::FIRE_SLACK_MAX_MS`]. Every test asserts through these
-//! names, so a round inside the bounds breaks none.
+//! **What a tuning round may move** (cut AL.3, between its measurement runs,
+//! and nothing else). **AK's constants are frozen**: the hunt's, the fall
+//! back's, the stall's and the held turn's stay as AK.3 left them. AL.3 may
+//! move only AL's named constants within their bounds; AL.1's are, in the
+//! picture, [`super::picture::FIRE_SLACK_START_MS`],
+//! [`super::picture::FIRE_SLACK_UP_MS`] and [`super::picture::FIRE_RETRY_MS`],
+//! and in the lane [`super::lane::WEAPONS_LEARNED_MS`]. The brief bounds them
+//! 0..=500, 100..=300, 150..=500 and 5 000..=10 000; **the lane's tests admit
+//! less**, one constant moved at a time from the built tree (the rest as
+//! built): `FIRE_SLACK_START_MS` 50..=410 (seen passing at 50, 100, 150, 200,
+//! 250 built, 300, 350, 400 and 410; at 0 the lattice rig's cannon is refused
+//! 3 lines of 22, over its one in ten, and from 420 its median gap is over
+//! its bound), `FIRE_SLACK_UP_MS` 100..=200 (100, 150 built and 200 pass; at
+//! 250 and 300 the lattice rig's cannon median is over its bound),
+//! `FIRE_RETRY_MS` 150..=500 (both ends and 250 built pass; under
+//! [`super::lane::FIRE_GAP_MS`] the lane's gap after the refused line governs
+//! the retry instead), and `WEAPONS_LEARNED_MS` 6 001..=10 000 (6 001, 7 000,
+//! 8 000 built and 10 000 pass; the lock-line test needs it above
+//! `WEAPONS_LOCKED_MS + POLL_STARVE_MS + LIMIT_WINDOW_MS`, 6 000, and does not
+//! compile at or under it). Two moved together are untried. Not tunable:
+//! [`super::picture::ENGAGED_PULSE_MS`],
+//! [`super::picture::FIRE_SLACK_MAX_MS`] (a ruling: one pulse),
+//! [`super::picture::FIRE_SLACK_MIN_MS`],
+//! [`super::picture::FIRE_SLACK_DOWN_MS`], [`super::lane::FIRE_GAP_MS`],
+//! [`super::lane::POLL_STARVE_MS`], and
+//! [`super::picture::CYCLE_READ_WITHIN_MS`] and
+//! [`super::lane::WEAPONS_AFTER_SHOT_MS`] (both read from the transcript); nor
+//! [`SIGHT_BAND_MAX_M`] and [`FALL_BACK_MAX_M`] (a ruling) or
+//! [`HUNT_STALE_PLOT_MS`] (a guard: no live row read older than 2 s). Every
+//! test asserts through these names, never their values; the one exception
+//! is the lead's own bounds on the offline median gaps (1 200 ms for the
+//! machine gun, 6 500 for the cannon), which a round must keep.
 use std::collections::BTreeSet;
 
 use serde::Serialize;
@@ -1407,9 +1430,15 @@ pub fn target_pos(picture: &Picture, contact: &Contact, now_ms: u64) -> Option<(
     })
 }
 
-/// Rule 5: the guns to fire at `target`, main gun first.
+/// Rule 5: the guns to fire at `target`, main gun first. None while the
+/// picture holds every gun in doubt (a lost section's `its weapons are gone`,
+/// cut AL.1), and never a gun whose counted rounds are gone or one the tank
+/// said it does not carry.
 fn fireable(picture: &Picture, target: &str, other: Side, now_ms: u64) -> Vec<String> {
-    if picture.lock.as_deref() != Some(target) || picture.lock_friendly {
+    if picture.lock.as_deref() != Some(target)
+        || picture.lock_friendly
+        || picture.weapons_doubt.is_some()
+    {
         return Vec::new();
     }
     let Some(contact) = picture.contacts.get(target) else {
@@ -1429,7 +1458,12 @@ fn fireable(picture: &Picture, target: &str, other: Side, now_ms: u64) -> Vec<St
     let order = std::iter::once(main).chain((0..picture.weapons.len()).filter(|i| *i != main));
     order
         .filter_map(|index| picture.weapons.get(index))
-        .filter(|w| w.rounds > 0 && w.percent != Some(0) && believed_ready(w, now_ms))
+        .filter(|w| {
+            !picture.struck.contains(&w.id)
+                && w.rounds_left() > 0
+                && w.percent != Some(0)
+                && believed_ready(w, now_ms)
+        })
         .map(|w| w.id.clone())
         .collect()
 }
@@ -3156,6 +3190,9 @@ mod tests {
     // -- cut AK.1: the fire clock --------------------------------------------------
 
     #[test]
+    // The slack's floor is nothing (cut AL.1), which the lint reads as a
+    // no-op; the rule stays written through its names.
+    #[allow(clippy::unnecessary_min_or_max)]
     fn after_a_shot_the_weapon_waits_for_its_own_clock() {
         let (mut picture, mut pilot) = flying();
         hold(&mut picture, contact("BA", Some(Side::Blue), 0, 450));
@@ -3192,5 +3229,62 @@ mod tests {
             c.read_ms = due;
         }
         assert_eq!(pilot.decide(&picture, &doctrine(), due).fire, ["cannon"]);
+    }
+
+    // -- cut AL.1: a lost gun, an empty gun, every gun in doubt -----------------
+
+    /// **`fireable` skips a struck, an empty and a doubted gun** (cut AL.1):
+    /// a gun the tank said it does not carry, a gun whose rounds the acks have
+    /// counted down to none, and every gun while a lost section's `its weapons
+    /// are gone` waits for `WEAPONSTATUS`.
+    #[test]
+    fn fireable_skips_a_struck_an_empty_and_a_doubted_gun() {
+        let armed = || {
+            let (mut picture, _) = flying();
+            hold(&mut picture, contact("BA", Some(Side::Blue), 0, 450));
+            picture.lock = Some("BA".into());
+            picture.weapons = vec![weapon("cannon", true), weapon("machine_gun", true)];
+            picture
+        };
+        let picture = armed();
+        assert_eq!(
+            fireable(&picture, "BA", Side::Blue, NOW),
+            ["cannon", "machine_gun"]
+        );
+        // Struck: the no-such-weapon answer takes it out of the list.
+        let mut picture = armed();
+        picture.apply(
+            NOW,
+            &classify("That unit carries no weapon called `cannon`."),
+        );
+        assert_eq!(fireable(&picture, "BA", Side::Blue, NOW), ["machine_gun"]);
+        // …and a gun the struck set names is never fired, whatever the list says.
+        let mut picture = armed();
+        picture.struck.insert("machine_gun".into());
+        assert_eq!(fireable(&picture, "BA", Side::Blue, NOW), ["cannon"]);
+        // Empty: every round the last row counted has been acked.
+        let mut picture = armed();
+        if let Some(mg) = picture.weapons.iter_mut().find(|w| w.id == "machine_gun") {
+            mg.shots_since_read = mg.rounds;
+        }
+        assert_eq!(fireable(&picture, "BA", Side::Blue, NOW), ["cannon"]);
+        // Doubted: nothing at all until `WEAPONSTATUS` answers.
+        let mut picture = armed();
+        picture.apply(
+            NOW,
+            &classify("The turret is destroyed: its weapons are gone."),
+        );
+        assert!(fireable(&picture, "BA", Side::Blue, NOW).is_empty());
+        picture.apply(NOW + 100, &classify("Locked on BA, 62% to hit."));
+        picture.apply(
+            NOW + 100,
+            &classify("machine_gun (mg)  ready  400 of 500 round(s)"),
+        );
+        picture.apply(NOW + 101, &classify("Power online."));
+        assert_eq!(picture.weapons_doubt, None);
+        assert_eq!(
+            fireable(&picture, "BA", Side::Blue, NOW + 101),
+            ["machine_gun"]
+        );
     }
 }

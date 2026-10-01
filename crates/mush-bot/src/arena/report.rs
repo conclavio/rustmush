@@ -7,9 +7,96 @@
 //! them), never a count of `FIRE` lines typed; and the run is `done` only when
 //! every match it played was won and nothing blocked it, so a headless run's
 //! exit code 0 means exactly that.
+//!
+//! **The fire gaps** (cut AL.1): [`fire_gaps`] is the programme lead's own
+//! count of a transcript's `FIRE` lines, and [`shot_gaps`] the same count over
+//! the cockpit's acceptances, which a refused and retried `FIRE` does not
+//! split. The offline lane asserts on both; the win-rate lane prints both.
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::{Side, picture::Picture};
+
+/// Two `FIRE` lines (or two shots) of one gun further apart than this are not a
+/// gap in its fire: the fight broke off between them (the lead's count).
+pub const FIRE_GAP_WINDOW_MS: u64 = 20_000;
+
+/// One gun's gaps: how many, and their 10th, 50th and 90th percentiles, each
+/// the sorted gaps' element at `floor(q × (len − 1))`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct GapStats {
+    pub gaps: usize,
+    pub p10_ms: u64,
+    pub p50_ms: u64,
+    pub p90_ms: u64,
+}
+
+/// The gaps of each key under [`FIRE_GAP_WINDOW_MS`], in the order of `lines`,
+/// for the lines `key` reads a key from.
+fn gaps_by<'a>(
+    lines: impl IntoIterator<Item = (u64, &'a str)>,
+    key: impl Fn(&'a str) -> Option<&'a str>,
+) -> BTreeMap<String, GapStats> {
+    let mut last: BTreeMap<&str, u64> = BTreeMap::new();
+    let mut gaps: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for (at, line) in lines {
+        let Some(key) = key(line) else {
+            continue;
+        };
+        if let Some(before) = last.insert(key, at) {
+            let gap = at.saturating_sub(before);
+            if gap < FIRE_GAP_WINDOW_MS {
+                gaps.entry(key.to_owned()).or_default().push(gap);
+            }
+        }
+    }
+    gaps.into_iter()
+        .filter_map(|(key, gaps)| percentiles(gaps).map(|stats| (key, stats)))
+        .collect()
+}
+
+/// The percentiles of `gaps` by index (the lead's rule: the sorted gaps'
+/// element at `floor(q × (len − 1))`); `None` for no gap.
+fn percentiles(mut gaps: Vec<u64>) -> Option<GapStats> {
+    gaps.sort_unstable();
+    let last = gaps.len().checked_sub(1)?;
+    let at = |tenths: usize| gaps.get(last * tenths / 10).copied().unwrap_or(0);
+    Some(GapStats {
+        gaps: gaps.len(),
+        p10_ms: at(1),
+        p50_ms: at(5),
+        p90_ms: at(9),
+    })
+}
+
+/// **The lead's count of the `FIRE` lines** (`sends.js` beside the AL plan):
+/// every line starting `FIRE ` is keyed by the word after it as typed, and its
+/// gap to that key's previous `FIRE` line counts when it is under
+/// [`FIRE_GAP_WINDOW_MS`]. A key with no gap is left out. `sends` are the
+/// lane's own `(lane_ms, line)`, in the order they went.
+pub fn fire_gaps<'a>(
+    sends: impl IntoIterator<Item = (u64, &'a str)>,
+) -> BTreeMap<String, GapStats> {
+    gaps_by(sends, |line| {
+        line.strip_prefix("FIRE ")
+            .and_then(|rest| rest.split_whitespace().next())
+    })
+}
+
+/// **The same count over the shots that left**: the lines that are exactly
+/// `Firing {w}.`, keyed by `{w}`. A `FIRE` refused and tried again inside its
+/// second is two `FIRE` lines but one shot, so the lead's count alone would
+/// read it as a quarter-second gap and flatter the median; this one does not.
+pub fn shot_gaps<'a>(
+    lines: impl IntoIterator<Item = (u64, &'a str)>,
+) -> BTreeMap<String, GapStats> {
+    gaps_by(lines, |line| {
+        line.strip_prefix("Firing ")
+            .and_then(|rest| rest.strip_suffix('.'))
+            .filter(|w| !w.is_empty() && !w.contains(char::is_whitespace))
+    })
+}
 
 /// One match the pilot flew (or tried to).
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -330,6 +417,85 @@ mod tests {
             .remove("commander_overruled");
         let read: MatchResult = serde_json::from_value(old).expect("reads");
         assert_eq!(read.commander_overruled, 0);
+    }
+
+    /// **The lead's count** (cut AL.1): per word after `FIRE `, a gap to that
+    /// word's last line under the window, percentiles by index.
+    #[test]
+    fn fire_gaps_follow_the_leads_count() {
+        let sends = [
+            (0, "FIRE cannon"),
+            (100, "FIRE machine_gun"),
+            (1_200, "FIRE machine_gun"),
+            (2_300, "CONTACTS"),
+            (2_400, "FIRE machine_gun"),
+            (3_000, "FIRE machine_gun"),
+            (6_500, "FIRE cannon"),
+            (8_000, "FIRE machine_gun"),
+            // Over the window from the last: no gap, but the next counts from it.
+            (8_000 + FIRE_GAP_WINDOW_MS, "FIRE machine_gun"),
+            (9_000 + FIRE_GAP_WINDOW_MS, "FIRE machine_gun"),
+            // A lone line of its own key: no gap, left out.
+            (30_000, "FIRE mg"),
+            // Not a `FIRE` line.
+            (30_001, "FIREcannon"),
+            (30_002, "FIRE"),
+        ];
+        let gaps = fire_gaps(sends.iter().map(|(at, line)| (*at, *line)));
+        assert_eq!(gaps.keys().collect::<Vec<_>>(), ["cannon", "machine_gun"]);
+        assert_eq!(
+            gaps["cannon"],
+            GapStats {
+                gaps: 1,
+                p10_ms: 6_500,
+                p50_ms: 6_500,
+                p90_ms: 6_500
+            }
+        );
+        // Machine-gun gaps 1 100, 1 200, 600, 5 000 and 1 000 (the window's
+        // 20 000 left out); sorted 600, 1 000, 1 100, 1 200, 5 000: index
+        // floor(0.1 × 4) = 0, floor(0.5 × 4) = 2, floor(0.9 × 4) = 3.
+        assert_eq!(
+            gaps["machine_gun"],
+            GapStats {
+                gaps: 5,
+                p10_ms: 600,
+                p50_ms: 1_100,
+                p90_ms: 1_200
+            }
+        );
+    }
+
+    /// **The shots that left** (cut AL.1): the same rule over `Firing {w}.`
+    /// lines only, so a refusal between two acks splits nothing.
+    #[test]
+    fn shot_gaps_count_accepted_shots_only() {
+        let lines = [
+            (0, "Firing machine_gun."),
+            (1_050, "FIRE machine_gun refused. Still cycling: 1 s to go."),
+            (1_300, "Firing machine_gun."),
+            (2_600, "Firing machine_gun."),
+            (3_000, "Firing cannon."),
+            (9_250, "Firing cannon."),
+            (9_300, "Firing  cannon."),
+            (9_400, "Firing cannon"),
+        ];
+        let gaps = shot_gaps(lines.iter().map(|(at, line)| (*at, *line)));
+        assert_eq!(gaps.keys().collect::<Vec<_>>(), ["cannon", "machine_gun"]);
+        assert_eq!(
+            gaps["machine_gun"],
+            GapStats {
+                gaps: 2,
+                p10_ms: 1_300,
+                p50_ms: 1_300,
+                p90_ms: 1_300
+            },
+            "1 300 and 1 300: the refusal splits nothing"
+        );
+        assert_eq!(gaps["cannon"].gaps, 1);
+        assert_eq!(gaps["cannon"].p50_ms, 6_250);
+        // The lead's count over the same lines sees no `FIRE` line at all.
+        assert!(fire_gaps(lines.iter().map(|(at, line)| (*at, *line))).is_empty());
     }
 
     #[test]

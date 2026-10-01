@@ -511,6 +511,13 @@ fn every_notice() -> Vec<FrameNotice> {
         section: "turret".into(),
         consequences: Vec::new(),
     });
+    // The turret's own loss (cut AL.1): the words that hold every gun until
+    // `WEAPONSTATUS` answers. Last of the lost sections, so the doubt it sets
+    // is its own.
+    notices.push(FrameNotice::SectionLost {
+        section: "turret".into(),
+        consequences: vec!["remove_weapons".into()],
+    });
     notices.push(FrameNotice::TargetSectionLost {
         contact: named(BA_ID, ba()),
         section: "turret".into(),
@@ -982,12 +989,22 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
             FrameNotice::SectionLost {
                 section,
                 consequences,
-            } => assert!(
-                matches!(&read, Line::SectionLost { section: s, cost }
-                    if s == section.as_str() && cost.is_some() == !consequences.is_empty()),
-                "{}",
-                fail()
-            ),
+            } => {
+                assert!(
+                    matches!(&read, Line::SectionLost { section: s, cost }
+                        if s == section.as_str() && cost.is_some() == !consequences.is_empty()),
+                    "{}",
+                    fail()
+                );
+                // The bot holds every gun on exactly the words the game says
+                // for a section whose loss takes its weapons (cut AL.1).
+                assert_eq!(
+                    reader.picture.weapons_doubt.is_some(),
+                    consequences.iter().any(|c| c == "remove_weapons"),
+                    "{}",
+                    fail()
+                );
+            }
             FrameNotice::TargetSectionLost { contact, section } => assert!(
                 matches!(&read, Line::TargetSectionLost { designator, section: s }
                     if *designator == contact.designator.to_string() && s == section.as_str()),
@@ -1148,6 +1165,14 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
         ),
         (cockpit::CockpitError::NoLockOrName, Line::NoLockOrName),
         (cockpit::CockpitError::NoWeapon, Line::NoWeapon),
+        // Cut AL.1: a gun the tank does not carry (every `FIRE` of a gun lost
+        // with its turret, in the bot's own transcripts).
+        (
+            cockpit::CockpitError::NoSuchWeapon("cannon".into()),
+            Line::NoSuchWeapon {
+                weapon: "cannon".into(),
+            },
+        ),
         (cockpit::CockpitError::Destroyed, Line::DestroyedNoOrders),
     ] {
         assert_eq!(reader.one(&error.to_string()), want, "{error}");

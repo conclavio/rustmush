@@ -20,7 +20,15 @@
 //! transcripts). A fourth, cut AK.2's `hull_internals`, is the hull's
 //! internals `STATUS` prints: `(60, 60)` unless a test sets it, before the
 //! fight or during it.
-use std::collections::BTreeMap;
+//!
+//! Cut AL.1 adds, off by default too: `lost` (guns the tank no longer carries:
+//! a `FIRE` of one answers the no-such-weapon line, `WEAPONSTATUS` leaves it
+//! out) and [`Server::lose_turret`]; `no_chance` (guns whose rows read `0% to
+//! hit`); a magazine run dry refuses its `FIRE` as `Empty:`; and per-gun counts
+//! (`fire_lines_by`, `cycling_refusals_by`) with each acceptance said (`acks`),
+//! for the fire-gap assertions ([`mush_bot::arena::report::fire_gaps`] over the
+//! lane's own sends, [`mush_bot::arena::report::shot_gaps`] over the acks).
+use std::collections::{BTreeMap, BTreeSet};
 
 use mush_bot::arena::{
     CommanderReply, Doctrine, Lane, LaneEvent, Purpose, Send, Side,
@@ -28,9 +36,20 @@ use mush_bot::arena::{
         ERRORS_IN_ROW, HOLD_MAX_S, OFF_BUDGET, OFF_DESTROYED, OFF_ERRORS, OFF_MATCH_OVER,
         OFF_STALE, Stance,
     },
+    lane::{
+        FIRE_GAP_MS, LIMIT_WINDOW_MS, POLL_GAP_MS, POLL_STARVE_MS, STATUS_EVERY_MS,
+        WEAPONS_AFTER_SHOT_MS, WEAPONS_IDLE_MS, WEAPONS_LEARNED_MS, WEAPONS_LOCKED_MS,
+    },
     lobby::{Centre, Step},
-    picture::{FIRE_SLACK_MAX_MS, Power, bearing_deg},
-    pilot::{HELD_TURN_DEG, STALL_MS, WITHDRAW_MS, clamp_arena, hull_failing},
+    picture::{
+        CYCLE_READ_WITHIN_MS, FIRE_RETRY_MS, FIRE_SLACK_MAX_MS, FIRE_SLACK_START_MS,
+        FIRE_SLACK_UP_MS, Picture, Power, Weapon, bearing_deg,
+    },
+    pilot::{
+        FRESH_PLOT_MS, FRESH_READ_MS, HELD_TURN_DEG, STALL_MS, WITHDRAW_MS, clamp_arena,
+        hull_failing,
+    },
+    report::{self, GapStats},
     settings::Settings,
 };
 use serde_json::{Value, json};
@@ -155,6 +174,25 @@ struct Server {
     fire_lines: u32,
     shots: BTreeMap<String, u32>,
     cycling_refusals: u32,
+    /// The same two counts per gun (cut AL.1), and each `Firing {w}.` said,
+    /// at the time it is due.
+    fire_lines_by: BTreeMap<String, u32>,
+    cycling_refusals_by: BTreeMap<String, u32>,
+    acks: Vec<(u64, String)>,
+    /// Each `Still cycling: N s to go.` said (cut AL.1): when it is due, the
+    /// gun, and its `N`.
+    cycling_refusals_at: Vec<(u64, String, u64)>,
+    /// Guns the tank has lost (cut AL.1): a `FIRE` of one answers ``That unit
+    /// carries no weapon called `{w}`.``, `WEAPONSTATUS` leaves it out, and
+    /// with none left it answers `This unit carries no weapon.`. Empty unless
+    /// a test loses one (or [`Server::lose_turret`]).
+    lost: BTreeSet<String>,
+    /// Guns whose rows read `0% to hit` while locked (cut AL.1). Empty unless
+    /// a test sets one.
+    no_chance: BTreeSet<String>,
+    /// How long a `FIRE`'s answer (its ack or its refusal) takes (cut AL.1):
+    /// 3 ms unless a test slows it past a tick, as a remote server may.
+    fire_answer_ms: u64,
 }
 
 impl Server {
@@ -184,7 +222,24 @@ impl Server {
             fire_lines: 0,
             shots: BTreeMap::new(),
             cycling_refusals: 0,
+            fire_lines_by: BTreeMap::new(),
+            cycling_refusals_by: BTreeMap::new(),
+            acks: Vec::new(),
+            cycling_refusals_at: Vec::new(),
+            lost: BTreeSet::new(),
+            no_chance: BTreeSet::new(),
+            fire_answer_ms: 3,
         }
+    }
+
+    /// **The turret goes** (cut AL.1): the victim's line, and both guns with
+    /// it. An assumption about the server written from the bot's own
+    /// transcripts (the line, then every `FIRE` answered as a gun not carried,
+    /// and `WEAPONSTATUS` reading `This unit carries no weapon.`).
+    fn lose_turret(&mut self) {
+        self.say(0, "The turret is destroyed: its weapons are gone.");
+        self.lost.insert("cannon".into());
+        self.lost.insert("machine_gun".into());
     }
 
     /// The frame the cockpit reads: the last pulse at or before now.
@@ -269,10 +324,10 @@ impl Server {
             Some(left) => format!("cycling ({} s)", left.div_ceil(1_000)),
             None => "ready".into(),
         };
-        let chance = if self.locked.is_some() {
-            "  band 1 of 3  62% to hit"
-        } else {
-            ""
+        let chance = match self.locked {
+            Some(_) if self.no_chance.contains(weapon) => "  band 3 of 3  0% to hit",
+            Some(_) => "  band 1 of 3  62% to hit",
+            None => "",
         };
         let rounds = match self.magazine {
             Some(size) => format!("{} of {size}", self.rounds_shown(weapon, size)),
@@ -387,14 +442,21 @@ impl Server {
                 );
             }
             "WEAPONSTATUS" => {
-                let mut reply = String::new();
-                if let Some(lock) = &self.locked {
-                    reply.push_str(&format!("Locked on {lock}, 62% to hit.\n"));
+                let rows: Vec<String> = [("cannon", ""), ("machine_gun", " (mg)")]
+                    .into_iter()
+                    .filter(|(weapon, _)| !self.lost.contains(*weapon))
+                    .map(|(weapon, short)| self.weapon_row(weapon, short))
+                    .collect();
+                if rows.is_empty() {
+                    self.say(3, "This unit carries no weapon.");
+                } else {
+                    let mut reply = String::new();
+                    if let Some(lock) = &self.locked {
+                        reply.push_str(&format!("Locked on {lock}, 62% to hit.\n"));
+                    }
+                    reply.push_str(&rows.join("\n"));
+                    self.say(3, &reply);
                 }
-                reply.push_str(&self.weapon_row("cannon", ""));
-                reply.push('\n');
-                reply.push_str(&self.weapon_row("machine_gun", " (mg)"));
-                self.say(3, &reply);
             }
             "RANGE" => match self.locked.clone() {
                 Some(lock) => self.say(3, &format!("Range to {lock}: 440 m.")),
@@ -433,18 +495,41 @@ impl Server {
                     self.say(500, &format!("Locked on {target}, 62% to hit."));
                 } else if let Some(weapon) = line.strip_prefix("FIRE ") {
                     self.fire_lines += 1;
-                    if self.locked.is_none() {
+                    *self.fire_lines_by.entry(weapon.to_owned()).or_default() += 1;
+                    let empty = self
+                        .magazine
+                        .is_some_and(|_| self.rounds.get(weapon) == Some(&0));
+                    if self.lost.contains(weapon) {
                         self.say(
-                            3,
+                            self.fire_answer_ms,
+                            &format!("That unit carries no weapon called `{weapon}`."),
+                        );
+                    } else if self.locked.is_none() {
+                        self.say(
+                            self.fire_answer_ms,
                             &format!("FIRE {weapon} refused. No lock: LOCK a contact first."),
                         );
                     } else if let Some(left) = self.pre_check_left(weapon) {
                         self.cycling_refusals += 1;
+                        *self
+                            .cycling_refusals_by
+                            .entry(weapon.to_owned())
+                            .or_default() += 1;
+                        let secs = left.div_ceil(1_000);
                         self.say(
-                            3,
+                            self.fire_answer_ms,
+                            &format!("FIRE {weapon} refused. Still cycling: {secs} s to go."),
+                        );
+                        self.cycling_refusals_at.push((
+                            self.now + self.fire_answer_ms,
+                            weapon.to_owned(),
+                            secs,
+                        ));
+                    } else if empty {
+                        self.say(
+                            self.fire_answer_ms,
                             &format!(
-                                "FIRE {weapon} refused. Still cycling: {} s to go.",
-                                left.div_ceil(1_000)
+                                "FIRE {weapon} refused. Empty: that weapon has nothing left to fire."
                             ),
                         );
                     } else {
@@ -460,7 +545,9 @@ impl Server {
                             let left = self.rounds.entry(weapon.to_owned()).or_insert(size);
                             *left = left.saturating_sub(1);
                         }
-                        self.say(3, &format!("Firing {weapon}."));
+                        self.say(self.fire_answer_ms, &format!("Firing {weapon}."));
+                        self.acks
+                            .push((self.now + self.fire_answer_ms, weapon.to_owned()));
                         let lock = self.locked.clone().unwrap_or_default();
                         if weapon == "cannon" {
                             self.say(600, &format!("Hit on {lock}: turret."));
@@ -492,6 +579,7 @@ impl Server {
         self.contacts.clear();
         self.fired.clear();
         self.rounds.clear();
+        self.lost.clear();
         self.held_from = None;
     }
 }
@@ -1468,11 +1556,12 @@ fn heading_sends(run: &Run, from: u64) -> Vec<(u64, u32)> {
         .collect()
 }
 
-/// **A refused `FIRE` is the exception** (cut AK.1): against an arena that
-/// fires on its 500 ms pulse and a magazine that counts down, locked for two
-/// minutes, at most one `FIRE` line in twenty is refused as still cycling, and
-/// each gun fires at least once a cycle, a pulse, the slack's ceiling and a
-/// poll.
+/// **A refused `FIRE` is the exception** (cut AK.1; cut AL.1 per gun): against
+/// an arena that fires on its 500 ms pulse and a magazine that counts down,
+/// locked for two minutes, at most one `FIRE` line in ten of each gun, plus
+/// the slack's climb from its start to its ceiling, is refused as still
+/// cycling, and each gun fires at least once a cycle, a pulse, the slack's
+/// ceiling and a poll.
 #[test]
 fn a_refused_fire_is_the_exception() {
     const PULSE_MS: u64 = 500;
@@ -1482,7 +1571,8 @@ fn a_refused_fire_is_the_exception() {
     });
     sight_a_hostile(&mut run);
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
-    let (lines, refusals) = (run.server.fire_lines, run.server.cycling_refusals);
+    let lines = run.server.fire_lines_by.clone();
+    let refusals = run.server.cycling_refusals_by.clone();
     let shots = run.server.shots.clone();
     run.until(120_000, |_| false);
     assert_eq!(
@@ -1490,12 +1580,38 @@ fn a_refused_fire_is_the_exception() {
         Some("BA"),
         "locked throughout"
     );
-    let lines = run.server.fire_lines - lines;
-    let refusals = run.server.cycling_refusals - refusals;
-    assert!(
-        refusals * 20 <= lines,
-        "{refusals} of {lines} FIRE lines refused as still cycling"
-    );
+    let per_gun: Vec<(&str, u32, u32)> = ["cannon", "machine_gun"]
+        .into_iter()
+        .map(|weapon| {
+            let lines = count(&run.server.fire_lines_by, weapon) - count(&lines, weapon);
+            let refusals =
+                count(&run.server.cycling_refusals_by, weapon) - count(&refusals, weapon);
+            println!("pulse {PULSE_MS}: {weapon}: {refusals} of {lines} FIRE lines refused");
+            (weapon, refusals, lines)
+        })
+        .collect();
+    // A loosening beyond Q-AL2's one in ten, on the 500 ms pulse rig only, by
+    // the programme lead's ruling of 2026-09-30. An allowance, not a rate the
+    // loop is proved to keep: a FIRE on a pulse boundary needs a slack within
+    // 60 ms of the one-pulse ceiling, where a refusal lifts the slack only to
+    // the ceiling (`MAX - need`, not UP), so at that worst phase the picture's
+    // own model (`FIRE_SLACK_DOWN_MS`) refuses DOWN / (MAX - need + DOWN) of
+    // the lines, one in seven at a need of 440 ms; the guns' acks fall on
+    // every phase of the pulse, and this rig measured 3 of 21 cannon lines and
+    // 8 of 86 machine-gun lines at the built constants. So the bound is one
+    // line in ten, plus the climb from the starting slack to the ceiling, one
+    // refusal per rise, which a tuning round that lowers START or UP lengthens.
+    // The no-pulse rig and the 250 ms lattice rig (the live shape) keep one in
+    // ten, strict (`full_rate_on_each_guns_own_cycle`,
+    // `full_rate_on_the_arenas_lattice`).
+    let climb = (FIRE_SLACK_MAX_MS - FIRE_SLACK_START_MS).div_ceil(FIRE_SLACK_UP_MS);
+    for (weapon, refusals, lines) in per_gun {
+        let most = u64::from(lines) / 10 + climb;
+        assert!(
+            u64::from(refusals) <= most,
+            "{weapon}: {refusals} of {lines} FIRE lines refused as still cycling, at most {most}"
+        );
+    }
     for weapon in ["cannon", "machine_gun"] {
         let fired = run.server.shots.get(weapon).copied().unwrap_or(0)
             - shots.get(weapon).copied().unwrap_or(0);
@@ -1513,6 +1629,83 @@ fn a_refused_fire_is_the_exception() {
         .find(|w| w.id == "machine_gun")
         .expect("the machine gun");
     assert!(mg.rounds < 200, "the magazine counted down");
+}
+
+/// **A refused `FIRE` is tried again inside the second it was refused for**
+/// (cut AL.1): on the 500 ms pulse rig and on the 250 ms lattice, every
+/// `Still cycling: N s to go.` answering the lane's own `FIRE` is followed by
+/// that gun's next `FIRE` within a tick of `N − 1` whole seconds and the
+/// retry step ([`FIRE_RETRY_MS`]) after the step the refusal was read at — or
+/// of the lane's own [`FIRE_GAP_MS`] after the refused line, where that is
+/// later — unless no tick in between had a slot free for it (the limiter's
+/// window full, less the other gun's `FIRE` typed ahead of it in that tick).
+#[test]
+fn a_refused_fire_is_tried_again_inside_its_second() {
+    let max = usize::try_from(Settings::default().max_lines_per_s).unwrap_or(usize::MAX);
+    for pulse_ms in [500, LATTICE_MS] {
+        let mut run = to_the_fight_with(Settings::default(), |server| {
+            server.pulse_ms = Some(pulse_ms);
+            server.magazine = Some(200);
+        });
+        sight_a_hostile(&mut run);
+        assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+        let from = run.server.cycling_refusals_at.len();
+        run.until(120_000, |_| false);
+        let refusals = run.server.cycling_refusals_at[from..].to_vec();
+        assert!(
+            !refusals.is_empty(),
+            "pulse {pulse_ms}: no refusal to retry"
+        );
+        let (mut on_time, mut held) = (0, 0);
+        for (at, weapon, secs) in &refusals {
+            let line = format!("FIRE {weapon}");
+            // Read at the first step at or after it is said.
+            let read = at.div_ceil(STEP_MS) * STEP_MS;
+            let refused_line = run
+                .sends_of(&line, 0)
+                .into_iter()
+                .rfind(|sent| sent <= at)
+                .unwrap_or(0);
+            let due = (read + (secs - 1) * 1_000 + FIRE_RETRY_MS).max(refused_line + FIRE_GAP_MS);
+            if due + TICK_MS > run.now {
+                continue;
+            }
+            let next = run.sends_of(&line, read).first().copied();
+            println!(
+                "pulse {pulse_ms}: {weapon} refused ({secs} s) at {at}, due again {due}, typed \
+                 again {next:?}"
+            );
+            if next.is_some_and(|next| next <= due + TICK_MS) {
+                on_time += 1;
+                continue;
+            }
+            // Late (or not again before the run ended): every tick from the
+            // one it was due at had no slot for it.
+            let until = next.unwrap_or(run.now + STEP_MS);
+            let first_tick = due.div_ceil(TICK_MS) * TICK_MS;
+            for tick in (first_tick..until).step_by(TICK_MS as usize) {
+                let taken = run
+                    .sent
+                    .iter()
+                    .filter(|s| {
+                        (s.lane_ms < tick && s.lane_ms + LIMIT_WINDOW_MS > tick)
+                            || (s.lane_ms == tick && s.line.starts_with("FIRE ") && s.line != line)
+                    })
+                    .count();
+                assert!(
+                    taken >= max,
+                    "pulse {pulse_ms}: {weapon} refused at {at}, due again {due}, passed over \
+                     at {tick} with {taken} of {max} slots taken; typed again at {next:?}"
+                );
+            }
+            held += 1;
+        }
+        println!(
+            "pulse {pulse_ms}: {on_time} refused FIRE(s) tried again on time, {held} held by the \
+             limiter"
+        );
+        assert!(on_time > 0, "pulse {pulse_ms}: none checked on its clock");
+    }
 }
 
 /// Searching on 090 at full speed, then held by the ground: the run, when the
@@ -1995,4 +2188,830 @@ fn a_withdraw_is_cleared_when_the_commander_stops() {
     run.step();
     assert_eq!(run.lane.doctrine().stance, Stance::StandOff);
     assert!(run.records_of("doctrine-lapsed").is_empty());
+}
+
+// -- cut AL.1: full cadence ---------------------------------------------------------
+
+/// The lead's own bounds on the machine gun's and the cannon's median gap,
+/// offline with no pulse (16c's AL entry: its figures, not constants of the
+/// bot's).
+const LEAD_MG_P50_MS: u64 = 1_200;
+const LEAD_CANNON_P50_MS: u64 = 6_500;
+/// The arena's own lattice (the bot's transcripts: its notices arrive on a
+/// 250 ms lattice within a match), for the lattice rig.
+const LATTICE_MS: u64 = 250;
+const GUNS: [&str; 2] = ["cannon", "machine_gun"];
+
+/// A per-gun count, none when the gun has none.
+fn count(by: &BTreeMap<String, u32>, weapon: &str) -> u32 {
+    by.get(weapon).copied().unwrap_or(0)
+}
+
+/// The picture's gun `id`.
+fn gun<'a>(picture: &'a Picture, id: &str) -> Option<&'a Weapon> {
+    picture.weapons.iter().find(|w| w.id == id)
+}
+
+/// Both guns' cycles are learned, each the scripted gun's own.
+fn cycles_learned(run: &Run) -> bool {
+    GUNS.iter()
+        .all(|w| gun(run.lane.picture(), w).and_then(|g| g.cycle_ms) == Some(Server::cycle_ms(w)))
+}
+
+/// Locked on BA with both cycles learned.
+fn locked_and_learned(run: &mut Run) {
+    sight_a_hostile(run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    assert!(
+        run.until(20_000, cycles_learned),
+        "the cycles learned: {:?}",
+        run.lane.picture().weapons
+    );
+}
+
+/// Neither a tick nor the step after one: no reply to a line the lane typed is
+/// on its way, so a test may change the server here.
+fn between_ticks(run: &Run) -> bool {
+    !run.now.is_multiple_of(TICK_MS) && !(run.now - STEP_MS).is_multiple_of(TICK_MS)
+}
+
+/// Between ticks, `weapon` due inside the next 300 ms and the next periodic
+/// `WEAPONSTATUS` over a second off: its next line will be a `FIRE`, typed
+/// before any row can tell the picture what the server has just changed.
+fn about_to_fire(run: &Run, weapon: &str) -> bool {
+    let last_poll = run.sends_of("WEAPONSTATUS", 0).last().copied().unwrap_or(0);
+    between_ticks(run)
+        && gun(run.lane.picture(), weapon)
+            .and_then(|w| w.next_ready_ms)
+            .is_some_and(|at| at > run.now && at <= run.now + 300)
+        && run.now + LIMIT_WINDOW_MS < last_poll + WEAPONS_LEARNED_MS
+}
+
+/// The lead's count over the lane's own sends, and the same over the server's
+/// acceptances, from `from`.
+fn both_gaps(run: &Run, from: u64) -> (BTreeMap<String, GapStats>, BTreeMap<String, GapStats>) {
+    let fire = report::fire_gaps(
+        run.sent
+            .iter()
+            .filter(|s| s.lane_ms >= from)
+            .map(|s| (s.lane_ms, s.line.as_str())),
+    );
+    let acks: Vec<(u64, String)> = run
+        .server
+        .acks
+        .iter()
+        .filter(|(at, _)| *at >= from)
+        .map(|(at, w)| (*at, format!("Firing {w}.")))
+        .collect();
+    let shot = report::shot_gaps(acks.iter().map(|(at, line)| (*at, line.as_str())));
+    (fire, shot)
+}
+
+/// **Full rate** on a rig whose pulse is `pulse_ms`: locked on BA for two
+/// minutes, both cycles read whole; each gun's two gap counts and its
+/// refusals printed. The run and when the two minutes began.
+fn full_rate(pulse_ms: Option<u64>) -> (Run, u64) {
+    let mut run = to_the_fight_with(Settings::default(), |server| {
+        server.pulse_ms = pulse_ms;
+        server.magazine = Some(200);
+    });
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    let start = run.now;
+    let lines = run.server.fire_lines_by.clone();
+    let refusals = run.server.cycling_refusals_by.clone();
+    run.until(120_000, |_| false);
+    assert_eq!(
+        run.lane.picture().lock.as_deref(),
+        Some("BA"),
+        "locked throughout"
+    );
+    // The test measures AL's clock: both cycles were read whole.
+    assert!(cycles_learned(&run), "{:?}", run.lane.picture().weapons);
+    let (fire, shot) = both_gaps(&run, start);
+    for weapon in GUNS {
+        let lines = count(&run.server.fire_lines_by, weapon) - count(&lines, weapon);
+        let refusals = count(&run.server.cycling_refusals_by, weapon) - count(&refusals, weapon);
+        println!(
+            "pulse {pulse_ms:?}: {weapon}: FIRE lines {:?}; shots {:?}; {refusals} of {lines} FIRE \
+             lines refused as still cycling",
+            fire.get(weapon),
+            shot.get(weapon),
+        );
+        assert!(refusals * 10 <= lines, "{weapon}: {refusals} of {lines}");
+    }
+    (run, start)
+}
+
+/// **The lead's assertion** (cut AL.1): with the scripted cockpit's pulse
+/// unset, so the bot's own schedule is all that is measured, the machine gun's
+/// median gap is at most 1 200 ms and the cannon's at most 6 500, by the
+/// lead's count of the `FIRE` lines and by the shots that left; at most one
+/// `FIRE` line in ten of each gun is refused as still cycling (in
+/// [`full_rate`]); and each gun fires at least once a cycle, the slack's
+/// ceiling and two ticks.
+#[test]
+fn full_rate_on_each_guns_own_cycle() {
+    let (run, start) = full_rate(None);
+    let (fire, shot) = both_gaps(&run, start);
+    for (count_name, gaps) in [("FIRE lines", &fire), ("shots", &shot)] {
+        let p50 = |w: &str| gaps.get(w).map_or(u64::MAX, |g| g.p50_ms);
+        assert!(
+            p50("machine_gun") <= LEAD_MG_P50_MS,
+            "{count_name}: {gaps:?}"
+        );
+        assert!(
+            p50("cannon") <= LEAD_CANNON_P50_MS,
+            "{count_name}: {gaps:?}"
+        );
+    }
+    for weapon in GUNS {
+        let shots = run
+            .server
+            .acks
+            .iter()
+            .filter(|(at, w)| *at >= start && w == weapon)
+            .count() as u64;
+        let floor = 120_000 / (Server::cycle_ms(weapon) + FIRE_SLACK_MAX_MS + 2 * TICK_MS);
+        assert!(shots >= floor, "{weapon}: {shots} shots, at least {floor}");
+    }
+}
+
+/// **Full rate on the arena's lattice** (cut AL.1): the scripted arena starts
+/// each shot at its next 250 ms lattice point (the bot's transcripts' notice
+/// lattice), so a gun is ready one cycle after that point: both gap counts'
+/// medians are at most a cycle, a lattice step and two ticks, and at most one
+/// `FIRE` line in ten of each gun is refused (in [`full_rate`]).
+#[test]
+fn full_rate_on_the_arenas_lattice() {
+    let (run, start) = full_rate(Some(LATTICE_MS));
+    let (fire, shot) = both_gaps(&run, start);
+    for (count_name, gaps) in [("FIRE lines", &fire), ("shots", &shot)] {
+        for weapon in GUNS {
+            let bound = Server::cycle_ms(weapon) + LATTICE_MS + 2 * TICK_MS;
+            let p50 = gaps.get(weapon).map_or(u64::MAX, |g| g.p50_ms);
+            assert!(
+                p50 <= bound,
+                "{count_name}: {weapon} p50 {p50} over {bound}: {gaps:?}"
+            );
+        }
+    }
+}
+
+/// The reservation's rule, worked out from the lane's picture and its sends: a
+/// poll sent at `now` after `before` (the lines typed inside the window before
+/// it) leaves a slot, inside `max` lines a window, for each gun the pilot may
+/// fire that is due inside the window (none while it fires nothing: no lock, a
+/// friendly one, every gun in doubt; never a gun read at `0%`).
+fn leaves_the_guns_a_slot(picture: &Picture, before: &[&Send], now: u64, max: usize) -> bool {
+    if picture.lock.is_none() || picture.lock_friendly || picture.weapons_doubt.is_some() {
+        return true;
+    }
+    let mut due: Vec<u64> = picture
+        .weapons
+        .iter()
+        .filter(|w| !picture.struck.contains(&w.id) && w.rounds_left() > 0 && w.percent != Some(0))
+        .filter_map(|w| w.next_ready_ms)
+        .map(|at| at.max(now))
+        .filter(|d| *d < now + LIMIT_WINDOW_MS)
+        .collect();
+    due.sort_unstable();
+    due.iter().enumerate().all(|(k, d)| {
+        let in_window = before
+            .iter()
+            .filter(|s| s.lane_ms + LIMIT_WINDOW_MS > *d)
+            .count();
+        // The lines already in the window, the poll, the guns before, the gun.
+        let lines = in_window + 1 + k + 1;
+        lines <= max
+    })
+}
+
+/// What a crowded minute came to: whether both cycles were learned before
+/// it, ticks with the ring full, ticks a due `STATUS` was held back, of those
+/// the ones the reservation alone held (a slot free), polls that went
+/// overdue, and when each `STATUS` went.
+#[derive(Debug)]
+struct Crowded {
+    learned: bool,
+    crowded: u32,
+    held_back: u32,
+    reserved: u32,
+    starved: u32,
+    statuses: Vec<u64>,
+}
+
+/// **A crowded minute** on a lane typing at most `max` lines a second: locked,
+/// with a contact notice every second so `CONTACTS` (and the lock's `RANGE`
+/// after every second reply) crowd the ring. Checked tick by tick against the
+/// lane's own picture: no poll that can wait goes in a tick where it leaves no
+/// slot for a gun due inside the next second, unless it was `POLL_STARVE_MS`
+/// overdue; a `STATUS` held back with a slot free was held by the rule; and a
+/// gun that may fire is never passed over in a tick with a slot free for it.
+fn a_crowded_minute(max: usize) -> Crowded {
+    let settings = Settings {
+        max_lines_per_s: u32::try_from(max).unwrap_or(u32::MAX),
+        ..Settings::default()
+    };
+    let mut run = to_the_fight(settings);
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    // Fewer lines a second may leave the post-shot read no slot inside the
+    // cannon's first second; then the minute checks `STATUS` alone (a
+    // `WEAPONSTATUS` may be the post-shot read, whose cadence is not a poll's
+    // that can wait).
+    let learned = run.until(20_000, cycles_learned);
+    run.server
+        .contacts
+        .push("X7  unknown  bearing 180° (rel 090°)  far  500 m  1 s".into());
+    let start = run.now;
+    let mut seen = Crowded {
+        learned,
+        crowded: 0,
+        held_back: 0,
+        reserved: 0,
+        starved: 0,
+        statuses: Vec::new(),
+    };
+    let mut last_poll: BTreeMap<String, u64> = BTreeMap::new();
+    for send in &run.sent {
+        last_poll.insert(send.line.clone(), send.lane_ms);
+    }
+    while run.now < start + 60_000 {
+        if run.now.is_multiple_of(1_000) {
+            run.server.now = run.now;
+            run.server.say(0, "New contact X7: bearing 180°, far.");
+        }
+        let sent_before = run.sent.len();
+        run.step();
+        if !run.now.is_multiple_of(TICK_MS) {
+            continue;
+        }
+        let now = run.now;
+        let picture = run.lane.picture();
+        let tick: Vec<&Send> = run.sent[sent_before..].iter().collect();
+        let earlier: Vec<&Send> = run.sent[..sent_before]
+            .iter()
+            .filter(|s| s.lane_ms + LIMIT_WINDOW_MS > now)
+            .collect();
+        if earlier.len() + tick.len() >= max {
+            seen.crowded += 1;
+        }
+        // Every poll that can wait (with no gun's cycle unknown, every
+        // `WEAPONSTATUS` is the periodic one).
+        for (i, send) in tick.iter().enumerate() {
+            let every = match send.line.as_str() {
+                "STATUS" => STATUS_EVERY_MS,
+                "WEAPONSTATUS" if learned => WEAPONS_LEARNED_MS,
+                _ => continue,
+            };
+            let before: Vec<&Send> = earlier.iter().chain(tick[..i].iter()).copied().collect();
+            let overdue = last_poll
+                .get(&send.line)
+                .is_none_or(|at| now >= at + every.max(POLL_GAP_MS) + POLL_STARVE_MS);
+            if overdue {
+                seen.starved += 1;
+            }
+            assert!(
+                overdue || leaves_the_guns_a_slot(picture, &before, now, max),
+                "{max} a second: {} at {now} left no slot: {:?}; sent {:?}",
+                send.line,
+                picture.weapons,
+                before
+                    .iter()
+                    .map(|s| (s.lane_ms, &s.line))
+                    .collect::<Vec<_>>()
+            );
+        }
+        // A `STATUS` due and not sent: held back (for the guns, or the slots).
+        if let Some(at) = last_poll.get("STATUS")
+            && now >= at + STATUS_EVERY_MS
+            && !tick.iter().any(|s| s.line == "STATUS")
+        {
+            seen.held_back += 1;
+            // …and with a slot still free after this tick's lines, the lane
+            // stopped only because the reservation said so: the rule, worked
+            // out here, leaves no slot for a gun, and it was not overdue. A
+            // reservation that refused whatever the guns' clocks said fails
+            // here.
+            let all: Vec<&Send> = earlier.iter().chain(tick.iter()).copied().collect();
+            if all.len() < max {
+                assert!(
+                    !leaves_the_guns_a_slot(picture, &all, now, max)
+                        && now < at + STATUS_EVERY_MS + POLL_STARVE_MS,
+                    "{max} a second: STATUS held back at {now} with a slot free and the \
+                     guns' slots kept: {:?}; sent {:?}",
+                    picture.weapons,
+                    all.iter().map(|s| (s.lane_ms, &s.line)).collect::<Vec<_>>()
+                );
+                seen.reserved += 1;
+            }
+        }
+        // Every gun that may fire goes in a tick with a slot free for it: the
+        // guns come first, main gun first.
+        let free = max.saturating_sub(earlier.len());
+        let ba_fresh = picture.contacts.get("BA").is_some_and(|c| {
+            c.age_ms <= FRESH_PLOT_MS && now.saturating_sub(c.read_ms) <= FRESH_READ_MS
+        });
+        let mut ahead = 0;
+        for weapon in GUNS {
+            let line = format!("FIRE {weapon}");
+            let fired = tick.iter().any(|s| s.line == line);
+            let Some(w) = gun(picture, weapon) else {
+                continue;
+            };
+            let last_fire = run.sent[..sent_before]
+                .iter()
+                .rev()
+                .find(|s| s.line == line)
+                .map(|s| s.lane_ms);
+            let may = picture.lock.as_deref() == Some("BA")
+                && ba_fresh
+                && picture.weapons_doubt.is_none()
+                && w.rounds_left() > 0
+                && w.percent != Some(0)
+                && w.next_ready_ms.is_some_and(|at| at <= now)
+                && (fired || !picture.fire_pending(weapon))
+                && last_fire.is_none_or(|at| now >= at + FIRE_GAP_MS);
+            if may {
+                assert!(
+                    fired || ahead >= free,
+                    "{max} a second: {weapon} due at {:?} passed over at {now} with {free} \
+                     slot(s) free",
+                    w.next_ready_ms
+                );
+                ahead += 1;
+            }
+        }
+        for send in &tick {
+            last_poll.insert(send.line.clone(), send.lane_ms);
+        }
+    }
+    seen.statuses = run.sends_of("STATUS", start);
+    println!("a due gun keeps its slot, {max} lines a second: {seen:?}");
+    let fires = run.sends_of("FIRE machine_gun", start);
+    println!(
+        "the machine gun fired {} times in the crowded minute",
+        fires.len()
+    );
+    let floor = 60_000 / (Server::cycle_ms("machine_gun") + FIRE_SLACK_MAX_MS + 2 * TICK_MS);
+    assert!(
+        fires.len() as u64 >= floor,
+        "{max} a second: the machine gun kept firing: {} of at least {floor}",
+        fires.len()
+    );
+    seen
+}
+
+/// **A due gun keeps its slot from a poll** (cut AL.1): [`a_crowded_minute`]
+/// at the settings' own limiter, where `STATUS` is never held past its
+/// overdue escape and a window; and one line a second fewer, where the ring
+/// is fuller and the reservation, not the limiter, is what holds a poll back
+/// in many ticks: there a `STATUS` is held with a slot free in at least one
+/// tick in 250 of the minute (6 to 28 such ticks were seen across the tuning
+/// bounds, where the settings' own limiter shows 0 to 5). (At fewer lines the
+/// escape lifts only the reservation: the lines ahead of `STATUS` may hold it
+/// longer.)
+#[test]
+fn a_due_gun_keeps_its_slot_from_a_poll() {
+    let max = usize::try_from(Settings::default().max_lines_per_s).unwrap_or(usize::MAX);
+    let full = a_crowded_minute(max);
+    assert!(full.learned, "the cycles learned first: {full:?}");
+    assert!(full.crowded > 100, "the ring was crowded: {full:?}");
+    assert!(
+        full.held_back > 0,
+        "a poll was held back for the guns: {full:?}"
+    );
+    for pair in full.statuses.windows(2) {
+        assert!(
+            pair[1] - pair[0] <= STATUS_EVERY_MS + POLL_STARVE_MS + LIMIT_WINDOW_MS,
+            "STATUS starved: {full:?}"
+        );
+    }
+    let fewer = a_crowded_minute(max - 1);
+    assert!(fewer.crowded > 100, "the ring was crowded: {fewer:?}");
+    let ticks = 60_000 / TICK_MS;
+    assert!(
+        u64::from(fewer.reserved) * 250 >= ticks,
+        "the reservation itself held a STATUS with a slot free: {fewer:?}"
+    );
+}
+
+/// Locked with both cycles learned on a rig whose pulse is `pulse_ms` (and,
+/// with a pulse, a magazine that counts down, as the live rows do), a minute
+/// sends at most one `WEAPONSTATUS` every `WEAPONS_LEARNED_MS` (and one for
+/// the minute's edge) while the machine gun keeps firing. The run.
+fn thinned(pulse_ms: Option<u64>) -> Run {
+    let mut run = to_the_fight_with(Settings::default(), |server| {
+        server.pulse_ms = pulse_ms;
+        server.magazine = pulse_ms.map(|_| 200);
+    });
+    locked_and_learned(&mut run);
+    let from = run.now;
+    run.until(60_000, |_| false);
+    let polls = run.sends_of("WEAPONSTATUS", from);
+    println!("pulse {pulse_ms:?}: WEAPONSTATUS, every cycle learned: {polls:?}");
+    assert!(
+        polls.len() as u64 <= 60_000 / WEAPONS_LEARNED_MS + 1,
+        "pulse {pulse_ms:?}: {polls:?}"
+    );
+    assert!(!run.sends_of("FIRE machine_gun", from).is_empty());
+    run
+}
+
+/// **`WEAPONSTATUS` thins once every cycle is known** (cut AL.1): at most once
+/// every `WEAPONS_LEARNED_MS` locked ([`thinned`]), and back to
+/// `WEAPONS_LOCKED_MS` while a gun's row reads `0%` — on time in the middle,
+/// since no slot is kept for a gun the pilot will not fire.
+#[test]
+fn weaponstatus_thins_once_every_cycle_is_known() {
+    let mut run = thinned(None);
+    // The machine gun's row reads 0%: it is left unfired, and the guns are
+    // read at the locked cadence again.
+    run.server.no_chance.insert("machine_gun".into());
+    assert!(run.until(
+        WEAPONS_LEARNED_MS + POLL_STARVE_MS + LIMIT_WINDOW_MS,
+        |run| gun(run.lane.picture(), "machine_gun").and_then(|w| w.percent) == Some(0)
+    ));
+    let from = run.now;
+    run.until(30_000, |_| false);
+    let polls = run.sends_of("WEAPONSTATUS", from);
+    println!("WEAPONSTATUS, a gun at 0%: {polls:?}");
+    assert!(
+        polls.len() as u64 >= 30_000 / (WEAPONS_LOCKED_MS + POLL_STARVE_MS),
+        "{polls:?}"
+    );
+    // The locked cadence, held back at most until it is overdue (and a window
+    // for a slot), and in the middle well under the learned one.
+    let mut gaps: Vec<u64> = polls.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    assert!(
+        gaps.iter()
+            .all(|gap| *gap <= WEAPONS_LOCKED_MS + POLL_STARVE_MS + LIMIT_WINDOW_MS),
+        "{polls:?}"
+    );
+    gaps.sort_unstable();
+    assert!(gaps[gaps.len() / 2] < WEAPONS_LEARNED_MS, "{polls:?}");
+    assert!(
+        gaps[gaps.len() / 2] <= WEAPONS_LOCKED_MS + TICK_MS,
+        "the locked cadence on time in the middle: {polls:?}"
+    );
+    assert!(
+        run.sends_of("FIRE machine_gun", from).is_empty(),
+        "a gun at 0% is not fired"
+    );
+}
+
+/// **`WEAPONSTATUS` thins on the arena's lattice too** (cut AL.1): with the
+/// scripted arena starting each shot at its next 250 ms lattice point and the
+/// rounds counting down, a read that lands on the frame before a shot left
+/// (its row held by the stale-ready guard) still reads the chance under the
+/// lock, so the learned cadence holds ([`thinned`]).
+#[test]
+fn weaponstatus_thins_on_the_arenas_lattice() {
+    thinned(Some(LATTICE_MS));
+}
+
+/// **No `FIRE` for a gun the tank has lost** (cut AL.1): the cannon lost
+/// mid-fight (after it was read and fired) is typed at once more, answered as
+/// a gun not carried, and never again, while the machine gun keeps its rate;
+/// then the turret goes: nothing is fired from its line on, the
+/// `WEAPONSTATUS` it asks goes within a tick and once, and after `This unit
+/// carries no weapon.` nothing is fired either.
+#[test]
+fn no_fire_for_a_gun_the_tank_has_lost() {
+    let mut run = to_the_fight(Settings::default());
+    locked_and_learned(&mut run);
+    assert!(
+        !run.sends_of("FIRE cannon", 0).is_empty(),
+        "the cannon fired"
+    );
+    assert!(run.until(30_000, |run| about_to_fire(run, "cannon")));
+    run.server.lost.insert("cannon".into());
+    let lost_at = run.now;
+    run.until(20_000, |_| false);
+    let cannon = run.sends_of("FIRE cannon", lost_at);
+    assert_eq!(
+        cannon.len(),
+        1,
+        "one FIRE, answered as not carried: {cannon:?}"
+    );
+    assert!(run.lane.picture().struck.contains("cannon"));
+    assert!(
+        run.said
+            .iter()
+            .any(|s| s == "No cannon aboard any more: struck from the fire schedule."),
+        "{:?}",
+        run.said
+    );
+    // The machine gun keeps its rate: a cycle, at most the slack's ceiling and
+    // two ticks a shot.
+    let (_, shot) = both_gaps(&run, lost_at);
+    let mg = shot.get("machine_gun").expect("the machine gun fired");
+    println!("the machine gun after the cannon was lost: {mg:?}");
+    let most = Server::cycle_ms("machine_gun") + FIRE_SLACK_MAX_MS + 2 * TICK_MS;
+    assert!(mg.p50_ms <= most, "{mg:?}");
+    assert!(mg.gaps as u64 >= 20_000 / most - 1, "{mg:?}");
+    // The turret goes, between ticks (no reply on its way), with the machine
+    // gun due by the next tick and two slots free in it: a gun the doubt did
+    // not hold would go beside the doubt's `WEAPONSTATUS`, before its reply.
+    assert!(
+        run.until(60_000, |run| the_turret_can_go(run, 2)),
+        "no moment with the machine gun due and two slots free"
+    );
+    run.server.now = run.now;
+    run.server.lose_turret();
+    run.step();
+    let turret_at = run
+        .lane
+        .picture()
+        .weapons_doubt
+        .expect("every gun in doubt");
+    assert_eq!(turret_at, run.now);
+    run.until(10_000, |_| false);
+    let polls = run.sends_of("WEAPONSTATUS", turret_at);
+    assert!(
+        polls.first().is_some_and(|at| *at <= turret_at + TICK_MS),
+        "the doubt's WEAPONSTATUS within a tick: {polls:?}"
+    );
+    assert_eq!(
+        polls
+            .iter()
+            .filter(|at| **at < turret_at + WEAPONS_LOCKED_MS)
+            .count(),
+        1,
+        "once for the doubt: {polls:?}"
+    );
+    let fires: Vec<&Send> = run
+        .sent
+        .iter()
+        .filter(|s| s.lane_ms >= turret_at && s.line.starts_with("FIRE"))
+        .collect();
+    assert!(fires.is_empty(), "no FIRE after the turret: {fires:?}");
+    let picture = run.lane.picture();
+    assert!(picture.weapons.is_empty() && picture.weapons_doubt.is_none());
+    assert!(
+        run.said
+            .iter()
+            .any(|s| s
+                == "The turret's weapons are gone: no FIRE until WEAPONSTATUS says what is left."),
+        "{:?}",
+        run.said
+    );
+}
+
+/// A moment to lose the turret: between ticks, the last `WEAPONSTATUS`'s
+/// reply read, the machine gun due by the next tick, and at most `lines` in the
+/// limiter's window ending at that tick.
+fn the_turret_can_go(run: &Run, lines: usize) -> bool {
+    let next_tick = (run.now / TICK_MS + 1) * TICK_MS;
+    let in_window = run
+        .sent
+        .iter()
+        .filter(|s| s.lane_ms + LIMIT_WINDOW_MS > next_tick)
+        .count();
+    between_ticks(run)
+        && last_weapons(run).is_some_and(|at| run.now >= at + 2 * STEP_MS)
+        && gun(run.lane.picture(), "machine_gun")
+            .and_then(|w| w.next_ready_ms)
+            .is_some_and(|at| at <= next_tick)
+        && in_window <= lines
+}
+
+/// **The doubt's `WEAPONSTATUS` skips the poll gap** (cut AL.1): the turret
+/// lost inside [`POLL_GAP_MS`] of the last `WEAPONSTATUS`, with a slot free,
+/// is asked about at the next tick all the same, and nothing is fired before
+/// its reply.
+#[test]
+fn the_doubts_weaponstatus_skips_the_poll_gap() {
+    let mut run = to_the_fight(Settings::default());
+    locked_and_learned(&mut run);
+    assert!(
+        run.until(60_000, |run| {
+            let next_tick = (run.now / TICK_MS + 1) * TICK_MS;
+            the_turret_can_go(run, 3)
+                && last_weapons(run).is_some_and(|at| next_tick < at + POLL_GAP_MS)
+        }),
+        "no moment inside a WEAPONSTATUS's poll gap with a slot free"
+    );
+    let last = last_weapons(&run).unwrap_or(0);
+    let turret_at = run.now;
+    run.server.now = run.now;
+    run.server.lose_turret();
+    run.until(LIMIT_WINDOW_MS, |_| false);
+    let polls = run.sends_of("WEAPONSTATUS", last + 1);
+    assert!(
+        polls.first().is_some_and(|at| *at < last + POLL_GAP_MS),
+        "the doubt's WEAPONSTATUS inside the gap after {last}: {polls:?}"
+    );
+    let fires = run
+        .sent
+        .iter()
+        .filter(|s| s.lane_ms >= turret_at && s.line.starts_with("FIRE"))
+        .count();
+    assert_eq!(fires, 0, "nothing fired before the reply");
+}
+
+/// **An empty gun is not fired again** (cut AL.1): a magazine the rows had not
+/// yet shown dry refuses the next `FIRE` as `Empty:`; the gun is struck from
+/// the fire schedule, which is said once, and the cannon fires on.
+#[test]
+fn an_empty_gun_is_not_fired_again() {
+    let mut run = to_the_fight_with(Settings::default(), |server| {
+        server.magazine = Some(200);
+    });
+    locked_and_learned(&mut run);
+    assert!(run.until(30_000, |run| about_to_fire(run, "machine_gun")));
+    run.server.rounds.insert("machine_gun".into(), 0);
+    let dry_at = run.now;
+    run.until(20_000, |_| false);
+    let mg = run.sends_of("FIRE machine_gun", dry_at);
+    assert_eq!(mg.len(), 1, "one FIRE, refused as empty: {mg:?}");
+    assert_eq!(
+        run.said
+            .iter()
+            .filter(|s| *s == "The machine_gun is empty: struck from the fire schedule.")
+            .count(),
+        1,
+        "{:?}",
+        run.said
+    );
+    assert!(
+        run.sends_of("FIRE cannon", dry_at).len() >= 2,
+        "the cannon fires on"
+    );
+}
+
+/// The last `WEAPONSTATUS` the lane typed, if any.
+fn last_weapons(run: &Run) -> Option<u64> {
+    run.sends_of("WEAPONSTATUS", 0).last().copied()
+}
+
+/// The server says `Firing {weapon}.` `delay_ms` on (a multiple of the step):
+/// the lane reads it at that step. When it is read.
+fn ack_in(run: &mut Run, delay_ms: u64, weapon: &str) -> u64 {
+    run.server.now = run.now;
+    run.server.say(delay_ms, &format!("Firing {weapon}."));
+    run.now + delay_ms
+}
+
+/// A `WEAPONSTATUS` went at least [`WEAPONS_AFTER_SHOT_MS`] after the ack read
+/// at `ack`, and its reply (said 3 ms after the line, read at the next step)
+/// was read inside the first second after it.
+fn read_in_first_second(run: &Run, ack: u64) -> bool {
+    run.sends_of("WEAPONSTATUS", ack)
+        .iter()
+        .any(|at| *at >= ack + WEAPONS_AFTER_SHOT_MS && at + STEP_MS - ack < CYCLE_READ_WITHIN_MS)
+}
+
+/// Step to a quiet moment of an unlocked lane: between ticks, a second after
+/// the last `WEAPONSTATUS` (the polls that go with it out of the limiter's
+/// window) and a second before any of the five-second polls is due again.
+fn a_quiet_moment(run: &mut Run) {
+    assert!(run.until(2 * WEAPONS_IDLE_MS, |run| {
+        between_ticks(run)
+            && last_weapons(run).is_some_and(|at| {
+                run.now >= at + LIMIT_WINDOW_MS + 2 * STEP_MS && run.now < at + 2 * LIMIT_WINDOW_MS
+            })
+    }));
+}
+
+/// **Each gun whose cycle is unknown is read inside its own first second**
+/// (cut AL.1): the post-shot `WEAPONSTATUS` is kept per gun, so a second gun's
+/// ack 100, 300, 480 or 600 ms after the first's moves neither gun's read out of
+/// its first second, nor into the frame before its shot (under
+/// [`WEAPONS_AFTER_SHOT_MS`] after its ack); and a periodic `WEAPONSTATUS`
+/// that falls due just after an ack (its row may be the frame before the shot
+/// left) does not cancel the read. Unlocked, so nothing is fired: the acks
+/// are the server's alone, and the rows read `ready`, so no row sets a cycle.
+#[test]
+fn each_unlearned_gun_is_read_inside_its_own_first_second() {
+    for apart in [100, 300, 480, 600] {
+        let mut run = to_the_fight(Settings::default());
+        a_quiet_moment(&mut run);
+        assert!(
+            GUNS.iter()
+                .all(|w| gun(run.lane.picture(), w).is_some_and(|g| g.cycle_ms.is_none())),
+            "{:?}",
+            run.lane.picture().weapons
+        );
+        let cannon = ack_in(&mut run, STEP_MS, "cannon");
+        let mg = ack_in(&mut run, STEP_MS + apart, "machine_gun");
+        run.until(3_000, |_| false);
+        for (weapon, ack) in [("cannon", cannon), ("machine_gun", mg)] {
+            assert!(
+                read_in_first_second(&run, ack),
+                "{weapon} acked at {ack}, the guns {apart} ms apart: WEAPONSTATUS at {:?}",
+                run.sends_of("WEAPONSTATUS", cannon)
+            );
+        }
+    }
+    // A periodic `WEAPONSTATUS` due 150 ms after an ack. The machine gun's
+    // ack first, at a quiet moment: its post-shot read moves the periodic one
+    // off the other polls' five-second beat, so it goes on its own.
+    let mut run = to_the_fight(Settings::default());
+    a_quiet_moment(&mut run);
+    let mg = ack_in(&mut run, STEP_MS, "machine_gun");
+    run.until(LIMIT_WINDOW_MS, |_| false);
+    assert!(read_in_first_second(&run, mg));
+    assert!(run.until(WEAPONS_IDLE_MS, |run| {
+        between_ticks(run)
+            && last_weapons(run).is_some_and(|at| run.now + 150 >= at + WEAPONS_IDLE_MS)
+    }));
+    let ack = ack_in(&mut run, STEP_MS, "cannon");
+    run.until(3_000, |_| false);
+    let polls = run.sends_of("WEAPONSTATUS", ack);
+    assert!(
+        polls
+            .first()
+            .is_some_and(|at| *at < ack + WEAPONS_AFTER_SHOT_MS),
+        "the periodic one went first: {polls:?} after {ack}"
+    );
+    assert!(
+        read_in_first_second(&run, ack),
+        "the read the ack armed still went: {polls:?} after {ack}"
+    );
+}
+
+/// **A gun is never typed again while its `FIRE` is unanswered** (cut AL.1):
+/// with every `FIRE`'s answer slower than [`FIRE_GAP_MS`] and a tick (a remote
+/// server), no gun's `FIRE` line follows its last one before that one's
+/// answer, and both guns keep firing.
+#[test]
+fn no_second_fire_while_the_first_is_unanswered() {
+    const ANSWER_MS: u64 = FIRE_GAP_MS + 2 * TICK_MS;
+    let mut run = to_the_fight_with(Settings::default(), |server| {
+        server.fire_answer_ms = ANSWER_MS;
+    });
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    let from = run.now;
+    run.until(30_000, |_| false);
+    for weapon in GUNS {
+        let fires = run.sends_of(&format!("FIRE {weapon}"), from);
+        println!("{weapon}, answers {ANSWER_MS} ms on: FIRE at {fires:?}");
+        assert!(
+            fires.len() as u64
+                >= 30_000
+                    / (Server::cycle_ms(weapon) + ANSWER_MS + FIRE_SLACK_MAX_MS + 2 * TICK_MS),
+            "{weapon} kept firing: {fires:?}"
+        );
+        for pair in fires.windows(2) {
+            assert!(
+                pair[1] >= pair[0] + ANSWER_MS,
+                "{weapon} typed again at {} before its FIRE at {} was answered: {fires:?}",
+                pair[1],
+                pair[0]
+            );
+        }
+    }
+}
+
+/// **The learned cadence needs each gun's chance read against the lock
+/// held** (cut AL.1): with both cycles learned, a lock line said after the
+/// last rows (as a new lock prints it) brings the guns' next read back to the
+/// locked cadence, not the learned one.
+#[test]
+fn a_lock_line_after_the_rows_brings_back_the_locked_cadence() {
+    let mut run = to_the_fight(Settings::default());
+    locked_and_learned(&mut run);
+    // The last reply's rows committed, the next read not yet due.
+    assert!(run.until(
+        WEAPONS_LEARNED_MS + POLL_STARVE_MS + LIMIT_WINDOW_MS,
+        |run| {
+            between_ticks(run)
+                && last_weapons(run)
+                    .is_some_and(|at| run.now >= at + POLL_GAP_MS && run.now < at + LIMIT_WINDOW_MS)
+        }
+    ));
+    let last = last_weapons(&run).unwrap_or(0);
+    run.server.now = run.now;
+    run.server.say(0, "Locked on BA, 62% to hit.");
+    run.until(WEAPONS_LEARNED_MS, |_| false);
+    let next = run.sends_of("WEAPONSTATUS", last + 1);
+    let most = WEAPONS_LOCKED_MS + POLL_STARVE_MS + LIMIT_WINDOW_MS;
+    const { assert!(WEAPONS_LOCKED_MS + POLL_STARVE_MS + LIMIT_WINDOW_MS < WEAPONS_LEARNED_MS) };
+    assert!(
+        next.first().is_some_and(|at| *at <= last + most),
+        "read again by {} after {last}: {next:?}",
+        last + most
+    );
+}
+
+/// **A lane that has read no gun keeps the unlearned cadence** (cut AL.1): no
+/// row read (the first reply a transient, or a tank that carries none) is not
+/// "every gun has its cycle", so the guns are asked for at the idle cadence,
+/// never the learned one.
+#[test]
+fn a_lane_that_has_read_no_gun_keeps_the_unlearned_cadence() {
+    let mut run = to_the_fight_with(Settings::default(), |server| {
+        server.lost = GUNS.iter().map(|w| (*w).to_owned()).collect();
+    });
+    let from = run.now;
+    run.until(20_000, |_| false);
+    assert!(run.lane.picture().weapons.is_empty());
+    let polls = run.sends_of("WEAPONSTATUS", from);
+    assert!(polls.len() >= 3, "{polls:?}");
+    for pair in polls.windows(2) {
+        assert!(pair[1] - pair[0] < WEAPONS_LEARNED_MS, "{polls:?}");
+    }
 }

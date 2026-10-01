@@ -265,6 +265,10 @@ pub enum Line {
     WeaponRow(WeaponRow),
     /// `This unit carries no weapon.`
     NoWeapon,
+    /// ``That unit carries no weapon called `cannon`.`` — the answer to a `FIRE`
+    /// naming a gun the tank does not carry (cut AL.1): in the bot's own
+    /// transcripts, every `FIRE` of a gun lost with its turret.
+    NoSuchWeapon { weapon: String },
     /// `Callsign RA.` — opens a `STATUS` block.
     StatusCallsign { callsign: String },
     /// `STATUS`'s second line.
@@ -1095,6 +1099,14 @@ fn cockpit_reply(body: &str) -> Option<Line> {
             weapon: weapon.to_owned(),
         });
     }
+    if let Some(weapon) = body
+        .strip_prefix("That unit carries no weapon called `")
+        .and_then(|rest| rest.strip_suffix("`."))
+    {
+        return is_id(weapon).then(|| Line::NoSuchWeapon {
+            weapon: weapon.to_owned(),
+        });
+    }
     None
 }
 
@@ -1834,6 +1846,29 @@ mod tests {
         );
         assert_eq!(classify("This unit carries no weapon."), Line::NoWeapon);
         assert_eq!(classify("No contacts."), Line::NoContacts);
+    }
+
+    /// **A gun the tank does not carry** (cut AL.1): the sentence with the
+    /// weapon in backticks, and nothing like it.
+    #[test]
+    fn the_no_such_weapon_answer() {
+        for weapon in ["cannon", "machine_gun"] {
+            assert_eq!(
+                classify(&format!("That unit carries no weapon called `{weapon}`.")),
+                Line::NoSuchWeapon {
+                    weapon: weapon.into()
+                }
+            );
+        }
+        for near in [
+            "That unit carries no weapon called cannon.",
+            "That unit carries no weapon called `cannon`",
+            "That unit carries no weapon called `Cannon`.",
+            "That unit carries no weapon called ``.",
+        ] {
+            assert!(matches!(classify(near), Line::Other(_)), "{near}");
+        }
+        assert_eq!(classify("This unit carries no weapon."), Line::NoWeapon);
     }
 
     #[test]

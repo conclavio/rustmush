@@ -14,12 +14,21 @@
 //! carries that stamp (`lane_ms`) and the runner writes it into the transcript's
 //! `arena-send` record, so the limiter is checked on the clock it ran on.
 //!
-//! **What goes first** when a slot is free: the lobby's line; the match's first
-//! `STATUS` and first `WEAPONSTATUS` (straight after `Power online.`); the main
-//! gun's `FIRE`; `LOCK`; `CONTACTS` when due; the other guns' `FIRE`s;
-//! `HEADING`; `SPEED`; the lock's `RANGE` when due; `STATUS` when due;
-//! `WEAPONSTATUS` when due; `BEARING B` when the pilot asks. One line per free
-//! slot per tick.
+//! **What goes first** when a slot is free (cut AL.1): the lobby's line; the
+//! match's first `STATUS` and first `WEAPONSTATUS` (straight after `Power
+//! online.`); the doubt's `WEAPONSTATUS` (once, at once, when a lost section
+//! said `its weapons are gone`); **every gun the pilot fires, main gun first**,
+//! each on its own cycle and never while its own last `FIRE` is unanswered;
+//! `LOCK`; `CONTACTS` when due (never deferred: a gun fires only on a row read
+//! inside two seconds); the post-shot `WEAPONSTATUS`; `HEADING`; `SPEED`; the
+//! lock's `RANGE` (never deferred: it is good only inside its 250 ms window,
+//! and it refines the lock's fix); and then **the polls that can wait** —
+//! `STATUS`, the periodic `WEAPONSTATUS`, `BEARING B` — each only when it
+//! leaves a slot free for every gun due inside the next second
+//! (`Lane::reserve_ok`), or once it is [`POLL_STARVE_MS`] overdue. One line
+//! per free slot per tick. (The bot's own transcripts: 212 of 347 machine-gun
+//! `FIRE`s went with three lines already in the second before, the gun sitting
+//! behind `CONTACTS`; the schedule's slack, not refusals, held its rate.)
 //!
 //! **The polls** (a line-mode pilot is sent no periodic picture, and a frame
 //! changes at most once a pulse — 500, 1 000 or 5 000 ms engaged, on alert,
@@ -27,13 +36,16 @@
 //! otherwise, and once 250 ms after any contact notice; while locked, a bare
 //! `RANGE` straight after every second `CONTACTS` reply commits, so it lands
 //! inside the picture's 400 ms and refines that row's fix ("a fresh one reads
-//! to 10 m", `help cockpit`); `STATUS` every 2 000 ms; `WEAPONSTATUS` 1 000 ms
-//! after each shot until that weapon's cycle is learned, then every 3 000 ms
-//! while locked and every 5 000 ms otherwise; `BEARING B` every 5 000 ms while
-//! the pilot searches; never the same poll twice inside 500 ms; the first
-//! `STATUS` and `WEAPONSTATUS` straight after `Power online.`. Locked and
-//! firing both guns that is about 3.75 lines a second, under the cap; the order
-//! above decides what slips when it is not.
+//! to 10 m", `help cockpit`); `STATUS` every 2 000 ms; `WEAPONSTATUS`
+//! [`WEAPONS_AFTER_SHOT_MS`] after each shot of a gun whose cycle is not yet
+//! learned (inside the first second after the ack, where a row prints the whole
+//! cycle), then every 3 000 ms while locked and every 5 000 ms otherwise — and
+//! every [`WEAPONS_LEARNED_MS`] once every gun carried has its cycle and none
+//! reads `0%` (while locked, each gun's chance read since the last lock line;
+//! the rounds come down by acks between rows); `BEARING B` every
+//! 5 000 ms while the pilot searches; never the same poll twice inside 500 ms
+//! (but the doubt's `WEAPONSTATUS`); the first `STATUS` and `WEAPONSTATUS`
+//! straight after `Power online.`.
 //!
 //! **Orders are closed-loop.** The pilot re-decides every tick. A `HEADING`,
 //! `SPEED` or `LOCK` not acknowledged (`Steering to`, `Making`, `Locking`)
@@ -94,7 +106,7 @@ use super::{
     },
     lines::Line,
     lobby::{Lobby, Step},
-    picture::{Phase, Picture, Power},
+    picture::{self, Phase, Picture, Power},
     pilot::{HuntLeg, Orders, Pilot},
     report::Report,
     settings::Settings,
@@ -114,20 +126,47 @@ pub const CONTACTS_AFTER_NOTICE_MS: u64 = 250;
 pub const RANGE_WINDOW_MS: u64 = 250;
 /// `STATUS` this often.
 pub const STATUS_EVERY_MS: u64 = 2_000;
-/// `WEAPONSTATUS` this long after a shot, until the weapon's cycle is learned.
-pub const WEAPONS_AFTER_SHOT_MS: u64 = 1_000;
+/// **`WEAPONSTATUS` this long after a shot, until the weapon's cycle is
+/// learned** (cut AL.1): inside the first second after the ack, where a
+/// `cycling` row prints the whole cycle, and after the frame the shot leaves in
+/// (the bot's own rows 250 to 500 ms after a machine-gun ack still read `ready`
+/// 11 times of 49; rows 500 to 1 000 ms after read the whole cycle every time).
+/// Re-armed at every ack of a gun whose cycle is unknown. Read from the
+/// transcript, not tunable.
+pub const WEAPONS_AFTER_SHOT_MS: u64 = 500;
+const _: () = assert!(WEAPONS_AFTER_SHOT_MS < picture::CYCLE_READ_WITHIN_MS);
 /// `WEAPONSTATUS` this often while locked…
 pub const WEAPONS_LOCKED_MS: u64 = 3_000;
-/// …and this often otherwise.
+/// …and this often otherwise…
 pub const WEAPONS_IDLE_MS: u64 = 5_000;
+/// …and this often, locked or not, once every gun carried has its cycle and
+/// none reads `0%` (cut AL.1): the clock needs no row then, and the rounds come
+/// down by acks. A gun at `0%` is left unfired until a row says otherwise, so
+/// it keeps the faster cadence; so does a lane that has read no gun, and,
+/// while locked, one whose chance was read before the last lock line (it is
+/// of no lock, or of the lock before). AL.3 may tune it within 5 000..=10 000
+/// by the brief, but the lane's tests admit only values above
+/// `WEAPONS_LOCKED_MS + POLL_STARVE_MS + LIMIT_WINDOW_MS` (6 000): see the
+/// tuning list in [`super::pilot`].
+pub const WEAPONS_LEARNED_MS: u64 = 8_000;
+/// **A poll that can wait goes anyway once it is this overdue** (cut AL.1), so
+/// the reservation for the guns never holds `STATUS`, the periodic
+/// `WEAPONSTATUS` or `BEARING B` back for more than this past its due time.
+/// It lifts only the reservation: everything ahead of these polls in
+/// [`Lane::tick`]'s order still goes first, so a one-line-a-second lane that
+/// holds a contact (whose `CONTACTS`, due every second and never deferred,
+/// takes each free slot no gun does) may not reach them at all. Not tunable.
+pub const POLL_STARVE_MS: u64 = 2_000;
 /// `BEARING B` this often while searching.
 pub const BEARING_EVERY_MS: u64 = 5_000;
 /// Never the same poll twice inside this.
 pub const POLL_GAP_MS: u64 = 500;
 /// An order unanswered this long is re-sent when re-decided.
 pub const ACK_WAIT_MS: u64 = 1_500;
-/// At most one `FIRE` per weapon this often.
-pub const FIRE_GAP_MS: u64 = 700;
+/// At most one `FIRE` per weapon this often (cut AL.1: a lattice step, so a
+/// refused `FIRE` is tried again inside its second; the gun's own clock, and
+/// its last `FIRE` answered first, govern the rest). Not tunable.
+pub const FIRE_GAP_MS: u64 = 250;
 /// A `FIRE` refused as too many orders waits this long.
 pub const FIRE_BUSY_WAIT_MS: u64 = 1_000;
 
@@ -208,7 +247,12 @@ struct Fight {
     contacts_open: bool,
     contacts_commits: u32,
     range_until: Option<u64>,
-    weapons_after_shot: Option<u64>,
+    /// The post-shot `WEAPONSTATUS`, per gun (cut AL.1): each gun whose cycle
+    /// is not yet known, as its ack named it, and when its read is due (its
+    /// ack and [`WEAPONS_AFTER_SHOT_MS`]). Kept per gun so that one gun's ack
+    /// never moves another's read out of that gun's first second, nor brings
+    /// it forward into the frame before its shot left.
+    weapons_after_shot: BTreeMap<String, u64>,
     heading_ack: Option<u64>,
     speed_ack: Option<u64>,
     lock_ack: Option<u64>,
@@ -395,7 +439,7 @@ impl Lane {
             .iter()
             .map(|w| {
                 json!({"id": w.id, "ready": w.ready, "rounds": w.rounds, "percent": w.percent,
-                    "cycle_ms": w.cycle_ms})
+                    "cycle_ms": w.cycle_ms, "slack_ms": w.slack_ms})
             })
             .collect();
         // The pilot's own state for a reader of the transcript (cut AK.1): the
@@ -417,7 +461,8 @@ impl Lane {
                 "held": own.held.is_some(), "immobile": own.immobile, "disabled": own.disabled,
                 "destroyed": own.destroyed},
             "lock": p.lock, "lock_percent": p.lock_percent, "contacts": contacts,
-            "weapons": weapons, "tally": p.tally, "doctrine": self.doctrine,
+            "weapons": weapons, "struck": p.struck, "doubt": p.weapons_doubt.is_some(),
+            "tally": p.tally, "doctrine": self.doctrine,
             "pilot": {"hunt": hunt, "fallen_back": self.pilot.fallen_back,
                 "stall": self.pilot.stall_level}})
     }
@@ -669,9 +714,14 @@ impl Lane {
                         .weapons
                         .iter()
                         .any(|w| w.id == *weapon && w.cycle_ms.is_some());
+                    // Armed at every ack of a gun whose cycle is unknown, for
+                    // that gun alone (cut AL.1): a later ack of the same gun
+                    // re-arms it (the earlier shot's first second is over by
+                    // then), and another gun's ack moves nothing of this one.
                     if !learned {
-                        fight.weapons_after_shot =
-                            Some(now_ms.saturating_add(WEAPONS_AFTER_SHOT_MS));
+                        fight
+                            .weapons_after_shot
+                            .insert(weapon.clone(), now_ms.saturating_add(WEAPONS_AFTER_SHOT_MS));
                     }
                 }
                 Line::Refused {
@@ -735,8 +785,12 @@ impl Lane {
         } else {
             Orders::default()
         };
-        // What the pilot said (a hunt, a fall back, a held tank): `arena`
-        // events, not journalled (cut AK.1).
+        // What the pilot said (a hunt, a fall back, a held tank) and what the
+        // picture said of the guns (a gun struck, emptied or every gun held,
+        // cut AL.1): `arena` events, not journalled (cut AK.1).
+        for note in self.picture.take_notes() {
+            self.events.push(LaneEvent::Said(note));
+        }
         for note in self.pilot.take_notes() {
             self.events.push(LaneEvent::Said(note));
         }
@@ -841,6 +895,24 @@ impl Lane {
         let main = main_gun(&self.picture).map(str::to_owned);
         let locked = self.picture.lock.is_some();
         let held = !self.picture.contacts.is_empty();
+        let doubt = self.picture.weapons_doubt;
+        // Every gun carried has its cycle and none reads `0%` (cut AL.1) — with
+        // at least one gun read, and, while locked, each gun's chance read
+        // since the last lock line (a chance read before a lock, or against
+        // the lock before, says nothing of this one: the guns are read again
+        // at the locked cadence). The chance, not the row: a `WEAPONSTATUS`
+        // reply's own lock line comes before its rows, and a row the
+        // stale-ready guard holds still reads its chance.
+        let p = &self.picture;
+        let learned = !p.weapons.is_empty()
+            && p.weapons.iter().all(|w| {
+                w.cycle_ms.is_some()
+                    && w.percent != Some(0)
+                    && (p.lock.is_none() || w.chance_ms >= p.lock_read_ms)
+            });
+        // Whether a poll that can wait leaves a slot for every gun due inside
+        // the next second (cut AL.1), taken before this line goes.
+        let reserve = self.reserve_ok(now_ms);
         let fight = self.fight.as_mut()?;
         // 0. The first `STATUS` and `WEAPONSTATUS` go straight after `Power
         // online.`: nothing can be aimed or fired before they are read, and at
@@ -853,6 +925,23 @@ impl Lane {
             fight.last_weapons = Some(now_ms);
             return Some(("WEAPONSTATUS".into(), Purpose::Poll));
         }
+        // 1. The doubt's `WEAPONSTATUS` (cut AL.1): a lost section said `its
+        // weapons are gone`, and nothing is fired until the guns are read
+        // again — so it goes at once, past the poll gap, once a doubt.
+        if let Some(since) = doubt
+            && fight.last_weapons.is_none_or(|at| at < since)
+        {
+            fight.last_weapons = Some(now_ms);
+            // It reads every gun whose post-shot read is due; one not yet due
+            // keeps its own (its row now may be the frame before its shot).
+            fight.weapons_after_shot.retain(|_, at| *at > now_ms);
+            return Some(("WEAPONSTATUS".into(), Purpose::Poll));
+        }
+        // 2. Every gun the pilot fires, main gun first (cut AL.1): each on its
+        // own clock (the pilot's), never inside a lattice step of its last
+        // `FIRE`, never while that `FIRE` is unanswered, and never inside a
+        // busy refusal's wait.
+        let picture = &self.picture;
         let can_fire = |fight: &Fight, weapon: &str| {
             fight
                 .last_fire
@@ -862,24 +951,27 @@ impl Lane {
                     .fire_hold
                     .get(weapon)
                     .is_none_or(|until| now_ms >= *until)
+                && !picture.fire_pending(weapon)
         };
-        // 1. The main gun.
-        if let Some(main) = &main
-            && let Some(index) = orders.fire.iter().position(|w| w == main)
-            && can_fire(fight, main)
-        {
+        let gun = main
+            .as_ref()
+            .and_then(|main| orders.fire.iter().position(|w| w == main))
+            .filter(|index| can_fire(fight, &orders.fire[*index]))
+            .or_else(|| orders.fire.iter().position(|w| can_fire(fight, w)));
+        if let Some(index) = gun {
             let weapon = orders.fire.remove(index);
             fight.last_fire.insert(weapon.clone(), now_ms);
             self.picture.sent_fire(now_ms, &weapon);
             return Some((format!("FIRE {weapon}"), Purpose::Order));
         }
-        // 2. The lock.
+        // 3. The lock.
         if let Some(target) = orders.lock.take() {
             fight.lock_ack = Some(now_ms);
             self.pilot.sent_lock(now_ms);
             return Some((format!("LOCK {target}"), Purpose::Order));
         }
-        // 3. `CONTACTS`.
+        // 4. `CONTACTS`: never deferred, since a gun fires only on a row read
+        // inside two seconds.
         let every = if held {
             CONTACTS_HELD_MS
         } else {
@@ -893,14 +985,24 @@ impl Lane {
             fight.contacts_soon = None;
             return Some(("CONTACTS".into(), Purpose::Poll));
         }
-        // 4. The other guns.
-        if let Some(index) = orders.fire.iter().position(|w| can_fire(fight, w)) {
-            let weapon = orders.fire.remove(index);
-            fight.last_fire.insert(weapon.clone(), now_ms);
-            self.picture.sent_fire(now_ms, &weapon);
-            return Some((format!("FIRE {weapon}"), Purpose::Order));
+        // 5. The post-shot `WEAPONSTATUS`, inside the first second after the
+        // ack of a gun whose cycle is not yet known: due when any such gun's
+        // read is; a gun whose cycle a row has set since (or one struck from
+        // the fire schedule) needs none.
+        fight.weapons_after_shot.retain(|armed, _| {
+            !picture.struck.contains(armed)
+                && !picture.weapons.iter().any(|w| {
+                    (w.id == *armed || w.short.as_deref() == Some(armed.as_str()))
+                        && w.cycle_ms.is_some()
+                })
+        });
+        let after_shot = fight.weapons_after_shot.values().any(|at| now_ms >= *at);
+        if after_shot && gap_ok(fight.last_weapons, now_ms) {
+            fight.last_weapons = Some(now_ms);
+            fight.weapons_after_shot.retain(|_, at| *at > now_ms);
+            return Some(("WEAPONSTATUS".into(), Purpose::Poll));
         }
-        // 5. The heading, 6. the speed.
+        // 6. The heading, 7. the speed.
         if let Some(deg) = orders.heading.take() {
             fight.heading_ack = Some(now_ms);
             self.pilot.sent_heading(deg, now_ms);
@@ -911,7 +1013,8 @@ impl Lane {
             self.pilot.sent_speed(kph);
             return Some((format!("SPEED {kph}"), Purpose::Order));
         }
-        // 7. The lock's `RANGE`, straight after its reply.
+        // 8. The lock's `RANGE`, straight after its reply: never deferred, as
+        // it is good only inside its window and it refines the lock's fix.
         if let Some(until) = fight.range_until {
             fight.range_until = None;
             if locked && now_ms <= until && gap_ok(fight.last_range, now_ms) {
@@ -919,32 +1022,88 @@ impl Lane {
                 return Some(("RANGE".into(), Purpose::Poll));
             }
         }
-        // 8. `STATUS`.
-        if poll_due(fight.last_status, STATUS_EVERY_MS, now_ms) {
+        // 9. The polls that can wait (cut AL.1): each only when it leaves a
+        // slot for every gun due inside the next second, or once it is
+        // `POLL_STARVE_MS` overdue.
+        let may_wait = |last: Option<u64>, every: u64| {
+            reserve
+                || last.is_none_or(|at| {
+                    now_ms
+                        >= at
+                            .saturating_add(every.max(POLL_GAP_MS))
+                            .saturating_add(POLL_STARVE_MS)
+                })
+        };
+        // 9a. `STATUS`.
+        if poll_due(fight.last_status, STATUS_EVERY_MS, now_ms)
+            && may_wait(fight.last_status, STATUS_EVERY_MS)
+        {
             fight.last_status = Some(now_ms);
             return Some(("STATUS".into(), Purpose::Poll));
         }
-        // 9. `WEAPONSTATUS`.
-        let every = if locked {
+        // 9b. The periodic `WEAPONSTATUS`.
+        let every = if learned {
+            WEAPONS_LEARNED_MS
+        } else if locked {
             WEAPONS_LOCKED_MS
         } else {
             WEAPONS_IDLE_MS
         };
-        let after_shot = fight.weapons_after_shot.is_some_and(|at| now_ms >= at);
-        if (poll_due(fight.last_weapons, every, now_ms) || after_shot)
-            && gap_ok(fight.last_weapons, now_ms)
-        {
+        if poll_due(fight.last_weapons, every, now_ms) && may_wait(fight.last_weapons, every) {
             fight.last_weapons = Some(now_ms);
-            fight.weapons_after_shot = None;
+            // As the doubt's: only the post-shot reads already due are done.
+            fight.weapons_after_shot.retain(|_, at| *at > now_ms);
             return Some(("WEAPONSTATUS".into(), Purpose::Poll));
         }
-        // 10. `BEARING B`.
-        if orders.ask_spot_b && poll_due(fight.last_bearing, BEARING_EVERY_MS, now_ms) {
+        // 9c. `BEARING B`.
+        if orders.ask_spot_b
+            && poll_due(fight.last_bearing, BEARING_EVERY_MS, now_ms)
+            && may_wait(fight.last_bearing, BEARING_EVERY_MS)
+        {
             orders.ask_spot_b = false;
             fight.last_bearing = Some(now_ms);
             return Some(("BEARING B".into(), Purpose::Poll));
         }
         None
+    }
+
+    /// **The guns' reservation** (cut AL.1): whether a poll that can wait may
+    /// go now and still leave a slot for every gun due inside the next second.
+    /// Always while the pilot fires nothing: with no lock, a friendly lock, or
+    /// every gun in doubt (whose `WEAPONSTATUS` is the one read that ends it).
+    /// Otherwise the carried guns the pilot may fire — not struck, rounds
+    /// left, not read at `0%` (the pilot leaves such a gun unfired until a row
+    /// says otherwise, so a slot kept for it would only hold back the read
+    /// that could) — that have a clock (`next_ready_ms`), each due at
+    /// `d = max(clock, now)`, those with `d` inside the limiter's window,
+    /// sorted by `d`: the `k`-th (from 0) must find the lines already in the
+    /// window ending at `d`, this poll, the `k` guns due before it and itself
+    /// inside [`Lane::max_lines`].
+    fn reserve_ok(&self, now_ms: u64) -> bool {
+        let p = &self.picture;
+        if p.lock.is_none() || p.lock_friendly || p.weapons_doubt.is_some() {
+            return true;
+        }
+        let mut due: Vec<u64> = p
+            .weapons
+            .iter()
+            .filter(|w| !p.struck.contains(&w.id) && w.rounds_left() > 0 && w.percent != Some(0))
+            .filter_map(|w| w.next_ready_ms)
+            .map(|at| at.max(now_ms))
+            .filter(|d| *d < now_ms.saturating_add(LIMIT_WINDOW_MS))
+            .collect();
+        due.sort_unstable();
+        due.iter().enumerate().all(|(k, d)| {
+            let in_window = self
+                .ring
+                .iter()
+                .filter(|sent| sent.saturating_add(LIMIT_WINDOW_MS) > *d)
+                .count();
+            // The lines already in the window, this poll, the guns due before
+            // this one, and this gun.
+            let lines = in_window + 1 + k + 1;
+            lines <= self.max_lines()
+        })
     }
 
     /// After every feed and tick: the lobby's sentences, the state record, the

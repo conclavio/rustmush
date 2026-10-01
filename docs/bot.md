@@ -350,13 +350,21 @@ second** (`[arena] max_lines_per_s`, 1 to 4), every purpose together, well under
 the server's flood limit and the cockpit's eight pending orders. A line-mode
 pilot is sent no running picture, so it polls: `CONTACTS` once a second while it
 holds anything (every five seconds otherwise, and a quarter-second after any
-contact notice), `STATUS` every two seconds, `WEAPONSTATUS` a second after each
-shot until it knows that gun's cycle, then every few seconds, the lock's `RANGE`
-after every second `CONTACTS` (a lock reads finer than the scope), and
-`BEARING B` while it searches. When the four slots are short, the order is: the
-first `STATUS` and `WEAPONSTATUS` after the power comes up (nothing can be aimed
-before they are read), then the main gun's shot, the lock, `CONTACTS`, the other
-guns' shots, the heading and the speed, and then the remaining polls.
+contact notice), `STATUS` every two seconds, `WEAPONSTATUS` half a second after
+each shot until it knows that gun's cycle, then every few seconds — and every
+eight seconds while every gun has its cycle and a chance to hit read against
+the lock it holds, since it counts each gun's rounds down by its own shots —
+the lock's `RANGE` after every
+second `CONTACTS` (a lock reads finer than the scope), and `BEARING B` while it
+searches. When the four slots are short, the order is: the first `STATUS` and
+`WEAPONSTATUS` after the power comes up (nothing can be aimed before they are
+read), then every gun that is due, main gun first, then the lock, `CONTACTS`,
+the heading and the speed and the lock's `RANGE`, and then the polls that can
+wait (`STATUS`, the regular `WEAPONSTATUS` and `BEARING B`). Those keep a slot
+free for any gun it would fire that is due inside the next second (not one that
+reads `0%`, and none while it fires nothing), and stop waiting for the guns once
+they are two seconds late; everything ahead of them in the order still goes
+first.
 
 **Lead or wingman.** The centre's own rule (`help simulator`) is that whoever
 claims a side first leads it, and only a side's lead (or staff) may start the
@@ -405,16 +413,32 @@ hostile with a fresh plot (never an unidentified contact, never a friend) and
 keeps that lock unless another is at least 100 m nearer; it fires each gun,
 main gun first, when the lock's plot is fresh and the gun is ready **on the
 gun's own clock**: the shot's acknowledgement starts it, one cycle and a slack
-long. The seconds the cockpit prints in `cycling (N s)` and `Still cycling: N s
-to go.` are rounded up, so it counts them whole, and the slack starts at one
-engaged pulse (half a second, since "you and the arena are a pulse apart") and
-grows a quarter-second each time the cockpit still says cycling to its own
-`FIRE`, shrinking back a little with each shot that leaves. It circles its
-target at `[arena] band_m` (150 to 450 m; 450 m by default: just outside the
-420 m a machine closes to, inside the 480 m a stopped tank is seen at, and the
-widest band it ever flies), bending toward the band when off it; it circles
-toward the target's rear when its plots show the target moving, and otherwise
-reverses every twenty seconds so the machine's plot of it goes stale.
+long. The cycle is the whole seconds a `cycling (N s)` row prints when it is
+read inside the first second after the shot (the seconds the cockpit prints are
+rounded up, and a row read later can print a second less). The slack covers
+the arena's step after the acknowledgement and is never more than half a second
+(one engaged pulse: "you and the arena are a pulse apart"); it starts at a
+quarter-second, grows when the cockpit still says cycling to its own `FIRE`,
+and shrinks a little with every shot that leaves. A `FIRE` refused as still
+cycling is tried again a quarter-second into the last second it was told
+(`1 s to go` a quarter-second on, `3 s to go` two seconds and a quarter on),
+inside the second it was refused for. A gun is never fired again while its last
+`FIRE` is unanswered. It circles its target at `[arena] band_m` (150 to 450 m;
+450 m by default: just outside the 420 m a machine closes to, inside the 480 m
+a stopped tank is seen at, and the widest band it ever flies), bending toward
+the band when off it; it circles toward the target's rear when its plots show
+the target moving, and otherwise reverses every twenty seconds so the machine's
+plot of it goes stale.
+
+A gun the tank no longer carries is struck from the fire schedule for the rest
+of the match at the first `That unit carries no weapon called …`, and an empty
+one at `FIRE … refused. Empty: …` (until a `WEAPONSTATUS` row counts rounds
+into it again). When a lost section's line ends `its weapons are gone`, every
+gun is held and a `WEAPONSTATUS` goes at once; nothing is fired until it
+answers. Each is said in an `arena` event: `No cannon aboard any more: struck
+from the fire schedule.`, `The turret's weapons are gone: no FIRE until
+WEAPONSTATUS says what is left.`, `The machine_gun is empty: struck from the
+fire schedule.`
 
 It falls back only on its own hull: its internals at half, or a hull plate at a
 quarter or gone (a turret or track plate does not count). It breaks away from
@@ -443,7 +467,8 @@ Still held at 0 kph, it turns further from the heading it stopped on (90°, then
 off for three seconds. It says what it does in `arena` events: `Hunting BA:
 its last plot, 380 m away.`, `Falling back to 450 m: the hull is at half.`,
 `Held at 0 kph: turning to 180°.` and their kin, and the `arena-picture` record
-carries its hunt, its fall back and its stall. Its first `SPEED` order is
+carries its hunt, its fall back and its stall, each gun's cycle and slack, the
+guns struck and whether every gun is held. Its first `SPEED` order is
 `999`, which makes the tank say its own top speeds.
 
 **The report and the exit code.** The JSON report gains an `arena` block: the
