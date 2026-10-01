@@ -148,7 +148,8 @@
 //!   and a moving one out to all of it; bare ground stops at 90 per cent; …
 //!   heavy woods stop at 50 per cent (300 m) and move at 80"). No ground lets
 //!   a mover hide better than a stopped tank, so the pilot stops wherever it
-//!   is and reads no ground. A **return not yet told apart** (a row read, its
+//!   is, and these stops read no ground (only the opening, below, reads its
+//!   own brief). A **return not yet told apart** (a row read, its
 //!   plot fresh) is faced, stopped, for at most [`UNIDENTIFIED_WAIT_MS`] from
 //!   when it was first seen ("Three seconds of holding a return is enough to
 //!   tell it apart"), with a rest as long between two such stops and at most
@@ -169,10 +170,50 @@
 //!   across when the hunt began (judged once, there: a tank at or past the
 //!   plot has the bearing to it turned round). **Any hit taken ends a wait**
 //!   for good: the tank has been found;
+//! * **The opening** (cut AN.2; [`OpeningStage`], `[arena] opening = "wait"`,
+//!   the default): "on grass a stopped tank can be seen out to 80 per cent of
+//!   that (480 m) and a moving one out to all of it; … a road hides nothing
+//!   either way" and "Stop before you are found" (`help cockpit`, "Seeing");
+//!   "two sides fly stock tanks against each other on the proving ground"
+//!   (`help simulator`), and a machine "that has seen nobody for a minute and
+//!   a half crosses to the other side's entry zone to look". So in a skirmish
+//!   (the board's rule, [`super::picture::Picture::match_mode`]) whose own
+//!   `Power online.` the pilot read, from the muster it then stood at
+//!   ([`Pilot::muster_m`]), with nothing on its first `CONTACTS`, it types
+//!   `VIEW BRIEF` once, steps off the road onto ground that hides a stopped
+//!   tank ([`HIDING`]) past that ground's true edge — never toward the
+//!   machines — and holds there stopped, bow toward the other side's entry
+//!   ([`other_entry`]: the muster mirrored, the pilot's inference from the two
+//!   sides flying identical tanks from opposite ends; no contact bearing is
+//!   used), until a hostile is in sight, a hit or [`OPENING_MAX_MS`]. A
+//!   return not yet told apart does not end it;
+//! * **Fire from the halt** (cut AN.2; [`Halt`]): the machine "closes: to
+//!   about … 420 m …, where it stops, turns onto you and shoots" (`help
+//!   simulator`), and [`Pilot::hold`] closes past the band, its slack and its
+//!   hysteresis (525 m at 450) while a mover is seen to 600 m. So a hostile
+//!   first seen inside the stock sight while the pilot waits (the opening, or
+//!   the re-approach's wait) is fired on with the tank stopped, bow on, until
+//!   it stops coming on (its row's range not shortening and no track published
+//!   for [`HALT_STILL_MS`]), comes to the band, finds the tank or
+//!   [`HALT_MAX_MS`] passes: the stopped tank lets it come. A row past the
+//!   stock sight is a teammate's report and arms no halt;
+//! * **The re-approach** (cut AN.2; [`Reapproach`], `[arena] reapproach`, on
+//!   by default): "Open the range past its sight and it comes after you
+//!   again; let the ground hide you and it drives at where it last saw you"
+//!   (`help simulator`). A stopped machine (no published track) inside the
+//!   stock sight that out-hits the pilot over [`EXCHANGE_WINDOW_MS`] is backed
+//!   away from bow on, steering on its last plot (the pilot is blind between
+//!   480 and 600 m of a stopped machine: "a stopped tank can be seen out to …
+//!   480 m and a moving one out to all of it"), to [`REAPPROACH_OPEN_M`] from
+//!   that plot, and then waited for, stopped and facing it, for
+//!   [`REAPPROACH_WAIT_MS`]; whatever comes on inside the stock sight in that
+//!   wait is fired on from the halt. At most [`REAPPROACH_PER_MATCH`] a match, a rest of
+//!   [`REAPPROACH_REST_MS`] after each;
 //! * "A machine that loses you … crosses to the other side's entry zone to
 //!   look", and the proving ground's roads meet at The Crossroads (B) — so with
 //!   no identified hostile held for 5 s (an unidentified contact does not
-//!   count) and no hunt left, the pilot drives for `B`, past it 800 m, and back.
+//!   count), no hunt left and the opening over, the pilot drives for `B`, past
+//!   it 800 m, and back.
 //!
 //! **The pilot's own rule above any doctrine.** Hurt to half its hull's
 //! internals, or with a plate **of its hull** at a quarter or gone, it falls
@@ -188,17 +229,24 @@
 //! when it applies: (1) the held turn (or, after a stop while reversing, a
 //! stop with the bow kept), the back-off and an open stall; (2) the pilot's
 //! own fall-back withdrawal, in reverse bow-on (the current heading at full
-//! ahead with no target to face); (3) a doctrine `withdraw`, the same; (3b)
-//! the turn into a side or rear hit, stopped, for [`THREAT_TURN_MS`] (never
-//! under an `orbit` doctrine, and nothing when the threat is within
-//! [`HOLD_BOW_DEG`] of a young target the pilot already faces); (4) the
-//! doctrine's stance round a hostile whose plot is younger than
-//! [`HUNT_STALE_PLOT_MS`]; only while no hostile is held that young (cut
-//! AL.3), (4a) a stop facing a return not yet told apart and (4b) a stop
-//! facing a hunted hostile expected back inside the sight, the hunt's legs
-//! frozen through it; (5) the hunt; (4 again) the doctrine's stance round an
-//! older row never seen fresh; (6) the search. Every heading steps (2) to
-//! (6) return at a forward speed is steered round held ground; every reverse
+//! ahead with no target to face); (3) a doctrine `withdraw`, the same; (3a,
+//! cut AN.2) the re-approach: in reverse bow-on to its plot's distance, then
+//! stopped facing the plot; (3b) the turn into a side or rear hit, stopped,
+//! for [`THREAT_TURN_MS`] (never under an `orbit` doctrine, and nothing when
+//! the threat is within [`HOLD_BOW_DEG`] of a young target the pilot already
+//! faces); (3c, cut AN.2) the halt: stopped, bow on its hostile while that
+//! hostile is held young; (4) the doctrine's stance round a hostile whose
+//! plot is younger than [`HUNT_STALE_PLOT_MS`]; only while no hostile is held
+//! that young (cut AL.3), (4a) a stop facing a return not yet told apart and
+//! (4b) a stop facing a hunted hostile expected back inside the sight, the
+//! hunt's legs frozen through it; (5) the hunt; (4 again) the doctrine's
+//! stance round an older row never seen fresh; with nothing to fly at, (6a,
+//! cut AN.2) the opening while it is not over — still before its brief, its
+//! step off the road at [`OPENING_STEP_KPH`], then stopped bow toward the
+//! other side's entry — and then (6) the search. [`Pilot::rule`] names the
+//! rule step 3a, 3c or 6a flew at the last decision (`reapproach`,
+//! `approach_wait`, `halt`, `opening`). Every heading steps (2) to (6) return
+//! at a forward speed is steered round held ground; every reverse
 //! (the hold's, a withdrawal's, the back-off) whose ray behind the tank meets a
 //! mark is a stop instead, the bow kept. The stances: `hold` stops at the band
 //! bow-on ([`Pilot::hold`]); `close` is a hold at [`CLOSE_M`]; `hunt` drives at
@@ -208,6 +256,14 @@
 //! and it outranks the widened band after a fall back. A doctrine `hunt` (cut
 //! AK.2) holds a hostile only while its plot is fresh ([`FRESH_PLOT_MS`]):
 //! past that it hunts at once from the trail, and with no trail it searches.
+//! No hunt starts while a re-approach is in force (cut AN.2), as none starts
+//! while a withdrawal flies.
+//!
+//! **The knobs** (cut AN.2; [`Knobs`]): [`Pilot::new`] flies [`Knobs::off`],
+//! the pilot as cut AM left it (no opening, no halt, no re-approach), so every
+//! older unit test flies the pilot it was written for; the lane builds
+//! [`Pilot::with_knobs`] from `[arena] opening` and `reapproach`. The exchange
+//! the re-approach reads is counted whatever the knobs say.
 //!
 //! **What a tuning round may move** (cut AL.3, between its measurement runs,
 //! and nothing else). **AK's constants are frozen**: the hunt's, the fall
@@ -277,16 +333,33 @@
 //! (and 60), [`ONE_TRACK_COMMIT_MS`] and [`HELD_MARK_DETOUR_DEG`]. Two moved
 //! together are untried.
 //!
+//! **AN.2's**, in this module, within these bounds: [`OPENING_MAX_MS`]
+//! 240 000..=480 000, [`OPENING_COVER_M`] 20..=40 (never below 20: with
+//! [`OPENING_ARRIVE_M`] at 10 the tank could stop on the road),
+//! [`OPENING_STEP_MAX_M`] 60..=120, [`HALT_STILL_MS`] 4 000..=10 000,
+//! [`EXCHANGE_WINDOW_MS`] 10 000..=30 000, [`EXCHANGE_MIN_TAKEN`] 4..=12,
+//! [`EXCHANGE_MARGIN`] 2..=8, [`REAPPROACH_OPEN_M`] 620..=700,
+//! [`REAPPROACH_MAX_MS`] 30 000..=60 000, [`REAPPROACH_WAIT_MS`]
+//! 30 000..=60 000 and [`REAPPROACH_PER_MATCH`] 1..=3. Not tunable:
+//! [`OPENING_BRIEF_WAIT_MS`], [`OPENING_STEP_KPH`], [`OPENING_ARRIVE_M`],
+//! [`OPENING_STEP_MS`], [`STOCK_SIGHT_M`] (the help's), [`HIDING`] (the
+//! help's), [`HALT_MAX_MS`] and [`REAPPROACH_REST_MS`]; and [`HUNT_TRAIL_MS`]
+//! stays frozen with AK's.
+//!
 //! Every test asserts through these names, never their values; the one
 //! exception is the lead's own bounds on the offline median gaps (1 200 ms for
 //! the machine gun, 6 500 for the cannon), which a round must keep.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::Serialize;
 
 use super::{
     Side,
-    picture::{Contact, EventKind, Phase, Picture, Power, Track, bearing_deg, distance_m},
+    picture::{
+        Contact, EventKind, Ground, MatchMode, Phase, Picture, Power, Track, bearing_deg,
+        distance_m,
+    },
+    settings::Opening,
 };
 
 /// "Full ahead" before the tank's own ceilings are read.
@@ -459,6 +532,74 @@ pub const UNIDENTIFIED_WAIT_MS: u64 = 6_000;
 /// of returns (a flicker at the sight's edge, a crowd of friends and machines)
 /// cannot hold the tank still for a match. Not tunable.
 pub const UNIDENTIFIED_STOPS_MAX: u8 = 4;
+/// **The opening's longest hold** (cut AN.2), from power online; then the
+/// search. "one that has seen nobody for a minute and a half crosses to the
+/// other side's entry zone to look" (`help simulator`): the machine comes to
+/// the muster's side. Tunable 240 000..=480 000.
+pub const OPENING_MAX_MS: u64 = 360_000;
+/// **How far into hiding ground the step goes** past where that ground's
+/// run may truly start (cut AN.2): the run's start and the cell allowance,
+/// then this. Tunable 20..=40, never below 20: the step is done
+/// [`OPENING_ARRIVE_M`] short of its aim, so the tank then stands at least
+/// 10 m past the run's true start, off the road.
+pub const OPENING_COVER_M: f64 = 20.0;
+/// The longest step off the road, metres (cut AN.2). Tunable 60..=120.
+pub const OPENING_STEP_MAX_M: f64 = 80.0;
+/// **The opening's waits** (cut AN.2): for the first `CONTACTS` reply after
+/// power and for the brief's ground, each at most this long; and a start
+/// position read more than this after power online is no muster. Not
+/// tunable.
+pub const OPENING_BRIEF_WAIT_MS: u64 = 5_000;
+/// The step's speed, kph (cut AN.2). Not tunable.
+pub const OPENING_STEP_KPH: i32 = 15;
+/// The step is done this short of its aim, metres (cut AN.2). Not tunable.
+pub const OPENING_ARRIVE_M: f64 = 10.0;
+/// …or this long after it began (cut AN.2). Not tunable.
+pub const OPENING_STEP_MS: u64 = 20_000;
+/// **The stock sight** (cut AN.2): "Against the stock sight's 600 m … a
+/// moving one out to all of it" (`help cockpit`, "Seeing"). A hostile row
+/// farther out is a teammate's report ("anything a teammate is passing you
+/// from beyond it"). Not tunable.
+pub const STOCK_SIGHT_M: f64 = 600.0;
+/// **Ground that hides a stopped tank** (cut AN.2): `help cockpit`'s
+/// stopped-tank ceilings under 100 per cent on ground a tank enters — grass
+/// 80, bare ground 90, rubble 70, light woods 65. Heavy woods are left out ("A
+/// walker takes the thick woods that stop a tank", `help simulator`), and "a
+/// road hides nothing either way". The brief's own class words. Not tunable.
+pub const HIDING: [&str; 4] = ["grass", "bare ground", "rubble", "light woods"];
+/// **The halt ends when its hostile has neither closed nor published a track
+/// for this long** (cut AN.2): it has stopped coming on. "Closed" is its row's
+/// range read shorter than the shortest read before it in the halt: the scope
+/// rounds a range to 50 m (`help cockpit`), so a machine coming on at 10 m a
+/// second reads 50 m nearer every five seconds, while its row-only fixes
+/// (about 55 m of sigma at 500 to 600 m) seldom carry a track in the window.
+/// Tunable 4 000..=10 000.
+pub const HALT_STILL_MS: u64 = 6_000;
+/// …and at this, whatever. Not tunable.
+pub const HALT_MAX_MS: u64 = 60_000;
+/// **The exchange's window** (cut AN.2): hits taken and scored in the last
+/// this long. Tunable 10 000..=30 000.
+pub const EXCHANGE_WINDOW_MS: u64 = 20_000;
+/// A re-approach needs at least this many hits taken in the window…
+/// Tunable 4..=12.
+pub const EXCHANGE_MIN_TAKEN: usize = 8;
+/// …and at least this many more taken than scored. Tunable 2..=8.
+pub const EXCHANGE_MARGIN: usize = 4;
+/// **The re-approach opens to this far from the machine's last plot**
+/// (cut AN.2): past the 600 m a mover is seen at, so the machine coming on
+/// is seen first. Tunable 620..=700.
+pub const REAPPROACH_OPEN_M: f64 = 650.0;
+/// The backing off is given up this long after it began (cut AN.2). Tunable
+/// 30 000..=60 000.
+pub const REAPPROACH_MAX_MS: u64 = 45_000;
+/// The wait for the machine to come on lasts at most this long (cut AN.2).
+/// Tunable 30 000..=60 000.
+pub const REAPPROACH_WAIT_MS: u64 = 45_000;
+/// At most this many re-approaches a match (cut AN.2). Tunable 1..=3.
+pub const REAPPROACH_PER_MATCH: u8 = 2;
+/// No re-approach begins for this long after one ends (cut AN.2). Not
+/// tunable.
+pub const REAPPROACH_REST_MS: u64 = 30_000;
 
 // The doctrine the pilot flies moved to the commander's module (cut AJ.3),
 // which parses and clamps the model's answer into it; these names stay here.
@@ -474,6 +615,100 @@ pub struct Orders {
     pub fire: Vec<String>,
     /// Ask `BEARING B` (the lane paces it).
     pub ask_spot_b: bool,
+    /// Ask `VIEW BRIEF` (cut AN.2; the opening's brief, the lane paces it).
+    pub ask_view_brief: bool,
+}
+
+/// **The pilot's knobs** (cut AN.2; `[arena] opening` and `reapproach`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Knobs {
+    pub opening: Opening,
+    pub reapproach: bool,
+}
+
+impl Knobs {
+    /// The shipped defaults: the opening waits, the re-approach is on.
+    pub fn on() -> Knobs {
+        Knobs {
+            opening: Opening::Wait,
+            reapproach: true,
+        }
+    }
+
+    /// The pilot as it was before them: the search at once, no re-approach.
+    pub fn off() -> Knobs {
+        Knobs {
+            opening: Opening::Search,
+            reapproach: false,
+        }
+    }
+}
+
+/// **Where the opening is** (cut AN.2; the module head).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub enum OpeningStage {
+    /// Waiting for the muster's position and the first `CONTACTS` after
+    /// power.
+    Fresh,
+    /// `VIEW BRIEF` asked, since then.
+    Brief { since_ms: u64 },
+    /// Stepping off the road from `from_m` to `aim_m`, since then.
+    Step {
+        aim_m: (f64, f64),
+        from_m: (f64, f64),
+        since_ms: u64,
+    },
+    /// Holding stopped, bow toward the other side's entry (`facing_deg` as it
+    /// was first faced), since then.
+    Hold { since_ms: u64, facing_deg: u32 },
+    /// Over, or never begun: the search flies.
+    Done,
+}
+
+impl OpeningStage {
+    /// `fresh`, `brief`, `step`, `hold` or `done` (the `arena-picture`
+    /// record's word).
+    pub fn word(&self) -> &'static str {
+        match self {
+            OpeningStage::Fresh => "fresh",
+            OpeningStage::Brief { .. } => "brief",
+            OpeningStage::Step { .. } => "step",
+            OpeningStage::Hold { .. } => "hold",
+            OpeningStage::Done => "done",
+        }
+    }
+}
+
+/// **Fire from the halt** (cut AN.2): stopped, bow on `d`, since then.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Halt {
+    /// A designator the stream named.
+    pub d: String,
+    pub since_ms: u64,
+    /// The shortest range `d`'s row has read in the halt (the arming row's
+    /// at first)…
+    pub nearest_m: u32,
+    /// …and when it was first read that short: [`HALT_STILL_MS`] from this
+    /// with no track published, `d` has stopped coming on.
+    pub nearest_ms: u64,
+}
+
+/// **The re-approach's stage** (cut AN.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum ReapproachStage {
+    /// Backing away bow on, since then.
+    Open { since_ms: u64 },
+    /// Stopped, facing the plot, waiting for it to come on, since then.
+    Wait { since_ms: u64 },
+}
+
+/// **A re-approach** (cut AN.2): on `d` (a designator the stream named), its
+/// stage, and `d`'s last plot, followed while `d` is seen.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Reapproach {
+    pub d: String,
+    pub stage: ReapproachStage,
+    pub plot_m: (f64, f64),
 }
 
 /// The search's leg.
@@ -803,6 +1038,39 @@ pub struct Pilot {
     /// **The wait flown at the last decision** (cut AL.3; either kind): whom
     /// it is for, and when it ends.
     pub wait: Option<(String, u64)>,
+    /// **The knobs** this pilot flies (cut AN.2).
+    pub knobs: Knobs,
+    /// **The own muster** (cut AN.2): [`Pilot::start_pos`] when the picture
+    /// saw this match's own `Power online.`
+    /// ([`super::picture::Picture::powered_here`]) and the start position was
+    /// read within [`OPENING_BRIEF_WAIT_MS`] of it; else `None` for the match
+    /// (a bot restarted or attached into a running match would take a
+    /// mid-field point for it). With none there is no opening and no other
+    /// entry.
+    pub muster_m: Option<(f64, f64)>,
+    /// **The opening** (cut AN.2): [`OpeningStage::Done`] from the start under
+    /// `opening = "search"`.
+    pub opening: OpeningStage,
+    /// The picture's [`super::picture::Picture::contacts_read`] at the first
+    /// decision: the opening waits for the first reply after it.
+    opening_contacts_seen: u64,
+    /// **Fire from the halt** in force (cut AN.2).
+    pub halt: Option<Halt>,
+    /// **The re-approach** in force (cut AN.2)…
+    pub reapproach: Option<Reapproach>,
+    /// …how many began this match (at most [`REAPPROACH_PER_MATCH`])…
+    pub reapproaches: u8,
+    /// …and none begins before then.
+    pub reapproach_rest_until_ms: u64,
+    /// **The exchange** (cut AN.2): each hit taken (`true`) and each hit
+    /// scored on a named hostile (`false`) this match, oldest first, pruned to
+    /// [`EXCHANGE_WINDOW_MS`]. Fed every decision whatever the knobs say. It
+    /// holds times only, never a designator.
+    pub exchange: VecDeque<(u64, bool)>,
+    /// The newest event the exchange has read.
+    exchange_seen_ms: u64,
+    /// **The rule flown at the last decision** (cut AN.2; [`Pilot::rule`]).
+    rule: Option<&'static str>,
     /// What the pilot said since [`Pilot::take_notes`].
     #[serde(skip)]
     notes: Vec<String>,
@@ -863,9 +1131,117 @@ impl Default for Pilot {
             unknown_said: BTreeSet::new(),
             unknown_flown: false,
             wait: None,
+            knobs: Knobs::off(),
+            muster_m: None,
+            opening: OpeningStage::Done,
+            opening_contacts_seen: 0,
+            halt: None,
+            reapproach: None,
+            reapproaches: 0,
+            reapproach_rest_until_ms: 0,
+            exchange: VecDeque::new(),
+            exchange_seen_ms: 0,
+            rule: None,
             notes: Vec::new(),
         }
     }
+}
+
+/// **The other side's entry** (cut AN.2): the own muster `start` mirrored
+/// across the ground's centre line that lies between it and the nearer pair
+/// of edges, on a ground `side` metres east-west by north-south — `(side.0 −
+/// x, y)` when `|x − side.0 / 2| ≥ |y − side.1 / 2|`, else `(x, side.1 − y)`.
+/// Both sides fly identical stock tanks from opposite ends of the ground
+/// ("two sides fly stock tanks against each other on the proving ground",
+/// `help simulator`): the reflection is the pilot's inference from that, and
+/// no contact bearing is used (the first contact comes from wherever the
+/// machine's patrol is). Wrong only on a ground whose sides do not muster at
+/// mirrored ends, and then only in where the pilot faces while it waits.
+pub fn other_entry(start: (f64, f64), side: (f64, f64)) -> (f64, f64) {
+    let (x, y) = start;
+    if (x - side.0 / 2.0).abs() >= (y - side.1 / 2.0).abs() {
+        (side.0 - x, y)
+    } else {
+        (x, side.1 - y)
+    }
+}
+
+/// A brief's bearing in degrees as its word in lower case (`north`,
+/// `north-east`, …); `that way` for a bearing no brief prints.
+fn bearing_word(deg: u32) -> String {
+    super::lines::BRIEF_BEARINGS
+        .iter()
+        .find(|(_, at)| *at == deg)
+        .map_or_else(|| "that way".to_owned(), |(word, _)| word.to_lowercase())
+}
+
+/// **The step off the road** the brief's `ground` offers (cut AN.2), as
+/// `(bearing, metres)`, every ray judged from the ground's own `from_m`;
+/// `None` to hold where the tank stands.
+///
+/// * **Already hidden**: at least 6 of the 8 rays begin on [`HIDING`] ground.
+///   A proxy read from the eight neighbours: a ray starts from the pilot's own
+///   cell and never describes it.
+/// * **Otherwise**, on each ray more than 45° from `away_deg` (the bearing
+///   from the muster to the other side's entry: never toward the machines),
+///   the first run on hiding ground; its start `s` is 0 when it is the first
+///   run, else the run before's reach. A reach is counted from the own cell's
+///   centre and rounded to the brief's 10 m, so the true end of the run
+///   before can lie up to half a cell past `s` on an axis and up to a
+///   diagonal cell past it on a diagonal: the allowance `a` is `cell_m / 2`
+///   on an axis and `cell_m × 1.5` on a diagonal (`cell_m` from the header,
+///   10 without one). The ray qualifies when `s + a + `[`OPENING_COVER_M`]` ≤
+///   `[`OPENING_STEP_MAX_M`] and that run reaches at least `s + a +
+///   `[`OPENING_COVER_M`]` + 10`. The smallest `s` wins, ties by compass order
+///   from north; the step is `s + a + `[`OPENING_COVER_M`] long.
+pub fn opening_step(ground: &Ground, away_deg: u32) -> Option<(u32, f64)> {
+    let hides = |class: &str| HIDING.contains(&class);
+    let hidden = ground
+        .rays
+        .values()
+        .filter(|(runs, _)| runs.first().is_some_and(|(class, _)| hides(class)))
+        .count();
+    if hidden >= 6 {
+        return None;
+    }
+    let cell = f64::from(ground.cell_m.unwrap_or(10));
+    // (s, bearing, metres); the rays iterate in compass order from north.
+    let mut best: Option<(f64, u32, f64)> = None;
+    for (&bearing, (runs, _)) in &ground.rays {
+        if angle_between(bearing, away_deg) <= 45 {
+            continue;
+        }
+        let Some(index) = runs.iter().position(|(class, _)| hides(class)) else {
+            continue;
+        };
+        let start = index
+            .checked_sub(1)
+            .and_then(|before| runs.get(before))
+            .map_or(0.0, |(_, reach)| f64::from(*reach));
+        let Some((_, reach)) = runs.get(index) else {
+            continue;
+        };
+        let allowance = if bearing % 90 == 0 {
+            cell / 2.0
+        } else {
+            cell * 1.5
+        };
+        let metres = start + allowance + OPENING_COVER_M;
+        if metres <= OPENING_STEP_MAX_M
+            && f64::from(*reach) >= metres + 10.0
+            && best.is_none_or(|(s, _, _)| start < s)
+        {
+            best = Some((start, bearing, metres));
+        }
+    }
+    best.map(|(_, bearing, metres)| (bearing, metres))
+}
+
+/// How old a contact's plot is now: its age when read, and the time since.
+fn plot_age_ms(contact: &Contact, now_ms: u64) -> u64 {
+    contact
+        .age_ms
+        .saturating_add(now_ms.saturating_sub(contact.read_ms))
 }
 
 /// Degrees into `0..360`.
@@ -1033,8 +1409,60 @@ fn believed_ready(weapon: &super::picture::Weapon, now_ms: u64) -> bool {
 }
 
 impl Pilot {
+    /// **The pilot as it was before cut AN.2** ([`Knobs::off`]): every older
+    /// unit test flies it.
     pub fn new() -> Pilot {
         Pilot::default()
+    }
+
+    /// **A pilot flying `knobs`** (cut AN.2): what the lane builds from
+    /// `[arena]` ([`super::settings::Settings::knobs`]).
+    pub fn with_knobs(knobs: Knobs) -> Pilot {
+        Pilot {
+            knobs,
+            opening: match knobs.opening {
+                Opening::Wait => OpeningStage::Fresh,
+                Opening::Search => OpeningStage::Done,
+            },
+            ..Pilot::default()
+        }
+    }
+
+    /// **The rule flown at the last decision** (cut AN.2): `opening` (step
+    /// 6a), `halt` (3c), `reapproach` (3a, backing off) or `approach_wait`
+    /// (3a, waiting), else `None`. A word, never a designator.
+    pub fn rule(&self) -> Option<&'static str> {
+        self.rule
+    }
+
+    /// **The exchange over its window** at `now_ms` (cut AN.2): `(taken,
+    /// scored)`.
+    pub fn exchange_counts(&self, now_ms: u64) -> (usize, usize) {
+        let inside = |at: u64| now_ms.saturating_sub(at) <= EXCHANGE_WINDOW_MS;
+        let taken = self
+            .exchange
+            .iter()
+            .filter(|(at, taken)| *taken && inside(*at))
+            .count();
+        let scored = self
+            .exchange
+            .iter()
+            .filter(|(at, taken)| !*taken && inside(*at))
+            .count();
+        (taken, scored)
+    }
+
+    /// **The other side's entry now** (cut AN.2): [`other_entry`] of the own
+    /// muster, on the ground the brief's header sized, else on `help
+    /// simulator`'s "2.56 km square" ([`ARENA_SIDE_M`]); `None` with no
+    /// muster.
+    pub fn other_entry_now(&self, picture: &Picture) -> Option<(f64, f64)> {
+        let side = picture
+            .ground
+            .as_ref()
+            .and_then(|ground| ground.side_m)
+            .unwrap_or((ARENA_SIDE_M, ARENA_SIDE_M));
+        self.muster_m.map(|muster| other_entry(muster, side))
     }
 
     /// **Decide.** What to type now, given the picture and the doctrine.
@@ -1106,6 +1534,10 @@ impl Pilot {
             self.ceilings_asked = true;
         }
         self.take_hit(picture, doctrine, other, target.as_deref(), live, now_ms);
+        // Cut AN.2: the opening, the re-approach and the halt are judged
+        // before any step flies (and before the hunt's start, which a
+        // re-approach holds back).
+        self.judge(picture, doctrine, other, target.as_deref(), now_ms);
         self.follow(picture, doctrine, other, target.as_deref(), sign, now_ms);
         let full = picture.own.max_ahead_kph.unwrap_or(UNKNOWN_FULL_KPH);
         let motion = self.motion(
@@ -1119,6 +1551,8 @@ impl Pilot {
         );
         let (heading, mut speed, ask) = motion;
         orders.ask_spot_b = ask;
+        // Cut AN.2: the opening asks for its brief until it has it.
+        orders.ask_view_brief = matches!(self.opening, OpeningStage::Brief { .. });
         if !self.ceilings_asked {
             speed = Some(CEILING_ASK_KPH);
         }
@@ -1302,6 +1736,11 @@ impl Pilot {
         sign: f64,
         now_ms: u64,
     ) {
+        if self.power_ms.is_none() {
+            // The first decision (cut AN.2): the opening waits for the first
+            // `CONTACTS` reply after it.
+            self.opening_contacts_seen = picture.contacts_read;
+        }
         let power_ms = *self.power_ms.get_or_insert(now_ms);
         if self.last_hostile_ms.is_none() {
             self.last_hostile_ms = Some(power_ms);
@@ -1315,6 +1754,12 @@ impl Pilot {
             && picture.own.pos_read_ms >= power_ms
         {
             self.start_pos = Some(pos);
+            // Cut AN.2: only a start the pilot saw is a muster.
+            let seen = picture.powered_here
+                && picture.power_ms.is_some_and(|power| {
+                    picture.own.pos_read_ms <= power.saturating_add(OPENING_BRIEF_WAIT_MS)
+                });
+            self.muster_m = seen.then_some(pos);
         }
         // The Crossroads' own position, as the picture plotted it from a
         // `STATUS` block that named it nearest (range and bearing from the
@@ -1331,6 +1776,8 @@ impl Pilot {
         // Seen second (cut AL.3): the hostiles hurt, the newest hit taken, and
         // when each return not yet told apart was first seen.
         self.take_seen_second(picture, power_ms, now_ms);
+        // The exchange (cut AN.2), whatever the knobs.
+        self.take_exchange(picture, power_ms, now_ms);
         // Only a row young enough to be held counts (cut AK.1): a stale row
         // still listed after a failed hunt does not keep the search away, and
         // nor does a wreck's row, listed until it expires.
@@ -1773,6 +2220,434 @@ impl Pilot {
         }
     }
 
+    /// **The exchange** (cut AN.2), every decision, from this match's events
+    /// newer than the last read: a hit scored on a named hostile (`Hit on
+    /// {d}…` without `(FRIENDLY)`; a bare `Hit.` names nobody) is `(at,
+    /// false)`, a hit taken `(at, true)`; entries older than
+    /// [`EXCHANGE_WINDOW_MS`] are pruned. Fed whatever the knobs say.
+    fn take_exchange(&mut self, picture: &Picture, power_ms: u64, now_ms: u64) {
+        self.exchange_seen_ms = self.exchange_seen_ms.max(power_ms);
+        let seen = self.exchange_seen_ms;
+        for event in picture.events.iter().filter(|event| event.at_ms > seen) {
+            let entry = match event.kind {
+                EventKind::HitScored
+                    if event.text.starts_with("Hit on ") && !event.text.contains("(FRIENDLY)") =>
+                {
+                    Some(false)
+                }
+                EventKind::HitTaken => Some(true),
+                _ => None,
+            };
+            if let Some(taken) = entry {
+                self.exchange.push_back((event.at_ms, taken));
+            }
+            self.exchange_seen_ms = self.exchange_seen_ms.max(event.at_ms);
+        }
+        while self
+            .exchange
+            .front()
+            .is_some_and(|(at, _)| now_ms.saturating_sub(*at) > EXCHANGE_WINDOW_MS)
+        {
+            self.exchange.pop_front();
+        }
+    }
+
+    /// **The rules of cut AN.2, judged** every decision before any step
+    /// flies: the opening's stages and ends, the re-approach's begin, stages
+    /// and ends, and the halt's ends, each saying what it did.
+    fn judge(
+        &mut self,
+        picture: &Picture,
+        doctrine: &Doctrine,
+        other: Side,
+        target: Option<&str>,
+        now_ms: u64,
+    ) {
+        self.judge_opening(picture, other, target, now_ms);
+        self.judge_reapproach(picture, doctrine, other, target, now_ms);
+        self.judge_halt(picture, doctrine, other, now_ms);
+    }
+
+    /// **A live hostile in sight** (cut AN.2): one with a row read (its range
+    /// known) whose plot is no older than [`FRESH_PLOT_MS`] — the target when
+    /// it is one, else the nearest — with its row's range.
+    fn in_sight(
+        &self,
+        picture: &Picture,
+        other: Side,
+        target: Option<&str>,
+        now_ms: u64,
+    ) -> Option<(String, u32)> {
+        let sighted = |c: &&Contact| {
+            self.live_hostile(c, other)
+                && c.range_m.is_some()
+                && plot_age_ms(c, now_ms) <= FRESH_PLOT_MS
+        };
+        let contact = target
+            .and_then(|t| picture.contacts.get(t))
+            .filter(sighted)
+            .or_else(|| {
+                picture
+                    .contacts
+                    .values()
+                    .filter(sighted)
+                    .min_by_key(|c| c.range_m)
+            })?;
+        Some((contact.designator.clone(), contact.range_m?))
+    }
+
+    /// **Arm the halt** for `d`, a row read `range_m` off (cut AN.2).
+    fn arm_halt(&mut self, d: &str, range_m: u32, now_ms: u64) {
+        self.note(format!("Firing from the halt at {d}, {range_m} m off."));
+        self.halt = Some(Halt {
+            d: d.to_owned(),
+            since_ms: now_ms,
+            nearest_m: range_m,
+            nearest_ms: now_ms,
+        });
+    }
+
+    /// **The opening holds** (cut AN.2): stopped, the bow toward the other
+    /// side's entry, said once.
+    fn enter_hold(&mut self, picture: &Picture, now_ms: u64) {
+        let facing = match (picture.own_pos_at(now_ms), self.other_entry_now(picture)) {
+            (Some(own), Some(entry)) => whole(bearing_deg(own, entry)),
+            _ => self.reference_heading(picture),
+        };
+        self.opening = OpeningStage::Hold {
+            since_ms: now_ms,
+            facing_deg: facing,
+        };
+        self.note(format!(
+            "Opening: holding near our entry, facing {facing:03}° toward the other side's entry."
+        ));
+    }
+
+    /// **The opening, judged** (cut AN.2; the module head). `Fresh` never
+    /// begins — it is over at once, saying nothing — outside a skirmish, when
+    /// this match's own `Power online.` was not read, or with no muster
+    /// ([`Pilot::muster_m`], known once the first position is read or
+    /// [`OPENING_BRIEF_WAIT_MS`] after power); else it waits for the first
+    /// `CONTACTS` reply after the first decision (at most
+    /// [`OPENING_BRIEF_WAIT_MS`]) and is over, silently, when any contact, an
+    /// unknown included, is held or a `New contact` was read since power — a
+    /// posed duel, where the machine is an unidentified return for a second or
+    /// two — else it asks for the brief. From then the opening ends on (a) a
+    /// live hostile in sight ([`Pilot::in_sight`]; the halt armed for it only
+    /// inside [`STOCK_SIGHT_M`]: a row farther out is a teammate's report),
+    /// (b) a hit taken after power or (c) [`OPENING_MAX_MS`] after power; a
+    /// return not yet told apart ends nothing. The brief is waited for until
+    /// its ground is whole or [`OPENING_BRIEF_WAIT_MS`] has passed; the step
+    /// is [`opening_step`] of a whole ground read this match (none, or a dark
+    /// window: the hold where the tank stands); the step is done once the own
+    /// position's progress along it is within [`OPENING_ARRIVE_M`] of its
+    /// length, or [`OPENING_STEP_MS`] after it began.
+    fn judge_opening(&mut self, picture: &Picture, other: Side, target: Option<&str>, now_ms: u64) {
+        let first = self.power_ms.unwrap_or(now_ms);
+        let power = picture.power_ms.unwrap_or(first);
+        if self.opening == OpeningStage::Fresh {
+            if picture.match_mode != MatchMode::Skirmish || !picture.powered_here {
+                self.opening = OpeningStage::Done;
+                return;
+            }
+            if self.start_pos.is_none() && now_ms < power.saturating_add(OPENING_BRIEF_WAIT_MS) {
+                return;
+            }
+            if self.muster_m.is_none() {
+                self.opening = OpeningStage::Done;
+                return;
+            }
+            let replied = picture.contacts_read > self.opening_contacts_seen;
+            if !replied && now_ms < first.saturating_add(OPENING_BRIEF_WAIT_MS) {
+                return;
+            }
+            let noticed = picture
+                .events
+                .iter()
+                .any(|event| event.kind == EventKind::ContactNew && event.at_ms >= power);
+            if noticed || !picture.contacts.is_empty() {
+                self.opening = OpeningStage::Done;
+                return;
+            }
+            self.opening = OpeningStage::Brief { since_ms: now_ms };
+        }
+        if matches!(self.opening, OpeningStage::Fresh | OpeningStage::Done) {
+            return;
+        }
+        let secs = now_ms.saturating_sub(power) / 1_000;
+        // (a) A hostile in sight.
+        if let Some((d, range)) = self.in_sight(picture, other, target, now_ms) {
+            self.opening = OpeningStage::Done;
+            self.note(format!("Opening over: {d} is in sight after {secs} s."));
+            if f64::from(range) <= STOCK_SIGHT_M {
+                self.arm_halt(&d, range, now_ms);
+            }
+            return;
+        }
+        // (b) A hit taken after power.
+        if self.hit_taken_ms > first {
+            self.opening = OpeningStage::Done;
+            self.note(format!("Opening over: hit after {secs} s."));
+            return;
+        }
+        // (c) Its time.
+        if now_ms >= power.saturating_add(OPENING_MAX_MS) {
+            self.opening = OpeningStage::Done;
+            self.note(format!(
+                "Opening over: nothing came in {secs} s; searching."
+            ));
+            return;
+        }
+        match self.opening.clone() {
+            OpeningStage::Brief { since_ms } => {
+                let ground = picture
+                    .ground
+                    .as_ref()
+                    .filter(|ground| ground.complete && ground.read_ms >= first);
+                if ground.is_none() && now_ms < since_ms.saturating_add(OPENING_BRIEF_WAIT_MS) {
+                    return;
+                }
+                let away = self
+                    .muster_m
+                    .zip(self.other_entry_now(picture))
+                    .map(|(muster, entry)| whole(bearing_deg(muster, entry)));
+                let step = ground.and_then(|ground| {
+                    let from = ground.from_m?;
+                    let (bearing, metres) = opening_step(ground, away?)?;
+                    Some((from, bearing, metres))
+                });
+                match step {
+                    Some((from, bearing, metres)) => {
+                        let aim = clamp_arena(along(from, f64::from(bearing), metres));
+                        self.opening = OpeningStage::Step {
+                            aim_m: aim,
+                            from_m: from,
+                            since_ms: now_ms,
+                        };
+                        self.note(format!(
+                            "Opening: stepping off the road to the {} ({:.0} m).",
+                            bearing_word(bearing),
+                            metres.round()
+                        ));
+                    }
+                    None => self.enter_hold(picture, now_ms),
+                }
+            }
+            OpeningStage::Step {
+                aim_m,
+                from_m,
+                since_ms,
+            } => {
+                let length = distance_m(from_m, aim_m);
+                let progress = picture.own_pos_at(now_ms).map_or(0.0, |own| {
+                    if length <= f64::EPSILON {
+                        return 0.0;
+                    }
+                    ((own.0 - from_m.0) * (aim_m.0 - from_m.0)
+                        + (own.1 - from_m.1) * (aim_m.1 - from_m.1))
+                        / length
+                });
+                if progress >= length - OPENING_ARRIVE_M
+                    || now_ms >= since_ms.saturating_add(OPENING_STEP_MS)
+                {
+                    self.enter_hold(picture, now_ms);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// **The re-approach, judged** (cut AN.2; the module head). In force:
+    /// backing off, its plot follows the hostile while the hostile's plot is
+    /// fresh, it waits once [`REAPPROACH_OPEN_M`] from that plot and is given
+    /// up at [`REAPPROACH_MAX_MS`]; waiting, any live hostile held young with
+    /// a row inside [`STOCK_SIGHT_M`] arms the halt and ends it (a row farther
+    /// out is a teammate's report and ends nothing), a hit taken ends it with
+    /// nothing said, and
+    /// [`REAPPROACH_WAIT_MS`] ends it. Every end rests it for
+    /// [`REAPPROACH_REST_MS`]. Not in force, it begins when the knob is on,
+    /// fewer than [`REAPPROACH_PER_MATCH`] began this match, the rest is over,
+    /// no fall back flies, the doctrine is neither `orbit` nor `withdraw`, the
+    /// target is a live hostile whose row is fresh ([`FRESH_PLOT_MS`]), with no
+    /// published track (stopped) and within [`STOCK_SIGHT_M`], and the
+    /// exchange's window holds at least [`EXCHANGE_MIN_TAKEN`] hits taken and
+    /// [`EXCHANGE_MARGIN`] more taken than scored.
+    fn judge_reapproach(
+        &mut self,
+        picture: &Picture,
+        doctrine: &Doctrine,
+        other: Side,
+        target: Option<&str>,
+        now_ms: u64,
+    ) {
+        if let Some(reapproach) = self.reapproach.clone() {
+            let d = reapproach.d;
+            match reapproach.stage {
+                ReapproachStage::Open { since_ms } => {
+                    let mut plot = reapproach.plot_m;
+                    if let Some(contact) = picture.contacts.get(&d)
+                        && self.live_hostile(contact, other)
+                        && plot_age_ms(contact, now_ms) <= FRESH_PLOT_MS
+                        && let Some(fresh) = last_plot(picture, contact)
+                    {
+                        plot = fresh;
+                    }
+                    if let Some(reapproach) = self.reapproach.as_mut() {
+                        reapproach.plot_m = plot;
+                    }
+                    let off = picture.own_pos_at(now_ms).map(|own| distance_m(own, plot));
+                    if let Some(off) = off.filter(|off| *off >= REAPPROACH_OPEN_M) {
+                        if let Some(reapproach) = self.reapproach.as_mut() {
+                            reapproach.stage = ReapproachStage::Wait { since_ms: now_ms };
+                        }
+                        let off = off.round();
+                        self.note(format!(
+                            "Out of {d}'s sight at {off:.0} m from its last plot; waiting for it \
+                             to come on."
+                        ));
+                    } else if now_ms >= since_ms.saturating_add(REAPPROACH_MAX_MS) {
+                        self.note(format!(
+                            "Could not open the range on {d} in {} s; holding.",
+                            now_ms.saturating_sub(since_ms) / 1_000
+                        ));
+                        self.end_reapproach(now_ms);
+                    }
+                }
+                ReapproachStage::Wait { since_ms } => {
+                    // A hostile coming on is one held young with a row inside
+                    // the stock sight: a row farther out is a teammate's
+                    // report (`help cockpit`: `far` covers "anything a
+                    // teammate is passing you from beyond it"), as at the
+                    // opening's end, and it ends nothing.
+                    let comes = picture
+                        .contacts
+                        .values()
+                        .filter(|c| {
+                            self.live_hostile(c, other) && c.age_ms <= held_limit_ms(doctrine)
+                        })
+                        .filter_map(|c| c.range_m.map(|range| (c.designator.clone(), range)))
+                        .filter(|(_, range)| f64::from(*range) <= STOCK_SIGHT_M)
+                        .min_by_key(|(_, range)| *range);
+                    if let Some((come, range)) = comes {
+                        self.arm_halt(&come, range, now_ms);
+                        self.end_reapproach(now_ms);
+                    } else if self.hit_taken_ms > since_ms {
+                        self.end_reapproach(now_ms);
+                    } else if now_ms >= since_ms.saturating_add(REAPPROACH_WAIT_MS) {
+                        self.note(format!(
+                            "No approach from {d} in {} s; moving on.",
+                            now_ms.saturating_sub(since_ms) / 1_000
+                        ));
+                        self.end_reapproach(now_ms);
+                    }
+                }
+            }
+            return;
+        }
+        let falling_back = self.withdraw_until_ms.is_some_and(|until| now_ms < until);
+        if !self.knobs.reapproach
+            || self.reapproaches >= REAPPROACH_PER_MATCH
+            || now_ms < self.reapproach_rest_until_ms
+            || falling_back
+            || matches!(doctrine.stance, Stance::Orbit | Stance::Withdraw)
+        {
+            return;
+        }
+        let Some(contact) = target.and_then(|t| picture.contacts.get(t)) else {
+            return;
+        };
+        let stopped_in_sight = self.live_hostile(contact, other)
+            && plot_age_ms(contact, now_ms) <= FRESH_PLOT_MS
+            && contact.track.is_none()
+            && contact
+                .range_m
+                .is_some_and(|range| f64::from(range) <= STOCK_SIGHT_M);
+        if !stopped_in_sight {
+            return;
+        }
+        let (taken, scored) = self.exchange_counts(now_ms);
+        if taken < EXCHANGE_MIN_TAKEN || taken < scored.saturating_add(EXCHANGE_MARGIN) {
+            return;
+        }
+        let Some(plot_m) = last_plot(picture, contact) else {
+            return;
+        };
+        let d = contact.designator.clone();
+        self.reapproaches = self.reapproaches.saturating_add(1);
+        self.reapproach = Some(Reapproach {
+            d: d.clone(),
+            stage: ReapproachStage::Open { since_ms: now_ms },
+            plot_m,
+        });
+        let window_s = EXCHANGE_WINDOW_MS / 1_000;
+        self.note(format!(
+            "Opening the range on {d}: {taken} hits taken to {scored} scored in {window_s} s; \
+             backing off bow on."
+        ));
+    }
+
+    /// A re-approach is over (cut AN.2): the rest begins.
+    fn end_reapproach(&mut self, now_ms: u64) {
+        self.reapproach = None;
+        self.reapproach_rest_until_ms = now_ms.saturating_add(REAPPROACH_REST_MS);
+    }
+
+    /// **The halt's ends** (cut AN.2), in this order, each said: a hit taken
+    /// after it began (`we are found`); its hostile, held young, within the
+    /// band and [`HOLD_SLACK_M`] (the doctrine's band, widened after a fall
+    /// back as [`Pilot::engage`] widens it); [`HALT_STILL_MS`] in which its
+    /// hostile's row has read no shorter range and it has published no track
+    /// (`has stopped`: it is not coming on); [`HALT_MAX_MS`] after it began;
+    /// and, with nothing said, its hostile no longer held young.
+    fn judge_halt(&mut self, picture: &Picture, doctrine: &Doctrine, other: Side, now_ms: u64) {
+        let Some(mut halt) = self.halt.clone() else {
+            return;
+        };
+        let young = picture
+            .contacts
+            .get(&halt.d)
+            .filter(|c| self.live_hostile(c, other) && c.age_ms <= held_limit_ms(doctrine));
+        // Closing: a row read nearer than any before it in the halt.
+        if let Some(range) = young.and_then(|c| c.range_m)
+            && range < halt.nearest_m
+        {
+            halt.nearest_m = range;
+            halt.nearest_ms = now_ms;
+            self.halt = Some(halt.clone());
+        }
+        let d = halt.d;
+        let band = f64::from(if self.fallen_back {
+            widened_band(doctrine.band_m)
+        } else {
+            doctrine.band_m
+        });
+        let at_band = young.is_some_and(|c| {
+            match (picture.own_pos_at(now_ms), target_pos(picture, c, now_ms)) {
+                (Some(own), Some(pos)) => distance_m(own, pos) <= band + HOLD_SLACK_M,
+                _ => false,
+            }
+        });
+        let said = if self.hit_taken_ms > halt.since_ms {
+            Some("The halt is over: we are found.".to_owned())
+        } else if at_band {
+            Some(format!("The halt is over: {d} is at the band."))
+        } else if young.is_some_and(|c| c.track.is_none())
+            && now_ms >= halt.nearest_ms.saturating_add(HALT_STILL_MS)
+        {
+            Some(format!("The halt is over: {d} has stopped."))
+        } else if now_ms >= halt.since_ms.saturating_add(HALT_MAX_MS) {
+            Some("The halt is over: its time is up.".to_owned())
+        } else if young.is_none() {
+            None
+        } else {
+            return;
+        };
+        self.halt = None;
+        if let Some(said) = said {
+            self.note(said);
+        }
+    }
+
     /// **The hunt's bookkeeping**, every decision: a fresh hostile target
     /// refreshes the trail; a fresh hostile ends a hunt; a `Held:` notice ends
     /// its leg; and with no hostile held young, a live trail and no withdrawal
@@ -1839,8 +2714,10 @@ impl Pilot {
             .contacts
             .values()
             .any(|c| self.live_hostile(c, other) && c.age_ms <= held_limit_ms(doctrine));
+        // Cut AN.2: nor while a re-approach is in force.
         let withdrawing = self.withdraw_until_ms.is_some_and(|until| now_ms < until)
-            || doctrine.stance == Stance::Withdraw;
+            || doctrine.stance == Stance::Withdraw
+            || self.reapproach.is_some();
         if self.hunt.is_none()
             && !held_young
             && !withdrawing
@@ -2036,6 +2913,7 @@ impl Pilot {
         self.hold_flown = false;
         self.unknown_flown = false;
         self.wait = None;
+        self.rule = None;
     }
 
     /// After the steps: a hold not flown goes back to `Stopped`, and a stop
@@ -2174,6 +3052,32 @@ impl Pilot {
             self.orbit_since_ms = None;
             return back(aim);
         }
+        // 3a. The re-approach (cut AN.2): backing off bow on, steering on the
+        // hostile while it is held young and on its plot after (the pilot is
+        // blind between 480 and 600 m of a stopped machine); then stopped,
+        // facing the plot. The reverse goes through the shared path below
+        // (held ground behind turns it into a stop).
+        if let Some(reapproach) = &self.reapproach {
+            let plot = reapproach.plot_m;
+            let flown = match reapproach.stage {
+                ReapproachStage::Open { .. } => {
+                    let bow = self
+                        .young_pos(picture, doctrine, &reapproach.d, now_ms)
+                        .unwrap_or(plot);
+                    (
+                        "reapproach",
+                        (Some(bearing_deg(own, bow)), Some(-astern), false),
+                    )
+                }
+                ReapproachStage::Wait { .. } => (
+                    "approach_wait",
+                    (Some(bearing_deg(own, plot)), Some(0), false),
+                ),
+            };
+            self.orbit_since_ms = None;
+            self.rule = Some(flown.0);
+            return flown.1;
+        }
         // 3b. The turn into a side or rear hit, stopped (cut AL.2).
         if let Some(threat) = self.threat_turn(doctrine, contact, aim, own, now_ms) {
             self.orbit_since_ms = None;
@@ -2182,6 +3086,15 @@ impl Pilot {
                 self.note(note);
             }
             return (Some(threat), Some(0), false);
+        }
+        // 3c. Fire from the halt (cut AN.2): stopped, bow on its hostile while
+        // that one is held young; the guns fire by rule 5 as always.
+        if let Some(halt) = &self.halt
+            && let Some(pos) = self.young_pos(picture, doctrine, &halt.d, now_ms)
+        {
+            self.orbit_since_ms = None;
+            self.rule = Some("halt");
+            return (Some(bearing_deg(own, pos)), Some(0), false);
         }
         // 4. A hostile held young: the doctrine's stance (a `hunt` doctrine's
         // only while its plot is fresh).
@@ -2226,11 +3139,63 @@ impl Pilot {
         // row whose hunt is spent is nothing to fly at.
         self.orbit_since_ms = None;
         let spent = contact.is_some_and(|c| self.trailed.contains(&c.designator));
-        let quiet_since = self.last_hostile_ms.unwrap_or(now_ms);
-        if (target.is_none() || spent) && now_ms >= quiet_since.saturating_add(SEARCH_AFTER_MS) {
-            return self.search(picture, own, full);
+        if target.is_none() || spent {
+            // 6a. The opening while it is not over (cut AN.2), where the
+            // search would fly and with no five-second wait.
+            if let Some(opening) = self.opening_motion(picture, own) {
+                return opening;
+            }
+            let quiet_since = self.last_hostile_ms.unwrap_or(now_ms);
+            if now_ms >= quiet_since.saturating_add(SEARCH_AFTER_MS) {
+                return self.search(picture, own, full);
+            }
         }
         (None, None, false)
+    }
+
+    /// **Step 6a: the opening** (cut AN.2), while it is not over: nothing
+    /// before its brief is read (the tank stands at the muster), its step off
+    /// the road at [`OPENING_STEP_KPH`], then stopped with the bow toward the
+    /// other side's entry. `None` once it is over.
+    fn opening_motion(
+        &mut self,
+        picture: &Picture,
+        own: (f64, f64),
+    ) -> Option<(Option<f64>, Option<i32>, bool)> {
+        let flown = match &self.opening {
+            OpeningStage::Done => return None,
+            OpeningStage::Fresh | OpeningStage::Brief { .. } => (None, None, false),
+            OpeningStage::Step { aim_m, .. } => (
+                Some(bearing_deg(own, *aim_m)),
+                Some(OPENING_STEP_KPH),
+                false,
+            ),
+            OpeningStage::Hold { facing_deg, .. } => {
+                let facing = self
+                    .other_entry_now(picture)
+                    .map_or(f64::from(*facing_deg), |entry| bearing_deg(own, entry));
+                (Some(facing), Some(0), false)
+            }
+        };
+        self.rule = Some("opening");
+        Some(flown)
+    }
+
+    /// Where `d` is now when it is a live hostile held young
+    /// ([`held_limit_ms`]), as [`target_pos`] says (cut AN.2).
+    fn young_pos(
+        &self,
+        picture: &Picture,
+        doctrine: &Doctrine,
+        d: &str,
+        now_ms: u64,
+    ) -> Option<(f64, f64)> {
+        let other = picture.side.map(Side::other)?;
+        let contact = picture
+            .contacts
+            .get(d)
+            .filter(|c| self.live_hostile(c, other) && c.age_ms <= held_limit_ms(doctrine))?;
+        target_pos(picture, contact, now_ms)
     }
 
     /// **Step 3b** (cut AL.2): the threat's bearing while its turn lasts and
@@ -6382,5 +7347,1120 @@ mod tests {
                 "disabled {disabled}: {orders:?}"
             );
         }
+    }
+
+    // -- cut AN.2: the opening, the halt and the re-approach --------------------
+
+    /// When the own `Power online.` is read in these tests.
+    const POWER: u64 = 10_000;
+    /// The shipped muster of red's slot 1, on the east-west road.
+    const MUSTER: (f64, f64) = (60.0, 970.0);
+
+    /// A running red tank's picture, aboard, in a skirmish, its ceilings read.
+    fn running() -> Picture {
+        let mut picture = Picture {
+            phase: Phase::Running { match_id: 1 },
+            following: Some(1),
+            side: Some(Side::Red),
+            aboard: true,
+            ..Picture::default()
+        };
+        picture.own.max_ahead_kph = Some(54);
+        picture.own.max_astern_kph = Some(27);
+        picture
+    }
+
+    /// **At the muster** (cut AN.2): this match's own `Power online.` read at
+    /// [`POWER`], the pilot's first decision 50 ms on (nothing read yet), then
+    /// the first `STATUS` at `start` and the first `CONTACTS` reply (empty)
+    /// 100 ms after power. The pilot flies [`Knobs::on`].
+    fn at_muster(start: (f64, f64)) -> (Picture, Pilot) {
+        let mut picture = running();
+        picture.apply(POWER, &classify("Power online."));
+        let mut pilot = Pilot::with_knobs(Knobs::on());
+        pilot.ceilings_asked = true;
+        let first = pilot.decide(&picture, &hold_doctrine(), POWER + 50);
+        assert!(!first.ask_view_brief, "nothing read yet");
+        status_at(&mut picture, start, 90, POWER + 100);
+        picture.apply(POWER + 100, &classify("No contacts."));
+        (picture, pilot)
+    }
+
+    fn decide_at(picture: &Picture, pilot: &mut Pilot, at: u64) -> Orders {
+        pilot.decide(picture, &hold_doctrine(), at)
+    }
+
+    /// The brief's header (the shipped 256 by 256 cells of 10 m), then `rays`
+    /// (`{Bearing}: …` lines) and `No contacts.`, read at `at`.
+    fn read_brief(picture: &mut Picture, at: u64, rays: &[String]) {
+        picture.apply(
+            at,
+            &classify(
+                "Window around RA: cells 0 to 38 east and 88 to 107 north of 256 by 256; you at \
+                 (6, 97), heading 090°; 10 m a cell.",
+            ),
+        );
+        for ray in rays {
+            picture.apply(at, &classify(ray));
+        }
+        picture.apply(at, &classify("No contacts."));
+    }
+
+    /// Eight rays, the one for each bearing `(word, deg)` given by `ray`.
+    fn rays(ray: impl Fn(&str, u32) -> String) -> Vec<String> {
+        crate::arena::lines::BRIEF_BEARINGS
+            .iter()
+            .map(|(word, deg)| ray(word, *deg))
+            .collect()
+    }
+
+    /// **The shipped muster's brief**: north and south 10 m of road then
+    /// grass, east and west all road, the diagonals 10 m of road then grass.
+    fn road_brief() -> Vec<String> {
+        rays(|word, deg| match deg {
+            90 | 270 => format!("{word}: 190 m of road, then beyond the window."),
+            _ => format!("{word}: 10 m of road, then grass to 90 m, then beyond the window."),
+        })
+    }
+
+    /// The muster, its brief read, the step chosen: the pilot and the picture
+    /// at the step's first decision, and that decision's orders.
+    fn stepping(start: (f64, f64), brief: &[String]) -> (Picture, Pilot, Orders) {
+        let (mut picture, mut pilot) = at_muster(start);
+        let asked = decide_at(&picture, &mut pilot, POWER + 150);
+        assert!(asked.ask_view_brief, "the brief is asked for");
+        assert!(matches!(pilot.opening, OpeningStage::Brief { .. }));
+        read_brief(&mut picture, POWER + 1_000, brief);
+        let orders = decide_at(&picture, &mut pilot, POWER + 1_050);
+        (picture, pilot, orders)
+    }
+
+    /// The muster in a field of grass: the opening holds at once.
+    fn holding(start: (f64, f64)) -> (Picture, Pilot) {
+        let (picture, mut pilot, _) = stepping(
+            start,
+            &rays(|word, _| format!("{word}: 90 m of grass, then beyond the window.")),
+        );
+        assert!(matches!(pilot.opening, OpeningStage::Hold { .. }));
+        pilot.take_notes();
+        (picture, pilot)
+    }
+
+    /// A contact `range` m from `from` on `bearing`, read at `t`, its plot
+    /// `age_ms` old.
+    fn row_at(
+        from: (f64, f64),
+        designator: &str,
+        side: Option<Side>,
+        bearing: u32,
+        range: u32,
+        t: u64,
+        age_ms: u64,
+    ) -> Contact {
+        let mut row = contact_from(from, designator, side, bearing, range);
+        row.read_ms = t;
+        row.age_ms = age_ms;
+        for fix in &mut row.fixes {
+            fix.at_ms = t.saturating_sub(500 + age_ms);
+        }
+        row
+    }
+
+    #[test]
+    fn the_other_entry_is_the_muster_mirrored() {
+        let side = (ARENA_SIDE_M, ARENA_SIDE_M);
+        assert_eq!(other_entry((65.0, 975.0), side), (2_495.0, 975.0));
+        assert_eq!(other_entry((1_280.0, 40.0), side), (1_280.0, 2_520.0));
+        // A ground the brief's header sized: 100 by 50 cells of 10 m.
+        let header = (1_000.0, 500.0);
+        assert_eq!(other_entry((30.0, 240.0), header), (970.0, 240.0));
+        assert_eq!(other_entry((500.0, 20.0), header), (500.0, 480.0));
+        // The pilot reads the side off the header when it has one, else the
+        // help's 2.56 km.
+        let (mut picture, mut pilot) = at_muster((65.0, 975.0));
+        decide_at(&picture, &mut pilot, POWER + 150);
+        assert_eq!(pilot.muster_m, Some((65.0, 975.0)));
+        assert_eq!(pilot.other_entry_now(&picture), Some((2_495.0, 975.0)));
+        picture.apply(
+            POWER + 200,
+            &classify(
+                "Window around RA: cells 0 to 38 east and 88 to 107 north of 200 by 256; you at \
+                 (6, 97), heading 090°; 10 m a cell.",
+            ),
+        );
+        assert_eq!(pilot.other_entry_now(&picture), Some((1_935.0, 975.0)));
+    }
+
+    #[test]
+    fn the_opening_steps_off_the_road_and_faces_the_other_entry() {
+        let (mut picture, mut pilot, orders) = stepping(MUSTER, &road_brief());
+        // s 10 (the road's reach), a 5 (half a cell), and the cover (35 m
+        // north at the shipped 20).
+        let step = 10.0 + 5.0 + OPENING_COVER_M;
+        assert_eq!(
+            pilot.take_notes(),
+            [format!(
+                "Opening: stepping off the road to the north ({step:.0} m)."
+            )]
+        );
+        let OpeningStage::Step { aim_m, from_m, .. } = pilot.opening.clone() else {
+            panic!("stepping: {:?}", pilot.opening);
+        };
+        assert_eq!(from_m, MUSTER);
+        assert!(distance_m(aim_m, (60.0, 970.0 + step)) < 1e-6, "{aim_m:?}");
+        assert_eq!(
+            (orders.heading, orders.speed),
+            (Some(0), Some(OPENING_STEP_KPH))
+        );
+        assert!(!orders.ask_view_brief, "the brief is read");
+        assert!(!orders.ask_spot_b);
+        assert_eq!(pilot.rule(), Some("opening"));
+        pilot.sent_heading(0, POWER + 1_050);
+        pilot.sent_speed(OPENING_STEP_KPH);
+        // One metre short of arriving: still stepping.
+        let short = (60.0, 970.0 + step - OPENING_ARRIVE_M - 1.0);
+        status_at(&mut picture, short, 0, POWER + 3_000);
+        let orders = decide_at(&picture, &mut pilot, POWER + 3_000);
+        assert!(matches!(pilot.opening, OpeningStage::Step { .. }));
+        assert_eq!((orders.heading, orders.speed), (None, None));
+        assert!(pilot.take_notes().is_empty());
+        // Arrived, `OPENING_ARRIVE_M` short of the aim: the hold, stopped, the
+        // bow toward the other side's entry (2 500, 970).
+        let arrived = (60.0, 970.0 + step - OPENING_ARRIVE_M);
+        status_at(&mut picture, arrived, 0, POWER + 4_000);
+        let orders = decide_at(&picture, &mut pilot, POWER + 4_000);
+        let facing = whole(bearing_deg(arrived, (2_500.0, 970.0)));
+        assert_eq!(facing, 91);
+        assert_eq!((orders.heading, orders.speed), (Some(facing), Some(0)));
+        assert!(matches!(
+            pilot.opening,
+            OpeningStage::Hold { facing_deg: 91, .. }
+        ));
+        assert_eq!(
+            pilot.take_notes(),
+            [format!(
+                "Opening: holding near our entry, facing {facing:03}° toward the other side's entry."
+            )]
+        );
+        assert!(!orders.ask_spot_b);
+        assert_eq!(pilot.rule(), Some("opening"));
+        // Held there: nothing more is ordered, and no search.
+        pilot.sent_heading(facing, POWER + 4_000);
+        pilot.sent_speed(0);
+        let orders = decide_at(&picture, &mut pilot, POWER + 60_000);
+        assert_eq!(orders, Orders::default());
+        assert!(pilot.take_notes().is_empty());
+
+        // A diagonal step's aim carries a whole diagonal cell and a half (15
+        // m; 45 m at the shipped cover): only the north-west offers grass,
+        // from (300, 970).
+        let diagonal = 10.0 + 15.0 + OPENING_COVER_M;
+        let start = (300.0, 970.0);
+        let brief = rays(|word, deg| match deg {
+            315 => format!("{word}: 10 m of road, then grass to 90 m, then beyond the window."),
+            _ => format!("{word}: 190 m of road, then beyond the window."),
+        });
+        let (_, mut pilot, orders) = stepping(start, &brief);
+        assert_eq!(
+            pilot.take_notes(),
+            [format!(
+                "Opening: stepping off the road to the north-west ({diagonal:.0} m)."
+            )]
+        );
+        let OpeningStage::Step { aim_m, .. } = pilot.opening.clone() else {
+            panic!("stepping: {:?}", pilot.opening);
+        };
+        assert!(distance_m(aim_m, along(start, 315.0, diagonal)) < 1e-6);
+        assert_eq!(
+            (orders.heading, orders.speed),
+            (Some(315), Some(OPENING_STEP_KPH))
+        );
+        assert!(!orders.ask_spot_b);
+    }
+
+    #[test]
+    fn on_cover_the_opening_holds_where_it_stands() {
+        let (_, mut pilot, orders) = stepping(
+            MUSTER,
+            &rays(|word, _| format!("{word}: 90 m of grass, then beyond the window.")),
+        );
+        assert_eq!(
+            pilot.take_notes(),
+            ["Opening: holding near our entry, facing 090° toward the other side's entry."]
+        );
+        assert_eq!((orders.heading, orders.speed), (Some(90), Some(0)));
+        // Six of eight on cover is enough: north and south road.
+        let brief = rays(|word, deg| match deg {
+            0 | 180 => format!("{word}: 10 m of road, then grass to 90 m, then beyond the window."),
+            _ => format!("{word}: 30 m of light woods, then beyond the window."),
+        });
+        let (_, mut pilot, _) = stepping(MUSTER, &brief);
+        assert!(matches!(pilot.opening, OpeningStage::Hold { .. }));
+        assert!(
+            pilot
+                .take_notes()
+                .iter()
+                .all(|note| !note.contains("stepping"))
+        );
+    }
+
+    #[test]
+    fn with_no_brief_the_opening_holds_after_its_wait() {
+        let (picture, mut pilot) = at_muster(MUSTER);
+        let orders = decide_at(&picture, &mut pilot, POWER + 150);
+        assert!(orders.ask_view_brief);
+        assert_eq!((orders.heading, orders.speed), (None, None));
+        let orders = decide_at(
+            &picture,
+            &mut pilot,
+            POWER + 150 + OPENING_BRIEF_WAIT_MS - 1,
+        );
+        assert!(orders.ask_view_brief, "still asking");
+        assert!(matches!(pilot.opening, OpeningStage::Brief { .. }));
+        let orders = decide_at(&picture, &mut pilot, POWER + 150 + OPENING_BRIEF_WAIT_MS);
+        assert!(!orders.ask_view_brief);
+        assert!(matches!(pilot.opening, OpeningStage::Hold { .. }));
+        assert_eq!(
+            pilot.take_notes(),
+            ["Opening: holding near our entry, facing 090° toward the other side's entry."]
+        );
+        assert_eq!((orders.heading, orders.speed), (Some(90), Some(0)));
+        // A dark window is no ground either: a whole brief that offers the
+        // north step, then the dark answer before the next decision, leaves
+        // no ground, and the opening holds where it stands once its wait is
+        // up, with no step.
+        let (mut picture, mut pilot) = at_muster(MUSTER);
+        decide_at(&picture, &mut pilot, POWER + 150);
+        read_brief(&mut picture, POWER + 800, &road_brief());
+        assert!(
+            picture
+                .ground
+                .as_ref()
+                .is_some_and(|ground| ground.complete)
+        );
+        picture.apply(
+            POWER + 900,
+            &classify("The window is dark: the panel has told you nothing yet."),
+        );
+        assert_eq!(picture.ground, None);
+        decide_at(&picture, &mut pilot, POWER + 1_000);
+        assert!(
+            matches!(pilot.opening, OpeningStage::Brief { .. }),
+            "{:?}",
+            pilot.opening
+        );
+        let orders = decide_at(&picture, &mut pilot, POWER + 150 + OPENING_BRIEF_WAIT_MS);
+        assert!(matches!(pilot.opening, OpeningStage::Hold { .. }));
+        let notes = pilot.take_notes();
+        assert!(
+            notes.iter().all(|note| !note.contains("stepping")),
+            "{notes:?}"
+        );
+        assert_eq!(orders.speed, Some(0));
+    }
+
+    #[test]
+    fn the_opening_never_steps_toward_the_other_entry() {
+        let brief = rays(|word, deg| match deg {
+            45 | 90 | 135 => {
+                format!("{word}: 10 m of road, then grass to 90 m, then beyond the window.")
+            }
+            _ => format!("{word}: 190 m of road, then beyond the window."),
+        });
+        let (_, mut pilot, orders) = stepping(MUSTER, &brief);
+        assert!(matches!(pilot.opening, OpeningStage::Hold { .. }));
+        let notes = pilot.take_notes();
+        assert!(
+            notes.iter().all(|note| !note.contains("stepping")),
+            "{notes:?}"
+        );
+        assert_eq!(orders.speed, Some(0));
+    }
+
+    #[test]
+    fn the_opening_ends_on_a_hostile_a_hit_or_its_time() {
+        // (a) A hostile in sight: the opening is over and the halt armed.
+        let (mut picture, mut pilot) = holding(MUSTER);
+        let t = POWER + 42_300;
+        hold(
+            &mut picture,
+            row_at(MUSTER, "BA", Some(Side::Blue), 90, 550, t, 0),
+        );
+        let orders = decide_at(&picture, &mut pilot, t);
+        assert_eq!(
+            pilot.take_notes(),
+            [
+                "Opening over: BA is in sight after 42 s.",
+                "Firing from the halt at BA, 550 m off."
+            ]
+        );
+        assert_eq!(pilot.opening, OpeningStage::Done);
+        assert_eq!(
+            pilot.halt,
+            Some(Halt {
+                d: "BA".into(),
+                since_ms: t,
+                nearest_m: 550,
+                nearest_ms: t,
+            })
+        );
+        assert_eq!((orders.heading, orders.speed), (Some(90), Some(0)));
+        assert_eq!(pilot.rule(), Some("halt"));
+        // (b) A hit taken: over, no halt.
+        let (mut picture, mut pilot) = holding(MUSTER);
+        hit_taken(&mut picture, POWER + 20_000);
+        decide_at(&picture, &mut pilot, POWER + 20_100);
+        assert_eq!(pilot.take_notes(), ["Opening over: hit after 20 s."]);
+        assert_eq!(pilot.opening, OpeningStage::Done);
+        assert_eq!(pilot.halt, None);
+        // (c) Its time: over, and the search.
+        let (picture, mut pilot) = holding(MUSTER);
+        let orders = decide_at(&picture, &mut pilot, POWER + OPENING_MAX_MS - 1);
+        assert!(!orders.ask_spot_b, "still holding");
+        let orders = decide_at(&picture, &mut pilot, POWER + OPENING_MAX_MS);
+        assert_eq!(
+            pilot.take_notes(),
+            [format!(
+                "Opening over: nothing came in {} s; searching.",
+                OPENING_MAX_MS / 1_000
+            )]
+        );
+        assert_eq!(pilot.halt, None);
+        assert!(orders.ask_spot_b, "the search");
+        assert_eq!(pilot.rule(), None);
+        // (d) A hostile row past the stock sight is a teammate's report: the
+        // opening is over with its note, and no halt.
+        let (mut picture, mut pilot) = holding(MUSTER);
+        let t = POWER + 30_000;
+        hold(
+            &mut picture,
+            row_at(MUSTER, "BA", Some(Side::Blue), 90, 1_400, t, 0),
+        );
+        decide_at(&picture, &mut pilot, t);
+        assert_eq!(
+            pilot.take_notes(),
+            ["Opening over: BA is in sight after 30 s."]
+        );
+        assert_eq!(pilot.opening, OpeningStage::Done);
+        assert_eq!(pilot.halt, None);
+        assert_eq!(pilot.rule(), None, "the stance flies as before");
+    }
+
+    #[test]
+    fn no_opening_without_a_muster_a_skirmish_or_a_clear_start() {
+        let none_said = |pilot: &mut Pilot, picture: &Picture, from: u64| {
+            for t in [from, from + 1_000, from + 6_000, from + 20_000] {
+                let orders = decide_at(picture, pilot, t);
+                assert!(!orders.ask_view_brief, "{t}");
+            }
+            assert_eq!(pilot.opening, OpeningStage::Done);
+            let notes = pilot.take_notes();
+            assert!(
+                notes.iter().all(|note| !note.starts_with("Opening")),
+                "{notes:?}"
+            );
+        };
+        // Power from `Power is already online.`: a running match joined.
+        let mut picture = running();
+        picture.apply(POWER, &classify("Power is already online."));
+        status_at(&mut picture, MUSTER, 90, POWER + 100);
+        picture.apply(POWER + 100, &classify("No contacts."));
+        let mut pilot = Pilot::with_knobs(Knobs::on());
+        pilot.ceilings_asked = true;
+        none_said(&mut pilot, &picture, POWER + 150);
+        assert_eq!(pilot.muster_m, None);
+        // The start read 6 s after power: no muster.
+        let mut picture = running();
+        picture.apply(POWER, &classify("Power online."));
+        let mut pilot = Pilot::with_knobs(Knobs::on());
+        pilot.ceilings_asked = true;
+        decide_at(&picture, &mut pilot, POWER + 50);
+        picture.apply(POWER + 100, &classify("No contacts."));
+        let orders = decide_at(&picture, &mut pilot, POWER + 3_000);
+        assert!(!orders.ask_view_brief, "the muster is not known yet");
+        status_at(&mut picture, MUSTER, 90, POWER + 6_000);
+        none_said(&mut pilot, &picture, POWER + 6_050);
+        assert_eq!(pilot.start_pos, Some(MUSTER));
+        assert_eq!(pilot.muster_m, None);
+        // A hold match and a range.
+        for mode in [
+            "  mode: hold — keep The Crossroads (B) uncontested for 120 s",
+            "  mode: range — 2 targets on the blue side",
+        ] {
+            let mut picture = running();
+            picture.apply(POWER - 5_000, &classify("Simulator centre: selection"));
+            picture.apply(POWER - 5_000, &classify(mode));
+            assert_ne!(picture.match_mode, MatchMode::Skirmish);
+            picture.apply(POWER, &classify("Power online."));
+            status_at(&mut picture, MUSTER, 90, POWER + 100);
+            picture.apply(POWER + 100, &classify("No contacts."));
+            let mut pilot = Pilot::with_knobs(Knobs::on());
+            pilot.ceilings_asked = true;
+            none_said(&mut pilot, &picture, POWER + 150);
+        }
+        // The posed start: the first `CONTACTS` after power holds an unknown
+        // X1 at 500 m, identified as BA a second later.
+        let mut picture = running();
+        picture.apply(POWER, &classify("Power online."));
+        let mut pilot = Pilot::with_knobs(Knobs::on());
+        pilot.ceilings_asked = true;
+        decide_at(&picture, &mut pilot, POWER + 50);
+        status_at(&mut picture, MUSTER, 90, POWER + 100);
+        picture.apply(
+            POWER + 100,
+            &classify("X1  unknown  bearing 090° (rel 000°)  far  500 m  0 s"),
+        );
+        picture.settle(POWER + 300);
+        decide_at(&picture, &mut pilot, POWER + 300);
+        assert_eq!(pilot.opening, OpeningStage::Done);
+        picture.apply(POWER + 1_300, &classify("Contact X1 identified: BA, blue."));
+        picture.apply(
+            POWER + 1_400,
+            &classify("BA  blue  bearing 090° (rel 000°)  far  500 m  0 s"),
+        );
+        picture.settle(POWER + 1_600);
+        let orders = decide_at(&picture, &mut pilot, POWER + 1_600);
+        assert!(!orders.ask_view_brief);
+        assert_eq!(pilot.halt, None);
+        let notes = pilot.take_notes();
+        assert!(
+            notes
+                .iter()
+                .all(|note| !note.starts_with("Opening") && !note.starts_with("Firing from")),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn an_untold_return_does_not_end_the_opening() {
+        let (mut picture, mut pilot) = holding(MUSTER);
+        let t = POWER + 20_000;
+        hold(&mut picture, row_at(MUSTER, "X1", None, 45, 500, t, 0));
+        let orders = decide_at(&picture, &mut pilot, t);
+        // Step 4a faces it, stopped.
+        assert_eq!((orders.heading, orders.speed), (Some(45), Some(0)));
+        assert_eq!(
+            pilot.take_notes(),
+            ["Stopping for X1: facing 045° while it is told apart."]
+        );
+        assert!(matches!(pilot.opening, OpeningStage::Hold { .. }));
+        // Lost untold: the opening holds on, the bow back toward the other
+        // entry.
+        picture.contacts.clear();
+        let orders = decide_at(&picture, &mut pilot, t + 2_000);
+        assert!(matches!(pilot.opening, OpeningStage::Hold { .. }));
+        assert_eq!(orders.heading, Some(90));
+        assert_eq!(pilot.rule(), Some("opening"));
+        assert!(pilot.take_notes().is_empty());
+    }
+
+    /// The opening held, then BA sighted `range` m east on a closing track,
+    /// locked, with a ready cannon.
+    fn sighted_closing(range: u32, t: u64) -> (Picture, Pilot) {
+        let (mut picture, pilot) = holding(MUSTER);
+        let mut ba = row_at(MUSTER, "BA", Some(Side::Blue), 90, range, t, 0);
+        ba.track = Some(Track {
+            course_deg: 270.0,
+            speed_mps: 8.0,
+        });
+        hold(&mut picture, ba);
+        picture.lock = Some("BA".into());
+        let mut cannon = weapon("cannon", true);
+        cannon.read_ms = t - 100;
+        picture.weapons = vec![cannon];
+        (picture, pilot)
+    }
+
+    #[test]
+    fn the_halt_holds_still_beyond_the_band() {
+        let t = POWER + 50_000;
+        let (picture, mut pilot) = sighted_closing(590, t);
+        let orders = decide_at(&picture, &mut pilot, t);
+        assert_eq!(orders.speed, Some(0), "stopped");
+        assert_eq!(orders.heading, Some(90), "the bow on it");
+        assert_eq!(orders.fire, ["cannon"]);
+        assert_eq!(pilot.rule(), Some("halt"));
+        // The same picture flown by the pilot as it was: the hold closes on
+        // it (590 m is past the band, its slack and its hysteresis).
+        let mut old = Pilot::new();
+        old.power_ms = Some(POWER);
+        old.ceilings_asked = true;
+        let orders = old.decide(&picture, &hold_doctrine(), t);
+        assert!(orders.speed.is_some_and(|kph| kph > 0), "{orders:?}");
+        assert_eq!(orders.fire, ["cannon"]);
+    }
+
+    #[test]
+    fn the_halt_ends_when_it_stops_finds_us_or_reaches_the_band() {
+        let t = POWER + 50_000;
+        // Found: a hit taken.
+        let (mut picture, mut pilot) = sighted_closing(590, t);
+        decide_at(&picture, &mut pilot, t);
+        pilot.take_notes();
+        hit_taken(&mut picture, t + 1_000);
+        decide_at(&picture, &mut pilot, t + 1_100);
+        assert_eq!(pilot.take_notes(), ["The halt is over: we are found."]);
+        assert_eq!(pilot.halt, None);
+        // At the band: inside the band and its slack (500 m).
+        let (mut picture, mut pilot) = sighted_closing(590, t);
+        decide_at(&picture, &mut pilot, t);
+        pilot.take_notes();
+        let mut ba = row_at(MUSTER, "BA", Some(Side::Blue), 90, 500, t + 2_000, 0);
+        ba.track = Some(Track {
+            course_deg: 270.0,
+            speed_mps: 8.0,
+        });
+        hold(&mut picture, ba);
+        let orders = decide_at(&picture, &mut pilot, t + 2_000);
+        assert_eq!(pilot.take_notes(), ["The halt is over: BA is at the band."]);
+        assert_eq!(pilot.halt, None);
+        assert_eq!(pilot.rule(), None, "the stance flies");
+        assert_eq!(orders.speed, Some(0), "the hold, at the band");
+        // Stopped: no shorter range and no track for the halt's still time.
+        let (mut picture, mut pilot) = sighted_closing(590, t);
+        decide_at(&picture, &mut pilot, t);
+        pilot.take_notes();
+        let still = row_at(
+            MUSTER,
+            "BA",
+            Some(Side::Blue),
+            90,
+            590,
+            t + HALT_STILL_MS,
+            0,
+        );
+        hold(&mut picture, still.clone());
+        decide_at(&picture, &mut pilot, t + HALT_STILL_MS - 1);
+        assert!(pilot.halt.is_some(), "not yet");
+        decide_at(&picture, &mut pilot, t + HALT_STILL_MS);
+        assert_eq!(pilot.take_notes(), ["The halt is over: BA has stopped."]);
+        assert_eq!(pilot.halt, None);
+        // Coming on with no track published (a mover the scope's 50 m rows
+        // cannot fit): each nearer row restarts the still time, so the halt
+        // holds while it closes, and ends once a whole still time passes with
+        // no nearer row.
+        let (mut picture, mut pilot) = sighted_closing(590, t);
+        decide_at(&picture, &mut pilot, t);
+        pilot.take_notes();
+        let nearer = t + HALT_STILL_MS / 2;
+        hold(
+            &mut picture,
+            row_at(MUSTER, "BA", Some(Side::Blue), 90, 550, nearer, 0),
+        );
+        for at in [nearer, t + HALT_STILL_MS, nearer + HALT_STILL_MS - 1] {
+            let orders = decide_at(&picture, &mut pilot, at);
+            assert!(pilot.halt.is_some(), "closing at {at}");
+            assert!(pilot.take_notes().is_empty(), "at {at}");
+            assert!(orders.speed.is_none_or(|kph| kph <= 0), "at {at}");
+        }
+        assert_eq!(pilot.halt.as_ref().map(|h| h.nearest_m), Some(550));
+        decide_at(&picture, &mut pilot, nearer + HALT_STILL_MS);
+        assert_eq!(pilot.take_notes(), ["The halt is over: BA has stopped."]);
+        assert_eq!(pilot.halt, None);
+        // Its time: still coming on (a track) after a minute.
+        let (mut picture, mut pilot) = sighted_closing(590, t);
+        decide_at(&picture, &mut pilot, t);
+        pilot.take_notes();
+        let mut slow = row_at(MUSTER, "BA", Some(Side::Blue), 90, 560, t + HALT_MAX_MS, 0);
+        slow.track = Some(Track {
+            course_deg: 270.0,
+            speed_mps: 3.0,
+        });
+        hold(&mut picture, slow);
+        decide_at(&picture, &mut pilot, t + HALT_MAX_MS);
+        assert_eq!(pilot.take_notes(), ["The halt is over: its time is up."]);
+        // Lost: over, nothing said.
+        let (mut picture, mut pilot) = sighted_closing(590, t);
+        decide_at(&picture, &mut pilot, t);
+        pilot.take_notes();
+        picture.contacts.clear();
+        decide_at(&picture, &mut pilot, t + 1_000);
+        assert_eq!(pilot.halt, None);
+        assert!(
+            pilot
+                .take_notes()
+                .iter()
+                .all(|note| !note.starts_with("The halt"))
+        );
+    }
+
+    /// A tank at `MID` heading east, with the re-approach on and the opening
+    /// over (no `Power online.` of its own read).
+    fn reapproaching() -> (Picture, Pilot) {
+        let (mut picture, _) = flying_at(MID);
+        picture.own.heading_deg = 90;
+        let mut pilot = Pilot::with_knobs(Knobs::on());
+        pilot.power_ms = Some(NOW - 30_000);
+        pilot.ceilings_asked = true;
+        (picture, pilot)
+    }
+
+    /// `taken` hits taken and `scored` hits scored on BA, all in the second
+    /// before `t`.
+    fn exchange(picture: &mut Picture, taken: usize, scored: usize, t: u64) {
+        for i in 0..taken {
+            hit_taken(picture, t - 1_000 + i as u64);
+        }
+        for i in 0..scored {
+            picture.events.push_back(Event {
+                at_ms: t - 900 + i as u64,
+                kind: EventKind::HitScored,
+                text: "Hit on BA: turret.".into(),
+            });
+        }
+    }
+
+    /// An exchange that out-hits the pilot, read through the tunable names
+    /// (two over the floor taken — at least the margin — and the margin fewer
+    /// scored)…
+    const OUT_TAKEN: usize = max_usize(EXCHANGE_MIN_TAKEN, EXCHANGE_MARGIN) + 2;
+    const OUT_SCORED: usize = OUT_TAKEN - EXCHANGE_MARGIN;
+    /// …and one that does not: the floor taken, but one short of the margin.
+    const EVEN_TAKEN: usize = max_usize(EXCHANGE_MIN_TAKEN, EXCHANGE_MARGIN);
+    const EVEN_SCORED: usize = EVEN_TAKEN + 1 - EXCHANGE_MARGIN;
+
+    const fn max_usize(a: usize, b: usize) -> usize {
+        if a > b { a } else { b }
+    }
+
+    /// The re-approach's opening note for the out-hitting exchange.
+    fn opening_the_range_note() -> String {
+        format!(
+            "Opening the range on BA: {OUT_TAKEN} hits taken to {OUT_SCORED} scored in {} s; \
+             backing off bow on.",
+            EXCHANGE_WINDOW_MS / 1_000
+        )
+    }
+
+    /// The re-approach wait's end note on BA.
+    fn waited_note() -> String {
+        format!(
+            "No approach from BA in {} s; moving on.",
+            REAPPROACH_WAIT_MS / 1_000
+        )
+    }
+
+    /// BA, a stopped machine at the world point 420 m east of `MID`, as a row
+    /// read from `own` at `t`, its plot `age_ms` old.
+    fn ba_from(own: (f64, f64), t: u64, age_ms: u64) -> Contact {
+        let ba = along(MID, 90.0, 420.0);
+        let range = distance_m(own, ba).round() as u32;
+        let bearing = whole(bearing_deg(own, ba));
+        row_at(own, "BA", Some(Side::Blue), bearing, range, t, age_ms)
+    }
+
+    #[test]
+    fn the_reapproach_backs_off_bow_on_past_the_sight_and_waits() {
+        let (mut picture, mut pilot) = reapproaching();
+        let t = NOW;
+        hold(&mut picture, ba_from(MID, t, 0));
+        exchange(&mut picture, OUT_TAKEN, OUT_SCORED, t);
+        let orders = pilot.decide(&picture, &hold_doctrine(), t);
+        assert_eq!(pilot.take_notes(), [opening_the_range_note()]);
+        assert_eq!((orders.heading, orders.speed), (Some(90), Some(-27)));
+        assert_eq!(pilot.rule(), Some("reapproach"));
+        pilot.sent_heading(90, t);
+        pilot.sent_speed(-27);
+        let plot = pilot.reapproach.as_ref().expect("in force").plot_m;
+        assert!(distance_m(plot, along(MID, 90.0, 420.0)) < 1.0);
+        // Out of its sight at 480 m: its row stale, still reversing, on the
+        // plot.
+        let own = along(MID, 270.0, 60.0);
+        status_at(&mut picture, own, 90, t + 8_000);
+        hold(
+            &mut picture,
+            ba_from(own, t + 1_000, HUNT_STALE_PLOT_MS + 1),
+        );
+        let orders = pilot.decide(&picture, &hold_doctrine(), t + 8_000);
+        assert_eq!(
+            (orders.heading, orders.speed),
+            (None, None),
+            "still reversing, on 090"
+        );
+        assert_eq!(pilot.last_chosen_speed, Some(-27));
+        assert!(matches!(
+            pilot.reapproach.as_ref().map(|r| r.stage),
+            Some(ReapproachStage::Open { .. })
+        ));
+        assert_eq!(pilot.rule(), Some("reapproach"));
+        // `REAPPROACH_OPEN_M` from the plot: stopped, facing it, waiting.
+        let own = along(MID, 270.0, REAPPROACH_OPEN_M - 420.0);
+        status_at(&mut picture, own, 90, t + 30_000);
+        hold(&mut picture, ba_from(own, t + 1_000, 30_000));
+        let orders = pilot.decide(&picture, &hold_doctrine(), t + 30_000);
+        assert_eq!((orders.heading, orders.speed), (None, Some(0)));
+        assert_eq!(
+            pilot.take_notes(),
+            [format!(
+                "Out of BA's sight at {REAPPROACH_OPEN_M:.0} m from its last plot; waiting for it to come on."
+            )]
+        );
+        assert_eq!(pilot.rule(), Some("approach_wait"));
+        // Waiting: no hunt.
+        for dt in [31_000, 40_000, 60_000] {
+            pilot.decide(&picture, &hold_doctrine(), t + dt);
+            assert_eq!(pilot.hunt, None);
+            assert!(pilot.take_notes().is_empty());
+        }
+        // A teammate's report from past the stock sight (BB at 1 400 m, held
+        // young) is no machine coming on: no halt, still waiting.
+        hold(
+            &mut picture,
+            row_at(own, "BB", Some(Side::Blue), 90, 1_400, t + 60_500, 0),
+        );
+        let orders = pilot.decide(&picture, &hold_doctrine(), t + 60_500);
+        assert_eq!(pilot.halt, None);
+        assert!(pilot.take_notes().is_empty());
+        assert!(matches!(
+            pilot.reapproach.as_ref().map(|r| r.stage),
+            Some(ReapproachStage::Wait { .. })
+        ));
+        assert_eq!(pilot.rule(), Some("approach_wait"));
+        assert!(orders.speed.is_none_or(|kph| kph == 0), "{orders:?}");
+        // A fresh BA: the halt armed for it, the wait over.
+        let ba = row_at(own, "BA", Some(Side::Blue), 90, 600, t + 61_000, 0);
+        hold(&mut picture, ba);
+        let orders = pilot.decide(&picture, &hold_doctrine(), t + 61_000);
+        assert_eq!(
+            pilot.take_notes(),
+            ["Firing from the halt at BA, 600 m off."]
+        );
+        assert_eq!(pilot.reapproach, None);
+        assert_eq!(
+            pilot.reapproach_rest_until_ms,
+            t + 61_000 + REAPPROACH_REST_MS
+        );
+        assert_eq!(pilot.halt.as_ref().map(|h| h.d.as_str()), Some("BA"));
+        assert_eq!((orders.heading, orders.speed), (None, Some(0)));
+        assert_eq!(pilot.rule(), Some("halt"));
+    }
+
+    #[test]
+    fn no_reapproach_on_an_even_exchange_a_mover_or_an_orbit() {
+        // The floor taken, but one short of the margin over what was scored.
+        let (mut picture, mut pilot) = reapproaching();
+        hold(&mut picture, ba_from(MID, NOW, 0));
+        exchange(&mut picture, EVEN_TAKEN, EVEN_SCORED, NOW);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(pilot.reapproach, None);
+        // Out-hit, but by a mover.
+        let (mut picture, mut pilot) = reapproaching();
+        let mut ba = ba_from(MID, NOW, 0);
+        ba.track = Some(Track {
+            course_deg: 270.0,
+            speed_mps: 6.0,
+        });
+        hold(&mut picture, ba);
+        exchange(&mut picture, OUT_TAKEN, OUT_SCORED, NOW);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(pilot.reapproach, None);
+        // Out-hit by a stopped machine, under an orbit.
+        let (mut picture, mut pilot) = reapproaching();
+        hold(&mut picture, ba_from(MID, NOW, 0));
+        exchange(&mut picture, OUT_TAKEN, OUT_SCORED, NOW);
+        pilot.decide(&picture, &doctrine(), NOW);
+        assert_eq!(pilot.reapproach, None);
+        // …and with the knob off.
+        let (mut picture, _) = reapproaching();
+        let mut pilot = Pilot::with_knobs(Knobs {
+            reapproach: false,
+            ..Knobs::on()
+        });
+        pilot.power_ms = Some(NOW - 30_000);
+        hold(&mut picture, ba_from(MID, NOW, 0));
+        exchange(&mut picture, OUT_TAKEN, OUT_SCORED, NOW);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(pilot.reapproach, None);
+        // The same, out-hit by a stopped machine under the hold: it begins.
+        let (mut picture, mut pilot) = reapproaching();
+        hold(&mut picture, ba_from(MID, NOW, 0));
+        exchange(&mut picture, OUT_TAKEN, OUT_SCORED, NOW);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert!(pilot.reapproach.is_some());
+    }
+
+    #[test]
+    fn the_reapproach_gives_up_rests_and_counts_per_match() {
+        let (mut picture, mut pilot) = reapproaching();
+        let t = NOW;
+        let begin = |picture: &mut Picture, pilot: &mut Pilot, at: u64| {
+            hold(picture, ba_from(MID, at, 0));
+            exchange(picture, OUT_TAKEN, OUT_SCORED, at);
+            pilot.decide(picture, &hold_doctrine(), at);
+        };
+        begin(&mut picture, &mut pilot, t);
+        assert!(pilot.reapproach.is_some());
+        assert_eq!(pilot.reapproaches, 1);
+        pilot.take_notes();
+        // It never gets out (held where it is): given up at its bound.
+        pilot.decide(&picture, &hold_doctrine(), t + REAPPROACH_MAX_MS - 1);
+        assert!(pilot.reapproach.is_some());
+        pilot.decide(&picture, &hold_doctrine(), t + REAPPROACH_MAX_MS);
+        assert_eq!(
+            pilot.take_notes(),
+            [format!(
+                "Could not open the range on BA in {} s; holding.",
+                REAPPROACH_MAX_MS / 1_000
+            )]
+        );
+        assert_eq!(pilot.reapproach, None);
+        let rested = t + REAPPROACH_MAX_MS + REAPPROACH_REST_MS;
+        assert_eq!(pilot.reapproach_rest_until_ms, rested);
+        // None inside the rest.
+        begin(&mut picture, &mut pilot, rested - 1);
+        assert_eq!(pilot.reapproach, None);
+        assert_eq!(pilot.reapproaches, 1);
+        // After it, the second (on the same exchange, a millisecond old and
+        // still inside its window: a second batch a millisecond later would
+        // sit among the first, older than the events already taken).
+        pilot.decide(&picture, &hold_doctrine(), rested);
+        assert!(pilot.reapproach.is_some());
+        assert_eq!(pilot.reapproaches, REAPPROACH_PER_MATCH);
+        pilot.decide(&picture, &hold_doctrine(), rested + REAPPROACH_MAX_MS);
+        assert_eq!(pilot.reapproach, None);
+        // A third is refused at the match's cap.
+        let later = rested + REAPPROACH_MAX_MS + REAPPROACH_REST_MS + 1;
+        begin(&mut picture, &mut pilot, later);
+        assert_eq!(pilot.reapproach, None);
+        assert_eq!(pilot.reapproaches, REAPPROACH_PER_MATCH);
+    }
+
+    #[test]
+    fn the_reapproach_wait_ends_into_what_the_precedence_flies() {
+        // `out_ms` after it began the tank is `REAPPROACH_OPEN_M` from the plot, BA lost
+        // then; its plot was `age_ms` old when it began.
+        let waited = |age_ms: u64, out_ms: u64| {
+            let (mut picture, mut pilot) = reapproaching();
+            let t = NOW;
+            hold(&mut picture, ba_from(MID, t, age_ms));
+            exchange(&mut picture, OUT_TAKEN, OUT_SCORED, t);
+            pilot.decide(&picture, &hold_doctrine(), t);
+            assert!(pilot.reapproach.is_some());
+            picture.apply(t + 500, &classify("Contact BA lost."));
+            let own = along(MID, 270.0, REAPPROACH_OPEN_M - 420.0);
+            status_at(&mut picture, own, 90, t + out_ms);
+            pilot.decide(&picture, &hold_doctrine(), t + out_ms);
+            assert!(matches!(
+                pilot.reapproach.as_ref().map(|r| r.stage),
+                Some(ReapproachStage::Wait { .. })
+            ));
+            pilot.take_notes();
+            let end = t + out_ms + REAPPROACH_WAIT_MS;
+            pilot.decide(&picture, &hold_doctrine(), end - 1);
+            assert!(pilot.reapproach.is_some());
+            let orders = pilot.decide(&picture, &hold_doctrine(), end);
+            (pilot, orders, end)
+        };
+        // The trail's plot past `HUNT_TRAIL_MS` at the wait's end: no hunt,
+        // the search.
+        let (mut pilot, orders, end) = waited(FRESH_PLOT_MS, REAPPROACH_MAX_MS - 2_000);
+        let trail = pilot.trail.as_ref().expect("a trail").plot_ms;
+        assert!(end - trail > HUNT_TRAIL_MS, "{}", end - trail);
+        let notes = pilot.take_notes();
+        assert_eq!(notes, [waited_note()]);
+        assert_eq!(pilot.hunt, None);
+        assert!(orders.ask_spot_b, "the search");
+        // Younger: the hunt.
+        let (mut pilot, _, end) = waited(0, 1_000);
+        let trail = pilot.trail.as_ref().expect("a trail").plot_ms;
+        assert!(end - trail <= HUNT_TRAIL_MS);
+        let notes = pilot.take_notes();
+        assert_eq!(
+            notes.first().map(String::as_str),
+            Some(waited_note().as_str())
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.starts_with("Hunting BA: its last plot")),
+            "{notes:?}"
+        );
+        assert!(pilot.hunt.is_some());
+    }
+
+    #[test]
+    fn the_exchange_counts_with_the_reapproach_off() {
+        let (mut picture, _) = reapproaching();
+        let mut pilot = Pilot::with_knobs(Knobs {
+            reapproach: false,
+            ..Knobs::on()
+        });
+        pilot.power_ms = Some(NOW - 30_000);
+        hold(&mut picture, ba_from(MID, NOW, 0));
+        exchange(&mut picture, OUT_TAKEN, OUT_SCORED, NOW);
+        // A friendly hit and an unnamed one count for nothing; an event from
+        // before the power is not this match's.
+        for (at, text) in [
+            (NOW - 500, "Hit on RB (FRIENDLY): turret."),
+            (NOW - 400, "Hit."),
+            (NOW - 40_000, "Hit on BA: hull."),
+        ] {
+            picture.events.push_back(Event {
+                at_ms: at,
+                kind: EventKind::HitScored,
+                text: text.into(),
+            });
+        }
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(pilot.exchange_counts(NOW), (OUT_TAKEN, OUT_SCORED));
+        assert_eq!(pilot.reapproach, None);
+        // Past the window, nothing.
+        let inside = NOW + EXCHANGE_WINDOW_MS - 1_000;
+        pilot.decide(&picture, &hold_doctrine(), inside);
+        assert_eq!(pilot.exchange_counts(inside), (OUT_TAKEN, OUT_SCORED));
+        pilot.decide(&picture, &hold_doctrine(), NOW + EXCHANGE_WINDOW_MS + 1_001);
+        assert_eq!(
+            pilot.exchange_counts(NOW + EXCHANGE_WINDOW_MS + 1_001),
+            (0, 0)
+        );
+        assert!(pilot.exchange.is_empty(), "pruned");
+    }
+
+    #[test]
+    fn with_the_knobs_off_the_pilot_is_as_it_was() {
+        let mut picture = running();
+        picture.apply(POWER, &classify("Power online."));
+        let mut old = Pilot::new();
+        let mut off = Pilot::with_knobs(Knobs::off());
+        fn both(old: &mut Pilot, off: &mut Pilot, picture: &Picture, t: u64) -> Orders {
+            let a = old.decide(picture, &hold_doctrine(), t);
+            let b = off.decide(picture, &hold_doctrine(), t);
+            assert_eq!(a, b, "at {t}");
+            assert!(!a.ask_view_brief);
+            assert_eq!(old.take_notes(), off.take_notes(), "at {t}");
+            assert_eq!(old.rule(), None);
+            assert_eq!(off.rule(), None);
+            a
+        }
+        both(&mut old, &mut off, &picture, POWER + 50);
+        status_at(&mut picture, MUSTER, 90, POWER + 100);
+        picture.apply(POWER + 100, &classify("No contacts."));
+        both(&mut old, &mut off, &picture, POWER + 150);
+        // Five quiet seconds: the search.
+        picture.spots.insert(
+            'B',
+            crate::arena::picture::Spot {
+                name: "The Crossroads".into(),
+                range_m: Some(1_000),
+                bearing_deg: Some(90),
+                read_ms: POWER + 100,
+                plotted_m: Some((1_060, 970)),
+            },
+        );
+        let searching = both(&mut old, &mut off, &picture, POWER + 5_050);
+        assert!(searching.ask_spot_b);
+        assert_eq!(searching.heading, Some(90));
+        // A young hostile, then lost and hunted.
+        let t = POWER + 20_000;
+        hold(
+            &mut picture,
+            row_at(MUSTER, "BA", Some(Side::Blue), 90, 550, t, 0),
+        );
+        both(&mut old, &mut off, &picture, t);
+        picture.contacts.clear();
+        both(&mut old, &mut off, &picture, t + 1_000);
+        assert!(old.hunt.is_some() && off.hunt.is_some());
+        for dt in [2_000, 10_000, 30_000] {
+            both(&mut old, &mut off, &picture, t + dt);
+        }
+    }
+
+    #[test]
+    fn the_new_rules_name_only_held_designators() {
+        // Every designator a note of the opening or the halt names is one the
+        // picture held when it was said; every one a note of the re-approach
+        // names, one the stream named this match.
+        let check = |pilot: &mut Pilot, picture: &Picture| {
+            for note in pilot.take_notes() {
+                for word in note.split(|c: char| !c.is_ascii_alphanumeric()) {
+                    if crate::arena::lines::is_designator(word) {
+                        assert!(picture.contacts.contains_key(word), "{word} in {note}");
+                    }
+                }
+            }
+            assert!(pilot.rule().is_none_or(|rule| {
+                ["opening", "halt", "reapproach", "approach_wait"].contains(&rule)
+            }));
+        };
+        // The opening, its end on a hostile and the halt.
+        let (mut picture, mut pilot) = holding(MUSTER);
+        let t = POWER + 40_000;
+        hold(
+            &mut picture,
+            row_at(MUSTER, "BA", Some(Side::Blue), 90, 580, t, 0),
+        );
+        decide_at(&picture, &mut pilot, t);
+        check(&mut pilot, &picture);
+        hit_taken(&mut picture, t + 500);
+        decide_at(&picture, &mut pilot, t + 600);
+        check(&mut pilot, &picture);
+        // The re-approach through the stream, the path the lane flies: BA's
+        // row, the exchange, `Contact BA lost.` out of its sight, the wait
+        // and its end. BA is no longer held when the later notes are said, so
+        // each designator is checked against what the stream named this
+        // match (the waits' rule above).
+        fn names(line: &crate::arena::Line) -> Vec<String> {
+            match line {
+                crate::arena::Line::ContactRow(row) => vec![row.designator.clone()],
+                crate::arena::Line::NewContact { designator, .. }
+                | crate::arena::Line::ContactLost { designator } => vec![designator.clone()],
+                crate::arena::Line::Identified {
+                    was, designator, ..
+                } => vec![was.clone(), designator.clone()],
+                _ => Vec::new(),
+            }
+        }
+        let (mut picture, mut pilot) = reapproaching();
+        let mut named = BTreeSet::new();
+        let mut notes = Vec::new();
+        let mut read = |picture: &mut Picture, at: u64, text: &str| {
+            let line = classify(text);
+            named.extend(names(&line));
+            picture.apply(at, &line);
+            picture.settle(at + 200);
+        };
+        read(
+            &mut picture,
+            NOW - 400,
+            "BA  blue  bearing 090° (rel 000°)  far  400 m  0 s",
+        );
+        exchange(&mut picture, OUT_TAKEN, OUT_SCORED, NOW);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        notes.extend(pilot.take_notes());
+        read(&mut picture, NOW + 500, "Contact BA lost.");
+        pilot.decide(&picture, &hold_doctrine(), NOW + 1_000);
+        notes.extend(pilot.take_notes());
+        let own = along(MID, 270.0, REAPPROACH_OPEN_M - 390.0);
+        status_at(&mut picture, own, 90, NOW + 30_000);
+        pilot.decide(&picture, &hold_doctrine(), NOW + 30_000);
+        notes.extend(pilot.take_notes());
+        assert!(!picture.contacts.contains_key("BA"), "BA is not held");
+        pilot.decide(
+            &picture,
+            &hold_doctrine(),
+            NOW + 30_000 + REAPPROACH_WAIT_MS,
+        );
+        notes.extend(pilot.take_notes());
+        for start in [
+            "Opening the range on BA: ",
+            "Out of BA's sight at ",
+            "No approach from BA in ",
+        ] {
+            assert!(
+                notes.iter().any(|note| note.starts_with(start)),
+                "{start}: {notes:?}"
+            );
+        }
+        for note in &notes {
+            for word in note.split(|c: char| !c.is_ascii_alphanumeric()) {
+                if crate::arena::lines::is_designator(word) {
+                    assert!(named.contains(word), "{word} in {note}");
+                }
+            }
+        }
+        // The exchange holds times and sides of a hit, never a name; the
+        // rule is a word.
+        let json = serde_json::to_value(&pilot.exchange).expect("json");
+        assert!(!json.to_string().contains("BA"));
     }
 }

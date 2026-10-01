@@ -46,6 +46,11 @@
 //! the commander off for the run, every model record carries its own
 //! request's id, no goal call is counted, and the pilot flies on.
 //!
+//! And (cut AN.2) **the opening reads the ground at the muster**: from the
+//! shipped muster, with no pose, the pilot types `VIEW BRIEF` once, steps off
+//! the road north or south by its own brief and holds there; the format
+//! contract of the brief's bearing lines against the game's own.
+//!
 //! No test here calls a model API: every model is a `wiremock` stub, and every
 //! child runs from a directory holding an empty `.env` with every model key
 //! removed ([`arena_rig::bot_command`]).
@@ -75,7 +80,7 @@ static ARENA: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::M
 
 /// The lines the pilot may type.
 fn allowed(line: &str) -> bool {
-    const EXACT: [&str; 17] = [
+    const EXACT: [&str; 18] = [
         "look",
         "ooc",
         "simulator",
@@ -93,6 +98,7 @@ fn allowed(line: &str) -> bool {
         "STATUS",
         "RANGE",
         "BEARING B",
+        "VIEW BRIEF",
     ];
     if EXACT.contains(&line) {
         return true;
@@ -1640,4 +1646,134 @@ fn the_command_line_refuses_what_the_pilot_cannot_fly() {
         usage.contains("[--arena <red|blue> [--matches <n>]]"),
         "{usage}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Cut AN.2: the opening from the shipped muster
+// ---------------------------------------------------------------------------
+
+/// **The opening reads the ground at the muster** (cut AN.2; wall clock,
+/// bounded at 180 s). The rig with the AI fill and **no pose**: the shipped
+/// muster, red's slot 1 on the east-west road. The bot flies `--arena red
+/// --matches 1` with the default `[arena]` (the opening waits, the
+/// re-approach is on) on a 180 s cap. Once it has said `Opening: holding near
+/// our entry` and written the next `arena-picture`, God calls the match off.
+/// It typed `VIEW BRIEF` exactly once; it said it was stepping off the road to
+/// the north or the south before it held; and that picture's own position lies
+/// at least 20 m north or south of the start the pilot kept
+/// (`pilot.start_m`), the step being done once 25 m of it is behind it on the
+/// shipped muster. This is the format contract of the brief's bearing lines
+/// against the game's own `brief_lines`: the step is chosen from them alone.
+/// The report holds the one match as `abort`. No model is configured.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_opening_reads_the_ground_at_the_muster() {
+    let _one_world = ARENA.lock().await;
+    tokio::time::timeout(Duration::from_secs(180), open_at_the_muster())
+        .await
+        .expect("the opening finishes inside 180 s");
+}
+
+async fn open_at_the_muster() {
+    let mut cfg = arena_rig::arena_config();
+    cfg.match_.startup_ms = 2_000;
+    cfg.match_.board_timeout_ms = 60_000;
+    cfg.match_.max_duration_ms = 180_000;
+    let rig = arena_rig::boot(cfg, &[("pilot", "Pilot")]).await;
+    let mut god =
+        arena_rig::Client::login(&rig, arena_rig::GOD_ACCOUNT, arena_rig::GOD_PASSWORD, "God")
+            .await;
+    arena_rig::walk_to_lobby(&mut god).await;
+    let config = arena_rig::bot_config(&rig, "pilot+Pilot", "");
+    let started = Instant::now();
+    let flight = arena_rig::launch(
+        &rig,
+        &config,
+        "opening",
+        &["--arena", "red", "--matches", "1"],
+    );
+
+    // The hold said, then the next picture record (one every 5 s).
+    let held = |record: &Value| {
+        record["kind"] == "arena"
+            && record["data"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("Opening: holding near our entry"))
+    };
+    let deadline = Instant::now() + Duration::from_secs(140);
+    let picture = loop {
+        let records = records_now(&flight.transcript);
+        if let Some(at) = records.iter().position(held)
+            && let Some(picture) = records
+                .iter()
+                .skip(at + 1)
+                .find(|record| record["kind"] == "arena-picture")
+        {
+            break picture.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no hold and picture after it: {:?}",
+            records
+                .iter()
+                .filter(|record| record["kind"] == "arena")
+                .map(|record| record["data"].clone())
+                .collect::<Vec<_>>()
+        );
+        assert!(!flight.task.is_finished(), "the bot ended before its hold");
+        god.idle(Duration::from_millis(200)).await;
+    };
+    let held_after = started.elapsed();
+    god.say("SIM ABORT", "aborts match").await;
+    let landed = arena_rig::land(flight, Duration::from_secs(60)).await;
+
+    let sends = landed.sends();
+    for (line, _, _) in &sends {
+        assert!(allowed(line), "`{line}` is not the pilot's to type");
+        assert!(!forbidden(line), "`{line}` is forbidden");
+    }
+    let briefs: Vec<&(String, String, u64)> = sends
+        .iter()
+        .filter(|(line, _, _)| line == "VIEW BRIEF")
+        .collect();
+    assert_eq!(briefs.len(), 1, "one VIEW BRIEF: {sends:?}");
+    assert_eq!(briefs[0].1, "poll");
+    let said = landed.events("arena");
+    let step = said
+        .iter()
+        .position(|text| {
+            text.starts_with("Opening: stepping off the road to the north (")
+                || text.starts_with("Opening: stepping off the road to the south (")
+        })
+        .unwrap_or_else(|| panic!("a step north or south: {said:?}"));
+    let hold = said
+        .iter()
+        .position(|text| text.starts_with("Opening: holding near our entry"))
+        .unwrap_or_else(|| panic!("the hold: {said:?}"));
+    assert!(step < hold, "{said:?}");
+    let pilot = &picture["data"]["pilot"];
+    let start = pilot["start_m"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the start kept: {pilot}"));
+    let own = picture["data"]["own"]["pos"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the own position: {picture}"));
+    let (start_x, start_y) = (start[0].as_f64().expect("x"), start[1].as_f64().expect("y"));
+    let (own_x, own_y) = (own[0].as_f64().expect("x"), own[1].as_f64().expect("y"));
+    println!(
+        "OPENING: {} then {}; start ({start_x}, {start_y}), held at ({own_x}, {own_y}); \
+         the hold read {:.1} s after the launch",
+        said[step],
+        said[hold],
+        held_after.as_secs_f64()
+    );
+    assert!(
+        (own_y - start_y).abs() >= 20.0,
+        "stepped off the road: start ({start_x}, {start_y}), now ({own_x}, {own_y})"
+    );
+    assert_eq!(pilot["opening"], "hold", "{pilot}");
+    let matches = landed.matches();
+    assert_eq!(matches.len(), 1, "{}", landed.report_text);
+    assert_eq!(matches[0]["result"], "abort", "{}", landed.report_text);
+    god.close().await;
+    drop(rig);
 }

@@ -343,8 +343,9 @@ the pilot starts from Limbo, the Welcome Hall or the simulator centre.`
 **What it types.** A closed list and nothing else: `look`, `ooc`, `simulator`,
 `red`/`blue`, `SIM STATUS`, `SIM TEAM red|blue`, `SIM START`, `BOARD`,
 `STARTUP` and `SIM LEAVE` in the centre, and `CONTACTS`, `STATUS`,
-`WEAPONSTATUS`, `RANGE`, `BEARING B`, `HEADING`, `SPEED`, `LOCK` and `FIRE` in
-the pod. It never types `SIM AI`, `SIM UNIT`, `SIM MODE`, `SIM RANGE`,
+`WEAPONSTATUS`, `RANGE`, `BEARING B`, `VIEW BRIEF`, `HEADING`, `SPEED`, `LOCK`
+and `FIRE` in the pod. `VIEW BRIEF` goes once a match, at the muster, to read
+the ground for the opening (below). It never types `SIM AI`, `SIM UNIT`, `SIM MODE`, `SIM RANGE`,
 `SIM CONCEDE`, `SIM ABORT`, `ORDER` or `EXIT`. It types **at most four lines a
 second** (`[arena] max_lines_per_s`, 1 to 4), every purpose together, well under
 the server's flood limit and the cockpit's eight pending orders. A line-mode
@@ -360,7 +361,8 @@ searches. When the four slots are short, the order is: the first `STATUS` and
 `WEAPONSTATUS` after the power comes up (nothing can be aimed before they are
 read), then every gun that is due, main gun first, then the lock, `CONTACTS`,
 the heading and the speed and the lock's `RANGE`, and then the polls that can
-wait (`STATUS`, the regular `WEAPONSTATUS` and `BEARING B`). Those keep a slot
+wait (`STATUS`, the regular `WEAPONSTATUS`, `BEARING B` and `VIEW BRIEF`).
+Those keep a slot
 free for any gun it would fire that is due inside the next second (not one that
 reads `0%`, and none while it fires nothing), and stop waiting for the guns once
 they are two seconds late; everything ahead of them in the order still goes
@@ -510,8 +512,8 @@ unidentified contact does not count), does it drive for The Crossroads (`B`),
 from further away than one standing still — on grass a stopped tank is seen
 out to 480 m against the stock sight's 600 m, a moving one out to all of it,
 and no ground hides a mover better than a stopped tank — so, while no
-identified hostile is held, the pilot stops wherever it is (it reads no
-ground). A **return not yet told apart**, once a contact row has given its
+identified hostile is held, the pilot stops wherever it is (these stops read
+no ground; only the opening, below, reads its own brief). A **return not yet told apart**, once a contact row has given its
 bearing, is faced, stopped, while it resolves: for at most six seconds from
 when it was first seen (the help's three seconds to tell one apart, twice
 over), with a rest as long between two such stops and a handful of them (four)
@@ -530,6 +532,74 @@ across when the hunt began (judged there, once: a tank that has reached or
 passed the plot has the bearing back to it turned round). The hunt's legs stand still through a wait, and **any hit ends a wait**
 for good: the tank has been found. A fresh hostile ends it, and a hit on a side
 or the rear still turns the bow first.
+
+**It opens from the muster.** `help cockpit` says that on grass a stopped tank
+is seen out to 480 m against the stock sight's 600 m, a moving one out to all
+of it, and that a road hides nothing either way; `help simulator` says a
+machine that sees you closes to about 420 m, stops, turns onto you and shoots,
+and that one that has seen nobody for a minute and a half crosses to the other
+side's entry zone to look. So the pilot no longer drives for The Crossroads
+first. It opens this way **only in a skirmish it saw start**: not in a hold
+match or on a range (the board's `mode:` line says which), not in a posed duel
+where its first `CONTACTS` after `Power online.` already holds something (a
+contact not yet told apart included), and not after joining a match already
+running (it must have read this match's own `Power online.` and its first
+`STATUS` within five seconds of it). Its **own entry** is where that first
+`STATUS` put it. The **other side's entry** is worked out, not read: both sides
+fly identical stock tanks from opposite ends of the ground, so the pilot
+mirrors its own muster across the ground's middle, on the ground's size from
+its brief's header (`… of 256 by 256; … 10 m a cell.`) or, without one, the
+help's 2.56 km square; no contact's bearing is used. It then types `VIEW
+BRIEF` once and reads the ground round it. Standing on a road (red's first
+pod musters on the east-west road), it **steps off the road** onto ground that
+hides a stopped tank — grass, bare ground, rubble or light woods; never heavy
+woods, which stop a tank — on the nearest such ground in any direction more
+than 45° from the other side's entry, never toward the machines: past the
+road's true edge by 20 m (the brief rounds its reaches to 10 m and counts them
+from the middle of the tank's own cell, so the pilot allows half a cell on a
+straight line and a cell and a half on a diagonal), at 15 kph, 80 m at most.
+From the shipped muster that is about 35 m north onto grass. Already standing
+on such ground (six of the eight ground lines around it begin on it), or with
+no brief (none in five seconds, or a dark window), it stays where it is. Then
+it **holds**, stopped, its bow toward the other side's entry, until a hostile
+is in sight, a hit is taken, or six minutes have passed (then it searches as
+before). A contact not yet told apart does not end the wait: it is faced while
+it resolves, as ever. A hostile first seen inside the stock sight while it
+waits is **fired on from the halt**: the tank stays stopped with its bow on it,
+and every gun fires on its own clock, because the machine comes on to 420 m and
+stops, and a tank closing on it would be seen sooner. The halt ends when the
+hostile stops coming on (six seconds in which its `CONTACTS` row reads it no
+nearer and its plots show no course), when it reaches the band, when the tank
+is hit, or after a minute, and then the pilot fights as before. A hostile row from beyond the sight is a teammate's
+report: it ends the wait with no halt, and the pilot fights or hunts as before.
+A wingman under a human lead waits the same way when nothing is on its scope
+at its first `CONTACTS`; beside a teammate at the start (who shows as a contact
+not yet told apart) it flies as before.
+
+**It opens the range on a machine that out-hits it.** `help simulator` says
+"Open the range past its sight and it comes after you again; let the ground
+hide you and it drives at where it last saw you". When the machine it fights
+has **stopped** (its plots show no course), is inside the stock sight, and has
+hit the tank at least eight times in the last twenty seconds and four more
+times than the tank has hit it, the pilot **backs away bow on**, steering on
+the machine while it can see it and on its last plot after: between 480 and
+600 m of a stopped machine the pilot cannot see it, but it can see the pilot
+moving. At 650 m from that plot (past the machine's sight of a mover) it stops,
+facing the plot, and **waits** up to 45 seconds for the machine to come on; a
+hostile that comes on inside the stock sight is fired on from the halt (a
+teammate's report from beyond it ends nothing), and a hit ends the wait. The
+backing off gives up after 45 seconds. It does this at most twice a match,
+with half a minute's rest between, never while falling back or under an
+`orbit` or `withdraw` doctrine, and no hunt starts while it does it; after the
+wait the pilot hunts the machine only if its last plot is still young enough,
+else it searches.
+
+**Its two keys.** `[arena] opening = "wait"` (the default) opens as above;
+`"search"` drives for The Crossroads after five quiet seconds, as the pilot did
+before (any other word is refused). `[arena] reapproach = true` (the default)
+opens the range as above; `false` never does. Both are written out in
+`bots/arena/pilot.toml`, `bots/arena/commander.toml` and
+`mush-bot.toml.example`.
 
 Held by the ground, it turns 45° for three seconds and orders its speed again.
 Still held at 0 kph, it turns further from the heading it stopped on (90°, then
@@ -553,12 +623,22 @@ to 180°.`, `Turning into the shot: hit on the hull's left facet; facing BB.`,
 at 1420 m east, 1049 m north, heading 000°.`, `Steering round held ground: 136°
 for 091°.`, `Stopping for X1: facing 087° while it is told apart.`, `Stopping
 before BA finds us: its estimate is 590 m off at 012°.`, `The wait for BA is
-over; hunting on.` and their kin, and the `arena-picture` record carries its
+over; hunting on.`, `Opening: stepping off the road to the north (35 m).`,
+`Opening: holding near our entry, facing 091° toward the other side's entry.`,
+`Opening over: BA is in sight after 95 s.`, `Firing from the halt at BA, 590 m
+off.`, `The halt is over: BA has stopped.`, `Opening the range on BA: 10 hits
+taken to 4 scored in 20 s; backing off bow on.`, `Out of BA's sight at 650 m
+from its last plot; waiting for it to come on.`, `No approach from BA in 45 s;
+moving on.` and their kin, and the `arena-picture` record carries its
 hunt, its fall back and its stall, the turn into a hit (its bearing and the
 seconds left), the live turn with a track gone (`cw` or `ccw`), how many marks
 it holds, what its hold is doing (`stopped`, `ahead` or `astern`), the wait it
-is in (whom it is for and the seconds left, or `null`), each gun's cycle and
-slack, the guns struck and whether every gun is held. Its first `SPEED`
+is in (whom it is for and the seconds left, or `null`), the rule of its own in
+force (`rule`: `opening`, `halt`, `reapproach`, `approach_wait` or `null`), the
+hits taken and scored in the last twenty seconds (`exchange`), where the
+opening is (`opening`: `fresh`, `brief`, `step`, `hold` or `done`), the start
+it kept (`start_m`), each gun's cycle and slack, the guns struck and whether
+every gun is held. Its first `SPEED`
 order is `999`, which makes the tank say its own top speeds.
 
 **The report and the exit code.** The JSON report gains an `arena` block: the
@@ -658,6 +738,22 @@ the lane before it starts (`MUSH_BOT_WIN_RATE_ENGAGEMENT is hold or orbit, not
 
 ```sh
 MUSH_BOT_WIN_RATE_ENGAGEMENT=orbit cargo test -p mush-bot --test arena_win_rate -- --ignored --nocapture
+```
+
+**The knobs it flies.** `MUSH_BOT_WIN_RATE_OFF` turns the pilot's own rules off
+for a comparison run, on either win-rate lane: a comma list of `opening`,
+`reapproach` or `all`, written into the bot's config as `[arena] opening =
+"search"` and `reapproach = false`; unset, both stay on. Anything else stops
+the lane before it starts (`MUSH_BOT_WIN_RATE_OFF names opening, reapproach or
+all, not …`). Both lanes print `KNOBS: opening {wait|search}, reapproach
+{on|off}` straight after the `ENGAGEMENT` line, and every lane's reading ends
+with `PILOT RULES: opening {a}, off the road {b}, halt {c}, reapproach {d},
+approach wait {e}`: how many times the pilot held near its entry, stepped off
+the road, fired from the halt, opened the range and waited for the machine to
+come on, counted from its own `arena` sentences.
+
+```sh
+MUSH_BOT_WIN_RATE_OFF=reapproach cargo test -p mush-bot --test arena_muster_rate -- --ignored --nocapture
 ```
 
 **What it prints.** First `ENGAGEMENT: {hold|orbit}; flown hold 164 of 164
@@ -902,7 +998,9 @@ provider = { order = ["Together"], allow_fallbacks = false }
 **What it is sent and what it answers.** One system message (the commander's
 own instructions) and one user message: the pilot's picture as compact JSON of
 at most 2 KB — seconds since the power came on (or, after taking a powered tank
-back, since the panel first said the power was up), the own tank (callsign,
+back, since the panel first said the power was up), the pilot's own rule in
+force (`rule`: `opening`, `halt`, `reapproach`, `approach_wait` or `null`;
+below), the own tank (callsign,
 **its own side**, power, speed, heading, position, each section's condition
 and plate, each weapon's readiness, rounds and chance), the six nearest
 contacts (designator, side, bearing, `rel` — the contact row's own bearing from
@@ -942,7 +1040,15 @@ facet only 32 struck a front one); a stopped tank on grass is seen at 480 m
 against a mover's 600 m, so the tank that stops before it is found sees first,
 and a hunt first waits, stopped, for a machine it has not hurt; and each
 contact's `rel` is its bearing from the bow. It calls neither the hold nor the
-orbit the pilot's own default: `[arena] engagement` decides that.
+orbit the pilot's own default: `[arena] engagement` decides that. It also
+tells the model that the pilot keeps **three rules of its own** that no stance
+moves while they are in force, and that `rule` in the picture names the one in
+force: in a skirmish flown from the muster, the wait near its own entry, off
+the road and bow toward the other side's entry, until a hostile is in sight; a
+hostile first seen in that wait fired on from the halt until it stops, comes
+to `band_m` or finds the tank; and the backing away from a stopped machine that
+out-hits it, past the machine's sight of where it last saw it, then a wait for
+it to come on.
 
 **Hunt.** `hunt` drives straight at the target until its band and then
 holds it there, bow on, but only while its plot is fresh (three seconds); with no

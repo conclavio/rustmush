@@ -85,6 +85,20 @@
 //! picture says of it goes to the runner as `arena` events
 //! ([`Picture::take_notes`]).
 //!
+//! **`VIEW BRIEF`** (cut AN.2; `help cockpit`: "`VIEW BRIEF` says the same
+//! window in sentences"): its header and eight bearing lines are read into
+//! [`Picture::ground`] — the cells round the tank, run by run, from where it
+//! stood — and nothing else; the brief's contact sentences and spot lines are
+//! [`Line::Other`], and its `No contacts.` is applied as the `CONTACTS` empty
+//! form (the brief prints it only when the frame holds no contact) but opens
+//! nothing in the lane's ledger ([`Open::brief`]). The brief is open from its
+//! header or any bearing line to its tail (its `No contacts.`, a contact
+//! sentence or a spot line, [`brief_tail`]); chatter or a piece of a line the
+//! terminal wrapped inside it neither closes it nor makes its ground whole.
+//! The board's `mode:` line is
+//! read into [`Picture::match_mode`], and the ordinary `Power online.` that
+//! starts this match into [`Picture::powered_here`].
+//!
 //! **The observer rule, bot side.** The picture holds only designators the
 //! stream named; it never invents a contact, a side or a section, and no line but
 //! a contact row or a contact notice ever adds a contact.
@@ -92,10 +106,10 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::Serialize;
 
-pub use super::lines::{HeldCause, Power, ResultWord, Scope};
+pub use super::lines::{HeldCause, MatchMode, Power, ResultWord, Scope};
 use super::{
     Side,
-    lines::{AskKind, ContactRow, Line, STALE_TAIL_MS, WeaponRow, is_centre_room},
+    lines::{AskKind, ContactRow, Line, STALE_TAIL_MS, WeaponRow, is_centre_room, is_designator},
 };
 
 /// **An open reply's rows are applied this long after its last row; a reply
@@ -552,6 +566,28 @@ pub fn neutral(line: &Line) -> bool {
     )
 }
 
+/// **The brief's tail** (cut AN.2; `help cockpit`: after the eight bearings
+/// the brief says "every contact as `CONTACTS` words it, the beyond-window
+/// line, and the named spots"): a contact sentence (`BA, blue: bearing …`, a
+/// designator, one class word, then its bearing) or a spot line (`In the
+/// window: …`, `Off the window: …`). Each is [`Line::Other`] to the reader;
+/// the first of them closes an open brief ([`Open::brief`]), where chatter or a
+/// wrapped piece of a bearing line does not.
+pub fn brief_tail(line: &Line) -> bool {
+    let Line::Other(text) = line else {
+        return false;
+    };
+    if text.starts_with("In the window: ") || text.starts_with("Off the window: ") {
+        return true;
+    }
+    text.split_once(", ").is_some_and(|(designator, rest)| {
+        is_designator(designator)
+            && rest.split_once(": bearing ").is_some_and(|(class, _)| {
+                !class.is_empty() && class.bytes().all(|b| b.is_ascii_lowercase())
+            })
+    })
+}
+
 /// An open `CONTACTS` reply: rows with the time each was read.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ContactsReply {
@@ -585,6 +621,34 @@ pub struct StatusBlock {
     pub applied: bool,
 }
 
+/// **The ground `VIEW BRIEF` described** (cut AN.2; `help cockpit`: "`VIEW
+/// BRIEF` says the same window in sentences"): what the pilot's own brief said
+/// of the cells round it, read off the header and the eight bearing lines.
+/// It names no unit and never adds, changes or drops a contact.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Ground {
+    /// When the brief's header (or, with none read just before, its first
+    /// bearing line) was read.
+    pub read_ms: u64,
+    /// The own position then ([`Picture::own_pos_at`]): every ray is judged
+    /// from it.
+    pub from_m: Option<(f64, f64)>,
+    /// The arena's size in metres, `(W × m, H × m)` from the header; `None`
+    /// with no header read.
+    pub side_m: Option<(f64, f64)>,
+    /// The metres a cell, from the header; `None` with no header read.
+    pub cell_m: Option<u32>,
+    /// Bearing (0, 45, … 315) → `(runs, edge)`: each run `(class, reach in
+    /// metres)`, and whether the ray ends at the arena's edge.
+    pub rays: BTreeMap<u32, (Vec<(String, u32)>, bool)>,
+    /// **Read whole**, by the brief's own structure, not a timer: set when
+    /// the eighth bearing is read, or at the first line after the header that
+    /// closes the brief (the brief's `No contacts.` or a contact sentence;
+    /// [`Open::brief`]), whichever comes first. Chatter or a wrapped piece
+    /// read between the bearings does not make it whole.
+    pub complete: bool,
+}
+
 /// The replies being read now.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Open {
@@ -608,6 +672,19 @@ pub struct Open {
     /// been read. An answer takes the oldest mark **of its own weapon** (cut
     /// AK.1). A mark lapses after [`ACK_PAIR_MS`].
     pub fire_sent: VecDeque<(String, u64)>,
+    /// **A `VIEW BRIEF` is being read** (cut AN.2): set by its header and by
+    /// each bearing line (only `VIEW BRIEF` prints one, so a header the
+    /// terminal wrapped into pieces still opens it at its first bearing),
+    /// kept across [`neutral`] lines that are not the brief's tail
+    /// ([`brief_tail`]: chatter, a receiver notice, a wrapped piece of a
+    /// bearing line, as an open `CONTACTS` reply is kept), and closed by the
+    /// first other line (after that line is applied). A `No contacts.` read
+    /// while it is open is the
+    /// brief's own: applied as the `CONTACTS` empty form (the brief prints it
+    /// only when the frame holds no contact) but answering nothing in the
+    /// lane's ledger ([`Applied::opened`] `None`), so a `CONTACTS`, `STATUS` or
+    /// `FIRE` typed after `VIEW BRIEF` keeps its own line.
+    pub brief: bool,
 }
 
 /// The pilot's picture of the match.
@@ -658,6 +735,19 @@ pub struct Picture {
     /// once.
     pub weapons_doubt: Option<u64>,
     pub spots: BTreeMap<char, Spot>,
+    /// **The ground the last `VIEW BRIEF` described** (cut AN.2); `None` until
+    /// one is read this match, and after a dark window.
+    pub ground: Option<Ground>,
+    /// **The rule the board says** (cut AN.2): a skirmish at every board head
+    /// ([`Line::Board`]) and the mode its `  mode: …` line names. A new
+    /// followed match keeps it: the board said it for this match.
+    pub match_mode: MatchMode,
+    /// **This match's power was seen to come up** (cut AN.2): set only when the
+    /// ordinary column-0 `Power online.` is the line that sets
+    /// [`Picture::power_ms`] — not `Power is already online.`, a `Back
+    /// aboard` block's row or a running `STATUS` head, which a bot restarted
+    /// or attached into a running match reads. Cleared by a new match.
+    pub powered_here: bool,
     pub tally: Tally,
     pub events: VecDeque<Event>,
     /// Bumped on every change.
@@ -840,6 +930,17 @@ impl Picture {
         let mut journal = true;
         let mut event = None;
         let mut opened = None;
+        // **The brief's ground is whole** (cut AN.2) at the first line after
+        // its header that closes it: not one of its bearings, and not chatter
+        // or a wrapped piece read among them ([`Open::brief`]).
+        let brief_kept = matches!(line, Line::ViewHeader { .. } | Line::GroundRay { .. })
+            || (neutral && !brief_tail(line));
+        if self.open.brief
+            && !brief_kept
+            && let Some(ground) = self.ground.as_mut()
+        {
+            ground.complete = true;
+        }
         match line {
             // -- read replies ------------------------------------------------
             Line::ContactRow(row) => {
@@ -865,7 +966,9 @@ impl Picture {
             }
             Line::NoContacts => {
                 journal = false;
-                opened = Some(AskKind::Contacts);
+                // A brief's own `No contacts.` (cut AN.2) is applied as the
+                // empty form, and opens no reply in the lane's ledger.
+                opened = (!self.open.brief).then_some(AskKind::Contacts);
                 // The empty form is a whole reply of its own.
                 self.open.contacts = Some(ContactsReply::default());
                 self.close_contacts(now_ms);
@@ -1096,6 +1199,61 @@ impl Picture {
                 self.touch();
             }
             Line::NoFrameYet | Line::NoSuchContact => journal = false,
+            // -- `VIEW BRIEF` (cut AN.2) ---------------------------------------
+            Line::ViewHeader {
+                extent,
+                cell_m,
+                you: _,
+            } => {
+                journal = false;
+                let metres = f64::from(*cell_m);
+                self.ground = Some(Ground {
+                    read_ms: now_ms,
+                    from_m: self.own_pos_at(now_ms),
+                    side_m: Some((f64::from(extent.0) * metres, f64::from(extent.1) * metres)),
+                    cell_m: Some(*cell_m),
+                    rays: BTreeMap::new(),
+                    complete: false,
+                });
+                self.open.brief = true;
+                self.touch();
+            }
+            Line::GroundRay {
+                bearing_deg,
+                runs,
+                edge,
+            } => {
+                journal = false;
+                // A ray belongs to the brief being read, or to a ground begun
+                // within one output's span; else it begins a ground of its
+                // own, with no header's size.
+                let current = self.ground.as_ref().is_some_and(|ground| {
+                    self.open.brief || now_ms <= ground.read_ms.saturating_add(STALE_TAIL_MS)
+                });
+                if !current {
+                    self.ground = Some(Ground {
+                        read_ms: now_ms,
+                        from_m: self.own_pos_at(now_ms),
+                        ..Ground::default()
+                    });
+                }
+                if let Some(ground) = self.ground.as_mut() {
+                    ground.rays.insert(*bearing_deg, (runs.clone(), *edge));
+                    if ground.rays.len() >= 8 {
+                        ground.complete = true;
+                    }
+                }
+                // Only `VIEW BRIEF` prints a bearing line: the brief is open
+                // even when its header was wrapped into pieces the reader
+                // could not take, so its `No contacts.` still answers nothing.
+                self.open.brief = true;
+                self.touch();
+            }
+            Line::WindowDark => {
+                journal = false;
+                self.ground = None;
+                self.touch();
+            }
             Line::Range {
                 designator,
                 range_m,
@@ -1346,9 +1504,12 @@ impl Picture {
                     self.tally.first_hit_scored_ms.get_or_insert(now_ms);
                 }
                 self.touch();
+                // Cut AN.2: a friendly hit keeps its `(FRIENDLY)` mark, so the
+                // pilot's exchange counts only hits on the other side.
+                let mark = if *friendly { " (FRIENDLY)" } else { "" };
                 let text = match (designator, section) {
-                    (Some(d), Some(s)) => format!("Hit on {d}: {s}."),
-                    (Some(d), None) => format!("Hit on {d}."),
+                    (Some(d), Some(s)) => format!("Hit on {d}{mark}: {s}."),
+                    (Some(d), None) => format!("Hit on {d}{mark}."),
                     (None, _) => "Hit.".to_owned(),
                 };
                 event = Some(self.event(now_ms, EventKind::HitScored, text));
@@ -1501,7 +1662,12 @@ impl Picture {
             Line::PowerOnline => {
                 self.own.power = Power::Online;
                 self.aboard = true;
-                self.power_ms.get_or_insert(now_ms);
+                // Cut AN.2: this match's power seen to come up, only when this
+                // line is the one that says so first.
+                if self.power_ms.is_none() {
+                    self.power_ms = Some(now_ms);
+                    self.powered_here = true;
+                }
                 self.touch();
                 event = Some(self.event(now_ms, EventKind::PowerOnline, "Power online.".into()));
             }
@@ -1541,9 +1707,16 @@ impl Picture {
 
             // -- the lobby and the centre ------------------------------------
             Line::Board { .. } => {
+                // Cut AN.2: a skirmish unless the board's mode line says
+                // otherwise.
+                self.match_mode = MatchMode::Skirmish;
                 if matches!(self.phase, Phase::Unknown | Phase::Walking) {
                     event = self.set_phase(now_ms, Phase::InCentre);
                 }
+            }
+            Line::BoardMode(mode) => {
+                self.match_mode = *mode;
+                self.touch();
             }
             Line::Boarding { match_id } => {
                 if matches!(self.phase, Phase::Claimed { .. }) && self.following.is_none() {
@@ -1625,6 +1798,10 @@ impl Picture {
             | Line::NothingToAbort
             | Line::Hint(_)
             | Line::Other(_) => {}
+        }
+        // The brief closes at its first line of any other kind (cut AN.2).
+        if !brief_kept {
+            self.open.brief = false;
         }
         Applied {
             journal,
@@ -1937,6 +2114,10 @@ impl Picture {
         self.reclaims = 0;
         self.away_ms = 0;
         self.power_ms = None;
+        // Cut AN.2: the ground and the power seen are this match's; the mode
+        // is the board's, said for this match.
+        self.ground = None;
+        self.powered_here = false;
         self.aboard = false;
         self.open = Open::default();
         self.touch();
@@ -5305,5 +5486,355 @@ mod tests {
         assert_eq!(p.contacts_read, 3, "closed before any settle");
         p.settle(10_000);
         assert_eq!(p.contacts_read, 3);
+    }
+
+    /// A brief's eight bearing lines over the same `class` and `metres`.
+    fn brief_rays(class: &str, metres: u32) -> Vec<String> {
+        crate::arena::lines::BRIEF_BEARINGS
+            .iter()
+            .map(|(word, _)| format!("{word}: {metres} m of {class}, then beyond the window."))
+            .collect()
+    }
+
+    const HEADER: &str = "Window around RA: cells 0 to 38 east and 88 to 107 north of 256 by 256; \
+                          you at (6, 97), heading 090°; 10 m a cell.";
+
+    /// **A brief is read into the ground and adds no contact** (cut AN.2):
+    /// a whole brief — the header, eight rays, `No contacts.`, the spot lines —
+    /// gives a ground of eight rays, whole at the eighth, from the own
+    /// position, on the header's 2 560 m square; it adds, changes or drops no
+    /// contact and touches no lock. The brief's `No contacts.` opens nothing;
+    /// the same line read outside a brief still opens `Contacts`. A brief cut
+    /// after five rays is whole at the contact sentence after them, and one
+    /// whose contact sentence names a held hostile leaves that contact as it
+    /// was. A ray with no header just before begins a ground of its own, and
+    /// a dark window leaves none.
+    #[test]
+    fn a_view_brief_is_read_into_the_ground_and_adds_no_contact() {
+        let mut p = Picture {
+            phase: Phase::Running { match_id: 1 },
+            following: Some(1),
+            side: Some(Side::Red),
+            aboard: true,
+            ..Picture::default()
+        };
+        feed(
+            &mut p,
+            &[
+                (900, "Callsign RA."),
+                (900, "Red Tank 1: power online, 0 kph, heading 090°"),
+                (900, "  at 60 m east, 975 m north; scope clear"),
+            ],
+        );
+        p.settle(1_100);
+        let read_before = p.contacts_read;
+        let header = feed(&mut p, &[(1_000, HEADER)]);
+        assert!(!header[0].journal);
+        assert_eq!(header[0].opened, None);
+        assert!(p.open.brief);
+        let rays = brief_rays("grass", 90);
+        for (i, ray) in rays.iter().enumerate() {
+            let at = 1_001 + i as u64;
+            let applied = feed(&mut p, &[(at, ray)]);
+            assert!(!applied[0].journal);
+            let ground = p.ground.as_ref().expect("a ground");
+            assert_eq!(ground.complete, i == 7, "whole at the eighth ray only");
+            assert!(p.open.brief, "kept by each ray");
+        }
+        let rest = feed(
+            &mut p,
+            &[
+                (1_010, "No contacts."),
+                (1_011, "In the window: A The Ford, 190 m at 093°."),
+                (1_012, "Off the window: C North Barn, 1390 m at 045°."),
+            ],
+        );
+        assert_eq!(rest[0].opened, None, "the brief's own No contacts.");
+        assert!(rest.iter().all(|applied| applied.event.is_none()));
+        assert!(!p.open.brief, "closed by its first other line");
+        let ground = p.ground.clone().expect("a ground");
+        assert_eq!(ground.rays.len(), 8);
+        assert!(ground.complete);
+        assert_eq!(ground.read_ms, 1_000);
+        assert_eq!(ground.from_m, Some((60.0, 975.0)));
+        assert_eq!(ground.side_m, Some((2_560.0, 2_560.0)));
+        assert_eq!(ground.cell_m, Some(10));
+        assert_eq!(ground.rays[&45], (vec![("grass".to_owned(), 90)], false));
+        assert!(p.contacts.is_empty());
+        assert_eq!(p.lock, None);
+        assert_eq!(
+            p.contacts_read,
+            read_before + 1,
+            "applied as the empty form"
+        );
+        // Outside a brief, `No contacts.` still opens `Contacts`.
+        let plain = feed(&mut p, &[(2_000, "No contacts.")]);
+        assert_eq!(plain[0].opened, Some(AskKind::Contacts));
+
+        // A held hostile and its lock, then a brief cut after five rays whose
+        // contact sentence names it: whole at the sentence, BA as it was.
+        feed(
+            &mut p,
+            &[
+                (3_000, &row_line("BA", "blue", 90, 450, 1)),
+                (3_100, "Locked on BA, 62% to hit."),
+            ],
+        );
+        p.settle(3_400);
+        let before = p.contacts.clone();
+        assert!(before.contains_key("BA"));
+        let mut lines: Vec<(u64, &str)> = vec![(4_000, HEADER)];
+        for ray in rays.iter().take(5) {
+            lines.push((4_001, ray));
+        }
+        feed(&mut p, &lines);
+        assert!(!p.ground.as_ref().expect("a ground").complete, "five rays");
+        feed(
+            &mut p,
+            &[(
+                4_002,
+                "BA, blue: bearing 090° (rel 000°), far, 450 m, 1 s old.",
+            )],
+        );
+        let ground = p.ground.as_ref().expect("a ground");
+        assert!(ground.complete, "whole at the contact sentence");
+        assert_eq!(ground.rays.len(), 5);
+        assert_eq!(p.contacts, before, "the brief changes no contact");
+        assert_eq!(p.lock.as_deref(), Some("BA"));
+
+        // A ray with no header just before: a ground of its own, no size.
+        feed(
+            &mut p,
+            &[(
+                9_000,
+                "North: 10 m of road, then grass to 90 m, then beyond the window.",
+            )],
+        );
+        let ground = p.ground.as_ref().expect("a ground");
+        assert_eq!(ground.read_ms, 9_000);
+        assert_eq!(ground.side_m, None);
+        assert_eq!(ground.rays.len(), 1);
+        // A dark window: no ground.
+        feed(
+            &mut p,
+            &[(
+                9_500,
+                "The window is dark: there is no ground under the panel to draw.",
+            )],
+        );
+        assert_eq!(p.ground, None);
+        // A new match clears it.
+        feed(&mut p, &[(10_000, HEADER)]);
+        assert!(p.ground.is_some());
+        p.new_match();
+        assert_eq!(p.ground, None);
+        assert!(!p.open.brief);
+    }
+
+    /// **A brief stays open across chatter and the pieces of a wrapped line**
+    /// (cut AN.2): a header the terminal wrapped into two pieces the reader
+    /// cannot take, two bearings, a teammate's channel line and `Receiver
+    /// clear.` (the latency rig's injections), a bearing wrapped into two
+    /// pieces, and the last five bearings: the brief opens at its first
+    /// bearing and stays open, its ground is not whole before its own `No
+    /// contacts.` (seven bearings read), and that `No contacts.` opens
+    /// nothing. A contact sentence or a spot line — the brief's tail — closes
+    /// a brief; a `No contacts.` after it opens `Contacts`.
+    #[test]
+    fn a_brief_stays_open_across_chatter_and_wrapped_pieces() {
+        let mut p = Picture {
+            phase: Phase::Running { match_id: 1 },
+            following: Some(1),
+            side: Some(Side::Blue),
+            aboard: true,
+            ..Picture::default()
+        };
+        feed(
+            &mut p,
+            &[
+                (900, "Callsign BA."),
+                (900, "Blue Tank 1: power online, 0 kph, heading 270°"),
+                (900, "  at 2495 m east, 1075 m north; scope clear"),
+            ],
+        );
+        p.settle(1_100);
+        feed(
+            &mut p,
+            &[
+                (
+                    1_000,
+                    "Window around BA: cells 217 to 255 east and 100 to 119 north of 256 by 256; you",
+                ),
+                (1_000, "at (249, 107), heading 270°; 10 m a cell."),
+            ],
+        );
+        assert!(!p.open.brief, "a wrapped header is not read");
+        let rays = brief_rays("grass", 90);
+        for ray in rays.iter().take(2) {
+            feed(&mut p, &[(1_001, ray)]);
+            assert!(p.open.brief, "opened by a bearing");
+        }
+        let ground = p.ground.as_ref().expect("a ground of its own");
+        assert_eq!(ground.side_m, None);
+        let kept = feed(
+            &mut p,
+            &[
+                (1_002, "[RedNet] Ada: on your left"),
+                (1_002, "Receiver clear."),
+                (
+                    1_003,
+                    "East: 10 m of road, then grass to 30 m, then light woods to 50 m, then",
+                ),
+                (1_003, "rubble to 70 m, then beyond the window."),
+            ],
+        );
+        assert!(kept.iter().all(|applied| applied.opened.is_none()));
+        assert!(p.open.brief, "kept across chatter and a wrapped bearing");
+        assert!(!p.ground.as_ref().expect("a ground").complete);
+        for ray in rays.iter().skip(3) {
+            feed(&mut p, &[(1_004, ray)]);
+        }
+        let ground = p.ground.as_ref().expect("a ground");
+        assert_eq!(ground.rays.len(), 7);
+        assert!(!ground.complete, "seven bearings, and no tail yet");
+        assert!(p.open.brief);
+        let tail = feed(&mut p, &[(1_005, "No contacts.")]);
+        assert_eq!(tail[0].opened, None, "the brief's own No contacts.");
+        assert!(p.ground.as_ref().expect("a ground").complete);
+        assert!(!p.open.brief);
+        // The tail closes a brief: a contact sentence, or a spot line.
+        for tail in [
+            "BA, blue: bearing 090° (rel 000°), far, 450 m, 1 s old.",
+            "X12, unknown: bearing 045° (rel 135°), far, 550 m, 0 s old.",
+            "In the window: A The Ford, 190 m at 093°.",
+            "Off the window: C North Barn, 1390 m at 045°.",
+        ] {
+            assert!(brief_tail(&classify(tail)), "{tail}");
+            feed(&mut p, &[(2_000, HEADER)]);
+            for ray in &rays {
+                feed(&mut p, &[(2_001, ray)]);
+            }
+            feed(&mut p, &[(2_002, "[RedNet] Ada: on your left")]);
+            assert!(p.open.brief, "{tail}");
+            feed(&mut p, &[(2_003, tail)]);
+            assert!(!p.open.brief, "closed by {tail}");
+            let after = feed(&mut p, &[(2_004, "No contacts.")]);
+            assert_eq!(after[0].opened, Some(AskKind::Contacts), "{tail}");
+        }
+        for not_tail in [
+            "[RedNet] Ada: BA, blue: bearing 090°",
+            "rubble to 70 m, then beyond the window.",
+            "Ada says, \"on your left\"",
+        ] {
+            assert!(!brief_tail(&classify(not_tail)), "{not_tail}");
+        }
+    }
+
+    /// **The board says the mode** (cut AN.2): a board head resets the rule to
+    /// a skirmish, a mode line sets it, and a new match keeps it (the board
+    /// said it for this match).
+    #[test]
+    fn the_board_says_the_mode() {
+        let mut p = Picture::default();
+        assert_eq!(p.match_mode, MatchMode::Skirmish);
+        feed(
+            &mut p,
+            &[
+                (1_000, "Simulator centre: selection"),
+                (1_000, "  red: nobody"),
+                (
+                    1_000,
+                    "  mode: hold — keep The Crossroads (B) uncontested for 120 s",
+                ),
+            ],
+        );
+        assert_eq!(p.match_mode, MatchMode::Hold);
+        p.new_match();
+        assert_eq!(p.match_mode, MatchMode::Hold, "kept by a new match");
+        feed(&mut p, &[(2_000, "Simulator centre: selection")]);
+        assert_eq!(p.match_mode, MatchMode::Skirmish, "a board head resets it");
+        feed(
+            &mut p,
+            &[(2_000, "  mode: range — 2 targets on the blue side")],
+        );
+        assert_eq!(p.match_mode, MatchMode::Range);
+        feed(&mut p, &[(3_000, "Simulator centre: idle")]);
+        assert_eq!(p.match_mode, MatchMode::Skirmish);
+    }
+
+    /// **Only this match's own `Power online.` is seen to come up** (cut
+    /// AN.2): `powered_here` is set by the ordinary line when it is the one
+    /// that sets the power's time, never by `Power is already online.`, a
+    /// `Back aboard` row or a running `STATUS` head, nor by a `Power online.`
+    /// after one of those; a new match clears it.
+    #[test]
+    fn powered_here_only_from_the_own_power_online() {
+        let running = || Picture {
+            phase: Phase::Running { match_id: 1 },
+            following: Some(1),
+            side: Some(Side::Red),
+            ..Picture::default()
+        };
+        let mut p = running();
+        feed(&mut p, &[(1_500, "Power online.")]);
+        assert!(p.powered_here);
+        p.new_match();
+        assert!(!p.powered_here);
+        let mut p = running();
+        feed(
+            &mut p,
+            &[
+                (1_000, "Power is already online."),
+                (2_000, "Power online."),
+            ],
+        );
+        assert!(!p.powered_here);
+        let mut p = running();
+        feed(
+            &mut p,
+            &[
+                (2_000, "Back aboard RA after 45 s away."),
+                (2_010, "  Power online."),
+                (2_020, "Power online."),
+            ],
+        );
+        assert!(!p.powered_here);
+        let mut p = running();
+        feed(
+            &mut p,
+            &[
+                (3_000, "Callsign RA."),
+                (3_000, "Red Tank 1: power online, 30 kph, heading 090°"),
+                (3_100, "Power online."),
+            ],
+        );
+        assert!(!p.powered_here);
+    }
+
+    /// **A friendly hit keeps its mark in the event** (cut AN.2), so the
+    /// pilot's exchange counts only hits on the other side.
+    #[test]
+    fn a_friendly_hit_event_says_so() {
+        let mut p = Picture::default();
+        let applied = feed(
+            &mut p,
+            &[
+                (1_000, "Hit on RB (FRIENDLY): turret."),
+                (1_100, "Hit on BA: turret."),
+                (1_200, "Hit on RB (FRIENDLY)."),
+            ],
+        );
+        let texts: Vec<String> = applied
+            .into_iter()
+            .map(|a| a.event.expect("an event").text)
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "Hit on RB (FRIENDLY): turret.",
+                "Hit on BA: turret.",
+                "Hit on RB (FRIENDLY)."
+            ]
+        );
     }
 }

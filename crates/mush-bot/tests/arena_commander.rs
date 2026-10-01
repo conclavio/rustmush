@@ -136,6 +136,7 @@ async fn a_commander_call_carries_its_routing_and_is_filed_under_arena_commander
     let view = picture().commander_view(
         4_000,
         &Doctrine::pilot_default(&mush_bot::arena::settings::Settings::default()),
+        None,
     );
     let capture = commander::capture(&model, &view).expect("a request");
     let costs = Arc::new(Mutex::new(
@@ -231,7 +232,7 @@ async fn an_error_status_is_an_error_reply_and_still_filed() {
     let resolved = commander::resolve(&config.arena, None).expect("a commander");
     let model = resolved.selection.settings.clone();
     let brain = Brain::with_tape(&model, None).expect("a client");
-    let view = picture().commander_view(4_000, &Doctrine::pilot_default(&config.arena));
+    let view = picture().commander_view(4_000, &Doctrine::pilot_default(&config.arena), None);
     let capture = commander::capture(&model, &view).expect("a request");
     let costs = Arc::new(Mutex::new(
         Ledger::open(&config.costs, &config.ssh, &config.memory.namespace).expect("a ledger"),
@@ -282,7 +283,7 @@ async fn a_tape_shared_with_the_goal_loop_is_consumed_in_admission_order() {
     let costs = Arc::new(Mutex::new(
         Ledger::open(&config.costs, &config.ssh, &config.memory.namespace).expect("a ledger"),
     ));
-    let view = picture().commander_view(4_000, &Doctrine::pilot_default(&config.arena));
+    let view = picture().commander_view(4_000, &Doctrine::pilot_default(&config.arena), None);
 
     // Admitted in this order: commander, goal loop, commander.
     let mut first = commander_brain.clone();
@@ -510,7 +511,7 @@ async fn recorded_withdraws_are_flown_by_the_pilots_rule() {
         let model = resolved.selection.settings.clone();
         let brain = Brain::with_tape(&model, None).expect("a client");
         let picture = picture_from_view(&fixture["view"], Side::Red, NOW);
-        let view = picture.commander_view(NOW, &Doctrine::pilot_default(&config.arena));
+        let view = picture.commander_view(NOW, &Doctrine::pilot_default(&config.arena), None);
         let capture = commander::capture(&model, &view).expect("a request");
         let costs = Arc::new(Mutex::new(
             Ledger::open(&config.costs, &config.ssh, &config.memory.namespace).expect("a ledger"),
@@ -624,7 +625,7 @@ async fn recorded_live_pictures_reach_the_stub_under_the_new_policy() {
         let model = resolved.selection.settings.clone();
         let brain = Brain::with_tape(&model, None).expect("a client");
         let picture = picture_from_view(&fixture["view"], Side::Red, NOW);
-        let view = picture.commander_view(NOW, &Doctrine::pilot_default(&config.arena));
+        let view = picture.commander_view(NOW, &Doctrine::pilot_default(&config.arena), None);
         let capture = commander::capture(&model, &view).expect("a request");
         let costs = Arc::new(Mutex::new(
             Ledger::open(&config.costs, &config.ssh, &config.memory.namespace).expect("a ledger"),

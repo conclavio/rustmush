@@ -3,8 +3,9 @@
 //!
 //! **Independence.** Everything under this module is the bot's own. It reads
 //! only the player-visible text of its own SSH line session — the answers to its
-//! own `CONTACTS`, `WEAPONSTATUS`, `STATUS`, `RANGE` and `BEARING`, the cockpit's
-//! notices and the simulator centre's announcements — and it is written from the
+//! own `CONTACTS`, `WEAPONSTATUS`, `STATUS`, `RANGE`, `BEARING` and (cut AN.2)
+//! `VIEW BRIEF`, the cockpit's notices and the simulator centre's
+//! announcements — and it is written from the
 //! player help (`help simulator`, `help cockpit`) alone. No game crate is a
 //! normal or build dependency; the one test that holds these parsers to the
 //! game's own formatters takes `tacsim` as a development dependency, so a changed

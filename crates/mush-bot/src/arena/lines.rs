@@ -188,6 +188,24 @@ pub enum HeldCause {
     Unstated,
 }
 
+/// **The rule a match is fought under** (cut AN.2), as the board says it
+/// (`help simulator`, "Modes", "The range"): every match is a skirmish "until
+/// somebody says otherwise", and the board prints the rule two-space indented
+/// while a match is set up, boarding and running — `  mode: hold — keep The
+/// Crossroads (B) uncontested for 120 s`, `  mode: range — 2 targets on the
+/// blue side` — and prints nothing for a skirmish.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchMode {
+    /// Eliminate the other side: the board prints no mode line.
+    #[default]
+    Skirmish,
+    /// `mode: hold — …`: keep The Crossroads uncontested.
+    Hold,
+    /// `mode: range — …`: targets that never move.
+    Range,
+}
+
 /// How a match ended, the word in `Match {n} is over ({word}).`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -402,6 +420,35 @@ pub enum Line {
     /// `EMCON on: the pod radiates.` / `EMCON off: the pod is silent.` (bare
     /// `EMCON`)
     EmconReading { on: bool },
+    /// **`VIEW BRIEF`'s header** (cut AN.2; `help cockpit`: "`VIEW BRIEF`
+    /// says the same window in sentences"), read whole: `Window around RA:
+    /// cells 0 to 38 east and 88 to 107 north of 256 by 256; you at (6, 97),
+    /// heading 090°; 10 m a cell.` — the arena's size in cells (`extent`),
+    /// the metres a cell and the own cell. A header cut short (a wrapped
+    /// one) is [`Line::Other`].
+    ViewHeader {
+        extent: (u32, u32),
+        cell_m: u32,
+        you: (u32, u32),
+    },
+    /// **One bearing of `VIEW BRIEF`'s ground** (cut AN.2): `North: 10 m of
+    /// road, then grass to 90 m, then beyond the window.` — the bearing in
+    /// degrees (`North` 0, `North-east` 45, … `North-west` 315), each run as
+    /// `(class, reach in metres)` (the first run's length, then each later
+    /// run's end reach, all from the own cell's centre), and whether the ray
+    /// ends at `the edge of the arena` rather than `beyond the window`. The
+    /// class words are the brief's prose (`road`, `grass`, `bare ground`,
+    /// `light woods`, `heavy woods`, `deep water`, …). A line with no
+    /// recognised tail (one the terminal wrapped) is [`Line::Other`].
+    GroundRay {
+        bearing_deg: u32,
+        runs: Vec<(String, u32)>,
+        edge: bool,
+    },
+    /// `The window is dark: the panel has told you nothing yet.` / `The
+    /// window is dark: there is no ground under the panel to draw.` — `VIEW`'s
+    /// two answers with no ground (cut AN.2).
+    WindowDark,
 
     // -- acks of the pilot's own orders (journal false) ----------------------
     /// `Startup sequence begun; power comes online shortly.`
@@ -553,6 +600,9 @@ pub enum Line {
     AiFill { each: u32 },
     /// ``  `SIM TEAM red` or `SIM TEAM blue` opens the next match.``
     BoardNext,
+    /// `  mode: hold — keep The Crossroads (B) uncontested for 120 s` / `  mode:
+    /// range — 2 targets on the blue side` (cut AN.2): the board's rule line.
+    BoardMode(MatchMode),
     /// `Ada takes red slot 1. …` (the claimant is named by display name)
     Claimed { name: String, side: Side, index: u8 },
     /// `Ada gives up red slot 1.`
@@ -901,6 +951,19 @@ fn board_row(body: &str) -> Option<Line> {
         let each = rest.strip_suffix("; machines take the unclaimed pods.")?;
         return Some(Line::AiFill { each: uint(each)? });
     }
+    // The rule (cut AN.2): `mode: hold — …` or `mode: range — …`; any other
+    // word is not a mode this reader knows.
+    if let Some(rest) = body.strip_prefix("mode: ") {
+        let (word, tail) = rest.split_once(" — ")?;
+        if tail.is_empty() {
+            return None;
+        }
+        return match word {
+            "hold" => Some(Line::BoardMode(MatchMode::Hold)),
+            "range" => Some(Line::BoardMode(MatchMode::Range)),
+            _ => None,
+        };
+    }
     let (side, rest) = body.split_once(": ")?;
     let side = match side {
         "red" => Side::Red,
@@ -977,6 +1040,8 @@ fn exact(body: &str) -> Option<Line> {
     Some(match body {
         "No contacts." => Line::NoContacts,
         "This unit carries no weapon." => Line::NoWeapon,
+        "The window is dark: the panel has told you nothing yet."
+        | "The window is dark: there is no ground under the panel to draw." => Line::WindowDark,
         "The panel has told you nothing yet." => Line::NoFrameYet,
         "No lock: LOCK a contact first." => Line::NoLock,
         "No lock: LOCK a contact first, or name one." => Line::NoLockOrName,
@@ -1170,7 +1235,111 @@ fn cockpit_reply(body: &str) -> Option<Line> {
             weapon: weapon.to_owned(),
         });
     }
-    None
+    if let Some(line) = view_header(body) {
+        return Some(line);
+    }
+    ground_ray(body)
+}
+
+/// **`VIEW BRIEF`'s header** (cut AN.2), read whole or not at all: `Window
+/// around {cs}: cells {a} to {b} east and {c} to {d} north of {W} by {H}; you
+/// at ({x}, {y}), heading {h}°; {m} m a cell.` Every figure is a whole number
+/// and the callsign a designator; the window's own corners are read and
+/// checked but not kept (the pilot works from its own cell and the
+/// arena's size).
+fn view_header(body: &str) -> Option<Line> {
+    let rest = body.strip_prefix("Window around ")?;
+    let (callsign, rest) = rest.split_once(": cells ")?;
+    let (west, rest) = rest.split_once(" to ")?;
+    let (east, rest) = rest.split_once(" east and ")?;
+    let (south, rest) = rest.split_once(" to ")?;
+    let (north, rest) = rest.split_once(" north of ")?;
+    let (width, rest) = rest.split_once(" by ")?;
+    let (height, rest) = rest.split_once("; you at (")?;
+    let (x, rest) = rest.split_once(", ")?;
+    let (y, rest) = rest.split_once("), heading ")?;
+    let (heading, rest) = rest.split_once("°; ")?;
+    let metres = rest.strip_suffix(" m a cell.")?;
+    if !is_designator(callsign) {
+        return None;
+    }
+    for figure in [west, east, south, north, heading] {
+        uint(figure)?;
+    }
+    Some(Line::ViewHeader {
+        extent: (uint(width)?, uint(height)?),
+        cell_m: uint(metres)?,
+        you: (uint(x)?, uint(y)?),
+    })
+}
+
+/// The eight bearing words of a brief, compass order from north, with their
+/// degrees (cut AN.2).
+pub const BRIEF_BEARINGS: [(&str, u32); 8] = [
+    ("North", 0),
+    ("North-east", 45),
+    ("East", 90),
+    ("South-east", 135),
+    ("South", 180),
+    ("South-west", 225),
+    ("West", 270),
+    ("North-west", 315),
+];
+
+/// A class word of a brief (cut AN.2): one or more words of lower-case
+/// letters, one space between (`grass`, `bare ground`, `deep water`).
+fn class_word(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .split(' ')
+            .all(|word| !word.is_empty() && word.bytes().all(|b| b.is_ascii_lowercase()))
+}
+
+/// `{n} m` → n.
+fn metres(text: &str) -> Option<u32> {
+    uint(text.strip_suffix(" m")?)
+}
+
+/// **One bearing of a brief's ground** (cut AN.2): `{Bearing}: {n} m of
+/// {class}(, then {class} to {n} m)*, then (beyond the window|the edge of the
+/// arena).` or `{Bearing}: (beyond the window|the edge of the arena).`; a line
+/// with neither tail is not one.
+fn ground_ray(body: &str) -> Option<Line> {
+    let (word, rest) = body.split_once(": ")?;
+    let bearing_deg = BRIEF_BEARINGS
+        .iter()
+        .find(|(name, _)| *name == word)
+        .map(|(_, deg)| *deg)?;
+    let (rest, edge) = match rest.strip_suffix("the edge of the arena.") {
+        Some(rest) => (rest, true),
+        None => (rest.strip_suffix("beyond the window.")?, false),
+    };
+    if rest.is_empty() {
+        return Some(Line::GroundRay {
+            bearing_deg,
+            runs: Vec::new(),
+            edge,
+        });
+    }
+    let rest = rest.strip_suffix(", then ")?;
+    let mut pieces = rest.split(", then ");
+    let (first, class) = pieces.next()?.split_once(" m of ")?;
+    if !class_word(class) {
+        return None;
+    }
+    let mut runs = vec![(class.to_owned(), uint(first)?)];
+    for piece in pieces {
+        let (class, reach) = piece.rsplit_once(" to ")?;
+        if !class_word(class) {
+            return None;
+        }
+        runs.push((class.to_owned(), metres(reach)?));
+    }
+    Some(Line::GroundRay {
+        bearing_deg,
+        runs,
+        edge,
+    })
 }
 
 /// `BA (FRIENDLY)` → ("BA", true).
@@ -1801,6 +1970,8 @@ pub enum AskKind {
     Heading,
     Speed,
     Fire,
+    /// `VIEW BRIEF` (cut AN.2).
+    View,
     Lobby,
 }
 
@@ -1840,6 +2011,7 @@ pub enum AnswerTo {
 /// | `NoSuchContact` | `Kinds([Lock, Range, Bearing])` |
 /// | `Firing { weapon }`, `NoSuchWeapon { weapon }` | `Fire(weapon)` |
 /// | `Refused { order, weapon, .. }` | `Refusal { order, weapon }` |
+/// | `ViewHeader`, `GroundRay`, `WindowDark` | `Kinds([View])` (cut AN.2) |
 /// | `Transient`, `PowerNotOnline`, `PowerStarting`, `DestroyedNoOrders`, `OutsideCockpit`, `NotStartedYet` | `Oldest` |
 /// | everything else | `None` |
 ///
@@ -1867,6 +2039,13 @@ pub fn answer_to(line: &Line) -> Option<AnswerTo> {
             order: order.clone(),
             weapon: weapon.clone(),
         }),
+        // `VIEW BRIEF`'s header and ground, and `VIEW`'s dark answers (cut
+        // AN.2). The brief's other lines keep their own mapping: its contact
+        // sentences and spot lines are `Other`, and its `No contacts.` is the
+        // picture's to report (it answers nothing while a brief is open).
+        Line::ViewHeader { .. } | Line::GroundRay { .. } | Line::WindowDark => {
+            Some(AnswerTo::Kinds(&[K::View]))
+        }
         Line::Transient(_)
         | Line::PowerNotOnline
         | Line::PowerStarting
@@ -1933,6 +2112,7 @@ pub fn answer_to(line: &Line) -> Option<AnswerTo> {
         | Line::BoardSide { .. }
         | Line::AiFill { .. }
         | Line::BoardNext
+        | Line::BoardMode(_)
         | Line::Claimed { .. }
         | Line::GaveUp { .. }
         | Line::Boarding { .. }
@@ -3692,5 +3872,150 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// **`VIEW BRIEF`, read** (cut AN.2): every bearing line's form — runs,
+    /// no runs, the arena's edge, two-word classes, a diagonal — the header
+    /// with its numbers, a ray or a header cut short (`Other`), both dark
+    /// windows, what each answers, and the board's two mode lines.
+    #[test]
+    fn the_view_brief_lines() {
+        let ray = |bearing_deg: u32, runs: &[(&str, u32)], edge: bool| Line::GroundRay {
+            bearing_deg,
+            runs: runs.iter().map(|(c, m)| ((*c).to_owned(), *m)).collect(),
+            edge,
+        };
+        for (text, want) in [
+            (
+                "North: 10 m of road, then grass to 90 m, then beyond the window.",
+                ray(0, &[("road", 10), ("grass", 90)], false),
+            ),
+            (
+                "North-east: 14 m of road, then bare ground to 70 m, then light woods to 130 m, \
+                 then the edge of the arena.",
+                ray(
+                    45,
+                    &[("road", 14), ("bare ground", 70), ("light woods", 130)],
+                    true,
+                ),
+            ),
+            (
+                "East: 190 m of road, then beyond the window.",
+                ray(90, &[("road", 190)], false),
+            ),
+            (
+                "South-west: 40 m of heavy woods, then deep water to 120 m, then beyond the window.",
+                ray(225, &[("heavy woods", 40), ("deep water", 120)], false),
+            ),
+            ("West: the edge of the arena.", ray(270, &[], true)),
+            ("North-west: beyond the window.", ray(315, &[], false)),
+            (
+                "South: 90 m of grass, then beyond the window.",
+                ray(180, &[("grass", 90)], false),
+            ),
+            (
+                "South-east: 10 m of road, then rubble to 30 m, then beyond the window.",
+                ray(135, &[("road", 10), ("rubble", 30)], false),
+            ),
+        ] {
+            assert_eq!(classify(text), want, "{text}");
+        }
+        // Cut before its tail (a wrapped line), a stray word, a bad bearing:
+        // `Other`.
+        for text in [
+            "North: 10 m of road, then grass to 90 m, then beyond the",
+            "North: 10 m of road, then grass to 90 m,",
+            "North: 10 m of Road, then beyond the window.",
+            "Northward: 10 m of road, then beyond the window.",
+            "North: ten m of road, then beyond the window.",
+            "North: 10 m of road then beyond the window.",
+        ] {
+            assert!(matches!(classify(text), Line::Other(_)), "{text}");
+        }
+        // The header, its numbers read.
+        assert_eq!(
+            classify(
+                "Window around RA: cells 0 to 38 east and 88 to 107 north of 256 by 256; you at \
+                 (6, 97), heading 090°; 10 m a cell."
+            ),
+            Line::ViewHeader {
+                extent: (256, 256),
+                cell_m: 10,
+                you: (6, 97),
+            }
+        );
+        assert_eq!(
+            classify(
+                "Window around BB: cells 57 to 95 east and 0 to 19 north of 96 by 64; you at \
+                 (76, 4), heading 270°; 5 m a cell."
+            ),
+            Line::ViewHeader {
+                extent: (96, 64),
+                cell_m: 5,
+                you: (76, 4),
+            }
+        );
+        // A header cut short is `Other`.
+        for text in [
+            "Window around RA: cells 0 to 38 east and 88 to 107 north of 256 by 256; you at",
+            "Window around RA: cells 0 to 38 east and 88 to 107 north of 256 by 256; you at \
+             (6, 97), heading 090°; 10 m a",
+            "Window around me: cells 0 to 38 east and 88 to 107 north of 256 by 256; you at \
+             (6, 97), heading 090°; 10 m a cell.",
+        ] {
+            assert!(matches!(classify(text), Line::Other(_)), "{text}");
+        }
+        // The two dark windows.
+        for text in [
+            "The window is dark: the panel has told you nothing yet.",
+            "The window is dark: there is no ground under the panel to draw.",
+        ] {
+            assert_eq!(classify(text), Line::WindowDark, "{text}");
+        }
+        // What each answers: `VIEW BRIEF`, the one line typed for them.
+        for line in [
+            ray(0, &[("grass", 90)], false),
+            Line::ViewHeader {
+                extent: (256, 256),
+                cell_m: 10,
+                you: (6, 97),
+            },
+            Line::WindowDark,
+        ] {
+            assert_eq!(
+                answer_to(&line),
+                Some(AnswerTo::Kinds(&[AskKind::View])),
+                "{line:?}"
+            );
+        }
+        // The brief's other lines keep their own mapping.
+        for text in [
+            "BA, blue: bearing 045° (rel 000°), far, 450 m, 1 s old.",
+            "In the window: A The Ford, 190 m at 093°.",
+            "Off the window: C North Barn, 1390 m at 045°.",
+        ] {
+            assert!(matches!(classify(text), Line::Other(_)), "{text}");
+            assert_eq!(answer_to(&classify(text)), None);
+        }
+        assert_eq!(answer_to(&Line::NoContacts), None);
+        // The board's rule lines, two-space indented; any other word, or at
+        // column 0, is not one.
+        assert_eq!(
+            classify("  mode: hold — keep The Crossroads (B) uncontested for 120 s"),
+            Line::BoardMode(MatchMode::Hold)
+        );
+        assert_eq!(
+            classify("  mode: range — 2 targets on the blue side"),
+            Line::BoardMode(MatchMode::Range)
+        );
+        for text in [
+            "  mode: skirmish — eliminate the other side",
+            "  mode: hold",
+            "mode: hold — keep The Crossroads (B) uncontested for 120 s",
+            "   mode: hold — keep The Crossroads (B) uncontested for 120 s",
+        ] {
+            assert!(matches!(classify(text), Line::Other(_)), "{text}");
+        }
+        assert_eq!(answer_to(&Line::BoardMode(MatchMode::Hold)), None);
     }
 }

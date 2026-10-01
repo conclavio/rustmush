@@ -51,6 +51,8 @@ lead_start_grace_ms = 3000   # the lead waits this after its claim before SIM ST
 wait_start_s = 300           # the longest wait for a busy centre, for a lead to start, or for a claim on the other side (10..3600)
 band_m = 450                 # the band the pilot holds, or orbits, at, metres (150..450)
 engagement = "hold"          # hold (stop at the band, bow on) or orbit (circle it); hold is the default
+opening = "wait"             # wait (hold stopped near our entry until a hostile is in sight) or search (drive for The Crossroads)
+reapproach = true            # back away past a stopped machine's sight when it out-hits us, then wait for it to come on
 step_timeout_ms = 15000      # the longest one lobby line may go unanswered (2000..60000)
 commander = true             # fly the commander below
 commander_ms = 1500          # asks again this long after each answer or error (1000..10000)
@@ -59,14 +61,14 @@ commander_max_calls = 400    # the most commander calls in one match (1..10000)
 # commander by accident. Only the table below commands.
 commander_from_session = false
 
-# Measured by the programme lead on 2026-09-29, a picture of about 1.2 KB and a
+# Measured on 2026-09-29, on a picture of about 1.2 KB and a
 # five-field answer: with reasoning off this model answered in a median 1 342 ms
 # on OpenRouter's default routing and 333 ms pinned to Together. With reasoning
 # on the median was 10.6 s and many answers came back empty after thinking
 # through the whole token budget. An answer is dropped as late after two
 # seconds while a contact is held, and the call is given up there, and five
 # late answers in a row switch the commander off for the match, so never
-# enable reasoning here. Pinned to Together, the lead's live smoke of
+# enable reasoning here. Pinned to Together, a live smoke of
 # 2026-09-29 made 370 calls over five matches for 0.0706 US dollars: about
 # 1.4 US cents a match, about 410 ms a call.
 [arena.commander_model]

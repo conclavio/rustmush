@@ -1098,10 +1098,71 @@ pub fn engagement(value: Option<&str>) -> &'static str {
     }
 }
 
+/// The variable naming the pilot's knobs a win-rate lane turns off (cut
+/// AN.2): a comma list of `opening`, `reapproach` or `all`.
+pub const KNOBS_OFF_ENV: &str = "MUSH_BOT_WIN_RATE_OFF";
+
+/// **The knobs a lane turns off** (cut AN.2), from [`KNOBS_OFF_ENV`]'s value:
+/// unset (or naming nothing) turns none off; `opening` and `reapproach` that
+/// knob, `all` both; any other word is a panic, before anything is launched.
+pub fn knobs_off(value: Option<&str>) -> BTreeSet<&'static str> {
+    let mut off = BTreeSet::new();
+    for word in value
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|word| !word.is_empty())
+    {
+        match word {
+            "opening" => {
+                off.insert("opening");
+            }
+            "reapproach" => {
+                off.insert("reapproach");
+            }
+            "all" => {
+                off.insert("opening");
+                off.insert("reapproach");
+            }
+            other => {
+                panic!("MUSH_BOT_WIN_RATE_OFF names opening, reapproach or all, not {other}")
+            }
+        }
+    }
+    off
+}
+
 /// **The bot's extra config** for the engagement `e` (cut AL.3): the lanes'
-/// 5 s start grace, and `[arena] engagement`.
-pub fn extra(e: &str) -> String {
-    format!("\n[arena]\nlead_start_grace_ms = 5000\nengagement = \"{e}\"\n")
+/// 5 s start grace, and `[arena] engagement`; and (cut AN.2) `opening =
+/// "search"` and `reapproach = false` for the knobs `off` names, in that
+/// order. With none named it is byte for byte what it was.
+pub fn extra(e: &str, off: &BTreeSet<&str>) -> String {
+    let mut extra = format!("\n[arena]\nlead_start_grace_ms = 5000\nengagement = \"{e}\"\n");
+    if off.contains("opening") {
+        extra.push_str("opening = \"search\"\n");
+    }
+    if off.contains("reapproach") {
+        extra.push_str("reapproach = false\n");
+    }
+    extra
+}
+
+/// **The `KNOBS` line** both win-rate lanes print after `ENGAGEMENT` (cut
+/// AN.2): `KNOBS: opening {wait|search}, reapproach {on|off}`.
+pub fn knobs_line(off: &BTreeSet<&str>) -> String {
+    format!(
+        "KNOBS: opening {}, reapproach {}",
+        if off.contains("opening") {
+            "search"
+        } else {
+            "wait"
+        },
+        if off.contains("reapproach") {
+            "off"
+        } else {
+            "on"
+        }
+    )
 }
 
 /// What a lane flies (cut AK.3's posed plan, generalised in cut AN.1): the
@@ -1466,6 +1527,49 @@ pub struct Reading {
     /// milliseconds after the match's power online, a missing key (or a
     /// `null`) read as `None`; `None` when there is no report.
     pub firsts: Option<Vec<FirstTimes>>,
+    /// **What the pilot's own rules did** (cut AN.2): the transcript's
+    /// `arena` records that begin `Opening: holding near our entry`,
+    /// `Opening: stepping off the road`, `Firing from the halt at `, `Opening
+    /// the range on ` and `Out of ` (only with `'s sight at ` in it: the
+    /// lobby's `Out of the tank; boarding again.` is an `arena` record too),
+    /// counted in that order ([`PilotRules`]).
+    pub rules: PilotRules,
+}
+
+/// **The pilot rules' counts** (cut AN.2), as [`Reading::rules`] reads them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PilotRules {
+    pub opening: usize,
+    pub off_the_road: usize,
+    pub halt: usize,
+    pub reapproach: usize,
+    pub approach_wait: usize,
+}
+
+impl PilotRules {
+    /// Count one `arena` record's text.
+    fn count(&mut self, text: &str) {
+        if text.starts_with("Opening: holding near our entry") {
+            self.opening += 1;
+        } else if text.starts_with("Opening: stepping off the road") {
+            self.off_the_road += 1;
+        } else if text.starts_with("Firing from the halt at ") {
+            self.halt += 1;
+        } else if text.starts_with("Opening the range on ") {
+            self.reapproach += 1;
+        } else if text.starts_with("Out of ") && text.contains("'s sight at ") {
+            self.approach_wait += 1;
+        }
+    }
+
+    /// `PILOT RULES: opening {a}, off the road {b}, halt {c}, reapproach
+    /// {d}, approach wait {e}`.
+    pub fn line(&self) -> String {
+        format!(
+            "PILOT RULES: opening {}, off the road {}, halt {}, reapproach {}, approach wait {}",
+            self.opening, self.off_the_road, self.halt, self.reapproach, self.approach_wait
+        )
+    }
 }
 
 /// One match's `(first_contact_ms, first_hit_taken_ms, first_hit_scored_ms)`
@@ -1504,6 +1608,11 @@ pub fn reading(transcript: &str, report: Option<&serde_json::Value>) -> Reading 
                     *reading.fire_lines.entry(weapon.to_owned()).or_default() += 1;
                 }
                 sends.push((at, sent.to_owned()));
+            }
+            Some("arena") => {
+                if let Some(text) = record["data"].as_str() {
+                    reading.rules.count(text);
+                }
             }
             Some("observation") => {
                 let (Some(at), Some(text)) =
@@ -1717,7 +1826,10 @@ impl Reading {
     ///   whole seconds ([`opening_line`]);
     /// * (cut AN.1) `FRONT SHARE: {f} of {h} facet hits taken on a front
     ///   facet`, `h` the facet hits taken in all and `f` those on a key
-    ///   ending ` front`.
+    ///   ending ` front`;
+    /// * (cut AN.2) `PILOT RULES: opening {a}, off the road {b}, halt {c},
+    ///   reapproach {d}, approach wait {e}` ([`PilotRules::line`]), from the
+    ///   transcript alone (zeros with no `arena` record).
     ///
     /// With no report the last three read `SEEN FIRST: no report`,
     /// `OPENING: no report` and `FRONT SHARE: no report`. None of them names
@@ -1779,6 +1891,7 @@ impl Reading {
                 format!("FRONT SHARE: {front} of {all} facet hits taken on a front facet")
             }
         });
+        lines.push(self.rules.line());
         lines
     }
 }

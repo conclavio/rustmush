@@ -33,6 +33,21 @@
 //! tracks 61 and 58, and only 14 on the hull's front and 9 on the turret's.
 //! The orbit stays a stance a commander or this key may ask for.
 //!
+//! **`opening` and `reapproach`** (cut AN.2; [`super::pilot`]'s module head has
+//! the rules): `help simulator` says a machine that sees you "closes: to about
+//! … 420 m …, where it stops, turns onto you and shoots", that "Open the range
+//! past its sight and it comes after you again; let the ground hide you and it
+//! drives at where it last saw you", and that one "that has seen nobody for a
+//! minute and a half crosses to the other side's entry zone to look"; `help
+//! cockpit` says "on grass a stopped tank can be seen out to 80 per cent of
+//! that (480 m) and a moving one out to all of it", "a road hides nothing
+//! either way", and "Stop before you are found". So `opening = "wait"` (the
+//! default) holds stopped near the own entry, off the road, until a hostile is
+//! in sight, and `"search"` drives for The Crossroads as the pilot did before;
+//! `reapproach = true` (the default) backs away past a stopped machine's sight
+//! when it out-hits the pilot, then waits for it to come on. Any other
+//! `opening` word is refused when the table is read.
+//!
 //! **The commander's keys** (cut AJ.3; [`super::commander`]): `commander`
 //! switches the optional model commander on, `commander_ms` is how long after
 //! each answer it asks again (1 000 ms is the machines' own decision interval,
@@ -46,7 +61,10 @@
 //! would be paid for up to `commander_max_calls` discarded answers a match.
 use serde::{Deserialize, Serialize};
 
-use super::{commander::Stance, pilot::SIGHT_BAND_MAX_M};
+use super::{
+    commander::Stance,
+    pilot::{Knobs, SIGHT_BAND_MAX_M},
+};
 use crate::{Result, config::Model};
 
 /// **How the pilot's own doctrine fights** (`[arena] engagement`, cut AL.2;
@@ -72,6 +90,21 @@ impl Engagement {
     }
 }
 
+/// **How the pilot opens a match from the muster** (`[arena] opening`, cut
+/// AN.2; the module head says why `wait` is the default). Any other word is
+/// refused when the table is read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Opening {
+    /// Hold stopped near the own entry, off the road, bow toward the other
+    /// side's entry, until a hostile is in sight, a hit or six minutes.
+    #[default]
+    Wait,
+    /// Drive for The Crossroads after five quiet seconds (the pilot as it
+    /// was).
+    Search,
+}
+
 /// The `[arena]` table.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -93,6 +126,12 @@ pub struct Settings {
     /// How the pilot's own doctrine fights: `hold` (the default) or `orbit`
     /// (cut AL.2).
     pub engagement: Engagement,
+    /// How the pilot opens from the muster: `wait` (the default) or `search`
+    /// (cut AN.2).
+    pub opening: Opening,
+    /// Back away past a stopped machine's sight when it out-hits the pilot,
+    /// then wait for it to come on (cut AN.2; on by default).
+    pub reapproach: bool,
     /// How long one lobby line may go unanswered (2 000..=60 000).
     pub step_timeout_ms: u64,
     /// The model commander sets the pilot's doctrine when a commander model
@@ -121,6 +160,8 @@ impl Default for Settings {
             wait_start_s: 300,
             band_m: 450,
             engagement: Engagement::Hold,
+            opening: Opening::Wait,
+            reapproach: true,
             step_timeout_ms: 15_000,
             commander: true,
             commander_ms: 1_500,
@@ -132,6 +173,15 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// **The pilot's knobs** (cut AN.2): `opening` and `reapproach` as the
+    /// pilot reads them.
+    pub fn knobs(&self) -> Knobs {
+        Knobs {
+            opening: self.opening,
+            reapproach: self.reapproach,
+        }
+    }
+
     /// Refuse any key outside its range, and a commander model that
     /// [`Model::validate`] refuses (with its own sentence).
     pub fn validate(&self) -> Result<()> {
@@ -328,6 +378,36 @@ mod tests {
         assert_eq!(read.band_m, 500);
         assert_eq!(read.max_lines_per_s, 4);
         assert!(toml::from_str::<Settings>("lines_per_s = 2\n").is_err());
+    }
+
+    /// **The knobs** (cut AN.2): `opening` reads `wait` and `search` and
+    /// refuses any other word, `reapproach` reads a boolean, the defaults are
+    /// `wait` and `true` (the pilot's [`Knobs::on`]), and [`Settings::knobs`]
+    /// says what the table says.
+    #[test]
+    fn the_knobs_read_and_refuse() {
+        use super::{Knobs, Opening};
+        let defaults = Settings::default();
+        assert_eq!(defaults.opening, Opening::Wait);
+        assert!(defaults.reapproach);
+        assert_eq!(defaults.knobs(), Knobs::on());
+        let read: Settings = toml::from_str("").expect("a table");
+        assert_eq!(read.knobs(), Knobs::on(), "left out: the defaults");
+        let read: Settings =
+            toml::from_str("opening = \"search\"\nreapproach = false\n").expect("a table");
+        assert_eq!(read.opening, Opening::Search);
+        assert!(!read.reapproach);
+        assert_eq!(read.knobs(), Knobs::off());
+        assert!(read.validate().is_ok());
+        let read: Settings = toml::from_str("opening = \"wait\"\n").expect("a table");
+        assert_eq!(read.opening, Opening::Wait);
+        for word in ["advance", "Wait", "hold", ""] {
+            assert!(
+                toml::from_str::<Settings>(&format!("opening = \"{word}\"\n")).is_err(),
+                "{word}"
+            );
+        }
+        assert!(toml::from_str::<Settings>("reapproach = \"yes\"\n").is_err());
     }
 
     /// **`engagement`** (cut AL.2): `hold` by default, `orbit` read, and any

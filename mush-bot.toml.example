@@ -123,6 +123,8 @@ bootstrap = ["help", "look"] # sent once after login in agent mode; scripts list
 # wait_start_s = 300         # the longest wait for a busy centre, for a lead to start, or for a claim on the other side (10..3600)
 # band_m = 450               # the band the pilot holds, or orbits, at, metres (150..450)
 # engagement = "hold"        # hold (stop at the band, bow on) or orbit (circle it); hold is the default
+# opening = "wait"          # wait (hold stopped near our entry until a hostile is in sight) or search (drive for The Crossroads)
+# reapproach = true         # back away past a stopped machine's sight when it out-hits us, then wait for it to come on
 # step_timeout_ms = 15000    # the longest one lobby line may go unanswered (2000..60000)
 # The optional model commander sets the pilot's doctrine (where it goes, what it
 # hunts); the pilot still locks, fires and steers. docs/bot.md "The commander".

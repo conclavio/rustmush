@@ -61,6 +61,13 @@
 //! refusal `SIM TEAM red` is answered with instead, every time),
 //! `look_answer_ms` (how long `look`'s answer takes: 3 ms unless set) and
 //! `look_room` (the heading `look` answers with, `Limbo #0` unless set).
+//!
+//! Cut AN.2 adds, off by default too, `brief` (the lines `VIEW BRIEF` is
+//! answered with; unset, a header, eight bearings of grass and `No
+//! contacts.`), and answers `VIEW BRIEF` as the cockpit line it is. **Every
+//! older test flies [`base`]**, the pilot as it was before cut AN.2 (`opening
+//! = "search"`, `reapproach = false`); AN.2's own tests fly the shipped
+//! defaults.
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     ops::RangeInclusive,
@@ -84,15 +91,27 @@ use mush_bot::arena::{
         bearing_deg,
     },
     pilot::{
-        FRESH_PLOT_MS, FRESH_READ_MS, HEADING_STEP_DEG, HELD_FOR_MS, HELD_MARK_AHEAD_M,
-        HELD_MARK_HALF_WIDTH_M, HELD_MARK_NEAR_M, HELD_TURN_DEG, HOLD_BOW_DEG, ONE_TRACK_COMMIT_MS,
-        ONE_TRACK_DEADBAND_DEG, STALL_MS, UNIDENTIFIED_WAIT_MS, WITHDRAW_MS, clamp_arena,
-        hull_failing,
+        EXCHANGE_MARGIN, EXCHANGE_MIN_TAKEN, EXCHANGE_WINDOW_MS, FRESH_PLOT_MS, FRESH_READ_MS,
+        HEADING_STEP_DEG, HELD_FOR_MS, HELD_MARK_AHEAD_M, HELD_MARK_HALF_WIDTH_M, HELD_MARK_NEAR_M,
+        HELD_TURN_DEG, HOLD_BOW_DEG, HOLD_SLACK_M, ONE_TRACK_COMMIT_MS, ONE_TRACK_DEADBAND_DEG,
+        OPENING_COVER_M, REAPPROACH_OPEN_M, REAPPROACH_WAIT_MS, STALL_MS, UNIDENTIFIED_WAIT_MS,
+        WITHDRAW_MS, clamp_arena, hull_failing,
     },
     report::{self, GapStats},
-    settings::{Engagement, Settings},
+    settings::{Engagement, Opening, Settings},
 };
 use serde_json::{Value, json};
+
+/// **The settings every test written before cut AN.2 flies**: the shipped
+/// defaults with the opening's search and no re-approach, the pilot as it
+/// was. Cut AN.2's own tests fly `Settings::default()`.
+fn base() -> Settings {
+    Settings {
+        opening: Opening::Search,
+        reapproach: false,
+        ..Settings::default()
+    }
+}
 
 /// The fake clock's step, and the runner's tick.
 const STEP_MS: u64 = 10;
@@ -100,7 +119,7 @@ const TICK_MS: u64 = 50;
 
 /// The lines the lane may ever type.
 fn allowed(line: &str) -> bool {
-    const EXACT: [&str; 17] = [
+    const EXACT: [&str; 18] = [
         "look",
         "ooc",
         "simulator",
@@ -118,6 +137,7 @@ fn allowed(line: &str) -> bool {
         "STATUS",
         "RANGE",
         "BEARING B",
+        "VIEW BRIEF",
     ];
     if EXACT.contains(&line) {
         return true;
@@ -306,6 +326,13 @@ struct Server {
     /// The room heading `look` answers with (cut AM.2), a description line
     /// after it; unset, `Limbo #0`.
     look_room: Option<String>,
+    /// **What `VIEW BRIEF` answers** (cut AN.2), 3 ms on: these lines when
+    /// set; unset, a header (`Window around RA: cells 0 to 38 east and 88 to
+    /// 107 north of 256 by 256; you at (6, 97), heading 090°; 10 m a cell.`),
+    /// the eight bearings as `{Bearing}: 90 m of grass, then beyond the
+    /// window.` and `No contacts.`. The server never moves the tank: a test
+    /// that needs the opening's step to arrive moves `pos` itself.
+    brief: Vec<String>,
 }
 
 /// The transient the cut AM.1 knobs answer with.
@@ -359,6 +386,7 @@ impl Server {
             refuse_claim: None,
             look_answer_ms: 3,
             look_room: None,
+            brief: Vec::new(),
         }
     }
 
@@ -584,6 +612,7 @@ impl Server {
                 | "SPEED"
                 | "LOCK"
                 | "FIRE"
+                | "VIEW"
         );
         if lobby && let Some(transient) = self.transient.take() {
             self.say(3, &transient);
@@ -718,6 +747,33 @@ impl Server {
                 None => self.say(3, "No lock: LOCK a contact first, or name one."),
             },
             "BEARING B" => self.say(3, "Bearing to The Crossroads (B): 090° (rel 000°)."),
+            // Cut AN.2: the brief, the knob's or a field of grass.
+            "VIEW BRIEF" => {
+                let lines = if self.brief.is_empty() {
+                    let mut lines = vec![
+                        "Window around RA: cells 0 to 38 east and 88 to 107 north of 256 by 256; \
+                         you at (6, 97), heading 090°; 10 m a cell."
+                            .to_owned(),
+                    ];
+                    for bearing in [
+                        "North",
+                        "North-east",
+                        "East",
+                        "South-east",
+                        "South",
+                        "South-west",
+                        "West",
+                        "North-west",
+                    ] {
+                        lines.push(format!("{bearing}: 90 m of grass, then beyond the window."));
+                    }
+                    lines.push("No contacts.".to_owned());
+                    lines
+                } else {
+                    self.brief.clone()
+                };
+                self.say(3, &lines.join("\n"));
+            }
             _ => {
                 if let Some(deg) = line.strip_prefix("HEADING ") {
                     let was = self.heading_now();
@@ -1227,7 +1283,7 @@ fn to_the_fight_with(settings: Settings, knobs: impl FnOnce(&mut Server)) -> Run
 
 #[test]
 fn the_walk_from_limbo_to_power_online() {
-    let run = to_the_fight(Settings::default());
+    let run = to_the_fight(base());
     let lines = run.lines();
     assert_eq!(
         lines[..9],
@@ -1293,7 +1349,7 @@ fn sight(run: &mut Run, unknown: &str) {
 
 #[test]
 fn a_five_minute_fight_keeps_under_four_lines_a_second_and_the_vocabulary() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     sight_a_hostile(&mut run);
     let start = run.now;
     run.until(300_000, |_| false);
@@ -1347,7 +1403,7 @@ fn a_five_minute_fight_keeps_under_four_lines_a_second_and_the_vocabulary() {
 
 #[test]
 fn the_poll_cadence() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     // Nothing held: `CONTACTS` every five seconds.
     let start = run.now;
     run.until(20_000, |_| false);
@@ -1450,7 +1506,7 @@ fn a_due_fire_beats_a_due_poll() {
     // At one line a second there is always a poll due; the gun still goes.
     let settings = Settings {
         max_lines_per_s: 1,
-        ..Settings::default()
+        ..base()
     };
     let mut run = to_the_fight(settings);
     sight_a_hostile(&mut run);
@@ -1479,7 +1535,7 @@ fn a_due_fire_beats_a_due_poll() {
         "the one-a-second ring never bound"
     );
     // At four a second, every tick that sends the main gun sends it first.
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     sight_a_hostile(&mut run);
     run.until(30_000, |_| false);
     let fires = run.sends_of("FIRE cannon", 0);
@@ -1496,7 +1552,7 @@ fn a_due_fire_beats_a_due_poll() {
 
 #[test]
 fn the_journal_keeps_notices_speech_and_rooms_and_drops_the_rest() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     run.journal.clear();
     let now = run.now + 5;
     // An echo of a line the lane typed, a read reply, an ack, OUTSIDE_COCKPIT.
@@ -1529,7 +1585,7 @@ fn a_lobby_transient_resends_the_same_line_after_two_hundred_ms() {
         "That cockpit will not wake for you: control state unknown",
         "The arena is busy; try that again in a moment.",
     ] {
-        let mut run = Run::new(Settings::default());
+        let mut run = Run::new(base());
         run.server.transient = Some(transient.into());
         assert!(run.until(2_000, |run| run.sent.len() >= 2));
         assert_eq!(run.sent[0].line, "look");
@@ -1541,7 +1597,7 @@ fn a_lobby_transient_resends_the_same_line_after_two_hundred_ms() {
 
 #[test]
 fn a_drop_mid_fight_boards_again() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     // Nobody in sight for five seconds: the search orders full ahead.
     assert!(run.until(10_000, |run| run.lines().contains(&"SPEED 54")));
     run.server.outside = true;
@@ -1580,7 +1636,7 @@ fn a_drop_mid_fight_boards_again() {
 fn two_matches_reclaim_a_second_after_the_is_over_line() {
     let settings = Settings {
         matches: 2,
-        ..Settings::default()
+        ..base()
     };
     let mut run = to_the_fight(settings);
     run.until(3_000, |_| false);
@@ -1619,7 +1675,7 @@ fn two_matches_reclaim_a_second_after_the_is_over_line() {
 fn stop_in_selection_types_exactly_one_sim_leave() {
     let mut run = Run::new(Settings {
         lead_start_grace_ms: 60_000,
-        ..Settings::default()
+        ..base()
     });
     assert!(run.until(10_000, |run| run.lane.lobby().slot().is_some()));
     assert_eq!(run.lane.lobby().centre(), Centre::Selection);
@@ -1635,7 +1691,7 @@ fn stop_in_selection_types_exactly_one_sim_leave() {
 }
 
 fn outcome_of(word: &str) -> (String, String) {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     sight_a_hostile(&mut run);
     run.until(8_000, |_| false);
     run.server.end(run.now, word);
@@ -1663,7 +1719,7 @@ fn the_report_says_won_lost_draw_timeout_and_blocked() {
         );
     }
     // A blocker before any match: its own sentence.
-    let mut run = Run::new(Settings::default());
+    let mut run = Run::new(base());
     run.server.no_centre = true;
     assert!(run.until(10_000, |run| run.lane.result().is_some()));
     let result = run.lane.result().expect("a result");
@@ -1744,13 +1800,13 @@ fn fall_back_and_let_it_run_out(run: &mut Run) {
 fn slow() -> Settings {
     Settings {
         commander_ms: 10_000,
-        ..Settings::default()
+        ..base()
     }
 }
 
 #[test]
 fn the_commander_asks_at_power_online_one_call_at_a_time_on_its_cadence() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     let view = run.ask(200).expect("the first ask at power online");
     assert!(serde_json::to_vec(&view).expect("json").len() <= 2_048);
     assert_eq!(view["own"]["power"], "online");
@@ -1884,7 +1940,7 @@ fn a_withdraw_doctrine_backs_away_bow_on() {
 
 #[test]
 fn an_invalid_answer_keeps_the_doctrine() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     run.ask(200).expect("an ask");
     let before = run.lane.doctrine().clone();
     run.reply(CommanderReply::Answer("Orbit BA, please.".into()));
@@ -1896,7 +1952,7 @@ fn an_invalid_answer_keeps_the_doctrine() {
 #[test]
 fn late_answers_are_dropped_at_twice_the_contact_period_and_five_stop_the_commander() {
     // Searching (no contact held): the bound is 10 000 ms.
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     run.ask(200).expect("an ask");
     assert!(run.lane.picture().contacts.is_empty());
     run.until(9_000, |_| false);
@@ -1946,7 +2002,7 @@ fn late_answers_are_dropped_at_twice_the_contact_period_and_five_stop_the_comman
 
 #[test]
 fn the_tank_destroyed_voids_the_call_and_stops_the_commander() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     run.ask(200).expect("an ask");
     run.server.say(
         0,
@@ -1971,7 +2027,7 @@ fn the_tank_destroyed_voids_the_call_and_stops_the_commander() {
 fn the_match_end_stops_the_commander_and_the_next_match_starts_it_again() {
     let settings = Settings {
         matches: 2,
-        ..Settings::default()
+        ..base()
     };
     let mut run = to_the_fight(settings);
     let first = run.ask(200).expect("an ask");
@@ -2006,7 +2062,7 @@ fn the_match_end_stops_the_commander_and_the_next_match_starts_it_again() {
         run.lane.doctrine(),
         &Doctrine::pilot_default(&Settings {
             matches: 2,
-            ..Settings::default()
+            ..base()
         })
     );
     assert_eq!(view["t_s"], 0, "{view}");
@@ -2033,7 +2089,7 @@ fn the_match_end_stops_the_commander_and_the_next_match_starts_it_again() {
 fn no_commander_means_no_ask() {
     let mut run = to_the_fight(Settings {
         commander: false,
-        ..Settings::default()
+        ..base()
     });
     assert!(run.ask(5_000).is_none());
     run.server.end(run.now, "red");
@@ -2045,7 +2101,7 @@ fn no_commander_means_no_ask() {
 fn the_budget_stop_holds_for_the_rest_of_the_lane() {
     let settings = Settings {
         matches: 2,
-        ..Settings::default()
+        ..base()
     };
     let mut run = to_the_fight(settings);
     // The runner's order: an ask would be due, the budget refuses it, and the
@@ -2081,7 +2137,7 @@ fn the_budget_stop_holds_for_the_rest_of_the_lane() {
 fn a_lane_started_after_the_sessions_budget_block_never_asks() {
     // The runner switches a later lane's commander off at its start: the block
     // holds for the session, not only for the lane that met it.
-    let mut run = Run::new(Settings::default());
+    let mut run = Run::new(base());
     run.lane.commander_off(OFF_BUDGET);
     for event in run.lane.events() {
         if let LaneEvent::Record { kind, data } = event {
@@ -2136,7 +2192,7 @@ fn heading_sends(run: &Run, from: u64) -> Vec<(u64, u32)> {
 #[test]
 fn a_refused_fire_is_the_exception() {
     const PULSE_MS: u64 = 500;
-    let mut run = to_the_fight_with(Settings::default(), |server| {
+    let mut run = to_the_fight_with(base(), |server| {
         server.pulse_ms = Some(PULSE_MS);
         server.magazine = Some(200);
     });
@@ -2212,9 +2268,9 @@ fn a_refused_fire_is_the_exception() {
 /// window full, less the other gun's `FIRE` typed ahead of it in that tick).
 #[test]
 fn a_refused_fire_is_tried_again_inside_its_second() {
-    let max = usize::try_from(Settings::default().max_lines_per_s).unwrap_or(usize::MAX);
+    let max = usize::try_from(base().max_lines_per_s).unwrap_or(usize::MAX);
     for pulse_ms in [500, LATTICE_MS] {
-        let mut run = to_the_fight_with(Settings::default(), |server| {
+        let mut run = to_the_fight_with(base(), |server| {
             server.pulse_ms = Some(pulse_ms);
             server.magazine = Some(200);
         });
@@ -2282,7 +2338,7 @@ fn a_refused_fire_is_tried_again_inside_its_second() {
 /// Searching on 090 at full speed, then held by the ground: the run, when the
 /// notice was said, and the heading it stopped on.
 fn held_in_the_search(free_off_deg: u32) -> (Run, u64, u32) {
-    let mut run = to_the_fight_with(Settings::default(), |server| {
+    let mut run = to_the_fight_with(base(), |server| {
         server.held = Some(HeldKnob { free_off_deg });
     });
     assert!(run.until(10_000, |run| run.lines().contains(&"SPEED 54")));
@@ -2400,7 +2456,7 @@ fn a_tank_held_again_escalates_then_backs_off() {
 
 #[test]
 fn a_lost_contact_is_hunted_in_the_lane() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     sight_a_hostile(&mut run);
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
     run.until(2_000, |_| false);
@@ -2546,7 +2602,7 @@ fn headings_between(run: &Run, from: u64, to: u64) -> Vec<u32> {
 
 #[test]
 fn a_withdraw_on_a_sound_hull_is_flown_as_a_hunt() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     assert!(run.until(3_000, |run| {
         run.lane.picture().own.sections.contains_key("hull")
     }));
@@ -2756,7 +2812,7 @@ fn a_withdraw_episode_answered_away_early_still_ends_on_time_and_rests() {
 fn a_withdraw_is_cleared_when_the_commander_stops() {
     /// A kept withdraw on a failing hull, the run's doctrine then.
     fn withdrawn() -> Run {
-        let mut run = to_the_fight(Settings::default());
+        let mut run = to_the_fight(base());
         run.server.hull_internals = (30, 60);
         assert!(run.until(5_000, |run| hull_failing(run.lane.picture())));
         run.ask(200).expect("an ask");
@@ -2765,10 +2821,7 @@ fn a_withdraw_is_cleared_when_the_commander_stops() {
         run
     }
     fn cleared(run: &Run) {
-        assert_eq!(
-            run.lane.doctrine(),
-            &Doctrine::pilot_default(&Settings::default())
-        );
+        assert_eq!(run.lane.doctrine(), &Doctrine::pilot_default(&base()));
         let lapsed = run.records_of("doctrine-lapsed");
         assert_eq!(lapsed.len(), 1, "{lapsed:?}");
         assert_eq!(lapsed[0]["why"], "the commander stopped");
@@ -2796,7 +2849,7 @@ fn a_withdraw_is_cleared_when_the_commander_stops() {
     );
     cleared(&run);
     // Any other stance survives a stop: the pilot flies on the last doctrine.
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     run.ask(200).expect("an ask");
     run.reply(answer("stand_off"));
     run.lane.commander_off(OFF_BUDGET);
@@ -2886,7 +2939,7 @@ fn both_gaps(run: &Run, from: u64) -> (BTreeMap<String, GapStats>, BTreeMap<Stri
 /// minutes, both cycles read whole; each gun's two gap counts and its
 /// refusals printed. The run and when the two minutes began.
 fn full_rate(pulse_ms: Option<u64>) -> (Run, u64) {
-    let mut run = to_the_fight_with(Settings::default(), |server| {
+    let mut run = to_the_fight_with(base(), |server| {
         server.pulse_ms = pulse_ms;
         server.magazine = Some(200);
     });
@@ -3047,7 +3100,7 @@ struct Crowded {
 fn a_crowded_minute(max: usize) -> Crowded {
     let settings = Settings {
         max_lines_per_s: u32::try_from(max).unwrap_or(u32::MAX),
-        ..Settings::default()
+        ..base()
     };
     let mut run = to_the_fight(settings);
     sight_a_hostile(&mut run);
@@ -3211,7 +3264,7 @@ fn a_crowded_minute(max: usize) -> Crowded {
 /// longer.)
 #[test]
 fn a_due_gun_keeps_its_slot_from_a_poll() {
-    let max = usize::try_from(Settings::default().max_lines_per_s).unwrap_or(usize::MAX);
+    let max = usize::try_from(base().max_lines_per_s).unwrap_or(usize::MAX);
     let full = a_crowded_minute(max);
     assert!(full.learned, "the cycles learned first: {full:?}");
     assert!(full.crowded > 100, "the ring was crowded: {full:?}");
@@ -3252,7 +3305,7 @@ fn an_identification_never_starts_a_hunt() {
     const X1_ROW: &str = "X1  unknown  bearing 000° (rel 270°)  far  450 m  1 s";
     const BA_ROW: &str = "BA  blue  bearing 000° (rel 270°)  far  450 m  1 s";
     for d in 0..=20u64 {
-        let mut run = to_the_fight(Settings::default());
+        let mut run = to_the_fight(base());
         run.server.contacts = vec![X1_ROW.into()];
         run.server.now = run.now;
         run.server.say(0, "New contact X1: bearing 000°, far.");
@@ -3316,7 +3369,7 @@ fn an_identification_never_starts_a_hunt() {
 /// sends at most one `WEAPONSTATUS` every `WEAPONS_LEARNED_MS` (and one for
 /// the minute's edge) while the machine gun keeps firing. The run.
 fn thinned(pulse_ms: Option<u64>) -> Run {
-    let mut run = to_the_fight_with(Settings::default(), |server| {
+    let mut run = to_the_fight_with(base(), |server| {
         server.pulse_ms = pulse_ms;
         server.magazine = pulse_ms.map(|_| 200);
     });
@@ -3393,7 +3446,7 @@ fn weaponstatus_thins_on_the_arenas_lattice() {
 /// carries no weapon.` nothing is fired either.
 #[test]
 fn no_fire_for_a_gun_the_tank_has_lost() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     locked_and_learned(&mut run);
     assert!(
         !run.sends_of("FIRE cannon", 0).is_empty(),
@@ -3497,7 +3550,7 @@ fn the_turret_can_go(run: &Run, lines: usize) -> bool {
 /// its reply.
 #[test]
 fn the_doubts_weaponstatus_skips_the_poll_gap() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     locked_and_learned(&mut run);
     assert!(
         run.until(60_000, |run| {
@@ -3530,7 +3583,7 @@ fn the_doubts_weaponstatus_skips_the_poll_gap() {
 /// the fire schedule, which is said once, and the cannon fires on.
 #[test]
 fn an_empty_gun_is_not_fired_again() {
-    let mut run = to_the_fight_with(Settings::default(), |server| {
+    let mut run = to_the_fight_with(base(), |server| {
         server.magazine = Some(200);
     });
     locked_and_learned(&mut run);
@@ -3600,7 +3653,7 @@ fn a_quiet_moment(run: &mut Run) {
 #[test]
 fn each_unlearned_gun_is_read_inside_its_own_first_second() {
     for apart in [100, 300, 480, 600] {
-        let mut run = to_the_fight(Settings::default());
+        let mut run = to_the_fight(base());
         a_quiet_moment(&mut run);
         assert!(
             GUNS.iter()
@@ -3622,7 +3675,7 @@ fn each_unlearned_gun_is_read_inside_its_own_first_second() {
     // A periodic `WEAPONSTATUS` due 150 ms after an ack. The machine gun's
     // ack first, at a quiet moment: its post-shot read moves the periodic one
     // off the other polls' five-second beat, so it goes on its own.
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     a_quiet_moment(&mut run);
     let mg = ack_in(&mut run, STEP_MS, "machine_gun");
     run.until(LIMIT_WINDOW_MS, |_| false);
@@ -3653,7 +3706,7 @@ fn each_unlearned_gun_is_read_inside_its_own_first_second() {
 #[test]
 fn no_second_fire_while_the_first_is_unanswered() {
     const ANSWER_MS: u64 = FIRE_GAP_MS + 2 * TICK_MS;
-    let mut run = to_the_fight_with(Settings::default(), |server| {
+    let mut run = to_the_fight_with(base(), |server| {
         server.fire_answer_ms = ANSWER_MS;
     });
     sight_a_hostile(&mut run);
@@ -3686,7 +3739,7 @@ fn no_second_fire_while_the_first_is_unanswered() {
 /// locked cadence, not the learned one.
 #[test]
 fn a_lock_line_after_the_rows_brings_back_the_locked_cadence() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     locked_and_learned(&mut run);
     // The last reply's rows committed, the next read not yet due.
     assert!(run.until(
@@ -3717,7 +3770,7 @@ fn a_lock_line_after_the_rows_brings_back_the_locked_cadence() {
 /// never the learned one.
 #[test]
 fn a_lane_that_has_read_no_gun_keeps_the_unlearned_cadence() {
-    let mut run = to_the_fight_with(Settings::default(), |server| {
+    let mut run = to_the_fight_with(base(), |server| {
         server.lost = GUNS.iter().map(|w| (*w).to_owned()).collect();
     });
     let from = run.now;
@@ -3746,7 +3799,7 @@ fn signed_turn(from: u32, to: u32) -> i64 {
 /// reverse.
 #[test]
 fn a_hold_faces_the_hostile_and_changes_range_along_the_line_of_fire() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     run.server.ba_at = Some((0, 440));
     sight_a_hostile(&mut run);
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
@@ -3815,7 +3868,7 @@ fn a_hold_faces_the_hostile_and_changes_range_along_the_line_of_fire() {
 /// tick to 90° left of its bow, stopped, and says so.
 #[test]
 fn a_side_hit_turns_the_bow() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     sight_a_hostile(&mut run);
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
     run.until(2_000, |_| false);
@@ -3882,7 +3935,7 @@ fn a_side_hit_turns_the_bow() {
 /// unless `STATUS` reads it.
 #[test]
 fn a_one_track_tank_never_circles_for_a_small_turn() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     run.server.ba_at = Some((0, 450));
     sight_a_hostile(&mut run);
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
@@ -3984,7 +4037,7 @@ fn a_one_track_tank_never_circles_for_a_small_turn() {
 /// `HELD_MARK_HALF_WIDTH_M`.
 #[test]
 fn the_search_does_not_drive_back_into_held_ground() {
-    let mut run = to_the_fight_with(Settings::default(), |server| {
+    let mut run = to_the_fight_with(base(), |server| {
         server.held = Some(HeldKnob { free_off_deg: 30 });
         server.pos = (1_000, 970);
     });
@@ -4051,7 +4104,7 @@ fn the_search_does_not_drive_back_into_held_ground() {
 /// the hold: bow on, closing full ahead.
 #[test]
 fn an_unidentified_contact_is_faced_stopped() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     run.until(1_500, |_| false);
     assert!(
         heading_sends(&run, 0).is_empty(),
@@ -4151,7 +4204,7 @@ fn the_lane_flies_the_engagement_it_is_given() {
     };
     let (stance, heading, speed, word) = fly(Settings {
         engagement: Engagement::Orbit,
-        ..Settings::default()
+        ..base()
     });
     assert_eq!((stance, word), (Stance::Orbit, json!("orbit")));
     assert!(
@@ -4159,7 +4212,7 @@ fn the_lane_flies_the_engagement_it_is_given() {
         "the orbit's tangent round BA due north: {heading}"
     );
     assert_eq!(speed, Some(54), "circling at full speed");
-    let (stance, heading, speed, word) = fly(Settings::default());
+    let (stance, heading, speed, word) = fly(base());
     assert_eq!((stance, word), (Stance::Hold, json!("hold")));
     assert!(
         angle_between(heading, 0) <= HOLD_BOW_DEG,
@@ -4180,7 +4233,7 @@ fn an_overruled_withdraw_is_flown_as_the_lanes_engagement() {
     ] {
         let mut run = to_the_fight(Settings {
             engagement,
-            ..Settings::default()
+            ..base()
         });
         sight_a_hostile(&mut run);
         assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
@@ -4223,7 +4276,7 @@ fn a_transient_answer_to_fire_rearms_that_gun() {
             "the bound discriminates"
         )
     };
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     locked_and_learned(&mut run);
     let from = run.now;
     run.server.fire_transient.insert("machine_gun".into());
@@ -4262,7 +4315,7 @@ fn a_transient_answer_to_fire_rearms_that_gun() {
 /// popped it.
 #[test]
 fn a_lobby_transient_never_reaches_the_cockpit() {
-    let mut run = Run::new(Settings::default());
+    let mut run = Run::new(base());
     run.server.lobby_transient = Some("SIM TEAM red".into());
     // Between the transient's queueing and its read, the claim waits in the
     // ledger as the lobby's own line, at its head (the ledger's unit test has
@@ -4299,7 +4352,7 @@ fn a_lobby_transient_never_reaches_the_cockpit() {
         .map(|s| s.lane_ms)
         .filter(|at| *at < claims[1])
         .collect();
-    let max = usize::try_from(Settings::default().max_lines_per_s).unwrap_or(usize::MAX);
+    let max = usize::try_from(base().max_lines_per_s).unwrap_or(usize::MAX);
     let slot = before
         .len()
         .checked_sub(max)
@@ -4339,7 +4392,7 @@ fn channel_line(len: usize) -> String {
 #[test]
 fn a_padded_channel_line_never_ends_the_match() {
     let end = "Match 1 is over (blue). Its units are checked in.";
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     sight_a_hostile(&mut run);
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
     let running = run.lane.picture().phase.clone();
@@ -4406,7 +4459,7 @@ fn a_full_width_channel_line_never_swallows_an_expected_answer() {
         mush_ansi::wrap_indent(&long, 120, 0),
         std::slice::from_ref(&long)
     );
-    let mut run = to_the_fight_with(Settings::default(), |server| server.fire_answer_ms = 20);
+    let mut run = to_the_fight_with(base(), |server| server.fire_answer_ms = 20);
     locked_and_learned(&mut run);
     // A `FIRE cannon` the server acks (one it refused is tried again).
     let mut acked = false;
@@ -4442,7 +4495,7 @@ fn a_full_width_channel_line_never_swallows_an_expected_answer() {
 #[test]
 fn a_chain_runs_on_through_whatever_its_pieces_read() {
     let end = "Match 1 is over (blue). Its units are checked in.";
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     sight_a_hostile(&mut run);
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
     let running = run.lane.picture().phase.clone();
@@ -4501,7 +4554,7 @@ fn a_chain_runs_on_through_whatever_its_pieces_read() {
 /// while the seated pilot types nothing.
 #[test]
 fn a_chain_ends_with_its_output() {
-    let mut run = Run::new(Settings::default());
+    let mut run = Run::new(base());
     assert!(run.until(30_000, |run| run.lines().contains(&"BOARD")));
     let running = run
         .server
@@ -4539,7 +4592,7 @@ fn a_chain_ends_with_its_output() {
 #[test]
 fn a_full_width_channel_line_never_swallows_a_lock_line_or_a_claim() {
     // The claim, straight after a channel line `Pilot` would not fit on.
-    let mut run = Run::new(Settings::default());
+    let mut run = Run::new(base());
     assert!(run.until(10_000, |run| run.lines().contains(&"SIM TEAM red")));
     let claim = run
         .server
@@ -4557,7 +4610,7 @@ fn a_full_width_channel_line_never_swallows_a_lock_line_or_a_claim() {
         run.said
     );
     // The lock line, straight after one `Locked` would not fit on.
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     sight_a_hostile(&mut run);
     assert!(run.until(5_000, |run| run.lane.picture().lock.as_deref()
         == Some("BA")));
@@ -4613,7 +4666,7 @@ fn a_wrapped_board_row_never_swallows_a_claim() {
         })
         .expect("a row whose tail is 115 to 120 columns");
     assert!(!tail.starts_with(' ') && !tail.starts_with('['), "{tail}");
-    let mut run = Run::new(Settings::default());
+    let mut run = Run::new(base());
     assert!(run.until(10_000, |run| run.lines().contains(&"SIM TEAM red")));
     // The claim's answer comes straight after the wrapped row.
     let claim = run
@@ -4642,7 +4695,7 @@ fn a_wrapped_board_row_never_swallows_a_claim() {
 /// `RANGE` follows the second reply read after it, never one read before.
 #[test]
 fn a_reboard_while_locked_types_no_early_range() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     sight_a_hostile(&mut run);
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
     run.until(5_000, |_| false);
@@ -4676,7 +4729,7 @@ fn a_reboard_while_locked_types_no_early_range() {
 
 /// To the fight with BA at 450 m east and the friendly RB held, locked on BA.
 fn locked_with_a_friend() -> Run {
-    let mut run = to_the_fight_with(Settings::default(), |server| {
+    let mut run = to_the_fight_with(base(), |server| {
         server.ba_at = Some((90, 450));
     });
     sight(&mut run, "X1");
@@ -4920,7 +4973,7 @@ fn until_typed(run: &mut Run, line: &str) -> u64 {
 /// it given up, and types nothing after it.
 #[test]
 fn a_stop_racing_a_claim_never_holds_the_slot() {
-    let mut run = Run::new(Settings::default());
+    let mut run = Run::new(base());
     run.server.claim_answer_ms = 2_000;
     let claim = until_typed(&mut run, "SIM TEAM red");
     run.lane.stop();
@@ -4956,8 +5009,8 @@ fn a_stop_racing_a_claim_never_holds_the_slot() {
 /// `SIM TEAM red` within 15 s.``.
 #[test]
 fn a_pause_longer_than_the_step_timeout_does_not_block() {
-    let timeout = Settings::default().step_timeout_ms;
-    let mut run = Run::new(Settings::default());
+    let timeout = base().step_timeout_ms;
+    let mut run = Run::new(base());
     run.server.claim_answer_ms = timeout + 8_000;
     let claim = until_typed(&mut run, "SIM TEAM red");
     run.until(claim + 100 - run.now, |_| false);
@@ -5008,7 +5061,7 @@ fn a_pause_longer_than_the_step_timeout_does_not_block() {
 fn a_match_ending_mid_pause_rematches_after_the_resume() {
     let mut run = to_the_fight(Settings {
         matches: 2,
-        ..Settings::default()
+        ..base()
     });
     run.until(2_000, |_| false);
     let paused = run.now;
@@ -5047,7 +5100,7 @@ fn a_match_ending_mid_pause_rematches_after_the_resume() {
 /// reads were not yet due.
 #[test]
 fn a_resume_mid_fight_reads_the_tank_and_orders_again() {
-    let mut run = to_the_fight(Settings::default());
+    let mut run = to_the_fight(base());
     let driving = |run: &Run| {
         run.lines()
             .iter()
@@ -5093,7 +5146,7 @@ fn a_resume_mid_fight_reads_the_tank_and_orders_again() {
 fn a_blocked_second_match_reports_the_blocker() {
     let mut run = to_the_fight(Settings {
         matches: 2,
-        ..Settings::default()
+        ..base()
     });
     run.until(2_000, |_| false);
     run.server.refuse_claim = Some("The red side is full: it takes 1 pilot(s).".into());
@@ -5124,7 +5177,7 @@ fn a_blocked_second_match_reports_the_blocker() {
 #[test]
 fn the_walk_and_the_claim_hold_on_a_slow_wire() {
     for (late_ms, inside_ooc) in [(1_800, false), (1_400, true)] {
-        let mut run = Run::new(Settings::default());
+        let mut run = Run::new(base());
         run.wire = Some(Wire::new(WIRE_SEED));
         run.server.look_answer_ms = late_ms;
         run.server.look_room = Some("Simulator Lobby #50".into());
@@ -5159,4 +5212,429 @@ fn the_walk_and_the_claim_hold_on_a_slow_wire() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Cut AN.2: the opening, the halt and the re-approach, on the shipped defaults
+// ---------------------------------------------------------------------------
+
+/// The brief the scripted server's `brief` knob answers with: the shipped
+/// header, `rays` and `No contacts.`.
+fn brief_of(rays: impl Fn(&str, u32) -> String) -> Vec<String> {
+    let mut lines = vec![
+        "Window around RA: cells 0 to 38 east and 88 to 107 north of 256 by 256; you at (6, 97), \
+         heading 090°; 10 m a cell."
+            .to_owned(),
+    ];
+    for (word, deg) in mush_bot::arena::lines::BRIEF_BEARINGS {
+        lines.push(rays(word, deg));
+    }
+    lines.push("No contacts.".to_owned());
+    lines
+}
+
+/// **The shipped muster's brief**: north and south 10 m of road then grass,
+/// east and west all road, the diagonals 10 m of road then grass.
+fn road_brief() -> Vec<String> {
+    brief_of(|word, deg| match deg {
+        90 | 270 => format!("{word}: 190 m of road, then beyond the window."),
+        _ => format!("{word}: 10 m of road, then grass to 90 m, then beyond the window."),
+    })
+}
+
+/// Every sentence the pilot said that starts `head`.
+fn said_starting<'a>(run: &'a Run, head: &str) -> Vec<&'a String> {
+    run.said.iter().filter(|s| s.starts_with(head)).collect()
+}
+
+#[test]
+fn the_opening_types_view_brief_once_and_steps_off_the_road() {
+    let mut run = to_the_fight_with(Settings::default(), |server| {
+        server.brief = road_brief();
+    });
+    let power = run.now;
+    // The brief, then the step: north at 15 kph.
+    assert!(
+        run.until(10_000, |run| run.lines().contains(&"SPEED 15")),
+        "the step: {:?}",
+        run.lines()
+    );
+    assert!(run.lines().contains(&"HEADING 0"), "{:?}", run.lines());
+    assert_eq!(run.sends_of("VIEW BRIEF", 0).len(), 1);
+    // The road's 10 m, half a cell and the cover: 35 m at the shipped 20.
+    let step = 10.0 + 5.0 + OPENING_COVER_M;
+    let stepping = format!("Opening: stepping off the road to the north ({step:.0} m).");
+    assert!(run.said.contains(&stepping), "{:?}", run.said);
+    assert_eq!(run.lane.picture_json()["pilot"]["opening"], "step");
+    assert_eq!(run.lane.picture_json()["pilot"]["rule"], "opening");
+    assert_eq!(
+        run.lane.picture_json()["pilot"]["start_m"],
+        json!([60.0, 970.0])
+    );
+    // The commander is told the rule in force (its first ask, due since the
+    // power came on and taken now).
+    let view = run.ask(200).expect("an ask");
+    assert_eq!(view["rule"], "opening");
+    // The server never moves the tank: it is moved to the aim.
+    let aim = 970 + step.round() as i32;
+    run.server.pos = (60, aim);
+    let moved = run.now;
+    assert!(
+        run.until(10_000, |run| !run.sends_of("SPEED 0", moved).is_empty()),
+        "the hold: {:?}",
+        run.lines()
+    );
+    // Facing the other side's entry (2 500, 970) from there: 091°.
+    run.until(1_000, |_| false);
+    assert!(
+        heading_sends(&run, moved).iter().any(|(_, deg)| *deg == 91),
+        "{:?}",
+        heading_sends(&run, moved)
+    );
+    assert!(
+        run.said.contains(
+            &"Opening: holding near our entry, facing 091° toward the other side's entry."
+                .to_owned()
+        ),
+        "{:?}",
+        run.said
+    );
+    assert_eq!(run.lane.picture_json()["pilot"]["opening"], "hold");
+    // Two minutes on: held there, no search, no second brief.
+    let held = run.now;
+    run.until(120_000, |_| false);
+    assert!(run.sends_of("BEARING B", power).is_empty(), "no search");
+    let ahead = speed_sends(&run, held, run.now);
+    assert!(ahead.iter().all(|(_, kph)| *kph <= 0), "{ahead:?}");
+    assert_eq!(run.sends_of("VIEW BRIEF", 0).len(), 1, "once a match");
+    assert!(run.sent.iter().all(|send| allowed(&send.line)));
+    assert!(limiter_holds(&run.sent, 4));
+    let brief = run
+        .sent
+        .iter()
+        .find(|send| send.line == "VIEW BRIEF")
+        .expect("typed");
+    assert_eq!(brief.purpose, Purpose::Poll);
+}
+
+#[test]
+fn a_start_into_a_running_match_has_no_opening() {
+    let mut run = Run::new(Settings::default());
+    assert!(
+        run.until(60_000, |run| run.lines().contains(&"STARTUP")),
+        "{:?}",
+        run.lines()
+    );
+    // The tank is powered already: `STARTUP`'s answer is that, not a start.
+    for (_, chunk) in &mut run.server.queue {
+        let text = chunk.text().to_owned();
+        if text.contains("Startup sequence begun") {
+            *chunk = Chunk::Text(String::new());
+        } else if text.contains("Power online.") {
+            *chunk = Chunk::Text("Power is already online.\r\n".to_owned());
+        }
+    }
+    assert!(run.until(10_000, Run::fighting), "{:?}", run.lines());
+    run.until(30_000, |_| false);
+    assert!(run.sends_of("VIEW BRIEF", 0).is_empty());
+    assert!(said_starting(&run, "Opening").is_empty(), "{:?}", run.said);
+    assert_eq!(run.lane.picture_json()["pilot"]["opening"], "done");
+    assert_eq!(run.lane.pilot().muster_m, None);
+}
+
+#[test]
+fn a_posed_start_has_no_opening() {
+    // The first `CONTACTS` after power holds an unknown at 500 m, told apart
+    // as BA a second later.
+    let mut run = Run::new(Settings::default());
+    assert!(run.until(60_000, |run| run.lines().contains(&"STARTUP")));
+    run.server.contacts = vec!["X1  unknown  bearing 090° (rel 000°)  far  500 m  0 s".into()];
+    assert!(run.until(10_000, Run::fighting));
+    run.server.now = run.now;
+    run.server.queue_rendered(
+        1_000,
+        Chunk::Identify {
+            was: "X1".into(),
+            row: "BA  blue  bearing 090° (rel 000°)  far  500 m  1 s".into(),
+        },
+    );
+    run.until(20_000, |_| false);
+    assert!(
+        run.sends_of("VIEW BRIEF", 0).is_empty(),
+        "{:?}",
+        run.lines()
+    );
+    assert!(said_starting(&run, "Opening").is_empty(), "{:?}", run.said);
+    assert!(
+        said_starting(&run, "Firing from the halt").is_empty(),
+        "{:?}",
+        run.said
+    );
+    // A `New contact` said before the first `STATUS`, nothing on the scope.
+    let mut run = Run::new(Settings::default());
+    assert!(run.until(60_000, |run| run.lines().contains(&"STARTUP")));
+    let at = run
+        .server
+        .queue
+        .iter()
+        .find(|(_, chunk)| chunk.text().contains("Power online."))
+        .map(|(at, _)| *at)
+        .expect("the power queued");
+    run.server.queue.push((
+        at,
+        Chunk::Text("New contact X1: bearing 090°, far.\r\n".to_owned()),
+    ));
+    assert!(run.until(10_000, Run::fighting));
+    run.until(20_000, |_| false);
+    assert!(
+        run.sends_of("VIEW BRIEF", 0).is_empty(),
+        "{:?}",
+        run.lines()
+    );
+    assert!(said_starting(&run, "Opening").is_empty(), "{:?}", run.said);
+}
+
+/// **A mover is fired on from the halt** (cut AN.2): the opening holds on a
+/// field of grass; BA comes on from 600 m at 10 m/s due east, read through the
+/// scope's 50 m rows (too coarse for the picture to publish a track at that
+/// speed), and is fired on with the tank stopped and its bow on BA — no
+/// positive `SPEED` while BA is past the band, and `FIRE` lines go. Each row
+/// 50 m nearer keeps the halt (it has not stopped coming on), so the halt is
+/// over only when BA comes to the band and its slack (`BA is at the band.`),
+/// never on `has stopped` or its time while BA closes.
+#[test]
+fn a_mover_is_fired_on_from_the_halt() {
+    let mut run = to_the_fight(Settings::default());
+    // The opening holds on a field of grass.
+    assert!(
+        run.until(10_000, |run| !said_starting(run, "Opening: holding")
+            .is_empty()),
+        "{:?}",
+        run.said
+    );
+    // BA comes on from 600 m at 10 m/s, due east.
+    run.server.ba_at = Some((90, 600));
+    run.server.contacts = vec!["BA  blue  bearing 090° (rel 000°)  far  600 m  1 s".into()];
+    run.server.now = run.now;
+    run.server.say(0, "New contact BA: bearing 090°, far.");
+    let sighted = run.now;
+    // The band and its slack, as the shipped doctrine flies it (450 m and
+    // 50), and the true range at which the scope's 50 m row first reads it.
+    let band = 450.0 + HOLD_SLACK_M;
+    let mut range = 600_u32;
+    let mut past_band_until = sighted;
+    let mut at_band_from = None;
+    let mut halt_over = None;
+    while range > 420 {
+        run.until(1_000, |_| false);
+        if halt_over.is_none() && !said_starting(&run, "The halt is over").is_empty() {
+            halt_over = Some(run.now);
+        }
+        range = range.saturating_sub(10).max(420);
+        run.server.ba_at = Some((90, range));
+        if f64::from(range) > band {
+            past_band_until = run.now;
+        }
+        if at_band_from.is_none() && f64::from(range) < band + 25.0 {
+            at_band_from = Some(run.now);
+        }
+    }
+    let at_band_from = at_band_from.expect("BA came to the band");
+    run.until(2_000, |_| false);
+    if halt_over.is_none() && !said_starting(&run, "The halt is over").is_empty() {
+        halt_over = Some(run.now);
+    }
+    assert!(
+        run.said
+            .iter()
+            .any(|s| s.starts_with("Firing from the halt at BA, ")),
+        "{:?}",
+        run.said
+    );
+    // Stopped while BA is past the band, firing, the bow on it.
+    let speeds = speed_sends(&run, sighted, past_band_until);
+    assert!(
+        speeds.iter().all(|(_, kph)| *kph <= 0),
+        "a positive SPEED while BA is past the band: {speeds:?}; said {:?}",
+        run.said
+    );
+    assert!(
+        run.sent.iter().any(|send| send.line.starts_with("FIRE ")
+            && send.lane_ms >= sighted
+            && send.lane_ms <= past_band_until),
+        "fired from the halt"
+    );
+    let bows = heading_sends(&run, sighted);
+    assert!(
+        bows.iter()
+            .filter(|(at, _)| *at <= past_band_until)
+            .all(|(_, deg)| angle_between(*deg, 90) <= HOLD_BOW_DEG),
+        "the bow on BA: {bows:?}"
+    );
+    // The halt is over once, at the band, and not before BA came to it.
+    let over: Vec<&String> = said_starting(&run, "The halt is over");
+    assert_eq!(
+        over,
+        ["The halt is over: BA is at the band."],
+        "{:?}",
+        run.said
+    );
+    let halt_over = halt_over.expect("the halt is over");
+    assert!(
+        halt_over > at_band_from,
+        "over at {halt_over}, BA at the band from {at_band_from}"
+    );
+    assert_ne!(run.lane.picture_json()["pilot"]["rule"], "halt");
+}
+
+#[test]
+fn the_reapproach_backs_off_and_waits_on_the_scripted_server() {
+    // Mid-field, so the backing off stays on the ground.
+    let mut run = to_the_fight_with(Settings::default(), |server| server.pos = (1_000, 970));
+    assert!(run.until(10_000, |run| {
+        !said_starting(run, "Opening: holding").is_empty()
+    }));
+    // BA stopped at the world point 420 m east of the tank.
+    let ba = (1_420_i32, 970_i32);
+    let place = |run: &mut Run| {
+        let (x, _) = run.server.pos;
+        let range = u32::try_from(ba.0 - x).unwrap_or(0);
+        if range > 480 {
+            // Past a stopped tank's sight (`help cockpit`): lost.
+            if !run.server.contacts.is_empty() {
+                run.server.contacts.clear();
+                run.server.ba_at = None;
+                run.server.now = run.now;
+                run.server.say(0, "Contact BA lost.");
+            }
+        } else {
+            run.server.ba_at = Some((90, range));
+        }
+    };
+    run.server.contacts = vec!["BA  blue  bearing 090° (rel 000°)  far  400 m  1 s".into()];
+    place(&mut run);
+    run.server.now = run.now;
+    run.server.say(0, "New contact BA: bearing 090°, far.");
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    // Hits taken on the front, enough to out-hit the pilot (two over the
+    // floor), inside three quarters of the exchange's window: ten in 15 s at
+    // the shipped figures.
+    let taken = EXCHANGE_MIN_TAKEN.max(EXCHANGE_MARGIN) + 2;
+    let spacing = EXCHANGE_WINDOW_MS * 3 / 4 / taken as u64;
+    let hits = run.now;
+    for i in 0..taken as u32 {
+        run.server.now = run.now;
+        run.server.say(
+            0,
+            &format!(
+                "Hit on the hull's front facet: {} of 400 armour left.",
+                390 - 10 * i
+            ),
+        );
+        run.until(spacing, |_| false);
+    }
+    assert!(
+        run.said
+            .iter()
+            .any(|s| s.starts_with("Opening the range on BA: ")),
+        "{:?}",
+        run.said
+    );
+    // The picture record and the commander are told: the exchange counted,
+    // the rule in force.
+    let json = run.lane.picture_json();
+    let pilot = &json["pilot"];
+    assert_eq!(pilot["rule"], "reapproach");
+    assert!(
+        pilot["exchange"]["taken"]
+            .as_u64()
+            .is_some_and(|n| n >= EXCHANGE_MIN_TAKEN as u64),
+        "{pilot}"
+    );
+    let view = run.ask(200).expect("an ask");
+    assert_eq!(view["rule"], "reapproach");
+    let back = speed_sends(&run, hits, run.now);
+    assert!(back.iter().any(|(_, kph)| *kph < 0), "{back:?}");
+    // Backing west: BA stays where it is in the world.
+    let backing = run.now;
+    let mut stopped = None;
+    // The stock tank's 27 kph astern, 7.5 m a second, in whole metres.
+    let mut west_m = 0.0_f64;
+    for _ in 0..60 {
+        if run.lane.pilot().last_speed_order.is_some_and(|kph| kph < 0) {
+            west_m += 7.5;
+            run.server.pos.0 = 1_000 - west_m.round() as i32;
+        }
+        place(&mut run);
+        run.until(1_000, |_| false);
+        if !said_starting(&run, "Out of BA's sight at ").is_empty() {
+            stopped = Some(run.now);
+            break;
+        }
+    }
+    let stopped = stopped.unwrap_or_else(|| panic!("never out of sight: {:?}", run.said));
+    assert!(
+        run.until(2_000, |run| !run
+            .sends_of("SPEED 0", stopped - 1_000)
+            .is_empty()),
+        "{:?}",
+        speed_sends(&run, backing, run.now)
+    );
+    // `REAPPROACH_OPEN_M` from the plot as the pilot reckons it. Its plot is BA's last row,
+    // a range rounded to the scope's 50 m (up to 25 m off BA's true point);
+    // and between two `STATUS` reads (2 s apart) it dead-reckons astern while
+    // this rig moves the tank in whole seconds (up to 15 m more).
+    let off = f64::from(ba.0 - run.server.pos.0);
+    assert!(off >= REAPPROACH_OPEN_M - 25.0 - 2.0 * 7.5, "{off}");
+    // The wait: no hunt for its length (from the step it began, at most a
+    // second before it was seen said)…
+    run.until(stopped + REAPPROACH_WAIT_MS - 1_000 - run.now, |_| false);
+    assert!(said_starting(&run, "Hunting ").is_empty(), "{:?}", run.said);
+    assert_eq!(run.lane.picture_json()["pilot"]["rule"], "approach_wait");
+    // …then over, and the precedence flies what it would (here the hunt:
+    // the trail's plot is younger than the hunt's ceiling).
+    run.until(3_000, |_| false);
+    let over = run
+        .said
+        .iter()
+        .position(|s| {
+            *s == format!(
+                "No approach from BA in {} s; moving on.",
+                REAPPROACH_WAIT_MS / 1_000
+            )
+        })
+        .unwrap_or_else(|| panic!("the wait's end: {:?}", run.said));
+    assert!(
+        run.said
+            .iter()
+            .enumerate()
+            .all(|(at, s)| !s.starts_with("Hunting ") || at > over),
+        "{:?}",
+        run.said
+    );
+}
+
+#[test]
+fn with_the_knobs_off_the_lane_is_as_it_was() {
+    let mut run = to_the_fight(base());
+    let power = run.now;
+    run.until(10_000, |_| false);
+    assert!(run.sends_of("VIEW BRIEF", 0).is_empty());
+    let bearing = run.sends_of("BEARING B", power);
+    assert!(
+        bearing
+            .first()
+            .is_some_and(|at| *at >= power + 5_000 && *at <= power + 6_000),
+        "{bearing:?}"
+    );
+    let headings = heading_sends(&run, power);
+    assert!(
+        headings
+            .first()
+            .is_some_and(|(at, deg)| *at >= power + 5_000 && *deg == 90),
+        "{headings:?}"
+    );
+    assert!(said_starting(&run, "Opening").is_empty());
+    assert_eq!(run.lane.picture_json()["pilot"]["opening"], "done");
+    assert_eq!(run.lane.picture_json()["pilot"]["rule"], Value::Null);
 }

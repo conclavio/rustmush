@@ -25,15 +25,19 @@
 //! transcript (`win-rate-muster.jsonl`) and report (`win-rate-muster.json`)
 //! there for reading after (the rig's own directory is removed).
 //! `MUSH_BOT_WIN_RATE_ENGAGEMENT` (`hold`, the default, or `orbit`) picks the
-//! pilot's engagement as it does for the posed lane.
+//! pilot's engagement as it does for the posed lane, and (cut AN.2)
+//! `MUSH_BOT_WIN_RATE_OFF` turns the pilot's own knobs off for an ablation as
+//! it does there.
 //!
-//! **What it prints**, in this order: the reading's `ENGAGEMENT` line; `WIN
+//! **What it prints**, in this order: the reading's `ENGAGEMENT` line; (cut
+//! AN.2) `KNOBS: opening {wait|search}, reapproach {on|off}`; `WIN
 //! RATE FROM THE MUSTER: {w} of 10 for red against one machine at 1 v 1 (…)`;
 //! one line a match with its three first times (the rig's
 //! `muster_match_line`: `first contact`, `first hit taken` and `first hit
 //! scored`, each whole seconds after that match's power online, or `none`);
 //! the rest of the reading (`FIRE GAP`, `SHOT GAP`, `STILL CYCLING`, `HITS
-//! TAKEN BY FACET`, `SEEN FIRST`, `OPENING`, `FRONT SHARE`); then `NO REPORT`
+//! TAKEN BY FACET`, `SEEN FIRST`, `OPENING`, `FRONT SHARE`, and cut AN.2's
+//! `PILOT RULES`); then `NO REPORT`
 //! and `EARLY END` when they apply. Nothing between the launch and the last
 //! line panics. The offline [`the_muster_lane_reads_its_match_lines`] (not
 //! ignored) proves the lines on hand-written matches.
@@ -55,7 +59,12 @@ async fn arena_win_rate_from_the_muster() {
     let value =
         std::env::var_os(arena_rig::ENGAGEMENT_ENV).map(|v| v.to_string_lossy().into_owned());
     let flying = arena_rig::engagement(value.as_deref());
-    let extra = arena_rig::extra(flying);
+    // Cut AN.2: the pilot's knobs this flight turns off, refused before the
+    // launch when the variable names anything else.
+    let off_value =
+        std::env::var_os(arena_rig::KNOBS_OFF_ENV).map(|v| v.to_string_lossy().into_owned());
+    let off = arena_rig::knobs_off(off_value.as_deref());
+    let extra = arena_rig::extra(flying, &off);
     let flown = arena_rig::fly_lane(&arena_rig::LanePlan {
         name: "win-rate-muster",
         matches: MATCHES,
@@ -77,6 +86,7 @@ async fn arena_win_rate_from_the_muster() {
     if let Some(head) = lines.first() {
         println!("{head}");
     }
+    println!("{}", arena_rig::knobs_line(&off));
     println!(
         "{}",
         flown.outcome().line("WIN RATE FROM THE MUSTER", MATCHES)

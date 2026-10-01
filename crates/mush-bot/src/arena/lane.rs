@@ -23,8 +23,9 @@
 //! inside two seconds); the post-shot `WEAPONSTATUS`; `HEADING`; `SPEED`; the
 //! lock's `RANGE` (never deferred: it is good only inside its 250 ms window,
 //! and it refines the lock's fix); and then **the polls that can wait** —
-//! `STATUS`, the periodic `WEAPONSTATUS`, `BEARING B` — each only when it
-//! leaves a slot free for every gun due inside the next second
+//! `STATUS`, the periodic `WEAPONSTATUS`, `BEARING B` and (cut AN.2) `VIEW
+//! BRIEF` — each only when it leaves a slot free for every gun due inside the
+//! next second
 //! (`Lane::reserve_ok`), or once it is [`POLL_STARVE_MS`] overdue. One line
 //! per free slot per tick. (The bot's own transcripts: 212 of 347 machine-gun
 //! `FIRE`s went with three lines already in the second before, the gun sitting
@@ -43,9 +44,11 @@
 //! every [`WEAPONS_LEARNED_MS`] once every gun carried has its cycle and none
 //! reads `0%` (while locked, each gun's chance read since the last lock line;
 //! the rounds come down by acks between rows); `BEARING B` every
-//! 5 000 ms while the pilot searches; never the same poll twice inside 500 ms
-//! (but the doubt's `WEAPONSTATUS`); the first `STATUS` and `WEAPONSTATUS`
-//! straight after `Power online.`.
+//! 5 000 ms while the pilot searches; `VIEW BRIEF` (cut AN.2) while the
+//! pilot's opening asks for its brief, at most once in
+//! [`super::pilot::OPENING_BRIEF_WAIT_MS`] (so once a match, at the muster);
+//! never the same poll twice inside 500 ms (but the doubt's `WEAPONSTATUS`);
+//! the first `STATUS` and `WEAPONSTATUS` straight after `Power online.`.
 //!
 //! **Orders are closed-loop.** The pilot re-decides every tick. A `HEADING`,
 //! `SPEED` or `LOCK` not acknowledged (`Steering to`, `Making`, `Locking`)
@@ -137,7 +140,7 @@ use super::{
     lines::{self, AnswerTo, AskKind, Line, answer_to},
     lobby::{Lobby, Step},
     picture::{self, Phase, Picture, Power},
-    pilot::{HuntLeg, Orders, Pilot, Turn, live_turn},
+    pilot::{HuntLeg, OPENING_BRIEF_WAIT_MS, Orders, Pilot, Turn, live_turn},
     report::Report,
     settings::Settings,
 };
@@ -227,8 +230,8 @@ pub struct Unanswered {
 impl Unanswered {
     /// The lane typed `send` at `now_ms`: a cockpit read or order by its verb
     /// (`CONTACTS`, `WEAPONSTATUS`, `STATUS`, `RANGE`, `BEARING B`, `LOCK`,
-    /// `HEADING`, `SPEED`, and `FIRE` with its gun), and every walk and lobby
-    /// line as [`AskKind::Lobby`].
+    /// `HEADING`, `SPEED`, `FIRE` with its gun, and cut AN.2's exact `VIEW
+    /// BRIEF`), and every walk and lobby line as [`AskKind::Lobby`].
     pub fn typed(&mut self, now_ms: u64, send: &Send) {
         self.lapse(now_ms);
         let (kind, weapon) = match send.purpose {
@@ -248,6 +251,7 @@ impl Unanswered {
                     "HEADING" => AskKind::Heading,
                     "SPEED" => AskKind::Speed,
                     "FIRE" => AskKind::Fire,
+                    "VIEW" if rest == "BRIEF" => AskKind::View,
                     _ => return,
                 };
                 let weapon = (kind == AskKind::Fire).then(|| rest.trim().to_owned());
@@ -300,9 +304,15 @@ impl Unanswered {
     /// empty forms — as the reply it would begin); the lock line that heads a
     /// `WEAPONSTATUS` reply, while one waits; and any game line at all while a
     /// lobby line awaits its answer (the lobby reads its own answers, which
-    /// this ledger does not tell apart). Pure: the channel continuation asks
-    /// it, and an expected answer is never read as chatter.
+    /// this ledger does not tell apart); and (cut AN.2) a brief's own bearing
+    /// lines and `No contacts.` while a `VIEW BRIEF` is being read
+    /// ([`super::picture::Open::brief`]): it answers nothing in the ledger,
+    /// but it is the game's line the lane asked for. Pure: the channel
+    /// continuation asks it, and an expected answer is never read as chatter.
     pub fn expects(&self, line: &Line, picture: &Picture) -> bool {
+        if picture.open.brief && matches!(line, Line::NoContacts | Line::GroundRay { .. }) {
+            return true;
+        }
         if let Some(kind) = opener(line)
             && self.cockpit(|asked| asked.kind == kind).is_some()
         {
@@ -527,6 +537,8 @@ struct Fight {
     last_weapons: Option<u64>,
     last_range: Option<u64>,
     last_bearing: Option<u64>,
+    /// The last `VIEW BRIEF` (cut AN.2).
+    last_view: Option<u64>,
     contacts_soon: Option<u64>,
     /// [`Picture::contacts_read`] as this fight last counted it (cut AM.1):
     /// seeded when the fight is made, so a re-board or a restart while locked
@@ -634,13 +646,14 @@ impl Lane {
             side,
             lobby: Lobby::new(side, settings.clone(), &me),
             doctrine: Doctrine::pilot_default(&settings),
+            // Cut AN.2: the pilot flies the table's knobs.
+            pilot: Pilot::with_knobs(settings.knobs()),
             doctrine_until_ms: None,
             rest_until_ms: 0,
             commander: Schedule::new(&settings),
             settings,
             assembler: Assembler::default(),
             picture: Picture::default(),
-            pilot: Pilot::new(),
             pilot_match: None,
             ring: VecDeque::new(),
             recent: VecDeque::new(),
@@ -811,6 +824,10 @@ impl Lane {
         let wait = self.pilot.wait.as_ref().map(
             |(d, until)| json!({"d": d, "left_s": until.saturating_sub(p.last_ms).div_ceil(1_000)}),
         );
+        // Cut AN.2: the rule flown at the last decision (a word), the
+        // exchange over its window (counts), the opening's stage (a word) and
+        // the start the pilot kept (the end-to-end measures the step from it).
+        let (taken, scored) = self.pilot.exchange_counts(p.last_ms);
         json!({"phase": phase_word(&p.phase), "match": p.following, "step": self.lobby.step(),
             "lead": self.lobby.lead(), "aboard": p.aboard,
             "own": {"callsign": own.callsign, "power": own.power.as_str(), "kph": own.speed_kph,
@@ -825,7 +842,11 @@ impl Lane {
                 "stall": self.pilot.stall_level, "threat": threat,
                 "live_turn": live_turn(p).map(Turn::as_str),
                 "marks": self.pilot.held_marks.len(),
-                "hold": self.pilot.hold_motion.as_str(), "wait": wait}})
+                "hold": self.pilot.hold_motion.as_str(), "wait": wait,
+                "rule": self.pilot.rule(),
+                "exchange": {"taken": taken, "scored": scored},
+                "opening": self.pilot.opening.word(),
+                "start_m": self.pilot.start_pos.map(|(x, y)| [x.round(), y.round()])}})
     }
 
     /// The pilot's own state (for tests and `/arena`).
@@ -878,7 +899,10 @@ impl Lane {
         // The call limit may have stopped it.
         self.withdraw_rule(now_ms);
         self.commander_records();
-        due.map(|_| self.picture.commander_view(now_ms, &self.doctrine))
+        due.map(|_| {
+            self.picture
+                .commander_view(now_ms, &self.doctrine, self.pilot.rule())
+        })
     }
 
     /// **Would an ask be due now?** [`Lane::commander_due`] without marking or
@@ -1294,7 +1318,7 @@ impl Lane {
     /// are forgotten.
     fn sync(&mut self, now_ms: u64) {
         if self.picture.following != self.pilot_match {
-            self.pilot = Pilot::new();
+            self.pilot = Pilot::with_knobs(self.settings.knobs());
             self.pilot_match = self.picture.following;
         }
         if self.lobby.fighting() && !self.stopped {
@@ -1521,6 +1545,16 @@ impl Lane {
             orders.ask_spot_b = false;
             fight.last_bearing = Some(now_ms);
             return Some(("BEARING B".into(), Purpose::Poll));
+        }
+        // 9d. `VIEW BRIEF` (cut AN.2): while the opening asks for its brief,
+        // at most once in its wait.
+        if orders.ask_view_brief
+            && poll_due(fight.last_view, OPENING_BRIEF_WAIT_MS, now_ms)
+            && may_wait(fight.last_view, OPENING_BRIEF_WAIT_MS)
+        {
+            orders.ask_view_brief = false;
+            fight.last_view = Some(now_ms);
+            return Some(("VIEW BRIEF".into(), Purpose::Poll));
         }
         None
     }
@@ -1804,5 +1838,120 @@ mod tests {
         assert!(lane.prev.is_some_and(|prev| prev.chain));
         lane.line(30_000, &word, 115, &mut journal);
         assert!(lane.prev.is_some_and(|prev| prev.chain));
+    }
+
+    /// **A brief answers only its own line** (cut AN.2): with `VIEW BRIEF`,
+    /// then `CONTACTS`, `FIRE machine_gun` and `STATUS` typed after it and
+    /// waiting, the brief's header, eight rays and its own `No contacts.` pop
+    /// only the `VIEW BRIEF` (the `No contacts.` is expected, never chatter,
+    /// and pops nothing); then the `CONTACTS` reply, the `Firing` ack and the
+    /// `STATUS` block each pop their own line, and the ledger is empty. A dark
+    /// window pops a waiting `VIEW BRIEF` alone.
+    #[test]
+    fn a_brief_answers_only_its_own_line() {
+        use AskKind as K;
+        let mut p = Picture::default();
+        let mut u = Unanswered::default();
+        u.typed(0, &send("VIEW BRIEF", Purpose::Poll));
+        u.typed(10, &send("CONTACTS", Purpose::Poll));
+        u.typed(20, &send("FIRE machine_gun", Purpose::Order));
+        u.typed(30, &send("STATUS", Purpose::Poll));
+        assert_eq!(kinds(&u), [K::View, K::Contacts, K::Fire, K::Status]);
+        // Read as the lane reads: `expects` first, then the picture, then the
+        // ledger with what the picture says the line opened.
+        let read = |p: &mut Picture, u: &mut Unanswered, at: u64, text: &str| {
+            let line = classify(text);
+            let expected = u.expects(&line, p);
+            let applied = p.apply(at, &line);
+            let popped = u.answer(at, &line, applied.opened, p);
+            (expected, popped.map(|asked| asked.kind))
+        };
+        let header = "Window around RA: cells 0 to 38 east and 88 to 107 north of 256 by 256; \
+                      you at (6, 97), heading 090°; 10 m a cell.";
+        assert_eq!(read(&mut p, &mut u, 40, header), (true, Some(K::View)));
+        for (word, _) in lines::BRIEF_BEARINGS {
+            let ray = format!("{word}: 90 m of grass, then beyond the window.");
+            let (expected, popped) = read(&mut p, &mut u, 41, &ray);
+            assert!(expected, "{ray}");
+            assert_eq!(popped, None, "{ray}");
+        }
+        assert_eq!(
+            read(&mut p, &mut u, 42, "No contacts."),
+            (true, None),
+            "the brief's own: expected, and it pops nothing"
+        );
+        assert_eq!(kinds(&u), [K::Contacts, K::Fire, K::Status]);
+        // Each reply pops its own line.
+        assert_eq!(
+            read(&mut p, &mut u, 50, "No contacts."),
+            (true, Some(K::Contacts))
+        );
+        assert_eq!(
+            read(&mut p, &mut u, 60, "Firing machine_gun."),
+            (true, Some(K::Fire))
+        );
+        assert_eq!(
+            read(&mut p, &mut u, 70, "Callsign RA."),
+            (true, Some(K::Status))
+        );
+        assert!(u.is_empty());
+        // A dark window answers a waiting `VIEW BRIEF` alone.
+        u.typed(100, &send("VIEW BRIEF", Purpose::Poll));
+        u.typed(110, &send("CONTACTS", Purpose::Poll));
+        assert_eq!(
+            read(
+                &mut p,
+                &mut u,
+                120,
+                "The window is dark: the panel has told you nothing yet."
+            ),
+            (true, Some(K::View))
+        );
+        assert_eq!(kinds(&u), [K::Contacts]);
+        // A header the terminal wrapped, a teammate's channel line among the
+        // bearings and a bearing wrapped in two: the first bearing pops the
+        // `VIEW BRIEF`, and the brief's own `No contacts.` still pops nothing,
+        // leaving the `CONTACTS` typed after it its own line.
+        let mut p = Picture::default();
+        let mut u = Unanswered::default();
+        u.typed(200, &send("VIEW BRIEF", Purpose::Poll));
+        u.typed(210, &send("CONTACTS", Purpose::Poll));
+        for piece in [
+            "Window around RA: cells 0 to 38 east and 100 to 119 north of 256 by 256; you at",
+            "(6, 109), heading 090°; 10 m a cell.",
+        ] {
+            assert_eq!(read(&mut p, &mut u, 220, piece).1, None, "{piece}");
+        }
+        for (i, (word, _)) in lines::BRIEF_BEARINGS.iter().enumerate() {
+            if i == 2 {
+                for piece in [
+                    "[RedNet] Ada: on your left",
+                    "East: 10 m of road, then grass to 30 m, then light woods to 50 m, then",
+                    "rubble to 70 m, then beyond the window.",
+                ] {
+                    assert_eq!(read(&mut p, &mut u, 222, piece).1, None, "{piece}");
+                }
+                continue;
+            }
+            let ray = format!("{word}: 90 m of grass, then beyond the window.");
+            let popped = read(&mut p, &mut u, 221, &ray).1;
+            assert_eq!(popped, (i == 0).then_some(K::View), "{ray}");
+        }
+        assert_eq!(
+            read(&mut p, &mut u, 223, "No contacts."),
+            (true, None),
+            "the brief's own, after a wrapped header and a wrapped bearing"
+        );
+        assert_eq!(kinds(&u), [K::Contacts]);
+        assert_eq!(
+            read(&mut p, &mut u, 230, "No contacts."),
+            (true, Some(K::Contacts))
+        );
+        assert!(u.is_empty());
+        // Only the exact line is `VIEW BRIEF`: a bare `VIEW` is not typed by
+        // the lane and is not kept.
+        let mut u = Unanswered::default();
+        u.typed(0, &send("VIEW", Purpose::Poll));
+        assert!(u.is_empty());
     }
 }

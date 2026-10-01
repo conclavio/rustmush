@@ -1701,3 +1701,55 @@ async fn live_centre() {
     live.client.close().await;
     drop(rig);
 }
+
+// ---------------------------------------------------------------------------
+// Cut AN.2: `VIEW BRIEF`'s header
+// ---------------------------------------------------------------------------
+
+/// **`VIEW BRIEF`'s header reads as the game prints it** (cut AN.2): the
+/// cockpit's own `brief_header` over a hand-built window payload, through the
+/// server's line renderer and the bot's own pipeline, reads as the header with
+/// the arena's size in cells, the metres a cell and the own cell, and starts a
+/// ground of that size. The bearing lines' grammar is held by the end-to-end
+/// test from the shipped muster (`arena_e2e`): their formatter needs the
+/// atlas's terrain classes, which are no dependency of this crate's.
+#[test]
+fn the_view_brief_header_reads_as_the_game_prints_it() {
+    let header = cockpit::brief_header(
+        "RA",
+        90_000,
+        &serde_json::json!({"origin_cell": [0, 88], "width": 39, "height": 20,
+            "extent": [256, 256], "you": [6, 9], "cell_cm": 1000}),
+    );
+    let mut reader = Reader::new();
+    assert_eq!(
+        reader.one(&header),
+        Line::ViewHeader {
+            extent: (256, 256),
+            cell_m: 10,
+            you: (6, 97),
+        },
+        "{header}"
+    );
+    let ground = reader.picture.ground.clone().expect("a ground");
+    assert_eq!(ground.side_m, Some((2_560.0, 2_560.0)));
+    assert_eq!(ground.cell_m, Some(10));
+    assert!(ground.rays.is_empty());
+    assert!(reader.picture.open.brief);
+    // A blue tank's at the far muster, three-digit cells and all.
+    let header = cockpit::brief_header(
+        "BA",
+        270_000,
+        &serde_json::json!({"origin_cell": [217, 88], "width": 39, "height": 20,
+            "extent": [256, 256], "you": [32, 9], "cell_cm": 1000}),
+    );
+    assert_eq!(
+        Reader::new().one(&header),
+        Line::ViewHeader {
+            extent: (256, 256),
+            cell_m: 10,
+            you: (249, 97),
+        },
+        "{header}"
+    );
+}
