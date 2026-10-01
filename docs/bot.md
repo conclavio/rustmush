@@ -497,6 +497,31 @@ Only after the hunt, with no identified hostile held for five seconds (an
 unidentified contact does not count), does it drive for The Crossroads (`B`),
 800 m past it, and back.
 
+**It stops before it is found.** `help cockpit` says a tank on the move is seen
+from further away than one standing still — on grass a stopped tank is seen
+out to 480 m against the stock sight's 600 m, a moving one out to all of it,
+and no ground hides a mover better than a stopped tank — so, while no
+identified hostile is held, the pilot stops wherever it is (it reads no
+ground). A **return not yet told apart**, once a contact row has given its
+bearing, is faced, stopped, while it resolves: for at most six seconds from
+when it was first seen (the help's three seconds to tell one apart, twice
+over), with a rest as long between two such stops and a handful of them (four)
+a match at most, so a stream of returns cannot hold the tank still; a return
+known only from its `New contact` notice does not stop it, and one lost and
+found again (the help: it "reads `X2` again") is a new return, first seen
+then. A **hunted machine
+the tank has not hurt and that is not going away**, expected back inside
+700 m, is waited for, stopped and facing where it is estimated to be, for
+twenty seconds, once a trail: the help's machine "drives at where it last saw
+you", and a tank that arrives moving is seen first. A machine it **has** hurt
+(the cockpit said `BA's turret is destroyed.` or any section of it) is chased
+at once, because the help's hurt machine breaks off for home and on the way
+fights only what is close; so is one whose plots showed it going away or
+across when the hunt began (judged there, once: a tank that has reached or
+passed the plot has the bearing back to it turned round). The hunt's legs stand still through a wait, and **any hit ends a wait**
+for good: the tank has been found. A fresh hostile ends it, and a hit on a side
+or the rear still turns the bow first.
+
 Held by the ground, it turns 45° for three seconds and orders its speed again.
 Still held at 0 kph, it turns further from the heading it stopped on (90°, then
 135°, then 180°, each judged four seconds after the last), and at last backs
@@ -517,11 +542,14 @@ away.`, `Falling back to 450 m: the hull is at half.`, `Held at 0 kph: turning
 to 180°.`, `Turning into the shot: hit on the hull's left facet; facing BB.`,
 `The right_track is gone: turning counter-clockwise only.`, `Held ground marked
 at 1420 m east, 1049 m north, heading 000°.`, `Steering round held ground: 136°
-for 091°.` and their kin, and the `arena-picture` record carries its hunt, its
-fall back and its stall, the turn into a hit (its bearing and the seconds
-left), the live turn with a track gone (`cw` or `ccw`), how many marks it holds
-and what its hold is doing (`stopped`, `ahead` or `astern`), each gun's cycle
-and slack, the guns struck and whether every gun is held. Its first `SPEED`
+for 091°.`, `Stopping for X1: facing 087° while it is told apart.`, `Stopping
+before BA finds us: its estimate is 590 m off at 012°.`, `The wait for BA is
+over; hunting on.` and their kin, and the `arena-picture` record carries its
+hunt, its fall back and its stall, the turn into a hit (its bearing and the
+seconds left), the live turn with a track gone (`cw` or `ccw`), how many marks
+it holds, what its hold is doing (`stopped`, `ahead` or `astern`), the wait it
+is in (whom it is for and the seconds left, or `null`), each gun's cycle and
+slack, the guns struck and whether every gun is held. Its first `SPEED`
 order is `999`, which makes the tank say its own top speeds.
 
 **The report and the exit code.** The JSON report gains an `arena` block: the
@@ -580,6 +608,28 @@ fewer than ten matches finish: the owner's target is seven in ten, and the lane
 reports the figure rather than failing on it. CI runs it only by hand (the `bot-win-rate` job,
 `workflow_dispatch`); read the figure off the job's log.
 
+**The engagement it flies.** `MUSH_BOT_WIN_RATE_ENGAGEMENT` picks the pilot's
+own engagement, written into the bot's config as `[arena] engagement`: unset or
+`hold` flies the hold (the default), `orbit` the orbit, and anything else stops
+the lane before it starts (`MUSH_BOT_WIN_RATE_ENGAGEMENT is hold or orbit, not
+…`). Nothing in the code changes between the two.
+
+```sh
+MUSH_BOT_WIN_RATE_ENGAGEMENT=orbit cargo test -p mush-bot --test arena_win_rate -- --ignored --nocapture
+```
+
+**What it prints.** First `ENGAGEMENT: {hold|orbit}; flown hold 164 of 164
+picture records` (the stances the transcript's picture records actually flew,
+most first), then the `WIN RATE` line and one line a match, then the lead's
+reading of the transcript and the report: `FIRE GAP {gun}: p10 … / p50 … / p90
+… ms over {n} gaps` (the gaps between one gun's `FIRE` lines, each under 20 s),
+`SHOT GAP {gun}: …` (the same between the shots that left, `Firing {gun}.`, so a
+refused line tried again a quarter-second later does not count as a short
+gap), `STILL CYCLING {gun}: {k} of {n} FIRE lines`, and `HITS TAKEN BY FACET:
+hull front 205, turret front 150, …` (summed over the matches; `none`, or `no
+report` when the bot left none). The live commander lane prints the same lines
+after its match lines.
+
 **It always reports.** Set `MUSH_BOT_WIN_RATE_KEEP` to a directory and the
 run's transcript and report are kept there (`win-rate.jsonl`, `win-rate.json`)
 before anything is printed, however the run ended. When the bot left no
@@ -620,7 +670,39 @@ hits than it scored. Every timeout was a tank with a track shot away: two
 could not move at all, and the rest hunted at a crawl, the plot about 600 m
 off taking 88 to 211 s to reach, so the course leg never ran and the sweep
 barely moved; twice the search after the sweep found the machine again and
-the pilot won.
+the pilot won. All three flew the orbit.
+
+**Nose-on, measured.** On 2026-09-30 again, with the hold as the default, the
+guns on their own clocks and the stops before being found, three runs on the
+hold and one forced onto the orbit (every other constant as the pilot ships;
+flown before a return lost and found again was stopped for afresh, and before
+a trail's going away was judged once, when its hunt began):
+
+| run | fire slack: start, rise | result | shot gap p50 (cannon, machine gun) | still cycling (cannon, machine gun) | facet hits taken on a front facet |
+|---|---|---|---|---|---|
+| hold 1 | 250, 150 ms | `WIN RATE: 5 of 10 … (lost 5, drew 0, timed out 0, other 0)` | 6 550, 1 498 ms | 18 of 107, 62 of 412 | 355 of 355 |
+| hold 2 | 250, 200 ms | `WIN RATE: 5 of 10 … (lost 5, drew 0, timed out 0, other 0)` | 6 544, 1 499 ms | 17 of 108, 75 of 434 | 404 of 404 |
+| hold 3 | 300, 150 ms (as shipped) | `WIN RATE: 4 of 10 … (lost 6, drew 0, timed out 0, other 0)` | 6 497, 1 497 ms | 12 of 104, 58 of 423 | 401 of 401 |
+| orbit | 300, 150 ms (as shipped) | `WIN RATE: 4 of 10 … (lost 5, drew 0, timed out 1, other 0)` | 6 612, 1 502 ms | 15 of 125, 75 of 497 | 47 of 429 |
+
+The pilot ships with the third (**selected from 3 runs**, on the guns'
+refusals: a starting slack of 250 ms saw 20 to 28 per cent of each gun's first
+five `FIRE` lines in a match refused, 300 ms 14 and 18; a win more or less in
+ten is noise). On the hold **every hit that named a facet struck a front
+one** (the rest, 17, 28 and 28 a run, struck a turret already destroyed, which
+names no facet), no track was shot away and nothing held it, against one facet hit in nine on the
+front under the orbit, which lost a track in six matches of ten. The win rate
+did not move with it: the machine still hit about twice every three seconds
+from first contact, and the tank, fighting at the band, still took about
+as many hits as it scored. A return not yet told apart stopped the tank once a
+match, at its first sighting (a machine found again after a hunt was not
+stopped for then; it is now); every machine it hunted was one whose turret it had destroyed, so the
+wait before being found never ran. A line-mode machine gun fires no faster than
+about once every 1.25 s (it is ready one cycle after the arena's next
+quarter-second step following its acknowledgement), and these runs measured a
+median of 1.5 s between its shots, a seventh of its `FIRE` lines still refused
+as cycling: the slack may not grow past half a second, so that share stays
+above one in ten.
 
 **The live commander lane.** A second ignored lane,
 `crates/mush-bot/tests/arena_live_commander.rs`, flies the same rig, poses and
@@ -706,8 +788,10 @@ at most 2 KB — seconds since the power came on (or, after taking a powered tan
 back, since the panel first said the power was up), the own tank (callsign,
 **its own side**, power, speed, heading, position, each section's condition
 and plate, each weapon's readiness, rounds and chance), the six nearest
-contacts (designator, side, bearing, range, plot age, and course and speed
-when the plots show it moving), the lock, the doctrine in force (without its
+contacts (designator, side, bearing, `rel` — the contact row's own bearing from
+the tank's bow, `null` for a contact known only from its notice — range, plot
+age, and course and speed when the plots show it moving), the lock, the
+doctrine in force (without its
 note: the model's own last reason, sent back to it, only made it repeat
 itself) and the six latest events. It holds nothing the pilot's own screen did
 not say. The answer is one JSON object,
@@ -724,6 +808,25 @@ as hostile anyway). An answer that does not read keeps the doctrine and is
 recorded as `commander-invalid`; one that does is recorded as read
 (`arena-doctrine`) and flown from the next tick, by the pilot's rule below.
 
+**Hold.** `hold` stops at the band with the bow on the target and changes the
+range only along the line of fire, ahead to close and in reverse to open (a
+model's `stand_off` reads as it); `close` drives in bow on to 200 m and holds
+there; `orbit` circles at the band and shows the target a side the whole time.
+
+**What the instructions tell it.** Besides the stances and the rules below,
+the system message gives the model the help's own figures: a round from within
+45 degrees of the bow strikes the front (400 on the hull, 350 on the turret), a
+side 250 or 220 and is twice the target, three side hits in ten land on that
+side's track, and a round from behind strikes the thinnest plate and can reach
+the engine — so **turn into the shot**; circling did not stop the machines'
+cannon and machine guns hitting (in the lead's live run on the orbit it still
+chose the orbit a quarter of the time, and of 494 hits the tank took on a named
+facet only 32 struck a front one); a stopped tank on grass is seen at 480 m
+against a mover's 600 m, so the tank that stops before it is found sees first,
+and a hunt first waits, stopped, for a machine it has not hurt; and each
+contact's `rel` is its bearing from the bow. It calls neither the hold nor the
+orbit the pilot's own default: `[arena] engagement` decides that.
+
 **Hunt.** `hunt` drives straight at the target until its band and then
 holds it there, bow on, but only while its plot is fresh (three seconds); with no
 hostile in sight it hunts the last one lost at once, as the pilot does on its
@@ -736,10 +839,11 @@ In the lead's live smoke of 2026-09-29 the commander answered `withdraw` for
 238 of 367 doctrines, most of them on a lost contact and some on a hostile it
 had read as a friend, and only 33 on a hull at half or less. So a `withdraw`
 answered while the tank's hull is sound (its internals above half) is flown as
-`hunt` when no hostile with a fresh plot is held and as `orbit` when one is,
-keeping its target, band and sense; the transcript records it as
+`hunt` when no hostile with a fresh plot is held and, when one is, as the
+pilot's own engagement (`hold` by default, `orbit` under `[arena] engagement =
+"orbit"`), keeping its target, band and sense; the transcript records it as
 `commander-overruled` (`{"from": "withdraw", "to": "hunt", "why": "the hull is
-sound"}`) and the report counts it. A withdraw on a failing hull is kept, as
+sound"}`, or `"to": "hold"`) and the report counts it. A withdraw on a failing hull is kept, as
 **one bounded hold**: `hold_s` seconds counted from the first withdraw of the
 episode, however often the commander answers withdraw again (a later answer
 may move its target or band, never its end). Then the pilot's own doctrine
@@ -800,8 +904,9 @@ are not goal turns: they never count against `[agent] max_steps`. Each match in
 the report's `arena` block counts `commander_calls` (the requests the cost
 ledger holds), `commander_applied`,
 `commander_stale`, `commander_invalid`, `commander_errors` and
-`commander_overruled` (the withdraws the pilot's rule flew as a hunt or an
-orbit), and names `commander_off` when it stopped before the match's end.
+`commander_overruled` (the withdraws the pilot's rule flew as a hunt or as the
+pilot's own engagement), and names `commander_off` when it stopped before the
+match's end.
 
 **Why reasoning must be off.** Measured before this was built, on a picture of
 about 1.2 KB and a five-field answer: `deepseek/deepseek-v4.1-flash` through

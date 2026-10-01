@@ -406,7 +406,7 @@
       "t_s": 2
     },
     "reply": "{\"target\":null,\"stance\":\"withdraw\",\"band_m\":900,\"sense\":\"auto\",\"note\":\"BA is blue, same side as me (RA); no hostile designator exists, so disengage to 900 m and break lock rather than fire on a friendly.\"}",
-    "expect": "orbit"
+    "expect": "hold"
   },
   {
     "req": 9,
@@ -473,7 +473,7 @@
       "t_s": 4
     },
     "reply": "{\"target\":null,\"stance\":\"withdraw\",\"band_m\":900,\"sense\":\"auto\",\"note\":\"Only contact BA is blue, same side as RA; no hostile designator exists, so disengage to 900 m and break lock rather than keep firing on a friendly.\"}",
-    "expect": "orbit"
+    "expect": "hold"
   },
   {
     "req": 269,
@@ -540,7 +540,7 @@
       "t_s": 73
     },
     "reply": "{\"target\":\"BA\",\"stance\":\"withdraw\",\"band_m\":900,\"sense\":\"auto\",\"note\":\"Mobility crippled (left track destroyed, right damaged) and left/right/rear hull armor gone; cannot maneuver to show a side or front, so withdraw to keep range and avoid further hits.\"}",
-    "expect": "orbit"
+    "expect": "hold"
   },
   {
     "req": 497,

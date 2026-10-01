@@ -119,9 +119,12 @@ pub const ENGAGED_PULSE_MS: u64 = 500;
 /// such a row sets [`Weapon::cycle_ms`]. Read from the transcript, not tunable.
 pub const CYCLE_READ_WITHIN_MS: u64 = 1_000;
 /// A weapon's slack before any ack or refusal has moved it (cut AL.1; AL.3 may
-/// tune it within 0..=500 by the brief, but the lane's tests admit only
-/// 50..=410: see the tuning list in [`super::pilot`]).
-pub const FIRE_SLACK_START_MS: u64 = 250;
+/// tune it within 0..=500 by the brief, but the lane's tests admit less: see
+/// the tuning list in [`super::pilot`]). 300 since AL.3's re-measure (it was
+/// 250): at 250, 20 to 28 per cent of each gun's first five `FIRE` lines in a
+/// match were refused as still cycling (two runs); at 300, 14 per cent of the
+/// cannon's and 18 of the machine gun's (one run).
+pub const FIRE_SLACK_START_MS: u64 = 300;
 /// The slack grows this much on each `Still cycling` answer to a `FIRE` this
 /// runner typed (the cockpit's own pre-check: the clock was early; cut AL.1,
 /// AL.3 may tune it within 100..=300 by the brief, but the lane's tests admit

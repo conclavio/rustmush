@@ -14,7 +14,10 @@
 //! `commander::brain`'s, tested beside it; the runner reserving at admission is
 //! proved end to end by cut AJ.4.) And (cut AK.2) twelve pictures and answers
 //! recorded from the lead's live smoke, replayed through a stub, come out of
-//! the pilot's withdraw rule as the rule says.
+//! the pilot's withdraw rule as the rule says; and (cut AL.3) eight recorded
+//! from the lead's live commander lane on AK reach a stub under the new
+//! policy, each picture carrying its contacts' `rel`, and come out of the rule
+//! as the pilot's own engagement (the hold) flies them.
 use std::{
     collections::BTreeSet,
     path::PathBuf,
@@ -391,7 +394,10 @@ fn section_from_words(words: &str) -> Section {
 /// `now`: the own tank (its sections from their words, its weapons, its
 /// position, heading and speed), its contacts (side, bearing, range, and the
 /// plot's age, read now), the lock, flying for `side` in a running match whose
-/// power came up `t_s` seconds ago.
+/// power came up `t_s` seconds ago. Cut AL.3: a contact's relative bearing is
+/// the view's `rel` when it carries one, else its `brg` less the own `hdg`
+/// (the recorded pictures of cut AK carry no `rel`); a contact with no `rng`
+/// was known only from its notice, and is left without a row (no range).
 fn picture_from_view(view: &Value, side: Side, now: u64) -> Picture {
     let mut picture = Picture {
         phase: Phase::Running { match_id: 1 },
@@ -435,14 +441,17 @@ fn picture_from_view(view: &Value, side: Side, now: u64) -> Picture {
             Some("blue") => Some(Side::Blue),
             _ => None,
         };
+        let bearing_deg = whole(&contact["brg"]).unwrap_or(0);
+        let rel_deg = whole(&contact["rel"])
+            .unwrap_or_else(|| (bearing_deg + 360 - picture.own.heading_deg % 360) % 360);
         picture.contacts.insert(
             designator.clone(),
             Contact {
                 designator,
                 was: None,
                 side,
-                bearing_deg: whole(&contact["brg"]).unwrap_or(0),
-                rel_deg: 0,
+                bearing_deg,
+                rel_deg,
                 band: "far".into(),
                 range_m: whole(&contact["rng"]),
                 age_ms: contact["age"].as_u64().unwrap_or(0) * 1_000,
@@ -463,7 +472,8 @@ fn picture_from_view(view: &Value, side: Side, now: u64) -> Picture {
 /// and three on a hull at half or less. Each picture is rebuilt, sent as the
 /// commander's picture through a stub that answers the recorded answer, and
 /// the answer read, scheduled and vetted as at a match's first withdraw: the
-/// lost contact is hunted, the held hostile orbited, and only the failing hull
+/// lost contact is hunted, the held hostile held (cut AL.3: the pilot's own
+/// engagement, the hold by default; it was orbited), and only the failing hull
 /// withdraws, for the default hold. No model is called.
 #[tokio::test]
 async fn recorded_withdraws_are_flown_by_the_pilots_rule() {
@@ -473,13 +483,10 @@ async fn recorded_withdraws_are_flown_by_the_pilots_rule() {
             .expect("the recorded pictures");
     assert_eq!(fixtures.len(), 12);
     let count = |expect: &str| fixtures.iter().filter(|f| f["expect"] == expect).count();
-    assert_eq!(
-        (count("hunt"), count("orbit"), count("withdraw")),
-        (6, 3, 3)
-    );
+    assert_eq!((count("hunt"), count("hold"), count("withdraw")), (6, 3, 3));
     let same_side = fixtures
         .iter()
-        .filter(|f| f["expect"] == "orbit")
+        .filter(|f| f["expect"] == "hold")
         .filter(|f| f["reply"].as_str().is_some_and(|r| r.contains("same side")))
         .count();
     assert!(same_side >= 2, "{same_side} same-side answers");
@@ -540,7 +547,7 @@ async fn recorded_withdraws_are_flown_by_the_pilots_rule() {
             .reply(NOW + 400, CommanderReply::Answer(reply.content.clone()))
             .unwrap_or_else(|| panic!("{req}: {:?}", schedule.take_records()));
         assert_eq!(doctrine.stance, Stance::Withdraw, "{req}: as recorded");
-        let vetted = commander::vet(doctrine, &picture, true);
+        let vetted = commander::vet(doctrine, &picture, true, Stance::Hold);
         let expect = fixture["expect"].as_str().expect("expect");
         assert_eq!(
             serde_json::to_value(vetted.doctrine.stance).expect("json"),
@@ -567,4 +574,143 @@ async fn recorded_withdraws_are_flown_by_the_pilots_rule() {
             assert_eq!(vetted.doctrine.hold_s, None, "{req}");
         }
     }
+}
+
+// -- cut AL.3: eight recorded live pictures under the new policy ---------------------
+
+/// **The lead's live commander lane on AK, replayed under the new policy**
+/// (cut AL.3). Eight doctrines the commander applied there, each with the
+/// picture it answered, recorded in
+/// `tests/fixtures/arena_commander_ak_live.json`: four `orbit`s with a fresh
+/// blue contact held on a sound hull (the commander may still choose the
+/// orbit), two `withdraw`s on a sound hull with a fresh blue contact held, and
+/// two `hunt`s with no hostile held (one holding a return known only from its
+/// notice). Each picture is rebuilt, sent as the commander's picture through a
+/// stub that answers the recorded answer, and the answer read, scheduled and
+/// vetted with the pilot's default engagement, the hold: the orbit stays an
+/// orbit, the withdraw is flown as the hold, the hunt as the hunt. What the
+/// stub was sent: exactly [`COMMANDER_POLICY`] as the system message, and a
+/// picture naming the own side, carrying a `rel` on every contact (a number
+/// where it has a range, `null` where it has none) and no `note`. No model is
+/// called.
+#[tokio::test]
+async fn recorded_live_pictures_reach_the_stub_under_the_new_policy() {
+    const NOW: u64 = 200_000;
+    let fixtures: Vec<Value> =
+        serde_json::from_str(include_str!("fixtures/arena_commander_ak_live.json"))
+            .expect("the recorded pictures");
+    assert_eq!(fixtures.len(), 8);
+    let count = |expect: &str| fixtures.iter().filter(|f| f["expect"] == expect).count();
+    assert_eq!((count("orbit"), count("hold"), count("hunt")), (4, 2, 2));
+    let (mut with_rel, mut without_rel) = (0, 0);
+    for fixture in &fixtures {
+        let req = &fixture["req"];
+        let reply_text = fixture["reply"].as_str().expect("the recorded answer");
+        let recorded: Value = serde_json::from_str(reply_text).expect("the answer is JSON");
+        let stub = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "gen-ak-live", "model": "deepseek/deepseek-v4.1-flash", "provider": "Together",
+                "choices": [{"message": {"content": reply_text}, "finish_reason": "stop"}],
+                "usage": {"cost": 0.0002, "prompt_tokens": 900, "completion_tokens": 60,
+                    "total_tokens": 960}
+            })))
+            .expect(1)
+            .mount(&stub)
+            .await;
+        let config = config(&format!("{}/v1/chat/completions", stub.uri()));
+        let resolved = commander::resolve(&config.arena, None).expect("a commander");
+        let model = resolved.selection.settings.clone();
+        let brain = Brain::with_tape(&model, None).expect("a client");
+        let picture = picture_from_view(&fixture["view"], Side::Red, NOW);
+        let view = picture.commander_view(NOW, &Doctrine::pilot_default(&config.arena));
+        let capture = commander::capture(&model, &view).expect("a request");
+        let costs = Arc::new(Mutex::new(
+            Ledger::open(&config.costs, &config.ssh, &config.memory.namespace).expect("a ledger"),
+        ));
+        let request =
+            commander::admit(&costs, resolved.selection.clone(), &capture).expect("admitted");
+        let reply = commander::call(brain, capture, costs.clone(), request.id)
+            .await
+            .expect("a reply");
+        assert_eq!(reply.error, None, "{req}");
+        assert_eq!(reply.content, reply_text, "{req}");
+
+        // What the stub was sent: the new policy, and a picture naming the own
+        // side, every contact's `rel`, and no note.
+        let requests = stub.received_requests().await.expect("recorded");
+        assert_eq!(requests.len(), 1, "{req}");
+        let body: Value = requests[0].body_json().expect("json");
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][0]["content"], COMMANDER_POLICY, "{req}");
+        let sent: Value =
+            serde_json::from_str(body["messages"][1]["content"].as_str().expect("text"))
+                .expect("the picture as JSON");
+        assert_eq!(sent["own"]["side"], "red", "{req}");
+        assert!(sent["doctrine"].get("note").is_none(), "{req}: {sent}");
+        assert!(!sent.to_string().contains("\"note\""), "{req}: {sent}");
+        let contacts = sent["contacts"].as_array().expect("contacts");
+        assert_eq!(
+            contacts.len(),
+            fixture["view"]["contacts"]
+                .as_array()
+                .expect("recorded contacts")
+                .len(),
+            "{req}"
+        );
+        for contact in contacts {
+            let object = contact.as_object().expect("a contact");
+            assert!(object.contains_key("rel"), "{req}: {contact}");
+            if contact["rng"].is_u64() {
+                with_rel += 1;
+                let rel = contact["rel"].as_u64().expect("a number with a range");
+                let (brg, hdg) = (
+                    contact["brg"].as_u64().expect("brg"),
+                    sent["own"]["hdg"].as_u64().expect("hdg"),
+                );
+                assert_eq!(rel, (brg + 360 - hdg) % 360, "{req}: {contact}");
+            } else {
+                without_rel += 1;
+                assert_eq!(contact["rel"], Value::Null, "{req}: {contact}");
+            }
+        }
+
+        // The answer through the schedule, then the pilot's rule with the
+        // pilot's default engagement, as at the match's first answer.
+        let mut schedule = Schedule::new(&config.arena);
+        assert!(schedule.begin(1, NOW));
+        schedule
+            .due(NOW, !picture.contacts.is_empty())
+            .expect("an ask");
+        let doctrine = schedule
+            .reply(NOW + 400, CommanderReply::Answer(reply.content.clone()))
+            .unwrap_or_else(|| panic!("{req}: {:?}", schedule.take_records()));
+        assert_eq!(
+            serde_json::to_value(doctrine.stance).expect("json"),
+            recorded["stance"],
+            "{req}: as recorded"
+        );
+        let vetted = commander::vet(doctrine.clone(), &picture, true, Stance::Hold);
+        let expect = fixture["expect"].as_str().expect("expect");
+        assert_eq!(
+            serde_json::to_value(vetted.doctrine.stance).expect("json"),
+            expect,
+            "{req} ({}): {reply_text}",
+            fixture["class"]
+        );
+        if doctrine.stance == Stance::Withdraw {
+            assert_eq!(
+                vetted.overruled,
+                Some((Stance::Withdraw, Stance::Hold, commander::WHY_HULL_SOUND)),
+                "{req}"
+            );
+            assert_eq!(vetted.doctrine.hold_s, None, "{req}");
+        } else {
+            assert_eq!(vetted.overruled, None, "{req}");
+            assert_eq!(vetted.doctrine, doctrine, "{req}");
+        }
+    }
+    assert!(with_rel >= 6, "{with_rel} contacts with a row");
+    assert!(without_rel >= 1, "{without_rel} known only from a notice");
 }

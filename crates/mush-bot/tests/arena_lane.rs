@@ -56,10 +56,11 @@ use mush_bot::arena::{
     pilot::{
         FRESH_PLOT_MS, FRESH_READ_MS, HEADING_STEP_DEG, HELD_FOR_MS, HELD_MARK_AHEAD_M,
         HELD_MARK_HALF_WIDTH_M, HELD_MARK_NEAR_M, HELD_TURN_DEG, HOLD_BOW_DEG, ONE_TRACK_COMMIT_MS,
-        ONE_TRACK_DEADBAND_DEG, STALL_MS, WITHDRAW_MS, clamp_arena, hull_failing,
+        ONE_TRACK_DEADBAND_DEG, STALL_MS, UNIDENTIFIED_WAIT_MS, WITHDRAW_MS, clamp_arena,
+        hull_failing,
     },
     report::{self, GapStats},
-    settings::Settings,
+    settings::{Engagement, Settings},
 };
 use serde_json::{Value, json};
 
@@ -1967,6 +1968,12 @@ fn a_lost_contact_is_hunted_in_the_lane() {
     sight_a_hostile(&mut run);
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
     run.until(2_000, |_| false);
+    // Cut AL.3: BA is hurt before it goes (as every hunted machine in AK.3's
+    // runs was), so it is hunted at once rather than waited for.
+    run.server.now = run.now;
+    run.server.say(0, "BA's turret is destroyed.");
+    run.until(100, |_| false);
+    assert!(run.lane.pilot().hurt.contains("BA"));
     // The scope loses BA: `CONTACTS` answers `No contacts.` from now on.
     // (The notices come after any reply already on its way, which still
     // names BA.)
@@ -2139,8 +2146,8 @@ fn a_withdraw_on_a_sound_hull_is_flown_as_a_hunt() {
 /// `withdraw` for longer than the pilot's own withdrawal. The tank backs away
 /// bow on for the hold, counted from the first withdraw however often it is
 /// answered again; then the pilot's default hold again; and a withdraw in the
-/// rest after it is flown as an orbit (the overruled withdraw's stance until
-/// AL.3).
+/// rest after it is flown as the pilot's own engagement, the hold (cut AL.3:
+/// it was an orbit).
 #[test]
 fn a_withdraw_on_a_failing_hull_holds_then_lapses() {
     const HOLD_S: u32 = 20;
@@ -2229,14 +2236,15 @@ fn a_withdraw_on_a_failing_hull_holds_then_lapses() {
         "stopped at the band after the lapse"
     );
     // A third withdraw inside the rest: the hold is spent, and BA is held, so
-    // it is flown as an orbit.
+    // it is flown as the pilot's own engagement, the hold (cut AL.3: it was
+    // an orbit).
     run.ask(12_000).expect("an ask");
     assert!(run.now < lapse + u64::from(HOLD_MAX_S) * 1_000);
     run.reply(withdraw_for(HOLD_S));
-    assert_eq!(run.lane.doctrine().stance, Stance::Orbit);
+    assert_eq!(run.lane.doctrine().stance, Stance::Hold);
     assert_eq!(
         run.records_of("commander-overruled"),
-        vec![&json!({"from": "withdraw", "to": "orbit", "why": "the hold is spent"})]
+        vec![&json!({"from": "withdraw", "to": "hold", "why": "the hold is spent"})]
     );
     // The rest over, a withdraw on the failing hull is kept again.
     run.advance_to(lapse + u64::from(HOLD_MAX_S) * 1_000);
@@ -2284,10 +2292,12 @@ fn a_withdraw_episode_answered_away_early_still_ends_on_time_and_rests() {
     run.ask(12_000).expect("an ask");
     assert!(run.now < end + rest_ms, "inside the rest");
     run.reply(withdraw_for(HOLD_S));
-    assert_eq!(run.lane.doctrine().stance, Stance::Orbit);
+    // Flown as the pilot's own engagement, the hold (cut AL.3: it was an
+    // orbit).
+    assert_eq!(run.lane.doctrine().stance, Stance::Hold);
     assert_eq!(
         run.records_of("commander-overruled"),
-        vec![&json!({"from": "withdraw", "to": "orbit", "why": "the hold is spent"})]
+        vec![&json!({"from": "withdraw", "to": "hold", "why": "the hold is spent"})]
     );
     // After the rest, a new episode: kept, and held its own full length (the
     // old episode's end is not inherited).
@@ -2583,7 +2593,13 @@ fn a_crowded_minute(max: usize) -> Crowded {
         ..Settings::default()
     };
     let mut run = to_the_fight(settings);
+    // Cut AL.3: BA is one the pilot has hurt, so the moment's hunt a reply
+    // crossing the identification can start drives at once, as it always did,
+    // rather than waiting stopped (the minute's lines were measured so).
+    run.server.now = run.now;
+    run.server.say(0, "BA's turret is destroyed.");
     sight_a_hostile(&mut run);
+    assert!(run.lane.pilot().hurt.contains("BA"));
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
     // Fewer lines a second may leave the post-shot read no slot inside the
     // cannon's first second; then the minute checks `STATUS` alone (a
@@ -3274,6 +3290,12 @@ fn a_side_hit_turns_the_bow() {
     sight_a_hostile(&mut run);
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
     run.until(2_000, |_| false);
+    // Cut AL.3: BA hurt before it goes, so the hunt drives rather than waits
+    // stopped (the turn's own stop is what this asserts).
+    run.server.now = run.now;
+    run.server.say(0, "BA's turret is destroyed.");
+    run.until(100, |_| false);
+    assert!(run.lane.pilot().hurt.contains("BA"));
     run.server.contacts.clear();
     run.server.locked = None;
     run.server.now = run.now;
@@ -3368,17 +3390,29 @@ fn a_one_track_tank_never_circles_for_a_small_turn() {
     let need = run.now;
     assert!(run.until(3_000, |run| !heading_sends(run, need).is_empty()));
     // Two seconds into the long way round (the scripted tank near 300°), BA
-    // moves to 110°: from where `STATUS` reads the tank that is another
-    // clockwise turn well past the deadband, which only the commit holds back
-    // (fixes after review: with BA still, the lane's own dedupe held every
-    // re-send, commit or none).
+    // moves to 170° clockwise of where the tank is then (about 110°): from
+    // where `STATUS` reads the tank that is another clockwise turn well past
+    // the deadband, which only the commit holds back (fixes after review: with
+    // BA still, the lane's own dedupe held every re-send, commit or none).
+    // (Cut AL.3: taken from the tank's own heading rather than fixed at 110°.
+    // The wobble before can leave the bow a few degrees counter-clockwise of
+    // 350° — a stop facing a return not yet told apart moved the lines' phase —
+    // and from 345° the long way round reaches 287° in two seconds, from which
+    // a fixed 110° is a counter-clockwise turn of 177°: the live side.)
     run.until(2_000, |_| false);
+    let mid_turn = run.server.heading_now();
     assert!(
-        signed_turn(run.server.heading_now(), 110) > i64::from(ONE_TRACK_DEADBAND_DEG),
-        "mid-turn at {}",
-        run.server.heading_now()
+        angle_between(mid_turn, 300) <= 30,
+        "mid-turn near 300°, BA's move near 110°: {mid_turn}"
     );
-    run.server.ba_at = Some((110, 450));
+    let past = (mid_turn + 170) % 360;
+    let read = run.lane.picture().own.heading_deg;
+    assert!(
+        signed_turn(read, past) > i64::from(ONE_TRACK_DEADBAND_DEG),
+        "from where STATUS reads the tank ({read}°), BA at {past}° is a clockwise \
+         turn past the deadband"
+    );
+    run.server.ba_at = Some((past, 450));
     run.until(ONE_TRACK_COMMIT_MS + 1_000, |_| false);
     let sends = heading_sends(&run, need);
     let (ordered, deg) = *sends.first().expect("the turn ordered");
@@ -3475,4 +3509,173 @@ fn the_search_does_not_drive_back_into_held_ground() {
         "{:?}",
         run.said
     );
+}
+
+// -- cut AL.3: seen second, and the engagement --------------------------------------
+
+/// **A return not yet told apart is faced, stopped** (cut AL.3): a second and
+/// a half after `Power online.` (before the search, so no heading has been
+/// ordered yet), `New contact X1: bearing 087°, far.` and the scripted row
+/// `X1  unknown  bearing 087° …  450 m  1 s`: within two ticks of the row
+/// being read the lane types `HEADING 87` and `SPEED 0`, says so, and the
+/// picture record names the wait. Told apart as BA 700 m off on that bearing,
+/// the hold: bow on, closing full ahead.
+#[test]
+fn an_unidentified_contact_is_faced_stopped() {
+    let mut run = to_the_fight(Settings::default());
+    run.until(1_500, |_| false);
+    assert!(
+        heading_sends(&run, 0).is_empty(),
+        "no heading before the search"
+    );
+    run.server.contacts = vec!["X1  unknown  bearing 087° (rel 357°)  far  450 m  1 s".into()];
+    run.server.now = run.now;
+    run.server.say(0, "New contact X1: bearing 087°, far.");
+    let noticed = run.now;
+    assert!(
+        run.until(2_000, |run| run
+            .lane
+            .picture()
+            .contacts
+            .get("X1")
+            .is_some_and(|c| c.range_m.is_some())),
+        "the row is read"
+    );
+    let row = run.now;
+    // The notice alone stopped nothing: no heading or speed went before the
+    // row was read.
+    assert!(
+        heading_sends(&run, noticed)
+            .iter()
+            .all(|(at, _)| *at >= row)
+            && speed_sends(&run, noticed, row)
+                .iter()
+                .all(|(at, _)| *at >= row),
+        "a stop on the notice alone: {:?}",
+        run.sent
+    );
+    run.until(2 * TICK_MS, |_| false);
+    // The first heading and speed after the notice: 087° and 0, both inside
+    // the row's first two ticks.
+    let window = row..=row + 2 * TICK_MS;
+    let headings = heading_sends(&run, noticed);
+    let first_heading = headings.first().copied();
+    assert!(
+        first_heading.is_some_and(|(at, deg)| deg == 87 && window.contains(&at)),
+        "{headings:?} after the row at {row}"
+    );
+    let speeds = speed_sends(&run, noticed, run.now);
+    let first_speed = speeds.first().copied();
+    assert!(
+        first_speed.is_some_and(|(at, kph)| kph == 0 && window.contains(&at)),
+        "{speeds:?} after the row at {row}"
+    );
+    assert!(
+        run.said
+            .contains(&"Stopping for X1: facing 087° while it is told apart.".to_owned()),
+        "{:?}",
+        run.said
+    );
+    let view = run.lane.picture_json();
+    assert_eq!(view["pilot"]["wait"]["d"], "X1", "{}", view["pilot"]);
+    assert!(
+        view["pilot"]["wait"]["left_s"]
+            .as_u64()
+            .is_some_and(|s| (1..=UNIDENTIFIED_WAIT_MS / 1_000).contains(&s))
+    );
+    // Told apart: BA, 700 m off on 087°. The hold: bow on, full ahead.
+    run.server.contacts = vec!["BA  blue  bearing 087° (rel 000°)  far  700 m  1 s".into()];
+    run.server.now = run.now;
+    run.server.say(0, "Contact X1 identified: BA, blue.");
+    let told = run.now;
+    assert!(run.until(3_000, |run| {
+        speed_sends(run, told, run.now)
+            .iter()
+            .any(|(_, kph)| *kph == 54)
+    }));
+    let bow = last_heading(&run, run.now).expect("a heading ordered");
+    assert!(angle_between(bow, 87) <= HOLD_BOW_DEG, "{bow}");
+    let view = run.lane.picture_json();
+    assert_eq!(view["pilot"]["hold"], "ahead", "{}", view["pilot"]);
+    assert_eq!(view["pilot"]["wait"], Value::Null);
+    assert_eq!(run.lane.pilot().unknown_stops, 1);
+}
+
+/// **The lane flies the engagement it is given** (cut AL.3): with
+/// `engagement = Orbit` the pilot's own doctrine is the orbit, and BA held due
+/// north at the band is circled — a heading on its tangent, 090° or 270°, at
+/// full speed; with the default it is held — the bow on BA and stopped.
+#[test]
+fn the_lane_flies_the_engagement_it_is_given() {
+    let fly = |settings: Settings| {
+        let mut run = to_the_fight(settings);
+        sight_a_hostile(&mut run);
+        assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+        run.until(5_000, |_| false);
+        let heading = last_heading(&run, run.now).expect("a heading ordered");
+        (
+            run.lane.doctrine().stance,
+            heading,
+            run.lane.pilot().last_speed_order,
+            run.lane.picture_json()["doctrine"]["stance"].clone(),
+        )
+    };
+    let (stance, heading, speed, word) = fly(Settings {
+        engagement: Engagement::Orbit,
+        ..Settings::default()
+    });
+    assert_eq!((stance, word), (Stance::Orbit, json!("orbit")));
+    assert!(
+        angle_between(heading, 90) <= 30 || angle_between(heading, 270) <= 30,
+        "the orbit's tangent round BA due north: {heading}"
+    );
+    assert_eq!(speed, Some(54), "circling at full speed");
+    let (stance, heading, speed, word) = fly(Settings::default());
+    assert_eq!((stance, word), (Stance::Hold, json!("hold")));
+    assert!(
+        angle_between(heading, 0) <= HOLD_BOW_DEG,
+        "the bow on BA: {heading}"
+    );
+    assert_eq!(speed, Some(0), "stopped at the band");
+}
+
+/// **An overruled withdraw is flown as the engagement the lane is given**
+/// (cut AL.3): BA held fresh and the hull sound, a commander's `withdraw` is
+/// flown as the pilot's own engagement — the orbit under `engagement = Orbit`,
+/// the hold by default — and `commander-overruled` names it.
+#[test]
+fn an_overruled_withdraw_is_flown_as_the_lanes_engagement() {
+    for (engagement, stance, word) in [
+        (Engagement::Orbit, Stance::Orbit, "orbit"),
+        (Engagement::Hold, Stance::Hold, "hold"),
+    ] {
+        let mut run = to_the_fight(Settings {
+            engagement,
+            ..Settings::default()
+        });
+        sight_a_hostile(&mut run);
+        assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+        assert!(!hull_failing(run.lane.picture()), "60 of 60");
+        let ba_fresh = |run: &Run| {
+            run.lane
+                .picture()
+                .contacts
+                .get("BA")
+                .is_some_and(|c| c.age_ms <= FRESH_PLOT_MS)
+        };
+        assert!(run.until(3_000, ba_fresh), "BA's row read");
+        run.ask(12_000).expect("an ask");
+        assert!(
+            ba_fresh(&run),
+            "BA held fresh at the answer: {:?}",
+            run.lane.picture().contacts
+        );
+        run.reply(answer("withdraw"));
+        assert_eq!(run.lane.doctrine().stance, stance, "{word}");
+        assert_eq!(
+            run.records_of("commander-overruled"),
+            vec![&json!({"from": "withdraw", "to": word, "why": "the hull is sound"})],
+            "{word}"
+        );
+    }
 }

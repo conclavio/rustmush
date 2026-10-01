@@ -156,8 +156,9 @@ pub struct MatchResult {
     /// with its `commander-error` record).
     #[serde(default)]
     pub commander_errors: u32,
-    /// Applied `withdraw`s the pilot's rule flew as `hunt` or `orbit` (cut
-    /// AK.2; each with its `commander-overruled` record). Always written.
+    /// Applied `withdraw`s the pilot's rule flew as `hunt` or as the pilot's
+    /// own engagement (cut AK.2, cut AL.3; each with its `commander-overruled`
+    /// record). Always written.
     #[serde(default)]
     pub commander_overruled: u32,
     /// Why the commander stopped before the match's end, when it did.

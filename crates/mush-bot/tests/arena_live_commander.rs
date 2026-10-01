@@ -22,9 +22,11 @@
 //! ```
 //!
 //! It prints `LIVE COMMANDER: {w} of 5 for red against one machine at 1 v 1
-//! (…)`, one line a match with the commander's tally, and one `COST:` line from
-//! the report's cost ledger ([`live_lines`]), and asserts only that five
-//! matches finished. `MUSH_BOT_WIN_RATE_KEEP` keeps `live-commander.jsonl` and
+//! (…)`, one line a match with the commander's tally, the win-rate lane's
+//! reading lines (cut AL.3: the rig's `Reading::lines`, `ENGAGEMENT` with the
+//! stances flown, `FIRE GAP`, `SHOT GAP`, `STILL CYCLING`, `HITS TAKEN BY
+//! FACET`), and one `COST:` line from the report's cost ledger
+//! ([`live_lines`]), and asserts only that five matches finished. `MUSH_BOT_WIN_RATE_KEEP` keeps `live-commander.jsonl` and
 //! `live-commander.json` as it keeps the win-rate lane's.
 //!
 //! **Its setup is proved offline**, with no key and no model:
@@ -87,6 +89,12 @@ async fn arena_live_commander_five_matches() {
     })
     .await;
 
+    // The lead's reading (cut AL.3), after the match lines and before the cost.
+    let reading = arena_rig::reading(
+        &posed.partial.transcript_text,
+        posed.partial.report.as_ref(),
+    )
+    .lines(&live_engagement());
     match &posed.partial.report {
         Some(report) => {
             let unposed = posed.unposed();
@@ -94,6 +102,11 @@ async fn arena_live_commander_five_matches() {
             // The first line is the results, the last the cost; between them
             // one line a match, in the report's order.
             for (index, line) in lines.iter().enumerate() {
+                if index + 1 == lines.len() {
+                    for read in &reading {
+                        println!("{read}");
+                    }
+                }
                 let flagged = index
                     .checked_sub(1)
                     .and_then(|at| posed.flown().get(at))
@@ -105,6 +118,9 @@ async fn arena_live_commander_five_matches() {
         }
         None => {
             println!("{}", posed.outcome().line("LIVE COMMANDER", LIVE_MATCHES));
+            for read in &reading {
+                println!("{read}");
+            }
             println!("{}", arena_rig::NO_REPORT);
         }
     }
@@ -150,6 +166,18 @@ fn live_commander_extra() -> String {
         "\n{}",
         toml::to_string(&outer).expect("the [arena] table serialises")
     )
+}
+
+/// **The engagement the live lane flies** (cut AL.3): `bots/arena/commander.toml`'s
+/// `[arena] engagement`, `hold` (the default) when it names none.
+fn live_engagement() -> String {
+    let text = std::fs::read_to_string(COMMANDER_TOML).expect("bots/arena/commander.toml");
+    let file: toml::Table = toml::from_str(&text).expect("commander.toml is TOML");
+    file.get("arena")
+        .and_then(|arena| arena.get("engagement"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or("hold")
+        .to_owned()
 }
 
 /// A count from the report, 0 when absent.

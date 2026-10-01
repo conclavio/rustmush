@@ -142,6 +142,33 @@
 //!   100 m would cross the edge or once it is that far past the aim; a wreck
 //!   is never hunted, targeted or shot at (its row stays listed until it
 //!   expires);
+//! * **"Stop before you are found"** (cut AL.3; `help cockpit`, "Seeing": "A
+//!   tank on the move is seen from further away than a tank standing still …
+//!   on grass a stopped tank can be seen out to 80 per cent of that (480 m)
+//!   and a moving one out to all of it; bare ground stops at 90 per cent; …
+//!   heavy woods stop at 50 per cent (300 m) and move at 80"). No ground lets
+//!   a mover hide better than a stopped tank, so the pilot stops wherever it
+//!   is and reads no ground. A **return not yet told apart** (a row read, its
+//!   plot fresh) is faced, stopped, for at most [`UNIDENTIFIED_WAIT_MS`] from
+//!   when it was first seen ("Three seconds of holding a return is enough to
+//!   tell it apart"), with a rest as long between two such stops and at most
+//!   [`UNIDENTIFIED_STOPS_MAX`] a match; a return lost or told apart is
+//!   forgotten, so one found again — "If you lose the contact and find it
+//!   again it is an unknown return once more, so it reads `X2` again" — is
+//!   first seen afresh, and stopped for again. A **hunted hostile the pilot has not
+//!   hurt and that is not going away**, expected back inside
+//!   [`SEEN_SECOND_M`], is waited for, stopped and facing its estimate, for
+//!   [`AMBUSH_WAIT_MS`] once a trail: the help's machine "drives at where it
+//!   last saw you", and the pilot used to arrive moving and be seen first
+//!   (every hunt of AK.3's runs began 586 to 608 m from the last plot). One
+//!   the pilot has hurt (the stream said `{d}'s {section} is destroyed.`) is
+//!   chased at once — "Hurt badly enough it breaks off for its own entry zone
+//!   … on the way home it turns and fights only what is close (inside about
+//!   200 m)", and every hunted machine in AK.3's runs was one whose turret the
+//!   bot had destroyed — and so is one whose trail's track was going away or
+//!   across when the hunt began (judged once, there: a tank at or past the
+//!   plot has the bearing to it turned round). **Any hit taken ends a wait**
+//!   for good: the tank has been found;
 //! * "A machine that loses you … crosses to the other side's entry zone to
 //!   look", and the proving ground's roads meet at The Crossroads (B) — so with
 //!   no identified hostile held for 5 s (an unidentified contact does not
@@ -166,8 +193,11 @@
 //! under an `orbit` doctrine, and nothing when the threat is within
 //! [`HOLD_BOW_DEG`] of a young target the pilot already faces); (4) the
 //! doctrine's stance round a hostile whose plot is younger than
-//! [`HUNT_STALE_PLOT_MS`]; (5) the hunt; (4 again) the doctrine's stance round
-//! an older row never seen fresh; (6) the search. Every heading steps (2) to
+//! [`HUNT_STALE_PLOT_MS`]; only while no hostile is held that young (cut
+//! AL.3), (4a) a stop facing a return not yet told apart and (4b) a stop
+//! facing a hunted hostile expected back inside the sight, the hunt's legs
+//! frozen through it; (5) the hunt; (4 again) the doctrine's stance round an
+//! older row never seen fresh; (6) the search. Every heading steps (2) to
 //! (6) return at a forward speed is steered round held ground; every reverse
 //! (the hold's, a withdrawal's, the back-off) whose ray behind the tank meets a
 //! mark is a stop instead, the bow kept. The stances: `hold` stops at the band
@@ -198,7 +228,14 @@
 //! the retry instead), and `WEAPONS_LEARNED_MS` 6 001..=10 000 (6 001, 7 000,
 //! 8 000 built and 10 000 pass; the lock-line test needs it above
 //! `WEAPONS_LOCKED_MS + POLL_STARVE_MS + LIMIT_WINDOW_MS`, 6 000, and does not
-//! compile at or under it). Two moved together are untried. Not tunable:
+//! compile at or under it). Two moved together are untried. **Since AL.3**
+//! (whose stop facing a return not yet told apart moved the scripted fights'
+//! line phase) the lane's tests admit less of `FIRE_SLACK_START_MS`: 300 (now
+//! built) passes; at 400 the withdraw's lapse sends its `SPEED 0` a tick
+//! before that test's window opens, and at 350 that and the crowded minute's
+//! held-back `STATUS` both fail (phase-sensitive tests, not the clock).
+//! `FIRE_SLACK_UP_MS` at 200 alone passes; with `FIRE_SLACK_START_MS` at 400
+//! as well it fails the lapse. Not tunable:
 //! [`super::picture::ENGAGED_PULSE_MS`],
 //! [`super::picture::FIRE_SLACK_MAX_MS`] (a ruling: one pulse),
 //! [`super::picture::FIRE_SLACK_MIN_MS`],
@@ -218,6 +255,13 @@
 //! [`HELD_MARK_AHEAD_M`], [`HELD_MARK_CLEAR_M`] (derived) and
 //! [`HELD_MARKS_MAX`].
 //!
+//! AL.3's, in this module: [`SEEN_SECOND_M`] 600..=800 and
+//! [`AMBUSH_WAIT_MS`] 10 000..=30 000 (each tried at both ends, one at a time,
+//! and passing). Not tunable: [`UNIDENTIFIED_WAIT_MS`] (twice the help's three
+//! seconds) and [`UNIDENTIFIED_STOPS_MAX`] (a bound, not a tactic). AL.3's own
+//! runs never reached the wait (every hunted machine was one the bot had
+//! hurt), so neither moved.
+//!
 //! **The tests admit less of two of them**, one constant moved at a time from
 //! the built tree (the rest as built; every other AL.2 constant passes at both
 //! ends of its bound):
@@ -236,7 +280,7 @@
 //! Every test asserts through these names, never their values; the one
 //! exception is the lead's own bounds on the offline median gaps (1 200 ms for
 //! the machine gun, 6 500 for the cannon), which a round must keep.
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
@@ -394,6 +438,27 @@ pub const HUNT_SWEEP_MS: u64 = 60_000;
 pub const ARENA_SIDE_M: f64 = 2_560.0;
 /// No hunt aim lies nearer the edge than this.
 pub const EDGE_MARGIN_M: f64 = 60.0;
+/// **Seen second** (cut AL.3): a hunted hostile whose estimate is at most this
+/// far off is waited for, stopped. The stock sight's 600 m against a mover
+/// ("on grass a stopped tank can be seen out to 80 per cent of that (480 m)
+/// and a moving one out to all of it", `help cockpit`, "Seeing"), plus a
+/// margin for the estimate's error. No ground in the help lets a moving tank
+/// hide better than a stopped one, so stopping is never worse wherever the
+/// tank stands: the ground is not read. Tunable 600..=800.
+pub const SEEN_SECOND_M: f64 = 700.0;
+/// …waited for this long, once a trail: "after twenty quiet seconds with
+/// nothing hostile in sight it turns round and comes back in, once" (`help
+/// simulator`, "Fighting the machines"). Tunable 10 000..=30 000.
+pub const AMBUSH_WAIT_MS: u64 = 20_000;
+/// **A return not yet told apart** (cut AL.3) is faced, stopped, for at most
+/// this long from when it was first seen — twice "Three seconds of holding a
+/// return is enough to tell it apart" (`help cockpit`, "Names") — and no
+/// other such stop begins for this long after one ends. Not tunable.
+pub const UNIDENTIFIED_WAIT_MS: u64 = 6_000;
+/// …and at most this many such stops a match. A bound, not a tactic: a stream
+/// of returns (a flicker at the sight's edge, a crowd of friends and machines)
+/// cannot hold the tank still for a match. Not tunable.
+pub const UNIDENTIFIED_STOPS_MAX: u8 = 4;
 
 // The doctrine the pilot flies moved to the commander's module (cut AJ.3),
 // which parses and clamps the model's answer into it; these names stay here.
@@ -478,6 +543,18 @@ pub struct Hunt {
     pub speed_mps: f64,
     /// When the sweep began, once it has.
     pub sweep_since_ms: Option<u64>,
+    /// **The wait before the hostile finds us** (cut AL.3): when it began,
+    /// once it has…
+    pub wait_since_ms: Option<u64>,
+    /// …and whether it is spent (its time up, or a hit taken after it began):
+    /// a trail is waited for once.
+    pub wait_spent: bool,
+    /// The trail's track was going away or across when the hunt began (its
+    /// course within 90° of the bearing from the own tank, then, to the
+    /// plot): never waited for. Judged once, at the start — a tank that has
+    /// reached or passed the plot has the bearing to it turned round, and a
+    /// machine driving away from the plot is still driving away.
+    pub going_away: bool,
 }
 
 /// **What a hold is doing with the range** (cut AL.2, [`Pilot::hold`]):
@@ -692,6 +769,40 @@ pub struct Pilot {
     /// forgotten with an unanswered order): the stall opens only after a
     /// forward one.
     pub last_chosen_speed: Option<i32>,
+    /// **Seen second** (cut AL.3): every hostile the stream said lost a
+    /// section this match (`{d}'s {section} is destroyed.`). Such a machine is
+    /// hunted at once, never waited for: "Hurt badly enough it breaks off for
+    /// its own entry zone … on the way home it turns and fights only what is
+    /// close (inside about 200 m)" (`help simulator`).
+    pub hurt: BTreeSet<String>,
+    /// The newest section-lost event already read.
+    pub hurt_seen_ms: u64,
+    /// The newest hit taken (a `Hit on the …` line) read this match: a wait
+    /// that began before it is over for good — the tank has been found.
+    pub hit_taken_ms: u64,
+    /// When each contact not yet told apart was first seen this match, while
+    /// it is one (lost or told apart, it is forgotten: found again, it is a
+    /// new return).
+    pub unknown_since: BTreeMap<String, u64>,
+    /// The stop for a return not yet told apart now in force: whom, and when
+    /// it began.
+    pub unknown_stop: Option<(String, u64)>,
+    /// How many such stops this match (at most [`UNIDENTIFIED_STOPS_MAX`])…
+    pub unknown_stops: u8,
+    /// …and no new one before then: [`UNIDENTIFIED_WAIT_MS`] after the last
+    /// one ended.
+    pub unknown_rest_until_ms: u64,
+    /// The designators whose stop has been said (forgotten with
+    /// [`Pilot::unknown_since`], so a return found again is said again).
+    #[serde(skip)]
+    unknown_said: BTreeSet<String>,
+    /// A stop for a return was flown this decision (else the one in force
+    /// ends, and the rest begins).
+    #[serde(skip)]
+    unknown_flown: bool,
+    /// **The wait flown at the last decision** (cut AL.3; either kind): whom
+    /// it is for, and when it ends.
+    pub wait: Option<(String, u64)>,
     /// What the pilot said since [`Pilot::take_notes`].
     #[serde(skip)]
     notes: Vec<String>,
@@ -742,6 +853,16 @@ impl Default for Pilot {
             held_astern: false,
             detour: false,
             last_chosen_speed: None,
+            hurt: BTreeSet::new(),
+            hurt_seen_ms: 0,
+            hit_taken_ms: 0,
+            unknown_since: BTreeMap::new(),
+            unknown_stop: None,
+            unknown_stops: 0,
+            unknown_rest_until_ms: 0,
+            unknown_said: BTreeSet::new(),
+            unknown_flown: false,
+            wait: None,
             notes: Vec::new(),
         }
     }
@@ -848,18 +969,22 @@ pub fn widened_band(band_m: u32) -> u32 {
     )
 }
 
+/// The course leg's moving aim: the last plot dead-reckoned along the
+/// estimated course by the plot's age, at most [`HUNT_ALONG_MAX_M`] on.
+fn along_aim(hunt: &Hunt, now_ms: u64) -> (f64, f64) {
+    let run_m = hunt.speed_mps * now_ms.saturating_sub(hunt.trail.plot_ms) as f64 / 1_000.0;
+    along(
+        hunt.trail.plot_m,
+        hunt.course_deg,
+        run_m.min(HUNT_ALONG_MAX_M),
+    )
+}
+
 /// A leg's aim, clamped into the ground, and whether the clamp moved it.
 fn leg_aim(hunt: &Hunt, now_ms: u64) -> ((f64, f64), bool) {
     let raw = match &hunt.leg {
         HuntLeg::ToPlot => hunt.trail.plot_m,
-        HuntLeg::Along => {
-            let run_m = hunt.speed_mps * now_ms.saturating_sub(hunt.trail.plot_ms) as f64 / 1_000.0;
-            along(
-                hunt.trail.plot_m,
-                hunt.course_deg,
-                run_m.min(HUNT_ALONG_MAX_M),
-            )
-        }
+        HuntLeg::Along => along_aim(hunt, now_ms),
         HuntLeg::Sweep {
             origin,
             heading_deg,
@@ -867,6 +992,16 @@ fn leg_aim(hunt: &Hunt, now_ms: u64) -> ((f64, f64), bool) {
         } => along(*origin, *heading_deg, HUNT_SWEEP_LEG_M),
     };
     (clamp_arena(raw), past_the_edge(raw))
+}
+
+/// **Where the hunted hostile is estimated to be** (cut AL.3), as the
+/// current leg aims before clamping: the last plot on the way to it and on the
+/// sweep, the dead-reckoned point on the course leg.
+fn wait_estimate(hunt: &Hunt, now_ms: u64) -> (f64, f64) {
+    match &hunt.leg {
+        HuntLeg::ToPlot | HuntLeg::Sweep { .. } => hunt.trail.plot_m,
+        HuntLeg::Along => along_aim(hunt, now_ms),
+    }
 }
 
 /// **How old a hostile's plot may be and still be fought** rather than hunted:
@@ -1190,6 +1325,9 @@ impl Pilot {
         }
         // A kill, before anything reads the contacts: its wreck is no hostile.
         self.take_kills(picture);
+        // Seen second (cut AL.3): the hostiles hurt, the newest hit taken, and
+        // when each return not yet told apart was first seen.
+        self.take_seen_second(picture, power_ms, now_ms);
         // Only a row young enough to be held counts (cut AK.1): a stale row
         // still listed after a failed hunt does not keep the search away, and
         // nor does a wreck's row, listed until it expires.
@@ -1588,6 +1726,50 @@ impl Pilot {
         }
     }
 
+    /// **What seen second reads** (cut AL.3), every decision, from this
+    /// match's events only (the picture's ring outlives a match): each
+    /// `{d}'s {section} is destroyed.` adds `d` to [`Pilot::hurt`]; the newest
+    /// hit taken moves [`Pilot::hit_taken_ms`]; and every contact with no side
+    /// is stamped the first time it is seen ([`Pilot::unknown_since`]), and
+    /// forgotten once it is no longer an unknown return in the picture.
+    fn take_seen_second(&mut self, picture: &Picture, power_ms: u64, now_ms: u64) {
+        self.hurt_seen_ms = self.hurt_seen_ms.max(power_ms);
+        self.hit_taken_ms = self.hit_taken_ms.max(power_ms);
+        let (hurt_seen, hit_seen) = (self.hurt_seen_ms, self.hit_taken_ms);
+        for event in &picture.events {
+            match event.kind {
+                EventKind::TargetSectionLost if event.at_ms > hurt_seen => {
+                    self.hurt_seen_ms = self.hurt_seen_ms.max(event.at_ms);
+                    if let Some((designator, _)) = event.text.split_once("'s ") {
+                        self.hurt.insert(designator.to_owned());
+                    }
+                }
+                EventKind::HitTaken if event.at_ms > hit_seen => {
+                    self.hit_taken_ms = self.hit_taken_ms.max(event.at_ms);
+                }
+                _ => {}
+            }
+        }
+        // A return lost or told apart is forgotten, its sentence with it: one
+        // found again is a new return ("If you lose the contact and find it
+        // again it is an unknown return once more, so it reads `X2` again",
+        // `help cockpit`), first seen now.
+        self.unknown_since.retain(|designator, _| {
+            picture
+                .contacts
+                .get(designator)
+                .is_some_and(|c| c.side.is_none())
+        });
+        let since = &self.unknown_since;
+        self.unknown_said
+            .retain(|designator| since.contains_key(designator));
+        for contact in picture.contacts.values().filter(|c| c.side.is_none()) {
+            self.unknown_since
+                .entry(contact.designator.clone())
+                .or_insert(now_ms);
+        }
+    }
+
     /// **The hunt's bookkeeping**, every decision: a fresh hostile target
     /// refreshes the trail; a fresh hostile ends a hunt; a `Held:` notice ends
     /// its leg; and with no hostile held young, a live trail and no withdrawal
@@ -1676,6 +1858,14 @@ impl Pilot {
                 },
             };
             let away = distance_m(own, clamp_arena(trail.plot_m)).round();
+            // Cut AL.3: going away or across, judged from here and now (the
+            // picture publishes a track only for a mover).
+            let going_away = trail.track.as_ref().is_some_and(|track| {
+                angle_between(
+                    whole(track.course_deg),
+                    whole(bearing_deg(own, trail.plot_m)),
+                ) <= 90
+            });
             self.note(format!(
                 "Hunting {}: its last plot, {away:.0} m away.",
                 trail.designator
@@ -1688,6 +1878,9 @@ impl Pilot {
                 course_deg,
                 speed_mps,
                 sweep_since_ms: None,
+                wait_since_ms: None,
+                wait_spent: false,
+                going_away,
             });
         }
     }
@@ -1817,9 +2010,17 @@ impl Pilot {
         now_ms: u64,
     ) -> (Option<f64>, Option<i32>, bool) {
         self.hold_flown = false;
+        self.unknown_flown = false;
+        self.wait = None;
         let out = self.motion_steps(picture, doctrine, target, full, live, sign, now_ms);
         if !self.hold_flown {
             self.hold_motion = HoldMotion::Stopped;
+        }
+        // A stop for a return not flown this decision is over (cut AL.3), for
+        // whatever reason — told apart, its time up, a hit, a higher step —
+        // and the rest before the next one begins.
+        if !self.unknown_flown && self.unknown_stop.take().is_some() {
+            self.unknown_rest_until_ms = now_ms.saturating_add(UNIDENTIFIED_WAIT_MS);
         }
         if let Some(kph) = out.1 {
             self.last_chosen_speed = Some(kph);
@@ -1966,6 +2167,25 @@ impl Pilot {
         {
             return self.engage(doctrine, contact, aim, own, full, astern, live, now_ms);
         }
+        // 4a and 4b. Seen second (cut AL.3), only while no hostile is held
+        // young: stopped, facing a return not yet told apart, then facing a
+        // hunted hostile expected back inside the sight.
+        let held_young = picture.side.map(Side::other).is_some_and(|other| {
+            picture
+                .contacts
+                .values()
+                .any(|c| self.live_hostile(c, other) && c.age_ms <= held_limit_ms(doctrine))
+        });
+        if !held_young {
+            if let Some(bearing) = self.unidentified_stop(picture, now_ms) {
+                self.orbit_since_ms = None;
+                return (Some(bearing), Some(0), false);
+            }
+            if let Some(bearing) = self.ambush_wait(own, now_ms) {
+                self.orbit_since_ms = None;
+                return (Some(bearing), Some(0), false);
+            }
+        }
         // 5. The hunt, before any stance round a stale row.
         if self.hunt.is_some()
             && let Some(heading) = self.hunt_heading(own, sign, now_ms)
@@ -2013,6 +2233,125 @@ impl Pilot {
         {
             return None;
         }
+        Some(bearing)
+    }
+
+    /// **Step 4a: a return not yet told apart** (cut AL.3; "Stop before you are
+    /// found", `help cockpit`): the bearing its own row read, to face stopped
+    /// while it is told apart. A return qualifies when it has no side, **a row
+    /// read** (a notice alone may carry no bearing), a plot no older than
+    /// [`FRESH_PLOT_MS`], and was first seen at most [`UNIDENTIFIED_WAIT_MS`]
+    /// ago. The stop in force goes on while its return qualifies and no hit
+    /// has been taken since it began; otherwise a new one begins for the
+    /// nearest that qualifies (the first by designator among equals) — but
+    /// not inside the rest after the last ([`Pilot::unknown_rest_until_ms`])
+    /// and not past [`UNIDENTIFIED_STOPS_MAX`] a match. Said once per
+    /// designator while it stays an unknown return (again when it is found
+    /// again).
+    fn unidentified_stop(&mut self, picture: &Picture, now_ms: u64) -> Option<f64> {
+        let qualifies = |c: &Contact| {
+            c.side.is_none()
+                && c.range_m.is_some()
+                && c.age_ms <= FRESH_PLOT_MS
+                && self
+                    .unknown_since
+                    .get(&c.designator)
+                    .is_some_and(|since| now_ms <= since.saturating_add(UNIDENTIFIED_WAIT_MS))
+        };
+        if let Some((designator, since)) = &self.unknown_stop {
+            // In force: on while it qualifies and nothing has hit the tank.
+            let going_on = self.hit_taken_ms <= *since;
+            let contact = picture.contacts.get(designator).filter(|c| qualifies(c));
+            let (Some(contact), true) = (contact, going_on) else {
+                return None;
+            };
+            let bearing = f64::from(contact.bearing_deg);
+            let until = self
+                .unknown_since
+                .get(designator)
+                .map_or(now_ms, |first| first.saturating_add(UNIDENTIFIED_WAIT_MS));
+            self.wait = Some((designator.clone(), until));
+            self.unknown_flown = true;
+            return Some(bearing);
+        }
+        if now_ms < self.unknown_rest_until_ms || self.unknown_stops >= UNIDENTIFIED_STOPS_MAX {
+            return None;
+        }
+        let contact = picture
+            .contacts
+            .values()
+            .filter(|c| qualifies(c))
+            .min_by_key(|c| c.range_m)?;
+        let designator = contact.designator.clone();
+        let bearing = f64::from(contact.bearing_deg);
+        let until = self
+            .unknown_since
+            .get(&designator)
+            .map_or(now_ms, |first| first.saturating_add(UNIDENTIFIED_WAIT_MS));
+        self.unknown_stops = self.unknown_stops.saturating_add(1);
+        self.unknown_stop = Some((designator.clone(), now_ms));
+        self.unknown_flown = true;
+        self.wait = Some((designator.clone(), until));
+        if self.unknown_said.insert(designator.clone()) {
+            self.note(format!(
+                "Stopping for {designator}: facing {:03}° while it is told apart.",
+                whole(bearing)
+            ));
+        }
+        Some(bearing)
+    }
+
+    /// **Step 4b: the hunted hostile expected back inside the sight** (cut
+    /// AL.3): during a hunt whose wait is not spent, the bearing to its
+    /// estimate ([`wait_estimate`]), to face stopped for [`AMBUSH_WAIT_MS`]
+    /// from the first decision it is at most [`SEEN_SECOND_M`] off — "A tank
+    /// on the move is seen from further away than a tank standing still" and
+    /// "let the ground hide you and it drives at where it last saw you". Never
+    /// for a hostile the stream said lost a section ([`Pilot::hurt`]: it goes
+    /// home, and waiting lets it), nor for one whose trail's track was going
+    /// away or across when the hunt began ([`Hunt::going_away`]: its course
+    /// within 90° of the bearing from the own tank to its plot then; the
+    /// picture publishes a track only for a mover). **The legs are frozen
+    /// through the wait** (it returns before the hunt's heading is worked out,
+    /// so no arrival or leg change is judged in it); a hit taken after it
+    /// began ends it for good, as does its time.
+    fn ambush_wait(&mut self, own: (f64, f64), now_ms: u64) -> Option<f64> {
+        let hit_taken_ms = self.hit_taken_ms;
+        let exempt = {
+            let hunt = self.hunt.as_ref()?;
+            if hunt.wait_spent {
+                return None;
+            }
+            hunt.going_away || self.hurt.contains(&hunt.trail.designator)
+        };
+        let hunt = self.hunt.as_mut()?;
+        let d = hunt.trail.designator.clone();
+        if let Some(since) = hunt.wait_since_ms {
+            if exempt || hit_taken_ms > since || now_ms >= since.saturating_add(AMBUSH_WAIT_MS) {
+                hunt.wait_spent = true;
+                self.note(format!("The wait for {d} is over; hunting on."));
+                return None;
+            }
+            let bearing = bearing_deg(own, wait_estimate(hunt, now_ms));
+            self.wait = Some((d, since.saturating_add(AMBUSH_WAIT_MS)));
+            return Some(bearing);
+        }
+        if exempt {
+            return None;
+        }
+        let estimate = wait_estimate(hunt, now_ms);
+        let off = distance_m(own, estimate);
+        if off > SEEN_SECOND_M {
+            return None;
+        }
+        hunt.wait_since_ms = Some(now_ms);
+        let bearing = bearing_deg(own, estimate);
+        self.wait = Some((d.clone(), now_ms.saturating_add(AMBUSH_WAIT_MS)));
+        self.note(format!(
+            "Stopping before {d} finds us: its estimate is {:.0} m off at {:03}°.",
+            off.round(),
+            whole(bearing)
+        ));
         Some(bearing)
     }
 
@@ -2856,8 +3195,16 @@ mod tests {
         assert!(!decide(&picture, &mut pilot).ask_spot_b);
         hold(&mut picture, contact("X1", None, 0, 500));
         let (_, mut fresh) = flying();
+        // Cut AL.3: a return not yet told apart, its row read, is faced
+        // stopped first…
+        let orders = fresh.decide(&picture, &doctrine(), NOW);
+        assert!(!orders.ask_spot_b);
+        assert_eq!((orders.heading, orders.speed), (Some(0), Some(0)));
+        // …and once its time is up, the search as ever.
         assert!(
-            fresh.decide(&picture, &doctrine(), NOW).ask_spot_b,
+            fresh
+                .decide(&picture, &doctrine(), NOW + UNIDENTIFIED_WAIT_MS + 1)
+                .ask_spot_b,
             "an unknown is not a hostile"
         );
     }
@@ -2996,14 +3343,49 @@ mod tests {
         range: u32,
         track: Option<Track>,
     ) -> (Picture, Pilot, Orders) {
+        lost_as(from, bearing, range, track, false)
+    }
+
+    /// **`lost`, BA hurt first** (cut AL.3): the stream said `BA's turret is
+    /// destroyed.` before the loss, so the hunt drives at once — never waits —
+    /// as every hunt in AK.3's runs was of a machine the bot had hurt. The
+    /// hunt tests about its legs use it.
+    fn lost_hurt(
+        from: (f64, f64),
+        bearing: u32,
+        range: u32,
+        track: Option<Track>,
+    ) -> (Picture, Pilot, Orders) {
+        lost_as(from, bearing, range, track, true)
+    }
+
+    fn lost_as(
+        from: (f64, f64),
+        bearing: u32,
+        range: u32,
+        track: Option<Track>,
+        hurt: bool,
+    ) -> (Picture, Pilot, Orders) {
         let (mut picture, mut pilot) = flying_at(from);
         let mut ba = contact_from(from, "BA", Some(Side::Blue), bearing, range);
         ba.track = track;
         hold(&mut picture, ba);
+        if hurt {
+            hurt_event(&mut picture, "BA", NOW - 100);
+        }
         decide(&picture, &mut pilot);
         picture.contacts.clear();
         let orders = pilot.decide(&picture, &doctrine(), NOW + 1_000);
         (picture, pilot, orders)
+    }
+
+    /// The stream says `{designator}'s turret is destroyed.` at `at_ms`.
+    fn hurt_event(picture: &mut Picture, designator: &str, at_ms: u64) {
+        picture.events.push_back(Event {
+            at_ms,
+            kind: EventKind::TargetSectionLost,
+            text: format!("{designator}'s turret is destroyed."),
+        });
     }
 
     fn hunt_of(pilot: &Pilot) -> Hunt {
@@ -3033,7 +3415,10 @@ mod tests {
                 speed_mps: 8.0,
             }),
         ] {
-            let (_, mut pilot, orders) = lost(MID, 0, 450, track.clone());
+            // Cut AL.3: BA hurt, so hunted at once (the untracked and the
+            // closing cases would otherwise wait first; the hunt's legs are
+            // what this tests).
+            let (_, mut pilot, orders) = lost_hurt(MID, 0, 450, track.clone());
             let hunt = hunt_of(&pilot);
             assert_eq!(hunt.leg, HuntLeg::ToPlot, "{track:?}");
             assert_eq!(hunt.trail.designator, "BA");
@@ -3142,6 +3527,9 @@ mod tests {
             course_deg: 90.0,
             speed_mps,
         };
+        // BA unhurt, going away when it was lost (cut AL.3): never waited
+        // for, even level with or past the plot, where the bearing back to
+        // the plot is BA's course turned round.
         let on_the_course = |from_x: f64, speed_mps: f64| {
             let (mut picture, mut pilot, _) =
                 lost((from_x - 200.0, 1_000.0), 90, 200, Some(course(speed_mps)));
@@ -3445,6 +3833,8 @@ mod tests {
             kind: EventKind::Kill,
             text: "BA destroyed.".into(),
         });
+        // Cut AL.3: BB hurt before it went, so it is hunted at once.
+        hurt_event(&mut picture, "BB", NOW + 100);
         picture.contacts.remove("BB");
         let wreck = |picture: &mut Picture, t: u64| {
             if let Some(ba) = picture.contacts.get_mut("BA") {
@@ -3547,6 +3937,9 @@ mod tests {
         read(&mut picture, &lines);
         pilot.decide(&picture, &doctrine(), NOW + 50);
         let trail = pilot.trail.clone().expect("a trail");
+        // Cut AL.3: BA hurt before it went, so it is hunted at once (the
+        // waits' sentences have their own test).
+        read(&mut picture, &[(NOW + 900, "BA's turret is destroyed.")]);
         read(&mut picture, &[(NOW + 1_000, "Contact BA lost.")]);
         pilot.decide(&picture, &doctrine(), NOW + 1_010);
         let hunt = hunt_of(&pilot);
@@ -3776,6 +4169,8 @@ mod tests {
                 &mut picture,
                 contact_from(MID, "BA", Some(Side::Blue), 0, 450),
             );
+            // Cut AL.3: BA hurt, so a hunt drives at once.
+            hurt_event(&mut picture, "BA", NOW - 100);
             pilot.decide(&picture, doctrine, NOW);
             assert!(pilot.hunt.is_none());
             let t = NOW + 1_000;
@@ -3820,6 +4215,7 @@ mod tests {
             &mut picture,
             contact_from(MID, "BA", Some(Side::Blue), 0, 450),
         );
+        hurt_event(&mut picture, "BA", NOW - 100);
         pilot.decide(&picture, &hunting(450), NOW);
         picture.contacts.clear();
         let orders = pilot.decide(&picture, &hunting(450), NOW + 1_000);
@@ -5452,6 +5848,474 @@ mod tests {
                 keys,
                 BTreeSet::from(["astern", "at_m", "blocked_m", "heading_deg"])
             );
+        }
+    }
+
+    // -- cut AL.3: seen second ---------------------------------------------------------
+
+    /// A return not yet told apart at `bearing`/`range` from mid-field, its row
+    /// read at `t`.
+    fn unknown_row(picture: &mut Picture, designator: &str, bearing: u32, range: u32, t: u64) {
+        let mut row = contact_from(MID, designator, None, bearing, range);
+        row.read_ms = t;
+        hold(picture, row);
+    }
+
+    /// A hit taken at `at_ms` that names no facet (no turn into it).
+    fn hit_taken(picture: &mut Picture, at_ms: u64) {
+        picture.events.push_back(Event {
+            at_ms,
+            kind: EventKind::HitTaken,
+            text: "Hit on the hull.".into(),
+        });
+    }
+
+    /// **A return not yet told apart is faced, stopped** (cut AL.3, step 4a):
+    /// a row at bearing 087° stops the tank facing it, said once; past
+    /// `UNIDENTIFIED_WAIT_MS` the pilot moves on; told apart as a hostile it is
+    /// held; a return known only from its notice does not stop the tank, nor
+    /// does a second inside the rest after a stop, nor any past
+    /// `UNIDENTIFIED_STOPS_MAX` a match; and a hit taken ends a stop for good.
+    #[test]
+    fn an_unidentified_return_stops_the_tank_facing_it() {
+        let (mut picture, mut pilot) = flying_at(MID);
+        unknown_row(&mut picture, "X1", 87, 450, NOW);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!((orders.heading, orders.speed), (Some(87), Some(0)));
+        assert!(!orders.ask_spot_b, "not searching: {orders:?}");
+        assert_eq!(
+            pilot.take_notes(),
+            ["Stopping for X1: facing 087° while it is told apart."]
+        );
+        assert_eq!(
+            pilot.wait,
+            Some(("X1".to_owned(), NOW + UNIDENTIFIED_WAIT_MS))
+        );
+        assert_eq!(pilot.unknown_stops, 1);
+        // Still not told apart at its time's end: still faced, not said again.
+        unknown_row(&mut picture, "X1", 87, 450, NOW + UNIDENTIFIED_WAIT_MS);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW + UNIDENTIFIED_WAIT_MS);
+        assert_eq!((orders.heading, orders.speed), (Some(87), Some(0)));
+        // Past it, the pilot moves on: the search, full ahead.
+        let t = NOW + UNIDENTIFIED_WAIT_MS + 50;
+        unknown_row(&mut picture, "X1", 87, 450, t);
+        let orders = pilot.decide(&picture, &hold_doctrine(), t);
+        assert!(orders.ask_spot_b, "{orders:?}");
+        assert_eq!(orders.speed, Some(54));
+        assert_eq!(
+            (pilot.wait.clone(), pilot.unknown_stop.clone()),
+            (None, None)
+        );
+        assert!(pilot.take_notes().is_empty(), "said once");
+
+        // Told apart as a hostile inside its time: the hold (BA 700 m off at
+        // 087°, so the hold closes, full ahead at it).
+        let (mut picture, mut pilot) = flying_at(MID);
+        unknown_row(&mut picture, "X1", 87, 700, NOW);
+        assert_eq!(pilot.decide(&picture, &hold_doctrine(), NOW).speed, Some(0));
+        picture.contacts.clear();
+        let mut ba = contact_from(MID, "BA", Some(Side::Blue), 87, 700);
+        ba.read_ms = NOW + 3_000;
+        hold(&mut picture, ba);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW + 3_000);
+        assert_eq!((orders.heading, orders.speed), (Some(87), Some(54)));
+        assert_eq!(pilot.hold_motion, HoldMotion::Ahead);
+        assert_eq!(pilot.unknown_stop, None);
+
+        // Known only from its notice (no row, so no bearing it read): no stop.
+        let (mut picture, mut pilot) = flying_at(MID);
+        picture.apply(NOW, &classify("New contact X1: bearing 087°, far."));
+        assert!(
+            picture
+                .contacts
+                .get("X1")
+                .is_some_and(|c| c.range_m.is_none())
+        );
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert!(orders.ask_spot_b, "searching: {orders:?}");
+        assert_eq!(pilot.unknown_stops, 0);
+
+        // A second return inside the rest after a stop does not stop the tank;
+        // one after the rest does.
+        let (mut picture, mut pilot) = flying_at(MID);
+        unknown_row(&mut picture, "X1", 87, 450, NOW);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        picture.contacts.clear();
+        let ended = NOW + 1_000;
+        assert_eq!(
+            pilot.decide(&picture, &hold_doctrine(), ended).speed,
+            Some(54)
+        );
+        assert_eq!(pilot.unknown_rest_until_ms, ended + UNIDENTIFIED_WAIT_MS);
+        let t = ended + 1_000;
+        unknown_row(&mut picture, "X2", 200, 450, t);
+        let orders = pilot.decide(&picture, &hold_doctrine(), t);
+        assert_eq!(orders.speed, Some(54), "inside the rest");
+        let t = ended + UNIDENTIFIED_WAIT_MS;
+        unknown_row(&mut picture, "X2", 200, 450, t);
+        let orders = pilot.decide(&picture, &hold_doctrine(), t);
+        assert_eq!(
+            (orders.heading, orders.speed),
+            (Some(200), Some(0)),
+            "after the rest"
+        );
+
+        // At most `UNIDENTIFIED_STOPS_MAX` a match.
+        let (mut picture, mut pilot) = flying_at(MID);
+        let mut t = NOW;
+        for k in 0..=UNIDENTIFIED_STOPS_MAX {
+            picture.contacts.clear();
+            unknown_row(&mut picture, &format!("X{}", k + 1), 87, 450, t);
+            let orders = pilot.decide(&picture, &hold_doctrine(), t);
+            let want = if k < UNIDENTIFIED_STOPS_MAX { 0 } else { 54 };
+            assert_eq!(orders.speed, Some(want), "return {k}");
+            // It goes, and the rest runs out before the next.
+            picture.contacts.clear();
+            pilot.decide(&picture, &hold_doctrine(), t + 100);
+            t += 100 + UNIDENTIFIED_WAIT_MS;
+        }
+        assert_eq!(pilot.unknown_stops, UNIDENTIFIED_STOPS_MAX);
+
+        // A hit taken ends the stop for good.
+        let (mut picture, mut pilot) = flying_at(MID);
+        unknown_row(&mut picture, "X1", 87, 450, NOW);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        hit_taken(&mut picture, NOW + 500);
+        for t in [NOW + 600, NOW + 2_000] {
+            unknown_row(&mut picture, "X1", 87, 450, t);
+            let orders = pilot.decide(&picture, &hold_doctrine(), t);
+            assert_eq!(orders.speed, Some(54), "at {t}");
+        }
+        assert_eq!(pilot.unknown_stop, None);
+
+        // Lost and found again, a return is an unknown one once more and
+        // reads `X1` again (`help cockpit`): first seen afresh, so stopped
+        // for — and said — again, long after the first X1 was first seen.
+        let (mut picture, mut pilot) = flying_at(MID);
+        unknown_row(&mut picture, "X1", 87, 450, NOW);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        pilot.take_notes();
+        picture.contacts.clear();
+        let mut ba = contact_from(MID, "BA", Some(Side::Blue), 87, 450);
+        ba.read_ms = NOW + 3_000;
+        hold(&mut picture, ba);
+        pilot.decide(&picture, &hold_doctrine(), NOW + 3_000);
+        assert!(!pilot.unknown_since.contains_key("X1"), "told apart");
+        // BA hurt, so its hunt drives rather than waits; then it is lost.
+        hurt_event(&mut picture, "BA", NOW + 3_500);
+        picture.contacts.clear();
+        pilot.decide(&picture, &hold_doctrine(), NOW + 4_000);
+        assert!(pilot.hunt.is_some());
+        let t = NOW + 3_000 + UNIDENTIFIED_WAIT_MS + 1_000;
+        unknown_row(&mut picture, "X1", 87, 450, t);
+        let orders = pilot.decide(&picture, &hold_doctrine(), t);
+        assert_eq!(
+            (orders.heading, orders.speed),
+            (Some(87), Some(0)),
+            "found again"
+        );
+        assert_eq!(pilot.unknown_since.get("X1"), Some(&t));
+        assert_eq!(pilot.unknown_stops, 2);
+        let notes = pilot.take_notes();
+        assert!(
+            notes
+                .iter()
+                .any(|n| n == "Stopping for X1: facing 087° while it is told apart."),
+            "{notes:?}"
+        );
+
+        // The turn into a side hit outranks the stop: a return first seen
+        // as the hit lands is not stopped for while the turn lasts; after it,
+        // a new return is.
+        let (mut picture, mut pilot) = flying_at(MID);
+        unknown_row(&mut picture, "X1", 87, 450, NOW + 600);
+        hit(&mut picture, NOW + 600, LEFT_HIT);
+        for t in [NOW + 600, NOW + 2_000] {
+            unknown_row(&mut picture, "X1", 87, 450, t);
+            let orders = pilot.decide(&picture, &hold_doctrine(), t);
+            assert_eq!(
+                (orders.heading, orders.speed),
+                (Some(270), Some(0)),
+                "at {t}"
+            );
+            assert_eq!((pilot.unknown_stop.clone(), pilot.unknown_stops), (None, 0));
+        }
+        let t = NOW + 600 + THREAT_TURN_MS;
+        picture.contacts.clear();
+        unknown_row(&mut picture, "X2", 200, 450, t);
+        let orders = pilot.decide(&picture, &hold_doctrine(), t);
+        assert_eq!((orders.heading, orders.speed), (Some(200), Some(0)));
+        assert_eq!(pilot.unknown_stops, 1);
+    }
+
+    /// **The hunt stops short of its estimate and waits, once** (cut AL.3,
+    /// step 4b): an unhurt, untracked BA lost inside `SEEN_SECOND_M` is waited
+    /// for, stopped and facing its plot, its legs frozen through the wait;
+    /// after `AMBUSH_WAIT_MS` the hunt goes on and never waits again for that
+    /// trail; outside `SEEN_SECOND_M` there is no stop until the estimate is
+    /// inside it; a hurt BA and a track going away or across are hunted at
+    /// once, a closing track waits; a hit taken ends the wait; a fresh hostile
+    /// ends it into the hold; and the turn into a side hit outranks it.
+    #[test]
+    fn the_hunt_stops_short_of_its_estimate_and_waits_once() {
+        let (mut picture, mut pilot, orders) = lost(MID, 0, 450, None);
+        assert_eq!((orders.heading, orders.speed), (Some(0), Some(0)));
+        let began = NOW + 1_000;
+        let hunt = hunt_of(&pilot);
+        assert_eq!(hunt.leg, HuntLeg::ToPlot);
+        assert_eq!((hunt.wait_since_ms, hunt.wait_spent), (Some(began), false));
+        assert_eq!(
+            pilot.take_notes(),
+            [
+                "Hunting BA: its last plot, 450 m away.",
+                "Stopping before BA finds us: its estimate is 450 m off at 000°."
+            ]
+        );
+        assert_eq!(pilot.wait, Some(("BA".to_owned(), began + AMBUSH_WAIT_MS)));
+        // The legs are frozen through the wait: at the plot, nothing arrives.
+        let plot = hunt.trail.plot_m;
+        read_at(&mut picture, plot, began + 5_000);
+        let orders = pilot.decide(&picture, &doctrine(), began + 5_000);
+        assert_eq!(orders.speed, Some(0));
+        assert_eq!(hunt_of(&pilot).leg, HuntLeg::ToPlot, "no arrival judged");
+        assert!(pilot.take_notes().is_empty());
+        // Its time up: the hunt goes on (arrived: the course leg), and says so.
+        let over = began + AMBUSH_WAIT_MS;
+        read_at(&mut picture, plot, over);
+        let orders = pilot.decide(&picture, &doctrine(), over);
+        assert_eq!(orders.speed, Some(54));
+        let hunt = hunt_of(&pilot);
+        assert_eq!(hunt.leg, HuntLeg::Along);
+        assert!(hunt.wait_spent);
+        assert_eq!(
+            pilot.take_notes(),
+            [
+                "The wait for BA is over; hunting on.",
+                "Hunting BA: along 000° from its last plot."
+            ]
+        );
+        // Never again for that trail: 450 m off again, it drives.
+        read_at(&mut picture, MID, over + 1_000);
+        let orders = pilot.decide(&picture, &doctrine(), over + 1_000);
+        assert_eq!(orders.speed, Some(54));
+        assert_eq!(pilot.wait, None);
+
+        // Outside `SEEN_SECOND_M`: no stop, until the estimate comes inside it.
+        let far = (SEEN_SECOND_M + 100.0) as u32;
+        let (mut picture, mut pilot, orders) = lost(MID, 0, far, None);
+        assert_eq!(orders.speed, Some(54));
+        assert_eq!(hunt_of(&pilot).wait_since_ms, None);
+        read_at(&mut picture, along(MID, 0.0, 150.0), NOW + 10_000);
+        let orders = pilot.decide(&picture, &doctrine(), NOW + 10_000);
+        assert_eq!(orders.speed, Some(0));
+        assert_eq!(hunt_of(&pilot).wait_since_ms, Some(NOW + 10_000));
+
+        // Hurt: hunted at once. A track going away or across: at once; a
+        // closing one waits.
+        let (_, pilot, orders) = lost_hurt(MID, 0, 450, None);
+        assert_eq!(orders.speed, Some(54), "hurt");
+        assert_eq!(hunt_of(&pilot).wait_since_ms, None);
+        for (course, waits) in [
+            (0.0, false),
+            (90.0, false),
+            (270.0, false),
+            (150.0, true),
+            (180.0, true),
+        ] {
+            let track = Track {
+                course_deg: course,
+                speed_mps: 8.0,
+            };
+            let (_, pilot, orders) = lost(MID, 0, 450, Some(track));
+            let want = if waits { 0 } else { 54 };
+            assert_eq!(orders.speed, Some(want), "course {course}");
+            assert_eq!(
+                hunt_of(&pilot).wait_since_ms.is_some(),
+                waits,
+                "course {course}"
+            );
+        }
+        // Going across when the hunt began stays so: past the plot on the
+        // course leg, where the bearing back to the plot is the course turned
+        // round and the estimate a few tens of metres off, it still drives.
+        let track = Track {
+            course_deg: 90.0,
+            speed_mps: 8.0,
+        };
+        let (mut picture, mut pilot, _) = lost(MID, 0, 450, Some(track));
+        assert!(hunt_of(&pilot).going_away);
+        let plot = hunt_of(&pilot).trail.plot_m;
+        for (pos, t) in [
+            (plot, NOW + 10_000),
+            ((plot.0 + 10.0, plot.1), NOW + 11_000),
+            ((plot.0 + 40.0, plot.1), NOW + 13_000),
+        ] {
+            read_at(&mut picture, pos, t);
+            let orders = pilot.decide(&picture, &doctrine(), t);
+            assert_eq!(orders.speed, Some(54), "at {pos:?}");
+            assert_eq!(hunt_of(&pilot).leg, HuntLeg::Along, "at {pos:?}");
+            assert_eq!(hunt_of(&pilot).wait_since_ms, None, "at {pos:?}");
+        }
+        assert!(
+            !pilot
+                .take_notes()
+                .iter()
+                .any(|n| n.starts_with("Stopping before")),
+            "never waited"
+        );
+
+        // A hit taken after the wait began ends it, for good.
+        let (mut picture, mut pilot, _) = lost(MID, 0, 450, None);
+        pilot.take_notes();
+        hit_taken(&mut picture, NOW + 2_000);
+        let orders = pilot.decide(&picture, &doctrine(), NOW + 2_100);
+        assert_eq!(orders.speed, Some(54));
+        assert!(hunt_of(&pilot).wait_spent);
+        assert_eq!(pilot.take_notes(), ["The wait for BA is over; hunting on."]);
+        let orders = pilot.decide(&picture, &doctrine(), NOW + 3_000);
+        assert_eq!(orders.speed, Some(54), "for good");
+
+        // A fresh hostile ends it into the hold (BB 700 m off at 090°: the
+        // hold closes, full ahead at it).
+        let (mut picture, mut pilot, _) = lost(MID, 0, 450, None);
+        pilot.take_notes();
+        let t = NOW + 3_000;
+        let mut bb = contact_from(MID, "BB", Some(Side::Blue), 90, 700);
+        bb.read_ms = t;
+        hold(&mut picture, bb);
+        let orders = pilot.decide(&picture, &hold_doctrine(), t);
+        assert!(pilot.hunt.is_none());
+        assert_eq!((orders.heading, orders.speed), (Some(90), Some(54)));
+        assert_eq!(pilot.hold_motion, HoldMotion::Ahead);
+        assert_eq!(pilot.wait, None);
+        assert_eq!(
+            pilot.take_notes(),
+            ["The hunt for BA ends: BB is in sight."]
+        );
+
+        // The turn into a side hit outranks it; the hit has ended it, so after
+        // the turn the hunt drives.
+        let (mut picture, mut pilot, _) = lost(MID, 0, 450, None);
+        let t = NOW + 2_000;
+        hit(&mut picture, t, LEFT_HIT);
+        let orders = pilot.decide(&picture, &hold_doctrine(), t);
+        assert_eq!(
+            (orders.heading, orders.speed),
+            (Some(270), Some(0)),
+            "the turn into the shot: {:?}",
+            pilot.take_notes()
+        );
+        assert!(pilot.threat.is_some());
+        let t = t + THREAT_TURN_MS;
+        let orders = pilot.decide(&picture, &hold_doctrine(), t);
+        assert_eq!(orders.speed, Some(54));
+        assert!(hunt_of(&pilot).wait_spent);
+
+        // A side hit before the wait begins: the turn is flown and no wait
+        // begins while it lasts; after it, the wait does (a hit before it
+        // began does not end it).
+        let (mut picture, mut pilot) = flying_at(MID);
+        hold(
+            &mut picture,
+            contact_from(MID, "BA", Some(Side::Blue), 0, 450),
+        );
+        decide(&picture, &mut pilot);
+        picture.contacts.clear();
+        hit(&mut picture, NOW + 600, LEFT_HIT);
+        for t in [NOW + 1_000, NOW + 3_000] {
+            let orders = pilot.decide(&picture, &hold_doctrine(), t);
+            assert_eq!(
+                (orders.heading, orders.speed),
+                (Some(270), Some(0)),
+                "at {t}"
+            );
+            assert_eq!(hunt_of(&pilot).wait_since_ms, None, "at {t}");
+            assert_eq!(pilot.wait, None, "at {t}");
+        }
+        let t = NOW + 600 + THREAT_TURN_MS;
+        let orders = pilot.decide(&picture, &hold_doctrine(), t);
+        assert_eq!((orders.heading, orders.speed), (Some(0), Some(0)));
+        assert_eq!(hunt_of(&pilot).wait_since_ms, Some(t));
+    }
+
+    /// **The bot-side observer rule for AL.3's notes**: fed through
+    /// [`Picture::apply`], every designator a wait's sentence names is one a
+    /// contact row or notice named.
+    #[test]
+    fn the_waits_name_only_designators_the_stream_named() {
+        fn names(line: &crate::arena::Line) -> Vec<String> {
+            match line {
+                crate::arena::Line::ContactRow(row) => vec![row.designator.clone()],
+                crate::arena::Line::NewContact { designator, .. }
+                | crate::arena::Line::ContactLost { designator } => vec![designator.clone()],
+                crate::arena::Line::Identified {
+                    was, designator, ..
+                } => vec![was.clone(), designator.clone()],
+                _ => Vec::new(),
+            }
+        }
+        let (mut picture, mut pilot) = flying();
+        let mut named = BTreeSet::new();
+        let mut notes = Vec::new();
+        let script: [(u64, &str); 8] = [
+            (NOW, "Callsign RA."),
+            (NOW, "Red Tank 1: power online, 0 kph, heading 000°"),
+            (NOW, "  at 1280 m east, 1000 m north; scope holds a hostile"),
+            (NOW + 10, "New contact X1: bearing 087°, far."),
+            (
+                NOW + 20,
+                "X1  unknown  bearing 087° (rel 087°)  far  450 m  0 s",
+            ),
+            (NOW + 3_000, "Contact X1 identified: BA, blue."),
+            (
+                NOW + 3_010,
+                "BA  blue  bearing 087° (rel 087°)  far  450 m  0 s",
+            ),
+            (NOW + 4_000, "Contact BA lost."),
+        ];
+        for (at, text) in script {
+            let line = classify(text);
+            named.extend(names(&line));
+            picture.apply(at, &line);
+            // A row is read once its reply has settled.
+            picture.settle(at + 200);
+            pilot.decide(&picture, &hold_doctrine(), at + 200);
+            notes.extend(pilot.take_notes());
+        }
+        let over = NOW + 4_200 + AMBUSH_WAIT_MS;
+        pilot.decide(&picture, &hold_doctrine(), over);
+        notes.extend(pilot.take_notes());
+        for start in [
+            "Stopping for X1: ",
+            "Stopping before BA finds us: ",
+            "The wait for BA is over",
+        ] {
+            assert!(
+                notes.iter().any(|n| n.starts_with(start)),
+                "{start}: {notes:?}"
+            );
+        }
+        for note in &notes {
+            for word in note
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .filter(|w| {
+                    w.len() > 1
+                        && w.chars()
+                            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                        && w.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                })
+            {
+                assert!(named.contains(word), "{note}: {word}");
+            }
+        }
+        // The wait in the pilot's state names a designator the stream named.
+        let value = serde_json::to_value(&pilot).expect("json");
+        assert!(value["wait"].is_null(), "{}", value["wait"]);
+        for designator in value["unknown_since"].as_object().expect("a map").keys() {
+            assert!(named.contains(designator), "{designator}");
+        }
+        for designator in value["hurt"].as_array().expect("a set") {
+            assert!(named.contains(designator.as_str().expect("a word")));
         }
     }
 }

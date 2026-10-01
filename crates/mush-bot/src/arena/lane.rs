@@ -84,7 +84,9 @@
 //! **The pilot's rule on a `withdraw`** (cut AK.2; the commander's module head
 //! has the smoke's figures). Every applied doctrine goes through
 //! [`super::commander::vet`]: a `withdraw` on a sound hull, or in the rest
-//! after a hold, is flown as `hunt` or `orbit` (`commander-overruled`). A kept
+//! after a hold, is flown as `hunt` with no fresh hostile held, else as the
+//! pilot's own engagement (cut AL.3: `[arena] engagement`'s stance, `hold` by
+//! default; it was always `orbit`), recorded `commander-overruled`. A kept
 //! `withdraw` is one hold per episode: the episode's first sets
 //! `doctrine_until_ms` to `hold_s` on, a later one while it runs replaces the
 //! doctrine but never moves it; when it passes a standing `withdraw` becomes
@@ -460,6 +462,12 @@ impl Lane {
             json!({"bearing": (bearing.round() as u32) % 360,
                 "until_s": until.saturating_sub(p.last_ms).div_ceil(1_000)})
         });
+        // Cut AL.3: the wait flown at the last decision, either kind — a
+        // return not yet told apart, or a hunted hostile expected back — whom
+        // it is for and the whole seconds it has left.
+        let wait = self.pilot.wait.as_ref().map(
+            |(d, until)| json!({"d": d, "left_s": until.saturating_sub(p.last_ms).div_ceil(1_000)}),
+        );
         json!({"phase": phase_word(&p.phase), "match": p.following, "step": self.lobby.step(),
             "lead": self.lobby.lead(), "aboard": p.aboard,
             "own": {"callsign": own.callsign, "power": own.power.as_str(), "kph": own.speed_kph,
@@ -474,7 +482,7 @@ impl Lane {
                 "stall": self.pilot.stall_level, "threat": threat,
                 "live_turn": live_turn(p).map(Turn::as_str),
                 "marks": self.pilot.held_marks.len(),
-                "hold": self.pilot.hold_motion.as_str()}})
+                "hold": self.pilot.hold_motion.as_str(), "wait": wait}})
     }
 
     /// The pilot's own state (for tests and `/arena`).
@@ -542,10 +550,17 @@ impl Lane {
         self.withdraw_rule(now_ms);
         if let Some(doctrine) = self.commander.reply(now_ms, reply) {
             let may_hold = now_ms >= self.rest_until_ms;
+            // An overruled withdraw with a hostile held is flown as the
+            // pilot's own engagement (cut AL.3; it was always the orbit).
             let Vetted {
                 doctrine,
                 overruled,
-            } = vet(doctrine, &self.picture, may_hold);
+            } = vet(
+                doctrine,
+                &self.picture,
+                may_hold,
+                self.settings.engagement.stance(),
+            );
             if let Some((from, to, why)) = overruled {
                 self.commander.overruled(from, to, why);
             }

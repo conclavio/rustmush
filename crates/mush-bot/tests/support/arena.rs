@@ -1229,3 +1229,184 @@ pub async fn fly_posed(plan: &PosedPlan<'_>) -> Posed {
         refused,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Cut AL.3: the lead's reading of a posed flight.
+// ---------------------------------------------------------------------------
+
+/// **What a posed flight's transcript and report say** (cut AL.3), as the lead
+/// reads a run: what was flown, the guns' cadence and what the facet shown
+/// cost. Printed by both posed lanes ([`Reading::lines`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reading {
+    /// The `arena-picture` records, counted by their `data.doctrine.stance`…
+    pub stances: BTreeMap<String, usize>,
+    /// …of this many `arena-picture` records.
+    pub pictures: usize,
+    /// The lead's count ([`mush_bot::arena::report::fire_gaps`]) over the
+    /// `arena-send` records' `(data.lane_ms, data.line)`.
+    pub gaps: BTreeMap<String, mush_bot::arena::report::GapStats>,
+    /// The same over the shots that left
+    /// ([`mush_bot::arena::report::shot_gaps`]): each observation line
+    /// `Firing {w}.` at its record's `elapsed_ms`.
+    pub shots: BTreeMap<String, mush_bot::arena::report::GapStats>,
+    /// The `arena-send` lines starting `FIRE `, by the word after it.
+    pub fire_lines: BTreeMap<String, usize>,
+    /// The observation lines `FIRE {w} refused. Still cycling…`, by `{w}`.
+    pub still_cycling: BTreeMap<String, usize>,
+    /// The report's `arena.matches[*].hits_taken_by_facet`, summed; `None`
+    /// when there is no report.
+    pub facets: Option<BTreeMap<String, u32>>,
+}
+
+/// **Read a posed flight** (cut AL.3): `transcript` is the raw JSON-lines
+/// transcript (a torn line, the last one above all, is skipped), `report` the
+/// bot's report when it left one.
+pub fn reading(transcript: &str, report: Option<&serde_json::Value>) -> Reading {
+    let mut reading = Reading::default();
+    let mut sends: Vec<(u64, String)> = Vec::new();
+    let mut acks: Vec<(u64, String)> = Vec::new();
+    for line in transcript.lines() {
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        match record["kind"].as_str() {
+            Some("arena-picture") => {
+                reading.pictures += 1;
+                if let Some(stance) = record["data"]["doctrine"]["stance"].as_str() {
+                    *reading.stances.entry(stance.to_owned()).or_default() += 1;
+                }
+            }
+            Some("arena-send") => {
+                let (Some(at), Some(sent)) = (
+                    record["data"]["lane_ms"].as_u64(),
+                    record["data"]["line"].as_str(),
+                ) else {
+                    continue;
+                };
+                if let Some(weapon) = sent
+                    .strip_prefix("FIRE ")
+                    .and_then(|rest| rest.split_whitespace().next())
+                {
+                    *reading.fire_lines.entry(weapon.to_owned()).or_default() += 1;
+                }
+                sends.push((at, sent.to_owned()));
+            }
+            Some("observation") => {
+                let (Some(at), Some(text)) =
+                    (record["elapsed_ms"].as_u64(), record["data"].as_str())
+                else {
+                    continue;
+                };
+                for line in text.lines().map(str::trim) {
+                    if line.starts_with("Firing ") {
+                        acks.push((at, line.to_owned()));
+                    }
+                    if let Some((weapon, said)) = line
+                        .strip_prefix("FIRE ")
+                        .and_then(|rest| rest.split_once(' '))
+                        && said.starts_with("refused. Still cycling")
+                    {
+                        *reading.still_cycling.entry(weapon.to_owned()).or_default() += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    reading.gaps =
+        mush_bot::arena::report::fire_gaps(sends.iter().map(|(at, line)| (*at, line.as_str())));
+    reading.shots =
+        mush_bot::arena::report::shot_gaps(acks.iter().map(|(at, line)| (*at, line.as_str())));
+    reading.facets = report.map(|report| {
+        let mut facets: BTreeMap<String, u32> = BTreeMap::new();
+        let matches = report["arena"]["matches"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice);
+        for flown in matches {
+            let Some(split) = flown["hits_taken_by_facet"].as_object() else {
+                continue;
+            };
+            for (key, count) in split {
+                let count = count
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .unwrap_or(0);
+                if count == 0 {
+                    continue;
+                }
+                let total = facets.entry(key.clone()).or_default();
+                *total = total.saturating_add(count);
+            }
+        }
+        facets
+    });
+    reading
+}
+
+/// `{key} {n}, …` by count, highest first, then by key.
+fn by_count<K: std::fmt::Display + Ord, N: std::fmt::Display + Ord + Copy>(
+    counts: &BTreeMap<K, N>,
+) -> String {
+    let mut pairs: Vec<(&K, N)> = counts.iter().map(|(k, n)| (k, *n)).collect();
+    pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    pairs
+        .iter()
+        .map(|(k, n)| format!("{k} {n}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+impl Reading {
+    /// **The reading lines** (cut AL.3), in this order:
+    ///
+    /// * `ENGAGEMENT: {e}; flown {stance} {k}, {stance} {k} of {n} picture
+    ///   records` — the engagement the lane was given, then what its picture
+    ///   records flew, by count, highest first, then by word (`flown nothing`
+    ///   when no record carried a stance);
+    /// * `FIRE GAP {w}: p10 {a} / p50 {b} / p90 {c} ms over {n} gaps`, one per
+    ///   weapon by id (the lead's count);
+    /// * `SHOT GAP {w}: p10 {a} / p50 {b} / p90 {c} ms over {n} gaps`, one per
+    ///   weapon by id (the shots that left);
+    /// * `STILL CYCLING {w}: {k} of {n} FIRE lines`, one per weapon by id;
+    /// * `HITS TAKEN BY FACET: {key} {n}, …` by count, highest first, then by
+    ///   key; `HITS TAKEN BY FACET: none` when the report holds no facet hit,
+    ///   `HITS TAKEN BY FACET: no report` when there is no report.
+    pub fn lines(&self, engagement: &str) -> Vec<String> {
+        let flown = if self.stances.is_empty() {
+            "nothing".to_owned()
+        } else {
+            by_count(&self.stances)
+        };
+        let mut lines = vec![format!(
+            "ENGAGEMENT: {engagement}; flown {flown} of {} picture records",
+            self.pictures
+        )];
+        for (head, gaps) in [("FIRE GAP", &self.gaps), ("SHOT GAP", &self.shots)] {
+            for (weapon, g) in gaps {
+                lines.push(format!(
+                    "{head} {weapon}: p10 {} / p50 {} / p90 {} ms over {} gaps",
+                    g.p10_ms, g.p50_ms, g.p90_ms, g.gaps
+                ));
+            }
+        }
+        let weapons: BTreeSet<&String> = self
+            .fire_lines
+            .keys()
+            .chain(self.still_cycling.keys())
+            .collect();
+        for weapon in weapons {
+            lines.push(format!(
+                "STILL CYCLING {weapon}: {} of {} FIRE lines",
+                self.still_cycling.get(weapon).copied().unwrap_or(0),
+                self.fire_lines.get(weapon).copied().unwrap_or(0)
+            ));
+        }
+        lines.push(match &self.facets {
+            None => "HITS TAKEN BY FACET: no report".to_owned(),
+            Some(facets) if facets.is_empty() => "HITS TAKEN BY FACET: none".to_owned(),
+            Some(facets) => format!("HITS TAKEN BY FACET: {}", by_count(facets)),
+        });
+        lines
+    }
+}

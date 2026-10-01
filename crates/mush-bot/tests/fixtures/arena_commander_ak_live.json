@@ -1,0 +1,506 @@
+[
+  {
+    "req": 27,
+    "class": "orbit_hostile_held_sound_hull",
+    "view": {
+      "contacts": [
+        {
+          "age": 0,
+          "brg": 68,
+          "course": null,
+          "d": "BA",
+          "mps": null,
+          "rng": 400,
+          "side": "blue"
+        }
+      ],
+      "doctrine": {
+        "band_m": 420,
+        "sense": "auto",
+        "stance": "orbit",
+        "target": "BA"
+      },
+      "events": [
+        "Hit on the turret.",
+        "Hit on BA: turret.",
+        "Hit on the turret.",
+        "Hit on the hull.",
+        "Hit on BA: turret.",
+        "Hit on the hull."
+      ],
+      "lock": "BA",
+      "own": {
+        "cs": "RA",
+        "hdg": 165,
+        "kph": 41,
+        "pos": [
+          1037,
+          815
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 120/120",
+          "hull": "intact 200/200; front 400/400, left 220/250, rear 150/150, right 250/250, top 100/100",
+          "left_track": "intact 100/100; left 96/120",
+          "right_track": "intact 100/100; right 120/120",
+          "turret": "intact 150/150; front 350/350, left 178/220, rear 140/140, right 220/220"
+        },
+        "side": "red",
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": 51,
+            "ready": false,
+            "rounds": 37
+          },
+          {
+            "id": "machine_gun",
+            "pct": 28,
+            "ready": false,
+            "rounds": 1930
+          }
+        ]
+      },
+      "t_s": 22
+    },
+    "reply": "{\"target\":\"BA\",\"stance\":\"orbit\",\"band_m\":420,\"sense\":\"auto\",\"note\":\"hull intact, keep circling the hostile at 420 m while weapons cycle\"}",
+    "expect": "orbit"
+  },
+  {
+    "req": 143,
+    "class": "orbit_hostile_held_sound_hull",
+    "view": {
+      "contacts": [
+        {
+          "age": 0,
+          "brg": 73,
+          "course": null,
+          "d": "BA",
+          "mps": null,
+          "rng": 450,
+          "side": "blue"
+        }
+      ],
+      "doctrine": {
+        "band_m": 420,
+        "sense": "auto",
+        "stance": "orbit",
+        "target": "BA"
+      },
+      "events": [
+        "Hit on the right_track.",
+        "Hit on BA: turret.",
+        "Hit on the right_track.",
+        "Miss on BA: the round went wide.",
+        "Hit on the turret.",
+        "Hit on the right_track."
+      ],
+      "lock": "BA",
+      "own": {
+        "cs": "RA",
+        "hdg": 352,
+        "kph": 41,
+        "pos": [
+          984,
+          840
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 120/120",
+          "hull": "intact 200/200; front 400/400, left 184/250, rear 135/150, right 235/250, top 100/100",
+          "left_track": "intact 100/100; left 105/120",
+          "right_track": "intact 67/100; right 0/120",
+          "turret": "intact 112/150; front 350/350, left 0/220, rear 134/140, right 196/220"
+        },
+        "side": "red",
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": 47,
+            "ready": false,
+            "rounds": 36
+          },
+          {
+            "id": "machine_gun",
+            "pct": 25,
+            "ready": false,
+            "rounds": 1880
+          }
+        ]
+      },
+      "t_s": 31
+    },
+    "reply": "{\"target\":\"BA\",\"stance\":\"orbit\",\"band_m\":420,\"sense\":\"auto\",\"note\":\"hull internals intact, keep circling BA at 420 m; weapons reloading\"}",
+    "expect": "orbit"
+  },
+  {
+    "req": 231,
+    "class": "orbit_hostile_held_sound_hull",
+    "view": {
+      "contacts": [
+        {
+          "age": 0,
+          "brg": 96,
+          "course": null,
+          "d": "BA",
+          "mps": null,
+          "rng": 450,
+          "side": "blue"
+        }
+      ],
+      "doctrine": {
+        "band_m": 400,
+        "sense": "auto",
+        "stance": "orbit",
+        "target": "BA"
+      },
+      "events": [
+        "Hit on the hull.",
+        "Hit on the turret.",
+        "Hit on BA: hull.",
+        "Hit on the hull.",
+        "Hit on BA: hull.",
+        "Hit on the turret."
+      ],
+      "lock": "BA",
+      "own": {
+        "cs": "RA",
+        "hdg": 7,
+        "kph": 46,
+        "pos": [
+          960,
+          1007
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 120/120",
+          "hull": "intact 200/200; front 400/400, left 187/250, rear 129/150, right 10/250, top 100/100",
+          "left_track": "intact 100/100; left 84/120",
+          "right_track": "intact 100/100; right 39/120",
+          "turret": "intact 150/150; front 350/350, left 67/220, rear 128/140, right 55/220"
+        },
+        "side": "red",
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": 44,
+            "ready": false,
+            "rounds": 34
+          },
+          {
+            "id": "machine_gun",
+            "pct": 24,
+            "ready": false,
+            "rounds": 1800
+          }
+        ]
+      },
+      "t_s": 47
+    },
+    "reply": "{\"target\":\"BA\",\"stance\":\"orbit\",\"band_m\":400,\"sense\":\"auto\",\"note\":\"Hull internals intact; keep circling BA at 400 m to present side/rear aspects and avoid the frontal hits we are taking.\"}",
+    "expect": "orbit"
+  },
+  {
+    "req": 405,
+    "class": "orbit_hostile_held_sound_hull",
+    "view": {
+      "contacts": [
+        {
+          "age": 1,
+          "brg": 79,
+          "course": null,
+          "d": "BA",
+          "mps": null,
+          "rng": 400,
+          "side": "blue"
+        }
+      ],
+      "doctrine": {
+        "band_m": 420,
+        "sense": "auto",
+        "stance": "orbit",
+        "target": "BA"
+      },
+      "events": [
+        "Hit on BA: hull.",
+        "Hit on BA: turret.",
+        "FIRE machine_gun refused. Still cycling: 1 s to go.",
+        "Hit on BA: turret.",
+        "Hit on BA: hull.",
+        "Hit on the hull."
+      ],
+      "lock": "BA",
+      "own": {
+        "cs": "RA",
+        "hdg": 158,
+        "kph": 41,
+        "pos": [
+          1020,
+          907
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 120/120",
+          "hull": "intact 200/200; front 400/400, left 130/250, rear 150/150, right 250/250, top 100/100",
+          "left_track": "intact 100/100; left 120/120",
+          "right_track": "intact 100/100; right 120/120",
+          "turret": "intact 150/150; front 350/350, left 220/220, rear 140/140, right 220/220"
+        },
+        "side": "red",
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": 50,
+            "ready": false,
+            "rounds": 38
+          },
+          {
+            "id": "machine_gun",
+            "pct": 28,
+            "ready": false,
+            "rounds": 1950
+          }
+        ]
+      },
+      "t_s": 14
+    },
+    "reply": "{\"target\":\"BA\",\"stance\":\"orbit\",\"band_m\":420,\"sense\":\"auto\",\"note\":\"hull intact, BA hit repeatedly; keep orbiting at 420 to stay in sight and press the damaged target\"}",
+    "expect": "orbit"
+  },
+  {
+    "req": 55,
+    "class": "withdraw_hostile_held_sound_hull",
+    "view": {
+      "contacts": [
+        {
+          "age": 0,
+          "brg": 85,
+          "course": null,
+          "d": "BA",
+          "mps": null,
+          "rng": 400,
+          "side": "blue"
+        }
+      ],
+      "doctrine": {
+        "band_m": 420,
+        "sense": "auto",
+        "stance": "orbit",
+        "target": "BA"
+      },
+      "events": [
+        "Hit on the hull.",
+        "Miss on BA: the round went wide.",
+        "Hit on the hull.",
+        "Hit on BA: hull.",
+        "Hit on the hull.",
+        "Hit on the hull."
+      ],
+      "lock": "BA",
+      "own": {
+        "cs": "RA",
+        "hdg": 159,
+        "kph": 54,
+        "pos": [
+          1038,
+          966
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 120/120",
+          "hull": "intact 200/200; front 394/400, left 73/250, rear 141/150, right 169/250, top 100/100",
+          "left_track": "intact 100/100; left 72/120",
+          "right_track": "intact 100/100; right 39/120",
+          "turret": "intact 150/150; front 344/350, left 178/220, rear 131/140, right 34/220"
+        },
+        "side": "red",
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": 52,
+            "ready": false,
+            "rounds": 33
+          },
+          {
+            "id": "machine_gun",
+            "pct": 30,
+            "ready": false,
+            "rounds": 1800
+          }
+        ]
+      },
+      "t_s": 48
+    },
+    "reply": "{\"target\":\"BA\",\"stance\":\"withdraw\",\"band_m\":450,\"sense\":\"auto\",\"hold_s\":12,\"note\":\"hull internals at half or less; left/right/turret sides badly damaged, break away to recover\"}",
+    "expect": "hold"
+  },
+  {
+    "req": 431,
+    "class": "withdraw_hostile_held_sound_hull",
+    "view": {
+      "contacts": [
+        {
+          "age": 0,
+          "brg": 82,
+          "course": null,
+          "d": "BA",
+          "mps": null,
+          "rng": 450,
+          "side": "blue"
+        }
+      ],
+      "doctrine": {
+        "band_m": 420,
+        "sense": "auto",
+        "stance": "orbit",
+        "target": "BA"
+      },
+      "events": [
+        "Hit on the turret.",
+        "Hit on the right_track.",
+        "Hit on the turret.",
+        "Hit on BA: hull.",
+        "Hit on the right_track.",
+        "The right_track is destroyed."
+      ],
+      "lock": "BA",
+      "own": {
+        "cs": "RA",
+        "hdg": 353,
+        "kph": 41,
+        "pos": [
+          972,
+          919
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 120/120",
+          "hull": "intact 200/200; front 400/400, left 103/250, rear 126/150, right 55/250, top 100/100",
+          "left_track": "intact 85/100; left 0/120",
+          "right_track": "destroyed 0/100; right 0/120",
+          "turret": "intact 150/150; front 350/350, left 154/220, rear 140/140, right 193/220"
+        },
+        "side": "red",
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": 48,
+            "ready": false,
+            "rounds": 35
+          },
+          {
+            "id": "machine_gun",
+            "pct": 26,
+            "ready": false,
+            "rounds": 1870
+          }
+        ]
+      },
+      "t_s": 37
+    },
+    "reply": "{\"target\":\"BA\",\"stance\":\"withdraw\",\"band_m\":450,\"sense\":\"auto\",\"hold_s\":20,\"note\":\"right track destroyed, hull internals at half or less; break contact to survive\"}",
+    "expect": "hold"
+  },
+  {
+    "req": 109,
+    "class": "hunt_nothing_held",
+    "view": {
+      "contacts": [
+        {
+          "age": 1,
+          "brg": 90,
+          "course": null,
+          "d": "X1",
+          "mps": null,
+          "rng": null,
+          "side": null
+        }
+      ],
+      "doctrine": {
+        "band_m": 450,
+        "sense": "auto",
+        "stance": "orbit",
+        "target": null
+      },
+      "events": [
+        "phase: claimed red 1",
+        "phase: boarding (match 2)",
+        "phase: seated (match 2)",
+        "phase: running (match 2)",
+        "New contact X1.",
+        "Power online."
+      ],
+      "lock": null,
+      "own": {
+        "cs": null,
+        "hdg": 0,
+        "kph": 0,
+        "pos": null,
+        "power": "online",
+        "sections": {},
+        "side": "red",
+        "weapons": []
+      },
+      "t_s": 0
+    },
+    "reply": "{\"target\":null,\"stance\":\"hunt\",\"band_m\":450,\"sense\":\"auto\",\"note\":\"X1 is an unknown contact with no side or range; hunt to identify it, since a lost or stale contact is never a reason to withdraw.\"}",
+    "expect": "hunt"
+  },
+  {
+    "req": 503,
+    "class": "hunt_nothing_held",
+    "view": {
+      "contacts": [],
+      "doctrine": {
+        "band_m": 450,
+        "sense": "auto",
+        "stance": "hunt",
+        "target": "BA"
+      },
+      "events": [
+        "Miss on BA: the round went wide.",
+        "Miss on BA: the target moved.",
+        "Miss on BA: the target moved.",
+        "Hit on BA: engine.",
+        "Lock on BA broken.",
+        "Contact BA lost."
+      ],
+      "lock": null,
+      "own": {
+        "cs": "RA",
+        "hdg": 122,
+        "kph": 20,
+        "pos": [
+          964,
+          912
+        ],
+        "power": "online",
+        "sections": {
+          "engine": "intact 120/120",
+          "hull": "intact 200/200; front 139/400, left 40/250, rear 69/150, right 7/250, top 100/100",
+          "left_track": "intact 28/100; left 0/120",
+          "right_track": "destroyed 0/100; right 0/120",
+          "turret": "intact 150/150; front 305/350, left 118/220, rear 131/140, right 145/220"
+        },
+        "side": "red",
+        "weapons": [
+          {
+            "id": "cannon",
+            "pct": null,
+            "ready": false,
+            "rounds": 26
+          },
+          {
+            "id": "machine_gun",
+            "pct": null,
+            "ready": true,
+            "rounds": 1580
+          }
+        ]
+      },
+      "t_s": 103
+    },
+    "reply": "{\"target\":\"BA\",\"stance\":\"hunt\",\"band_m\":450,\"sense\":\"auto\",\"note\":\"BA lost after engine hit; hunt to last position and sweep, hull internals still above half so no withdraw\"}",
+    "expect": "hunt"
+  }
+]
