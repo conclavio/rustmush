@@ -19,19 +19,67 @@
 //!   gun's inner band allow (420 m for the stock tank), where it stops, turns
 //!   onto you and shoots" — so the pilot does not stand and trade at that range;
 //! * "on grass a stopped tank can be seen out to 80 per cent of that (480 m)
-//!   and a moving one out to all of it" (600 m) — so the orbit's default radius,
-//!   **450 m**, sits just outside the stand-off and inside the stopped-tank
-//!   sight: the pilot keeps a stopped machine in view while making it turn. The
+//!   and a moving one out to all of it" (600 m) — so the default band,
+//!   **450 m**, sits just outside the machines' stand-off and inside the
+//!   stopped-tank sight: the pilot keeps a stopped machine in view. The
 //!   machines stop to shoot, so the stopped tank's 480 m, less a margin for the
 //!   scope's 50 m rounding and the tank's own drift, is the **ceiling** of every
 //!   band the pilot flies ([`SIGHT_BAND_MAX_M`], 450 m), the fall back's
 //!   included: the moving sight's 600 m is where it loses them;
-//! * "a side is twice the target, 7 m of flank against 3.5 m of bow", and "one
-//!   caught from behind spends its thinnest" plate — so the orbit circles toward
-//!   the target's **rear** when the picture holds a track on it;
-//! * a machine "drives at where it last saw you", and a contact "is drawn where
-//!   it was last seen" — so without a track the orbit **reverses** every 20 s,
-//!   which makes the machine's plot of the pilot go stale;
+//! * **"The facet you show decides what a hit costs you"** (`help cockpit`,
+//!   "Seeing"): "from within 45 degrees of your bow it strikes the front", "a
+//!   side is twice the target, 7 m of flank against 3.5 m of bow", the stock
+//!   hull carries 400 in front, 250 a side and 150 behind, and a side shot
+//!   lands on that side's track three times in ten — "Turn into the shot". So
+//!   the pilot's default engagement (cut AL.2, [`Stance::Hold`]) **stops at the
+//!   band with its bow on the hostile** and changes range only **along the
+//!   line of fire**: ahead to close, in reverse to open ("a negative speed
+//!   reverses"; "the stock tank makes 54 kph forward and 27 astern"). The bow
+//!   is held within [`HOLD_BOW_DEG`] of the hostile, inside the help's 45°
+//!   front arc. The orbit showed the machine a side the whole fight: of the
+//!   hits the bot took in its own measured run, hull left 97, hull right 80,
+//!   turret left 64 and right 60, the tracks 61 and 58, and the front only 14
+//!   (hull) and 9 (turret). The range moves only past the band's slack and a
+//!   hysteresis of half the scope's 50 m rounding ([`HOLD_HYSTERESIS_M`]), so a
+//!   machine at the help's 420 m, read `400 m`, never sets the tank reversing
+//!   and back;
+//! * a side or rear hit turns the bow to the shooter ([`THREAT_TURN_MS`]): the
+//!   struck facet is the help's 45-degree face (`left` 225..=315 degrees
+//!   clockwise from the bow, `right` 45..=135, `rear` 135..=225), and a hostile
+//!   is in that arc when its own row's relative bearing (`rel`, read every
+//!   second) lies in it; the hit line says nothing of who fired, so with none
+//!   in the arc the bow turns to the arc's centre, and with only the held
+//!   target to blame it is taken as the shooter (the hold already faces it).
+//!   A hit read after its turn would be over, one with nothing to blame while
+//!   the current turn is not yet read by `STATUS`, and with one track gone one
+//!   whose turn goes the dead way turn nothing; the turn's sentence is said
+//!   when it is flown, never for a turn a held stop or a withdrawal outranks;
+//! * the **orbit** is a stance a commander or `[arena] engagement = "orbit"`
+//!   asks for, no longer the default: it circles toward the target's **rear**
+//!   when the picture holds a track on it ("one caught from behind spends its
+//!   thinnest" plate), and without a track **reverses** every 20 s. (That this
+//!   spoils the machines' aim was not borne out: every one of the bot's own
+//!   113 misses in its measured run read `the round went wide`, none `the
+//!   target moved`.)
+//! * "Lose one track and the tank is slowed and will not turn that way" — so
+//!   with one track gone ([`live_turn`]) every turn the pilot makes on its own
+//!   (the held turn, the stall's, the sweep's legs, the detour round held
+//!   ground) goes the live way, and an orbit circles the way that turns the
+//!   live way (a named change to the orbit, with one track gone only). Two
+//!   signs are kept apart: the orbit's circling sense ([`Pilot::sense`], `+1`
+//!   counter-clockwise round the target) and the compass turn sign
+//!   ([`Pilot::turn_sign`], `+1` clockwise, the heading growing). The bot's own
+//!   transcript shows the server turning a one-track tank the long, live way
+//!   when ordered a heading on the dead side, about 30° a second, so a small
+//!   correction toward the dead side is a whole circle: a heading whose turn
+//!   from the [`Pilot::reference_heading`] is toward the dead side by at most
+//!   [`ONE_TRACK_DEADBAND_DEG`] (the help's front arc) is not ordered at all —
+//!   with one track gone the hold's bow may stand up to that far off the
+//!   target on the dead side, still inside the front arc — and a larger one is
+//!   ordered once and then no heading goes until `STATUS` reads it or
+//!   [`ONE_TRACK_COMMIT_MS`] (a whole circle at that rate) has passed. "Or
+//!   reverses to turn" is not built: how a one-track tank reverses is
+//!   unobserved;
 //! * "`SPEED` says both when you ask for more than it has" — so the first speed
 //!   order is `999`, which reads the tank's own ceilings; until they are known
 //!   "full ahead" is 40 kph, under the stock tank's 41 on grass;
@@ -64,7 +112,23 @@
 //!   heading it was stopped on** (90°, 135°, 180°, each judged a whole
 //!   [`STALL_MS`] later, above the 3.1 s p90 and 4.0 s longest lag the bot's
 //!   own transcript shows from `Steering to D°.` to a `STATUS` reading D), and
-//!   at last backs off ("a negative speed reverses", `help cockpit`);
+//!   at last backs off ("a negative speed reverses", `help cockpit`). A tank
+//!   the pilot itself stopped or reverses is never "stalled": the watchdog
+//!   opens only after a forward speed of the pilot's own choosing;
+//! * held ground is **remembered** (cut AL.2, [`HeldMark`]): the bot's own
+//!   transcript shows the search driving back into one slope ten times, 12 s
+//!   apart. A stop on ground — `too steep`, `will not take the tank` or `the
+//!   edge`, never `something is in the way` (another unit, which moves) —
+//!   marks the point [`HELD_MARK_AHEAD_M`] ahead of where the tank stopped
+//!   (behind it, when it stopped reversing), and a forward heading whose next
+//!   [`HELD_MARK_NEAR_M`] passes within [`HELD_MARK_HALF_WIDTH_M`] of a mark
+//!   more than [`HELD_MARK_CLEAR_M`] off is turned aside by
+//!   [`HELD_MARK_DETOUR_DEG`] (up to three times) the pilot's turn way. A mark
+//!   is **a point, not a bank**: a detour can meet the same bank further
+//!   along, and that is a new stop and a new mark. A stop while reversing (a
+//!   guard: no transcript holds one) runs no forward held turn — the tank
+//!   stops with its bow kept — and a reverse whose ray behind the tank meets a
+//!   mark stops instead;
 //! * "Hurt badly enough it breaks off for its own entry zone", "Open the range
 //!   past its sight and it comes after you again", and "A machine that loses you
 //!   goes to where it last saw you" — so a lost hostile is **hunted**: to its
@@ -85,23 +149,35 @@
 //!
 //! **The pilot's own rule above any doctrine.** Hurt to half its hull's
 //! internals, or with a plate **of its hull** at a quarter or gone, it falls
-//! back: away from the target for 10 s or until it has opened to its widened
-//! band, whichever is first; the widened band is 150 m wider than the
-//! doctrine's, never narrower than it and never past [`SIGHT_BAND_MAX_M`]. After
-//! that it flies its doctrine again at the widened band, `close` flown as
-//! `orbit` there (a failing hull does not drive in to 200 m).
+//! back: **in reverse with its bow on the target** (cut AL.2: it used to turn
+//! its stern, or its damaged flank, to the machine) for 10 s or until it has
+//! opened to its widened band, whichever is first; the widened band is 150 m
+//! wider than the doctrine's, never narrower than it and never past
+//! [`SIGHT_BAND_MAX_M`]. After that it flies its doctrine again at the widened
+//! band, `close` flown as `hold` there (a failing hull does not drive in to
+//! 200 m).
 //!
-//! **One stance precedence** (`Pilot::motion`), each step returning when it
-//! applies: (1) the held turn and the stall; (2) the pilot's own fall-back
-//! withdrawal; (3) a doctrine `withdraw`; (4) the doctrine's stance round a
-//! hostile whose plot is younger than [`HUNT_STALE_PLOT_MS`]; (5) the hunt;
-//! (4 again) the doctrine's stance round an older row never seen fresh; (6) the
-//! search. A doctrine `withdraw` reaches step 3 only as a bounded hold on a
-//! failing hull (the lane enforces it, cut AK.2), and it outranks the widened
-//! orbit after a fall back, so it is what turns the tank away for its hold. A
-//! doctrine `hunt` (cut AK.2) drives straight at a hostile until its band and
-//! circles it there, but only while its plot is fresh ([`FRESH_PLOT_MS`]): past
-//! that it hunts at once from the trail, and with no trail it searches.
+//! **One stance precedence** (`Pilot::motion`, cut AL.2), each step returning
+//! when it applies: (1) the held turn (or, after a stop while reversing, a
+//! stop with the bow kept), the back-off and an open stall; (2) the pilot's
+//! own fall-back withdrawal, in reverse bow-on (the current heading at full
+//! ahead with no target to face); (3) a doctrine `withdraw`, the same; (3b)
+//! the turn into a side or rear hit, stopped, for [`THREAT_TURN_MS`] (never
+//! under an `orbit` doctrine, and nothing when the threat is within
+//! [`HOLD_BOW_DEG`] of a young target the pilot already faces); (4) the
+//! doctrine's stance round a hostile whose plot is younger than
+//! [`HUNT_STALE_PLOT_MS`]; (5) the hunt; (4 again) the doctrine's stance round
+//! an older row never seen fresh; (6) the search. Every heading steps (2) to
+//! (6) return at a forward speed is steered round held ground; every reverse
+//! (the hold's, a withdrawal's, the back-off) whose ray behind the tank meets a
+//! mark is a stop instead, the bow kept. The stances: `hold` stops at the band
+//! bow-on ([`Pilot::hold`]); `close` is a hold at [`CLOSE_M`]; `hunt` drives at
+//! a fresh hostile and holds at the band; `withdraw` backs away bow-on;
+//! `orbit` circles as cut AK built it. A doctrine `withdraw` reaches step 3
+//! only as a bounded hold on a failing hull (the lane enforces it, cut AK.2),
+//! and it outranks the widened band after a fall back. A doctrine `hunt` (cut
+//! AK.2) holds a hostile only while its plot is fresh ([`FRESH_PLOT_MS`]):
+//! past that it hunts at once from the trail, and with no trail it searches.
 //!
 //! **What a tuning round may move** (cut AL.3, between its measurement runs,
 //! and nothing else). **AK's constants are frozen**: the hunt's, the fall
@@ -131,10 +207,35 @@
 //! [`super::picture::CYCLE_READ_WITHIN_MS`] and
 //! [`super::lane::WEAPONS_AFTER_SHOT_MS`] (both read from the transcript); nor
 //! [`SIGHT_BAND_MAX_M`] and [`FALL_BACK_MAX_M`] (a ruling) or
-//! [`HUNT_STALE_PLOT_MS`] (a guard: no live row read older than 2 s). Every
-//! test asserts through these names, never their values; the one exception
-//! is the lead's own bounds on the offline median gaps (1 200 ms for the
-//! machine gun, 6 500 for the cannon), which a round must keep.
+//! [`HUNT_STALE_PLOT_MS`] (a guard: no live row read older than 2 s).
+//!
+//! AL.2's, in this module, within these bounds: [`HOLD_SLACK_M`] 50..=100,
+//! [`THREAT_TURN_MS`] 2 000..=8 000, [`ONE_TRACK_DEADBAND_DEG`] 45..=90,
+//! [`ONE_TRACK_COMMIT_MS`] 8 000..=16 000, [`HELD_MARK_NEAR_M`] 80..=200,
+//! [`HELD_MARK_HALF_WIDTH_M`] 20..=60 and [`HELD_MARK_DETOUR_DEG`] 30..=90.
+//! Not tunable: [`HOLD_BOW_DEG`] (a ruling: the help's 45° front arc less a
+//! margin), [`HOLD_HYSTERESIS_M`] (half the scope's rounding),
+//! [`HELD_MARK_AHEAD_M`], [`HELD_MARK_CLEAR_M`] (derived) and
+//! [`HELD_MARKS_MAX`].
+//!
+//! **The tests admit less of two of them**, one constant moved at a time from
+//! the built tree (the rest as built; every other AL.2 constant passes at both
+//! ends of its bound):
+//! `HELD_MARK_NEAR_M` 90..=200 (80 fails: the bot's own run-2 case, `091` from
+//! (1 330, 1 052), meets that stop's point 89.7 m ahead, and the brief fixes
+//! that geometry; 90, 120 built and 200 pass), and `HELD_MARK_HALF_WIDTH_M`
+//! 25..=60 (at 20 the clear distance falls to 40 m, and a mark dead-reckoned
+//! up to 2 s of driving past the true stop lies beyond it: the back-off from
+//! that forward stop is then stopped by the stop's own mark, and a search
+//! drifting on its dead reckoning slips past a mark's narrower line; 25, 28,
+//! 30 built and 60 pass). Also tried at both ends and passing:
+//! [`HOLD_SLACK_M`] (and 75), [`THREAT_TURN_MS`], [`ONE_TRACK_DEADBAND_DEG`]
+//! (and 60), [`ONE_TRACK_COMMIT_MS`] and [`HELD_MARK_DETOUR_DEG`]. Two moved
+//! together are untried.
+//!
+//! Every test asserts through these names, never their values; the one
+//! exception is the lead's own bounds on the offline median gaps (1 200 ms for
+//! the machine gun, 6 500 for the cannon), which a round must keep.
 use std::collections::BTreeSet;
 
 use serde::Serialize;
@@ -162,10 +263,61 @@ pub const READY_AFTER_ACK_MS: u64 = 1_500;
 pub const ORBIT_CORRECTION_DEG: f64 = 60.0;
 /// …reached this many metres off the band.
 pub const ORBIT_CORRECTION_SPAN_M: f64 = 150.0;
-/// `Close` drives straight in to this range, then orbits there.
+/// `Close` drives straight in to this range bow-on, then holds there (cut
+/// AL.2: it used to circle there).
 pub const CLOSE_M: f64 = 200.0;
-/// `StandOff` holds within this of its band.
-pub const STAND_OFF_SLACK_M: f64 = 50.0;
+/// **The hold's slack** (cut AL.2; renamed from `STAND_OFF_SLACK_M`): a hold
+/// changing range stops once within this of its band. Tunable 50..=100.
+pub const HOLD_SLACK_M: f64 = 50.0;
+/// **The hold's hysteresis** (cut AL.2): a stopped hold changes range only
+/// past the slack and this much more. Half the scope's rounding: a row's range
+/// is "rounded to 50 m" (`help cockpit`), so a machine at the help's 420 m
+/// reads `400 m`, and a threshold on that step would toggle the speed every
+/// read. Not tunable.
+pub const HOLD_HYSTERESIS_M: f64 = 25.0;
+/// **The bow's tolerance** (cut AL.2): a hold faces within this of the
+/// hostile, and a threat this close to the held target's bearing is the
+/// target. A ruling, not tunable: "from within 45 degrees of your bow it
+/// strikes the front" (`help cockpit`, "Seeing"), less a margin for
+/// whole-degree bearings and a machine that moves.
+pub const HOLD_BOW_DEG: u32 = 30;
+/// **The turn into a side or rear hit** lasts this long after the hit (cut
+/// AL.2). Tunable 2 000..=8 000.
+pub const THREAT_TURN_MS: u64 = 4_000;
+/// **One track gone** (cut AL.2): a heading toward the dead side by at most
+/// this is not ordered. The help's front arc: a dead-side error inside it
+/// still shows the front. Tunable 45..=90.
+pub const ONE_TRACK_DEADBAND_DEG: u32 = 45;
+/// …and after a larger one is ordered, no heading goes for this long unless
+/// `STATUS` reads it first. The bot's own transcript turned a one-track tank
+/// about 30° a second (307° to 164° counter-clockwise in 4.8 s), so a whole
+/// circle is about 12 s. Tunable 8 000..=16 000.
+pub const ONE_TRACK_COMMIT_MS: u64 = 12_000;
+/// **Held ground** (cut AL.2): a mark is the point this far ahead of where the
+/// tank stopped (behind it, stopped reversing). Not tunable.
+pub const HELD_MARK_AHEAD_M: f64 = 20.0;
+/// A forward heading is blocked by a mark at most this far ahead along it…
+/// Tunable 80..=200.
+pub const HELD_MARK_NEAR_M: f64 = 120.0;
+/// …and within this of its line. Tunable 20..=60.
+pub const HELD_MARK_HALF_WIDTH_M: f64 = 30.0;
+/// A mark this close to the own tank does not block a forward heading: it is
+/// the held turn's and the stall's business, so a tank at its own stop is not
+/// boxed in. Derived, not tunable.
+pub const HELD_MARK_CLEAR_M: f64 = HELD_MARK_AHEAD_M + HELD_MARK_HALF_WIDTH_M;
+/// A blocked heading is turned aside this much at a time, up to three times.
+/// Tunable 30..=90.
+pub const HELD_MARK_DETOUR_DEG: f64 = 45.0;
+/// The most marks a match keeps; the oldest goes first. Not tunable.
+pub const HELD_MARKS_MAX: usize = 16;
+/// The three `Held:` sentences that name ground (cut AL.2): only these are
+/// marked. `Held: something is in the way.` is another unit, which moves, and
+/// `Held: the tank is held.` names nothing.
+pub const HELD_GROUND: [&str; 3] = [
+    "Held: the slope ahead is too steep for the tank.",
+    "Held: the ground ahead will not take the tank.",
+    "Held: this is the edge of the arena.",
+];
 /// The orbit reverses after this long without a track to steer by.
 pub const FLIP_EVERY_MS: u64 = 20_000;
 /// A track is advanced by its plot's age, at most this far.
@@ -328,10 +480,119 @@ pub struct Hunt {
     pub sweep_since_ms: Option<u64>,
 }
 
+/// **What a hold is doing with the range** (cut AL.2, [`Pilot::hold`]):
+/// stopped at the band, closing it ahead, or opening it in reverse — always
+/// with the bow on the hostile. Remembered between decisions so the range
+/// moves only past the hysteresis, and back to `Stopped` whenever the pilot
+/// flies anything but a hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub enum HoldMotion {
+    #[default]
+    Stopped,
+    Ahead,
+    Astern,
+}
+
+impl HoldMotion {
+    /// `stopped`, `ahead` or `astern` (the `arena-picture` record's word).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HoldMotion::Stopped => "stopped",
+            HoldMotion::Ahead => "ahead",
+            HoldMotion::Astern => "astern",
+        }
+    }
+}
+
+/// **A compass turn** (cut AL.2): clockwise is the heading growing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum Turn {
+    Clockwise,
+    CounterClockwise,
+}
+
+impl Turn {
+    /// The compass turn sign: `+1` clockwise, `-1` counter-clockwise.
+    pub fn compass_sign(self) -> f64 {
+        match self {
+            Turn::Clockwise => 1.0,
+            Turn::CounterClockwise => -1.0,
+        }
+    }
+
+    /// `cw` or `ccw` (the `arena-picture` record's word).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Turn::Clockwise => "cw",
+            Turn::CounterClockwise => "ccw",
+        }
+    }
+
+    /// `clockwise` or `counter-clockwise`.
+    fn words(self) -> &'static str {
+        match self {
+            Turn::Clockwise => "clockwise",
+            Turn::CounterClockwise => "counter-clockwise",
+        }
+    }
+
+    /// The track whose loss leaves this the only way to turn.
+    fn gone_track(self) -> &'static str {
+        match self {
+            Turn::Clockwise => "left_track",
+            Turn::CounterClockwise => "right_track",
+        }
+    }
+
+    /// Whether a signed turn `s` ([`signed_turn`], positive clockwise) goes
+    /// the dead way when this is the only live one.
+    fn is_dead(self, s: i64) -> bool {
+        match self {
+            Turn::Clockwise => s < 0,
+            Turn::CounterClockwise => s > 0,
+        }
+    }
+}
+
+/// **The only way a one-track tank turns** (cut AL.2): exactly one of the own
+/// sections `left_track` and `right_track` reads `destroyed` → the other way
+/// ("Lose one track and the tank is slowed and will not turn that way", `help
+/// cockpit`; the bot's own transcript turned a right-track tank the long way,
+/// counter-clockwise). Both or neither → `None`.
+pub fn live_turn(picture: &Picture) -> Option<Turn> {
+    let gone = |track: &str| {
+        picture
+            .own
+            .sections
+            .get(track)
+            .is_some_and(|section| section.condition == "destroyed")
+    };
+    match (gone("left_track"), gone("right_track")) {
+        (true, false) => Some(Turn::Clockwise),
+        (false, true) => Some(Turn::CounterClockwise),
+        _ => None,
+    }
+}
+
+/// **Held ground** (cut AL.2): where the tank stopped on ground it could not
+/// enter, the heading it stopped on, whether it was reversing, and the point
+/// it could not enter — [`HELD_MARK_AHEAD_M`] ahead of it, or behind it when
+/// it stopped reversing. Positions, a heading and a direction only: a mark
+/// names no unit. A point, not a bank.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct HeldMark {
+    pub at_m: (f64, f64),
+    pub heading_deg: u32,
+    pub astern: bool,
+    pub blocked_m: (f64, f64),
+}
+
 /// The pilot's own state. One per match.
 #[derive(Clone, Debug, Serialize)]
 pub struct Pilot {
-    /// `+1` counter-clockwise round the target, `-1` clockwise.
+    /// **The orbit's circling sense**: `+1` counter-clockwise round the target,
+    /// `-1` clockwise. Not a compass turn: the held turn, the stall, the sweep
+    /// and the detour turn by [`Pilot::turn_sign`] (cut AL.2).
     pub sense: i8,
     /// When the current stretch of orbiting began.
     pub orbit_since_ms: Option<u64>,
@@ -394,6 +655,43 @@ pub struct Pilot {
     pub last_lock_order_ms: Option<u64>,
     /// `SPEED 999` has gone out (or the ceilings were known).
     pub ceilings_asked: bool,
+    /// **The hold's range motion** (cut AL.2; [`Pilot::hold`]).
+    pub hold_motion: HoldMotion,
+    /// A hold was flown this decision (else `hold_motion` goes back to
+    /// `Stopped`).
+    #[serde(skip)]
+    hold_flown: bool,
+    /// **The turn into a side or rear hit** (cut AL.2): the newest facet hit
+    /// already read…
+    pub threat_seen_ms: u64,
+    /// …and the bearing to turn to, until when.
+    pub threat: Option<(f64, u64)>,
+    /// The threat's `Turning into the shot: …` sentence, said only when step
+    /// 3b first flies the turn: a turn outranked for its whole time (a held
+    /// stop, the back-off, a withdrawal) or dropped is never said.
+    #[serde(skip)]
+    threat_note: Option<String>,
+    /// **One track gone** (cut AL.2): a dead-side heading ordered, and when;
+    /// no heading goes until `STATUS` reads it or [`ONE_TRACK_COMMIT_MS`]
+    /// passes.
+    pub turn_commit: Option<(u32, u64)>,
+    /// The dead-side heading this decision would order, committed when the
+    /// lane types it.
+    #[serde(skip)]
+    turn_wanted: Option<u32>,
+    /// The one-track sentence has been said this match.
+    pub one_track_said: bool,
+    /// **Held ground** (cut AL.2), oldest first, at most [`HELD_MARKS_MAX`].
+    pub held_marks: Vec<HeldMark>,
+    /// The newest `Held:` came while reversing: step 1 stops the tank, the
+    /// bow kept, instead of the forward held turn.
+    pub held_astern: bool,
+    /// A heading is being steered round held ground now.
+    pub detour: bool,
+    /// The speed the pilot's own motion last chose (not `SPEED 999`, and not
+    /// forgotten with an unanswered order): the stall opens only after a
+    /// forward one.
+    pub last_chosen_speed: Option<i32>,
     /// What the pilot said since [`Pilot::take_notes`].
     #[serde(skip)]
     notes: Vec<String>,
@@ -432,6 +730,18 @@ impl Default for Pilot {
             last_speed_order: None,
             last_lock_order_ms: None,
             ceilings_asked: false,
+            hold_motion: HoldMotion::Stopped,
+            hold_flown: false,
+            threat_seen_ms: 0,
+            threat: None,
+            threat_note: None,
+            turn_commit: None,
+            turn_wanted: None,
+            one_track_said: false,
+            held_marks: Vec::new(),
+            held_astern: false,
+            detour: false,
+            last_chosen_speed: None,
             notes: Vec::new(),
         }
     }
@@ -458,6 +768,28 @@ fn angle_between(a: u32, b: u32) -> u32 {
 fn along(pos: (f64, f64), bearing: f64, metres: f64) -> (f64, f64) {
     let r = bearing.to_radians();
     (pos.0 + metres * r.sin(), pos.1 + metres * r.cos())
+}
+
+/// The signed turn from one whole heading to another, in `-179..=180`: positive
+/// is clockwise (the heading growing).
+fn signed_turn(from: u32, to: u32) -> i64 {
+    let d = (i64::from(to) - i64::from(from)).rem_euclid(360);
+    if d > 180 { d - 360 } else { d }
+}
+
+/// Whether the ray from `o` along `heading` meets `point`: at most
+/// [`HELD_MARK_NEAR_M`] ahead along it and within [`HELD_MARK_HALF_WIDTH_M`]
+/// of its line — and, with a `clear` distance, only a point more than that
+/// from `o`.
+fn ray_meets(o: (f64, f64), heading: f64, point: (f64, f64), clear: Option<f64>) -> bool {
+    let (dx, dy) = (point.0 - o.0, point.1 - o.1);
+    if clear.is_some_and(|clear| dx.hypot(dy) <= clear) {
+        return false;
+    }
+    let r = heading.to_radians();
+    let ahead = dx * r.sin() + dy * r.cos();
+    let aside = (dx * r.cos() - dy * r.sin()).abs();
+    (0.0..=HELD_MARK_NEAR_M).contains(&ahead) && aside <= HELD_MARK_HALF_WIDTH_M
 }
 
 /// **Never past the edge**: a point clamped into the proving ground, at least
@@ -588,13 +920,27 @@ impl Pilot {
         let other = side.other();
         // The doctrine's own sense, when it names one, is `s` everywhere — the
         // orbit, a `Held:` turn, the stall and the sweep alike; `Auto` keeps
-        // the pilot's running one.
+        // the pilot's running one. With one track gone the compass turns go the
+        // live way instead (cut AL.2): the turn sign is taken once, here.
         match doctrine.sense {
             Sense::Cw => self.sense = -1,
             Sense::Ccw => self.sense = 1,
             Sense::Auto => {}
         }
-        self.observe(picture, doctrine, other, now_ms);
+        let live = live_turn(picture);
+        let sign = self.turn_sign(picture);
+        self.turn_wanted = None;
+        if let Some(turn) = live
+            && !self.one_track_said
+        {
+            self.one_track_said = true;
+            self.note(format!(
+                "The {} is gone: turning {} only.",
+                turn.gone_track(),
+                turn.words()
+            ));
+        }
+        self.observe(picture, doctrine, other, sign, now_ms);
 
         // Rule 3: the target.
         let target = self.target(picture, doctrine, other);
@@ -621,16 +967,30 @@ impl Pilot {
         if picture.own.max_ahead_kph.is_some() {
             self.ceilings_asked = true;
         }
-        self.follow(picture, doctrine, other, target.as_deref(), now_ms);
+        self.take_hit(picture, doctrine, other, target.as_deref(), live, now_ms);
+        self.follow(picture, doctrine, other, target.as_deref(), sign, now_ms);
         let full = picture.own.max_ahead_kph.unwrap_or(UNKNOWN_FULL_KPH);
-        let motion = self.motion(picture, doctrine, target.as_deref(), full, now_ms);
+        let motion = self.motion(
+            picture,
+            doctrine,
+            target.as_deref(),
+            full,
+            live,
+            sign,
+            now_ms,
+        );
         let (heading, mut speed, ask) = motion;
         orders.ask_spot_b = ask;
         if !self.ceilings_asked {
             speed = Some(CEILING_ASK_KPH);
         }
+        // One track gone (cut AL.2): a small turn toward the dead side is not
+        // ordered, a large one once and then nothing until it is read.
+        let heading = heading.and_then(|deg| match live {
+            Some(turn) => self.one_track(picture, turn, whole(deg), now_ms),
+            None => Some(whole(deg)),
+        });
         if let Some(deg) = heading {
-            let deg = whole(deg);
             let due = match self.last_heading_order {
                 None => true,
                 Some((last, at)) => {
@@ -651,9 +1011,14 @@ impl Pilot {
         orders
     }
 
-    /// The lane typed `HEADING deg`.
+    /// The lane typed `HEADING deg` (with one track gone, a dead-side heading
+    /// the pilot asked for is committed to from now, cut AL.2).
     pub fn sent_heading(&mut self, deg: u32, now_ms: u64) {
         self.last_heading_order = Some((deg, now_ms));
+        if self.turn_wanted == Some(deg) {
+            self.turn_wanted = None;
+            self.turn_commit = Some((deg, now_ms));
+        }
     }
 
     /// The lane typed `SPEED kph`.
@@ -683,6 +1048,96 @@ impl Pilot {
         self.last_speed_order = None;
     }
 
+    /// **Back at the controls** (cut AL.2; the lane calls it where it forgets
+    /// the heading and the speed): the one-track commit and the turn into a hit
+    /// are dropped too, and the newest hit in `picture` is taken as read. The
+    /// machine flew the tank meanwhile and it "is yours again where it
+    /// stands", so the heading a commit waits for and the bearing a hit came
+    /// from — a facet of the hull as it lay then — are not the tank's now.
+    pub fn forget_turns(&mut self, picture: &Picture) {
+        self.turn_commit = None;
+        self.turn_wanted = None;
+        self.threat = None;
+        self.threat_note = None;
+        if let Some(hit) = &picture.own.last_hit {
+            self.threat_seen_ms = self.threat_seen_ms.max(hit.at_ms);
+        }
+    }
+
+    /// **The compass turn sign** (cut AL.2): `+1` clockwise (the heading
+    /// growing), `-1` counter-clockwise. With one track gone, the live turn's
+    /// ([`live_turn`]); else the orbit's sense as a number, exactly as cut AK
+    /// turned by it. Not the orbit's circling sense: the held turn, the
+    /// stall's turns, the sweep's legs and the detour round held ground turn
+    /// by this.
+    pub fn turn_sign(&self, picture: &Picture) -> f64 {
+        match live_turn(picture) {
+            Some(turn) => turn.compass_sign(),
+            None => f64::from(self.sense),
+        }
+    }
+
+    /// **The reference heading** (cut AL.2): the last heading ordered when it
+    /// went after the last `STATUS` read (at or after its position's time),
+    /// else the heading that `STATUS` read. What a one-track turn, the arc of
+    /// a side hit and a heading-less reverse are measured from.
+    pub fn reference_heading(&self, picture: &Picture) -> u32 {
+        match self.last_heading_order {
+            Some((deg, at)) if at >= picture.own.pos_read_ms => deg,
+            _ => picture.own.heading_deg,
+        }
+    }
+
+    /// **Whether a forward heading `h` from `o` meets held ground**: some
+    /// mark's blocked point more than [`HELD_MARK_CLEAR_M`] from `o` lies at
+    /// most [`HELD_MARK_NEAR_M`] ahead along `h` and within
+    /// [`HELD_MARK_HALF_WIDTH_M`] of its line.
+    pub fn blocked(&self, o: (f64, f64), h: f64) -> bool {
+        self.held_marks
+            .iter()
+            .any(|mark| ray_meets(o, h, mark.blocked_m, Some(HELD_MARK_CLEAR_M)))
+    }
+
+    /// **Whether a reverse with the bow on `bow` from `o` meets held ground**:
+    /// the ray behind the tank (`bow + 180`). A mark taken while reversing is
+    /// met however near (it lies just behind the tank that stopped on it); a
+    /// mark taken driving ahead keeps its clear distance, as for a forward
+    /// heading, so the back-off from a forward stop is not stopped by its own
+    /// stop's mark.
+    pub fn blocked_behind(&self, o: (f64, f64), bow: f64) -> bool {
+        self.held_marks.iter().any(|mark| {
+            let clear = (!mark.astern).then_some(HELD_MARK_CLEAR_M);
+            ray_meets(o, bow + 180.0, mark.blocked_m, clear)
+        })
+    }
+
+    /// **Steer round held ground** (cut AL.2): a forward heading `h` from `o`
+    /// that [`Pilot::blocked`] is turned `k ×` [`HELD_MARK_DETOUR_DEG`] by the
+    /// compass turn sign, `k` = 1, 2, 3, the first that is clear winning; all
+    /// three blocked, `h` is left as it is. Says so when a detour starts.
+    pub fn steer_round(&mut self, o: (f64, f64), h: f64, sign: f64) -> f64 {
+        if !self.blocked(o, h) {
+            self.detour = false;
+            return h;
+        }
+        for k in 1..=3_u8 {
+            let aside = norm(h + f64::from(k) * HELD_MARK_DETOUR_DEG * sign);
+            if !self.blocked(o, aside) {
+                if !self.detour {
+                    self.note(format!(
+                        "Steering round held ground: {:03}° for {:03}°.",
+                        whole(aside),
+                        whole(h)
+                    ));
+                }
+                self.detour = true;
+                return aside;
+            }
+        }
+        self.detour = false;
+        h
+    }
+
     /// **What the pilot said** since the last call, oldest first, verbatim
     /// (the lane hands each to the runner as an `arena` event): a hunt's
     /// start, legs and end, a fall back and its reason, a held tank turned
@@ -701,7 +1156,14 @@ impl Pilot {
     /// came up, where the pilot started, where The Crossroads is, whether a
     /// hostile is held, a `Held:` notice, the stall watchdog, and the fall-back
     /// rule.
-    fn observe(&mut self, picture: &Picture, doctrine: &Doctrine, other: Side, now_ms: u64) {
+    fn observe(
+        &mut self,
+        picture: &Picture,
+        doctrine: &Doctrine,
+        other: Side,
+        sign: f64,
+        now_ms: u64,
+    ) {
         let power_ms = *self.power_ms.get_or_insert(now_ms);
         if self.last_hostile_ms.is_none() {
             self.last_hostile_ms = Some(power_ms);
@@ -738,20 +1200,25 @@ impl Pilot {
         {
             self.last_hostile_ms = Some(now_ms);
         }
-        if let Some(held) = picture
+        if let Some((held, text)) = picture
             .events
             .iter()
             .filter(|event| event.kind == EventKind::Held && event.at_ms > self.held_seen_ms)
-            .map(|event| event.at_ms)
-            .max()
+            .max_by_key(|event| event.at_ms)
+            .map(|event| (event.at_ms, event.text.clone()))
         {
             self.held_seen_ms = held;
             // The heading the tank was stopped on: every further turn is
             // measured from it, never from a later reading.
             self.held_from_deg = Some(picture.own.heading_deg);
-            self.held_heading = Some(whole(
-                f64::from(picture.own.heading_deg) + HELD_TURN_DEG * f64::from(self.sense),
-            ));
+            // Stopped while reversing (cut AL.2; read before the speed is
+            // forgotten below): no forward held turn — step 1 stops the tank
+            // with its bow kept.
+            let astern = self.last_speed_order.is_some_and(|kph| kph < 0);
+            self.mark_ground(picture, &text, astern, now_ms);
+            self.held_astern = astern;
+            self.held_heading =
+                (!astern).then(|| whole(f64::from(picture.own.heading_deg) + HELD_TURN_DEG * sign));
             self.held_until_ms = now_ms.saturating_add(HELD_FOR_MS);
             // Insurance, not the fix: the speed goes again straight after the
             // turn (no transcript shows a `SPEED` freeing a held tank).
@@ -771,7 +1238,7 @@ impl Pilot {
             self.stall_level = 0;
             self.stall_since_ms = None;
         }
-        self.watch_stall(picture, now_ms);
+        self.watch_stall(picture, sign, now_ms);
         if !self.fallen_back
             && let Some(why) = fall_back_due(picture)
         {
@@ -796,8 +1263,11 @@ impl Pilot {
     /// 1 to 3 turn to 90°, 135° and 180° from the heading the tank was stopped
     /// on, level 4 backs off for [`HELD_REVERSE_MS`] and closes it at level 0.
     /// A read that is not held at 0 kph closes it, keeping a turned heading
-    /// [`HELD_FOR_MS`] more to clear the ground.
-    fn watch_stall(&mut self, picture: &Picture, now_ms: u64) {
+    /// [`HELD_FOR_MS`] more to clear the ground. A stall opens only while the
+    /// speed the pilot's own motion last chose was ahead (cut AL.2): a tank
+    /// the pilot itself stopped, or reverses, is never "stalled". The turns go
+    /// by the compass turn sign `sign` ([`Pilot::turn_sign`]).
+    fn watch_stall(&mut self, picture: &Picture, sign: f64, now_ms: u64) {
         if picture.own.pos_read_ms <= self.stall_status_ms {
             return;
         }
@@ -820,7 +1290,10 @@ impl Pilot {
         }
         match self.stall_since_ms {
             None => {
-                if now_ms >= self.held_until_ms && now_ms >= self.reverse_until_ms {
+                if now_ms >= self.held_until_ms
+                    && now_ms >= self.reverse_until_ms
+                    && self.last_chosen_speed.is_some_and(|kph| kph > 0)
+                {
                     self.stall_since_ms = Some(now_ms);
                     // Held with no notice read (a re-board, say): the heading
                     // it reads now is the one it was stopped on.
@@ -834,10 +1307,7 @@ impl Pilot {
                 if self.stall_level <= 3 {
                     let from = self.held_from_deg.unwrap_or(picture.own.heading_deg);
                     let deg = whole(
-                        f64::from(from)
-                            + HELD_TURN_DEG
-                                * f64::from(self.stall_level + 1)
-                                * f64::from(self.sense),
+                        f64::from(from) + HELD_TURN_DEG * f64::from(self.stall_level + 1) * sign,
                     );
                     self.stall_heading = Some(deg);
                     self.forget_heading();
@@ -853,6 +1323,185 @@ impl Pilot {
             }
             Some(_) => {}
         }
+    }
+
+    /// **Mark held ground** (cut AL.2): a `Held:` that names ground
+    /// ([`HELD_GROUND`]), with a known position, is marked where the tank is
+    /// now, on the heading it stopped on, the blocked point
+    /// [`HELD_MARK_AHEAD_M`] ahead of it — or behind it, `astern`. At most
+    /// [`HELD_MARKS_MAX`] are kept, the oldest dropped.
+    fn mark_ground(&mut self, picture: &Picture, text: &str, astern: bool, now_ms: u64) {
+        if !HELD_GROUND.contains(&text) {
+            return;
+        }
+        let Some(at_m) = picture.own_pos_at(now_ms) else {
+            return;
+        };
+        let heading_deg = picture.own.heading_deg;
+        let way = f64::from(heading_deg) + if astern { 180.0 } else { 0.0 };
+        self.held_marks.push(HeldMark {
+            at_m,
+            heading_deg,
+            astern,
+            blocked_m: along(at_m, way, HELD_MARK_AHEAD_M),
+        });
+        if self.held_marks.len() > HELD_MARKS_MAX {
+            self.held_marks.remove(0);
+        }
+        self.note(format!(
+            "Held ground marked at {:.0} m east, {:.0} m north, heading {heading_deg:03}°.",
+            at_m.0, at_m.1
+        ));
+    }
+
+    /// **A side or rear hit turns the bow to the shooter** (cut AL.2), read
+    /// from the picture's newest facet hit ([`super::picture::Own::last_hit`])
+    /// once. A `front` or `top` hit does nothing, and nor does any hit under an
+    /// `orbit` doctrine. The struck arc is the help's 45-degree face of the
+    /// facet, degrees clockwise from the bow (`left` 225..=315, `right`
+    /// 45..=135, `rear` 135..=225); a hostile is in it when its own row's
+    /// relative bearing lies in it (a live hostile with a row, not a wreck,
+    /// its plot no older than [`HUNT_STALE_PLOT_MS`]). The threat is the
+    /// nearest such hostile other than the held target; with a young target
+    /// held and none other in the arc the target is taken as the shooter (the
+    /// hold already faces it: any other turn is dropped); with none held and
+    /// none in the arc, the arc's centre from the reference heading (the line
+    /// says nothing of who fired). A newer hit re-arms the turn only when its
+    /// threat is more than [`HOLD_BOW_DEG`] from the current one, so two
+    /// shooters in a crossfire do not thrash it.
+    ///
+    /// Three hits turn nothing (fixes after review): one read when its turn
+    /// would already be over (read late, after a stretch immobile or
+    /// disabled); one with nothing to blame while the current turn's heading
+    /// is ordered and not yet read by `STATUS` — the hull is somewhere in the
+    /// turn, so the arc's centre from the ordered heading would send the bow
+    /// round another quarter, away from the shooter, at every hit; and, with
+    /// one track gone ([`live_turn`]), one whose turn goes the dead way — the
+    /// server turns that the long, live way round, longer than the turn lasts
+    /// and showing a side and the stern to the target on the way (within
+    /// [`ONE_TRACK_DEADBAND_DEG`] it would not be ordered at all, and the
+    /// front already faces it). The sentence is said when step 3b first flies
+    /// the turn, never when a higher step outranks it for its whole time.
+    #[allow(clippy::too_many_arguments)]
+    fn take_hit(
+        &mut self,
+        picture: &Picture,
+        doctrine: &Doctrine,
+        other: Side,
+        target: Option<&str>,
+        live: Option<Turn>,
+        now_ms: u64,
+    ) {
+        let Some(hit) = picture.own.last_hit.as_ref() else {
+            return;
+        };
+        if hit.at_ms <= self.threat_seen_ms {
+            return;
+        }
+        self.threat_seen_ms = hit.at_ms;
+        if doctrine.stance == Stance::Orbit || now_ms >= hit.at_ms.saturating_add(THREAT_TURN_MS) {
+            return;
+        }
+        let (arc, centre) = match hit.facet.as_str() {
+            "left" => (225..=315, 270),
+            "right" => (45..=135, 90),
+            "rear" => (135..=225, 180),
+            _ => return,
+        };
+        let Some(own) = picture.own_pos_at(now_ms) else {
+            return;
+        };
+        let young = target
+            .and_then(|t| picture.contacts.get(t))
+            .filter(|c| self.live_hostile(c, other) && c.age_ms <= held_limit_ms(doctrine));
+        let shooter = picture
+            .contacts
+            .values()
+            .filter(|c| {
+                self.live_hostile(c, other)
+                    && c.range_m.is_some()
+                    && c.age_ms <= HUNT_STALE_PLOT_MS
+                    && arc.contains(&c.rel_deg)
+                    && young.is_none_or(|t| t.designator != c.designator)
+            })
+            .min_by_key(|c| c.range_m.unwrap_or(u32::MAX));
+        let (bearing, facing) = match (shooter, young) {
+            (Some(c), _) => {
+                let bearing = target_pos(picture, c, now_ms)
+                    .map_or(f64::from(c.bearing_deg), |pos| bearing_deg(own, pos));
+                (bearing, c.designator.clone())
+            }
+            (None, Some(t)) => {
+                // The held target is the shooter: the hold already faces it.
+                if let (Some((current, _)), Some(pos)) =
+                    (self.threat, target_pos(picture, t, now_ms))
+                    && angle_between(whole(current), whole(bearing_deg(own, pos))) > HOLD_BOW_DEG
+                {
+                    self.threat = None;
+                    self.threat_note = None;
+                }
+                return;
+            }
+            (None, None) => {
+                // Mid-turn, with the turn's heading ordered and not yet read:
+                // where the hull lies is not known, so the arc is not either.
+                if self.threat.is_some_and(|(_, until)| now_ms < until)
+                    && self
+                        .last_heading_order
+                        .is_some_and(|(_, at)| at >= picture.own.pos_read_ms)
+                {
+                    return;
+                }
+                let bearing = norm(f64::from(self.reference_heading(picture)) + f64::from(centre));
+                (bearing, format!("{:03}°", whole(bearing)))
+            }
+        };
+        // One track gone: a turn the dead way is the long way round (a turn of
+        // exactly 180° is as long either way, and goes).
+        if let Some(turn) = live {
+            let s = signed_turn(self.reference_heading(picture), whole(bearing));
+            if turn.is_dead(s) && s.unsigned_abs() < 180 {
+                return;
+            }
+        }
+        if let Some((current, until)) = self.threat
+            && now_ms < until
+            && angle_between(whole(current), whole(bearing)) <= HOLD_BOW_DEG
+        {
+            return;
+        }
+        self.threat = Some((norm(bearing), hit.at_ms.saturating_add(THREAT_TURN_MS)));
+        self.threat_note = Some(format!(
+            "Turning into the shot: hit on the {}'s {} facet; facing {facing}.",
+            hit.plate, hit.facet
+        ));
+    }
+
+    /// **One track gone** (cut AL.2): whether to order `deg` now. While a
+    /// dead-side heading is committed, nothing, until a `STATUS` read after it
+    /// reads within [`HEADING_STEP_DEG`] of it or [`ONE_TRACK_COMMIT_MS`] has
+    /// passed. Else a heading whose turn from the reference heading is toward
+    /// the dead side by at most [`ONE_TRACK_DEADBAND_DEG`] is not ordered; one
+    /// by more is ordered and committed to once the lane types it; a live-side
+    /// heading is ordered as ever.
+    fn one_track(&mut self, picture: &Picture, turn: Turn, deg: u32, now_ms: u64) -> Option<u32> {
+        if let Some((committed, at)) = self.turn_commit {
+            let read = picture.own.pos_read_ms > at
+                && angle_between(picture.own.heading_deg, committed) <= HEADING_STEP_DEG;
+            if !read && now_ms < at.saturating_add(ONE_TRACK_COMMIT_MS) {
+                return None;
+            }
+            self.turn_commit = None;
+        }
+        let s = signed_turn(self.reference_heading(picture), deg);
+        if !turn.is_dead(s) {
+            return Some(deg);
+        }
+        if s.unsigned_abs() <= u64::from(ONE_TRACK_DEADBAND_DEG) {
+            return None;
+        }
+        self.turn_wanted = Some(deg);
+        Some(deg)
     }
 
     /// Rule 3: the doctrine's target when it is a held hostile young enough to
@@ -951,6 +1600,7 @@ impl Pilot {
         doctrine: &Doctrine,
         other: Side,
         target: Option<&str>,
+        sign: f64,
         now_ms: u64,
     ) {
         // The trail: the target's last plot while that plot is fresh.
@@ -996,7 +1646,7 @@ impl Pilot {
             && self.held_seen_ms > hunt.leg_since_ms
             && let Some(own) = own
         {
-            self.next_leg(own, now_ms);
+            self.next_leg(own, sign, now_ms);
         }
         // The start. A `hunt` doctrine (cut AK.2) hunts as soon as no plot is
         // fresh, rather than flying round a row a few seconds old.
@@ -1043,10 +1693,9 @@ impl Pilot {
     }
 
     /// The hunt's next leg: the plot → along the course → the sweep's legs, a
-    /// quarter turn by the pilot's sense each → the end (the trail dropped,
-    /// the search next).
-    fn next_leg(&mut self, own: (f64, f64), now_ms: u64) {
-        let sense = f64::from(self.sense);
+    /// quarter turn each by the compass turn sign `sign` (cut AL.2: the live
+    /// way with one track gone) → the end (the trail dropped, the search next).
+    fn next_leg(&mut self, own: (f64, f64), sign: f64, now_ms: u64) {
         let Some(hunt) = self.hunt.as_mut() else {
             return;
         };
@@ -1065,7 +1714,7 @@ impl Pilot {
                 Some(HuntLeg::Sweep {
                     leg: 0,
                     origin: clamp_arena(own),
-                    heading_deg: norm(hunt.course_deg + 90.0 * sense),
+                    heading_deg: norm(hunt.course_deg + 90.0 * sign),
                 })
             }
             HuntLeg::Sweep {
@@ -1073,7 +1722,7 @@ impl Pilot {
             } => (leg.saturating_add(1) < HUNT_SWEEP_LEGS).then(|| HuntLeg::Sweep {
                 leg: leg.saturating_add(1),
                 origin: clamp_arena(own),
-                heading_deg: norm(heading_deg + 90.0 * sense),
+                heading_deg: norm(heading_deg + 90.0 * sign),
             }),
         };
         match next {
@@ -1096,13 +1745,13 @@ impl Pilot {
 
     /// The hunt's heading now, advancing its legs as they are done; `None`
     /// once it has ended.
-    fn hunt_heading(&mut self, own: (f64, f64), now_ms: u64) -> Option<f64> {
+    fn hunt_heading(&mut self, own: (f64, f64), sign: f64, now_ms: u64) -> Option<f64> {
         // Each pass either returns or moves the hunt one leg on (or ends it).
         for _ in 0..=usize::from(HUNT_SWEEP_LEGS) + 2 {
             let hunt = self.hunt.as_ref()?;
             match hunt.leg {
                 HuntLeg::Along if now_ms.saturating_sub(hunt.trail.plot_ms) > HUNT_TRAIL_MS => {
-                    self.next_leg(own, now_ms);
+                    self.next_leg(own, sign, now_ms);
                     continue;
                 }
                 HuntLeg::Sweep { .. }
@@ -1121,7 +1770,7 @@ impl Pilot {
             // The course leg's aim moves; it is done only where the clamp
             // stopped it (the edge).
             if d <= HUNT_ARRIVE_M && (!along_leg || clamped) {
-                self.next_leg(own, now_ms);
+                self.next_leg(own, sign, now_ms);
                 continue;
             }
             if along_leg && !clamped {
@@ -1132,7 +1781,7 @@ impl Pilot {
                 // Past the moving aim by more than the arrival: the estimate
                 // is behind, and the course leg is done.
                 if ahead > HUNT_ARRIVE_M && aside <= HUNT_ARRIVE_M {
-                    self.next_leg(own, now_ms);
+                    self.next_leg(own, sign, now_ms);
                     continue;
                 }
                 // Caught up with it, or level with it and at most the arrival
@@ -1141,7 +1790,7 @@ impl Pilot {
                 // `HUNT_ARRIVE_M` would cross it: that is the edge reached).
                 if d <= HUNT_ARRIVE_M || (ahead >= 0.0 && aside <= HUNT_ARRIVE_M) {
                     if past_the_edge(along(own, hunt.course_deg, HUNT_ARRIVE_M)) {
-                        self.next_leg(own, now_ms);
+                        self.next_leg(own, sign, now_ms);
                         continue;
                     }
                     return Some(hunt.course_deg);
@@ -1153,40 +1802,135 @@ impl Pilot {
     }
 
     /// Rule 6: `(heading, speed, ask the bearing to B)`, by the one stance
-    /// precedence of the module head.
+    /// precedence of the module head. A hold not flown this decision goes
+    /// back to `Stopped`, and the speed chosen is remembered for the stall
+    /// watchdog (cut AL.2).
+    #[allow(clippy::too_many_arguments)]
     fn motion(
         &mut self,
         picture: &Picture,
         doctrine: &Doctrine,
         target: Option<&str>,
         full: i32,
+        live: Option<Turn>,
+        sign: f64,
+        now_ms: u64,
+    ) -> (Option<f64>, Option<i32>, bool) {
+        self.hold_flown = false;
+        let out = self.motion_steps(picture, doctrine, target, full, live, sign, now_ms);
+        if !self.hold_flown {
+            self.hold_motion = HoldMotion::Stopped;
+        }
+        if let Some(kph) = out.1 {
+            self.last_chosen_speed = Some(kph);
+        }
+        out
+    }
+
+    /// The steps of the precedence. Step 1's own headings are never steered
+    /// round held ground; every heading steps 2 to 6 return at a forward speed
+    /// is, and every reverse they return whose ray behind the tank meets held
+    /// ground is a stop with the bow kept (cut AL.2).
+    #[allow(clippy::too_many_arguments)]
+    fn motion_steps(
+        &mut self,
+        picture: &Picture,
+        doctrine: &Doctrine,
+        target: Option<&str>,
+        full: i32,
+        live: Option<Turn>,
+        sign: f64,
         now_ms: u64,
     ) -> (Option<f64>, Option<i32>, bool) {
         let Some(own) = picture.own_pos_at(now_ms) else {
+            self.detour = false;
             return (None, None, false);
         };
-        // 1. A `Held:` notice outranks everything for its three seconds; then
-        // the back-off; then a stall's turn while it is open, and after it
-        // frees the tank until the ground is cleared.
-        if now_ms < self.held_until_ms
-            && let Some(held) = self.held_heading
-        {
-            return (Some(f64::from(held)), Some(full), false);
+        let astern = picture.own.max_astern_kph.unwrap_or(UNKNOWN_ASTERN_KPH);
+        if let Some(step_one) = self.step_one(picture, own, full, astern, now_ms) {
+            self.detour = false;
+            return step_one;
+        }
+        let (heading, speed, ask) = self.stance_motion(
+            picture, doctrine, target, full, astern, live, sign, own, now_ms,
+        );
+        match (heading, speed) {
+            (Some(h), Some(kph)) if kph > 0 => (Some(self.steer_round(own, h, sign)), speed, ask),
+            (_, Some(kph)) if kph < 0 => {
+                self.detour = false;
+                let bow = heading.unwrap_or_else(|| f64::from(self.reference_heading(picture)));
+                if self.blocked_behind(own, bow) {
+                    (heading, Some(0), ask)
+                } else {
+                    (heading, speed, ask)
+                }
+            }
+            _ => {
+                self.detour = false;
+                (heading, speed, ask)
+            }
+        }
+    }
+
+    /// Step 1: a `Held:` notice outranks everything for its three seconds —
+    /// the held turn, or after a stop while reversing a stop with the bow kept
+    /// (cut AL.2); then the back-off (a stop instead when the ray behind the
+    /// tank meets held ground); then a stall's turn while it is open, and after
+    /// it frees the tank until the ground is cleared.
+    fn step_one(
+        &mut self,
+        picture: &Picture,
+        own: (f64, f64),
+        full: i32,
+        astern: i32,
+        now_ms: u64,
+    ) -> Option<(Option<f64>, Option<i32>, bool)> {
+        if now_ms < self.held_until_ms {
+            if self.held_astern {
+                return Some((None, Some(0), false));
+            }
+            if let Some(held) = self.held_heading {
+                return Some((Some(f64::from(held)), Some(full), false));
+            }
         }
         if now_ms < self.reverse_until_ms {
-            let astern = picture.own.max_astern_kph.unwrap_or(UNKNOWN_ASTERN_KPH);
-            return (None, Some(-astern), false);
+            let bow = f64::from(self.reference_heading(picture));
+            let kph = if self.blocked_behind(own, bow) {
+                0
+            } else {
+                -astern
+            };
+            return Some((None, Some(kph), false));
         }
         if let Some(stall) = self.stall_heading {
             if self.stall_level >= 1 || now_ms < self.stall_clear_until_ms {
-                return (Some(f64::from(stall)), Some(full), false);
+                return Some((Some(f64::from(stall)), Some(full), false));
             }
             self.stall_heading = None;
         }
+        None
+    }
+
+    /// Steps 2 to 6 of the precedence.
+    #[allow(clippy::too_many_arguments)]
+    fn stance_motion(
+        &mut self,
+        picture: &Picture,
+        doctrine: &Doctrine,
+        target: Option<&str>,
+        full: i32,
+        astern: i32,
+        live: Option<Turn>,
+        sign: f64,
+        own: (f64, f64),
+        now_ms: u64,
+    ) -> (Option<f64>, Option<i32>, bool) {
         let contact = target.and_then(|t| picture.contacts.get(t));
         let aim = contact.and_then(|c| target_pos(picture, c, now_ms));
-        let away = |aim: Option<(f64, f64)>| match aim {
-            Some(aim) => (Some(bearing_deg(own, aim) + 180.0), Some(full), false),
+        // Every withdrawal backs away with the bow on the target (cut AL.2);
+        // with no target to face, the current heading at full speed.
+        let back = |aim: Option<(f64, f64)>| match aim {
+            Some(aim) => (Some(bearing_deg(own, aim)), Some(-astern), false),
             None => (None, Some(full), false),
         };
         // 2. The pilot's own fall-back withdrawal: until its time is up or the
@@ -1198,24 +1942,33 @@ impl Pilot {
                 self.withdraw_until_ms = None;
             } else {
                 self.orbit_since_ms = None;
-                return away(aim);
+                return back(aim);
             }
         }
         // 3. A doctrine `withdraw`, ahead of the widened band.
         if doctrine.stance == Stance::Withdraw {
             self.orbit_since_ms = None;
-            return away(aim);
+            return back(aim);
+        }
+        // 3b. The turn into a side or rear hit, stopped (cut AL.2).
+        if let Some(threat) = self.threat_turn(doctrine, contact, aim, own, now_ms) {
+            self.orbit_since_ms = None;
+            // Said now that the turn is flown, not when the hit armed it.
+            if let Some(note) = self.threat_note.take() {
+                self.note(note);
+            }
+            return (Some(threat), Some(0), false);
         }
         // 4. A hostile held young: the doctrine's stance (a `hunt` doctrine's
         // only while its plot is fresh).
         if let (Some(contact), Some(aim)) = (contact, aim)
             && contact.age_ms <= held_limit_ms(doctrine)
         {
-            return self.engage(doctrine, contact, aim, own, full, now_ms);
+            return self.engage(doctrine, contact, aim, own, full, astern, live, now_ms);
         }
         // 5. The hunt, before any stance round a stale row.
         if self.hunt.is_some()
-            && let Some(heading) = self.hunt_heading(own, now_ms)
+            && let Some(heading) = self.hunt_heading(own, sign, now_ms)
         {
             self.orbit_since_ms = None;
             return (Some(heading), Some(full), false);
@@ -1224,7 +1977,7 @@ impl Pilot {
         if let (Some(contact), Some(aim)) = (contact, aim)
             && !self.trailed.contains(&contact.designator)
         {
-            return self.engage(doctrine, contact, aim, own, full, now_ms);
+            return self.engage(doctrine, contact, aim, own, full, astern, live, now_ms);
         }
         // 6. Nothing to fly at: the search, after five quiet seconds. A stale
         // row whose hunt is spent is nothing to fly at.
@@ -1237,8 +1990,37 @@ impl Pilot {
         (None, None, false)
     }
 
-    /// The doctrine's stance round a held hostile: after the fall back at the
-    /// widened band, and `close` flown as `orbit` there.
+    /// **Step 3b** (cut AL.2): the threat's bearing while its turn lasts and
+    /// the doctrine is not an orbit — but nothing when a young target is held
+    /// within [`HOLD_BOW_DEG`] of it (the hold already faces it).
+    fn threat_turn(
+        &mut self,
+        doctrine: &Doctrine,
+        contact: Option<&Contact>,
+        aim: Option<(f64, f64)>,
+        own: (f64, f64),
+        now_ms: u64,
+    ) -> Option<f64> {
+        let (bearing, until) = self.threat?;
+        if now_ms >= until || doctrine.stance == Stance::Orbit {
+            self.threat = None;
+            self.threat_note = None;
+            return None;
+        }
+        if let (Some(contact), Some(aim)) = (contact, aim)
+            && contact.age_ms <= held_limit_ms(doctrine)
+            && angle_between(whole(bearing), whole(bearing_deg(own, aim))) <= HOLD_BOW_DEG
+        {
+            return None;
+        }
+        Some(bearing)
+    }
+
+    /// The doctrine's stance round a held hostile (cut AL.2): `orbit` as cut AK
+    /// built it; `hold` and `hunt` a hold at the band; `close` a hold at
+    /// [`CLOSE_M`]; `withdraw` a reverse with the bow on. After the fall back,
+    /// at the widened band, and `close` flown as `hold` there.
+    #[allow(clippy::too_many_arguments)]
     fn engage(
         &mut self,
         doctrine: &Doctrine,
@@ -1246,13 +2028,15 @@ impl Pilot {
         aim: (f64, f64),
         own: (f64, f64),
         full: i32,
+        astern: i32,
+        live: Option<Turn>,
         now_ms: u64,
     ) -> (Option<f64>, Option<i32>, bool) {
         // A hostile is held: the next search starts over.
         self.search = SearchLeg::ToB;
         let (stance, band) = if self.fallen_back {
             let stance = match doctrine.stance {
-                Stance::Close => Stance::Orbit,
+                Stance::Close => Stance::Hold,
                 stance => stance,
             };
             (stance, f64::from(widened_band(doctrine.band_m)))
@@ -1263,49 +2047,65 @@ impl Pilot {
         let beta = bearing_deg(own, aim);
         match stance {
             Stance::Orbit => (
-                Some(self.orbit(doctrine, contact, aim, own, d, beta, band, now_ms)),
+                Some(self.orbit(doctrine, contact, aim, own, d, beta, band, live, now_ms)),
                 Some(full),
                 false,
             ),
-            Stance::Close if d <= CLOSE_M => (
-                Some(self.orbit(doctrine, contact, aim, own, d, beta, CLOSE_M, now_ms)),
-                Some(full),
-                false,
-            ),
-            Stance::Close => {
-                self.orbit_since_ms = None;
-                (Some(beta), Some(full), false)
-            }
-            Stance::StandOff => {
-                self.orbit_since_ms = None;
-                if d > band + STAND_OFF_SLACK_M {
-                    (Some(beta), Some(full), false)
-                } else if d < band - STAND_OFF_SLACK_M {
-                    (Some(beta + 180.0), Some(full), false)
-                } else {
-                    (Some(beta), Some(0), false)
-                }
-            }
-            // Hunt (cut AK.2): straight at it until the band, then round it
-            // there.
-            Stance::Hunt if d > band + STAND_OFF_SLACK_M => {
-                self.orbit_since_ms = None;
-                (Some(beta), Some(full), false)
-            }
-            Stance::Hunt => (
-                Some(self.orbit(doctrine, contact, aim, own, d, beta, band, now_ms)),
-                Some(full),
-                false,
-            ),
+            Stance::Hold | Stance::Hunt => self.hold(beta, d, band, full, astern),
+            Stance::Close => self.hold(beta, d, CLOSE_M, full, astern),
             Stance::Withdraw => {
                 self.orbit_since_ms = None;
-                (Some(beta + 180.0), Some(full), false)
+                (Some(beta), Some(-astern), false)
             }
         }
     }
 
+    /// **The hold** (cut AL.2): the bow on the hostile at bearing `beta`
+    /// always, and the range changed only along that line. From `Stopped` it
+    /// closes (`full` ahead) once `d` is past `band` by [`HOLD_SLACK_M`] and
+    /// [`HOLD_HYSTERESIS_M`], and opens (`astern`, in reverse) once short of
+    /// it by as much; closing stops once within `band + HOLD_SLACK_M`, opening
+    /// once out at `band − HOLD_SLACK_M`. At the default 450 m band the tank
+    /// reverses only under 375 m and stops reversing at 400 m, so a machine at
+    /// the help's 420 m, read at the scope's `400 m`, is a stop.
+    pub fn hold(
+        &mut self,
+        beta: f64,
+        d: f64,
+        band: f64,
+        full: i32,
+        astern: i32,
+    ) -> (Option<f64>, Option<i32>, bool) {
+        self.orbit_since_ms = None;
+        self.hold_flown = true;
+        let leave = HOLD_SLACK_M + HOLD_HYSTERESIS_M;
+        // Closing or opening stops at the slack; a stop then moves again only
+        // past the hysteresis (both in one decision when the range jumped).
+        if (self.hold_motion == HoldMotion::Ahead && d <= band + HOLD_SLACK_M)
+            || (self.hold_motion == HoldMotion::Astern && d >= band - HOLD_SLACK_M)
+        {
+            self.hold_motion = HoldMotion::Stopped;
+        }
+        if self.hold_motion == HoldMotion::Stopped {
+            if d > band + leave {
+                self.hold_motion = HoldMotion::Ahead;
+            } else if d < band - leave {
+                self.hold_motion = HoldMotion::Astern;
+            }
+        }
+        let kph = match self.hold_motion {
+            HoldMotion::Stopped => 0,
+            HoldMotion::Ahead => full,
+            HoldMotion::Astern => -astern,
+        };
+        (Some(beta), Some(kph), false)
+    }
+
     /// The orbit's heading: the tangent at the band, bent up to 60° toward the
     /// target when outside it and away when inside, reached 150 m off the band.
+    /// With one track gone the circling sense, after the orbit's own choice, is
+    /// the one that turns the live way (cut AL.2: counter-clockwise circling is
+    /// a counter-clockwise turn), and the pilot's sense is set to it.
     #[allow(clippy::too_many_arguments)]
     fn orbit(
         &mut self,
@@ -1316,6 +2116,7 @@ impl Pilot {
         d: f64,
         beta: f64,
         band: f64,
+        live: Option<Turn>,
         now_ms: u64,
     ) -> f64 {
         if self.orbit_since_ms.is_none() {
@@ -1348,6 +2149,16 @@ impl Pilot {
                     f64::from(self.sense)
                 }
             },
+        };
+        let s = match live {
+            Some(turn) => {
+                self.sense = match turn {
+                    Turn::CounterClockwise => 1,
+                    Turn::Clockwise => -1,
+                };
+                f64::from(self.sense)
+            }
+            None => s,
         };
         let offset = ((d - band) / ORBIT_CORRECTION_SPAN_M).clamp(-1.0, 1.0) * ORBIT_CORRECTION_DEG;
         beta + s * (90.0 - offset)
@@ -1476,7 +2287,7 @@ mod tests {
     use crate::arena::{
         classify,
         picture::{Event, Fix, Section, Track, Weapon},
-        settings::Settings,
+        settings::{Engagement, Settings},
     };
 
     const NOW: u64 = 100_000;
@@ -1551,7 +2362,17 @@ mod tests {
         }
     }
 
+    /// **The orbit these tests were written for**: cut AK's default made
+    /// explicit (cut AL.2 made the hold the default).
     fn doctrine() -> Doctrine {
+        Doctrine::pilot_default(&Settings {
+            engagement: Engagement::Orbit,
+            ..Settings::default()
+        })
+    }
+
+    /// The pilot's default doctrine now: the hold (cut AL.2).
+    fn hold_doctrine() -> Doctrine {
         Doctrine::pilot_default(&Settings::default())
     }
 
@@ -1594,7 +2415,7 @@ mod tests {
     }
 
     #[test]
-    fn close_stand_off_and_withdraw_headings() {
+    fn close_hold_and_withdraw_headings() {
         let run = |stance: Stance, range: u32| {
             let (mut picture, mut pilot) = flying();
             hold(&mut picture, contact("BA", Some(Side::Blue), 90, range));
@@ -1607,14 +2428,20 @@ mod tests {
         };
         assert_eq!(run(Stance::Close, 600).heading, Some(90));
         assert_eq!(run(Stance::Close, 600).speed, Some(54));
-        // Inside 200 m it orbits at 200: at 200 exactly, the tangent.
-        assert_eq!(run(Stance::Close, 200).heading, Some(180));
-        assert_eq!(run(Stance::StandOff, 700).heading, Some(90));
-        assert_eq!(run(Stance::StandOff, 200).heading, Some(270));
-        let inside = run(Stance::StandOff, 460);
+        // At 200 m it holds there (cut AL.2: it used to circle there): bow on,
+        // stopped.
+        let close = run(Stance::Close, 200);
+        assert_eq!((close.heading, close.speed), (Some(90), Some(0)));
+        assert_eq!(run(Stance::Hold, 700).heading, Some(90));
+        // Inside the band past the hysteresis it opens the range in reverse,
+        // bow on (cut AL.2: it used to turn away, 270).
+        let near = run(Stance::Hold, 200);
+        assert_eq!((near.heading, near.speed), (Some(90), Some(-27)));
+        let inside = run(Stance::Hold, 460);
         assert_eq!((inside.heading, inside.speed), (Some(90), Some(0)));
+        // A withdraw backs away bow on (cut AL.2: it used to drive away, 270).
         let away = run(Stance::Withdraw, 400);
-        assert_eq!((away.heading, away.speed), (Some(270), Some(54)));
+        assert_eq!((away.heading, away.speed), (Some(90), Some(-27)));
     }
 
     #[test]
@@ -1710,7 +2537,12 @@ mod tests {
         };
         let orders = pilot.decide(&picture, &doctrine, NOW);
         assert!(pilot.fallen_back);
-        assert_eq!(heading(&orders), 180, "withdrawing: straight away");
+        // Cut AL.2: in reverse, bow on (it used to turn away, 180).
+        assert_eq!(
+            (orders.heading, orders.speed),
+            (Some(0), Some(-27)),
+            "withdrawing: backing away bow on"
+        );
         // `WITHDRAW_MS` on it orbits at the widened band: at 250 m that is
         // inside it, so the heading opens past the tangent.
         let mut later = picture.clone();
@@ -1753,7 +2585,8 @@ mod tests {
         let orders = decide(&picture, &mut pilot);
         assert!(pilot.fallen_back);
         assert_eq!(pilot.withdraw_until_ms, Some(NOW + WITHDRAW_MS));
-        assert_eq!(heading(&orders), 180);
+        // Cut AL.2: in reverse, bow on (it used to turn away, 180).
+        assert_eq!((orders.heading, orders.speed), (Some(0), Some(-27)));
         // One more is not a quarter.
         let (mut picture, mut pilot) = flying();
         hold(&mut picture, contact("BA", Some(Side::Blue), 0, 300));
@@ -2842,7 +3675,9 @@ mod tests {
         let (mut picture, mut pilot) = flying();
         hold(&mut picture, contact("BA", Some(Side::Blue), 0, 100));
         half_hull(&mut picture);
-        assert_eq!(heading(&pilot.decide(&picture, &doctrine, NOW)), 180);
+        // Cut AL.2: in reverse, bow on (it used to turn away, 180).
+        let orders = pilot.decide(&picture, &doctrine, NOW);
+        assert_eq!((orders.heading, orders.speed), (Some(0), Some(-27)));
         let t = NOW + 1_000;
         assert!(t < NOW + WITHDRAW_MS);
         let mut out = contact("BA", Some(Side::Blue), 0, widened);
@@ -2876,14 +3711,19 @@ mod tests {
             let orders = pilot.decide(&picture, &Doctrine { stance, ..doctrine }, t);
             (orders.heading, orders.speed)
         };
-        // Stand off at the widened band: at it, stopped facing the target.
-        assert_eq!(fly(Stance::StandOff), (Some(0), Some(0)));
-        // Close is flown as an orbit there (not straight in to 200 m).
-        assert_eq!(fly(Stance::Close), (Some(90), Some(54)));
-        // A doctrine withdraw turns away, ahead of the widened orbit.
-        assert_eq!(fly(Stance::Withdraw), (Some(180), Some(54)));
-        // A hunt flies at the widened band too: at it, round it.
-        assert_eq!(fly(Stance::Hunt), (Some(90), Some(54)));
+        // Hold at the widened band: at it, stopped facing the target.
+        assert_eq!(fly(Stance::Hold), (Some(0), Some(0)));
+        // Close is flown as a hold there (not straight in to 200 m; cut AL.2:
+        // it used to circle there, 090 at 54).
+        assert_eq!(fly(Stance::Close), (Some(0), Some(0)));
+        // A doctrine withdraw backs away bow on, ahead of the widened band
+        // (cut AL.2: it used to turn away, 180 at 54).
+        assert_eq!(fly(Stance::Withdraw), (Some(0), Some(-27)));
+        // A hunt flies at the widened band too: at it, it holds (cut AL.2: it
+        // used to circle, 090 at 54).
+        assert_eq!(fly(Stance::Hunt), (Some(0), Some(0)));
+        // The orbit is still the orbit there: the tangent.
+        assert_eq!(fly(Stance::Orbit), (Some(90), Some(54)));
     }
 
     // -- cut AK.2: the hunt stance ---------------------------------------------------
@@ -2898,7 +3738,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hunt_stance_drives_in_to_the_band_then_orbits() {
+    fn the_hunt_stance_drives_in_to_the_band_then_holds() {
         let band = 300;
         let fly = |range: u32| {
             let (mut picture, mut pilot) = flying();
@@ -2906,21 +3746,20 @@ mod tests {
             let orders = pilot.decide(&picture, &hunting(band), NOW);
             (orders.heading, orders.speed)
         };
-        // Outside the band and its slack: straight at it, full ahead.
+        // Outside the band, its slack and the hysteresis: straight at it,
+        // full ahead.
         assert_eq!(fly(900), (Some(0), Some(54)));
-        let slack = STAND_OFF_SLACK_M as u32;
-        assert_eq!(fly(band + slack + 10), (Some(0), Some(54)));
-        // At the band: the orbit's tangent; inside the slack, the orbit bent
-        // toward the band, as `orbit` flies it.
-        assert_eq!(fly(band), (Some(90), Some(54)));
-        assert_eq!(
-            fly(band + slack).0,
-            Some(orbit_heading(0.0, f64::from(band + slack), band, 1.0))
-        );
-        assert_eq!(
-            fly(band - 100).0,
-            Some(orbit_heading(0.0, f64::from(band - 100), band, 1.0))
-        );
+        let slack = HOLD_SLACK_M as u32;
+        let leave = (HOLD_SLACK_M + HOLD_HYSTERESIS_M) as u32;
+        assert_eq!(fly(band + leave + 10), (Some(0), Some(54)));
+        // At the band, and inside the slack and the hysteresis: the hold, bow
+        // on and stopped (cut AL.2: it used to circle there).
+        assert_eq!(fly(band), (Some(0), Some(0)));
+        assert_eq!(fly(band + slack), (Some(0), Some(0)));
+        assert_eq!(fly(band + slack + 10), (Some(0), Some(0)));
+        // Well inside the band (past the slack and the hysteresis): in
+        // reverse, bow on.
+        assert_eq!(fly(band - leave - 10), (Some(0), Some(-27)));
         // A fresh friend is never hunted: nothing to fly at yet.
         let (mut picture, mut pilot) = flying();
         hold(&mut picture, contact("RB", Some(Side::Red), 0, 900));
@@ -3286,5 +4125,1333 @@ mod tests {
             fireable(&picture, "BA", Side::Blue, NOW + 101),
             ["machine_gun"]
         );
+    }
+
+    // -- cut AL.2: nose-on ------------------------------------------------------
+
+    /// One decision of `pilot` on `doctrine` at `at`, with BA at `bearing` and
+    /// `range` from the origin, its orders not held back by an earlier one:
+    /// `(heading, speed)`.
+    fn fly_on(
+        picture: &mut Picture,
+        pilot: &mut Pilot,
+        doctrine: &Doctrine,
+        bearing: u32,
+        range: u32,
+        at: u64,
+    ) -> (Option<u32>, Option<i32>) {
+        let mut ba = contact("BA", Some(Side::Blue), bearing, range);
+        ba.read_ms = at;
+        hold(picture, ba);
+        picture.own.pos_read_ms = at;
+        pilot.forget_heading();
+        pilot.forget_speed();
+        let orders = pilot.decide(picture, doctrine, at);
+        (orders.heading, orders.speed)
+    }
+
+    /// **The default engagement holds bow on at the band** (cut AL.2): for
+    /// bearings round the clock, a fresh pilot on the default doctrine is
+    /// stopped inside the slack and the hysteresis, closes full ahead beyond
+    /// them until back at the slack, opens in reverse short of them until out
+    /// at the slack, never reverses for a machine at the help's 420 m or one
+    /// read at exactly 400 m, and orders its heading on the hostile throughout.
+    #[test]
+    fn the_default_engagement_holds_bow_on_at_the_band() {
+        let doctrine = hold_doctrine();
+        assert_eq!(doctrine.stance, Stance::Hold);
+        let band = f64::from(doctrine.band_m);
+        let at = |m: f64| m.round() as u32;
+        let slack = HOLD_SLACK_M;
+        let leave = HOLD_SLACK_M + HOLD_HYSTERESIS_M;
+        // Due north the plot lies at exactly its range, so each threshold is
+        // pinned on its own metre there; round the clock (where a bearing's
+        // sine leaves a hair of float) a metre inside it.
+        for bearing in (0..360).step_by(30) {
+            let edge = if bearing == 0 { 0.0 } else { 1.0 };
+            let check = |(heading, _): (Option<u32>, Option<i32>)| {
+                let h = heading.expect("a heading");
+                assert!(
+                    angle_between(h, bearing) <= HOLD_BOW_DEG,
+                    "{h} for {bearing}"
+                );
+            };
+            // A fresh pilot inside the slack and the hysteresis: stopped.
+            for range in [
+                band - leave + edge,
+                band - slack,
+                band,
+                band + slack,
+                band + leave - edge,
+            ] {
+                let (mut picture, mut pilot) = flying();
+                let flown = fly_on(&mut picture, &mut pilot, &doctrine, bearing, at(range), NOW);
+                check(flown);
+                assert_eq!(flown.1, Some(0), "{range} at {bearing}");
+                assert_eq!(pilot.hold_motion, HoldMotion::Stopped);
+            }
+            // Beyond them: full ahead, kept until back at the slack.
+            let (mut picture, mut pilot) = flying();
+            let mut t = NOW;
+            for (range, kph) in [
+                (band + leave + 1.0, 54),
+                (band + slack + 1.0, 54),
+                (band + slack - edge, 0),
+                (band + slack + 1.0, 0),
+                (band + leave - edge, 0),
+            ] {
+                let flown = fly_on(&mut picture, &mut pilot, &doctrine, bearing, at(range), t);
+                check(flown);
+                assert_eq!(flown.1, Some(kph), "closing: {range} at {bearing}");
+                t += 1_000;
+            }
+            // Short of them: in reverse, kept until out at the slack.
+            let (mut picture, mut pilot) = flying();
+            let mut t = NOW;
+            for (range, kph) in [
+                (band - leave - 1.0, -27),
+                (band - slack - 1.0, -27),
+                (band - slack + edge, 0),
+                (band - slack - 1.0, 0),
+                (band - leave + edge, 0),
+            ] {
+                let flown = fly_on(&mut picture, &mut pilot, &doctrine, bearing, at(range), t);
+                check(flown);
+                assert_eq!(flown.1, Some(kph), "opening: {range} at {bearing}");
+                t += 1_000;
+            }
+            // The machines' 420 m, and a row read at exactly 400 m: never a
+            // reverse, fresh or arriving from a close.
+            for range in [420, 400] {
+                let (mut picture, mut pilot) = flying();
+                assert_eq!(
+                    fly_on(&mut picture, &mut pilot, &doctrine, bearing, range, NOW).1,
+                    Some(0)
+                );
+                let (mut picture, mut pilot) = flying();
+                fly_on(&mut picture, &mut pilot, &doctrine, bearing, 700, NOW);
+                assert_eq!(pilot.hold_motion, HoldMotion::Ahead);
+                let flown = fly_on(&mut picture, &mut pilot, &doctrine, bearing, range, NOW + 1);
+                check(flown);
+                assert_eq!(flown.1, Some(0), "{range} after a close");
+                let flown = fly_on(&mut picture, &mut pilot, &doctrine, bearing, range, NOW + 2);
+                assert_eq!(flown.1, Some(0), "{range} held");
+            }
+        }
+        // A tank whose astern ceiling is unknown reverses at the slow default.
+        let (mut picture, mut pilot) = flying();
+        picture.own.max_astern_kph = None;
+        let flown = fly_on(&mut picture, &mut pilot, &doctrine, 0, 100, NOW);
+        assert_eq!(flown, (Some(0), Some(-UNKNOWN_ASTERN_KPH)));
+    }
+
+    /// **The orbit is a stance, no longer the default** (cut AL.2): the default
+    /// doctrine holds; with `[arena] engagement = "orbit"` it is the orbit,
+    /// flown as cut AK built it.
+    #[test]
+    fn orbit_is_a_stance_and_no_longer_the_default() {
+        assert_eq!(
+            Doctrine::pilot_default(&Settings::default()).stance,
+            Stance::Hold
+        );
+        let orbit = Doctrine::pilot_default(&Settings {
+            engagement: Engagement::Orbit,
+            ..Settings::default()
+        });
+        assert_eq!(orbit.stance, Stance::Orbit);
+        assert_eq!(orbit, doctrine(), "the orbit the older tests fly");
+        // At the band, BA due north: the hold stops facing it; the orbit takes
+        // its tangent (the pilot's running sense, counter-clockwise) full ahead.
+        let (mut picture, mut pilot) = flying();
+        hold(&mut picture, contact("BA", Some(Side::Blue), 0, 450));
+        let held = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!((held.heading, held.speed), (Some(0), Some(0)));
+        let (mut picture, mut pilot) = flying();
+        hold(&mut picture, contact("BA", Some(Side::Blue), 0, 450));
+        let circled = pilot.decide(&picture, &orbit, NOW);
+        assert_eq!(
+            (circled.heading, circled.speed),
+            (Some(orbit_heading(0.0, 450.0, orbit.band_m, 1.0)), Some(54))
+        );
+        assert_eq!(pilot.hold_motion, HoldMotion::Stopped);
+    }
+
+    /// **`close` and `hunt` end in a hold** (cut AL.2): `close` drives in bow
+    /// on and holds at [`CLOSE_M`] (reversing only well inside it); `hunt`
+    /// drives at a fresh hostile and holds at the band.
+    #[test]
+    fn close_and_hunt_end_in_a_hold() {
+        let close = Doctrine {
+            stance: Stance::Close,
+            ..hold_doctrine()
+        };
+        let (mut picture, mut pilot) = flying();
+        let slack = HOLD_SLACK_M;
+        let leave = HOLD_SLACK_M + HOLD_HYSTERESIS_M;
+        let mut t = NOW;
+        for (range, kph) in [
+            (600.0, 54),
+            (CLOSE_M + slack + 1.0, 54),
+            (CLOSE_M + slack, 0),
+            (CLOSE_M, 0),
+            (CLOSE_M - leave, 0),
+            (CLOSE_M - leave - 1.0, -27),
+        ] {
+            let flown = fly_on(&mut picture, &mut pilot, &close, 0, range as u32, t);
+            assert_eq!(flown, (Some(0), Some(kph)), "close at {range}");
+            t += 1_000;
+        }
+        let hunt = Doctrine {
+            stance: Stance::Hunt,
+            ..hold_doctrine()
+        };
+        let band = f64::from(hunt.band_m);
+        let (mut picture, mut pilot) = flying();
+        let mut t = NOW;
+        for (range, kph) in [
+            (900.0, 54),
+            (band + slack + 1.0, 54),
+            (band + slack, 0),
+            (band, 0),
+        ] {
+            let flown = fly_on(&mut picture, &mut pilot, &hunt, 180, range as u32, t);
+            assert_eq!(flown, (Some(180), Some(kph)), "hunt at {range}");
+            t += 1_000;
+        }
+    }
+
+    /// **The fall back and a kept withdraw reverse bow on** (cut AL.2): with a
+    /// target, the heading on it and a negative speed; the fall back with no
+    /// target to face keeps its heading at full ahead.
+    #[test]
+    fn the_fall_back_and_a_kept_withdraw_reverse_bow_on() {
+        for bearing in (0..360).step_by(45) {
+            // The pilot's own fall back, on half the hull.
+            let (mut picture, mut pilot) = flying();
+            half_hull(&mut picture);
+            hold(&mut picture, contact("BA", Some(Side::Blue), bearing, 250));
+            let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+            assert!(pilot.withdraw_until_ms.is_some());
+            assert_eq!((orders.heading, orders.speed), (Some(bearing), Some(-27)));
+            // A kept doctrine withdraw.
+            let (mut picture, mut pilot) = flying();
+            hold(&mut picture, contact("BA", Some(Side::Blue), bearing, 450));
+            let withdraw = Doctrine {
+                stance: Stance::Withdraw,
+                hold_s: Some(20),
+                ..hold_doctrine()
+            };
+            let orders = pilot.decide(&picture, &withdraw, NOW);
+            assert_eq!((orders.heading, orders.speed), (Some(bearing), Some(-27)));
+        }
+        // Nothing to face: the fall back keeps the heading, full ahead.
+        let (mut picture, mut pilot) = flying();
+        half_hull(&mut picture);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert!(pilot.withdraw_until_ms.is_some());
+        assert_eq!((orders.heading, orders.speed), (None, Some(54)));
+    }
+
+    /// A contact at `bearing`/`range` from the origin whose own row reads
+    /// `rel` relative to the hull.
+    fn contact_rel(designator: &str, bearing: u32, range: u32, rel: u32) -> Contact {
+        Contact {
+            rel_deg: rel,
+            ..contact(designator, Some(Side::Blue), bearing, range)
+        }
+    }
+
+    fn hit(picture: &mut Picture, at: u64, line: &str) {
+        picture.apply(at, &classify(line));
+    }
+
+    const LEFT_HIT: &str = "Hit on the hull's left facet: 200 of 250 armour left.";
+
+    /// **A side or rear hit turns the bow to the shooter** (cut AL.2).
+    #[test]
+    fn a_side_or_rear_hit_turns_the_bow_to_the_shooter() {
+        // A hostile in the struck arc by its own row's relative bearing: the
+        // `STATUS` heading (090, seconds old) would put BB astern, but its row
+        // reads it at 270, on the left. BA is the held target, due north.
+        let (mut picture, mut pilot) = flying();
+        picture.own.heading_deg = 90;
+        hold(&mut picture, contact_rel("BA", 0, 450, 0));
+        hold(&mut picture, contact_rel("BB", 270, 500, 270));
+        picture.lock = Some("BA".into());
+        hit(&mut picture, NOW, LEFT_HIT);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!((orders.heading, orders.speed), (Some(270), Some(0)));
+        assert_eq!(
+            pilot.take_notes(),
+            ["Turning into the shot: hit on the hull's left facet; facing BB."]
+        );
+        let (bearing, until) = pilot.threat.expect("a threat");
+        assert_eq!((whole(bearing), until), (270, NOW + THREAT_TURN_MS));
+        // A newer hit on the same threat does not re-arm it; one on a threat
+        // more than `HOLD_BOW_DEG` away does (BC on the right, by its row).
+        hit(&mut picture, NOW + 500, LEFT_HIT);
+        pilot.decide(&picture, &hold_doctrine(), NOW + 500);
+        assert_eq!(pilot.threat, Some((bearing, until)), "the same threat");
+        assert!(pilot.take_notes().is_empty());
+        hold(&mut picture, contact_rel("BC", 90, 600, 90));
+        hit(
+            &mut picture,
+            NOW + 1_000,
+            "Hit on the turret's right facet: 200 of 220 armour left.",
+        );
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW + 1_000);
+        assert_eq!(
+            pilot.threat.map(|(b, u)| (whole(b), u)),
+            Some((90, NOW + 1_000 + THREAT_TURN_MS))
+        );
+        assert_eq!(orders.heading, Some(90));
+        assert_eq!(
+            pilot.take_notes(),
+            ["Turning into the shot: hit on the turret's right facet; facing BC."]
+        );
+        // The turn lasts `THREAT_TURN_MS`; then the hold faces BA again.
+        let end = NOW + 1_000 + THREAT_TURN_MS;
+        let mut later = picture.clone();
+        for c in later.contacts.values_mut() {
+            c.read_ms = end;
+        }
+        later.own.pos_read_ms = end;
+        pilot.decide(&later, &hold_doctrine(), end - 1);
+        assert!(pilot.threat.is_some());
+        let orders = pilot.decide(&later, &hold_doctrine(), end);
+        assert_eq!(pilot.threat, None);
+        assert_eq!((orders.heading, orders.speed), (Some(0), Some(0)));
+
+        // None in the arc and none held: the arc's centre from the reference
+        // heading — the `STATUS` heading with no order since…
+        let (mut picture, mut pilot) = flying();
+        picture.own.heading_deg = 40;
+        hit(
+            &mut picture,
+            NOW,
+            "Hit on the hull's rear facet: 100 of 150 armour left.",
+        );
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!((orders.heading, orders.speed), (Some(220), Some(0)));
+        assert_eq!(
+            pilot.take_notes(),
+            ["Turning into the shot: hit on the hull's rear facet; facing 220°."]
+        );
+        // …or the heading ordered after it.
+        let (mut picture, mut pilot) = flying();
+        picture.own.heading_deg = 40;
+        pilot.sent_heading(100, NOW + 1);
+        hit(&mut picture, NOW + 2, LEFT_HIT);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW + 2);
+        assert_eq!(orders.heading, Some(10));
+        assert_eq!(
+            pilot.take_notes(),
+            ["Turning into the shot: hit on the hull's left facet; facing 010°."]
+        );
+
+        // A young target held and no other hostile in the arc: the target is
+        // the shooter, and the hold already faces it — whether it is in the
+        // arc itself or not.
+        for (bearing, rel) in [(0, 0), (270, 270)] {
+            let (mut picture, mut pilot) = flying();
+            hold(&mut picture, contact_rel("BA", bearing, 450, rel));
+            hit(&mut picture, NOW, LEFT_HIT);
+            let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+            assert_eq!(pilot.threat, None);
+            assert_eq!((orders.heading, orders.speed), (Some(bearing), Some(0)));
+            assert!(pilot.take_notes().is_empty());
+        }
+        // A wreck, an unidentified contact and a notice-only contact in the
+        // arc are no shooter.
+        let (mut picture, mut pilot) = flying();
+        let mut x1 = contact_rel("X1", 270, 300, 270);
+        x1.side = None;
+        hold(&mut picture, x1);
+        // (BD, known only from its notice, has no row: no range, and its plot
+        // too old to be held, so it is neither the shooter nor a young target.)
+        let mut bd = contact_rel("BD", 260, 300, 260);
+        bd.range_m = None;
+        bd.age_ms = HUNT_STALE_PLOT_MS + 1;
+        hold(&mut picture, bd);
+        hold(&mut picture, contact_rel("BE", 280, 300, 280));
+        pilot.wrecks.insert("BE".into());
+        hit(&mut picture, NOW, LEFT_HIT);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(
+            pilot.take_notes(),
+            ["Turning into the shot: hit on the hull's left facet; facing 270°."]
+        );
+
+        // A front or top hit does nothing.
+        for line in [
+            "Hit on the hull's front facet: 300 of 400 armour left.",
+            "Hit on the turret's top facet: 80 of 100 armour left.",
+        ] {
+            let (mut picture, mut pilot) = flying();
+            hit(&mut picture, NOW, line);
+            pilot.decide(&picture, &hold_doctrine(), NOW);
+            assert_eq!(pilot.threat, None, "{line}");
+            assert_eq!(pilot.threat_seen_ms, NOW, "read once");
+        }
+        // An orbit doctrine does nothing.
+        let (mut picture, mut pilot) = flying();
+        hold(&mut picture, contact_rel("BB", 270, 500, 270));
+        hit(&mut picture, NOW, LEFT_HIT);
+        pilot.decide(&picture, &doctrine(), NOW);
+        assert_eq!(pilot.threat, None);
+        assert!(pilot.take_notes().is_empty());
+    }
+
+    /// The compass direction of the turn from `from` to `to`: `+1` clockwise,
+    /// `-1` counter-clockwise, `0` none.
+    fn turn_way(from: u32, to: u32) -> i64 {
+        signed_turn(from, to).signum()
+    }
+
+    /// `flying()` with `track` destroyed.
+    fn one_track(track: &str) -> (Picture, Pilot) {
+        let (mut picture, pilot) = flying();
+        lose_track(&mut picture, track);
+        (picture, pilot)
+    }
+
+    fn lose_track(picture: &mut Picture, track: &str) {
+        picture.own.sections.insert(
+            track.into(),
+            Section {
+                condition: "destroyed".into(),
+                internals: Some((0, 24)),
+                facets: Default::default(),
+            },
+        );
+    }
+
+    /// **A one-track tank turns only the live way** (cut AL.2), asserted on
+    /// the compass direction of each ordered heading from the reference
+    /// heading, never on the orbit's sense.
+    #[test]
+    fn a_one_track_tank_turns_only_the_live_way() {
+        assert_eq!(live_turn(&flying().0), None);
+        let (mut both, _) = one_track("left_track");
+        lose_track(&mut both, "right_track");
+        assert_eq!(live_turn(&both), None, "both gone: no live turn");
+        for (track, live) in [
+            ("left_track", Turn::Clockwise),
+            ("right_track", Turn::CounterClockwise),
+        ] {
+            let way = live.compass_sign() as i64;
+            let words = if way > 0 {
+                "clockwise"
+            } else {
+                "counter-clockwise"
+            };
+            let (picture, _) = one_track(track);
+            assert_eq!(live_turn(&picture), Some(live));
+
+            // The held turn, the pilot's sense set against the live way.
+            let (mut picture, mut pilot) = one_track(track);
+            pilot.sense = -(way as i8);
+            picture.own.heading_deg = 100;
+            held_event(&mut picture, NOW - 10);
+            let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+            let h = orders.heading.expect("the held turn");
+            assert_eq!(turn_way(100, h), way, "{track}: the held turn {h}");
+            assert_eq!(angle_between(100, h), HELD_TURN_DEG as u32);
+            // The sentence, once a match.
+            let notes = pilot.take_notes();
+            assert_eq!(
+                notes.first().map(String::as_str),
+                Some(format!("The {track} is gone: turning {words} only.").as_str())
+            );
+            pilot.decide(&picture, &hold_doctrine(), NOW + 10);
+            assert!(
+                !pilot.take_notes().iter().any(|n| n.contains(" is gone: ")),
+                "once"
+            );
+
+            // A stall's level: 90° from the stop, the live way.
+            let t0 = NOW + HELD_FOR_MS;
+            held_read(&mut picture, t0, 145);
+            pilot.decide(&picture, &hold_doctrine(), t0);
+            assert!(pilot.stall_since_ms.is_some(), "{track}: a stall opens");
+            let t1 = t0 + STALL_MS;
+            held_read(&mut picture, t1, 145);
+            let orders = pilot.decide(&picture, &hold_doctrine(), t1);
+            assert_eq!(pilot.stall_level, 1);
+            let h = orders.heading.expect("the stall's turn");
+            assert_eq!(turn_way(100, h), way, "{track}: the stall {h}");
+            assert_eq!(angle_between(100, h), 2 * HELD_TURN_DEG as u32);
+
+            // The sweep's next leg, a quarter turn from the course the live
+            // way, the pilot's sense set against it.
+            let track_of = Track {
+                course_deg: 90.0,
+                speed_mps: 8.0,
+            };
+            let (mut picture, mut pilot, _) = lost(MID, 0, 450, Some(track_of));
+            lose_track(&mut picture, track);
+            pilot.sense = -(way as i8);
+            to_the_sweep(&mut picture, &mut pilot);
+            let HuntLeg::Sweep { heading_deg, .. } = hunt_of(&pilot).leg else {
+                panic!("sweeping");
+            };
+            assert_eq!(turn_way(90, whole(heading_deg)), way, "{track}: the sweep");
+            assert_eq!(angle_between(90, whole(heading_deg)), 90);
+
+            // A detour round held ground: the search on 090 meets a mark
+            // ahead (half way between the clear distance and the reach); it
+            // turns aside the live way.
+            let (mut picture, mut pilot) = one_track(track);
+            picture.own.heading_deg = 90;
+            picture.spots.insert(
+                'B',
+                crate::arena::picture::Spot {
+                    name: "The Crossroads".into(),
+                    range_m: None,
+                    bearing_deg: Some(90),
+                    read_ms: NOW,
+                    plotted_m: None,
+                },
+            );
+            let ahead = mark_ahead_m();
+            pilot.held_marks.push(HeldMark {
+                at_m: (ahead - HELD_MARK_AHEAD_M, 0.0),
+                heading_deg: 90,
+                astern: false,
+                blocked_m: (ahead, 0.0),
+            });
+            let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+            let h = orders.heading.expect("the detour");
+            assert_eq!(turn_way(90, h), way, "{track}: the detour {h}");
+            assert_eq!(f64::from(angle_between(90, h)), HELD_MARK_DETOUR_DEG);
+
+            // An orbit with `Sense::Auto` and no track, across a timed flip:
+            // it circles the way that turns the live way. The tank drives
+            // 100 m along the first heading the orbit orders; seen from there
+            // the orbit's next heading has turned the live way.
+            // (The tank already lies on the orbit's tangent: from a bow on BA
+            // the tangent is a quarter turn, the dead way for one of the two
+            // tracks, which a deadband tuned to 90° would not order.)
+            let (mut picture, mut pilot) = one_track(track);
+            let ba_at = (0.0, 450.0);
+            hold(&mut picture, contact("BA", Some(Side::Blue), 0, 450));
+            let circling = match live {
+                Turn::CounterClockwise => 1.0,
+                Turn::Clockwise => -1.0,
+            };
+            picture.own.heading_deg = orbit_heading(0.0, 450.0, doctrine().band_m, circling);
+            let first = heading(&pilot.decide(&picture, &doctrine(), NOW));
+            assert_eq!(first, picture.own.heading_deg, "{track}: on the tangent");
+            pilot.sent_heading(first, NOW);
+            let t = NOW + FLIP_EVERY_MS;
+            let own = along((0.0, 0.0), f64::from(first), 100.0);
+            let mut ba = contact_from(
+                own,
+                "BA",
+                Some(Side::Blue),
+                whole(bearing_deg(own, ba_at)),
+                distance_m(own, ba_at).round() as u32,
+            );
+            ba.read_ms = t;
+            hold(&mut picture, ba);
+            read_at(&mut picture, own, t);
+            picture.own.heading_deg = first;
+            let second = heading(&pilot.decide(&picture, &doctrine(), t));
+            assert_eq!(
+                turn_way(first, second),
+                way,
+                "{track}: {first} then {second}"
+            );
+
+            // The deadband: a small dead-side correction, and one of exactly
+            // `ONE_TRACK_DEADBAND_DEG`, are not ordered; a live-side one is.
+            let dead_by =
+                |deg: u32| -> u32 { ((100 - way * i64::from(deg)).rem_euclid(360)) as u32 };
+            let (mut picture, mut pilot) = one_track(track);
+            picture.own.heading_deg = 100;
+            for off in [10, ONE_TRACK_DEADBAND_DEG] {
+                let flown = fly_on(
+                    &mut picture,
+                    &mut pilot,
+                    &hold_doctrine(),
+                    dead_by(off),
+                    450,
+                    NOW,
+                );
+                assert_eq!(flown, (None, Some(0)), "{track}: {off}° dead side");
+            }
+            let live_side = ((100 + way * 40).rem_euclid(360)) as u32;
+            let flown = fly_on(
+                &mut picture,
+                &mut pilot,
+                &hold_doctrine(),
+                live_side,
+                450,
+                NOW,
+            );
+            assert_eq!(flown.0, Some(live_side), "{track}: live side at once");
+            // A large one is ordered once, then nothing until `STATUS` reads
+            // it…
+            let (mut picture, mut pilot) = one_track(track);
+            picture.own.heading_deg = 100;
+            let far = dead_by(ONE_TRACK_DEADBAND_DEG + 10);
+            let flown = fly_on(&mut picture, &mut pilot, &hold_doctrine(), far, 450, NOW);
+            assert_eq!(flown.0, Some(far));
+            pilot.sent_heading(far, NOW);
+            assert_eq!(pilot.turn_commit, Some((far, NOW)));
+            let elsewhere = ((100 + way * 60).rem_euclid(360)) as u32;
+            let flown = fly_on(
+                &mut picture,
+                &mut pilot,
+                &hold_doctrine(),
+                elsewhere,
+                450,
+                NOW + 500,
+            );
+            assert_eq!(flown.0, None, "{track}: committed");
+            // (a `STATUS` short of it does not end the commit)
+            picture.own.heading_deg = (far + 20) % 360;
+            let flown = fly_on(
+                &mut picture,
+                &mut pilot,
+                &hold_doctrine(),
+                elsewhere,
+                450,
+                NOW + 1_000,
+            );
+            assert_eq!(flown.0, None, "{track}: not read yet");
+            picture.own.heading_deg = ((i64::from(far) - 3 * way).rem_euclid(360)) as u32;
+            let flown = fly_on(
+                &mut picture,
+                &mut pilot,
+                &hold_doctrine(),
+                far,
+                450,
+                NOW + 1_500,
+            );
+            assert_eq!(pilot.turn_commit, None, "{track}: read");
+            assert_eq!(flown.0, Some(far));
+            // …or the commit lapses.
+            let (mut picture, mut pilot) = one_track(track);
+            picture.own.heading_deg = 100;
+            fly_on(&mut picture, &mut pilot, &hold_doctrine(), far, 450, NOW);
+            pilot.sent_heading(far, NOW);
+            let lapse = NOW + ONE_TRACK_COMMIT_MS;
+            let flown = fly_on(
+                &mut picture,
+                &mut pilot,
+                &hold_doctrine(),
+                far,
+                450,
+                lapse - 1,
+            );
+            assert_eq!(flown.0, None);
+            let flown = fly_on(&mut picture, &mut pilot, &hold_doctrine(), far, 450, lapse);
+            assert_eq!(flown.0, Some(far), "{track}: the commit lapsed");
+            // The re-board clears it.
+            let (mut picture, mut pilot) = one_track(track);
+            picture.own.heading_deg = 100;
+            fly_on(&mut picture, &mut pilot, &hold_doctrine(), far, 450, NOW);
+            pilot.sent_heading(far, NOW);
+            pilot.forget_turns(&picture);
+            assert_eq!(pilot.turn_commit, None);
+            let flown = fly_on(
+                &mut picture,
+                &mut pilot,
+                &hold_doctrine(),
+                far,
+                450,
+                NOW + 500,
+            );
+            assert_eq!(flown.0, Some(far), "{track}: re-boarded");
+        }
+    }
+
+    /// How far ahead a test puts a mark that must block: half way between the
+    /// clear distance and the reach, so it blocks wherever a tuning round
+    /// moves either within its bounds.
+    fn mark_ahead_m() -> f64 {
+        (HELD_MARK_CLEAR_M + HELD_MARK_NEAR_M) / 2.0
+    }
+
+    /// The tank read at `pos` on `heading` at `at`, free and stopped.
+    fn status_at(picture: &mut Picture, pos: (f64, f64), heading: u32, at: u64) {
+        picture.own.pos_m = Some(pos);
+        picture.own.heading_deg = heading;
+        picture.own.pos_read_ms = at;
+        picture.own.held = None;
+        picture.own.speed_kph = 0;
+    }
+
+    /// **A held stop marks its ground and the search steers round it** (cut
+    /// AL.2): the bot's own run-2 loop, and the mark's geometry.
+    #[test]
+    fn a_held_stop_marks_its_ground_and_the_search_steers_round_it() {
+        // Stopped at (1 420, 1 049) on 000 by the slope.
+        let stop = (1_420.0, 1_049.0);
+        let (mut picture, mut pilot) = flying_at(stop);
+        picture.events.push_back(Event {
+            at_ms: NOW - 10,
+            kind: EventKind::Held,
+            text: "Held: the slope ahead is too steep for the tank.".into(),
+        });
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(
+            pilot.held_marks,
+            [HeldMark {
+                at_m: stop,
+                heading_deg: 0,
+                astern: false,
+                blocked_m: (1_420.0, 1_049.0 + HELD_MARK_AHEAD_M),
+            }]
+        );
+        assert!(pilot.take_notes().contains(
+            &"Held ground marked at 1420 m east, 1049 m north, heading 000°.".to_owned()
+        ));
+        // Later, searching from (1 330, 1 052) for B on 091: blocked, and the
+        // search's heading is turned aside.
+        let from = (1_330.0, 1_052.0);
+        assert!(pilot.blocked(from, 91.0));
+        picture.spots.insert(
+            'B',
+            crate::arena::picture::Spot {
+                name: "The Crossroads".into(),
+                range_m: None,
+                bearing_deg: Some(91),
+                read_ms: NOW,
+                plotted_m: None,
+            },
+        );
+        let t = NOW + 20_000;
+        status_at(&mut picture, from, 91, t);
+        let orders = pilot.decide(&picture, &hold_doctrine(), t);
+        let aside = whole(91.0 + HELD_MARK_DETOUR_DEG * pilot.turn_sign(&picture));
+        assert!(orders.ask_spot_b, "searching");
+        assert_eq!(orders.heading, Some(aside));
+        assert!(!pilot.blocked(from, f64::from(aside)));
+        assert_eq!(
+            pilot.take_notes(),
+            [format!("Steering round held ground: {aside:03}° for 091°.")]
+        );
+        assert!(pilot.detour);
+        // Said once while the detour lasts.
+        pilot.decide(&picture, &hold_doctrine(), t + 50);
+        assert!(pilot.take_notes().is_empty());
+        // A heading clear of the mark is untouched.
+        assert!(!pilot.blocked(from, 270.0));
+        assert!(!pilot.blocked(from, 0.0));
+        assert_eq!(pilot.steer_round(from, 270.0, 1.0), 270.0);
+        assert!(!pilot.detour);
+        // A mark beyond `HELD_MARK_NEAR_M` is ignored.
+        let far = (stop.0 - HELD_MARK_NEAR_M - 20.0, 1_069.0);
+        assert!(!pilot.blocked(far, 90.0));
+        // From the stop point itself every heading is free (the clear
+        // distance), and from anywhere within it of the mark.
+        for h in (0..360).step_by(5) {
+            assert!(!pilot.blocked(stop, f64::from(h)), "{h}");
+            assert!(!pilot.blocked((1_420.0, 1_040.0), f64::from(h)), "{h}");
+        }
+        // Three blocked detours leave the heading as it was.
+        let mut boxed = pilot.clone();
+        for k in 1..=3_u8 {
+            let detour = 91.0 + f64::from(k) * HELD_MARK_DETOUR_DEG;
+            boxed.held_marks.push(HeldMark {
+                at_m: from,
+                heading_deg: 0,
+                astern: false,
+                blocked_m: along(from, detour, mark_ahead_m()),
+            });
+        }
+        assert_eq!(boxed.steer_round(from, 91.0, 1.0), 91.0);
+        // A stopped or reversing tank's heading is untouched: a hold at the
+        // band on 091, and a hold reversing on 091 (its ray behind it clear),
+        // with only the run-2 mark — which a forward heading on 091 would be
+        // steered round (fixes after review: the boxed marks left 091 either
+        // way).
+        assert_ne!(
+            pilot.clone().steer_round(from, 91.0, 1.0),
+            91.0,
+            "steered, were it ahead"
+        );
+        let (mut picture, mut pilot) = flying_at(from);
+        pilot.held_marks = pilot_marks(stop);
+        let ba = contact_from(from, "BA", Some(Side::Blue), 91, 450);
+        hold(&mut picture, ba);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!((orders.heading, orders.speed), (Some(91), Some(0)));
+        let (mut picture, mut pilot) = flying_at(from);
+        pilot.held_marks = pilot_marks(stop);
+        hold(
+            &mut picture,
+            contact_from(from, "BA", Some(Side::Blue), 91, 200),
+        );
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!((orders.heading, orders.speed), (Some(91), Some(-27)));
+        // The same ahead: steered round.
+        let (mut picture, mut pilot) = flying_at(from);
+        pilot.held_marks = pilot_marks(stop);
+        hold(
+            &mut picture,
+            contact_from(from, "BA", Some(Side::Blue), 91, 900),
+        );
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(orders.speed, Some(54));
+        assert_ne!(orders.heading, Some(91), "closing: steered round");
+        // `Held: something is in the way.` (a unit) and the unstated hold mark
+        // nothing.
+        for text in ["Held: something is in the way.", "Held: the tank is held."] {
+            let (mut picture, mut pilot) = flying_at(stop);
+            picture.events.push_back(Event {
+                at_ms: NOW - 10,
+                kind: EventKind::Held,
+                text: text.into(),
+            });
+            pilot.decide(&picture, &hold_doctrine(), NOW);
+            assert!(pilot.held_marks.is_empty(), "{text}");
+            assert!(pilot.held_heading.is_some(), "{text}: still turned");
+        }
+        // The edge is ground; at most `HELD_MARKS_MAX` are kept, the oldest
+        // dropped.
+        let (mut picture, mut pilot) = flying_at(stop);
+        for i in 0..=HELD_MARKS_MAX as u64 {
+            picture.events.push_back(Event {
+                at_ms: NOW + i,
+                kind: EventKind::Held,
+                text: "Held: this is the edge of the arena.".into(),
+            });
+            picture.own.pos_m = Some((stop.0 + i as f64, stop.1));
+            pilot.decide(&picture, &hold_doctrine(), NOW + i + 1);
+        }
+        assert_eq!(pilot.held_marks.len(), HELD_MARKS_MAX);
+        assert_eq!(pilot.held_marks[0].at_m, (stop.0 + 1.0, stop.1));
+    }
+
+    /// The run-2 stop's one mark.
+    fn pilot_marks(stop: (f64, f64)) -> Vec<HeldMark> {
+        vec![HeldMark {
+            at_m: stop,
+            heading_deg: 0,
+            astern: false,
+            blocked_m: along(stop, 0.0, HELD_MARK_AHEAD_M),
+        }]
+    }
+
+    /// **A stop while reversing marks behind and stops the reverse** (cut
+    /// AL.2; a guard — no transcript holds one): a fall back backing into a
+    /// steep bank runs no full-ahead held turn, marks the ground behind, turns
+    /// the next reverse into a stop with the bow kept, and opens no stall.
+    #[test]
+    fn a_stop_while_reversing_marks_behind_and_stops_the_reverse() {
+        let (mut picture, mut pilot) = flying_at(MID);
+        half_hull(&mut picture);
+        hold(
+            &mut picture,
+            contact_from(MID, "BA", Some(Side::Blue), 0, 250),
+        );
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!((orders.heading, orders.speed), (Some(0), Some(-27)));
+        pilot.sent_heading(0, NOW);
+        pilot.sent_speed(-27);
+        pilot.take_notes();
+        // Held while reversing.
+        picture.events.push_back(Event {
+            at_ms: NOW + 500,
+            kind: EventKind::Held,
+            text: "Held: the slope ahead is too steep for the tank.".into(),
+        });
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW + 510);
+        assert_eq!(
+            (orders.heading, orders.speed),
+            (None, Some(0)),
+            "no full-ahead held turn: stopped, the bow kept"
+        );
+        assert!(pilot.held_astern);
+        assert_eq!(pilot.held_heading, None);
+        assert_eq!(
+            pilot.held_marks,
+            [HeldMark {
+                at_m: MID,
+                heading_deg: 0,
+                astern: true,
+                blocked_m: along(MID, 180.0, HELD_MARK_AHEAD_M),
+            }]
+        );
+        assert_eq!(
+            pilot.take_notes(),
+            ["Held ground marked at 1280 m east, 1000 m north, heading 000°."]
+        );
+        assert!(pilot.blocked_behind(MID, 0.0), "the ray behind meets it");
+        assert!(
+            !pilot.blocked(MID, 180.0),
+            "a forward ray keeps its clear distance"
+        );
+        // After the held stop the fall back still runs: its reverse is a stop
+        // with the bow kept.
+        let t = NOW + 510 + HELD_FOR_MS;
+        held_read(&mut picture, t, 0);
+        let orders = pilot.decide(&picture, &hold_doctrine(), t);
+        assert!(pilot.withdraw_until_ms.is_some());
+        assert_eq!(orders.speed, Some(0));
+        assert!(
+            orders
+                .heading
+                .is_none_or(|h| angle_between(h, 0) <= HOLD_BOW_DEG),
+            "the bow kept: {orders:?}"
+        );
+        // Read held at 0 kph a whole stall later: no stall, the pilot chose
+        // the stop.
+        let t = t + STALL_MS;
+        held_read(&mut picture, t, 0);
+        pilot.decide(&picture, &hold_doctrine(), t);
+        assert_eq!(pilot.stall_since_ms, None);
+        assert_eq!(pilot.stall_level, 0);
+        // A hold that would open the range here stops instead, bow on.
+        let (mut picture, mut pilot) = flying_at(MID);
+        pilot.held_marks = vec![HeldMark {
+            at_m: MID,
+            heading_deg: 0,
+            astern: true,
+            blocked_m: along(MID, 180.0, HELD_MARK_AHEAD_M),
+        }];
+        hold(
+            &mut picture,
+            contact_from(MID, "BA", Some(Side::Blue), 0, 200),
+        );
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!((orders.heading, orders.speed), (Some(0), Some(0)));
+        assert_eq!(
+            pilot.hold_motion,
+            HoldMotion::Astern,
+            "still wanting to open"
+        );
+        // Facing the other way, the mark is ahead, and the reverse goes.
+        let (mut picture, mut pilot) = flying_at(MID);
+        pilot.held_marks = vec![HeldMark {
+            at_m: MID,
+            heading_deg: 0,
+            astern: true,
+            blocked_m: along(MID, 180.0, HELD_MARK_AHEAD_M),
+        }];
+        hold(
+            &mut picture,
+            contact_from(MID, "BA", Some(Side::Blue), 180, 200),
+        );
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!((orders.heading, orders.speed), (Some(180), Some(-27)));
+    }
+
+    /// **The back-off stops short of held ground behind** (fixes after
+    /// review): step 1's back-off is checked against the ray behind the tank
+    /// like every other reverse — a mark taken reversing is met however near,
+    /// one taken driving ahead only past the clear distance (so the back-off
+    /// from a forward stop is not stopped by that stop's own mark), and a mark
+    /// off the ray stops nothing.
+    #[test]
+    fn the_back_off_stops_short_of_held_ground_behind() {
+        let mark = |bearing: f64, metres: f64, astern: bool| HeldMark {
+            at_m: MID,
+            heading_deg: 0,
+            astern,
+            blocked_m: along(MID, bearing, metres),
+        };
+        for (marks, kph, why) in [
+            (vec![], -27, "nothing marked"),
+            (
+                vec![mark(180.0, HELD_MARK_AHEAD_M, true)],
+                0,
+                "a mark taken reversing, just behind",
+            ),
+            (
+                vec![mark(180.0, mark_ahead_m(), false)],
+                0,
+                "a mark taken ahead, past the clear distance behind",
+            ),
+            (
+                vec![mark(180.0, HELD_MARK_AHEAD_M, false)],
+                -27,
+                "a mark taken ahead, inside the clear distance",
+            ),
+            (
+                vec![mark(90.0, mark_ahead_m(), true)],
+                -27,
+                "a mark off the ray behind",
+            ),
+        ] {
+            let (picture, mut pilot) = flying_at(MID);
+            pilot.held_marks = marks;
+            pilot.stall_level = 4;
+            pilot.reverse_until_ms = NOW + HELD_REVERSE_MS;
+            let orders = pilot.decide(&picture, &doctrine(), NOW);
+            assert_eq!((orders.heading, orders.speed), (None, Some(kph)), "{why}");
+        }
+    }
+
+    /// **A hold goes back to `Stopped` once anything else is flown** (fixes
+    /// after review): a hold opening the range in reverse, then a decision
+    /// under a withdraw, then the hold again inside its hysteresis is a stop,
+    /// not the old reverse.
+    #[test]
+    fn a_hold_stops_again_after_flying_anything_else() {
+        let band = f64::from(hold_doctrine().band_m);
+        let (mut picture, mut pilot) = flying();
+        let opening = (band - HOLD_SLACK_M - HOLD_HYSTERESIS_M - 10.0) as u32;
+        let flown = fly_on(&mut picture, &mut pilot, &hold_doctrine(), 0, opening, NOW);
+        assert_eq!(flown, (Some(0), Some(-27)));
+        assert_eq!(pilot.hold_motion, HoldMotion::Astern);
+        let withdraw = Doctrine {
+            stance: Stance::Withdraw,
+            hold_s: Some(20),
+            ..hold_doctrine()
+        };
+        fly_on(&mut picture, &mut pilot, &withdraw, 0, opening, NOW + 1_000);
+        assert_eq!(pilot.hold_motion, HoldMotion::Stopped);
+        // Inside the hysteresis, short of the slack: a fresh hold stands.
+        let inside = (band - HOLD_SLACK_M - 10.0) as u32;
+        let flown = fly_on(
+            &mut picture,
+            &mut pilot,
+            &hold_doctrine(),
+            0,
+            inside,
+            NOW + 2_000,
+        );
+        assert_eq!(flown, (Some(0), Some(0)));
+        assert_eq!(pilot.hold_motion, HoldMotion::Stopped);
+    }
+
+    /// **The turn into a hit in a crossfire** (fixes after review): the
+    /// nearest hostile in the struck arc is the shooter; a threat within
+    /// [`HOLD_BOW_DEG`] of the held target is not turned to (the hold faces
+    /// it) and its sentence is not said; and a current threat whose shooter
+    /// is gone, with only the held target left to blame, is dropped.
+    #[test]
+    fn a_crossfire_turns_to_the_nearest_shooter_and_never_off_the_target() {
+        // Two in the left arc: the nearer, BB, is faced (BA, nearer still,
+        // is the target, due north).
+        let (mut picture, mut pilot) = flying();
+        hold(&mut picture, contact_rel("BA", 0, 200, 0));
+        hold(&mut picture, contact_rel("BB", 250, 300, 250));
+        hold(&mut picture, contact_rel("BC", 290, 600, 290));
+        hit(&mut picture, NOW, LEFT_HIT);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!((orders.heading, orders.speed), (Some(250), Some(0)));
+        assert_eq!(
+            pilot.take_notes(),
+            ["Turning into the shot: hit on the hull's left facet; facing BB."]
+        );
+        // The shooter (BB, left arc) within `HOLD_BOW_DEG` of the held target
+        // (BA, astern-left): the hold already faces it, nothing is said.
+        let (mut picture, mut pilot) = flying();
+        hold(&mut picture, contact_rel("BA", 220, 450, 220));
+        hold(&mut picture, contact_rel("BB", 240, 500, 240));
+        hit(&mut picture, NOW, LEFT_HIT);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(
+            pilot.threat.map(|(b, _)| whole(b)),
+            Some(240),
+            "armed on BB"
+        );
+        assert_eq!((orders.heading, orders.speed), (Some(220), Some(0)));
+        assert!(pilot.take_notes().is_empty());
+        // A threat armed on BB; BB gone, a second left hit with only BA (well
+        // off it) to blame: the threat is dropped, and the hold faces BA.
+        let (mut picture, mut pilot) = flying();
+        hold(&mut picture, contact_rel("BA", 0, 450, 0));
+        hold(&mut picture, contact_rel("BB", 270, 500, 270));
+        hit(&mut picture, NOW, LEFT_HIT);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert!(pilot.threat.is_some());
+        picture.contacts.remove("BB");
+        hit(&mut picture, NOW + 500, LEFT_HIT);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW + 500);
+        assert_eq!(pilot.threat, None);
+        assert_eq!((orders.heading, orders.speed), (Some(0), Some(0)));
+    }
+
+    /// **A turn into a hit that is not flown is not said** (fixes after
+    /// review): a withdrawal outranks step 3b for the whole turn, and the
+    /// sentence never goes; a hit read after its turn would be over arms
+    /// nothing; and a hit taken while the machine flew the tank is read at the
+    /// re-board ([`Pilot::forget_turns`]) and turns nothing.
+    #[test]
+    fn a_turn_into_a_hit_is_said_only_when_flown() {
+        // Falling back on half the hull, BB in the left arc: the reverse bow
+        // on BA goes on, and nothing turns or is said.
+        let (mut picture, mut pilot) = flying();
+        half_hull(&mut picture);
+        hold(&mut picture, contact_rel("BA", 0, 250, 0));
+        hold(&mut picture, contact_rel("BB", 270, 500, 270));
+        hit(&mut picture, NOW, LEFT_HIT);
+        for t in [NOW, NOW + THREAT_TURN_MS - 1, NOW + THREAT_TURN_MS] {
+            let orders = pilot.decide(&picture, &hold_doctrine(), t);
+            assert!(pilot.withdraw_until_ms.is_some(), "still falling back");
+            assert_eq!((orders.heading, orders.speed), (Some(0), Some(-27)), "{t}");
+            pilot.forget_heading();
+            pilot.forget_speed();
+        }
+        // The fall back over, the turn's time long past: dropped, unsaid.
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW + WITHDRAW_MS);
+        assert_eq!(pilot.withdraw_until_ms, None);
+        assert_eq!(pilot.threat, None, "lapsed unflown");
+        assert_eq!(orders.heading, Some(0), "the hold on BA");
+        let notes = pilot.take_notes();
+        assert!(
+            !notes.iter().any(|n| n.starts_with("Turning into the shot")),
+            "{notes:?}"
+        );
+        // A kept doctrine withdraw outranks it the same way.
+        let (mut picture, mut pilot) = flying();
+        hold(&mut picture, contact_rel("BA", 0, 450, 0));
+        hold(&mut picture, contact_rel("BB", 270, 500, 270));
+        hit(&mut picture, NOW, LEFT_HIT);
+        let withdraw = Doctrine {
+            stance: Stance::Withdraw,
+            hold_s: Some(20),
+            ..hold_doctrine()
+        };
+        let orders = pilot.decide(&picture, &withdraw, NOW);
+        assert_eq!((orders.heading, orders.speed), (Some(0), Some(-27)));
+        assert!(pilot.take_notes().is_empty());
+        // A hit read a whole turn late (after a stretch immobile, say), with
+        // nothing to blame: it would have turned to 270. Not even armed (the
+        // fall back running here would leave an armed one standing, spent,
+        // in the `arena-picture` record).
+        let (mut picture, mut pilot) = flying();
+        half_hull(&mut picture);
+        hit(&mut picture, NOW - THREAT_TURN_MS, LEFT_HIT);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(pilot.threat, None);
+        assert_eq!(pilot.threat_seen_ms, NOW - THREAT_TURN_MS, "read once");
+        assert_ne!(orders.heading, Some(270));
+        assert_eq!(
+            pilot.take_notes(),
+            ["Falling back to 450 m: the hull is at half."]
+        );
+        // A hit taken while away, read at the re-board.
+        let (mut picture, mut pilot) = flying();
+        hit(&mut picture, NOW - 1_000, LEFT_HIT);
+        pilot.forget_turns(&picture);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(pilot.threat, None);
+        assert_ne!(orders.heading, Some(270));
+        assert!(pilot.take_notes().is_empty());
+    }
+
+    /// **A second hit with nothing to blame, mid-turn, does not move the
+    /// turn** (fixes after review): the arc's centre is measured from the
+    /// reference heading, and while the turn's own heading is ordered and not
+    /// yet read by `STATUS` that is where the hull is going, not where it is —
+    /// so the turn stands until a `STATUS` reads the hull.
+    #[test]
+    fn an_unblamed_hit_mid_turn_does_not_send_the_bow_round_again() {
+        let (mut picture, mut pilot) = flying();
+        hit(&mut picture, NOW, LEFT_HIT);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(orders.heading, Some(270));
+        pilot.sent_heading(270, NOW);
+        pilot.take_notes();
+        let armed = pilot.threat;
+        // Again on the left, 1.2 s on, no `STATUS` between: the same turn.
+        hit(&mut picture, NOW + 1_200, LEFT_HIT);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW + 1_200);
+        assert_eq!(pilot.threat, armed);
+        assert_eq!(orders.heading, None, "270 already ordered");
+        assert!(pilot.take_notes().is_empty());
+        // A `STATUS` reads the hull part way round, at 300: a left hit now
+        // is placed from it.
+        picture.own.heading_deg = 300;
+        picture.own.pos_read_ms = NOW + 2_000;
+        hit(&mut picture, NOW + 2_100, LEFT_HIT);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW + 2_100);
+        assert_eq!(
+            pilot.threat.map(|(b, u)| (whole(b), u)),
+            Some((210, NOW + 2_100 + THREAT_TURN_MS))
+        );
+        assert_eq!(orders.heading, Some(210));
+        assert_eq!(
+            pilot.take_notes(),
+            ["Turning into the shot: hit on the hull's left facet; facing 210°."]
+        );
+    }
+
+    /// **One track gone, a hit on the dead side turns nothing** (fixes after
+    /// review): the server would turn the bow the long, live way round —
+    /// longer than the turn lasts, showing a side and the stern to the held
+    /// target on the way — so no turn is armed, ordered or committed, and the
+    /// hold keeps its bow; a hit on the live side turns at once; a hit dead
+    /// astern (as long either way) turns.
+    #[test]
+    fn a_one_track_tank_never_turns_the_dead_way_into_a_hit() {
+        for (track, dead, live) in [
+            ("right_track", ("right", 90), ("left", 270)),
+            ("left_track", ("left", 270), ("right", 90)),
+        ] {
+            let line =
+                |facet: &str| format!("Hit on the hull's {facet} facet: 200 of 250 armour left.");
+            // A shooter in the dead-side arc, BA held due north.
+            let (mut picture, mut pilot) = one_track(track);
+            hold(&mut picture, contact_rel("BA", 0, 450, 0));
+            hold(&mut picture, contact_rel("BB", dead.1, 500, dead.1));
+            hit(&mut picture, NOW, &line(dead.0));
+            let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+            assert_eq!(pilot.threat, None, "{track}: {} hit", dead.0);
+            assert_eq!(
+                (orders.heading, orders.speed),
+                (Some(0), Some(0)),
+                "{track}"
+            );
+            if let Some(deg) = orders.heading {
+                pilot.sent_heading(deg, NOW);
+            }
+            assert_eq!(pilot.turn_commit, None, "{track}: nothing committed");
+            assert!(
+                !pilot
+                    .take_notes()
+                    .iter()
+                    .any(|n| n.starts_with("Turning into the shot")),
+                "{track}"
+            );
+            // Nothing held, nothing in the arc: the dead side's centre, the
+            // same.
+            let (mut picture, mut pilot) = one_track(track);
+            hit(&mut picture, NOW, &line(dead.0));
+            let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+            assert_eq!(pilot.threat, None, "{track}: unblamed {} hit", dead.0);
+            assert_ne!(orders.heading, Some(dead.1));
+            // The live side: turned at once.
+            let (mut picture, mut pilot) = one_track(track);
+            hold(&mut picture, contact_rel("BA", 0, 450, 0));
+            hold(&mut picture, contact_rel("BC", live.1, 500, live.1));
+            hit(&mut picture, NOW, &line(live.0));
+            let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+            assert_eq!(
+                (orders.heading, orders.speed),
+                (Some(live.1), Some(0)),
+                "{track}: {} hit",
+                live.0
+            );
+            // Dead astern, nothing to blame: as long either way, so turned.
+            let (mut picture, mut pilot) = one_track(track);
+            hit(
+                &mut picture,
+                NOW,
+                "Hit on the hull's rear facet: 100 of 150 armour left.",
+            );
+            pilot.decide(&picture, &hold_doctrine(), NOW);
+            assert_eq!(pilot.threat.map(|(b, _)| whole(b)), Some(180), "{track}");
+        }
+    }
+
+    /// **The bot-side observer rule for AL.2's notes**: fed through
+    /// [`Picture::apply`], every designator a new note names is one a contact
+    /// row or notice named; a mark holds positions, a heading and a direction.
+    #[test]
+    fn the_new_notes_name_only_designators_the_stream_named() {
+        let (mut picture, mut pilot) = flying();
+        let lines = [
+            (NOW, "Callsign RA."),
+            (NOW, "Red Tank 1: power online, 0 kph, heading 000°"),
+            (NOW, "  at 1280 m east, 1000 m north; scope holds a hostile"),
+            (NOW, "  right_track  destroyed  internals 0/24"),
+            (NOW + 10, "New contact X1: bearing 270°, far."),
+            (NOW + 20, "Contact X1 identified: BB, blue."),
+            (
+                NOW + 30,
+                "BB  blue  bearing 270° (rel 270°)  far  500 m  0 s",
+            ),
+            (
+                NOW + 31,
+                "BA  blue  bearing 000° (rel 000°)  far  300 m  0 s",
+            ),
+            (NOW + 40, "No such contact."),
+            (
+                NOW + 50,
+                "Hit on the hull's left facet: 200 of 250 armour left.",
+            ),
+            // (Read after the turn into the hit is flown: a held stop
+            // outranks the turn, and its sentence is said only when flown.)
+            (
+                NOW + 110,
+                "Held: the slope ahead is too steep for the tank.",
+            ),
+        ];
+        let mut named = BTreeSet::new();
+        let mut notes = Vec::new();
+        for (at, text) in lines {
+            if at == NOW + 110 {
+                assert_eq!(live_turn(&picture), Some(Turn::CounterClockwise));
+                pilot.decide(&picture, &hold_doctrine(), NOW + 100);
+                notes.extend(pilot.take_notes());
+            }
+            let line = classify(text);
+            match &line {
+                crate::arena::Line::ContactRow(row) => {
+                    named.insert(row.designator.clone());
+                }
+                crate::arena::Line::NewContact { designator, .. }
+                | crate::arena::Line::ContactLost { designator } => {
+                    named.insert(designator.clone());
+                }
+                crate::arena::Line::Identified {
+                    was, designator, ..
+                } => {
+                    named.insert(was.clone());
+                    named.insert(designator.clone());
+                }
+                _ => {}
+            }
+            picture.apply(at, &line);
+        }
+        pilot.decide(&picture, &hold_doctrine(), NOW + 120);
+        notes.extend(pilot.take_notes());
+        // The search later meets the mark: the detour's sentence too.
+        pilot.held_marks.push(HeldMark {
+            at_m: (1_280.0, 900.0),
+            heading_deg: 90,
+            astern: false,
+            blocked_m: (1_280.0 + mark_ahead_m(), 1_000.0),
+        });
+        assert!(pilot.steer_round((1_280.0, 1_000.0), 90.0, -1.0) != 90.0);
+        notes.extend(pilot.take_notes());
+        for start in [
+            "The right_track is gone",
+            "Turning into the shot",
+            "Held ground marked",
+            "Steering round held ground",
+        ] {
+            assert!(
+                notes.iter().any(|n| n.starts_with(start)),
+                "{start}: {notes:?}"
+            );
+        }
+        for note in &notes {
+            for word in note
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .filter(|w| {
+                    w.len() > 1
+                        && w.chars()
+                            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                        && w.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                })
+            {
+                assert!(named.contains(word), "{note}: {word}");
+            }
+        }
+        assert!(notes.iter().any(|n| n.ends_with("facing BB.")), "{notes:?}");
+        // The threat names nothing but a bearing.
+        let value = serde_json::to_value(&pilot).expect("json");
+        assert!(value["threat"].is_array());
+        for mark in value["held_marks"].as_array().expect("marks") {
+            let keys: BTreeSet<&str> = mark
+                .as_object()
+                .expect("a mark")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                keys,
+                BTreeSet::from(["astern", "at_m", "blocked_m", "heading_deg"])
+            );
+        }
     }
 }

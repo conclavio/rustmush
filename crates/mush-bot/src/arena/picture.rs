@@ -216,6 +216,17 @@ pub struct Section {
     pub facets: BTreeMap<String, (i64, i64)>,
 }
 
+/// **A hit the own tank took on a named facet** (cut AL.2): when it was read,
+/// the plate it struck (the `through` section when the line names one, else
+/// the section hit) and the facet, exactly as the victim's line printed them.
+/// Nothing in it names who fired: the line says nothing of that.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct FacetHit {
+    pub at_ms: u64,
+    pub plate: String,
+    pub facet: String,
+}
+
 /// The own tank.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Own {
@@ -237,6 +248,9 @@ pub struct Own {
     pub disabled: bool,
     pub immobile: bool,
     pub sections: BTreeMap<String, Section>,
+    /// The newest hit taken on a named facet (cut AL.2): the pilot turns its
+    /// bow toward a side or rear hit. A new match starts without one.
+    pub last_hit: Option<FacetHit>,
     pub scope: Scope,
     /// `SPEED`'s own ceilings, from its usage line.
     pub max_ahead_kph: Option<i32>,
@@ -420,6 +434,11 @@ pub struct Tally {
     pub misses: u32,
     pub kills: u32,
     pub hits_taken: u32,
+    /// **The facet split of the hits taken** (cut AL.2), keyed `"{plate}
+    /// {facet}"` (`hull left`, `right_track right`, `turret rear`): every hit
+    /// line that names a facet counts once here as well as in `hits_taken`; a
+    /// hit with no facet counts only there. What the facet you show cost.
+    pub hits_taken_by_facet: BTreeMap<String, u32>,
     pub sections_lost: Vec<String>,
 }
 
@@ -1232,6 +1251,19 @@ impl Picture {
                 self.tally.hits_taken = self.tally.hits_taken.saturating_add(1);
                 let plate = through.as_ref().unwrap_or(section).clone();
                 if let Some(facet) = facet {
+                    // Cut AL.2: the facet split, and the newest facet hit for
+                    // the pilot's turn into the shot.
+                    let count = self
+                        .tally
+                        .hits_taken_by_facet
+                        .entry(format!("{plate} {facet}"))
+                        .or_default();
+                    *count = count.saturating_add(1);
+                    self.own.last_hit = Some(FacetHit {
+                        at_ms: now_ms,
+                        plate: plate.clone(),
+                        facet: facet.clone(),
+                    });
                     let cell = self
                         .own
                         .sections
@@ -2716,6 +2748,116 @@ mod tests {
         assert_eq!(p.own.sections["engine"].internals, Some((20, 40)));
         assert_eq!(p.own.sections["left_track"].condition, "destroyed");
         assert!(p.own.immobile);
+    }
+
+    /// **The facet split** (cut AL.2): a hit through a plate counts on that
+    /// plate's facet, not the section behind it; a hit naming no facet counts
+    /// only in `hits_taken`; a new match starts the split again.
+    #[test]
+    fn hits_taken_are_split_by_facet() {
+        let mut p = Picture::default();
+        feed(
+            &mut p,
+            &[
+                (
+                    1_000,
+                    "Hit on the hull's left facet: 200 of 250 armour left.",
+                ),
+                (
+                    1_100,
+                    "Hit on the hull's left facet: 150 of 250 armour left.",
+                ),
+                (
+                    1_200,
+                    "Hit on the engine, through the hull's rear facet: armour gone, 20 of 40 inside.",
+                ),
+                (
+                    1_300,
+                    "Hit on the right_track's right facet: 40 of 100 armour left.",
+                ),
+                (
+                    1_400,
+                    "Hit on the turret's front facet: 300 of 350 armour left.",
+                ),
+                (1_500, "Hit on the left_track, which is already destroyed."),
+            ],
+        );
+        assert_eq!(p.tally.hits_taken, 6);
+        let split: Vec<(&str, u32)> = p
+            .tally
+            .hits_taken_by_facet
+            .iter()
+            .map(|(k, v)| (k.as_str(), *v))
+            .collect();
+        assert_eq!(
+            split,
+            [
+                ("hull left", 2),
+                ("hull rear", 1),
+                ("right_track right", 1),
+                ("turret front", 1)
+            ]
+        );
+        assert!(
+            !p.tally.hits_taken_by_facet.contains_key("engine rear"),
+            "the plate, not the section behind it"
+        );
+        assert_eq!(
+            serde_json::to_value(&p.tally).expect("json")["hits_taken_by_facet"]["hull left"],
+            2
+        );
+        assert!(p.own.last_hit.is_some());
+        // A new match: the split, and the last facet hit with it, start again
+        // (a hit carried over would turn the next match's tank at power-on).
+        p.claimed(Side::Red, 1);
+        feed(
+            &mut p,
+            &[(3_000, "Match 9 is boarding. Every pilot: BOARD your pod.")],
+        );
+        assert_eq!(p.following, Some(9));
+        assert!(p.tally.hits_taken_by_facet.is_empty());
+        assert_eq!(p.tally.hits_taken, 0);
+        assert_eq!(p.own.last_hit, None);
+    }
+
+    /// **The last facet hit is kept** (cut AL.2) for the pilot's turn into the
+    /// shot: its time, plate and facet; a hit with no facet leaves it alone.
+    #[test]
+    fn the_last_facet_hit_is_kept() {
+        let mut p = Picture::default();
+        assert_eq!(p.own.last_hit, None);
+        feed(
+            &mut p,
+            &[(
+                2_000,
+                "Hit on the hull's left facet: 200 of 250 armour left.",
+            )],
+        );
+        assert_eq!(
+            p.own.last_hit,
+            Some(FacetHit {
+                at_ms: 2_000,
+                plate: "hull".into(),
+                facet: "left".into(),
+            })
+        );
+        feed(
+            &mut p,
+            &[(
+                2_500,
+                "Hit on the engine, through the hull's rear facet: armour gone, 20 of 40 inside.",
+            )],
+        );
+        let rear = p.own.last_hit.clone().expect("a facet hit");
+        assert_eq!(
+            (rear.at_ms, rear.plate.as_str(), rear.facet.as_str()),
+            (2_500, "hull", "rear")
+        );
+        feed(
+            &mut p,
+            &[(3_000, "Hit on the left_track, which is already destroyed.")],
+        );
+        assert_eq!(p.own.last_hit, Some(rear), "no facet: kept");
     }
 
     #[test]

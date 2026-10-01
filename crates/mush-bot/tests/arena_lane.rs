@@ -28,6 +28,14 @@
 //! (`fire_lines_by`, `cycling_refusals_by`) with each acceptance said (`acks`),
 //! for the fire-gap assertions ([`mush_bot::arena::report::fire_gaps`] over the
 //! lane's own sends, [`mush_bot::arena::report::shot_gaps`] over the acks).
+//!
+//! Cut AL.2 adds, off by default too: `ba_at` (where BA is: its `CONTACTS` row
+//! and the lock's `RANGE` follow it), `pos` (the position `STATUS` prints,
+//! `(60, 970)` unless moved), and [`Server::lose_track`] (`track_gone`: the
+//! victim's line, the track's `destroyed` row in `STATUS`, and every `HEADING`
+//! turned the live way at 30° a second — an assumption modelled on the bot's
+//! own transcript), with a log of each `STATUS` heading printed and each
+//! `HEADING` answered.
 use std::collections::{BTreeMap, BTreeSet};
 
 use mush_bot::arena::{
@@ -46,8 +54,9 @@ use mush_bot::arena::{
         FIRE_SLACK_UP_MS, Picture, Power, Weapon, bearing_deg,
     },
     pilot::{
-        FRESH_PLOT_MS, FRESH_READ_MS, HELD_TURN_DEG, STALL_MS, WITHDRAW_MS, clamp_arena,
-        hull_failing,
+        FRESH_PLOT_MS, FRESH_READ_MS, HEADING_STEP_DEG, HELD_FOR_MS, HELD_MARK_AHEAD_M,
+        HELD_MARK_HALF_WIDTH_M, HELD_MARK_NEAR_M, HELD_TURN_DEG, HOLD_BOW_DEG, ONE_TRACK_COMMIT_MS,
+        ONE_TRACK_DEADBAND_DEG, STALL_MS, WITHDRAW_MS, clamp_arena, hull_failing,
     },
     report::{self, GapStats},
     settings::Settings,
@@ -193,6 +202,32 @@ struct Server {
     /// How long a `FIRE`'s answer (its ack or its refusal) takes (cut AL.1):
     /// 3 ms unless a test slows it past a tick, as a remote server may.
     fire_answer_ms: u64,
+    /// **Where BA is** (cut AL.2): `(bearing, range)` from the tank. Set, every
+    /// `CONTACTS` reply prints BA's row from it — the range rounded to the
+    /// scope's 50 m, `rel` the bearing less the heading the tank has now — and
+    /// the lock's `RANGE` answers the range whole. Unset, the rows a test
+    /// wrote and `440 m`.
+    ba_at: Option<(u32, u32)>,
+    /// The position `STATUS` prints, metres east and north (cut AL.2):
+    /// `(60, 970)` unless a test moves it.
+    pos: (i32, i32),
+    /// **One track gone** (cut AL.2; [`Server::lose_track`]): `STATUS` prints
+    /// its `destroyed` row, and every `HEADING` is turned the live way (the
+    /// long way round for a heading on the dead side) at 30° a second, the
+    /// heading `STATUS` prints moving with it. **An assumption about the
+    /// server, modelled on the bot's own transcript** (a right-track tank
+    /// ordered `HEADING 150` from about 352° went 307° → 224° → 164°
+    /// counter-clockwise, about 30° a second), not a copy of it. Unset, a
+    /// `HEADING` turns the tank at once, as before.
+    track_gone: Option<&'static str>,
+    /// The turn in progress with one track gone: from, to, when it began.
+    turning: Option<(u32, u32, u64)>,
+    /// Each `STATUS` answered (cut AL.2): when its reply is due, and the
+    /// heading it prints.
+    status_log: Vec<(u64, u32)>,
+    /// Each `HEADING` answered (cut AL.2): when, the heading the tank had,
+    /// and the heading ordered.
+    heading_log: Vec<(u64, u32, u32)>,
 }
 
 impl Server {
@@ -229,7 +264,51 @@ impl Server {
             lost: BTreeSet::new(),
             no_chance: BTreeSet::new(),
             fire_answer_ms: 3,
+            ba_at: None,
+            pos: (60, 970),
+            track_gone: None,
+            turning: None,
+            status_log: Vec::new(),
+            heading_log: Vec::new(),
         }
+    }
+
+    /// **A track goes** (cut AL.2): the victim's line, and the knob set.
+    fn lose_track(&mut self, track: &'static str) {
+        self.say(
+            0,
+            &format!("The {track} is destroyed: the tank is slowed; it will not turn that way."),
+        );
+        self.turning = Some((self.heading, self.heading, self.now));
+        self.track_gone = Some(track);
+    }
+
+    /// The live turn's compass sign with one track gone: `+1` clockwise when
+    /// the left track is gone, `-1` counter-clockwise when the right is.
+    fn live_way(&self) -> Option<i64> {
+        self.track_gone
+            .map(|track| if track == "left_track" { 1 } else { -1 })
+    }
+
+    /// The heading the tank has now: the last ordered, or with one track gone
+    /// as far round the live way as 30° a second has turned it.
+    fn heading_now(&self) -> u32 {
+        let (Some(way), Some((from, to, since))) = (self.live_way(), self.turning) else {
+            return self.heading;
+        };
+        let whole_turn = (i64::from(to) - i64::from(from)) * way;
+        let whole_turn = whole_turn.rem_euclid(360);
+        let turned = (i64::try_from(self.now.saturating_sub(since)).unwrap_or(i64::MAX) * 30
+            / 1_000)
+            .min(whole_turn);
+        (i64::from(from) + way * turned).rem_euclid(360) as u32
+    }
+
+    /// BA's row from [`Server::ba_at`], as the scope prints it now.
+    fn ba_row(&self, bearing: u32, range: u32) -> String {
+        let rel = (i64::from(bearing) - i64::from(self.heading_now())).rem_euclid(360);
+        let shown = (range + 25) / 50 * 50;
+        format!("BA  blue  bearing {bearing:03}° (rel {rel:03}°)  far  {shown} m  1 s")
     }
 
     /// **The turret goes** (cut AL.1): the victim's line, and both guns with
@@ -417,10 +496,21 @@ impl Server {
             }
             _ if self.outside => self.say(3, "You are not at the station of a deployed unit."),
             "CONTACTS" => {
-                if self.contacts.is_empty() {
+                // BA's row from where the knob puts it (cut AL.2).
+                let rows: Vec<String> = self
+                    .contacts
+                    .iter()
+                    .map(|row| match self.ba_at {
+                        Some((bearing, range)) if row.starts_with("BA ") => {
+                            self.ba_row(bearing, range)
+                        }
+                        _ => row.clone(),
+                    })
+                    .collect();
+                if rows.is_empty() {
                     self.say(3, "No contacts.");
                 } else {
-                    let rows = self.contacts.join("\n");
+                    let rows = rows.join("\n");
                     self.say(3, &rows);
                 }
             }
@@ -431,13 +521,19 @@ impl Server {
                     Some(_) => (0, ", HELD"),
                     None => (self.speed, ""),
                 };
-                let heading = self.heading;
+                let heading = self.heading_now();
+                self.status_log.push((self.now + 3, heading));
                 let (left, max) = self.hull_internals;
                 let condition = if left < max { "damaged" } else { "intact" };
+                let (x, y) = self.pos;
+                let track = match self.track_gone {
+                    Some(track) => format!("\n  {track}  destroyed  internals 0/24"),
+                    None => String::new(),
+                };
                 self.say(
                     3,
                     &format!(
-                        "Callsign RA.\nRed Tank 1: power online, {speed} kph, heading {heading:03}°{held}\n  at 60 m east, 970 m north; scope holds a hostile\n  nearest spot: The Ford (A), 400 m at 090°\n  hull  {condition}  internals {left}/{max}\n    front 400/400  left 250/250  right 250/250  rear 150/150\n  turret  intact\n    front 350/350  left 220/220  right 220/220  rear 140/140"
+                        "Callsign RA.\nRed Tank 1: power online, {speed} kph, heading {heading:03}°{held}\n  at {x} m east, {y} m north; scope holds a hostile\n  nearest spot: The Ford (A), 400 m at 090°\n  hull  {condition}  internals {left}/{max}\n    front 400/400  left 250/250  right 250/250  rear 150/150\n  turret  intact\n    front 350/350  left 220/220  right 220/220  rear 140/140{track}"
                     ),
                 );
             }
@@ -459,13 +555,25 @@ impl Server {
                 }
             }
             "RANGE" => match self.locked.clone() {
-                Some(lock) => self.say(3, &format!("Range to {lock}: 440 m.")),
+                Some(lock) => {
+                    let range = match self.ba_at {
+                        Some((_, range)) if lock == "BA" => range,
+                        _ => 440,
+                    };
+                    self.say(3, &format!("Range to {lock}: {range} m."));
+                }
                 None => self.say(3, "No lock: LOCK a contact first, or name one."),
             },
             "BEARING B" => self.say(3, "Bearing to The Crossroads (B): 090° (rel 000°)."),
             _ => {
                 if let Some(deg) = line.strip_prefix("HEADING ") {
+                    let was = self.heading_now();
                     self.heading = deg.parse().unwrap_or(0);
+                    self.heading_log.push((self.now, was, self.heading));
+                    // One track gone: the turn starts from where the tank is.
+                    if self.track_gone.is_some() {
+                        self.turning = Some((was, self.heading, self.now));
+                    }
                     // Far enough from where it stopped, the turn frees it;
                     // anything nearer leaves it held, silently.
                     if let (Some(from), Some(knob)) = (self.held_from, &self.held)
@@ -581,6 +689,8 @@ impl Server {
         self.rounds.clear();
         self.lost.clear();
         self.held_from = None;
+        self.track_gone = None;
+        self.turning = None;
     }
 }
 
@@ -1275,17 +1385,36 @@ fn a_lock_broken_and_not_held_again_for_three_seconds_asks_at_once() {
     assert_eq!(ask["lock"], Value::Null);
 }
 
+/// The heading last ordered at or before `at`, from any time (the pilot
+/// re-orders only a change).
+fn last_heading(run: &Run, at: u64) -> Option<u32> {
+    heading_sends(run, 0)
+        .into_iter()
+        .rev()
+        .find(|(sent, _)| *sent <= at)
+        .map(|(_, deg)| deg)
+}
+
+/// Every `SPEED` typed in `from..=to`: when, and which.
+fn speed_sends(run: &Run, from: u64, to: u64) -> Vec<(u64, i32)> {
+    run.sent
+        .iter()
+        .filter(|s| s.lane_ms >= from && s.lane_ms <= to)
+        .filter_map(|s| Some((s.lane_ms, s.line.strip_prefix("SPEED ")?.parse().ok()?)))
+        .collect()
+}
+
 #[test]
-fn a_withdraw_doctrine_turns_the_ordered_heading_about() {
+fn a_withdraw_doctrine_backs_away_bow_on() {
     let mut run = to_the_fight(slow());
     sight_a_hostile(&mut run);
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
     // A failing hull: a withdraw on a sound one is flown as a hunt or an orbit
     // (cut AK.2; that has its own test). So the pilot falls back on its own
-    // first, heading away; its withdrawal is let run out, so a heading away
-    // after it is the doctrine's alone.
+    // first, backing away; its withdrawal is let run out, so a reverse after
+    // it is the doctrine's alone.
     fall_back_and_let_it_run_out(&mut run);
-    // Orbiting BA at its band: a tangent, east or west.
+    // Holding BA at its band, bow on (cut AL.2: it used to circle it).
     run.until(2_000, |_| false);
     let heading = |run: &Run, from: u64| -> Vec<u32> {
         run.sent
@@ -1295,23 +1424,25 @@ fn a_withdraw_doctrine_turns_the_ordered_heading_about() {
             .filter_map(|deg| deg.parse().ok())
             .collect()
     };
-    let orbit = heading(&run, 0);
+    let held = heading(&run, 0);
     assert!(
-        orbit.last().is_some_and(|deg| !(150..=210).contains(deg)),
-        "orbiting, not heading away: {orbit:?}"
+        held.last()
+            .is_some_and(|deg| angle_between(*deg, 0) <= HOLD_BOW_DEG),
+        "holding BA (due north) bow on, not heading away: {held:?}"
     );
     run.ask(12_000).expect("an ask");
     let applied = run.now;
     run.reply(answer("withdraw"));
     assert_eq!(run.lane.doctrine().stance, Stance::Withdraw);
     run.until(2_000, |_| false);
-    // Straight away from BA, due north of the tank: south, give or take the
-    // few degrees the tank's own dead-reckoned drift since its STATUS makes.
-    let away = heading(&run, applied);
-    assert!(
-        away.first().is_some_and(|deg| (170..=190).contains(deg)),
-        "{away:?}"
-    );
+    // Backing away from BA, due north of the tank, with the bow on it (cut
+    // AL.2: it used to head away, south): the heading last ordered through
+    // the withdraw (the hold already faced BA, so it may not go again) within
+    // `HOLD_BOW_DEG` of 000, and a reverse within two seconds.
+    let bow = last_heading(&run, run.now).expect("a heading ordered");
+    assert!(angle_between(bow, 0) <= HOLD_BOW_DEG, "{bow}");
+    let reverse = speed_sends(&run, applied, applied + 2_000);
+    assert!(reverse.iter().any(|(_, kph)| *kph < 0), "{reverse:?}");
 }
 
 #[test]
@@ -1431,7 +1562,8 @@ fn the_match_end_stops_the_commander_and_the_next_match_starts_it_again() {
     // ...and match 2 starts on the pilot's own defaults: no target carried
     // over, and `t_s` counting from this match's power online, not match 1's.
     let view = run.ask(200).expect("asked again at its power online");
-    assert_eq!(view["doctrine"]["stance"], "orbit");
+    // The pilot's default is the hold (cut AL.2; it was the orbit).
+    assert_eq!(view["doctrine"]["stance"], "hold");
     assert_eq!(view["doctrine"]["target"], Value::Null);
     assert_eq!(
         run.lane.doctrine(),
@@ -1442,7 +1574,9 @@ fn the_match_end_stops_the_commander_and_the_next_match_starts_it_again() {
     );
     assert_eq!(view["t_s"], 0, "{view}");
     assert!(run.lane.picture().power_ms.expect("power online read") > first_power);
+    // A model's `stand_off` still reads, as the hold (cut AL.2).
     run.reply(answer("stand_off"));
+    assert_eq!(run.lane.doctrine().stance, Stance::Hold);
     run.server.end(run.now, "red");
     assert!(run.until(5_000, |run| run.lane.result().is_some()));
     let report = run.lane.report();
@@ -1877,16 +2011,23 @@ fn a_lost_contact_is_hunted_in_the_lane() {
         .expect("whole seconds");
     assert!(age_s <= 10, "the plot is {age_s} s old");
     assert_eq!(view["pilot"]["fallen_back"], json!(false));
-    // Within a second, a `HEADING` toward the last plot.
+    // Within a second, the heading toward the last plot (cut AL.2: the hold
+    // already faced BA, due north, where the plot is, so the heading last
+    // ordered, from any time, is it) and full ahead.
     run.advance_to(lost_at + 1_000);
-    let toward = heading_sends(&run, lost_at + 1)
-        .into_iter()
-        .filter(|(at, _)| *at <= lost_at + 1_000)
-        .any(|(at, deg)| {
-            let own = run.lane.picture().own_pos_at(at).expect("a position");
-            angle_between(deg, whole(bearing_deg(own, plot))) <= 10
-        });
-    assert!(toward, "{:?}", heading_sends(&run, lost_at));
+    let toward = last_heading(&run, lost_at + 1_000).expect("a heading ordered");
+    let own = run
+        .lane
+        .picture()
+        .own_pos_at(lost_at + 1_000)
+        .expect("a position");
+    assert!(
+        angle_between(toward, whole(bearing_deg(own, plot))) <= 10,
+        "{toward}: {:?}",
+        heading_sends(&run, lost_at)
+    );
+    let ahead = speed_sends(&run, lost_at, lost_at + 1_000);
+    assert!(ahead.iter().any(|(_, kph)| *kph == 54), "{ahead:?}");
     // Sighted again (an unknown first, which does not end the hunt).
     sight(&mut run, "X2");
     assert!(
@@ -1900,15 +2041,20 @@ fn a_lost_contact_is_hunted_in_the_lane() {
             .any(|s| s == "The hunt for BA ends: BA is in sight.")
     }));
     assert_eq!(run.lane.picture_json()["pilot"]["hunt"], Value::Null);
-    // Orbiting BA again: the heading it settles on within two seconds.
+    // Holding BA again (cut AL.2: it used to orbit it): within two seconds
+    // the heading last ordered, from any time, is on BA (due north), and the
+    // tank is stopped at the band.
     let ended = run.now;
     run.until(2_000, |_| false);
-    let (_, orbit) = *heading_sends(&run, ended)
-        .last()
-        .expect("a heading after the hunt");
+    let bow = last_heading(&run, ended + 2_000).expect("a heading ordered");
     assert!(
-        angle_between(orbit, 0) >= 25,
-        "an orbit round BA (due north), not a drive at it: {orbit}"
+        angle_between(bow, 0) <= HOLD_BOW_DEG,
+        "a hold on BA (due north): {bow}"
+    );
+    assert_eq!(
+        run.lane.pilot().last_speed_order,
+        Some(0),
+        "stopped at the band"
     );
     // Every designator a hunt sentence names, the stream named.
     let named = ["X1", "X2", "BA"];
@@ -1988,11 +2134,13 @@ fn a_withdraw_on_a_sound_hull_is_flown_as_a_hunt() {
 }
 
 /// **A kept withdraw holds, then lapses** (cut AK.2), built so that only the
-/// doctrine can turn the heading: the pilot's own fall back has run out and it
-/// orbits BA when the commander answers `withdraw` for longer than the pilot's
-/// own withdrawal. The tank heads away for the hold, counted from the first
-/// withdraw however often it is answered again; then the pilot's default
-/// orbit again; and a withdraw in the rest after it is flown as an orbit.
+/// doctrine can reverse the tank: the pilot's own fall back has run out and it
+/// holds BA bow on (cut AL.2: it used to orbit) when the commander answers
+/// `withdraw` for longer than the pilot's own withdrawal. The tank backs away
+/// bow on for the hold, counted from the first withdraw however often it is
+/// answered again; then the pilot's default hold again; and a withdraw in the
+/// rest after it is flown as an orbit (the overruled withdraw's stance until
+/// AL.3).
 #[test]
 fn a_withdraw_on_a_failing_hull_holds_then_lapses() {
     const HOLD_S: u32 = 20;
@@ -2007,10 +2155,11 @@ fn a_withdraw_on_a_failing_hull_holds_then_lapses() {
     fall_back_and_let_it_run_out(&mut run);
     run.until(2_000, |_| false);
     // The heading last ordered (the pilot re-orders only a change).
-    let orbit = headings_between(&run, 0, run.now + 1);
+    let held = headings_between(&run, 0, run.now + 1);
     assert!(
-        orbit.last().is_some_and(|deg| !(150..=210).contains(deg)),
-        "orbiting after the pilot's own withdrawal, not heading away: {orbit:?}"
+        held.last()
+            .is_some_and(|deg| angle_between(*deg, 0) <= HOLD_BOW_DEG),
+        "holding BA bow on after the pilot's own withdrawal, not heading away: {held:?}"
     );
 
     // The first withdraw: kept, for its twenty seconds.
@@ -2032,12 +2181,22 @@ fn a_withdraw_on_a_failing_hull_holds_then_lapses() {
     assert_eq!(run.lane.doctrine().stance, Stance::Withdraw);
     assert_eq!(run.lane.doctrine().hold_s, Some(HOLD_MAX_S));
     assert_eq!(run.records_of("arena-doctrine").len(), 2);
-    // Straight away from BA (due north) through the hold.
+    // Backing away from BA (due north) with the bow on it through the hold
+    // (cut AL.2: it used to head away, south): every heading sent through it
+    // (there may be none: the hold already faced BA) and the heading last
+    // ordered within `HOLD_BOW_DEG` of 000, and a reverse sent in it.
     run.advance_to(first + hold_ms - TICK_MS);
     assert_eq!(run.lane.doctrine().stance, Stance::Withdraw, "still held");
     let away = headings_between(&run, first, run.now + 1);
-    assert!(!away.is_empty());
-    assert!(away.iter().all(|deg| (170..=190).contains(deg)), "{away:?}");
+    assert!(
+        away.iter()
+            .all(|deg| angle_between(*deg, 0) <= HOLD_BOW_DEG),
+        "{away:?}"
+    );
+    let bow = last_heading(&run, run.now).expect("a heading ordered");
+    assert!(angle_between(bow, 0) <= HOLD_BOW_DEG, "{bow}");
+    let reverse = speed_sends(&run, first, run.now);
+    assert!(reverse.iter().any(|(_, kph)| *kph < 0), "{reverse:?}");
     assert!(run.records_of("doctrine-lapsed").is_empty());
     // Twenty seconds after the first, not the second: the pilot's own again.
     run.advance_to(first + hold_ms + TICK_MS);
@@ -2051,13 +2210,23 @@ fn a_withdraw_on_a_failing_hull_holds_then_lapses() {
     assert_eq!(lapsed[0]["why"], "the hold ran out");
     assert_eq!(lapsed[0]["was"]["stance"], "withdraw");
     assert_eq!(lapsed[0]["was"]["hold_s"], HOLD_MAX_S);
-    // Orbiting BA again.
+    // Holding BA again (cut AL.2: the pilot's default is the hold, not the
+    // orbit, and the bow never left BA, so no new heading need go): the
+    // heading last ordered, from any time, on BA, and the tank stopped at
+    // the band.
     let lapse = run.now;
     run.until(3_000, |_| false);
-    let again = headings_between(&run, first + hold_ms - TICK_MS, run.now + 1);
+    let again = last_heading(&run, run.now).expect("a heading ordered");
     assert!(
-        again.last().is_some_and(|deg| !(150..=210).contains(deg)),
-        "orbiting again after the lapse: {again:?}"
+        angle_between(again, 0) <= HOLD_BOW_DEG,
+        "holding again after the lapse: {again}"
+    );
+    assert_eq!(
+        speed_sends(&run, lapse, run.now)
+            .last()
+            .map(|(_, kph)| *kph),
+        Some(0),
+        "stopped at the band after the lapse"
     );
     // A third withdraw inside the rest: the hold is spent, and BA is held, so
     // it is flown as an orbit.
@@ -2186,7 +2355,7 @@ fn a_withdraw_is_cleared_when_the_commander_stops() {
     run.reply(answer("stand_off"));
     run.lane.commander_off(OFF_BUDGET);
     run.step();
-    assert_eq!(run.lane.doctrine().stance, Stance::StandOff);
+    assert_eq!(run.lane.doctrine().stance, Stance::Hold);
     assert!(run.records_of("doctrine-lapsed").is_empty());
 }
 
@@ -3014,4 +3183,296 @@ fn a_lane_that_has_read_no_gun_keeps_the_unlearned_cadence() {
     for pair in polls.windows(2) {
         assert!(pair[1] - pair[0] < WEAPONS_LEARNED_MS, "{polls:?}");
     }
+}
+
+// -- cut AL.2: nose-on ----------------------------------------------------------
+
+/// The signed turn from one whole heading to another, in `-179..=180`:
+/// positive is clockwise.
+fn signed_turn(from: u32, to: u32) -> i64 {
+    let d = (i64::from(to) - i64::from(from)).rem_euclid(360);
+    if d > 180 { d - 360 } else { d }
+}
+
+/// **A hold faces the hostile and changes range along the line of fire** (cut
+/// AL.2): BA due north at 440 m, then at the machines' 420 m (its row reading
+/// `400 m`), then 700 m, then 250 m. Every heading ordered is on BA; the tank
+/// is stopped, never reversed at 420, then closes full ahead, then opens in
+/// reverse.
+#[test]
+fn a_hold_faces_the_hostile_and_changes_range_along_the_line_of_fire() {
+    let mut run = to_the_fight(Settings::default());
+    run.server.ba_at = Some((0, 440));
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    let start = run.now;
+    run.until(5_000, |_| false);
+    assert_eq!(
+        run.lane.pilot().last_speed_order,
+        Some(0),
+        "stopped at 440 m"
+    );
+    // 420 m, read `400 m`: never a reverse.
+    run.server.ba_at = Some((0, 420));
+    let at_420 = run.now;
+    run.until(10_000, |_| false);
+    assert!(
+        run.lane
+            .picture()
+            .contacts
+            .get("BA")
+            .is_some_and(|ba| ba.range_m == Some(400)),
+        "the row reads 400 m"
+    );
+    let speeds = speed_sends(&run, at_420, run.now);
+    assert!(speeds.iter().all(|(_, kph)| *kph >= 0), "{speeds:?}");
+    assert_eq!(
+        run.lane.pilot().last_speed_order,
+        Some(0),
+        "stopped at 420 m"
+    );
+    // 700 m: closing, full ahead.
+    run.server.ba_at = Some((0, 700));
+    let far = run.now;
+    assert!(
+        run.until(5_000, |run| speed_sends(run, far, run.now)
+            .iter()
+            .any(|(_, kph)| *kph == 54)),
+        "{:?}",
+        speed_sends(&run, far, run.now)
+    );
+    // 250 m: opening, in reverse.
+    run.server.ba_at = Some((0, 250));
+    let near = run.now;
+    assert!(
+        run.until(5_000, |run| speed_sends(run, near, run.now)
+            .iter()
+            .any(|(_, kph)| *kph < 0)),
+        "{:?}",
+        speed_sends(&run, near, run.now)
+    );
+    run.until(2_000, |_| false);
+    // Bow on throughout.
+    let headings = heading_sends(&run, start);
+    assert!(
+        headings
+            .iter()
+            .all(|(_, deg)| angle_between(*deg, 0) <= HOLD_BOW_DEG),
+        "{headings:?}"
+    );
+    let bow = last_heading(&run, run.now).expect("a heading ordered");
+    assert!(angle_between(bow, 0) <= HOLD_BOW_DEG, "{bow}");
+    assert_eq!(run.lane.picture_json()["pilot"]["hold"], "astern");
+}
+
+/// **A side hit turns the bow** (cut AL.2): hunting a lost hostile with
+/// nothing held, `Hit on the hull's left facet: …` turns the tank within a
+/// tick to 90° left of its bow, stopped, and says so.
+#[test]
+fn a_side_hit_turns_the_bow() {
+    let mut run = to_the_fight(Settings::default());
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    run.until(2_000, |_| false);
+    run.server.contacts.clear();
+    run.server.locked = None;
+    run.server.now = run.now;
+    run.server
+        .say(0, "Lock on BA broken: contact gone.\nContact BA lost.");
+    assert!(run.until(2_000, |run| run.lane.pilot().hunt.is_some()));
+    run.until(1_000, |_| false);
+    assert!(run.lane.pilot().hunt.is_some(), "still hunting");
+    assert!(run.lane.picture().contacts.is_empty(), "nothing held");
+    // A moment with the limiter's window all but empty (at most one line in
+    // the last second), so the turn and the stop both have a slot at once.
+    assert!(run.until(10_000, |run| {
+        run.now.is_multiple_of(TICK_MS)
+            && run
+                .sent
+                .iter()
+                .filter(|s| s.lane_ms + LIMIT_WINDOW_MS > run.now + TICK_MS)
+                .count()
+                <= 1
+    }));
+    // The bow: the pilot's reference heading, which is the scripted tank's.
+    let bow = run.lane.pilot().reference_heading(run.lane.picture());
+    assert_eq!(bow, run.server.heading_now());
+    let left = (bow + 270) % 360;
+    run.server.now = run.now;
+    run.server
+        .say(0, "Hit on the hull's left facet: 200 of 250 armour left.");
+    let hit = run.now;
+    // Read at the next step, decided and typed at the tick after it.
+    run.until(STEP_MS + TICK_MS, |_| false);
+    let turned = heading_sends(&run, hit + 1);
+    assert!(
+        turned
+            .first()
+            .is_some_and(|(_, deg)| angle_between(*deg, left) <= 1),
+        "{turned:?} for {left}"
+    );
+    let speeds = speed_sends(&run, hit + 1, run.now);
+    assert_eq!(speeds.first().map(|(_, kph)| *kph), Some(0), "{speeds:?}");
+    let sentence =
+        format!("Turning into the shot: hit on the hull's left facet; facing {left:03}°.");
+    assert!(run.said.contains(&sentence), "{sentence}: {:?}", run.said);
+    let view = run.lane.picture_json();
+    let threat = &view["pilot"]["threat"];
+    assert_eq!(threat["bearing"], left, "{threat}");
+    assert!(threat["until_s"].as_u64().is_some_and(|s| s >= 1));
+    assert_eq!(view["tally"]["hits_taken_by_facet"]["hull left"], 1);
+}
+
+/// **A one-track tank never circles for a small turn** (cut AL.2): with the
+/// right track gone and BA's bearing wobbling 10° either side of the bow for a
+/// minute, no heading is ordered that turns the tank clockwise (its dead side)
+/// by at most `ONE_TRACK_DEADBAND_DEG`, and the tank never goes round; a 90°
+/// clockwise need is ordered once and not again inside `ONE_TRACK_COMMIT_MS`
+/// unless `STATUS` reads it.
+#[test]
+fn a_one_track_tank_never_circles_for_a_small_turn() {
+    let mut run = to_the_fight(Settings::default());
+    run.server.ba_at = Some((0, 450));
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    run.until(3_000, |_| false);
+    assert_eq!(run.server.heading_now(), 0, "facing BA");
+    run.server.now = run.now;
+    run.server.lose_track("right_track");
+    run.until(3_000, |_| false);
+    assert_eq!(
+        run.lane.picture_json()["pilot"]["live_turn"],
+        "ccw",
+        "{}",
+        run.lane.picture_json()["pilot"]
+    );
+    let (from_heading, from_status) = (run.server.heading_log.len(), run.server.status_log.len());
+    for k in 0..30 {
+        run.server.ba_at = Some((if k % 2 == 0 { 10 } else { 350 }, 450));
+        run.until(2_000, |_| false);
+    }
+    for (at, was, to) in &run.server.heading_log[from_heading..] {
+        let s = signed_turn(*was, *to);
+        assert!(
+            !(s > 0 && s <= i64::from(ONE_TRACK_DEADBAND_DEG)),
+            "a small clockwise turn ordered at {at}: {was} to {to}"
+        );
+    }
+    let read = &run.server.status_log[from_status..];
+    assert!(
+        read.iter().all(|(_, h)| angle_between(*h, 0) <= 30),
+        "the tank went round: {read:?}"
+    );
+    // A 90° clockwise need: ordered once, then nothing until it is read.
+    run.server.ba_at = Some((90, 450));
+    let need = run.now;
+    assert!(run.until(3_000, |run| !heading_sends(run, need).is_empty()));
+    // Two seconds into the long way round (the scripted tank near 300°), BA
+    // moves to 110°: from where `STATUS` reads the tank that is another
+    // clockwise turn well past the deadband, which only the commit holds back
+    // (fixes after review: with BA still, the lane's own dedupe held every
+    // re-send, commit or none).
+    run.until(2_000, |_| false);
+    assert!(
+        signed_turn(run.server.heading_now(), 110) > i64::from(ONE_TRACK_DEADBAND_DEG),
+        "mid-turn at {}",
+        run.server.heading_now()
+    );
+    run.server.ba_at = Some((110, 450));
+    run.until(ONE_TRACK_COMMIT_MS + 1_000, |_| false);
+    let sends = heading_sends(&run, need);
+    let (ordered, deg) = *sends.first().expect("the turn ordered");
+    assert!(angle_between(deg, 90) <= 2, "{sends:?}");
+    for (at, again) in &sends[1..] {
+        if *at >= ordered + ONE_TRACK_COMMIT_MS {
+            break;
+        }
+        let read_by_then = run.server.status_log.iter().any(|(due, h)| {
+            *due > ordered && *due < *at && angle_between(*h, deg) <= HEADING_STEP_DEG
+        });
+        assert!(
+            read_by_then,
+            "HEADING {again} at {at}, committed to {deg} at {ordered}: {sends:?}"
+        );
+    }
+    // Clockwise from where the tank was, so the server turned it the long
+    // way round, counter-clockwise, as the live track does.
+    let (_, was, to) = *run
+        .server
+        .heading_log
+        .iter()
+        .find(|(at, _, to)| *at == ordered && *to == deg)
+        .expect("answered");
+    assert!(signed_turn(was, to) > 0, "a clockwise need: {was} to {to}");
+    let sentence = "The right_track is gone: turning counter-clockwise only.";
+    assert_eq!(
+        run.said.iter().filter(|s| *s == sentence).count(),
+        1,
+        "{:?}",
+        run.said
+    );
+}
+
+/// **The search does not drive back into held ground** (cut AL.2; the bot's
+/// own run-2 loop): the held knob stops the searching tank; freed, and moved
+/// west on the same line until the marked point is 10 m inside
+/// `HELD_MARK_NEAR_M` (90 m at the built constants), every search `HEADING`
+/// for the next 30 s misses the marked point by at least
+/// `HELD_MARK_HALF_WIDTH_M`.
+#[test]
+fn the_search_does_not_drive_back_into_held_ground() {
+    let mut run = to_the_fight_with(Settings::default(), |server| {
+        server.held = Some(HeldKnob { free_off_deg: 30 });
+        server.pos = (1_000, 970);
+    });
+    assert!(run.until(10_000, |run| run.lines().contains(&"SPEED 54")));
+    run.until(2_500, |_| false);
+    assert_eq!(run.server.heading, 90, "searching on 090");
+    // Held just after a `STATUS` is read, so the pilot's own position is the
+    // scripted one, not dead-reckoned on past it.
+    let statuses = run.sends_of("STATUS", 0).len();
+    assert!(run.until(3_000, |run| run.sends_of("STATUS", 0).len() > statuses));
+    run.until(2 * STEP_MS, |_| false);
+    run.server.now = run.now;
+    run.server.hold_tank();
+    assert!(run.until(1_000, |run| !run.lane.pilot().held_marks.is_empty()));
+    let blocked = run.lane.pilot().held_marks[0].blocked_m;
+    assert!(
+        (blocked.0 - (1_000.0 + HELD_MARK_AHEAD_M)).abs() < 2.0 && (blocked.1 - 970.0).abs() < 1.0,
+        "{blocked:?}"
+    );
+    assert_eq!(run.lane.picture_json()["pilot"]["marks"], 1);
+    assert!(
+        run.until(5_000, |run| run.server.held_from.is_none()),
+        "freed"
+    );
+    run.until(HELD_FOR_MS + 1_000, |_| false);
+    // West on the same line, the marked point 10 m inside the mark's reach
+    // (90 m at the built constants, wherever a tuning round puts the reach):
+    // the next `STATUS` reads it.
+    let west = (HELD_MARK_NEAR_M - HELD_MARK_AHEAD_M - 10.0).round() as i32;
+    run.server.pos = (1_000 - west, 970);
+    let o = (f64::from(1_000 - west), 970.0);
+    assert!(run.until(3_000, |run| run.lane.picture().own.pos_m == Some(o)));
+    let from = run.now;
+    run.until(30_000, |_| false);
+    let sends = heading_sends(&run, from);
+    assert!(!sends.is_empty(), "the search's heading");
+    for (at, deg) in &sends {
+        let r = f64::from(*deg).to_radians();
+        let (dx, dy) = (blocked.0 - o.0, blocked.1 - o.1);
+        let ahead = dx * r.sin() + dy * r.cos();
+        let aside = (dx * r.cos() - dy * r.sin()).abs();
+        assert!(
+            ahead <= 0.0 || aside >= HELD_MARK_HALF_WIDTH_M,
+            "HEADING {deg} at {at} passes {aside:.0} m from the held ground"
+        );
+    }
+    assert!(
+        run.said
+            .iter()
+            .any(|s| s.starts_with("Steering round held ground: ")),
+        "{:?}",
+        run.said
+    );
 }

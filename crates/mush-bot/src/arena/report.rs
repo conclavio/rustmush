@@ -122,6 +122,12 @@ pub struct MatchResult {
     pub misses: u32,
     pub kills: u32,
     pub hits_taken: u32,
+    /// **The facet split of `hits_taken`** (cut AL.2): hits on a named facet,
+    /// keyed `"{plate} {facet}"` (`hull left`, `right_track right`), from the
+    /// picture's tally. Always written; a report written before it reads as
+    /// none.
+    #[serde(default)]
+    pub hits_taken_by_facet: BTreeMap<String, u32>,
     /// The own sections the panel said were destroyed.
     pub sections_lost: Vec<String>,
     /// The own tank was destroyed.
@@ -186,6 +192,7 @@ impl MatchResult {
             misses: tally.misses,
             kills: tally.kills,
             hits_taken: tally.hits_taken,
+            hits_taken_by_facet: tally.hits_taken_by_facet.clone(),
             sections_lost: tally.sections_lost.clone(),
             destroyed: picture.own.destroyed,
             reclaims,
@@ -326,6 +333,7 @@ mod tests {
             misses: 2,
             kills: 1,
             hits_taken: 3,
+            hits_taken_by_facet: BTreeMap::new(),
             sections_lost: vec![],
             destroyed: false,
             reclaims: 0,
@@ -496,6 +504,53 @@ mod tests {
         assert_eq!(gaps["cannon"].p50_ms, 6_250);
         // The lead's count over the same lines sees no `FIRE` line at all.
         assert!(fire_gaps(lines.iter().map(|(at, line)| (*at, *line))).is_empty());
+    }
+
+    /// **The facet split is always written and reads back** (cut AL.2): an
+    /// empty split is written as `{}`, a filled one from the picture's tally
+    /// round-trips, and a report written before the field reads as none.
+    #[test]
+    fn hits_taken_by_facet_is_always_written_and_read_back() {
+        let value = serde_json::to_value(flown(1, "red")).expect("json");
+        assert_eq!(value["hits_taken_by_facet"], serde_json::json!({}));
+        let mut picture = Picture::default();
+        picture.tally.hits_taken = 3;
+        picture
+            .tally
+            .hits_taken_by_facet
+            .insert("hull left".into(), 2);
+        picture
+            .tally
+            .hits_taken_by_facet
+            .insert("right_track right".into(), 1);
+        let result = MatchResult::from_picture(
+            &picture,
+            Side::Red,
+            2,
+            "RA".into(),
+            true,
+            "red",
+            0,
+            0,
+            60_000,
+        );
+        assert_eq!(
+            result.hits_taken_by_facet,
+            picture.tally.hits_taken_by_facet
+        );
+        let written = serde_json::to_value(&result).expect("json");
+        assert_eq!(
+            written["hits_taken_by_facet"],
+            serde_json::json!({"hull left": 2, "right_track right": 1})
+        );
+        let read: MatchResult = serde_json::from_value(written).expect("reads");
+        assert_eq!(read, result);
+        let mut old = value;
+        old.as_object_mut()
+            .expect("an object")
+            .remove("hits_taken_by_facet");
+        let read: MatchResult = serde_json::from_value(old).expect("reads");
+        assert!(read.hits_taken_by_facet.is_empty());
     }
 
     #[test]

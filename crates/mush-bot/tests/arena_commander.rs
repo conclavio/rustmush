@@ -187,7 +187,7 @@ async fn a_commander_call_carries_its_routing_and_is_filed_under_arena_commander
     // The answer is a doctrine.
     let doctrine = Doctrine::parse(&reply.content).expect("a doctrine");
     assert_eq!(doctrine.target.as_deref(), Some("BA"));
-    assert_eq!(doctrine.stance, Stance::StandOff);
+    assert_eq!(doctrine.stance, Stance::Hold);
     // The stub still answers 500: past the sight, clamped to it (cut AK.2).
     assert_eq!(doctrine.band_m, 450);
     assert_eq!(doctrine.sense, Sense::Ccw);

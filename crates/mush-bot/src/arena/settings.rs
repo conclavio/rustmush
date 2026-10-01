@@ -8,15 +8,30 @@
 //!   refills at 10 lines a second and the cockpit queues at most 8 pending
 //!   orders a tank, so four a second leaves room for a person at the same
 //!   keyboard and never fills either;
-//! * `band_m` is the orbit's radius. Its default, **450 m**, sits just outside
-//!   the 420 m a machine closes to (`help simulator`, "Fighting the machines")
-//!   and inside the 480 m a stopped tank on grass is seen at (`help cockpit`,
-//!   "Seeing"), so the pilot keeps a stopped machine in view while making it
-//!   turn. The range 150..=450 keeps it outside a collision and never past
-//!   that sight (cut AK.1): the machines stop to shoot, so 450 m, the stopped
-//!   tank's 480 m less a margin for the scope's rounding and the tank's drift,
-//!   is the ceiling of every band the pilot flies
+//! * `band_m` is the range the pilot holds (or orbits) at. Its default,
+//!   **450 m**, sits just outside the 420 m a machine closes to (`help
+//!   simulator`, "Fighting the machines") and inside the 480 m a stopped tank
+//!   on grass is seen at (`help cockpit`, "Seeing"), so the pilot keeps a
+//!   stopped machine in view. The range 150..=450 keeps it outside a collision
+//!   and never past that sight (cut AK.1): the machines stop to shoot, so
+//!   450 m, the stopped tank's 480 m less a margin for the scope's rounding and
+//!   the tank's drift, is the ceiling of every band the pilot flies
 //!   ([`SIGHT_BAND_MAX_M`]).
+//!
+//! **`engagement`** (cut AL.2) is how the pilot's own doctrine fights:
+//! [`Engagement::Hold`] (the default) stops at the band with the bow on the
+//! hostile and changes range only along the line of fire, ahead to close and
+//! in reverse to open; [`Engagement::Orbit`] circles it, as the pilot did
+//! before. `hold` is the default because **the facet you show decides what a
+//! hit costs** (`help cockpit`, "Seeing": "from within 45 degrees of your bow
+//! it strikes the front … a side is twice the target, 7 m of flank against
+//! 3.5 m of bow", and the stock tank's hull carries 400 in front against 250 a
+//! side and 150 behind, a side shot landing on that side's track three times
+//! in ten — "Turn into the shot"), and because the orbit showed the machines a
+//! side the whole fight: of the hits the bot took in its own measured run,
+//! hull left 97, hull right 80, turret left 64, turret right 60, the two
+//! tracks 61 and 58, and only 14 on the hull's front and 9 on the turret's.
+//! The orbit stays a stance a commander or this key may ask for.
 //!
 //! **The commander's keys** (cut AJ.3; [`super::commander`]): `commander`
 //! switches the optional model commander on, `commander_ms` is how long after
@@ -31,8 +46,31 @@
 //! would be paid for up to `commander_max_calls` discarded answers a match.
 use serde::{Deserialize, Serialize};
 
-use super::pilot::SIGHT_BAND_MAX_M;
+use super::{commander::Stance, pilot::SIGHT_BAND_MAX_M};
 use crate::{Result, config::Model};
+
+/// **How the pilot's own doctrine fights** (`[arena] engagement`, cut AL.2;
+/// the module head says why `hold` is the default). Any other word is refused
+/// when the table is read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Engagement {
+    /// Stop at the band, bow on ([`Stance::Hold`]).
+    #[default]
+    Hold,
+    /// Circle the target at the band ([`Stance::Orbit`]).
+    Orbit,
+}
+
+impl Engagement {
+    /// The stance the pilot's own doctrine flies.
+    pub fn stance(self) -> Stance {
+        match self {
+            Engagement::Hold => Stance::Hold,
+            Engagement::Orbit => Stance::Orbit,
+        }
+    }
+}
 
 /// The `[arena]` table.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -49,9 +87,12 @@ pub struct Settings {
     /// How long the pilot waits for a busy centre, for a lead to start the
     /// match, or for somebody to claim the other side (10..=3 600 seconds).
     pub wait_start_s: u64,
-    /// The orbit's radius around the target, metres (150..=450, the
+    /// The range the pilot holds, or orbits, at, metres (150..=450, the
     /// ceiling [`SIGHT_BAND_MAX_M`]).
     pub band_m: u32,
+    /// How the pilot's own doctrine fights: `hold` (the default) or `orbit`
+    /// (cut AL.2).
+    pub engagement: Engagement,
     /// How long one lobby line may go unanswered (2 000..=60 000).
     pub step_timeout_ms: u64,
     /// The model commander sets the pilot's doctrine when a commander model
@@ -79,6 +120,7 @@ impl Default for Settings {
             lead_start_grace_ms: 3_000,
             wait_start_s: 300,
             band_m: 450,
+            engagement: Engagement::Hold,
             step_timeout_ms: 15_000,
             commander: true,
             commander_ms: 1_500,
@@ -286,5 +328,28 @@ mod tests {
         assert_eq!(read.band_m, 500);
         assert_eq!(read.max_lines_per_s, 4);
         assert!(toml::from_str::<Settings>("lines_per_s = 2\n").is_err());
+    }
+
+    /// **`engagement`** (cut AL.2): `hold` by default, `orbit` read, and any
+    /// other word refused — the commander's old `stand_off` included.
+    #[test]
+    fn engagement_defaults_to_hold_reads_orbit_and_refuses_anything_else() {
+        use super::{Engagement, Stance};
+        assert_eq!(Settings::default().engagement, Engagement::Hold);
+        assert_eq!(Settings::default().engagement.stance(), Stance::Hold);
+        let read: Settings = toml::from_str("").expect("a table");
+        assert_eq!(read.engagement, Engagement::Hold, "left out: hold");
+        let read: Settings = toml::from_str("engagement = \"hold\"\n").expect("a table");
+        assert_eq!(read.engagement, Engagement::Hold);
+        let read: Settings = toml::from_str("engagement = \"orbit\"\n").expect("a table");
+        assert_eq!(read.engagement, Engagement::Orbit);
+        assert_eq!(read.engagement.stance(), Stance::Orbit);
+        assert!(read.validate().is_ok());
+        for word in ["stand_off", "circle", "Hold", ""] {
+            assert!(
+                toml::from_str::<Settings>(&format!("engagement = \"{word}\"\n")).is_err(),
+                "{word}"
+            );
+        }
     }
 }

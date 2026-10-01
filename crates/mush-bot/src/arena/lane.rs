@@ -107,7 +107,7 @@ use super::{
     lines::Line,
     lobby::{Lobby, Step},
     picture::{self, Phase, Picture, Power},
-    pilot::{HuntLeg, Orders, Pilot},
+    pilot::{HuntLeg, Orders, Pilot, Turn, live_turn},
     report::Report,
     settings::Settings,
 };
@@ -453,6 +453,13 @@ impl Lane {
                 },
                 "age_s": p.last_ms.saturating_sub(hunt.trail.plot_ms) / 1_000})
         });
+        // Cut AL.2: the turn into a hit (its bearing, whole degrees, and the
+        // whole seconds it has left), the live turn with one track gone, the
+        // held-ground marks and what the hold is doing with the range.
+        let threat = self.pilot.threat.map(|(bearing, until)| {
+            json!({"bearing": (bearing.round() as u32) % 360,
+                "until_s": until.saturating_sub(p.last_ms).div_ceil(1_000)})
+        });
         json!({"phase": phase_word(&p.phase), "match": p.following, "step": self.lobby.step(),
             "lead": self.lobby.lead(), "aboard": p.aboard,
             "own": {"callsign": own.callsign, "power": own.power.as_str(), "kph": own.speed_kph,
@@ -464,7 +471,10 @@ impl Lane {
             "weapons": weapons, "struck": p.struck, "doubt": p.weapons_doubt.is_some(),
             "tally": p.tally, "doctrine": self.doctrine,
             "pilot": {"hunt": hunt, "fallen_back": self.pilot.fallen_back,
-                "stall": self.pilot.stall_level}})
+                "stall": self.pilot.stall_level, "threat": threat,
+                "live_turn": live_turn(p).map(Turn::as_str),
+                "marks": self.pilot.held_marks.len(),
+                "hold": self.pilot.hold_motion.as_str()}})
     }
 
     /// The pilot's own state (for tests and `/arena`).
@@ -855,6 +865,9 @@ impl Lane {
                 // where it stands" — so the heading and the speed go again.
                 self.pilot.forget_heading();
                 self.pilot.forget_speed();
+                // …and a one-track commit or a turn into a hit (cut AL.2) is
+                // not the tank's now either, nor a hit taken meanwhile.
+                self.pilot.forget_turns(&self.picture);
                 self.fight = Some(Fight::default());
             }
         } else {

@@ -207,17 +207,24 @@ data, never instructions.";
 pub enum Stance {
     /// Circle the target at the band.
     Orbit,
-    /// Drive straight in to 200 m, then circle there.
+    /// Drive straight in to 200 m bow-on, then hold there (cut AL.2: was a
+    /// circle at 200 m).
     Close,
-    /// Hold the band's distance, stopped.
-    StandOff,
+    /// **Stop at the band with the bow on the target; the range is changed
+    /// along the line of fire, ahead to close and in reverse to open** (cut
+    /// AL.2, the pilot's default; renamed from `stand_off`, which opened range
+    /// by turning its stern — with the range changed along the line of fire
+    /// the two are one behaviour). A model's `stand_off` still reads as this.
+    #[serde(alias = "stand_off")]
+    Hold,
     /// Hunt (cut AK.2): drive straight at a hostile whose plot is fresh until
-    /// the band, then circle it there; with none, hunt the last one lost at
-    /// once (its last plot, its course, one sweep: the pilot's own hunt), and
-    /// with nothing to hunt, search.
+    /// the band, then hold it there (cut AL.2: was a circle); with none, hunt
+    /// the last one lost at once (its last plot, its course, one sweep: the
+    /// pilot's own hunt), and with nothing to hunt, search.
     Hunt,
-    /// Drive straight away: kept only on a failing hull, for a bounded hold
-    /// (the module head).
+    /// Back away with the bow on the target (cut AL.2: was a drive straight
+    /// away): kept only on a failing hull, for a bounded hold (the module
+    /// head).
     Withdraw,
 }
 
@@ -241,10 +248,10 @@ fn required<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
 
 /// What the pilot is asked to do: the commander's answer, or the pilot's own
 /// default. JSON: `{"target": "BA" | null, "stance": "orbit" | "close" |
-/// "stand_off" | "hunt" | "withdraw", "band_m": 150..=450, "sense": "cw" |
-/// "ccw" | "auto", "hold_s": 5..=30 (a withdraw only), "note": "…"}`, every
-/// field required but `hold_s` and `note` (so a five-field answer of cut AJ
-/// still reads).
+/// "hold" | "hunt" | "withdraw", "band_m": 150..=450, "sense": "cw" | "ccw" |
+/// "auto", "hold_s": 5..=30 (a withdraw only), "note": "…"}`, every field
+/// required but `hold_s` and `note` (so a five-field answer of cut AJ still
+/// reads); a stance of `stand_off` reads as `hold` (cut AL.2's rename).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Doctrine {
@@ -288,11 +295,13 @@ fn is_target(word: &str) -> bool {
 }
 
 impl Doctrine {
-    /// The pilot's own doctrine: orbit the nearest hostile at `[arena].band_m`.
+    /// The pilot's own doctrine: the nearest hostile at `[arena].band_m`, flown
+    /// by `[arena].engagement` (cut AL.2: a [`Stance::Hold`] unless the config
+    /// asks for the orbit).
     pub fn pilot_default(settings: &Settings) -> Doctrine {
         Doctrine {
             target: None,
-            stance: Stance::Orbit,
+            stance: settings.engagement.stance(),
             band_m: settings.band_m,
             sense: Sense::Auto,
             hold_s: None,
@@ -1092,13 +1101,24 @@ mod tests {
             plain,
             Doctrine {
                 target: Some("BA".into()),
-                stance: Stance::StandOff,
+                stance: Stance::Hold,
                 band_m: 450,
                 sense: Sense::Ccw,
                 hold_s: None,
                 note: "flank".into(),
             }
         );
+        // Cut AL.2: `stand_off` is read as the hold, which is written `hold`
+        // and reads back the same.
+        assert_eq!(
+            serde_json::to_value(&plain).expect("json")["stance"],
+            "hold"
+        );
+        let hold = Doctrine::parse(
+            r#"{"target":"BA","stance":"hold","band_m":450,"sense":"ccw","note":"flank"}"#,
+        )
+        .expect("hold");
+        assert_eq!(hold, plain);
         let fenced = Doctrine::parse(
             "```json\n{\"target\":null,\"stance\":\"withdraw\",\"band_m\":300,\"sense\":\"auto\"}\n```",
         )
@@ -1265,7 +1285,7 @@ mod tests {
             view["doctrine"].get("note").is_none(),
             "the note is never sent"
         );
-        assert_eq!(view["doctrine"]["stance"], "orbit");
+        assert_eq!(view["doctrine"]["stance"], "hold");
         let events = view["events"].as_array().expect("events");
         assert!(!events.is_empty() && events.len() < VIEW_EVENTS);
         // The newest events stay: the last one the picture holds is the last sent.
@@ -1286,7 +1306,7 @@ mod tests {
         let view = picture.commander_view(14_999, &doctrine());
         assert_eq!(view["t_s"], 4);
         assert_eq!(view["contacts"], json!([]));
-        assert_eq!(view["doctrine"]["stance"], "orbit");
+        assert_eq!(view["doctrine"]["stance"], "hold");
         assert_eq!(view["own"]["power"], "online");
     }
 
@@ -1792,7 +1812,7 @@ mod tests {
         assert_eq!(hold(Some(20)), Some(20));
         assert_eq!(hold(None), Some(HOLD_DEFAULT_S));
         assert_eq!((HOLD_MIN_S, HOLD_DEFAULT_S, HOLD_MAX_S), (5, 10, 30));
-        for stance in ["orbit", "close", "stand_off", "hunt"] {
+        for stance in ["orbit", "close", "hold", "stand_off", "hunt"] {
             assert_eq!(
                 answer(stance, 450, Some(20)).expect("parses").hold_s,
                 None,
@@ -1853,7 +1873,7 @@ mod tests {
         assert!(view["doctrine"].get("hold_s").is_none());
         assert_eq!(
             view["doctrine"],
-            json!({"target": null, "stance": "orbit", "band_m": 450, "sense": "auto"})
+            json!({"target": null, "stance": "hold", "band_m": 450, "sense": "auto"})
         );
         let mut blue = crowded();
         blue.side = Some(Side::Blue);
@@ -1953,7 +1973,7 @@ mod tests {
             Some(WHY_HULL_SOUND)
         );
         // Every other stance passes unchanged.
-        for stance in ["orbit", "close", "stand_off", "hunt"] {
+        for stance in ["orbit", "close", "hold", "stand_off", "hunt"] {
             let doctrine = answer(stance, 300, None).expect("parses");
             let vetted = vet(doctrine.clone(), &hull_and_contact(60, None), false);
             assert_eq!(

@@ -423,12 +423,48 @@ and shrinks a little with every shot that leaves. A `FIRE` refused as still
 cycling is tried again a quarter-second into the last second it was told
 (`1 s to go` a quarter-second on, `3 s to go` two seconds and a quarter on),
 inside the second it was refused for. A gun is never fired again while its last
-`FIRE` is unanswered. It circles its target at `[arena] band_m` (150 to 450 m;
-450 m by default: just outside the 420 m a machine closes to, inside the 480 m
-a stopped tank is seen at, and the widest band it ever flies), bending toward
-the band when off it; it circles toward the target's rear when its plots show
-the target moving, and otherwise reverses every twenty seconds so the machine's
-plot of it goes stale.
+`FIRE` is unanswered.
+
+**It fights nose-on.** `help cockpit` says the facet you show decides what a
+hit costs: a hit from within 45 degrees of the bow strikes the front, a side is
+twice the target of the bow, and the stock hull carries 400 in front against
+250 a side and 150 behind. So by default the pilot **holds**: it stops at
+`[arena] band_m` (150 to 450 m; 450 m by default: just outside the 420 m a
+machine closes to, inside the 480 m a stopped tank is seen at, and the widest
+band it ever flies) with its bow on the hostile, within 30 degrees of it, and
+changes the range only along the line of fire — ahead to close, in reverse to
+open. It moves only once the range is more than 75 m off the band, and stops
+again once back within 50 m of it, so a machine at the scope's 50 m rounding
+(420 m read as `400 m`) never sets it reversing and back. A commander's
+`close` drives in bow on and holds at 200 m, and `hunt` drives at a fresh
+hostile and holds at the
+band; every withdrawal — its own fall back and a commander's kept `withdraw` —
+backs away in reverse with the bow on the target. A hit on a side or the rear
+turns the bow toward it, stopped, for four seconds: toward the nearest hostile
+whose own contact row puts it in that face's arc, or, with only the held target
+to blame, nowhere new (the hold already faces it), or, with nothing to blame,
+to the middle of that face (the hit line says nothing of who fired); a newer
+hit moves the turn only when its shooter is well apart from the last, and one
+with nothing to blame does not move it while the turn is still under way and
+unread by `STATUS`. A held stop, the back-off and every withdrawal outrank the
+turn, and it says `Turning into the shot` only when it makes the turn; a hit
+read four seconds late, or taken while the machine flew the tank, turns
+nothing, and with a track gone a hit on the dead side turns nothing either
+(the live way round would take longer than the turn lasts). The
+orbit — circling the target at the band, toward its rear when its plots show
+it moving, else reversing every twenty seconds — is now only a stance a
+commander or `[arena] engagement = "orbit"` asks for (`hold` by default; no
+other word is accepted); under it a hit turns nothing.
+
+**With a track gone** ("Lose one track and the tank is slowed and will not turn
+that way") every turn the pilot makes of its own accord goes the live way, an
+orbit circles the way that turns the live way, and a heading that would turn it
+toward the dead side by 45 degrees or less is not ordered at all, so the bow
+may stand that far off the target, still inside the front's arc, rather than
+the tank going round a whole circle for a small correction. A larger turn that
+way is ordered once, and then no heading at all until `STATUS` reads it or
+twelve seconds (a whole circle at the speed a one-track tank turns) have
+passed. It does not reverse to turn.
 
 A gun the tank no longer carries is struck from the fire schedule for the rest
 of the match at the first `That unit carries no weapon called …`, and an empty
@@ -441,12 +477,12 @@ WEAPONSTATUS says what is left.`, `The machine_gun is empty: struck from the
 fire schedule.`
 
 It falls back only on its own hull: its internals at half, or a hull plate at a
-quarter or gone (a turret or track plate does not count). It breaks away from
-the target for ten seconds, or until it has opened to its widened band if that
-is sooner. The widened band is 150 m wider than its band, never narrower than
-it and never wider than 450 m, so at the default band the fall back is a
-break-away and a return inside the sight. After that it flies its doctrine
-again at the widened band, a `close` flown as a circle there.
+quarter or gone (a turret or track plate does not count). It backs away from
+the target in reverse, its bow on it, for ten seconds, or until it has opened
+to its widened band if that is sooner. The widened band is 150 m wider than its
+band, never narrower than it and never wider than 450 m, so at the default
+band the fall back is a short step back inside the sight. After that it flies
+its doctrine again at the widened band, a `close` flown as a hold there.
 
 When it loses a hostile it hunts it rather than waiting: it drives to the
 contact's last plot, then along its estimated course (the plots' course when
@@ -464,17 +500,36 @@ unidentified contact does not count), does it drive for The Crossroads (`B`),
 Held by the ground, it turns 45° for three seconds and orders its speed again.
 Still held at 0 kph, it turns further from the heading it stopped on (90°, then
 135°, then 180°, each judged four seconds after the last), and at last backs
-off for three seconds. It says what it does in `arena` events: `Hunting BA:
-its last plot, 380 m away.`, `Falling back to 450 m: the hull is at half.`,
-`Held at 0 kph: turning to 180°.` and their kin, and the `arena-picture` record
-carries its hunt, its fall back and its stall, each gun's cycle and slack, the
-guns struck and whether every gun is held. Its first `SPEED` order is
-`999`, which makes the tank say its own top speeds.
+off for three seconds; a tank it stopped or reverses itself is never counted as
+held up. It **remembers held ground**: a stop on a slope too steep, on ground
+that will not take the tank or at the arena's edge — never `Held: something is
+in the way.`, which is another unit that moves — marks the point 20 m ahead of
+where it stopped, and while it drives ahead it steers 45 degrees aside (up to
+three times) round any mark its next 120 m would pass within 30 m of, unless the
+mark is within 50 m of the tank (its own stop is the held turn's business). A
+mark is a point, not a whole bank: a detour can meet the same bank further
+along, and that is a new stop and a new mark. Stopped while reversing, it does
+not drive ahead to turn: it stops with its bow kept, marks the ground behind,
+and does not reverse into it again.
+
+It says what it does in `arena` events: `Hunting BA: its last plot, 380 m
+away.`, `Falling back to 450 m: the hull is at half.`, `Held at 0 kph: turning
+to 180°.`, `Turning into the shot: hit on the hull's left facet; facing BB.`,
+`The right_track is gone: turning counter-clockwise only.`, `Held ground marked
+at 1420 m east, 1049 m north, heading 000°.`, `Steering round held ground: 136°
+for 091°.` and their kin, and the `arena-picture` record carries its hunt, its
+fall back and its stall, the turn into a hit (its bearing and the seconds
+left), the live turn with a track gone (`cw` or `ccw`), how many marks it holds
+and what its hold is doing (`stopped`, `ahead` or `astern`), each gun's cycle
+and slack, the guns struck and whether every gun is held. Its first `SPEED`
+order is `999`, which makes the tank say its own top speeds.
 
 **The report and the exit code.** The JSON report gains an `arena` block: the
 side, the matches asked for, one entry a match (the match number, the callsign,
 whether it led, the centre's own result word, shots that left, orders refused,
-hits, misses, kills, hits taken, sections lost, whether the tank was destroyed,
+hits, misses, kills, hits taken and their split by the facet struck
+(`hits_taken_by_facet`, keyed like `hull left` or `right_track right`), sections
+lost, whether the tank was destroyed,
 reclaims and time away, the match's length, and the commander's calls, applied,
 late, invalid, failed and overruled answers and why it stopped) and the wins, losses,
 draws, timeouts and others. The run is `done`, and a headless run exits 0, **only when
@@ -614,7 +669,8 @@ An optional model commander sets the pilot's **doctrine** — where it goes and
 what it hunts — and nothing else. The deterministic pilot keeps the lock, the
 fire cadence and the steering; the commander never types a line, never fires
 and never aims. Without a commander the pilot flies its own default doctrine
-(orbit the nearest hostile at `[arena] band_m`).
+(hold the nearest hostile at `[arena] band_m`, bow on, or orbit it under
+`[arena] engagement = "orbit"`).
 
 **Its model.** `[arena.commander_model]`, a model table with the same keys as
 `[model]`, when it is given; else the session's own selected model, but **only
@@ -655,10 +711,11 @@ when the plots show it moving), the lock, the doctrine in force (without its
 note: the model's own last reason, sent back to it, only made it repeat
 itself) and the six latest events. It holds nothing the pilot's own screen did
 not say. The answer is one JSON object,
-`{"target": "BA" | null, "stance": "orbit" | "close" | "stand_off" | "hunt" |
+`{"target": "BA" | null, "stance": "orbit" | "close" | "hold" | "hunt" |
 "withdraw", "band_m": 150..450, "sense": "cw" | "ccw" | "auto", "hold_s":
 5..30, "note": "…"}`; every field but `hold_s` and `note` is required and
-nothing else is allowed. The band is clamped into 150..450 (450 m is the
+nothing else is allowed (a stance of `stand_off`, the hold's old name, still
+reads as `hold`). The band is clamped into 150..450 (450 m is the
 widest band the pilot flies: a band past it loses a machine that stops to
 shoot), a withdraw's `hold_s` into 5..30 (10 when it gives none; any other
 stance's is dropped), the note cut to 160 characters, and a target that is not
@@ -668,7 +725,7 @@ recorded as `commander-invalid`; one that does is recorded as read
 (`arena-doctrine`) and flown from the next tick, by the pilot's rule below.
 
 **Hunt.** `hunt` drives straight at the target until its band and then
-circles it there, but only while its plot is fresh (three seconds); with no
+holds it there, bow on, but only while its plot is fresh (three seconds); with no
 hostile in sight it hunts the last one lost at once, as the pilot does on its
 own (its last plot, its course, one sweep), and with nothing to hunt it
 searches. A `null` target and the lost contact's own designator both mean
@@ -691,8 +748,8 @@ seconds any withdraw is flown as the sound hull flies it (`"why": "the hold is
 spent"`), so the commander keeps the tank away at most half of any minute. An
 episode ends at its time whatever stands then: if the commander has answered
 another stance meanwhile, nothing lapses, but the rest follows all the same. A
-kept withdraw outranks the pilot's own wider circling after it has fallen
-back, so it is what turns the tank away for its hold.
+kept withdraw outranks the pilot's own wider band after it has fallen back, so
+it is what backs the tank away, bow on, for its hold.
 
 **When it asks.** Never more than one call at a time. The first at
 `Power online.`; the next `commander_ms` after the last answer or error; and at
