@@ -12,11 +12,30 @@
 //! `SIM START`, `BOARD`, `STARTUP` and `SIM LEAVE`. It can never type `SIM AI`,
 //! `SIM UNIT`, `SIM CONCEDE`, `SIM MODE`, `SIM RANGE`, `SIM ABORT`, `ORDER` or
 //! `EXIT` (16c Q-AJ2, Q-AJ3). `SIM START` goes out only while the machine
-//! believes the pilot leads its side, and `SIM LEAVE` once, as the lane stops
-//! (again only on a busy answer, inside the 3 s its answer is waited for), when the centre was last read idle or in selection and the pilot
-//! holds a slot — so a pilot that stops before a match never locks the centre
-//! for the people after it (`help simulator`: "the last one to leave closes the
+//! believes the pilot leads its side and stands at [`Step::Start`] (cut AM.2:
+//! checked in [`Lobby::poll`] and again in [`Lobby::due`], so a lead lost to a
+//! line read in between never starts a match). `SIM LEAVE` goes once, as the
+//! lane stops (again only on a busy answer, inside the 3 s its answer is
+//! waited for), when the centre was last read idle or in selection and the
+//! pilot holds a slot — and (cut AM.2, 16c Q-AM3) when a stop finds a
+//! `SIM TEAM` or a `SIM START` typed and unanswered, the stop waits for that
+//! answer (at most `[arena].step_timeout_ms` from its typing) and then types
+//! the one `SIM LEAVE` whatever it learned, none when the answer names the
+//! other side's slot (that slot is not this run's to give up). A blocker or
+//! a match's end closes without the wait: a refused claim neither waits nor
+//! leaves. So a pilot that stops before a match never locks the centre for the
+//! people after it (`help simulator`: "the last one to leave closes the
 //! match").
+//!
+//! **The pause** (cut AM.2, 16c Q-AM2). While the lane is paused the machine
+//! still reads, but every line is read at the pause instant, so a clock a line
+//! sets then (a rematch, a `STARTUP` wanted again, the quiet rule's last line)
+//! starts from the resume; `Lobby::resume` moves every lobby wait on by the
+//! pause's length (`Lobby::shift`). The match's own times are the centre's
+//! and stay real: a boarding or a running read while paused is stamped when
+//! it was really read and never shifted, so the boarding bound keeps the
+//! window the centre announced, and a match recorded while paused keeps its
+//! real length.
 //!
 //! **Who leads** (`help simulator`: "Whoever claims a side first leads it; if
 //! they give the slot up … the next who claimed leads"). A claim window per
@@ -194,9 +213,20 @@ struct Flight {
 /// `SIM LEAVE`'s one use. A transient answer (the command did not commit, so
 /// the slot is still held) re-sends it after 200 ms like any lobby line, but
 /// only inside the 3 s its answer is waited for; nothing re-sends it after.
+///
+/// **A stop with a claim or a start in flight** (cut AM.2) waits for that
+/// line's answer first ([`Leave::AwaitFlight`]), at most until `until` (its
+/// typing and `[arena].step_timeout_ms`), then types the one `SIM LEAVE`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Leave {
     No,
+    /// Stopped with `line` (`SIM TEAM` or `SIM START`) typed and unanswered:
+    /// its answer queues the leave (the other side's slot ends it), and so
+    /// does `until`.
+    AwaitFlight {
+        line: LobbyLine,
+        until: u64,
+    },
     Queued,
     /// Typed first at this time.
     Sent(u64),
@@ -301,6 +331,12 @@ pub struct Lobby {
     blocker: Option<String>,
     closed: bool,
     leave: Leave,
+    /// The lane's pause (cut AM.2): every line read while it is set is read
+    /// at this instant.
+    paused_at: Option<u64>,
+    /// When the last line was really read: a match record's length runs to it
+    /// even while paused.
+    read_ms: u64,
     events: Vec<LaneEvent>,
 }
 
@@ -352,6 +388,8 @@ impl Lobby {
             blocker: None,
             closed: false,
             leave: Leave::No,
+            paused_at: None,
+            read_ms: 0,
             events: Vec::new(),
         }
     }
@@ -419,10 +457,11 @@ impl Lobby {
             .map(|index| callsign(self.side, index))
     }
 
-    /// `SIM LEAVE` is queued, or typed and not answered for less than 3 s.
+    /// `SIM LEAVE` is queued, or typed and not answered for less than 3 s, or
+    /// (cut AM.2) a stop waits for a claim's or a start's answer before it.
     pub fn leave_pending(&self, now_ms: u64) -> bool {
         match self.leave {
-            Leave::Queued => true,
+            Leave::Queued | Leave::AwaitFlight { .. } => true,
             Leave::Sent(first) | Leave::Again { first, .. } => {
                 now_ms < first.saturating_add(LEAVE_WAIT_MS)
             }
@@ -445,10 +484,17 @@ impl Lobby {
 
     // -- the line out -----------------------------------------------------------
 
-    /// The line to type now, if any.
+    /// The line to type now, if any. A stop waiting for a claim's or a start's
+    /// answer types its `SIM LEAVE` at `until` even unanswered (cut AM.2), and
+    /// `SIM START` is never due unless the pilot leads and stands at
+    /// [`Step::Start`] (cut AM.2: [`Lobby::poll`] drops it first; this is for a
+    /// line read between the two).
     pub fn due(&self, now_ms: u64) -> Option<LobbyLine> {
         match self.leave {
             Leave::Queued => return Some(LobbyLine::SimLeave),
+            Leave::AwaitFlight { until, .. } if now_ms >= until => {
+                return Some(LobbyLine::SimLeave);
+            }
             Leave::Again { first, at }
                 if now_ms >= at && now_ms < first.saturating_add(LEAVE_WAIT_MS) =>
             {
@@ -460,9 +506,15 @@ impl Lobby {
             return None;
         }
         match self.want {
+            Some((LobbyLine::SimStart, _)) if !self.may_start() => None,
             Some((line, at)) if now_ms >= at => Some(line),
             _ => None,
         }
+    }
+
+    /// `SIM START` may go: the pilot leads, at [`Step::Start`] (cut AM.2).
+    fn may_start(&self) -> bool {
+        self.lead && self.step == Step::Start
     }
 
     /// The lane typed `line` at `now_ms`.
@@ -472,6 +524,9 @@ impl Lobby {
                 Leave::Again { first, .. } => Leave::Sent(first),
                 _ => Leave::Sent(now_ms),
             };
+            // A claim or a start a stop waited for is given up on with it
+            // (cut AM.2): only `SIM LEAVE`'s answer is awaited now.
+            self.flight = None;
             return;
         }
         self.want = None;
@@ -488,10 +543,19 @@ impl Lobby {
     // -- the lines in -------------------------------------------------------------
 
     /// Read one line (already applied to `picture`; never the echo of a line the
-    /// lane typed).
+    /// lane typed). While paused (cut AM.2) the line is read at the pause
+    /// instant: every clock it sets starts from the resume.
     pub fn on_line(&mut self, now_ms: u64, raw: &str, line: &Line, picture: &mut Picture) {
+        self.read_ms = now_ms;
+        let now_ms = self.paused_at.unwrap_or(now_ms);
         self.last_line_ms = now_ms;
-        if self.flight.is_some() {
+        // A room heading that is not where the walk's line goes is somebody
+        // else's answer (a late `look`, a move it did not ask for): it is no
+        // answer to the line in flight, so the quiet rule never reads it as a
+        // refusal (cut AM.2).
+        let foreign_room = matches!(self.step, Step::Look | Step::Walk)
+            && matches!(line, Line::Room(name) if !self.walk_arrives(name));
+        if self.flight.is_some() && !foreign_room {
             self.answered = true;
         }
         if let Line::Connected { name, .. } = line {
@@ -499,9 +563,11 @@ impl Lobby {
         }
         self.centre_line(now_ms, line, picture);
         if self.closed {
-            // The one line still in flight is `SIM LEAVE`: a busy answer means
-            // it did not commit and the slot is still held.
-            if matches!(line, Line::Transient(_)) {
+            if let Leave::AwaitFlight { line: flown, .. } = self.leave {
+                self.await_flight(flown, line, picture);
+            } else if matches!(line, Line::Transient(_)) {
+                // The one line still in flight is `SIM LEAVE`: a busy answer
+                // means it did not commit and the slot is still held.
                 self.leave_again(now_ms);
             }
             return;
@@ -515,7 +581,7 @@ impl Lobby {
         }
         match self.step {
             Step::Look => self.on_look(now_ms, line),
-            Step::Walk => self.on_walk(now_ms, line, picture),
+            Step::Walk => self.on_walk(now_ms, line),
             Step::Survey => self.on_survey(now_ms, raw, line, picture),
             Step::Claim => self.on_claim(now_ms, line, picture),
             Step::Start => self.on_start(now_ms, raw, line, picture),
@@ -536,20 +602,47 @@ impl Lobby {
         if self.closed {
             return;
         }
+        // **`SIM START` only while leading** (cut AM.2): a start wanted by a
+        // pilot that has lost the lead (a match's end releases every lead; a
+        // claim window read again) is dropped, and the pilot waits for
+        // somebody to start, as after the refusal that says so.
+        if matches!(self.want, Some((LobbyLine::SimStart, _))) && !self.may_start() {
+            self.want = None;
+            if self.step == Step::Start {
+                self.await_start(now_ms);
+            }
+        }
         if let Some(flight) = self.flight
             && self.step != Step::Reboard
             && now_ms >= flight.sent_ms.saturating_add(self.settings.step_timeout_ms)
         {
-            let sentence = format!(
-                "No answer to `{}` within {} s.",
-                flight.line.line(),
-                self.settings.step_timeout_ms / 1_000
-            );
+            let secs = self.settings.step_timeout_ms / 1_000;
+            // **A running match is never given up because the tank would not
+            // start** (cut AM.2): `STARTUP` is typed again.
+            if self.step == Step::Startup && Self::followed_running(picture) {
+                self.say(format!(
+                    "No answer to `STARTUP` within {secs} s; typing it again."
+                ));
+                self.ask(now_ms, LobbyLine::Startup);
+                return;
+            }
+            let sentence = format!("No answer to `{}` within {secs} s.", flight.line.line());
             return self.block(now_ms, &sentence, picture);
         }
         if let Some((at, sentence)) = &self.deadline
             && now_ms >= *at
         {
+            // …nor because its power did not come up (cut AM.2).
+            if self.step == Step::AwaitPower && Self::followed_running(picture) {
+                self.deadline = None;
+                self.say(format!(
+                    "Power did not come online within {} s; typing STARTUP again.",
+                    POWER_WAIT_MS / 1_000
+                ));
+                self.step = Step::Startup;
+                self.ask(now_ms, LobbyLine::Startup);
+                return;
+            }
             let sentence = sentence.clone();
             return self.block(now_ms, &sentence, picture);
         }
@@ -657,11 +750,165 @@ impl Lobby {
     /// **Stop**: record a match the pilot had not finished as `blocked`, and
     /// queue the one `SIM LEAVE` when the centre was last read idle or in
     /// selection and the pilot holds a slot. Idempotent.
+    ///
+    /// **A claim or a start in flight** (cut AM.2, 16c Q-AM3): a `SIM TEAM`
+    /// or a `SIM START` typed and not yet answered is kept, and the leave
+    /// waits for its answer (`Leave::AwaitFlight`) until its typing and
+    /// `[arena].step_timeout_ms`; then one `SIM LEAVE` whatever it learned.
+    /// Only a stop waits: a blocker and a match's end close as before.
     pub fn stop(&mut self, now_ms: u64, picture: &Picture) {
+        if self.closed {
+            return;
+        }
+        let flight = self.flight;
         self.close(now_ms, picture);
+        if let Some(flight) = flight
+            && matches!(flight.line, LobbyLine::SimTeam(_) | LobbyLine::SimStart)
+        {
+            self.flight = Some(flight);
+            self.leave = Leave::AwaitFlight {
+                line: flight.line,
+                until: flight.sent_ms.saturating_add(self.settings.step_timeout_ms),
+            };
+            self.retries = 0;
+            self.say(format!(
+                "Stopping: waiting for the answer to `{}` before giving the slot up.",
+                flight.line.line()
+            ));
+        }
+    }
+
+    /// **The lane pauses** (cut AM.2): every line read from now is read at
+    /// `at`. Idempotent.
+    pub(crate) fn pause(&mut self, at: u64) {
+        if self.paused_at.is_none() {
+            self.paused_at = Some(at);
+        }
+    }
+
+    /// **The lane resumes** at `now_ms` (cut AM.2): every lobby wait moves on
+    /// by the pause's length ([`Lobby::shift`]), so no step lapses while
+    /// paused and a clock set by a line read then starts from now.
+    pub(crate) fn resume(&mut self, now_ms: u64) {
+        if let Some(at) = self.paused_at.take() {
+            self.shift(now_ms.saturating_sub(at));
+        }
+    }
+
+    /// The pause is over without a shift (cut AM.2): a stop's `SIM LEAVE`
+    /// runs on the real clock.
+    pub(crate) fn unpause(&mut self) {
+        self.paused_at = None;
+    }
+
+    /// **Every lobby wait moves on by `ms`** (cut AM.2): the line in flight's
+    /// typing, the waiting step's deadline, the wanted line's instant, the
+    /// rematch, the re-board and resume cadence, the empty side's and the busy
+    /// centre's waits, the lead's grace (the claim and the last claim by
+    /// anybody else) and the quiet rule's last line. Never the match's own
+    /// times (`running_ms`, `reboard_since`, `boarding_ms`) nor the leave.
+    fn shift(&mut self, ms: u64) {
+        let on = |at: u64| at.saturating_add(ms);
+        if let Some(flight) = self.flight.as_mut() {
+            flight.sent_ms = on(flight.sent_ms);
+        }
+        if let Some((at, _)) = self.deadline.as_mut() {
+            *at = on(*at);
+        }
+        if let Some((_, at)) = self.want.as_mut() {
+            *at = on(*at);
+        }
+        self.rematch_at = self.rematch_at.map(on);
+        self.reboard_next = on(self.reboard_next);
+        self.resume_at = on(self.resume_at);
+        self.empty_since = self.empty_since.map(on);
+        self.busy_since = self.busy_since.map(on);
+        self.claim_ms = on(self.claim_ms);
+        self.last_other_ms = on(self.last_other_ms);
+        self.last_line_ms = on(self.last_line_ms);
     }
 
     // -- internals ----------------------------------------------------------------
+
+    /// **The real time** (cut AM.2): `now_ms` but for a line read while
+    /// paused, which `on_line` reads at the pause instant. The match's own
+    /// times (its boarding, its running, a drop's time away, a record's
+    /// length) are the centre's and run on the real clock: they are stamped
+    /// with this and never shifted, so a boarding announced mid-pause keeps
+    /// the window the centre gave it.
+    fn real_ms(&self, now_ms: u64) -> u64 {
+        self.read_ms.max(now_ms)
+    }
+
+    /// The followed match is running: the only time the pod's `STARTUP` is
+    /// typed.
+    fn followed_running(picture: &Picture) -> bool {
+        matches!(picture.phase, Phase::Running { match_id } if picture.following == Some(match_id))
+    }
+
+    /// `name` is where the walk's line in flight goes: any room for `look`,
+    /// the Welcome Hall for `ooc`, the Simulator Lobby for `simulator`.
+    fn walk_arrives(&self, name: &str) -> bool {
+        match self.flight.map(|f| f.line) {
+            Some(LobbyLine::Look) => true,
+            Some(LobbyLine::Ooc) => name == "Welcome Hall",
+            Some(LobbyLine::Simulator) => name == "Simulator Lobby",
+            _ => false,
+        }
+    }
+
+    /// **The answer a stop waits for** (cut AM.2), while closed with
+    /// [`Leave::AwaitFlight`]: any answer to the claim or the start queues the
+    /// one `SIM LEAVE` (the pilot's own claim records its slot first); the
+    /// other side's `You already hold …` ends the leave with nothing typed;
+    /// every other line changes nothing.
+    fn await_flight(&mut self, flown: LobbyLine, line: &Line, picture: &Picture) {
+        let answered = match (flown, line) {
+            (_, Line::Transient(_)) => true,
+            (LobbyLine::SimTeam(_), Line::Claimed { name, side, index })
+                if *side == self.side && self.is_me(name) =>
+            {
+                self.slot = Some(*index);
+                self.last_slot = self.slot;
+                true
+            }
+            (LobbyLine::SimTeam(_), Line::AlreadyHold { side, index }) if *side == self.side => {
+                self.slot = Some(*index);
+                self.last_slot = self.slot;
+                true
+            }
+            (LobbyLine::SimTeam(_), Line::AlreadyHold { .. }) => {
+                // The claim took nothing, and the slot held is not this
+                // run's to give up.
+                self.flight = None;
+                self.leave = Leave::Done;
+                return;
+            }
+            (
+                LobbyLine::SimTeam(_),
+                Line::SideFull { .. }
+                | Line::WrongCentreState { .. }
+                | Line::NoCentre
+                | Line::LayerOff
+                | Line::OutsideCentre
+                | Line::NobodyPlaying,
+            ) => true,
+            (LobbyLine::SimStart, line) if Self::followed_boarding(line, picture).is_some() => true,
+            (
+                LobbyLine::SimStart,
+                Line::NotLead
+                | Line::EmptySide { .. }
+                | Line::WrongCentreState { .. }
+                | Line::NobodyPlaying,
+            ) => true,
+            _ => false,
+        };
+        if answered {
+            self.flight = None;
+            self.leave = Leave::Queued;
+            self.retries = 0;
+        }
+    }
 
     fn window(&mut self, side: Side) -> &mut Option<Vec<String>> {
         match side {
@@ -699,14 +946,23 @@ impl Lobby {
             return;
         }
         self.lead = lead;
-        if lead && matches!(self.step, Step::Start | Step::Await) {
-            self.say(format!("Now leading the {} side.", side.as_str()));
-            if self.step == Step::Await {
-                self.step = Step::Start;
-                self.deadline = None;
-                self.last_other_ms = self.last_other_ms.max(now_ms);
+        if lead {
+            if matches!(self.step, Step::Start | Step::Await) {
+                self.say(format!("Now leading the {} side.", side.as_str()));
+                if self.step == Step::Await {
+                    self.step = Step::Start;
+                    self.deadline = None;
+                    self.last_other_ms = self.last_other_ms.max(now_ms);
+                }
             }
-        } else if !lead && self.step == Step::Start && self.flight.is_none() {
+            return;
+        }
+        // The lead lost: a start wanted and not yet typed goes, whatever is in
+        // flight (cut AM.2).
+        if matches!(self.want, Some((LobbyLine::SimStart, _))) {
+            self.want = None;
+        }
+        if self.step == Step::Start && self.flight.is_none() {
             self.await_start(now_ms);
         }
     }
@@ -856,7 +1112,9 @@ impl Lobby {
             .clone()
             .or_else(|| self.callsign())
             .unwrap_or_default();
-        let duration = self.running_ms.map_or(0, |at| now_ms.saturating_sub(at));
+        // A match recorded while paused keeps its real length (cut AM.2).
+        let end = self.real_ms(now_ms);
+        let duration = self.running_ms.map_or(0, |at| end.saturating_sub(at));
         let result = MatchResult::from_picture(
             picture,
             self.side,
@@ -934,7 +1192,13 @@ impl Lobby {
         self.want = Some((LobbyLine::SimStatus, at_ms.max(now_ms)));
     }
 
+    /// Not the lead (or not now): wait for somebody to start, up to
+    /// `[arena].wait_start_s`. A start wanted and not yet typed goes (cut
+    /// AM.2).
     fn await_start(&mut self, now_ms: u64) {
+        if matches!(self.want, Some((LobbyLine::SimStart, _))) {
+            self.want = None;
+        }
         self.step = Step::Await;
         self.deadline = Some((
             now_ms.saturating_add(self.settings.wait_start_s * 1_000),
@@ -945,10 +1209,15 @@ impl Lobby {
         ));
     }
 
+    /// `look`'s own answer: the room heading decides the walk. A heading read
+    /// before `look` is typed is not its answer (cut AM.2).
     fn on_look(&mut self, now_ms: u64, line: &Line) {
         let Line::Room(name) = line else {
             return;
         };
+        if self.flight.map(|f| f.line) != Some(LobbyLine::Look) {
+            return;
+        }
         if is_centre_room(name) {
             self.survey(now_ms, now_ms);
         } else if name == "Welcome Hall" {
@@ -958,15 +1227,18 @@ impl Lobby {
         }
     }
 
-    fn on_walk(&mut self, now_ms: u64, line: &Line, picture: &Picture) {
+    /// The walk's own room: `ooc` to the Welcome Hall, then `simulator` to the
+    /// Simulator Lobby. Every other heading is ignored (cut AM.2: a late
+    /// `look`'s answer, or a move the walk did not make); a walk that never
+    /// arrives blocks by the quiet rule in [`Lobby::poll`] alone.
+    fn on_walk(&mut self, now_ms: u64, line: &Line) {
         let Line::Room(name) = line else {
             return;
         };
         match (self.flight.map(|f| f.line), name.as_str()) {
             (Some(LobbyLine::Ooc), "Welcome Hall") => self.walk(now_ms, LobbyLine::Simulator),
             (Some(LobbyLine::Simulator), "Simulator Lobby") => self.survey(now_ms, now_ms),
-            (Some(_), _) => self.block(now_ms, UNREACHABLE, picture),
-            (None, _) => {}
+            _ => {}
         }
     }
 
@@ -1031,7 +1303,7 @@ impl Lobby {
                     picture.side = Some(self.side);
                     picture.following = Some(id);
                     picture.phase = Phase::Boarding { match_id: id };
-                    self.boarding_ms = now_ms;
+                    self.boarding_ms = self.real_ms(now_ms);
                     self.lead_at_boarding = false;
                     self.enter_team_room(now_ms, picture);
                     return;
@@ -1051,7 +1323,7 @@ impl Lobby {
                     if picture.own.callsign.is_none() {
                         picture.own.callsign = Some(mine.callsign.clone());
                     }
-                    self.running_ms = Some(now_ms);
+                    self.running_ms = Some(self.real_ms(now_ms));
                     self.lead_at_boarding = false;
                     self.reboard(now_ms);
                     return;
@@ -1168,7 +1440,7 @@ impl Lobby {
         self.deadline = None;
         self.waiting_other = false;
         self.lead_at_boarding = self.lead;
-        self.boarding_ms = now_ms;
+        self.boarding_ms = self.real_ms(now_ms);
         self.board_window_ms = boarding_window_ms(raw);
         self.say(format!(
             "Match {match_id} is boarding; going to the {} pod.",
@@ -1284,15 +1556,64 @@ impl Lobby {
             && picture.following == Some(*match_id)
         {
             self.deadline = None;
-            self.running_ms = Some(now_ms);
+            self.running_ms = Some(self.real_ms(now_ms));
             self.say(format!("Match {match_id} is running; starting the tank."));
             self.step = Step::Startup;
             self.ask(now_ms, LobbyLine::Startup);
         }
     }
 
+    /// **`STARTUP`'s every answer** (cut AM.2): begun or still coming up, the
+    /// power wait; online, the fight; the dark panel, again in a second; the
+    /// tank destroyed or a wreck, the fight's step with nothing to type until
+    /// the match's end; the tank no longer in the match, the match recorded
+    /// `left` and its end waited for when another match follows (the last one
+    /// asked ends the run there); any other refusal, again after
+    /// `[arena].step_timeout_ms`; a drop, the re-board.
     fn on_power(&mut self, now_ms: u64, line: &Line, picture: &Picture) {
         match line {
+            Line::DestroyedNoOrders => self.wrecked(),
+            Line::Refused { order, said, .. }
+                if order == "STARTUP" && said.starts_with("Your tank is a wreck") =>
+            {
+                self.wrecked()
+            }
+            Line::Refused { order, said, .. }
+                if order == "STARTUP"
+                    && said.starts_with("That tank is no longer in the match") =>
+            {
+                self.flight = None;
+                self.want = None;
+                self.deadline = None;
+                // The end is waited for only when another match follows it:
+                // the last one asked ends the run here.
+                let flown = self
+                    .matches
+                    .len()
+                    .saturating_add(usize::from(picture.following.is_some()));
+                let more = u32::try_from(flown).unwrap_or(u32::MAX) < self.settings.matches;
+                self.say(if more {
+                    "The tank is no longer in the match; waiting for it to end.".to_owned()
+                } else {
+                    "The tank is no longer in the match.".to_owned()
+                });
+                if let Some(id) = picture.following {
+                    self.record(now_ms, picture, id, "left", false);
+                }
+                self.after_match(now_ms, picture);
+            }
+            Line::Refused { order, said, .. } if order == "STARTUP" => {
+                let wait = self.settings.step_timeout_ms;
+                self.flight = None;
+                self.deadline = None;
+                self.step = Step::Startup;
+                self.retries = 0;
+                self.want = Some((LobbyLine::Startup, now_ms.saturating_add(wait)));
+                self.say(format!(
+                    "STARTUP was refused (`{said}`); typing it again in {} s.",
+                    wait / 1_000
+                ));
+            }
             Line::StartupBegun | Line::PowerStarting if self.step == Step::Startup => {
                 self.flight = None;
                 self.step = Step::AwaitPower;
@@ -1322,6 +1643,18 @@ impl Lobby {
         self.say("Power online; fighting.".to_owned());
     }
 
+    /// The tank is destroyed (or a wreck): the fight's step, typing nothing
+    /// (the picture marks it destroyed, so [`Step::Fight`] never starts it
+    /// again), until the match's end records the centre's own word (cut
+    /// AM.2).
+    fn wrecked(&mut self) {
+        self.flight = None;
+        self.want = None;
+        self.deadline = None;
+        self.step = Step::Fight;
+        self.say("The tank is destroyed; waiting for the match to end.".to_owned());
+    }
+
     /// `OUTSIDE_COCKPIT`, `RESUME_LINE` or the doctrine line naming the own tank:
     /// the pilot is out of it.
     fn dropped(&self, line: &Line, picture: &Picture) -> bool {
@@ -1344,7 +1677,7 @@ impl Lobby {
     fn reboard(&mut self, now_ms: u64) {
         self.step = Step::Reboard;
         self.deadline = None;
-        self.reboard_since = now_ms;
+        self.reboard_since = self.real_ms(now_ms);
         self.reboard_next = now_ms;
         self.reboard_room_first = false;
         self.back_away_ms = None;
@@ -1405,7 +1738,7 @@ impl Lobby {
         self.reclaims = self.reclaims.saturating_add(1);
         let away = self
             .back_away_ms
-            .unwrap_or_else(|| now_ms.saturating_sub(self.reboard_since));
+            .unwrap_or_else(|| self.real_ms(now_ms).saturating_sub(self.reboard_since));
         self.away_ms = self.away_ms.saturating_add(away);
         self.say(format!(
             "Back aboard after {} s away.",
@@ -1534,6 +1867,26 @@ mod tests {
             self.now += 1_000;
             self.hear("Power online.");
             assert_eq!(self.lobby.step(), Step::Fight);
+        }
+
+        /// Through the start and the board to `STARTUP` typed in the running
+        /// match (cut AM.2); the time it was typed.
+        fn up_to_startup(&mut self) -> u64 {
+            self.claim_lead();
+            assert_eq!(self.next(4_000).as_deref(), Some("SIM START"));
+            self.hear("Match 1 is boarding. Every pilot: BOARD your pod. The match starts when everyone is seated, or in 30 second(s).");
+            assert_eq!(self.next(100).as_deref(), Some("red"));
+            self.hear("Red Room #57");
+            assert_eq!(self.next(100).as_deref(), Some("BOARD"));
+            self.hear("You climb into Red Pod 1. The panel wakes when every pilot is seated.");
+            self.hear("Match 1 is running. Good hunting.");
+            assert_eq!(self.next(100).as_deref(), Some("STARTUP"));
+            assert_eq!(self.lobby.step(), Step::Startup);
+            self.now
+        }
+
+        fn types(&self, line: &str) -> usize {
+            self.typed.iter().filter(|l| *l == line).count()
         }
     }
 
@@ -2298,10 +2651,16 @@ mod tests {
         rig.next(100);
         rig.hear("Startup sequence begun; power comes online shortly.");
         let begun = rig.now;
-        rig.at(begun + POWER_WAIT_MS);
-        assert_eq!(
-            rig.lobby.blocker(),
-            Some("Power did not come online within 30 s.")
+        assert_eq!(rig.at(begun + POWER_WAIT_MS - 1), None);
+        // The match runs: never given up because the power did not come up
+        // (cut AM.2), `STARTUP` again instead.
+        assert_eq!(rig.at(begun + POWER_WAIT_MS).as_deref(), Some("STARTUP"));
+        assert_eq!(rig.lobby.blocker(), None);
+        assert_eq!(rig.lobby.step(), Step::Startup);
+        assert!(
+            rig.said().contains(
+                &"Power did not come online within 30 s; typing STARTUP again.".to_owned()
+            )
         );
     }
 
@@ -2314,6 +2673,623 @@ mod tests {
                 "Match 1 is boarding. Every pilot: BOARD your pod. The match starts when everyone is seated, or in 60 second(s)."
             ),
             Some(60_000)
+        );
+    }
+
+    // -- cut AM.2: the stop races, the start, the walk, `STARTUP`, the pause ----
+
+    const CLAIMED: &str = "Pilot takes red slot 1. `SIM START` begins the match; the machines take the pods nobody claims.";
+
+    /// Walk in, read an idle board, and type `SIM TEAM red`; when it went.
+    fn claim_typed(rig: &mut Rig) -> u64 {
+        rig.walk_in();
+        rig.board("idle", "nobody", "nobody");
+        assert_eq!(rig.next(100).as_deref(), Some("SIM TEAM red"));
+        rig.now
+    }
+
+    /// **A stop with a claim in flight** (cut AM.2): it says so, types nothing
+    /// until the claim's answer, then exactly one `SIM LEAVE`; the leave is
+    /// pending until that leave's own answer.
+    #[test]
+    fn a_stop_with_a_claim_in_flight_waits_then_leaves_once() {
+        let mut rig = Rig::new(Side::Red);
+        claim_typed(&mut rig);
+        rig.lobby.stop(rig.now, &rig.picture);
+        assert!(
+            rig.said().contains(
+                &"Stopping: waiting for the answer to `SIM TEAM red` before giving the slot up."
+                    .to_owned()
+            )
+        );
+        assert!(rig.lobby.leave_pending(rig.now));
+        assert_eq!(rig.next(5_000), None, "nothing before the claim's answer");
+        assert!(rig.lobby.leave_pending(rig.now));
+        rig.hear(CLAIMED);
+        assert_eq!(rig.lobby.slot(), Some(1));
+        assert!(rig.lobby.leave_pending(rig.now));
+        assert_eq!(rig.next(100).as_deref(), Some("SIM LEAVE"));
+        assert!(rig.lobby.leave_pending(rig.now));
+        assert_eq!(rig.next(2_000), None);
+        rig.hear("Pilot gives up red slot 1.");
+        assert!(!rig.lobby.leave_pending(rig.now));
+        assert!(rig.said().contains(&"Gave up red slot 1.".to_owned()));
+        assert_eq!(rig.next(30_000), None, "nothing after it");
+        assert_eq!(rig.types("SIM LEAVE"), 1);
+        // A second stop changes nothing.
+        rig.lobby.stop(rig.now, &rig.picture);
+        assert!(rig.said().is_empty());
+    }
+
+    /// **A claim never answered** (cut AM.2): the one `SIM LEAVE` goes at the
+    /// claim's typing and the step timeout, not one tick before, and once.
+    #[test]
+    fn a_stop_whose_claim_is_never_answered_leaves_at_the_step_timeout() {
+        let mut rig = Rig::new(Side::Red);
+        let sent = claim_typed(&mut rig);
+        let timeout = Settings::default().step_timeout_ms;
+        rig.lobby.stop(rig.now, &rig.picture);
+        assert_eq!(rig.at(sent + timeout - 50), None);
+        assert_eq!(rig.at(sent + timeout - 1), None);
+        assert!(rig.lobby.leave_pending(rig.now));
+        assert_eq!(rig.at(sent + timeout).as_deref(), Some("SIM LEAVE"));
+        // An unneeded leave is answered harmlessly.
+        rig.hear("You hold no slot in the simulator.");
+        assert_eq!(rig.next(30_000), None);
+        assert_eq!(rig.types("SIM LEAVE"), 1);
+        assert!(!rig.lobby.leave_pending(rig.now));
+        assert_eq!(rig.lobby.blocker(), None, "a stop is not a blocker");
+    }
+
+    /// **A stop with a start in flight** (cut AM.2): the boarding line that
+    /// answers it is followed by exactly one `SIM LEAVE`.
+    #[test]
+    fn a_stop_with_a_start_in_flight_leaves_after_its_answer() {
+        let mut rig = Rig::new(Side::Red);
+        rig.claim_lead();
+        assert_eq!(rig.next(4_000).as_deref(), Some("SIM START"));
+        rig.lobby.stop(rig.now, &rig.picture);
+        assert!(
+            rig.said().contains(
+                &"Stopping: waiting for the answer to `SIM START` before giving the slot up."
+                    .to_owned()
+            )
+        );
+        assert_eq!(rig.next(1_000), None);
+        rig.hear("Match 1 is boarding. Every pilot: BOARD your pod. The match starts when everyone is seated, or in 30 second(s).");
+        assert_eq!(rig.next(100).as_deref(), Some("SIM LEAVE"));
+        assert_eq!(rig.next(30_000), None);
+        assert_eq!(rig.types("SIM LEAVE"), 1);
+        assert!(!rig.typed.iter().any(|l| l == "red" || l == "BOARD"));
+        // Every other answer to a start queues it too.
+        for answer in [
+            "Only a side's lead or staff can start the match.",
+            "The blue side has no pilots; a match takes at least one a side.",
+            "The simulator centre is running; that is not something you can do to it now.",
+            "Nobody is in the simulator; a match takes at least one pilot.",
+            "The arena is busy; try that again in a moment.",
+        ] {
+            let mut rig = Rig::new(Side::Red);
+            rig.claim_lead();
+            assert_eq!(rig.next(4_000).as_deref(), Some("SIM START"));
+            rig.lobby.stop(rig.now, &rig.picture);
+            rig.hear("Ada says, \"Wait for me.\"");
+            assert_eq!(rig.next(1_000), None, "{answer}: not chatter");
+            rig.hear(answer);
+            assert_eq!(rig.next(100).as_deref(), Some("SIM LEAVE"), "{answer}");
+            assert_eq!(rig.next(30_000), None, "{answer}");
+        }
+    }
+
+    /// **Every answer to a claim** a stop waits for queues the one leave (cut
+    /// AM.2), the pilot's own claim recording its slot.
+    #[test]
+    fn every_answer_to_a_claim_queues_the_leave() {
+        for answer in [
+            "You already hold red slot 2. `SIM LEAVE` gives it up.",
+            "The red side is full: it takes 1 pilot(s).",
+            "The simulator centre is running; that is not something you can do to it now.",
+            "This server has no simulator centre.",
+            "The TacSim layer is off on this server, so the simulator cannot run.",
+            "The simulator is through the lobby.",
+            "Nobody is in the simulator; a match takes at least one pilot.",
+            "The command could not commit; please retry in a moment.",
+        ] {
+            let mut rig = Rig::new(Side::Red);
+            claim_typed(&mut rig);
+            rig.lobby.stop(rig.now, &rig.picture);
+            // Somebody else's claim is no answer to this one.
+            rig.hear("Ada takes red slot 1. `SIM START` begins the match.");
+            assert_eq!(rig.next(1_000), None, "{answer}");
+            rig.hear(answer);
+            assert_eq!(rig.next(100).as_deref(), Some("SIM LEAVE"), "{answer}");
+            assert_eq!(rig.next(30_000), None, "{answer}");
+            assert_eq!(rig.types("SIM LEAVE"), 1, "{answer}");
+        }
+    }
+
+    /// **A refused claim neither waits nor leaves** (cut AM.2): a blocker
+    /// closes as before — no `Stopping` sentence, no `SIM LEAVE`, nothing
+    /// pending — and a stop after it changes nothing.
+    #[test]
+    fn a_refused_claim_neither_waits_nor_leaves() {
+        for (answer, blocker) in [
+            (
+                "The red side is full: it takes 1 pilot(s).",
+                "The red side is full.",
+            ),
+            (
+                "You already hold blue slot 2. `SIM LEAVE` gives it up.",
+                "The bot already holds a slot on the other side.",
+            ),
+        ] {
+            let mut rig = Rig::new(Side::Red);
+            claim_typed(&mut rig);
+            rig.hear(answer);
+            assert_eq!(rig.lobby.blocker(), Some(blocker));
+            rig.lobby.stop(rig.now, &rig.picture);
+            assert!(!rig.lobby.leave_pending(rig.now), "{answer}");
+            assert_eq!(rig.next(30_000), None, "{answer}");
+            assert_eq!(rig.types("SIM LEAVE"), 0, "{answer}");
+            let said = rig.said();
+            assert!(
+                !said.iter().any(|s| s.starts_with("Stopping")),
+                "{answer}: {said:?}"
+            );
+        }
+    }
+
+    /// **The other side's slot** (cut AM.2): a stop waiting for a claim that
+    /// is answered `You already hold blue slot 2.` types nothing — the claim
+    /// took nothing, and that slot is not this run's to give up.
+    #[test]
+    fn a_stop_answered_by_the_other_sides_slot_types_no_leave() {
+        let mut rig = Rig::new(Side::Red);
+        claim_typed(&mut rig);
+        rig.lobby.stop(rig.now, &rig.picture);
+        assert!(rig.lobby.leave_pending(rig.now));
+        rig.hear("You already hold blue slot 2. `SIM LEAVE` gives it up.");
+        assert_eq!(rig.lobby.leave, Leave::Done);
+        assert!(!rig.lobby.leave_pending(rig.now));
+        assert_eq!(rig.next(30_000), None);
+        assert_eq!(rig.types("SIM LEAVE"), 0);
+    }
+
+    /// **A start wanted and not typed goes with the lead** (cut AM.2): a match
+    /// end read while the pilot follows none releases every lead in
+    /// `centre_line` (not through `recompute_lead`), so it is `poll` and `due`
+    /// that drop the start: it is never typed, and the pilot waits.
+    #[test]
+    fn a_queued_start_is_dropped_when_the_lead_is_lost() {
+        let mut rig = Rig::new(Side::Red);
+        rig.claim_lead();
+        let grace = rig.now + Settings::default().lead_start_grace_ms;
+        // Polled past the grace, not typed: the start is wanted.
+        rig.now = grace;
+        rig.lobby.poll(grace, &mut rig.picture);
+        assert!(matches!(rig.lobby.want, Some((LobbyLine::SimStart, _))));
+        assert_eq!(rig.lobby.step(), Step::Start);
+        // Somebody else's match ends first.
+        rig.hear("Match 7 is over (red). Its units are checked in.");
+        assert!(!rig.lobby.lead());
+        // `due` alone never yields it now.
+        assert_eq!(rig.lobby.due(rig.now), None);
+        assert_eq!(rig.at(rig.now), None);
+        assert_eq!(rig.lobby.step(), Step::Await);
+        assert_eq!(rig.lobby.want, None);
+        assert_eq!(rig.next(10_000), None);
+        assert_eq!(rig.types("SIM START"), 0);
+        // And `due` refuses a start wanted at `Start` by a pilot who does not
+        // lead, whatever put it there.
+        rig.lobby.step = Step::Start;
+        rig.lobby.want = Some((LobbyLine::SimStart, 0));
+        assert_eq!(rig.lobby.due(rig.now), None);
+        // A lead lost through the claim window drops it too, the flight
+        // whatever it is.
+        let mut rig = Rig::new(Side::Red);
+        rig.claim_lead();
+        rig.now += Settings::default().lead_start_grace_ms;
+        rig.lobby.poll(rig.now, &mut rig.picture);
+        assert!(matches!(rig.lobby.want, Some((LobbyLine::SimStart, _))));
+        rig.lobby.flight = Some(Flight {
+            line: LobbyLine::SimStatus,
+            sent_ms: rig.now,
+        });
+        rig.hear("Pilot gives up red slot 1.");
+        assert!(!rig.lobby.lead());
+        assert_eq!(rig.lobby.want, None);
+    }
+
+    /// **A late `look` answer never blocks the walk** (cut AM.2): `look`, some
+    /// noise and the quiet rule's `ooc`; then the late answer's heading is
+    /// ignored (no blocker, and it starts no quiet rule), and the walk's own
+    /// rooms carry it to `SIM STATUS`.
+    #[test]
+    fn a_late_look_answer_never_blocks_the_walk() {
+        let mut rig = Rig::new(Side::Red);
+        assert_eq!(rig.at(0).as_deref(), Some("look"));
+        rig.hear("Huh?  (Type \"help\" for help.)");
+        assert_eq!(rig.next(1_800).as_deref(), Some("ooc"));
+        rig.hear("Simulator Lobby #50");
+        assert_eq!(rig.lobby.step(), Step::Walk);
+        assert_eq!(rig.next(3_000), None);
+        assert_eq!(rig.lobby.blocker(), None);
+        assert!(!rig.lobby.finished());
+        rig.hear("Welcome Hall #2");
+        assert_eq!(rig.next(100).as_deref(), Some("simulator"));
+        rig.hear("Simulator Lobby #50");
+        assert_eq!(rig.next(100).as_deref(), Some("SIM STATUS"));
+        assert_eq!(rig.typed, ["look", "ooc", "simulator", "SIM STATUS"]);
+        assert_eq!(rig.lobby.blocker(), None);
+        // A heading before `look` is typed is not its answer.
+        let mut rig = Rig::new(Side::Red);
+        rig.hear("Simulator Lobby #50");
+        assert_eq!(rig.lobby.step(), Step::Look);
+        assert_eq!(rig.at(0).as_deref(), Some("look"));
+        rig.hear("Limbo #0");
+        assert_eq!(rig.next(3_000).as_deref(), Some("ooc"));
+    }
+
+    /// **A walk waits for its own room** (cut AM.2): during `simulator`'s
+    /// flight a Welcome Hall heading is ignored; the Simulator Lobby moves it
+    /// on.
+    #[test]
+    fn a_walk_waits_for_its_own_room() {
+        let mut rig = Rig::new(Side::Red);
+        assert_eq!(rig.at(0).as_deref(), Some("look"));
+        rig.hear("Limbo #0");
+        assert_eq!(rig.next(3_000).as_deref(), Some("ooc"));
+        rig.hear("Welcome Hall #2");
+        assert_eq!(rig.next(100).as_deref(), Some("simulator"));
+        rig.hear("Welcome Hall #2");
+        assert_eq!(rig.next(3_000), None);
+        assert_eq!(rig.lobby.step(), Step::Walk);
+        assert_eq!(rig.lobby.blocker(), None);
+        rig.hear("Simulator Lobby #50");
+        assert_eq!(rig.next(100).as_deref(), Some("SIM STATUS"));
+    }
+
+    /// **`STARTUP` knows every answer** (cut AM.2), each from `STARTUP` typed
+    /// in a running match.
+    #[test]
+    fn startup_knows_every_answer() {
+        // Begun or still coming up: the power wait.
+        for line in [
+            "Startup sequence begun; power comes online shortly.",
+            "Power is still coming up; hold on.",
+        ] {
+            let mut rig = Rig::new(Side::Red);
+            rig.up_to_startup();
+            rig.hear(line);
+            assert_eq!(rig.lobby.step(), Step::AwaitPower, "{line}");
+        }
+        // Online: the fight.
+        for line in ["Power is already online.", "Power online."] {
+            let mut rig = Rig::new(Side::Red);
+            rig.up_to_startup();
+            rig.hear(line);
+            assert_eq!(rig.lobby.step(), Step::Fight, "{line}");
+            assert!(rig.said().contains(&"Power online; fighting.".to_owned()));
+        }
+        // The dark panel: again in a second.
+        let mut rig = Rig::new(Side::Red);
+        rig.up_to_startup();
+        rig.hear("The panel is dark until the match starts; the simulator is still waiting for the other pods.");
+        let t = rig.now;
+        assert_eq!(rig.at(t + 999), None);
+        assert_eq!(rig.at(t + 1_000).as_deref(), Some("STARTUP"));
+        // Destroyed, or a wreck: the fight's step, nothing typed for a minute,
+        // no blocker; the match's end records the centre's word.
+        for line in [
+            "Your tank is destroyed and takes no orders. EXIT leaves the pod.",
+            "STARTUP refused. Your tank is a wreck.",
+        ] {
+            let mut rig = Rig::new(Side::Red);
+            rig.up_to_startup();
+            rig.hear(line);
+            assert_eq!(rig.lobby.step(), Step::Fight, "{line}");
+            assert!(rig.picture.own.destroyed, "{line}");
+            assert!(
+                rig.said()
+                    .contains(&"The tank is destroyed; waiting for the match to end.".to_owned()),
+                "{line}"
+            );
+            assert_eq!(rig.next(60_000), None, "{line}");
+            assert_eq!(rig.lobby.blocker(), None, "{line}");
+            rig.hear("Match 1 is over (blue). Its units are checked in.");
+            assert_eq!(rig.lobby.matches()[0].result, "blue", "{line}");
+            assert_eq!(rig.lobby.blocker(), None, "{line}");
+        }
+        // No longer in the match, the last match asked: recorded `left`, and
+        // the run ends there (no end is waited for, and the sentence says
+        // none is).
+        let mut rig = Rig::new(Side::Red);
+        rig.up_to_startup();
+        rig.hear("STARTUP refused. That tank is no longer in the match.");
+        assert_eq!(rig.lobby.matches()[0].result, "left");
+        let said = rig.said();
+        assert!(
+            said.contains(&"The tank is no longer in the match.".to_owned()),
+            "{said:?}"
+        );
+        assert!(
+            !said.iter().any(|s| s.contains("waiting for it to end")),
+            "{said:?}"
+        );
+        assert!(
+            said.iter()
+                .any(|s| s.starts_with("Stopped flying match 1 before its end (left); ")),
+            "{said:?}"
+        );
+        assert_eq!(rig.lobby.blocker(), None);
+        assert!(rig.lobby.finished());
+        // No longer in the match with another to fly: the flight and the want
+        // go, nothing is typed and nothing blocks while the match runs on, and
+        // the next claim goes after its end; the record stays `left`.
+        let mut rig = Rig::with(
+            Side::Red,
+            Settings {
+                matches: 2,
+                ..Settings::default()
+            },
+            "Pilot",
+        );
+        rig.up_to_startup();
+        rig.hear("STARTUP refused. That tank is no longer in the match.");
+        assert_eq!(rig.lobby.matches()[0].result, "left");
+        assert!(
+            rig.said()
+                .contains(&"The tank is no longer in the match; waiting for it to end.".to_owned())
+        );
+        assert_eq!(rig.lobby.step(), Step::Over);
+        assert_eq!(rig.lobby.flight, None);
+        assert_eq!(rig.lobby.want, None);
+        assert_eq!(rig.next(60_000), None);
+        assert_eq!(rig.lobby.blocker(), None);
+        assert!(!rig.lobby.closed());
+        rig.hear("Match 1 is over (blue). Its units are checked in.");
+        let end = rig.now;
+        assert_eq!(rig.at(end + REMATCH_AFTER_MS - 1), None);
+        assert_eq!(
+            rig.at(end + REMATCH_AFTER_MS).as_deref(),
+            Some("SIM TEAM red")
+        );
+        assert_eq!(rig.lobby.matches().len(), 1);
+        assert_eq!(rig.lobby.matches()[0].result, "left");
+        assert_eq!(rig.types("SIM TEAM red"), 2);
+        // Any other refusal: again at the step timeout, not every second.
+        let mut rig = Rig::new(Side::Red);
+        rig.up_to_startup();
+        rig.hear("STARTUP refused. The arena has not seated your tank.");
+        let t = rig.now;
+        let timeout = Settings::default().step_timeout_ms;
+        assert!(rig.said().contains(
+            &"STARTUP was refused (`The arena has not seated your tank.`); typing it again in 15 s."
+                .to_owned()
+        ));
+        assert_eq!(rig.at(t + 1_000), None);
+        assert_eq!(rig.at(t + timeout - 1), None);
+        assert_eq!(rig.at(t + timeout).as_deref(), Some("STARTUP"));
+        assert_eq!(rig.lobby.blocker(), None);
+        // A refused `FIRE` saying the tank is a wreck marks nothing.
+        let mut picture = Picture::default();
+        picture.apply(0, &classify("FIRE cannon refused. Your tank is a wreck."));
+        assert!(!picture.own.destroyed);
+        // A drop: the re-board.
+        let mut rig = Rig::new(Side::Red);
+        rig.up_to_startup();
+        rig.hear("You are not at the station of a deployed unit.");
+        assert_eq!(rig.lobby.step(), Step::Reboard);
+        assert_eq!(rig.next(100).as_deref(), Some("BOARD"));
+    }
+
+    /// **A running match is never given up because the tank would not start**
+    /// (cut AM.2): no answer to `STARTUP` within the step timeout types it
+    /// again, and so does a power wait that runs out; the match's end then
+    /// records the centre's own word.
+    #[test]
+    fn a_running_match_is_never_blocked_by_startup() {
+        let mut rig = Rig::new(Side::Red);
+        let t = rig.up_to_startup();
+        let timeout = Settings::default().step_timeout_ms;
+        assert_eq!(rig.at(t + timeout - 1), None);
+        assert_eq!(rig.at(t + timeout).as_deref(), Some("STARTUP"));
+        assert!(
+            rig.said()
+                .contains(&"No answer to `STARTUP` within 15 s; typing it again.".to_owned())
+        );
+        assert_eq!(rig.lobby.blocker(), None);
+        rig.hear("Startup sequence begun; power comes online shortly.");
+        let begun = rig.now;
+        assert_eq!(rig.at(begun + POWER_WAIT_MS - 1), None);
+        assert_eq!(rig.at(begun + POWER_WAIT_MS).as_deref(), Some("STARTUP"));
+        assert!(
+            rig.said().contains(
+                &"Power did not come online within 30 s; typing STARTUP again.".to_owned()
+            )
+        );
+        assert_eq!(rig.lobby.step(), Step::Startup);
+        rig.hear("Match 1 is over (blue). Its units are checked in.");
+        assert_eq!(rig.lobby.matches().len(), 1);
+        assert_eq!(rig.lobby.matches()[0].result, "blue");
+        assert_eq!(rig.lobby.blocker(), None);
+        assert!(rig.lobby.finished());
+    }
+
+    /// **`shift` moves every lobby wait** (cut AM.2), field by field, and none
+    /// of the match's own times nor the leave.
+    #[test]
+    fn shift_moves_every_wait() {
+        let mut rig = Rig::new(Side::Red);
+        let lobby = &mut rig.lobby;
+        lobby.flight = Some(Flight {
+            line: LobbyLine::SimTeam(Side::Red),
+            sent_ms: 1,
+        });
+        lobby.deadline = Some((2, "a deadline".into()));
+        lobby.want = Some((LobbyLine::SimStatus, 3));
+        lobby.rematch_at = Some(4);
+        lobby.reboard_next = 5;
+        lobby.resume_at = 6;
+        lobby.empty_since = Some(7);
+        lobby.busy_since = Some(8);
+        lobby.claim_ms = 9;
+        lobby.last_other_ms = 10;
+        lobby.last_line_ms = 11;
+        lobby.running_ms = Some(12);
+        lobby.reboard_since = 13;
+        lobby.boarding_ms = 14;
+        lobby.leave = Leave::AwaitFlight {
+            line: LobbyLine::SimTeam(Side::Red),
+            until: 15,
+        };
+        lobby.shift(1_000);
+        assert_eq!(lobby.flight.map(|f| f.sent_ms), Some(1_001));
+        assert_eq!(lobby.deadline.as_ref().map(|(at, _)| *at), Some(1_002));
+        assert_eq!(lobby.want.map(|(_, at)| at), Some(1_003));
+        assert_eq!(lobby.rematch_at, Some(1_004));
+        assert_eq!(lobby.reboard_next, 1_005);
+        assert_eq!(lobby.resume_at, 1_006);
+        assert_eq!(lobby.empty_since, Some(1_007));
+        assert_eq!(lobby.busy_since, Some(1_008));
+        assert_eq!(lobby.claim_ms, 1_009);
+        assert_eq!(lobby.last_other_ms, 1_010);
+        assert_eq!(lobby.last_line_ms, 1_011);
+        // Never the match's own times, nor the leave.
+        assert_eq!(lobby.running_ms, Some(12));
+        assert_eq!(lobby.reboard_since, 13);
+        assert_eq!(lobby.boarding_ms, 14);
+        assert_eq!(
+            lobby.leave,
+            Leave::AwaitFlight {
+                line: LobbyLine::SimTeam(Side::Red),
+                until: 15
+            }
+        );
+        // Unset waits stay unset.
+        let mut rig = Rig::new(Side::Red);
+        rig.lobby.want = None;
+        rig.lobby.shift(1_000);
+        assert_eq!(
+            (
+                rig.lobby.flight,
+                rig.lobby.deadline.clone(),
+                rig.lobby.want,
+                rig.lobby.rematch_at,
+                rig.lobby.empty_since,
+                rig.lobby.busy_since
+            ),
+            (None, None, None, None, None, None)
+        );
+    }
+
+    /// **Lines read while paused wait from the resume** (cut AM.2): a followed
+    /// match's end read a minute into a ten-minute pause sets the rematch
+    /// `REMATCH_AFTER_MS` after the resume and the quiet rule's last line at
+    /// the resume, while its record runs to when it was really read; a dark
+    /// panel read mid-pause wants `STARTUP` a second after the resume.
+    #[test]
+    fn lines_read_while_paused_wait_from_the_resume() {
+        let mut rig = Rig::with(
+            Side::Red,
+            Settings {
+                matches: 2,
+                ..Settings::default()
+            },
+            "Pilot",
+        );
+        rig.fly();
+        let running = rig.lobby.running_ms.expect("running");
+        let paused = rig.now + 5_000;
+        rig.lobby.pause(paused);
+        rig.now = paused + 60_000;
+        rig.hear("Match 1 is over (red). Its units are checked in.");
+        assert_eq!(rig.lobby.step(), Step::Over);
+        assert_eq!(rig.lobby.rematch_at, Some(paused + REMATCH_AFTER_MS));
+        assert_eq!(
+            rig.lobby.matches()[0].duration_ms,
+            paused + 60_000 - running,
+            "the record keeps the real time"
+        );
+        rig.now = paused + 300_000;
+        rig.hear("Ada says, \"Still there?\"");
+        assert_eq!(rig.lobby.last_line_ms, paused);
+        let resumed = paused + 600_000;
+        rig.lobby.resume(resumed);
+        assert_eq!(rig.lobby.rematch_at, Some(resumed + REMATCH_AFTER_MS));
+        assert_eq!(rig.lobby.last_line_ms, resumed);
+        assert_eq!(rig.at(resumed + REMATCH_AFTER_MS - 1), None);
+        assert_eq!(
+            rig.at(resumed + REMATCH_AFTER_MS).as_deref(),
+            Some("SIM TEAM red")
+        );
+        // A dark panel read mid-pause: `STARTUP` a second after the resume.
+        let mut rig = Rig::new(Side::Red);
+        let t = rig.up_to_startup();
+        rig.lobby.pause(t + 100);
+        rig.now = t + 20_000;
+        rig.hear("The panel is dark until the match starts; the simulator is still waiting for the other pods.");
+        let resumed = t + 100_000;
+        rig.lobby.resume(resumed);
+        assert_eq!(rig.at(resumed + 999), None);
+        assert_eq!(rig.at(resumed + 1_000).as_deref(), Some("STARTUP"));
+        assert_eq!(rig.lobby.blocker(), None);
+    }
+
+    /// **The match's own times stay real while paused** (cut AM.2): a
+    /// boarding announced twenty seconds into a pause keeps the window the
+    /// centre gave it (its 30 s and the 10 s of slack from when it was really
+    /// read), so a climb-in after a resume 45 s in waits for the match and
+    /// blocks only when that real bound lapses; a match running read while
+    /// paused, and a drop and a return read then, are timed by when they were
+    /// really read.
+    #[test]
+    fn the_matchs_own_times_stay_real_while_paused() {
+        let mut rig = Rig::new(Side::Red);
+        rig.walk_in();
+        rig.board("selection", "1 (RA): Ada", "nobody");
+        rig.next(100);
+        rig.hear("Pilot takes red slot 2. `SIM START` begins the match.");
+        assert_eq!(rig.lobby.step(), Step::Await);
+        let paused = rig.now + 1_000;
+        rig.lobby.pause(paused);
+        rig.now = paused + 20_000;
+        let announced = rig.now;
+        rig.hear("Match 1 is boarding. Every pilot: BOARD your pod. The match starts when everyone is seated, or in 30 second(s).");
+        assert_eq!(rig.lobby.step(), Step::ToRoom);
+        assert_eq!(rig.lobby.boarding_ms, announced, "really read");
+        let resumed = paused + 45_000;
+        rig.lobby.resume(resumed);
+        assert_eq!(rig.at(resumed).as_deref(), Some("red"));
+        rig.hear("Red Room #57");
+        assert_eq!(rig.next(100).as_deref(), Some("BOARD"));
+        rig.hear("You climb into Red Pod 2. The panel wakes when every pilot is seated.");
+        assert_eq!(rig.lobby.step(), Step::AwaitRunning);
+        assert_eq!(rig.at(announced + 40_000 - 1), None);
+        assert_eq!(rig.lobby.blocker(), None, "the real window is still open");
+        assert!(!rig.lobby.closed());
+        // The match runs, read during a second pause.
+        let paused = rig.now + 100;
+        rig.lobby.pause(paused);
+        rig.now = paused + 5_000;
+        let running = rig.now;
+        rig.hear("Match 1 is running. Good hunting.");
+        assert_eq!(rig.lobby.running_ms, Some(running), "really read");
+        let resumed = paused + 8_000;
+        rig.lobby.resume(resumed);
+        assert_eq!(rig.at(resumed).as_deref(), Some("STARTUP"));
+        rig.hear("Power online.");
+        assert_eq!(rig.lobby.step(), Step::Fight);
+        // A drop and a return, both read while paused: five real seconds away.
+        rig.lobby.pause(rig.now + 100);
+        rig.now += 2_000;
+        rig.hear("You are not at the station of a deployed unit.");
+        assert_eq!(rig.lobby.step(), Step::Reboard);
+        rig.now += 5_000;
+        rig.hear("You are already in your pod.");
+        assert!(
+            rig.said()
+                .contains(&"Back aboard after 5 s away.".to_owned())
         );
     }
 }

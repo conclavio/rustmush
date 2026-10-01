@@ -2395,6 +2395,12 @@ impl Picture {
         if said == "Your tank cannot move." {
             self.own.immobile = true;
         }
+        // `STARTUP refused. Your tank is a wreck.` (cut AM.2): the tank is
+        // destroyed, so nothing starts it again. Only `STARTUP`'s: a refused
+        // `FIRE` saying so is left as it was.
+        if order == "STARTUP" && said.starts_with("Your tank is a wreck") {
+            self.own.destroyed = true;
+        }
         if said.starts_with("No lock:") {
             self.clear_lock(now_ms);
         }

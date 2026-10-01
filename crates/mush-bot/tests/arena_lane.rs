@@ -50,6 +50,12 @@
 //! line before an earlier one when the earlier one's delay is longer, so a
 //! test whose proof depends on the order answers come in keeps them in the
 //! order typed and asserts that order.
+//!
+//! Cut AM.2 adds, off by default too: `claim_answer_ms` (how long the claim
+//! takes to answer `SIM TEAM red`: 4 ms unless set), `refuse_claim` (a
+//! refusal `SIM TEAM red` is answered with instead, every time),
+//! `look_answer_ms` (how long `look`'s answer takes: 3 ms unless set) and
+//! `look_room` (the heading `look` answers with, `Limbo #0` unless set).
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     ops::RangeInclusive,
@@ -66,7 +72,7 @@ use mush_bot::arena::{
         WEAPONS_AFTER_SHOT_MS, WEAPONS_IDLE_MS, WEAPONS_LEARNED_MS, WEAPONS_LOCKED_MS,
     },
     lines::AskKind,
-    lobby::{Centre, Step, TRANSIENT_RETRY_MS},
+    lobby::{Centre, REMATCH_AFTER_MS, Step, TRANSIENT_RETRY_MS},
     picture::{
         ACK_PAIR_MS, CYCLE_READ_WITHIN_MS, FIRE_RETRY_MS, FIRE_SLACK_MAX_MS, FIRE_SLACK_START_MS,
         FIRE_SLACK_UP_MS, Phase, Picture, Power, ResultWord, SNAPSHOT_SETTLE_MS, Weapon,
@@ -258,6 +264,17 @@ struct Server {
     /// The next line typed equal to this is answered with [`TRANSIENT`],
     /// once (cut AM.1).
     lobby_transient: Option<String>,
+    /// How long `SIM TEAM red`'s answer (the claim) takes (cut AM.2): 4 ms
+    /// unless set.
+    claim_answer_ms: u64,
+    /// `SIM TEAM red` is answered with this refusal instead of the claim,
+    /// every time (cut AM.2). Unset unless a test sets it.
+    refuse_claim: Option<String>,
+    /// How long `look`'s answer takes (cut AM.2): 3 ms unless set.
+    look_answer_ms: u64,
+    /// The room heading `look` answers with (cut AM.2), a description line
+    /// after it; unset, `Limbo #0`.
+    look_room: Option<String>,
 }
 
 /// The transient the cut AM.1 knobs answer with.
@@ -307,6 +324,10 @@ impl Server {
             leave_answer_ms: 3,
             chatter: None,
             lobby_transient: None,
+            claim_answer_ms: 4,
+            refuse_claim: None,
+            look_answer_ms: 3,
+            look_room: None,
         }
     }
 
@@ -491,7 +512,13 @@ impl Server {
         let me = self.me.clone();
         let id = self.match_id;
         match line {
-            "look" => self.say(3, "Limbo #0\nA grey place with no edges."),
+            "look" => match self.look_room.clone() {
+                Some(room) => self.say(
+                    self.look_answer_ms,
+                    &format!("{room}\nThe room you are in."),
+                ),
+                None => self.say(self.look_answer_ms, "Limbo #0\nA grey place with no edges."),
+            },
             "ooc" => self.say(3, "Welcome Hall #2\nA bright hall."),
             "simulator" => self.say(3, "Simulator Lobby #50\nThe lobby of the simulator."),
             "SIM STATUS" => {
@@ -507,13 +534,17 @@ impl Server {
                     );
                 }
             }
+            "SIM TEAM red" if self.refuse_claim.is_some() => {
+                let refusal = self.refuse_claim.clone().unwrap_or_default();
+                self.say(3, &refusal);
+            }
             "SIM TEAM red" => {
                 if self.board != "idle" && self.board != "selection" {
                     self.say(3, "The last match is cleared from the board and the tanks are back at muster.");
                 }
                 self.board = "selection".into();
                 self.say(
-                    4,
+                    self.claim_answer_ms,
                     &format!("{me} takes red slot 1. `SIM START` begins the match; the machines take the pods nobody claims."),
                 );
             }
@@ -4688,5 +4719,267 @@ fn the_fire_clock_holds_on_a_slow_wire() {
             "{weapon}: {acks} shots, at least {floor}"
         );
         assert!(refused * 10 <= lines, "{weapon}: {refused} of {lines}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cut AM.2: the stop races, the pause, the blocked report, the walk on the wire
+// ---------------------------------------------------------------------------
+
+/// Step `run` until the lane has typed `line` (60 s at most); when it went.
+fn until_typed(run: &mut Run, line: &str) -> u64 {
+    assert!(
+        run.until(60_000, |run| run.lines().contains(&line)),
+        "{line} never typed; sent {:?}, said {:?}",
+        run.lines(),
+        run.said
+    );
+    run.sends_of(line, 0)[0]
+}
+
+/// **A stop racing a claim never holds the slot** (cut AM.2): stopped right
+/// after `SIM TEAM red` is typed, with the claim two seconds away, the lane
+/// says it waits, types exactly one `SIM LEAVE` once the claim has come, hears
+/// it given up, and types nothing after it.
+#[test]
+fn a_stop_racing_a_claim_never_holds_the_slot() {
+    let mut run = Run::new(Settings::default());
+    run.server.claim_answer_ms = 2_000;
+    let claim = until_typed(&mut run, "SIM TEAM red");
+    run.lane.stop();
+    // `Lane::stop`'s events reach the run at its next step.
+    run.until(10_000, |_| false);
+    assert!(
+        run.said.iter().any(|s| s
+            == "Stopping: waiting for the answer to `SIM TEAM red` before giving the slot up."),
+        "{:?}",
+        run.said
+    );
+    let leaves = run.sends_of("SIM LEAVE", 0);
+    assert_eq!(leaves.len(), 1, "{:?}", run.lines());
+    assert!(
+        leaves[0] >= claim + 2_000,
+        "the leave at {} before the claim at {}",
+        leaves[0],
+        claim + 2_000
+    );
+    assert_eq!(run.lines().last(), Some(&"SIM LEAVE"), "nothing after it");
+    assert!(run.said.iter().any(|s| s == "Gave up red slot 1."));
+    assert!(!run.lane.leave_pending(run.now));
+    assert!(run.lane.result().is_none(), "a stop is not a result");
+    assert!(!run.lines().contains(&"SIM START"));
+}
+
+/// **A pause longer than the step timeout does not block** (cut AM.2): the
+/// lane is paused 100 ms after `SIM TEAM red` is typed with the claim
+/// `step_timeout_ms + 8 s` away, and stepped (typing nothing, chatter read
+/// half a second before the resume) until `step_timeout_ms + 5 s` past the
+/// typing; resumed, it waits on for the claim (about 3 s later) and flies.
+/// Before the cut the first tick after the resume blocked with ``No answer to
+/// `SIM TEAM red` within 15 s.``.
+#[test]
+fn a_pause_longer_than_the_step_timeout_does_not_block() {
+    let timeout = Settings::default().step_timeout_ms;
+    let mut run = Run::new(Settings::default());
+    run.server.claim_answer_ms = timeout + 8_000;
+    let claim = until_typed(&mut run, "SIM TEAM red");
+    run.until(claim + 100 - run.now, |_| false);
+    run.lane.pause(run.now);
+    assert!(run.lane.paused());
+    let typed = run.sent.len();
+    let resume_at = claim + timeout + 5_000;
+    run.until(resume_at - 500 - run.now, |_| false);
+    run.server.now = run.now;
+    run.server.say(0, "Ada says, \"Anyone on red?\"");
+    run.until(resume_at - run.now, |_| false);
+    assert_eq!(
+        run.sent.len(),
+        typed,
+        "typed while paused: {:?}",
+        &run.lines()[typed..]
+    );
+    assert_eq!(run.lane.lobby().blocker(), None);
+    run.lane.resume(run.now);
+    assert!(!run.lane.paused());
+    assert!(
+        run.until(60_000, Run::fighting),
+        "never reached the fight; said {:?}",
+        run.said
+    );
+    assert_eq!(run.lane.lobby().blocker(), None);
+    assert_eq!(run.lane.lobby().slot(), Some(1));
+    for sentence in [
+        "Paused: typing nothing until /resume; still reading.",
+        "Resumed after 20 s; every wait starts again from now.",
+        "Claimed red slot 1 (RA), leading the side.",
+    ] {
+        assert!(
+            run.said.iter().any(|s| s == sentence),
+            "{sentence}: {:?}",
+            run.said
+        );
+    }
+    assert_eq!(run.sends_of("SIM TEAM red", 0).len(), 1, "claimed once");
+}
+
+/// **A match ending mid-pause rematches after the resume** (cut AM.2): two
+/// matches; paused in match 1's fight, the match ends 10 s into the pause and
+/// is read then; resumed 120 s in, the next `SIM TEAM red` goes
+/// `REMATCH_AFTER_MS` after the resume (within a tick), not before, and
+/// nothing is typed while paused.
+#[test]
+fn a_match_ending_mid_pause_rematches_after_the_resume() {
+    let mut run = to_the_fight(Settings {
+        matches: 2,
+        ..Settings::default()
+    });
+    run.until(2_000, |_| false);
+    let paused = run.now;
+    run.lane.pause(paused);
+    let typed = run.sent.len();
+    run.until(10_000, |_| false);
+    run.server.end(run.now, "red");
+    run.until(paused + 120_000 - run.now, |_| false);
+    assert_eq!(run.sent.len(), typed, "typed while paused");
+    assert_eq!(
+        run.lane.report().matches.len(),
+        1,
+        "match 1 read while paused"
+    );
+    assert_eq!(run.lane.report().matches[0].result, "red");
+    let resumed = run.now;
+    run.lane.resume(resumed);
+    assert!(run.until(5_000, |run| {
+        !run.sends_of("SIM TEAM red", resumed).is_empty()
+    }));
+    let claim = run.sends_of("SIM TEAM red", resumed)[0];
+    assert!(
+        (resumed + REMATCH_AFTER_MS..=resumed + REMATCH_AFTER_MS + TICK_MS).contains(&claim),
+        "claimed at {claim}, resumed at {resumed}"
+    );
+    assert!(run.until(60_000, Run::fighting), "the second match flies");
+}
+
+/// **A resume mid-fight reads the tank again and orders again** (cut AM.2):
+/// paused while the pilot drives (a speed of its own ordered, not the
+/// ceilings' `SPEED 999`), the resume makes the fight afresh, as after a
+/// re-board: the first lines after it are `STATUS` and `WEAPONSTATUS`, ahead
+/// of every other cockpit line, and the speed it had ordered goes again
+/// within the limiter's next second — the person may have moved the tank
+/// while it sat paused. The old fight believed that speed stood and its
+/// reads were not yet due.
+#[test]
+fn a_resume_mid_fight_reads_the_tank_and_orders_again() {
+    let mut run = to_the_fight(Settings::default());
+    let driving = |run: &Run| {
+        run.lines()
+            .iter()
+            .any(|l| l.starts_with("SPEED ") && *l != "SPEED 999")
+    };
+    assert!(
+        run.until(60_000, driving),
+        "the pilot never drove: {:?}",
+        run.lines()
+    );
+    run.until(300, |_| false);
+    let speed = run
+        .lines()
+        .into_iter()
+        .rfind(|l| l.starts_with("SPEED "))
+        .map(str::to_owned)
+        .expect("a speed");
+    let paused = run.now;
+    run.lane.pause(paused);
+    let typed = run.sent.len();
+    run.until(1_000, |_| false);
+    assert_eq!(run.sent.len(), typed, "typed while paused");
+    let resumed = run.now;
+    run.lane.resume(resumed);
+    run.until(TICK_MS, |_| false);
+    let after: Vec<&str> = run.sent[typed..].iter().map(|s| s.line.as_str()).collect();
+    assert_eq!(
+        after.get(..2),
+        Some(&["STATUS", "WEAPONSTATUS"][..]),
+        "the tank read first after the resume: {after:?}"
+    );
+    assert!(
+        run.until(1_100, |run| !run.sends_of(&speed, resumed).is_empty()),
+        "`{speed}` never ordered again after the resume: {:?}",
+        &run.lines()[typed..]
+    );
+}
+
+/// **A blocked second match reports its blocker** (cut AM.2): match 1 won,
+/// the re-claim refused as the side full, the run `blocked` with the blocker
+/// first and the matches flown after it.
+#[test]
+fn a_blocked_second_match_reports_the_blocker() {
+    let mut run = to_the_fight(Settings {
+        matches: 2,
+        ..Settings::default()
+    });
+    run.until(2_000, |_| false);
+    run.server.refuse_claim = Some("The red side is full: it takes 1 pilot(s).".into());
+    run.server.end(run.now, "red");
+    assert!(run.until(10_000, |run| run.lane.result().is_some()));
+    let result = run.lane.result().expect("a result");
+    assert_eq!(result.status, "blocked");
+    assert_eq!(
+        result.outcome,
+        "The red side is full. Stopped after 1 of 2 match(es) for red: won 1, lost 0, drew 0, \
+         timed out 0, other 0."
+    );
+    assert_eq!(
+        run.sends_of("SIM LEAVE", 0).len(),
+        0,
+        "a refused claim holds nothing"
+    );
+}
+
+/// **The walk and the claim hold on a slow wire** (cut AM.2): AM.1's latency
+/// rig from the first line, a line of chatter riding in front of `look`'s
+/// echo, and `look` answered late with the Simulator Lobby: the quiet rule
+/// walks on with `ooc`, and the run reaches the fight with no blocker, its
+/// walk `look`, `ooc`, `simulator`, `SIM STATUS` in that order. At 1.8 s late
+/// (on [`WIRE_SEED`]) the late answer lands after `simulator`'s own; at 1.4 s
+/// it lands inside `ooc`'s flight, ahead of the Welcome Hall (the journal
+/// shows it first), and is ignored there.
+#[test]
+fn the_walk_and_the_claim_hold_on_a_slow_wire() {
+    for (late_ms, inside_ooc) in [(1_800, false), (1_400, true)] {
+        let mut run = Run::new(Settings::default());
+        run.wire = Some(Wire::new(WIRE_SEED));
+        run.server.look_answer_ms = late_ms;
+        run.server.look_room = Some("Simulator Lobby #50".into());
+        run.server.chatter = Some("Ada says, \"Radio check.\"".into());
+        assert!(
+            run.until(60_000, Run::fighting),
+            "{late_ms}: never reached the fight; sent {:?}, said {:?}",
+            run.lines(),
+            run.said
+        );
+        println!(
+            "{late_ms} ms late: {}",
+            run.wire.as_ref().expect("the wire").report()
+        );
+        assert_eq!(run.lane.lobby().blocker(), None, "{late_ms}");
+        assert_eq!(
+            run.lines()[..4],
+            ["look", "ooc", "simulator", "SIM STATUS"],
+            "{late_ms}: {:?}",
+            run.lines()
+        );
+        assert_eq!(run.sends_of("SIM TEAM red", 0).len(), 1, "{late_ms}");
+        if inside_ooc {
+            let journal = run.journal.join("\n");
+            let late = journal
+                .find("Simulator Lobby #50")
+                .expect("the late heading");
+            let hall = journal.find("Welcome Hall #2").expect("the hall");
+            assert!(
+                late < hall,
+                "{late_ms}: the late heading came first:\n{journal}"
+            );
+        }
     }
 }

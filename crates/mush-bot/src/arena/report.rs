@@ -284,9 +284,28 @@ impl Report {
     }
 
     /// The run's outcome sentence. A blocker before any match is its own
-    /// sentence; otherwise the sentence is the matches'.
+    /// sentence; a blocker after one or more names itself first, then how many
+    /// of the matches asked for were flown (a match the blocker stopped
+    /// counted) and their tally (cut AM.2): `{blocker} Stopped after {n} of
+    /// {asked} match(es) for {side}: won {w}, lost {l}, drew {d}, timed out
+    /// {t}, other {o}.`. With no blocker the sentence is the matches'.
     pub fn outcome(&self, blocker: Option<&str>) -> String {
         let side = self.side.as_str();
+        if let Some(blocker) = blocker
+            && !self.matches.is_empty()
+        {
+            return format!(
+                "{blocker} Stopped after {} of {} match(es) for {side}: won {}, lost {}, drew {}, \
+                 timed out {}, other {}.",
+                self.matches.len(),
+                self.matches_asked,
+                self.wins,
+                self.losses,
+                self.draws,
+                self.timeouts,
+                self.other
+            );
+        }
         match self.matches.as_slice() {
             [] => blocker.map_or_else(|| format!("No match was flown for {side}."), str::to_owned),
             [one] if one.won => format!(
@@ -401,6 +420,36 @@ mod tests {
         );
         assert_eq!(flown(1, "draw").verdict(Side::Red), "drawn");
         assert_eq!(flown(1, "abort").verdict(Side::Red), "ended");
+    }
+
+    /// **A blocked run names its blocker** (cut AM.2): after one or more
+    /// matches, the blocker first, then how many of those asked were flown and
+    /// their tally; before any, the blocker alone.
+    #[test]
+    fn a_blocked_run_after_flown_matches_names_its_blocker() {
+        let one = Report::new(Side::Red, 2, vec![flown(1, "red")]);
+        assert_eq!(
+            one.outcome(Some("The red side is full.")),
+            "The red side is full. Stopped after 1 of 2 match(es) for red: won 1, lost 0, drew 0, \
+             timed out 0, other 0."
+        );
+        let two = Report::new(Side::Red, 3, vec![flown(1, "blue"), flown(2, "blocked")]);
+        assert_eq!(
+            two.outcome(Some("The match did not start within 40 s.")),
+            "The match did not start within 40 s. Stopped after 2 of 3 match(es) for red: won 0, \
+             lost 1, drew 0, timed out 0, other 1."
+        );
+        assert!(!two.done(true));
+        // No match: the blocker alone; no blocker: as before.
+        let none = Report::new(Side::Red, 2, vec![]);
+        assert_eq!(
+            none.outcome(Some("The red side is full.")),
+            "The red side is full."
+        );
+        assert_eq!(
+            one.outcome(None),
+            "Won match 1 for red as RA: 4 shot(s), 2 hit(s), 1 kill(s); took 3 hit(s)."
+        );
     }
 
     #[test]

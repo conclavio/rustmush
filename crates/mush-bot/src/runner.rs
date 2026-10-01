@@ -348,6 +348,27 @@ const ARENA_SESSION: &str = "--arena cannot be combined with --script, --paused,
 /// loop's `arena` action, which declines with it).
 const ARENA_FLYING: &str = "the arena pilot is already flying; /arena stop first";
 
+/// What the arena lane's pause does this tick (cut AM.2).
+#[derive(Debug, PartialEq, Eq)]
+enum PauseAction {
+    Pause,
+    Resume,
+}
+
+/// **The lane's pause follows the run's status** (cut AM.2, 16c Q-AM2): a lane
+/// that flies, is not stopped and is not yet paused pauses while the run is
+/// not `running`; a paused lane resumes once it is. A stopped lane is never
+/// paused, so a failure (which stops it) is never reported as a pause.
+fn pause_action(flying: bool, stopped: bool, paused: bool, running: bool) -> Option<PauseAction> {
+    if flying && !stopped && !paused && !running {
+        Some(PauseAction::Pause)
+    } else if paused && running {
+        Some(PauseAction::Resume)
+    } else {
+        None
+    }
+}
+
 struct Boundary {
     path: PathBuf,
     resume_status: String,
@@ -1587,6 +1608,27 @@ impl App {
 
     // -- the simulator pilot (cut AJ.2) -----------------------------------------
 
+    /// **The lane's pause follows the run's status** (cut AM.2, 16c Q-AM2):
+    /// every way the status leaves `running` (`/pause`, `/send`, a bare line,
+    /// `/goal`, `/role`, `/note`, a single `/step`, `/checkpoint`, …) pauses
+    /// a flying lane, and every way it comes back (`/resume`, `/mission
+    /// start`, …) resumes it, with no wiring in any control arm. The pause and
+    /// resume sentences reach the transcript at once.
+    fn arena_pause_sync(&mut self) -> Result<()> {
+        let now = self.elapsed_ms();
+        let running = self.state.status == "running";
+        let Some(lane) = self.arena.as_mut() else {
+            return Ok(());
+        };
+        match pause_action(lane.flying(), lane.stopped(), lane.paused(), running) {
+            Some(PauseAction::Pause) => lane.pause(now),
+            Some(PauseAction::Resume) => lane.resume(now),
+            None => return Ok(()),
+        }
+        let events = lane.events();
+        self.arena_events(events)
+    }
+
     /// Whether this tick is the lane's: it flies and the run is running, its one
     /// `SIM LEAVE` is due, or its result is not yet written.
     fn arena_due(&self) -> bool {
@@ -1673,14 +1715,15 @@ impl App {
     }
 
     /// At the run's end: stop the lane and let it type its one `SIM LEAVE`,
-    /// waiting at most 3 s for the answer.
+    /// waiting at most [`crate::arena::Lane::stop_bound_ms`] (cut AM.2: a
+    /// claim or a start in flight is answered first, then 3 s for the
+    /// leave's own answer).
     async fn arena_finish(&mut self) -> Result<()> {
         let Some(lane) = self.arena.as_mut() else {
             return Ok(());
         };
         lane.stop();
-        let deadline = Instant::now()
-            + Duration::from_millis(crate::arena::lobby::LEAVE_WAIT_MS.saturating_add(500));
+        let deadline = Instant::now() + Duration::from_millis(lane.stop_bound_ms());
         let mut decoder = Decoder::default();
         loop {
             let now = self.elapsed_ms();
@@ -2051,6 +2094,7 @@ impl App {
     }
 
     async fn tick(&mut self) -> Result<()> {
+        self.arena_pause_sync()?;
         let activity_now = Instant::now();
         let delta = activity_now.duration_since(self.activity_tick).as_millis() as u64;
         self.activity_tick = activity_now;
@@ -2117,6 +2161,13 @@ impl App {
                     return Ok(());
                 }
             } else if (!quiet || pending.text.is_empty()) && now < pending.deadline {
+                // **A pending command never holds the pilot** (cut AM.2): the
+                // lane's own polls keep the output from going quiet, so a
+                // due lane ticks now and the command stays pending, finished
+                // at its own quiet or deadline on a later tick.
+                if self.arena_due() {
+                    return self.arena_tick().await;
+                }
                 return Ok(());
             }
             let pending = self.pending.take().unwrap();
@@ -3235,5 +3286,41 @@ mod tests {
         assert_eq!(arena_me("rose", &sheet), "Rosebot");
         assert_eq!(arena_me("rose+ ", &sheet), "Rosebot");
         assert_eq!(arena_me("rose+", &sheet), "Rosebot");
+    }
+
+    /// **The lane's pause follows the run's status** (cut AM.2): every one of
+    /// the sixteen cases of its four inputs.
+    #[test]
+    fn pause_action_follows_the_status() {
+        use PauseAction::{Pause, Resume};
+        for flying in [false, true] {
+            for stopped in [false, true] {
+                for paused in [false, true] {
+                    for running in [false, true] {
+                        let expected = if flying && !stopped && !paused && !running {
+                            Some(Pause)
+                        } else if paused && running {
+                            Some(Resume)
+                        } else {
+                            None
+                        };
+                        assert_eq!(
+                            pause_action(flying, stopped, paused, running),
+                            expected,
+                            "flying {flying}, stopped {stopped}, paused {paused}, running {running}"
+                        );
+                    }
+                }
+            }
+        }
+        // The cases that matter, by name: a flying lane pauses when the run
+        // stops running, and only once; it resumes when the run runs again; a
+        // stopped or finished lane never pauses.
+        assert_eq!(pause_action(true, false, false, false), Some(Pause));
+        assert_eq!(pause_action(true, false, true, false), None, "once");
+        assert_eq!(pause_action(true, false, true, true), Some(Resume));
+        assert_eq!(pause_action(true, false, false, true), None, "flying on");
+        assert_eq!(pause_action(true, true, false, false), None, "stopped");
+        assert_eq!(pause_action(false, false, false, false), None, "finished");
     }
 }

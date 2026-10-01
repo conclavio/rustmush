@@ -1097,6 +1097,9 @@ impl Pilot {
 
         // Rules 2 and 6: the speed ceilings, then movement.
         if picture.own.immobile || picture.own.disabled {
+            // The waits close while immobile (cut AM.2), as they do whenever
+            // no step flies them.
+            self.idle_motion(now_ms);
             return orders;
         }
         if picture.own.max_ahead_kph.is_some() {
@@ -2009,23 +2012,43 @@ impl Pilot {
         sign: f64,
         now_ms: u64,
     ) -> (Option<f64>, Option<i32>, bool) {
-        self.hold_flown = false;
-        self.unknown_flown = false;
-        self.wait = None;
+        self.motion_begun();
         let out = self.motion_steps(picture, doctrine, target, full, live, sign, now_ms);
-        if !self.hold_flown {
-            self.hold_motion = HoldMotion::Stopped;
-        }
-        // A stop for a return not flown this decision is over (cut AL.3), for
-        // whatever reason — told apart, its time up, a hit, a higher step —
-        // and the rest before the next one begins.
-        if !self.unknown_flown && self.unknown_stop.take().is_some() {
-            self.unknown_rest_until_ms = now_ms.saturating_add(UNIDENTIFIED_WAIT_MS);
-        }
+        self.motion_ended(now_ms);
         if let Some(kph) = out.1 {
             self.last_chosen_speed = Some(kph);
         }
         out
+    }
+
+    /// **No motion this decision** (cut AM.2): an immobile or disabled tank
+    /// flies no step, so its waits close as [`Pilot::motion`]'s do around the
+    /// steps when none is flown — the hold back to `Stopped`, no wait, and a
+    /// stop for a return over with the rest after it begun. Nothing is
+    /// ordered.
+    fn idle_motion(&mut self, now_ms: u64) {
+        self.motion_begun();
+        self.motion_ended(now_ms);
+    }
+
+    /// Before the steps: nothing flown yet this decision, and no wait.
+    fn motion_begun(&mut self) {
+        self.hold_flown = false;
+        self.unknown_flown = false;
+        self.wait = None;
+    }
+
+    /// After the steps: a hold not flown goes back to `Stopped`, and a stop
+    /// for a return not flown this decision is over (cut AL.3), for whatever
+    /// reason — told apart, its time up, a hit, a higher step, the tank
+    /// immobile — and the rest before the next one begins.
+    fn motion_ended(&mut self, now_ms: u64) {
+        if !self.hold_flown {
+            self.hold_motion = HoldMotion::Stopped;
+        }
+        if !self.unknown_flown && self.unknown_stop.take().is_some() {
+            self.unknown_rest_until_ms = now_ms.saturating_add(UNIDENTIFIED_WAIT_MS);
+        }
     }
 
     /// The steps of the precedence. Step 1's own headings are never steered
@@ -6316,6 +6339,48 @@ mod tests {
         }
         for designator in value["hurt"].as_array().expect("a set") {
             assert!(named.contains(designator.as_str().expect("a word")));
+        }
+    }
+
+    /// **The waits end while immobile** (cut AM.2): an immobile or disabled
+    /// tank flies no motion step, so an unidentified stop in force ends (its
+    /// rest begins), no wait stands, a hold goes back to stopped, and nothing
+    /// of the heading or the speed is ordered.
+    #[test]
+    fn the_waits_end_while_immobile() {
+        for disabled in [false, true] {
+            let (mut picture, mut pilot) = flying_at(MID);
+            unknown_row(&mut picture, "X1", 87, 450, NOW);
+            let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+            assert_eq!((orders.heading, orders.speed), (Some(87), Some(0)));
+            assert!(pilot.unknown_stop.is_some() && pilot.wait.is_some());
+            // A hold left moving, to see it go back to stopped.
+            pilot.hold_motion = HoldMotion::Ahead;
+            if disabled {
+                picture.own.disabled = true;
+            } else {
+                picture.own.immobile = true;
+            }
+            let t = NOW + 1_000;
+            unknown_row(&mut picture, "X1", 87, 450, t);
+            let orders = pilot.decide(&picture, &hold_doctrine(), t);
+            assert_eq!(pilot.wait, None, "disabled {disabled}");
+            assert_eq!(pilot.unknown_stop, None, "disabled {disabled}");
+            assert_eq!(
+                pilot.unknown_rest_until_ms,
+                t + UNIDENTIFIED_WAIT_MS,
+                "disabled {disabled}"
+            );
+            assert_eq!(
+                pilot.hold_motion,
+                HoldMotion::Stopped,
+                "disabled {disabled}"
+            );
+            assert_eq!(
+                (orders.heading, orders.speed),
+                (None, None),
+                "disabled {disabled}: {orders:?}"
+            );
         }
     }
 }

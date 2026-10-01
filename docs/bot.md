@@ -390,7 +390,11 @@ time to. When it stops before a match has started (a blocker, `/arena stop`,
 the end of the run) and still holds a slot, it gives the slot up with one
 `SIM LEAVE` (typed again only when the server answers it as busy, and only
 within the three seconds it waits for the answer), so it never leaves a centre
-locked behind it; it never types it while a match is boarding or running.
+locked behind it. It never types it while a match is boarding or running,
+except the one it owes when it stops with a claim or a start of its own typed
+and not yet answered: that one goes once the answer comes (whatever the
+centre is doing by then; none when the answer is that it holds a slot on the
+other side), or after at most `[arena] step_timeout_ms` without one.
 Every centre room hears every match's announcements, so it moves only on the
 lines of the match it claimed in, and it waits out another match that is
 boarding or running before it claims.
@@ -402,8 +406,13 @@ types `BOARD` every three seconds until the tank is its own again
 (`Back aboard {callsign} after {duration} away.`), then types `STARTUP` if the
 tank went dark. The report counts each reclaim and the time away. A tank the
 server says was left for good (`… it cannot be taken back.`) ends that match
-for the pilot. A run whose own process ended (its SSH connection closed) does
-not come back by itself: start it again for the same side and it walks to the
+for the pilot. A `STARTUP` that goes unanswered or is refused in a running
+match is typed again. If the tank is destroyed or a wreck, the pilot waits for
+the match to end. If the tank is no longer in the match, it records the match
+as left, and waits for the end only when another match follows. It never gives
+a running match up because the tank would not start, and records it with the
+centre's own word. A run whose own process ended (its SSH connection closed)
+does not come back by itself: start it again for the same side and it walks to the
 centre, reads its own row on the board as `flown by doctrine`, follows that
 match, and boards back from its team room as above.
 
@@ -566,6 +575,9 @@ draw, a timeout, an abort, a blocker — is `blocked` and exits 2. The outcome
 reads `Won match 3 for red as RA: 7 shot(s), 4 hit(s), 1 kill(s); took 2 hit(s).`
 or `Match 3 ended (timeout); the bot flew RA for red: …`, and for several
 matches `Won 2 of 3 matches for red (lost 1, drew 0, timed out 0, other 0).`
+A run that blocks after some matches says the blocker, then how many of the
+asked matches it flew and their tally: `The red side is full. Stopped after 1
+of 2 match(es) for red: won 1, lost 0, drew 0, timed out 0, other 0.`
 
 **What it remembers.** The transcript keeps every byte the game sent, and each
 line the pilot typed as an `arena-send` record with the lane's own clock
@@ -596,9 +608,21 @@ of typing its `FIRE`: on a round trip over about a quarter of a second the
 cycle stays unlearned and the gun fires from its rows, rather than a second
 early.
 
-`/pause` stops the pilot typing and `/resume` starts it again; `/arena stop`
-ends it and hands you the tank. It will not fly under a mission contract, a
-script, a managed floor or a campaign session.
+**At the prompt while it flies.** `/pause` stops the pilot typing and nothing
+else: it keeps reading, so its picture stays current, and a tank left sitting
+in a match is your choice. `/send`, a bare line, and any command that pauses
+the run pause it the same way before they go. `/resume`, or anything that sets
+the run running again, takes up every wait where it left off — a lobby step's
+answer, the start and boarding bounds, a rematch due while you were paused (a
+boarding announced while paused keeps the window the centre gave it) — so a
+pause never ends a run on its own; the pilot reads its tank again and
+sends its heading and speed again first. Your own command's output never holds
+the pilot up once it runs again. The run's time limit (`[agent] max_seconds`)
+keeps counting while paused. `/arena stop` ends it and hands you the tank. A
+claim or a start it has typed and not yet heard back about is waited for (at
+most `[arena] step_timeout_ms`), and then the slot is given up with one
+`SIM LEAVE`. It will not fly under a mission contract, a script, a managed
+floor or a campaign session.
 
 **What it never does.** It never types a line outside its closed list, and
 never more than four in a second. It never starts a match it does not lead,

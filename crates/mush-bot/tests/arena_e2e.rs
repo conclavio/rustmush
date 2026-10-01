@@ -34,6 +34,11 @@
 //! And (cut AK.3) **a refused pose answers at once**: `try_pose` comes back
 //! with the verb's refusal sentence, not after the whole step timeout.
 //!
+//! And (cut AM.2) **the prompt pauses and resumes a flight**: at the bot's
+//! own prompt, `/send STATUS` pauses the pilot (nothing of the lane's is typed
+//! until `/resume`), and after `/resume` the pilot types again at once while
+//! that command's output is still being collected.
+//!
 //! No test here calls a model API: every model is a `wiremock` stub, and every
 //! child runs from a directory holding an empty `.env` with every model key
 //! removed ([`arena_rig::bot_command`]).
@@ -837,6 +842,241 @@ async fn refuse_poses() {
         .await
         .expect("a pose on the road is taken");
     assert!(text.contains("opens at cell"), "{text}");
+    god.close().await;
+    drop(rig);
+}
+
+// ---------------------------------------------------------------------------
+// Cut AM.2: the prompt while it flies
+// ---------------------------------------------------------------------------
+
+/// Every whole record of a transcript still being written (a torn last line
+/// is left until it is whole).
+fn records_now(path: &std::path::Path) -> Vec<Value> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.split_inclusive('\n')
+        .filter(|line| line.ends_with('\n'))
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
+/// Where the first record of `kind` whose `data` is `data` sits, from `from`.
+fn position_of(records: &[Value], from: usize, kind: &str, data: &str) -> Option<usize> {
+    records
+        .iter()
+        .enumerate()
+        .skip(from)
+        .find(|(_, record)| record["kind"] == kind && record["data"] == data)
+        .map(|(index, _)| index)
+}
+
+/// Write one control line to the bot's prompt.
+async fn type_at_prompt(stdin: &mut tokio::process::ChildStdin, line: &str) {
+    use tokio::io::AsyncWriteExt;
+    stdin
+        .write_all(format!("{line}\n").as_bytes())
+        .await
+        .expect("the control line is written");
+    stdin.flush().await.expect("the control line is flushed");
+}
+
+/// **The prompt pauses and resumes a flight** (cut AM.2; wall clock,
+/// generously bounded at 120 s). The bot flies alone against one machine
+/// posed 500 m off (as [`fly_alone`]) at its prompt, not headless, with
+/// `[agent] settle_ms = 15000` and `observation_ms = 20000`: a command's
+/// output is finished only once quiet for 15 s or at 20 s, and the lane's own
+/// polls never let it go quiet — so before the cut the pilot typed nothing for
+/// up to 20 s after `/resume`. After its first `FIRE` (and 21 s after the
+/// launch, when the login's own output is finished) the person types
+/// `/send STATUS` (again each second while the bot is still collecting
+/// output), then `/resume` once the `STATUS` has gone. Nothing of the lane's
+/// is typed between the two; the pause and the resume are said, in order; the
+/// lane types again within 5 s of `/resume`; and `STATUS`'s own
+/// `command-result` comes after that first line — the pending command was
+/// still open while the lane typed. God then calls the match off, and the
+/// report holds the one match as `abort`. No model is configured.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_repl_pauses_and_resumes_a_flight() {
+    let _one_world = ARENA.lock().await;
+    tokio::time::timeout(Duration::from_secs(120), pause_and_resume())
+        .await
+        .expect("the paused flight finishes inside 120 s");
+}
+
+async fn pause_and_resume() {
+    let mut cfg = arena_rig::arena_config();
+    cfg.match_.startup_ms = 2_000;
+    cfg.match_.board_timeout_ms = 60_000;
+    cfg.match_.max_duration_ms = 100_000;
+    let rig = arena_rig::boot(cfg, &[("pilot", "Pilot")]).await;
+    let mut god =
+        arena_rig::Client::login(&rig, arena_rig::GOD_ACCOUNT, arena_rig::GOD_PASSWORD, "God")
+            .await;
+    arena_rig::pose(&mut god, "RA=100 97 90").await;
+    arena_rig::pose(&mut god, "BA=150 97 270").await;
+    arena_rig::walk_to_lobby(&mut god).await;
+
+    let config = arena_rig::bot_config_agent(&rig, "pilot+Pilot", 150, 15_000, 20_000, "");
+    let from = god.seen.len();
+    let launched = Instant::now();
+    let (mut flight, mut stdin) =
+        arena_rig::launch_interactive(&rig, &config, "repl", &["--arena", "red"]);
+    let hunting = arena_rig::await_line(
+        &mut god,
+        from,
+        "Good hunting",
+        &mut flight,
+        Duration::from_secs(60),
+    )
+    .await;
+    assert!(
+        arena_rig::await_fire(&mut god, &mut flight, Duration::from_secs(40)).await,
+        "the pilot fired"
+    );
+    while launched.elapsed() < Duration::from_secs(21) {
+        god.idle(Duration::from_millis(250)).await;
+    }
+
+    // `/send STATUS`, again each second while the bot is still collecting
+    // output, until its `send` event is in the transcript.
+    let mut sent = false;
+    for _ in 0..30 {
+        let errors = records_now(&flight.transcript)
+            .iter()
+            .filter(|record| record["kind"] == "control-error")
+            .count();
+        type_at_prompt(&mut stdin, "/send STATUS").await;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut refused = false;
+        while Instant::now() < deadline {
+            let records = records_now(&flight.transcript);
+            if position_of(&records, 0, "send", "STATUS").is_some() {
+                sent = true;
+                break;
+            }
+            if records
+                .iter()
+                .filter(|record| record["kind"] == "control-error")
+                .count()
+                > errors
+            {
+                refused = true;
+                break;
+            }
+            god.idle(Duration::from_millis(50)).await;
+        }
+        if sent {
+            break;
+        }
+        assert!(refused, "`/send STATUS` was neither sent nor refused");
+        god.idle(Duration::from_secs(1)).await;
+    }
+    assert!(sent, "`/send STATUS` never went");
+    type_at_prompt(&mut stdin, "/resume").await;
+
+    // Ten of the lane's lines after the `/resume` record, or 30 s.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let records = records_now(&flight.transcript);
+        let after = position_of(&records, 0, "control", "/resume").map_or(0, |at| {
+            records[at..]
+                .iter()
+                .filter(|record| record["kind"] == "arena-send")
+                .count()
+        });
+        if after >= 10 || Instant::now() >= deadline {
+            break;
+        }
+        assert!(!flight.task.is_finished(), "the bot ended mid-flight");
+        god.idle(Duration::from_millis(50)).await;
+    }
+    arena_rig::still_running(&god, hunting);
+    god.say("@arena/abort", "is stopping").await;
+
+    // The abort read, and `STATUS`'s own result written (at its 20 s
+    // deadline at the latest), before `/quit`.
+    let deadline = Instant::now() + Duration::from_secs(40);
+    loop {
+        let records = records_now(&flight.transcript);
+        let aborted = records.iter().any(|record| {
+            record["kind"] == "arena"
+                && record["data"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(" is over (abort)"))
+        });
+        let finished = records.iter().any(|record| {
+            record["kind"] == "command-result" && record["data"]["command"] == "STATUS"
+        });
+        if (aborted && finished) || Instant::now() >= deadline {
+            break;
+        }
+        god.idle(Duration::from_millis(100)).await;
+    }
+    type_at_prompt(&mut stdin, "/quit").await;
+    let landed = arena_rig::land(flight, Duration::from_secs(30)).await;
+    drop(stdin);
+
+    let records = &landed.records;
+    let send_at = position_of(records, 0, "control", "/send STATUS").expect("the /send record");
+    let resume_at =
+        position_of(records, send_at, "control", "/resume").expect("the /resume record");
+    assert!(
+        !records[send_at..resume_at]
+            .iter()
+            .any(|record| record["kind"] == "arena-send"),
+        "the lane typed while paused"
+    );
+    let said = landed.events("arena");
+    let paused = said
+        .iter()
+        .position(|text| text == "Paused: typing nothing until /resume; still reading.")
+        .unwrap_or_else(|| panic!("the pause is said: {said:?}"));
+    let resumed = said
+        .iter()
+        .position(|text| {
+            text.starts_with("Resumed after ")
+                && text.ends_with(" s; every wait starts again from now.")
+        })
+        .unwrap_or_else(|| panic!("the resume is said: {said:?}"));
+    assert!(paused < resumed, "{said:?}");
+    let first = records
+        .iter()
+        .enumerate()
+        .skip(resume_at)
+        .find(|(_, record)| record["kind"] == "arena-send")
+        .map(|(index, _)| index)
+        .expect("the lane typed after /resume");
+    let resume_ms = records[resume_at]["elapsed_ms"].as_u64().expect("elapsed");
+    let first_ms = records[first]["elapsed_ms"].as_u64().expect("elapsed");
+    let result = records
+        .iter()
+        .position(|record| {
+            record["kind"] == "command-result" && record["data"]["command"] == "STATUS"
+        })
+        .expect("STATUS's command-result");
+    let result_ms = records[result]["elapsed_ms"].as_u64().expect("elapsed");
+    let send_ms = records[send_at]["elapsed_ms"].as_u64().expect("elapsed");
+    println!(
+        "REPL: /send STATUS at {send_ms} ms, /resume at {resume_ms} ms, first arena-send {} ms \
+         after it ({}), STATUS's command-result at {result_ms} ms ({} ms after the /resume)",
+        first_ms - resume_ms,
+        records[first]["data"]["line"],
+        result_ms.saturating_sub(resume_ms)
+    );
+    assert!(
+        first_ms <= resume_ms + 5_000,
+        "the first line {} ms after /resume",
+        first_ms - resume_ms
+    );
+    assert!(
+        result > first,
+        "STATUS's command-result before the lane typed again: the pending command held the pilot"
+    );
+    let matches = landed.matches();
+    assert_eq!(matches.len(), 1, "{}", landed.report_text);
+    assert_eq!(matches[0]["result"], "abort", "{}", landed.report_text);
     god.close().await;
     drop(rig);
 }

@@ -77,6 +77,15 @@
 //! awaits its answer). The chain is decided from the wrap alone, so it runs on
 //! through an echo, an indented piece or an expected answer.
 //!
+//! **The pause** (cut AM.2, 16c Q-AM2). The runner pauses the lane whenever
+//! the run stops being `running` ([`Lane::pause`]) and resumes it when it runs
+//! again ([`Lane::resume`]). Paused, the lane types nothing and reads on (its
+//! picture stays current; the lobby reads every line at the pause instant), so
+//! a tank left sitting in a match is the person's choice. Resumed, every lobby
+//! wait starts again from the resume and the fight is made afresh. The pilot's
+//! own clocks, the commander's schedule and the run's time limit are not
+//! moved. A stop ends a pause with no shift.
+//!
 //! **The journal filter.** The lane remembers the last 32 lines it typed; a line
 //! equal to one of them is the terminal's echo and is not read at all, and
 //! every line [`Picture::apply`] marks `journal: false` (read replies, acks,
@@ -607,6 +616,9 @@ pub struct Lane {
     asked: Unanswered,
     /// The line read before, for the channel continuation (cut AM.1).
     prev: Option<Prev>,
+    /// **The pause** (cut AM.2, 16c Q-AM2): when the run stopped being
+    /// `running`. The lane reads on and types nothing until it resumes.
+    paused_at: Option<u64>,
 }
 
 impl Lane {
@@ -640,6 +652,7 @@ impl Lane {
             stopped: false,
             asked: Unanswered::default(),
             prev: None,
+            paused_at: None,
         }
     }
 
@@ -681,9 +694,56 @@ impl Lane {
         !self.lobby.closed()
     }
 
-    /// `SIM LEAVE` is queued, or typed and its answer not yet in (at most 3 s).
+    /// `SIM LEAVE` is queued, or typed and its answer not yet in (at most 3 s),
+    /// or a stop waits for a claim's or a start's answer before it.
     pub fn leave_pending(&self, now_ms: u64) -> bool {
         self.lobby.leave_pending(now_ms)
+    }
+
+    /// **The longest a stop's leave can take** (cut AM.2): the claim or start
+    /// in flight waited for (`[arena].step_timeout_ms` at most), then
+    /// `SIM LEAVE`'s answer ([`super::lobby::LEAVE_WAIT_MS`]), and half a
+    /// second. The runner waits at most this long at a run's end.
+    pub fn stop_bound_ms(&self) -> u64 {
+        self.settings
+            .step_timeout_ms
+            .saturating_add(super::lobby::LEAVE_WAIT_MS)
+            .saturating_add(500)
+    }
+
+    /// The lane is paused (cut AM.2).
+    pub fn paused(&self) -> bool {
+        self.paused_at.is_some()
+    }
+
+    /// **Pause** at `now_ms` (cut AM.2, 16c Q-AM2): type nothing until
+    /// [`Lane::resume`], and keep reading, every lobby line read at this
+    /// instant. Idempotent; nothing on a stopped lane.
+    pub fn pause(&mut self, now_ms: u64) {
+        if self.stopped || self.paused_at.is_some() {
+            return;
+        }
+        self.paused_at = Some(now_ms);
+        self.lobby.pause(now_ms);
+        self.events.push(LaneEvent::Said(
+            "Paused: typing nothing until /resume; still reading.".to_owned(),
+        ));
+    }
+
+    /// **Resume** at `now_ms` (cut AM.2): every lobby wait starts again from
+    /// now (`Lobby::resume`), and the fight is made afresh, so the first
+    /// `STATUS` and `WEAPONSTATUS` go at once and the heading and the speed
+    /// are ordered again, as after a re-board. Nothing when not paused.
+    pub fn resume(&mut self, now_ms: u64) {
+        let Some(at) = self.paused_at.take() else {
+            return;
+        };
+        self.lobby.resume(now_ms);
+        self.fight = None;
+        self.events.push(LaneEvent::Said(format!(
+            "Resumed after {} s; every wait starts again from now.",
+            now_ms.saturating_sub(at).saturating_add(500) / 1_000
+        )));
     }
 
     /// The run's `arena` report block, each match with its commander counts.
@@ -781,13 +841,18 @@ impl Lane {
     // -- stopping -------------------------------------------------------------
 
     /// **Stop.** Queue the one `SIM LEAVE` when it is due (the centre last read
-    /// idle or in selection, a slot held); [`Lane::tick`] then returns it and
-    /// nothing after it. Idempotent.
+    /// idle or in selection, a slot held; or, cut AM.2, after the answer to a
+    /// claim or a start still in flight, at most [`Lane::stop_bound_ms`] in
+    /// all); [`Lane::tick`] then returns it and nothing after it. Idempotent.
     pub fn stop(&mut self) {
         if self.stopped {
             return;
         }
         self.stopped = true;
+        // A pause ends here with no shift (cut AM.2): the leave runs on the
+        // real clock.
+        self.paused_at = None;
+        self.lobby.unpause();
         let now = self.picture.last_ms;
         self.lobby.stop(now, &self.picture);
         self.fight = None;
@@ -1147,6 +1212,14 @@ impl Lane {
         }
         self.picture.settle(now_ms);
         self.check_commit(now_ms);
+        // Paused (cut AM.2): the reading goes on, and nothing is typed — no
+        // lobby poll, no pilot, no commander. A lane whose lobby closed while
+        // paused (a blocker read then) flies no more, and its one `SIM LEAVE`
+        // still goes.
+        if self.paused_at.is_some() && !self.stopped && self.flying() {
+            self.after(now_ms);
+            return Vec::new();
+        }
         if !self.stopped {
             self.lobby.poll(now_ms, &mut self.picture);
         }

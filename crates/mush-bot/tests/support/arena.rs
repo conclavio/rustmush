@@ -521,6 +521,22 @@ pub fn bot_config(rig: &Rig, username: &str, extra: &str) -> PathBuf {
 /// arena mode it bounds each match (a claim starts it again), which the
 /// win-rate lane's three-minute matches need longer than 150 s.
 pub fn bot_config_with(rig: &Rig, username: &str, max_seconds: u64, extra: &str) -> PathBuf {
+    bot_config_agent(rig, username, max_seconds, 100, 1_000, extra)
+}
+
+/// [`bot_config_with`] with the `[agent]` table's `settle_ms` and
+/// `observation_ms` of the caller's too (cut AM.2): how long a command's output
+/// must be quiet, and at most how long it is collected, before the command is
+/// finished. They cannot come through `extra`: TOML refuses a second `[agent]`
+/// table.
+pub fn bot_config_agent(
+    rig: &Rig,
+    username: &str,
+    max_seconds: u64,
+    settle_ms: u64,
+    observation_ms: u64,
+    extra: &str,
+) -> PathBuf {
     let home = rig.dir.join("bot");
     std::fs::create_dir_all(&home).expect("the bot's working directory");
     let config = format!(
@@ -533,8 +549,8 @@ host_key_sha256 = "{}"
 
 [agent]
 max_seconds = {max_seconds}
-settle_ms = 100
-observation_ms = 1000
+settle_ms = {settle_ms}
+observation_ms = {observation_ms}
 
 [memory]
 persistent = false
@@ -667,6 +683,41 @@ pub fn launch_env(
         transcript,
         report,
     }
+}
+
+/// **Start the bot binary at its prompt** (cut AM.2): as [`launch_env`], but
+/// without `--headless`, so it reads its control lines (`/send …`, `/resume`,
+/// `/quit`) from stdin, which is piped and handed back — taken from the child
+/// before its output is waited for, which would close it.
+pub fn launch_interactive(
+    rig: &Rig,
+    config: &Path,
+    name: &str,
+    args: &[&str],
+) -> (Flight, tokio::process::ChildStdin) {
+    let transcript = rig.dir.join("bot").join(format!("{name}.jsonl"));
+    let report = rig.dir.join("bot").join(format!("{name}.json"));
+    let mut command = tokio::process::Command::from(bot_command(rig, config, PILOT_PASSWORD));
+    command
+        .args(args)
+        .arg("--transcript")
+        .arg(&transcript)
+        .arg("--report")
+        .arg(&report)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command.spawn().expect("the bot starts");
+    let stdin = child.stdin.take().expect("the bot's stdin");
+    (
+        Flight {
+            task: tokio::spawn(child.wait_with_output()),
+            transcript,
+            report,
+        },
+        stdin,
+    )
 }
 
 /// **Wait for the bot to finish**, at most `bound`, and read what it left.
