@@ -46,7 +46,9 @@
 //! the rounds come down by acks between rows); `BEARING B` every
 //! 5 000 ms while the pilot searches; `VIEW BRIEF` (cut AN.2) while the
 //! pilot's opening asks for its brief, at most once in
-//! [`super::pilot::OPENING_BRIEF_WAIT_MS`] (so once a match, at the muster);
+//! [`super::pilot::OPENING_BRIEF_WAIT_MS`] (so once at the muster, and cut
+//! AO.1 once more after each move in for room: at most
+//! [`super::pilot::OPENING_INWARD_LEGS_MAX`] more a match);
 //! never the same poll twice inside 500 ms (but the doubt's `WEAPONSTATUS`);
 //! the first `STATUS` and `WEAPONSTATUS` straight after `Power online.`.
 //!

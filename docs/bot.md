@@ -344,8 +344,9 @@ the pilot starts from Limbo, the Welcome Hall or the simulator centre.`
 `red`/`blue`, `SIM STATUS`, `SIM TEAM red|blue`, `SIM START`, `BOARD`,
 `STARTUP` and `SIM LEAVE` in the centre, and `CONTACTS`, `STATUS`,
 `WEAPONSTATUS`, `RANGE`, `BEARING B`, `VIEW BRIEF`, `HEADING`, `SPEED`, `LOCK`
-and `FIRE` in the pod. `VIEW BRIEF` goes once a match, at the muster, to read
-the ground for the opening (below). It never types `SIM AI`, `SIM UNIT`, `SIM MODE`, `SIM RANGE`,
+and `FIRE` in the pod. `VIEW BRIEF` goes at the muster to read the ground for
+the opening (below), and once more after each move in for room behind it: at
+most four a match. It never types `SIM AI`, `SIM UNIT`, `SIM MODE`, `SIM RANGE`,
 `SIM CONCEDE`, `SIM ABORT`, `ORDER` or `EXIT`. It types **at most four lines a
 second** (`[arena] max_lines_per_s`, 1 to 4), every purpose together, well under
 the server's flood limit and the cockpit's eight pending orders. A line-mode
@@ -583,8 +584,9 @@ and that one that has seen nobody for a minute and a half crosses to the other
 side's entry zone to look. So the pilot no longer drives for The Crossroads
 first. It opens this way **only in a skirmish it saw start**: not in a hold
 match or on a range (the board's `mode:` line says which), not in a posed duel
-where its first `CONTACTS` after `Power online.` already holds something (a
-contact not yet told apart included), and not after joining a match already
+where its first `CONTACTS` after `Power online.` already holds something other
+than a teammate (a contact not yet told apart more than 100 m off included) or
+the cockpit announced one, and not after joining a match already
 running (it must have read this match's own `Power online.` and its first
 `STATUS` within five seconds of it). Its **own entry** is where that first
 `STATUS` put it. The **other side's entry** is worked out, not read: both sides
@@ -592,15 +594,37 @@ fly identical stock tanks from opposite ends of the ground, so the pilot
 mirrors its own muster across the ground's middle, on the ground's size from
 its brief's header (`… of 256 by 256; … 10 m a cell.`) or, without one, the
 help's 2.56 km square; no contact's bearing is used. It then types `VIEW
-BRIEF` once and reads the ground round it. Standing on a road (red's first
-pod musters on the east-west road), it **steps off the road** onto ground that
+BRIEF` and reads the ground round it.
+
+**It holds with room behind it.** When it later backs away from a machine
+(below), the longest back-off it orders runs from about 420 m of the machine,
+where the help's machines stop, out to 650 m of where it last saw it; the
+scope reads 420 m as `400 m`, and a back-off keeps 30 m of ground behind it,
+so with a margin it wants about **290 m of ground it can cross** behind the
+place it holds. Ground it can cross is road, grass, bare ground, rubble, light
+woods and plain water (the ford); deep water, heavy woods and any other ground
+stop a tank. It reads the room from its own brief: the distance behind it,
+straight away from the other side's entry, to the edge of the ground, cut
+short where the brief's line behind it first meets ground that stops a tank.
+It does this only when it would ever back away (the re-approach or the follow
+is on). From a muster with less room, it first **moves in** toward the other
+side's entry, at full ahead, along a line its brief shows passable (stopping
+20 m short of anything that stops a tank), by the room it lacks; a shortfall
+of 30 m or less is room enough, and a move in shorter than 40 m is not
+driven. Then it **stops**, types `VIEW BRIEF` again and reads the ground
+where it stands, at most three times a match. With no passable line in, it
+says so and opens where it stands. From red's first pod that is about 235 m
+in along the road, and the brief there shows room enough.
+
+Then, standing on a road (red's first pod musters on the east-west road), it
+**steps off the road** onto ground that
 hides a stopped tank — grass, bare ground, rubble or light woods; never heavy
 woods, which stop a tank — on the nearest such ground in any direction more
 than 45° from the other side's entry, never toward the machines: past the
 road's true edge by 20 m (the brief rounds its reaches to 10 m and counts them
 from the middle of the tank's own cell, so the pilot allows half a cell on a
 straight line and a cell and a half on a diagonal), at 15 kph, 80 m at most.
-From the shipped muster that is about 35 m north onto grass. Already standing
+From red's first pod, after its move in, that is about 35 m north onto grass. Already standing
 on such ground (six of the eight ground lines around it begin on it), or with
 no brief (none in five seconds, or a dark window), it stays where it is. Then
 it **holds**, stopped, its bow toward the other side's entry, until a hostile
@@ -614,9 +638,10 @@ hostile stops coming on (six seconds in which its `CONTACTS` row reads it no
 nearer and its plots show no course), when it reaches the band, when the tank
 is hit, or after a minute, and then the pilot fights as before. A hostile row from beyond the sight is a teammate's
 report: it ends the wait with no halt, and the pilot fights or hunts as before.
-A wingman under a human lead waits the same way when nothing is on its scope
-at its first `CONTACTS`; beside a teammate at the start (who shows as a contact
-not yet told apart) it flies as before.
+A wingman under a human lead opens the same way beside a teammate at the
+start: at its first `CONTACTS`, a contact the cockpit names as its own side,
+or one not yet told apart within 100 m (the two sides muster at opposite ends
+of the ground), is a teammate and ends nothing.
 
 **It opens the range on a machine that out-hits it.** `help simulator` says
 "Open the range past its sight and it comes after you again; let the ground
@@ -629,9 +654,18 @@ the machine while it can see it and on its last plot after: between 480 and
 moving. At 650 m from that plot (past the machine's sight of a mover) it stops,
 facing the plot, and **waits** up to 45 seconds for the machine to come on; a
 hostile that comes on inside the stock sight is fired on from the halt (a
-teammate's report from beyond it ends nothing), and a hit ends the wait. The
-backing off gives up after 45 seconds. It does this at most twice a match,
-with half a minute's rest between, never while falling back or under an
+teammate's report from beyond it ends nothing), and a hit ends the wait. A
+tank reverses only along its bow line, so where the ground behind runs short
+the pilot **slants its bow** off the machine by the smallest angle, 10, 20 or
+30 degrees, that leaves 30 m of ground behind it, keeping the machine inside
+its front arc; when no such slant does, when the cockpit says it is held
+while it reverses, or when ground it remembers as held stops the reverse, it
+**stops there and waits** as at 650 m (`No room behind: waiting 410 m from
+BA's last plot.`) rather than backing into the edge. The backing off gives up
+after a minute: `help cockpit` gives the stock tank 27 kph astern, and grass
+caps it to about 20 kph, so 250 m of backing off takes about 46 seconds. It
+does this at most twice a match, with half a minute's rest between, never
+while falling back or under an
 `orbit` or `withdraw` doctrine, and no hunt starts while it does it; after the
 wait the pilot hunts the machine only if its last plot is still young enough,
 else it searches.
@@ -643,23 +677,40 @@ and that once home it shoots back at whatever comes for it and, after twenty
 quiet seconds with nothing hostile in sight, comes back in, once. So a
 hostile the cockpit said lost a section (`BA's turret is destroyed.`), or one
 the pilot has hit eight times this match, whose plots show it **driving away**
-(its course within 60 degrees of the bearing to it) is **followed**: bow on,
+is **followed**. Driving away is a course within 60 degrees of the bearing to
+it; a course faster than 20 m/s (the stock tank makes 15) is noise and shows
+nothing. A machine whose plots show no course at all — at 500 to 600 m the
+scope's 50 m rows seldom carry one for a tank making 10 m/s — is driving away
+when its row's range from where the pilot stands now has opened by 100 m
+inside ten seconds. It is followed bow on,
 held 350 m behind it — outside the 200 m it turns to fight at, inside the
 480 m a stopped tank is seen at — and fired at from behind. It is **never
 followed into its entry zone**. The help names the entry zone but not its
 shape, so the pilot keeps out of a band across the whole approach: a line
 through the other side's entry, square to the line from its own muster to
 it. Once the machine is within 400 m of that line, or the pilot within 750 m,
-the pilot **backs out of its sight**, in reverse with its bow on the
-machine's last plot, to 650 m from that plot (past the 600 m a moving tank is
-seen at; at most 45 seconds), then **waits** there, stopped and facing it, up
-to 90 seconds for its one return. A hostile that comes on inside the sight is
-fired on from the halt; a hit ends the wait; at its end the pilot drops the
+the pilot **backs out of its sight**, in reverse with its bow on the machine
+(on its last plot once it is out of sight), to 650 m from that plot (past the
+600 m a moving tank is seen at; at most 65 seconds, the same 20 kph over
+about 300 m), then **waits** there, stopped and facing it, up to 90 seconds
+for its one return. A machine seen farther off moves that plot farther; one
+coming back never moves it nearer, so the pilot still stops where it meant
+to and lets the machine come on. Like the re-approach's, this back-off slants
+or stops where the ground behind runs out (`No room behind for the return:
+waiting 520 m from BA's last plot.`). A machine already that close to its
+entry line when it breaks off is not followed at all: the pilot says only
+that it will not follow it into its entry zone, and backs out of its sight.
+A hostile that comes on inside the sight is
+fired on from the halt (the machine waited for only once its row reads nearer
+than that plot: still in sight and driving home, it is let go); a hit ends the
+wait; at its end the pilot drops the
 machine's trail and searches, because a hunt would drive at its last plot,
 near its entry line, and on into the entry zone. A followed machine lost goes
 the same way, to the backing off; one whose plots stop showing it moving for
 five seconds has stopped, and the pilot fights it as before; one the pilot
-turns from to fight another hostile is no longer followed. A machine that
+turns from to fight another hostile is no longer followed. A followed
+machine's row is flown up to six seconds old under any stance the commander
+sets, the same limit at which it counts as lost. A machine that
 breaks off while the pilot is opening the range on it or firing at it from
 the halt is followed at once, and that rule ends. No hunt starts, and no re-approach
 begins, while it follows or waits. It follows only from a muster it saw: a pilot that
@@ -698,15 +749,19 @@ to 180°.`, `Turning into the shot: hit on the hull's left facet; facing BB.`,
 at 1420 m east, 1049 m north, heading 000°.`, `Steering round held ground: 136°
 for 091°.`, `Stopping for X1: facing 087° while it is told apart.`, `Stopping
 before BA finds us: its estimate is 590 m off at 012°.`, `The wait for BA is
-over; hunting on.`, `Opening: stepping off the road to the north (35 m).`,
-`Opening: holding near our entry, facing 091° toward the other side's entry.`,
+over; hunting on.`, `Opening: moving in 235 m toward the other side's entry:
+65 m of ground behind us, 290 m wanted.`, `Opening: stepping off the road to
+the north (35 m).`, `Opening: holding near our entry, facing 091° toward the
+other side's entry.`,
 `Opening over: BA is in sight after 95 s.`, `Firing from the halt at BA, 590 m
 off.`, `The halt is over: BA has stopped.`, `Opening the range on BA: 10 hits
 taken to 4 scored in 20 s; backing off bow on.`, `Out of BA's sight at 650 m
-from its last plot; waiting for it to come on.`, `No approach from BA in 45 s;
-moving on.`, `Following BA home: it is hurt and driving away; holding 350 m
-behind it.`, `Not following BA into its entry zone; backing off out of its
-sight.`, `Waiting for BA to come back, 650 m from its last plot.`, `No return
+from its last plot; waiting for it to come on.`, `No room behind: waiting
+410 m from BA's last plot.`, `No approach from BA in 45 s; moving on.`,
+`Following BA home: it is hurt and driving away; holding 350 m behind it.`,
+`Not following BA into its entry zone; backing off out of its sight.`,
+`Waiting for BA to come back, 650 m from its last plot.`, `No room behind for
+the return: waiting 520 m from BA's last plot.`, `No return
 from BA in 90 s; searching.`, `Firing on the arena's lattice: phase 5 ms,
 round trip 40 ms.` and their kin, and the `arena-picture` record carries its
 hunt, its fall back and its stall, the turn into a hit (its bearing and the
@@ -716,7 +771,7 @@ is in (whom it is for and the seconds left, or `null`), the rule of its own in
 force (`rule`: `opening`, `halt`, `reapproach`, `approach_wait`, `follow`,
 `return_back`, `return_wait` or `null`), the hits taken and scored in the
 last twenty seconds (`exchange`), where the opening is (`opening`: `fresh`,
-`brief`, `step`, `hold` or `done`), the start it kept (`start_m`), the
+`brief`, `inward`, `step`, `hold` or `done`), the start it kept (`start_m`), the
 lattice's phase and round trip as it reads them (`lattice`: `phase`,
 `rtt_ms`, each a figure or `null`), each gun's cycle and slack and whether
 its last shot set the lattice clock (`lattice`), the guns struck and whether
@@ -832,11 +887,14 @@ lattice or all, not …`). Both lanes print `KNOBS: opening {wait|search},
 reapproach {on|off}, follow {on|off}, lattice {on|off}` straight after the
 `ENGAGEMENT` line, and every lane's reading ends with `PILOT RULES: opening
 {a}, off the road {b}, halt {c}, reapproach {d}, approach wait {e}, follow
-{f}, return wait {g}, lattice {h}`: how many times the pilot held near its
-entry, stepped off the road, fired from the halt, opened the range, waited
-for the machine to come on, followed a broken machine, waited for its return
-and (once a match at most) put its guns on the lattice, counted from its own
-`arena` sentences.
+{f}, return wait {g}, lattice {h}, inward {i}, room holds {k}, return room
+holds {r}, gave up {u}`: how many times the pilot held near its entry,
+stepped off the road, fired from the halt, opened the range, waited for the
+machine to come on, followed a broken machine, waited for its return, (once
+a match at most) put its guns on the lattice, moved in for room behind its
+opening, stopped a re-approach's back-off and a return's back-off where the
+ground behind ran out, and gave a re-approach up at its time, counted from
+its own `arena` sentences.
 
 ```sh
 MUSH_BOT_WIN_RATE_OFF=reapproach cargo test -p mush-bot --test arena_muster_rate -- --ignored --nocapture
@@ -1060,6 +1118,9 @@ with the machine's row still 400 to 450 m off; held that near its own entry,
 it has no room behind it to back out to 650 m, and the range opened only when
 the machine itself left. (The second tuning move, a wider margin before a
 re-approach begins, was made on the reading that the machine re-closed.)
+Those runs are why the opening now holds with room behind it, why a back-off
+slants or stops where the ground behind runs out, and why the backing off is
+given a minute; the figures above were read before those changes.
 **The follow** ran none to three times a run, and the return's wait as often
 except in the first run, whose one return was still backing off when the
 match ended. In six matches of the first two runs a re-approach was in force

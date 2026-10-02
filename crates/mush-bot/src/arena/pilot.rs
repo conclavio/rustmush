@@ -179,8 +179,10 @@
 //!   a half crosses to the other side's entry zone to look". So in a skirmish
 //!   (the board's rule, [`super::picture::Picture::match_mode`]) whose own
 //!   `Power online.` the pilot read, from the muster it then stood at
-//!   ([`Pilot::muster_m`]), with nothing on its first `CONTACTS`, it types
-//!   `VIEW BRIEF` once, steps off the road onto ground that hides a stopped
+//!   ([`Pilot::muster_m`]), with nothing but teammates on its first
+//!   `CONTACTS` (cut AO.1), it types `VIEW BRIEF` once (and once more after
+//!   each move in for room, cut AO.1, below), steps off the road onto ground
+//!   that hides a stopped
 //!   tank ([`HIDING`]) past that ground's true edge — never toward the
 //!   machines — and holds there stopped, bow toward the other side's entry
 //!   ([`other_entry`]: the muster mirrored, the pilot's inference from the two
@@ -247,6 +249,38 @@
 //!   entry zone. With no muster known
 //!   ([`Pilot::muster_m`]: a match joined running) there is no entry line, so
 //!   nothing is followed;
+//! * **Off the wall** (cut AO.1; under the knobs that exist, so
+//!   [`Pilot::new`] is unchanged). The bot's own runs backed into their own
+//!   edge (`Held: this is the edge of the arena.`) every re-approach, from an
+//!   opening held 15 to 67 m off it. **The opening's room**: with a back-off
+//!   knob on, the opening holds with [`OPENING_ROOM_M`] of ground a tank
+//!   crosses ([`PASSABLE`]) behind it, read from its own brief
+//!   ([`opening_room`]); from a muster with less, it first drives in along
+//!   the line to the other side's entry ([`opening_inward`],
+//!   [`OpeningStage::Inward`]), stops, reads a second `VIEW BRIEF` there (at
+//!   most [`OPENING_INWARD_LEGS_MAX`] legs), and only then steps off the road
+//!   and holds. **The back-offs** (the re-approach's and the return's, not
+//!   the hold's, the fall back's or a `withdraw`'s): a tank reverses only
+//!   along its bow line, so each reverses on the smallest bow slant within
+//!   [`HOLD_BOW_DEG`] that leaves [`EDGE_BACK_MARGIN_M`] astern
+//!   (`back_off_bow`), and **ends and holds** — its own wait at once, `No
+//!   room behind…` said — when none does, on a `Held:` while it reversed, or
+//!   when held ground behind stopped it; their bounds,
+//!   [`REAPPROACH_MAX_MS`] and [`RETURN_BACK_MS`], cover the drive the help
+//!   and the transcripts give (about 20 kph astern on grass). **The return**
+//!   keeps its bow on the machine while it is held young, and its plot moves
+//!   only farther: a machine coming back never lengthens the back-off; and its
+//!   wait, which can now begin with the machine still in sight and leaving,
+//!   reads that machine as coming on only once its row is nearer than the
+//!   plot the wait faces (else the halt, the follow's begin at the keep-out
+//!   and the hold again would go round every few decisions). **The
+//!   broken machine**: a track faster than [`BROKEN_TRACK_MAX_MPS`] is no
+//!   evidence, and a hurt machine with none is broken when its row's range
+//!   from where the tank stands now opens by [`BROKEN_OPEN_M`]
+//!   ([`Pilot::leaving`]); no follow begins inside the keep-out. **A followed
+//!   row** is flown to [`HUNT_STALE_PLOT_MS`] under every doctrine. **The
+//!   wingman's opening** survives a teammate at the muster
+//!   ([`OPENING_TEAMMATE_M`]);
 //! * "A machine that loses you … crosses to the other side's entry zone to
 //!   look", and the proving ground's roads meet at The Crossroads (B) — so with
 //!   no identified hostile held for 5 s (an unidentified contact does not
@@ -272,8 +306,10 @@
 //! stopped facing the plot — or (cut AN.3; never both in force) the return
 //! after a broken machine's follow, "once home it shoots back at whatever
 //! comes for it, and after twenty quiet seconds … comes back in, once": in
-//! reverse bow on its last plot to [`RETURN_STANDOFF_M`], then stopped facing
-//! that plot; (3b) the turn into a side or rear hit, stopped,
+//! reverse bow on the machine (cut AO.1; its last plot once it is not held
+//! young) to [`RETURN_STANDOFF_M`] from its last plot, then stopped facing
+//! that plot — each back-off on `back_off_bow`'s slant, a stop when none
+//! leaves room (cut AO.1); (3b) the turn into a side or rear hit, stopped,
 //! for [`THREAT_TURN_MS`] (never under an `orbit` doctrine, and nothing when
 //! the threat is within [`HOLD_BOW_DEG`] of a young target the pilot already
 //! faces); (3c, cut AN.2) the halt: stopped, bow on its hostile while that
@@ -286,9 +322,10 @@
 //! (4b) a stop facing a hunted hostile expected back inside the sight, the
 //! hunt's legs frozen through it; (5) the hunt; (4 again) the doctrine's
 //! stance round an older row never seen fresh; with nothing to fly at, (6a,
-//! cut AN.2) the opening while it is not over — still before its brief, its
-//! step off the road at [`OPENING_STEP_KPH`], then stopped bow toward the
-//! other side's entry — and then (6) the search. [`Pilot::rule`] names the
+//! cut AN.2) the opening while it is not over — still before its brief, a
+//! move in for room at full ahead and stopped for the brief after it (cut
+//! AO.1), its step off the road at [`OPENING_STEP_KPH`], then stopped bow
+//! toward the other side's entry — and then (6) the search. [`Pilot::rule`] names the
 //! rule step 3a, 3c, 4 or 6a flew at the last decision (`reapproach`,
 //! `approach_wait`, `return_back`, `return_wait`, `halt`, `follow`,
 //! `opening`). Every heading steps (2) to (6) return
@@ -388,7 +425,8 @@
 //! [`OPENING_STEP_MAX_M`] 60..=120, [`HALT_STILL_MS`] 4 000..=10 000,
 //! [`EXCHANGE_WINDOW_MS`] 10 000..=30 000, [`EXCHANGE_MIN_TAKEN`] 4..=12,
 //! [`EXCHANGE_MARGIN`] 2..=8, [`REAPPROACH_OPEN_M`] 620..=700,
-//! [`REAPPROACH_MAX_MS`] 30 000..=60 000, [`REAPPROACH_WAIT_MS`]
+//! [`REAPPROACH_MAX_MS`] 30 000..=90 000 (widened by cut AO.1, which raised it
+//! to 60 000 to cover the drive), [`REAPPROACH_WAIT_MS`]
 //! 30 000..=60 000 and [`REAPPROACH_PER_MATCH`] 1..=3. Not tunable:
 //! [`OPENING_BRIEF_WAIT_MS`], [`OPENING_STEP_KPH`], [`OPENING_ARRIVE_M`],
 //! [`OPENING_STEP_MS`], [`STOCK_SIGHT_M`] (the help's), [`HIDING`] (the
@@ -402,8 +440,19 @@
 //! 250..=600, [`RETURN_STANDOFF_M`] 620..=750 (past the 600 m moving sight)
 //! and [`RETURN_WAIT_MS`] 60 000..=120 000; and in the picture
 //! [`super::picture::LATTICE_GUARD_MS`] 150..=200. Not tunable:
-//! [`FOLLOW_STOPPED_MS`] and [`RETURN_BACK_MS`], and the picture's other
-//! lattice constants.
+//! [`FOLLOW_STOPPED_MS`] and [`RETURN_BACK_MS`] (raised by cut AO.1 to
+//! 65 000, derived from the drive), and the picture's other lattice
+//! constants.
+//!
+//! **AO.1's**, in this module, within these bounds: [`OPENING_ROOM_MARGIN_M`]
+//! 30..=120, [`EDGE_BACK_MARGIN_M`] 20..=60 and [`BROKEN_OPEN_M`] 50..=150
+//! (and AN.2's [`REAPPROACH_MAX_MS`] above, its bound widened). Not tunable:
+//! [`MACHINE_STANDOFF_M`] and [`PASSABLE`] (the help's), [`OPENING_ROOM_M`]
+//! and [`OPENING_ROOM_SLACK_M`] (derived), [`OPENING_INWARD_MIN_M`],
+//! [`OPENING_INWARD_MS`], [`OPENING_INWARD_LEGS_MAX`] (a bound),
+//! [`BACK_OFF_SLANT_STEP_DEG`], [`BROKEN_OPEN_WINDOW_MS`] (the track's own
+//! window), [`BROKEN_OPEN_SPAN_MS`], [`BROKEN_TRACK_MAX_MPS`] (the help's
+//! forward speed and a third) and [`OPENING_TEAMMATE_M`].
 //!
 //! Every test asserts through these names, never their values; the one
 //! exception is the lead's own bounds on the offline median gaps (1 200 ms for
@@ -415,8 +464,8 @@ use serde::Serialize;
 use super::{
     Side,
     picture::{
-        Contact, EventKind, Ground, MatchMode, Phase, Picture, Power, Track, bearing_deg,
-        distance_m,
+        Contact, EventKind, Ground, MatchMode, Phase, Picture, Power, TRACK_WINDOW_MS, Track,
+        bearing_deg, distance_m,
     },
     settings::Opening,
 };
@@ -648,9 +697,15 @@ pub const EXCHANGE_MARGIN: usize = 4;
 /// (cut AN.2): past the 600 m a mover is seen at, so the machine coming on
 /// is seen first. Tunable 620..=700.
 pub const REAPPROACH_OPEN_M: f64 = 650.0;
-/// The backing off is given up this long after it began (cut AN.2). Tunable
-/// 30 000..=60 000.
-pub const REAPPROACH_MAX_MS: u64 = 45_000;
+/// The backing off is given up this long after it began (cut AN.2; raised by
+/// cut AO.1 to cover the drive). `help cockpit` gives the stock tank 27 kph
+/// astern and caps grass as 54 is to about 41, so about 20.5 kph astern on
+/// grass; the bot's own transcript reads `STATUS` -8, -18 and -20 kph about
+/// 2.5, 5.3 and 7.3 s after `SPEED -27`, then -20 steady (about 5.6 m/s). A
+/// machine at the help's 420 m reads `400 m` on the scope, so the back-off to
+/// [`REAPPROACH_OPEN_M`] is about 250 m and takes about 46 s; 60 s covers it.
+/// Tunable 30 000..=90 000.
+pub const REAPPROACH_MAX_MS: u64 = 60_000;
 /// The wait for the machine to come on lasts at most this long (cut AN.2).
 /// Tunable 30 000..=60 000.
 pub const REAPPROACH_WAIT_MS: u64 = 45_000;
@@ -685,12 +740,87 @@ pub const FOLLOW_STOPPED_MS: u64 = 5_000;
 /// out to all of it", `help cockpit`), so the machine coming back in is seen
 /// first. Tunable 620..=750.
 pub const RETURN_STANDOFF_M: f64 = 650.0;
-/// …or this long after it began (cut AN.3). Not tunable.
-pub const RETURN_BACK_MS: u64 = 45_000;
+/// …or this long after it began (cut AN.3; raised by cut AO.1 to cover the
+/// drive): the same reverse on grass as [`REAPPROACH_MAX_MS`]'s, about 5.6 m/s
+/// once up to speed, over the return's [`RETURN_STANDOFF_M`] less
+/// [`FOLLOW_BAND_M`] (300 m at the shipped figures) takes about 55 s. Not
+/// tunable.
+pub const RETURN_BACK_MS: u64 = 65_000;
 /// **The wait for the one return** (cut AN.3): "after twenty quiet seconds
 /// with nothing hostile in sight it turns round and comes back in, once"
 /// (`help simulator`), plus its drive back. Tunable 60 000..=120 000.
 pub const RETURN_WAIT_MS: u64 = 90_000;
+/// **The machine's stand-off** (cut AO.1): a machine "closes: to about seven
+/// tenths of what its own sight and its gun's inner band allow (420 m for the
+/// stock tank), where it stops, turns onto you and shoots" (`help
+/// simulator`): where a re-approach's back-off begins. Not tunable.
+pub const MACHINE_STANDOFF_M: f64 = 420.0;
+/// **The opening's room margin** (cut AO.1): the scope rounds a range to
+/// 50 m (`help cockpit`), so a machine at 420 m reads `400 m` and the back-off
+/// from its row is that much longer, plus the ground a back-off keeps astern
+/// ([`EDGE_BACK_MARGIN_M`]). Tunable 30..=120.
+pub const OPENING_ROOM_MARGIN_M: f64 = 60.0;
+/// **The ground the opening holds with behind it** (cut AO.1): the longest
+/// back-off the pilot orders, from the machine's [`MACHINE_STANDOFF_M`] out
+/// to [`REAPPROACH_OPEN_M`] of its plot, plus [`OPENING_ROOM_MARGIN_M`] (290 m
+/// at the shipped figures). Derived, not tunable.
+pub const OPENING_ROOM_M: f64 = REAPPROACH_OPEN_M - MACHINE_STANDOFF_M + OPENING_ROOM_MARGIN_M;
+/// **A move in shorter than this is not driven** (cut AO.1): each leg is
+/// followed by a stop and a fresh `VIEW BRIEF`, which the lane paces
+/// [`OPENING_BRIEF_WAIT_MS`] apart. Not tunable.
+pub const OPENING_INWARD_MIN_M: f64 = 40.0;
+/// **A shortfall of room this small is room enough** (cut AO.1): its leg,
+/// the shortfall and [`OPENING_ARRIVE_M`], would be under
+/// [`OPENING_INWARD_MIN_M`]. Derived (30 m), not tunable.
+pub const OPENING_ROOM_SLACK_M: f64 = OPENING_INWARD_MIN_M - OPENING_ARRIVE_M;
+/// A move in is done this long after it began, wherever the tank is (cut
+/// AO.1). Not tunable.
+pub const OPENING_INWARD_MS: u64 = 60_000;
+/// At most this many moves in a match (cut AO.1). A bound, not a tactic. Not
+/// tunable.
+pub const OPENING_INWARD_LEGS_MAX: u8 = 3;
+/// **Ground a tank crosses** (cut AO.1): the brief's own class words for the
+/// ground the help lets a tracked tank drive on. "Deep water is impassable to
+/// a tracked tank; the proving ground has one ford" (`help cockpit`: the ford
+/// is plain `water`), and "A walker takes the thick woods that stop a tank"
+/// (`help simulator`). **Any other word blocks** — `deep water`, `heavy
+/// woods`, and a word the help never named. Not tunable.
+pub const PASSABLE: [&str; 6] = [
+    "road",
+    "grass",
+    "bare ground",
+    "rubble",
+    "light woods",
+    "water",
+];
+/// **The ground a back-off keeps astern** (cut AO.1): the re-approach's and
+/// the return's back-offs slant or end before the ground behind the tank,
+/// to the arena's edge, is shorter than this. Tunable 20..=60.
+pub const EDGE_BACK_MARGIN_M: f64 = 30.0;
+/// A back-off's bow slants off the machine this much at a time, up to
+/// [`HOLD_BOW_DEG`] (cut AO.1). Not tunable.
+pub const BACK_OFF_SLANT_STEP_DEG: u32 = 10;
+/// **A machine leaving with no track** (cut AO.1; [`Pilot::leaving`]): its
+/// row's range from where the tank stands now opened by at least this — two
+/// of the scope's 50 m steps (`help cockpit`: a range is "rounded to 50 m").
+/// Tunable 50..=150.
+pub const BROKEN_OPEN_M: f64 = 100.0;
+/// …over the fixes of the track's own window
+/// ([`super::picture::TRACK_WINDOW_MS`]) (cut AO.1). Not tunable.
+pub const BROKEN_OPEN_WINDOW_MS: u64 = TRACK_WINDOW_MS;
+/// …the nearer fix at least this much older than the newest (cut AO.1). Not
+/// tunable.
+pub const BROKEN_OPEN_SPAN_MS: u64 = 2_000;
+/// **A track faster than this is no evidence** (cut AO.1): "the stock tank
+/// makes 54 kph forward" (`help cockpit`), 15 m/s, plus a third for the fit's
+/// noise. The bot's own transcript showed a 181 m/s track on a machine 50 m
+/// off. Not tunable.
+pub const BROKEN_TRACK_MAX_MPS: f64 = 20.0;
+/// **A teammate at the muster** (cut AO.1): the two sides muster at opposite
+/// ends of the ground ("two sides fly stock tanks against each other on the
+/// proving ground", `help simulator`), so a return not yet told apart this
+/// close at the first `CONTACTS` is a teammate. Not tunable.
+pub const OPENING_TEAMMATE_M: u32 = 100;
 
 // The doctrine the pilot flies moved to the commander's module (cut AJ.3),
 // which parses and clamps the model's answer into it; these names stay here.
@@ -756,6 +886,14 @@ pub enum OpeningStage {
         from_m: (f64, f64),
         since_ms: u64,
     },
+    /// **Moving in for room behind** (cut AO.1): driving from `from_m` to
+    /// `aim_m` toward the other side's entry, since then; then stopped for
+    /// the next brief.
+    Inward {
+        aim_m: (f64, f64),
+        from_m: (f64, f64),
+        since_ms: u64,
+    },
     /// Holding stopped, bow toward the other side's entry (`facing_deg` as it
     /// was first faced), since then.
     Hold { since_ms: u64, facing_deg: u32 },
@@ -764,12 +902,13 @@ pub enum OpeningStage {
 }
 
 impl OpeningStage {
-    /// `fresh`, `brief`, `step`, `hold` or `done` (the `arena-picture`
-    /// record's word).
+    /// `fresh`, `brief`, `inward` (cut AO.1), `step`, `hold` or `done` (the
+    /// `arena-picture` record's word).
     pub fn word(&self) -> &'static str {
         match self {
             OpeningStage::Fresh => "fresh",
             OpeningStage::Brief { .. } => "brief",
+            OpeningStage::Inward { .. } => "inward",
             OpeningStage::Step { .. } => "step",
             OpeningStage::Hold { .. } => "hold",
             OpeningStage::Done => "done",
@@ -1182,6 +1321,17 @@ pub struct Pilot {
     /// The picture's [`super::picture::Picture::contacts_read`] at the first
     /// decision: the opening waits for the first reply after it.
     opening_contacts_seen: u64,
+    /// **The moves in for room behind** begun this match (cut AO.1), at most
+    /// [`OPENING_INWARD_LEGS_MAX`].
+    pub opening_legs: u8,
+    /// The opening's `no way in` sentence has been said this match (cut
+    /// AO.1).
+    opening_no_way_said: bool,
+    /// **The last decision the shared reverse path turned a back-off's
+    /// reverse into a stop** (cut AO.1): held ground behind the tank, while the
+    /// rule was `reapproach` or `return_back`. A back-off begun before it ends
+    /// at the next decision.
+    pub back_off_blocked_ms: u64,
     /// **Fire from the halt** in force (cut AN.2).
     pub halt: Option<Halt>,
     /// **The re-approach** in force (cut AN.2)…
@@ -1272,6 +1422,9 @@ impl Default for Pilot {
             muster_m: None,
             opening: OpeningStage::Done,
             opening_contacts_seen: 0,
+            opening_legs: 0,
+            opening_no_way_said: false,
+            back_off_blocked_ms: 0,
             halt: None,
             reapproach: None,
             reapproaches: 0,
@@ -1375,6 +1528,169 @@ pub fn opening_step(ground: &Ground, away_deg: u32) -> Option<(u32, f64)> {
         }
     }
     best.map(|(_, bearing, metres)| (bearing, metres))
+}
+
+/// **The ground's size** (cut AO.1): the brief's header's
+/// ([`Ground::side_m`]), else `help simulator`'s "2.56 km square"
+/// ([`ARENA_SIDE_M`]). The one source of it: [`Pilot::other_entry_now`] and
+/// the back-offs read it here.
+pub fn ground_side(picture: &Picture) -> (f64, f64) {
+    picture
+        .ground
+        .as_ref()
+        .and_then(|ground| ground.side_m)
+        .unwrap_or((ARENA_SIDE_M, ARENA_SIDE_M))
+}
+
+/// **The ground astern** (cut AO.1): the distance from `own` along
+/// `bow_deg + 180°` to the edge of the ground `[0, side.0] × [0, side.1]`
+/// (`STATUS` counts from its south-west corner): the smallest exit over the two axes,
+/// an axis the direction does not move along never exiting; `0.0` when `own`
+/// lies outside the ground.
+pub fn room_astern(own: (f64, f64), bow_deg: f64, side: (f64, f64)) -> f64 {
+    let inside = (0.0..=side.0).contains(&own.0) && (0.0..=side.1).contains(&own.1);
+    if !inside {
+        return 0.0;
+    }
+    let astern = (bow_deg + 180.0).to_radians();
+    let exit = |at: f64, step: f64, high: f64| {
+        if step > f64::EPSILON {
+            (high - at) / step
+        } else if step < -f64::EPSILON {
+            at / -step
+        } else {
+            f64::INFINITY
+        }
+    };
+    exit(own.0, astern.sin(), side.0).min(exit(own.1, astern.cos(), side.1))
+}
+
+/// The brief's ray nearest a whole bearing (cut AO.1): 0, 45, … 315.
+fn nearest_ray(deg: u32) -> u32 {
+    ((deg % 360 + 22) / 45 * 45) % 360
+}
+
+/// **Where a ray's ground first stops a tank** (cut AO.1): walking its runs
+/// from the own cell, the start (0, else the reach of the run before) of the
+/// first run whose class is not [`PASSABLE`]; `None` when every run is.
+fn first_block_m(runs: &[(String, u32)]) -> Option<f64> {
+    let mut start = 0.0;
+    for (class, reach) in runs {
+        if !PASSABLE.contains(&class.as_str()) {
+            return Some(start);
+        }
+        start = f64::from(*reach);
+    }
+    None
+}
+
+/// **How far a ray of the brief is clear** (cut AO.1): its
+/// [`first_block_m`], else its last run's reach (0 with no run); `None` with
+/// no such ray. A clear ray's reach ends at the window or the arena's edge,
+/// and nothing past it is known.
+fn ray_clear_m(ground: &Ground, bearing: u32) -> Option<f64> {
+    let (runs, _) = ground.rays.get(&bearing)?;
+    Some(
+        first_block_m(runs)
+            .unwrap_or_else(|| runs.last().map_or(0.0, |(_, reach)| f64::from(*reach))),
+    )
+}
+
+/// **The ground behind the opening** (cut AO.1): from the brief's own
+/// `from_m`, the [`room_astern`] with the bow on `away_deg` (the bearing from
+/// the muster to the other side's entry) on the header's ground (else the
+/// help's square), cut short by the ray nearest astern where its ground first
+/// stops a tank (`first_block_m`). `None` without `from_m`.
+pub fn opening_room(ground: &Ground, away_deg: u32) -> Option<f64> {
+    let from = ground.from_m?;
+    let side = ground.side_m.unwrap_or((ARENA_SIDE_M, ARENA_SIDE_M));
+    let room = room_astern(from, f64::from(away_deg), side);
+    let behind = ground
+        .rays
+        .get(&nearest_ray(away_deg.saturating_add(180)))
+        .and_then(|(runs, _)| first_block_m(runs));
+    Some(behind.map_or(room, |block| room.min(block)))
+}
+
+/// **What the ground behind the opening says** (cut AO.1; [`opening_inward`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RoomVerdict {
+    /// Room enough: the shortfall is at most [`OPENING_ROOM_SLACK_M`].
+    Enough,
+    /// Move in `leg_m` toward the other side's entry; `room_m` behind now.
+    MoveIn { leg_m: f64, room_m: f64 },
+    /// Too little room, and the ground ahead refuses a leg of
+    /// [`OPENING_INWARD_MIN_M`]; `room_m` behind now.
+    NoWayIn { room_m: f64 },
+}
+
+/// **Whether the opening moves in for room** (cut AO.1), from the brief's
+/// `ground` with the bow on `away_deg`; `None` without `from_m`. With `room`
+/// its [`opening_room`] and `need` [`OPENING_ROOM_M`] less it: a `need` of at
+/// most [`OPENING_ROOM_SLACK_M`] is [`RoomVerdict::Enough`]; otherwise the ray
+/// nearest `away_deg` clears `reach` (`ray_clear_m`, less
+/// [`OPENING_COVER_M`] so the leg stops short of ground that stops a tank),
+/// and a `reach` under [`OPENING_INWARD_MIN_M`] is
+/// [`RoomVerdict::NoWayIn`], else the leg is `need` and [`OPENING_ARRIVE_M`],
+/// at most `reach` — never under the minimum, since `need` is over the slack.
+pub fn opening_inward(ground: &Ground, away_deg: u32) -> Option<RoomVerdict> {
+    let room_m = opening_room(ground, away_deg)?;
+    let need = OPENING_ROOM_M - room_m;
+    if need <= OPENING_ROOM_SLACK_M {
+        return Some(RoomVerdict::Enough);
+    }
+    let reach = ray_clear_m(ground, nearest_ray(away_deg)).unwrap_or(0.0) - OPENING_COVER_M;
+    if reach < OPENING_INWARD_MIN_M {
+        return Some(RoomVerdict::NoWayIn { room_m });
+    }
+    Some(RoomVerdict::MoveIn {
+        leg_m: (need + OPENING_ARRIVE_M).min(reach),
+        room_m,
+    })
+}
+
+/// **The bow a back-off reverses on** (cut AO.1): the re-approach's and the
+/// return's, from `own` with the machine at `aim_deg`, on a ground `side`.
+/// `aim_deg` itself when [`room_astern`] of it leaves [`EDGE_BACK_MARGIN_M`];
+/// else the **smallest** slant that does, over `k = 1, 2, …` while `k ×`
+/// [`BACK_OFF_SLANT_STEP_DEG`] is at most [`HOLD_BOW_DEG`], `aim_deg − k ×
+/// step` before `aim_deg + k × step`; else `None` (the back-off ends and
+/// holds). A tank reverses only along its bow line ("a negative speed
+/// reverses", `help cockpit`), so "along the edge" is a slant of the bow
+/// inside the help's front arc ("from within 45 degrees of your bow it
+/// strikes the front"), never a flank shown; the smallest slant keeps most of
+/// the bow's margin. At an edge square to the line of fire a slant gains
+/// little (about 4 m at 30° from 26 m); it is for a machine off the axis.
+fn back_off_bow(own: (f64, f64), aim_deg: f64, side: (f64, f64)) -> Option<f64> {
+    let roomy = |bow: f64| room_astern(own, bow, side) >= EDGE_BACK_MARGIN_M;
+    if roomy(aim_deg) {
+        return Some(aim_deg);
+    }
+    let mut k = 1_u32;
+    while k * BACK_OFF_SLANT_STEP_DEG <= HOLD_BOW_DEG {
+        let slant = f64::from(k * BACK_OFF_SLANT_STEP_DEG);
+        for bow in [aim_deg - slant, aim_deg + slant] {
+            if roomy(bow) {
+                return Some(norm(bow));
+            }
+        }
+        k += 1;
+    }
+    None
+}
+
+/// How far `own` has come along the leg from `from_m` to `aim_m` (the step's
+/// and the move in's projection; 0 with no own position or a leg of no
+/// length).
+fn progress_along(own: Option<(f64, f64)>, from_m: (f64, f64), aim_m: (f64, f64)) -> f64 {
+    let length = distance_m(from_m, aim_m);
+    own.map_or(0.0, |own| {
+        if length <= f64::EPSILON {
+            return 0.0;
+        }
+        ((own.0 - from_m.0) * (aim_m.0 - from_m.0) + (own.1 - from_m.1) * (aim_m.1 - from_m.1))
+            / length
+    })
 }
 
 /// How old a contact's plot is now: its age when read, and the time since.
@@ -1573,16 +1889,21 @@ impl Pilot {
     /// (3a, waiting); cut AN.3: `follow` (4, a broken machine followed home),
     /// `return_back` (3a, backing out of its sight) or `return_wait` (3a,
     /// waiting for its return); else `None`. A word, never a designator.
+    /// Cut AO.1 adds no word: a move in for room is `opening`, a back-off's
+    /// hold at the edge is its stage's own wait (`approach_wait`,
+    /// `return_wait`).
     pub fn rule(&self) -> Option<&'static str> {
         self.rule
     }
 
-    /// **Whether `contact` is broken** (cut AN.3; the module head), seen from
-    /// `own` at `now_ms`: a live hostile held young ([`HUNT_STALE_PLOT_MS`]),
-    /// hurt ([`Pilot::hurt`]) or hit at least [`BROKEN_HITS_MIN`] times this
-    /// match ([`Pilot::scored_on`]), publishing a track whose course lies
-    /// within [`BROKEN_AWAY_DEG`] of the bearing from `own` to where it is now
-    /// ([`target_pos`]): driving away.
+    /// **Whether `contact` is broken** (cut AN.3; cut AO.1; the module head),
+    /// seen from `own` at `now_ms`: a live hostile held young
+    /// ([`HUNT_STALE_PLOT_MS`]), hurt ([`Pilot::hurt`]) or hit at least
+    /// [`BROKEN_HITS_MIN`] times this match ([`Pilot::scored_on`]), and
+    /// driving away — either a **plausible** track (at most
+    /// [`BROKEN_TRACK_MAX_MPS`]: a faster one is read as none) whose course
+    /// lies within [`BROKEN_AWAY_DEG`] of the bearing from `own` to where it is
+    /// now ([`target_pos`]), or no plausible track and [`Pilot::leaving`].
     pub fn broken(
         &self,
         picture: &Picture,
@@ -1599,15 +1920,36 @@ impl Pilot {
                 .scored_on
                 .get(d)
                 .is_some_and(|hits| *hits >= BROKEN_HITS_MIN);
-        let (Some(track), Some(pos)) = (&contact.track, target_pos(picture, contact, now_ms))
-        else {
+        let away = match plausible_track(contact) {
+            Some(track) => target_pos(picture, contact, now_ms).is_some_and(|pos| {
+                angle_between(whole(track.course_deg), whole(bearing_deg(own, pos)))
+                    <= BROKEN_AWAY_DEG
+            }),
+            None => self.leaving(contact, own, now_ms),
+        };
+        self.live_hostile(contact, other) && contact.age_ms <= HUNT_STALE_PLOT_MS && hurt && away
+    }
+
+    /// **A machine leaving with no track** (cut AO.1): over `contact`'s fixes
+    /// of the last [`BROKEN_OPEN_WINDOW_MS`], the newest fix lies at least
+    /// [`BROKEN_OPEN_M`] farther from `own` than the nearest of those at least
+    /// [`BROKEN_OPEN_SPAN_MS`] older than it. Both distances are from **the
+    /// own position now**, so the tank's own motion cancels and only the
+    /// machine moving away counts. The picture publishes a track only for
+    /// motion its fixes can carry, and a row-only fix at 500 to 600 m has
+    /// about 55 m of error, so a 10 m/s machine driving home seldom shows one
+    /// (the bot's own runs hunted five such machines into their entry zones).
+    pub fn leaving(&self, contact: &Contact, own: (f64, f64), now_ms: u64) -> bool {
+        let floor = now_ms.saturating_sub(BROKEN_OPEN_WINDOW_MS);
+        let recent = || contact.fixes.iter().filter(move |fix| fix.at_ms >= floor);
+        let Some(newest) = recent().max_by_key(|fix| fix.at_ms) else {
             return false;
         };
-        self.live_hostile(contact, other)
-            && contact.age_ms <= HUNT_STALE_PLOT_MS
-            && hurt
-            && angle_between(whole(track.course_deg), whole(bearing_deg(own, pos)))
-                <= BROKEN_AWAY_DEG
+        let nearest = recent()
+            .filter(|fix| fix.at_ms.saturating_add(BROKEN_OPEN_SPAN_MS) <= newest.at_ms)
+            .map(|fix| distance_m(own, fix.pos_m))
+            .min_by(f64::total_cmp);
+        nearest.is_some_and(|nearest| distance_m(own, newest.pos_m) - nearest >= BROKEN_OPEN_M)
     }
 
     /// **How far `q` lies short of the other side's entry line** (cut AN.3):
@@ -1646,14 +1988,10 @@ impl Pilot {
 
     /// **The other side's entry now** (cut AN.2): [`other_entry`] of the own
     /// muster, on the ground the brief's header sized, else on `help
-    /// simulator`'s "2.56 km square" ([`ARENA_SIDE_M`]); `None` with no
-    /// muster.
+    /// simulator`'s "2.56 km square" ([`ARENA_SIDE_M`]), as [`ground_side`]
+    /// reads it; `None` with no muster.
     pub fn other_entry_now(&self, picture: &Picture) -> Option<(f64, f64)> {
-        let side = picture
-            .ground
-            .as_ref()
-            .and_then(|ground| ground.side_m)
-            .unwrap_or((ARENA_SIDE_M, ARENA_SIDE_M));
+        let side = ground_side(picture);
         self.muster_m.map(|muster| other_entry(muster, side))
     }
 
@@ -2492,18 +2830,22 @@ impl Pilot {
     /// live hostile held young with a row inside [`STOCK_SIGHT_M`], with its
     /// row's range. A row farther out is a teammate's report (`help cockpit`:
     /// `far` covers "anything a teammate is passing you from beyond it").
+    /// Only rows `counts` keeps (the designator and the row's range) are
+    /// read: the return's wait (cut AO.1) drops its own machine's row until it
+    /// reads nearer than the plot the wait faces.
     fn coming_on(
         &self,
         picture: &Picture,
         doctrine: &Doctrine,
         other: Side,
+        counts: impl Fn(&str, u32) -> bool,
     ) -> Option<(String, u32)> {
         picture
             .contacts
             .values()
             .filter(|c| self.live_hostile(c, other) && c.age_ms <= held_limit_ms(doctrine))
             .filter_map(|c| c.range_m.map(|range| (c.designator.clone(), range)))
-            .filter(|(_, range)| f64::from(*range) <= STOCK_SIGHT_M)
+            .filter(|(d, range)| f64::from(*range) <= STOCK_SIGHT_M && counts(d, *range))
             .min_by_key(|(_, range)| *range)
     }
 
@@ -2512,7 +2854,10 @@ impl Pilot {
     /// keep out of), the doctrine is not `withdraw`, no fall back flies, no
     /// return is in force (the machine's one return is being waited for), and
     /// the target is [`Pilot::broken`]: `Following {d} home: it is hurt and
-    /// driving away; holding {FOLLOW_BAND_M} m behind it.` A re-approach in
+    /// driving away; holding {FOLLOW_BAND_M} m behind it.` — but (cut AO.1)
+    /// with the keep-out already reached, no follow begins: only the
+    /// keep-out's sentence is said and the return begins from its last plot,
+    /// so the two notes are never said in one decision. A re-approach in
     /// force ends then (rested, as any end of it is: it opens the range on a
     /// stopped machine, and this one drives away; the return and the
     /// re-approach are never both in force), and so does a halt on it (it
@@ -2528,9 +2873,9 @@ impl Pilot {
     /// ([`ENTRY_KEEP_OUT_M`] from the entry line for `d`, that and
     /// [`FOLLOW_BAND_M`] for the own tank) into the return from its last plot,
     /// saying `Not following {d} into its entry zone; backing off out of its
-    /// sight.`; and silently when `d` has published no track for
-    /// [`FOLLOW_STOPPED_MS`] (it has stopped: the stance flies). A kill ends
-    /// it in [`Pilot::take_kills`].
+    /// sight.`; and silently when `d` has shown neither a plausible track nor
+    /// (cut AO.1) [`Pilot::leaving`] for [`FOLLOW_STOPPED_MS`] (it has
+    /// stopped: the stance flies). A kill ends it in [`Pilot::take_kills`].
     fn judge_follow(
         &mut self,
         picture: &Picture,
@@ -2567,15 +2912,6 @@ impl Pilot {
                 return;
             }
             let d = contact.designator.clone();
-            self.note(format!(
-                "Following {d} home: it is hurt and driving away; holding {:.0} m behind it.",
-                FOLLOW_BAND_M.round()
-            ));
-            self.follow = Some(Follow {
-                d,
-                since_ms: now_ms,
-                tracked_ms: now_ms,
-            });
             // The machine is driving away: no longer the stopped machine a
             // re-approach opens the range on, nor one coming on at a halt.
             if self.reapproach.is_some() {
@@ -2588,6 +2924,28 @@ impl Pilot {
             {
                 self.halt = None;
             }
+            // Cut AO.1: no follow begins inside the keep-out. The keep-out's
+            // own sentence, and the return from its last plot, at once.
+            if self.kept_out(picture, contact, Some(own), now_ms) {
+                self.note(format!(
+                    "Not following {d} into its entry zone; backing off out of its sight."
+                ));
+                if let Some(plot) =
+                    last_plot(picture, contact).or_else(|| target_pos(picture, contact, now_ms))
+                {
+                    self.begin_return(picture, d, plot, now_ms);
+                }
+                return;
+            }
+            self.note(format!(
+                "Following {d} home: it is hurt and driving away; holding {:.0} m behind it.",
+                FOLLOW_BAND_M.round()
+            ));
+            self.follow = Some(Follow {
+                d,
+                since_ms: now_ms,
+                tracked_ms: now_ms,
+            });
         }
         let Some(follow) = self.follow.clone() else {
             return;
@@ -2620,27 +2978,45 @@ impl Pilot {
             self.follow = None;
             return;
         }
-        let pos = target_pos(picture, contact, now_ms);
-        let short = |q: Option<(f64, f64)>| q.and_then(|q| self.short_of_entry(picture, q));
-        let kept_out = short(pos).is_some_and(|m| m <= ENTRY_KEEP_OUT_M)
-            || short(own).is_some_and(|m| m <= ENTRY_KEEP_OUT_M + FOLLOW_BAND_M);
-        if kept_out {
+        if self.kept_out(picture, contact, own, now_ms) {
             self.follow = None;
             self.note(format!(
                 "Not following {d} into its entry zone; backing off out of its sight."
             ));
-            if let Some(plot) = last_plot(picture, contact).or(pos) {
+            if let Some(plot) =
+                last_plot(picture, contact).or_else(|| target_pos(picture, contact, now_ms))
+            {
                 self.begin_return(picture, d, plot, now_ms);
             }
             return;
         }
-        if contact.track.is_some() {
+        // Cut AO.1: still moving is a plausible track, or the row's range
+        // from the own tank opening with none ([`Pilot::leaving`]).
+        let moving = plausible_track(contact).is_some()
+            || own.is_some_and(|own| self.leaving(contact, own, now_ms));
+        if moving {
             if let Some(follow) = self.follow.as_mut() {
                 follow.tracked_ms = now_ms;
             }
         } else if now_ms >= follow.tracked_ms.saturating_add(FOLLOW_STOPPED_MS) {
             self.follow = None;
         }
+    }
+
+    /// **The keep-out** (cut AN.3; a helper since cut AO.1, where the follow's
+    /// begin reads it too): the machine within [`ENTRY_KEEP_OUT_M`] of the
+    /// other side's entry line, or the own tank within that and
+    /// [`FOLLOW_BAND_M`].
+    fn kept_out(
+        &self,
+        picture: &Picture,
+        contact: &Contact,
+        own: Option<(f64, f64)>,
+        now_ms: u64,
+    ) -> bool {
+        let short = |q: Option<(f64, f64)>| q.and_then(|q| self.short_of_entry(picture, q));
+        short(target_pos(picture, contact, now_ms)).is_some_and(|m| m <= ENTRY_KEEP_OUT_M)
+            || short(own).is_some_and(|m| m <= ENTRY_KEEP_OUT_M + FOLLOW_BAND_M)
     }
 
     /// **The return begins** (cut AN.3) for `d` from its last plot `plot_m`:
@@ -2656,48 +3032,128 @@ impl Pilot {
             stage: ReturnStage::Back { since_ms: now_ms },
         });
         if off.is_some_and(|off| off >= RETURN_STANDOFF_M) {
-            self.return_waits(off.unwrap_or(RETURN_STANDOFF_M), now_ms);
+            self.return_waits(off, now_ms);
         }
     }
 
-    /// **The return waits** (cut AN.3), `off_m` from the plot, said once.
-    fn return_waits(&mut self, off_m: f64, now_ms: u64) {
+    /// **The return waits** (cut AN.3), `off_m` from the plot (cut AO.1:
+    /// with no own position, `Waiting for {d} to come back.`), said once.
+    fn return_waits(&mut self, off_m: Option<f64>, now_ms: u64) {
         let Some(ret) = self.ret.as_mut() else {
             return;
         };
         ret.stage = ReturnStage::Wait { since_ms: now_ms };
         let d = ret.d.clone();
-        self.note(format!(
-            "Waiting for {d} to come back, {:.0} m from its last plot.",
-            off_m.round()
-        ));
+        self.note(match off_m {
+            Some(off) => format!(
+                "Waiting for {d} to come back, {:.0} m from its last plot.",
+                off.round()
+            ),
+            None => format!("Waiting for {d} to come back."),
+        });
     }
 
-    /// **The return, judged** (cut AN.3; the module head). Backing off, it
-    /// waits once [`RETURN_STANDOFF_M`] from the plot or [`RETURN_BACK_MS`]
-    /// after it began. Waiting, a hostile coming on ([`Pilot::coming_on`])
-    /// arms the halt and ends it; a hit taken after the wait began ends it
-    /// with nothing said; and [`RETURN_WAIT_MS`] ends it with `No return from
-    /// {d} in {s} s; searching.` and the trail of `d` dropped, so no hunt
-    /// drives at its last plot near the entry line and on into the entry zone
-    /// — the search flies.
+    /// **Whether a back-off ends and holds** (cut AO.1), the re-approach's
+    /// `Open` or the return's `Back` begun at `since_ms`, its machine at
+    /// `aim`: (a) no bow within [`HOLD_BOW_DEG`] leaves [`EDGE_BACK_MARGIN_M`]
+    /// astern ([`back_off_bow`] from the own position now, on
+    /// [`ground_side`]); (b) a `Held:` read while it reversed; (c) the shared
+    /// reverse path turned its reverse into a stop at an earlier decision
+    /// (held ground behind, [`Pilot::back_off_blocked_ms`]).
+    fn back_off_ends(
+        &self,
+        picture: &Picture,
+        own: Option<(f64, f64)>,
+        aim: (f64, f64),
+        since_ms: u64,
+    ) -> bool {
+        let side = ground_side(picture);
+        let no_bow =
+            own.is_some_and(|own| back_off_bow(own, bearing_deg(own, aim), side).is_none());
+        let held = self.held_astern && self.held_seen_ms > since_ms;
+        no_bow || held || self.back_off_blocked_ms > since_ms
+    }
+
+    /// **A back-off's hold** (cut AO.1): `{head}: waiting {m} m from {d}'s
+    /// last plot.`, `m` from `plot_m` in whole metres, or `{head}: waiting for
+    /// {d}.` with no own position.
+    fn no_room_note(&mut self, head: &str, d: &str, own: Option<(f64, f64)>, plot_m: (f64, f64)) {
+        self.note(match own {
+            Some(own) => format!(
+                "{head}: waiting {:.0} m from {d}'s last plot.",
+                distance_m(own, plot_m).round()
+            ),
+            None => format!("{head}: waiting for {d}."),
+        });
+    }
+
+    /// **The return, judged** (cut AN.3; cut AO.1; the module head). Backing
+    /// off, its plot follows a fresh row of the machine only **farther** from
+    /// the own tank (a machine coming back never lengthens the back-off: the
+    /// help's broken machine "comes back in, once", and the return exists to
+    /// take that from a stopped tank); it ends and holds where
+    /// [`Pilot::back_off_ends`] says (`No room behind for the return: …`, and
+    /// its own wait, no other note); and it waits once [`RETURN_STANDOFF_M`]
+    /// from the plot or [`RETURN_BACK_MS`] after it began. Waiting, a hostile
+    /// coming on ([`Pilot::coming_on`]; `d` itself only once its row reads
+    /// nearer than the plot, cut AO.1) arms the halt and ends it; a hit taken
+    /// after the wait began ends it with nothing said; and [`RETURN_WAIT_MS`]
+    /// ends it with `No return from {d} in {s} s; searching.` and the trail of
+    /// `d` dropped, so no hunt drives at its last plot near the entry line and
+    /// on into the entry zone — the search flies.
     fn judge_return(&mut self, picture: &Picture, doctrine: &Doctrine, other: Side, now_ms: u64) {
         let Some(ret) = self.ret.clone() else {
             return;
         };
         match ret.stage {
             ReturnStage::Back { since_ms } => {
-                let off = picture
-                    .own_pos_at(now_ms)
-                    .map(|own| distance_m(own, ret.plot_m));
+                let own = picture.own_pos_at(now_ms);
+                let mut plot = ret.plot_m;
+                if let Some(own) = own
+                    && let Some(contact) = picture.contacts.get(&ret.d)
+                    && self.live_hostile(contact, other)
+                    && plot_age_ms(contact, now_ms) <= FRESH_PLOT_MS
+                    && let Some(fresh) = last_plot(picture, contact)
+                    && distance_m(own, fresh) > distance_m(own, plot)
+                {
+                    plot = fresh;
+                    if let Some(ret) = self.ret.as_mut() {
+                        ret.plot_m = plot;
+                    }
+                }
+                let aim = self
+                    .young_pos(picture, doctrine, &ret.d, now_ms)
+                    .unwrap_or(plot);
+                if self.back_off_ends(picture, own, aim, since_ms) {
+                    if let Some(ret) = self.ret.as_mut() {
+                        ret.stage = ReturnStage::Wait { since_ms: now_ms };
+                    }
+                    self.no_room_note("No room behind for the return", &ret.d, own, plot);
+                    return;
+                }
+                let off = own.map(|own| distance_m(own, plot));
                 if off.is_some_and(|off| off >= RETURN_STANDOFF_M)
                     || now_ms >= since_ms.saturating_add(RETURN_BACK_MS)
                 {
-                    self.return_waits(off.unwrap_or(0.0), now_ms);
+                    self.return_waits(off, now_ms);
                 }
             }
             ReturnStage::Wait { since_ms } => {
-                if let Some((come, range)) = self.coming_on(picture, doctrine, other) {
+                // Cut AO.1: a wait begun where the ground behind ran out can
+                // begin with the machine still in sight and driving home. It
+                // comes on only once its row reads nearer than the plot the
+                // wait faces (the help's "comes back in, once"); a row no
+                // nearer is the machine still leaving, and arming the halt on
+                // it would end the wait only for the follow's begin to find
+                // it broken at the keep-out and back off again, round and
+                // round. Any other hostile in sight comes on as before.
+                let off = picture
+                    .own_pos_at(now_ms)
+                    .map(|own| distance_m(own, ret.plot_m));
+                let back = |d: &str, range: u32| {
+                    d != ret.d || !off.is_some_and(|off| f64::from(range) >= off)
+                };
+                if let Some((come, range)) = self.coming_on(picture, doctrine, other, back) {
                     self.ret = None;
                     self.arm_halt(&come, range, now_ms);
                 } else if self.hit_taken_ms > since_ms {
@@ -2782,10 +3238,20 @@ impl Pilot {
     /// ([`Pilot::muster_m`], known once the first position is read or
     /// [`OPENING_BRIEF_WAIT_MS`] after power); else it waits for the first
     /// `CONTACTS` reply after the first decision (at most
-    /// [`OPENING_BRIEF_WAIT_MS`]) and is over, silently, when any contact, an
-    /// unknown included, is held or a `New contact` was read since power — a
-    /// posed duel, where the machine is an unidentified return for a second or
-    /// two — else it asks for the brief. From then the opening ends on (a) a
+    /// [`OPENING_BRIEF_WAIT_MS`]) and is over, silently, when a contact that is
+    /// no teammate is held or a `New contact` since power names one that is not
+    /// now held as a teammate — a posed duel, where the machine is an
+    /// unidentified return for a second or two — else it asks for the brief.
+    /// A teammate (cut AO.1) is a contact the stream names as the own side, or
+    /// one not yet told apart whose row reads at most [`OPENING_TEAMMATE_M`].
+    /// **The room** (cut AO.1), only with a back-off knob on: a whole brief's
+    /// [`opening_inward`] that says [`RoomVerdict::MoveIn`] (at most
+    /// [`OPENING_INWARD_LEGS_MAX`] a match) drives the leg toward the other
+    /// side's entry ([`OpeningStage::Inward`]), which ends as the step does,
+    /// at [`OPENING_INWARD_MS`] or on a `Held:`, into a stop and a fresh brief
+    /// (read only from the leg's end on); [`RoomVerdict::NoWayIn`] is said once
+    /// a match, and the step or the hold follow as before. From then the
+    /// opening ends on (a) a
     /// live hostile in sight ([`Pilot::in_sight`]; the halt armed for it only
     /// inside [`STOCK_SIGHT_M`]: a row farther out is a teammate's report),
     /// (b) a hit taken after power or (c) [`OPENING_MAX_MS`] after power; a
@@ -2814,11 +3280,41 @@ impl Pilot {
             if !replied && now_ms < first.saturating_add(OPENING_BRIEF_WAIT_MS) {
                 return;
             }
+            // Cut AO.1: a teammate at the muster ends nothing. The help's two
+            // sides muster at opposite ends of the ground, so a return not yet
+            // told apart within `OPENING_TEAMMATE_M` at the first `CONTACTS`
+            // is a teammate; and a contact the stream itself names as the own
+            // side is never a hostile.
+            let own_side = other.other();
+            let teammate = |c: &Contact| {
+                c.side == Some(own_side)
+                    || (c.side.is_none()
+                        && c.range_m.is_some_and(|range| range <= OPENING_TEAMMATE_M))
+            };
+            let foe_held = picture.contacts.values().any(|c| !teammate(c));
+            // AN.2's notice test, narrowed: a `New contact` since power whose
+            // designator is not now held as a teammate (one the whole-list
+            // rule dropped, an empty first reply, still counts). The notice
+            // keeps the designator it was said under: a contact identified
+            // since (`Contact X1 identified: RB, red.`) is held under its new
+            // one and remembers the old one as `was`, so it is looked up by
+            // either.
             let noticed = picture
                 .events
                 .iter()
-                .any(|event| event.kind == EventKind::ContactNew && event.at_ms >= power);
-            if noticed || !picture.contacts.is_empty() {
+                .filter(|event| event.kind == EventKind::ContactNew && event.at_ms >= power)
+                .any(|event| {
+                    let d = event
+                        .text
+                        .strip_prefix("New contact ")
+                        .and_then(|rest| rest.split([':', '.']).next())
+                        .unwrap_or_default();
+                    !picture
+                        .contacts
+                        .values()
+                        .any(|c| (c.designator == d || c.was.as_deref() == Some(d)) && teammate(c))
+                });
+            if noticed || foe_held {
                 self.opening = OpeningStage::Done;
                 return;
             }
@@ -2853,10 +3349,18 @@ impl Pilot {
         }
         match self.opening.clone() {
             OpeningStage::Brief { since_ms } => {
+                // The muster's first brief is read as AN.2 read it; a brief
+                // after a move in (cut AO.1) only once read since it was
+                // asked, never an earlier one's ground.
+                let read_from = if self.opening_legs == 0 {
+                    first
+                } else {
+                    since_ms
+                };
                 let ground = picture
                     .ground
                     .as_ref()
-                    .filter(|ground| ground.complete && ground.read_ms >= first);
+                    .filter(|ground| ground.complete && ground.read_ms >= read_from);
                 if ground.is_none() && now_ms < since_ms.saturating_add(OPENING_BRIEF_WAIT_MS) {
                     return;
                 }
@@ -2864,6 +3368,47 @@ impl Pilot {
                     .muster_m
                     .zip(self.other_entry_now(picture))
                     .map(|(muster, entry)| whole(bearing_deg(muster, entry)));
+                // Cut AO.1: room behind for the longest back-off, only when a
+                // back-off knob is on (a pilot that never backs off has no use
+                // for it).
+                let backs_off = self.knobs.reapproach || self.knobs.follow_broken;
+                if backs_off
+                    && let Some(ground) = ground
+                    && let Some(away) = away
+                {
+                    match opening_inward(ground, away) {
+                        Some(RoomVerdict::MoveIn { leg_m, room_m })
+                            if self.opening_legs < OPENING_INWARD_LEGS_MAX =>
+                        {
+                            if let Some(from) = ground.from_m {
+                                let aim = clamp_arena(along(from, f64::from(away), leg_m));
+                                self.opening = OpeningStage::Inward {
+                                    aim_m: aim,
+                                    from_m: from,
+                                    since_ms: now_ms,
+                                };
+                                self.opening_legs = self.opening_legs.saturating_add(1);
+                                self.note(format!(
+                                    "Opening: moving in {:.0} m toward the other side's entry: \
+                                     {:.0} m of ground behind us, {:.0} m wanted.",
+                                    leg_m.round(),
+                                    room_m.round(),
+                                    OPENING_ROOM_M.round()
+                                ));
+                                return;
+                            }
+                        }
+                        Some(RoomVerdict::NoWayIn { room_m }) if !self.opening_no_way_said => {
+                            self.opening_no_way_said = true;
+                            self.note(format!(
+                                "Opening: no way in toward the other side's entry; {:.0} m of \
+                                 ground behind us.",
+                                room_m.round()
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
                 let step = ground.and_then(|ground| {
                     let from = ground.from_m?;
                     let (bearing, metres) = opening_step(ground, away?)?;
@@ -2892,18 +3437,28 @@ impl Pilot {
                 since_ms,
             } => {
                 let length = distance_m(from_m, aim_m);
-                let progress = picture.own_pos_at(now_ms).map_or(0.0, |own| {
-                    if length <= f64::EPSILON {
-                        return 0.0;
-                    }
-                    ((own.0 - from_m.0) * (aim_m.0 - from_m.0)
-                        + (own.1 - from_m.1) * (aim_m.1 - from_m.1))
-                        / length
-                });
+                let progress = progress_along(picture.own_pos_at(now_ms), from_m, aim_m);
                 if progress >= length - OPENING_ARRIVE_M
                     || now_ms >= since_ms.saturating_add(OPENING_STEP_MS)
                 {
                     self.enter_hold(picture, now_ms);
+                }
+            }
+            // Cut AO.1: the move in ends as the step does, or at its time, or
+            // on a `Held:` read since it began; then stopped for the next
+            // brief, which the lane asks at its own pace.
+            OpeningStage::Inward {
+                aim_m,
+                from_m,
+                since_ms,
+            } => {
+                let length = distance_m(from_m, aim_m);
+                let progress = progress_along(picture.own_pos_at(now_ms), from_m, aim_m);
+                if progress >= length - OPENING_ARRIVE_M
+                    || now_ms >= since_ms.saturating_add(OPENING_INWARD_MS)
+                    || self.held_seen_ms > since_ms
+                {
+                    self.opening = OpeningStage::Brief { since_ms: now_ms };
                 }
             }
             _ => {}
@@ -2912,7 +3467,9 @@ impl Pilot {
 
     /// **The re-approach, judged** (cut AN.2; the module head). In force:
     /// backing off, its plot follows the hostile while the hostile's plot is
-    /// fresh, it waits once [`REAPPROACH_OPEN_M`] from that plot and is given
+    /// fresh, it ends and holds where [`Pilot::back_off_ends`] says (cut AO.1:
+    /// `No room behind: …`, straight into its own wait with no other note),
+    /// it waits once [`REAPPROACH_OPEN_M`] from that plot and is given
     /// up at [`REAPPROACH_MAX_MS`]; waiting, any live hostile held young with
     /// a row inside [`STOCK_SIGHT_M`] arms the halt and ends it (a row farther
     /// out is a teammate's report and ends nothing), a hit taken ends it with
@@ -2949,8 +3506,19 @@ impl Pilot {
                     if let Some(reapproach) = self.reapproach.as_mut() {
                         reapproach.plot_m = plot;
                     }
-                    let off = picture.own_pos_at(now_ms).map(|own| distance_m(own, plot));
-                    if let Some(off) = off.filter(|off| *off >= REAPPROACH_OPEN_M) {
+                    let own = picture.own_pos_at(now_ms);
+                    // Cut AO.1: judged first, the back-off ends and holds at
+                    // the edge, on a `Held:` or at held ground behind.
+                    let aim = self
+                        .young_pos(picture, doctrine, &d, now_ms)
+                        .unwrap_or(plot);
+                    let off = own.map(|own| distance_m(own, plot));
+                    if self.back_off_ends(picture, own, aim, since_ms) {
+                        if let Some(reapproach) = self.reapproach.as_mut() {
+                            reapproach.stage = ReapproachStage::Wait { since_ms: now_ms };
+                        }
+                        self.no_room_note("No room behind", &d, own, plot);
+                    } else if let Some(off) = off.filter(|off| *off >= REAPPROACH_OPEN_M) {
                         if let Some(reapproach) = self.reapproach.as_mut() {
                             reapproach.stage = ReapproachStage::Wait { since_ms: now_ms };
                         }
@@ -2971,7 +3539,9 @@ impl Pilot {
                     // A hostile coming on is one held young with a row inside
                     // the stock sight: a row farther out is a teammate's
                     // report, as at the opening's end, and it ends nothing.
-                    if let Some((come, range)) = self.coming_on(picture, doctrine, other) {
+                    if let Some((come, range)) =
+                        self.coming_on(picture, doctrine, other, |_, _| true)
+                    {
                         self.arm_halt(&come, range, now_ms);
                         self.end_reapproach(now_ms);
                     } else if self.hit_taken_ms > since_ms {
@@ -3415,6 +3985,11 @@ impl Pilot {
                 self.detour = false;
                 let bow = heading.unwrap_or_else(|| f64::from(self.reference_heading(picture)));
                 if self.blocked_behind(own, bow) {
+                    // Cut AO.1: a back-off stopped here ends at the next
+                    // decision ([`Pilot::back_off_ends`]).
+                    if matches!(self.rule, Some("reapproach" | "return_back")) {
+                        self.back_off_blocked_ms = now_ms;
+                    }
                     (heading, Some(0), ask)
                 } else {
                     (heading, speed, ask)
@@ -3510,6 +4085,18 @@ impl Pilot {
         // blind between 480 and 600 m of a stopped machine); then stopped,
         // facing the plot. The reverse goes through the shared path below
         // (held ground behind turns it into a stop).
+        // Cut AO.1: each back-off reverses on [`back_off_bow`] — the bearing to
+        // the machine, or the smallest slant off it that leaves room astern —
+        // the judge's own function, position and decision; with none (a
+        // back-off begun this decision, not yet judged) it stops, the bow on.
+        let side = ground_side(picture);
+        let back_off = |aim: (f64, f64)| {
+            let bearing = bearing_deg(own, aim);
+            match back_off_bow(own, bearing, side) {
+                Some(bow) => (Some(bow), Some(-astern), false),
+                None => (Some(bearing), Some(0), false),
+            }
+        };
         if let Some(reapproach) = &self.reapproach {
             let plot = reapproach.plot_m;
             let flown = match reapproach.stage {
@@ -3517,10 +4104,7 @@ impl Pilot {
                     let bow = self
                         .young_pos(picture, doctrine, &reapproach.d, now_ms)
                         .unwrap_or(plot);
-                    (
-                        "reapproach",
-                        (Some(bearing_deg(own, bow)), Some(-astern), false),
-                    )
+                    ("reapproach", back_off(bow))
                 }
                 ReapproachStage::Wait { .. } => (
                     "approach_wait",
@@ -3536,10 +4120,19 @@ impl Pilot {
         // through the shared reverse path (held ground behind turns it into a
         // stop); then stopped, facing the plot, for its one return.
         if let Some(ret) = &self.ret {
-            let bearing = Some(bearing_deg(own, ret.plot_m));
             let flown = match ret.stage {
-                ReturnStage::Back { .. } => ("return_back", (bearing, Some(-astern), false)),
-                ReturnStage::Wait { .. } => ("return_wait", (bearing, Some(0), false)),
+                // Cut AO.1: the bow on the machine while it is held young, as
+                // the re-approach's, else on its last plot.
+                ReturnStage::Back { .. } => {
+                    let bow = self
+                        .young_pos(picture, doctrine, &ret.d, now_ms)
+                        .unwrap_or(ret.plot_m);
+                    ("return_back", back_off(bow))
+                }
+                ReturnStage::Wait { .. } => (
+                    "return_wait",
+                    (Some(bearing_deg(own, ret.plot_m)), Some(0), false),
+                ),
             };
             self.orbit_since_ms = None;
             self.rule = Some(flown.0);
@@ -3567,14 +4160,23 @@ impl Pilot {
         // only while its plot is fresh) — or, for the broken machine followed
         // home (cut AN.3), in its place a hold bow on at the follow's band,
         // the guns firing by rule 5.
-        if let (Some(contact), Some(aim)) = (contact, aim)
-            && contact.age_ms <= held_limit_ms(doctrine)
-        {
-            if self
-                .follow
+        // Cut AO.1: a followed row is flown to `HUNT_STALE_PLOT_MS` under every
+        // doctrine — the follow's own lost test reads that limit, so one limit
+        // governs a followed row; every other row keeps `held_limit_ms`.
+        let followed = |c: &Contact| {
+            self.follow
                 .as_ref()
-                .is_some_and(|follow| follow.d == contact.designator)
-            {
+                .is_some_and(|follow| follow.d == c.designator)
+        };
+        if let (Some(contact), Some(aim)) = (contact, aim)
+            && contact.age_ms
+                <= if followed(contact) {
+                    HUNT_STALE_PLOT_MS
+                } else {
+                    held_limit_ms(doctrine)
+                }
+        {
+            if followed(contact) {
                 self.search = SearchLeg::ToB;
                 self.rule = Some("follow");
                 return self.hold(
@@ -3626,7 +4228,7 @@ impl Pilot {
         if target.is_none() || spent {
             // 6a. The opening while it is not over (cut AN.2), where the
             // search would fly and with no five-second wait.
-            if let Some(opening) = self.opening_motion(picture, own) {
+            if let Some(opening) = self.opening_motion(picture, own, full) {
                 return opening;
             }
             let quiet_since = self.last_hostile_ms.unwrap_or(now_ms);
@@ -3638,17 +4240,27 @@ impl Pilot {
     }
 
     /// **Step 6a: the opening** (cut AN.2), while it is not over: nothing
-    /// before its brief is read (the tank stands at the muster), its step off
-    /// the road at [`OPENING_STEP_KPH`], then stopped with the bow toward the
-    /// other side's entry. `None` once it is over.
+    /// before its brief is read (the tank stands at the muster), (cut AO.1) a
+    /// move in for room at `full` ahead and a stop while the brief after it is
+    /// read, its step off the road at [`OPENING_STEP_KPH`], then stopped with
+    /// the bow toward the other side's entry. `None` once it is over.
     fn opening_motion(
         &mut self,
         picture: &Picture,
         own: (f64, f64),
+        full: i32,
     ) -> Option<(Option<f64>, Option<i32>, bool)> {
         let flown = match &self.opening {
             OpeningStage::Done => return None,
+            // Cut AO.1: stopped while a brief after a move in is asked and
+            // read; the muster's first brief is waited for as AN.2 waited.
+            OpeningStage::Brief { .. } if self.opening_legs > 0 => (None, Some(0), false),
             OpeningStage::Fresh | OpeningStage::Brief { .. } => (None, None, false),
+            // Cut AO.1: the move in, at full ahead through the shared forward
+            // path (steered round held ground as every forward heading is).
+            OpeningStage::Inward { aim_m, .. } => {
+                (Some(bearing_deg(own, *aim_m)), Some(full), false)
+            }
             OpeningStage::Step { aim_m, .. } => (
                 Some(bearing_deg(own, *aim_m)),
                 Some(OPENING_STEP_KPH),
@@ -4050,6 +4662,16 @@ pub fn target_pos(picture: &Picture, contact: &Contact, now_ms: u64) -> Option<(
         }
         None => plot,
     })
+}
+
+/// **A track the broken machine's test reads** (cut AO.1): the contact's
+/// published track when its speed is at most [`BROKEN_TRACK_MAX_MPS`] (a
+/// stock tank cannot drive faster); a faster one is no evidence, read as none.
+fn plausible_track(contact: &Contact) -> Option<&Track> {
+    contact
+        .track
+        .as_ref()
+        .filter(|track| track.speed_mps <= BROKEN_TRACK_MAX_MPS)
 }
 
 /// Rule 5: the guns to fire at `target`, main gun first. None while the
@@ -7839,6 +8461,11 @@ mod tests {
     const POWER: u64 = 10_000;
     /// The shipped muster of red's slot 1, on the east-west road.
     const MUSTER: (f64, f64) = (60.0, 970.0);
+    /// **A muster with room behind it** (cut AO.1): 400 m from the west edge,
+    /// past [`OPENING_ROOM_M`], so the opening steps off the road at once.
+    /// The other side's entry is then (2 160, 970). Where the opening's tests
+    /// whose subject is not the room are flown.
+    const ROOMY_MUSTER: (f64, f64) = (400.0, 970.0);
 
     /// A running red tank's picture, aboard, in a skirmish, its ceilings read.
     fn running() -> Picture {
@@ -7903,6 +8530,17 @@ mod tests {
     fn road_brief() -> Vec<String> {
         rays(|word, deg| match deg {
             90 | 270 => format!("{word}: 190 m of road, then beyond the window."),
+            _ => format!("{word}: 10 m of road, then grass to 90 m, then beyond the window."),
+        })
+    }
+
+    /// **The shipped muster's brief as the window clamps it** (cut AO.1):
+    /// [`road_brief`] with the west ray `60 m of road` to the arena's edge and
+    /// the east ray `320 m of road` to the window's reach.
+    fn muster_brief() -> Vec<String> {
+        rays(|word, deg| match deg {
+            270 => format!("{word}: 60 m of road, then the edge of the arena."),
+            90 => format!("{word}: 320 m of road, then beyond the window."),
             _ => format!("{word}: 10 m of road, then grass to 90 m, then beyond the window."),
         })
     }
@@ -7977,7 +8615,7 @@ mod tests {
 
     #[test]
     fn the_opening_steps_off_the_road_and_faces_the_other_entry() {
-        let (mut picture, mut pilot, orders) = stepping(MUSTER, &road_brief());
+        let (mut picture, mut pilot, orders) = stepping(ROOMY_MUSTER, &road_brief());
         // s 10 (the road's reach), a 5 (half a cell), and the cover (35 m
         // north at the shipped 20).
         let step = 10.0 + 5.0 + OPENING_COVER_M;
@@ -7990,8 +8628,8 @@ mod tests {
         let OpeningStage::Step { aim_m, from_m, .. } = pilot.opening.clone() else {
             panic!("stepping: {:?}", pilot.opening);
         };
-        assert_eq!(from_m, MUSTER);
-        assert!(distance_m(aim_m, (60.0, 970.0 + step)) < 1e-6, "{aim_m:?}");
+        assert_eq!(from_m, ROOMY_MUSTER);
+        assert!(distance_m(aim_m, (400.0, 970.0 + step)) < 1e-6, "{aim_m:?}");
         assert_eq!(
             (orders.heading, orders.speed),
             (Some(0), Some(OPENING_STEP_KPH))
@@ -8002,18 +8640,18 @@ mod tests {
         pilot.sent_heading(0, POWER + 1_050);
         pilot.sent_speed(OPENING_STEP_KPH);
         // One metre short of arriving: still stepping.
-        let short = (60.0, 970.0 + step - OPENING_ARRIVE_M - 1.0);
+        let short = (400.0, 970.0 + step - OPENING_ARRIVE_M - 1.0);
         status_at(&mut picture, short, 0, POWER + 3_000);
         let orders = decide_at(&picture, &mut pilot, POWER + 3_000);
         assert!(matches!(pilot.opening, OpeningStage::Step { .. }));
         assert_eq!((orders.heading, orders.speed), (None, None));
         assert!(pilot.take_notes().is_empty());
         // Arrived, `OPENING_ARRIVE_M` short of the aim: the hold, stopped, the
-        // bow toward the other side's entry (2 500, 970).
-        let arrived = (60.0, 970.0 + step - OPENING_ARRIVE_M);
+        // bow toward the other side's entry (2 160, 970).
+        let arrived = (400.0, 970.0 + step - OPENING_ARRIVE_M);
         status_at(&mut picture, arrived, 0, POWER + 4_000);
         let orders = decide_at(&picture, &mut pilot, POWER + 4_000);
-        let facing = whole(bearing_deg(arrived, (2_500.0, 970.0)));
+        let facing = whole(bearing_deg(arrived, (2_160.0, 970.0)));
         assert_eq!(facing, 91);
         assert_eq!((orders.heading, orders.speed), (Some(facing), Some(0)));
         assert!(matches!(
@@ -8065,7 +8703,7 @@ mod tests {
     #[test]
     fn on_cover_the_opening_holds_where_it_stands() {
         let (_, mut pilot, orders) = stepping(
-            MUSTER,
+            ROOMY_MUSTER,
             &rays(|word, _| format!("{word}: 90 m of grass, then beyond the window.")),
         );
         assert_eq!(
@@ -8078,7 +8716,7 @@ mod tests {
             0 | 180 => format!("{word}: 10 m of road, then grass to 90 m, then beyond the window."),
             _ => format!("{word}: 30 m of light woods, then beyond the window."),
         });
-        let (_, mut pilot, _) = stepping(MUSTER, &brief);
+        let (_, mut pilot, _) = stepping(ROOMY_MUSTER, &brief);
         assert!(matches!(pilot.opening, OpeningStage::Hold { .. }));
         assert!(
             pilot
@@ -8090,7 +8728,7 @@ mod tests {
 
     #[test]
     fn with_no_brief_the_opening_holds_after_its_wait() {
-        let (picture, mut pilot) = at_muster(MUSTER);
+        let (picture, mut pilot) = at_muster(ROOMY_MUSTER);
         let orders = decide_at(&picture, &mut pilot, POWER + 150);
         assert!(orders.ask_view_brief);
         assert_eq!((orders.heading, orders.speed), (None, None));
@@ -8113,7 +8751,7 @@ mod tests {
         // north step, then the dark answer before the next decision, leaves
         // no ground, and the opening holds where it stands once its wait is
         // up, with no step.
-        let (mut picture, mut pilot) = at_muster(MUSTER);
+        let (mut picture, mut pilot) = at_muster(ROOMY_MUSTER);
         decide_at(&picture, &mut pilot, POWER + 150);
         read_brief(&mut picture, POWER + 800, &road_brief());
         assert!(
@@ -8151,7 +8789,7 @@ mod tests {
             }
             _ => format!("{word}: 190 m of road, then beyond the window."),
         });
-        let (_, mut pilot, orders) = stepping(MUSTER, &brief);
+        let (_, mut pilot, orders) = stepping(ROOMY_MUSTER, &brief);
         assert!(matches!(pilot.opening, OpeningStage::Hold { .. }));
         let notes = pilot.take_notes();
         assert!(
@@ -8164,11 +8802,11 @@ mod tests {
     #[test]
     fn the_opening_ends_on_a_hostile_a_hit_or_its_time() {
         // (a) A hostile in sight: the opening is over and the halt armed.
-        let (mut picture, mut pilot) = holding(MUSTER);
+        let (mut picture, mut pilot) = holding(ROOMY_MUSTER);
         let t = POWER + 42_300;
         hold(
             &mut picture,
-            row_at(MUSTER, "BA", Some(Side::Blue), 90, 550, t, 0),
+            row_at(ROOMY_MUSTER, "BA", Some(Side::Blue), 90, 550, t, 0),
         );
         let orders = decide_at(&picture, &mut pilot, t);
         assert_eq!(
@@ -8191,14 +8829,14 @@ mod tests {
         assert_eq!((orders.heading, orders.speed), (Some(90), Some(0)));
         assert_eq!(pilot.rule(), Some("halt"));
         // (b) A hit taken: over, no halt.
-        let (mut picture, mut pilot) = holding(MUSTER);
+        let (mut picture, mut pilot) = holding(ROOMY_MUSTER);
         hit_taken(&mut picture, POWER + 20_000);
         decide_at(&picture, &mut pilot, POWER + 20_100);
         assert_eq!(pilot.take_notes(), ["Opening over: hit after 20 s."]);
         assert_eq!(pilot.opening, OpeningStage::Done);
         assert_eq!(pilot.halt, None);
         // (c) Its time: over, and the search.
-        let (picture, mut pilot) = holding(MUSTER);
+        let (picture, mut pilot) = holding(ROOMY_MUSTER);
         let orders = decide_at(&picture, &mut pilot, POWER + OPENING_MAX_MS - 1);
         assert!(!orders.ask_spot_b, "still holding");
         let orders = decide_at(&picture, &mut pilot, POWER + OPENING_MAX_MS);
@@ -8214,11 +8852,11 @@ mod tests {
         assert_eq!(pilot.rule(), None);
         // (d) A hostile row past the stock sight is a teammate's report: the
         // opening is over with its note, and no halt.
-        let (mut picture, mut pilot) = holding(MUSTER);
+        let (mut picture, mut pilot) = holding(ROOMY_MUSTER);
         let t = POWER + 30_000;
         hold(
             &mut picture,
-            row_at(MUSTER, "BA", Some(Side::Blue), 90, 1_400, t, 0),
+            row_at(ROOMY_MUSTER, "BA", Some(Side::Blue), 90, 1_400, t, 0),
         );
         decide_at(&picture, &mut pilot, t);
         assert_eq!(
@@ -8317,9 +8955,12 @@ mod tests {
 
     #[test]
     fn an_untold_return_does_not_end_the_opening() {
-        let (mut picture, mut pilot) = holding(MUSTER);
+        let (mut picture, mut pilot) = holding(ROOMY_MUSTER);
         let t = POWER + 20_000;
-        hold(&mut picture, row_at(MUSTER, "X1", None, 45, 500, t, 0));
+        hold(
+            &mut picture,
+            row_at(ROOMY_MUSTER, "X1", None, 45, 500, t, 0),
+        );
         let orders = decide_at(&picture, &mut pilot, t);
         // Step 4a faces it, stopped.
         assert_eq!((orders.heading, orders.speed), (Some(45), Some(0)));
@@ -8341,8 +8982,8 @@ mod tests {
     /// The opening held, then BA sighted `range` m east on a closing track,
     /// locked, with a ready cannon.
     fn sighted_closing(range: u32, t: u64) -> (Picture, Pilot) {
-        let (mut picture, pilot) = holding(MUSTER);
-        let mut ba = row_at(MUSTER, "BA", Some(Side::Blue), 90, range, t, 0);
+        let (mut picture, pilot) = holding(ROOMY_MUSTER);
+        let mut ba = row_at(ROOMY_MUSTER, "BA", Some(Side::Blue), 90, range, t, 0);
         ba.track = Some(Track {
             course_deg: 270.0,
             speed_mps: 8.0,
@@ -8389,7 +9030,7 @@ mod tests {
         let (mut picture, mut pilot) = sighted_closing(590, t);
         decide_at(&picture, &mut pilot, t);
         pilot.take_notes();
-        let mut ba = row_at(MUSTER, "BA", Some(Side::Blue), 90, 500, t + 2_000, 0);
+        let mut ba = row_at(ROOMY_MUSTER, "BA", Some(Side::Blue), 90, 500, t + 2_000, 0);
         ba.track = Some(Track {
             course_deg: 270.0,
             speed_mps: 8.0,
@@ -8405,7 +9046,7 @@ mod tests {
         decide_at(&picture, &mut pilot, t);
         pilot.take_notes();
         let still = row_at(
-            MUSTER,
+            ROOMY_MUSTER,
             "BA",
             Some(Side::Blue),
             90,
@@ -8429,7 +9070,7 @@ mod tests {
         let nearer = t + HALT_STILL_MS / 2;
         hold(
             &mut picture,
-            row_at(MUSTER, "BA", Some(Side::Blue), 90, 550, nearer, 0),
+            row_at(ROOMY_MUSTER, "BA", Some(Side::Blue), 90, 550, nearer, 0),
         );
         for at in [nearer, t + HALT_STILL_MS, nearer + HALT_STILL_MS - 1] {
             let orders = decide_at(&picture, &mut pilot, at);
@@ -8445,7 +9086,15 @@ mod tests {
         let (mut picture, mut pilot) = sighted_closing(590, t);
         decide_at(&picture, &mut pilot, t);
         pilot.take_notes();
-        let mut slow = row_at(MUSTER, "BA", Some(Side::Blue), 90, 560, t + HALT_MAX_MS, 0);
+        let mut slow = row_at(
+            ROOMY_MUSTER,
+            "BA",
+            Some(Side::Blue),
+            90,
+            560,
+            t + HALT_MAX_MS,
+            0,
+        );
         slow.track = Some(Track {
             course_deg: 270.0,
             speed_mps: 3.0,
@@ -8867,11 +9516,11 @@ mod tests {
             }));
         };
         // The opening, its end on a hostile and the halt.
-        let (mut picture, mut pilot) = holding(MUSTER);
+        let (mut picture, mut pilot) = holding(ROOMY_MUSTER);
         let t = POWER + 40_000;
         hold(
             &mut picture,
-            row_at(MUSTER, "BA", Some(Side::Blue), 90, 580, t, 0),
+            row_at(ROOMY_MUSTER, "BA", Some(Side::Blue), 90, 580, t, 0),
         );
         decide_at(&picture, &mut pilot, t);
         check(&mut pilot, &picture);
@@ -9522,6 +10171,9 @@ mod tests {
         let (mut picture, mut pilot) = following_at(own);
         hold(&mut picture, ba_east(own, 300, NOW, Some(90.0)));
         hurt_event(&mut picture, "BA", NOW - 100);
+        // Cut AO.1: hits scored on BA, so the counts' check below reads a
+        // count, not an empty map.
+        scored(&mut picture, "BA", 2, NOW);
         pilot.decide(&picture, &hold_doctrine(), NOW);
         assert!(pilot.follow.is_some());
         check(&mut pilot, &picture, &mut named);
@@ -9539,9 +10191,15 @@ mod tests {
         pilot.decide(&picture, &hold_doctrine(), NOW + 70_000 + RETURN_WAIT_MS);
         check(&mut pilot, &picture, &mut named);
         // The follow, the return and the counts hold names the stream gave
-        // and nothing else.
+        // and nothing else (cut AO.1: over inputs that hold some — the
+        // count, and every designator anywhere in the pilot's state).
+        assert!(!pilot.scored_on.is_empty());
         assert!(pilot.scored_on.keys().all(|d| d == "BA"));
         let json = serde_json::to_value(&pilot).expect("json");
+        let mut held = Vec::new();
+        designators_in(&json, &mut held);
+        assert!(!held.is_empty(), "the pilot's state names BA");
+        assert!(held.iter().all(|d| named.contains(d)), "{held:?}");
         for d in ["BB", "BC", "X1"] {
             assert!(!json.to_string().contains(d), "{d}");
         }
@@ -9765,5 +10423,1022 @@ mod tests {
         assert_eq!(pilot.rule(), Some("return_wait"));
         assert!(orders.speed.is_none_or(|kph| kph == 0), "{orders:?}");
         assert_eq!(pilot.hunt, None);
+    }
+
+    // -- cut AO.1: off the wall ---------------------------------------------------
+
+    /// The move in's note: `leg` metres in, `room` metres behind.
+    fn moving_in_note(leg: f64, room: f64) -> String {
+        format!(
+            "Opening: moving in {:.0} m toward the other side's entry: {:.0} m of ground behind \
+             us, {:.0} m wanted.",
+            leg.round(),
+            room.round(),
+            OPENING_ROOM_M.round()
+        )
+    }
+
+    /// AN.2's step note, north, on a ray of 10 m of road then grass.
+    fn stepping_north_note() -> String {
+        let step = 10.0 + 5.0 + OPENING_COVER_M;
+        format!("Opening: stepping off the road to the north ({step:.0} m).")
+    }
+
+    /// The notes in `notes` that start `head`.
+    fn starting<'a>(notes: &'a [String], head: &str) -> Vec<&'a String> {
+        notes.iter().filter(|note| note.starts_with(head)).collect()
+    }
+
+    /// **The opening moves in for room behind** (cut AO.1): from the shipped
+    /// muster, 60 m off the west edge, the brief's room is 60 m; the pilot
+    /// drives in on 090 at full ahead the shortfall and the arrival, says so,
+    /// stops at the aim and asks the brief again; the muster's brief is never
+    /// read twice; the second, from the aim, has room, and AN.2's step north
+    /// and hold follow, facing 091.
+    #[test]
+    fn the_opening_moves_in_for_room_behind() {
+        let (mut picture, mut pilot, orders) = stepping(MUSTER, &muster_brief());
+        let room = 60.0;
+        let leg = OPENING_ROOM_M - room + OPENING_ARRIVE_M;
+        assert!(leg <= 320.0 - OPENING_COVER_M, "inside the east ray");
+        assert_eq!(pilot.take_notes(), [moving_in_note(leg, room)]);
+        assert_eq!((orders.heading, orders.speed), (Some(90), Some(54)));
+        assert!(!orders.ask_view_brief);
+        assert_eq!(pilot.opening.word(), "inward");
+        assert_eq!(pilot.rule(), Some("opening"));
+        assert_eq!(pilot.opening_legs, 1);
+        let OpeningStage::Inward { aim_m, from_m, .. } = pilot.opening.clone() else {
+            panic!("moving in: {:?}", pilot.opening);
+        };
+        assert_eq!(from_m, MUSTER);
+        assert!(
+            distance_m(aim_m, (MUSTER.0 + leg, MUSTER.1)) < 1e-6,
+            "{aim_m:?}"
+        );
+        pilot.sent_heading(90, POWER + 1_050);
+        pilot.sent_speed(54);
+        // Short of the aim: driving on.
+        status_at(
+            &mut picture,
+            (aim_m.0 - OPENING_ARRIVE_M - 1.0, aim_m.1),
+            90,
+            POWER + 12_000,
+        );
+        let orders = decide_at(&picture, &mut pilot, POWER + 12_000);
+        assert_eq!(pilot.opening.word(), "inward");
+        assert_eq!((orders.speed, orders.ask_view_brief), (None, false));
+        // At the aim: stopped, and the next brief asked.
+        status_at(&mut picture, aim_m, 90, POWER + 17_000);
+        let orders = decide_at(&picture, &mut pilot, POWER + 17_000);
+        assert!(
+            matches!(pilot.opening, OpeningStage::Brief { since_ms } if since_ms == POWER + 17_000),
+            "{:?}",
+            pilot.opening
+        );
+        assert_eq!(orders.speed, Some(0));
+        assert!(orders.ask_view_brief);
+        assert_eq!(pilot.rule(), Some("opening"));
+        assert!(pilot.take_notes().is_empty());
+        pilot.sent_speed(0);
+        // The muster's brief is not read again: still asking, stopped.
+        let orders = decide_at(&picture, &mut pilot, POWER + 18_000);
+        assert!(orders.ask_view_brief);
+        assert!(matches!(pilot.opening, OpeningStage::Brief { .. }));
+        assert_eq!(orders.speed, None, "the stop stands");
+        // The second brief, from the aim: room enough, AN.2's step north.
+        read_brief(&mut picture, POWER + 19_000, &road_brief());
+        let orders = decide_at(&picture, &mut pilot, POWER + 19_050);
+        assert_eq!(pilot.take_notes(), [stepping_north_note()]);
+        assert_eq!(
+            (orders.heading, orders.speed),
+            (Some(0), Some(OPENING_STEP_KPH))
+        );
+        assert!(!orders.ask_view_brief);
+        pilot.sent_heading(0, POWER + 19_050);
+        pilot.sent_speed(OPENING_STEP_KPH);
+        let step = 10.0 + 5.0 + OPENING_COVER_M;
+        let arrived = (aim_m.0, aim_m.1 + step - OPENING_ARRIVE_M);
+        status_at(&mut picture, arrived, 0, POWER + 22_000);
+        let orders = decide_at(&picture, &mut pilot, POWER + 22_000);
+        let facing = whole(bearing_deg(arrived, (2_500.0, 970.0)));
+        assert_eq!(facing, 91);
+        assert_eq!((orders.heading, orders.speed), (Some(facing), Some(0)));
+        assert_eq!(
+            pilot.take_notes(),
+            [format!(
+                "Opening: holding near our entry, facing {facing:03}° toward the other side's entry."
+            )]
+        );
+        assert_eq!(pilot.opening_legs, 1);
+        assert!(!pilot.opening_no_way_said);
+    }
+
+    /// **With room behind, the opening steps off the road at once** (cut
+    /// AO.1): from [`ROOMY_MUSTER`] there is no move in; AN.2's step and hold
+    /// follow, and the brief is asked once.
+    #[test]
+    fn with_room_behind_the_opening_steps_off_the_road_at_once() {
+        let (mut picture, mut pilot, orders) = stepping(ROOMY_MUSTER, &road_brief());
+        let notes = pilot.take_notes();
+        assert_eq!(notes, [stepping_north_note()]);
+        assert!(starting(&notes, "Opening: moving in").is_empty());
+        assert_eq!(
+            (orders.heading, orders.speed),
+            (Some(0), Some(OPENING_STEP_KPH))
+        );
+        assert!(!orders.ask_view_brief);
+        pilot.sent_heading(0, POWER + 1_050);
+        pilot.sent_speed(OPENING_STEP_KPH);
+        let step = 10.0 + 5.0 + OPENING_COVER_M;
+        let arrived = (ROOMY_MUSTER.0, ROOMY_MUSTER.1 + step - OPENING_ARRIVE_M);
+        status_at(&mut picture, arrived, 0, POWER + 4_000);
+        for t in [POWER + 4_000, POWER + 30_000, POWER + 60_000] {
+            let orders = decide_at(&picture, &mut pilot, t);
+            assert!(!orders.ask_view_brief, "{t}");
+        }
+        assert!(matches!(pilot.opening, OpeningStage::Hold { .. }));
+        assert_eq!(pilot.opening_legs, 0);
+    }
+
+    /// **Blocking ground ahead cuts the move in** (cut AO.1): deep water
+    /// 100 m east cuts the leg to 100 m less the cover; with heavy woods 60 m
+    /// behind, every brief has the same short room, and once the legs are used
+    /// up the next brief holds where the tank stands. A forward ray that
+    /// clears less than the cover and the least leg says `no way in`, once;
+    /// a shortfall of the slack or less is room enough, and one metre more is
+    /// a leg.
+    #[test]
+    fn blocking_ground_ahead_cuts_the_move_in() {
+        let woods_behind = |word: &str| {
+            format!("{word}: 60 m of grass, then heavy woods to 120 m, then beyond the window.")
+        };
+        let brief = rays(|word, deg| match deg {
+            90 => format!(
+                "{word}: 100 m of road, then deep water to 150 m, then grass to 190 m, then \
+                 beyond the window."
+            ),
+            270 => woods_behind(word),
+            _ => format!("{word}: 90 m of grass, then beyond the window."),
+        });
+        let (mut picture, mut pilot, mut orders) = stepping(MUSTER, &brief);
+        let leg = 100.0 - OPENING_COVER_M;
+        let mut t = POWER + 1_050;
+        for n in 1..=OPENING_INWARD_LEGS_MAX {
+            assert_eq!(pilot.take_notes(), [moving_in_note(leg, 60.0)], "leg {n}");
+            assert_eq!(pilot.opening_legs, n);
+            assert_eq!(orders.speed, Some(54), "leg {n}");
+            let OpeningStage::Inward { aim_m, from_m, .. } = pilot.opening.clone() else {
+                panic!("leg {n}: {:?}", pilot.opening);
+            };
+            assert!((distance_m(from_m, aim_m) - leg).abs() < 1e-6);
+            assert_eq!(whole(bearing_deg(from_m, aim_m)), 90);
+            pilot.sent_speed(54);
+            if let Some(deg) = orders.heading {
+                pilot.sent_heading(deg, t);
+            }
+            t += 10_000;
+            status_at(&mut picture, aim_m, 90, t);
+            let stopped = decide_at(&picture, &mut pilot, t);
+            assert_eq!(stopped.speed, Some(0), "leg {n}");
+            assert!(stopped.ask_view_brief, "leg {n}");
+            pilot.sent_speed(0);
+            t += 1_000;
+            read_brief(&mut picture, t, &brief);
+            t += 50;
+            orders = decide_at(&picture, &mut pilot, t);
+        }
+        // The legs used up: the brief holds where the tank stands (seven of
+        // the eight rays begin on grass), with no leg and no note of one.
+        let notes = pilot.take_notes();
+        assert!(
+            starting(&notes, "Opening: moving in").is_empty(),
+            "{notes:?}"
+        );
+        assert!(
+            matches!(pilot.opening, OpeningStage::Hold { .. }),
+            "{:?}",
+            pilot.opening
+        );
+        assert_eq!(pilot.opening_legs, OPENING_INWARD_LEGS_MAX);
+        assert!(
+            orders.speed.is_none_or(|kph| kph == 0),
+            "stopped: {orders:?}"
+        );
+
+        // A forward ray that clears less than the cover and the least leg.
+        let clear = (OPENING_COVER_M + OPENING_INWARD_MIN_M - 10.0).round();
+        let brief = rays(|word, deg| match deg {
+            90 => format!(
+                "{word}: {clear:.0} m of road, then deep water to {:.0} m, then beyond the window.",
+                clear + 100.0
+            ),
+            270 => woods_behind(word),
+            _ => format!("{word}: 90 m of grass, then beyond the window."),
+        });
+        let (picture, mut pilot, orders) = stepping(MUSTER, &brief);
+        assert_eq!(
+            pilot.take_notes(),
+            [
+                "Opening: no way in toward the other side's entry; 60 m of ground behind us."
+                    .to_owned(),
+                "Opening: holding near our entry, facing 090° toward the other side's entry."
+                    .to_owned(),
+            ]
+        );
+        assert_eq!(orders.speed, Some(0));
+        assert_eq!(pilot.opening_legs, 0);
+        assert!(pilot.opening_no_way_said);
+        for t in [POWER + 2_000, POWER + 20_000] {
+            decide_at(&picture, &mut pilot, t);
+            assert!(pilot.take_notes().is_empty(), "said once");
+        }
+
+        // A shortfall of the slack is room enough; one metre more is a leg.
+        let enough = (OPENING_ROOM_M - OPENING_ROOM_SLACK_M, 970.0);
+        let (_, mut pilot, _) = stepping(enough, &road_brief());
+        assert_eq!(pilot.take_notes(), [stepping_north_note()]);
+        assert_eq!(pilot.opening_legs, 0);
+        let short = (enough.0 - 1.0, 970.0);
+        let (_, mut pilot, _) = stepping(short, &road_brief());
+        assert_eq!(
+            pilot.take_notes(),
+            [moving_in_note(
+                OPENING_ROOM_SLACK_M + 1.0 + OPENING_ARRIVE_M,
+                short.0
+            )]
+        );
+    }
+
+    /// **Blocking ground behind is no room** (cut AO.1): at [`ROOMY_MUSTER`],
+    /// heavy woods 50 m behind leave 50 m of room, whatever the edge, and the
+    /// pilot moves in.
+    #[test]
+    fn blocking_ground_behind_is_no_room() {
+        let brief = rays(|word, deg| match deg {
+            270 => {
+                format!("{word}: 50 m of grass, then heavy woods to 120 m, then beyond the window.")
+            }
+            90 => format!("{word}: 190 m of road, then beyond the window."),
+            _ => format!("{word}: 10 m of road, then grass to 90 m, then beyond the window."),
+        });
+        let (picture, mut pilot, orders) = stepping(ROOMY_MUSTER, &brief);
+        let ground = picture.ground.as_ref().expect("the brief's ground");
+        assert_eq!(opening_room(ground, 90), Some(50.0));
+        let leg = (OPENING_ROOM_M - 50.0 + OPENING_ARRIVE_M).min(190.0 - OPENING_COVER_M);
+        assert_eq!(pilot.take_notes(), [moving_in_note(leg, 50.0)]);
+        assert_eq!(pilot.opening.word(), "inward");
+        assert_eq!(orders.heading, Some(90));
+    }
+
+    /// **The room rule needs a back-off to serve** (cut AO.1): with neither
+    /// the re-approach nor the follow on, the shipped muster steps off the
+    /// road at once as AN.2 did; with either on, it moves in.
+    #[test]
+    fn the_room_rule_needs_a_back_off_to_serve() {
+        let fly = |knobs: Knobs| {
+            let (mut picture, mut pilot) = at_muster(MUSTER);
+            pilot.knobs = knobs;
+            decide_at(&picture, &mut pilot, POWER + 150);
+            read_brief(&mut picture, POWER + 1_000, &muster_brief());
+            let orders = decide_at(&picture, &mut pilot, POWER + 1_050);
+            (pilot.take_notes(), orders, pilot.opening.word())
+        };
+        let (notes, orders, word) = fly(Knobs {
+            reapproach: false,
+            follow_broken: false,
+            ..Knobs::on()
+        });
+        assert_eq!(notes, [stepping_north_note()]);
+        assert_eq!(word, "step");
+        assert_eq!(orders.heading, Some(0));
+        let leg = OPENING_ROOM_M - 60.0 + OPENING_ARRIVE_M;
+        for knobs in [
+            Knobs {
+                follow_broken: false,
+                ..Knobs::on()
+            },
+            Knobs {
+                reapproach: false,
+                ..Knobs::on()
+            },
+        ] {
+            let (notes, orders, word) = fly(knobs);
+            assert_eq!(notes, [moving_in_note(leg, 60.0)], "{knobs:?}");
+            assert_eq!(word, "inward");
+            assert_eq!(orders.heading, Some(90));
+        }
+    }
+
+    /// A red tank at `own`, flying [`Knobs::on`], with BA stopped 420 m off on
+    /// `bearing` out-hitting it at `NOW`; and BA's world point.
+    fn out_hit_at(own: (f64, f64), bearing: u32) -> (Picture, Pilot, (f64, f64)) {
+        let (mut picture, _) = flying_at(own);
+        picture.own.heading_deg = bearing;
+        let mut pilot = Pilot::with_knobs(Knobs::on());
+        pilot.power_ms = Some(NOW - 30_000);
+        pilot.ceilings_asked = true;
+        let ba = row_at(own, "BA", Some(Side::Blue), bearing, 420, NOW, 0);
+        let at = ba.fixes.back().expect("a fix").pos_m;
+        hold(&mut picture, ba);
+        exchange(&mut picture, OUT_TAKEN, OUT_SCORED, NOW);
+        (picture, pilot, at)
+    }
+
+    /// The help's square, as the pilot reads it with no header.
+    const HELP_SIDE: (f64, f64) = (ARENA_SIDE_M, ARENA_SIDE_M);
+
+    /// **A re-approach at the edge slants, then holds** (cut AO.1): a machine
+    /// stopped off the axis (060°) out-hits the tank near the west edge.
+    /// While a slant leaves `EDGE_BACK_MARGIN_M` astern, the reverse's bow is
+    /// the smallest such slant (10°, then 20°, minus first); once none does,
+    /// the back-off holds — stopped, its note said, its own wait, and no give-up
+    /// after `REAPPROACH_MAX_MS`. Square to the edge the straight bow is kept
+    /// until its room runs out; and a back-off begun with no room stops at once
+    /// and holds at the next decision.
+    #[test]
+    fn a_reapproach_at_the_edge_slants_then_holds() {
+        let margin = EDGE_BACK_MARGIN_M;
+        let step = f64::from(BACK_OFF_SLANT_STEP_DEG);
+        let roomy = |own: (f64, f64), bow: f64| room_astern(own, bow, HELP_SIDE) >= margin;
+        let own = (margin * 0.8, 1_000.0);
+        let (mut picture, mut pilot, ba) = out_hit_at(own, 60);
+        let aim = bearing_deg(own, ba);
+        assert!(!roomy(own, aim) && roomy(own, aim - step));
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(pilot.take_notes(), [opening_the_range_note()]);
+        assert_eq!(pilot.rule(), Some("reapproach"));
+        let bow = whole(aim - step);
+        assert_eq!((orders.heading, orders.speed), (Some(bow), Some(-27)));
+        pilot.sent_heading(bow, NOW);
+        pilot.sent_speed(-27);
+        // Nearer the edge: the 10° slants leave too little, the 20° enough.
+        let own = (margin * 0.66, 1_000.0);
+        status_at(&mut picture, own, bow, NOW + 2_000);
+        let aim = bearing_deg(own, ba);
+        assert!(!roomy(own, aim - step) && !roomy(own, aim + step));
+        assert!(roomy(own, aim - 2.0 * step));
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW + 2_000);
+        let bow = whole(aim - 2.0 * step);
+        assert_eq!(orders.heading, Some(bow));
+        assert_eq!(pilot.rule(), Some("reapproach"));
+        assert!(pilot.take_notes().is_empty());
+        pilot.sent_heading(bow, NOW + 2_000);
+        // At the edge: no slant inside the front arc leaves room. Held.
+        let own = (margin * 0.4, 1_000.0);
+        status_at(&mut picture, own, bow, NOW + 4_000);
+        let aim = bearing_deg(own, ba);
+        let slants = (1..=HOLD_BOW_DEG / BACK_OFF_SLANT_STEP_DEG).map(|k| f64::from(k) * step);
+        assert!(
+            std::iter::once(0.0)
+                .chain(slants)
+                .all(|s| !roomy(own, aim - s) && !roomy(own, aim + s))
+        );
+        let plot = pilot.reapproach.as_ref().expect("in force").plot_m;
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW + 4_000);
+        assert_eq!(
+            pilot.take_notes(),
+            [format!(
+                "No room behind: waiting {:.0} m from BA's last plot.",
+                distance_m(own, plot).round()
+            )]
+        );
+        assert_eq!(orders.speed, Some(0));
+        assert_eq!(pilot.rule(), Some("approach_wait"));
+        assert!(matches!(
+            pilot.reapproach.as_ref().map(|r| r.stage),
+            Some(ReapproachStage::Wait { since_ms }) if since_ms == NOW + 4_000
+        ));
+        // BA lost; no give-up, ever.
+        picture.contacts.clear();
+        let mut notes = Vec::new();
+        for t in [
+            NOW + 5_000,
+            NOW + REAPPROACH_MAX_MS,
+            NOW + REAPPROACH_MAX_MS + 1_000,
+        ] {
+            pilot.decide(&picture, &hold_doctrine(), t);
+            notes.extend(pilot.take_notes());
+        }
+        assert!(
+            starting(&notes, "Could not open the range").is_empty(),
+            "{notes:?}"
+        );
+
+        // Square to the edge: the straight bow while the room lasts, then the
+        // hold.
+        let own = (margin + 20.0, 1_000.0);
+        let (mut picture, mut pilot, ba) = out_hit_at(own, 90);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!((orders.heading, orders.speed), (Some(90), Some(-27)));
+        assert_eq!(pilot.take_notes(), [opening_the_range_note()]);
+        pilot.sent_heading(90, NOW);
+        pilot.sent_speed(-27);
+        let own = (margin + 1.0, 1_000.0);
+        status_at(&mut picture, own, 90, NOW + 2_000);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW + 2_000);
+        assert_eq!(orders.heading, None, "still the straight bow");
+        assert_eq!(pilot.rule(), Some("reapproach"));
+        let own = (margin * 0.8, 1_000.0);
+        status_at(&mut picture, own, 90, NOW + 4_000);
+        pilot.decide(&picture, &hold_doctrine(), NOW + 4_000);
+        assert_eq!(
+            pilot.take_notes(),
+            [format!(
+                "No room behind: waiting {:.0} m from BA's last plot.",
+                distance_m(own, ba).round()
+            )]
+        );
+        assert_eq!(pilot.rule(), Some("approach_wait"));
+
+        // Begun with no room: stopped at once, the bow on; held next.
+        let own = (margin * 0.4, 1_000.0);
+        let (picture, mut pilot, _) = out_hit_at(own, 90);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(pilot.take_notes(), [opening_the_range_note()]);
+        assert_eq!((orders.heading, orders.speed), (Some(90), Some(0)));
+        assert_eq!(pilot.rule(), Some("reapproach"));
+        pilot.decide(&picture, &hold_doctrine(), NOW + 500);
+        assert_eq!(
+            starting(&pilot.take_notes(), "No room behind: ").len(),
+            1,
+            "held"
+        );
+        assert_eq!(pilot.rule(), Some("approach_wait"));
+    }
+
+    /// `Held: this is the edge of the arena.` at `at`.
+    fn edge_event(picture: &mut Picture, at_ms: u64) {
+        picture.events.push_back(Event {
+            at_ms,
+            kind: EventKind::Held,
+            text: "Held: this is the edge of the arena.".into(),
+        });
+    }
+
+    /// **A held stop while backing off ends the back-off** (cut AO.1): a
+    /// `Held:` read while the return's `Back` reverses ends it in its wait at
+    /// once, said; the same for the re-approach's `Open`; and a held mark
+    /// behind that the shared reverse path stops on ends the back-off at the
+    /// next decision.
+    #[test]
+    fn a_held_stop_while_backing_off_ends_the_back_off() {
+        // The return.
+        let own = (1_000.0, 970.0);
+        let (mut picture, mut pilot) = following_at(own);
+        pilot.ret = Some(Return {
+            d: "BA".into(),
+            plot_m: (1_300.0, 970.0),
+            stage: ReturnStage::Back { since_ms: NOW },
+        });
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(orders.speed, Some(-27));
+        assert_eq!(pilot.rule(), Some("return_back"));
+        pilot.sent_speed(-27);
+        edge_event(&mut picture, NOW + 1_000);
+        pilot.decide(&picture, &hold_doctrine(), NOW + 1_100);
+        let notes = pilot.take_notes();
+        assert_eq!(
+            starting(&notes, "No room behind for the return: "),
+            ["No room behind for the return: waiting 300 m from BA's last plot."],
+            "{notes:?}"
+        );
+        assert!(starting(&notes, "Waiting for ").is_empty(), "{notes:?}");
+        assert!(matches!(
+            pilot.ret.as_ref().map(|r| r.stage),
+            Some(ReturnStage::Wait { since_ms }) if since_ms == NOW + 1_100
+        ));
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW + 1_100 + HELD_FOR_MS);
+        assert_eq!(pilot.rule(), Some("return_wait"));
+        assert!(orders.speed.is_none_or(|kph| kph == 0), "{orders:?}");
+        assert!(pilot.take_notes().is_empty());
+
+        // The re-approach.
+        let (mut picture, mut pilot) = reapproaching();
+        hold(&mut picture, ba_from(MID, NOW, 0));
+        exchange(&mut picture, OUT_TAKEN, OUT_SCORED, NOW);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(pilot.take_notes(), [opening_the_range_note()]);
+        pilot.sent_speed(-27);
+        edge_event(&mut picture, NOW + 1_000);
+        pilot.decide(&picture, &hold_doctrine(), NOW + 1_100);
+        let notes = pilot.take_notes();
+        assert_eq!(
+            starting(&notes, "No room behind: "),
+            ["No room behind: waiting 420 m from BA's last plot."],
+            "{notes:?}"
+        );
+        assert!(starting(&notes, "Out of ").is_empty(), "{notes:?}");
+        assert!(matches!(
+            pilot.reapproach.as_ref().map(|r| r.stage),
+            Some(ReapproachStage::Wait { since_ms }) if since_ms == NOW + 1_100
+        ));
+
+        // Case (c): held ground behind stops the reverse; the back-off ends
+        // at the next decision.
+        let (mut picture, mut pilot) = reapproaching();
+        hold(&mut picture, ba_from(MID, NOW, 0));
+        exchange(&mut picture, OUT_TAKEN, OUT_SCORED, NOW);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        pilot.take_notes();
+        pilot.sent_heading(90, NOW);
+        pilot.sent_speed(-27);
+        pilot.held_marks.push(HeldMark {
+            at_m: MID,
+            heading_deg: 90,
+            astern: true,
+            blocked_m: along(MID, 270.0, HELD_MARK_AHEAD_M),
+        });
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW + 1_000);
+        assert_eq!(orders.speed, Some(0), "stopped by the mark");
+        assert_eq!(pilot.rule(), Some("reapproach"));
+        assert_eq!(pilot.back_off_blocked_ms, NOW + 1_000);
+        assert!(pilot.take_notes().is_empty());
+        pilot.sent_speed(0);
+        pilot.decide(&picture, &hold_doctrine(), NOW + 2_000);
+        assert_eq!(
+            pilot.take_notes(),
+            ["No room behind: waiting 420 m from BA's last plot."]
+        );
+        assert_eq!(pilot.rule(), Some("approach_wait"));
+    }
+
+    /// **The return's back keeps its bow and its plot** (cut AO.1): BA seen
+    /// again during `Back` nearer than the stored plot steers the bow onto it
+    /// and leaves the plot, and `Back` still ends at the standoff from that
+    /// plot; seen farther, the plot follows it; with no own position the wait
+    /// names no distance.
+    #[test]
+    fn the_returns_back_keeps_its_bow_and_its_plot() {
+        let own = (1_000.0, 970.0);
+        let stored = (1_300.0, 970.0);
+        let backing = || {
+            let (picture, mut pilot) = following_at(own);
+            pilot.ret = Some(Return {
+                d: "BA".into(),
+                plot_m: stored,
+                stage: ReturnStage::Back { since_ms: NOW },
+            });
+            (picture, pilot)
+        };
+        // Nearer: BA 200 m off at 070°.
+        let (mut picture, mut pilot) = backing();
+        let ba = row_at(own, "BA", Some(Side::Blue), 70, 200, NOW, 0);
+        let at = ba.fixes.back().expect("a fix").pos_m;
+        hold(&mut picture, ba);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!((orders.heading, orders.speed), (Some(70), Some(-27)));
+        assert_eq!(pilot.rule(), Some("return_back"));
+        assert_eq!(pilot.ret.as_ref().map(|r| r.plot_m), Some(stored));
+        pilot.sent_heading(70, NOW);
+        pilot.sent_speed(-27);
+        // At the standoff from the stored plot, BA still nearer: the wait.
+        let out = (stored.0 - RETURN_STANDOFF_M, 970.0);
+        status_at(&mut picture, out, 70, NOW + 30_000);
+        let range = distance_m(out, at).round() as u32;
+        let bearing = whole(bearing_deg(out, at));
+        hold(
+            &mut picture,
+            row_at(out, "BA", Some(Side::Blue), bearing, range, NOW + 30_000, 0),
+        );
+        assert!(f64::from(range) < RETURN_STANDOFF_M);
+        pilot.decide(&picture, &hold_doctrine(), NOW + 30_000);
+        assert_eq!(pilot.ret.as_ref().map(|r| r.plot_m), Some(stored));
+        assert_eq!(pilot.take_notes(), [waiting_note("BA", RETURN_STANDOFF_M)]);
+        // Farther: the plot follows it.
+        let (mut picture, mut pilot) = backing();
+        let ba = row_at(own, "BA", Some(Side::Blue), 90, 400, NOW, 0);
+        let at = ba.fixes.back().expect("a fix").pos_m;
+        hold(&mut picture, ba);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        let plot = pilot.ret.as_ref().expect("in force").plot_m;
+        assert!(distance_m(plot, at) < 1e-6, "{plot:?}");
+        // No own position at the wait.
+        let (mut picture, mut pilot) = backing();
+        picture.own.pos_m = None;
+        pilot.decide(&picture, &hold_doctrine(), NOW + RETURN_BACK_MS);
+        assert_eq!(pilot.take_notes(), ["Waiting for BA to come back."]);
+        assert!(matches!(
+            pilot.ret.as_ref().map(|r| r.stage),
+            Some(ReturnStage::Wait { .. })
+        ));
+    }
+
+    /// BA with no track, `range` m due east of `own`, its fixes `fixes`.
+    fn trackless_ba(own: (f64, f64), range: u32, fixes: &[(u64, (f64, f64))]) -> Contact {
+        let mut ba = row_at(own, "BA", Some(Side::Blue), 90, range, NOW, 0);
+        ba.fixes = fixes
+            .iter()
+            .map(|(at_ms, pos_m)| Fix {
+                at_ms: *at_ms,
+                pos_m: *pos_m,
+                sigma_m: 55.0,
+                from_lock: false,
+            })
+            .collect();
+        ba
+    }
+
+    /// **A hurt machine leaving with no track is broken** (cut AO.1): BA hit
+    /// `BROKEN_HITS_MIN` times, no track, its fixes 450 m and then 450 m and
+    /// `BROKEN_OPEN_M` from the still tank over 8 s, is broken and followed;
+    /// the same fixes of a still machine while the tank itself reversed
+    /// `BROKEN_OPEN_M` are not.
+    #[test]
+    fn a_hurt_machine_leaving_with_no_track_is_broken() {
+        let own = (1_000.0, 970.0);
+        let near = along(own, 90.0, 450.0);
+        let far = along(own, 90.0, 450.0 + BROKEN_OPEN_M);
+        let (mut picture, mut pilot) = following_at(own);
+        let range = (450.0 + BROKEN_OPEN_M) as u32;
+        let ba = trackless_ba(own, range, &[(NOW - 8_500, near), (NOW - 500, far)]);
+        assert!(pilot.leaving(&ba, own, NOW));
+        hold(&mut picture, ba.clone());
+        scored(&mut picture, "BA", BROKEN_HITS_MIN, NOW);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert!(pilot.broken(&picture, &ba, own, NOW));
+        assert_eq!(pilot.take_notes(), [following_note("BA")]);
+        assert!(pilot.follow.is_some());
+        // A still machine, the tank having reversed: the same world point.
+        let reversed = along(own, 270.0, BROKEN_OPEN_M);
+        let (mut picture, mut pilot) = following_at(reversed);
+        let ba = trackless_ba(reversed, range, &[(NOW - 8_500, near), (NOW - 500, near)]);
+        assert!(!pilot.leaving(&ba, reversed, NOW));
+        hold(&mut picture, ba.clone());
+        scored(&mut picture, "BA", BROKEN_HITS_MIN, NOW);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert!(!pilot.broken(&picture, &ba, reversed, NOW));
+        assert_eq!(pilot.follow, None);
+        assert!(starting(&pilot.take_notes(), "Following").is_empty());
+        // Opened by less than `BROKEN_OPEN_M`, or inside the span: not leaving.
+        let short = along(own, 90.0, 450.0 + BROKEN_OPEN_M - 1.0);
+        let ba = trackless_ba(own, range, &[(NOW - 8_500, near), (NOW - 500, short)]);
+        assert!(!pilot.leaving(&ba, own, NOW));
+        let ba = trackless_ba(
+            own,
+            range,
+            &[
+                (NOW - 500 - BROKEN_OPEN_SPAN_MS + 1, near),
+                (NOW - 500, far),
+            ],
+        );
+        assert!(!pilot.leaving(&ba, own, NOW));
+        // A fix older than the window counts for nothing.
+        let ba = trackless_ba(
+            own,
+            range,
+            &[(NOW - BROKEN_OPEN_WINDOW_MS - 1, near), (NOW - 500, far)],
+        );
+        assert!(!pilot.leaving(&ba, own, NOW));
+    }
+
+    /// **An implausible track is no evidence** (cut AO.1): a hurt BA 50 m off
+    /// with a 181 m/s track going away and its fixes still is not broken; the
+    /// same track at a stock tank's speed is.
+    #[test]
+    fn an_implausible_track_is_no_evidence() {
+        let own = (1_000.0, 970.0);
+        let still = along(own, 90.0, 50.0);
+        let fly = |speed_mps: f64| {
+            let (mut picture, mut pilot) = following_at(own);
+            let mut ba = trackless_ba(own, 50, &[(NOW - 8_500, still), (NOW - 500, still)]);
+            ba.track = Some(Track {
+                course_deg: 90.0,
+                speed_mps,
+            });
+            hold(&mut picture, ba.clone());
+            hurt_event(&mut picture, "BA", NOW - 100);
+            pilot.decide(&picture, &hold_doctrine(), NOW);
+            let broken = pilot.broken(&picture, &ba, own, NOW);
+            (broken, pilot.follow.is_some(), pilot.take_notes())
+        };
+        let (broken, followed, notes) = fly(181.0);
+        assert!(!broken && !followed, "{notes:?}");
+        assert!(starting(&notes, "Following").is_empty());
+        const { assert!(BROKEN_TRACK_MAX_MPS < 181.0) };
+        let (broken, _, _) = fly(BROKEN_TRACK_MAX_MPS);
+        assert!(broken, "a stock tank's speed is evidence");
+    }
+
+    /// **A broken machine inside the keep-out is not followed** (cut AO.1):
+    /// only the keep-out's sentence, the return begun, and no `Following`.
+    #[test]
+    fn a_broken_machine_inside_the_keep_out_is_not_followed() {
+        let own = (ENTRY_LINE_X - ENTRY_KEEP_OUT_M - 300.0, 970.0);
+        let (mut picture, mut pilot) = following_at(own);
+        let ba = ba_east(own, 300, NOW, Some(90.0));
+        let plot = ba.fixes.back().expect("a fix").pos_m;
+        hold(&mut picture, ba);
+        hurt_event(&mut picture, "BA", NOW - 100);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(pilot.take_notes(), [not_following_note("BA")]);
+        assert_eq!(pilot.follow, None);
+        assert_eq!(
+            pilot.ret,
+            Some(Return {
+                d: "BA".into(),
+                plot_m: plot,
+                stage: ReturnStage::Back { since_ms: NOW },
+            })
+        );
+        assert_eq!(pilot.rule(), Some("return_back"));
+        assert_eq!(orders.speed, Some(-27));
+    }
+
+    /// **A return held short waits out a machine still leaving** (cut AO.1):
+    /// the keep-out's return stopped at once by a `Held:` waits with BA still
+    /// in sight, broken and driving home; BA's receding rows neither arm the
+    /// halt nor let the follow's begin back off again (one room hold, one
+    /// keep-out note, for the whole wait), and BA's row read nearer than the
+    /// plot the wait faces is fired on from the halt.
+    #[test]
+    fn a_return_held_short_waits_out_a_machine_still_leaving() {
+        let own = (ENTRY_LINE_X - ENTRY_KEEP_OUT_M - 300.0, 970.0);
+        let (mut picture, mut pilot) = following_at(own);
+        hold(&mut picture, ba_east(own, 300, NOW, Some(90.0)));
+        hurt_event(&mut picture, "BA", NOW - 100);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        assert_eq!(pilot.take_notes(), [not_following_note("BA")]);
+        pilot.sent_speed(-27);
+        edge_event(&mut picture, NOW + 1_000);
+        let t = NOW + 1_100;
+        hold(&mut picture, ba_east(own, 350, t, Some(90.0)));
+        pilot.decide(&picture, &hold_doctrine(), t);
+        let notes = pilot.take_notes();
+        assert_eq!(
+            starting(&notes, "No room behind for the return: "),
+            ["No room behind for the return: waiting 350 m from BA's last plot."],
+            "{notes:?}"
+        );
+        pilot.sent_speed(0);
+        // BA still in sight, still driving home, for the next ten decisions
+        // (from the end of the `Held:`'s own stop, step 1).
+        let mut notes = Vec::new();
+        for k in 1..=10_u32 {
+            let t = t + HELD_FOR_MS + u64::from(k) * 1_000;
+            hold(&mut picture, ba_east(own, 350 + 8 * k, t, Some(90.0)));
+            let orders = pilot.decide(&picture, &hold_doctrine(), t);
+            assert!(orders.speed.is_none_or(|kph| kph == 0), "{k}: {orders:?}");
+            let said = pilot.take_notes();
+            assert_eq!(
+                pilot.rule(),
+                Some("return_wait"),
+                "{k}: {:?} {:?} {:?} {said:?}",
+                pilot.ret,
+                pilot.halt,
+                pilot.follow,
+            );
+            notes.extend(said);
+        }
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(pilot.halt, None);
+        assert_eq!(pilot.follow, None);
+        assert!(matches!(
+            pilot.ret.as_ref().map(|r| r.stage),
+            Some(ReturnStage::Wait { since_ms }) if since_ms == t
+        ));
+        // BA comes back past the plot the wait faces: fired on from the halt.
+        let back = t + HELD_FOR_MS + 11_000;
+        hold(&mut picture, ba_east(own, 300, back, Some(270.0)));
+        pilot.decide(&picture, &hold_doctrine(), back);
+        let notes = pilot.take_notes();
+        assert_eq!(
+            notes.first().map(String::as_str),
+            Some("Firing from the halt at BA, 300 m off."),
+            "{notes:?}"
+        );
+        assert_eq!(pilot.ret, None);
+        assert!(starting(&notes, "Not following").is_empty(), "{notes:?}");
+    }
+
+    /// **A followed row is flown to the stale limit under `hunt`** (cut AO.1):
+    /// the followed BA's row 4 s old — past a `hunt` doctrine's fresh limit,
+    /// inside `HUNT_STALE_PLOT_MS` — is still flown: the follow's hold, its
+    /// rule word.
+    #[test]
+    fn a_followed_row_is_flown_to_the_stale_limit_under_hunt() {
+        let own = (1_000.0, 970.0);
+        let far = (FOLLOW_BAND_M + HOLD_SLACK_M + HOLD_HYSTERESIS_M + 25.0) as u32;
+        let doctrine = hunting(450);
+        let (mut picture, mut pilot) = following_at(own);
+        hold(&mut picture, ba_east(own, far, NOW, Some(90.0)));
+        hurt_event(&mut picture, "BA", NOW - 100);
+        let orders = pilot.decide(&picture, &doctrine, NOW);
+        assert_eq!(pilot.take_notes(), [following_note("BA")]);
+        assert_eq!(pilot.rule(), Some("follow"));
+        assert_eq!(orders.speed, Some(54));
+        pilot.sent_speed(54);
+        let t = NOW + 2_000;
+        let age = 4_000;
+        assert!(age > FRESH_PLOT_MS && age <= HUNT_STALE_PLOT_MS);
+        let mut ba = ba_east(own, far, t, Some(90.0));
+        ba.age_ms = age;
+        hold(&mut picture, ba);
+        let orders = pilot.decide(&picture, &doctrine, t);
+        assert_eq!(pilot.rule(), Some("follow"));
+        assert_eq!(pilot.hold_motion, HoldMotion::Ahead, "the follow's hold");
+        assert!(orders.speed.is_none_or(|kph| kph > 0), "{orders:?}");
+        assert!(pilot.follow.is_some());
+        assert_eq!(pilot.hunt, None);
+    }
+
+    /// The pilot's orders after the first `CONTACTS` reply (its `lines`,
+    /// read 100 ms after power at [`ROOMY_MUSTER`]).
+    fn first_reply(lines: &[&str]) -> (Pilot, Orders) {
+        let mut picture = running();
+        picture.apply(POWER, &classify("Power online."));
+        let mut pilot = Pilot::with_knobs(Knobs::on());
+        pilot.ceilings_asked = true;
+        decide_at(&picture, &mut pilot, POWER + 50);
+        status_at(&mut picture, ROOMY_MUSTER, 90, POWER + 100);
+        for line in lines {
+            picture.apply(POWER + 100, &classify(line));
+        }
+        picture.settle(POWER + 300);
+        let orders = decide_at(&picture, &mut pilot, POWER + 300);
+        (pilot, orders)
+    }
+
+    /// **A wingman keeps its opening beside a teammate** (cut AO.1): an
+    /// unknown 20 m off, an own-side row at 40 m or 300 m, a notice for an
+    /// unknown then held 20 m off, and a notice for one identified as the own
+    /// side before the first reply (held under its new designator) leave the
+    /// opening on (the brief asked); an
+    /// unknown 500 m off, and a notice whose contact the first reply did not
+    /// hold, end it.
+    #[test]
+    fn a_wingman_keeps_its_opening_beside_a_teammate() {
+        for lines in [
+            &["X1  unknown  bearing 090° (rel 000°)  close  20 m  0 s"][..],
+            &["RB  red  bearing 000° (rel 270°)  close  40 m  0 s"][..],
+            &["RB  red  bearing 000° (rel 270°)  effective  300 m  0 s"][..],
+            &[
+                "New contact X1: bearing 045°, close.",
+                "X1  unknown  bearing 045° (rel 315°)  close  20 m  0 s",
+            ][..],
+            &[
+                "New contact X1: bearing 045°, close.",
+                "Contact X1 identified: RB, red.",
+                "RB  red  bearing 045° (rel 315°)  close  30 m  0 s",
+            ][..],
+        ] {
+            let (pilot, orders) = first_reply(lines);
+            assert!(orders.ask_view_brief, "{lines:?}");
+            assert!(
+                matches!(pilot.opening, OpeningStage::Brief { .. }),
+                "{lines:?}: {:?}",
+                pilot.opening
+            );
+        }
+        for lines in [
+            &["X1  unknown  bearing 090° (rel 000°)  far  500 m  0 s"][..],
+            &["New contact X1: bearing 090°, far.", "No contacts."][..],
+        ] {
+            let (pilot, orders) = first_reply(lines);
+            assert!(!orders.ask_view_brief, "{lines:?}");
+            assert_eq!(pilot.opening, OpeningStage::Done, "{lines:?}");
+        }
+    }
+
+    /// Every designator in `value` (keys and strings), depth first.
+    fn designators_in(value: &serde_json::Value, out: &mut Vec<String>) {
+        use crate::arena::lines::is_designator;
+        match value {
+            serde_json::Value::String(text) if is_designator(text) => out.push(text.clone()),
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    designators_in(item, out);
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                for (key, item) in fields {
+                    if is_designator(key) {
+                        out.push(key.clone());
+                    }
+                    designators_in(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// **The new notes name only held designators** (cut AO.1; the bot's own
+    /// observer rule): the opening's room notes name none; the back-offs'
+    /// holds, the keep-out's begin and the wait with no own position name only
+    /// a designator the stream named this match; the rule is a word.
+    #[test]
+    fn the_new_notes_name_only_held_designators() {
+        let mut named: BTreeSet<String> = BTreeSet::new();
+        let mut said: Vec<String> = Vec::new();
+        let mut check = |pilot: &mut Pilot, picture: &Picture| {
+            named.extend(picture.contacts.keys().cloned());
+            for note in pilot.take_notes() {
+                for word in note.split(|c: char| !c.is_ascii_alphanumeric()) {
+                    if crate::arena::lines::is_designator(word) {
+                        assert!(named.contains(word), "{word} in {note}");
+                    }
+                }
+                said.push(note);
+            }
+            assert!(pilot.rule().is_none_or(|rule| {
+                [
+                    "opening",
+                    "halt",
+                    "reapproach",
+                    "approach_wait",
+                    "follow",
+                    "return_back",
+                    "return_wait",
+                ]
+                .contains(&rule)
+            }));
+        };
+        // The opening's room notes.
+        let (picture, mut pilot, _) = stepping(MUSTER, &muster_brief());
+        check(&mut pilot, &picture);
+        let brief = rays(|word, deg| match deg {
+            90 => {
+                format!("{word}: 30 m of road, then deep water to 130 m, then beyond the window.")
+            }
+            _ => format!("{word}: 90 m of grass, then beyond the window."),
+        });
+        let (picture, mut pilot, _) = stepping(MUSTER, &brief);
+        check(&mut pilot, &picture);
+        // The re-approach held at the edge.
+        let own = (EDGE_BACK_MARGIN_M * 0.4, 1_000.0);
+        let (picture, mut pilot, _) = out_hit_at(own, 90);
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        check(&mut pilot, &picture);
+        pilot.decide(&picture, &hold_doctrine(), NOW + 500);
+        check(&mut pilot, &picture);
+        // The keep-out at the follow's begin, then the return held by the
+        // edge with BA no longer held.
+        let own = (ENTRY_LINE_X - ENTRY_KEEP_OUT_M - 300.0, 970.0);
+        let (mut picture, mut pilot) = following_at(own);
+        hold(&mut picture, ba_east(own, 300, NOW, Some(90.0)));
+        hurt_event(&mut picture, "BA", NOW - 100);
+        let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
+        check(&mut pilot, &picture);
+        if let Some(kph) = orders.speed {
+            pilot.sent_speed(kph);
+        }
+        picture.contacts.clear();
+        edge_event(&mut picture, NOW + 1_000);
+        pilot.decide(&picture, &hold_doctrine(), NOW + 1_100);
+        assert!(!picture.contacts.contains_key("BA"), "BA is not held");
+        check(&mut pilot, &picture);
+        // The wait with no own position.
+        let (mut picture, mut pilot) = following_at((1_000.0, 970.0));
+        hold(&mut picture, ba_east((1_000.0, 970.0), 300, NOW, None));
+        pilot.ret = Some(Return {
+            d: "BA".into(),
+            plot_m: (1_300.0, 970.0),
+            stage: ReturnStage::Back { since_ms: NOW },
+        });
+        pilot.decide(&picture, &hold_doctrine(), NOW);
+        check(&mut pilot, &picture);
+        picture.contacts.clear();
+        picture.own.pos_m = None;
+        pilot.decide(&picture, &hold_doctrine(), NOW + RETURN_BACK_MS);
+        check(&mut pilot, &picture);
+        for head in [
+            "Opening: moving in ",
+            "Opening: no way in ",
+            "No room behind: ",
+            "Not following BA",
+            "No room behind for the return: ",
+            "Waiting for BA to come back.",
+        ] {
+            assert!(starting(&said, head).len() == 1, "{head}: {said:?}");
+        }
+    }
+
+    /// **The time bounds cover the drive** (cut AO.1), the arithmetic from
+    /// the named figures: `help cockpit`'s 27 kph astern, scaled as grass caps
+    /// 54 to about 41, reached about 7 s after `SPEED -27` (the bot's own
+    /// transcript; counted here as standing still); the re-approach's back-off
+    /// from a row reading 400 m (the help's 420 m on the scope) to
+    /// `REAPPROACH_OPEN_M`, and the return's from `FOLLOW_BAND_M` to
+    /// `RETURN_STANDOFF_M`, each inside its bound.
+    #[test]
+    fn the_time_bounds_cover_the_drive() {
+        const ASTERN_KPH: f64 = 27.0;
+        const AHEAD_KPH: f64 = 54.0;
+        const GRASS_KPH: f64 = 41.0;
+        const RAMP_S: f64 = 7.0;
+        const ROW_READS_M: f64 = 400.0;
+        let mps = ASTERN_KPH * GRASS_KPH / AHEAD_KPH / 3.6;
+        let reapproach_s = RAMP_S + (REAPPROACH_OPEN_M - ROW_READS_M) / mps;
+        assert!(
+            reapproach_s * 1_000.0 <= REAPPROACH_MAX_MS as f64,
+            "{reapproach_s:.1} s"
+        );
+        let return_s = RAMP_S + (RETURN_STANDOFF_M - FOLLOW_BAND_M) / mps;
+        assert!(
+            return_s * 1_000.0 <= RETURN_BACK_MS as f64,
+            "{return_s:.1} s"
+        );
+        // And the opening's room is the longest back-off the pilot orders,
+        // from the help's stand-off, with its margin.
+        const { assert!(OPENING_ROOM_M >= REAPPROACH_OPEN_M - MACHINE_STANDOFF_M) };
     }
 }

@@ -79,8 +79,9 @@
 //! `STILL CYCLING {w}: {k} of {n} FIRE lines`, `HITS TAKEN BY FACET: …` and
 //! (cut AN.1) `SEEN FIRST: …`, `OPENING: …` and `FRONT SHARE: …`, (cut AN.2)
 //! `PILOT RULES: opening {a}, off the road {b}, halt {c}, reapproach {d},
-//! approach wait {e}` and (cut AN.3) `, follow {f}, return wait {g}, lattice
-//! {h}` (what the pilot's own rules did, counted from its `arena`
+//! approach wait {e}`, (cut AN.3) `, follow {f}, return wait {g}, lattice
+//! {h}` and (cut AO.1) `, inward {i}, room holds {k}, return room holds {r},
+//! gave up {u}` (what the pilot's own rules did, counted from its `arena`
 //! sentences), and only then `UNPOSED`, `NO REPORT` and `EARLY END`. The offline
 //! `the_reading_lines_are_the_leads_count` (not ignored) proves the reading on
 //! a hand-written transcript and report.
@@ -435,7 +436,7 @@ fn the_reading_lines_are_the_leads_count() {
             "SEEN FIRST: contact before hit 1, hit before contact 1, neither 0 of 2 matches; lead p10 12 / p50 12 / p90 12 s over 1; shot first 1, shot at first 1",
             "OPENING: first contact p10 30 / p50 30 / p90 30 s after power online over 2 matches; first hit taken p50 29 s over 2",
             "FRONT SHARE: 1 of 8 facet hits taken on a front facet",
-            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0",
+            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0, inward 0, room holds 0, return room holds 0, gave up 0",
         ]
     );
     // Empty facet maps: none. No report: no report. The engagement is the
@@ -467,7 +468,7 @@ fn the_reading_lines_are_the_leads_count() {
     assert_eq!(
         lines.last().map(String::as_str),
         Some(
-            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0"
+            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0, inward 0, room holds 0, return room holds 0, gave up 0"
         )
     );
     assert_eq!(lines.len(), 12);
@@ -481,7 +482,7 @@ fn the_reading_lines_are_the_leads_count() {
             "SEEN FIRST: no report",
             "OPENING: no report",
             "FRONT SHARE: no report",
-            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0",
+            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0, inward 0, room holds 0, return room holds 0, gave up 0",
         ]
     );
 
@@ -620,6 +621,15 @@ fn the_knob_variable_reads_and_refuses() {
         "The machine_gun is off the lattice clock for 30 s: refused twice.",
         "Opening over: BA is in sight after 95 s.",
         "The halt is over: BA is at the band.",
+        "Opening: moving in 235 m toward the other side's entry: 65 m of ground behind us, 290 m wanted.",
+        "Opening: moving in 41 m toward the other side's entry: 259 m of ground behind us, 290 m wanted.",
+        "No room behind: waiting 410 m from BA's last plot.",
+        "No room behind: waiting for BB.",
+        "No room behind for the return: waiting 520 m from BA's last plot.",
+        "No room behind for the return: waiting for BB.",
+        "Could not open the range on BA in 60 s; holding.",
+        "Could not open the range on BB in 60 s; holding.",
+        "Opening: no way in toward the other side's entry; 60 m of ground behind us.",
     ]
     .iter()
     .map(|text| said(text))
@@ -630,7 +640,8 @@ fn the_knob_variable_reads_and_refuses() {
         reading.lines("hold").last().map(String::as_str),
         Some(
             "PILOT RULES: opening 2, off the road 2, halt 2, reapproach 2, approach wait 2, \
-             follow 2, return wait 2, lattice 2"
+             follow 2, return wait 2, lattice 2, inward 2, room holds 2, return room holds 2, \
+             gave up 2"
         )
     );
     // No transcript: zeros.
@@ -640,7 +651,7 @@ fn the_knob_variable_reads_and_refuses() {
             .last()
             .map(String::as_str),
         Some(
-            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0"
+            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0, inward 0, room holds 0, return room holds 0, gave up 0"
         )
     );
 }

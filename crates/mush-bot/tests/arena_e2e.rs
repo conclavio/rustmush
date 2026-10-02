@@ -1658,11 +1658,17 @@ fn the_command_line_refuses_what_the_pilot_cannot_fly() {
 /// --matches 1` with the default `[arena]` (the opening waits, the
 /// re-approach is on) on a 180 s cap. Once it has said `Opening: holding near
 /// our entry` and written the next `arena-picture`, God calls the match off.
-/// It typed `VIEW BRIEF` exactly once; it said it was stepping off the road to
-/// the north or the south before it held; and that picture's own position lies
-/// at least 20 m north or south of the start the pilot kept
-/// (`pilot.start_m`), the step being done once 25 m of it is behind it on the
-/// shipped muster. This is the format contract of the brief's bearing lines
+/// It typed `VIEW BRIEF` exactly twice (cut AO.1: red's first pod musters
+/// about 65 m off the west edge, so the pilot first moves in for room behind,
+/// says so, types `SPEED 0` and reads the brief again); it said it was
+/// stepping off the road to the north or the south after the move in and
+/// before it held; and that picture's own position lies at least 20 m north
+/// or south of where the step began (the last picture written after the move
+/// in and before the step was said: the step is chosen from the second
+/// brief's position, not the start the pilot kept), the step being done
+/// once 25 m of it is behind it, and at least
+/// `OPENING_ROOM_M` less 40 m east of the west edge (red's room behind is its
+/// own x). This is the format contract of the brief's bearing lines
 /// against the game's own `brief_lines`: the step is chosen from them alone.
 /// The report holds the one match as `abort`. No model is configured.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1735,8 +1741,63 @@ async fn open_at_the_muster() {
         .iter()
         .filter(|(line, _, _)| line == "VIEW BRIEF")
         .collect();
-    assert_eq!(briefs.len(), 1, "one VIEW BRIEF: {sends:?}");
-    assert_eq!(briefs[0].1, "poll");
+    // Cut AO.1: one at the muster and one after the move in for room.
+    assert_eq!(briefs.len(), 2, "two VIEW BRIEFs: {sends:?}");
+    assert!(briefs.iter().all(|brief| brief.1 == "poll"), "{briefs:?}");
+    // The move in said, then a `SPEED 0` typed, then the second brief, in
+    // the transcript's own order.
+    let records = &landed.records;
+    let moving_in = records
+        .iter()
+        .position(|record| {
+            record["kind"] == "arena"
+                && record["data"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("Opening: moving in "))
+        })
+        .unwrap_or_else(|| panic!("the move in: {:?}", landed.events("arena")));
+    let second_brief = records
+        .iter()
+        .enumerate()
+        .filter(|(_, record)| {
+            record["kind"] == "arena-send" && record["data"]["line"] == "VIEW BRIEF"
+        })
+        .nth(1)
+        .map(|(at, _)| at)
+        .expect("the second brief");
+    assert!(
+        records
+            .get(moving_in..second_brief)
+            .is_some_and(|between| between.iter().any(|record| {
+                record["kind"] == "arena-send" && record["data"]["line"] == "SPEED 0"
+            })),
+        "a stop between the move in and the second brief: {sends:?}"
+    );
+    // Where the step began: the last picture written after the move in and
+    // before the step was said. The tank is stopped there for the second
+    // brief (or still slowing along the east-west road), so its y is the
+    // step's own origin, the leg's drift off the road included.
+    let stepping = records
+        .iter()
+        .position(|record| {
+            record["kind"] == "arena"
+                && record["data"].as_str().is_some_and(|text| {
+                    text.starts_with("Opening: stepping off the road to the north (")
+                        || text.starts_with("Opening: stepping off the road to the south (")
+                })
+        })
+        .unwrap_or_else(|| panic!("the step: {:?}", landed.events("arena")));
+    let step_from = records
+        .get(moving_in..stepping)
+        .and_then(|between| {
+            between
+                .iter()
+                .rev()
+                .find(|record| record["kind"] == "arena-picture")
+        })
+        .and_then(|record| record["data"]["own"]["pos"].as_array())
+        .and_then(|pos| Some((pos.first()?.as_f64()?, pos.get(1)?.as_f64()?)))
+        .unwrap_or_else(|| panic!("a picture between the move in and the step: {sends:?}"));
     let said = landed.events("arena");
     let step = said
         .iter()
@@ -1750,6 +1811,11 @@ async fn open_at_the_muster() {
         .position(|text| text.starts_with("Opening: holding near our entry"))
         .unwrap_or_else(|| panic!("the hold: {said:?}"));
     assert!(step < hold, "{said:?}");
+    let moved = said
+        .iter()
+        .position(|text| text.starts_with("Opening: moving in "))
+        .unwrap_or_else(|| panic!("the move in: {said:?}"));
+    assert!(moved < step, "{said:?}");
     let pilot = &picture["data"]["pilot"];
     let start = pilot["start_m"]
         .as_array()
@@ -1760,15 +1826,27 @@ async fn open_at_the_muster() {
     let (start_x, start_y) = (start[0].as_f64().expect("x"), start[1].as_f64().expect("y"));
     let (own_x, own_y) = (own[0].as_f64().expect("x"), own[1].as_f64().expect("y"));
     println!(
-        "OPENING: {} then {}; start ({start_x}, {start_y}), held at ({own_x}, {own_y}); \
-         the hold read {:.1} s after the launch",
+        "OPENING: {} then {} then {}; start ({start_x}, {start_y}), step from ({:.0}, \
+         {:.0}), held at ({own_x}, {own_y}); the hold read {:.1} s after the launch",
+        said[moved],
         said[step],
         said[hold],
+        step_from.0,
+        step_from.1,
         held_after.as_secs_f64()
     );
+    // The step is measured from its own origin (cut AO.1: after the move in,
+    // not the muster the pilot kept).
     assert!(
-        (own_y - start_y).abs() >= 20.0,
-        "stepped off the road: start ({start_x}, {start_y}), now ({own_x}, {own_y})"
+        (own_y - step_from.1).abs() >= 20.0,
+        "stepped off the road: start ({start_x}, {start_y}), step from {step_from:?}, now \
+         ({own_x}, {own_y})"
+    );
+    // Cut AO.1: red's room behind is its own x, at least the room the pilot
+    // wants less the arrival and the brief's rounding.
+    assert!(
+        own_x >= mush_bot::arena::pilot::OPENING_ROOM_M - 40.0,
+        "held with room behind: start ({start_x}, {start_y}), now ({own_x}, {own_y})"
     );
     assert_eq!(pilot["opening"], "hold", "{pilot}");
     let matches = landed.matches();

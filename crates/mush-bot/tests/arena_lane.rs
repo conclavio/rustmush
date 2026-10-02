@@ -81,6 +81,12 @@
 //! edge nearer +250, and one test flies 225, past the guard) and
 //! [`Wire::steady`] (a wire with a fixed delay each way: no jitter, no split,
 //! no injection, TCP order kept).
+//!
+//! Cut AO.1 adds, off by default too, `ba_plotted_s` (BA's row printed that
+//! many seconds old, and the lock's `RANGE` on BA answered as old and as
+//! coarse as the row: BA read on the scope's rows alone); and since the room
+//! rule moves the opening in from a muster with too little ground behind it,
+//! the opening's tests whose subject is not the room fly from (400, 970).
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     ops::RangeInclusive,
@@ -107,8 +113,9 @@ use mush_bot::arena::{
         ENTRY_KEEP_OUT_M, EXCHANGE_MARGIN, EXCHANGE_MIN_TAKEN, EXCHANGE_WINDOW_MS, FOLLOW_BAND_M,
         FRESH_PLOT_MS, FRESH_READ_MS, HEADING_STEP_DEG, HELD_FOR_MS, HELD_MARK_AHEAD_M,
         HELD_MARK_HALF_WIDTH_M, HELD_MARK_NEAR_M, HELD_TURN_DEG, HOLD_BOW_DEG, HOLD_SLACK_M,
-        ONE_TRACK_COMMIT_MS, ONE_TRACK_DEADBAND_DEG, OPENING_COVER_M, REAPPROACH_OPEN_M,
-        REAPPROACH_WAIT_MS, STALL_MS, UNIDENTIFIED_WAIT_MS, WITHDRAW_MS, clamp_arena, hull_failing,
+        ONE_TRACK_COMMIT_MS, ONE_TRACK_DEADBAND_DEG, OPENING_ARRIVE_M, OPENING_COVER_M,
+        OPENING_ROOM_M, REAPPROACH_MAX_MS, REAPPROACH_OPEN_M, REAPPROACH_WAIT_MS, STALL_MS,
+        UNIDENTIFIED_WAIT_MS, WITHDRAW_MS, clamp_arena, hull_failing,
     },
     report::{self, GapStats},
     settings::{Engagement, Opening, Settings},
@@ -359,6 +366,13 @@ struct Server {
     /// to +150; the muster runs read it nearer +250); 0, the rule as before,
     /// unless a test sets it.
     accept_lag_ms: u64,
+    /// **BA's plot age** (cut AO.1): with `ba_at` set, BA's row prints `{s}
+    /// s` and the lock's `RANGE` answers `Range to BA: {r} m, plotted {s} s
+    /// ago.` with the range rounded to the scope's 50 m, as its row is: a plot
+    /// a couple of seconds old "reads no better than the rest of the scope"
+    /// (`help cockpit`, "Seeing"), so BA is read on the scope's rows alone.
+    /// Unset, `1 s` and the whole range, as before.
+    ba_plotted_s: Option<u32>,
 }
 
 /// The transient the cut AM.1 knobs answer with.
@@ -415,6 +429,7 @@ impl Server {
             brief: Vec::new(),
             lattice_notices: false,
             accept_lag_ms: 0,
+            ba_plotted_s: None,
         }
     }
 
@@ -453,7 +468,8 @@ impl Server {
     fn ba_row(&self, bearing: u32, range: u32) -> String {
         let rel = (i64::from(bearing) - i64::from(self.heading_now())).rem_euclid(360);
         let shown = (range + 25) / 50 * 50;
-        format!("BA  blue  bearing {bearing:03}° (rel {rel:03}°)  far  {shown} m  1 s")
+        let age = self.ba_plotted_s.unwrap_or(1);
+        format!("BA  blue  bearing {bearing:03}° (rel {rel:03}°)  far  {shown} m  {age} s")
     }
 
     /// **The turret goes** (cut AL.1): the victim's line, and both guns with
@@ -780,7 +796,17 @@ impl Server {
                         Some((_, range)) if lock == "BA" => range,
                         _ => 440,
                     };
-                    self.say(3, &format!("Range to {lock}: {range} m."));
+                    // Cut AO.1: BA's plot `ba_plotted_s` old reads as its row.
+                    match self.ba_plotted_s {
+                        Some(age) if lock == "BA" && self.ba_at.is_some() => {
+                            let shown = (range + 25) / 50 * 50;
+                            self.say(
+                                3,
+                                &format!("Range to {lock}: {shown} m, plotted {age} s ago."),
+                            );
+                        }
+                        _ => self.say(3, &format!("Range to {lock}: {range} m.")),
+                    }
                 }
                 None => self.say(3, "No lock: LOCK a contact first, or name one."),
             },
@@ -5316,10 +5342,27 @@ fn said_starting<'a>(run: &'a Run, head: &str) -> Vec<&'a String> {
     run.said.iter().filter(|s| s.starts_with(head)).collect()
 }
 
+/// **The shipped muster's brief as the window clamps it** (cut AO.1):
+/// [`road_brief`] with the west ray `60 m of road` to the arena's edge and the
+/// east ray `320 m of road` to the window's reach.
+fn muster_brief() -> Vec<String> {
+    brief_of(|word, deg| match deg {
+        270 => format!("{word}: 60 m of road, then the edge of the arena."),
+        90 => format!("{word}: 320 m of road, then beyond the window."),
+        _ => format!("{word}: 10 m of road, then grass to 90 m, then beyond the window."),
+    })
+}
+
+/// **A muster with room behind it** (cut AO.1): where the opening's lane
+/// tests whose subject is not the room are flown, 400 m off the west edge
+/// (the other side's entry is then (2 160, 970)).
+const ROOMY_POS: (i32, i32) = (400, 970);
+
 #[test]
 fn the_opening_types_view_brief_once_and_steps_off_the_road() {
     let mut run = to_the_fight_with(Settings::default(), |server| {
         server.brief = road_brief();
+        server.pos = ROOMY_POS;
     });
     let power = run.now;
     // The brief, then the step: north at 15 kph.
@@ -5338,7 +5381,7 @@ fn the_opening_types_view_brief_once_and_steps_off_the_road() {
     assert_eq!(run.lane.picture_json()["pilot"]["rule"], "opening");
     assert_eq!(
         run.lane.picture_json()["pilot"]["start_m"],
-        json!([60.0, 970.0])
+        json!([400.0, 970.0])
     );
     // The commander is told the rule in force (its first ask, due since the
     // power came on and taken now).
@@ -5346,14 +5389,14 @@ fn the_opening_types_view_brief_once_and_steps_off_the_road() {
     assert_eq!(view["rule"], "opening");
     // The server never moves the tank: it is moved to the aim.
     let aim = 970 + step.round() as i32;
-    run.server.pos = (60, aim);
+    run.server.pos = (ROOMY_POS.0, aim);
     let moved = run.now;
     assert!(
         run.until(10_000, |run| !run.sends_of("SPEED 0", moved).is_empty()),
         "the hold: {:?}",
         run.lines()
     );
-    // Facing the other side's entry (2 500, 970) from there: 091°.
+    // Facing the other side's entry (2 160, 970) from there: 091°.
     run.until(1_000, |_| false);
     assert!(
         heading_sends(&run, moved).iter().any(|(_, deg)| *deg == 91),
@@ -5473,7 +5516,9 @@ fn a_posed_start_has_no_opening() {
 /// never on `has stopped` or its time while BA closes.
 #[test]
 fn a_mover_is_fired_on_from_the_halt() {
-    let mut run = to_the_fight(Settings::default());
+    // Cut AO.1: from a muster with room behind it (the rig's default (60,
+    // 970) has 60 m, and the opening would first move in).
+    let mut run = to_the_fight_with(Settings::default(), |server| server.pos = ROOMY_POS);
     // The opening holds on a field of grass.
     assert!(
         run.until(10_000, |run| !said_starting(run, "Opening: holding")
@@ -6091,4 +6136,263 @@ fn a_start_into_a_running_match_follows_nothing() {
     );
     assert_eq!(run.lane.pilot().follow, None);
     assert_eq!(run.lane.pilot().ret, None);
+}
+
+// ---------------------------------------------------------------------------
+// Cut AO.1: off the wall
+// ---------------------------------------------------------------------------
+
+/// **The opening moves in from the muster and holds with room** (cut AO.1):
+/// the shipped defaults at the rig's (60, 970) with [`muster_brief`] (60 m of
+/// road to the west edge): the move in is said, `HEADING 90` and a full-ahead
+/// `SPEED` go; the test moves the tank to the aim (300, 970) and the brief
+/// there to [`road_brief`]; then `SPEED 0`, the second `VIEW BRIEF`, the step
+/// north and the hold, at least the room less the arrival east of the west
+/// edge. Exactly two `VIEW BRIEF`s, every line in the vocabulary, and the
+/// limiter holding.
+#[test]
+fn the_opening_moves_in_from_the_muster_and_holds_with_room() {
+    let mut run = to_the_fight_with(Settings::default(), |server| {
+        server.brief = muster_brief();
+    });
+    assert!(
+        run.until(10_000, |run| !said_starting(run, "Opening: moving in ")
+            .is_empty()),
+        "the move in: {:?}",
+        run.said
+    );
+    let leg = OPENING_ROOM_M - 60.0 + OPENING_ARRIVE_M;
+    let moving = format!(
+        "Opening: moving in {:.0} m toward the other side's entry: 60 m of ground behind us, \
+         {:.0} m wanted.",
+        leg.round(),
+        OPENING_ROOM_M.round()
+    );
+    assert_eq!(said_starting(&run, "Opening: moving in "), [&moving]);
+    assert!(
+        run.until(3_000, |run| run.lines().contains(&"HEADING 90")
+            && run.lines().contains(&"SPEED 54")),
+        "{:?}",
+        run.lines()
+    );
+    assert_eq!(run.lane.picture_json()["pilot"]["opening"], "inward");
+    assert_eq!(run.lane.picture_json()["pilot"]["rule"], "opening");
+    assert_eq!(run.sends_of("VIEW BRIEF", 0).len(), 1);
+    // The server never moves the tank: it is moved to the aim, where the
+    // brief has room.
+    let aim_x = 60 + leg.round() as i32;
+    run.server.pos = (aim_x, 970);
+    run.server.brief = road_brief();
+    let moved = run.now;
+    assert!(
+        run.until(10_000, |run| !run.sends_of("SPEED 0", moved).is_empty()),
+        "the stop: {:?}",
+        run.lines()
+    );
+    let stopped = run.sends_of("SPEED 0", moved)[0];
+    assert!(
+        run.until(10_000, |run| run.sends_of("VIEW BRIEF", 0).len() == 2),
+        "the second brief: {:?}",
+        run.lines()
+    );
+    let second = run.sends_of("VIEW BRIEF", 0)[1];
+    assert!(stopped <= second, "stopped at {stopped}, asked at {second}");
+    assert!(
+        run.until(10_000, |run| run.lines().contains(&"SPEED 15")),
+        "the step: {:?}",
+        run.lines()
+    );
+    let step = 10.0 + 5.0 + OPENING_COVER_M;
+    let stepping = format!("Opening: stepping off the road to the north ({step:.0} m).");
+    assert!(run.said.contains(&stepping), "{:?}", run.said);
+    assert!(
+        heading_sends(&run, second).iter().any(|(_, deg)| *deg == 0),
+        "{:?}",
+        heading_sends(&run, second)
+    );
+    // Moved to the step's aim: the hold.
+    run.server.pos = (aim_x, 970 + step.round() as i32);
+    assert!(
+        run.until(10_000, |run| !said_starting(run, "Opening: holding")
+            .is_empty()),
+        "the hold: {:?}",
+        run.said
+    );
+    let held_x = run.lane.picture().own.pos_m.expect("a position").0;
+    assert!(
+        held_x >= OPENING_ROOM_M - OPENING_ARRIVE_M - 10.0,
+        "held at {held_x}"
+    );
+    // A minute on: still two briefs.
+    run.until(60_000, |_| false);
+    assert_eq!(run.sends_of("VIEW BRIEF", 0).len(), 2, "{:?}", run.lines());
+    assert!(
+        run.sent
+            .iter()
+            .filter(|send| send.line == "VIEW BRIEF")
+            .all(|send| send.purpose == Purpose::Poll)
+    );
+    assert!(run.sent.iter().all(|send| allowed(&send.line)));
+    assert!(limiter_holds(&run.sent, 4));
+    assert_eq!(run.lane.picture_json()["pilot"]["opening"], "hold");
+}
+
+/// **A re-approach at the edge holds rather than backing into it** (cut
+/// AO.1): the re-approach alone on, the tank at (80, 1 005) and BA stopped
+/// 420 m east out-hitting it. It opens the range in reverse; the test moves
+/// the tank west as the reverse would; where the ground behind runs out it
+/// stops (`SPEED 0`), says `No room behind` once, and gives nothing up in the
+/// next `REAPPROACH_MAX_MS`.
+#[test]
+fn a_reapproach_at_the_edge_holds_rather_than_backing_into_it() {
+    let mut run = to_the_fight_with(
+        Settings {
+            reapproach: true,
+            ..base()
+        },
+        |server| server.pos = (80, 1_005),
+    );
+    // BA stopped at the world point 420 m east of the tank.
+    let ba = (500_i32, 1_005_i32);
+    let place = |run: &mut Run| {
+        let (x, _) = run.server.pos;
+        run.server.ba_at = Some((90, u32::try_from(ba.0 - x).unwrap_or(0)));
+    };
+    run.server.contacts = vec!["BA  blue  bearing 090° (rel 000°)  far  400 m  1 s".into()];
+    place(&mut run);
+    run.server.now = run.now;
+    run.server.say(0, "New contact BA: bearing 090°, far.");
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    // Hits taken on the front, enough to out-hit the pilot.
+    let taken = EXCHANGE_MIN_TAKEN.max(EXCHANGE_MARGIN) + 2;
+    let spacing = EXCHANGE_WINDOW_MS * 3 / 4 / taken as u64;
+    let hits = run.now;
+    for i in 0..taken as u32 {
+        run.server.now = run.now;
+        run.server.say(
+            0,
+            &format!(
+                "Hit on the hull's front facet: {} of 400 armour left.",
+                390 - 10 * i
+            ),
+        );
+        run.until(spacing, |_| false);
+    }
+    assert!(
+        !said_starting(&run, "Opening the range on BA: ").is_empty(),
+        "{:?}",
+        run.said
+    );
+    let back = speed_sends(&run, hits, run.now);
+    assert!(back.iter().any(|(_, kph)| *kph < 0), "{back:?}");
+    // Backing west at the stock tank's 27 kph astern, 7.5 m a second.
+    let mut west_m = 0.0_f64;
+    let mut held = None;
+    for _ in 0..30 {
+        if run.lane.pilot().last_speed_order.is_some_and(|kph| kph < 0) {
+            west_m += 7.5;
+            run.server.pos.0 = 80 - west_m.round() as i32;
+        }
+        place(&mut run);
+        run.until(1_000, |_| false);
+        if !said_starting(&run, "No room behind: ").is_empty() {
+            held = Some(run.now);
+            break;
+        }
+    }
+    let held = held.unwrap_or_else(|| panic!("never held: {:?}", run.said));
+    assert!(
+        run.until(2_000, |run| !run
+            .sends_of("SPEED 0", held - 1_000)
+            .is_empty()),
+        "{:?}",
+        speed_sends(&run, hits, run.now)
+    );
+    println!(
+        "held at {} m east: {:?}",
+        run.server.pos.0,
+        said_starting(&run, "No room behind: ")
+    );
+    run.until(REAPPROACH_MAX_MS, |_| false);
+    assert_eq!(
+        said_starting(&run, "No room behind: ").len(),
+        1,
+        "{:?}",
+        run.said
+    );
+    assert!(
+        said_starting(&run, "Could not open the range").is_empty(),
+        "{:?}",
+        run.said
+    );
+    assert!(run.server.pos.0 >= 0, "never past the edge");
+}
+
+/// **A track-less broken machine is followed on the scripted server** (cut
+/// AO.1): as AN.3's [`a_broken_machine_is_followed_on_the_scripted_server`],
+/// BA kept at its own world point; but BA drives east at 10 m/s read on the
+/// scope's rows alone (`ba_plotted_s`: no lock reads it finer), so the
+/// picture never publishes a track for it. Its turret destroyed and its range
+/// from the tank opening, it is followed: `Following BA home` said, a positive
+/// `SPEED` toward it, and no `Hunting `.
+#[test]
+fn a_trackless_broken_machine_is_followed_on_the_scripted_server() {
+    let mut run = to_the_fight_with(Settings::default(), |server| {
+        server.pos = (300, 970);
+        server.ba_plotted_s = Some(2);
+    });
+    assert!(
+        run.until(10_000, |run| !said_starting(run, "Opening: holding")
+            .is_empty()),
+        "{:?}",
+        run.said
+    );
+    let mut x = 300.0_f64;
+    let mut ba = 750.0_f64;
+    let mut seen = true;
+    run.server.contacts = vec!["BA  blue  bearing 090° (rel 000°)  far  450 m  2 s".into()];
+    place_ba(&mut run, x, ba, &mut seen);
+    run.server.now = run.now;
+    run.server.say(0, "New contact BA: bearing 090°, far.");
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    run.server.now = run.now;
+    run.server.say(0, "BA's turret is destroyed.");
+    let driving = run.now;
+    let mut tracked = false;
+    let mut ahead_following = None;
+    for _ in 0..40 {
+        ba += 10.0;
+        let kph = run.lane.pilot().last_speed_order.unwrap_or(0);
+        x += f64::from(kph) / 3.6;
+        place_ba(&mut run, x, ba, &mut seen);
+        run.until(1_000, |_| false);
+        tracked |= run
+            .lane
+            .picture()
+            .contacts
+            .get("BA")
+            .is_some_and(|c| c.track.is_some());
+        if ahead_following.is_none()
+            && run.lane.pilot().rule() == Some("follow")
+            && run.lane.pilot().last_speed_order.is_some_and(|kph| kph > 0)
+        {
+            ahead_following = Some(run.now);
+        }
+        if ahead_following.is_some_and(|at| run.now >= at + 3_000) {
+            break;
+        }
+    }
+    println!(
+        "BA at {ba:.0} m east, the tank at {x:.0}; said {:?}",
+        said_starting(&run, "Following ")
+    );
+    assert!(!tracked, "BA published a track");
+    let following = format!(
+        "Following BA home: it is hurt and driving away; holding {FOLLOW_BAND_M:.0} m behind it."
+    );
+    assert!(run.said.contains(&following), "{:?}", run.said);
+    assert!(ahead_following.is_some(), "never ahead on the follow");
+    let ahead = speed_sends(&run, driving, run.now);
+    assert!(ahead.iter().any(|(_, kph)| *kph > 0), "{ahead:?}");
+    assert!(said_starting(&run, "Hunting ").is_empty(), "{:?}", run.said);
 }
