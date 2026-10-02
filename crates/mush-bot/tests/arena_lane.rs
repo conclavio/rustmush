@@ -5470,6 +5470,7 @@ fn the_walk_and_the_claim_hold_on_a_slow_wire() {
 
 // ---------------------------------------------------------------------------
 // Cut AN.2: the opening, the halt and the re-approach, on the shipped defaults
+// (the re-approach, shipped off since cut AO.3, set on where it is flown)
 // ---------------------------------------------------------------------------
 
 /// The brief the scripted server's `brief` knob answers with: the shipped
@@ -5762,8 +5763,15 @@ fn a_mover_is_fired_on_from_the_halt() {
 
 #[test]
 fn the_reapproach_backs_off_and_waits_on_the_scripted_server() {
-    // Mid-field, so the backing off stays on the ground.
-    let mut run = to_the_fight_with(Settings::default(), |server| server.pos = (1_000, 970));
+    // Mid-field, so the backing off stays on the ground. Cut AO.3: the
+    // re-approach ships off, so this rig turns it on.
+    let mut run = to_the_fight_with(
+        Settings {
+            reapproach: true,
+            ..Settings::default()
+        },
+        |server| server.pos = (1_000, 970),
+    );
     assert!(run.until(10_000, |run| {
         !said_starting(run, "Opening: holding").is_empty()
     }));

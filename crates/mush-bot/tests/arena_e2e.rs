@@ -1718,8 +1718,9 @@ fn the_command_line_refuses_what_the_pilot_cannot_fly() {
 /// **The opening reads the ground at the muster** (cut AN.2; wall clock,
 /// bounded at 180 s). The rig with the AI fill and **no pose**: the shipped
 /// muster, red's slot 1 on the east-west road. The bot flies `--arena red
-/// --matches 1` with the default `[arena]` (the opening waits, the
-/// re-approach is on) on a 180 s cap. Once it has said `Opening: holding near
+/// --matches 1` with the default `[arena]` (the opening waits; the follow is
+/// on, so the opening moves in for room behind, though the re-approach ships
+/// off since cut AO.3) on a 180 s cap. Once it has said `Opening: holding near
 /// our entry` and written the next `arena-picture`, God calls the match off.
 /// It typed `VIEW BRIEF` exactly twice (cut AO.1: red's first pod musters
 /// about 65 m off the west edge, so the pilot first moves in for room behind,

@@ -199,10 +199,10 @@
 //!   for [`HALT_STILL_MS`]), comes to the band, finds the tank or
 //!   [`HALT_MAX_MS`] passes: the stopped tank lets it come. A row past the
 //!   stock sight is a teammate's report and arms no halt;
-//! * **The re-approach** (cut AN.2; [`Reapproach`], `[arena] reapproach`, on
-//!   by default): "Open the range past its sight and it comes after you
-//!   again; let the ground hide you and it drives at where it last saw you"
-//!   (`help simulator`). A stopped machine (no published track) inside the
+//! * **The re-approach** (cut AN.2; [`Reapproach`], `[arena] reapproach`, off
+//!   by default since cut AO.3): "Open the range past its sight and it comes
+//!   after you again; let the ground hide you and it drives at where it last
+//!   saw you" (`help simulator`). A stopped machine (no published track) inside the
 //!   stock sight that out-hits the pilot over [`EXCHANGE_WINDOW_MS`] is backed
 //!   away from bow on, steering on its last plot (the pilot is blind between
 //!   480 and 600 m of a stopped machine: "a stopped tank can be seen out to …
@@ -852,8 +852,9 @@ pub struct Knobs {
 }
 
 impl Knobs {
-    /// The shipped defaults: the opening waits, the re-approach and the
-    /// follow are on.
+    /// Every knob on: the opening waits, the re-approach and the follow are
+    /// on. (Cut AO.3: the shipped defaults are `Settings::default().knobs()`,
+    /// which has the re-approach off.)
     pub fn on() -> Knobs {
         Knobs {
             opening: Opening::Wait,

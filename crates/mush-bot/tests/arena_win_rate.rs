@@ -46,7 +46,16 @@
 //!
 //! Set `MUSH_BOT_WIN_RATE_KEEP` to a directory to keep the run's transcript
 //! (`win-rate.jsonl`) and report (`win-rate.json`) there for reading after (the
-//! rig's own directory is removed).
+//! rig's own directory is removed), and (cut AO.3) its `KNOBS` line with a
+//! newline (`win-rate.knobs`); `arena_muster_rate`'s pool lane reads kept
+//! posed runs together with `MUSH_BOT_WIN_RATE_POOL_NAME=win-rate`.
+//!
+//! **The interval** (cut AO.3): straight after the `WIN RATE` line it prints
+//! `WIN RATE INTERVAL: {w} of {n}, 95 per cent Wilson {lo} to {hi} per cent`
+//! (`n` the matches counted; `WIN RATE INTERVAL: no matches` with none):
+//! ten matches cannot tell 7 of 10 from 5 of 10, so no difference is called
+//! while two intervals overlap. The offline `the_lanes_print_the_interval`
+//! proves both lanes' lines.
 //!
 //! **The duel benchmark** (cut AN.1): posed 500 m apart, every match here is a
 //! duel from the first second. The match a person plays starts at the shipped
@@ -69,7 +78,11 @@
 //! before the launch with `MUSH_BOT_WIN_RATE_OFF names opening, reapproach,
 //! follow, lattice or all, not {word}`. Both win-rate lanes print `KNOBS:
 //! opening {wait|search}, reapproach {on|off}, follow {on|off}, lattice
-//! {on|off}` straight after the `ENGAGEMENT` line.
+//! {on|off}` straight after the `ENGAGEMENT` line. Cut AO.3: the variable
+//! names knobs to fly off, and the line is the value flown: the shipped
+//! default (`Settings::default()`) less what it names, so a knob shipped off
+//! is flown off, and printed `off`, whether named or not (the offline
+//! `the_knobs_line_is_the_flown_value`).
 //!
 //! **The lead's reading** (cut AL.3; the rig's `reading` over the kept
 //! transcript and the report): first `ENGAGEMENT: {e}; flown {stance} {k}, …
@@ -110,6 +123,10 @@ async fn arena_win_rate_over_ten_matches() {
         std::env::var_os(arena_rig::KNOBS_OFF_ENV).map(|v| v.to_string_lossy().into_owned());
     let off = arena_rig::knobs_off(off_value.as_deref());
     let extra = arena_rig::extra(flying, &off);
+    // Cut AO.3: the knobs as flown, kept beside the transcript and report
+    // (when the run is kept) so a pool can refuse runs flown differently.
+    let knobs = arena_rig::knobs_line(&off);
+    arena_rig::keep_knobs("win-rate", &knobs);
     let posed = arena_rig::fly_lane(&arena_rig::LanePlan {
         name: "win-rate",
         matches: MATCHES,
@@ -131,8 +148,10 @@ async fn arena_win_rate_over_ten_matches() {
     if let Some(head) = lines.first() {
         println!("{head}");
     }
-    println!("{}", arena_rig::knobs_line(&off));
-    println!("{}", posed.outcome().line("WIN RATE", MATCHES));
+    println!("{knobs}");
+    for line in arena_rig::win_rate_lines(&posed.outcome(), "WIN RATE", MATCHES) {
+        println!("{line}");
+    }
     let unposed = posed.unposed();
     for flown in posed.flown() {
         let flagged = flown["match"]
@@ -577,10 +596,11 @@ fn the_knob_variable_reads_and_refuses() {
     .expect("the [arena] table");
     assert_eq!(read.knobs(), mush_bot::arena::pilot::Knobs::off());
     assert!(!read.lattice);
-    // The `KNOBS` line.
+    // The `KNOBS` line, the value flown (cut AO.3: the re-approach ships
+    // off, so it reads `off` whether named or not).
     assert_eq!(
         knobs_line(&none),
-        "KNOBS: opening wait, reapproach on, follow on, lattice on"
+        "KNOBS: opening wait, reapproach off, follow on, lattice on"
     );
     assert_eq!(
         knobs_line(&knobs_off(Some("reapproach"))),
@@ -592,7 +612,7 @@ fn the_knob_variable_reads_and_refuses() {
     );
     assert_eq!(
         knobs_line(&knobs_off(Some("follow,lattice"))),
-        "KNOBS: opening wait, reapproach on, follow off, lattice off"
+        "KNOBS: opening wait, reapproach off, follow off, lattice off"
     );
     assert_eq!(
         knobs_line(&all),
@@ -657,4 +677,181 @@ fn the_knob_variable_reads_and_refuses() {
             "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0, inward 0, room holds 0, return room holds 0, gave up 0, benched 0"
         )
     );
+}
+
+/// **The lanes print the interval** (cut AO.3): for a hand-written report,
+/// the two figure lines each lane prints, through the helpers the lanes call
+/// (`Outcome::from_report`, then the rig's `win_rate_lines`, which is the
+/// `WIN RATE` line and `interval_line` over `Outcome::total`): the posed
+/// lane's under `WIN RATE`, the muster lane's under `WIN RATE FROM THE
+/// MUSTER`, each with the same `WIN RATE INTERVAL` straight after it; and a
+/// report of no matches reads `no matches`.
+#[test]
+fn the_lanes_print_the_interval() {
+    use arena_rig::{Outcome, win_rate_lines};
+    use serde_json::json;
+
+    let report = json!({"arena": {"wins": 7, "losses": 2, "draws": 0, "timeouts": 1, "other": 0,
+        "matches": []}});
+    let outcome = Outcome::from_report(&report);
+    assert_eq!(outcome.total(), 10);
+    assert_eq!(
+        win_rate_lines(&outcome, "WIN RATE", MATCHES),
+        [
+            "WIN RATE: 7 of 10 for red against one machine at 1 v 1 (lost 2, drew 0, timed out 1, other 0)",
+            "WIN RATE INTERVAL: 7 of 10, 95 per cent Wilson 40 to 89 per cent",
+        ]
+    );
+    assert_eq!(
+        win_rate_lines(&outcome, "WIN RATE FROM THE MUSTER", MATCHES),
+        [
+            "WIN RATE FROM THE MUSTER: 7 of 10 for red against one machine at 1 v 1 (lost 2, drew 0, timed out 1, other 0)",
+            "WIN RATE INTERVAL: 7 of 10, 95 per cent Wilson 40 to 89 per cent",
+        ]
+    );
+    // A short flight is counted over what it flew, not over ten.
+    let short = Outcome::from_report(&json!({"arena": {"wins": 2, "losses": 1}}));
+    assert_eq!(
+        win_rate_lines(&short, "WIN RATE", MATCHES)[1],
+        "WIN RATE INTERVAL: 2 of 3, 95 per cent Wilson 21 to 94 per cent"
+    );
+    let none = Outcome::from_report(&json!({"arena": {}}));
+    assert_eq!(
+        win_rate_lines(&none, "WIN RATE", MATCHES)[1],
+        "WIN RATE INTERVAL: no matches"
+    );
+}
+
+/// **The `KNOBS` line is the value flown** (cut AO.3): through the helpers
+/// that take the defaults (`knobs_line_from`, `extra_from`), a `Settings`
+/// whose `reapproach` is off reads `reapproach off` with nothing named, and
+/// the extra config writes nothing for it (the bot's own default flies it
+/// off); named, it is accepted and written off as before, which changes
+/// nothing; a knob still on by default is written off when named. With every
+/// default on both are byte for byte what the lanes printed and wrote
+/// before, and the public `knobs_line` and `extra` are the helpers on
+/// `Settings::default()`.
+#[test]
+fn the_knobs_line_is_the_flown_value() {
+    use std::collections::BTreeSet;
+
+    use arena_rig::{extra, extra_from, knobs_line, knobs_line_from, knobs_off};
+    use mush_bot::arena::settings::Settings;
+
+    let shipped_off = Settings {
+        reapproach: false,
+        ..Settings::default()
+    };
+    let none = BTreeSet::new();
+    let head = "\n[arena]\nlead_start_grace_ms = 5000\nengagement = \"hold\"\n";
+    assert_eq!(
+        knobs_line_from(&shipped_off, &none),
+        "KNOBS: opening wait, reapproach off, follow on, lattice on"
+    );
+    assert_eq!(extra_from(&shipped_off, "hold", &none), head);
+    // The bot reads that config with the knob off all the same.
+    let read: Settings = toml::from_str(
+        extra_from(&shipped_off, "hold", &none)
+            .trim_start()
+            .trim_start_matches("[arena]\n"),
+    )
+    .expect("the [arena] table");
+    assert_eq!(read.reapproach, shipped_off.reapproach);
+    // Named while already off: accepted, written off as any named knob is,
+    // and nothing changes (the line and what the bot reads are the same).
+    let reapproach = knobs_off(Some("reapproach"));
+    assert_eq!(
+        knobs_line_from(&shipped_off, &reapproach),
+        "KNOBS: opening wait, reapproach off, follow on, lattice on"
+    );
+    assert_eq!(
+        extra_from(&shipped_off, "hold", &reapproach),
+        format!("{head}reapproach = false\n")
+    );
+    // A knob still on by default is written off when named.
+    let lattice = knobs_off(Some("lattice"));
+    assert_eq!(
+        knobs_line_from(&shipped_off, &lattice),
+        "KNOBS: opening wait, reapproach off, follow on, lattice off"
+    );
+    assert_eq!(
+        extra_from(&shipped_off, "hold", &lattice),
+        format!("{head}lattice = false\n")
+    );
+    // The extra config and the line agree with what the bot then reads.
+    let read: Settings = toml::from_str(
+        extra_from(&shipped_off, "hold", &lattice)
+            .trim_start()
+            .trim_start_matches("[arena]\n"),
+    )
+    .expect("the [arena] table");
+    assert!(!read.lattice && !read.reapproach && read.follow_broken);
+    // Every default on (as the bot shipped before the pool): the bytes the
+    // lanes printed and wrote before.
+    let all_on = Settings {
+        opening: mush_bot::arena::settings::Opening::Wait,
+        reapproach: true,
+        follow_broken: true,
+        lattice: true,
+        ..Settings::default()
+    };
+    // All five of the old `KNOBS` pins, each named knob read off: a knob on
+    // by default and named prints `off` (the line is never the default alone).
+    for (named, line) in [
+        (
+            None,
+            "KNOBS: opening wait, reapproach on, follow on, lattice on",
+        ),
+        (
+            Some("reapproach"),
+            "KNOBS: opening wait, reapproach off, follow on, lattice on",
+        ),
+        (
+            Some("opening,reapproach"),
+            "KNOBS: opening search, reapproach off, follow on, lattice on",
+        ),
+        (
+            Some("follow,lattice"),
+            "KNOBS: opening wait, reapproach on, follow off, lattice off",
+        ),
+        (
+            Some("all"),
+            "KNOBS: opening search, reapproach off, follow off, lattice off",
+        ),
+    ] {
+        assert_eq!(
+            knobs_line_from(&all_on, &knobs_off(named)),
+            line,
+            "{named:?}"
+        );
+    }
+    assert_eq!(extra_from(&all_on, "hold", &none), head);
+    assert_eq!(
+        extra_from(&all_on, "hold", &knobs_off(Some("all"))),
+        format!(
+            "{head}opening = \"search\"\nreapproach = false\nfollow_broken = false\nlattice = \
+             false\n"
+        )
+    );
+    // The public functions are the helpers on the shipped defaults.
+    let shipped = Settings::default();
+    for named in [
+        None,
+        Some("opening"),
+        Some("reapproach"),
+        Some("follow,lattice"),
+        Some("all"),
+    ] {
+        let off = knobs_off(named);
+        assert_eq!(
+            knobs_line_from(&shipped, &off),
+            knobs_line(&off),
+            "{named:?}"
+        );
+        assert_eq!(
+            extra_from(&shipped, "hold", &off),
+            extra("hold", &off),
+            "{named:?}"
+        );
+    }
 }

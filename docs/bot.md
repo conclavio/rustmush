@@ -477,8 +477,9 @@ live; no line-mode clock is expected to beat that. What the lattice clock can
 buy at that gap is **fewer refused lines**, and fewer benches (the reading
 counts them as `benched`, below). A `ready` row read before a lattice clock's
 instant is the cockpit's frame, not the arena's acceptance, so it never pulls
-that clock earlier. Whether the lattice stays on by default is decided by the
-pooled runs. Two refusals as still
+that clock earlier. The pooled runs kept the lattice on by default: it
+refused 6.9 per cent of its `FIRE` lines against 15.9 per cent with it off,
+at the same shot gap ("From the muster, pooled", below). Two refusals as still
 cycling of one gun's own `FIRE`s inside 30 seconds put that gun back on the
 clock above for 30 seconds (`The machine_gun is off the lattice clock for 30
 s: refused twice.`). It says `Firing on the arena's lattice: phase 5 ms, round
@@ -662,7 +663,9 @@ start: at its first `CONTACTS`, a contact the cockpit names as its own side,
 or one not yet told apart within 100 m (the two sides muster at opposite ends
 of the ground), is a teammate and ends nothing.
 
-**It opens the range on a machine that out-hits it.** `help simulator` says
+**It opens the range on a machine that out-hits it** (only with `[arena]
+reapproach = true`; off by default, see "From the muster, pooled" below).
+`help simulator` says
 "Open the range past its sight and it comes after you again; let the ground
 hide you and it drives at where it last saw you". When the machine it fights
 has **stopped** (its plots show no course), is inside the stock sight, and has
@@ -738,8 +741,10 @@ before.
 
 **Its keys.** `[arena] opening = "wait"` (the default) opens as above;
 `"search"` drives for The Crossroads after five quiet seconds, as the pilot did
-before (any other word is refused). `[arena] reapproach = true` (the default)
-opens the range as above; `false` never does. `[arena] follow_broken = true`
+before (any other word is refused). `[arena] reapproach = true` opens the
+range as above; `false` (**the default**, chosen on the pooled runs below:
+the re-approach reached its wait in only 11 of 31 back-offs) never does.
+`[arena] follow_broken = true`
 (the default) follows a broken machine home as above; `false` holds and hunts
 it as before. `[arena] lattice = true` (the default) fires on the arena's
 lattice as above; `false` keeps the clock that adds a learned slack to each
@@ -906,15 +911,19 @@ the lane before it starts (`MUSH_BOT_WIN_RATE_ENGAGEMENT is hold or orbit, not
 MUSH_BOT_WIN_RATE_ENGAGEMENT=orbit cargo test -p mush-bot --test arena_win_rate -- --ignored --nocapture
 ```
 
-**The knobs it flies.** `MUSH_BOT_WIN_RATE_OFF` turns the pilot's own rules off
-for a comparison run, on either win-rate lane: a comma list of `opening`,
-`reapproach`, `follow`, `lattice` or `all` (all four), written into the bot's
-config as `[arena] opening = "search"`, `reapproach = false`, `follow_broken =
-false` and `lattice = false`; unset, all stay on. Anything else stops the lane
+**The knobs it flies.** `MUSH_BOT_WIN_RATE_OFF` names the pilot's own rules to
+fly off for a comparison run, on either win-rate lane: a comma list of
+`opening`, `reapproach`, `follow`, `lattice` or `all` (all four), written into
+the bot's config as `[arena] opening = "search"`, `reapproach = false`,
+`follow_broken = false` and `lattice = false`; unset, each flies its shipped
+default. A knob shipped off is flown off whether it is named or not (naming
+it is accepted and changes nothing); no variable turns a knob shipped off
+back on. Anything else stops the lane
 before it starts (`MUSH_BOT_WIN_RATE_OFF names opening, reapproach, follow,
 lattice or all, not …`). Both lanes print `KNOBS: opening {wait|search},
 reapproach {on|off}, follow {on|off}, lattice {on|off}` straight after the
-`ENGAGEMENT` line, and every lane's reading ends with `PILOT RULES: opening
+`ENGAGEMENT` line: the value **flown**, the shipped default less what the
+variable names. Every lane's reading ends with `PILOT RULES: opening
 {a}, off the road {b}, halt {c}, reapproach {d}, approach wait {e}, follow
 {f}, return wait {g}, lattice {h}, inward {i}, room holds {k}, return room
 holds {r}, gave up {u}, benched {n}`: how many times the pilot held near its
@@ -927,12 +936,18 @@ off the lattice clock after two refusals (`… is off the lattice clock …`),
 counted from its own `arena` sentences.
 
 ```sh
-MUSH_BOT_WIN_RATE_OFF=reapproach cargo test -p mush-bot --test arena_muster_rate -- --ignored --nocapture
+MUSH_BOT_WIN_RATE_OFF=lattice cargo test -p mush-bot --test arena_muster_rate -- --ignored --nocapture
 ```
+
+Neither lane can fly a knob shipped off on (as the re-approach now ships):
+set it in a config (`[arena] reapproach = true`) and run the bot by hand.
 
 **What it prints.** First `ENGAGEMENT: {hold|orbit}; flown hold 164 of 164
 picture records` (the stances the transcript's picture records actually flew,
-most first), then the `WIN RATE` line and one line a match, then a
+most first), then the `WIN RATE` line, straight after it `WIN RATE INTERVAL:
+{w} of {n}, 95 per cent Wilson {lo} to {hi} per cent` (`n` the matches
+counted; `WIN RATE INTERVAL: no matches` with none), and one line a match,
+then a
 reading of the transcript and the report: `FIRE GAP {gun}: p10 … / p50 … / p90
 … ms over {n} gaps` (the gaps between one gun's `FIRE` lines, each under 20 s),
 `SHOT GAP {gun}: …` (the same between the shots that left, `Firing {gun}.`, so a
@@ -942,9 +957,15 @@ hull front 205, turret front 150, …` (summed over the matches; `none`, or `no
 report` when the bot left none). The live commander lane prints the same lines
 after its match lines.
 
+**The interval.** Ten matches are a small sample: a 95 per cent Wilson
+interval on 7 of 10 runs from 40 to 89 per cent, and on 5 of 10 from 24 to
+76, so every win-rate figure is printed with its interval and no difference
+is called while two intervals overlap.
+
 **It always reports.** Set `MUSH_BOT_WIN_RATE_KEEP` to a directory and the
 run's transcript and report are kept there (`win-rate.jsonl`, `win-rate.json`)
-before anything is printed, however the run ended. When the bot left no
+before anything is printed, however the run ended, with its `KNOBS` line and a
+newline in `win-rate.knobs` beside them. When the bot left no
 report, the figure is counted from the lobby's own `Match {n} is over (…)`
 lines, and `NO REPORT: the figure is from the lobby's match-end lines.`
 follows it. A run that stopped early says so after the match lines:
@@ -1057,8 +1078,10 @@ Its `WIN RATE FROM THE MUSTER: {w} of 10 for red against one machine at 1 v 1
 (…)` is **the figure of record**; the posed lane stays as the duel benchmark.
 CI runs it only by hand too (the `bot-muster-rate` job). A run takes up to
 about two hours, under one deadline of 140 minutes; `MUSH_BOT_WIN_RATE_KEEP`
-keeps `win-rate-muster.jsonl` and `win-rate-muster.json`, and
-`MUSH_BOT_WIN_RATE_ENGAGEMENT` picks the engagement, as for the posed lane.
+keeps `win-rate-muster.jsonl`, `win-rate-muster.json` and
+`win-rate-muster.knobs`, `MUSH_BOT_WIN_RATE_ENGAGEMENT` picks the engagement
+and `MUSH_BOT_WIN_RATE_OFF` the knobs flown off, as for the posed lane, and it
+prints its `WIN RATE INTERVAL` straight after its figure.
 Each match line ends with the match's first contact, first hit taken and
 first hit scored, in whole seconds after its `Power online.` (or `none`).
 The report carries the same three times for each match (`first_contact_ms`,
@@ -1081,6 +1104,30 @@ other side. Every lane now ends its reading with three more lines:
   (`OPENING: no contact in {n} matches` when nothing was ever seen).
 - `FRONT SHARE: {f} of {h} facet hits taken on a front facet`: how much of the
   punishment the front took.
+
+**The pool.** Kept runs are read together by a fourth ignored lane in the
+same target, `arena_win_rate_pooled`. `MUSH_BOT_WIN_RATE_POOL` names the kept
+directories as a path list (separated by `;` on Windows, `:` elsewhere), and
+`MUSH_BOT_WIN_RATE_POOL_NAME` the files' stem (`win-rate-muster` by default;
+`win-rate` pools posed runs). It flies nothing. On Windows give the
+directories as Windows paths (`C:/…`): Git Bash does not translate a `/c/…`
+path inside a list.
+
+```sh
+MUSH_BOT_WIN_RATE_POOL="runs/d1;runs/d2;runs/d3" cargo test -p mush-bot --test arena_muster_rate arena_win_rate_pooled -- --ignored --nocapture
+```
+
+It prints `POOLED: {k} runs`; for each run `RUN {i}: {w} of {n}, 95 per cent
+Wilson {lo} to {hi} per cent` (or `RUN {i}: no report`) and `RUN {i}: KNOBS:
+…` (or `RUN {i}: KNOBS: unknown` when the run kept no knobs file); then
+`WIN RATE FROM THE MUSTER, POOLED: {w} of {n} …` over the summed results (`WIN
+RATE, POOLED` for posed runs), its `WIN RATE INTERVAL`, and one reading of all
+the runs from `FIRE GAP` on (no gap is counted across two runs). It stops,
+before printing anything, when a directory holds neither the transcript nor
+the report, or when two runs' known `KNOBS` lines differ: runs flown with
+different knobs are never pooled. Unset, it prints `POOL:
+MUSH_BOT_WIN_RATE_POOL is unset; nothing to pool.` and passes, so the
+`bot-muster-rate` job runs it harmlessly.
 
 The live commander lane flies from the muster too with
 `MUSH_BOT_LIVE_FROM_MUSTER=1` beside `MUSH_BOT_LIVE_COMMANDER=1` (`0` or unset
@@ -1171,6 +1218,56 @@ arena's lattice", above). Ten
 matches are a small sample (one unchanged bot read 5, 5 and 4 of 10 on the
 posed lane), so these figures are read beside the mechanism lines, never
 alone.
+
+**From the muster, pooled.** On 2026-10-02, with the opening's move in for
+room behind it, the back-offs that slant or stop at the edge and the lattice
+guard at 275 ms, the defaults were chosen on pooled runs. **The rule:** a
+behaviour stays on by default only when its own reading shows it doing its
+job and its pooled figure is not below its figure off; no difference is
+called while the intervals overlap, and at thirty matches against ten only a
+gap of about 35 points can be called. So the default rests mainly on each
+behaviour's own reading. Three runs of one build at the defaults of the day
+(every knob on) were pooled to thirty matches; the re-approach and the
+lattice clock were each flown once off; then one run at the defaults that
+resulted, and one posed duel.
+
+| run | `KNOBS` | result | 95 per cent Wilson interval | machine gun `STILL CYCLING` | machine gun `SHOT GAP` p50 | `PILOT RULES` (reapproach, approach wait, room holds, gave up, benched) |
+|---|---|---|---|---|---|---|
+| default 1 | all on | `2 of 10` (lost 8) | 6 to 51 per cent | 25 of 325 | 1 500 ms | 12, 4, 2, 0, 2 |
+| default 2 | all on | `4 of 10` (lost 6) | 17 to 69 per cent | 23 of 354 | 1 500 ms | 11, 5, 2, 0, 2 |
+| default 3 | all on | `6 of 10` (lost 4) | 31 to 83 per cent | 20 of 391 | 1 500 ms | 8, 2, 0, 0, 0 |
+| **the three pooled** | all on | **`12 of 30` (lost 18)** | **25 to 58 per cent** | 68 of 1 070 | 1 500 ms | 31, 11, 4, 0, 4 |
+| re-approach off | `reapproach off` | `3 of 10` (lost 7) | 11 to 60 per cent | 26 of 363 | 1 500 ms | 0, 0, 0, 0, 3 |
+| lattice off | `lattice off` | `3 of 10` (lost 7) | 11 to 60 per cent | 78 of 474 | 1 500 ms | 11, 5, 0, 0, 0 |
+| as now shipped (re-approach off) | `reapproach off` | `3 of 10` (lost 7) | 11 to 60 per cent | 20 of 337 | 1 500 ms | 0, 0, 0, 0, 2 |
+| posed duel, as now shipped | `reapproach off` | `8 of 10` (lost 2) | 49 to 94 per cent | 24 of 510 | 1 500 ms | 0, 0, 0, 0, 2 |
+
+No run's interval lies wholly above or below another's, so no win-rate
+difference is called. What the readings showed:
+
+- **The re-approach** began 31 times in the thirty pooled matches and reached
+  its wait at 650 m 11 times: under the half its rule asks for. Four more
+  stopped where the ground behind ran out (`No room behind: …`) and none gave
+  up at its minute, so the raised bound covers the drive; of the other 16, 15
+  were still in force when the match ended (6 won, 9 lost) and 1 ended when
+  the machine drove away and was followed. It is **off by default** (`[arena] reapproach = false`) and
+  stays a key.
+- **The lattice clock** had 92 of its 1 342 `FIRE` lines (both guns) refused
+  as still cycling, 6.9 per cent, against 94 of 590, 15.9 per cent, with it
+  off, at the same machine-gun shot gap (a median of 1 500 ms both ways). It
+  was benched 4 times in thirty matches, against 22 to 36 a run with the
+  175 ms guard. It stays **on by default**.
+- **The move in** ran in every match (`inward` 10 a run). The pilot still saw
+  the machine first in every match (`SEEN FIRST: contact before hit 30 … of 30
+  matches; lead p10 11 / p50 12 / p90 13 s`), but the machine now came into
+  sight about 137 s after power online (`OPENING: first contact p10 136 / p50
+  137 / p90 138 s … over 30 matches; first hit taken p50 150 s`), about 21 s
+  sooner than from the hold near the entry (158 s), because the hold is now
+  235 m nearer the other side's entry. Every facet hit still
+  struck a front one (`FRONT SHARE: 1253 of 1253`).
+
+The defaults that result: `opening = "wait"`, `reapproach = false`,
+`follow_broken = true`, `lattice = true`.
 
 **From a goal.** A plain `--goal` can hand the character to the pilot: the goal
 model may answer with the action `arena` and a `side` (`red` or `blue`, in any

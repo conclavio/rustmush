@@ -27,6 +27,13 @@
 //! deadline for the whole flight, and a result ([`Posed`]) that always holds
 //! what there is to print and keep, however the flight ended.
 //!
+//! **The pooled measure** (cut AO.3): every win-rate figure is printed with a
+//! 95 per cent Wilson interval ([`interval_line`]); the `KNOBS` line is the
+//! value flown, read from the shipped defaults ([`knobs_flown`]) and kept
+//! beside each kept run ([`keep_knobs`]); and kept runs are read together
+//! ([`reading_of`], [`pool_lines`]), refusing runs flown with different
+//! knobs.
+//!
 //! **The one cross-crate state-slot site** of the bot's tests is in [`boot`]: the
 //! account oracle installed into its module-state slot after composition, as
 //! every simulator lens does, because a simulator slot belongs to an ACCOUNT
@@ -1134,44 +1141,122 @@ pub fn knobs_off(value: Option<&str>) -> BTreeSet<&'static str> {
     off
 }
 
+/// **One knob as a flight flies it** (cut AO.3): its word in [`KNOBS`], the
+/// `[arena]` line that turns it off, whether the shipped default has it on,
+/// whether the flight names it off, and whether this flight has it on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlownKnob {
+    pub knob: &'static str,
+    pub off_line: &'static str,
+    pub default_on: bool,
+    pub named: bool,
+    pub on: bool,
+}
+
+/// **The knobs as flown** (cut AO.3), in [`KNOBS`]' order: each knob's
+/// shipped default read from `defaults` (`opening` on when it is `wait`;
+/// `reapproach`, `follow_broken` and `lattice` as they stand), less what
+/// `off` names. A knob whose default is already off is flown off whether
+/// named or not. The one helper both [`knobs_line_from`] and [`extra_from`]
+/// read, so the `KNOBS` line and the config a lane writes never disagree.
+pub fn knobs_flown(
+    defaults: &mush_bot::arena::settings::Settings,
+    off: &BTreeSet<&str>,
+) -> [FlownKnob; 4] {
+    use mush_bot::arena::settings::Opening;
+    let knob = |knob: &'static str, off_line: &'static str, default_on: bool| FlownKnob {
+        knob,
+        off_line,
+        default_on,
+        named: off.contains(knob),
+        on: default_on && !off.contains(knob),
+    };
+    [
+        knob(
+            "opening",
+            "opening = \"search\"\n",
+            defaults.opening == Opening::Wait,
+        ),
+        knob("reapproach", "reapproach = false\n", defaults.reapproach),
+        knob("follow", "follow_broken = false\n", defaults.follow_broken),
+        knob("lattice", "lattice = false\n", defaults.lattice),
+    ]
+}
+
 /// **The bot's extra config** for the engagement `e` (cut AL.3): the lanes'
 /// 5 s start grace, and `[arena] engagement`; and (cut AN.2) `opening =
 /// "search"` and `reapproach = false`, (cut AN.3) `follow_broken = false`
 /// and `lattice = false` for the knobs `off` names, in that order. With none
-/// named it is byte for byte what it was.
+/// named it is byte for byte what it was. [`extra_from`] on the shipped
+/// defaults (`Settings::default()`, cut AO.3).
 pub fn extra(e: &str, off: &BTreeSet<&str>) -> String {
+    extra_from(&mush_bot::arena::settings::Settings::default(), e, off)
+}
+
+/// [`extra`] on the defaults of the caller's (cut AO.3), through
+/// [`knobs_flown`]: each named knob's line turning it off, as before,
+/// whatever its default. A knob whose default is already off is written off
+/// too when named, which changes nothing (the bot's own default flies it
+/// off), and gets no line when not named (it is flown off all the same).
+/// The bytes depend only on what is named, so they are what [`extra`] wrote
+/// before whatever the defaults.
+pub fn extra_from(
+    defaults: &mush_bot::arena::settings::Settings,
+    e: &str,
+    off: &BTreeSet<&str>,
+) -> String {
     let mut extra = format!("\n[arena]\nlead_start_grace_ms = 5000\nengagement = \"{e}\"\n");
-    if off.contains("opening") {
-        extra.push_str("opening = \"search\"\n");
-    }
-    if off.contains("reapproach") {
-        extra.push_str("reapproach = false\n");
-    }
-    if off.contains("follow") {
-        extra.push_str("follow_broken = false\n");
-    }
-    if off.contains("lattice") {
-        extra.push_str("lattice = false\n");
+    for flown in knobs_flown(defaults, off) {
+        if flown.named {
+            extra.push_str(flown.off_line);
+        }
     }
     extra
 }
 
 /// **The `KNOBS` line** both win-rate lanes print after `ENGAGEMENT` (cut
 /// AN.2; cut AN.3): `KNOBS: opening {wait|search}, reapproach {on|off},
-/// follow {on|off}, lattice {on|off}`.
+/// follow {on|off}, lattice {on|off}`. Cut AO.3: the value **flown**, the
+/// shipped default (`Settings::default()`) less what `off` names
+/// ([`knobs_line_from`]).
 pub fn knobs_line(off: &BTreeSet<&str>) -> String {
-    let on_off = |knob: &str| if off.contains(knob) { "off" } else { "on" };
+    knobs_line_from(&mush_bot::arena::settings::Settings::default(), off)
+}
+
+/// [`knobs_line`] on the defaults of the caller's (cut AO.3), through
+/// [`knobs_flown`]. While every default is on this is byte for byte what
+/// [`knobs_line`] printed before.
+pub fn knobs_line_from(
+    defaults: &mush_bot::arena::settings::Settings,
+    off: &BTreeSet<&str>,
+) -> String {
+    let [opening, reapproach, follow, lattice] = knobs_flown(defaults, off);
+    let on_off = |flown: FlownKnob| if flown.on { "on" } else { "off" };
     format!(
         "KNOBS: opening {}, reapproach {}, follow {}, lattice {}",
-        if off.contains("opening") {
-            "search"
-        } else {
-            "wait"
-        },
-        on_off("reapproach"),
-        on_off("follow"),
-        on_off("lattice")
+        if opening.on { "wait" } else { "search" },
+        on_off(reapproach),
+        on_off(follow),
+        on_off(lattice)
     )
+}
+
+/// The file a lane keeps its `KNOBS` line in, beside its transcript and
+/// report (cut AO.3): `{stem}.knobs`.
+pub fn knobs_file(stem: &str) -> String {
+    format!("{stem}.knobs")
+}
+
+/// **Keep the `KNOBS` line** (cut AO.3): when [`KEEP_ENV`] names a
+/// directory, write `line` and a newline to [`knobs_file`]`(stem)` there,
+/// so a pool of kept runs ([`pool_lines`]) can refuse runs flown with
+/// different knobs. Nothing is written, and nothing panics, otherwise.
+pub fn keep_knobs(stem: &str, line: &str) {
+    if let Some(keep) = std::env::var_os(KEEP_ENV) {
+        let keep = PathBuf::from(keep);
+        let _ = std::fs::create_dir_all(&keep);
+        let _ = std::fs::write(keep.join(knobs_file(stem)), format!("{line}\n"));
+    }
 }
 
 /// What a lane flies (cut AK.3's posed plan, generalised in cut AN.1): the
@@ -1325,6 +1410,68 @@ impl Outcome {
             self.won, self.lost, self.drew, self.timed_out, self.other
         )
     }
+
+    /// **Every match counted** (cut AO.3): won, lost, drew, timed out and
+    /// other together, the `n` of [`interval_line`].
+    pub fn total(&self) -> u64 {
+        self.won + self.lost + self.drew + self.timed_out + self.other
+    }
+
+    /// Two outcomes' columns summed (cut AO.3; the pool's figure).
+    pub fn plus(self, other: Outcome) -> Outcome {
+        Outcome {
+            won: self.won + other.won,
+            lost: self.lost + other.lost,
+            drew: self.drew + other.drew,
+            timed_out: self.timed_out + other.timed_out,
+            other: self.other + other.other,
+        }
+    }
+}
+
+/// **A 95 per cent Wilson interval** on `wins` of `n` (cut AO.3), in whole
+/// per cent: with `z` = 1.96, `p = wins / n`, `d = 1 + z² / n`, `c = p + z² /
+/// (2n)` and `s = z × √(p(1 − p) / n + z² / (4n²))`, the bounds are `(c − s) /
+/// d` and `(c + s) / d`, each clamped to `[0, 1]` and rounded half away from
+/// zero. `None` for `n = 0`. Ten matches cannot tell 7 of 10 from 5 of 10
+/// (40 to 89 per cent against 24 to 76), so every win-rate figure is printed
+/// with it and no difference is called while two intervals overlap.
+pub fn wilson_95(wins: u64, n: u64) -> Option<(u32, u32)> {
+    const Z: f64 = 1.96;
+    if n == 0 {
+        return None;
+    }
+    // Counts of matches: far inside f64's exact integers.
+    let n = n as f64;
+    let p = wins as f64 / n;
+    let z2 = Z * Z;
+    let d = 1.0 + z2 / n;
+    let c = p + z2 / (2.0 * n);
+    let s = Z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt();
+    let per_cent = |bound: f64| ((bound / d).clamp(0.0, 1.0) * 100.0).round() as u32;
+    Some((per_cent(c - s), per_cent(c + s)))
+}
+
+/// **The `WIN RATE INTERVAL` line** (cut AO.3), printed straight after every
+/// `WIN RATE` line: `WIN RATE INTERVAL: {w} of {n}, 95 per cent Wilson {lo}
+/// to {hi} per cent` ([`wilson_95`]), or `WIN RATE INTERVAL: no matches`.
+pub fn interval_line(wins: u64, n: u64) -> String {
+    match wilson_95(wins, n) {
+        Some((lo, hi)) => {
+            format!("WIN RATE INTERVAL: {wins} of {n}, 95 per cent Wilson {lo} to {hi} per cent")
+        }
+        None => "WIN RATE INTERVAL: no matches".to_owned(),
+    }
+}
+
+/// **A lane's two figure lines** (cut AO.3): `outcome`'s
+/// [`Outcome::line`] under `head` of `of`, then its [`interval_line`] over
+/// [`Outcome::total`]. Both win-rate lanes print these.
+pub fn win_rate_lines(outcome: &Outcome, head: &str, of: usize) -> [String; 2] {
+    [
+        outcome.line(head, of),
+        interval_line(outcome.won, outcome.total()),
+    ]
 }
 
 /// The match id of a `Match {n} is over (` line whose needle begins at the end
@@ -1638,11 +1785,61 @@ pub type FirstTimes = (Option<u64>, Option<u64>, Option<u64>);
 
 /// **Read a lane's flight** (cut AL.3): `transcript` is the raw JSON-lines
 /// transcript (a torn line, the last one above all, is skipped), `report` the
-/// bot's report when it left one.
+/// bot's report when it left one. Cut AO.3: [`reading_of`] over this one run,
+/// its lines byte for byte what they were.
 pub fn reading(transcript: &str, report: Option<&serde_json::Value>) -> Reading {
+    reading_of(&[(transcript, report)])
+}
+
+/// How far apart [`reading_of`] sets two kept runs' clocks (cut AO.3), in
+/// milliseconds: 10¹², about 31 years, so every gap that spans two runs is
+/// far past `FIRE_GAP_WINDOW_MS` and is dropped.
+pub const POOL_RUN_OFFSET_MS: u64 = 1_000_000_000_000;
+
+/// **Read several kept runs as one** (cut AO.3; the pool lane's reading):
+/// each `(transcript, report)` read as [`reading`] reads one, run `k`'s times
+/// (`lane_ms` of its sends, `elapsed_ms` of its observations) offset by `k ×`
+/// [`POOL_RUN_OFFSET_MS`], so no gap spans two runs. The stances, picture
+/// records, `FIRE` lines, still-cycling counts and [`PilotRules`] are summed;
+/// the facets are summed (`None` only when no run has a report); the first
+/// times are concatenated in run order (`None` only when no run has a
+/// report).
+pub fn reading_of(runs: &[(&str, Option<&serde_json::Value>)]) -> Reading {
     let mut reading = Reading::default();
     let mut sends: Vec<(u64, String)> = Vec::new();
     let mut acks: Vec<(u64, String)> = Vec::new();
+    let mut facets: Option<BTreeMap<String, u32>> = None;
+    let mut firsts: Option<Vec<FirstTimes>> = None;
+    for (k, (transcript, report)) in runs.iter().enumerate() {
+        let offset = u64::try_from(k)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(POOL_RUN_OFFSET_MS);
+        read_run(&mut reading, &mut sends, &mut acks, transcript, offset);
+        if let Some(report) = report {
+            add_facets(facets.get_or_insert_with(BTreeMap::new), report);
+            firsts
+                .get_or_insert_with(Vec::new)
+                .extend(first_times(report));
+        }
+    }
+    reading.gaps =
+        mush_bot::arena::report::fire_gaps(sends.iter().map(|(at, line)| (*at, line.as_str())));
+    reading.shots =
+        mush_bot::arena::report::shot_gaps(acks.iter().map(|(at, line)| (*at, line.as_str())));
+    reading.facets = facets;
+    reading.firsts = firsts;
+    reading
+}
+
+/// One run's transcript into `reading`'s counts, and its sends and `Firing`
+/// acks (each at its time plus `offset`) into `sends` and `acks`.
+fn read_run(
+    reading: &mut Reading,
+    sends: &mut Vec<(u64, String)>,
+    acks: &mut Vec<(u64, String)>,
+    transcript: &str,
+    offset: u64,
+) {
     for line in transcript.lines() {
         let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
@@ -1667,7 +1864,7 @@ pub fn reading(transcript: &str, report: Option<&serde_json::Value>) -> Reading 
                 {
                     *reading.fire_lines.entry(weapon.to_owned()).or_default() += 1;
                 }
-                sends.push((at, sent.to_owned()));
+                sends.push((at.saturating_add(offset), sent.to_owned()));
             }
             Some("arena") => {
                 if let Some(text) = record["data"].as_str() {
@@ -1682,7 +1879,7 @@ pub fn reading(transcript: &str, report: Option<&serde_json::Value>) -> Reading 
                 };
                 for line in text.lines().map(str::trim) {
                     if line.starts_with("Firing ") {
-                        acks.push((at, line.to_owned()));
+                        acks.push((at.saturating_add(offset), line.to_owned()));
                     }
                     if let Some((weapon, said)) = line
                         .strip_prefix("FIRE ")
@@ -1696,48 +1893,46 @@ pub fn reading(transcript: &str, report: Option<&serde_json::Value>) -> Reading 
             _ => {}
         }
     }
-    reading.gaps =
-        mush_bot::arena::report::fire_gaps(sends.iter().map(|(at, line)| (*at, line.as_str())));
-    reading.shots =
-        mush_bot::arena::report::shot_gaps(acks.iter().map(|(at, line)| (*at, line.as_str())));
-    reading.facets = report.map(|report| {
-        let mut facets: BTreeMap<String, u32> = BTreeMap::new();
-        let matches = report["arena"]["matches"]
-            .as_array()
-            .map_or(&[][..], Vec::as_slice);
-        for flown in matches {
-            let Some(split) = flown["hits_taken_by_facet"].as_object() else {
+}
+
+/// A report's `arena.matches[*].hits_taken_by_facet` added into `facets`
+/// (a zero or unreadable count adds nothing).
+fn add_facets(facets: &mut BTreeMap<String, u32>, report: &serde_json::Value) {
+    let matches = report["arena"]["matches"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    for flown in matches {
+        let Some(split) = flown["hits_taken_by_facet"].as_object() else {
+            continue;
+        };
+        for (key, count) in split {
+            let count = count
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0);
+            if count == 0 {
                 continue;
-            };
-            for (key, count) in split {
-                let count = count
-                    .as_u64()
-                    .and_then(|n| u32::try_from(n).ok())
-                    .unwrap_or(0);
-                if count == 0 {
-                    continue;
-                }
-                let total = facets.entry(key.clone()).or_default();
-                *total = total.saturating_add(count);
             }
+            let total = facets.entry(key.clone()).or_default();
+            *total = total.saturating_add(count);
         }
-        facets
-    });
-    reading.firsts = report.map(|report| {
-        report["arena"]["matches"]
-            .as_array()
-            .map_or(&[][..], Vec::as_slice)
-            .iter()
-            .map(|flown| {
-                (
-                    flown["first_contact_ms"].as_u64(),
-                    flown["first_hit_taken_ms"].as_u64(),
-                    flown["first_hit_scored_ms"].as_u64(),
-                )
-            })
-            .collect()
-    });
-    reading
+    }
+}
+
+/// A report's matches' first times, in the report's order.
+fn first_times(report: &serde_json::Value) -> Vec<FirstTimes> {
+    report["arena"]["matches"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .map(|flown| {
+            (
+                flown["first_contact_ms"].as_u64(),
+                flown["first_hit_taken_ms"].as_u64(),
+                flown["first_hit_scored_ms"].as_u64(),
+            )
+        })
+        .collect()
 }
 
 /// **Percentiles in whole seconds** (cut AN.1): the 10th, 50th and 90th of
@@ -1957,4 +2152,148 @@ impl Reading {
         lines.push(self.rules.line());
         lines
     }
+}
+
+// ---------------------------------------------------------------------------
+// Cut AO.3: the pool (kept runs read together into one figure and one
+// reading).
+// ---------------------------------------------------------------------------
+
+/// The variable naming the kept directories a pool reads (cut AO.3), split
+/// as `std::env::split_paths` splits a path list (`;` on Windows, `:`
+/// elsewhere).
+pub const POOL_ENV: &str = "MUSH_BOT_WIN_RATE_POOL";
+/// The variable setting the kept files' stem a pool reads (cut AO.3):
+/// [`POOL_STEM`] by default; `win-rate` pools posed runs.
+pub const POOL_NAME_ENV: &str = "MUSH_BOT_WIN_RATE_POOL_NAME";
+/// The muster lane's stem, the pool's default (cut AO.3).
+pub const POOL_STEM: &str = "win-rate-muster";
+/// What the pool lane prints, and passes on, with [`POOL_ENV`] unset.
+pub const POOL_UNSET: &str = "POOL: MUSH_BOT_WIN_RATE_POOL is unset; nothing to pool.";
+/// A kept run's knobs when it left no [`knobs_file`].
+pub const KNOBS_UNKNOWN: &str = "KNOBS: unknown";
+
+/// **One kept run** (cut AO.3): its directory and what it holds of
+/// `{stem}.jsonl` (the raw transcript), `{stem}.json` (whether the file is
+/// there, and the report when it reads as JSON) and `{stem}.knobs` (its
+/// first line, when not empty).
+#[derive(Clone, Debug, Default)]
+pub struct KeptRun {
+    pub dir: PathBuf,
+    pub transcript: Option<String>,
+    pub report_file: bool,
+    pub report: Option<serde_json::Value>,
+    pub knobs: Option<String>,
+}
+
+impl KeptRun {
+    /// The run's `KNOBS` line, or [`KNOBS_UNKNOWN`].
+    pub fn knobs_line(&self) -> String {
+        self.knobs
+            .clone()
+            .unwrap_or_else(|| KNOBS_UNKNOWN.to_owned())
+    }
+}
+
+/// **Read the kept runs** (cut AO.3) in `dirs`, each by `stem`. Panics,
+/// naming every such directory, when one holds neither `{stem}.jsonl` nor
+/// `{stem}.json`: a pool never silently reads a run that is not there.
+pub fn read_kept(dirs: &[PathBuf], stem: &str) -> Vec<KeptRun> {
+    let runs: Vec<KeptRun> = dirs
+        .iter()
+        .map(|dir| {
+            let report_text = std::fs::read_to_string(dir.join(format!("{stem}.json"))).ok();
+            KeptRun {
+                dir: dir.clone(),
+                transcript: std::fs::read_to_string(dir.join(format!("{stem}.jsonl"))).ok(),
+                report_file: report_text.is_some(),
+                report: report_text
+                    .as_deref()
+                    .and_then(|text| serde_json::from_str(text).ok()),
+                knobs: std::fs::read_to_string(dir.join(knobs_file(stem)))
+                    .ok()
+                    .and_then(|text| text.lines().next().map(|line| line.trim().to_owned()))
+                    .filter(|line| !line.is_empty()),
+            }
+        })
+        .collect();
+    let empty: Vec<String> = runs
+        .iter()
+        .filter(|run| run.transcript.is_none() && !run.report_file)
+        .map(|run| run.dir.display().to_string())
+        .collect();
+    assert!(
+        empty.is_empty(),
+        "POOL: no {stem}.jsonl and no {stem}.json in {}",
+        empty.join("; ")
+    );
+    runs
+}
+
+/// **Refuse runs flown with different knobs** (cut AO.3): panics, naming
+/// both runs' directories and lines, when two runs' known `KNOBS` lines
+/// differ. A run with no knobs file ([`KNOBS_UNKNOWN`]) is not compared.
+pub fn check_knobs(runs: &[KeptRun]) {
+    let mut known = runs
+        .iter()
+        .filter_map(|run| run.knobs.as_ref().map(|line| (run, line)));
+    let Some((first, line)) = known.next() else {
+        return;
+    };
+    if let Some((other, theirs)) = known.find(|(_, theirs)| *theirs != line) {
+        panic!(
+            "POOL: the kept runs were flown with different knobs: {} has `{line}`, {} has `{theirs}`",
+            first.dir.display(),
+            other.dir.display()
+        );
+    }
+}
+
+/// The pool's figure head for `stem` (cut AO.3): `WIN RATE FROM THE MUSTER,
+/// POOLED` for the muster lane's runs ([`POOL_STEM`]), `WIN RATE, POOLED`
+/// for any other (the posed lane's `win-rate`).
+pub fn pool_head(stem: &str) -> &'static str {
+    if stem == POOL_STEM {
+        "WIN RATE FROM THE MUSTER, POOLED"
+    } else {
+        "WIN RATE, POOLED"
+    }
+}
+
+/// **The pool's lines** (cut AO.3), in order: `POOLED: {k} runs`; for each
+/// run `RUN {i}: {w} of {n}, 95 per cent Wilson {lo} to {hi} per cent` (from
+/// its report; `RUN {i}: no matches` for a report of none) or `RUN {i}: no
+/// report`, then `RUN {i}: {its KNOBS line}` or `RUN {i}: KNOBS: unknown`;
+/// the summed [`Outcome::line`] under [`pool_head`] of the summed
+/// [`Outcome::total`]; its [`interval_line`]; and [`reading_of`]'s lines from
+/// `FIRE GAP` on (its `ENGAGEMENT` head left out). [`check_knobs`] runs
+/// first, so a refused pool prints nothing.
+pub fn pool_lines(runs: &[KeptRun], stem: &str) -> Vec<String> {
+    check_knobs(runs);
+    let mut lines = vec![format!("POOLED: {} runs", runs.len())];
+    let mut pooled = Outcome::default();
+    for (i, run) in runs.iter().enumerate() {
+        let i = i + 1;
+        match &run.report {
+            Some(report) => {
+                let outcome = Outcome::from_report(report);
+                pooled = pooled.plus(outcome);
+                let interval = interval_line(outcome.won, outcome.total());
+                let figure = interval
+                    .strip_prefix("WIN RATE INTERVAL: ")
+                    .unwrap_or(&interval);
+                lines.push(format!("RUN {i}: {figure}"));
+            }
+            None => lines.push(format!("RUN {i}: no report")),
+        }
+        lines.push(format!("RUN {i}: {}", run.knobs_line()));
+    }
+    let of = usize::try_from(pooled.total()).unwrap_or(usize::MAX);
+    lines.extend(win_rate_lines(&pooled, pool_head(stem), of));
+    let kept: Vec<(&str, Option<&serde_json::Value>)> = runs
+        .iter()
+        .map(|run| (run.transcript.as_deref().unwrap_or(""), run.report.as_ref()))
+        .collect();
+    lines.extend(reading_of(&kept).lines("pooled").into_iter().skip(1));
+    lines
 }

@@ -44,9 +44,12 @@
 //! either way", and "Stop before you are found". So `opening = "wait"` (the
 //! default) holds stopped near the own entry, off the road, until a hostile is
 //! in sight, and `"search"` drives for The Crossroads as the pilot did before;
-//! `reapproach = true` (the default) backs away past a stopped machine's sight
-//! when it out-hits the pilot, then waits for it to come on. Any other
-//! `opening` word is refused when the table is read.
+//! `reapproach = true` backs away past a stopped machine's sight when it
+//! out-hits the pilot, then waits for it to come on. **`reapproach` is off by
+//! default** (cut AO.3): on thirty pooled matches from the muster only 11 of
+//! its 31 back-offs reached their wait (its own reading had to show at least
+//! half), so it ships off and stays a key. Any other `opening` word is
+//! refused when the table is read.
 //!
 //! **`follow_broken` and `lattice`** (cut AN.3; [`super::pilot`]'s and
 //! [`super::picture`]'s module heads have the rules): `help simulator` says a
@@ -142,7 +145,8 @@ pub struct Settings {
     /// (cut AN.2).
     pub opening: Opening,
     /// Back away past a stopped machine's sight when it out-hits the pilot,
-    /// then wait for it to come on (cut AN.2; on by default).
+    /// then wait for it to come on (cut AN.2; off by default since cut AO.3:
+    /// the module head says why).
     pub reapproach: bool,
     /// Follow a hurt machine driving away home from behind, never into its
     /// entry zone, then wait for its return (cut AN.3; on by default).
@@ -180,7 +184,7 @@ impl Default for Settings {
             band_m: 450,
             engagement: Engagement::Hold,
             opening: Opening::Wait,
-            reapproach: true,
+            reapproach: false,
             follow_broken: true,
             lattice: true,
             step_timeout_ms: 15_000,
@@ -405,17 +409,23 @@ mod tests {
 
     /// **The knobs** (cut AN.2): `opening` reads `wait` and `search` and
     /// refuses any other word, `reapproach` reads a boolean, the defaults are
-    /// `wait` and `true` (the pilot's [`Knobs::on`]), and [`Settings::knobs`]
-    /// says what the table says.
+    /// `wait` and (cut AO.3) `false` (the pilot's [`Knobs::on`] with the
+    /// re-approach off), and [`Settings::knobs`] says what the table says.
     #[test]
     fn the_knobs_read_and_refuse() {
         use super::{Knobs, Opening};
+        let shipped = Knobs {
+            reapproach: false,
+            ..Knobs::on()
+        };
         let defaults = Settings::default();
         assert_eq!(defaults.opening, Opening::Wait);
-        assert!(defaults.reapproach);
-        assert_eq!(defaults.knobs(), Knobs::on());
+        assert!(!defaults.reapproach);
+        assert_eq!(defaults.knobs(), shipped);
         let read: Settings = toml::from_str("").expect("a table");
-        assert_eq!(read.knobs(), Knobs::on(), "left out: the defaults");
+        assert_eq!(read.knobs(), shipped, "left out: the defaults");
+        let read: Settings = toml::from_str("reapproach = true\n").expect("a table");
+        assert_eq!(read.knobs(), Knobs::on(), "the re-approach is still a key");
         // Cut AN.3: `Knobs::off` is the follow off too.
         let read: Settings =
             toml::from_str("opening = \"search\"\nreapproach = false\nfollow_broken = false\n")
@@ -445,8 +455,10 @@ mod tests {
         assert!(defaults.lattice);
         let read: Settings = toml::from_str("").expect("a table");
         assert!(read.follow_broken && read.lattice, "left out: on");
+        // Cut AO.3: the re-approach is set here, since its default is off.
         let read: Settings =
-            toml::from_str("follow_broken = false\nlattice = false\n").expect("a table");
+            toml::from_str("reapproach = true\nfollow_broken = false\nlattice = false\n")
+                .expect("a table");
         assert!(!read.follow_broken && !read.lattice);
         assert_eq!(
             read.knobs(),
