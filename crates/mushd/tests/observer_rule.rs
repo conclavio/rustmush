@@ -6536,7 +6536,16 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
 
     // ---- (1) in flight, nothing --------------------------------------------
     let mut hit = false;
-    for _ in 0..4 {
+    // 16b cut AP.1 (16c `B-86`): `WEAPONSTATUS` reads the last frame's countdown
+    // aged by the wall clock, so its `ready` is the wall's and not the arena's
+    // ready frame. A pulse capped by `max_catch_up_steps` under load leaves the
+    // arena behind the wall, and a `FIRE` forwarded on the wall's `ready` can then
+    // meet the arena's own `Still cycling` a pulse later — a shot not taken, which
+    // is waited out and typed again, apart from the four. Every other refusal is
+    // still a failure.
+    let mut shots = 0;
+    let mut cycling = 0;
+    while shots < 4 {
         wait_until(STEP_TIMEOUT, "the rack to be ready", async || {
             ask_whole(&mut bo, "WEAPONSTATUS")
                 .await
@@ -6549,14 +6558,28 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
         bo.send_line("FIRE missiles").await;
         bo.expect_after(shot, "Firing missiles.").await;
         let outcome = bo
-            .expect_one_of_after(shot, &["Hit on RA", "Miss on RA", "refused"])
+            .expect_one_of_after(
+                shot,
+                &["Hit on RA", "Miss on RA", "Still cycling", "refused"],
+            )
             .await;
         assert_ne!(
             outcome,
-            2,
+            3,
             "the rack was refused: {}",
             strip_ansi(&bo.seen[shot..])
         );
+        if outcome == 2 {
+            cycling += 1;
+            assert!(
+                cycling <= 4,
+                "the arena refused the rack for its cycle {cycling} times after the \
+                 cockpit read it ready: {}",
+                strip_ansi(&bo.seen[shot..])
+            );
+        } else {
+            shots += 1;
+        }
         o1_drain(&mut ada).await;
         let told = ae2_told(&strip_ansi(&ada.seen[from..]));
         let whole = told.join("\n");
@@ -6589,7 +6612,7 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
         }
         assert!(
             told.is_empty(),
-            "a missile that missed told its target something:\n{whole}"
+            "a missile that missed, or one the arena refused, told its target something:\n{whole}"
         );
     }
     assert!(
@@ -6613,6 +6636,24 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
         .await
         .contains("under a floor of 5000 ms")
     );
+    // 16b cut AP.1 (16c `B-86`): the `ready` above is the wall's, aged off the
+    // last frame, and can come a lattice step before the arena's ready frame;
+    // the floor's pulled-in pulse quantises down to the lattice and may stop
+    // short of the ready instant. Under the floor the cockpit reads the frame's
+    // own countdown, unaged, so this second read is `ready` only once the held
+    // frame says so — and the `FIRE` below is not refused in the cockpit against
+    // a frame the arena has already moved past. It answers at once when the
+    // ready frame is in, and at the next floored wake when it was not.
+    wait_until(
+        STEP_TIMEOUT,
+        "the ready frame under the floor",
+        async || {
+            ask_whole(&mut bo, "WEAPONSTATUS")
+                .await
+                .contains("missiles  ready")
+        },
+    )
+    .await;
     o1_drain(&mut ada).await;
     let from = ada.mark();
     let fire_mark = bo.mark();

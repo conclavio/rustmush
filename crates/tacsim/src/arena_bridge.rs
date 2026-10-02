@@ -63,7 +63,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mush_core::module::{AsyncCompletion, ModError, Registrar};
 use mush_core::{
@@ -548,6 +548,25 @@ pub struct MatchMirror {
     /// itself holds is `Clock::floor_ms`; this is the world's copy of the last
     /// set it delivered.
     pub tempo_floor_ms: Option<u32>,
+    /// **The arena millisecond a staff tempo floor was last lifted at** (16b cut
+    /// AP.1, 16c `B-86`), or `None` before the first lift and after every
+    /// floor.
+    ///
+    /// Written by [`ArenaRegistry::note_tempo_floor`] alone: a lift (`None`)
+    /// stamps it with [`MatchMirror::now_ms`] as the mirror holds it at that
+    /// moment — whether or not a floor stood, since `@arena/tempo <match>=off`
+    /// is a lift either way, and a stamp with no floor behind it only leaves the
+    /// frames already held unaged until their next — and a new floor (`Some`)
+    /// clears it. It exists for the cockpit's aged mirror
+    /// (`crate::match_::cockpit::aged_weapons`): under a floor the wall clock
+    /// runs ahead of the arena's, and a frame the pilot was sent under one
+    /// carries that same wall time with it after the lift — so a frame whose
+    /// [`CockpitFrame::arena_ms`] is at or before this stamp keeps its own
+    /// countdown, unaged, until the next frame the arena sends that pilot. A
+    /// frame goes out on a change and never for a countdown (the gun's own
+    /// ready transition is one such change), and it carries an arena time past
+    /// the lift.
+    pub floor_lifted_at_ms: Option<i64>,
     /// **The arena millisecond of the last snapshot the world wrote** (16b cut
     /// AF.2), or `None` before the first: `on_snapshot` sets it as it writes
     /// `tacsim:snapshot:<n>`, the live record carries it as its `at_ms`, and
@@ -586,6 +605,26 @@ pub struct CockpitFrame {
     /// frame through the `_held` forms with it, so a re-pushed frame carries the
     /// figures the pilot was sent. A fact about what the pilot has been told.
     pub ranges: BTreeMap<ContactId, u64>,
+    /// **The arena's own clock after the step that built this frame**,
+    /// milliseconds (16b cut AP.1, 16c `B-86`): the
+    /// [`crate::arena_task::ArenaOut::Frames`] message's `now_ms`, written by
+    /// `on_frames`. A fact about **what** the pilot was told — the cockpit reads
+    /// it against [`MatchMirror::floor_lifted_at_ms`] to tell a frame built under
+    /// a staff tempo floor from one built after its lift.
+    pub arena_ms: i64,
+    /// **The world's instant `on_frames` stored this frame** (16b cut AP.1, 16c
+    /// `B-86`): a fact about **when** the pilot was told it. The cockpit's
+    /// `FIRE` pre-check and `WEAPONSTATUS` age each weapon's countdown by the
+    /// wall time since
+    /// ([`crate::match_::cockpit::aged_weapons`]), because a frame is never
+    /// re-sent for a countdown change and a pilot must not be refused locally
+    /// for a gun that is already ready in the arena.
+    ///
+    /// A `std::time::Instant` and not an arena or world number: the world has
+    /// no millisecond clock (`World::now()` is unix seconds), and this file is
+    /// the world side of the seam — nothing under `crate::arena` reads a wall
+    /// clock, and neither field here crosses the seam or folds into any hash.
+    pub received: Instant,
 }
 
 /// **The world's registry of running matches** — the tacsim module's own state
@@ -1041,9 +1080,18 @@ impl ArenaRegistry {
     /// [`MatchMirror::tempo_floor_ms`], written by `@arena/tempo` after a
     /// successful offer and never before. A match this registry does not track
     /// is left alone.
+    ///
+    /// **16b cut AP.1** (16c `B-86`): and [`MatchMirror::floor_lifted_at_ms`]
+    /// beside it — a lift stamps the mirror's own [`MatchMirror::now_ms`], the
+    /// last arena time the world has heard, and a floor clears the stamp, so the
+    /// cockpit's aged mirror leaves a frame built under the floor unaged.
     pub fn note_tempo_floor(&mut self, match_id: MatchId, floor_ms: Option<u32>) {
         if let Some(mirror) = self.matches.get_mut(&match_id) {
             mirror.tempo_floor_ms = floor_ms;
+            mirror.floor_lifted_at_ms = match floor_ms {
+                Some(_) => None,
+                None => Some(mirror.now_ms),
+            };
         }
     }
 
@@ -1161,6 +1209,17 @@ impl ArenaRegistry {
     /// ways it ends.
     pub fn hint_starting(&mut self, pilot: ObjId, until_s: i64) {
         self.starting_hints.insert(pilot, until_s);
+    }
+
+    /// **Move that pilot's held frame's receipt back by `by`** (16b cut AP.1, 16c
+    /// `B-86`), so a test can reach a weapon's ready instant on the aged mirror
+    /// ([`CockpitFrame::received`]) without sleeping. A pilot with no frame is
+    /// left alone, and a receipt that cannot go back that far stays where it is.
+    /// Production never calls it.
+    pub fn age_last_frame(&mut self, pilot: ObjId, by: Duration) {
+        if let Some(held) = self.last_frames.get_mut(&pilot) {
+            held.received = held.received.checked_sub(by).unwrap_or(held.received);
+        }
     }
 
     /// **Whether that pilot's `STARTUP` is still outstanding** at the world second
@@ -2154,6 +2213,9 @@ fn on_frames(
     };
     let mut sent = 0_u64;
     let mut tempo = None;
+    // **16b cut AP.1** (16c `B-86`): the receipt, read once for the message and
+    // not once per pilot — every frame of one pulse was told at one moment.
+    let received = Instant::now();
     // 16b cut T.3: the arena's `Ended` carries a reason and a digest and no
     // poses, so the last pose the world saw on this feed is what a check-in
     // re-places the unit at. Recorded for every frame, whether or not its pilot
@@ -2281,6 +2343,9 @@ fn on_frames(
                     match_id,
                     frame: remembered,
                     ranges,
+                    // 16b cut AP.1: what the pilot was told, and when.
+                    arena_ms: now_ms,
+                    received,
                 },
             );
         }

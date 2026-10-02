@@ -1981,6 +1981,72 @@ pub fn frame_weapons(frame: &Frame) -> Vec<WeaponRow> {
         .collect()
 }
 
+/// **The weapon rows as the pilot may act on them now** (16b cut AP.1, 16c
+/// `B-86`): [`frame_weapons`] off the held frame, each row's countdown aged by
+/// the wall time since the world received that frame
+/// ([`CockpitFrame::received`]).
+///
+/// A frame is never re-sent for a countdown change
+/// ([`crate::arena::weapons::FrameWeapon::same_as`] leaves `ready_in_ms` out, on
+/// purpose), so the `ready_in_ms` a pilot holds is the figure at the step that
+/// built the frame, and read as it stands it refused every `FIRE` typed after the
+/// gun's true ready instant and before the ready frame landed — a pulse late on
+/// every cycle. Aged, the row reads `remaining = ready_in_ms − elapsed`, held at
+/// nought, and is `ready` once `remaining` is nought; a row that was ready stays
+/// ready. Nothing else on the row moves.
+///
+/// **`floored` leaves the rows the frame's own.** Under a staff `@arena/tempo`
+/// floor the arena moves at most `max_catch_up_steps × period` of arena time per
+/// wake of `max(period, floor)` wall time, so the wall clock runs ahead of the
+/// arena's and an aged row would forward early into the arena's own `Still
+/// cycling` refusal; a frame built under a floor since lifted carries the same
+/// wall time with it. The cockpit's `floored` answers both.
+///
+/// It is the verbs' reading and never the panel's: the keyframe
+/// ([`status_frame_held`]) carries the frame's own figures, which the TUI and the
+/// web print as they stand until the next frame — neither counts down — so a
+/// `WEAPONSTATUS` line can read `ready` beside a re-pushed panel that still
+/// reads the frame's own seconds.
+#[must_use]
+pub fn aged_weapons(held: &CockpitFrame, now: std::time::Instant, floored: bool) -> Vec<WeaponRow> {
+    let rows = frame_weapons(&held.frame);
+    if floored {
+        return rows;
+    }
+    // The saturating read: an elapsed past `i64::MAX` ms is every countdown done.
+    let elapsed =
+        i64::try_from(now.saturating_duration_since(held.received).as_millis()).unwrap_or(i64::MAX);
+    rows.into_iter()
+        .map(|row| {
+            let remaining = row.ready_in_ms.saturating_sub(elapsed).max(0);
+            WeaponRow {
+                ready: row.ready || remaining == 0,
+                ready_in_ms: remaining,
+                ..row
+            }
+        })
+        .collect()
+}
+
+/// **Whether the held frame's countdown must stay unaged** (16b cut AP.1, 16c
+/// `B-86`): a staff tempo floor stands on its match
+/// ([`crate::arena_bridge::MatchMirror::tempo_floor_ms`]), or the frame was built
+/// at or before the arena time a floor was lifted at
+/// ([`crate::arena_bridge::MatchMirror::floor_lifted_at_ms`] against
+/// [`CockpitFrame::arena_ms`]). In the second case the rows are the frame's own
+/// until the next frame, which carries an arena time past the lift. A match the
+/// registry no longer mirrors has no floor.
+fn floored(w: &World, held: &CockpitFrame) -> bool {
+    w.module_state::<ArenaRegistry>()
+        .and_then(|registry| registry.mirror(held.match_id))
+        .is_some_and(|mirror| {
+            mirror.tempo_floor_ms.is_some()
+                || mirror
+                    .floor_lifted_at_ms
+                    .is_some_and(|at| held.arena_ms <= at)
+        })
+}
+
 // ---------------------------------------------------------------------------
 // K2: `BOARD`
 // ---------------------------------------------------------------------------
@@ -4218,14 +4284,25 @@ fn spot_marker_walk(window: &serde_json::Value) -> Vec<(usize, &serde_json::Valu
 /// instead of a pulse later; the arena refuses in the same order against its own
 /// state ([`crate::arena::state::Arena::resolve_fire`]) when the mirror was stale, so
 /// a frame one pulse behind changes which half answers and never what it says.
+///
+/// **16b cut AP.1** (16c `B-86`): the cycle is the last frame's countdown aged by
+/// the wall clock since the frame was received ([`aged_weapons`]), unaged under a
+/// staff tempo floor or on a frame built under one since lifted — so a `FIRE`
+/// typed once the gun is truly ready is forwarded instead of refused locally, and
+/// the arena takes it at its next wake. A remainder above nought is still refused,
+/// in the same sentence. A `FIRE` forwarded inside the OS timer's overshoot of a
+/// wake scheduled before the ready instant can still meet the arena's own refusal
+/// a pulse later, which `help cockpit`'s "a pulse apart" paragraph already allows.
 fn fire(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
+    // 16b cut AP.1: the one wall-clock read this verb ages the mirror by.
+    let now = std::time::Instant::now();
     // 16b cut D.2 (`B-03`): a wreck fires nothing, and it is asked first — a
     // destroyed tank's weapons are gone, so every later check would answer about
     // the rack instead of about the tank.
     require_alive(ctx.w, seat.driver)?;
     let held = last_frame(ctx.w, seat.driver);
-    let weapon = choose_weapon(&carried(ctx.w, seat.unit, held.as_ref()), rest)?;
+    let weapon = choose_weapon(&carried(ctx.w, seat.unit, held.as_ref(), now), rest)?;
     // **16b cut D.2** (`B-16`): every one of these is `FIRE <weapon> refused. …`,
     // which is the sentence the arena's own refusal says a pulse later. The
     // `NoSuchWeapon` above is the one that is not: `choose_weapon` failed to find
@@ -4307,9 +4384,16 @@ fn contacts(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
 /// **16b cut W.1 made the numbers live**: they come off the arena's own frame, which
 /// is the single writer of the cycle and the rounds while a match runs, and carry the
 /// band of the platform's lock where there is one.
+///
+/// **16b cut AP.1** (16c `B-86`): and each cycle is aged by the wall clock since the
+/// frame was received ([`aged_weapons`]), so `cannon  cycling (1 s)` counts down to
+/// `cannon  ready` between frames. The keyframe re-pushed beside the lines is the
+/// frame's own, unaged.
 fn weapon_status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
+    // 16b cut AP.1: read once, at the top of the verb.
+    let now = std::time::Instant::now();
     let held = last_frame(ctx.w, seat.driver);
-    let weapons = carried(ctx.w, seat.unit, held.as_ref());
+    let weapons = carried(ctx.w, seat.unit, held.as_ref(), now);
     let mut lines: Vec<String> = Vec::new();
     if weapons.is_empty() {
         lines.push("This unit carries no weapon.".to_owned());
@@ -5694,9 +5778,19 @@ pub fn weapons_of(w: &World, unit: ObjId) -> Vec<WeaponRow> {
 /// `This unit carries no weapon.` and a bare `FIRE` refuses in the cockpit with
 /// [`CockpitError::NoWeapon`] (16b cut AE.3), which is the same sentence, one
 /// pulse earlier.
-fn carried(w: &World, unit: ObjId, held: Option<&CockpitFrame>) -> Vec<WeaponRow> {
+///
+/// **16b cut AP.1** (16c `B-86`): the frame's rows are read through
+/// [`aged_weapons`] at `now`, so each countdown is the frame's own aged by the wall
+/// time since the world received it — unaged under a staff tempo floor, or on a
+/// frame built under one since lifted (`floored`).
+fn carried(
+    w: &World,
+    unit: ObjId,
+    held: Option<&CockpitFrame>,
+    now: std::time::Instant,
+) -> Vec<WeaponRow> {
     match held {
-        Some(held) => frame_weapons(&held.frame),
+        Some(held) => aged_weapons(held, now, floored(w, held)),
         None => weapons_of(w, unit),
     }
 }
@@ -9314,5 +9408,117 @@ mod tests {
             "EMCON refused. This tank carries no jamming pod."
         );
         assert_eq!(Refusal::NoJammer.as_str(), "no_jammer");
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut AP.1
+    // -----------------------------------------------------------------------
+
+    /// **`B-86`, the formula and the floor skip**: a cycling cannon's countdown
+    /// is the frame's own less the wall time since receipt, held at nought and
+    /// ready there; a ready row stays ready at every instant; and a floored read
+    /// is [`frame_weapons`]'s, untouched, at every instant.
+    ///
+    /// The frame is a real one, the opening frame of a stepped scout-and-tank
+    /// arena, with its rack replaced by the two rows this is about.
+    #[test]
+    fn ap1_the_aged_rows_count_down_from_receipt_and_a_floor_leaves_them_alone() {
+        use crate::arena::state::Team;
+        use crate::arena::test_support::{arena_at_epoch, pose, scout, tank};
+        use crate::arena::weapons::FrameWeapon;
+        use std::time::{Duration, Instant};
+        const RED: ObjId = ObjId(4);
+        const BLUE: ObjId = ObjId(9);
+        let mut arena = arena_at_epoch(
+            vec![
+                scout(RED, Team::Red, pose(1_500, 1_500)),
+                tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+            ],
+            1,
+        );
+        let mut frame = arena
+            .step(0, &[], &[])
+            .frames
+            .into_iter()
+            .map(|(_, frame)| frame)
+            .find(|frame| frame.unit == RED)
+            .expect("red is sent its opening frame");
+        let row = |id: &'static str, ready: bool, ready_in_ms: i64| FrameWeapon {
+            id: SmolStr::new_static(id),
+            ready,
+            ready_in_ms,
+            rounds: 10,
+            rounds_max: 10,
+            range_band: None,
+            p_permille: None,
+            bands_cm: vec![100_000],
+            heat_per_shot: 0,
+        };
+        frame.weapons = vec![row("cannon", false, 2_000), row("machine_gun", true, 0)];
+        let now = Instant::now();
+        let held_at = |back_ms: u64| CockpitFrame {
+            match_id: crate::arena_task::MatchId(1),
+            frame: frame.clone(),
+            ranges: BTreeMap::new(),
+            arena_ms: 0,
+            received: now
+                .checked_sub(Duration::from_millis(back_ms))
+                .expect("the clock reaches that far back"),
+        };
+        let cannon = |rows: &[WeaponRow]| {
+            rows.iter()
+                .find(|row| row.id == "cannon")
+                .map(|row| (row.ready, row.ready_in_ms))
+                .expect("the cannon row")
+        };
+        let gun = |rows: &[WeaponRow]| {
+            rows.iter()
+                .find(|row| row.id == "machine_gun")
+                .map(|row| (row.ready, row.ready_in_ms))
+                .expect("the machine gun row")
+        };
+
+        // Half a second to go, and the line says so, rounded up.
+        let rows = aged_weapons(&held_at(1_500), now, false);
+        assert_eq!(cannon(&rows), (false, 500));
+        let line = rows
+            .iter()
+            .find(|row| row.id == "cannon")
+            .map(|row| row.render(&rows))
+            .expect("the cannon row");
+        assert!(line.starts_with("cannon  cycling (1 s)  "), "{line}");
+        // At the ready instant and long past it: ready, at nought.
+        for back_ms in [2_000, 9_000] {
+            let rows = aged_weapons(&held_at(back_ms), now, false);
+            assert_eq!(cannon(&rows), (true, 0), "{back_ms} ms after receipt");
+        }
+        // The ready row stays ready, and nothing but the countdown moves.
+        for back_ms in [0, 1_500, 2_000, 9_000] {
+            let held = held_at(back_ms);
+            let rows = aged_weapons(&held, now, false);
+            assert_eq!(gun(&rows), (true, 0), "{back_ms} ms after receipt");
+            for (aged, own) in rows.iter().zip(frame_weapons(&held.frame)) {
+                assert_eq!(
+                    WeaponRow {
+                        ready: own.ready,
+                        ready_in_ms: own.ready_in_ms,
+                        ..aged.clone()
+                    },
+                    own,
+                    "only the countdown is aged"
+                );
+            }
+            // Floored: the frame's own rows, untouched, at every instant.
+            assert_eq!(
+                aged_weapons(&held, now, true),
+                frame_weapons(&held.frame),
+                "{back_ms} ms after receipt, under a floor"
+            );
+        }
+        // At receipt itself, the frame's own figure.
+        assert_eq!(
+            cannon(&aged_weapons(&held_at(0), now, false)),
+            (false, 2_000)
+        );
     }
 }

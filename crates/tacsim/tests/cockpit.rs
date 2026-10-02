@@ -284,6 +284,13 @@ impl Rig {
     /// in for a module (16b §0.4), and there is no other way to put a platform
     /// with no weapon left, or a refused `STARTUP`, in front of the cockpit.
     fn push_frame(&mut self, n: usize, frame: tacsim::arena::step::Frame) {
+        self.push_frame_at(n, frame, 0);
+    }
+
+    /// [`Rig::push_frame`], with the message's arena clock at `now_ms` (16b cut
+    /// AP.1): what `on_frames` stamps the held frame's `arena_ms` with, and what
+    /// it raises the mirror's `now_ms` to.
+    fn push_frame_at(&mut self, n: usize, frame: tacsim::arena::step::Frame, now_ms: i64) {
         let pilot = self.pilot(n);
         let match_id = self.centre().match_id.expect("a running match");
         let Some(tasks) = self
@@ -298,7 +305,7 @@ impl Rig {
             tasks.stage(tacsim::arena_task::ArenaOut::Frames {
                 match_id,
                 frames: vec![(pilot, frame)],
-                now_ms: 0,
+                now_ms,
                 // 16b cut I.4: a pilot's frame, and no staff picture.
                 observer: None,
             }),
@@ -311,6 +318,18 @@ impl Rig {
             payload: tacsim::arena_bridge::EGRESS_PAYLOAD.to_owned(),
         });
         self.log.extend(out);
+    }
+
+    /// **Move that pilot's held frame's receipt back by `ms`** (16b cut AP.1)
+    /// through the registry's own test aid, so a test reaches a weapon's ready
+    /// instant on the aged mirror without sleeping.
+    fn age_last_frame(&mut self, n: usize, ms: u64) {
+        let pilot = self.pilot(n);
+        self.tw
+            .world_mut()
+            .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+            .expect("the arena registry is composed")
+            .age_last_frame(pilot, std::time::Duration::from_millis(ms));
     }
 
     /// **Whether that pilot's `Starting` hint stands now** (16b cut D.1).
@@ -12580,4 +12599,177 @@ fn ah1_the_fixture_frame_yields_the_points_its_own_fields_earn() {
     cold.notices = vec![];
     assert_eq!(frame_points(true, &cold), vec![HintPoint::Panel]);
     assert_eq!(frame_points(false, &cold), Vec::<HintPoint>::new());
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AP.1: the aged mirror (16c `B-86`)
+// ---------------------------------------------------------------------------
+
+/// **A frame the arena could have sent**: pilot 0's own held frame with power
+/// online, the golden scene's contacts and its lock on one of them, and the cannon
+/// two seconds into nothing — `ready: false, ready_in_ms: 2_000`, a round in the
+/// breech. Everything `FIRE` pre-checks passes but the cycle.
+fn ap1_locked_and_cycling(rig: &Rig) -> tacsim::arena::step::Frame {
+    let scene = fixture::frame();
+    let mut frame = rig.held_frame(0);
+    frame.notices.clear();
+    frame.catchup = None;
+    frame.power = tacsim::arena::state::Power::Online;
+    frame.contacts = scene.contacts.clone();
+    frame.lock = scene.lock;
+    assert!(
+        frame
+            .contacts
+            .iter()
+            .any(|contact| Some(contact.id) == frame.lock),
+        "the lock is one of the frame's own contacts"
+    );
+    let mut cannons = 0;
+    for weapon in &mut frame.weapons {
+        if weapon.id == "cannon" {
+            weapon.ready = false;
+            weapon.ready_in_ms = 2_000;
+            weapon.rounds = weapon.rounds.max(1);
+            cannons += 1;
+        }
+    }
+    assert_eq!(cannons, 1, "the stock tank carries one cannon");
+    frame
+}
+
+/// **`B-86`, the forward**: a `FIRE` typed after the gun's true ready instant and
+/// before the ready frame lands is forwarded, not refused in the cockpit.
+///
+/// The ready instant is reached by moving the held frame's receipt back
+/// (`ArenaRegistry::age_last_frame`), not by sleeping. The arena's own answer a
+/// pulse later (it holds no lock for this pilot) is not this test's business.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn ap1_a_fire_typed_after_the_true_ready_instant_and_before_the_ready_frame_is_forwarded() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let frame = ap1_locked_and_cycling(&rig);
+    rig.push_frame(0, frame);
+
+    let said = rig.say(0, "fire");
+    assert!(
+        said.contains("FIRE cannon refused. Still cycling: 2 s to go."),
+        "a fresh frame's countdown is refused as it stands: {said}"
+    );
+    rig.age_last_frame(0, 2_000);
+    let said = rig.say(0, "fire");
+    assert!(
+        said.contains("Firing cannon."),
+        "a gun ready by the wall clock was refused by the cockpit: {said}"
+    );
+    assert!(!said.contains("Still cycling"), "{said}");
+}
+
+/// **`B-86`, the read verb and the panel**: `WEAPONSTATUS` prints the aged
+/// remainder and counts down to `ready`, while the keyframe it re-pushes keeps the
+/// frame's own figures — which the TUI and the web print as they stand until the
+/// next frame; neither counts down.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn ap1_weaponstatus_prints_the_aged_remainder_and_the_keyframe_does_not() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let frame = ap1_locked_and_cycling(&rig);
+    rig.push_frame(0, frame);
+
+    let said = rig.say(0, "weaponstatus");
+    assert!(said.contains("cannon  cycling (2 s)"), "{said}");
+    rig.age_last_frame(0, 1_000);
+    let said = rig.say(0, "weaponstatus");
+    assert!(said.contains("cannon  cycling (1 s)"), "{said}");
+    rig.age_last_frame(0, 1_000);
+    let events = rig.events(0, "weaponstatus");
+    let said = rig.tw.seen_by(&events, rig.pilot(0)).join("\n");
+    assert!(said.contains("cannon  ready"), "{said}");
+    assert!(!said.contains("cannon  cycling"), "{said}");
+
+    // The keyframe beside the lines: the frame's own countdown, unaged.
+    let panel = Rig::panel(&events).expect("WEAPONSTATUS re-pushes the keyframe");
+    let cannon = panel["weapons"]
+        .as_array()
+        .and_then(|weapons| weapons.iter().find(|weapon| weapon["id"] == "cannon"))
+        .expect("the keyframe carries the cannon");
+    assert_eq!(cannon["ready_in_ms"], 2000, "{cannon}");
+    assert_eq!(cannon["ready"], false, "{cannon}");
+}
+
+/// **`B-86`, the floor rule both ways**: under a staff tempo floor the countdown
+/// stays the frame's own; after the lift a frame built under the floor STILL
+/// does, because its `arena_ms` is at or before the lift's stamp; and the first
+/// frame built past the lift ages again.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn ap1_a_staff_tempo_floor_and_a_frame_built_under_one_leave_the_remainder_unaged() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let match_id = rig.centre().match_id.expect("a running match");
+    let frame = ap1_locked_and_cycling(&rig);
+    rig.push_frame(0, frame.clone());
+    rig.age_last_frame(0, 2_000);
+
+    // A floor stands: the wall clock runs ahead of the arena's, so no aging.
+    rig.tw
+        .world_mut()
+        .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+        .expect("the arena registry is composed")
+        .note_tempo_floor(match_id, Some(5_000));
+    let said = rig.say(0, "fire");
+    assert!(
+        said.contains("FIRE cannon refused. Still cycling: 2 s to go."),
+        "a floored countdown was aged: {said}"
+    );
+
+    // Lifted: the stamp is the mirror's clock, and the held frame predates it.
+    let pilot = rig.pilot(0);
+    let lifted_at = {
+        let registry = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+            .expect("the arena registry is composed");
+        registry.note_tempo_floor(match_id, None);
+        let mirror = registry.mirror(match_id).expect("the match is mirrored");
+        assert_eq!(mirror.tempo_floor_ms, None);
+        let at = mirror.floor_lifted_at_ms.expect("a lift is stamped");
+        assert_eq!(at, mirror.now_ms, "the lift stamps the mirror's own clock");
+        let held = registry.last_frame(pilot).expect("the pilot holds a frame");
+        assert!(
+            held.arena_ms <= at,
+            "the held frame was built under the floor"
+        );
+        at
+    };
+    let said = rig.say(0, "fire");
+    assert!(
+        said.contains("FIRE cannon refused. Still cycling: 2 s to go."),
+        "a frame built under a floor since lifted was aged: {said}"
+    );
+
+    // The first frame past the lift ages again.
+    rig.push_frame_at(0, frame, lifted_at + 1_000);
+    rig.age_last_frame(0, 2_000);
+    let said = rig.say(0, "fire");
+    assert!(
+        said.contains("Firing cannon."),
+        "a frame built past the lift was left unaged: {said}"
+    );
+
+    // And a new floor clears the stamp.
+    let registry = rig
+        .tw
+        .world_mut()
+        .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+        .expect("the arena registry is composed");
+    registry.note_tempo_floor(match_id, Some(5_000));
+    assert_eq!(
+        registry
+            .mirror(match_id)
+            .and_then(|mirror| mirror.floor_lifted_at_ms),
+        None
+    );
 }
