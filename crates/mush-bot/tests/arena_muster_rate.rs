@@ -39,7 +39,8 @@
 //! the rest of the reading (`FIRE GAP`, `SHOT GAP`, `STILL CYCLING`, `HITS
 //! TAKEN BY FACET`, `SEEN FIRST`, `OPENING`, `FRONT SHARE`, and cut AN.2's
 //! `PILOT RULES`, with cut AN.3's follow, return wait and lattice counts and
-//! cut AO.1's inward, room holds, return room holds and gave up);
+//! cut AO.1's inward, room holds, return room holds and gave up, and cut
+//! AO.2's benched);
 //! then `NO REPORT`
 //! and `EARLY END` when they apply. Nothing between the launch and the last
 //! line panics. The offline [`the_muster_lane_reads_its_match_lines`] (not

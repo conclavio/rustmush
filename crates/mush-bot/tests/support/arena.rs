@@ -1543,7 +1543,8 @@ pub struct Reading {
     /// lobby's `Out of the tank; boarding again.` is an `arena` record too),
     /// and (cut AN.3) `Following `, `Waiting for ` and `Firing on the arena's
     /// lattice`, and (cut AO.1) `Opening: moving in `, `No room behind: `, `No
-    /// room behind for the return: ` and `Could not open the range on `,
+    /// room behind for the return: ` and `Could not open the range on `, and
+    /// (cut AO.2) those containing `is off the lattice clock` (the bench),
     /// counted in that order ([`PilotRules`]).
     pub rules: PilotRules,
 }
@@ -1568,6 +1569,9 @@ pub struct PilotRules {
     pub room_holds: usize,
     pub return_room_holds: usize,
     pub gave_up: usize,
+    /// Cut AO.2: the lattice clock's benches (`The {w} is off the lattice
+    /// clock for {s} s: refused twice.`).
+    pub benched: usize,
 }
 
 impl PilotRules {
@@ -1597,18 +1601,20 @@ impl PilotRules {
             self.return_room_holds += 1;
         } else if text.starts_with("Could not open the range on ") {
             self.gave_up += 1;
+        } else if text.contains("is off the lattice clock") {
+            self.benched += 1;
         }
     }
 
     /// `PILOT RULES: opening {a}, off the road {b}, halt {c}, reapproach
     /// {d}, approach wait {e}, follow {f}, return wait {g}, lattice {h}` and
     /// (cut AO.1) `, inward {i}, room holds {k}, return room holds {r}, gave
-    /// up {u}`.
+    /// up {u}` and (cut AO.2) `, benched {n}`.
     pub fn line(&self) -> String {
         format!(
             "PILOT RULES: opening {}, off the road {}, halt {}, reapproach {}, approach wait {}, \
              follow {}, return wait {}, lattice {}, inward {}, room holds {}, return room holds \
-             {}, gave up {}",
+             {}, gave up {}, benched {}",
             self.opening,
             self.off_the_road,
             self.halt,
@@ -1620,7 +1626,8 @@ impl PilotRules {
             self.inward,
             self.room_holds,
             self.return_room_holds,
-            self.gave_up
+            self.gave_up,
+            self.benched
         )
     }
 }
@@ -1883,8 +1890,8 @@ impl Reading {
     /// * (cut AN.2) `PILOT RULES: opening {a}, off the road {b}, halt {c},
     ///   reapproach {d}, approach wait {e}` and (cut AN.3) `, follow {f},
     ///   return wait {g}, lattice {h}` and (cut AO.1) `, inward {i}, room
-    ///   holds {k}, return room holds {r}, gave up {u}`
-    ///   ([`PilotRules::line`]), from the transcript alone (zeros with no
+    ///   holds {k}, return room holds {r}, gave up {u}` and (cut AO.2) `,
+    ///   benched {n}` ([`PilotRules::line`]), from the transcript alone (zeros with no
     ///   `arena` record).
     ///
     /// With no report the last three read `SEEN FIRST: no report`,

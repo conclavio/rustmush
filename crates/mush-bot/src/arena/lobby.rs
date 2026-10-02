@@ -35,7 +35,10 @@
 //! and stay real: a boarding or a running read while paused is stamped when
 //! it was really read and never shifted, so the boarding bound keeps the
 //! window the centre announced, and a match recorded while paused keeps its
-//! real length.
+//! real length. A pause that spans a match's boarding window and its start
+//! loses that match (cut AO.2): the game drops the slot nobody seated, the
+//! `BOARD` typed after the resume is answered with no slot, and the match is
+//! recorded `left` and the next one claimed — never a blocker.
 //!
 //! **Who leads** (`help simulator`: "Whoever claims a side first leads it; if
 //! they give the slot up … the next who claimed leads"). A claim window per
@@ -56,7 +59,7 @@ use serde::Serialize;
 use super::{
     Side,
     lane::LaneEvent,
-    lines::{BoardPilot, Line, Standing, is_centre_room, pod_number},
+    lines::{self, BoardPilot, Line, Standing, is_centre_room, pod_number},
     picture::{Phase, Picture, Power},
     report::MatchResult,
     settings::Settings,
@@ -266,6 +269,28 @@ fn fold(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
+/// **Chat** (cut AO.2), which never belongs to a room's look: a channel's
+/// frame (`[Public] …`, and an attributed emit's `[Name] …`), the OOC frame
+/// (`<OOC> …`), or a say, whisper or page frame (`Ada says, "…"`). A pose
+/// prints as the poser's name and the action (`help communication`), with no
+/// frame of its own that line mode can tell from a room's description, so it
+/// is read by these frames alone.
+fn chat_frame(raw: &str) -> bool {
+    let line = raw.trim();
+    line.starts_with('[')
+        || line.starts_with("<OOC>")
+        || [" says, \"", " whispers, \"", " pages: "]
+            .iter()
+            .any(|frame| line.contains(frame))
+}
+
+/// **A walk's line refused** (cut AO.2): the game's answer to a line it does
+/// not take (`Huh?  (Type "help" for help.)`), which answers the walk and never
+/// belongs to a room's look.
+fn walk_refused(raw: &str) -> bool {
+    raw.trim().starts_with("Huh?")
+}
+
 /// `… or in 30 second(s).` → 30 000.
 fn boarding_window_ms(raw: &str) -> Option<u64> {
     let (_, rest) = raw.trim().rsplit_once(" or in ")?;
@@ -287,6 +312,11 @@ pub struct Lobby {
     retries: u32,
     /// A line other than the echo has arrived since the flight was typed.
     answered: bool,
+    /// **The foreign room's look** (cut AO.2): the real read time of the last
+    /// line of another room's look the walk is reading past — its heading,
+    /// then its description and exits — while that look is open
+    /// ([`Lobby::on_line`]).
+    foreign_block_ms: Option<u64>,
     last_line_ms: u64,
     /// A waiting step's deadline, and the blocker it ends in.
     deadline: Option<(u64, String)>,
@@ -353,6 +383,7 @@ impl Lobby {
             flight: None,
             retries: 0,
             answered: false,
+            foreign_block_ms: None,
             last_line_ms: 0,
             deadline: None,
             centre: Centre::Unknown,
@@ -535,6 +566,10 @@ impl Lobby {
             sent_ms: now_ms,
         });
         self.answered = false;
+        // A line typed closes a foreign room's look (cut AO.2): what follows
+        // may be that line's own answer (a heading read before `look` is
+        // typed, then `look`'s own room).
+        self.foreign_block_ms = None;
         if self.step == Step::Reboard && line == LobbyLine::Board {
             self.reboard_next = now_ms.saturating_add(REBOARD_EVERY_MS);
         }
@@ -553,9 +588,30 @@ impl Lobby {
         // else's answer (a late `look`, a move it did not ask for): it is no
         // answer to the line in flight, so the quiet rule never reads it as a
         // refusal (cut AM.2).
-        let foreign_room = matches!(self.step, Step::Look | Step::Walk)
-            && matches!(line, Line::Room(name) if !self.walk_arrives(name));
-        if self.flight.is_some() && !foreign_room {
+        let walking = matches!(self.step, Step::Look | Step::Walk);
+        let foreign_room = walking && matches!(line, Line::Room(name) if !self.walk_arrives(name));
+        // **The foreign room's look** (cut AO.2): one output's pieces arrive
+        // at most `STALE_TAIL_MS` apart (the lane's own continuation rule), so
+        // a room's description and exits follow its heading within it. The
+        // heading opens the block at its real read time; a plain line that is
+        // not chat, read within `STALE_TAIL_MS` of the block's last line, is
+        // that room's and moves the block on. The block suppresses only
+        // `answered`: everything else about the line runs as before, and any
+        // other line — a heading the walk arrives at, a busy answer (still
+        // sent to `transient`, which types the walk's line again), a refusal,
+        // chat, or a line read after a longer gap — closes it and answers the
+        // walk, so the quiet rule then blocks as before.
+        let real_ms = self.read_ms;
+        let foreign_look = walking
+            && !foreign_room
+            && matches!(line, Line::Other(_))
+            && !chat_frame(raw)
+            && !walk_refused(raw)
+            && self
+                .foreign_block_ms
+                .is_some_and(|last| real_ms.saturating_sub(last) <= lines::STALE_TAIL_MS);
+        self.foreign_block_ms = (foreign_room || foreign_look).then_some(real_ms);
+        if self.flight.is_some() && !foreign_room && !foreign_look {
             self.answered = true;
         }
         if let Line::Connected { name, .. } = line {
@@ -1033,10 +1089,29 @@ impl Lobby {
     }
 
     /// A transient answer: the same line again after 200 ms, at most 40 times.
+    ///
+    /// **A busy `STARTUP` never gives a running match up** (cut AO.2): past
+    /// the forty, `STARTUP` in the running followed match is typed again after
+    /// `[arena].step_timeout_ms` — as the step timeout already types it again —
+    /// with its count reset; every other line blocks.
     fn transient(&mut self, now_ms: u64, picture: &Picture) {
         let Some(flight) = self.flight else {
             return;
         };
+        if self.retries >= TRANSIENT_RETRIES
+            && flight.line == LobbyLine::Startup
+            && Self::followed_running(picture)
+        {
+            let wait = self.settings.step_timeout_ms;
+            self.say(format!(
+                "The server kept answering `STARTUP` as busy; typing it again in {} s.",
+                wait / 1_000
+            ));
+            self.retries = 0;
+            self.flight = None;
+            self.want = Some((LobbyLine::Startup, now_ms.saturating_add(wait)));
+            return;
+        }
         if self.retries >= TRANSIENT_RETRIES {
             let sentence = format!(
                 "The server kept answering `{}` as busy.",
@@ -1518,8 +1593,43 @@ impl Lobby {
         }
     }
 
+    /// `BOARD`'s answers: aboard, the wait for the running line; outside the
+    /// team room, the walk there (at most [`BOARD_ROOM_TRIES`] times).
+    ///
+    /// **A start without us** (cut AO.2): the game drops a claimed slot nobody
+    /// seated at the boarding deadline (`{name} never boarded; {side} slot {i}
+    /// is dropped.`), so a `BOARD` typed after a running match began — a
+    /// pause that spanned the boarding window and the start — is answered
+    /// `You hold no slot in the simulator.`. That match is lost to this run:
+    /// recorded `left`, as the `no longer in the match` path records it, and
+    /// the next one claimed after its end (or, the last one asked for, the run
+    /// ends). Outside a running followed match the same answer is left to the
+    /// step timeout, as before.
     fn on_board(&mut self, now_ms: u64, line: &Line, picture: &Picture) {
         match line {
+            Line::NoSlot if Self::followed_running(picture) => {
+                self.flight = None;
+                self.want = None;
+                self.deadline = None;
+                self.slot = None;
+                // The end is waited for only when another match follows it:
+                // the last one asked ends the run here.
+                let flown = self
+                    .matches
+                    .len()
+                    .saturating_add(usize::from(picture.following.is_some()));
+                let more = u32::try_from(flown).unwrap_or(u32::MAX) < self.settings.matches;
+                let Some(id) = picture.following else {
+                    return;
+                };
+                self.say(if more {
+                    format!("Match {id} started without us; waiting for it to end.")
+                } else {
+                    format!("Match {id} started without us.")
+                });
+                self.record(now_ms, picture, id, "left", false);
+                self.after_match(now_ms, picture);
+            }
             Line::ClimbIn { .. } | Line::AlreadyAboard => {
                 self.flight = None;
                 self.step = Step::AwaitRunning;
@@ -3291,5 +3401,242 @@ mod tests {
             rig.said()
                 .contains(&"Back aboard after 5 s away.".to_owned())
         );
+    }
+
+    /// The lead, paused just after its `SIM START`, through the boarding and
+    /// (unless `boarding_only`) the start; resumed, into the team room and
+    /// `BOARD` typed; the resume's time.
+    fn paused_through_the_start(rig: &mut Rig, boarding_only: bool) -> u64 {
+        rig.claim_lead();
+        assert_eq!(rig.next(4_000).as_deref(), Some("SIM START"));
+        let paused = rig.now + 100;
+        rig.lobby.pause(paused);
+        rig.now = paused + 1_000;
+        rig.hear("Match 1 is boarding. Every pilot: BOARD your pod. The match starts when everyone is seated, or in 30 second(s).");
+        if !boarding_only {
+            rig.now = paused + 41_000;
+            rig.hear("Pilot never boarded; red slot 1 is dropped.");
+            rig.hear("Match 1 is running. Good hunting.");
+        }
+        let resumed = paused + 50_000;
+        rig.lobby.resume(resumed);
+        assert_eq!(rig.at(resumed).as_deref(), Some("red"));
+        rig.hear("Red Room #57");
+        assert_eq!(rig.next(100).as_deref(), Some("BOARD"));
+        resumed
+    }
+
+    /// **A `BOARD` answered with no slot in a running match loses it** (cut
+    /// AO.2): a pause through the boarding window and the start, then the
+    /// game's `You hold no slot in the simulator.` — that match said started
+    /// without us, recorded `left` and its end waited for (or, the last one
+    /// asked, the run ended as the `no longer in the match` path ends it),
+    /// with no blocker; while the match is still boarding the same answer
+    /// leaves `BOARD` to its step timeout, as before.
+    #[test]
+    fn a_board_answered_no_slot_in_a_running_match_loses_it() {
+        let two = Settings {
+            matches: 2,
+            ..Settings::default()
+        };
+        let timeout = two.step_timeout_ms;
+        let mut rig = Rig::with(Side::Red, two, "Pilot");
+        paused_through_the_start(&mut rig, false);
+        rig.said();
+        rig.hear("You hold no slot in the simulator.");
+        let said = rig.said();
+        assert_eq!(
+            said.iter()
+                .filter(|s| *s == "Match 1 started without us; waiting for it to end.")
+                .count(),
+            1,
+            "{said:?}"
+        );
+        assert!(
+            said.iter()
+                .any(|s| s.starts_with("Stopped flying match 1 before its end (left); ")),
+            "{said:?}"
+        );
+        assert_eq!(rig.lobby.matches().len(), 1);
+        assert_eq!(rig.lobby.matches()[0].result, "left");
+        assert_eq!(rig.lobby.step(), Step::Over);
+        assert_eq!(rig.lobby.slot(), None);
+        assert_eq!(
+            (rig.lobby.flight, rig.lobby.want, rig.lobby.deadline.clone()),
+            (None, None, None)
+        );
+        let t = rig.now;
+        assert_eq!(rig.at(t + timeout + 1_000), None);
+        assert_eq!(rig.next(60_000), None, "the end is waited for");
+        assert_eq!(rig.lobby.blocker(), None);
+        assert!(!rig.lobby.closed());
+        rig.hear("Match 1 is over (blue). Its units are checked in.");
+        let end = rig.now;
+        assert_eq!(rig.at(end + REMATCH_AFTER_MS - 1), None);
+        assert_eq!(
+            rig.at(end + REMATCH_AFTER_MS).as_deref(),
+            Some("SIM TEAM red")
+        );
+        assert_eq!(rig.lobby.matches().len(), 1, "recorded once");
+        assert_eq!(rig.lobby.matches()[0].result, "left");
+        // The last match asked: said so, recorded, and the run ends there.
+        let mut rig = Rig::new(Side::Red);
+        paused_through_the_start(&mut rig, false);
+        rig.hear("You hold no slot in the simulator.");
+        let said = rig.said();
+        assert!(
+            said.contains(&"Match 1 started without us.".to_owned()),
+            "{said:?}"
+        );
+        assert!(
+            !said.iter().any(|s| s.contains("waiting for it to end")),
+            "{said:?}"
+        );
+        assert_eq!(rig.lobby.matches()[0].result, "left");
+        assert_eq!(rig.lobby.blocker(), None);
+        assert!(rig.lobby.finished());
+        // Still boarding: `on_board` as before — nothing said, the flight
+        // kept, and the step timeout blocks.
+        let mut rig = Rig::new(Side::Red);
+        let resumed = paused_through_the_start(&mut rig, true);
+        let typed = rig.now;
+        assert!(resumed <= typed);
+        rig.said();
+        rig.hear("You hold no slot in the simulator.");
+        assert!(rig.said().is_empty());
+        assert_eq!(rig.lobby.step(), Step::Board);
+        assert!(rig.lobby.matches().is_empty());
+        assert_eq!(rig.at(typed + timeout - 1), None);
+        rig.at(typed + timeout);
+        assert_eq!(
+            rig.lobby.blocker(),
+            Some("No answer to `BOARD` within 15 s.")
+        );
+    }
+
+    /// **Forty busy `STARTUP`s never give a running match up** (cut AO.2):
+    /// the forty-first busy answer in a running match types `STARTUP` again
+    /// after the step timeout, said, with no blocker (`SIM STATUS` still
+    /// blocks: `forty_transients_running_block`).
+    #[test]
+    fn forty_busy_startups_never_give_a_running_match_up() {
+        let mut rig = Rig::new(Side::Red);
+        rig.up_to_startup();
+        let timeout = Settings::default().step_timeout_ms;
+        for _ in 0..TRANSIENT_RETRIES {
+            rig.hear("The arena is busy; try that again in a moment.");
+            assert_eq!(rig.next(300).as_deref(), Some("STARTUP"));
+        }
+        rig.said();
+        rig.hear("The arena is busy; try that again in a moment.");
+        let t = rig.now;
+        assert_eq!(rig.lobby.blocker(), None);
+        assert_eq!(
+            rig.said(),
+            ["The server kept answering `STARTUP` as busy; typing it again in 15 s."]
+        );
+        assert_eq!(rig.at(t + timeout - 1), None);
+        assert_eq!(rig.at(t + timeout).as_deref(), Some("STARTUP"));
+        assert_eq!(rig.lobby.retries, 0, "a fresh count");
+        rig.hear("Power online.");
+        assert_eq!(rig.lobby.step(), Step::Fight);
+        assert_eq!(rig.lobby.blocker(), None);
+    }
+
+    /// **A foreign room's description is not the walk's answer** (cut AO.2):
+    /// with `ooc` in flight, another room's heading, its description and its
+    /// exits read inside `STALE_TAIL_MS` of each other answer nothing, so the
+    /// quiet rule never blocks and the walk's own heading moves it on; a busy
+    /// answer inside the look still types the walk's line again; a plain line
+    /// read exactly `STALE_TAIL_MS` after the look's last is still the look's;
+    /// and a plain line read a millisecond later, a refusal inside the window,
+    /// or chat answers the walk, so the quiet rule blocks as before.
+    #[test]
+    fn a_foreign_rooms_description_is_not_the_walks_answer() {
+        let to_ooc = |rig: &mut Rig| -> u64 {
+            assert_eq!(rig.at(0).as_deref(), Some("look"));
+            rig.hear("Limbo #0");
+            rig.hear("A grey nowhere.");
+            assert_eq!(rig.next(3_000).as_deref(), Some("ooc"));
+            assert_eq!(rig.lobby.step(), Step::Walk);
+            rig.now
+        };
+        let look = |rig: &mut Rig, t: u64| {
+            for (at, line) in [
+                (t + 100, "Simulator Lobby #50"),
+                (t + 400, "A wide hall of pods and boards."),
+                (t + 900, "The red and blue doors stand open."),
+                (t + 1_200, "Obvious exits: Red Room, Blue Room, out."),
+            ] {
+                rig.now = at;
+                rig.hear(line);
+            }
+        };
+        let mut rig = Rig::new(Side::Red);
+        let t = to_ooc(&mut rig);
+        look(&mut rig, t);
+        assert!(!rig.lobby.answered);
+        assert_eq!(rig.next(WALK_SETTLE_MS + QUIET_MS + 3_000), None);
+        assert_eq!(rig.lobby.blocker(), None);
+        rig.hear("Welcome Hall #2");
+        assert_eq!(rig.next(100).as_deref(), Some("simulator"));
+        // A busy answer inside the look types the walk's line again.
+        let mut rig = Rig::new(Side::Red);
+        let t = to_ooc(&mut rig);
+        rig.now = t + 100;
+        rig.hear("Simulator Lobby #50");
+        rig.now = t + 300;
+        rig.hear("A wide hall of pods and boards.");
+        rig.now = t + 500;
+        rig.hear("The command could not commit; please retry in a moment.");
+        assert_eq!(rig.at(t + 699), None);
+        assert_eq!(rig.at(t + 700).as_deref(), Some("ooc"));
+        // The window's edge: a plain line read exactly `STALE_TAIL_MS` after
+        // the look's last is still the look's ...
+        let mut rig = Rig::new(Side::Red);
+        let t = to_ooc(&mut rig);
+        rig.now = t + 100;
+        rig.hear("Simulator Lobby #50");
+        rig.now = t + 400;
+        rig.hear("A wide hall of pods and boards.");
+        rig.now = t + 400 + lines::STALE_TAIL_MS;
+        rig.hear("Somebody's late line.");
+        assert!(!rig.lobby.answered, "inside the window");
+        // ... and one read a millisecond past it answers the walk: the quiet
+        // rule blocks.
+        let mut rig = Rig::new(Side::Red);
+        let t = to_ooc(&mut rig);
+        rig.now = t + 100;
+        rig.hear("Simulator Lobby #50");
+        rig.now = t + 400;
+        rig.hear("A wide hall of pods and boards.");
+        rig.now = t + 400 + lines::STALE_TAIL_MS + 1;
+        rig.hear("Somebody's late line.");
+        assert!(rig.lobby.answered, "past the window");
+        rig.next(WALK_SETTLE_MS + QUIET_MS + 100);
+        assert_eq!(rig.lobby.blocker(), Some(UNREACHABLE));
+        // A refusal read inside the window answers the walk: the quiet rule
+        // blocks.
+        let mut rig = Rig::new(Side::Red);
+        let t = to_ooc(&mut rig);
+        rig.now = t + 100;
+        rig.hear("Simulator Lobby #50");
+        rig.now = t + 400;
+        rig.hear("A wide hall of pods and boards.");
+        rig.now = t + 700;
+        rig.hear("Huh?  (Type \"help\" for help.)");
+        assert!(rig.lobby.answered, "a refusal inside the window");
+        rig.next(WALK_SETTLE_MS + QUIET_MS + 100);
+        assert_eq!(rig.lobby.blocker(), Some(UNREACHABLE));
+        // Chat inside the look answers the walk, as any line did.
+        let mut rig = Rig::new(Side::Red);
+        let t = to_ooc(&mut rig);
+        rig.now = t + 100;
+        rig.hear("Simulator Lobby #50");
+        rig.now = t + 300;
+        rig.hear("[Public] Ada: anyone for the sim?");
+        assert!(rig.lobby.answered);
+        rig.next(WALK_SETTLE_MS + QUIET_MS + 100);
+        assert_eq!(rig.lobby.blocker(), Some(UNREACHABLE));
     }
 }

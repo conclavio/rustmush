@@ -80,9 +80,10 @@
 //! (cut AN.1) `SEEN FIRST: …`, `OPENING: …` and `FRONT SHARE: …`, (cut AN.2)
 //! `PILOT RULES: opening {a}, off the road {b}, halt {c}, reapproach {d},
 //! approach wait {e}`, (cut AN.3) `, follow {f}, return wait {g}, lattice
-//! {h}` and (cut AO.1) `, inward {i}, room holds {k}, return room holds {r},
-//! gave up {u}` (what the pilot's own rules did, counted from its `arena`
-//! sentences), and only then `UNPOSED`, `NO REPORT` and `EARLY END`. The offline
+//! {h}`, (cut AO.1) `, inward {i}, room holds {k}, return room holds {r},
+//! gave up {u}` and (cut AO.2) `, benched {n}` (what the pilot's own rules
+//! did, counted from its `arena` sentences; `benched` counts the lattice
+//! clock's benches), and only then `UNPOSED`, `NO REPORT` and `EARLY END`. The offline
 //! `the_reading_lines_are_the_leads_count` (not ignored) proves the reading on
 //! a hand-written transcript and report.
 use std::time::Duration;
@@ -436,7 +437,7 @@ fn the_reading_lines_are_the_leads_count() {
             "SEEN FIRST: contact before hit 1, hit before contact 1, neither 0 of 2 matches; lead p10 12 / p50 12 / p90 12 s over 1; shot first 1, shot at first 1",
             "OPENING: first contact p10 30 / p50 30 / p90 30 s after power online over 2 matches; first hit taken p50 29 s over 2",
             "FRONT SHARE: 1 of 8 facet hits taken on a front facet",
-            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0, inward 0, room holds 0, return room holds 0, gave up 0",
+            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0, inward 0, room holds 0, return room holds 0, gave up 0, benched 0",
         ]
     );
     // Empty facet maps: none. No report: no report. The engagement is the
@@ -468,7 +469,7 @@ fn the_reading_lines_are_the_leads_count() {
     assert_eq!(
         lines.last().map(String::as_str),
         Some(
-            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0, inward 0, room holds 0, return room holds 0, gave up 0"
+            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0, inward 0, room holds 0, return room holds 0, gave up 0, benched 0"
         )
     );
     assert_eq!(lines.len(), 12);
@@ -482,7 +483,7 @@ fn the_reading_lines_are_the_leads_count() {
             "SEEN FIRST: no report",
             "OPENING: no report",
             "FRONT SHARE: no report",
-            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0, inward 0, room holds 0, return room holds 0, gave up 0",
+            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0, inward 0, room holds 0, return room holds 0, gave up 0, benched 0",
         ]
     );
 
@@ -507,8 +508,9 @@ fn the_reading_lines_are_the_leads_count() {
 /// refuses any other word with its sentence; the bot's extra config is byte
 /// for byte what it was with nothing off and names only the knobs turned off;
 /// the `KNOBS` line says them; and the reading's `PILOT RULES` counts a
-/// hand-written transcript's `arena` sentences — two of each rule — and
-/// counts the lobby's `Out of the tank; boarding again.` nowhere.
+/// hand-written transcript's `arena` sentences — two of each rule, and (cut
+/// AO.2) two of the lattice clock's benches — and counts the lobby's `Out of
+/// the tank; boarding again.` nowhere.
 #[test]
 fn the_knob_variable_reads_and_refuses() {
     use std::collections::BTreeSet;
@@ -619,6 +621,7 @@ fn the_knob_variable_reads_and_refuses() {
         "Not following BA into its entry zone; backing off out of its sight.",
         "No return from BA in 90 s; searching.",
         "The machine_gun is off the lattice clock for 30 s: refused twice.",
+        "The cannon is off the lattice clock for 30 s: refused twice.",
         "Opening over: BA is in sight after 95 s.",
         "The halt is over: BA is at the band.",
         "Opening: moving in 235 m toward the other side's entry: 65 m of ground behind us, 290 m wanted.",
@@ -641,7 +644,7 @@ fn the_knob_variable_reads_and_refuses() {
         Some(
             "PILOT RULES: opening 2, off the road 2, halt 2, reapproach 2, approach wait 2, \
              follow 2, return wait 2, lattice 2, inward 2, room holds 2, return room holds 2, \
-             gave up 2"
+             gave up 2, benched 2"
         )
     );
     // No transcript: zeros.
@@ -651,7 +654,7 @@ fn the_knob_variable_reads_and_refuses() {
             .last()
             .map(String::as_str),
         Some(
-            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0, inward 0, room holds 0, return room holds 0, gave up 0"
+            "PILOT RULES: opening 0, off the road 0, halt 0, reapproach 0, approach wait 0, follow 0, return wait 0, lattice 0, inward 0, room holds 0, return room holds 0, gave up 0, benched 0"
         )
     );
 }

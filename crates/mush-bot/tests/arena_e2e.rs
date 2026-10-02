@@ -1367,26 +1367,38 @@ async fn type_at_prompt(stdin: &mut tokio::process::ChildStdin, line: &str) {
 }
 
 /// **The prompt pauses and resumes a flight** (cut AM.2; wall clock,
-/// generously bounded at 120 s). The bot flies alone against one machine
-/// posed 500 m off (as [`fly_alone`]) at its prompt, not headless, with
-/// `[agent] settle_ms = 15000` and `observation_ms = 20000`: a command's
-/// output is finished only once quiet for 15 s or at 20 s, and the lane's own
-/// polls never let it go quiet — so before the cut the pilot typed nothing for
-/// up to 20 s after `/resume`. After its first `FIRE` (and 21 s after the
-/// launch, when the login's own output is finished) the person types
-/// `/send STATUS` (again each second while the bot is still collecting
-/// output), then `/resume` once the `STATUS` has gone. Nothing of the lane's
-/// is typed between the two; the pause and the resume are said, in order; the
-/// lane types again within 5 s of `/resume`; and `STATUS`'s own
-/// `command-result` comes after that first line — the pending command was
-/// still open while the lane typed. God then calls the match off, and the
-/// report holds the one match as `abort`. No model is configured.
+/// generously bounded at 126 s: AM.2's 120 and cut AO.2's pause of its own).
+/// The bot flies alone against one machine posed 500 m off (as [`fly_alone`])
+/// at its prompt, not headless, with `[agent] settle_ms = 15000` and
+/// `observation_ms = 20000`: a command's output is finished only once quiet
+/// for 15 s or at 20 s, and the lane's own polls never let it go quiet — so
+/// before the cut the pilot typed nothing for up to 20 s after `/resume`.
+///
+/// After its first `FIRE` (and 21 s after the launch, when the login's own
+/// output is finished) the person types two pauses:
+/// - **`/pause`, held at least 6 s, then `/resume`** (cut AO.2). No command is
+///   pending (every `command-result` but `STATUS`'s lies before the `/pause`),
+///   so the runner's main path ticks the paused lane: an `arena-picture`
+///   record, which only `Runner::arena_tick` writes (every 5 s while the
+///   match runs), lies between the `/pause` and its `/resume`, and nothing of
+///   the lane's is typed between them.
+/// - **`/send STATUS`** (again each second while the bot is still collecting
+///   output), **then `/resume`** once the `STATUS` has gone (cut AM.2): the
+///   `/send` alone pauses the pilot, so nothing of the lane's is typed between
+///   the `/send` and that `/resume`.
+///
+/// The pause and the resume are said, in order, the resume as `Resumed after
+/// {s} s; the lobby's waits go on where they stood.`; the lane types again
+/// within 5 s of the second `/resume`; and `STATUS`'s own `command-result`
+/// comes after that first line — the pending command was still open while
+/// the lane typed. God then calls the match off, and the report holds the one
+/// match as `abort`. No model is configured.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_repl_pauses_and_resumes_a_flight() {
     let _one_world = ARENA.lock().await;
-    tokio::time::timeout(Duration::from_secs(120), pause_and_resume())
+    tokio::time::timeout(Duration::from_secs(126), pause_and_resume())
         .await
-        .expect("the paused flight finishes inside 120 s");
+        .expect("the paused flight finishes inside 126 s");
 }
 
 async fn pause_and_resume() {
@@ -1423,8 +1435,18 @@ async fn pause_and_resume() {
         god.idle(Duration::from_millis(250)).await;
     }
 
-    // `/send STATUS`, again each second while the bot is still collecting
-    // output, until its `send` event is in the transcript.
+    // Cut AO.2: `/pause` with no command pending, held at least 6 s so the
+    // runner's 5 s `arena-picture` cadence falls inside it, then `/resume`.
+    type_at_prompt(&mut stdin, "/pause").await;
+    let paused_at = Instant::now();
+    while paused_at.elapsed() < Duration::from_secs(6) {
+        god.idle(Duration::from_millis(250)).await;
+    }
+    type_at_prompt(&mut stdin, "/resume").await;
+
+    // Cut AM.2: `/send STATUS` pauses the pilot on its own; again each second
+    // while the bot is still collecting output, until its `send` event is in
+    // the transcript.
     let mut sent = false;
     for _ in 0..30 {
         let errors = records_now(&flight.transcript)
@@ -1460,16 +1482,18 @@ async fn pause_and_resume() {
     assert!(sent, "`/send STATUS` never went");
     type_at_prompt(&mut stdin, "/resume").await;
 
-    // Ten of the lane's lines after the `/resume` record, or 30 s.
+    // Ten of the lane's lines after the second `/resume` record, or 30 s.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let records = records_now(&flight.transcript);
-        let after = position_of(&records, 0, "control", "/resume").map_or(0, |at| {
-            records[at..]
-                .iter()
-                .filter(|record| record["kind"] == "arena-send")
-                .count()
-        });
+        let after = position_of(&records, 0, "control", "/send STATUS")
+            .and_then(|send| position_of(&records, send, "control", "/resume"))
+            .map_or(0, |at| {
+                records[at..]
+                    .iter()
+                    .filter(|record| record["kind"] == "arena-send")
+                    .count()
+            });
         if after >= 10 || Instant::now() >= deadline {
             break;
         }
@@ -1503,14 +1527,24 @@ async fn pause_and_resume() {
     drop(stdin);
 
     let records = &landed.records;
-    let send_at = position_of(records, 0, "control", "/send STATUS").expect("the /send record");
+    let pause_at = position_of(records, 0, "control", "/pause").expect("the /pause record");
+    let unpaused_at = position_of(records, pause_at, "control", "/resume")
+        .expect("the /pause's own /resume record");
+    let send_at =
+        position_of(records, unpaused_at, "control", "/send STATUS").expect("the /send record");
     let resume_at =
-        position_of(records, send_at, "control", "/resume").expect("the /resume record");
+        position_of(records, send_at, "control", "/resume").expect("the /send's /resume record");
+    assert!(
+        !records[pause_at..unpaused_at]
+            .iter()
+            .any(|record| record["kind"] == "arena-send"),
+        "the lane typed while paused by /pause"
+    );
     assert!(
         !records[send_at..resume_at]
             .iter()
             .any(|record| record["kind"] == "arena-send"),
-        "the lane typed while paused"
+        "the lane typed while paused by /send"
     );
     let said = landed.events("arena");
     let paused = said
@@ -1521,10 +1555,39 @@ async fn pause_and_resume() {
         .iter()
         .position(|text| {
             text.starts_with("Resumed after ")
-                && text.ends_with(" s; every wait starts again from now.")
+                && text.ends_with(" s; the lobby's waits go on where they stood.")
         })
         .unwrap_or_else(|| panic!("the resume is said: {said:?}"));
     assert!(paused < resumed, "{said:?}");
+    // Cut AO.2: the runner's main path ticked the paused lane. No command was
+    // pending through the `/pause` (every `command-result` but `STATUS`'s,
+    // the login's among them, lies before it), and an `arena-picture`
+    // record, which only `Runner::arena_tick` writes, lies between the
+    // `/pause` and its `/resume`.
+    let results: Vec<usize> = records
+        .iter()
+        .enumerate()
+        .filter(|(_, record)| {
+            record["kind"] == "command-result" && record["data"]["command"] != "STATUS"
+        })
+        .map(|(index, _)| index)
+        .collect();
+    assert!(
+        !results.is_empty() && results.iter().all(|&at| at < pause_at),
+        "a command was pending through the /pause: {results:?}, /pause at {pause_at}"
+    );
+    let pause_ms = records[pause_at]["elapsed_ms"].as_u64().expect("elapsed");
+    let picture = records[pause_at..unpaused_at]
+        .iter()
+        .find(|record| record["kind"] == "arena-picture")
+        .unwrap_or_else(|| panic!("no arena-picture record while paused"));
+    let picture_ms = picture["elapsed_ms"].as_u64().expect("elapsed");
+    println!(
+        "REPL: /pause at {pause_ms} ms; an arena-picture at {picture_ms} ms ({} ms into the \
+         pause); its /resume at {} ms",
+        picture_ms - pause_ms,
+        records[unpaused_at]["elapsed_ms"].as_u64().unwrap_or(0)
+    );
     let first = records
         .iter()
         .enumerate()

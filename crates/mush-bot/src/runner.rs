@@ -369,6 +369,32 @@ fn pause_action(flying: bool, stopped: bool, paused: bool, running: bool) -> Opt
     }
 }
 
+/// **Whether this tick is the lane's** (cut AJ.2; cut AO.2): it flies and
+/// the run is running, or it flies **paused** and is not stopped — a paused
+/// lane is ticked so it keeps reading and settles (its stale tail flushed,
+/// its picture settled), typing nothing — or its one `SIM LEAVE` is due, or
+/// its result is not yet written.
+fn arena_due_for(
+    flying: bool,
+    running: bool,
+    paused: bool,
+    stopped: bool,
+    leave_pending: bool,
+    unreported_result: bool,
+) -> bool {
+    (flying && (running || (paused && !stopped))) || leave_pending || unreported_result
+}
+
+/// **Whether the lane's tick is the runner's whole tick** (cut AO.2): a
+/// running lane's is (no speech, scenario, activity, social or goal model turn
+/// runs while it flies); a **paused** lane's never is — it reads and settles,
+/// types nothing, and the runner's tick goes on past it exactly as it did
+/// before the lane was ticked while paused (a `/step` still takes its one goal
+/// turn, a pending speech or scenario arm still runs).
+fn arena_tick_ends_tick(paused: bool) -> bool {
+    !paused
+}
+
 struct Boundary {
     path: PathBuf,
     resume_status: String,
@@ -1629,20 +1655,35 @@ impl App {
         self.arena_events(events)
     }
 
-    /// Whether this tick is the lane's: it flies and the run is running, its one
-    /// `SIM LEAVE` is due, or its result is not yet written.
+    /// Whether this tick is the lane's ([`arena_due_for`]): it flies and the
+    /// run is running, it flies paused (cut AO.2), its one `SIM LEAVE` is due,
+    /// or its result is not yet written.
     fn arena_due(&self) -> bool {
         let now = self.elapsed_ms();
         self.arena.as_ref().is_some_and(|lane| {
-            (lane.flying() && self.state.status == "running")
-                || lane.leave_pending(now)
-                || (!self.arena_reported && !lane.stopped() && lane.result().is_some())
+            arena_due_for(
+                lane.flying(),
+                self.state.status == "running",
+                lane.paused(),
+                lane.stopped(),
+                lane.leave_pending(now),
+                !self.arena_reported && !lane.stopped() && lane.result().is_some(),
+            )
         })
+    }
+
+    /// The lane is paused (cut AO.2): its tick never ends the runner's.
+    fn arena_paused(&self) -> bool {
+        self.arena.as_ref().is_some_and(|lane| lane.paused())
     }
 
     /// The lane's tick: its lines, its events, its picture record and its
     /// result. No speech, scenario, activity, social or goal model turn runs
-    /// while it flies.
+    /// while it flies, except while it is paused (cut AO.2: then the runner's
+    /// tick goes on past it). The commander asks nothing while paused
+    /// ([`crate::arena::Lane::commander_ready`]). A blocker read while paused
+    /// types its owed `SIM LEAVE` and writes its result while paused, as the
+    /// lane already does.
     async fn arena_tick(&mut self) -> Result<()> {
         let now = self.elapsed_ms();
         let Some(lane) = self.arena.as_mut() else {
@@ -2213,8 +2254,16 @@ impl App {
         if self.checkpoint_tick().await? {
             return Ok(());
         }
+        // **A paused lane's tick never ends the runner's** (cut AO.2): it
+        // reads and settles, types nothing, and the tick goes on exactly as
+        // before (a `/step` still takes its one goal turn, a pending speech or
+        // scenario arm still runs); a running lane's tick is the whole tick.
         if self.arena_due() {
-            return self.arena_tick().await;
+            let ends = arena_tick_ends_tick(self.arena_paused());
+            self.arena_tick().await?;
+            if ends {
+                return Ok(());
+            }
         }
         if self.speech.is_some() {
             self.dispatch_speech().await?;
@@ -3322,5 +3371,64 @@ mod tests {
         assert_eq!(pause_action(true, false, false, true), None, "flying on");
         assert_eq!(pause_action(true, true, false, false), None, "stopped");
         assert_eq!(pause_action(false, false, false, false), None, "finished");
+    }
+
+    /// **A paused flying lane is due** (cut AO.2): `arena_due_for` over all
+    /// sixty-four cases of its six inputs, then the cases that matter by name.
+    #[test]
+    fn a_paused_flying_lane_is_due() {
+        let both = [false, true];
+        for flying in both {
+            for running in both {
+                for paused in both {
+                    for stopped in both {
+                        for leave in both {
+                            for result in both {
+                                let expected = (flying && running)
+                                    || (flying && paused && !stopped)
+                                    || leave
+                                    || result;
+                                assert_eq!(
+                                    arena_due_for(flying, running, paused, stopped, leave, result),
+                                    expected,
+                                    "flying {flying}, running {running}, paused {paused}, \
+                                     stopped {stopped}, leave {leave}, result {result}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Paused and flying: due, the run not running.
+        assert!(arena_due_for(true, false, true, false, false, false));
+        // Paused and stopped: not due, unless a leave or a result is owed.
+        assert!(!arena_due_for(true, false, true, true, false, false));
+        assert!(
+            arena_due_for(true, false, true, true, true, false),
+            "a leave"
+        );
+        assert!(
+            arena_due_for(true, false, true, true, false, true),
+            "a result"
+        );
+        // Running and flying: due.
+        assert!(arena_due_for(true, true, false, false, false, false));
+        // Neither running nor paused: not due.
+        assert!(!arena_due_for(true, false, false, false, false, false));
+        assert!(!arena_due_for(false, false, false, false, false, false));
+    }
+
+    /// **A paused lane's tick never ends the runner's** (cut AO.2): the
+    /// runner's main path goes on past a paused lane's tick (so a `/step`
+    /// still takes its goal turn), and a running lane's tick is the whole
+    /// tick.
+    #[test]
+    fn a_paused_lanes_tick_never_ends_the_runners() {
+        assert!(!arena_tick_ends_tick(true), "paused: the tick goes on");
+        assert!(
+            arena_tick_ends_tick(false),
+            "running: the lane's tick is the tick"
+        );
     }
 }

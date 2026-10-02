@@ -110,16 +110,18 @@
 //!   bot takes those as arrival-frame edges, which is why the round trip comes
 //!   off. **Anyone re-reading live transcripts** (a round trip of 35 to 48 ms
 //!   on the dev box) **must read them net of the round trip**, or it is taken
-//!   off twice. With the runner's 50 ms tick, +175 lands the arrival between
-//!   +150 (every send accepted) and +250 (the next lattice point), so the shot
-//!   goes on the floor: one cycle and one lattice step apart. **Measured
-//!   from the muster (cut AN.3's runs, local, a round trip of 1 to 2 ms)**
-//!   that edge did not hold: read against the phase learned here, a `FIRE`
-//!   175 to 250 ms past the ready instant was refused about as often as it
-//!   was accepted, and from +250 almost always accepted (AN.1's run, on AL's
-//!   clock, reads the same) — past this guard's bound, so the bench kept most
-//!   guns on AL's clock and the machine gun's shots stayed a median of about
-//!   1 500 ms apart.
+//!   off twice. **The edge is about a lattice step past the instant** (cut
+//!   AO.2): read against the phase learned here, the bot's own muster
+//!   transcripts (local, a round trip of 1 to 2 ms) had the arena accept 42
+//!   of 98 `FIRE`s sent 150 to 199 ms past it, 33 of 64 at 200 to 249 and 55
+//!   of 61 at 250 to 299, so AN.3's guard of 175 was refused about half the
+//!   time and the bench kept most guns on AL's clock. The clock now waits for
+//!   that edge: with the runner's 50 ms tick, a guard of 275 lands the arrival
+//!   at +275 to +325, past it. The shot is then expected one cycle and two
+//!   lattice steps after the last — about 1 500 ms for the machine gun, as
+//!   AL's clock reads live; no line-mode clock is predicted to beat that — and
+//!   what the lattice clock can buy at that gap is fewer refused lines. Whether
+//!   the knob stays on by default is left to the pooled runs.
 //! * **The bench**: two `Still cycling` answers to a lattice-clocked gun's own
 //!   `FIRE` inside [`LATTICE_BENCH_MS`] put that gun back on AL's clock for
 //!   that long ([`LATTICE_MISSES_OFF`]; `The {w} is off the lattice clock for
@@ -250,11 +252,14 @@ pub const LATTICE_SAMPLES: usize = 24;
 pub const LATTICE_MIN_SAMPLES: usize = 8;
 /// …and at least this share of the kept notices, per mille. Not tunable.
 pub const LATTICE_SHARE_PER_MILLE: usize = 750;
-/// **The guard** (cut AN.3): a lattice-clocked gun is typed this long past
-/// the instant it is ready, net of the round trip (the module head: AL's
-/// accepted-from-+150 edge, under the next lattice point at +250, with the
-/// runner's 50 ms tick). Tunable 150..=200.
-pub const LATTICE_GUARD_MS: u64 = 175;
+/// **The guard** (cut AN.3; widened in cut AO.2): a lattice-clocked gun is
+/// typed this long past the instant it is ready, net of the round trip. The
+/// bot's own transcripts (local, a round trip of 1 to 2 ms) read the arena's
+/// edge about a lattice step past that instant: it accepted 42 of 98 `FIRE`s
+/// sent 150 to 199 ms past it, 33 of 64 at 200 to 249, and 55 of 61 at 250 to
+/// 299. With the runner's 50 ms tick, a guard of 275 lands the arrival at +275
+/// to +325, past the edge (the module head). Tunable 150..=300.
+pub const LATTICE_GUARD_MS: u64 = 275;
 /// Above this round trip the lattice is off and AL's clock flies. Not
 /// tunable.
 pub const LATTICE_RTT_MAX_MS: u64 = 200;
@@ -266,7 +271,7 @@ pub const LATTICE_MISSES_OFF: usize = 2;
 /// …inside this long bench the gun from the lattice clock for this long. Not
 /// tunable.
 pub const LATTICE_BENCH_MS: u64 = 30_000;
-const _: () = assert!(LATTICE_BIN_MS < LATTICE_MS && LATTICE_GUARD_MS < LATTICE_MS);
+const _: () = assert!(LATTICE_BIN_MS < LATTICE_MS && LATTICE_GUARD_MS < 2 * LATTICE_MS);
 
 /// **The next lattice point after `at`** (cut AN.3): the smallest `L > at`
 /// with `L % LATTICE_MS == p` (`p` is taken modulo [`LATTICE_MS`]).
@@ -2708,6 +2713,14 @@ impl Picture {
         // both ways, and with no clock it is the later bound; any other row
         // leaves nothing to count but the row.
         match row.cycling_s {
+            // Cut AO.2: a row read inside the guard is the cockpit's frame,
+            // not the arena's acceptance, so a lattice-clocked gun keeps its
+            // later clock; AL's clock (the gun off the lattice) is the row's
+            // time, as before.
+            None if row.ready && weapon.on_lattice => {
+                weapon.next_ready_ms =
+                    Some(weapon.next_ready_ms.map_or(read_ms, |at| at.max(read_ms)));
+            }
             None if row.ready => weapon.next_ready_ms = Some(read_ms),
             None => weapon.next_ready_ms = None,
             Some(secs) => {
@@ -6472,6 +6485,55 @@ mod tests {
             &["machine_gun (mg)  cycling (1 s)  478 of 500 round(s)"],
         );
         assert_eq!(weapon(&p, "machine_gun").next_ready_ms, Some(11_250));
+    }
+
+    /// **A ready row never pulls a lattice clock early** (cut AO.2): a
+    /// `ready` row read inside the guard — inside [`READY_AFTER_ACK_MS`] of
+    /// the ack, its rounds one fewer, so the stale-ready guard lets it through
+    /// — is the cockpit's frame, not the arena's acceptance, and a
+    /// lattice-clocked gun keeps its later clock; with the lattice off the
+    /// same row sets AL's clock to its own time, as before.
+    #[test]
+    fn a_ready_row_never_pulls_a_lattice_clock_early() {
+        let at_10_102 = |on: bool| {
+            let mut p = lattice_picture(on);
+            notices_at_phase_five(&mut p);
+            mg_learned(&mut p, 40);
+            mg_shot(&mut p, 10_102, 40);
+            p
+        };
+        let row = "machine_gun (mg)  ready  479 of 500 round(s)";
+        // The ack's lattice clock, and the row read before it.
+        let mut p = at_10_102(true);
+        let clock = next_lattice(10_102, 5) + 1_000 + LATTICE_GUARD_MS - 40;
+        let read = 11_200;
+        const { assert!(11_200 - 10_102 < READY_AFTER_ACK_MS) };
+        assert!(read < clock);
+        let mg = weapon(&p, "machine_gun");
+        assert!(mg.on_lattice);
+        assert_eq!(mg.next_ready_ms, Some(clock));
+        assert_eq!((mg.rounds, mg.shots_since_read), (480, 1));
+        rows_at(&mut p, read, &[row]);
+        let mg = weapon(&p, "machine_gun");
+        assert_eq!(mg.read_ms, read, "the stale-ready guard let it through");
+        assert!(mg.ready);
+        assert_eq!(mg.next_ready_ms, Some(clock), "the lattice clock kept");
+        // A ready row read after that clock is the evidence, as before.
+        mg_shot(&mut p, 12_102, 40);
+        let later = next_lattice(12_102, 5) + 1_000 + LATTICE_GUARD_MS - 40 + 10;
+        rows_at(
+            &mut p,
+            later,
+            &["machine_gun (mg)  ready  478 of 500 round(s)"],
+        );
+        assert_eq!(weapon(&p, "machine_gun").next_ready_ms, Some(later));
+        // The lattice off: the same row sets the clock to its read time.
+        let mut p = at_10_102(false);
+        let mg = weapon(&p, "machine_gun");
+        assert!(!mg.on_lattice);
+        assert_eq!(mg.next_ready_ms, Some(10_102 + 1_000 + mg.slack_ms));
+        rows_at(&mut p, read, &[row]);
+        assert_eq!(weapon(&p, "machine_gun").next_ready_ms, Some(read));
     }
 
     /// **The lattice is forgotten at a new match** (cut AN.3): the samples,

@@ -84,12 +84,16 @@
 //!
 //! **The pause** (cut AM.2, 16c Q-AM2). The runner pauses the lane whenever
 //! the run stops being `running` ([`Lane::pause`]) and resumes it when it runs
-//! again ([`Lane::resume`]). Paused, the lane types nothing and reads on (its
-//! picture stays current; the lobby reads every line at the pause instant), so
-//! a tank left sitting in a match is the person's choice. Resumed, every lobby
-//! wait starts again from the resume and the fight is made afresh. The pilot's
-//! own clocks, the commander's schedule and the run's time limit are not
-//! moved. A stop ends a pause with no shift.
+//! again ([`Lane::resume`]). Paused, the lane types nothing and the runner
+//! still ticks it (the runner's `arena_due_for`, cut AO.2), so it reads on and
+//! settles (its stale tail flushed, its picture current; the lobby reads every
+//! line at the pause instant) and the commander asks nothing
+//! ([`Lane::commander_ready`]); a tank left sitting in a match is the person's
+//! choice. Resumed, every lobby wait is moved on by the pause's length, so each
+//! goes on where it stood (a clock set by a line read while paused starts from
+//! the resume), and the fight is made afresh. The pilot's own clocks, the
+//! commander's schedule and the run's time limit are not moved. A stop ends a
+//! pause with no shift.
 //!
 //! **The journal filter.** The lane remembers the last 32 lines it typed; a line
 //! equal to one of them is the terminal's echo and is not read at all, and
@@ -749,10 +753,14 @@ impl Lane {
         ));
     }
 
-    /// **Resume** at `now_ms` (cut AM.2): every lobby wait starts again from
-    /// now (`Lobby::resume`), and the fight is made afresh, so the first
-    /// `STATUS` and `WEAPONSTATUS` go at once and the heading and the speed
-    /// are ordered again, as after a re-board. Nothing when not paused.
+    /// **Resume** at `now_ms` (cut AM.2): every lobby wait is moved on by the
+    /// pause's length (`Lobby::resume`), so each goes on where it stood — a
+    /// lobby step's answer, the start and boarding bounds, a rematch — while
+    /// the pilot's own clocks (its opening, its back-offs' and returns' waits)
+    /// ran on through the pause (cut AO.2: the sentence says so); and the
+    /// fight is made afresh, so the first `STATUS` and `WEAPONSTATUS` go at
+    /// once and the heading and the speed are ordered again, as after a
+    /// re-board. Nothing when not paused.
     pub fn resume(&mut self, now_ms: u64) {
         let Some(at) = self.paused_at.take() else {
             return;
@@ -760,7 +768,7 @@ impl Lane {
         self.lobby.resume(now_ms);
         self.fight = None;
         self.events.push(LaneEvent::Said(format!(
-            "Resumed after {} s; every wait starts again from now.",
+            "Resumed after {} s; the lobby's waits go on where they stood.",
             now_ms.saturating_sub(at).saturating_add(500) / 1_000
         )));
     }
@@ -899,9 +907,11 @@ impl Lane {
     /// when the pilot is flying, the commander is on and no call is in flight.
     /// The ask is then in flight, with the `CONTACTS` period in force (1 000 ms
     /// holding a contact, 5 000 ms searching; the stale bound is twice it).
+    /// **Never while paused** (cut AO.2): a paused run spends nothing; a reply
+    /// already in flight is applied as before.
     pub fn commander_due(&mut self, now_ms: u64) -> Option<Value> {
         self.commander_sync(now_ms);
-        let due = if self.fighting() {
+        let due = if self.fighting() && self.paused_at.is_none() {
             let held = !self.picture.contacts.is_empty();
             self.commander.due(now_ms, held)
         } else {
@@ -918,11 +928,12 @@ impl Lane {
 
     /// **Would an ask be due now?** [`Lane::commander_due`] without marking or
     /// counting anything ([`Schedule::ready`]): the runner asks this first,
-    /// then checks the budget, then takes the ask.
+    /// then checks the budget, then takes the ask. False while paused (cut
+    /// AO.2).
     pub fn commander_ready(&mut self, now_ms: u64) -> bool {
         self.commander_sync(now_ms);
         self.commander_records();
-        self.fighting() && self.commander.ready(now_ms)
+        self.fighting() && self.paused_at.is_none() && self.commander.ready(now_ms)
     }
 
     /// **What came back** for the call in flight: a timely valid doctrine goes
@@ -1250,7 +1261,10 @@ impl Lane {
         // Paused (cut AM.2): the reading goes on, and nothing is typed — no
         // lobby poll, no pilot, no commander. A lane whose lobby closed while
         // paused (a blocker read then) flies no more, and its one `SIM LEAVE`
-        // still goes.
+        // still goes, and its result is written, while paused. Cut AO.2: the
+        // runner ticks a paused lane (`arena_due_for` in `runner.rs`), so this
+        // branch — the stale tail flushed, the picture settled, `after` — is
+        // the runner's own path, not only the tests'.
         if self.paused_at.is_some() && !self.stopped && self.flying() {
             self.after(now_ms);
             return Vec::new();

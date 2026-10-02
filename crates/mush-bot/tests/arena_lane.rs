@@ -75,10 +75,11 @@
 //! the lattice point the shot went on plus 5 ms, rather than 600 ms after its
 //! `FIRE`: the arena's own notices on its lattice, as the bot's transcripts
 //! read them), `accept_lag_ms` (a `FIRE` passes the pre-check only at `now ≥
-//! start + cycle + accept_lag_ms`: the floor test uses 100, inside the
+//! start + cycle + accept_lag_ms`: AN.3's floor test flew 100, inside the
 //! "+50 to +150" an earlier reading of the bot's transcripts put past each
-//! gun's ready instant; the measured runs from the muster read the live
-//! edge nearer +250, and one test flies 225, past the guard) and
+//! gun's ready instant; since cut AO.2 the lattice rigs fly
+//! `LIVE_EDGE_LAG_MS`, the 250 the measured runs from the muster read, and
+//! one test flies `LATTICE_GUARD_MS + 75`, past the guard) and
 //! [`Wire::steady`] (a wire with a fixed delay each way: no jitter, no split,
 //! no injection, TCP order kept).
 //!
@@ -87,6 +88,11 @@
 //! coarse as the row: BA read on the scope's rows alone); and since the room
 //! rule moves the opening in from a muster with too little ground behind it,
 //! the opening's tests whose subject is not the room fly from (400, 970).
+//!
+//! Cut AO.2 adds, off by default too, `slot_dropped` (set by
+//! `start_without_us`: the match started with the bot's slot dropped, and
+//! `BOARD` answered `You hold no slot in the simulator.` until the match
+//! ends), and re-bases the lattice rigs on `LIVE_EDGE_LAG_MS`.
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     ops::RangeInclusive,
@@ -106,8 +112,8 @@ use mush_bot::arena::{
     lobby::{Centre, REMATCH_AFTER_MS, Step, TRANSIENT_RETRY_MS},
     picture::{
         ACK_PAIR_MS, CYCLE_READ_WITHIN_MS, FIRE_RETRY_MS, FIRE_SLACK_MAX_MS, FIRE_SLACK_START_MS,
-        FIRE_SLACK_UP_MS, Phase, Picture, Power, ResultWord, SNAPSHOT_SETTLE_MS, Weapon,
-        bearing_deg,
+        FIRE_SLACK_UP_MS, LATTICE_GUARD_MS, LATTICE_RTT_MAX_MS, Phase, Picture, Power, ResultWord,
+        SNAPSHOT_SETTLE_MS, Weapon, bearing_deg,
     },
     pilot::{
         ENTRY_KEEP_OUT_M, EXCHANGE_MARGIN, EXCHANGE_MIN_TAKEN, EXCHANGE_WINDOW_MS, FOLLOW_BAND_M,
@@ -363,8 +369,8 @@ struct Server {
     /// **The acceptance lag** (cut AN.3): a `FIRE` passes the pre-check only
     /// at `now ≥ start + cycle + accept_lag_ms` of the gun's last shot as
     /// well (an earlier reading of the transcripts put the live edge at +50
-    /// to +150; the muster runs read it nearer +250); 0, the rule as before,
-    /// unless a test sets it.
+    /// to +150; the muster runs read it nearer +250, `LIVE_EDGE_LAG_MS`); 0,
+    /// the rule as before, unless a test sets it.
     accept_lag_ms: u64,
     /// **BA's plot age** (cut AO.1): with `ba_at` set, BA's row prints `{s}
     /// s` and the lock's `RANGE` answers `Range to BA: {r} m, plotted {s} s
@@ -373,6 +379,10 @@ struct Server {
     /// (`help cockpit`, "Seeing"), so BA is read on the scope's rows alone.
     /// Unset, `1 s` and the whole range, as before.
     ba_plotted_s: Option<u32>,
+    /// **The slot dropped** (cut AO.2; [`start_without_us`]): the boarding
+    /// window closed with nobody seated in the bot's slot, so `BOARD` is
+    /// answered `You hold no slot in the simulator.` until [`Server::end`].
+    slot_dropped: bool,
 }
 
 /// The transient the cut AM.1 knobs answer with.
@@ -430,6 +440,7 @@ impl Server {
             lattice_notices: false,
             accept_lag_ms: 0,
             ba_plotted_s: None,
+            slot_dropped: false,
         }
     }
 
@@ -722,7 +733,9 @@ impl Server {
             }
             "red" => self.say(3, "Red Room #57\nThe red team room."),
             "BOARD" => {
-                if self.running && self.handing_over > 0 {
+                if self.slot_dropped {
+                    self.say(3, "You hold no slot in the simulator.");
+                } else if self.running && self.handing_over > 0 {
                     self.handing_over -= 1;
                     self.say(
                         3,
@@ -967,6 +980,7 @@ impl Server {
             &format!("Match {id} is over ({word}). Its units are checked in."),
         );
         self.match_id += 1;
+        self.slot_dropped = false;
         self.locked = None;
         self.contacts.clear();
         self.fired.clear();
@@ -5135,7 +5149,7 @@ fn a_pause_longer_than_the_step_timeout_does_not_block() {
     assert_eq!(run.lane.lobby().slot(), Some(1));
     for sentence in [
         "Paused: typing nothing until /resume; still reading.",
-        "Resumed after 20 s; every wait starts again from now.",
+        "Resumed after 20 s; the lobby's waits go on where they stood.",
         "Claimed red slot 1 (RA), leading the side.",
     ] {
         assert!(
@@ -5145,6 +5159,151 @@ fn a_pause_longer_than_the_step_timeout_does_not_block() {
         );
     }
     assert_eq!(run.sends_of("SIM TEAM red", 0).len(), 1, "claimed once");
+}
+
+/// **A paused lane reads and settles** (cut AO.2): paused mid-fight with a
+/// `CONTACTS` reply on its way, the reply delivered while paused reaches the
+/// picture through the lane's ticks alone (the picture settled; nothing typed
+/// to close it), nothing is typed, and the commander would ask nothing while
+/// paused, though it would just before the pause and does again after the
+/// resume.
+#[test]
+fn a_paused_lane_reads_and_settles() {
+    let mut run = to_the_fight(base());
+    // The runner's order: the commander would ask at power online.
+    let end = run.now + 200;
+    while !run.lane.commander_ready(run.now) {
+        assert!(run.now < end, "an ask is due at power online");
+        run.step();
+    }
+    // The next `CONTACTS` typed: BA on the scope as its reply is handed out,
+    // and the lane paused before it arrives.
+    let from = run.now + 1;
+    assert!(
+        run.until(10_000, |run| !run.sends_of("CONTACTS", from).is_empty()),
+        "{:?}",
+        run.lines()
+    );
+    run.server.contacts = vec!["BA  blue  bearing 000° (rel 270°)  far  450 m  1 s".into()];
+    assert!(run.lane.picture().contacts.is_empty(), "nothing held yet");
+    run.lane.pause(run.now);
+    assert!(!run.lane.commander_ready(run.now), "paused");
+    let typed = run.sent.len();
+    let paused = run.now;
+    while run.now < paused + 3_000 {
+        run.step();
+        assert!(!run.lane.commander_ready(run.now), "paused at {}", run.now);
+    }
+    assert!(
+        run.lane.picture().contacts.contains_key("BA"),
+        "{:?}",
+        run.lane.picture().contacts
+    );
+    assert_eq!(
+        run.sent.len(),
+        typed,
+        "typed while paused: {:?}",
+        &run.lines()[typed..]
+    );
+    run.lane.resume(run.now);
+    let end = run.now + 200;
+    while !run.lane.commander_ready(run.now) {
+        assert!(run.now < end, "an ask is due again after the resume");
+        run.step();
+    }
+}
+
+/// **A start without us** (cut AO.2; test only): the boarding window closes
+/// with nobody seated in the bot's slot, so the game drops the slot and runs
+/// the match, and every `BOARD` is answered `You hold no slot in the
+/// simulator.` until the match ends ([`Server::end`] clears it).
+fn start_without_us(run: &mut Run) {
+    let id = run.server.match_id;
+    run.server.now = run.now;
+    run.server.board = "running".into();
+    run.server.running = true;
+    run.server.slot_dropped = true;
+    run.server.say(
+        0,
+        &format!(
+            "Pilot never boarded; red slot 1 is dropped.\nMatch {id} is running. Good hunting."
+        ),
+    );
+}
+
+/// **A pause through the boarding and the start loses that match** (cut
+/// AO.2): two matches; the lane paused as `SIM START` is typed, so match 1's
+/// boarding is read while paused, and the match starts without the bot (the
+/// slot dropped); resumed, the lane walks to the team room and types `BOARD`,
+/// answered with no slot: `Match 1 started without us; waiting for it to
+/// end.` is said once, nothing blocks, match 1 is recorded `left`, and once
+/// it ends match 2 is claimed, boarded and flown.
+#[test]
+fn a_pause_through_the_boarding_and_the_start_loses_that_match() {
+    let mut run = Run::new(Settings {
+        matches: 2,
+        ..base()
+    });
+    until_typed(&mut run, "SIM START");
+    run.lane.pause(run.now);
+    let typed = run.sent.len();
+    run.until(10_000, |_| false);
+    assert_eq!(run.lane.lobby().step(), Step::ToRoom, "the boarding read");
+    start_without_us(&mut run);
+    run.until(5_000, |_| false);
+    assert_eq!(
+        run.sent.len(),
+        typed,
+        "typed while paused: {:?}",
+        &run.lines()[typed..]
+    );
+    let resumed = run.now;
+    run.lane.resume(resumed);
+    let lost = "Match 1 started without us; waiting for it to end.";
+    assert!(
+        run.until(5_000, |run| run.said.iter().any(|s| s == lost)),
+        "sent {:?}, said {:?}",
+        run.lines(),
+        run.said
+    );
+    let after: Vec<&str> = run.sent[typed..].iter().map(|s| s.line.as_str()).collect();
+    assert_eq!(after, ["red", "BOARD"]);
+    // The match runs on without the bot: nothing typed, nothing blocks.
+    run.until(base().step_timeout_ms + 5_000, |_| false);
+    assert_eq!(run.sent.len(), typed + 2, "{:?}", &run.lines()[typed..]);
+    assert_eq!(run.lane.lobby().blocker(), None);
+    assert_eq!(run.lane.report().matches.len(), 1);
+    assert_eq!(run.lane.report().matches[0].match_id, 1);
+    assert_eq!(run.lane.report().matches[0].result, "left");
+    run.server.end(run.now, "blue");
+    assert!(
+        run.until(60_000, Run::fighting),
+        "match 2 never flew: sent {:?}, said {:?}",
+        run.lines(),
+        run.said
+    );
+    assert_eq!(run.said.iter().filter(|s| *s == lost).count(), 1);
+    assert_eq!(run.lane.lobby().blocker(), None);
+    assert_eq!(run.sends_of("SIM TEAM red", 0).len(), 2, "match 2 claimed");
+    assert_eq!(run.sends_of("BOARD", 0).len(), 2, "match 2 boarded");
+    assert!(
+        run.said
+            .iter()
+            .any(|s| s == "Match 2 is running; starting the tank."),
+        "{:?}",
+        run.said
+    );
+    run.server.end(run.now, "red");
+    assert!(run.until(5_000, |run| run.lane.result().is_some()));
+    let report = run.lane.report();
+    assert_eq!(report.matches.len(), 2);
+    assert_eq!(
+        (
+            report.matches[0].result.as_str(),
+            report.matches[1].result.as_str()
+        ),
+        ("left", "red")
+    );
 }
 
 /// **A match ending mid-pause rematches after the resume** (cut AM.2): two
@@ -5761,9 +5920,9 @@ fn with_the_knobs_off_the_lane_is_as_it_was() {
 /// **The lattice rig** (cut AN.3): the arena fires on its 250 ms pulse,
 /// says each shot's outcome on the lattice point it went on
 /// (`lattice_notices`) and accepts a gun's `FIRE` only `accept_lag_ms` past
-/// its ready instant (100 at the floor: inside the "+50 to +150" an earlier
-/// reading of the transcripts gave; the muster runs read the live edge nearer
-/// +250); a 200-round magazine. Locked on BA with both cycles learned first,
+/// its ready instant ([`LIVE_EDGE_LAG_MS`] since cut AO.2, the edge the
+/// muster runs read; AN.3 flew 100, inside the "+50 to +150" an earlier
+/// reading of the transcripts gave); a 200-round magazine. Locked on BA with both cycles learned first,
 /// then two minutes. Prints each gun's two gap counts and its refusals; the
 /// run, when the two minutes began, and each gun's `FIRE` lines and
 /// still-cycling refusals in them.
@@ -5805,24 +5964,51 @@ fn at_the_lattice_floor(
     (run, start, counts)
 }
 
-/// **Full rate at the lattice floor** (cut AN.3): with the lattice on, the
-/// machine gun's shots are a median of at most a cycle and a lattice step
-/// apart (its line-mode floor) and a p90 of at most two steps, the cannon's
-/// median at most its cycle and a step, at most one `FIRE` line in ten of
-/// each gun refused as still cycling, and the lattice said once. The same
-/// rig with the lattice off prints its figures for the record.
+/// **The live edge** (cut AO.2): the acceptance lag the lattice rigs fly. The
+/// bot's own run-1 transcript of 2026-10-01 (a local server, a round trip of
+/// 1 to 2 ms), read against the lattice the bot learned, had the arena accept
+/// 42 of 98 `FIRE`s sent 150 to 199 ms past the instant the clock called the
+/// gun ready, 33 of 64 at 200 to 249 and 55 of 61 at 250 to 299: the edge
+/// about a lattice step past that instant, not the +100 an earlier reading
+/// gave.
+const LIVE_EDGE_LAG_MS: u64 = 250;
+
+/// **The lattice at the live edge** (cut AO.2; it replaces AN.3's floor test,
+/// whose +100 ms edge and 1 250 ms machine-gun floor the live runs refuted):
+/// the lattice rig at [`LIVE_EDGE_LAG_MS`], on against off. With the lattice
+/// on, each gun has at most one `FIRE` line in ten refused as still cycling
+/// and no more than with it off; the machine gun's median shot gap is no more
+/// than off's and a tick, and its median and 90th percentile at most a cycle
+/// and two lattice steps (no line-mode clock is predicted to beat that at this
+/// edge, and the clock that waits for it never slips a step); the cannon's at
+/// most its cycle and two steps; the lattice is said once; and the picture's
+/// lattice keys are as before. Then the old 100 ms rig, printed for the
+/// record.
 #[test]
-fn full_rate_at_the_lattice_floor() {
-    let (run, start, counts) = at_the_lattice_floor(true, 100);
+fn the_lattice_at_the_live_edge() {
+    let (run, start, counts) = at_the_lattice_floor(true, LIVE_EDGE_LAG_MS);
+    let (off, off_start, off_counts) = at_the_lattice_floor(false, LIVE_EDGE_LAG_MS);
     let (_, shot) = both_gaps(&run, start);
+    let (_, off_shot) = both_gaps(&off, off_start);
+    println!("lag {LIVE_EDGE_LAG_MS}: shots on {shot:?}; off {off_shot:?}");
+    println!("lag {LIVE_EDGE_LAG_MS}: FIRE lines and refusals on {counts:?}; off {off_counts:?}");
+    for ((weapon, lines, refused), (_, _, off_refused)) in counts.iter().zip(&off_counts) {
+        assert!(refused * 10 <= *lines, "{weapon}: {refused} of {lines}");
+        assert!(
+            refused <= off_refused,
+            "{weapon}: {refused} refused on, {off_refused} off"
+        );
+    }
     let mg = shot.get("machine_gun").expect("machine-gun shots");
-    assert!(mg.p50_ms <= 1_000 + LATTICE_MS, "{shot:?}");
+    let mg_off = off_shot.get("machine_gun").expect("machine-gun shots, off");
+    assert!(
+        mg.p50_ms <= mg_off.p50_ms + TICK_MS,
+        "on {shot:?}; off {off_shot:?}"
+    );
+    assert!(mg.p50_ms <= 1_000 + 2 * LATTICE_MS, "{shot:?}");
     assert!(mg.p90_ms <= 1_000 + 2 * LATTICE_MS, "{shot:?}");
     let cannon = shot.get("cannon").expect("cannon shots");
-    assert!(cannon.p50_ms <= 6_000 + LATTICE_MS, "{shot:?}");
-    for (weapon, lines, refused) in counts {
-        assert!(refused * 10 <= lines, "{weapon}: {refused} of {lines}");
-    }
+    assert!(cannon.p50_ms <= 6_000 + 2 * LATTICE_MS, "{shot:?}");
     assert!(
         gun(run.lane.picture(), "machine_gun").is_some_and(|w| w.on_lattice),
         "{:?}",
@@ -5842,29 +6028,31 @@ fn full_rate_at_the_lattice_floor() {
             .is_some_and(|guns| guns.iter().any(|g| g["lattice"] == true)),
         "{json}"
     );
-    // The lattice off, for the record: no assertion.
-    let (off, off_start, _) = at_the_lattice_floor(false, 100);
-    let (_, off_shot) = both_gaps(&off, off_start);
-    println!("lattice off: shots {off_shot:?}");
     assert!(said_starting(&off, "Firing on the arena's lattice").is_empty());
+    // The old 100 ms rig, for the record: no assertion.
+    let (old, old_start, old_counts) = at_the_lattice_floor(true, 100);
+    let (_, old_shot) = both_gaps(&old, old_start);
+    println!("lag 100 (the old floor), lattice on: shots {old_shot:?}; {old_counts:?}");
 }
 
-/// **Past the guard, the bench** (cut AN.3): the same rig with the arena
-/// accepting a `FIRE` only 225 ms past the ready instant, past the lattice
-/// clock's guard, as the muster runs read the live arena. The clock's sends
-/// are refused, each gun is benched (its note said) and flies AL's clock
-/// through the bench. Prints both guns' figures with the lattice on and off
-/// for the record; asserts only the bench, and that the machine gun's median
-/// shot gap with the lattice on is no worse than off by more than a lattice
-/// step (the clock tried again after each bench costs a refusal or two).
+/// **Past the guard, the bench** (cut AN.3; cut AO.2 moves its lag with the
+/// guard): the same rig with the arena accepting a `FIRE` only
+/// `LATTICE_GUARD_MS + 75` past the ready instant, past the lattice clock's
+/// guard. The clock's sends are refused, each gun is benched (its note said)
+/// and flies AL's clock through the bench. Prints both guns' figures with the
+/// lattice on and off for the record; asserts only the bench, and that the
+/// machine gun's median shot gap with the lattice on is no worse than off by
+/// more than a lattice step (the clock tried again after each bench costs a
+/// refusal or two).
 #[test]
 fn past_the_guard_the_bench() {
-    let (on, on_start, on_counts) = at_the_lattice_floor(true, 225);
-    let (off, off_start, off_counts) = at_the_lattice_floor(false, 225);
+    let lag = LATTICE_GUARD_MS + 75;
+    let (on, on_start, on_counts) = at_the_lattice_floor(true, lag);
+    let (off, off_start, off_counts) = at_the_lattice_floor(false, lag);
     let (_, on_shot) = both_gaps(&on, on_start);
     let (_, off_shot) = both_gaps(&off, off_start);
-    println!("lag 225: shots on {on_shot:?}; off {off_shot:?}");
-    println!("lag 225: FIRE lines and refusals on {on_counts:?}; off {off_counts:?}");
+    println!("lag {lag}: shots on {on_shot:?}; off {off_shot:?}");
+    println!("lag {lag}: FIRE lines and refusals on {on_counts:?}; off {off_counts:?}");
     let benched = said_starting(&on, "The machine_gun is off the lattice clock");
     assert!(!benched.is_empty(), "{:?}", on.said);
     assert!(
@@ -5920,11 +6108,11 @@ fn the_slow_wire_is_as_it_was_with_the_lattice() {
     assert!(said_starting(&on, "Firing on the arena's lattice").is_empty());
 }
 
-/// **A steady wire learns the lattice** (cut AN.3): 80 ms each way on the
-/// lattice rig (no acceptance lag): both cycles are learned, the machine gun
-/// is on the lattice, the round trip read is the wire's (150 to 200 ms), and
-/// the machine gun's shots are a median of at most a cycle, a lattice step
-/// and a tick apart.
+/// **A steady wire learns the lattice** (cut AN.3; cut AO.2 puts the rig on
+/// the live edge): 80 ms each way on the lattice rig at [`LIVE_EDGE_LAG_MS`]:
+/// both cycles are learned, the machine gun is on the lattice, the round trip
+/// read is the wire's (150 to 200 ms), and the machine gun's shots are a
+/// median of at most a cycle, two lattice steps and a tick apart.
 #[test]
 fn a_steady_wire_learns_the_lattice() {
     let mut run = to_the_fight_with(
@@ -5935,6 +6123,7 @@ fn a_steady_wire_learns_the_lattice() {
         |server| {
             server.pulse_ms = Some(LATTICE_MS);
             server.lattice_notices = true;
+            server.accept_lag_ms = LIVE_EDGE_LAG_MS;
             server.magazine = Some(200);
         },
     );
@@ -5954,7 +6143,81 @@ fn a_steady_wire_learns_the_lattice() {
     let (fire, shot) = both_gaps(&run, start);
     println!("steady wire: FIRE lines {fire:?}; shots {shot:?}; round trip {rtt:?}");
     let mg = shot.get("machine_gun").expect("machine-gun shots");
-    assert!(mg.p50_ms <= 1_000 + LATTICE_MS + TICK_MS, "{shot:?}");
+    assert!(mg.p50_ms <= 1_000 + 2 * LATTICE_MS + TICK_MS, "{shot:?}");
+}
+
+/// **A round trip over the bound keeps AL's clock** (cut AO.2; the 200 ms
+/// bound's own lane): 105 ms each way (a round trip of about 210 ms on the
+/// wire, read as a little more with the tick: over `LATTICE_RTT_MAX_MS` and
+/// under the 250 ms past which no cycle is learned) on the lattice rig at
+/// [`LIVE_EDGE_LAG_MS`], the lattice on: both cycles and the lattice's phase
+/// are learned, yet no gun
+/// is on the lattice at any step from the sighting on, and the lattice is
+/// never said.
+#[test]
+fn a_round_trip_over_the_bound_keeps_als_clock() {
+    let mut run = to_the_fight_with(
+        Settings {
+            lattice: true,
+            ..base()
+        },
+        |server| {
+            server.pulse_ms = Some(LATTICE_MS);
+            server.lattice_notices = true;
+            server.accept_lag_ms = LIVE_EDGE_LAG_MS;
+            server.magazine = Some(200);
+        },
+    );
+    run.wire = Some(Wire::steady(105));
+    // Every step from the sighting on, through the learning and a minute.
+    let mut on_lattice = false;
+    let mut fly = |run: &mut Run, limit_ms: u64, done: fn(&Run) -> bool| {
+        let end = run.now + limit_ms;
+        while run.now < end {
+            run.step();
+            on_lattice |= run.lane.picture().weapons.iter().any(|w| w.on_lattice);
+            if done(run) {
+                return true;
+            }
+        }
+        false
+    };
+    sight_a_hostile(&mut run);
+    assert!(fly(&mut run, 5_000, |run| run
+        .lane
+        .picture()
+        .lock
+        .is_some()));
+    // Over 200 ms a cycle is learned less often than on a quick wire (the
+    // cannon's row must still be read inside the half second from its send):
+    // a minute for both, not `locked_and_learned`'s twenty seconds.
+    let locked = run.now;
+    assert!(
+        fly(&mut run, 60_000, cycles_learned),
+        "the cycles learned: {:?}",
+        run.lane.picture().weapons
+    );
+    println!(
+        "round trip over the bound: both cycles learned {} ms after the lock",
+        run.now - locked
+    );
+    let start = run.now;
+    fly(&mut run, 60_000, |_| false);
+    let picture = run.lane.picture();
+    assert!(cycles_learned(&run), "{:?}", picture.weapons);
+    // The phase is learned too, so the round-trip bound is the only gate
+    // left between these guns and the lattice.
+    assert!(picture.lattice.phase().is_some(), "{:?}", picture.lattice);
+    let rtt = picture.lattice.rtt();
+    assert!(rtt.is_some_and(|r| r > LATTICE_RTT_MAX_MS), "{rtt:?}");
+    let (fire, shot) = both_gaps(&run, start);
+    println!("round trip over the bound: FIRE lines {fire:?}; shots {shot:?}; round trip {rtt:?}");
+    assert!(!on_lattice, "a gun on the lattice over the bound");
+    assert!(
+        said_starting(&run, "Firing on the arena's lattice").is_empty(),
+        "{:?}",
+        run.said
+    );
 }
 
 /// The keep-out's note on BA, as the pilot says it.

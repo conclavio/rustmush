@@ -338,7 +338,14 @@ simulator centre: it types `look`, then `ooc` and `simulator` as the room needs,
 reads the board with `SIM STATUS`, and waits (reading it again every ten
 seconds, up to `[arena] wait_start_s`) while another match is boarding or
 running. Anywhere else it stops with `The simulator is not reachable from here:
-the pilot starts from Limbo, the Welcome Hall or the simulator centre.`
+the pilot starts from Limbo, the Welcome Hall or the simulator centre.` The
+walk reads only its own room's heading and lines: a late look of the Welcome
+Hall or of a room of the simulator centre that the walk is not going to (its
+heading, then its description and exits, each within two seconds of the last)
+is read as that room's and is no answer to the walk, so it never stops the
+walk; a busy answer, a refusal or chat still answers it. The pilot knows no
+other room by its heading, so a late look of any other room, Limbo's among
+them, still reads as an answer and can stop the walk.
 
 **What it types.** A closed list and nothing else: `look`, `ooc`, `simulator`,
 `red`/`blue`, `SIM STATUS`, `SIM TEAM red|blue`, `SIM START`, `BOARD`,
@@ -410,7 +417,10 @@ types `BOARD` every three seconds until the tank is its own again
 tank went dark. The report counts each reclaim and the time away. A tank the
 server says was left for good (`… it cannot be taken back.`) ends that match
 for the pilot. A `STARTUP` that goes unanswered or is refused in a running
-match is typed again. If the tank is destroyed or a wreck, the pilot waits for
+match is typed again, and so is one the server keeps answering as busy: after
+forty busy answers in a running match it says ``The server kept answering
+`STARTUP` as busy; typing it again in 15 s.`` and types it again after
+`[arena] step_timeout_ms`. If the tank is destroyed or a wreck, the pilot waits for
 the match to end. If the tank is no longer in the match, it records the match
 as left, and waits for the end only when another match follows. It never gives
 a running match up because the tank would not start, and records it with the
@@ -448,20 +458,27 @@ notices** (the last 24 it read in a running match; at least 8 of them, and
 three in four, in one 50 ms bin; never an acknowledgement, a refusal or a
 reply), and **the round trip** from each acknowledgement less the moment its
 `FIRE` went (the median of the last eight). Once a gun's cycle is learned, it
-types that gun's next `FIRE` a **guard** of 175 ms past the instant the gun is
+types that gun's next `FIRE` a **guard** of 275 ms past the instant the gun is
 ready — the next lattice point after the acknowledgement and one cycle on —
 **less the round trip**: a lattice point it reads is late by the wire's down
 leg, and its `FIRE` takes the up leg to arrive, so the guard is measured where
-the arena stands. (The edges this rests on were read from the bot's own
-transcripts on a local server, where the round trip was a few milliseconds:
-every `FIRE` arriving before 50 ms past that instant was refused, and every
-one from 150 ms on accepted. Anyone reading a transcript from a distant
-server must read it net of its round trip.) The guard is meant to land the
-shot on that floor, a cycle and one lattice step after the last — but see
-"From the muster, measured with its own rules" below: on the local server of
-2026-10-01 the arena accepted a `FIRE` reliably only from about 250 ms past
-that instant, so the lattice clock was refused about half the time and
-benched often, and the machine gun stayed about 1.5 s between shots. Two refusals as still
+the arena stands. **Why 275.** The bot's own transcripts on a local server
+(a round trip of 1 to 2 ms), read against the lattice it learned, put the
+arena's edge about a whole lattice step past that instant: of the `FIRE`s
+sent 150 to 199 ms past it, 42 in 98 were accepted; 200 to 249 ms past it, 33
+in 64; 250 to 299 ms past it, 55 in 61. An earlier guard of 175 ms was
+refused about half the time. With the pilot's 50 ms tick, a guard of 275 ms
+lands each `FIRE` 275 to 325 ms past that instant, past the edge. (Anyone
+reading a transcript from a distant server must read it net of its round
+trip.) **What to expect.** A `FIRE` that waits for the edge lands a lattice
+step later, so the shot goes a cycle and two lattice steps after the last —
+about 1.5 s apart for the machine gun, no faster than the clock above flies
+live; no line-mode clock is expected to beat that. What the lattice clock can
+buy at that gap is **fewer refused lines**, and fewer benches (the reading
+counts them as `benched`, below). A `ready` row read before a lattice clock's
+instant is the cockpit's frame, not the arena's acceptance, so it never pulls
+that clock earlier. Whether the lattice stays on by default is decided by the
+pooled runs. Two refusals as still
 cycling of one gun's own `FIRE`s inside 30 seconds put that gun back on the
 clock above for 30 seconds (`The machine_gun is off the lattice clock for 30
 s: refused twice.`). It says `Firing on the arena's lattice: phase 5 ms, round
@@ -470,14 +487,16 @@ changes nothing: above a round trip of 200 ms the lattice is off and the clock
 above flies, and above about 250 ms no cycle is learned at all, so on a
 distant enough server the pilot types exactly what it types with the lattice
 off. On the offline lattice rig (an arena firing on its quarter-second pulse
-that accepts a `FIRE` only 100 ms past the ready instant) the machine gun's
-shots went a median and a p90 of 1 250 ms apart with no `FIRE` line refused,
-against a median of 1 350 ms and five lines in ninety-two refused with the
-lattice off. On the same rig accepting a `FIRE` only 225 ms past the ready
-instant (past the guard, as the live arena was measured) the guns were
-benched, the machine gun's shots went a median of 1 500 ms apart with the
-lattice on or off, and the lattice clock cost more refused lines: 17 of 93
-against 10 of 88.
+that accepts a `FIRE` only 250 ms past the ready instant, the edge the
+transcripts read) the machine gun's shots went a median of 1 500 ms apart with
+the lattice on or off, and the lattice clock had no `FIRE` line refused (0 of
+80 for the machine gun, 0 of 18 for the cannon) against 10 of 88 and 4 of 22
+with it off. On the same rig accepting a `FIRE` only 350 ms past the ready
+instant (past the guard) the guns were benched, the machine gun's shots still
+went a median of 1 500 ms apart, and the lattice clock cost more refused
+lines: 23 of 96 against 17 of 92. On the same rig with a steady wire of about
+210 ms round trip, both cycles are learned and no gun ever goes on the
+lattice.
 
 **It fights nose-on.** `help cockpit` says the facet you show decides what a
 hit costs: a hit from within 45 degrees of the bow strikes the front, a side is
@@ -826,13 +845,23 @@ cycle stays unlearned and the gun fires from its rows, rather than a second
 early.
 
 **At the prompt while it flies.** `/pause` stops the pilot typing and nothing
-else: it keeps reading, so its picture stays current, and a tank left sitting
-in a match is your choice. `/send`, a bare line, and any command that pauses
-the run pause it the same way before they go. `/resume`, or anything that sets
-the run running again, takes up every wait where it left off — a lobby step's
-answer, the start and boarding bounds, a rematch due while you were paused (a
-boarding announced while paused keeps the window the centre gave it) — so a
-pause never ends a run on its own; the pilot reads its tank again and
+else: it keeps reading and its picture settles, so the picture stays current,
+and a tank left sitting in a match is your choice. While paused its commander
+asks nothing, so a paused run spends nothing. `/send`, a bare line, and any
+command that pauses the run pause it the same way before they go. `/resume`,
+or anything that sets the run running again, says `Resumed after {s} s; the
+lobby's waits go on where they stood.`: the lobby's waits — a lobby step's
+answer, the start and boarding bounds, a rematch due while you were paused —
+are moved on by the pause's length, so each goes on where it stood (a boarding
+announced while paused keeps the window the centre gave it), while the
+pilot's own clocks (its opening, its back-offs' and returns' waits) ran on
+through the pause. A pause never leaves the run blocked. **A pause through a
+match's boarding and its start loses that match**: the game drops a slot
+whose pilot never boarded, so the `BOARD` typed after the resume is answered
+`You hold no slot in the simulator.`, and the pilot says `Match 3 started
+without us; waiting for it to end.`, records the match as left and claims the
+next once it ends; after the last match asked for (`Match 3 started without
+us.`) the run ends there. After a resume the pilot reads its tank again and
 sends its heading and speed again first. Your own command's output never holds
 the pilot up once it runs again. The run's time limit (`[agent] max_seconds`)
 keeps counting while paused. `/arena stop` ends it and hands you the tank. A
@@ -888,13 +917,14 @@ reapproach {on|off}, follow {on|off}, lattice {on|off}` straight after the
 `ENGAGEMENT` line, and every lane's reading ends with `PILOT RULES: opening
 {a}, off the road {b}, halt {c}, reapproach {d}, approach wait {e}, follow
 {f}, return wait {g}, lattice {h}, inward {i}, room holds {k}, return room
-holds {r}, gave up {u}`: how many times the pilot held near its entry,
-stepped off the road, fired from the halt, opened the range, waited for the
-machine to come on, followed a broken machine, waited for its return, (once
-a match at most) put its guns on the lattice, moved in for room behind its
-opening, stopped a re-approach's back-off and a return's back-off where the
-ground behind ran out, and gave a re-approach up at its time, counted from
-its own `arena` sentences.
+holds {r}, gave up {u}, benched {n}`: how many times the pilot held near its
+entry, stepped off the road, fired from the halt, opened the range, waited for
+the machine to come on, followed a broken machine, waited for its return,
+(once a match at most) put its guns on the lattice, moved in for room behind
+its opening, stopped a re-approach's back-off and a return's back-off where
+the ground behind ran out, gave a re-approach up at its time, and took a gun
+off the lattice clock after two refusals (`… is off the lattice clock …`),
+counted from its own `arena` sentences.
 
 ```sh
 MUSH_BOT_WIN_RATE_OFF=reapproach cargo test -p mush-bot --test arena_muster_rate -- --ignored --nocapture
@@ -1135,7 +1165,9 @@ lattice the pilot learned, a `FIRE` arriving 175 to 250 ms past the instant the
 gun was ready was refused about as often as it was accepted, and one arriving
 250 ms or more past it almost always accepted — the arena's edge on that day
 lay past the guard's 200 ms ceiling, so the machine gun's shots stayed a
-median of 1.5 s apart and about a fifth of its `FIRE` lines were refused. Ten
+median of 1.5 s apart and about a fifth of its `FIRE` lines were refused. The
+guard has since been widened to 275 ms, past that edge ("Its guns on the
+arena's lattice", above). Ten
 matches are a small sample (one unchanged bot read 5, 5 and 4 of 10 on the
 posed lane), so these figures are read beside the mechanism lines, never
 alone.

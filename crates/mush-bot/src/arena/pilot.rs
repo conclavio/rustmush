@@ -439,7 +439,8 @@
 //! help's 200 m and inside the stopped tank's 480 m), [`ENTRY_KEEP_OUT_M`]
 //! 250..=600, [`RETURN_STANDOFF_M`] 620..=750 (past the 600 m moving sight)
 //! and [`RETURN_WAIT_MS`] 60 000..=120 000; and in the picture
-//! [`super::picture::LATTICE_GUARD_MS`] 150..=200. Not tunable:
+//! [`super::picture::LATTICE_GUARD_MS`] 150..=300 (widened by cut AO.2, which
+//! raised it to 275, past the edge the transcripts measured). Not tunable:
 //! [`FOLLOW_STOPPED_MS`] and [`RETURN_BACK_MS`] (raised by cut AO.1 to
 //! 65 000, derived from the drive), and the picture's other lattice
 //! constants.
