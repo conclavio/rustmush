@@ -1302,6 +1302,10 @@ Standing decisions, from the sweep's list as the owner's rulings leave it: secti
 
 From the 2026-10-02 engine sweep (`plan-data/engine-lessons-2026-10-02/`). Depends on nothing of the bot's code; queued after AO. Gateway: no (the server half only; `N20` is world-side). Packs: none. Hash: no. Help: yes (`help cockpit` and `help simulator`). The bot's `arena_contract.rs` moves with every sentence change, a declared reader change under doc 16 §11. Size: medium, four sub-cuts.
 
+### The unit-minds programme
+
+Decided 2026-10-02: docs/design/17-unit-minds.md (from the proposal docs/design/proposals/unit-minds.md, 1125c834, with the owner's rulings of the same day: the seal is per sortie, the OOC sim crosses no IC boundary and carries exactly the character's IC minds at no cost, only a character principal (human- or AI-played) may ORDER and a mind never, player minds fly NPC hulls under licence). Its build order M1a, M1b, M2 to M8 is doc 17 section 22; the cuts are ledgered in a 17b when the first launches; cut AP precedes M1a, which needs no Rhai.
+
 ## 5. Open questions for the owner
 
 Each has a default, and the build proceeds on the default unless the owner says otherwise before the cut
