@@ -10644,6 +10644,13 @@ fn ae2_the_missile_lands_where_the_target_was() {
                     told.push((arena.now_ms, frame.notices.clone()));
                 }
             }
+            // **16b cut AP.2**: a missile that takes the tank's turret takes
+            // its side's only gun, and a side that came in armed and has no
+            // gun left is out — the match ends at the impact's substep, and an
+            // ended arena's clock stands, so the loop stops there.
+            if out.ended.is_some() {
+                break;
+            }
         }
         let events = ledger_of(&mut arena, &mut bytes);
         let outcome = events.iter().find_map(|event| match &event.kind {

@@ -1245,13 +1245,50 @@ impl Arena {
     /// action is a [`UnitClass::Drone`] **and** it fielded at least one unit that
     /// is not — its guns are all wrecks or disabled hulks, and the drone that
     /// still runs cannot decide anything, so it may neither hold the match open
-    /// for the hour nor be the side the timeout calls a draw for. Keyed on the
+    /// to the cap nor be the side the timeout calls a draw for. Keyed on the
     /// class and never on arms, on purpose: the clause bites only on a side that
     /// has a drone standing, so every cut-A fixture side, the harness's movers,
     /// the range's target side and the unarmed `tank()` fixtures — all `Armour`,
     /// armed or not — read exactly as they did, and a side that fielded drones
     /// alone (which the lobby refuses with `NoGun`) is still standing while one
     /// runs. [`Arena::spent`] is unchanged: a drone was never armed at check-out.
+    ///
+    /// **16b cut AP.2** (16c `B-87`; the owner's rulings of 2026-10-02 under 16c
+    /// `Q57` and `Q47`; doc 16 §3.8 read for the side once more): a side is also
+    /// **out** when it came in armed and has no gun left — at least one of its
+    /// units still in action was [`UnitState::armed_at_checkout`], and **no** unit
+    /// of it still in action carries a weapon. A turret shot off empties the
+    /// unit's `weapons` (doc 16 §3.3's `remove_weapons`) but leaves it driving, so
+    /// [`Arena::settle_disabled`] never marks it and [`Arena::out_of_action`]
+    /// stays false; without this clause the side stood, the machine withdrew to
+    /// its entry zone and the match ran to `match.max_duration_ms` as a timeout
+    /// with no winner. Three readings are load-bearing:
+    ///
+    /// * **keyed on `weapons.is_empty()` and `armed_at_checkout()`, never on
+    ///   `ammo`** — an empty magazine is not a lost gun, so a tank that has fired
+    ///   its last round still carries its weapon row and 16b cut Q.7's
+    ///   [`EndReason::Spent`] draw stands (a solo pilot at full armour does not
+    ///   lose the instant the last round leaves the breech);
+    /// * **any in-action unit armed at check-out, against any in-action unit
+    ///   still carrying a gun** (rather than 16c's literal "every in-action unit
+    ///   was armed and is empty") — a gunless tank beside a live drone that was
+    ///   never armed is out, because the drone decides nothing and the side
+    ///   cannot shoot; a side with no unit armed at check-out (cut A's unarmed
+    ///   `tank()` fixtures, a range's targets, the harness's movers) is never
+    ///   disarmed and reads exactly as it did;
+    /// * **no "while the other side still carries one" test** — against a side
+    ///   that never had a gun, the armed side that loses its last one is out and
+    ///   the never-armed side stands; both sides disarmed at once leaves nobody
+    ///   standing, which is the elimination draw (`Some(None)`, `draw (both
+    ///   sides eliminated)`), settled before [`Arena::settle_spent`] runs.
+    ///
+    /// Symmetric by D-16-5: the pilot's side reads the same way, so a one-tank
+    /// side loses the hit that takes its turret, still able to drive (`Q57`).
+    /// `out_of_action`, `settle_disabled`, `spent`, the unit's outcome and the
+    /// reflex controller's dry withdrawal are untouched: a disarmed unit that
+    /// still drives is not `disabled`. A pure read, settled where every
+    /// elimination is (inside the substep by `Arena::substep`, phase 5 the
+    /// backstop), and folded into no hash.
     #[must_use]
     pub fn eliminated(&self) -> Option<Option<Team>> {
         let mut standing: Vec<Team> = Vec::new();
@@ -1260,6 +1297,10 @@ impl Arena {
         // with a non-drone still in action.
         let mut fielded_gun: Vec<Team> = Vec::new();
         let mut standing_gun: Vec<Team> = Vec::new();
+        // 16b cut AP.2: the sides with an in-action unit that came in armed, and
+        // the ones with an in-action unit that still carries a weapon.
+        let mut armed_in_action: Vec<Team> = Vec::new();
+        let mut carries_gun: Vec<Team> = Vec::new();
         for unit in &self.units {
             if !present.contains(&unit.team) {
                 present.push(unit.team);
@@ -1277,12 +1318,21 @@ impl Arena {
             if !drone && !standing_gun.contains(&unit.team) {
                 standing_gun.push(unit.team);
             }
+            if unit.armed_at_checkout() && !armed_in_action.contains(&unit.team) {
+                armed_in_action.push(unit.team);
+            }
+            if !unit.weapons.is_empty() && !carries_gun.contains(&unit.team) {
+                carries_gun.push(unit.team);
+            }
         }
         if present.len() < 2 {
             return None;
         }
         // A side left with drones alone, having fielded something else, is out.
         standing.retain(|team| standing_gun.contains(team) || !fielded_gun.contains(team));
+        // 16b cut AP.2: and so is a side that came in armed and has no gun left.
+        let disarmed = |team: &Team| armed_in_action.contains(team) && !carries_gun.contains(team);
+        standing.retain(|team| !disarmed(team));
         match standing.len() {
             0 => Some(None),
             1 => standing.first().copied().map(Some),
@@ -2407,6 +2457,182 @@ mod tests {
             drones.eliminated(),
             None,
             "a side that fielded no gun is untouched by the clause"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut AP.2 — a side that came in armed and has no gun left is out
+    // -----------------------------------------------------------------------
+
+    /// Shoot the turret off `unit`: the stock tank's one gun is mounted there.
+    fn disarm(arena: &mut Arena, unit: ObjId) {
+        let mut journal: Vec<Notice> = Vec::new();
+        arena.apply_consequence(
+            unit,
+            &Consequence::RemoveWeapons {
+                section: SmolStr::new("turret"),
+            },
+            0,
+            None,
+            &mut journal,
+        );
+        assert!(
+            arena
+                .unit(unit)
+                .is_some_and(|state| state.weapons.is_empty() && state.armed_at_checkout()),
+            "the turret took the gun and left the record of one"
+        );
+    }
+
+    /// **16b cut AP.2** (16c `B-87`, `Q57`; doc 16 §3.8 read for the side): a
+    /// side that came in armed and has no gun left is out, on either side,
+    /// still able to drive.
+    ///
+    /// Blue's turret shot off: red wins, and blue is neither out of action nor
+    /// disabled. The same on red gives blue. Both at once is the elimination
+    /// draw, settled before `Spent` could be. Three guards: an empty magazine
+    /// is not a lost gun (Q.7's `Spent` stands); a side that never had a gun is
+    /// never disarmed, so against it the armed side that loses its last gun is
+    /// the one out (no "while the other side still carries one" test); and a
+    /// drone that was never armed keeps no gunless side standing, while a side
+    /// of drones alone reads as AE.3 left it.
+    #[test]
+    fn ap2_a_side_whose_guns_are_shot_away_is_out_while_the_other_carries_one() {
+        use crate::arena::test_support::{drone, tank};
+
+        // Blue's turret: red wins, and blue still drives.
+        let mut arena = duel();
+        assert_eq!(arena.eliminated(), None, "both sides carry a gun");
+        disarm(&mut arena, BLUE);
+        assert!(!arena.out_of_action(BLUE), "a disarmed tank still drives");
+        let mut journal: Vec<Notice> = Vec::new();
+        arena.settle_disabled(BLUE, 0, &mut journal);
+        assert_eq!(
+            arena.unit(BLUE).map(|state| state.disabled),
+            Some(false),
+            "it is not disabled: its motion is whole"
+        );
+        assert!(journal.is_empty(), "and nothing is said of it");
+        assert_eq!(arena.eliminated(), Some(Some(Team::Red)));
+        assert_eq!(
+            arena.settle_elimination().map(|end| end.reason),
+            Some(EndReason::Elimination {
+                winner: Some(Team::Red)
+            })
+        );
+
+        // Symmetric (D-16-5): red's turret gives blue.
+        let mut arena = duel();
+        disarm(&mut arena, RED);
+        assert_eq!(arena.eliminated(), Some(Some(Team::Blue)));
+
+        // Both turrets: nobody stands, the elimination draw, and `Spent` never
+        // gets to say "out of ammunition" of two tanks with full magazines.
+        let mut arena = duel();
+        disarm(&mut arena, RED);
+        disarm(&mut arena, BLUE);
+        assert_eq!(arena.eliminated(), Some(None));
+        assert_eq!(
+            arena.settle_elimination().map(|end| end.reason),
+            Some(EndReason::Elimination { winner: None })
+        );
+        assert_eq!(arena.settle_spent(), None, "settled first, so no Spent");
+
+        // Q.7's guard: two empty magazines with their guns still mounted are
+        // not two lost guns.
+        let mut dry = duel();
+        for id in [RED, BLUE] {
+            if let Some(state) = dry.unit_mut(id) {
+                state.ammo.insert(SmolStr::new("cannon"), 0);
+            }
+        }
+        assert!(
+            [RED, BLUE]
+                .iter()
+                .all(|id| dry.unit(*id).is_some_and(|state| !state.weapons.is_empty())),
+            "the weapon rows are still there"
+        );
+        assert_eq!(
+            dry.eliminated(),
+            None,
+            "an empty magazine is not a lost gun"
+        );
+        assert!(dry.spent());
+
+        // The never-armed side: red's unarmed armour stands, blue came in armed
+        // and has lost its gun, so blue is out and red wins.
+        let mut unarmed = arena_of(vec![
+            tank(RED, Team::Red, pose(1_500, 1_500)),
+            line_tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+        ]);
+        assert_eq!(unarmed.eliminated(), None);
+        disarm(&mut unarmed, BLUE);
+        assert_eq!(
+            unarmed.eliminated(),
+            Some(Some(Team::Red)),
+            "no 'while the other side still carries one' test"
+        );
+
+        // AE.3's interplay: red's gunless tank beside its live drone is out.
+        const DRONE: ObjId = ObjId(5);
+        let mut with_drone = arena_of(vec![
+            line_tank(RED, Team::Red, pose(1_500, 1_500)),
+            drone(DRONE, Team::Red, pose(2_500, 1_500)),
+            line_tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+        ]);
+        disarm(&mut with_drone, RED);
+        assert!(!with_drone.out_of_action(DRONE), "the drone still runs");
+        assert_eq!(
+            with_drone.eliminated(),
+            Some(Some(Team::Blue)),
+            "the drone decides nothing and red cannot shoot"
+        );
+        // And a side of drones alone, never armed, is untouched by either clause.
+        let drones = arena_of(vec![
+            drone(RED, Team::Red, pose(1_500, 1_500)),
+            line_tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+        ]);
+        assert_eq!(drones.eliminated(), None);
+
+        // **The side, not the unit**: a disarmed tank beside an armed teammate
+        // keeps its side standing — the side still carries a gun — and only the
+        // teammate's turret going too puts it out.
+        const WINGMAN: ObjId = ObjId(6);
+        let side = || {
+            arena_of(vec![
+                line_tank(RED, Team::Red, pose(1_500, 1_500)),
+                line_tank(WINGMAN, Team::Red, pose(2_500, 1_500)),
+                line_tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+            ])
+        };
+        let mut lance = side();
+        disarm(&mut lance, RED);
+        assert_eq!(
+            lance.eliminated(),
+            None,
+            "a teammate still carries a gun, so the side stands"
+        );
+        disarm(&mut lance, WINGMAN);
+        assert_eq!(
+            lance.eliminated(),
+            Some(Some(Team::Blue)),
+            "and with the last gun gone the side is out"
+        );
+        // A wreck beside a disarmed teammate: the wreck is out of action and
+        // counts for nothing, the teammate in action carries no gun.
+        let mut wrecked = side();
+        let mut journal: Vec<Notice> = Vec::new();
+        wrecked.destroy_unit(WINGMAN, 100, None, &mut journal);
+        assert_eq!(
+            wrecked.eliminated(),
+            None,
+            "red's disarmable tank still carries its gun"
+        );
+        disarm(&mut wrecked, RED);
+        assert_eq!(
+            wrecked.eliminated(),
+            Some(Some(Team::Blue)),
+            "a wreck keeps no gunless side standing"
         );
     }
 }

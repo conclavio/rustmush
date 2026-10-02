@@ -158,8 +158,11 @@
 //! `TACSIM_ASSERT` it asserts W8 — the span and the orders per commander per
 //! minute — against `[tacsim.command]`, the tape against the script and the
 //! opening round at any knob, **and**, at the lane's own defaults only, the span
-//! and the busiest minute equal to the squads a side (off them the fight decides
-//! those two figures); its timing is **report-only**, printed beside the
+//! and the busiest minute pinned to the fight's own figures (the squads a side
+//! at Z.1; since 16b cut AP.2 the busiest minute one fewer and the span two
+//! fewer, the match ending at 111,250 ms before minute one's last marks; off
+//! the defaults the fight decides those two figures); its timing is
+//! **report-only**, printed beside the
 //! authored lane's 12 ms per wake and 20 ms per window. Its JSON
 //! (`<stem>-lance.<ext>`) is outside the delta. `z1_the_lance_lane_runs_small`,
 //! un-ignored, runs it at one lance a side for ten arena seconds with the
@@ -2667,7 +2670,22 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
     }
 
     let arena_cfg = ArenaConfig::default();
-    let match_cfg = MatchConfig::default();
+    let mut match_cfg = MatchConfig::default();
+    // **16b cut AP.2** (16c Q47): the shipped cap is fifteen minutes, so a
+    // `TACSIM_LONG_RUN_S` past it would meet `max_duration_ms` inside the long
+    // run's window. The lane's own match covers the warm-up, the window and a
+    // minute more (never less than the default), so it measures what it is
+    // asked; the cap folds into no hash, so the deterministic block is unmoved.
+    match_cfg.max_duration_ms = match_cfg.max_duration_ms.max(
+        u32::try_from(
+            i64::from(match_cfg.startup_ms)
+                .saturating_add(i64::from(arena_cfg.reflex.decide_ms))
+                .saturating_add(i64::from(arena_cfg.tempo.engaged_ms))
+                .saturating_add(i64::from(knobs.long_run_s).saturating_mul(1_000))
+                .saturating_add(60_000),
+        )
+        .unwrap_or(u32::MAX),
+    );
     let sensors_cfg = tacsim::config::SensorsConfig::default();
     let open_at = Instant::now();
     let mut arena = Arena::new(
@@ -8030,14 +8048,54 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         // 3 (`red-1`'s wrecks kept its 71,500 ms order). The four fact pins
         // below did not move: `blue-1` stood none at 71,500 and at the release,
         // `red-1` stood three at the release, and the tape carries seven orders.
+        //
+        // **16b cut AP.2 (16c B-87, Q57) — the fight ends at 111,250 ms, a
+        // quarter-second before minute one's last marks, re-pinned from the
+        // fight.** A side that came in armed and has no gun left is now out
+        // (`Arena::eliminated`). At the defaults blue's last machine in action,
+        // #100019, has had its weapons shot off and still drives; at 111,250 ms
+        // it is blue's only unit not a wreck, so blue is disarmed and the match
+        // ends `Elimination { winner: Some(Red) }` there — where before this cut
+        // it drove on until it was wrecked at 119,000 ms. Minute one's third
+        // marks (`red-3` and `blue-3`, 111,500 ms) fall after the end and are
+        // never given. So at the read each commander holds a live order on its
+        // second squad alone (`red-2` and `blue-2`, ordered at 91,500 ms): the
+        // first squads hold none (the AI.1 paragraph above), and the third
+        // squads' opening orders (11,500 ms) expired at 101,500 ms — the span
+        // reads `squads_per_side - 2`, 1, where AI.1's fight read 2. Red's busiest
+        // sixty seconds hold its 71,500 and 91,500 ms marks — `squads_per_side -
+        // 1`, 2, where the script's full minute gives 3 — and the tape carries
+        // five orders, not seven: the opening round a side, red's 71,500 and
+        // 91,500 ms marks and blue's 91,500 ms one. The release and the two AE.1
+        // fact pins did not move (`blue-1` stood none at 71,500 and at the
+        // release, `red-1` three at the release), and a third fact pin below
+        // holds the defaults to this end, so the three re-pinned figures pass on
+        // a fact. That is the clause doing what doc 16 §3.8 now says, not a
+        // defect: the lane's knobs and script are untouched; only the figures
+        // its fight gives at the defaults moved.
         if at_defaults {
+            // **The fact pin of 16b cut AP.2**: the defaults' fight ends by the
+            // disarmed-side clause at 111,250 ms, red the winner — before
+            // minute one's third marks at 111,500 ms.
+            assert_eq!(
+                (run.ended.as_ref().map(|end| end.reason), arena.now_ms),
+                (
+                    Some(tacsim::arena::state::EndReason::Elimination {
+                        winner: Some(Team::Red)
+                    }),
+                    111_250
+                ),
+                "16b cut AP.2: at the defaults the match ends at 111,250 ms as red's \
+                 elimination win, blue's last machine disarmed"
+            );
             assert_eq!(
                 command.span_max,
-                squads_per_side - 1,
+                squads_per_side - 2,
                 "W8: the span read {} where the script holds {squads_per_side} squads under \
-                 one commander and each side's first squad holds no order at the read (red-1 \
-                 released with no wreck under its order, blue-1's order expired; 16b cut \
-                 AI.1, see above)",
+                 one commander and only each side's second squad holds an order at the read \
+                 (red-1 released with no wreck under its order, the first and third squads' \
+                 opening orders expired, the third squads' minute-one marks after the end; \
+                 16b cuts AI.1 and AP.2, see above)",
                 command.span_max
             );
             // How many of the squad's machines stood at the scripted wake at
@@ -8107,11 +8165,14 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                 "every release is its own side's commander's: {:?}",
                 counts.released_lines
             );
+            // 16b cut AP.2: one fewer than the script's minute gives, since the
+            // match ends before minute one's third marks (see above).
             assert_eq!(
                 command.orders_per_commander_minute_max,
-                u64::try_from(squads_per_side).unwrap_or(u64::MAX),
+                u64::try_from(squads_per_side - 1).unwrap_or(u64::MAX),
                 "W8: the busiest commander minute read {} where the script gives \
-                 {squads_per_side}",
+                 {squads_per_side} and the match ends before the minute's last mark (16b \
+                 cut AP.2)",
                 command.orders_per_commander_minute_max
             );
             // The opening round and one minute's `squads_per_side` a side —
@@ -8119,7 +8180,8 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             // — counted over the scripted wakes at which the ordered squad had
             // a standing machine, one order per side per wake as
             // `orders_on_tape` files them (16b cut AE.1: seven at the defaults,
-            // `blue-1`'s minute-one mark landing on no machine).
+            // `blue-1`'s minute-one mark landing on no machine; five since 16b
+            // cut AP.2, the match ending before the third squads' marks).
             let stood_to_order: std::collections::BTreeSet<(bool, i64)> = marks
                 .iter()
                 .filter(|(_, _, is_order, standing)| *is_order && *standing > 0)
@@ -8141,11 +8203,16 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             // so it cannot fail on its own. The defaults' fight gives the opening
             // round and one minute's `squads_per_side` a side less `blue-1`'s
             // minute-one mark — seven — and a fight that moves again at the
-            // defaults moves this figure and says so.
+            // defaults moves this figure and says so. **16b cut AP.2** moved it:
+            // the match ends at 111,250 ms, before `red-3`'s and `blue-3`'s
+            // 111,500 ms marks, so two more fall away — five.
             assert_eq!(
                 command.orders,
-                u64::try_from(2 * (1 + squads_per_side) - 1).unwrap_or(u64::MAX),
-                "16b cut AE.1: at the defaults the tape carries the opening round and one                  minute's {squads_per_side} a side less blue-1's minute-one mark (71,500 ms),                  not {} orders",
+                u64::try_from(2 * (1 + squads_per_side) - 3).unwrap_or(u64::MAX),
+                "16b cuts AE.1 and AP.2: at the defaults the tape carries the opening round \
+                 and one minute's {squads_per_side} a side less blue-1's minute-one mark \
+                 (71,500 ms) and both third squads' (111,500 ms, after the end), not {} \
+                 orders",
                 command.orders
             );
         }

@@ -104,8 +104,10 @@ const MUSTER: &str = "The Proving Ground";
 ///
 /// Frontal for the same reason the in-process twin is (see its module head): only
 /// the hull's `destroy_unit` blows a `line_tank` up, and the front band reaches
-/// only the hull and the turret — so this fight can end exactly one way, and the
-/// twin tells the same story every run.
+/// only the hull and the turret. Since **16b cut AP.2** a turret loss ends the
+/// match too (a side that came in armed and has no gun left is out), so the
+/// fight ends at the hull or at the turret by the seeded facet draw, and this
+/// twin, like the other, asserts whichever section went.
 const RED_CELL: (i64, i64, u32) = (90, 97, 90_000);
 const BLUE_CELL: (i64, i64, u32) = (94, 97, 270_000);
 
@@ -820,13 +822,26 @@ async fn the_story_is_the_same_story_through_the_gateway() {
         winner.contains(&format!("Hit on {classified}: ")),
         "the shooter's outcome line never crossed the boundary:\n{winner}"
     );
-    // **16b cut Q.2**: and so does the section the gunner watched come apart. The
-    // blue tank dies of a hull loss, so its hull is the certain one.
+    // **16b cut Q.2**: and so does the section the gunner watched come apart.
+    // The blue tank is beaten by a hull loss or (16b cut AP.2) a turret loss —
+    // the loser's own line says which, exactly one of the two, because the
+    // match is over at the first — and that section is the certain one.
+    let loser = strip_ansi(&bo.seen);
+    let hull_went = loser.contains("The hull is destroyed: the tank is finished.");
+    let turret_went = loser.contains("The turret is destroyed: its weapons are gone.");
     assert!(
-        winner.contains(&format!("{classified}'s hull is destroyed.")),
+        hull_went != turret_went,
+        "exactly one of the hull and the turret went (hull {hull_went}, turret {turret_went}):\n{loser}"
+    );
+    eprintln!(
+        "arena_story_split: the duel ended at the {}",
+        if hull_went { "hull" } else { "turret" }
+    );
+    let section = if hull_went { "hull" } else { "turret" };
+    assert!(
+        winner.contains(&format!("{classified}'s {section} is destroyed.")),
         "the shooter's section-destroyed line never crossed the boundary:\n{winner}"
     );
-    let loser = strip_ansi(&bo.seen);
     assert!(
         loser.contains("Hit on the "),
         "the victim's damage line never crossed the boundary:\n{loser}"
@@ -881,10 +896,17 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     // the same public head and the pilot's own lines.
     let report = ada.sim_report("SIM REPORT").await;
     let flat = report.split_whitespace().collect::<Vec<_>>().join(" ");
+    // 16b cut AP.2: the kill line is the hull's; a turret ending is the shot's
+    // own clause instead.
+    let finished = if hull_went {
+        "destroyed by your round."
+    } else {
+        "'s turret destroyed"
+    };
     for want in [
         "red won (blue eliminated)",
         "You flew RA: ",
-        "destroyed by your round.",
+        finished,
         "the match ended: blue eliminated.",
     ] {
         assert!(flat.contains(want), "{want:?} missing from:\n{report}");

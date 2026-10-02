@@ -18,10 +18,10 @@
 //!
 //! | witness | seat | what this file asserts about them |
 //! |---|---|---|
-//! | Ada | red pilot | the whole cockpit: contacts, the lock and its percentage, the rounds going down, the kill, the team room afterwards |
-//! | Bo | blue pilot | the cockpit on the other side: that it is told of every round that hit it and of its hull going, and **still nothing** that identifies or locates its killer |
+//! | Ada | red pilot | the whole cockpit: contacts, the lock and its percentage, the rounds going down, the kill (or, since 16b cut AP.2, the turret going), the team room afterwards |
+//! | Bo | blue pilot | the cockpit on the other side: that it is told of every round that hit it and of its hull (or its turret) going, and **still nothing** that identifies or locates its killer |
 //! | Cy | a bystander standing in the lobby for the whole match | the centre's own announcements, and **nothing of the arena** |
-//! | God | staff | `@arena/status` running then reset, `@unit/show` on the wreck, the ledger, the result document, the money |
+//! | God | staff | `@arena/status` running then reset, `@unit/show` on the beaten tank, the ledger, the result document, the money |
 //!
 //! # What the cockpit shows each pilot about the shooting
 //!
@@ -33,19 +33,24 @@
 //! the point:
 //!
 //! * **Ada**, the shooter, is told that each round landed, named by the opaque
-//!   contact her own platform holds, and that the target was destroyed. She is
+//!   contact her own platform holds, which section of the target went, and —
+//!   when that was the hull — that the target was destroyed. She is
 //!   told nothing of which section she struck or what the target had left: a
 //!   gunner sees the round land, not the target's internals.
 //! * **Bo**, the victim, is told that it was hit, which of *its own* sections and
-//!   facets took it and what is left there, and that its hull is gone. It is told
+//!   facets took it and what is left there, and that its hull (or, since 16b
+//!   cut AP.2, its turret) is gone. It is told
 //!   nothing whatever about Ada — no object number, no name, no contact id, no
 //!   bearing, no side, no weapon — because where a round came from is a thing only
 //!   a sensor may tell.
 //!
-//! "The loser sees its tank destroyed" is therefore asserted in the cockpit as
+//! "The loser sees its tank beaten" is therefore asserted in the cockpit as
 //! well as on the surfaces that always carried it: the centre's own "Match 1 is
-//! over (red)" line, the hatch that opens, the result document's `destroyed` row,
-//! and `@unit/show`'s `section hull: wreck` on the checked-in tank.
+//! over (red)" line, the hatch that opens, the result document's row for the blue
+//! tank — `destroyed` when the hull went, `intact` when the turret went (16b cut
+//! AP.2: a disarmed tank still drives, and its outcome word is untouched) — and
+//! `@unit/show`'s `section hull: wreck` on the checked-in tank, or
+//! `section turret: destroyed` when the turret went first (see below).
 //!
 //! # Why the two accounts are seeded before the world task spawns
 //!
@@ -72,10 +77,23 @@
 //! for a wreck. A rear-quarter duel therefore ends in a wreck most of the time and
 //! in a disablement the rest of it, which is correct engine behaviour and a story
 //! test that tells a different story every third run. The **front** band reaches
-//! only the hull and the turret, and a turret loss disables nothing, so a frontal
-//! duel can end exactly one way: the blue tank blows up. It costs about twice the
-//! rounds (400 cm of glacis against 150 cm of engine deck) and buys the acceptance
-//! its own premise.
+//! only the hull and the turret, and before **16b cut AP.2** a turret loss
+//! disabled nothing, so a frontal duel could end exactly one way: the blue tank
+//! blew up. It costs about twice the rounds (400 cm of glacis against 150 cm of
+//! engine deck).
+//!
+//! **Since AP.2 the duel ends at the hull or at the turret.** A side that came
+//! in armed and has no gun left is out (16c `B-87`, `Q57`; doc 16 §3.8), and Bo's
+//! side is one tank whose one gun is in its turret (350 armour over 150
+//! internals, `remove_weapons`). Which section the k-th hit finds is the seeded
+//! facet draw's, keyed on the shot number, so which section goes first is a
+//! matter of which shots hit — timing — and nothing in a stock duel can make the
+//! hull go first. So the test reads which ending it got off the loser's own
+//! transcript (exactly one of the two sentences: the match is over at the first
+//! of them) and asserts the elimination and **whichever section went** on every
+//! surface — the two cockpits, `@unit/show`, the black box, the result document
+//! and the debrief. The end is detected by `OVER` either way, so the fight's
+//! flow does not change.
 //!
 //! # Why the two tanks are re-posed before `SIM START`
 //!
@@ -164,6 +182,14 @@ const MAX_SHOTS: usize = 30;
 
 /// The line every witness in the centre reads when the match is settled.
 const OVER: &str = "is over (red)";
+/// The loser's own line when its hull goes (`FrameNotice::SectionLost` with the
+/// hull's `destroy_unit`).
+const HULL_LOST: &str = "The hull is destroyed: the tank is finished.";
+/// **16b cut AP.2**: the loser's own line when its turret goes
+/// (`FrameNotice::SectionLost` with the turret's `remove_weapons`, in
+/// `consequence_words`' words) — which, Bo's side having no other gun, ends the
+/// match at that hit.
+const TURRET_LOST: &str = "The turret is destroyed: its weapons are gone.";
 /// What `CONTACTS` says when the platform holds nothing.
 const NO_CONTACTS: &str = "No contacts.";
 /// The parser's refusal, which is the sentinel's answer.
@@ -1243,10 +1269,19 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         "the loser was told nothing about being shot:\n{}",
         tail(&loser)
     );
+    // **16b cut AP.2**: the duel ends at the hull or at the turret (the module
+    // head's "Why the fight is frontal"), and the loser's own transcript says
+    // which — exactly one of the two, because the match is over at the first.
+    let hull_went = loser.contains(HULL_LOST);
+    let turret_went = loser.contains(TURRET_LOST);
     assert!(
-        loser.contains("The hull is destroyed: the tank is finished."),
-        "and nothing about its hull going:\n{}",
+        hull_went != turret_went,
+        "exactly one of the hull and the turret went (hull {hull_went}, turret {turret_went}):\n{}",
         tail(&loser)
+    );
+    eprintln!(
+        "arena_story: the duel ended at the {}",
+        if hull_went { "hull" } else { "turret" }
     );
     never_names(
         &loser,
@@ -1260,10 +1295,11 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     );
     // Line by line, on the sentences this cut added: nothing in them identifies or
     // locates the shooter.
-    for line in loser
-        .lines()
-        .filter(|line| line.starts_with("Hit on the ") || line.starts_with("The hull is"))
-    {
+    for line in loser.lines().filter(|line| {
+        line.starts_with("Hit on the ")
+            || line.starts_with("The hull is")
+            || line.starts_with("The turret is")
+    }) {
         for leak in [contact.as_str(), "bearing", "cannon", "°"] {
             assert!(
                 !line.contains(leak),
@@ -1283,8 +1319,8 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         tail(&loser)
     );
 
-    // The winner saw her rounds land and saw the kill, and saw nothing of what
-    // the blue tank had left: the two halves of the same shot never cross.
+    // The winner saw her rounds land and saw the kill (or the turret go), and
+    // saw nothing of what the blue tank had left: the two halves of the same shot never cross.
     let winner = strip_ansi(&ada.seen);
     assert!(
         // 16b cut Q.1: by the shot the target has been told apart, so the
@@ -1297,23 +1333,27 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         tail(&winner)
     );
     // **16b cut Q.2**: and told when a section of the target came apart — the
-    // owner's ask of 2026-09-19. The blue tank is killed by a hull loss, so its
-    // hull is the one section the shooter is certain to watch go.
+    // owner's ask of 2026-09-19. The blue tank is beaten by a hull loss or (16b
+    // cut AP.2) a turret loss, so that section is the one the shooter is certain
+    // to watch go.
+    let section = if hull_went { "hull" } else { "turret" };
     assert!(
-        winner.contains(&format!("{named}'s hull is destroyed.")),
+        winner.contains(&format!("{named}'s {section} is destroyed.")),
         "the shooter was never told a section of the target went:\n{}",
         tail(&winner)
     );
     // The gunner's line and the victim's are not the same sentence: the victim's
     // says what it cost the tank, and the shooter's cannot.
     assert!(
-        !winner.contains("The hull is destroyed"),
+        !winner.contains("The hull is destroyed") && !winner.contains("The turret is destroyed"),
         "the shooter was shown the victim's own consequence list:\n{}",
         tail(&winner)
     );
-    assert!(
+    // The kill line is the hull's alone: a disarmed tank still drives.
+    assert_eq!(
         winner.contains(&format!("{named} destroyed.")),
-        "nor that the target went:\n{}",
+        hull_went,
+        "the target is destroyed exactly when its hull went:\n{}",
         tail(&winner)
     );
     assert!(
@@ -1326,9 +1366,15 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     // (9) Staff: the wreck, the survivor, and the ammunition.
     // -----------------------------------------------------------------
     let wreck = ask_whole(&mut god, &format!("@unit/show #{blue}")).await;
+    // 16b cut AP.2: a wreck, or its turret destroyed and its hull whole.
+    let beaten = if hull_went {
+        wreck.contains("section hull: wreck")
+    } else {
+        wreck.contains("section turret: destroyed") && !wreck.contains("section hull: wreck")
+    };
     assert!(
-        wreck.contains("section hull: wreck"),
-        "the loser's tank came back a wreck (doc 16 §3.3): {wreck}"
+        beaten,
+        "the loser's tank came back a wreck or disarmed (doc 16 §3.3, §3.8): {wreck}"
     );
     let survivor = ask_whole(&mut god, &format!("@unit/show #{red}")).await;
     assert!(
@@ -1349,7 +1395,9 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         "fired",
         "impact",
         "hit",
-        "unit_destroyed",
+        // 16b cut AP.2: the section that went — the hull, whose loss also writes
+        // `unit_destroyed` (asserted below), or the turret — precedes the end.
+        "section_destroyed",
         "match_ended",
     ];
     let mut previous = 0_usize;
@@ -1373,15 +1421,52 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         Some("red"),
         "the black box names the winner: {ended}"
     );
+    let lost = events
+        .iter()
+        .find(|event| {
+            event.get("kind").and_then(Value::as_str) == Some("section_destroyed")
+                && event.get("section").and_then(Value::as_str) == Some(section)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "a section_destroyed line for the {section}: {:?}",
+                kinds(&events)
+            )
+        });
+    assert_eq!(
+        lost.get("unit").and_then(Value::as_u64),
+        Some(u64::from(blue)),
+        "and which tank lost it: {lost}"
+    );
     let destroyed = events
         .iter()
-        .find(|event| event.get("kind").and_then(Value::as_str) == Some("unit_destroyed"))
-        .expect("a unit_destroyed line");
-    assert_eq!(
-        destroyed.get("unit").and_then(Value::as_u64),
-        Some(u64::from(blue)),
-        "and which tank went up: {destroyed}"
-    );
+        .find(|event| event.get("kind").and_then(Value::as_str) == Some("unit_destroyed"));
+    if hull_went {
+        let destroyed = destroyed.expect("a unit_destroyed line");
+        assert_eq!(
+            destroyed.get("unit").and_then(Value::as_u64),
+            Some(u64::from(blue)),
+            "and which tank went up: {destroyed}"
+        );
+        // The hull's own line comes first, then the tank going up, then the
+        // end — the order the old list pinned with `unit_destroyed` in it.
+        assert!(
+            first(&events, "section_destroyed") <= first(&events, "unit_destroyed"),
+            "the tank went up before its hull was destroyed: {:?}",
+            kinds(&events)
+        );
+        assert!(
+            first(&events, "unit_destroyed") <= first(&events, "match_ended"),
+            "the tank went up before the end: {:?}",
+            kinds(&events)
+        );
+    } else {
+        assert!(
+            destroyed.is_none(),
+            "a disarmed tank is not destroyed: {:?}",
+            kinds(&events)
+        );
+    }
     // Every hit is the red tank's, on the blue one, and carries the plan's cause.
     let hits: Vec<&Value> = events
         .iter()
@@ -1554,9 +1639,12 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
             .find(|row| row.get("unit").and_then(Value::as_u64) == Some(u64::from(unit)))
             .unwrap_or_else(|| panic!("no row for #{unit}: {result}"))
     };
+    // 16b cut AP.2: `UnitOutcome` is untouched, so a tank that lost its turret
+    // and still drives comes back `intact` on its row — the match's end is the
+    // side's, and the record's `reason` above says it.
     assert_eq!(
         row_of(blue).get("outcome").and_then(Value::as_str),
-        Some("destroyed"),
+        Some(if hull_went { "destroyed" } else { "intact" }),
         "{result}"
     );
     assert_eq!(
@@ -1645,15 +1733,22 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     // (11b) The winner's debrief (16b cut V.3; 16c N2, Q37).
     // -----------------------------------------------------------------
     // Ada reads her own match: the public outcome at its head, her own shots,
-    // and the kill her own round made — and a match the centre never held is
-    // refused in one sentence.
+    // and the kill (or the turret) her own round made — and a match the centre
+    // never held is refused in one sentence.
     let report = sim_report(&mut ada, "SIM REPORT").await;
     let flat = report.split_whitespace().collect::<Vec<_>>().join(" ");
+    // 16b cut AP.2: the kill line is the hull's; a turret ending is the shot's
+    // own clause instead.
+    let finished = if hull_went {
+        "destroyed by your round.".to_owned()
+    } else {
+        "'s turret destroyed".to_owned()
+    };
     for want in [
         "red won (blue eliminated)",
         "You flew RA: ",
         "cannon at ",
-        "destroyed by your round.",
+        finished.as_str(),
         "the match ended: blue eliminated.",
     ] {
         assert!(flat.contains(want), "{want:?} missing from:\n{report}");

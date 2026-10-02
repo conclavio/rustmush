@@ -83,7 +83,10 @@ pub const MAX_HOLD_RADIUS_CELLS: u16 = 32;
 pub const MIN_HOLD_MS: u32 = 10_000;
 
 /// **The longest a Hold may last**, arena milliseconds (16b cut O.1): an hour,
-/// the stock `match.max_duration_ms`.
+/// the stock `match.max_duration_ms` until 16b cut AP.2 made it fifteen
+/// minutes. Nothing ties the two: `MatchConfig::validate` puts no ceiling on
+/// the cap, and a `hold_ms` at or past `match.max_duration_ms` can never
+/// settle and is not checked here — a 16c debt.
 pub const MAX_HOLD_MS: u32 = 3_600_000;
 
 /// **One mode a ground declares it supports** (16b cut O.1; 16c N11), beyond the

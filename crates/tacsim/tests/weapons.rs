@@ -894,9 +894,31 @@ fn the_engaged_tempo_is_entered_on_a_shot_and_held() {
     // Take the gun off it and the third trigger goes with it. The two still hold
     // each other inside `tempo.alert_range_cm`, so one `engaged_hold_ms` later the
     // arena is back at `Alert` — the two holds are independent (doc 16 §3.1).
+    //
+    // The weapon rows alone first, the rounds kept — a turret shot off (16b cut
+    // F.1) — and the trigger is gone already: the reach is the guns', never the
+    // magazines'.
     if let Some(state) = arena.unit_mut(RED) {
         state.weapons.clear();
     }
+    assert!(
+        arena
+            .unit(RED)
+            .is_some_and(|state| state.armed_at_checkout()),
+        "the rounds are still aboard"
+    );
+    assert!(!arena.hostile_in_weapons_range());
+    // **16b cut AP.2**: and that state is a side that came in armed with no gun
+    // left, which is out — the match would end at the next substep and its
+    // clock stand, and this test is about the tempo's triggers, not about who
+    // wins. So the gun's record goes too (`ammo`, which is what
+    // `UnitState::armed_at_checkout` reads): red is then a side that never had
+    // a gun, which the clause leaves standing.
+    assert_eq!(arena.eliminated(), Some(Some(Team::Blue)));
+    if let Some(state) = arena.unit_mut(RED) {
+        state.ammo.clear();
+    }
+    assert!(arena.ended.is_none() && arena.eliminated().is_none());
     assert!(!arena.hostile_in_weapons_range());
     let quiet_from = arena.now_ms;
     while arena.now_ms < quiet_from + hold + 500 {
@@ -2305,6 +2327,224 @@ fn o3_a_range_whose_shooters_run_dry_is_not_spent() {
         Some(tacsim::arena::EndReason::Spent),
         "the contrast is a spent draw"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AP.2 — a disarming hit ends the match at its own substep
+// ---------------------------------------------------------------------------
+
+/// **Two stock tanks, head on, both seated** (16b cut AP.2): red at `(6, 4)`
+/// facing east, blue four cells east of it facing west, each checked out off
+/// the fielded catalog as `match_::start` checks one out — so both came in
+/// armed (`UnitState::armed_at_checkout`). Blue's pilot never starts up.
+///
+/// Blue's **front band** is narrowed to its turret alone: the stock band splits
+/// a round between the hull and the turret by the seeded facet draw, and this
+/// fixture is about the turret's `remove_weapons`, so every round that hits
+/// finds the turret and the fifth one through it takes blue's only gun.
+fn ap2_duel() -> Arena {
+    use tacsim::arena::state::Controller;
+    let catalog = tacsim::definitions::Catalog::build_fielded(&[], tacsim::NS)
+        .expect("the fielded content binds");
+    let line_tank = tacsim::definitions::content::LINE_TANK;
+    let red = fielded_unit(
+        &catalog,
+        line_tank,
+        RED,
+        Team::Red,
+        facing(6, 4, 90_000),
+        Controller::Pilot,
+        1,
+    );
+    let mut blue = fielded_unit(
+        &catalog,
+        line_tank,
+        BLUE,
+        Team::Blue,
+        facing(10, 4, 270_000),
+        Controller::Pilot,
+        1,
+    );
+    let mut narrowed = false;
+    for band in &mut blue.profile.bands {
+        if band.band == "front" {
+            band.sections = vec![(SmolStr::new("turret"), 100)];
+            narrowed = true;
+        }
+    }
+    assert!(narrowed, "the stock tank has a front band");
+    let pilots = [RED, BLUE]
+        .into_iter()
+        .enumerate()
+        .map(|(seat, unit)| Pilot {
+            unit,
+            pilot: ObjId(1_000 + u32::try_from(seat).unwrap_or(0)),
+            station: SmolStr::new("cockpit"),
+            epoch: 1,
+        })
+        .collect();
+    Arena::new(
+        CustodyOut {
+            definition: definition(&[]),
+            units: vec![red, blue],
+            pilots,
+            resolution: tacsim::match_::resolution_for(&catalog),
+            seed: SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
+        },
+        &ArenaConfig::default(),
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the duel")
+}
+
+/// Red starts up at 0 and, from 15,000, locks blue and fires at every 10,000 ms
+/// beat (the cannon cycles in 6,000); the beats run long past the end.
+fn ap2_script() -> Vec<Beat> {
+    let mut beats = vec![Beat {
+        t_ms: 0,
+        intents: vec![intent(RED, IntentKind::Startup, 1)],
+    }];
+    for n in 0..30_u64 {
+        let at = 15_000 + i64::try_from(n).unwrap_or(0) * 10_000;
+        let seq = n * 2 + 2;
+        beats.push(Beat {
+            t_ms: at,
+            intents: vec![
+                intent(
+                    RED,
+                    IntentKind::Lock {
+                        contact: contact_of(RED, BLUE),
+                    },
+                    seq,
+                ),
+                intent(
+                    RED,
+                    IntentKind::Fire {
+                        weapon: SmolStr::new("cannon"),
+                    },
+                    seq + 1,
+                ),
+            ],
+        });
+    }
+    beats
+}
+
+/// **A disarming hit ends the match at its own substep, at every cadence**
+/// (16b cut AP.2; 16c `B-87`; doc 16 §3.8 read for the side; 16b §11's
+/// mandatory cross-tempo test).
+///
+/// Red shoots blue's turret away. Blue came in armed, still drives and is
+/// neither a wreck nor disabled — and it is out: a side that came in armed and
+/// has no gun left is eliminated the substep its last gun goes. So the black
+/// box holds exactly one `match_ended`, an elimination with red the winner,
+/// stamped at the end of the substep the turret was destroyed in (W.2's rule
+/// for every elimination: `settle_elimination` stamps the substep it ran in),
+/// with no `unit_destroyed`, no `unit_disabled` and no `spent`; and the same
+/// script at 5,000, 1,000 and 500 ms gives one event list and one per-substep
+/// hash sequence — so the end is a fact of arena time, not of the pulse that
+/// carried it.
+#[test]
+fn ap2_a_disarming_hit_ends_the_match_at_its_own_substep_at_every_tempo() {
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    let mut substep = 0_i64;
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = ap2_duel();
+        assert!(
+            arena
+                .units
+                .iter()
+                .all(tacsim::arena::state::UnitState::armed_at_checkout),
+            "both tanks came in armed"
+        );
+        substep = i64::from(tacsim::arena::clock::substep_ms(
+            &ArenaConfig::default().tempo,
+            arena.cell_cm(),
+            arena.max_speed_cms(),
+        ));
+        let run = replay(&mut arena, cadence, 400_000, &ap2_script());
+        assert_eq!(
+            arena.ended.map(|end| end.reason),
+            Some(tacsim::arena::EndReason::Elimination {
+                winner: Some(Team::Red)
+            }),
+            "cadence {cadence}: the disarmed side is out by {}",
+            arena.now_ms
+        );
+        let blue = arena.unit(BLUE).unwrap_or_else(|| panic!("blue"));
+        assert!(
+            blue.weapons.is_empty() && !blue.limits.wreck && !blue.disabled,
+            "cadence {cadence}: blue lost its gun and nothing else"
+        );
+        assert!(!arena.out_of_action(BLUE), "a disarmed tank still drives");
+        runs.push((cadence, run));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+    let lines = |kind: &str| -> Vec<&Line> {
+        first
+            .events
+            .iter()
+            .filter(|(_, encoded, _, _)| encoded.contains(&format!("\"kind\":\"{kind}\"")))
+            .collect()
+    };
+    let ended = lines("match_ended");
+    assert_eq!(ended.len(), 1, "exactly one end: {ended:?}");
+    assert!(
+        ended
+            .iter()
+            .all(|(_, encoded, _, _)| encoded.contains(r#"{"elimination":{"winner":"red"}}"#)),
+        "the disarmed side is eliminated, red the winner: {ended:?}"
+    );
+    let turret: Vec<&Line> = lines("section_destroyed")
+        .into_iter()
+        .filter(|(_, encoded, _, _)| {
+            encoded.contains(&format!("\"unit\":{}", BLUE.0))
+                && encoded.contains("\"section\":\"turret\"")
+        })
+        .collect();
+    assert_eq!(turret.len(), 1, "blue's turret went once: {turret:?}");
+    let (Some((lost_at, _, _, _)), Some((ended_at, _, _, _))) = (turret.first(), ended.first())
+    else {
+        panic!("a turret line and an end line");
+    };
+    // The end is the turret's own substep: the first substep boundary at or
+    // after the impact, which is the same arena millisecond at every cadence.
+    assert!(substep > 0, "a substep length");
+    let boundary = (lost_at + substep - 1) / substep * substep;
+    assert_eq!(
+        *ended_at, boundary,
+        "the end is stamped at the end of the substep the turret went in ({lost_at} ms, substep {substep} ms)"
+    );
+    for word in ["unit_destroyed", "unit_disabled"] {
+        assert!(lines(word).is_empty(), "no `{word}`: the tank still drives");
+    }
+    assert!(
+        first
+            .events
+            .iter()
+            .all(|(_, encoded, _, _)| !encoded.contains("\"spent\"")),
+        "never `spent`: blue's magazine is full"
+    );
+
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "the event list differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes,
+            first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms ({} against {})",
+            run.hashes.len(),
+            first.hashes.len()
+        );
+        assert_eq!(run.shots, first.shots);
+        assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
 }
 
 // ---------------------------------------------------------------------------

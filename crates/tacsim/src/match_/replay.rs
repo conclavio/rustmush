@@ -78,8 +78,11 @@ pub const REPLAY_RECORD: &str = "tacsim.replay";
 
 /// **The most keyframes one replay keeps** (16b cut I.1): 736, which at the
 /// shipped `ledger.summary_ms` of 5,000 is 61 minutes 20 seconds of arena time
-/// — past `[tacsim.match].max_duration_ms`' hour with two summaries of margin,
-/// pinned against the default configuration. A shape cap: the byte budget
+/// — four times the fifteen-minute cap (16b cut AP.2), and the hour it was
+/// before with two summaries of margin, pinned against the default
+/// configuration. `MatchConfig::validate` puts no ceiling on the cap, so a
+/// replay of a match an operator configured past the hour outruns this cap (a
+/// 16c debt). A shape cap: the byte budget
 /// ([`REPLAY_MAX_BYTES`]) is the one that binds first on a full staff match.
 pub const REPLAY_MAX_KEYFRAMES: usize = 736;
 

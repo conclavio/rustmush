@@ -300,7 +300,7 @@ hunt_after_ms = 90000
 [tacsim.match]                     # (16b cut G) the match lifecycle's slots and timeouts
 startup_ms = 10000                 # ms STARTUP takes to carry a unit's power from starting to online; until then motion and fire refuse
 board_timeout_ms = 120000          # ms Boarding waits for every claimed slot to be seated before unseated slots are dropped (an empty side aborts)
-max_duration_ms = 3600000          # one hour: the longest a match runs before it ends as a timeout
+max_duration_ms = 900000           # fifteen minutes: the longest a match runs before it ends as a timeout
 max_slots_per_side = 12            # ceiling 1..12; current centre clamps to its six pods a side and logs it at boot
 # (16b cut N.1, sized by Q.7) whether SIM START tops each side up to a size with
 # the tanks of the pods nobody claimed, under the reflex controller. With it ON

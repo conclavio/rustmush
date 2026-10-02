@@ -1369,6 +1369,56 @@ async fn q7_a_spent_end_is_a_draw_the_board_explains() {
     );
 }
 
+/// **The board's and the history's words for an elimination and a timeout**
+/// (16b cut AP.2; review `F7`/`AP2-1`): the words `help simulator`'s end
+/// paragraph quotes, pinned where they are printed.
+///
+/// This rig ends a match through `match_::finish` (`end_match`) and has no
+/// arena to land a hit in, so it proves the WORDS and nothing of the disarmed
+/// side's clause — that is the library's (`damage.rs`'s
+/// `ap2_a_side_whose_guns_are_shot_away_is_out_while_the_other_carries_one`,
+/// `weapons.rs`'s cross-tempo `ap2_a_disarming_hit_…`). An elimination has no
+/// board arm of its own: `SIM STATUS` prints the outcome word, `— red`, and
+/// `SIM HISTORY` `red won (blue eliminated)`. A timeout prints `— timeout` and
+/// `timed out (the clock ran out)`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ap2_an_elimination_end_prints_the_boards_and_the_historys_words() {
+    let mut rig = fill_rig(1);
+    rig.say(0, "sim team red");
+    rig.say(0, "sim start");
+    assert!(rig.seat(0), "the one pilot boards and the match runs");
+    rig.end_match(tacsim::arena::EndReason::Elimination {
+        winner: Some(Team::Red),
+    });
+    assert_eq!(rig.state(), MatchState::Ended);
+    let said = rig.say(0, "sim status");
+    assert!(
+        said.lines()
+            .any(|line| line.trim_end().ends_with("ended (match 1) — red")),
+        "{said}"
+    );
+    let history = rig.say(0, "sim history");
+    assert!(history.contains("red won (blue eliminated)"), "{history}");
+
+    let mut rig = fill_rig(1);
+    rig.say(0, "sim team red");
+    rig.say(0, "sim start");
+    assert!(rig.seat(0));
+    rig.end_match(tacsim::arena::EndReason::Timeout);
+    assert_eq!(rig.state(), MatchState::Ended);
+    let said = rig.say(0, "sim status");
+    assert!(
+        said.lines()
+            .any(|line| line.trim_end().ends_with("ended (match 1) — timeout")),
+        "{said}"
+    );
+    let history = rig.say(0, "sim history");
+    assert!(
+        history.contains("timed out (the clock ran out)"),
+        "{history}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn q7_sim_ai_refuses_by_the_sentence_for_each_reason() {
     let mut rig = fill_rig(3);

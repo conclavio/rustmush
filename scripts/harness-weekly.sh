@@ -25,15 +25,18 @@
 #     per-pulse bounds;
 #   * the lance lane (16b cut Z.1) asserts W8 alone — the span and the orders
 #     per commander per minute bounded, the tape equal to the script's orders
-#     and the opening round landed at any knob, and the busiest minute equal
-#     to the squads a side, the span one fewer (16b cut AI.1: red-1 is
-#     released with no wreck holding its order, blue-1's has expired), and
+#     and the opening round landed at any knob, and the busiest minute one
+#     fewer than the squads a side and the span two fewer (16b cut AP.2: the
+#     match ends at 111,250 ms, blue's last machine disarmed, before minute
+#     one's third marks; 16b cut AI.1: red-1 is released with no wreck
+#     holding its order, blue-1's has expired), and
 #     (16b cut Z.2) each side's `order_released` lines from the script's
 #     release at the ninetieth arena second where its first squad still
 #     stands (16b cut AE.1: at least one, red's — three lines since 16b cut
 #     AI.1; blue-1 is all wrecks by then), and the orders counted over the
-#     scripted wakes a machine stood to take (seven, pinned), held to two
-#     facts of the fight, only at the lane's defaults (seed 2350,
+#     scripted wakes a machine stood to take (five since 16b cut AP.2,
+#     pinned), held to three facts of the fight, only at the lane's
+#     defaults (seed 2350,
 #     TACSIM_LANCE_UNITS=24, TACSIM_LANCE_ARENA_S=120, jitter 0; off them the
 #     fight decides those) — and prints its timing beside 12 ms and 20 ms,
 #     report-only;

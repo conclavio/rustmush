@@ -3320,8 +3320,8 @@ pub enum StopReason {
     /// `[tacsim.match].unattended_ms` of world time after the last un-`left` slot
     /// went `left` during `Running`, the lobby's 1 s tick sends this. Doc 16 §11's
     /// N.1 amendment makes a released seat one-way, so a match every human has
-    /// walked out of otherwise runs to `match.max_duration_ms` — an hour of
-    /// machines driving at each other in a centre nobody can claim a slot in.
+    /// walked out of otherwise runs to `match.max_duration_ms` — a quarter-hour
+    /// of machines driving at each other in a centre nobody can claim a slot in.
     Unattended,
 }
 
@@ -3344,8 +3344,8 @@ pub enum EndReason {
     /// their last round left the breech. This is the symmetric reading instead —
     /// a side that is dry while the other is not plays on, and only when neither
     /// can shoot is there nothing left to decide. Before it, such a match ran to
-    /// `match.max_duration_ms`, which is an hour of two tanks driving at each
-    /// other.
+    /// `match.max_duration_ms`, which was an hour, and is fifteen minutes since
+    /// AP.2, of two tanks driving at each other.
     Spent,
     /// **A side kept the key spot uncontested for the declared time** (16b cut
     /// O.1; 16c N11): a Hold match's own end, settled at its own arena

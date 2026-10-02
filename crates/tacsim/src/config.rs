@@ -604,13 +604,13 @@ impl Default for MatchConfig {
         MatchConfig {
             startup_ms: 10_000,
             board_timeout_ms: 120_000,
-            // One hour.
-            max_duration_ms: 3_600_000,
+            // Fifteen minutes (16c Q47, the owner's ruling of 2026-10-02): the arena is an explicit OOC proving ground.
+            max_duration_ms: 900_000,
             max_slots_per_side: 12,
             ai_fill: false,
             // Five minutes: long enough that a pilot who drops and reconnects
             // has not ended their own match, short enough that a centre is not
-            // held for the hour `max_duration_ms` would take.
+            // held for the quarter-hour `max_duration_ms` would take.
             unattended_ms: 300_000,
             // Five seconds: one `Quiet` pulse, so the arena has processed the
             // `Released` before the `Live` is sent.

@@ -264,7 +264,11 @@ close (inside about 200 m) and only while it has armour left to do it with, with
 an empty magazine it keeps driving, once home it shoots back at whatever comes
 for it, and after twenty quiet seconds with nothing hostile in sight it turns
 round and comes back in, once. A tank whose pilot left does the same, so a
-disconnection leaves your side a teammate rather than a parked target.
+disconnection leaves your side a teammate rather than a parked target. A machine
+whose guns have been shot away drives home and never comes back; and a side that
+came in armed and has no gun left — every tank it still has in action has had
+its weapons shot off — loses there and then, yours included, so shooting off the
+last turret ends the match.
 
 A machine that loses you goes to where it last saw you before it goes back to its
 patrol, and one that has seen nobody for a minute and a half crosses to the other
@@ -324,13 +328,18 @@ will read that the match resumed and that your tank is flying on doctrine;
 `BOARD` from your pod or your team room takes it back a few seconds later, and
 your first frame says what happened while you were away.
 
-It ends when one side has nothing left that can fight, when **neither** side has
-a round left to fire (a draw: `ended — draw: both sides are out of ammunition`),
-when a side's lead types `SIM CONCEDE` (`ended — blue wins: red
-conceded`), when a side keeps the key spot in a hold match (`ended — red wins:
-held The Crossroads`; see Modes above), when the match's time runs out, or when
-somebody aborts it. Running dry on your own does not lose you the match — the
-other side has to be dry too.
+It ends when one side has nothing left that can fight — every tank of it a
+wreck, or disabled, or with its guns shot away (an empty magazine is not a lost
+gun; the board says `ended — red` for the side that won, and `SIM HISTORY`
+`red won (blue eliminated)`) — when **neither** side has a round left to fire
+(a draw: `ended — draw: both sides are out of ammunition`), when a side's lead
+types `SIM CONCEDE` (`ended — blue wins: red conceded`), when a side keeps the
+key spot in a hold match (`ended — red wins: held The Crossroads`; see Modes
+above), when the match's fifteen minutes run out (`ended — timeout`, no
+winner; `SIM HISTORY` says `timed out (the clock ran out)`), or when somebody
+aborts it. Running dry on your own does not lose you the match — the other
+side has to be dry too; losing your last gun does, and both sides losing
+theirs at once is a draw.
 
 A beaten tank is not always a dead one, and a match neither side can finish is
 the reason `SIM CONCEDE` exists: it is a **result** and not an abort, so the

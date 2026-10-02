@@ -653,7 +653,7 @@ fn e3_two_machines_of_one_side_cross_the_ford_without_stopping_each_other() {
 /// ended at 533 s of arena time, and a 1 v 1 took 7 m 42 s. The owner plays
 /// solo, so when they die the match has to end **among the machines** and in
 /// minutes; the only exits before this cut were `SIM ABORT`, which records no
-/// result, and the one-hour cap.
+/// result, and the cap (an hour then; fifteen minutes since 16b cut AP.2).
 const ENDGAME_MS: i64 = 900_000;
 
 /// Play a field out until it ends or the bound runs out, at a one-second

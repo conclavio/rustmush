@@ -1046,7 +1046,7 @@ mod tests {
              [tacsim.match]\n\
              startup_ms = 5000\n\
              board_timeout_ms = 60000\n\
-             max_duration_ms = 900000\n\
+             max_duration_ms = 600000\n\
              max_slots_per_side = 4\n\
              ai_fill = true\n\
              unattended_ms = 45000\n\
@@ -1142,7 +1142,7 @@ mod tests {
             tacsim::config::MatchConfig {
                 startup_ms: 5_000,
                 board_timeout_ms: 60_000,
-                max_duration_ms: 900_000,
+                max_duration_ms: 600_000,
                 max_slots_per_side: 4,
                 ai_fill: true,
                 // 16b cut D.3 (`B-33`): the unattended end's own key.

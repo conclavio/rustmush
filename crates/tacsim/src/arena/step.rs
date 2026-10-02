@@ -4902,6 +4902,62 @@ mod tests {
         );
     }
 
+    /// **16b cut AP.2** (16c `B-87`): the settle order Q.7 set — elimination
+    /// first, `Spent` second — holds for the disarmed side. Both magazines are
+    /// emptied and blue's gun shot off by the fixture's hand between two pulses,
+    /// so the next substep finds both sides dry AND blue with no gun left: that
+    /// is red's elimination win, never the `Spent` draw it was before this cut
+    /// (`spent` counts an emptied weapon table as nothing to fire). One end in
+    /// the black box, at the substep's end.
+    #[test]
+    fn ap2_a_side_disarmed_on_a_dry_substep_is_eliminated_not_spent() {
+        const B: ObjId = ObjId(9);
+        let mut arena = m2_pair(60_000);
+        let mut journal = Log::default();
+        journal.absorb(&arena.step(0, &[], &[]));
+        journal.absorb(&arena.step(1_000, &[], &[]));
+        assert!(arena.ended.is_none());
+        for id in [A, B] {
+            if let Some(state) = arena.unit_mut(id) {
+                state.ammo.insert(SmolStr::new("cannon"), 0);
+            }
+        }
+        let mut said: Vec<Notice> = Vec::new();
+        arena.apply_consequence(
+            B,
+            &crate::arena::resolution::Consequence::RemoveWeapons {
+                section: SmolStr::new("turret"),
+            },
+            1_000,
+            None,
+            &mut said,
+        );
+        assert!(arena.spent(), "both sides are dry: Q.7's predicate holds");
+        let out = arena.step(2_000, &[], &[]);
+        journal.absorb(&out);
+        assert_eq!(
+            out.ended.map(|end| end.reason),
+            Some(EndReason::Elimination {
+                winner: Some(Team::Red)
+            }),
+            "the side with no gun left is out, settled before Spent"
+        );
+        assert_eq!(out.ended.map(|end| end.t_ms), Some(1_250));
+        let log = journal.events(&mut arena);
+        assert_eq!(
+            m2_ends(&log),
+            vec![(
+                1_250,
+                EventKind::MatchEnded {
+                    reason: EndReason::Elimination {
+                        winner: Some(Team::Red)
+                    }
+                }
+            )],
+            "exactly one end, the elimination, and no Spent beside it: {log:?}"
+        );
+    }
+
     /// **16b cut M.2** (16c `T-10`): `substeps` is what ran. A pulse cut into
     /// four whose second substep ends the match reports two; the opening pulse
     /// reports none.

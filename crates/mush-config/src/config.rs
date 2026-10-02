@@ -93,7 +93,7 @@
 //! | `[tacsim.arena.reflex].hunt_after_ms` | `90000` | **16b cut E.4** (`B-04`): arena milliseconds with nothing hostile held before a patrolling machine crosses to the other side's entry zone to look; `0` is off, and anything else is at least `decide_ms` |
 //! | `[tacsim.match].startup_ms` | `10000` | **16b cut G** (doc 16 §3.3): milliseconds `STARTUP` takes to bring a unit's power online |
 //! | `[tacsim.match].board_timeout_ms` | `120000` | milliseconds `Boarding` waits before unseated slots are dropped (doc 16 §3.8) |
-//! | `[tacsim.match].max_duration_ms` | `3600000` | the longest a match runs before it ends as a timeout |
+//! | `[tacsim.match].max_duration_ms` | `900000` | the longest a match runs before it ends as a timeout; fifteen minutes since 16b cut AP.2 (16c Q47) |
 //! | `[tacsim.match].max_slots_per_side` | `12` | pilot slots one side may claim (doc 16 §1's 12 v 12) |
 //! | `[tacsim.match].ai_fill` | `false` | **16b cut N.1** (doc 16 §6): whether `SIM START` also fields the tanks of the pods nobody claimed, under the reflex controller. Off by default because doc 16 §1's A1 is a two-tank story |
 //! | `[tacsim.match].unattended_ms` | `300000` | **16b cut D.3** (`B-33`): world milliseconds a running match every pilot has left runs on before the lobby ends it `unattended`; `0` is off, and anything else is at least `10000` |
@@ -1309,9 +1309,10 @@ pub struct TacsimMatchCfg {
     /// Doc 16 §11's N.1 amendment makes a released seat one-way: a pilot who
     /// `EXIT`s hands their tank to the reflex controller and cannot take it back.
     /// So a match every human has walked out of has nobody left who can end it,
-    /// and before this key it ran to `max_duration_ms` — an hour in which no
-    /// second crew could claim a slot. The lobby stamps the moment the last slot
-    /// goes `left` and its own 1 s tick sends the stop once this has passed.
+    /// and before this key it ran to `max_duration_ms` — a quarter-hour (an hour
+    /// before AP.2) in which no second crew could claim a slot. The lobby stamps
+    /// the moment the last slot goes `left` and its own 1 s tick sends the stop
+    /// once this has passed.
     ///
     /// A staff `@arena/start` match has no slots and is therefore never
     /// unattended; a destroyed pilot who stays in the pod is attending.
@@ -1333,8 +1334,8 @@ impl Default for TacsimMatchCfg {
         TacsimMatchCfg {
             startup_ms: 10_000,
             board_timeout_ms: 120_000,
-            // One hour.
-            max_duration_ms: 3_600_000,
+            // Fifteen minutes (16c Q47, the owner's ruling of 2026-10-02): the arena is an explicit OOC proving ground.
+            max_duration_ms: 900_000,
             max_slots_per_side: 12,
             ai_fill: false,
             // 16b cut D.3: five minutes.
@@ -2701,7 +2702,7 @@ scene_turn_dedline_secs = 30
                 m.max_duration_ms,
                 m.max_slots_per_side
             ),
-            (10_000, 120_000, 3_600_000, 12),
+            (10_000, 120_000, 900_000, 12),
             "[tacsim.match]"
         );
         // 16b cut Y.3 (16c `N4`): five seconds before a dropped pilot's `BOARD`
@@ -2788,7 +2789,7 @@ scene_turn_dedline_secs = 30
              [tacsim.match]\n\
              startup_ms = 5000\n\
              board_timeout_ms = 60000\n\
-             max_duration_ms = 900000\n\
+             max_duration_ms = 600000\n\
              max_slots_per_side = 4\n\
              [tacsim.sensors]\n\
              pass_ms = 750\n\
@@ -2858,7 +2859,7 @@ scene_turn_dedline_secs = 30
                 m.max_duration_ms,
                 m.max_slots_per_side
             ),
-            (5_000, 60_000, 900_000, 4),
+            (5_000, 60_000, 600_000, 4),
             "the TOML key is `match`, the Rust field `match_`"
         );
 

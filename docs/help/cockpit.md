@@ -453,7 +453,10 @@ If your side is beaten but not dead, its lead can end it honestly with
 After that `STATUS` carries `DESTROYED` beside the speed, and every order is
 refused at the cockpit: `Your tank is destroyed and takes no orders. EXIT leaves
 the pod.` A tank that has only lost its motion still sees, still locks and still
-shoots — it is `HEADING` and `SPEED` that answer `Your tank cannot move.`
+shoots — it is `HEADING` and `SPEED` that answer `Your tank cannot move.` A tank
+that has lost its guns still drives, and if it was the last gun on your side the
+match is over at that hit: a side that came in armed and has no gun left has
+lost.
 
 ## The cockpit screen
 

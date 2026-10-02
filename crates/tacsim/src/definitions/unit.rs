@@ -230,9 +230,12 @@ pub const ECCM_SIGNATURE_CELL: &str = "eccm_signature_recovery_permille";
 /// The condition a section, and a component, is born in.
 pub const INTACT: &str = "intact";
 
-/// The ceiling of a `ready_at_ms` cell: an hour of arena time, which is
-/// `match.max_duration_ms` (16b §9), so a cycle can never be set past the match
-/// that contains it.
+/// The ceiling of a `ready_at_ms` cell: an hour of arena time — four times the
+/// stock `match.max_duration_ms` (fifteen minutes since 16b cut AP.2) and the
+/// whole of the hour it was before — so at the stock cap a cycle can never be
+/// set past the match that contains it. `MatchConfig::validate` puts a floor
+/// on the cap and no ceiling, so an operator who configures a match past the
+/// hour is past this bound too: not enforced, a 16c debt.
 pub const MAX_READY_AT_MS: i64 = 3_600_000;
 
 /// The ceiling of a sensor's `condition` cell: a percentage.

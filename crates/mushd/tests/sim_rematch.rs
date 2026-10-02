@@ -686,10 +686,19 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     // The evidence a check-in is supposed to leave: the loser's record IS the
     // wreck, and the winner's magazine IS down. Doc 16 §1's acceptance reads
     // exactly this, which is why 16b cut F.1 does **not** reset at check-in.
+    // **16b cut AP.2**: a frontal duel ends at the hull or at the turret (a side
+    // that came in armed and has no gun left is out; `arena_story.rs`'s module
+    // head), so the loser comes back a wreck or disarmed — never neither.
     let wreck = ask_whole(&mut god, &format!("@unit/show #{blue}")).await;
+    let wrecked = wreck.contains("section hull: wreck");
+    let disarmed = wreck.contains("section turret: destroyed");
     assert!(
-        wreck.contains("section hull: wreck"),
-        "the loser's tank came back a wreck: {wreck}"
+        wrecked || disarmed,
+        "the loser's tank came back a wreck or disarmed: {wreck}"
+    );
+    eprintln!(
+        "sim_rematch: the duel ended at the {}",
+        if wrecked { "hull" } else { "turret" }
     );
     let survivor = ask_whole(&mut god, &format!("@unit/show #{red}")).await;
     let left = cell_current(&survivor, "component/cannon/ammo");
@@ -752,8 +761,8 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     for (unit, who) in [(red, RED_TANK), (blue, BLUE_TANK)] {
         let seen = ask_whole(&mut god, &format!("@unit/show #{unit}")).await;
         assert!(
-            !seen.contains("section hull: wreck"),
-            "{who} is still last match's wreck: {seen}"
+            !seen.contains("section hull: wreck") && !seen.contains("section turret: destroyed"),
+            "{who} is still last match's wreck or still disarmed: {seen}"
         );
         assert_eq!(
             cell_current(&seen, "component/cannon/ammo"),
@@ -835,8 +844,20 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     let first = flat(&sim_report(&mut bo, "SIM REPORT 1").await);
     assert!(first.contains("Match 1 on "), "{first}");
     assert!(first.contains("red won (blue eliminated)"), "{first}");
-    assert!(first.contains("You flew BA: destroyed;"), "{first}");
-    assert!(first.contains("your tank destroyed."), "{first}");
+    // 16b cut AP.2: the tank came back a wreck, or with its turret shot away
+    // and still driving — which `UnitOutcome` (untouched by the cut) calls
+    // `intact`, the debrief's own line saying what the turret cost.
+    if wrecked {
+        assert!(first.contains("You flew BA: destroyed;"), "{first}");
+        assert!(first.contains("your tank destroyed."), "{first}");
+    } else {
+        assert!(first.contains("You flew BA: intact;"), "{first}");
+        assert!(
+            first.contains("your turret destroyed: its weapons are gone."),
+            "{first}"
+        );
+        assert!(!first.contains("your tank destroyed."), "{first}");
+    }
 }
 
 // ---------------------------------------------------------------------------

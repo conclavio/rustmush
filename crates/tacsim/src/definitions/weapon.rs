@@ -23,7 +23,9 @@ use crate::definitions::DefinitionError;
 /// substep. It is refused on load, so a content edit cannot smuggle one in.
 pub const CYCLE_FLOOR_MS: u32 = 1_000;
 
-/// The slowest a weapon may cycle: an hour is past any match.
+/// The slowest a weapon may cycle: an hour, past any match at the stock cap
+/// (fifteen minutes since 16b cut AP.2; `MatchConfig::validate` sets the cap no
+/// ceiling).
 pub const MAX_CYCLE_MS: u32 = 3_600_000;
 
 /// The longest range band one weapon may declare: a hundred kilometres, two
