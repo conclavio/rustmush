@@ -1,6 +1,6 @@
 # The cockpit
 
-The fourteen verbs you fly a tank with, in the order a pilot uses them. They work
+The fifteen verbs you fly a tank with, in the order a pilot uses them. They work
 while you are at the station of a tank a running match has deployed, and nowhere
 else — `help simulator` is how you get there.
 
@@ -43,6 +43,9 @@ else — `help simulator` is how you get there.
                       spot, engage, withdraw, screen a bearing or support a
                       tank — or release them to their own doctrine. See
                       "Commanding the machines".
+  WATCH [ON|OFF]      push a short block of your own line, your guns and your
+                      contacts whenever it would read differently; for line
+                      mode. See "Watching from line mode".
 
 `EXIT` climbs out. Once the match is running that is final: see
 `help simulator`.
@@ -457,6 +460,30 @@ shoots — it is `HEADING` and `SPEED` that answer `Your tank cannot move.` A ta
 that has lost its guns still drives, and if it was the last gun on your side the
 match is over at that hit: a side that came in armed and has no gun left has
 lost.
+
+## Watching from line mode
+
+The line client has no screen that redraws itself: it prints the arena's
+notices as they happen and answers what you type, and your position, speed,
+readiness and contact ranges reach you only when you ask (`STATUS`,
+`CONTACTS`, `WEAPONSTATUS`, `RANGE`). `WATCH ON` changes that: whenever the
+block below would read differently from the last one you were sent, the panel
+pushes it, one to three lines, each within 120 columns —
+
+  Watch RA: online, 24 kph, heading 090°
+  Watch guns: cannon ready, machine_gun (mg) cycling (3 s); lock BA, 450 m, 46% to hit
+  Watch contacts: BA blue 087° far 450 m; X3 unknown 315° effective 200 m, plotted 4 s ago
+
+— your own line, your guns with your lock, and your contacts, in that order;
+the guns line only while you carry a gun and the contacts line only while
+your platform holds a contact, a plot's age named only once it has gone
+stale. It is the picture `STATUS`, `WEAPONSTATUS` and `CONTACTS` print and
+nothing more: no tempo, no position, and nothing about a unit your platform
+has not found. A line that would run past 120 columns ends in `; +2 more`,
+and `CONTACTS` lists the rest. `WATCH OFF` stops it, bare `WATCH` says which
+it is, and the switch is the seat's: it is off again when you next board. On
+the TUI and in the browser the cockpit screen already draws all of this, and
+the block lands in your scrollback only.
 
 ## The cockpit screen
 

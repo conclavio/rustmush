@@ -9,7 +9,7 @@
 //! 1. `BOARD` puts the body in the pod, the station on the **tank**, the seat in
 //!    the pilot's hands and the focus on it — and the second one fires cut K.1's
 //!    `Boarding → Running` trigger;
-//! 2. the eleven verbs are contextual: each refuses with its own one line where
+//! 2. the seventeen verbs are contextual: each refuses with its own one line where
 //!    it does not mean anything;
 //! 3. `HEADING` before `STARTUP` is refused with the cold tank's own word;
 //! 4. `VIEW` draws the platform at the centre of a grid;
@@ -792,7 +792,7 @@ async fn board_puts_the_body_in_the_pod_the_station_on_the_tank_and_the_seat_in_
 }
 
 // ---------------------------------------------------------------------------
-// (2) The gate: eleven verbs, one line each
+// (2) The gate: seventeen verbs (the fifteen selectors, BOARD and EXIT), one line each
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -12771,5 +12771,316 @@ async fn ap1_a_staff_tempo_floor_and_a_frame_built_under_one_leave_the_remainder
             .mirror(match_id)
             .and_then(|mirror| mirror.floor_lifted_at_ms),
         None
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AP.3: `WATCH`, a pushed digest for line mode (16c `N19`)
+// ---------------------------------------------------------------------------
+
+/// **The scene's digest, pinned** (16b cut AP.3): `watch_lines` over the one
+/// fixture scene with its own weapon rows, the ranges its keyframe carries
+/// (settled against no memory, as `status_frame` reads them) and the shipped
+/// one-second sensor pass.
+///
+/// `RA` at 1,200 cm/s (43 kph) heading 045°; the cannon loaded and the machine
+/// gun 900 ms from ready (`1 s`, rounded up); the lock on `BA`, whose 430 m
+/// plot rounds to 450 and whose bare-`FIRE` chance is the cannon's 624 per
+/// mille. The contacts line does not fit: `BA` (stale at 1,200 ms) and `RB`
+/// (fresh at 400 ms, so no age) take 74 columns, and `X3`'s entry would carry
+/// it to 124, so the line ends `; +2 more` for `X3` and `X4`.
+#[test]
+fn ap3_watch_lines_over_the_fixture_scene() {
+    let frame = fixture::frame();
+    let ranges = cockpit::settle_ranges(&frame, &BTreeMap::new());
+    let lines = cockpit::watch_lines(&frame, &ranges, &cockpit::frame_weapons(&frame), 1_000);
+    assert_eq!(
+        lines,
+        vec![
+            "Watch RA: online, 43 kph, heading 045°".to_owned(),
+            "Watch guns: cannon ready, machine_gun (mg) cycling (1 s); lock BA, 450 m, 62% to hit"
+                .to_owned(),
+            "Watch contacts: BA blue 045° far 450 m, plotted 1 s ago; RB red 270° close 100 m; \
+             +2 more"
+                .to_owned(),
+        ]
+    );
+    for line in &lines {
+        assert!(line.chars().count() <= cockpit::WATCH_COLUMNS, "{line}");
+    }
+}
+
+/// Every digest block the rig has pushed `pilot` since `from`: a `Sys` to that
+/// actor whose first span wears the notice tag and whose text opens `Watch `.
+fn ap3_blocks(rig: &Rig, pilot: ObjId, from: usize) -> Vec<String> {
+    rig.log
+        .iter()
+        .skip(from)
+        .filter_map(|(audience, event)| match event {
+            OutputEvent::Sys(text) if *audience == Audience::Actor(pilot) => {
+                let tagged = text.spans().first().and_then(|span| span.tag.as_deref())
+                    == Some(tacsim::arena_bridge::NOTICE_SENTENCE_TAG);
+                let plain = text.to_plain_text();
+                (tagged && plain.starts_with("Watch ")).then_some(plain)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// What `pilot` was sent since `from`, in order: `K` for a cockpit keyframe,
+/// `W` for a digest block, nothing for anything else.
+fn ap3_order(rig: &Rig, pilot: ObjId, from: usize) -> String {
+    rig.log
+        .iter()
+        .skip(from)
+        .filter(|(audience, _)| *audience == Audience::Actor(pilot))
+        .filter_map(|(_, event)| match event {
+            OutputEvent::Panel { feed, .. }
+                if feed.as_str() == tacsim::arena_bridge::FRAME_FEED =>
+            {
+                Some('K')
+            }
+            OutputEvent::Sys(text) if text.to_plain_text().starts_with("Watch ") => Some('W'),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The frame the registry holds for `pilot`, whole.
+fn ap3_held(rig: &Rig, pilot: ObjId) -> tacsim::arena_bridge::CockpitFrame {
+    rig.tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.last_frame(pilot).cloned())
+        .expect("the pilot holds a frame")
+}
+
+/// **`N19`, the switch and the push** (16b cut AP.3): bare `WATCH` reads off;
+/// `WATCH ON` answers and says the held frame's block at once, on AP.1's aged
+/// rows; a frame that changes what the block prints pushes exactly one block,
+/// after its keyframe; a frame that moves only the cell or the tempo pushes
+/// none; a plot crossing the sensor pass pushes one; `WATCH OFF` stops it; a
+/// word that is neither is the usage line; the pilot who never watched is
+/// pushed nothing; and the switch goes with the seat, so a reclaimed seat
+/// starts off.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn ap3_watch_on_pushes_one_block_per_changed_block_and_off_stops_it() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let pilot = rig.pilot(0);
+    let pass_ms = i64::from(config().sensors.pass_ms);
+    let frame = ap1_locked_and_cycling(&rig);
+    rig.push_frame(0, frame.clone());
+    rig.age_last_frame(0, 1_000);
+
+    // Off until typed.
+    let said = rig.say(0, "watch");
+    assert_eq!(said, cockpit::WATCH_IS_OFF);
+
+    // On: the reply, then the held frame's block at once, on the aged rows —
+    // while the keyframe it was read from still carries its own countdown.
+    let from = rig.log.len();
+    let said = rig.say(0, "WATCH ON");
+    assert!(said.starts_with(cockpit::WATCHING), "{said}");
+    let blocks = ap3_blocks(&rig, pilot, from);
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    let held = ap3_held(&rig, pilot);
+    let aged = cockpit::aged_weapons(&held, std::time::Instant::now(), false);
+    let expected = cockpit::watch_lines(&held.frame, &held.ranges, &aged, pass_ms).join("\n");
+    assert_eq!(blocks.first(), Some(&expected));
+    assert!(expected.contains("cannon cycling (1 s)"), "{expected}");
+    let cannon = held
+        .frame
+        .weapons
+        .iter()
+        .find(|weapon| weapon.id == "cannon")
+        .map(|weapon| weapon.ready_in_ms);
+    assert_eq!(
+        cannon,
+        Some(2_000),
+        "the keyframe's own countdown is unaged"
+    );
+    assert!(
+        (1..=3).contains(&expected.lines().count()),
+        "one to three lines: {expected}"
+    );
+
+    // A frame that moved the speed: its keyframe, then exactly one block —
+    // the frame as sent, with its own rows.
+    let mut faster = frame.clone();
+    faster.speed_cms = frame.speed_cms + 500;
+    let from = rig.log.len();
+    rig.push_frame(0, faster.clone());
+    assert_eq!(ap3_order(&rig, pilot, from), "KW");
+    let held = ap3_held(&rig, pilot);
+    assert_eq!(
+        ap3_blocks(&rig, pilot, from),
+        vec![
+            cockpit::watch_lines(
+                &held.frame,
+                &held.ranges,
+                &cockpit::frame_weapons(&held.frame),
+                pass_ms
+            )
+            .join("\n")
+        ],
+        "the bridge's block is the frame as sent"
+    );
+
+    // The same frame one cell on, and then at another tempo: keyframes only.
+    let mut moved = faster.clone();
+    moved.cell = moved.cell.map(|(x, y)| (x + 1, y));
+    moved.pose.x_cm += 1_000;
+    let from = rig.log.len();
+    rig.push_frame(0, moved.clone());
+    assert_eq!(
+        ap3_order(&rig, pilot, from),
+        "K",
+        "a moved cell pushed a block"
+    );
+    let mut retimed = moved.clone();
+    retimed.tempo = match moved.tempo {
+        tacsim::arena::clock::Tempo::Quiet => tacsim::arena::clock::Tempo::Engaged,
+        _ => tacsim::arena::clock::Tempo::Quiet,
+    };
+    let from = rig.log.len();
+    rig.push_frame(0, retimed.clone());
+    assert_eq!(
+        ap3_order(&rig, pilot, from),
+        "K",
+        "a tempo flip pushed a block"
+    );
+
+    // A held contact's plot crossing the pass: one block, saying so.
+    let mut stale = retimed.clone();
+    let fresh = stale
+        .contacts
+        .iter_mut()
+        .find(|contact| contact.age_ms <= pass_ms)
+        .expect("the scene holds a fresh plot");
+    fresh.age_ms = pass_ms + 500;
+    let entry_head = format!("{} ", fresh.designator);
+    let from = rig.log.len();
+    rig.push_frame(0, stale.clone());
+    assert_eq!(ap3_order(&rig, pilot, from), "KW");
+    let blocks = ap3_blocks(&rig, pilot, from);
+    let entry = blocks
+        .first()
+        .and_then(|block| {
+            block
+                .lines()
+                .find(|line| line.starts_with("Watch contacts: "))
+        })
+        .and_then(|line| line.strip_prefix("Watch contacts: "))
+        .and_then(|list| {
+            list.split("; ")
+                .find(|entry| entry.starts_with(&entry_head))
+        })
+        .map(str::to_owned);
+    assert!(
+        entry
+            .as_deref()
+            .is_some_and(|entry| entry.ends_with(" m, plotted 1 s ago")),
+        "{blocks:?}"
+    );
+
+    // Off: the reply, and a changed frame pushes nothing.
+    let said = rig.say(0, "watch off");
+    assert_eq!(said, cockpit::WATCH_OFF);
+    let mut slower = stale.clone();
+    slower.speed_cms = 0;
+    let from = rig.log.len();
+    rig.push_frame(0, slower);
+    assert_eq!(ap3_order(&rig, pilot, from), "K", "a block after WATCH OFF");
+    assert_eq!(rig.say(0, "watch"), cockpit::WATCH_IS_OFF);
+
+    // A word that is neither.
+    let said = rig.say(0, "watch sideways");
+    assert_eq!(said, cockpit::WATCH_USAGE);
+
+    // The pilot who never typed it was pushed nothing, ever.
+    let other = rig.pilot(1);
+    assert!(
+        !rig.log.iter().any(|(audience, event)| {
+            *audience == Audience::Actor(other)
+                && matches!(event, OutputEvent::Sys(text)
+                    if text.to_plain_text().starts_with("Watch "))
+        }),
+        "a pilot who never watched was pushed a block"
+    );
+
+    // The switch is the seat's: on, then the drop (`Released` unbinds the
+    // pilot) and the reclaim, and the reclaimed seat starts off.
+    assert!(rig.say(0, "watch on").starts_with(cockpit::WATCHING));
+    assert_eq!(rig.say(0, "watch"), cockpit::WATCH_IS_ON);
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    assert!(
+        !rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .is_some_and(|registry| registry.line_watching(pilot)),
+        "the drop left the switch on"
+    );
+    rig.fire_conn(pilot, mush_core::ConnTransition::Connected);
+    let now = rig.now;
+    rig.tick_to(now + 5);
+    let said = rig.say(0, "board");
+    assert!(said.contains("You climb back into"), "{said}");
+    assert_eq!(rig.say(0, "watch"), cockpit::WATCH_IS_OFF);
+}
+
+/// **`N19`, the block `WATCH ON` says is the one compared against** (16b cut
+/// AP.3): with every gun ready the aged rows are the frame's own, so the block
+/// the verb says at once is the block the bridge would build from the next
+/// frame that moves only the cell — and that frame pushes its keyframe and no
+/// block. Were the verb not to record what it said, the pilot would read the
+/// same lines twice.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn ap3_the_block_watch_on_says_is_recorded_and_not_said_again() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let pilot = rig.pilot(0);
+    let pass_ms = i64::from(config().sensors.pass_ms);
+    let mut frame = ap1_locked_and_cycling(&rig);
+    for weapon in &mut frame.weapons {
+        weapon.ready = true;
+        weapon.ready_in_ms = 0;
+        weapon.rounds = weapon.rounds.max(1);
+    }
+    rig.push_frame(0, frame.clone());
+    rig.age_last_frame(0, 1_000);
+
+    let from = rig.log.len();
+    let said = rig.say(0, "watch on");
+    assert!(said.starts_with(cockpit::WATCHING), "{said}");
+    let blocks = ap3_blocks(&rig, pilot, from);
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    let held = ap3_held(&rig, pilot);
+    let as_sent = cockpit::watch_lines(
+        &held.frame,
+        &held.ranges,
+        &cockpit::frame_weapons(&held.frame),
+        pass_ms,
+    )
+    .join("\n");
+    assert_eq!(
+        blocks.first(),
+        Some(&as_sent),
+        "with every gun ready the aged block is the frame's own"
+    );
+
+    // The same frame one cell on: the keyframe, and no block.
+    let mut moved = frame.clone();
+    moved.cell = moved.cell.map(|(x, y)| (x + 1, y));
+    moved.pose.x_cm += 1_000;
+    let from = rig.log.len();
+    rig.push_frame(0, moved);
+    assert_eq!(
+        ap3_order(&rig, pilot, from),
+        "K",
+        "the block WATCH ON said was said again"
     );
 }

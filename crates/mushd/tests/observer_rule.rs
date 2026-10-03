@@ -1291,6 +1291,35 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // is held to `names_nothing` at the end of it.
     let battery_mark = ada.mark();
 
+    // **16b cut AP.3** (16c N19): the line-mode digest, switched on inside the
+    // battery — so the block `WATCH ON` says at once, and every block the
+    // bridge pushes her from here to the battery's end, is held to
+    // `names_nothing` below with the rest. One line of the burst the flood
+    // bucket is measured against (the ORDER lines' breath below covers it).
+    // Read whole (to the sentinel), so the block said at once after the reply
+    // cannot spill into the first refusal below; and with the eighty-column
+    // wrap undone, because the reply is longer than that.
+    let watching = ask_whole(&mut ada, "WATCH ON").await;
+    let flat = watching.split_whitespace().collect::<Vec<&str>>().join(" ");
+    assert!(
+        flat.contains(tacsim::match_::cockpit::WATCHING) && flat.contains("Watch RA: "),
+        "`WATCH ON` said its reply and then the held frame's block:\n{watching}"
+    );
+    // And the switch tells a bystander nothing: Cy, unseated, is refused with
+    // the gate's one line, byte for byte the line his other cockpit verbs get.
+    let mut unseated: Vec<String> = Vec::new();
+    for line in ["WATCH ON", "WATCH", "CONTACTS"] {
+        let seen = ask(&mut cy, line, tacsim::match_::cockpit::OUTSIDE_COCKPIT).await;
+        unseated.push(seen.trim_start_matches(line).trim().to_owned());
+    }
+    for (line, answer) in ["WATCH ON", "WATCH", "CONTACTS"].iter().zip(&unseated) {
+        assert_eq!(
+            answer,
+            tacsim::match_::cockpit::OUTSIDE_COCKPIT,
+            "{line} to an unseated bystander answered something other than the gate's line"
+        );
+    }
+
     // **16b cut Q.1: naming a contact you do not hold tells you nothing.**
     //
     // A designator is short and guessable in a way sixteen base-16 digits were
@@ -1609,6 +1638,81 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         !names_side(&unresolved, "blue"),
         "the other side's word reached the pilot before classification:\n{unresolved}"
     );
+
+    // **16b cut AP.3** (16c N19): the digest she switched on in the battery.
+    // Nothing of a contact reached her as a `Watch contacts:` line before the
+    // acquisition told her of one — the block holds only what her platform
+    // holds — and once it holds one, the frame that said so pushed the block
+    // that lists it.
+    let acquired_at = ada
+        .seen
+        .get(detect_mark..)
+        .and_then(|after| after.find("New contact "))
+        .map(|at| detect_mark + at)
+        .expect("the acquisition is in the transcript");
+    let before = strip_ansi(&ada.seen[battery_mark..acquired_at]);
+    assert!(
+        !before.contains("Watch contacts:"),
+        "a contacts digest before the acquisition:\n{before}"
+    );
+    assert!(
+        before.contains("Watch RA: "),
+        "`WATCH ON` said no block of the held frame:\n{before}"
+    );
+    ada.expect_after(detect_mark, "Watch contacts:").await;
+    // Every `Watch contacts:` line says designators, class words, bearings,
+    // band words, ranges and the stale clause's words, and nothing else: no
+    // object number, no sixteen digits, no name.
+    let digests = strip_ansi(&ada.seen[detect_mark..]);
+    let mut listed = 0;
+    for line in digests
+        .lines()
+        .filter(|line| line.contains("Watch contacts:"))
+    {
+        listed += 1;
+        names_nothing(line, red, blue, "a `Watch contacts:` line");
+        no_sixteen_digit_word(line, "a `Watch contacts:` line");
+        assert!(!line.contains('#'), "an object number: {line}");
+        let list = line
+            .split_once("Watch contacts:")
+            .map_or("", |(_, list)| list);
+        for word in words_of(list) {
+            let designator = (word.len() >= 2
+                && word.starts_with('X')
+                && word.chars().skip(1).all(|c| c.is_ascii_digit()))
+                || ((word.starts_with('R') || word.starts_with('B'))
+                    && word.chars().all(|c| c.is_ascii_uppercase()));
+            assert!(
+                designator
+                    || word.chars().all(|c| c.is_ascii_digit())
+                    || [
+                        "unknown",
+                        "red",
+                        "blue",
+                        "close",
+                        "effective",
+                        "far",
+                        "beyond",
+                        "m",
+                        "plotted",
+                        "s",
+                        "ago",
+                        "more",
+                    ]
+                    .contains(&word),
+                "a `Watch contacts:` line said {word:?}: {line}"
+            );
+        }
+    }
+    assert!(
+        listed > 0,
+        "no contacts digest after the acquisition:\n{digests}"
+    );
+    // Off for the rest of this walk, BEFORE the refusal below: the blocks a
+    // closing drive would go on pushing must not interleave with the answers
+    // the byte-exact compares from here on read. Every block pushed before the
+    // switch went off arrives before its reply, and none after.
+    say(&mut ada, "WATCH OFF", "Watch off.").await;
     let refused = ask(&mut ada, "LOCK BA", NO_SUCH_CONTACT).await;
     assert_eq!(
         refused.trim_start_matches("LOCK BA").trim(),

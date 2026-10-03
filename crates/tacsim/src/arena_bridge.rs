@@ -61,7 +61,7 @@
 //! match is voided past `ledger.max_unflushed_chunks` — which is doc 16 §3.1's
 //! rule reached by the only path that could reach it honestly.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -709,6 +709,31 @@ pub struct ArenaRegistry {
     /// *not* clear it: a batch staged before the intent arrived is drained
     /// after it.
     emcon_hints: BTreeMap<ObjId, (bool, i64)>,
+    /// **Who wants the line-mode picture** (16b cut AP.3, 16c N19): the pilots
+    /// who typed `WATCH ON`, each pushed
+    /// [`crate::match_::cockpit::watch_lines`]' block by [`on_frames`] after a
+    /// keyframe whose block reads differently from the last one pushed.
+    ///
+    /// A view and never authority: nothing here crosses the seam, folds into a
+    /// hash or changes what the arena does. **Not the staff watchers**
+    /// ([`ArenaRegistry::watchers`], 16b cut I.4), which are staffers fed the
+    /// whole match's picture on the observer feed; this is a seated pilot asking
+    /// for their own picture as text. Keyed on the pilot the registry binds,
+    /// set and cleared only by [`ArenaRegistry::set_line_watch`], and dropped
+    /// with the seat ([`ArenaRegistry::unbind_pilot`]) and with the match
+    /// ([`ArenaRegistry::untrack`]): the switch is the seat's, and a pilot who
+    /// boards again types it again.
+    line_watch: BTreeSet<ObjId>,
+    /// **The block last pushed to each watching pilot** (16b cut AP.3), the
+    /// text [`ArenaRegistry::note_watch_block`] compares the next one against.
+    ///
+    /// `Frame::same_as` re-sends a frame for a moved cell, a moved pose, the
+    /// arena's tempo and a held contact's age at every whole second, none of
+    /// which the block prints; without this comparison a pilot driving
+    /// straight would be sent the same lines twice a second, and the rate they
+    /// arrived at would read out the tempo 16c `T-59` took off `STATUS`. Dropped
+    /// wherever [`ArenaRegistry::line_watch`] is, and by `WATCH OFF`.
+    last_watch_block: BTreeMap<ObjId, String>,
     /// **16b cut K.2**: the ground each running match is fought over, so `VIEW`
     /// can draw the window without re-deriving a 65,536-cell arena from the
     /// atlas on every look. One `Arc` per match, taken at check-out and dropped
@@ -816,6 +841,8 @@ impl ArenaRegistry {
             last_frames: BTreeMap::new(),
             starting_hints: BTreeMap::new(),
             emcon_hints: BTreeMap::new(),
+            line_watch: BTreeSet::new(),
+            last_watch_block: BTreeMap::new(),
             arenas: BTreeMap::new(),
             deliberation: BTreeMap::new(),
             order_stamps: BTreeMap::new(),
@@ -1037,6 +1064,11 @@ impl ArenaRegistry {
             self.starting_hints.remove(&pilot);
             // 16b cut O.2: and the pod's switch hint, for the same reason.
             self.emcon_hints.remove(&pilot);
+            // **16b cut AP.3**: and the line-mode switch with its last block.
+            // A cleared cockpit never leaks a digest, and the next match's
+            // pilot starts with the switch off.
+            self.line_watch.remove(&pilot);
+            self.last_watch_block.remove(&pilot);
         }
         self.arenas.remove(&match_id);
         // 16b cut N.2: and the deliberation row, for the same reason. An order
@@ -1201,7 +1233,51 @@ impl ArenaRegistry {
         self.starting_hints.remove(&pilot);
         // 16b cut O.2: and the pod's switch hint, for the same reason.
         self.emcon_hints.remove(&pilot);
+        // **16b cut AP.3**: and the line-mode switch, which is the seat's — a
+        // pilot who boards again (a reclaim included) types `WATCH ON` again.
+        self.line_watch.remove(&pilot);
+        self.last_watch_block.remove(&pilot);
         self.pilots.remove(&pilot).is_some()
+    }
+
+    /// **Set or clear one pilot's line-mode switch** (16b cut AP.3, 16c N19):
+    /// `WATCH ON` (`on`) or `WATCH OFF`. Off also forgets the last block pushed,
+    /// so a pilot who turns it on again is sent the block afresh. The staff
+    /// watchers (`@arena/watch`, [`ArenaRegistry::bind_watcher`]) are another
+    /// thing entirely.
+    pub fn set_line_watch(&mut self, pilot: ObjId, on: bool) {
+        if on {
+            self.line_watch.insert(pilot);
+        } else {
+            self.line_watch.remove(&pilot);
+            self.last_watch_block.remove(&pilot);
+        }
+    }
+
+    /// **Whether that pilot has typed `WATCH ON`** on the seat they hold (16b
+    /// cut AP.3). Read once per frame by `on_frames` — and the digest is built
+    /// only when it answers `true`, so a pilot who is not watching costs nothing.
+    #[must_use]
+    pub fn line_watching(&self, pilot: ObjId) -> bool {
+        self.line_watch.contains(&pilot)
+    }
+
+    /// **Record the block about to be pushed to that pilot, if it is new** (16b
+    /// cut AP.3): `true`, and `block` recorded, when it differs from the last
+    /// block pushed to them or there is none; `false`, and nothing written,
+    /// when it is the same text. The bridge pushes only on `true`; the `WATCH
+    /// ON` verb pushes either way (the pilot asked) and records through here so
+    /// the next frame's identical block is not repeated.
+    pub fn note_watch_block(&mut self, pilot: ObjId, block: &str) -> bool {
+        if self
+            .last_watch_block
+            .get(&pilot)
+            .is_some_and(|last| last == block)
+        {
+            return false;
+        }
+        self.last_watch_block.insert(pilot, block.to_owned());
+        true
     }
 
     /// **Stamp the `Starting` hint for one pilot** (16b cut D.1), expiring at the
@@ -2318,6 +2394,26 @@ fn on_frames(
             .and_then(|registry| registry.last_frame(pilot))
             .is_none_or(|held| held.match_id != match_id);
         let points = crate::match_::tutorial::frame_points(first_of_match, &frame);
+        // **16b cut AP.3** (16c N19): the line-mode digest, built only for a
+        // pilot who typed `WATCH ON` — read beside `first_of_match`, before the
+        // mirror is written and while `ranges` is still in hand: the frame as
+        // sent, its own weapon rows (`frame_weapons`; no `Instant` is needed
+        // here, the frame is that instant's) and the SETTLED ranges, the very
+        // figures the keyframe below carries. Pushed after the keyframe, and
+        // only if it reads differently from the last block — see below.
+        let watch_block = ctx
+            .w
+            .module_state::<ArenaRegistry>()
+            .is_some_and(|registry| registry.line_watching(pilot))
+            .then(|| {
+                crate::match_::cockpit::watch_lines(
+                    &frame,
+                    &ranges,
+                    &crate::match_::cockpit::frame_weapons(&frame),
+                    crate::match_::cockpit::pass_ms(ctx.w),
+                )
+                .join("\n")
+            });
         if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
             if confirmed || refused {
                 registry.clear_starting_hint(pilot);
@@ -2361,6 +2457,32 @@ fn on_frames(
             ctx.out.sys_to_actor(pilot, NOTICE_SENTENCE_TAG, line);
         }
         feed.keyframe_to(ctx, Audience::Actor(pilot), payload);
+        // **16b cut AP.3** (16c N19): the digest, AFTER the keyframe — a panel
+        // client composes the frame before it rings anything, and the line
+        // client prints the frame's notices and then the block — and BEFORE
+        // the AH.1 hints, so a hint stays the last word on its frame.
+        //
+        // **Only when the block reads differently from the last one pushed.**
+        // `Frame::same_as` re-sends a frame for a moved cell or pose, a global
+        // tempo flip and a held contact's age at every whole second, none of
+        // which the block prints: without the comparison a pilot driving
+        // straight would read the same lines twice a second, and the rate they
+        // arrived at would read out the arena's tempo, which 16c `T-59` took off
+        // `STATUS`. ONE `Sys` of one to three lines, as the catch-up block goes
+        // out — at most one event more per watching pilot per changed frame
+        // against `Q-U2`'s budget, and in practice one per changed block —
+        // tagged as the frame's own sentences, so the TUI's cockpit ring and
+        // the web's notices list (which draw the frame already) leave it out
+        // and it lands in their scrollback only.
+        if let Some(block) = watch_block {
+            let changed = ctx
+                .w
+                .module_state_mut::<ArenaRegistry>()
+                .is_some_and(|registry| registry.note_watch_block(pilot, &block));
+            if changed {
+                ctx.out.sys_to_actor(pilot, NOTICE_SENTENCE_TAG, block);
+            }
+        }
         // **16b cut AH.1**: the points, AFTER the keyframe and in point order.
         // After, so the frame's own notice lines print above the hint on the
         // line client (`Power online.`, then what to do with it), both panels
@@ -4201,6 +4323,89 @@ mod tests {
             registry.emcon_hint(pilot, 107),
             None,
             "unbound with the seat"
+        );
+    }
+
+    /// **16b cut AP.3's two rows, at the registry** (16c N19): the switch is
+    /// per pilot; `note_watch_block` records a new block and refuses the same
+    /// text; `WATCH OFF` forgets the last block, so the next is new again; and
+    /// the switch with its last block goes with the seat (`unbind_pilot`) and
+    /// with the match (`untrack`) — the second for a pilot whose seat never
+    /// reached `Released`, so a cleared cockpit never leaks a digest into the
+    /// next match.
+    #[test]
+    fn ap3_the_line_watch_is_per_pilot_compares_its_block_and_goes_with_the_seat_and_the_match() {
+        let mut tw =
+            mush_testkit::TestWorld::with_modules(vec![Box::new(crate::TacsimRuleset::default())]);
+        let pilot = tw.spawn_player("Ada");
+        let other = tw.spawn_player("Bo");
+        let unit = tw.spawn_player("Tank");
+        let registry = tw
+            .world_mut()
+            .module_state_mut::<ArenaRegistry>()
+            .expect("the registry is composed");
+        assert!(!registry.line_watching(pilot), "every seat starts off");
+        registry.set_line_watch(pilot, true);
+        assert!(registry.line_watching(pilot));
+        assert!(!registry.line_watching(other), "per pilot");
+
+        // The comparison: new, the same text, then different text.
+        assert!(registry.note_watch_block(pilot, "Watch RA: online, 0 kph, heading 090°"));
+        assert!(
+            !registry.note_watch_block(pilot, "Watch RA: online, 0 kph, heading 090°"),
+            "the same block was taken as new"
+        );
+        assert!(registry.note_watch_block(pilot, "Watch RA: online, 4 kph, heading 090°"));
+        assert!(
+            registry.note_watch_block(other, "Watch RA: online, 4 kph, heading 090°"),
+            "one pilot's last block is not another's"
+        );
+
+        // Off forgets the last block: on again, the same text is new.
+        registry.set_line_watch(pilot, false);
+        assert!(!registry.line_watching(pilot));
+        registry.set_line_watch(pilot, true);
+        assert!(
+            registry.note_watch_block(pilot, "Watch RA: online, 4 kph, heading 090°"),
+            "WATCH OFF kept the last block"
+        );
+
+        // The seat's end: `unbind_pilot` drops the switch and the block.
+        registry.unbind_pilot(pilot);
+        assert!(!registry.line_watching(pilot), "unbound with the seat");
+        registry.set_line_watch(pilot, true);
+        assert!(
+            registry.note_watch_block(pilot, "Watch RA: online, 4 kph, heading 090°"),
+            "the unbound seat kept its last block"
+        );
+        registry.set_line_watch(pilot, false);
+
+        // The match's end, for a pilot still bound to it: `untrack` drops both.
+        const MATCH: MatchId = MatchId(78);
+        registry.track(MATCH);
+        registry.bind_pilot(pilot, MATCH, unit);
+        registry.set_line_watch(pilot, true);
+        assert!(registry.note_watch_block(pilot, "Watch RA: online, 4 kph, heading 090°"));
+        // A pilot of another match keeps theirs.
+        registry.track(MatchId(79));
+        registry.bind_pilot(other, MatchId(79), unit);
+        registry.set_line_watch(other, true);
+        registry.untrack(MATCH);
+        assert!(
+            !registry.line_watching(pilot),
+            "the cleared match left the switch on"
+        );
+        assert!(
+            registry.note_watch_block(pilot, "Watch RA: online, 4 kph, heading 090°"),
+            "the cleared match kept the last block"
+        );
+        assert!(
+            registry.line_watching(other),
+            "another match's pilot was cleared"
+        );
+        assert!(
+            !registry.note_watch_block(other, "Watch RA: online, 4 kph, heading 090°"),
+            "another match's pilot lost their last block"
         );
     }
 }

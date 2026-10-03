@@ -1,4 +1,4 @@
-//! **The cockpit: boarding, the pilot's sixteen verbs, and the frame they
+//! **The cockpit: boarding, the pilot's seventeen verbs, and the frame they
 //! read** (16b cut K.2; 16b §8 cut K, K2–K4; doc 16 §3.3 "Startup", "Stations
 //! are on the tank", §3.6 "What a pilot sees", §3.7, §3.8 "Disconnects", §5, §6
 //! "Deliberation").
@@ -8,7 +8,7 @@
 //! This is the half that reports one, and everything the pilot can do once
 //! seated.
 //!
-//! **Sixteen**: the fourteen cockpit selectors of [`COCKPIT_VERBS`], plus
+//! **Seventeen**: the fifteen cockpit selectors of [`COCKPIT_VERBS`], plus
 //! [`BOARD_VERB`] and [`EXIT_VERB`], which are not selectors — they are how a
 //! pilot gets into the cockpit and out of it. The table below is that list in
 //! that order, and **16b cut D.2** made the three agree: the head said twelve in
@@ -16,7 +16,11 @@
 //! `BEARING` altogether (16c `T-77`). **16b cut Y.1** added the thirteenth
 //! selector, `ORDER` — see "Commanding the machines" below
 //! [`crate::match_::cockpit::resolve_designator`]. **16b cut O.2** added the
-//! fourteenth, `EMCON`: the jamming pod's switch (16c N12).
+//! fourteenth, `EMCON`: the jamming pod's switch (16c N12). **16b cut AP.3**
+//! added the fifteenth, `WATCH`: the switch that pushes a line-mode pilot a
+//! short block of their own picture whenever it would read differently (16c
+//! N19) — see "The line-mode digest" at
+//! [`crate::match_::cockpit::watch_lines`].
 //!
 //! ```text
 //! BOARD                      climb into your pod and take the tank's cockpit
@@ -34,6 +38,7 @@
 //! EMCON [on|off]             the jamming pod's switch, if the tank carries one
 //! STATUS                     callsign, power, speed, heading, scope, nearest spot, damage
 //! ORDER <squad|ALL> <what>   command your side's machines (HOLD, ADVANCE, ENGAGE, WITHDRAW, SCREEN, SUPPORT; RELEASE)
+//! WATCH [ON|OFF]             push your own line, guns and contacts as they change, for line mode
 //! EXIT                       climb out
 //! ```
 //!
@@ -78,10 +83,10 @@
 //! # The verbs are contextual, and the gate is what makes them so
 //!
 //! There is no such thing as a verb that exists only in a cockpit: the command
-//! table is global. So all sixteen are registered globally and
+//! table is global. So all seventeen are registered globally and
 //! [`CockpitGate`] refuses each of them, with one line, wherever it does not
 //! mean anything — `BOARD` outside a team room, `EXIT` outside a pod, and the
-//! fourteen cockpit selectors to anyone who is not focused on a station of a
+//! fifteen cockpit selectors to anyone who is not focused on a station of a
 //! **deployed** unit. A pilot who has boarded but whose match has not started
 //! yet is in that last case on purpose: there is no arena to order until the
 //! trigger fires.
@@ -136,8 +141,8 @@ use crate::arena::state::{
 };
 use crate::arena::step::Frame;
 use crate::arena_bridge::{
-    ArenaRegistry, CockpitFrame, FRAME_FEED, IntentRefusal, NOTICE_CATEGORY, forward_intent,
-    send_control,
+    ArenaRegistry, CockpitFrame, FRAME_FEED, IntentRefusal, NOTICE_CATEGORY, NOTICE_SENTENCE_TAG,
+    forward_intent, send_control,
 };
 use crate::arena_task::MatchId;
 use crate::match_::MatchState;
@@ -178,7 +183,12 @@ pub const EXIT_VERB: &str = "exit";
 /// **16b cut AG.1** gave `view` a `BRIEF` arm — the same window said in
 /// sentences (16c N17) — and no fifteenth selector: a second word on a read
 /// verb is not a verb.
-pub const COCKPIT_VERBS: [&str; 14] = [
+///
+/// **16b cut AP.3** added `watch`, the fifteenth (16c N19): `WATCH ON` asks the
+/// bridge to push a line-mode pilot a short block of their own picture
+/// whenever it would read differently ([`watch_lines`]). Appended, so every
+/// selector before it keeps its place.
+pub const COCKPIT_VERBS: [&str; 15] = [
     "startup",
     "heading",
     "speed",
@@ -193,6 +203,7 @@ pub const COCKPIT_VERBS: [&str; 14] = [
     "scan",
     "order",
     "emcon",
+    "watch",
 ];
 
 /// The station id one pod's pilot holds **on the tank** (doc 16 §3.3).
@@ -2842,7 +2853,8 @@ pub(crate) fn eject_pilot(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
 
 // ---------------------------------------------------------------------------
 // K3: the cockpit verbs (twelve at K3; `ORDER`, the thirteenth, is below
-// under "Commanding the machines"; `EMCON`, the fourteenth, follows `STARTUP`)
+// under "Commanding the machines"; `EMCON`, the fourteenth, follows `STARTUP`,
+// and `WATCH`, the fifteenth, follows `EMCON`)
 // ---------------------------------------------------------------------------
 
 /// `STARTUP` — bring power up (doc 16 §3.3).
@@ -3011,6 +3023,279 @@ fn emcon(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
     };
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
     Ok(())
+}
+
+/// **`WATCH ON`'s reply** (16b cut AP.3, 16c N19), said before the first block.
+pub const WATCHING: &str = "Watching: your own line, your guns and your contacts are pushed as they change. \
+     WATCH OFF stops it.";
+
+/// **`WATCH OFF`'s reply** (16b cut AP.3).
+pub const WATCH_OFF: &str = "Watch off.";
+
+/// **Bare `WATCH`, while the switch is on** (16b cut AP.3).
+pub const WATCH_IS_ON: &str = "Watch is on.";
+
+/// **Bare `WATCH`, while it is off** — which is how every seat starts (16b cut
+/// AP.3).
+pub const WATCH_IS_OFF: &str = "Watch is off.";
+
+/// **`WATCH`'s usage line** (16b cut AP.3), for any word but `on` and `off`.
+pub const WATCH_USAGE: &str = "WATCH [ON|OFF]; bare WATCH says which.";
+
+/// `WATCH [ON|OFF]` — the line-mode digest's switch (16b cut AP.3; 16c N19).
+///
+/// **Why it exists.** A line client is pull-only: the bridge pushes the
+/// `arena.cockpit` keyframe on every changed frame and prints the frame's
+/// transition notices, but `mush_ansi::render` prints a panel only in the grid
+/// shape, so a line-mode pilot learns their speed, their guns' readiness and
+/// their contacts' ranges only by typing `STATUS`, `WEAPONSTATUS` and
+/// `CONTACTS` — and three reads in five said nothing new. With the switch on,
+/// the bridge pushes the pilot [`watch_lines`]' block after each keyframe whose
+/// block reads differently from the last one pushed
+/// (`crate::arena_bridge::on_frames`). Off by default (16c N19's owner
+/// default), so a pilot who never types it reads exactly what they read before.
+///
+/// * `WATCH ON` (any case) sets the flag
+///   ([`ArenaRegistry::set_line_watch`]), says [`WATCHING`] and then — when the
+///   panel has told the pilot anything — that frame's block at once, as ONE
+///   `Sys` tagged [`NOTICE_SENTENCE_TAG`], built with the **aged** weapon rows
+///   (`carried`, 16b cut AP.1) so a pilot who types `WATCH ON` and
+///   `WEAPONSTATUS` in one breath reads one countdown, not two. The block is
+///   recorded ([`ArenaRegistry::note_watch_block`]) so the next frame's
+///   identical block is not said again;
+/// * `WATCH OFF` clears it and forgets the last block, and says [`WATCH_OFF`];
+/// * bare `WATCH` says [`WATCH_IS_ON`] or [`WATCH_IS_OFF`];
+/// * any other word is [`WATCH_USAGE`].
+///
+/// The flag is keyed on [`Seat::driver`], the pilot the registry binds and the
+/// one the frames go to, and it is the **seat's**: the registry drops it with
+/// the seat (`unbind_pilot`) and with the match (`untrack`), so a pilot who
+/// boards again types it again. Nothing crosses the seam and nothing is
+/// written but the RAM row: it is a view, never an order, and a wreck may
+/// watch.
+fn watch(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
+    let actor = ctx.actor;
+    let on = match rest.trim().to_ascii_lowercase().as_str() {
+        "" => {
+            let watching = ctx
+                .w
+                .module_state::<ArenaRegistry>()
+                .is_some_and(|registry| registry.line_watching(seat.driver));
+            let line = if watching { WATCH_IS_ON } else { WATCH_IS_OFF };
+            ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+            return Ok(());
+        }
+        "on" => true,
+        "off" => false,
+        _ => return Err(CockpitError::Usage(WATCH_USAGE.to_owned())),
+    };
+    if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+        registry.set_line_watch(seat.driver, on);
+    }
+    if !on {
+        ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, WATCH_OFF);
+        return Ok(());
+    }
+    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, WATCHING);
+    let Some(held) = last_frame(ctx.w, seat.driver) else {
+        return Ok(());
+    };
+    // 16b cut AP.1: read once, at the top of the block, as `FIRE` and
+    // `WEAPONSTATUS` read it — the aged rows, so this block and a
+    // `WEAPONSTATUS` typed in the same breath say one countdown.
+    let now = std::time::Instant::now();
+    let weapons = carried(ctx.w, seat.unit, Some(&held), now);
+    let block = watch_lines(&held.frame, &held.ranges, &weapons, pass_ms(ctx.w)).join("\n");
+    if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+        // Said whatever the last block was — the pilot asked — and recorded,
+        // so the next frame's identical block is not said again.
+        registry.note_watch_block(seat.driver, &block);
+    }
+    ctx.out.sys_to_actor(actor, NOTICE_SENTENCE_TAG, block);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The line-mode digest (16b cut AP.3; 16c N19)
+// ---------------------------------------------------------------------------
+
+/// **The widest a digest line may be**, in characters (16b cut AP.3): the
+/// terminal-width floor (16c cut AB), so a line client at the floor never
+/// wraps one.
+pub const WATCH_COLUMNS: usize = 120;
+
+/// **The line-mode digest** (16b cut AP.3, 16c `N19`): one to three lines of
+/// the pilot's own picture, which the bridge pushes a `WATCH ON` pilot as one
+/// `Sys` whenever it reads differently from the last it pushed.
+///
+/// 1. **The own line, always**: `Watch RA: online, 24 kph, heading 090°`, with
+///    `, HELD` and `, DESTROYED` after it as `STATUS` prints them, in that
+///    order — `STATUS`'s second line after its colon, **without** the word
+///    `power` (a reader that splits on `": power "`, as the bot's does, must
+///    never take the digest for a `STATUS` reply) and **without** a position
+///    (the block must not change with every cell).
+/// 2. **The guns line, only while `weapons` is not empty**: `Watch guns:
+///    cannon ready, machine_gun (mg) cycling (3 s); lock BA, 450 m, 46% to
+///    hit` — the rows **given**, in order, each with the short name a pilot may
+///    type ([`weapon_short_of`]) and its readiness rounded up to the second as
+///    [`WeaponRow::render`] rounds it — or `empty` once its rounds are gone,
+///    whatever its cycle, because `FIRE` refuses an empty gun and a gun that
+///    read `ready` with nothing in it would be a lie the pilot only finds out
+///    by firing; then the lock: its designator, ` (FRIENDLY)`
+///    on a friend (`friendly_mark`), the held range of its row and the chance
+///    of the shot a bare `FIRE` takes (`fired_by_default`, the figure
+///    [`lock_line`] prints); `lock BA, 450 m` with no chance resolved; `no
+///    lock` with none. The caller chooses the rows: the bridge passes the
+///    frame's own ([`frame_weapons`]), the verb the aged ones (`carried`).
+/// 3. **The contacts line, only while the platform holds a contact**: `Watch
+///    contacts: BA blue 087° far 450 m; X3 unknown 315° effective 200 m,
+///    plotted 4 s ago` — the rows `CONTACTS` prints, in its order, the range
+///    held against `ranges` ([`frame_contacts_held`]), and a plot's age only
+///    once [`stale_clause`] says it — older than the sensor pass `pass_ms`. A
+///    fresh plot's age is never printed, or a held contact would change the
+///    block every second.
+///
+/// **The fit rule** for lines 2 and 3: entries go in in order while the line
+/// stays within [`WATCH_COLUMNS`] characters with room kept for the tail; the
+/// first that does not fit ends the line `; +N more`, `N` the entries left
+/// out. The lock is always printed: the gun rows give way to it.
+///
+/// **The observer rule by construction** (doc 16 §1, §5): a pure function of
+/// the pilot's own frame, the ranges the pilot was told and the rows it is
+/// given, and nothing a pilot could not read off `STATUS`, `WEAPONSTATUS` and
+/// `CONTACTS` — designators only, never an object number, a name or a pilot,
+/// and no position. **No tempo word** (16c `T-59`): `STATUS` prints the
+/// pilot's own scope and never the arena's tempo, and neither does this.
+#[must_use]
+pub fn watch_lines(
+    frame: &Frame,
+    ranges: &BTreeMap<ContactId, u64>,
+    weapons: &[WeaponRow],
+    pass_ms: i64,
+) -> Vec<String> {
+    let mut lines = vec![format!(
+        "Watch {}: {}, {} kph, heading {:03}°{}{}",
+        frame.callsign,
+        frame.power.as_str(),
+        cms_to_kph(frame.speed_cms),
+        frame.pose.heading_mdeg / 1_000,
+        if frame.held { ", HELD" } else { "" },
+        if frame.wreck { ", DESTROYED" } else { "" }
+    )];
+    let rows = frame_contacts_held(frame, ranges);
+    if !weapons.is_empty() {
+        let guns: Vec<String> = weapons
+            .iter()
+            .map(|row| {
+                let named = match weapon_short_of(weapons, &row.id) {
+                    Some(short) => format!("{} ({short})", row.id),
+                    None => row.id.to_string(),
+                };
+                // An empty gun says so before its cycle: `FIRE` refuses it
+                // whatever the breech is doing (`CockpitError::Empty`), and
+                // the last round leaving is a change the block must push —
+                // `WEAPONSTATUS` prints the rounds, and this has no room to.
+                if row.rounds <= 0 {
+                    format!("{named} empty")
+                } else if row.ready {
+                    format!("{named} ready")
+                } else {
+                    format!(
+                        "{named} cycling ({} s)",
+                        row.ready_in_ms.saturating_add(999) / 1_000
+                    )
+                }
+            })
+            .collect();
+        let locked = frame_lock(frame).and_then(|lock| rows.iter().find(|row| row.id == lock));
+        let lock = match locked {
+            Some(row) => {
+                let mark = friendly_mark(frame, row.id);
+                match fired_by_default(&frame.weapons).and_then(|weapon| weapon.p_permille) {
+                    Some(permille) => format!(
+                        "; lock {}{mark}, {} m, {}% to hit",
+                        row.designator,
+                        row.range_m,
+                        permille / 10
+                    ),
+                    None => format!("; lock {}{mark}, {} m", row.designator, row.range_m),
+                }
+            }
+            None => "; no lock".to_owned(),
+        };
+        let columns = WATCH_COLUMNS.saturating_sub(lock.chars().count());
+        let mut line = fit_entries("Watch guns: ", &guns, ", ", columns);
+        line.push_str(&lock);
+        lines.push(line);
+    }
+    if !rows.is_empty() {
+        let contacts: Vec<String> = rows
+            .iter()
+            .map(|row| {
+                format!(
+                    "{} {} {:03}° {} {} m{}",
+                    row.designator,
+                    row.class,
+                    row.bearing_deg,
+                    row.band,
+                    row.range_m,
+                    stale_clause(row.age_ms, pass_ms)
+                )
+            })
+            .collect();
+        lines.push(fit_entries(
+            "Watch contacts: ",
+            &contacts,
+            "; ",
+            WATCH_COLUMNS,
+        ));
+    }
+    lines
+}
+
+/// **One digest line, fitted** (16b cut AP.3): `head` and then `entries`
+/// joined by `sep`, in order, while the line stays within `columns`
+/// characters — keeping room, whenever entries would remain, for the tail
+/// `; +N more` that says how many were left out. Stops at the first entry that
+/// does not fit, so what is printed is always a prefix of the list in its own
+/// order. Characters and not bytes, because `°` is two bytes and one column.
+fn fit_entries(head: &str, entries: &[String], sep: &str, columns: usize) -> String {
+    let mut line = head.to_owned();
+    let mut width = head.chars().count();
+    let mut taken = 0_usize;
+    for entry in entries {
+        let joiner = if taken == 0 { "" } else { sep };
+        let after = width + joiner.chars().count() + entry.chars().count();
+        let left = entries.len().saturating_sub(taken + 1);
+        let tail = if left == 0 {
+            0
+        } else {
+            more_tail(left).chars().count()
+        };
+        if after + tail > columns {
+            break;
+        }
+        line.push_str(joiner);
+        line.push_str(entry);
+        width = after;
+        taken += 1;
+    }
+    let left = entries.len().saturating_sub(taken);
+    if left > 0 {
+        if taken > 0 {
+            line.push_str(&more_tail(left));
+        } else {
+            // Nothing fitted at all (a width no shipped word reaches): the
+            // count alone, with no separator before it.
+            line.push_str(&format!("+{left} more"));
+        }
+    }
+    line
+}
+
+/// The tail a fitted digest line ends with when entries were left out.
+fn more_tail(left: usize) -> String {
+    format!("; +{left} more")
 }
 
 /// `HEADING <deg>` — 0 to 359, clockwise from north (doc 16 §3.7).
@@ -3492,7 +3777,7 @@ fn named_target<'a>(
 /// looked, which is exactly when a pilot needs to know they are shooting at a
 /// memory. The sentence is [`stale_clause`]'s; this is the only world read the two
 /// read verbs make.
-fn pass_ms(w: &World) -> i64 {
+pub(crate) fn pass_ms(w: &World) -> i64 {
     lobby::configs(w).map_or(1_000_i64, |(_, _, sensors)| {
         i64::from(sensors.pass_ms.max(1))
     })
@@ -6809,7 +7094,7 @@ fn join_names(names: &[String]) -> String {
 // The gate and the dispatch
 // ---------------------------------------------------------------------------
 
-/// **The contextual gate**: the sixteen verbs exist everywhere and mean
+/// **The contextual gate**: the seventeen verbs exist everywhere and mean
 /// something in a team room, in a pod, and at a deployed unit's station.
 ///
 /// One line each, and nothing else refused: a gate that is asked about `look`
@@ -6848,7 +7133,7 @@ impl mush_core::CommandGate for CockpitGate {
         // line (twice on the alias path) while `where_in_centre` resolves the
         // content latch up to fifteen times — three rooms and then all twelve pods.
         // A gate asked about `look` must cost what it always cost: two string
-        // compares and an eleven-element scan, and no world read at all.
+        // compares and a fifteen-element scan, and no world read at all.
         let ours = verb.eq_ignore_ascii_case(BOARD_VERB)
             || verb.eq_ignore_ascii_case(EXIT_VERB)
             || COCKPIT_VERBS
@@ -6951,7 +7236,7 @@ fn refusal(error: CockpitError) -> CmdError {
     CmdError::msg(error.to_string())
 }
 
-/// Run one cockpit verb: resolve the station first, so every one of the fourteen
+/// Run one cockpit verb: resolve the station first, so every one of the fifteen
 /// answers the same way to somebody who is not flying.
 ///
 /// **16b cut U.4 (16c `T-53`)**: the seat is resolved **once**, here, and every
@@ -6984,6 +7269,8 @@ fn cockpit_command(ctx: &mut Ctx<'_>, verb: &'static str) -> Result<(), CmdError
         "order" => order(ctx, &seat, &rest),
         // 16b cut O.2: the jamming pod's switch.
         "emcon" => emcon(ctx, &seat, &rest),
+        // 16b cut AP.3: the line-mode digest's switch.
+        "watch" => watch(ctx, &seat, &rest),
         // Not reachable: the table below registers exactly `COCKPIT_VERBS`, and
         // this arm is the closed-set proof rather than a panic.
         _ => Err(CockpitError::OutsideCockpit),
@@ -7056,6 +7343,12 @@ fn cockpit_help(verb: &str) -> String {
                     sight inside its bubble, yours among them; off clears your own sight and \
                     hides you from nothing. On at check-out."
             .to_owned(),
+        // 16b cut AP.3 (16c N19): who it is for, because a pilot on the TUI or
+        // the web already has the screen it says in three lines.
+        "watch" => "WATCH [ON|OFF]      push your own line, your guns and your contacts as a \
+                    short block whenever it would read differently — for a line-mode pilot; OFF \
+                    stops it; bare WATCH says which."
+            .to_owned(),
         // 16b cut D.2 (`T-77`): the callsign is `STATUS`'s first line and the
         // help did not mention it, so a pilot asked "who is RA?" had nowhere to
         // be sent; and cut D.1 replaced the arena's global tempo on the third
@@ -7067,7 +7360,7 @@ fn cockpit_help(verb: &str) -> String {
     }
 }
 
-/// Register the cockpit on the **tacsim** module: sixteen verbs and one gate.
+/// Register the cockpit on the **tacsim** module: seventeen verbs and one gate.
 ///
 /// The state the verbs read is [`ArenaRegistry`]'s and [`crate::match_::MatchBook`]'s, both
 /// registered by [`crate::arena_bridge::register`], so nothing here declares a
@@ -7079,11 +7372,12 @@ fn cockpit_help(verb: &str) -> String {
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // `BOARD` writes a station document, a placement, a billet and (at the
     // trigger) cut T.3's whole check-out; `EXIT` writes the same in reverse. Of
-    // the fourteen selectors, six stage at most one arena intent each (cut O.2's
+    // the fifteen selectors, six stage at most one arena intent each (cut O.2's
     // `EMCON` among them, which also stamps a bridge hint), cut Y.1's `ORDER`
-    // stages one per unit it fans out to, and the other seven — cut Q.1's `RANGE`
-    // and `BEARING` and cut Q.2's `SCAN` among them — only read the last frame;
-    // none of the fourteen writes a document. They are
+    // stages one per unit it fans out to, seven — cut Q.1's `RANGE` and
+    // `BEARING` and cut Q.2's `SCAN` among them — only read the last frame, and
+    // cut AP.3's `WATCH` sets or clears one RAM flag on the bridge's registry;
+    // none of the fifteen writes a document. They are
     // registered on the same
     // lane as their two neighbours rather than split across two classifications
     // for one subsystem.
@@ -7692,9 +7986,9 @@ mod tests {
         }
         assert_eq!(
             COCKPIT_VERBS.len(),
-            14,
+            15,
             "doc 16 section 3.7's nine, cut Q.1's two read verbs, cut Q.2's SCAN, cut Y.1's \
-             ORDER and cut O.2's EMCON"
+             ORDER, cut O.2's EMCON and cut AP.3's WATCH"
         );
     }
 
@@ -8025,7 +8319,7 @@ mod tests {
     /// and the `STATUS` help names the callsign line.
     #[test]
     fn d2_the_verb_table_and_the_help_agree_with_the_selector_list() {
-        assert_eq!(COCKPIT_VERBS.len(), 14);
+        assert_eq!(COCKPIT_VERBS.len(), 15);
         let head = include_str!("cockpit.rs");
         for verb in COCKPIT_VERBS {
             let upper = verb.to_uppercase();
@@ -9366,8 +9660,8 @@ mod tests {
     #[test]
     fn y1_order_is_the_thirteenth_selector() {
         // 16b cut O.2 put `emcon` after it, so it is the thirteenth and no
-        // longer the last.
-        assert_eq!(COCKPIT_VERBS.len(), 14);
+        // longer the last; 16b cut AP.3 put `watch` after that.
+        assert_eq!(COCKPIT_VERBS.len(), 15);
         assert_eq!(COCKPIT_VERBS.get(12), Some(&"order"));
         assert_eq!(
             cockpit_help("order"),
@@ -9385,7 +9679,9 @@ mod tests {
     #[test]
     fn o2_emcon_is_the_fourteenth_selector_and_its_words_are_pinned() {
         use crate::arena::perception::RefusalDetail;
-        assert_eq!(COCKPIT_VERBS.last(), Some(&"emcon"));
+        // 16b cut AP.3 appended `watch` after it, so it is the fourteenth and
+        // no longer the last.
+        assert_eq!(COCKPIT_VERBS.get(13), Some(&"emcon"));
         assert_eq!(
             cockpit_help("emcon"),
             "EMCON [on|off]      switch your jamming pod, if you carry one: on jams every sight \
@@ -9520,5 +9816,338 @@ mod tests {
             cannon(&aged_weapons(&held_at(0), now, false)),
             (false, 2_000)
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut AP.3
+    // -----------------------------------------------------------------------
+
+    /// **The help's own scene** (16b cut AP.3): `RA` online at 24 kph heading
+    /// east, a cannon ready and a machine gun three seconds from it, locked on
+    /// `BA` (a fresh plot at 450 m, `far` on the shipped 600 m sight) beside an
+    /// unidentified `X3` whose plot is four and a half seconds old. A real
+    /// opening frame of a stepped arena, its fields replaced.
+    fn ap3_scene() -> Frame {
+        use crate::arena::perception::FrameContact;
+        use crate::arena::state::Team;
+        use crate::arena::test_support::{arena_at_epoch, pose, scout, tank};
+        use crate::arena::weapons::FrameWeapon;
+        const RED: ObjId = ObjId(4);
+        const BLUE: ObjId = ObjId(9);
+        let mut arena = arena_at_epoch(
+            vec![
+                scout(RED, Team::Red, pose(1_500, 1_500)),
+                tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+            ],
+            1,
+        );
+        let mut frame = arena
+            .step(0, &[], &[])
+            .frames
+            .into_iter()
+            .map(|(_, frame)| frame)
+            .find(|frame| frame.unit == RED)
+            .expect("red is sent its opening frame");
+        frame.callsign = Designator::Slot {
+            team: Team::Red,
+            slot: 1,
+        };
+        frame.team = Team::Red;
+        frame.power = Power::Online;
+        frame.speed_cms = 667;
+        frame.pose.heading_mdeg = 90_000;
+        frame.held = false;
+        frame.wreck = false;
+        frame.sight_cm = 60_000;
+        frame.notices.clear();
+        frame.contacts = vec![
+            FrameContact {
+                id: ContactId(1),
+                designator: Designator::Slot {
+                    team: Team::Blue,
+                    slot: 1,
+                },
+                alias: Some(1),
+                class: Classification::Classified { team: Team::Blue },
+                bearing_mdeg: 87_000,
+                range_cm: 45_000,
+                age_ms: 800,
+                cell: Some((6, 2)),
+                condition: None,
+            },
+            FrameContact {
+                id: ContactId(2),
+                designator: Designator::Provisional(3),
+                alias: None,
+                class: Classification::Unknown,
+                bearing_mdeg: 315_000,
+                range_cm: 22_000,
+                age_ms: 4_500,
+                cell: Some((0, 3)),
+                condition: None,
+            },
+        ];
+        frame.lock = Some(ContactId(1));
+        let gun = |id: &'static str, ready: bool, ready_in_ms: i64, p: u32| FrameWeapon {
+            id: SmolStr::new_static(id),
+            ready,
+            ready_in_ms,
+            rounds: 10,
+            rounds_max: 20,
+            range_band: None,
+            p_permille: Some(p),
+            bands_cm: vec![100_000, 300_000],
+            heat_per_shot: 0,
+        };
+        frame.weapons = vec![
+            gun("cannon", true, 0, 460),
+            gun("machine_gun", false, 2_500, 210),
+        ];
+        frame
+    }
+
+    /// The scene's three lines, over its own rows and no range memory.
+    fn ap3_lines(frame: &Frame) -> Vec<String> {
+        watch_lines(frame, &BTreeMap::new(), &frame_weapons(frame), 1_000)
+    }
+
+    /// **16b cut AP.3** (16c N19): the digest is the help's three lines for the
+    /// help's numbers, one line for a bare platform, a plot's age only once it
+    /// is stale, a `; +N more` tail that keeps every line within 120 columns on
+    /// both fitted lines, the flags in `STATUS`'s order, the friendly mark —
+    /// and no prefix any reader of a `STATUS`, `CONTACTS` or lock line could
+    /// take, no tempo word and nothing that moves with the platform's cell.
+    #[test]
+    fn ap3_watch_lines_are_the_three_lines_within_120_columns() {
+        use crate::arena::clock::Tempo;
+        use crate::arena::perception::FrameContact;
+        use crate::arena::state::Team;
+        use crate::arena::weapons::FrameWeapon;
+
+        // (1) `docs/help/cockpit.md`'s "Watching from line mode", verbatim.
+        let scene = ap3_scene();
+        assert_eq!(
+            ap3_lines(&scene),
+            vec![
+                "Watch RA: online, 24 kph, heading 090°".to_owned(),
+                "Watch guns: cannon ready, machine_gun (mg) cycling (3 s); lock BA, 450 m, 46% \
+                 to hit"
+                    .to_owned(),
+                "Watch contacts: BA blue 087° far 450 m; X3 unknown 315° effective 200 m, \
+                 plotted 4 s ago"
+                    .to_owned(),
+            ]
+        );
+        let help = include_str!("../../../../docs/help/cockpit.md");
+        for line in ap3_lines(&scene) {
+            assert!(
+                help.contains(&format!("  {line}\n")),
+                "the help's example omits {line:?}"
+            );
+        }
+
+        // (2) No gun and no contact: the own line alone.
+        let mut bare = scene.clone();
+        bare.weapons.clear();
+        bare.contacts.clear();
+        bare.lock = None;
+        assert_eq!(
+            ap3_lines(&bare),
+            vec!["Watch RA: online, 24 kph, heading 090°".to_owned()]
+        );
+        // A gun and no lock, and a lock whose chance is not resolved yet.
+        let mut unlocked = scene.clone();
+        unlocked.lock = None;
+        assert!(
+            ap3_lines(&unlocked)
+                .get(1)
+                .is_some_and(|line| line.ends_with("cycling (3 s); no lock")),
+            "{:?}",
+            ap3_lines(&unlocked)
+        );
+        let mut unresolved = scene.clone();
+        for weapon in &mut unresolved.weapons {
+            weapon.p_permille = None;
+        }
+        assert!(
+            ap3_lines(&unresolved)
+                .get(1)
+                .is_some_and(|line| line.ends_with("; lock BA, 450 m")),
+            "{:?}",
+            ap3_lines(&unresolved)
+        );
+        // An empty gun reads `empty`, ready or cycling — `FIRE` refuses it
+        // either way — so the last round leaving changes the block.
+        let mut dry = scene.clone();
+        for weapon in &mut dry.weapons {
+            weapon.rounds = 0;
+        }
+        assert_eq!(
+            ap3_lines(&dry).get(1).map(String::as_str),
+            Some("Watch guns: cannon empty, machine_gun (mg) empty; lock BA, 450 m, 46% to hit"),
+            "an empty gun read as ready or cycling"
+        );
+        assert_ne!(ap3_lines(&dry), ap3_lines(&scene));
+
+        // (3) A plot's age prints only once it is older than the pass.
+        let mut aged = scene.clone();
+        if let Some(contact) = aged.contacts.first_mut() {
+            contact.age_ms = 1_000;
+        }
+        let at_pass = ap3_lines(&aged);
+        assert!(
+            at_pass
+                .get(2)
+                .is_some_and(|line| line.starts_with("Watch contacts: BA blue 087° far 450 m; ")),
+            "{at_pass:?}"
+        );
+        if let Some(contact) = aged.contacts.first_mut() {
+            contact.age_ms = 1_001;
+        }
+        let past_pass = ap3_lines(&aged);
+        assert!(
+            past_pass.get(2).is_some_and(|line| line
+                .starts_with("Watch contacts: BA blue 087° far 450 m, plotted 1 s ago; ")),
+            "{past_pass:?}"
+        );
+
+        // (4) Twenty-three contacts of the widest shipped words: one line,
+        // within 120, a prefix of the list in frame order and the count of
+        // the rest.
+        let mut crowded = scene.clone();
+        crowded.sight_cm = 0;
+        crowded.lock = None;
+        crowded.contacts = (0_u16..23)
+            .map(|n| FrameContact {
+                id: ContactId(100 + u64::from(n)),
+                designator: Designator::Provisional(10 + n),
+                alias: None,
+                class: Classification::Unknown,
+                bearing_mdeg: 315_000,
+                range_cm: 150_000,
+                age_ms: 12_000,
+                cell: Some((1, 1)),
+                condition: None,
+            })
+            .collect();
+        let lines = ap3_lines(&crowded);
+        let contacts = lines.get(2).expect("a contacts line");
+        assert!(contacts.chars().count() <= WATCH_COLUMNS, "{contacts}");
+        let (listed, more) = contacts
+            .rsplit_once("; +")
+            .expect("twenty-three contacts do not fit one line");
+        let more: usize = more
+            .strip_suffix(" more")
+            .and_then(|n| n.parse().ok())
+            .expect("the tail counts what it left out");
+        let shown: Vec<&str> = listed
+            .strip_prefix("Watch contacts: ")
+            .expect("the head")
+            .split("; ")
+            .collect();
+        assert!(!shown.is_empty(), "{contacts}");
+        assert_eq!(shown.len() + more, 23, "{contacts}");
+        for (n, entry) in shown.iter().enumerate() {
+            assert_eq!(
+                *entry,
+                format!(
+                    "X{} unknown 315° effective 1500 m, plotted 12 s ago",
+                    10 + n
+                ),
+                "the entries are the first of the list, in its order: {contacts}"
+            );
+        }
+
+        // (5) Twelve guns likewise, and the lock is still said after the tail.
+        let mut armed = scene.clone();
+        armed.weapons = (0..12)
+            .map(|n| FrameWeapon {
+                id: SmolStr::new(format!("heavy_laser{n}")),
+                ready: false,
+                ready_in_ms: 11_500,
+                rounds: 10,
+                rounds_max: 10,
+                range_band: None,
+                p_permille: Some(460),
+                bands_cm: vec![100_000, 300_000],
+                heat_per_shot: 0,
+            })
+            .collect();
+        let lines = ap3_lines(&armed);
+        let guns = lines.get(1).expect("a guns line");
+        assert!(guns.chars().count() <= WATCH_COLUMNS, "{guns}");
+        assert!(guns.ends_with("; lock BA, 450 m, 46% to hit"), "{guns}");
+        let (listed, rest) = guns.split_once("; +").expect("twelve guns do not fit");
+        let more: usize = rest
+            .split_once(" more; lock ")
+            .and_then(|(n, _)| n.parse().ok())
+            .expect("the tail before the lock");
+        let shown: Vec<&str> = listed
+            .strip_prefix("Watch guns: ")
+            .expect("the head")
+            .split(", ")
+            .collect();
+        assert_eq!(shown.len() + more, 12, "{guns}");
+        for (n, entry) in shown.iter().enumerate() {
+            // Each shares `hl` with the others, so none advertises it.
+            assert_eq!(*entry, format!("heavy_laser{n} cycling (12 s)"), "{guns}");
+        }
+
+        // (6) The flags, in `STATUS`'s order; the friendly mark on a lock.
+        let mut wreck = scene.clone();
+        wreck.held = true;
+        wreck.wreck = true;
+        assert_eq!(
+            ap3_lines(&wreck).first().map(String::as_str),
+            Some("Watch RA: online, 24 kph, heading 090°, HELD, DESTROYED")
+        );
+        let mut friendly = scene.clone();
+        friendly.contacts.push(FrameContact {
+            id: ContactId(3),
+            designator: Designator::Slot {
+                team: Team::Red,
+                slot: 2,
+            },
+            alias: Some(2),
+            class: Classification::Classified { team: Team::Red },
+            bearing_mdeg: 180_000,
+            range_cm: 12_000,
+            age_ms: 0,
+            cell: Some((1, 0)),
+            condition: None,
+        });
+        friendly.lock = Some(ContactId(3));
+        assert!(
+            ap3_lines(&friendly)
+                .get(1)
+                .is_some_and(|line| line.ends_with("; lock RB (FRIENDLY), 100 m, 46% to hit")),
+            "{:?}",
+            ap3_lines(&friendly)
+        );
+
+        // (7) No prefix a reader of `STATUS`, `CONTACTS` or the lock takes; no
+        // tempo word; nothing that moves with the cell, the position or the
+        // arena's tempo.
+        for frame in [&scene, &bare, &wreck, &friendly, &crowded, &armed] {
+            let lines = ap3_lines(frame);
+            for line in &lines {
+                assert!(line.chars().count() <= WATCH_COLUMNS, "{line}");
+                assert!(line.starts_with("Watch "), "{line}");
+                assert!(!line.contains(": power "), "{line}");
+                assert!(!line.starts_with("Locked on "), "{line}");
+                assert!(!line.contains("  bearing "), "{line}");
+                for word in ["quiet", "alert", "engaged", "Quiet", "Alert", "Engaged"] {
+                    assert!(!line.contains(word), "a tempo word: {line}");
+                }
+            }
+            for tempo in [Tempo::Quiet, Tempo::Alert, Tempo::Engaged] {
+                let mut moved = (*frame).clone();
+                moved.tempo = tempo;
+                moved.cell = Some((7, 7));
+                moved.pose.x_cm += 4_000;
+                moved.pose.y_cm -= 3_000;
+                assert_eq!(ap3_lines(&moved), lines, "the block moved with {tempo:?}");
+            }
+        }
     }
 }

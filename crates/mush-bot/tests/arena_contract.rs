@@ -1753,3 +1753,54 @@ fn the_view_brief_header_reads_as_the_game_prints_it() {
         "{header}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Cut AP.3: the `WATCH` digest
+// ---------------------------------------------------------------------------
+
+/// **The `WATCH` digest reads as nothing the reader parses** (16b cut AP.3;
+/// 16c N19, a declared reader change under doc 16 §11): the cockpit's own
+/// `watch_lines` over the hand-built scene (locked on `BA`, two contacts, a
+/// cycling gun: three lines) and over a bare frame (no gun, no contact: one
+/// line), each through the server's line renderer and the bot's own pipeline,
+/// reads `Line::Other` byte for byte — line by line, and as the one block the
+/// bridge pushes — and opens no `CONTACTS`, `WEAPONSTATUS` or `STATUS` reply
+/// and no brief. The prefixes were chosen so (the own line says `online`,
+/// never `power online`, which is what `STATUS`'s head is split on); this
+/// pins that they stay so.
+#[test]
+fn the_watch_digest_reads_as_neutral_lines_and_opens_no_reply() {
+    let scene = frame();
+    let mut bare = frame();
+    bare.weapons.clear();
+    bare.contacts.clear();
+    bare.lock = None;
+    let mut reader = Reader::new();
+    for (frame, count) in [(&scene, 3), (&bare, 1)] {
+        let lines = cockpit::watch_lines(
+            frame,
+            &std::collections::BTreeMap::new(),
+            &cockpit::frame_weapons(frame),
+            1_000,
+        );
+        assert_eq!(lines.len(), count, "{lines:?}");
+        for line in &lines {
+            assert_eq!(reader.one(line), Line::Other(line.clone()), "{line}");
+        }
+        let block = lines.join("\n");
+        assert_eq!(
+            reader.say(&block),
+            lines
+                .iter()
+                .map(|line| Line::Other(line.clone()))
+                .collect::<Vec<Line>>(),
+            "{block}"
+        );
+    }
+    let open = &reader.picture.open;
+    assert!(open.contacts.is_none(), "a CONTACTS reply opened");
+    assert!(open.weapons.is_none(), "a WEAPONSTATUS reply opened");
+    assert!(open.status.is_none(), "a STATUS reply opened");
+    assert!(!open.lock_line, "a lock line was read");
+    assert!(!open.brief, "a VIEW BRIEF opened");
+}
