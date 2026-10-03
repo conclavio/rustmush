@@ -43,6 +43,11 @@
 //! - **[`IntentKind::Emcon`]** (16b cut O.2) is a pilot's discrete action like
 //!   `STARTUP`, on [`Channel::Sensors`], resolved in phase 4 by
 //!   [`resolve_emcon`]: the jamming pod's switch.
+//! - **[`IntentKind::Goal`]** (17b cut M1a.4; doc 17 §4 D-UM-10) is a pilot's
+//!   `DRIVE`: continuous, on [`Channel::Helm`], latest-wins, and counted on
+//!   the seat's rate. It writes the hull's motor row
+//!   ([`crate::arena::motor::MotorRow`]) and the motor drives it between
+//!   ticks; a seat's `HEADING` or `SPEED` afterward takes the helm back.
 //!
 //! A refusal is always one of the named [`Refusal`] words, never a silent drop:
 //! cut K's cockpit turns each into a line a pilot can act on (a place's is a
@@ -201,11 +206,57 @@ pub enum IntentKind {
         /// `true` to radiate, `false` to fall silent.
         on: bool,
     },
+    /// **Hand the helm to the hull's motor** (17b cut M1a.4; doc 17 §4 D-UM-3
+    /// and D-UM-10; doc 16 §3.7): a pilot's `DRIVE`, and from 17b cut M1a.5 a
+    /// mind's `goto`. Continuous, [`Channel::Helm`], word `drive` — so a
+    /// refusal staged at phase 2 reads `DRIVE refused. …`.
+    ///
+    /// It meets the continuous gates (`PowerNotOnline`, `MotionDisabled`) and,
+    /// from a seat, the seat's rate: a [`MotorGoal::Cell`] spends a path search
+    /// from the arena-wide budget the motor shares, so a seat may not spam one
+    /// ([`apply_intent`]'s `Goal` arm has the whole rule). The word is `DRIVE`
+    /// and not doc 17's `GOTO` because core's baseline `goto` (aliases `go`,
+    /// `move`) holds that name and the command registry refuses a collision —
+    /// the M1a plan's departure (f).
+    Goal(MotorGoal),
+}
+
+/// **What a [`IntentKind::Goal`] asks of the motor** (17b cut M1a.4; doc 17 §4
+/// D-UM-10).
+///
+/// The motor ([`crate::arena::motor`]) drives one hull to one goal cell with
+/// the bounded route-finding the machines use; this is the whole of what a
+/// principal may say to it. A **contact is never a goal**: a goal is ground,
+/// and naming a contact's cell would be the motor reading a plot it was never
+/// handed (doc 16 §3.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum MotorGoal {
+    /// **Drive to this arena cell**, fanned at landing off a same-side hull's
+    /// arrival square inside another side's entry zone
+    /// (`crate::arena::state::Arena::fan_goal`).
+    Cell {
+        /// The column.
+        x: u16,
+        /// The row.
+        y: u16,
+    },
+    /// **Stop here**: the goal is dropped and the hull ordered to a standstill.
+    /// A hold keeps no goal, so it never "arrives", says nothing and schedules
+    /// no motor tick — and a hull shoved off the spot does not come back
+    /// (simplicity, declared by the cut).
+    Hold,
+    /// **Let go**: the goal is dropped and the hull keeps whatever heading and
+    /// speed it was last ordered.
+    Off,
 }
 
 impl IntentKind {
     /// Whether this order is a *desired value* rather than an action: continuous
     /// orders are latest-wins and never queue.
+    ///
+    /// **17b cut M1a.4**: a [`IntentKind::Goal`] is one — a goal is the desired
+    /// value of the motor, and a second `DRIVE` replaces the first.
     #[must_use]
     pub const fn is_continuous(&self) -> bool {
         matches!(
@@ -214,6 +265,7 @@ impl IntentKind {
                 | IntentKind::Speed { .. }
                 | IntentKind::Order(_)
                 | IntentKind::ReleaseOrder { .. }
+                | IntentKind::Goal(_)
         )
     }
 
@@ -251,7 +303,9 @@ impl IntentKind {
             | IntentKind::Startup
             | IntentKind::Order(_)
             | IntentKind::ReleaseOrder { .. }
-            | IntentKind::Place { .. } => Channel::Helm,
+            | IntentKind::Place { .. }
+            // 17b cut M1a.4: the motor is the helm's drive-by-wire.
+            | IntentKind::Goal(_) => Channel::Helm,
             IntentKind::Lock { .. } | IntentKind::Emcon { .. } => Channel::Sensors,
             IntentKind::Fire { .. } => Channel::Fire,
         }
@@ -270,6 +324,9 @@ impl IntentKind {
             IntentKind::ReleaseOrder { .. } => "release",
             IntentKind::Place { .. } => "place",
             IntentKind::Emcon { .. } => "emcon",
+            // 17b cut M1a.4: the cockpit's word, not doc 17's `goto` (departure
+            // (f)), so the staged refusal names the verb the pilot typed.
+            IntentKind::Goal(_) => "drive",
         }
     }
 }
@@ -306,7 +363,10 @@ pub enum IntentSource {
     /// `intents.max_pending_per_unit` per arena second on the unit it orders.
     Seat,
     /// The reflex controller's own order (`crate::arena::reflex`) — never
-    /// counted and never refused for the rate.
+    /// counted and never refused for the rate. **17b cut M1a.4**: and the
+    /// motor's own heading and speed (`crate::arena::motor`'s
+    /// `Arena::apply_motor_plan`), which is why a motor order never takes the
+    /// helm back from a `DRIVE` the way a seat's `HEADING` does.
     Machine,
 }
 
@@ -570,6 +630,12 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
 /// substep is motion's business (doc 16 §3.4 step 2, terrain and slow
 /// consequences).
 ///
+/// **17b cut M1a.4**: a continuous [`IntentKind::Goal`] meets those two gates
+/// and then, from an [`IntentSource::Seat`], the seat's rate below — the one
+/// continuous kind that does; it lands through `land_goal`. And a seat's
+/// `Heading` or `Speed` on a hull that is not the reflex controller's drops
+/// the motor's goal: the principal took the helm back.
+///
 /// For a **discrete** action: the seat must not be linkdead
 /// ([`Refusal::Linkdead`]) and, for an order from an [`IntentSource::Seat`], the
 /// seat must not have spent this arena second's rate ([`Refusal::QueueFull`]);
@@ -581,7 +647,9 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
 /// # The rate (16b cut M.1, `T-82`)
 ///
 /// `intents.max_pending_per_unit` is **the discrete orders one seat may give a
-/// unit per arena second**, counted in
+/// unit per arena second** — and, since 17b cut M1a.4, its continuous
+/// [`IntentKind::Goal`]s on the same window (the other continuous kinds never
+/// count) — counted in
 /// [`crate::arena::state::UnitState::orders_window_s`] and
 /// [`crate::arena::state::UnitState::orders_in_window`]: the window is
 /// `now_ms.div_euclid(1_000)`, a new window resets the count, and an order that
@@ -686,6 +754,25 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
         if unit.limits.motion_disabled {
             return IntentOutcome::Refused(Refusal::MotionDisabled);
         }
+        // **17b cut M1a.4** — the seat's rate on a goal. A `Goal { Cell }`
+        // spends a path search from the budget every hull shares, so a seat
+        // that could send one per keystroke could starve the field's searches;
+        // it is counted on the same per-unit window a discrete order is, and
+        // refused `QueueFull` past it. A mind's and the motor's own goals are
+        // never counted (D-UM-14), for the reason the machine's discrete
+        // orders are not (this function's head).
+        if matches!(i.kind, IntentKind::Goal(_)) && source == IntentSource::Seat {
+            let window = now_ms.div_euclid(1_000);
+            if unit.orders_window_s != window {
+                unit.orders_window_s = window;
+                unit.orders_in_window = 0;
+            }
+            if unit.orders_in_window >= max_pending {
+                return IntentOutcome::Refused(Refusal::QueueFull);
+            }
+            unit.orders_in_window = unit.orders_in_window.saturating_add(1);
+        }
+        let controller = unit.controller;
         match &i.kind {
             IntentKind::Heading { mdeg } => unit.desired_heading_mdeg = mdeg % 360_000,
             IntentKind::Speed { cms } => {
@@ -695,13 +782,39 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
                     .saturating_neg();
                 unit.desired_speed_cms = (*cms).clamp(reverse, forward);
             }
-            IntentKind::Startup
+            // 17b cut M1a.4: a hold is a stop (the motor row is written below,
+            // once this borrow of the unit has ended).
+            IntentKind::Goal(MotorGoal::Hold) => unit.desired_speed_cms = 0,
+            IntentKind::Goal(MotorGoal::Cell { .. } | MotorGoal::Off)
+            | IntentKind::Startup
             | IntentKind::Lock { .. }
             | IntentKind::Fire { .. }
             | IntentKind::Order(_)
             | IntentKind::ReleaseOrder { .. }
             | IntentKind::Place { .. }
             | IntentKind::Emcon { .. } => {}
+        }
+        match &i.kind {
+            IntentKind::Goal(goal) => land_goal(arena, i.unit, *goal, source),
+            // **17b cut M1a.4 — the principal takes the helm back** (D-UM-10:
+            // *`HEADING` or `SPEED` typed afterward disengages it*). A seat's
+            // heading or speed on a hull no reflex machine flies lets go of the
+            // motor's goal as `DRIVE OFF` does, so the hull steers what was
+            // typed. The motor's own orders (`IntentSource::Machine`) never
+            // do — they are how the goal is driven — and a reflex hull's goals
+            // are its machine's, which a seat's order does not reach (17b cut
+            // M1a.5 adds `IntentSource::Mind` here).
+            IntentKind::Heading { .. } | IntentKind::Speed { .. }
+                if source == IntentSource::Seat
+                    && controller != Controller::Reflex
+                    && arena
+                        .motors
+                        .row(i.unit)
+                        .is_some_and(|motor| motor.goal.is_some()) =>
+            {
+                arena.motors.forget_goal(i.unit);
+            }
+            _ => {}
         }
         return IntentOutcome::AppliedContinuous;
     }
@@ -811,6 +924,50 @@ fn release_order(
         });
     if !still_ordered {
         arena.note_order_expired(squad);
+    }
+}
+
+/// **Write one landed goal onto the hull's motor row** (17b cut M1a.4; doc 17
+/// §4 D-UM-10), for [`apply_intent`]'s [`IntentKind::Goal`] arm once the
+/// continuous gates have passed.
+///
+/// * [`MotorGoal::Cell`]: the cell is fanned off a same-side arrival square
+///   (`Arena::fan_goal`), the row is laid down if the hull has none, the goal
+///   written, the route and the remembered stop dropped — and the search stamp
+///   dropped **only for a seat's goal**: a typed order gets its search now,
+///   while a mind's or the machine's own goal keeps `searched_ms`, so the
+///   `repath_ms` throttle the reflex controller has always lived under holds
+///   for a mind that re-names its goal every think (M1a.5 and M1a.6 land
+///   through here). Then the hull is put on the motor's cadence
+///   (`Arena::engage_motor`).
+/// * [`MotorGoal::Hold`] and [`MotorGoal::Off`]: the goal, the route and the
+///   remembered stop go ([`crate::arena::motor::MotorTable::forget_goal`]); a
+///   hold's stop was written by the caller. A hull with no row gains none.
+///
+/// **A goal to a reflex hull is written like any other** — the arena cannot
+/// tell who typed it and no refusal word fits. What becomes of it is the
+/// machine's: at its next tick every state that derives its goal afresh
+/// (`Patrol`'s waypoint walk or a squad's order, `Approach`, `Engage`) writes
+/// over it, but **`Withdraw` keeps a goal it finds** — its arm sets the entry
+/// cell only when the row holds none — and drives to it until it arrives or
+/// no route reaches it. No seat reaches a reflex hull's helm today (the
+/// machine holds no pilot's lease); the in-source test pins both. Nothing is
+/// put on the motor's cadence for it: a reflex hull's drive runs inside its
+/// own tick.
+fn land_goal(arena: &mut Arena, unit: ObjId, goal: MotorGoal, source: IntentSource) {
+    match goal {
+        MotorGoal::Cell { x, y } => {
+            let cell = arena.fan_goal(unit, (x, y));
+            let motor = arena.motors.ensure(unit);
+            motor.goal = Some(cell);
+            motor.route.clear();
+            motor.refused = None;
+            if source == IntentSource::Seat {
+                motor.searched_ms = None;
+            }
+            arena.engage_motor(unit);
+        }
+        MotorGoal::Hold | MotorGoal::Off => arena.motors.forget_goal(unit),
     }
 }
 
@@ -2857,5 +3014,283 @@ mod tests {
         // A machine with no order reads none.
         arena.reflex.drop_to_doctrine(RED, true);
         assert_eq!(arena.frame_order(RED), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // 17b cut M1a.4 — the goal (doc 17 §4 D-UM-3, D-UM-10)
+    // -----------------------------------------------------------------------
+
+    /// How many motor ticks the heap holds for `unit`.
+    fn m1a4_motor_ticks(arena: &Arena, unit: ObjId) -> usize {
+        arena
+            .due
+            .iter()
+            .filter(|event| event.kind == DueKind::MotorTick { unit })
+            .count()
+    }
+
+    /// **The goal lands on the motor row, a seat's helm order takes it back,
+    /// and the gates and the seat's rate hold** (17b cut M1a.4; doc 17 §4
+    /// D-UM-10, D-UM-14).
+    ///
+    /// The kind: continuous, on the helm, word `drive`. On a pilot's powered
+    /// tank: a seat's `Cell` writes the goal, drops the route, the remembered
+    /// stop and the search stamp, and puts ONE motor tick on the heap (a second
+    /// goal rides it); a machine's `Cell` keeps the search stamp; a machine's
+    /// `Heading` keeps the goal and a seat's drops it; `Hold` drops it and
+    /// zeroes the ordered speed, `Off` drops it and leaves the speed. A hull with
+    /// no row gains none from a `Hold`. The three continuous gates refuse a
+    /// goal by name, and the phase-2 line they stage reads `DRIVE refused. …`.
+    /// A goal to a reflex machine is written and puts nothing on the motor's
+    /// cadence; a patrolling machine's next tick writes over it, and a
+    /// withdrawing machine's keeps it as its route home. A seat's goals are
+    /// counted on the per-unit window — the one past the bound is `QueueFull` —
+    /// and a machine's are not.
+    #[test]
+    fn m1a4_a_goal_sets_the_motors_goal_and_a_seat_helm_order_clears_it() {
+        use crate::arena::motor::Refusal as Stop;
+        let goal =
+            |unit: ObjId, kind: MotorGoal, seq: u64| intent(unit, 1, seq, IntentKind::Goal(kind));
+        let cell = |x: u16, y: u16| MotorGoal::Cell { x, y };
+
+        // The kind.
+        let kind = IntentKind::Goal(MotorGoal::Off);
+        assert!(kind.is_continuous());
+        assert!(!kind.is_discrete());
+        assert_eq!(kind.channel_required(), Channel::Helm);
+        assert_eq!(kind.as_str(), "drive");
+
+        // A seat's cell, on a pilot's powered tank with a stale row.
+        let mut arena = two_tanks(1);
+        online(&mut arena, RED);
+        {
+            let motor = arena.motors.ensure(RED);
+            motor.route = vec![(1, 1)];
+            motor.searched_ms = Some(500);
+            motor.refused = Some(Stop {
+                at: (1, 1),
+                cell: (2, 2),
+                cause: crate::arena::motion::BlockedCause::Impassable,
+                goal: (3, 3),
+                until_ms: 30_000,
+            });
+        }
+        assert_eq!(
+            apply_intent(&mut arena, &goal(RED, cell(5, 5), 1), IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        let row = arena.motors.row(RED).cloned().unwrap_or_default();
+        assert_eq!(row.goal, Some((5, 5)));
+        assert!(row.route.is_empty() && row.refused.is_none());
+        assert_eq!(row.searched_ms, None, "a typed goal gets its search now");
+        assert_eq!(m1a4_motor_ticks(&arena, RED), 1, "one motor tick");
+        assert!(arena.pending.is_empty(), "a goal never queues");
+        // A machine's goal keeps the stamp, and rides the same tick.
+        if let Some(motor) = arena.motors.row_mut(RED) {
+            motor.searched_ms = Some(700);
+        }
+        assert_eq!(
+            apply_intent(&mut arena, &goal(RED, cell(6, 6), 2), IntentSource::Machine),
+            IntentOutcome::AppliedContinuous
+        );
+        let row = arena.motors.row(RED).cloned().unwrap_or_default();
+        assert_eq!((row.goal, row.searched_ms), (Some((6, 6)), Some(700)));
+        assert_eq!(m1a4_motor_ticks(&arena, RED), 1, "still one tick");
+
+        // The motor's own heading keeps the goal; a seat's takes it back.
+        let heading = |seq| intent(RED, 1, seq, IntentKind::Heading { mdeg: 90_000 });
+        assert_eq!(
+            apply_intent(&mut arena, &heading(3), IntentSource::Machine),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(arena.motors.row(RED).and_then(|m| m.goal), Some((6, 6)));
+        // A heading the machine's own did not give, so the typed one shows.
+        let typed = intent(RED, 1, 4, IntentKind::Heading { mdeg: 180_000 });
+        assert_eq!(
+            apply_intent(&mut arena, &typed, IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(arena.motors.row(RED).and_then(|m| m.goal), None);
+        assert_eq!(
+            arena.unit(RED).map(|unit| unit.desired_heading_mdeg),
+            Some(180_000),
+            "and steers what was typed"
+        );
+        // A seat's speed does too.
+        let _ = apply_intent(&mut arena, &goal(RED, cell(5, 5), 5), IntentSource::Seat);
+        let _ = apply_intent(
+            &mut arena,
+            &intent(RED, 1, 6, IntentKind::Speed { cms: 300 }),
+            IntentSource::Seat,
+        );
+        assert_eq!(arena.motors.row(RED).and_then(|m| m.goal), None);
+
+        // Hold: no goal, a stop. Off: no goal, the speed left alone.
+        let _ = apply_intent(&mut arena, &goal(RED, cell(5, 5), 7), IntentSource::Seat);
+        assert_eq!(
+            apply_intent(
+                &mut arena,
+                &goal(RED, MotorGoal::Hold, 8),
+                IntentSource::Seat
+            ),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(arena.motors.row(RED).and_then(|m| m.goal), None);
+        assert_eq!(arena.unit(RED).map(|unit| unit.desired_speed_cms), Some(0));
+        let _ = apply_intent(
+            &mut arena,
+            &intent(RED, 1, 9, IntentKind::Speed { cms: 300 }),
+            IntentSource::Seat,
+        );
+        let _ = apply_intent(&mut arena, &goal(RED, cell(5, 5), 10), IntentSource::Seat);
+        assert_eq!(
+            apply_intent(
+                &mut arena,
+                &goal(RED, MotorGoal::Off, 11),
+                IntentSource::Seat
+            ),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(arena.motors.row(RED).and_then(|m| m.goal), None);
+        assert_eq!(
+            arena.unit(RED).map(|unit| unit.desired_speed_cms),
+            Some(300)
+        );
+        // A hold on a hull nothing steers lays no row down.
+        online(&mut arena, BLUE);
+        let _ = apply_intent(
+            &mut arena,
+            &goal(BLUE, MotorGoal::Hold, 12),
+            IntentSource::Seat,
+        );
+        assert!(arena.motors.row(BLUE).is_none());
+
+        // The gates, by name, and the line phase 2 stages for each.
+        for (refusal, line) in [
+            (Refusal::Wreck, "DRIVE refused. Your tank is a wreck."),
+            (
+                Refusal::MotionDisabled,
+                "DRIVE refused. Your tank cannot move.",
+            ),
+            (
+                Refusal::PowerNotOnline,
+                "DRIVE refused. Power not online: STARTUP first.",
+            ),
+        ] {
+            let mut arena = two_tanks(1);
+            online(&mut arena, RED);
+            if let Some(state) = arena.unit_mut(RED) {
+                match refusal {
+                    Refusal::Wreck => state.limits.wreck = true,
+                    Refusal::MotionDisabled => state.limits.motion_disabled = true,
+                    _ => state.power = Power::Off,
+                }
+            }
+            assert_eq!(
+                apply_intent(
+                    &mut arena.clone(),
+                    &goal(RED, cell(5, 5), 1),
+                    IntentSource::Seat
+                ),
+                IntentOutcome::Refused(refusal)
+            );
+            let out = arena.step(0, &[], &[goal(RED, cell(5, 5), 1)]);
+            let told: Vec<String> = out
+                .frames
+                .iter()
+                .filter(|(_, frame)| frame.unit == RED)
+                .flat_map(|(_, frame)| crate::match_::cockpit::notice_lines(frame))
+                .collect();
+            assert!(
+                told.iter().any(|said| said == line),
+                "{refusal:?}: {told:?}"
+            );
+            assert!(arena.motors.row(RED).is_none_or(|m| m.goal.is_none()));
+            assert_eq!(m1a4_motor_ticks(&arena, RED), 0);
+        }
+
+        // A goal to a reflex machine is written, and its next tick overwrites it:
+        // a machine patrolling under a squad's `HOLD` re-derives its goal — the
+        // cell it stands in — at every tick.
+        let mut machine = two_tanks(1);
+        online(&mut machine, RED);
+        if let Some(state) = machine.unit_mut(RED) {
+            state.controller = Controller::Reflex;
+        }
+        machine.adopt_reflex(RED, ReflexState::Patrol);
+        machine
+            .reflex
+            .set_order(RED, z2_order(crate::deliberation::order::Objective::Hold));
+        assert_eq!(
+            apply_intent(&mut machine, &goal(RED, cell(7, 0), 1), IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(machine.motors.row(RED).and_then(|m| m.goal), Some((7, 0)));
+        assert_eq!(
+            m1a4_motor_ticks(&machine, RED),
+            0,
+            "no motor cadence for a machine"
+        );
+        let mut counters = crate::arena::reflex::ReflexCounters::default();
+        assert!(machine.reflex_tick(RED, 1_000, &mut counters));
+        assert_eq!(
+            machine.motors.row(RED).and_then(|m| m.goal),
+            Some((1, 1)),
+            "the machine's tick re-derived its own goal: where it stands"
+        );
+        // ...but a withdrawing machine keeps a goal it finds as its route home
+        // (`decide`'s `Withdraw` arm sets one only when the row holds none), until
+        // it arrives or no route reaches it — pinned, so the day a seam can put
+        // a goal on a reflex hull meets it (the cut's NOT DONE, for the lead).
+        let mut withdrawing = two_tanks(1);
+        online(&mut withdrawing, RED);
+        if let Some(state) = withdrawing.unit_mut(RED) {
+            state.controller = Controller::Reflex;
+        }
+        withdrawing.adopt_reflex(RED, ReflexState::Withdraw);
+        assert_eq!(
+            apply_intent(
+                &mut withdrawing,
+                &goal(RED, cell(7, 0), 1),
+                IntentSource::Seat
+            ),
+            IntentOutcome::AppliedContinuous
+        );
+        let mut counters = crate::arena::reflex::ReflexCounters::default();
+        let _ = withdrawing.reflex_tick(RED, 1_000, &mut counters);
+        assert_eq!(
+            withdrawing.motors.row(RED).and_then(|m| m.goal),
+            Some((7, 0)),
+            "a withdrawing machine kept the goal it found"
+        );
+
+        // The seat's rate counts a seat's goal and never a machine's.
+        let mut rated = two_tanks(1);
+        online(&mut rated, RED);
+        let bound = rated.arena_cfg.intents.max_pending_per_unit;
+        for seq in 0..u64::from(bound) {
+            assert_eq!(
+                apply_intent(&mut rated, &goal(RED, cell(5, 5), seq), IntentSource::Seat),
+                IntentOutcome::AppliedContinuous,
+                "goal {seq}"
+            );
+        }
+        assert_eq!(
+            apply_intent(&mut rated, &goal(RED, cell(5, 5), 99), IntentSource::Seat),
+            IntentOutcome::Refused(Refusal::QueueFull)
+        );
+        let mut free = two_tanks(1);
+        online(&mut free, RED);
+        for seq in 0..u64::from(bound).saturating_mul(2) {
+            assert_eq!(
+                apply_intent(
+                    &mut free,
+                    &goal(RED, cell(5, 5), seq),
+                    IntentSource::Machine
+                ),
+                IntentOutcome::AppliedContinuous
+            );
+        }
+        assert_eq!(free.unit(RED).map(|unit| unit.orders_in_window), Some(0));
     }
 }

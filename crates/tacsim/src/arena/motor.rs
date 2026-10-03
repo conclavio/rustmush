@@ -60,10 +60,10 @@ use crate::arena::motion::BlockedCause;
 use crate::arena::path::{
     PathScratch, Shoulder, ShoulderVerdict, path_with, shoulder_refuses, shoulder_state,
 };
-use crate::arena::perception::bearing_of;
+use crate::arena::perception::{DriveOutcome, FrameNotice, bearing_of};
 use crate::arena::reflex::ReflexCounters;
 use crate::arena::slope;
-use crate::arena::state::{Arena, ArenaTerrain, Power, SeenPose, UnitState};
+use crate::arena::state::{Arena, ArenaTerrain, Controller, DueKind, Power, SeenPose, UnitState};
 use crate::config::ReflexConfig;
 
 /// How near a goal cell counts as arrived, in cells.
@@ -2108,6 +2108,274 @@ impl Arena {
             }
         }
         best.map(|(_, cell)| cell)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A principal's goal: the fan, the cadence and the step (17b cut M1a.4)
+// ---------------------------------------------------------------------------
+
+impl Arena {
+    /// **A goal fanned off a same-side hull's arrival square** (17b cut M1a.4;
+    /// the M1a plan's departure (d); 16b cut AI.1's [`HUNT_FAN_ROWS`]), for the
+    /// goals that land through `IntentKind::Goal`.
+    ///
+    /// [`Arena::far_entry_cell`]'s fan applied once more, at goal landing: when
+    /// `cell` lies inside an entry zone of **another** side, and another hull
+    /// of `unit`'s own side holds a motor goal within [`HUNT_FAN_ROWS`]
+    /// (Chebyshev) of it, the answer is the first row of the zone's fan
+    /// (`fan_rows` from `cell`'s own row, that row skipped) whose cell in
+    /// `cell`'s column is passable to the hull's own cost row — else the zone's
+    /// nearest passable cell on that row — and clear of every goal the side
+    /// holds; when the fan runs out (or the scan budget [`MAX_ENTRY_SCAN`] is
+    /// spent), `cell` itself. Anywhere else, `cell` unchanged.
+    ///
+    /// Two hulls cannot share an arrival square — physical knowledge the motor
+    /// owns and a pilot's map or a mind's view does not carry — and two pilots
+    /// of one side who both `DRIVE` the far zone's road corner would otherwise
+    /// be handed one cell, and the first there would turn back into the second.
+    /// The reflex controller's hunt keeps its own fan in its decision half
+    /// ([`Arena::far_entry_cell`] with the side's hunt cells), untouched.
+    ///
+    /// It reads the ground, the entry zones, the hull's own team and cost row,
+    /// and the **goals** of its own side's motor rows — never another hull's
+    /// pose, and nothing of any other side.
+    #[must_use]
+    pub fn fan_goal(&self, unit: ObjId, cell: (u16, u16)) -> (u16, u16) {
+        let Some(me) = self.unit(unit) else {
+            return cell;
+        };
+        let Some(zone) = self.definition.entry_zones.iter().find(|zone| {
+            zone.team != me.team
+                && (zone.x0.min(zone.x1)..=zone.x0.max(zone.x1)).contains(&cell.0)
+                && (zone.y0.min(zone.y1)..=zone.y0.max(zone.y1)).contains(&cell.1)
+        }) else {
+            return cell;
+        };
+        // Every goal the rest of the side holds, in unit-id order (the table's
+        // own); a goal is a fact about ground, never a pose.
+        let taken: Vec<(u16, u16)> = self
+            .motors
+            .rows()
+            .filter(|(id, _)| *id != unit)
+            .filter(|(id, _)| self.unit(*id).is_some_and(|other| other.team == me.team))
+            .filter_map(|(_, row)| row.goal)
+            .collect();
+        let clear = |at: (u16, u16)| {
+            taken
+                .iter()
+                .all(|other| other.0.abs_diff(at.0).max(other.1.abs_diff(at.1)) >= HUNT_FAN_ROWS)
+        };
+        if clear(cell) {
+            return cell;
+        }
+        let passable = |x: u16, y: u16| self.definition.terrain.passable_for(me.cost_row, x, y);
+        let (x0, x1) = (zone.x0.min(zone.x1), zone.x0.max(zone.x1));
+        let (y0, y1) = (zone.y0.min(zone.y1), zone.y0.max(zone.y1));
+        let mut read = 0_usize;
+        for row in fan_rows(cell.1, y0, y1).skip(1) {
+            if read > MAX_ENTRY_SCAN {
+                break;
+            }
+            let candidate = if passable(cell.0, row) {
+                Some((cell.0, row))
+            } else {
+                nearest_passable_in_zone(&passable, (x0, x1, y0, y1), row, (cell.0, row), &mut read)
+            };
+            if let Some(fanned) = candidate.filter(|at| clear(*at)) {
+                return fanned;
+            }
+        }
+        cell
+    }
+
+    /// **The stagger grid's next slot for `unit` at `cadence`** (16b cut U.1's
+    /// formula, lifted by 17b cut M1a.4 so the reflex tick and the motor tick
+    /// share it): the next multiple of `cadence` offset by
+    /// [`crate::arena::rng::stagger_ms`]`(seed, unit, cadence)` that is at or
+    /// after `now_ms`. A function of arena time, the seed and the unit id
+    /// alone, so a hull put on a cadence mid-match lands where one put on it
+    /// at check-out would, and the field stays spread.
+    #[must_use]
+    pub(crate) fn grid_at(&self, unit: ObjId, cadence: i64) -> i64 {
+        let cadence = cadence.max(1);
+        let offset = crate::arena::rng::stagger_ms(self.seed, unit, cadence);
+        let mut at = self.now_ms - self.now_ms.rem_euclid(cadence) + offset;
+        if at < self.now_ms {
+            at = at.saturating_add(cadence);
+        }
+        at
+    }
+
+    /// **Put a hull on the motor's cadence** (17b cut M1a.4; D-UM-3): one
+    /// [`DueKind::MotorTick`] at the hull's next slot of the stagger grid at
+    /// `reflex.decide_ms` ([`Arena::grid_at`]), unless the heap already holds
+    /// one for it — so a pilot who types `DRIVE` five times is driven by one
+    /// tick, and a goal re-named while a tick is pending rides that tick.
+    ///
+    /// A reflex hull is put on nothing: its drive runs inside its own
+    /// [`DueKind::ReflexTick`], and a goal written onto it is its machine's —
+    /// written over at the next tick by every state that derives its goal
+    /// afresh, and kept by `Withdraw` as its route home (`land_goal` in
+    /// `intents.rs` has the rule). A wreck is put on nothing either.
+    pub(crate) fn engage_motor(&mut self, unit: ObjId) {
+        if self
+            .unit(unit)
+            .is_none_or(|state| state.limits.wreck || state.controller == Controller::Reflex)
+        {
+            return;
+        }
+        if self
+            .due
+            .iter()
+            .any(|event| event.kind == DueKind::MotorTick { unit })
+        {
+            return;
+        }
+        let at = self.grid_at(unit, i64::from(self.arena_cfg.reflex.decide_ms));
+        self.due.schedule(at, DueKind::MotorTick { unit });
+    }
+
+    /// **One step of a principal's goal** (17b cut M1a.4; doc 17 §4 D-UM-3,
+    /// D-UM-10) — the body [`DueKind::MotorTick`] runs every `decide_ms`, and
+    /// that a goal's landing runs once at the landing millisecond (*a new goal
+    /// takes effect at N+1 and does not wait for the next motor tick*).
+    ///
+    /// For a hull that exists, is no wreck, is not the reflex controller's and
+    /// whose motor row holds a goal — and that can move: a hull that cannot
+    /// ([`UnitState::cannot_close`]) has its goal dropped and is told
+    /// [`crate::arena::perception::DriveOutcome::NoRoute`], once — in the
+    /// order the reflex tick drives one:
+    ///
+    /// 1. `Arena::refresh_held_avoid` — a hull still held on an occupied
+    ///    cell re-stamps it, before the sweep;
+    /// 2. [`MotorRow::age_avoid`] — the TTL sweep a row no decision runs needs,
+    ///    or a pilot's remembered stops would never expire;
+    /// 3. `Arena::follow` under [`Fallback::Notice`], the row taken out of the
+    ///    table for the drive as the reflex tick takes it;
+    /// 4. [`Arena::apply_motor_plan`] — the heading and the speed it decided,
+    ///    through the pilot's own door at the hull's current epochs;
+    /// 5. the notice: [`crate::arena::perception::DriveOutcome::Arrived`] when
+    ///    the drive arrived and
+    ///    [`crate::arena::perception::DriveOutcome::NoRoute`] when no route
+    ///    reached the goal — once each, because under `Notice` both drop the
+    ///    goal and the next tick finds none.
+    ///
+    /// Answers the drive's [`MotorOutcome`]; the default for a hull it does not
+    /// drive. Draws nothing and journals nothing.
+    pub(crate) fn motor_step(
+        &mut self,
+        unit: ObjId,
+        t_ms: i64,
+        counters: &mut ReflexCounters,
+    ) -> MotorOutcome {
+        let Some(state) = self.unit(unit) else {
+            return MotorOutcome::default();
+        };
+        if state.limits.wreck || state.controller == Controller::Reflex {
+            return MotorOutcome::default();
+        }
+        let here = self.definition.terrain.cell_of(&state.pose);
+        let cannot_close = state.cannot_close();
+        let Some(goal) = self.motors.row(unit).and_then(|motor| motor.goal) else {
+            return MotorOutcome::default();
+        };
+        // A hull that cannot move — an engine killed under a standing goal
+        // (`Consequence::DisableMotion` leaves no wreck), or one authored with
+        // no speed — reaches no goal, and its pilot cannot let go of one: the
+        // cockpit's and the arena's motion gates refuse `DRIVE OFF` and `DRIVE
+        // HOLD` on it. So the motor lets go itself, once, and says so in the
+        // no-route words — the tank holds where it is — instead of driving a
+        // goal it never reaches every `decide_ms` for the rest of the match.
+        if cannot_close {
+            self.motors.forget_goal(unit);
+            self.stage_notice(
+                unit,
+                FrameNotice::Drive {
+                    outcome: DriveOutcome::NoRoute,
+                },
+            );
+            return MotorOutcome {
+                arrived: false,
+                unreachable: Some(goal),
+            };
+        }
+        self.refresh_held_avoid(unit, t_ms);
+        let mut motors = std::mem::take(&mut self.motors);
+        let mut motor = motors.take(unit);
+        let _ = motor.age_avoid(t_ms);
+        let mut plan = MotorPlan::default();
+        let outcome = self.follow(
+            unit,
+            t_ms,
+            &mut motors,
+            &mut motor,
+            here,
+            Fallback::Notice,
+            counters,
+            &mut plan,
+        );
+        motors.put(unit, motor);
+        self.motors = motors;
+        self.apply_motor_plan(unit, &plan, counters);
+        if outcome.arrived {
+            self.stage_notice(
+                unit,
+                FrameNotice::Drive {
+                    outcome: DriveOutcome::Arrived,
+                },
+            );
+        } else if outcome.unreachable.is_some() {
+            self.stage_notice(
+                unit,
+                FrameNotice::Drive {
+                    outcome: DriveOutcome::NoRoute,
+                },
+            );
+        }
+        outcome
+    }
+
+    /// **Put a drive's plan through the pilot's own door** (17b cut M1a.4):
+    /// the heading, then the speed, each one an `Intent` on the channel that
+    /// carries it at the hull's **current** epoch, applied through
+    /// [`apply_intent`] as [`IntentSource::Machine`] — exactly the way
+    /// `Arena::order` applies the reflex controller's two continuous kinds, so
+    /// the motor does nothing a pilot could not and a refused order (a cold or
+    /// engine-killed hull) refuses here as it would there. A machine order
+    /// never counts on the seat's rate and never takes the helm back from the
+    /// goal it is driving. 17b cut M1a.5 folds this into
+    /// `apply_machine_intents`.
+    pub(crate) fn apply_motor_plan(
+        &mut self,
+        unit: ObjId,
+        plan: &MotorPlan,
+        counters: &mut ReflexCounters,
+    ) {
+        let mut seq = 0_u64;
+        let mut orders: Vec<IntentKind> = Vec::new();
+        if let Some(mdeg) = plan.heading_mdeg {
+            orders.push(IntentKind::Heading { mdeg });
+        }
+        if let Some(cms) = plan.speed_cms {
+            orders.push(IntentKind::Speed { cms });
+        }
+        for kind in orders {
+            let channel = kind.channel_required();
+            seq = seq.saturating_add(1);
+            let intent = Intent {
+                unit,
+                channel,
+                epoch: self.epochs.current(unit, channel),
+                kind,
+                seq,
+            };
+            counters.intents = counters.intents.saturating_add(1);
+            // Continuous: written straight onto the hull, never queued, so there
+            // is nothing to take back out of `pending` the way `Arena::order`
+            // does for a discrete action.
+            let _ = apply_intent(self, &intent, IntentSource::Machine);
+        }
     }
 }
 

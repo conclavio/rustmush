@@ -508,11 +508,16 @@ impl Default for TempoConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IntentsConfig {
-    /// **The discrete orders one seat may give a unit per arena second; also the
-    /// size, per unit, of the world side's inbox and pre-pulse buffer** (16b cut
-    /// M.1, `T-82`). Counted in arena time, so the burst a pilot may send does
-    /// not depend on the tempo; the reflex controller's own orders are never
-    /// counted. Continuous controls are latest-wins and do not count.
+    /// **The discrete orders — and, since 17b cut M1a.4, the `DRIVE` goals —
+    /// one seat may give a unit per arena second; also the size, per unit, of
+    /// the world side's inbox and pre-pulse buffer** (16b cut M.1, `T-82`).
+    /// Counted in arena time, so the burst a pilot may send does not depend on
+    /// the tempo; the reflex controller's own orders, and the motor's, are never
+    /// counted. The other continuous controls (`HEADING`, `SPEED`, a squad's
+    /// order) are latest-wins and do not count; every `DRIVE` does, `HOLD` and
+    /// `OFF` included, on the same window as `FIRE`, `LOCK` and `STARTUP`,
+    /// because one to a cell spends a path search from the budget every hull
+    /// shares.
     pub max_pending_per_unit: u32,
 }
 

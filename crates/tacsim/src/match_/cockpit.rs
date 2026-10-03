@@ -1,4 +1,4 @@
-//! **The cockpit: boarding, the pilot's seventeen verbs, and the frame they
+//! **The cockpit: boarding, the pilot's eighteen verbs, and the frame they
 //! read** (16b cut K.2; 16b §8 cut K, K2–K4; doc 16 §3.3 "Startup", "Stations
 //! are on the tank", §3.6 "What a pilot sees", §3.7, §3.8 "Disconnects", §5, §6
 //! "Deliberation").
@@ -8,7 +8,7 @@
 //! This is the half that reports one, and everything the pilot can do once
 //! seated.
 //!
-//! **Seventeen**: the fifteen cockpit selectors of [`COCKPIT_VERBS`], plus
+//! **Eighteen**: the sixteen cockpit selectors of [`COCKPIT_VERBS`], plus
 //! [`BOARD_VERB`] and [`EXIT_VERB`], which are not selectors — they are how a
 //! pilot gets into the cockpit and out of it. The table below is that list in
 //! that order, and **16b cut D.2** made the three agree: the head said twelve in
@@ -20,7 +20,10 @@
 //! added the fifteenth, `WATCH`: the switch that pushes a line-mode pilot a
 //! short block of their own picture whenever it would read differently (16c
 //! N19) — see "The line-mode digest" at
-//! [`crate::match_::cockpit::watch_lines`].
+//! [`crate::match_::cockpit::watch_lines`]. **17b cut M1a.4** added the
+//! sixteenth, `DRIVE`: the tank's own drive-by-wire, steering for a named spot
+//! or a cell on the machines' route-finding (doc 17 §4 D-UM-10; the word is
+//! `DRIVE` because core's `goto` holds that name).
 //!
 //! ```text
 //! BOARD                      climb into your pod and take the tank's cockpit
@@ -39,6 +42,7 @@
 //! STATUS                     callsign, power, speed, heading, scope, nearest spot, damage
 //! ORDER <squad|ALL> <what>   command your side's machines (HOLD, ADVANCE, ENGAGE, WITHDRAW, SCREEN, SUPPORT; RELEASE)
 //! WATCH [ON|OFF]             push your own line, guns and contacts as they change, for line mode
+//! DRIVE <spot|x,y|HOLD|OFF>  drive to a named spot or a cell on the machine's own route-finding
 //! EXIT                       climb out
 //! ```
 //!
@@ -83,10 +87,10 @@
 //! # The verbs are contextual, and the gate is what makes them so
 //!
 //! There is no such thing as a verb that exists only in a cockpit: the command
-//! table is global. So all seventeen are registered globally and
+//! table is global. So all eighteen are registered globally and
 //! [`CockpitGate`] refuses each of them, with one line, wherever it does not
 //! mean anything — `BOARD` outside a team room, `EXIT` outside a pod, and the
-//! fifteen cockpit selectors to anyone who is not focused on a station of a
+//! sixteen cockpit selectors to anyone who is not focused on a station of a
 //! **deployed** unit. A pilot who has boarded but whose match has not started
 //! yet is in that last case on purpose: there is no arena to order until the
 //! trigger fires.
@@ -133,9 +137,10 @@ use smol_str::SmolStr;
 
 use crate::arena::catchup::{Catchup, MAX_CATCHUP_CONTACTS, SectionWords};
 use crate::arena::damage;
+use crate::arena::intents::MotorGoal;
 use crate::arena::intents::{ControlState, IntentKind};
 use crate::arena::motion::BlockedCause;
-use crate::arena::perception::{FrameNotice, NoticeKind, RefusalDetail};
+use crate::arena::perception::{DriveOutcome, FrameNotice, NoticeKind, RefusalDetail};
 use crate::arena::state::{ArenaTerrain, Channel, ContactId, Designator, KeySpot, Power};
 use crate::arena::step::Frame;
 use crate::arena_bridge::{
@@ -186,7 +191,13 @@ pub const EXIT_VERB: &str = "exit";
 /// bridge to push a line-mode pilot a short block of their own picture
 /// whenever it would read differently ([`watch_lines`]). Appended, so every
 /// selector before it keeps its place.
-pub const COCKPIT_VERBS: [&str; 15] = [
+///
+/// **17b cut M1a.4** added `drive`, the sixteenth (doc 17 §4 D-UM-10): a
+/// continuous goal on the helm channel the arena's motor drives. Appended
+/// after `watch`. Doc 17 calls it `GOTO`, and core's baseline `goto` (aliases
+/// `go`, `move`) holds that name — the registry refuses a collision, so the
+/// word is `DRIVE` (the M1a plan's departure (f)).
+pub const COCKPIT_VERBS: [&str; 16] = [
     "startup",
     "heading",
     "speed",
@@ -202,6 +213,7 @@ pub const COCKPIT_VERBS: [&str; 15] = [
     "order",
     "emcon",
     "watch",
+    "drive",
 ];
 
 /// The station id one pod's pilot holds **on the tank** (doc 16 §3.3).
@@ -1033,6 +1045,15 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
         FrameNotice::Emcon { on: false, .. } => {
             "EMCON off: the pod is silent; your own sight clears, and nothing hides you.".to_owned()
         }
+        // **17b cut M1a.4** (doc 17 §4 D-UM-10): the motor's two answers to the
+        // pilot's own `DRIVE`, said once each. Nothing about the route, the cell
+        // or any other hull.
+        FrameNotice::Drive {
+            outcome: DriveOutcome::Arrived,
+        } => DRIVE_ARRIVED.to_owned(),
+        FrameNotice::Drive {
+            outcome: DriveOutcome::NoRoute,
+        } => DRIVE_NO_ROUTE.to_owned(),
     }
 }
 
@@ -2474,7 +2495,8 @@ pub(crate) fn eject_pilot(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
 // ---------------------------------------------------------------------------
 // K3: the cockpit verbs (twelve at K3; `ORDER`, the thirteenth, is below
 // under "Commanding the machines"; `EMCON`, the fourteenth, follows `STARTUP`,
-// and `WATCH`, the fifteenth, follows `EMCON`)
+// `WATCH`, the fifteenth, follows `EMCON`, and `DRIVE`, the sixteenth, follows
+// `WATCH`)
 // ---------------------------------------------------------------------------
 
 /// `STARTUP` — bring power up (doc 16 §3.3).
@@ -2733,6 +2755,164 @@ fn watch(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
     }
     ctx.out.sys_to_actor(actor, NOTICE_SENTENCE_TAG, block);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `DRIVE`, the sixteenth selector (17b cut M1a.4; doc 17 §4 D-UM-10)
+// ---------------------------------------------------------------------------
+
+/// **`DRIVE`'s usage line** (17b cut M1a.4), for a bare `DRIVE`.
+pub const DRIVE_USAGE: &str = "DRIVE <spot|x,y|HOLD|OFF>; STATUS names the nearest spot.";
+
+/// **`DRIVE HOLD`'s reply** (17b cut M1a.4).
+pub const DRIVE_HOLDING: &str = "Holding here.";
+
+/// **`DRIVE OFF`'s reply** (17b cut M1a.4).
+pub const DRIVE_RELEASED: &str = "DRIVE off; the helm is yours.";
+
+/// **The one byte-identical refusal for any word `DRIVE` cannot drive to**
+/// (17b cut M1a.4): not a spot's name or letter, not a cell, not `HOLD` or
+/// `OFF`. Never an echo of the word, and a contact's designator is "not a
+/// spot" like any other word — so nothing about a held or an unheld contact is
+/// read or said (doc 16 §3.6's one-answer rule, read for a verb that takes no
+/// contact at all).
+pub const DRIVE_NOT_A_GOAL: &str = "DRIVE refused. That is not a spot, a cell, HOLD or OFF.";
+
+/// **`DRIVE x,y` off the arena window** (17b cut M1a.4).
+pub const DRIVE_OFF_WINDOW: &str = "DRIVE refused. That cell is not on the window.";
+
+/// **What the motor says when a `DRIVE` arrives** (17b cut M1a.4), off
+/// [`crate::arena::perception::DriveOutcome::Arrived`].
+pub const DRIVE_ARRIVED: &str = "DRIVE: arrived.";
+
+/// **What the motor says when no route reaches a `DRIVE`'s goal** (17b cut
+/// M1a.4), off [`crate::arena::perception::DriveOutcome::NoRoute`]: the goal
+/// is dropped and the tank holds where it is.
+pub const DRIVE_NO_ROUTE: &str = "DRIVE: no route from here; holding.";
+
+/// **The two integers of `DRIVE x,y` or `DRIVE x y`** (17b cut M1a.4), or
+/// `None` for a word that is not exactly two unsigned integers — `12`, `12,`
+/// and `12,34,5` are not cells. Wide enough that an integer off any window
+/// reads as a cell off the window rather than as "not a cell".
+fn drive_cell(word: &str) -> Option<(u64, u64)> {
+    let (x, y) = match word.split_once(',') {
+        Some((x, y)) => (x.trim(), y.trim()),
+        None => {
+            let mut parts = word.split_whitespace();
+            let (Some(x), Some(y), None) = (parts.next(), parts.next(), parts.next()) else {
+                return None;
+            };
+            (x, y)
+        }
+    };
+    Some((x.parse().ok()?, y.parse().ok()?))
+}
+
+/// `DRIVE <spot|x,y|HOLD|OFF>` — hand the helm to the tank's own drive-by-wire
+/// (17b cut M1a.4; doc 17 §4 D-UM-3 and D-UM-10 with the M1a plan's departure
+/// (f): the word is `DRIVE` because core's baseline `goto`, with its aliases
+/// `go` and `move`, holds that name and the command registry refuses a
+/// collision; doc 16 §3.7).
+///
+/// The local pre-checks first, in `HEADING`'s order and words — the wreck
+/// ([`CockpitError::Destroyed`]), the dead engine ([`CockpitError::Immobile`]),
+/// the cold or starting tank ([`CockpitError::PowerNotOnline`],
+/// [`CockpitError::PowerStarting`]) — because a goal is a helm order the arena
+/// would refuse for the same three. Then the word, trimmed and case-folded,
+/// read by [`drive_goal`]:
+///
+/// * nothing: [`DRIVE_USAGE`];
+/// * `HOLD`: [`crate::arena::intents::MotorGoal::Hold`], [`DRIVE_HOLDING`] —
+///   the tank stops and keeps no goal;
+/// * `OFF`: [`crate::arena::intents::MotorGoal::Off`], [`DRIVE_RELEASED`] —
+///   the goal is dropped and the tank keeps its last heading and speed;
+/// * two integers `x,y` or `x y`: a cell of the arena window, `Steering for
+///   cell 12,34.`; a cell off the window is [`DRIVE_OFF_WINDOW`];
+/// * a key spot's whole name or its map letter, exactly as `RANGE` resolves
+///   one ([`resolve_spot`]): its cell, `Steering for The Ford (A).`;
+/// * anything else — a contact's designator among them — [`DRIVE_NOT_A_GOAL`],
+///   byte for byte.
+///
+/// The goal is staged through the same forward every ordering verb uses, as a
+/// continuous [`IntentKind::Goal`] on the helm channel, and counted on the
+/// seat's rate by the arena. What the motor makes of it comes back as a notice
+/// ([`DRIVE_ARRIVED`], [`DRIVE_NO_ROUTE`]); the route itself is never shown.
+fn drive(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
+    let actor = ctx.actor;
+    // As `HEADING`: the wreck, then the motion limit, then the power.
+    require_alive(ctx.w, seat.driver)?;
+    require_mobile(ctx.w, seat.driver)?;
+    require_power(ctx.w, seat.driver)?;
+    let word = rest.trim().to_ascii_lowercase();
+    // The ground is read only for a word that may name a place on it.
+    let (spots, cols, rows) = if matches!(word.as_str(), "" | "hold" | "off") {
+        (Vec::new(), 0, 0)
+    } else {
+        let held = last_frame(ctx.w, seat.driver);
+        match_of(ctx.w, seat.driver, held.as_ref())
+            .and_then(|match_id| {
+                ctx.w
+                    .module_state::<ArenaRegistry>()
+                    .and_then(|registry| registry.arena_of(match_id))
+                    .map(|ground| {
+                        (
+                            ground.key_spots.clone(),
+                            ground.terrain.width(),
+                            ground.terrain.height(),
+                        )
+                    })
+            })
+            .unwrap_or((Vec::new(), 0, 0))
+    };
+    let (goal, line) = drive_goal(&word, &spots, cols, rows)?;
+    forward_intent(ctx, seat.driver, seat.unit, IntentKind::Goal(goal))?;
+    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    Ok(())
+}
+
+/// **What one `DRIVE` word asks of the motor, and what the pilot is told**
+/// (17b cut M1a.4): [`drive`]'s whole reading of the word, pure over the
+/// ground's key spots and its window of `cols × rows` cells, so the goal a
+/// spot's name or letter forwards is the cell the reply names. `word` is
+/// already trimmed and case-folded; the arms are [`drive`]'s list. A missing
+/// ground (`cols == rows == 0`, no spots) reads every cell as off the window
+/// and every other word as not a goal.
+fn drive_goal(
+    word: &str,
+    spots: &[KeySpot],
+    cols: u16,
+    rows: u16,
+) -> Result<(MotorGoal, String), CockpitError> {
+    match word {
+        "" => Err(CockpitError::Usage(DRIVE_USAGE.to_owned())),
+        "hold" => Ok((MotorGoal::Hold, DRIVE_HOLDING.to_owned())),
+        "off" => Ok((MotorGoal::Off, DRIVE_RELEASED.to_owned())),
+        _ => {
+            if let Some((x, y)) = drive_cell(word) {
+                let on_window = (u16::try_from(x), u16::try_from(y));
+                let (Ok(x), Ok(y)) = on_window else {
+                    return Err(CockpitError::Refused(DRIVE_OFF_WINDOW.to_owned()));
+                };
+                if x >= cols || y >= rows {
+                    return Err(CockpitError::Refused(DRIVE_OFF_WINDOW.to_owned()));
+                }
+                return Ok((
+                    MotorGoal::Cell { x, y },
+                    format!("Steering for cell {x},{y}."),
+                ));
+            }
+            let not_a_goal = || CockpitError::Refused(DRIVE_NOT_A_GOAL.to_owned());
+            let (index, spot) = resolve_spot(spots, word).ok_or_else(not_a_goal)?;
+            let letter = spot_letter(index).ok_or_else(not_a_goal)?;
+            Ok((
+                MotorGoal::Cell {
+                    x: spot.x,
+                    y: spot.y,
+                },
+                format!("Steering for {} ({letter}).", spot.name),
+            ))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -6844,7 +7024,7 @@ fn join_names(names: &[String]) -> String {
 // The gate and the dispatch
 // ---------------------------------------------------------------------------
 
-/// **The contextual gate**: the seventeen verbs exist everywhere and mean
+/// **The contextual gate**: the eighteen verbs exist everywhere and mean
 /// something in a team room, in a pod, and at a deployed unit's station.
 ///
 /// One line each, and nothing else refused: a gate that is asked about `look`
@@ -6883,7 +7063,7 @@ impl mush_core::CommandGate for CockpitGate {
         // line (twice on the alias path) while `where_in_centre` resolves the
         // content latch up to fifteen times — three rooms and then all twelve pods.
         // A gate asked about `look` must cost what it always cost: two string
-        // compares and a fifteen-element scan, and no world read at all.
+        // compares and a sixteen-element scan, and no world read at all.
         let ours = verb.eq_ignore_ascii_case(BOARD_VERB)
             || verb.eq_ignore_ascii_case(EXIT_VERB)
             || COCKPIT_VERBS
@@ -6986,7 +7166,7 @@ fn refusal(error: CockpitError) -> CmdError {
     CmdError::msg(error.to_string())
 }
 
-/// Run one cockpit verb: resolve the station first, so every one of the fifteen
+/// Run one cockpit verb: resolve the station first, so every one of the sixteen
 /// answers the same way to somebody who is not flying.
 ///
 /// **16b cut U.4 (16c `T-53`)**: the seat is resolved **once**, here, and every
@@ -7021,6 +7201,8 @@ fn cockpit_command(ctx: &mut Ctx<'_>, verb: &'static str) -> Result<(), CmdError
         "emcon" => emcon(ctx, &seat, &rest),
         // 16b cut AP.3: the line-mode digest's switch.
         "watch" => watch(ctx, &seat, &rest),
+        // 17b cut M1a.4: the motor's goal.
+        "drive" => drive(ctx, &seat, &rest),
         // Not reachable: the table below registers exactly `COCKPIT_VERBS`, and
         // this arm is the closed-set proof rather than a panic.
         _ => Err(CockpitError::OutsideCockpit),
@@ -7099,6 +7281,13 @@ fn cockpit_help(verb: &str) -> String {
                     short block whenever it would read differently — for a line-mode pilot; OFF \
                     stops it; bare WATCH says which."
             .to_owned(),
+        // 17b cut M1a.4 (doc 17 §4 D-UM-10): what it drives to, and the two
+        // ways to have the helm back.
+        "drive" => "DRIVE <spot|x,y>    drive to a named spot of the ground, by its name or its \
+                    map letter, or to an arena cell, on the machine's own route-finding; HEADING \
+                    or SPEED takes the helm back. DRIVE HOLD stops and holds here; DRIVE OFF \
+                    lets go."
+            .to_owned(),
         // 16b cut D.2 (`T-77`): the callsign is `STATUS`'s first line and the
         // help did not mention it, so a pilot asked "who is RA?" had nowhere to
         // be sent; and cut D.1 replaced the arena's global tempo on the third
@@ -7110,7 +7299,7 @@ fn cockpit_help(verb: &str) -> String {
     }
 }
 
-/// Register the cockpit on the **tacsim** module: seventeen verbs and one gate.
+/// Register the cockpit on the **tacsim** module: eighteen verbs and one gate.
 ///
 /// The state the verbs read is [`ArenaRegistry`]'s and [`crate::match_::MatchBook`]'s, both
 /// registered by [`crate::arena_bridge::register`], so nothing here declares a
@@ -7122,12 +7311,13 @@ fn cockpit_help(verb: &str) -> String {
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // `BOARD` writes a station document, a placement, a billet and (at the
     // trigger) cut T.3's whole check-out; `EXIT` writes the same in reverse. Of
-    // the fifteen selectors, six stage at most one arena intent each (cut O.2's
-    // `EMCON` among them, which also stamps a bridge hint), cut Y.1's `ORDER`
-    // stages one per unit it fans out to, seven — cut Q.1's `RANGE` and
-    // `BEARING` and cut Q.2's `SCAN` among them — only read the last frame, and
-    // cut AP.3's `WATCH` sets or clears one RAM flag on the bridge's registry;
-    // none of the fifteen writes a document. They are
+    // the sixteen selectors, seven stage at most one arena intent each (cut
+    // O.2's `EMCON` among them, which also stamps a bridge hint, and 17b cut
+    // M1a.4's `DRIVE`), cut Y.1's `ORDER` stages one per unit it fans out to,
+    // seven — cut Q.1's `RANGE` and `BEARING` and cut Q.2's `SCAN` among them —
+    // only read the last frame, and cut AP.3's `WATCH` sets or clears one RAM
+    // flag on the bridge's registry; none of the sixteen writes a document.
+    // They are
     // registered on the same
     // lane as their two neighbours rather than split across two classifications
     // for one subsystem.
@@ -7681,9 +7871,9 @@ mod tests {
         }
         assert_eq!(
             COCKPIT_VERBS.len(),
-            15,
+            16,
             "doc 16 section 3.7's nine, cut Q.1's two read verbs, cut Q.2's SCAN, cut Y.1's \
-             ORDER, cut O.2's EMCON and cut AP.3's WATCH"
+             ORDER, cut O.2's EMCON, cut AP.3's WATCH and 17b cut M1a.4's DRIVE"
         );
     }
 
@@ -8014,7 +8204,7 @@ mod tests {
     /// and the `STATUS` help names the callsign line.
     #[test]
     fn d2_the_verb_table_and_the_help_agree_with_the_selector_list() {
-        assert_eq!(COCKPIT_VERBS.len(), 15);
+        assert_eq!(COCKPIT_VERBS.len(), 16);
         let head = include_str!("cockpit.rs");
         for verb in COCKPIT_VERBS {
             let upper = verb.to_uppercase();
@@ -9357,8 +9547,9 @@ mod tests {
     #[test]
     fn y1_order_is_the_thirteenth_selector() {
         // 16b cut O.2 put `emcon` after it, so it is the thirteenth and no
-        // longer the last; 16b cut AP.3 put `watch` after that.
-        assert_eq!(COCKPIT_VERBS.len(), 15);
+        // longer the last; 16b cut AP.3 put `watch` after that, and 17b cut
+        // M1a.4 `drive` after `watch`.
+        assert_eq!(COCKPIT_VERBS.len(), 16);
         assert_eq!(COCKPIT_VERBS.get(12), Some(&"order"));
         assert_eq!(
             cockpit_help("order"),
@@ -9377,7 +9568,7 @@ mod tests {
     fn o2_emcon_is_the_fourteenth_selector_and_its_words_are_pinned() {
         use crate::arena::perception::RefusalDetail;
         // 16b cut AP.3 appended `watch` after it, so it is the fourteenth and
-        // no longer the last.
+        // no longer the last; 17b cut M1a.4's `drive` follows `watch`.
         assert_eq!(COCKPIT_VERBS.get(13), Some(&"emcon"));
         assert_eq!(
             cockpit_help("emcon"),
@@ -9401,6 +9592,138 @@ mod tests {
             "EMCON refused. This tank carries no jamming pod."
         );
         assert_eq!(Refusal::NoJammer.as_str(), "no_jammer");
+    }
+
+    /// **17b cut M1a.4** (doc 17 §4 D-UM-10): the sixteenth selector, its help
+    /// line, its four replies, its usage line, its two refusals, the goal each
+    /// word forwards ([`drive_goal`]: a spot's name and its letter the spot's
+    /// own cell, of two spots, beside the reply naming it), the motor's
+    /// two notices — each rendered through [`notice_line`] — and the arena's
+    /// own refusal of a `DRIVE`, which names the verb through
+    /// [`IntentKind::as_str`].
+    #[test]
+    fn m1a4_drive_is_the_sixteenth_selector_and_its_words_are_pinned() {
+        use crate::arena::perception::RefusalDetail;
+        assert_eq!(COCKPIT_VERBS.len(), 16);
+        assert_eq!(COCKPIT_VERBS.get(15), Some(&"drive"));
+        assert_eq!(
+            cockpit_help("drive"),
+            "DRIVE <spot|x,y>    drive to a named spot of the ground, by its name or its map \
+             letter, or to an arena cell, on the machine's own route-finding; HEADING or SPEED \
+             takes the helm back. DRIVE HOLD stops and holds here; DRIVE OFF lets go."
+        );
+        assert_eq!(
+            DRIVE_USAGE,
+            "DRIVE <spot|x,y|HOLD|OFF>; STATUS names the nearest spot."
+        );
+        assert_eq!(DRIVE_HOLDING, "Holding here.");
+        assert_eq!(DRIVE_RELEASED, "DRIVE off; the helm is yours.");
+        assert_eq!(
+            DRIVE_NOT_A_GOAL,
+            "DRIVE refused. That is not a spot, a cell, HOLD or OFF."
+        );
+        assert_eq!(
+            DRIVE_OFF_WINDOW,
+            "DRIVE refused. That cell is not on the window."
+        );
+        assert_eq!(DRIVE_ARRIVED, "DRIVE: arrived.");
+        assert_eq!(DRIVE_NO_ROUTE, "DRIVE: no route from here; holding.");
+        // The cell parser: two unsigned integers, by comma or by space.
+        assert_eq!(drive_cell("12,34"), Some((12, 34)));
+        assert_eq!(drive_cell("12, 34"), Some((12, 34)));
+        assert_eq!(drive_cell("12 34"), Some((12, 34)));
+        assert_eq!(drive_cell("70000,1"), Some((70_000, 1)));
+        for word in [
+            "12", "12,", ",34", "12,34,5", "12 34 5", "ba", "x2", "-1,3", "a",
+        ] {
+            assert_eq!(drive_cell(word), None, "{word}");
+        }
+        // The word's reading: a spot's name and its letter forward that
+        // spot's own cell — two spots, so a swapped or a wrong index shows —
+        // and the reply names the same spot.
+        let spots = [
+            KeySpot {
+                name: SmolStr::new_static("The Ford"),
+                x: 12,
+                y: 40,
+            },
+            KeySpot {
+                name: SmolStr::new_static("Hill 7"),
+                x: 50,
+                y: 3,
+            },
+        ];
+        let read = |word: &str| drive_goal(word, &spots, 64, 48);
+        for (word, x, y, line) in [
+            ("the ford", 12, 40, "Steering for The Ford (A)."),
+            ("a", 12, 40, "Steering for The Ford (A)."),
+            ("hill 7", 50, 3, "Steering for Hill 7 (B)."),
+            ("b", 50, 3, "Steering for Hill 7 (B)."),
+            ("12,34", 12, 34, "Steering for cell 12,34."),
+            ("63 47", 63, 47, "Steering for cell 63,47."),
+        ] {
+            assert_eq!(
+                read(word),
+                Ok((MotorGoal::Cell { x, y }, line.to_owned())),
+                "{word}"
+            );
+        }
+        assert_eq!(
+            read("hold"),
+            Ok((MotorGoal::Hold, DRIVE_HOLDING.to_owned()))
+        );
+        assert_eq!(read("off"), Ok((MotorGoal::Off, DRIVE_RELEASED.to_owned())));
+        assert_eq!(read(""), Err(CockpitError::Usage(DRIVE_USAGE.to_owned())));
+        for word in ["64,1", "1,48", "70000,1"] {
+            assert_eq!(
+                read(word),
+                Err(CockpitError::Refused(DRIVE_OFF_WINDOW.to_owned())),
+                "{word}"
+            );
+        }
+        for word in ["ba", "x2", "the", "c", "12", "12,"] {
+            assert_eq!(
+                read(word),
+                Err(CockpitError::Refused(DRIVE_NOT_A_GOAL.to_owned())),
+                "{word}"
+            );
+        }
+        // No ground: every cell is off the window and no word is a spot.
+        assert_eq!(
+            drive_goal("1,1", &[], 0, 0),
+            Err(CockpitError::Refused(DRIVE_OFF_WINDOW.to_owned()))
+        );
+        assert_eq!(
+            drive_goal("a", &[], 0, 0),
+            Err(CockpitError::Refused(DRIVE_NOT_A_GOAL.to_owned()))
+        );
+        // The motor's two notices, through the one renderer.
+        let frame = ap3_scene();
+        for (outcome, line) in [
+            (DriveOutcome::Arrived, DRIVE_ARRIVED),
+            (DriveOutcome::NoRoute, DRIVE_NO_ROUTE),
+        ] {
+            assert_eq!(
+                notice_line(&frame, &FrameNotice::Drive { outcome }, &[]),
+                line
+            );
+        }
+        // The arena's own refusal of a goal names the verb the pilot typed.
+        let goal = IntentKind::Goal(MotorGoal::Off);
+        assert_eq!(goal.as_str(), "drive");
+        assert_eq!(
+            refusal_line(
+                goal.as_str(),
+                Refusal::PowerNotOnline,
+                None,
+                RefusalDetail::None
+            ),
+            "DRIVE refused. Power not online: STARTUP first."
+        );
+        assert_eq!(
+            refusal_line(goal.as_str(), Refusal::QueueFull, None, RefusalDetail::None),
+            "DRIVE refused. Too many orders at once; try that again."
+        );
     }
 
     // -----------------------------------------------------------------------

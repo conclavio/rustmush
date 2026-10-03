@@ -2556,6 +2556,13 @@ pub enum NoticeKind {
     /// **This platform's own jamming pod was switched off** (16b cut O.2, 16c
     /// N12), with what that costs said in the line.
     EmconOff,
+    /// **The pilot's `DRIVE` arrived** (17b cut M1a.4; doc 17 §4 D-UM-10): the
+    /// motor brought the hull within `ARRIVE_CELLS` of its goal and let go of
+    /// it. Said once — the goal is dropped, so the motor's tick finds none.
+    DriveArrived,
+    /// **No route reaches the pilot's `DRIVE` goal from where the hull stands**
+    /// (17b cut M1a.4): the motor dropped the goal and stopped the hull.
+    DriveNoRoute,
 }
 
 impl NoticeKind {
@@ -2590,6 +2597,9 @@ impl NoticeKind {
             // **16b cut O.2**: the pod's switch, one word for each way.
             NoticeKind::EmconOn => "emcon_on",
             NoticeKind::EmconOff => "emcon_off",
+            // **17b cut M1a.4**: the motor's two answers to a `DRIVE`.
+            NoticeKind::DriveArrived => "drive_arrived",
+            NoticeKind::DriveNoRoute => "drive_no_route",
         }
     }
 }
@@ -2850,6 +2860,28 @@ pub enum FrameNotice {
         /// The pod's bubble, whole metres (`jammer.radius_cm / 100`).
         radius_m: u32,
     },
+    /// **What the motor made of the pilot's `DRIVE`** (17b cut M1a.4; doc 17 §4
+    /// D-UM-10's pilot feedback), said to the hull's own pilots at the motor
+    /// step that found it — once each, because either answer drops the goal.
+    ///
+    /// The pilot's own drive and nothing else: no cell, no route, no other
+    /// hull — the fan that may have moved the goal off a teammate's arrival
+    /// square is not said, and a stop against something in the way is the
+    /// `blocked` notice's.
+    Drive {
+        /// Arrived, or no route.
+        outcome: DriveOutcome,
+    },
+}
+
+/// **The two answers the motor gives a `DRIVE`** (17b cut M1a.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriveOutcome {
+    /// Within `crate::arena::motor::ARRIVE_CELLS` of the goal, and stopped.
+    Arrived,
+    /// No route from where the hull stands; the goal is dropped and the hull
+    /// holds.
+    NoRoute,
 }
 
 impl FrameNotice {
@@ -2877,6 +2909,13 @@ impl FrameNotice {
             // 16b cut O.2: one switch, two words.
             FrameNotice::Emcon { on: true, .. } => NoticeKind::EmconOn,
             FrameNotice::Emcon { on: false, .. } => NoticeKind::EmconOff,
+            // 17b cut M1a.4: one drive, two words.
+            FrameNotice::Drive {
+                outcome: DriveOutcome::Arrived,
+            } => NoticeKind::DriveArrived,
+            FrameNotice::Drive {
+                outcome: DriveOutcome::NoRoute,
+            } => NoticeKind::DriveNoRoute,
         }
     }
 
@@ -3026,7 +3065,9 @@ impl FrameNotice {
             // 16b cut D.4: the pilot's own receiver is not a section of anything.
             | FrameNotice::Receiver { .. }
             // 16b cut O.2: nor is the pilot's own pod's switch.
-            | FrameNotice::Emcon { .. } => None,
+            | FrameNotice::Emcon { .. }
+            // 17b cut M1a.4: nor is the pilot's own drive.
+            | FrameNotice::Drive { .. } => None,
         }
     }
 
@@ -3052,7 +3093,9 @@ impl FrameNotice {
             // construction — there is no field on it for one.
             | FrameNotice::Receiver { .. }
             // **16b cut O.2**: nor does the pod's switch, for the same reason.
-            | FrameNotice::Emcon { .. } => None,
+            | FrameNotice::Emcon { .. }
+            // **17b cut M1a.4**: nor does the motor's answer to a `DRIVE`.
+            | FrameNotice::Drive { .. } => None,
         }
     }
 }

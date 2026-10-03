@@ -188,7 +188,13 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// format-2 document is refused by name ([`SnapshotError::Format`]) before
 /// any field of it is read, and a match resumed from one is voided by AF.3's
 /// boot as every refused document is.
-pub const SNAPSHOT_FORMAT: u32 = 3;
+///
+/// **4 since 17b cut M1a.4** (doc 17 §4, D-UM-3, D-UM-10): `DueKind::MotorTick`
+/// on the heap and `IntentKind::Goal` in `pending` are carried variants a
+/// format-3 reader cannot decode — a shape change of two carried enums, which
+/// the two unstepped `af1` fixtures leave empty, so the pin's digest and line
+/// count did not move and only the format did.
+pub const SNAPSHOT_FORMAT: u32 = 4;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///

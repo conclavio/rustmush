@@ -7455,3 +7455,86 @@ async fn af3_the_resume_names_nothing_a_pilot_or_a_bystander_may_not_read() {
         "a pilot's refusal is the same bytes with the resumed row present"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 17b cut M1a.4 — `DRIVE` takes ground, never a contact (doc 17 §4 D-UM-10)
+// ---------------------------------------------------------------------------
+
+/// The one `DRIVE` refusal line in an answer, trimmed — or the whole answer
+/// when it carries none, so a mismatch prints what was said.
+fn m1a4_drive_refusal(seen: &str) -> String {
+    seen.lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("DRIVE refused"))
+        .map_or_else(|| seen.to_owned(), str::to_owned)
+}
+
+/// **`DRIVE` says nothing about any contact** (17b cut M1a.4; doc 17 §4
+/// D-UM-10; doc 16 §1, §3.6, §3.7). Cy, who flies nothing, types `DRIVE a` and
+/// reads the gate's one line. Ada, powered and seven hundred metres from Bo —
+/// past her sight — types `DRIVE BA` before her platform holds anything, then
+/// closes under her own helm until it holds Bo's tank told apart as `BA`, and
+/// types `DRIVE BA` again, and the provisional name it held first: every
+/// answer is the ONE byte-identical `DRIVE refused. That is not a spot, a
+/// cell, HOLD or OFF.`, so the verb is no oracle on what is out there. No
+/// answer names a tank.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m1a4_drive_refuses_a_designator_in_one_sentence_before_and_after_detection() {
+    use tacsim::match_::cockpit::{DRIVE_NOT_A_GOAL, OUTSIDE_COCKPIT};
+
+    let server = boot("observer-drive").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+    let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
+    close_the_gap(&mut god, red, blue, domain).await;
+    take_off(&mut ada, &mut bo).await;
+
+    // The bystander: the gate's one line, byte for byte.
+    let seen = ask(&mut cy, "DRIVE a", OUTSIDE_COCKPIT).await;
+    // The answer is everything after the line's own echo (the slice opens on
+    // whatever the room said before it).
+    let answer = seen
+        .rsplit_once("DRIVE a")
+        .map_or(seen.as_str(), |(_, after)| after);
+    assert_eq!(answer.trim(), OUTSIDE_COCKPIT);
+
+    // Before detection: nothing held, and `BA` is not a spot.
+    power_up(&mut ada).await;
+    let held = ask(&mut ada, "CONTACTS", NO_CONTACTS).await;
+    assert!(
+        held.contains(NO_CONTACTS),
+        "the premise: nothing held\n{held}"
+    );
+    let before = ask(&mut ada, "DRIVE BA", "DRIVE refused").await;
+    names_nothing(&before, red, blue, "`DRIVE BA` before detection");
+    let before = m1a4_drive_refusal(&before);
+    assert_eq!(before, DRIVE_NOT_A_GOAL);
+
+    // Close under her own helm until her platform holds Bo's tank told apart.
+    say(&mut ada, "HEADING 90", "Steering to 90").await;
+    say(&mut ada, "SPEED 30", "Making 30 kph").await;
+    let provisional = first_contact(&mut ada).await;
+    wait_until(
+        STEP_TIMEOUT,
+        "the contact to be told apart as BA",
+        async || {
+            let listing = ask(&mut ada, "CONTACTS", "(rel ").await;
+            designator_of(&listing).as_deref() == Some("BA")
+        },
+    )
+    .await;
+    say(&mut ada, "SPEED 0", "Making 0 kph").await;
+
+    // After detection: the same bytes, for the held name and the first one.
+    for line in ["DRIVE BA", &format!("DRIVE {provisional}")] {
+        let seen = ask(&mut ada, line, "DRIVE refused").await;
+        names_nothing(&seen, red, blue, line);
+        assert_eq!(
+            m1a4_drive_refusal(&seen),
+            before,
+            "{line} after detection answered other bytes than before it"
+        );
+    }
+}

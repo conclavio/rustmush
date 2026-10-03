@@ -48,7 +48,8 @@ use tacsim::arena::{
     intents::Refusal,
     motion::BlockedCause,
     perception::{
-        Aspect, FrameContact, FrameNotice, FrameOdds, Named, NoticeKind, Receiver, RefusalDetail,
+        Aspect, DriveOutcome, FrameContact, FrameNotice, FrameOdds, Named, NoticeKind, Receiver,
+        RefusalDetail,
     },
     state::{Classification, ContactId, Designator, KeySpot, Power as ArenaPower, Team},
     step::{Frame, FrameFacet, FrameHeat, FrameSection},
@@ -408,6 +409,8 @@ fn every_notice_kind() -> Vec<NoticeKind> {
         NoticeKind::ReceiverClear,
         NoticeKind::EmconOn,
         NoticeKind::EmconOff,
+        NoticeKind::DriveArrived,
+        NoticeKind::DriveNoRoute,
     ];
     for kind in &kinds {
         match kind {
@@ -432,7 +435,9 @@ fn every_notice_kind() -> Vec<NoticeKind> {
             | NoticeKind::ReceiverDegraded
             | NoticeKind::ReceiverClear
             | NoticeKind::EmconOn
-            | NoticeKind::EmconOff => {}
+            | NoticeKind::EmconOff
+            | NoticeKind::DriveArrived
+            | NoticeKind::DriveNoRoute => {}
         }
     }
     kinds
@@ -623,6 +628,13 @@ fn every_notice() -> Vec<FrameNotice> {
     notices.push(FrameNotice::Emcon {
         on: false,
         radius_m: 60,
+    });
+    // 17b cut M1a.4: the motor's two answers to a `DRIVE`.
+    notices.push(FrameNotice::Drive {
+        outcome: DriveOutcome::Arrived,
+    });
+    notices.push(FrameNotice::Drive {
+        outcome: DriveOutcome::NoRoute,
     });
     notices
 }
@@ -1008,7 +1020,9 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
                     | NoticeKind::ReceiverDegraded
                     | NoticeKind::ReceiverClear
                     | NoticeKind::EmconOn
-                    | NoticeKind::EmconOff => assert!(
+                    | NoticeKind::EmconOff
+                    | NoticeKind::DriveArrived
+                    | NoticeKind::DriveNoRoute => assert!(
                         matches!(&read, Line::ContactLost { designator } if *designator == d),
                         "{}",
                         fail()
@@ -1165,6 +1179,10 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
                 "{}",
                 fail()
             ),
+            // 17b cut M1a.4: the bot reads neither of the motor's answers.
+            FrameNotice::Drive { .. } => {
+                assert_eq!(read, Line::Other(sentence.clone()), "{}", fail());
+            }
         }
     }
     assert!(said > 60, "{said} notices said");
@@ -1946,6 +1964,39 @@ fn the_briefs_empty_sentence_and_end_line_read_as_the_game_prints_them() {
         applied.opened,
         Some(mush_bot::arena::lines::AskKind::Contacts)
     );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M1a.4: the motor's two answers to a `DRIVE`
+// ---------------------------------------------------------------------------
+
+/// **The `DRIVE` notices read as nothing the reader parses** (17b cut M1a.4;
+/// doc 17 §4 D-UM-10): `DRIVE: arrived.` and `DRIVE: no route from here;
+/// holding.`, each through the cockpit's own `notice_line` and the bot's own
+/// pipeline, read `Line::Other` byte for byte and open no `CONTACTS`,
+/// `WEAPONSTATUS` or `STATUS` reply, no lock line and no brief. The bot does
+/// not drive (yet): it must not mistake the motor's sentences for a reply.
+#[test]
+fn the_drive_notices_read_as_neutral_lines_and_open_no_reply() {
+    let frame = frame();
+    let mut reader = Reader::new();
+    let lines: Vec<String> = [DriveOutcome::Arrived, DriveOutcome::NoRoute]
+        .into_iter()
+        .map(|outcome| cockpit::notice_line(&frame, &FrameNotice::Drive { outcome }, &[]))
+        .collect();
+    assert_eq!(
+        lines,
+        ["DRIVE: arrived.", "DRIVE: no route from here; holding."]
+    );
+    for line in &lines {
+        assert_eq!(reader.one(line), Line::Other(line.clone()), "{line}");
+    }
+    let open = &reader.picture.open;
+    assert!(open.contacts.is_none(), "a CONTACTS reply opened");
+    assert!(open.weapons.is_none(), "a WEAPONSTATUS reply opened");
+    assert!(open.status.is_none(), "a STATUS reply opened");
+    assert!(!open.lock_line, "a lock line was read");
+    assert!(!open.brief, "a VIEW BRIEF opened");
 }
 
 // ---------------------------------------------------------------------------

@@ -53,8 +53,8 @@ use smol_str::SmolStr;
 use crate::arena::clock::{Tempo, TempoSignals, substep_ms, substeps};
 use crate::arena::hash::state_hash;
 use crate::arena::intents::{
-    Control, Intent, IntentKind, IntentOutcome, IntentSource, Refusal, apply_control, apply_intent,
-    drain_pending, resolve_emcon, resolve_startup,
+    Control, Intent, IntentKind, IntentOutcome, IntentSource, MotorGoal, Refusal, apply_control,
+    apply_intent, drain_pending, resolve_emcon, resolve_startup,
 };
 use crate::arena::ledger::{EventKind, LedgerChunk};
 use crate::arena::motion::integrate;
@@ -65,7 +65,7 @@ use crate::arena::perception::{
 use crate::arena::reflex::ReflexCounters;
 use crate::arena::resolution::facet_band_seen;
 use crate::arena::state::{
-    ActionHash, Arena, Classification, ContactId, DueKind, EndReason, MatchEnd, Power,
+    ActionHash, Arena, Classification, ContactId, Controller, DueKind, EndReason, MatchEnd, Power,
     SPENT_NOTICE_MS, StopReason, Team,
 };
 use crate::arena::weapons::FrameWeapon;
@@ -718,6 +718,19 @@ impl Arena {
             if outcome == IntentOutcome::Queued && matches!(intent.kind, IntentKind::Fire { .. }) {
                 fire_intent_queued = true;
             }
+            // **17b cut M1a.4** (doc 17 §4 D-UM-10: *when a `Goal` lands, the
+            // motor runs one `follow` at the landing millisecond, so a new goal
+            // takes effect at N+1 and does not wait for the next motor tick*).
+            // Phase 2 runs at the pulse's start, and a world beat lands in the
+            // pulse that reaches it, so the step happens at one arena
+            // millisecond at every cadence. A hold or a release of the helm
+            // drives nothing; `Arena::motor_step` itself passes a reflex hull,
+            // whose drive is its own tick's.
+            if outcome == IntentOutcome::AppliedContinuous
+                && matches!(intent.kind, IntentKind::Goal(MotorGoal::Cell { .. }))
+            {
+                let _ = self.motor_step(intent.unit, self.now_ms, &mut reflex);
+            }
             // **16b cut I.3** (16c N10: *journalled always, announced never*):
             // a staff `Place` refused here — `unknown`, `epoch` or `channel`, the
             // three gates it meets — still leaves its line, under phase 2's one
@@ -901,11 +914,13 @@ impl Arena {
                     // Continuous orders never queue (phase 2 applies them), and
                     // neither does a squad's standing order (16b cut N.2): it is
                     // written onto the reflex machine at apply and read by that
-                    // machine's own tick.
+                    // machine's own tick. **17b cut M1a.4**: nor does a `DRIVE`'s
+                    // goal, which phase 2 writes onto the motor row.
                     IntentKind::Heading { .. }
                     | IntentKind::Speed { .. }
                     | IntentKind::Order(_)
-                    | IntentKind::ReleaseOrder { .. } => {}
+                    | IntentKind::ReleaseOrder { .. }
+                    | IntentKind::Goal(_) => {}
                 }
             }
         }
@@ -1564,6 +1579,40 @@ impl Arena {
                                     unit,
                                     tick_seq: tick_seq.saturating_add(1),
                                 },
+                            );
+                        }
+                    }
+                }
+                // **17b cut M1a.4** (doc 17 §4 D-UM-3): the motor's own cadence
+                // for a hull no reflex tick drives — a pilot's `DRIVE` — at its
+                // own arena timestamp against the positions this substep
+                // committed, for `ReflexTick`'s reason. Nothing after the match
+                // ended; a hull that is gone, a wreck, a reflex hull or a row
+                // with no goal is driven no more and the tick is not
+                // rescheduled, so the cadence ends with the goal (arrival and no
+                // route both drop it under `Fallback::Notice`, and a hull that
+                // can no longer move drops it in `Arena::motor_step`). It journals
+                // nothing, so it opens no action hash.
+                DueKind::MotorTick { unit } => {
+                    if self.ended.is_none()
+                        && self.unit(unit).is_some_and(|state| {
+                            !state.limits.wreck && state.controller != Controller::Reflex
+                        })
+                        && self
+                            .motors
+                            .row(unit)
+                            .is_some_and(|motor| motor.goal.is_some())
+                    {
+                        let _ = self.motor_step(unit, event.t_ms, reflex);
+                        if self
+                            .motors
+                            .row(unit)
+                            .is_some_and(|motor| motor.goal.is_some())
+                        {
+                            let cadence = i64::from(self.arena_cfg.reflex.decide_ms.max(1));
+                            self.due.schedule(
+                                event.t_ms.saturating_add(cadence),
+                                DueKind::MotorTick { unit },
                             );
                         }
                     }

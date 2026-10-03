@@ -5533,6 +5533,13 @@ fn shape(value: &serde_json::Value, path: &str, out: &mut std::collections::BTre
 /// `state.motors.rows.<id>` object with its nine field lines for each of the
 /// four machines `Arena::new` adopts, `state.motors.window` and
 /// `state.motors.spent` come (44) — 386 lines to 392.
+///
+/// **Carried unchanged through 17b cut M1a.4's `SNAPSHOT_FORMAT` 4**:
+/// `DueKind::MotorTick` and `IntentKind::Goal` are new variants of two carried
+/// enums, and neither fixture schedules a motor tick or queues an intent at
+/// pulse zero, so the digest and the 392 lines are what they were and only the
+/// format moved (the variants' own round trip is
+/// `m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row`).
 const AF1_SHAPE_DIGEST: &str = "3bf4a9bec92f8985a9773a65ae63657ecb271ea303dfe75c7c1e132c53245d6b";
 /// And how many lines that is.
 const AF1_SHAPE_LINES: usize = 392;
@@ -5587,7 +5594,7 @@ fn af1_the_snapshot_shape_is_pinned() {
         tacsim::arena::snapshot::digest_text(&sha2::Sha256::digest(joined.as_bytes()).into());
     assert_eq!(
         tacsim::arena::snapshot::SNAPSHOT_FORMAT,
-        3,
+        4,
         "a format bump re-blesses the pin below in the same change"
     );
     assert_eq!(
@@ -5710,10 +5717,91 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
         found: 2,
         expected: SNAPSHOT_FORMAT,
     };
-    assert_eq!(SNAPSHOT_FORMAT, 3);
+    // 17b cut M1a.4 moved the format to 4; a format-2 document is still
+    // refused by name.
+    assert_eq!(SNAPSHOT_FORMAT, 4);
     assert_eq!(Snapshot::head(&two), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&two, arena.definition.clone()).map(|_| ()),
+        Err(refused)
+    );
+}
+
+/// **17b cut M1a.4: a snapshot carries a motor tick and a pilot's motor row,
+/// and a format-3 document is refused by name** (doc 17 §4 D-UM-3, D-UM-10;
+/// `snapshot.rs`' `SNAPSHOT_FORMAT` 4).
+///
+/// The mover of [`scripted_arena`] is a pilot's tank: powered up and handed a
+/// seat's `Goal { Cell }` in one pulse, which writes its motor row (a row the
+/// reflex controller never laid down), runs the landing's drive and puts one
+/// `MotorTick` on the heap. The encoded state carries the tick and the row,
+/// and the decode hands back the same heap, the same row and the same hash.
+/// The same document stamped `"format": 3` — what every snapshot written
+/// between 17b cuts M1a.1 and M1a.4 says — is refused as `Format { found: 3,
+/// expected: 4 }` by both the head read and the decode.
+#[test]
+fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
+    use tacsim::arena::intents::MotorGoal;
+    use tacsim::arena::state::DueKind;
+    let mut arena = scripted_arena();
+    if let Some(unit) = arena.unit_mut(MOVER) {
+        unit.power = Power::Online;
+    }
+    assert!(arena.reflex.unit(MOVER).is_none(), "a pilot's tank");
+    let _ = arena.step(
+        0,
+        &[],
+        &[intent(
+            MOVER,
+            IntentKind::Goal(MotorGoal::Cell { x: 5, y: 9 }),
+            1,
+        )],
+    );
+    let goal = arena.motors.row(MOVER).and_then(|motor| motor.goal);
+    assert_eq!(goal, Some((5, 9)), "the pilot's goal is on the motor row");
+    let ticks = |arena: &Arena| {
+        arena
+            .due
+            .iter()
+            .filter(|event| event.kind == DueKind::MotorTick { unit: MOVER })
+            .map(|event| event.t_ms)
+            .collect::<Vec<i64>>()
+    };
+    assert_eq!(ticks(&arena).len(), 1, "one motor tick on the heap");
+
+    let snapshot = Snapshot::encode(&arena).expect("the arena encodes");
+    let state = state_of(&snapshot);
+    assert!(
+        state
+            .get("motors")
+            .and_then(|motors| motors.get("rows"))
+            .and_then(|rows| rows.get(MOVER.0.to_string()))
+            .is_some(),
+        "the state carries the pilot's motor row"
+    );
+    assert!(
+        state.to_string().contains("\"motor_tick\""),
+        "the state carries the motor tick"
+    );
+    let decoded = Snapshot::decode(&snapshot.document, arena.definition.clone())
+        .expect("the document decodes");
+    assert_eq!(decoded.motors.row(MOVER), arena.motors.row(MOVER));
+    assert_eq!(ticks(&decoded), ticks(&arena));
+    assert_eq!(
+        tacsim::arena::hash::state_hash(&decoded),
+        tacsim::arena::hash::state_hash(&arena)
+    );
+
+    let mut three = snapshot.document.clone();
+    three["format"] = serde_json::json!(3);
+    let refused = SnapshotError::Format {
+        found: 3,
+        expected: SNAPSHOT_FORMAT,
+    };
+    assert_eq!(SNAPSHOT_FORMAT, 4);
+    assert_eq!(Snapshot::head(&three), Err(refused.clone()));
+    assert_eq!(
+        Snapshot::decode(&three, arena.definition.clone()).map(|_| ()),
         Err(refused)
     );
 }

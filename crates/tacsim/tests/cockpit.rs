@@ -9,7 +9,7 @@
 //! 1. `BOARD` puts the body in the pod, the station on the **tank**, the seat in
 //!    the pilot's hands and the focus on it — and the second one fires cut K.1's
 //!    `Boarding → Running` trigger;
-//! 2. the seventeen verbs are contextual: each refuses with its own one line where
+//! 2. the eighteen verbs are contextual: each refuses with its own one line where
 //!    it does not mean anything;
 //! 3. `HEADING` before `STARTUP` is refused with the cold tank's own word;
 //! 4. `VIEW` draws the platform at the centre of a grid;
@@ -792,7 +792,7 @@ async fn board_puts_the_body_in_the_pod_the_station_on_the_tank_and_the_seat_in_
 }
 
 // ---------------------------------------------------------------------------
-// (2) The gate: seventeen verbs (the fifteen selectors, BOARD and EXIT), one line each
+// (2) The gate: eighteen verbs (the sixteen selectors, BOARD and EXIT), one line each
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -13444,4 +13444,260 @@ fn m1a3_the_keyframe_spells_an_order_with_designators_and_the_time_left() {
         payload.pointer("/order/facing_mdeg"),
         Some(&serde_json::json!(90_000))
     );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M1a.4 — `DRIVE`, the sixteenth selector (doc 17 §4 D-UM-10)
+// ---------------------------------------------------------------------------
+
+/// **The verb word collides with no registered command** (17b cut M1a.4; the
+/// check this cut adds for every new verb word). Doc 17 named it `GOTO`, and
+/// core's baseline `goto` — with its aliases `go` and `move` — holds that word:
+/// `Registry::insert_entry` refuses a collision, so a `goto` selector would
+/// have failed the tacsim module's registration and every composed server at
+/// boot. On the registry this rig composes, the three still answer core's own
+/// command, `drive` answers the cockpit's (a module's verb, so no kernel word),
+/// and no cockpit selector is a kernel or host word at all.
+///
+/// **The prefix shift, pinned as a deliberate fact**: the selectors register
+/// by prefix, and core's `drop` does too, so `dr` — core `drop`'s shortest
+/// prefix before this cut — is now ambiguous between `drive` and `drop`, and
+/// answers neither; `dro` is still `drop`, and `dri` is `DRIVE`'s. Declared in
+/// the `drive` stanza of `legacy-handlers.toml` (16b cut AP.4 made `o` an
+/// exact-only name for the same kind of shift; whether `dr` deserves one is the
+/// lead's call).
+#[test]
+fn m1a4_drive_collides_with_no_registered_command() {
+    let mut rig = Rig::boot(1);
+    let registry = &rig.tw.engine_mut().registry;
+    for word in ["goto", "go", "move"] {
+        assert_eq!(
+            registry.kernel_command_named(word),
+            Some("goto"),
+            "{word} is core's command"
+        );
+    }
+    assert_eq!(registry.kernel_command_named("drive"), None);
+    let drive = registry
+        .spec_of("drive")
+        .expect("the cockpit registers drive");
+    assert_eq!(drive.name.as_str(), "drive");
+    assert!(drive.help.starts_with("DRIVE <spot|x,y>"), "{}", drive.help);
+    assert_eq!(
+        registry.compatibility_of("drive"),
+        Some(mush_core::CommandCompatibility::Authoritative)
+    );
+    for verb in cockpit::COCKPIT_VERBS {
+        assert_eq!(
+            registry.kernel_command_named(verb),
+            None,
+            "the cockpit's {verb} shadows a kernel or host word"
+        );
+        assert!(registry.spec_of(verb).is_some(), "{verb} is registered");
+    }
+    // The prefix shift `drive` makes.
+    let named = |word: &str| {
+        registry
+            .lookup(word)
+            .map(|(spec, _)| spec.name.to_string())
+            .map_err(|err| match err {
+                mush_core::LookupErr::NotFound => Vec::new(),
+                mush_core::LookupErr::Ambiguous(names) => {
+                    let mut names: Vec<String> = names.iter().map(ToString::to_string).collect();
+                    names.sort();
+                    names
+                }
+            })
+    };
+    assert_eq!(
+        named("dr"),
+        Err(vec!["drive".to_owned(), "drop".to_owned()]),
+        "dr is ambiguous between DRIVE and core's drop"
+    );
+    assert_eq!(named("dro"), Ok("drop".to_owned()));
+    assert_eq!(named("dri"), Ok("drive".to_owned()));
+    assert_eq!(named("drive"), Ok("drive".to_owned()));
+}
+
+/// Every line `pilot` was sent from `mark` on, as the client reads them.
+fn m1a4_said_since(rig: &Rig, pilot: ObjId, mark: usize) -> Vec<String> {
+    rig.tw.seen_by(&rig.log[mark..], pilot)
+}
+
+/// **`DRIVE` resolves a spot by name and by letter, a cell, `HOLD` and `OFF`,
+/// and refuses the rest in one sentence** (17b cut M1a.4; doc 17 §4 D-UM-10;
+/// doc 16 §3.7), over the real composition, the shipped proving ground and the
+/// real arena task.
+///
+/// Cold, it is refused in `HEADING`'s own words. Powered: every reply
+/// verbatim, the usage line for a bare `DRIVE`, the off-window line, and the
+/// ONE byte-identical refusal for `BA`, `X2`, `nonsense`, `12` and `12,` — a
+/// contact's designator is not a spot, so nothing about any contact is read.
+/// Then the forwarded order is proved by its effect: a `DRIVE` to a cell four
+/// cells along the road is a `Goal { Cell }` on the helm channel at the seat's
+/// epoch, or the arena would have refused it (a wrong channel or epoch is
+/// refused silently, a wrong kind would not drive) — and the arena's motor
+/// drives the tank there and says `DRIVE: arrived.`; a `HEADING` then takes the
+/// helm back. Last, frames pushed through the real egress seam: a wreck, an
+/// immobile tank and a cold one are refused locally in `HEADING`'s words.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m1a4_drive_resolves_a_spot_a_letter_a_cell_hold_and_off_and_refuses_the_rest() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let pilot = rig.pilot(0);
+
+    // Cold: refused as `HEADING` is, before the word is read.
+    let cold = rig.say(0, "drive a");
+    assert!(cold.contains(cockpit::POWER_NOT_ONLINE), "{cold}");
+    assert_eq!(cold, rig.say(0, "heading 90"), "HEADING's own words");
+    assert!(
+        rig.say(0, "drive nonsense")
+            .contains(cockpit::POWER_NOT_ONLINE)
+    );
+
+    rig.say(0, "startup");
+    assert!(rig.powered(0).await, "the power came up");
+
+    // The usage line, and the replies.
+    assert_eq!(rig.say(0, "drive"), cockpit::DRIVE_USAGE);
+    let (spots, _) = shipped_spots(&rig);
+    let ford = spots.first().expect("the ground names a spot").name.clone();
+    let named = format!("Steering for {ford} (A).");
+    assert_eq!(rig.say(0, &format!("drive {ford}")), named);
+    assert_eq!(
+        rig.say(0, &format!("DRIVE {}", ford.to_uppercase())),
+        named,
+        "case-folded"
+    );
+    assert_eq!(rig.say(0, "drive a"), named, "by its map letter");
+    assert_eq!(rig.say(0, "drive 12,34"), "Steering for cell 12,34.");
+    assert_eq!(rig.say(0, "drive 12 34"), "Steering for cell 12,34.");
+    assert_eq!(rig.say(0, "drive hold"), cockpit::DRIVE_HOLDING);
+    assert_eq!(rig.say(0, "DRIVE OFF"), cockpit::DRIVE_RELEASED);
+    assert_eq!(cockpit::DRIVE_HOLDING, "Holding here.");
+    assert_eq!(cockpit::DRIVE_RELEASED, "DRIVE off; the helm is yours.");
+
+    // Off the window: the proving ground is 256 cells a side.
+    for word in ["256,3", "3,256", "70000,1"] {
+        assert_eq!(
+            rig.say(0, &format!("drive {word}")),
+            cockpit::DRIVE_OFF_WINDOW,
+            "{word}"
+        );
+    }
+    // Anything else: ONE sentence, byte for byte, and never an echo.
+    for word in ["BA", "X2", "nonsense", "12", "12,"] {
+        let said = rig.say(0, &format!("drive {word}"));
+        assert_eq!(said, cockpit::DRIVE_NOT_A_GOAL, "{word}");
+    }
+    assert_eq!(
+        cockpit::DRIVE_NOT_A_GOAL,
+        "DRIVE refused. That is not a spot, a cell, HOLD or OFF."
+    );
+
+    // Stop where it stands, then drive four cells along the road it faces.
+    assert_eq!(rig.say(0, "drive hold"), cockpit::DRIVE_HOLDING);
+    let from = rig.held_frame(0).cell.expect("the tank is on the window");
+    let to = (from.0.saturating_add(4), from.1);
+    let mark = rig.log.len();
+    assert_eq!(
+        rig.say(0, &format!("drive {},{}", to.0, to.1)),
+        format!("Steering for cell {},{}.", to.0, to.1)
+    );
+    let mut arrived = false;
+    for _ in 0..4_000 {
+        rig.pump();
+        if m1a4_said_since(&rig, pilot, mark)
+            .iter()
+            .any(|line| line.contains(cockpit::DRIVE_ARRIVED))
+        {
+            arrived = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let told = m1a4_said_since(&rig, pilot, mark);
+    assert!(arrived, "the motor never said it arrived: {told:?}");
+    assert!(
+        !told.iter().any(|line| line.contains("DRIVE refused")),
+        "the arena refused the goal: {told:?}"
+    );
+    let at = rig.held_frame(0).cell.expect("on the window");
+    assert!(
+        at.0.abs_diff(to.0).max(at.1.abs_diff(to.1)) <= 1,
+        "arrived at {at:?} for {to:?}"
+    );
+    // And the helm is the pilot's again the moment they type one.
+    assert_eq!(rig.say(0, "heading 90"), "Steering to 90°.");
+
+    // Local refusals off the held frame, in `HEADING`'s words and order.
+    let mut stuck = rig.held_frame(0);
+    stuck.notices.clear();
+    stuck.immobile = true;
+    stuck.power = tacsim::arena::state::Power::Online;
+    rig.push_frame(0, stuck);
+    let said = rig.say(0, "drive a");
+    assert!(said.contains(cockpit::IMMOBILE), "{said}");
+    assert_eq!(said, rig.say(0, "heading 90"));
+    let mut dead = rig.held_frame(0);
+    dead.notices.clear();
+    dead.wreck = true;
+    dead.immobile = true;
+    dead.power = tacsim::arena::state::Power::Off;
+    rig.push_frame(0, dead);
+    let said = rig.say(0, "drive a");
+    assert!(said.contains(cockpit::DESTROYED), "{said}");
+    assert_eq!(said, rig.say(0, "heading 90"));
+}
+
+/// **The two `DRIVE` ring rows are the server's own wire shape** (17b cut
+/// M1a.4): each notice `status_frame` publishes for the motor's two answers —
+/// the kind, the sentence, and every other key `null` or `false` — equals the
+/// `notice` object of its row in `notice_lines.json` byte for byte, so the
+/// TUI's ring and the web's are pinned against what the server sends.
+#[test]
+fn m1a4_the_drive_notice_rows_are_what_status_frame_publishes() {
+    use tacsim::arena::perception::{DriveOutcome, FrameNotice};
+
+    let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+        "../../../web/src/lib/fixtures/cockpit/notice_lines.json"
+    ))
+    .expect("notice_lines.json is an array");
+    for (outcome, kind, text) in [
+        (
+            DriveOutcome::Arrived,
+            "drive_arrived",
+            cockpit::DRIVE_ARRIVED,
+        ),
+        (
+            DriveOutcome::NoRoute,
+            "drive_no_route",
+            cockpit::DRIVE_NO_ROUTE,
+        ),
+    ] {
+        let mut frame = fixture::frame();
+        frame.notices = vec![FrameNotice::Drive { outcome }];
+        let payload = cockpit::status_frame(fixture::MATCH, &frame);
+        let published = payload
+            .pointer("/notices/0")
+            .cloned()
+            .unwrap_or_else(|| panic!("{kind}: no notice on the frame: {payload}"));
+        assert_eq!(published.get("text"), Some(&serde_json::json!(text)));
+        let committed = rows
+            .iter()
+            .find(|row| {
+                row.get("notice")
+                    .is_some_and(|notice| notice.get("kind") == Some(&serde_json::json!(kind)))
+            })
+            .cloned()
+            .unwrap_or_else(|| panic!("notice_lines.json has no {kind} row"));
+        assert_eq!(committed.get("notice"), Some(&published), "{kind}");
+        assert_eq!(
+            committed.get("line"),
+            Some(&serde_json::json!(text)),
+            "{kind}"
+        );
+        assert_eq!(cockpit::notice_lines(&frame), vec![text.to_owned()]);
+    }
 }

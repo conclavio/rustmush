@@ -2967,6 +2967,10 @@ const NOTICE_WORDS: &[(&str, &str)] = &[
     // 16b cut O.2 (16c N12): the pilot's own pod's switch, short.
     ("emcon_on", "EMCON on"),
     ("emcon_off", "EMCON off: pod silent"),
+    // 17b cut M1a.4: the motor's two answers to the pilot's own `DRIVE`, whole —
+    // each is already short, and there is nothing in it to compose.
+    ("drive_arrived", "DRIVE: arrived."),
+    ("drive_no_route", "DRIVE: no route from here; holding."),
 ];
 
 /// Why an order was refused, in the pilot's words (`Refusal::as_str`; the web's

@@ -145,7 +145,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::arena::damage::UnitReturn;
-use crate::arena::intents::{Control, ControlState, Intent, IntentKind};
+use crate::arena::intents::{Control, ControlState, Intent, IntentKind, MotorGoal};
 use crate::arena::ledger::LedgerChunk;
 use crate::arena::observer::Observer;
 use crate::arena::snapshot::Snapshot;
@@ -861,18 +861,26 @@ fn buffer_control(controls: &mut Controls, releases: &mut Releases, control: Con
 /// `ORDER` of the same pulse whichever the pilot typed last. Under one key the
 /// higher `seq` wins across both: `HOLD` then `RELEASE` leaves no order, and
 /// `RELEASE` then `HOLD` leaves `HOLD`.
+///
+/// **17b cut M1a.4**: a `Goal` (`DRIVE`) answers `3` and the discrete kinds
+/// moved to `4`. A goal has a key of its own — it is not a heading or a speed,
+/// and a `HEADING` and a `SPEED` of one pulse both stand — and
+/// [`buffer_continuous`] settles a goal against the helm orders the key order
+/// would put in the wrong place by `seq`, since the key order alone would
+/// apply a goal after a `HEADING` typed later than it.
 const fn continuous_code(kind: &IntentKind) -> u8 {
     match kind {
         IntentKind::Heading { .. } => 0,
         IntentKind::Speed { .. } => 1,
         IntentKind::Order(_) | IntentKind::ReleaseOrder { .. } => 2,
+        IntentKind::Goal(_) => GOAL_CODE,
         // Discrete (16b cut I.3: a staff `Place` among them; 16b cut O.2: the
         // pod's `Emcon` switch too); never buffered under a continuous key.
         IntentKind::Startup
         | IntentKind::Lock { .. }
         | IntentKind::Fire { .. }
         | IntentKind::Place { .. }
-        | IntentKind::Emcon { .. } => 3,
+        | IntentKind::Emcon { .. } => 4,
     }
 }
 
@@ -882,13 +890,76 @@ const fn continuous_code(kind: &IntentKind) -> u8 {
 ///
 /// Nothing a pilot meant is lost: phase 2 applies continuous orders
 /// latest-wins, so of two headings in one pulse only the second ever mattered.
+///
+/// **17b cut M1a.4 — the helm is the last word's.** A `Goal` and a `Heading`
+/// or `Speed` of one unit in one pulse are one decision — who holds the helm
+/// (doc 17 §4 D-UM-10: a `HEADING` or `SPEED` typed after a `DRIVE` takes the
+/// helm back). The buffer hands continuous orders over in key order, the goal
+/// last, so it settles only the pairs where the key order would answer
+/// otherwise than the typed order, and drops the **older** of the pair:
+///
+/// - a `Goal(Cell)` against a heading or a speed — `DRIVE a` then `HEADING 90`
+///   steers 90, and `HEADING 90` then `DRIVE a` drives to the spot;
+/// - a `Goal(Hold)` against a speed only — `DRIVE HOLD` then `SPEED 300`
+///   drives on at 300, and `SPEED 300` then `DRIVE HOLD` stops. A hold and a
+///   heading both stand in either order: the key order turns the tank and
+///   then stops it, which is what the typed order does, so the pilot told
+///   `Holding here.` is held and the pilot told `Steering to 90°.` is turned;
+/// - a `Goal(Off)` against nothing — a heading or a speed applied before it
+///   disengages the goal itself, and `OFF` after it only lets go of what is
+///   already let go.
+///
+/// The rule is settled after the coalesce, on what stands, so it answers the
+/// same whichever order the two arrive in. A goal and a helm order never share
+/// a `seq` (the world's monotonic stamp); were they to, the goal would stand.
 fn buffer_continuous(map: &mut Continuous, intent: Intent) {
-    let key = (intent.unit, continuous_code(&intent.kind));
+    let unit = intent.unit;
+    let key = (unit, continuous_code(&intent.kind));
     match map.get(&key) {
         Some(standing) if standing.seq > intent.seq => {}
         _ => {
             map.insert(key, intent);
         }
+    }
+    settle_the_helm(map, unit);
+}
+
+/// The key [`continuous_code`] gives a `Goal`.
+const GOAL_CODE: u8 = 3;
+
+/// The helm keys a standing goal of this shape settles against (17b cut
+/// M1a.4; see [`buffer_continuous`]).
+const fn goal_rivals(goal: MotorGoal) -> &'static [u8] {
+    match goal {
+        MotorGoal::Cell { .. } => &[0, 1],
+        MotorGoal::Hold => &[1],
+        MotorGoal::Off => &[],
+    }
+}
+
+/// Drop the older of a unit's standing goal and each helm order it settles
+/// against (17b cut M1a.4; see [`buffer_continuous`]).
+fn settle_the_helm(map: &mut Continuous, unit: ObjId) {
+    let Some(goal) = map.get(&(unit, GOAL_CODE)) else {
+        return;
+    };
+    let IntentKind::Goal(shape) = goal.kind else {
+        return;
+    };
+    let goal_seq = goal.seq;
+    let mut goal_dropped = false;
+    for code in goal_rivals(shape) {
+        let Some(helm) = map.get(&(unit, *code)) else {
+            continue;
+        };
+        if helm.seq > goal_seq {
+            goal_dropped = true;
+        } else {
+            map.remove(&(unit, *code));
+        }
+    }
+    if goal_dropped {
+        map.remove(&(unit, GOAL_CODE));
     }
 }
 
@@ -1983,6 +2054,158 @@ mod tests {
                     .map(|standing| standing.order.objective.as_str()),
                 left
             );
+        }
+    }
+
+    /// **17b cut M1a.4 (doc 17 §4 D-UM-10): of a `DRIVE` and a helm order in
+    /// one pulse, the one typed last is the one phase 2 sees.** The goal has a
+    /// key of its own (`3`), after `HEADING`'s and `SPEED`'s, so the key order
+    /// alone would apply a goal after a heading typed later than it and the
+    /// tank would drive to the spot the pilot had just steered away from.
+    /// `DRIVE` then `HEADING` hands over the heading and no goal; `HEADING`
+    /// then `DRIVE` the goal and no heading; `SPEED` likewise either way; a
+    /// late arrival older than what stands is the one dropped; another unit's
+    /// orders are untouched. `DRIVE HOLD` settles against a speed only and
+    /// `DRIVE OFF` against nothing, so a heading the cockpit confirmed is never
+    /// dropped by either, nor a hold by a heading. And through the arena:
+    /// `DRIVE` then `HEADING 90` leaves the tank with no goal, steering 90;
+    /// `DRIVE HOLD` then `HEADING 270` stops it turned to 270; `HEADING 90`
+    /// then `DRIVE OFF` turns it to 90.
+    #[test]
+    fn m1a4_a_goal_and_a_helm_order_in_one_pulse_leave_the_one_typed_last() {
+        use crate::arena::intents::MotorGoal;
+        let drive = || IntentKind::Goal(MotorGoal::Cell { x: 6, y: 6 });
+        let heading = || IntentKind::Heading { mdeg: 90_000 };
+        let speed = || IntentKind::Speed { cms: 300 };
+        let handed = |buffered: Vec<Intent>| {
+            let mut waiting = PrePulse::default();
+            for intent in buffered {
+                buffer_continuous(&mut waiting.continuous, intent);
+            }
+            let (_, intents) = waiting.take();
+            intents
+                .into_iter()
+                .map(|intent| (intent.unit, intent.kind))
+                .collect::<Vec<(ObjId, IntentKind)>>()
+        };
+        for helm in [heading(), speed()] {
+            assert_eq!(
+                handed(vec![order(RED, drive(), 1), order(RED, helm.clone(), 2)]),
+                vec![(RED, helm.clone())],
+                "DRIVE then {helm:?}"
+            );
+            assert_eq!(
+                handed(vec![order(RED, helm.clone(), 1), order(RED, drive(), 2)]),
+                vec![(RED, drive())],
+                "{helm:?} then DRIVE"
+            );
+            // Arrived out of order: the older one is the one dropped.
+            assert_eq!(
+                handed(vec![order(RED, drive(), 2), order(RED, helm.clone(), 1)]),
+                vec![(RED, drive())],
+                "an older {helm:?} behind a DRIVE"
+            );
+            assert_eq!(
+                handed(vec![order(RED, helm.clone(), 2), order(RED, drive(), 1)]),
+                vec![(RED, helm.clone())],
+                "an older DRIVE behind {helm:?}"
+            );
+        }
+        // A hold and a heading both stand in either order (the key order
+        // turns the tank and then stops it, as the typed order does); a hold
+        // and a speed settle by `seq`; an `OFF` settles against nothing.
+        let hold = || IntentKind::Goal(MotorGoal::Hold);
+        let off = || IntentKind::Goal(MotorGoal::Off);
+        for (first, second) in [(hold(), heading()), (heading(), hold())] {
+            assert_eq!(
+                handed(vec![
+                    order(RED, first.clone(), 1),
+                    order(RED, second.clone(), 2)
+                ]),
+                vec![(RED, heading()), (RED, hold())],
+                "{first:?} then {second:?}"
+            );
+        }
+        assert_eq!(
+            handed(vec![order(RED, hold(), 1), order(RED, speed(), 2)]),
+            vec![(RED, speed())],
+            "DRIVE HOLD then SPEED"
+        );
+        assert_eq!(
+            handed(vec![order(RED, speed(), 1), order(RED, hold(), 2)]),
+            vec![(RED, hold())],
+            "SPEED then DRIVE HOLD"
+        );
+        assert_eq!(
+            handed(vec![order(RED, speed(), 2), order(RED, hold(), 1)]),
+            vec![(RED, speed())],
+            "an older DRIVE HOLD behind SPEED"
+        );
+        for helm in [heading(), speed()] {
+            for (first, second) in [(off(), helm.clone()), (helm.clone(), off())] {
+                assert_eq!(
+                    handed(vec![
+                        order(RED, first.clone(), 1),
+                        order(RED, second.clone(), 2)
+                    ]),
+                    vec![(RED, helm.clone()), (RED, off())],
+                    "{first:?} then {second:?}"
+                );
+            }
+        }
+        // A heading and a speed both stand, and a goal typed after both
+        // replaces both; another unit is untouched.
+        assert_eq!(
+            handed(vec![
+                order(RED, heading(), 1),
+                order(RED, speed(), 2),
+                order(BLUE, heading(), 3),
+                order(RED, drive(), 4),
+            ]),
+            vec![(RED, drive()), (BLUE, heading())]
+        );
+
+        // Through the arena: `DRIVE` then `HEADING 90` in one pulse.
+        let mut arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+        if let Some(state) = arena.unit_mut(RED) {
+            state.power = crate::arena::state::Power::Online;
+        }
+        let mut waiting = PrePulse::default();
+        buffer_continuous(&mut waiting.continuous, order(RED, drive(), 1));
+        buffer_continuous(&mut waiting.continuous, order(RED, heading(), 2));
+        let (controls, intents) = waiting.take();
+        let _ = arena.step(0, &controls, &intents);
+        assert_eq!(arena.motors.row(RED).and_then(|motor| motor.goal), None);
+        assert_eq!(
+            arena.unit(RED).map(|unit| unit.desired_heading_mdeg),
+            Some(90_000)
+        );
+
+        // Through the arena: on a tank already driving, `DRIVE HOLD` then
+        // `HEADING 270` stops it turned to 270, and `HEADING 90` then `DRIVE
+        // OFF` turns it to 90 and leaves it driving.
+        for (first, second, heading_mdeg, speed_cms) in [
+            (hold(), IntentKind::Heading { mdeg: 270_000 }, 270_000, 0),
+            (heading(), off(), 90_000, 300),
+        ] {
+            let mut arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+            if let Some(state) = arena.unit_mut(RED) {
+                state.power = crate::arena::state::Power::Online;
+                state.desired_speed_cms = 300;
+            }
+            let mut waiting = PrePulse::default();
+            buffer_continuous(&mut waiting.continuous, order(RED, first.clone(), 1));
+            buffer_continuous(&mut waiting.continuous, order(RED, second.clone(), 2));
+            let (controls, intents) = waiting.take();
+            let _ = arena.step(0, &controls, &intents);
+            assert_eq!(
+                arena
+                    .unit(RED)
+                    .map(|unit| (unit.desired_heading_mdeg, unit.desired_speed_cms)),
+                Some((heading_mdeg, speed_cms)),
+                "{first:?} then {second:?}"
+            );
+            assert_eq!(arena.motors.row(RED).and_then(|motor| motor.goal), None);
         }
     }
 

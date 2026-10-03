@@ -366,6 +366,42 @@
       "designator": null,
       "detail": null,
       "friendly": false,
+      "kind": "drive_arrived",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "spent": false,
+      "text": "DRIVE: arrived.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "DRIVE: arrived."
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": null,
+      "friendly": false,
+      "kind": "drive_no_route",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "spent": false,
+      "text": "DRIVE: no route from here; holding.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "DRIVE: no route from here; holding."
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": null,
+      "friendly": false,
       "kind": "constructor",
       "order": null,
       "refusal": null,

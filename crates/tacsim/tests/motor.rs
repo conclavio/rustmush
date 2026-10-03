@@ -475,3 +475,645 @@ fn m1a1_age_avoid_ages_a_pilot_rows_stops_and_drops_its_refusal() {
     assert!(motor.age_avoid(20_000 + ttl), "the second one's turn");
     assert!(motor.avoid.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// 17b cut M1a.4 — a pilot's `DRIVE` (doc 17 §4 D-UM-3, D-UM-10)
+// ---------------------------------------------------------------------------
+
+/// The pilot a [`drive_run`] seats in Red Tank 1, so the arena builds frames.
+const M1A4_PILOT: ObjId = ObjId(9_001);
+
+/// What one [`drive_run`] produced.
+struct DriveRun {
+    /// Every ledger line: its time, its kind as JSON, its substep hash.
+    events: Vec<(i64, String, u64)>,
+    /// The state hash of every substep, in order.
+    hashes: Vec<u64>,
+    /// How many pulses it took — three cadences really are three numbers.
+    pulses: u32,
+    /// Every `drive_*` notice the pilot's frames carried, with the arena
+    /// window `[start, end]` of the pulse that built the frame.
+    told: Vec<(&'static str, i64, i64)>,
+    /// After each pulse: the arena time it started at, and the motor's goal.
+    goals: Vec<(i64, Option<(u16, u16)>)>,
+    /// After each pulse: the arena time it started at, and the speed the tank
+    /// was ordered.
+    speeds: Vec<(i64, i32)>,
+    /// Where the tank ended, and what it was last ordered.
+    cell: Option<(u16, u16)>,
+    desired_heading_mdeg: u32,
+    desired_speed_cms: i32,
+    /// Motor ticks left on the heap at the end.
+    ticks: usize,
+}
+
+/// **Red Tank 1, a pilot's, on the proving ground**, driven at `cadence_ms`
+/// to `until_ms` through `beats` — each `(t_ms, kind)` delivered as a seat's
+/// order, at the unit's current epoch, in the first pulse whose arena time has
+/// reached `t_ms` (every `t_ms` a multiple of 5,000, so one script means one
+/// thing at all three cadences: `tests/arena.rs`'s `Beat` rule).
+fn drive_run(
+    world: &mush_testkit::TestWorld,
+    cadence_ms: i64,
+    until_ms: i64,
+    beats: &[(i64, tacsim::arena::intents::IntentKind)],
+) -> DriveRun {
+    use tacsim::arena::intents::Intent;
+    use tacsim::arena::perception::FrameNotice;
+    let mut arena = shipped_arena(world, &[&[Muster::piloted(Team::Red, 1)]]);
+    let red = tank(world, Team::Red, 1);
+    let _ = arena.seat_pilot(
+        M1A4_PILOT,
+        red,
+        arena
+            .epochs
+            .current(red, tacsim::arena::state::Channel::Helm),
+    );
+    arena
+        .clock
+        .pin_tempo_for_tests(tacsim::arena::clock::Tempo::Quiet);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut run = DriveRun {
+        events: Vec::new(),
+        hashes: Vec::new(),
+        pulses: 0,
+        told: Vec::new(),
+        goals: Vec::new(),
+        speeds: Vec::new(),
+        cell: None,
+        desired_heading_mdeg: 0,
+        desired_speed_cms: 0,
+        ticks: 0,
+    };
+    let mut next = 0_usize;
+    let mut seq = 0_u64;
+    let mut wall = 0_i64;
+    loop {
+        let start = arena.now_ms;
+        let mut intents: Vec<Intent> = Vec::new();
+        while let Some((at, kind)) = beats.get(next) {
+            if *at > arena.now_ms {
+                break;
+            }
+            seq += 1;
+            let channel = kind.channel_required();
+            intents.push(Intent {
+                unit: red,
+                channel,
+                epoch: arena.epochs.current(red, channel),
+                kind: kind.clone(),
+                seq,
+            });
+            next += 1;
+        }
+        let out = arena.step(wall, &[], &intents);
+        run.pulses += 1;
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        run.hashes.extend(arena.substep_hashes.iter().copied());
+        for (_, frame) in &out.frames {
+            for notice in &frame.notices {
+                if let FrameNotice::Drive { .. } = notice {
+                    run.told.push((notice.kind().as_str(), start, arena.now_ms));
+                }
+            }
+        }
+        run.goals
+            .push((start, arena.motors.row(red).and_then(|motor| motor.goal)));
+        run.speeds.push((
+            start,
+            arena.unit(red).map_or(0, |unit| unit.desired_speed_cms),
+        ));
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    run.events = support::ledger_events(&mut arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    run.cell = cell_of(&arena, red);
+    if let Some(unit) = arena.unit(red) {
+        run.desired_heading_mdeg = unit.desired_heading_mdeg;
+        run.desired_speed_cms = unit.desired_speed_cms;
+    }
+    run.ticks = arena
+        .due
+        .iter()
+        .filter(|event| event.kind == tacsim::arena::state::DueKind::MotorTick { unit: red })
+        .count();
+    run
+}
+
+/// The three cadences of one script, held to one event list and one hash
+/// sequence, answered for the case's own assertions.
+fn drive_at_three_cadences(
+    world: &mush_testkit::TestWorld,
+    until_ms: i64,
+    beats: &[(i64, tacsim::arena::intents::IntentKind)],
+    case: &str,
+) -> Vec<DriveRun> {
+    let runs: Vec<DriveRun> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| drive_run(world, cadence, until_ms, beats))
+        .collect();
+    let [slow, mid, fast] = runs.as_slice() else {
+        panic!("three runs");
+    };
+    assert!(
+        slow.pulses < mid.pulses && mid.pulses < fast.pulses,
+        "{case}: three cadences, three pulse counts"
+    );
+    for (cadence, run) in [(1_000, mid), (500, fast)] {
+        assert_eq!(
+            run.events, slow.events,
+            "{case}: the event list at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, slow.hashes,
+            "{case}: the hash sequence at {cadence} ms"
+        );
+        assert_eq!(
+            run.cell, slow.cell,
+            "{case}: the final cell at {cadence} ms"
+        );
+        let kinds = |run: &DriveRun| run.told.iter().map(|(kind, ..)| *kind).collect::<Vec<_>>();
+        assert_eq!(
+            kinds(run),
+            kinds(slow),
+            "{case}: the notices at {cadence} ms"
+        );
+    }
+    // Each notice was staged at one arena millisecond: the windows of the
+    // pulses that carried it, one per cadence, have a millisecond in common.
+    for index in 0..slow.told.len() {
+        let windows: Vec<(i64, i64)> = runs
+            .iter()
+            .filter_map(|run| run.told.get(index).map(|(_, start, end)| (*start, *end)))
+            .collect();
+        let from = windows.iter().map(|(start, _)| *start).max().unwrap_or(0);
+        let to = windows.iter().map(|(_, end)| *end).min().unwrap_or(0);
+        assert!(from <= to, "{case}: notice {index} in windows {windows:?}");
+    }
+    runs
+}
+
+/// **A pilot's `DRIVE` drives the tank to the cell, at three cadences** (17b
+/// cut M1a.4; doc 17 §4 D-UM-3 and D-UM-10; doc 16 §3.1's D-16-2 — 16b §11's
+/// mandatory cross-tempo fixture for a cut that changes arena behaviour).
+///
+/// Red Tank 1 on the proving ground, a pilot's, powered up by a scripted
+/// `STARTUP` at nought; four scripts, each run at 5,000, 1,000 and 500 ms and
+/// held to one event list, one hash sequence and one final cell:
+///
+/// 1. a `Goal { Cell }` at 15,000 to a cell twenty cells along the road: the
+///    tank ends within `ARRIVE_CELLS` of it, the pilot is told `drive_arrived`
+///    exactly once (the pulses that carried it share a millisecond at every
+///    cadence), the goal is gone and no motor tick is left on the heap;
+/// 2. a tank already driving (a `SPEED 300` at 10,000) given a goal on ground
+///    its row cannot stand on: `drive_no_route` once, at the landing, the goal
+///    dropped, the ordered speed nought — the "holding" of the sentence — no
+///    tick left;
+/// 3. the first script with a `HEADING 180` at 20,000 — a heading the road's
+///    route never gives — the goal is still held after the pulse that ends at
+///    20,000 and gone after the one that starts there, at every cadence, and
+///    the tank is ordered the typed heading — no notice;
+/// 4. the first script with a `DRIVE HOLD` at 20,000: no goal, speed nought,
+///    no notice.
+#[test]
+fn m1a4_a_piloted_drive_drives_to_the_cell_at_three_cadences() {
+    use tacsim::arena::intents::{IntentKind, MotorGoal};
+    use tacsim::arena::motor::ARRIVE_CELLS;
+
+    let world = booted_world();
+    let probe = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
+    let red = tank(&world, Team::Red, 1);
+    let from = cell_of(&probe, red).expect("red is on the window");
+    let terrain = &probe.definition.terrain;
+    let row = probe.unit(red).map(|unit| unit.cost_row).expect("red");
+    let to = (from.0 + 20, from.1);
+    assert!(terrain.passable_for(row, to.0, to.1), "the road at {to:?}");
+    // The nearest cell five or more cells off that the tank's row cannot
+    // stand on: no route reaches it.
+    let sealed = (0..terrain.height())
+        .flat_map(|y| (0..terrain.width()).map(move |x| (x, y)))
+        .filter(|&(x, y)| !terrain.passable_for(row, x, y))
+        .filter(|&(x, y)| x.abs_diff(from.0).max(y.abs_diff(from.1)) >= 5)
+        .min_by_key(|&(x, y)| (x.abs_diff(from.0).max(y.abs_diff(from.1)), x, y))
+        .expect("the proving ground has ground a tank cannot stand on");
+    let cell = |at: (u16, u16)| IntentKind::Goal(MotorGoal::Cell { x: at.0, y: at.1 });
+
+    // 1. Arrival.
+    let runs = drive_at_three_cadences(
+        &world,
+        90_000,
+        &[(0, IntentKind::Startup), (15_000, cell(to))],
+        "arrival",
+    );
+    for run in &runs {
+        let at = run.cell.expect("on the window");
+        assert!(
+            at.0.abs_diff(to.0).max(at.1.abs_diff(to.1)) <= ARRIVE_CELLS,
+            "arrived at {at:?} for {to:?}"
+        );
+        let told: Vec<&str> = run.told.iter().map(|(kind, ..)| *kind).collect();
+        assert_eq!(told, ["drive_arrived"], "said once");
+        assert_eq!(run.goals.last().and_then(|(_, goal)| *goal), None);
+        assert_eq!(run.ticks, 0, "no motor tick after arrival");
+        assert!(
+            run.speeds.iter().any(|(_, speed)| *speed > 0),
+            "the motor drove it there"
+        );
+        assert_eq!(run.desired_speed_cms, 0, "and stopped it on arrival");
+    }
+
+    // 2. No route.
+    let runs = drive_at_three_cadences(
+        &world,
+        30_000,
+        &[
+            (0, IntentKind::Startup),
+            (10_000, IntentKind::Speed { cms: 300 }),
+            (15_000, cell(sealed)),
+        ],
+        "no route",
+    );
+    for run in &runs {
+        let moving = run
+            .speeds
+            .iter()
+            .rev()
+            .find(|(start, _)| *start < 15_000)
+            .map(|(_, speed)| *speed);
+        assert_eq!(moving, Some(300), "driving when the goal lands");
+        let told: Vec<&str> = run.told.iter().map(|(kind, ..)| *kind).collect();
+        assert_eq!(told, ["drive_no_route"], "said once");
+        let (_, start, _) = run.told.first().copied().unwrap_or(("", 0, 0));
+        assert_eq!(start, 15_000, "said at the landing");
+        assert_eq!(run.desired_speed_cms, 0);
+        assert_eq!(run.goals.last().and_then(|(_, goal)| *goal), None);
+        assert_eq!(run.ticks, 0);
+    }
+
+    // 3. A `HEADING` mid-route takes the helm back at its own millisecond.
+    let runs = drive_at_three_cadences(
+        &world,
+        30_000,
+        &[
+            (0, IntentKind::Startup),
+            (15_000, cell(to)),
+            (20_000, IntentKind::Heading { mdeg: 180_000 }),
+        ],
+        "heading",
+    );
+    for run in &runs {
+        let before = run
+            .goals
+            .iter()
+            .rev()
+            .find(|(start, _)| *start < 20_000)
+            .and_then(|(_, goal)| *goal);
+        let after = run
+            .goals
+            .iter()
+            .find(|(start, _)| *start == 20_000)
+            .map(|(_, goal)| *goal);
+        assert_eq!(before, Some(to), "still driving until the HEADING");
+        assert_eq!(after, Some(None), "the HEADING's pulse dropped the goal");
+        assert!(run.told.is_empty(), "nothing said: {:?}", run.told);
+        assert_eq!(run.desired_heading_mdeg, 180_000, "steering what was typed");
+        assert_eq!(run.ticks, 0, "the cadence ended with the goal");
+    }
+
+    // 4. `DRIVE HOLD`: a stop, no goal, nothing said.
+    let runs = drive_at_three_cadences(
+        &world,
+        30_000,
+        &[
+            (0, IntentKind::Startup),
+            (15_000, cell(to)),
+            (20_000, IntentKind::Goal(MotorGoal::Hold)),
+        ],
+        "hold",
+    );
+    for run in &runs {
+        assert_eq!(run.desired_speed_cms, 0);
+        assert_eq!(run.goals.last().and_then(|(_, goal)| *goal), None);
+        assert!(run.told.is_empty(), "a hold says nothing: {:?}", run.told);
+    }
+}
+
+/// **The fan keeps two same-side goals apart in a far zone** (17b cut M1a.4;
+/// the M1a plan's departure (d); 16b cut AI.1's `HUNT_FAN_ROWS`). Two pilots of
+/// red `DRIVE` the same passable cell of blue's entry zone in one pulse: the
+/// first is given the cell, the second a passable cell `HUNT_FAN_ROWS` or more
+/// rows from it (Chebyshev), so their arrival squares do not overlap. The same
+/// two orders to a cell outside every far zone are never fanned. And a reflex
+/// unit's own hunt fan — `far_entry_cell`, which reads the side's hunt cells it
+/// is handed and never a motor row — answers as it did before anyone drove.
+#[test]
+fn m1a4_the_fan_keeps_two_same_side_goals_apart_in_a_far_zone() {
+    use tacsim::arena::intents::{Intent, IntentKind, MotorGoal};
+    use tacsim::arena::motor::HUNT_FAN_ROWS;
+    use tacsim::arena::state::Channel;
+
+    let world = booted_world();
+    let field = || {
+        let mut arena = shipped_arena(
+            &world,
+            &[
+                &[Muster::piloted(Team::Red, 1), Muster::piloted(Team::Red, 2)],
+                &[Muster::reflex(Team::Blue, 1)],
+            ],
+        );
+        for unit in [tank(&world, Team::Red, 1), tank(&world, Team::Red, 2)] {
+            if let Some(state) = arena.unit_mut(unit) {
+                state.power = Power::Online;
+            }
+        }
+        arena
+    };
+    let (one, two) = (tank(&world, Team::Red, 1), tank(&world, Team::Red, 2));
+    let blue = tank(&world, Team::Blue, 1);
+    let probe = field();
+    let row = probe.unit(one).map(|unit| unit.cost_row).expect("red");
+    let zone = probe
+        .definition
+        .entry_zones
+        .iter()
+        .find(|zone| zone.team == Team::Blue)
+        .copied()
+        .expect("blue's entry zone");
+    let (x0, x1) = (zone.x0.min(zone.x1), zone.x0.max(zone.x1));
+    let (y0, y1) = (zone.y0.min(zone.y1), zone.y0.max(zone.y1));
+    let mid_y = y0 + (y1 - y0) / 2;
+    let target = (x0..=x1)
+        .find(|&x| probe.definition.terrain.passable_for(row, x, mid_y))
+        .map(|x| (x, mid_y))
+        .expect("a passable cell on the zone's middle row");
+    let hunt_before = probe.far_entry_cell(blue, &[]);
+
+    let drive_both = |arena: &mut Arena, at: (u16, u16)| {
+        let intents: Vec<Intent> = [one, two]
+            .into_iter()
+            .enumerate()
+            .map(|(seq, unit)| {
+                let kind = IntentKind::Goal(MotorGoal::Cell { x: at.0, y: at.1 });
+                Intent {
+                    unit,
+                    channel: Channel::Helm,
+                    epoch: arena.epochs.current(unit, Channel::Helm),
+                    kind,
+                    seq: u64::try_from(seq).unwrap_or(0) + 1,
+                }
+            })
+            .collect();
+        let _ = arena.step(0, &[], &intents);
+        (
+            arena.motors.row(one).and_then(|motor| motor.goal),
+            arena.motors.row(two).and_then(|motor| motor.goal),
+        )
+    };
+
+    let mut arena = field();
+    let (first, second) = drive_both(&mut arena, target);
+    assert_eq!(first, Some(target), "the first is given the cell");
+    let second = second.expect("the second has a goal");
+    assert!(
+        second.0.abs_diff(target.0).max(second.1.abs_diff(target.1)) >= HUNT_FAN_ROWS,
+        "{second:?} overlaps {target:?}"
+    );
+    assert!(
+        (x0..=x1).contains(&second.0) && (y0..=y1).contains(&second.1),
+        "fanned inside the zone: {second:?}"
+    );
+    assert!(
+        arena
+            .definition
+            .terrain
+            .passable_for(row, second.0, second.1),
+        "fanned onto passable ground: {second:?}"
+    );
+    assert_eq!(
+        arena.fan_goal(blue, target),
+        target,
+        "blue's own zone fans nothing"
+    );
+    assert_eq!(
+        arena.far_entry_cell(blue, &[]),
+        hunt_before,
+        "the machine's hunt reads no motor row"
+    );
+
+    // Outside every far zone: never fanned.
+    let mut arena = field();
+    let open = cell_of(&arena, one)
+        .map(|(x, y)| (x + 3, y))
+        .expect("red is on the window");
+    assert!(
+        !arena
+            .definition
+            .entry_zones
+            .iter()
+            .any(|zone| zone.team != Team::Red
+                && (zone.x0.min(zone.x1)..=zone.x0.max(zone.x1)).contains(&open.0)
+                && (zone.y0.min(zone.y1)..=zone.y0.max(zone.y1)).contains(&open.1)),
+        "the premise: {open:?} is in no far zone"
+    );
+    assert_eq!(drive_both(&mut arena, open), (Some(open), Some(open)));
+}
+
+/// **A pilot's motor row ages its stops on the motor's own tick** (17b cut
+/// M1a.4; the M1a plan's §4 D2): a row no reflex decision runs is swept by
+/// `motor_step`, so a remembered stop thirty seconds old and the refusal it
+/// carried are gone at the next `MotorTick`, as a machine's are at its tick.
+#[test]
+fn m1a4_a_pilots_motor_row_ages_its_stops_on_the_tick() {
+    use tacsim::arena::intents::{Intent, IntentKind, MotorGoal};
+    use tacsim::arena::state::{Channel, DueKind};
+
+    let world = booted_world();
+    let mut arena = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
+    let red = tank(&world, Team::Red, 1);
+    if let Some(state) = arena.unit_mut(red) {
+        state.power = Power::Online;
+    }
+    let from = cell_of(&arena, red).expect("on the window");
+    let to = (from.0 + 20, from.1);
+    let _ = arena.step(
+        0,
+        &[],
+        &[Intent {
+            unit: red,
+            channel: Channel::Helm,
+            epoch: arena.epochs.current(red, Channel::Helm),
+            kind: IntentKind::Goal(MotorGoal::Cell { x: to.0, y: to.1 }),
+            seq: 1,
+        }],
+    );
+    let tick = arena
+        .due
+        .iter()
+        .find(|event| event.kind == DueKind::MotorTick { unit: red })
+        .map(|event| event.t_ms)
+        .expect("the goal put the hull on the motor's cadence");
+    let ttl = tacsim::arena::motor::REFLEX_AVOID_TTL_MS;
+    {
+        let Some(motor) = arena.motors.row_mut(red) else {
+            panic!("the pilot's row");
+        };
+        motor.avoid = vec![((1, 1), tick - ttl)];
+        motor.refused = Some(Refusal {
+            at: (1, 1),
+            cell: (1, 2),
+            cause: BlockedCause::Impassable,
+            goal: to,
+            until_ms: tick,
+        });
+    }
+    let substep = i64::from(tacsim::arena::clock::substep_ms(
+        &arena.arena_cfg.tempo,
+        arena.cell_cm(),
+        arena.max_speed_cms(),
+    ));
+    let mut wall = 0_i64;
+    while arena.now_ms < tick {
+        wall += substep;
+        let _ = arena.step(wall, &[], &[]);
+    }
+    let motor = arena.motors.row(red).cloned().expect("the pilot's row");
+    assert!(
+        motor.avoid.is_empty(),
+        "the old stop aged: {:?}",
+        motor.avoid
+    );
+    assert_eq!(motor.refused, None, "and took its refusal with it");
+    assert_eq!(motor.goal, Some(to), "the drive goes on");
+}
+
+/// **A goal is driven at its landing millisecond** (17b cut M1a.4; doc 17 §4
+/// D-UM-10: *when a `Goal` lands, the motor runs one `follow` at the landing
+/// millisecond, so a new goal takes effect at N+1 and does not wait for the
+/// next motor tick*). A pilot's powered tank is given a goal twenty cells along
+/// the road in the opening pulse, which ends at the millisecond it began: the
+/// hull's first `MotorTick` is still on the heap, inside the first `decide_ms`
+/// (so it has not run), and yet the motor has already searched at nought, laid
+/// a route and ordered the tank a speed — which only the landing's own step
+/// can have done.
+#[test]
+fn m1a4_a_goal_is_driven_at_its_landing_millisecond() {
+    use tacsim::arena::intents::{Intent, IntentKind, MotorGoal};
+    use tacsim::arena::state::{Channel, DueKind};
+
+    let world = booted_world();
+    let mut arena = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
+    let red = tank(&world, Team::Red, 1);
+    if let Some(state) = arena.unit_mut(red) {
+        state.power = Power::Online;
+    }
+    let from = cell_of(&arena, red).expect("on the window");
+    let to = (from.0 + 20, from.1);
+    let _ = arena.step(
+        0,
+        &[],
+        &[Intent {
+            unit: red,
+            channel: Channel::Helm,
+            epoch: arena.epochs.current(red, Channel::Helm),
+            kind: IntentKind::Goal(MotorGoal::Cell { x: to.0, y: to.1 }),
+            seq: 1,
+        }],
+    );
+    assert_eq!(arena.now_ms, 0, "the opening pulse ends where it began");
+    let ticks: Vec<i64> = arena
+        .due
+        .iter()
+        .filter(|event| event.kind == DueKind::MotorTick { unit: red })
+        .map(|event| event.t_ms)
+        .collect();
+    let decide_ms = i64::from(arena.arena_cfg.reflex.decide_ms);
+    assert!(
+        matches!(ticks.as_slice(), [tick] if *tick < decide_ms),
+        "the first motor tick has not run: {ticks:?}"
+    );
+    let motor = arena.motors.row(red).cloned().expect("the pilot's row");
+    assert_eq!(motor.goal, Some(to));
+    assert_eq!(motor.searched_ms, Some(0), "searched at the landing");
+    assert!(!motor.route.is_empty(), "and a route laid");
+    assert!(
+        arena
+            .unit(red)
+            .is_some_and(|unit| unit.desired_speed_cms > 0),
+        "and the tank ordered on"
+    );
+}
+
+/// **An engine killed under a `DRIVE` lets go of the goal and says so** (17b
+/// cut M1a.4). A motion kill leaves no wreck, the pilot cannot let go of the
+/// goal (the cockpit's and the arena's motion gates refuse `DRIVE OFF` on a
+/// tank that cannot move), and the motor could never reach it — so the next
+/// `MotorTick` drops it, the pilot is told `drive_no_route` once, and the
+/// cadence ends with it rather than driving a dead hull every `decide_ms` for
+/// the rest of the match.
+#[test]
+fn m1a4_an_engine_killed_under_a_drive_lets_go_and_says_so() {
+    use tacsim::arena::intents::{Intent, IntentKind, MotorGoal};
+    use tacsim::arena::perception::FrameNotice;
+    use tacsim::arena::state::{Channel, DueKind};
+
+    let world = booted_world();
+    let mut arena = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
+    let red = tank(&world, Team::Red, 1);
+    let _ = arena.seat_pilot(M1A4_PILOT, red, arena.epochs.current(red, Channel::Helm));
+    if let Some(state) = arena.unit_mut(red) {
+        state.power = Power::Online;
+    }
+    let from = cell_of(&arena, red).expect("on the window");
+    let to = (from.0 + 20, from.1);
+    let _ = arena.step(
+        0,
+        &[],
+        &[Intent {
+            unit: red,
+            channel: Channel::Helm,
+            epoch: arena.epochs.current(red, Channel::Helm),
+            kind: IntentKind::Goal(MotorGoal::Cell { x: to.0, y: to.1 }),
+            seq: 1,
+        }],
+    );
+    let motor_ticks = |arena: &Arena| {
+        arena
+            .due
+            .iter()
+            .filter(|event| event.kind == DueKind::MotorTick { unit: red })
+            .count()
+    };
+    assert_eq!(motor_ticks(&arena), 1, "driving");
+    if let Some(state) = arena.unit_mut(red) {
+        state.limits.motion_disabled = true;
+    }
+    let mut told: Vec<&'static str> = Vec::new();
+    let mut wall = 0_i64;
+    while arena.now_ms < 10_000 {
+        wall += 500;
+        let out = arena.step(wall, &[], &[]);
+        for (_, frame) in &out.frames {
+            for notice in &frame.notices {
+                if let FrameNotice::Drive { .. } = notice {
+                    told.push(notice.kind().as_str());
+                }
+            }
+        }
+    }
+    assert_eq!(told, ["drive_no_route"], "said once");
+    assert_eq!(arena.motors.row(red).and_then(|motor| motor.goal), None);
+    assert_eq!(motor_ticks(&arena), 0, "the cadence ended with the goal");
+}

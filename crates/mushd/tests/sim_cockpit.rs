@@ -1387,3 +1387,95 @@ fn ap4_a_brief_without_its_end_line_last_fails_the_shape() {
         .replace("No contacts.", "No contacts in the window.");
     support::assert_brief_shape(&support::brief_sentences(&quiet), "quiet");
 }
+
+// ---------------------------------------------------------------------------
+// 17b cut M1a.4 — `DRIVE` over SSH (doc 17 §4 D-UM-10)
+// ---------------------------------------------------------------------------
+
+/// The cell a `VIEW BRIEF` header says the pilot stands in: its `you at (x,
+/// y)` clause, read with the line client's wrap undone.
+fn m1a4_you_at(brief: &str) -> (u32, u32) {
+    // The line client wraps at eighty columns, so the clause may break.
+    let brief = brief.split_whitespace().collect::<Vec<&str>>().join(" ");
+    let rest = brief
+        .split_once("you at (")
+        .map(|(_, rest)| rest)
+        .unwrap_or_else(|| panic!("the brief's header names no cell: {brief}"));
+    let inside = rest.split_once(')').map_or(rest, |(inside, _)| inside);
+    let (x, y) = inside
+        .split_once(',')
+        .unwrap_or_else(|| panic!("a cell is two numbers: {inside}"));
+    (
+        x.trim().parse().expect("a column"),
+        y.trim().parse().expect("a row"),
+    )
+}
+
+/// **A pilot drives over SSH** (17b cut M1a.4; doc 17 §4 D-UM-10; doc 16 §3.7),
+/// over the production composition. Powered up, `DRIVE The Ford` reads
+/// `Steering for The Ford (A).`; `DRIVE HOLD` stops the tank where it is
+/// (`Holding here.`); a `DRIVE` to the cell four along the road the tank
+/// faces reads `Steering for cell x,y.`, and the arena's motor brings the tank
+/// there and says `DRIVE: arrived.` within the wait — the muster is 580 m from
+/// the ford, too far for one — and `HEADING 180` is then the pilot's again:
+/// the tank, mustered facing east and driven east, turns in place until
+/// `STATUS` reads `heading 180°`, a heading nothing but the typed order gives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m1a4_a_pilot_drives_to_a_spot_and_a_cell_and_takes_the_helm_back() {
+    let server = boot("sim-cockpit-drive", Duration::from_secs(120)).await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god, "Simulator Lobby").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    take_off(&mut ada, &mut bo).await;
+
+    // Cold, it is refused as `HEADING` is.
+    let seen = ask(&mut ada, "DRIVE The Ford", POWER_NOT_ONLINE).await;
+    assert!(seen.contains(POWER_NOT_ONLINE), "{seen}");
+    let up = ada.mark();
+    say(&mut ada, "STARTUP", "Startup sequence").await;
+    wait_for_notice(&mut ada, up, "Power online.").await;
+
+    let seen = ask(&mut ada, "DRIVE The Ford", "Steering for").await;
+    assert!(seen.contains("Steering for The Ford (A)."), "{seen}");
+    say(&mut ada, "DRIVE HOLD", "Holding here.").await;
+    let brief = ask_whole(&mut ada, "VIEW BRIEF").await;
+    let (x, y) = m1a4_you_at(&brief);
+    let to = (x + 4, y);
+    let mark = ada.mark();
+    let seen = ask(
+        &mut ada,
+        &format!("DRIVE {},{}", to.0, to.1),
+        "Steering for cell",
+    )
+    .await;
+    assert!(
+        seen.contains(&format!("Steering for cell {},{}.", to.0, to.1)),
+        "{seen}"
+    );
+    ada.expect_after(mark, "DRIVE: arrived.").await;
+    let told = strip_ansi(&ada.seen[mark..]);
+    assert!(!told.contains("DRIVE refused"), "{told}");
+    assert!(!told.contains("no route"), "{told}");
+
+    let seen = ask(&mut ada, "STATUS", "power").await;
+    assert!(!seen.contains("heading 180°"), "the premise: {seen}");
+    say(&mut ada, "HEADING 180", "Steering to 180").await;
+    // `STATUS` prints the heading unpadded (`heading 180°`); the tank turns in
+    // place, and `STATUS` reads the last frame, so wait for a few pulses.
+    let mut seen = String::new();
+    for _ in 0..RETRY_BUDGET {
+        seen = ask_whole(&mut ada, "STATUS").await;
+        if seen.contains("heading 180°") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(seen.contains("heading 180°"), "{seen}");
+    let told = strip_ansi(&ada.seen[mark..]);
+    assert_eq!(
+        told.matches("DRIVE: arrived.").count(),
+        1,
+        "the drive said its arrival once: {told}"
+    );
+}

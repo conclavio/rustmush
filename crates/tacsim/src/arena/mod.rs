@@ -277,8 +277,8 @@ pub use heat::{COOL_CAUSE, MILLI, SHOT_CAUSE};
 pub use horizon::{Horizon, HorizonSight};
 pub use index::{SpatialIndex, range_cm};
 pub use intents::{
-    Control, ControlState, Intent, IntentKind, IntentOutcome, IntentSource, Refusal, apply_control,
-    apply_intent, drain_pending, resolve_emcon, resolve_startup,
+    Control, ControlState, Intent, IntentKind, IntentOutcome, IntentSource, MotorGoal, Refusal,
+    apply_control, apply_intent, drain_pending, resolve_emcon, resolve_startup,
 };
 pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, LedgerFull};
 pub use motion::{Held, MotionOutcome, cos_fx, integrate, sin_fx};
@@ -286,9 +286,9 @@ pub use motor::{Fallback, MotorOutcome, MotorPlan, MotorRow, MotorTable};
 pub use observer::{Observer, ObserverUnit};
 pub use path::{PathFailure, PathResult, PathScratch, min_move_cost, path_with};
 pub use perception::{
-    Aspect, FULL_SIGNATURE_PERMILLE, FrameCondition, FrameContact, FrameOdds, FrameOrder,
-    MindObjective, Named, PerceptionCounters, SensorProfile, SignatureFactor, ThermalSignature,
-    bearing_mdeg, bearing_of, contact_refusal, sees,
+    Aspect, DriveOutcome, FULL_SIGNATURE_PERMILLE, FrameCondition, FrameContact, FrameOdds,
+    FrameOrder, MindObjective, Named, PerceptionCounters, SensorProfile, SignatureFactor,
+    ThermalSignature, bearing_mdeg, bearing_of, contact_refusal, sees,
 };
 pub use reflex::{
     ARRIVE_CELLS, REFLEX_AVOID_MAX, REFLEX_AVOID_TTL_MS, REFLEX_STAND_TICKS, ReflexCounters,

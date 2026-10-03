@@ -3215,6 +3215,24 @@ pub enum DueKind {
         /// The contact it lost.
         contact: ContactId,
     },
+    /// **The motor's cadence for a hull no reflex tick drives** (17b cut M1a.4;
+    /// doc 17 §4 D-UM-3) — a pilot's `DRIVE` since that cut, a mind's `goto`
+    /// since 17b cut M1a.5 — due every `arena.reflex.decide_ms` of arena time
+    /// on the stagger grid [`DueKind::ReflexTick`] runs on, while the hull's
+    /// motor row holds a goal.
+    ///
+    /// It is a due event for [`DueKind::ReflexTick`]'s own reason: the drive
+    /// is applied at its own arena timestamp, so the same route is followed at
+    /// the same milliseconds at 5,000, 1,000 and 500 ms. Scheduled once per
+    /// engagement by `Arena::engage_motor` (a goal landing finds the heap
+    /// holding one or not), applied by `Arena::motor_step`, rescheduled from
+    /// its own `t_ms` while a goal stands, and taken off the heap with the rest
+    /// of a wreck's work. A reflex hull's drive runs inside its own tick and
+    /// schedules none of these.
+    MotorTick {
+        /// The hull being driven.
+        unit: ObjId,
+    },
 }
 
 /// One scheduled event: its arena timestamp, its insertion sequence, and what it

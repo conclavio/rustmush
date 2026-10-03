@@ -852,13 +852,11 @@ impl Arena {
     /// the first `units` milliseconds of each second. It is
     /// [`crate::arena::rng::stagger_ms`] now, the pass's own rule, and the grid
     /// formula around it is unchanged.
+    ///
+    /// **17b cut M1a.4** lifted the formula, verbatim, into `Arena::grid_at`,
+    /// which the motor's own tick (`DueKind::MotorTick`) is scheduled on too.
     fn schedule_reflex_tick(&mut self, unit: ObjId) {
-        let cadence = i64::from(self.arena_cfg.reflex.decide_ms.max(1));
-        let offset = crate::arena::rng::stagger_ms(self.seed, unit, cadence);
-        let mut at = self.now_ms - self.now_ms.rem_euclid(cadence) + offset;
-        if at < self.now_ms {
-            at = at.saturating_add(cadence);
-        }
+        let at = self.grid_at(unit, i64::from(self.arena_cfg.reflex.decide_ms.max(1)));
         self.due
             .schedule(at, DueKind::ReflexTick { unit, tick_seq: 0 });
     }
@@ -3022,6 +3020,9 @@ impl Arena {
                 | IntentKind::ReleaseOrder { .. } => {}
                 // 16b cut I.3: a staff act; a machine never issues one.
                 IntentKind::Place { .. } => {}
+                // 17b cut M1a.4: the reflex controller drives its own goals
+                // inside its tick and never hands the motor a `Goal`.
+                IntentKind::Goal(_) => {}
                 // **16b cut O.2**: a machine never switches its pod, so it keeps
                 // the switch where it found it — on for every machine that
                 // fielded the tank (the owner's default at check-out), but

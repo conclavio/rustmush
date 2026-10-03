@@ -763,6 +763,11 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
+name = "drive"
+category = "authoritative"
+note = "17b cut M1a.4 (doc 17 section 4 D-UM-3 and D-UM-10, with the declared departure that the word is DRIVE and not GOTO because core's baseline `goto` (aliases `go`, `move`) holds that name and the command registry refuses a collision; doc 16 section 3.7 Verbs). The sixteenth cockpit selector (eighteen verbs with BOARD and EXIT): DRIVE <spot|x,y|HOLD|OFF> stages ONE continuous arena Intent, IntentKind::Goal(MotorGoal), on the helm channel through arena_bridge::forward_intent -- the same forward HEADING uses -- and the arena counts it on the seat's per-unit rate. The arena's motor (crates/tacsim/src/arena/motor.rs) then drives the unit on DueKind::MotorTick and says `DRIVE: arrived.` or `DRIVE: no route from here; holding.` as frame notices; a HEADING or SPEED the pilot types afterward takes the helm back. No document, no world mutation, no prepared mechanic: it is an order to the arena, which authorises it again at apply. Contextual on a focused station of a deployed unit, refused elsewhere in one line (\"You are not at the station of a deployed unit.\") by the tacsim module's CockpitGate. Registered by prefix as the selectors are, so a content verb named drive would never be reached (F.4's warning); and since core's `drop` is a prefix registration too, `dr` -- core `drop`'s shortest prefix before this cut -- is now ambiguous between drive and drop and runs neither, while `dro` stays drop's and `dri` is DRIVE's (pinned by tests/cockpit.rs m1a4_drive_collides_with_no_registered_command; an exact-only `drive`, as 16b cut AP.4 did for `o`, is the lead's call). The baseline `goto` stanza is untouched. The category is `authoritative` with the rest of the cockpit, because the eighteen verbs are one subsystem on one lane and BOARD and EXIT, which carry the writes, cannot be anything else."
+
+[[handler]]
 name = "drop"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"

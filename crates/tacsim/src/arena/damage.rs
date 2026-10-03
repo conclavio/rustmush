@@ -1174,6 +1174,10 @@ impl Arena {
             // `Disabled` state *is* a wreck, so the distribution a report prints
             // has to agree with the field.
             DueKind::ReflexTick { unit, .. } => *unit != target,
+            // **17b cut M1a.4**: and a pilot's `DRIVE` stops driving a wreck —
+            // the motor's tick goes with the rest (its arm would refuse a
+            // wreck anyway; the heap is what the hash and `next_due_ms` read).
+            DueKind::MotorTick { unit } => *unit != target,
             // **16b cut M.2**: the duration bound is the match's, and a wreck's
             // held losses are still said to whoever sits in it — the sweep this
             // event replaced said them too.

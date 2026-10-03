@@ -1,6 +1,6 @@
 # The cockpit
 
-The fifteen verbs you fly a tank with, in the order a pilot uses them. They work
+The sixteen verbs you fly a tank with, in the order a pilot uses them. They work
 while you are at the station of a tank a running match has deployed, and nowhere
 else — `help simulator` is how you get there.
 
@@ -46,6 +46,10 @@ else — `help simulator` is how you get there.
   WATCH [ON|OFF]      push a short block of your own line, your guns and your
                       contacts whenever it would read differently; for line
                       mode. See "Watching from line mode".
+  DRIVE <spot|x,y|HOLD|OFF>
+                      drive to a named spot or a cell on the machine's own
+                      route-finding; HEADING or SPEED takes the helm back. See
+                      "Driving".
 
 `EXIT` climbs out. Once the match is running that is final: see
 `help simulator`.
@@ -79,6 +83,14 @@ not cleared in two seconds does the tank stop and the line arrive. `STATUS`
 carries `HELD` until you order something that frees it.
 Deep water is impassable to a tracked tank; the proving ground has one ford, on
 the east-west road.
+
+**`DRIVE` hands the helm to the tank's own drive-by-wire** — the same bounded
+route-finding the machines use. `DRIVE The Ford` or `DRIVE a` steers for a named
+spot, `DRIVE 12,34` for a cell; the tank finds a route, follows it, slows to
+arrive and stops a cell short, and says `DRIVE: arrived.` A spot no route reaches
+says `DRIVE: no route from here; holding.` and the tank holds where it is.
+`DRIVE HOLD` stops where you are; `DRIVE OFF` lets go; and any `HEADING` or
+`SPEED` you type takes the helm back at once.
 
 ## Names
 
