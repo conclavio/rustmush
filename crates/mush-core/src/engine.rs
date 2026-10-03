@@ -42,7 +42,9 @@ use crate::module::{
     self, GameModule, ModError, ModuleBootData, ModuleOp, SceneId, TickCadence, WorldEvent,
 };
 use crate::obj::{GOD, ObjId};
-use crate::output::{ConnId, DeliveryClass, Outbox, name_span};
+use crate::output::{
+    ConnId, DeliveryClass, OUTPUT_PREFIX_TAG, OUTPUT_SUFFIX_TAG, Outbox, name_span,
+};
 use crate::sched::{ScheduledKind, Scheduler, TimerId};
 use crate::world::World;
 
@@ -3033,9 +3035,57 @@ impl Engine {
     /// work lands in `fx` (and timers in [`Engine::sched`]). Returns
     /// whether the loop should keep running.
     pub fn step(&mut self, msg: Inbound, out: &mut Outbox, fx: &mut Effects) -> StepOutcome {
+        // 16b cut AP.4 (16c `N20`): a connection's `OUTPUTPREFIX` and
+        // `OUTPUTSUFFIX` go round the WHOLE step of every non-empty typed
+        // line, not round the `Cmd` arm's body alone — `drain_deferred` below
+        // answers the same line (`Queued.` for an authoritative submit, the
+        // fan-out and capture refusals, `Too many commands queued.`).
+        //
+        // - The prefix is read BEFORE the body and pushed first, `BestEffort`:
+        //   the world task transmits a committing step's `BestEffort` sends
+        //   before it awaits the ack and an aborted step still releases them,
+        //   so the prefix is first on the wire on every outcome.
+        // - The suffix is read AFTER the body (so `OUTPUTSUFFIX <<<` prints
+        //   its own `<<<`, a bare `OUTPUTSUFFIX` prints none, and the line
+        //   that sets a prefix is not prefixed) and pushed last, after the
+        //   drain, as `DeliveryClass::Trailer`: held with the step's last
+        //   batch and released on every outcome, so it closes a committing
+        //   line's `Set.` after the ack and an aborted write's refusal alike.
+        //   `OnCommit` would vanish on an abort; `BestEffort` would go out
+        //   before the ack, ahead of what it closes.
+        //
+        // The one gap: between the prefix and a committing line's suffix the
+        // ack is awaited, and a notice from another step can be transmitted
+        // to the connection in that window (`help macros` says so). A line
+        // 16b cut B.5's defer queue held re-enters this `step` when served,
+        // so its brackets wrap its own answer in its own turn; `Huh?` is
+        // dispatched and so sits inside. An empty line is not bracketed.
+        let bracketed = match &msg {
+            Inbound::Cmd { conn, actor, line }
+                if self.world.get(*actor).is_some() && !line.trim().is_empty() =>
+            {
+                Some(*conn)
+            }
+            _ => None,
+        };
+        if let Some(conn) = bracketed
+            && let Some(prefix) = self
+                .world
+                .output_brackets(conn)
+                .and_then(|row| row.prefix.clone())
+        {
+            out.best_effort_to_conn(
+                conn,
+                OutputEvent::Sys(RichText::tag(OUTPUT_PREFIX_TAG, prefix)),
+            );
+        }
         let outcome = match msg {
             Inbound::Cmd { conn, actor, line } => {
                 if self.world.get(actor).is_some() {
+                    // 16b cut AP.4: the connection whose line this is, for
+                    // `OUTPUTPREFIX`/`OUTPUTSUFFIX` (a handler holds the World
+                    // and no connection); `None` again once the body is done.
+                    self.world.set_dispatching_conn(Some(conn));
                     // Line-mode answer to a server-initiated request
                     // (interface plan I10): `respond <arg>` when the actor has
                     // a pending request resolves it without an idle stamp (an
@@ -3060,6 +3110,7 @@ impl Engine {
                             crate::action_state::TypedStateLens::Live(&self.action_state),
                         );
                     }
+                    self.world.set_dispatching_conn(None);
                 } else {
                     tracing::warn!(%actor, "Cmd for missing actor dropped");
                 }
@@ -3134,6 +3185,19 @@ impl Engine {
             }
         };
         self.drain_deferred(out, fx);
+        // 16b cut AP.4: the suffix, read now (after the body) and pushed last
+        // as a `Trailer` — see the head of this function.
+        if let Some(conn) = bracketed
+            && let Some(suffix) = self
+                .world
+                .output_brackets(conn)
+                .and_then(|row| row.suffix.clone())
+        {
+            out.trailer_to_conn(
+                conn,
+                OutputEvent::Sys(RichText::tag(OUTPUT_SUFFIX_TAG, suffix)),
+            );
+        }
         outcome
     }
 
@@ -3307,6 +3371,9 @@ impl Engine {
         from_linkdead: bool,
         out: &mut Outbox,
     ) {
+        // 16b cut AP.4: a new connection starts with no reply brackets, even
+        // on an id a closed one might have left a row under.
+        self.world.clear_output_brackets(conn);
         self.conn_up_inner(conn, actor, caps_structured, from_linkdead, true, out);
     }
 
@@ -3444,6 +3511,12 @@ impl Engine {
     /// into movement during an integrity freeze. The render addresses the actor,
     /// so a multi-connected session renders once and the gateway fans it out to
     /// every held connection.
+    ///
+    /// It touches no `OUTPUTPREFIX`/`OUTPUTSUFFIX` row (16b cut AP.4): the
+    /// brackets are World state, and `ReAttachRec` carries a connection, its
+    /// actor and its capability bit and nothing else, so a restart leaves a
+    /// re-attached connection's brackets cleared and a script that reads the
+    /// restart notice sets them again.
     pub fn reattach(
         &mut self,
         conn: ConnId,
@@ -3468,6 +3541,8 @@ impl Engine {
     }
 
     fn conn_down(&mut self, conn: ConnId, actor: ObjId, reason: DisconnectKind, out: &mut Outbox) {
+        // 16b cut AP.4: a connection's reply brackets end with it.
+        self.world.clear_output_brackets(conn);
         let Some(info) = self.conns.remove(&conn) else {
             tracing::debug!(conn, %actor, "ConnDown for untracked connection ignored");
             return;
@@ -7021,5 +7096,328 @@ mod tests {
             &mut fx,
         );
         assert!(out.is_empty());
+    }
+
+    /// 16b cut AP.4 (16c `N20`): `OUTPUTPREFIX`/`OUTPUTSUFFIX` are a setting
+    /// of ONE connection, silent, and `Engine::step` pushes them round every
+    /// non-empty typed line's whole step on that connection — the prefix first
+    /// (`BestEffort`, read before the body), the suffix last (`Trailer`, read
+    /// after it) — and on no other connection. Refusals keep the old value;
+    /// `ConnDown` clears the row, a re-used id starts clean, and a restart
+    /// (a fresh World, then `reattach`) leaves none.
+    #[test]
+    fn ap4_a_bracketed_connection_reads_its_prefix_first_and_its_suffix_last_round_each_line() {
+        use crate::request::{RequestCompletion, RequestOutcome};
+        use mush_proto::{RequestKind, RequestOption};
+
+        struct AskDone;
+        impl RequestCompletion for AskDone {
+            fn on_respond(&self, ctx: &mut Ctx<'_>, _payload: &str, _outcome: RequestOutcome) {
+                ctx.out.info(ctx.actor, "answered");
+            }
+        }
+        struct AskModule;
+        impl GameModule for AskModule {
+            fn name(&self) -> &'static str {
+                "ask"
+            }
+            fn register(&mut self, reg: &mut module::Registrar<'_>) -> Result<(), ModError> {
+                reg.classify_commands(crate::CommandCompatibility::ReadOnly);
+                reg.request_completion(Arc::new(AskDone))?;
+                reg.command(
+                    CommandSpec {
+                        name: "@ask".into(),
+                        ..CommandSpec::default()
+                    },
+                    Arc::new(|ctx: &mut Ctx<'_>| {
+                        let subject = ctx.actor;
+                        ctx.open_request(
+                            subject,
+                            RequestKind::Choice,
+                            RichText::plain("pick"),
+                            vec![RequestOption {
+                                id: "razor".into(),
+                                label: "Razor".into(),
+                            }],
+                            60_000,
+                            "p1",
+                        );
+                        Ok(())
+                    }),
+                )?;
+                Ok(())
+            }
+        }
+
+        fn fresh_engine() -> Engine {
+            let mut world = World::new_minimal();
+            world.set_now(1_000);
+            let mut registry = Registry::new();
+            register_core_commands(&mut registry).unwrap();
+            register_engine_commands(&mut registry).unwrap();
+            Engine::with_modules(world, registry, vec![Box::new(AskModule)]).unwrap()
+        }
+        fn conn_up(engine: &mut Engine, conn: ConnId) {
+            let (mut out, mut fx) = (Outbox::new(), Effects::new());
+            engine.step(
+                Inbound::ConnUp {
+                    conn,
+                    actor: GOD,
+                    caps_structured: false,
+                    from_linkdead: false,
+                },
+                &mut out,
+                &mut fx,
+            );
+        }
+        fn typed(engine: &mut Engine, conn: ConnId, line: &str) -> Outbox {
+            let (mut out, mut fx) = (Outbox::new(), Effects::new());
+            engine.step(
+                Inbound::Cmd {
+                    conn,
+                    actor: GOD,
+                    line: line.into(),
+                },
+                &mut out,
+                &mut fx,
+            );
+            out
+        }
+        /// Every event addressed to one connection, with its class and text.
+        fn to_conn(out: &Outbox, conn: ConnId) -> Vec<(DeliveryClass, String)> {
+            out.classes()
+                .iter()
+                .zip(out.events())
+                .filter(|(_, (aud, _))| *aud == Audience::Conn(conn))
+                .map(|(class, (_, event))| {
+                    let text = match event {
+                        OutputEvent::Sys(t) => t.to_plain_text(),
+                        other => format!("{other:?}"),
+                    };
+                    (*class, text)
+                })
+                .collect()
+        }
+        let prefix = (DeliveryClass::BestEffort, ">>>".to_string());
+        let suffix = (DeliveryClass::Trailer, "<<<".to_string());
+        const BAD_TEXT_REFUSAL: &str =
+            "OUTPUTPREFIX refused. The text is at most 256 printable characters.";
+
+        let mut engine = fresh_engine();
+        conn_up(&mut engine, 1);
+        conn_up(&mut engine, 2);
+
+        // Silent on success: no event to either connection, or to the actor.
+        let out = typed(&mut engine, 1, "OUTPUTPREFIX >>>");
+        assert!(out.is_empty(), "{:?}", texts(&out));
+        assert_eq!(
+            engine
+                .world
+                .output_brackets(1)
+                .and_then(|r| r.prefix.as_deref()),
+            Some(">>>")
+        );
+        assert_eq!(engine.world.output_brackets(2), None);
+        assert_eq!(engine.world.dispatching_conn(), None);
+
+        // The prefix stood; the suffix is read after the body, so the line
+        // that sets it is closed by it.
+        let mut out = typed(&mut engine, 1, "OUTPUTSUFFIX <<<");
+        assert_eq!(
+            out.take_classified()
+                .into_iter()
+                .map(|(class, aud, event)| (class, aud, format!("{event:?}")))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    DeliveryClass::BestEffort,
+                    Audience::Conn(1),
+                    format!(
+                        "{:?}",
+                        OutputEvent::Sys(RichText::tag(crate::OUTPUT_PREFIX_TAG, ">>>"))
+                    ),
+                ),
+                (
+                    DeliveryClass::Trailer,
+                    Audience::Conn(1),
+                    format!(
+                        "{:?}",
+                        OutputEvent::Sys(RichText::tag(crate::OUTPUT_SUFFIX_TAG, "<<<"))
+                    ),
+                ),
+            ]
+        );
+
+        // `look` on conn 1: the prefix first, the room (actor-addressed), the
+        // suffix last; conn 2 is addressed by the room alone (the actor fan-out).
+        let mut out = typed(&mut engine, 1, "look");
+        let all = out.take_classified();
+        assert!(all.len() >= 3, "{all:?}");
+        assert_eq!(
+            (all[0].0, &all[0].1),
+            (DeliveryClass::BestEffort, &Audience::Conn(1))
+        );
+        assert_eq!(
+            (all[all.len() - 1].0, &all[all.len() - 1].1),
+            (DeliveryClass::Trailer, &Audience::Conn(1))
+        );
+        assert!(
+            all[1..all.len() - 1]
+                .iter()
+                .all(|(_, aud, _)| *aud == Audience::Actor(GOD)),
+            "the body is the room, to the actor: {all:?}"
+        );
+        assert!(
+            all.iter().all(|(_, aud, _)| *aud != Audience::Conn(2)),
+            "conn 2 reads no bracket: {all:?}"
+        );
+
+        // `look` on conn 2: no bracket anywhere.
+        let out = typed(&mut engine, 2, "look");
+        assert!(!out.is_empty());
+        assert!(
+            out.events()
+                .iter()
+                .all(|(aud, _)| !matches!(aud, Audience::Conn(_))),
+            "{:?}",
+            texts(&out)
+        );
+
+        // An empty line is not bracketed.
+        assert!(typed(&mut engine, 1, "   ").is_empty());
+
+        // `Huh?` is dispatched, so it sits inside.
+        let out = typed(&mut engine, 1, "xyzzyplugh");
+        assert_eq!(to_conn(&out, 1), vec![prefix.clone(), suffix.clone()]);
+        assert!(
+            texts(&out).iter().any(|t| t.starts_with("Huh?")),
+            "{:?}",
+            texts(&out)
+        );
+
+        // What `drain_deferred` answers the line with sits INSIDE the pair:
+        // the suffix is pushed after the drain, not by the `Cmd` arm. `@ask`'s
+        // body only queues the request; the drain delivers it.
+        let out = typed(&mut engine, 1, "@ask");
+        assert_eq!(to_conn(&out, 1), vec![prefix.clone(), suffix.clone()]);
+        let request_at = out
+            .events()
+            .iter()
+            .position(|(_, event)| matches!(event, OutputEvent::Request { .. }))
+            .expect("the drain delivers the request");
+        assert_eq!(out.classes().first(), Some(&DeliveryClass::BestEffort));
+        assert_eq!(out.classes().last(), Some(&DeliveryClass::Trailer));
+        assert!(
+            0 < request_at && request_at + 1 < out.events().len(),
+            "the drained request sits between the prefix and the suffix: {:?}",
+            out.events()
+        );
+        // The drain's own refusal likewise: `@wait` past the per-actor cap is
+        // answered `Too many commands queued.` by `drain_deferred`.
+        for _ in 0..WAIT_QUEUE_MAX {
+            typed(&mut engine, 1, "@wait 60=think tick");
+        }
+        let out = typed(&mut engine, 1, "@wait 60=think overflow");
+        let refused_at = texts(&out)
+            .iter()
+            .position(|t| t == "Too many commands queued.")
+            .expect("the drain refuses the line past the cap");
+        assert_eq!(
+            texts(&out).first().map(String::as_str),
+            Some(">>>"),
+            "{:?}",
+            texts(&out)
+        );
+        assert_eq!(
+            texts(&out).last().map(String::as_str),
+            Some("<<<"),
+            "{:?}",
+            texts(&out)
+        );
+        assert!(
+            0 < refused_at && refused_at + 1 < texts(&out).len(),
+            "the drain's refusal sits inside the pair: {:?}",
+            texts(&out)
+        );
+        assert_eq!(out.classes().last(), Some(&DeliveryClass::Trailer));
+
+        // A `respond` line answering a pending request is bracketed too.
+        let out = typed(&mut engine, 1, "respond 1");
+        assert_eq!(to_conn(&out, 1), vec![prefix.clone(), suffix.clone()]);
+        assert!(
+            texts(&out).iter().any(|t| t == "answered"),
+            "{:?}",
+            texts(&out)
+        );
+
+        // Bare `OUTPUTPREFIX` clears the prefix (the clearing line is itself
+        // still prefixed: the prefix is read before the body).
+        let out = typed(&mut engine, 1, "OUTPUTPREFIX");
+        assert_eq!(to_conn(&out, 1), vec![prefix.clone(), suffix.clone()]);
+        let out = typed(&mut engine, 1, "look");
+        assert_eq!(to_conn(&out, 1), vec![suffix.clone()]);
+        assert_eq!(out.classes().last(), Some(&DeliveryClass::Trailer));
+
+        // A 257-character text is refused; the old value is kept.
+        let out = typed(&mut engine, 1, &format!("OUTPUTSUFFIX {}", "x".repeat(257)));
+        assert!(
+            texts(&out)
+                .iter()
+                .any(|t| t == "OUTPUTSUFFIX refused. The text is at most 256 printable characters."),
+            "{:?}",
+            texts(&out)
+        );
+        assert_eq!(to_conn(&out, 1), vec![suffix.clone()]);
+        // 256 is allowed.
+        let out = typed(&mut engine, 1, &format!("OUTPUTPREFIX {}", "y".repeat(256)));
+        assert!(!texts(&out).iter().any(|t| t.contains("refused")));
+        let out = typed(&mut engine, 1, "OUTPUTPREFIX >>>");
+        assert!(!texts(&out).iter().any(|t| t.contains("refused")));
+        // A control character is refused; the old value is kept.
+        let out = typed(&mut engine, 1, "OUTPUTPREFIX a\u{7}b");
+        assert!(
+            texts(&out).iter().any(|t| t == BAD_TEXT_REFUSAL),
+            "{:?}",
+            texts(&out)
+        );
+        assert_eq!(
+            engine.world.output_brackets(1),
+            Some(&crate::world::OutputBrackets {
+                prefix: Some(">>>".into()),
+                suffix: Some("<<<".into()),
+            })
+        );
+
+        // `ConnDown` clears the row; a `ConnUp` reusing the id starts clean.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::ConnDown {
+                conn: 1,
+                actor: GOD,
+                reason: DisconnectKind::Quit,
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert_eq!(engine.world.output_brackets(1), None);
+        // A row left under an id (never by a live path; planted here) is
+        // cleared by the `ConnUp` that reuses it.
+        engine.world.set_output_prefix(1, Some("stale".into()));
+        conn_up(&mut engine, 1);
+        assert_eq!(engine.world.output_brackets(1), None);
+        let out = typed(&mut engine, 1, "look");
+        assert!(to_conn(&out, 1).is_empty(), "{:?}", texts(&out));
+
+        // A row set, then the server restarts: the new World holds none, and
+        // `reattach` of the held connection makes none.
+        let out = typed(&mut engine, 1, "OUTPUTSUFFIX <<<");
+        assert_eq!(to_conn(&out, 1), vec![suffix.clone()]);
+        assert!(engine.world.output_brackets(1).is_some());
+        let mut restarted = fresh_engine();
+        let mut out = Outbox::new();
+        restarted.reattach(1, GOD, false, &mut out);
+        assert_eq!(restarted.world.output_brackets(1), None);
+        let out = typed(&mut restarted, 1, "look");
+        assert!(to_conn(&out, 1).is_empty(), "{:?}", texts(&out));
     }
 }

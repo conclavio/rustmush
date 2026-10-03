@@ -827,15 +827,26 @@ pub fn opens_contact_sentence(line: &str) -> bool {
     })
 }
 
-/// Whether a line opens one of `VIEW BRIEF`'s sentences (16b cut AG.1).
+/// The brief's own empty-contacts sentence (16b cut AP.4, 16c `N20`;
+/// `cockpit::NO_CONTACTS_IN_WINDOW`), never `CONTACTS`' `No contacts.`.
+pub const BRIEF_NO_CONTACTS: &str = "No contacts in the window.";
+
+/// The brief's fixed last line (16b cut AP.4; `cockpit::BRIEF_END_LINE`).
+pub const BRIEF_END: &str = "End of brief.";
+
+/// Whether a line opens one of `VIEW BRIEF`'s sentences (16b cut AG.1). The
+/// old empty sentence `No contacts.` still opens one, so a brief that said it
+/// fails [`assert_brief_shape`] by name rather than dropping it as a stray.
 fn opens_brief_sentence(line: &str) -> bool {
     line.starts_with("Window around ")
         || opens_bearing_sentence(line)
+        || line == BRIEF_NO_CONTACTS
         || line == "No contacts."
         || opens_contact_sentence(line)
         || line.contains("beyond this window")
         || line.starts_with("In the window:")
         || line.starts_with("Off the window:")
+        || line == BRIEF_END
 }
 
 /// Whether a trimmed terminal line is the reader's own traffic rather than
@@ -882,9 +893,10 @@ fn brief_walk(seen: &str) -> (Vec<String>, Vec<(usize, String)>) {
 /// is trimmed; the typed echo (`VIEW BRIEF`), a sentinel line (every file's
 /// sentinel is a `zzq-…` word) and the parser's `Huh?` are dropped. A line that
 /// **opens a brief sentence** — `Window around `, a bearing word and a colon,
-/// `No contacts.`, a contact sentence (one or two capitals, optional digits,
-/// `, `, a class word, `: bearing `), the beyond-window line (`beyond this
-/// window`), `In the window:` or `Off the window:` — starts a new sentence. A
+/// `No contacts in the window.`, a contact sentence (one or two capitals,
+/// optional digits, `, `, a class word, `: bearing `), the beyond-window line
+/// (`beyond this window`), `In the window:`, `Off the window:` or the closing
+/// `End of brief.` — starts a new sentence. A
 /// line that opens none is a wrapped continuation of the current sentence while
 /// that sentence does not yet end with `.` (the PTY is 80 by 24 and the session
 /// wraps at spaces), joined with one space; otherwise it is dropped — an arena
@@ -908,11 +920,9 @@ pub fn brief_sentences(seen: &str) -> Vec<String> {
 /// whose opener a change mis-worded — a malformed contact sentence, a
 /// re-worded spot line — and every reader asserts this list is empty.
 ///
-/// What it cannot see: a mis-worded line *after* the brief's last recognised
-/// sentence, which is indistinguishable from a notice landing after the brief.
-/// A reader that knows how its brief ends says so directly (`observer_rule`
-/// holds the last sentence to its own `VIEW`'s off-window line, `sim_solo` and
-/// `sim_cockpit` to an `Off the window:` sentence).
+/// Since 16b cut AP.4 a reader knows where its brief ends: `End of brief.` is
+/// the brief's own last line, which [`assert_brief_shape`] requires, so a
+/// mis-worded line before it is inside the brief and reported here.
 #[must_use]
 pub fn brief_strays(seen: &str) -> Vec<String> {
     let (sentences, dropped) = brief_walk(seen);
@@ -925,13 +935,15 @@ pub fn brief_strays(seen: &str) -> Vec<String> {
 
 /// **A brief has its shape, in its order** (16b cut AG.1; `brief_lines`'
 /// order): the header first and once; then the eight bearing sentences in
-/// compass order; then either the one `No contacts.` or one or more contact
-/// sentences, never both; then at most one beyond-window line, at most one
-/// `In the window:` and at most one `Off the window:`, in that order; and
-/// nothing after. Every sentence [`brief_sentences`] opened is placed by this
-/// walk, so a sentence out of its place, doubled, or a `No contacts.` beside a
-/// contact fails here. It reads sentences, so a line that opened none is
-/// [`brief_strays`]' to catch. Panics naming `what`.
+/// compass order; then either the one `No contacts in the window.` or one or
+/// more contact sentences, never both (and never `CONTACTS`' `No contacts.`,
+/// 16b cut AP.4); then at most one beyond-window line, at most one `In the
+/// window:` and at most one `Off the window:`, in that order; then `End of
+/// brief.` (AP.4), last; and nothing after. Every sentence
+/// [`brief_sentences`] opened is placed by this walk, so a sentence out of its
+/// place, doubled, or the empty sentence beside a contact fails here. It reads
+/// sentences, so a line that opened none is [`brief_strays`]' to catch.
+/// Panics naming `what`.
 pub fn assert_brief_shape(sentences: &[String], what: &str) {
     let mut rest = sentences.iter().map(String::as_str).peekable();
     assert!(
@@ -950,7 +962,7 @@ pub fn assert_brief_shape(sentences: &[String], what: &str) {
         );
     }
     if rest
-        .next_if(|sentence| *sentence == "No contacts.")
+        .next_if(|sentence| *sentence == BRIEF_NO_CONTACTS)
         .is_none()
     {
         let mut contacts = 0_usize;
@@ -962,17 +974,19 @@ pub fn assert_brief_shape(sentences: &[String], what: &str) {
         }
         assert!(
             contacts >= 1,
-            "{what}: `No contacts.` or a contact sentence after the bearings:\n{sentences:#?}"
+            "{what}: `{BRIEF_NO_CONTACTS}` or a contact sentence after the bearings:\n{sentences:#?}"
         );
     }
     let _beyond = rest.next_if(|sentence| sentence.contains("beyond this window"));
     let _in_window = rest.next_if(|sentence| sentence.starts_with("In the window:"));
     let _off_window = rest.next_if(|sentence| sentence.starts_with("Off the window:"));
+    let closed = rest.next_if(|sentence| *sentence == BRIEF_END).is_some();
     let left: Vec<&str> = rest.collect();
     assert!(
-        left.is_empty(),
-        "{what}: sentences out of the brief's order (a contact beside `No contacts.`, a \
-         line doubled or out of place): {left:#?}\n{sentences:#?}"
+        closed && left.is_empty(),
+        "{what}: sentences out of the brief's order (a contact beside `{BRIEF_NO_CONTACTS}`, \
+         a line doubled or out of place, `{BRIEF_END}` missing or not last): \
+         {left:#?}\n{sentences:#?}"
     );
 }
 

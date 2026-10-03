@@ -38,6 +38,14 @@ pub enum DeliveryClass {
     /// A refusal/failure response released only when the step aborts (or no
     /// authoritative write was attempted).
     OnAbort,
+    /// Released with the step's LAST batch on every outcome: with the step on
+    /// a `NoWrite`, after the ack on a committing step whether it committed or
+    /// aborted. What a per-line `OUTPUTSUFFIX` rides in (16b cut AP.4, 16c
+    /// `N20`), and nothing else: the world task's before-ack partitions hold
+    /// it with the step's `OnCommit` sends, so it closes everything the line
+    /// answered, the `Set.` of a committing write and the refusal of an
+    /// aborted one alike.
+    Trailer,
 }
 
 /// Durable disposition of the world step that produced a queue.
@@ -59,7 +67,9 @@ impl DeliveryClass {
         match outcome {
             DeliveryOutcome::NoWrite => true,
             DeliveryOutcome::Committed => !matches!(self, Self::OnAbort),
-            DeliveryOutcome::Aborted => matches!(self, Self::BestEffort | Self::OnAbort),
+            DeliveryOutcome::Aborted => {
+                matches!(self, Self::BestEffort | Self::OnAbort | Self::Trailer)
+            }
         }
     }
 }
@@ -68,6 +78,16 @@ impl DeliveryClass {
 /// opaque handle to address one specific connection (pre-login prompts,
 /// per-connection routing); `mush-session` owns allocation and delivery.
 pub type ConnId = u64;
+
+/// The [`RichText`] tag of a connection's `OUTPUTPREFIX` line (16b cut AP.4,
+/// 16c `N20`): a `Sys` event addressed to that one connection, pushed by
+/// `Engine::step` first in every typed line's step, `BestEffort`.
+pub const OUTPUT_PREFIX_TAG: &str = "output-prefix";
+
+/// The [`RichText`] tag of a connection's `OUTPUTSUFFIX` line (16b cut AP.4):
+/// pushed by `Engine::step` last in every typed line's step, after its drain,
+/// as a [`DeliveryClass::Trailer`].
+pub const OUTPUT_SUFFIX_TAG: &str = "output-suffix";
 
 /// The reserved relay sink staff-facing lines go to (interface programme D5):
 /// `+request` filings and staff alerts are published here as well, and the
@@ -170,6 +190,13 @@ impl Outbox {
     /// mutation committed.
     pub fn best_effort_to_conn(&mut self, conn: ConnId, event: OutputEvent) {
         self.push_classified(DeliveryClass::BestEffort, Audience::Conn(conn), event);
+    }
+
+    /// Queue a connection's per-line suffix (16b cut AP.4): class
+    /// [`DeliveryClass::Trailer`], released with the step's last batch on
+    /// every outcome. `Engine::step` alone calls it, after the step's drain.
+    pub fn trailer_to_conn(&mut self, conn: ConnId, event: OutputEvent) {
+        self.push_classified(DeliveryClass::Trailer, Audience::Conn(conn), event);
     }
 
     /// Queue an error-styled, non-authoritative diagnostic to one actor.
@@ -769,6 +796,36 @@ mod tests {
         assert!(DeliveryClass::BestEffort.releases_on(DeliveryOutcome::Aborted));
         assert!(DeliveryClass::OnAbort.releases_on(DeliveryOutcome::Aborted));
         assert!(!DeliveryClass::OnAbort.releases_on(DeliveryOutcome::Committed));
+    }
+
+    /// 16b cut AP.4: a `Trailer` (a connection's `OUTPUTSUFFIX`) is released
+    /// on every outcome, and the four older classes answer as they did.
+    #[test]
+    fn ap4_a_trailer_releases_on_every_outcome_and_the_old_classes_are_unchanged() {
+        let outcomes = [
+            DeliveryOutcome::NoWrite,
+            DeliveryOutcome::Committed,
+            DeliveryOutcome::Aborted,
+        ];
+        for outcome in outcomes {
+            assert!(DeliveryClass::Trailer.releases_on(outcome), "{outcome:?}");
+        }
+        let table = [
+            (DeliveryClass::OnCommit, [true, true, false]),
+            (DeliveryClass::Recoverable, [true, true, false]),
+            (DeliveryClass::DurableOutbox, [true, true, false]),
+            (DeliveryClass::BestEffort, [true, true, true]),
+            (DeliveryClass::OnAbort, [true, false, true]),
+        ];
+        for (class, answers) in table {
+            for (outcome, answer) in outcomes.into_iter().zip(answers) {
+                assert_eq!(class.releases_on(outcome), answer, "{class:?} {outcome:?}");
+            }
+        }
+        let mut out = Outbox::new();
+        out.trailer_to_conn(7, OutputEvent::Sys(RichText::tag(OUTPUT_SUFFIX_TAG, "<<<")));
+        assert_eq!(out.classes(), &[DeliveryClass::Trailer]);
+        assert_eq!(out.events()[0].0, Audience::Conn(7));
     }
 
     #[test]

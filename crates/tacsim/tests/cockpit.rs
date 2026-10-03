@@ -2919,11 +2919,13 @@ fn the_brief_golden_is_what_brief_lines_produces() {
 
 /// **16b cut AG.1: the brief's order** — the header, the eight bearings in
 /// compass order, the contacts in frame order, the beyond-window line, the
-/// spots the legend names in the window, the spots off it — sixteen lines on the
-/// scene; and TWELVE with the scene's contacts cleared, over a window rebuilt
-/// from that cleared frame (a payload the server could send): `No contacts.`,
-/// no beyond line, and `B` The Roof named in the window now that nothing covers
-/// it.
+/// spots the legend names in the window, the spots off it and (16b cut AP.4)
+/// `End of brief.` — seventeen lines on the scene; and THIRTEEN with the
+/// scene's contacts cleared, over a window rebuilt from that cleared frame (a
+/// payload the server could send): `No contacts in the window.` (the brief's
+/// own sentence since AP.4, never `CONTACTS`' `No contacts.`), no beyond line,
+/// `B` The Roof named in the window now that nothing covers it, and the end
+/// line last.
 #[test]
 fn ag1_brief_lines_is_the_header_the_eight_rays_the_contacts_and_the_spots_in_that_order() {
     let (_cockpit, _map, view) = fixture::payloads();
@@ -2934,7 +2936,7 @@ fn ag1_brief_lines_is_the_header_the_eight_rays_the_contacts_and_the_spots_in_th
         &view,
         &BTreeMap::new(),
     );
-    assert_eq!(lines.len(), 16, "{lines:#?}");
+    assert_eq!(lines.len(), 17, "{lines:#?}");
     let line = |n: usize| lines.get(n).map_or("", String::as_str);
     assert!(line(0).starts_with("Window around RA:"), "{}", line(0));
     for (n, (bearing, _, _)) in cockpit::BRIEF_BEARINGS.iter().enumerate() {
@@ -2959,6 +2961,8 @@ fn ag1_brief_lines_is_the_header_the_eight_rays_the_contacts_and_the_spots_in_th
     );
     assert!(line(14).starts_with("In the window:"), "{}", line(14));
     assert!(line(15).starts_with("Off the window:"), "{}", line(15));
+    assert_eq!(line(16), cockpit::BRIEF_END_LINE);
+    assert_eq!(cockpit::BRIEF_END_LINE, "End of brief.");
 
     let mut cleared = fixture::frame();
     cleared.contacts.clear();
@@ -2976,13 +2980,14 @@ fn ag1_brief_lines_is_the_header_the_eight_rays_the_contacts_and_the_spots_in_th
         &window,
         &BTreeMap::new(),
     );
-    assert_eq!(quiet.len(), 12, "12 + C lines at C = 0: {quiet:#?}");
+    assert_eq!(quiet.len(), 13, "13 + C lines at C = 0: {quiet:#?}");
     let quiet_line = |n: usize| quiet.get(n).map_or("", String::as_str);
     assert_eq!(quiet_line(0), line(0), "the same window, the same header");
     for n in 1..=8 {
         assert_eq!(quiet_line(n), line(n), "the ground does not move");
     }
-    assert_eq!(quiet_line(9), "No contacts.");
+    assert_eq!(quiet_line(9), "No contacts in the window.");
+    assert_eq!(quiet_line(9), cockpit::NO_CONTACTS_IN_WINDOW);
     assert_eq!(
         quiet_line(10),
         "In the window: A The Ford, 190 m at 093°; B The Roof, 90 m at 069°."
@@ -2991,6 +2996,7 @@ fn ag1_brief_lines_is_the_header_the_eight_rays_the_contacts_and_the_spots_in_th
         quiet_line(11),
         "Off the window: C The Woods, 490 m at 064°."
     );
+    assert_eq!(quiet_line(12), "End of brief.");
 }
 
 /// **16b cut AG.1: the brief names only what the grid drew**, checked over the
@@ -3004,7 +3010,12 @@ fn ag1_the_brief_names_only_what_the_grid_drew() {
     let (_cockpit, _map, view) = fixture::payloads();
     let brief = include_str!("../../../web/src/lib/fixtures/cockpit/view_brief.txt");
     let lines: Vec<&str> = brief.lines().collect();
-    assert_eq!(lines.len(), 16, "the golden is the sixteen lines: {brief}");
+    assert_eq!(
+        lines.len(),
+        17,
+        "the golden is the seventeen lines: {brief}"
+    );
+    assert_eq!(lines.last(), Some(&"End of brief."), "{brief}");
     let array = |key: &str| {
         view.get(key)
             .and_then(serde_json::Value::as_array)
@@ -5976,10 +5987,11 @@ fn ag1_pushed_a_grid(events: &[(Audience, OutputEvent)]) -> bool {
 }
 
 /// **16b cut AG.1: `VIEW BRIEF` at the muster** — the header naming the
-/// pilot's own callsign, the eight bearings in order, `No contacts.` (the blue
-/// tank is 2,430 m away against a 600 m sight), no in-window spot (the red
-/// window draws none of the five), and the off-window line `VIEW` itself says;
-/// then the status keyframe re-pushed and no grid, and nothing about any unit.
+/// pilot's own callsign, the eight bearings in order, `No contacts in the
+/// window.` (16b cut AP.4; the blue tank is 2,430 m away against a 600 m
+/// sight), no in-window spot (the red window draws none of the five), the
+/// off-window line `VIEW` itself says and `End of brief.`; then the status
+/// keyframe re-pushed and no grid, and nothing about any unit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ag1_view_brief_at_the_muster_is_the_window_in_sentences() {
     let mut rig = Rig::boot(2);
@@ -6002,7 +6014,7 @@ async fn ag1_view_brief_at_the_muster_is_the_window_in_sentences() {
             n + 1
         );
     }
-    assert_eq!(line(9), "No contacts.", "{joined}");
+    assert_eq!(line(9), "No contacts in the window.", "{joined}");
     assert!(
         !said.iter().any(|line| line.starts_with("In the window:")),
         "the muster window names no spot: {joined}"
@@ -6010,7 +6022,8 @@ async fn ag1_view_brief_at_the_muster_is_the_window_in_sentences() {
     let off = cockpit::off_window_spots_line(&spots, &[], &frame.pose, cell_cm)
         .expect("the shipped spots, none drawn");
     assert_eq!(line(10), off, "{joined}");
-    assert_eq!(said.len(), 11, "nothing else is said: {joined}");
+    assert_eq!(line(11), "End of brief.", "{joined}");
+    assert_eq!(said.len(), 12, "nothing else is said: {joined}");
     // The status keyframe, as `CONTACTS` re-pushes it; never the grid.
     let panel = Rig::panel(&events).expect("the brief re-pushes the status keyframe");
     assert!(

@@ -358,7 +358,8 @@ struct Server {
     /// set; unset, a header (`Window around RA: cells 0 to 38 east and 88 to
     /// 107 north of 256 by 256; you at (6, 97), heading 090°; 10 m a cell.`),
     /// the eight bearings as `{Bearing}: 90 m of grass, then beyond the
-    /// window.` and `No contacts.`. The server never moves the tank: a test
+    /// window.`, then `No contacts in the window.` and `End of brief.` (the
+    /// game's cut AP.4 shape). The server never moves the tank: a test
     /// that needs the opening's step to arrive moves `pos` itself.
     brief: Vec<String>,
     /// **The arena's notices on its lattice** (cut AN.3): with `pulse_ms`
@@ -844,7 +845,8 @@ impl Server {
                     ] {
                         lines.push(format!("{bearing}: 90 m of grass, then beyond the window."));
                     }
-                    lines.push("No contacts.".to_owned());
+                    lines.push("No contacts in the window.".to_owned());
+                    lines.push("End of brief.".to_owned());
                     lines
                 } else {
                     self.brief.clone()
@@ -5474,7 +5476,8 @@ fn the_walk_and_the_claim_hold_on_a_slow_wire() {
 // ---------------------------------------------------------------------------
 
 /// The brief the scripted server's `brief` knob answers with: the shipped
-/// header, `rays` and `No contacts.`.
+/// header, `rays`, `No contacts in the window.` and `End of brief.` (the
+/// game's cut AP.4 shape).
 fn brief_of(rays: impl Fn(&str, u32) -> String) -> Vec<String> {
     let mut lines = vec![
         "Window around RA: cells 0 to 38 east and 88 to 107 north of 256 by 256; you at (6, 97), \
@@ -5484,7 +5487,8 @@ fn brief_of(rays: impl Fn(&str, u32) -> String) -> Vec<String> {
     for (word, deg) in mush_bot::arena::lines::BRIEF_BEARINGS {
         lines.push(rays(word, deg));
     }
-    lines.push("No contacts.".to_owned());
+    lines.push("No contacts in the window.".to_owned());
+    lines.push("End of brief.".to_owned());
     lines
 }
 

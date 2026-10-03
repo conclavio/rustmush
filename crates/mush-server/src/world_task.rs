@@ -135,12 +135,12 @@ use mush_config::metrics::{LlmFeatureStat, LlmTodaySpend, Metrics, WorldSample};
 use mush_core::commands::movement::find_exit;
 use mush_core::{
     Audience, ControlMsg, DeliveryClass, DeliveryOutcome, DisconnectKind, Effect, Effects, Engine,
-    Flags, Inbound, IncidentId, LegalActionQuery, ObjId, ObjKind, OfferExecutionContext,
-    OfferRouteTable, OfferSubmission, Outbox, PerceivedRef, PreparedInstallation, PrincipalId,
-    Privileges, ProjectedLegalAction, ReceiptProjectionTable, Registry, Role, ScheduledKind,
-    StagedAction, StepOutcome, TickCadence, TypedStateLens, World, WorldCommand, WorldEvent,
-    can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
-    register_engine_commands, spoof_for_listener,
+    Flags, Inbound, IncidentId, LegalActionQuery, OUTPUT_PREFIX_TAG, OUTPUT_SUFFIX_TAG, ObjId,
+    ObjKind, OfferExecutionContext, OfferRouteTable, OfferSubmission, Outbox, OutputBrackets,
+    PerceivedRef, PreparedInstallation, PrincipalId, Privileges, ProjectedLegalAction,
+    ReceiptProjectionTable, Registry, Role, ScheduledKind, StagedAction, StepOutcome, TickCadence,
+    TypedStateLens, World, WorldCommand, WorldEvent, can_perceive, event_subject, is_ignoring,
+    narrative_actor, register_core_commands, register_engine_commands, spoof_for_listener,
 };
 use mush_ipc::{
     ActionSend, DiscordControlOp, GatewayAction, GatewayInput, GatewayRequest,
@@ -4516,7 +4516,8 @@ async fn run(
                                         if is_typed_line(&msg) {
                                             metrics.command_processed();
                                         }
-                                        refuse_world_msg(msg, reason, &gateway);
+                                        let brackets = output_brackets_of(&engine.world, &msg);
+                                        refuse_world_msg(msg, reason, &gateway, brackets);
                                     }
                                 },
                             }
@@ -4524,7 +4525,8 @@ async fn run(
                             if is_typed_line(&msg) {
                                 metrics.command_processed();
                             }
-                            refuse_world_msg(msg, reason, &gateway);
+                            let brackets = output_brackets_of(&engine.world, &msg);
+                            refuse_world_msg(msg, reason, &gateway, brackets);
                         }
                         StepOutcome::Continue
                     }
@@ -4539,7 +4541,8 @@ async fn run(
                         if is_typed_line(&msg) {
                             metrics.command_processed();
                         }
-                        refuse_world_msg(msg, RefusalReason::StoreUnavailable, &gateway);
+                        let brackets = output_brackets_of(&engine.world, &msg);
+                        refuse_world_msg(msg, RefusalReason::StoreUnavailable, &gateway, brackets);
                         StepOutcome::Continue
                     }
                     Admission::Allow => match msg {
@@ -4876,7 +4879,8 @@ async fn run(
                     if is_typed_line(&msg) {
                         metrics.command_processed();
                     }
-                    refuse_world_msg(msg, RefusalReason::CommitTimedOut, &gateway);
+                    let brackets = output_brackets_of(&engine.world, &msg);
+                    refuse_world_msg(msg, RefusalReason::CommitTimedOut, &gateway, brackets);
                     metrics.command_defer_timed_out();
                 }
                 StepOutcome::Continue
@@ -5765,7 +5769,8 @@ async fn run(
                             if is_typed_line(&msg) {
                                 metrics.command_processed();
                             }
-                            refuse_world_msg(msg, RefusalReason::CommitPending, &gateway);
+                            let brackets = output_brackets_of(&engine.world, &msg);
+                            refuse_world_msg(msg, RefusalReason::CommitPending, &gateway, brackets);
                         }
                         DeferEntry::Barrier(reply) => {
                             settle_barrier(reply, pending_commit.as_mut(), &metrics);
@@ -5778,7 +5783,8 @@ async fn run(
                     // not need queue capacity, and the prior exact commit gets
                     // a bounded grace period to finish normally.
                     if let Some(blocked) = deferred_world_msg.take() {
-                        refuse_world_msg(blocked, RefusalReason::CommitPending, &gateway);
+                        let brackets = output_brackets_of(&engine.world, &blocked);
+                        refuse_world_msg(blocked, RefusalReason::CommitPending, &gateway, brackets);
                     }
                     deferred_world_msg =
                         Some(WorldMsg::Inbound(Inbound::Control(ControlMsg::Shutdown)));
@@ -6470,7 +6476,8 @@ async fn run(
                 if is_typed_line(&msg) {
                     metrics.command_processed();
                 }
-                refuse_world_msg(msg, RefusalReason::CommitPending, &gateway);
+                let brackets = output_brackets_of(&engine.world, &msg);
+                refuse_world_msg(msg, RefusalReason::CommitPending, &gateway, brackets);
             }
             DeferEntry::Barrier(reply) => {
                 let _ = reply.send(Err(WorldReadError::Unavailable));
@@ -6494,10 +6501,32 @@ async fn run(
     }
 }
 
+/// The `OUTPUTPREFIX`/`OUTPUTSUFFIX` row of the connection a typed line came
+/// from (16b cut AP.4), cloned for [`refuse_world_msg`]; `None` for anything
+/// that is not a typed line, and for a connection that set neither.
+fn output_brackets_of(world: &World, msg: &WorldMsg) -> Option<OutputBrackets> {
+    match msg {
+        WorldMsg::Inbound(Inbound::Cmd { conn, .. }) => world.output_brackets(*conn).cloned(),
+        _ => None,
+    }
+}
+
 /// Complete a refused message without ever handing it to the engine. Requests
 /// with typed replies receive a conservative answer instead of hanging; work
 /// without a reply is dropped with a bounded diagnostic.
-fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
+///
+/// `brackets` is the refused typed line's connection row (16b cut AP.4,
+/// [`output_brackets_of`]): a world-task refusal answers the line as the
+/// engine would have, so a connection that set `OUTPUTPREFIX`/`OUTPUTSUFFIX`
+/// reads the prefix, the refusal and the suffix — to that connection, in ONE
+/// transmit so nothing lands between. Without a row the refusal goes to the
+/// actor as it always did.
+fn refuse_world_msg(
+    msg: WorldMsg,
+    reason: RefusalReason,
+    gateway: &Gateway,
+    brackets: Option<OutputBrackets>,
+) {
     // 16b cut B.5: only a typed line hears `CommitTimedOut`'s own sentence.
     // Everything else the defer queue times out — a query (a hydration request,
     // not a typed line) and every reply-carrying read — is refused exactly as
@@ -6508,8 +6537,28 @@ fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
         reason
     };
     match msg {
-        WorldMsg::Inbound(Inbound::Cmd { actor, .. })
-        | WorldMsg::Inbound(Inbound::ConnUp { actor, .. }) => {
+        WorldMsg::Inbound(Inbound::Cmd { conn, actor, .. }) => match brackets {
+            Some(brackets) => {
+                let line = |tag: &str, text: &str| {
+                    (
+                        SendTarget::Conn(conn),
+                        Arc::new(OutputEvent::Sys(RichText::tag(tag, text))),
+                    )
+                };
+                let mut sends = Vec::with_capacity(3);
+                if let Some(prefix) = &brackets.prefix {
+                    sends.push(line(OUTPUT_PREFIX_TAG, prefix));
+                }
+                // Worded and tagged exactly as `send_sys` words it.
+                sends.push(line("system", reason.text()));
+                if let Some(suffix) = &brackets.suffix {
+                    sends.push(line(OUTPUT_SUFFIX_TAG, suffix));
+                }
+                gateway.transmit(sends);
+            }
+            None => send_sys(gateway, actor, reason.text()),
+        },
+        WorldMsg::Inbound(Inbound::ConnUp { actor, .. }) => {
             send_sys(gateway, actor, reason.text());
         }
         WorldMsg::Inbound(Inbound::Query { conn, id, .. }) => {
@@ -6655,6 +6704,10 @@ pub const STORE_READ_ONLY_ALLOWED: &[&str] = &[
     "i",
     // Staff must be able to stop the server while the store is down.
     "@shutdown",
+    // 16b cut AP.4: a connection's reply brackets are one RAM row on the
+    // World; setting one needs no store.
+    "outputprefix",
+    "outputsuffix",
 ];
 
 /// In store-read-only mode, decide whether an inbound message must be refused.
@@ -9345,6 +9398,48 @@ fn resolve_classified_sends(
     sends
 }
 
+/// Whether a failed step's own sends already answer its failure, so the
+/// generic commit-failure sentence would only repeat it: any `BestEffort` or
+/// `OnAbort` send, except a connection's `OUTPUTPREFIX`/`OUTPUTSUFFIX` line
+/// (16b cut AP.4) — framing round an answer is not one.
+fn answers_an_abort(sends: &[ClassifiedSend]) -> bool {
+    sends.iter().any(|(class, _, event)| {
+        matches!(class, DeliveryClass::BestEffort | DeliveryClass::OnAbort)
+            && !is_output_bracket(event)
+    })
+}
+
+/// A connection's `OUTPUTPREFIX` or `OUTPUTSUFFIX` line (16b cut AP.4): a
+/// `Sys` whose first span carries one of the two tags `Engine::step` gives it.
+fn is_output_bracket(event: &OutputEvent) -> bool {
+    match event {
+        OutputEvent::Sys(text) => text.spans().first().is_some_and(|span| {
+            matches!(
+                span.tag.as_deref(),
+                Some(OUTPUT_PREFIX_TAG | OUTPUT_SUFFIX_TAG)
+            )
+        }),
+        _ => false,
+    }
+}
+
+/// Split a held batch at its first `Trailer` (a typed line's `OUTPUTSUFFIX`,
+/// 16b cut AP.4), `(answer, rest)`, the order kept: a failure path releases
+/// the answer, says its own failure sentence, then the rest — the suffix
+/// first — so the sentence sits inside the line's pair. Nothing moves: what
+/// joined the batch after the suffix (another step's commit-bound sends while
+/// the receipt was awaited, a commit's `ActionStateChanged` announce) stays
+/// after it, and a batch without a failure sentence goes out exactly as it
+/// was held. A batch with no `Trailer` is all answer.
+fn split_at_trailer(mut sends: Vec<ClassifiedSend>) -> (Vec<ClassifiedSend>, Vec<ClassifiedSend>) {
+    let at = sends
+        .iter()
+        .position(|(class, _, _)| *class == DeliveryClass::Trailer)
+        .unwrap_or(sends.len());
+    let rest = sends.split_off(at);
+    (sends, rest)
+}
+
 fn release_classified_sends(
     gateway: &Gateway,
     sends: Vec<ClassifiedSend>,
@@ -9580,9 +9675,7 @@ fn complete_pending_commit(
             (DeliveryOutcome::Aborted, Some(detail), true)
         }
     };
-    let has_abort_output = sends
-        .iter()
-        .any(|(class, _, _)| matches!(class, DeliveryClass::BestEffort | DeliveryClass::OnAbort));
+    let has_abort_output = answers_an_abort(&sends);
     if let Some(installation) = prepared_installation {
         if outcome == DeliveryOutcome::Committed {
             // The exact applied receipt is the only transition that makes the
@@ -9699,6 +9792,10 @@ fn complete_pending_commit(
         };
         let _ = finished.send(result);
     }
+    // 16b cut AP.4: a typed line's `OUTPUTSUFFIX` and what joined the batch
+    // after it go out after the commit-failure sentence below, so that
+    // sentence sits inside the line's pair; on a commit nothing moves.
+    let (sends, trailers) = split_at_trailer(sends);
     release_classified_sends(gateway, sends, outcome);
     let effect_mode = if outcome == DeliveryOutcome::Committed && !health.mode.integrity_frozen() {
         // A successful receipt is itself the recovery fact for this batch;
@@ -9738,6 +9835,7 @@ fn complete_pending_commit(
             send_commit_failure(gateway, actor, &detail);
         }
     }
+    release_classified_sends(gateway, trailers, outcome);
     CompletedPending {
         outcome,
         barriers,
@@ -9796,9 +9894,8 @@ fn abort_without_receipt(
     llm: Option<&Arc<LlmService>>,
     store: &Arc<dyn ObjectStore>,
 ) {
-    let has_abort_output = sends
-        .iter()
-        .any(|(class, _, _)| matches!(class, DeliveryClass::BestEffort | DeliveryClass::OnAbort));
+    let has_abort_output = answers_an_abort(&sends);
+    let (sends, trailers) = split_at_trailer(sends);
     release_classified_sends(gateway, sends, DeliveryOutcome::Aborted);
     release_classified_effects(
         health.mode,
@@ -9814,6 +9911,7 @@ fn abort_without_receipt(
     {
         send_commit_failure(gateway, actor, detail);
     }
+    release_classified_sends(gateway, trailers, DeliveryOutcome::Aborted);
     if let Some(create) = create {
         let _ = create.reply.send(Err(CreatePlayerErr::World(format!(
             "store write failed: {}",
@@ -9835,9 +9933,8 @@ fn refuse_before_submission(
     llm: Option<&Arc<LlmService>>,
     store: &Arc<dyn ObjectStore>,
 ) {
-    let has_abort_output = sends
-        .iter()
-        .any(|(class, _, _)| matches!(class, DeliveryClass::BestEffort | DeliveryClass::OnAbort));
+    let has_abort_output = answers_an_abort(&sends);
+    let (sends, trailers) = split_at_trailer(sends);
     release_classified_sends(gateway, sends, DeliveryOutcome::Aborted);
     release_classified_effects(
         health.mode,
@@ -9859,6 +9956,7 @@ fn refuse_before_submission(
             ),
         );
     }
+    release_classified_sends(gateway, trailers, DeliveryOutcome::Aborted);
     if let Some(create) = create {
         let _ = create.reply.send(Err(CreatePlayerErr::World(format!(
             "action precondition failed: {}",
@@ -13843,6 +13941,9 @@ mod tests {
     struct RecordingGateway {
         discord: Mutex<Vec<(u64, DiscordControlOp)>>,
         sends: Mutex<Vec<(SendTarget, Arc<OutputEvent>)>>,
+        /// The length of every `transmit` call, in order (16b cut AP.4: a
+        /// bracketed world-task refusal is ONE batch).
+        batches: Mutex<Vec<usize>>,
     }
 
     impl RecordingGateway {
@@ -13869,6 +13970,10 @@ mod tests {
             self.discord.lock().unwrap().push((character, op));
         }
         fn transmit(&self, sends: Vec<(SendTarget, Arc<OutputEvent>)>) {
+            self.batches
+                .lock()
+                .expect("recording gateway poisoned")
+                .push(sends.len());
             self.sends
                 .lock()
                 .expect("recording gateway poisoned")
@@ -15966,6 +16071,7 @@ mod tests {
             WorldMsg::Inbound(Inbound::Control(ControlMsg::Shutdown)),
             RefusalReason::CommitPending,
             &gateway,
+            None,
         );
         refuse_world_msg(
             WorldMsg::ReAttach {
@@ -15973,6 +16079,7 @@ mod tests {
             },
             RefusalReason::CommitPending,
             &gateway,
+            None,
         );
 
         // Both returned, and neither invented output for a nonexistent actor.
@@ -16171,6 +16278,7 @@ mod tests {
         let recorder = Arc::new(RecordingGateway {
             discord: Mutex::default(),
             sends: Mutex::new(Vec::new()),
+            batches: Mutex::default(),
         });
         let gateway: Gateway = recorder.clone();
         let persistence_integrity = PersistenceIntegrityLatch::new();
@@ -16229,6 +16337,7 @@ mod tests {
         let recorder = Arc::new(RecordingGateway {
             discord: Mutex::default(),
             sends: Mutex::new(Vec::new()),
+            batches: Mutex::default(),
         });
         let gateway: Gateway = recorder.clone();
         let mut health = StoreHealth::new();
@@ -17161,6 +17270,7 @@ mod tests {
             },
             RefusalReason::CommitTimedOut,
             &gateway,
+            None,
         );
         assert_eq!(legal.try_recv(), Ok(Err(LegalActionReadError::Busy)));
 
@@ -17173,6 +17283,7 @@ mod tests {
             },
             RefusalReason::CommitTimedOut,
             &gateway,
+            None,
         );
         assert_eq!(ready.try_recv(), Ok(Err(WorldReadError::Busy)));
 
@@ -17186,6 +17297,7 @@ mod tests {
             }),
             RefusalReason::CommitTimedOut,
             &gateway,
+            None,
         );
         assert_eq!(
             recorder.reply_text(9).as_deref(),
@@ -17196,6 +17308,7 @@ mod tests {
             defer_line(1, "look"),
             RefusalReason::CommitTimedOut,
             &gateway,
+            None,
         );
         let lines: Vec<String> = recorder
             .sends
@@ -17471,6 +17584,497 @@ mod tests {
             "the anchor, the four served lines and the refused fifth, once each"
         );
         rig.shut_down().await;
+    }
+
+    // ---- 16b cut AP.4 (16c `N20`): OUTPUTPREFIX/OUTPUTSUFFIX at the boundary ----
+    //
+    // The engine pushes the prefix `BestEffort` first and the suffix as a
+    // `Trailer` last; these prove what the world task's two partitions and its
+    // receipt release make of them, and that its own pre-engine refusals carry
+    // the same row.
+
+    /// Every `(target, text)` the recorder was handed, `Sys` and narrative.
+    fn ap4_heard(recorder: &RecordingGateway) -> Vec<(SendTarget, String)> {
+        recorder
+            .sends
+            .lock()
+            .expect("recording gateway poisoned")
+            .iter()
+            .filter_map(|(target, event)| match event.as_ref() {
+                OutputEvent::Sys(text) | OutputEvent::Narrative { text, .. } => {
+                    Some((target.clone(), text.to_plain_text()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// **The committing order, end to end on the held-receipt rig.** A typed
+    /// line whose step queues a receipt transmits `>>>` before the ack (with
+    /// the step's `BestEffort` sends) and nothing else; the ack then releases
+    /// the line's `OnCommit` answer and `<<<` after it.
+    #[tokio::test]
+    async fn ap4_a_committing_line_reads_its_prefix_before_the_ack_and_its_suffix_after_it() {
+        let mut rig = held_receipt_rig().await;
+        rig.attach(1).await;
+        rig.line(1, "OUTPUTPREFIX >>>").await;
+        rig.line(1, "OUTPUTSUFFIX <<<").await;
+        rig.serve_until("the suffix line's own pair", |rig| rig.heard_any("<<<"))
+            .await;
+        let before = ap4_heard(&rig.recorder).len();
+
+        rig.line(1, "@create bracket-anchor").await;
+        let (serial, receipt) = rig.next_write().await;
+        rig.serve_until("the prefix, before the ack", |rig| {
+            ap4_heard(&rig.recorder)[before..]
+                .iter()
+                .any(|(_, text)| text == ">>>")
+        })
+        .await;
+        let held = ap4_heard(&rig.recorder)[before..].to_vec();
+        assert_eq!(
+            held,
+            vec![(SendTarget::Conn(1), ">>>".to_owned())],
+            "before the ack only the prefix crosses: {held:?}"
+        );
+        receipt
+            .send(Ok(serial))
+            .expect("world still owns the exact receipt");
+        rig.serve_until("the suffix, after the ack", |rig| {
+            ap4_heard(&rig.recorder)[before..]
+                .iter()
+                .any(|(_, text)| text == "<<<")
+        })
+        .await;
+        let heard = ap4_heard(&rig.recorder)[before..].to_vec();
+        assert_eq!(
+            heard.first(),
+            Some(&(SendTarget::Conn(1), ">>>".to_owned()))
+        );
+        assert_eq!(heard.last(), Some(&(SendTarget::Conn(1), "<<<".to_owned())));
+        assert!(
+            heard[1..heard.len() - 1]
+                .iter()
+                .any(|(_, text)| text.contains("Created: bracket-anchor")),
+            "the line's committed answer sits inside the pair: {heard:?}"
+        );
+        rig.shut_down().await;
+    }
+
+    /// **The aborted order, end to end.** The same committing line, its
+    /// receipt failed: `>>>` crossed before the ack, the `OnCommit` answer is
+    /// suppressed, the commit-failure sentence still reaches the player (the
+    /// prefix is framing, not an answer that would silence it) and sits INSIDE
+    /// the pair, and `<<<` closes it.
+    #[tokio::test]
+    async fn ap4_an_aborted_line_reads_its_refusal_inside_the_pair_and_none_of_its_success() {
+        let mut rig = held_receipt_rig().await;
+        rig.attach(1).await;
+        rig.line(1, "OUTPUTPREFIX >>>").await;
+        rig.line(1, "OUTPUTSUFFIX <<<").await;
+        rig.serve_until("the suffix line's own pair", |rig| rig.heard_any("<<<"))
+            .await;
+        let before = ap4_heard(&rig.recorder).len();
+
+        rig.line(1, "@create bracket-anchor").await;
+        let (_serial, receipt) = rig.next_write().await;
+        receipt
+            .send(Err("ap4 test failure".to_owned()))
+            .expect("world still owns the exact receipt");
+        rig.serve_until("the suffix, after the failed ack", |rig| {
+            ap4_heard(&rig.recorder)[before..]
+                .iter()
+                .any(|(_, text)| text == "<<<")
+        })
+        .await;
+        let heard = ap4_heard(&rig.recorder)[before..].to_vec();
+        assert_eq!(
+            heard.first(),
+            Some(&(SendTarget::Conn(1), ">>>".to_owned()))
+        );
+        assert_eq!(heard.last(), Some(&(SendTarget::Conn(1), "<<<".to_owned())));
+        assert!(
+            heard
+                .iter()
+                .all(|(_, text)| !text.contains("Created: bracket-anchor")),
+            "nothing of the OnCommit answer: {heard:?}"
+        );
+        assert!(
+            heard[1..heard.len() - 1]
+                .iter()
+                .any(|(_, text)| text.contains("database rejected your last action")),
+            "the failure sentence is said, inside the pair: {heard:?}"
+        );
+        rig.shut_down().await;
+    }
+
+    /// **The aborted order on the receipt release itself.** What a committing
+    /// step holds for the ack (its `OnCommit` answer, an `OnAbort` refusal and
+    /// its `Trailer`; the `BestEffort` prefix already crossed) releases on an
+    /// abort as the refusal then `<<<`, nothing of the success, and on a
+    /// commit as the success then `<<<`, nothing of the refusal. What another
+    /// step joined to the batch while the receipt was awaited stays AFTER the
+    /// suffix on a commit (nothing moves inside the pair) and is dropped on an
+    /// abort.
+    #[test]
+    fn ap4_the_held_trailer_closes_the_step_on_either_ack() {
+        let held = || -> Vec<ClassifiedSend> {
+            vec![
+                (
+                    DeliveryClass::OnCommit,
+                    SendTarget::Char(u64::from(GOD.0)),
+                    Arc::new(OutputEvent::Sys(RichText::plain("Set."))),
+                ),
+                (
+                    DeliveryClass::OnAbort,
+                    SendTarget::Char(u64::from(GOD.0)),
+                    Arc::new(OutputEvent::Sys(RichText::tag("error", "refused"))),
+                ),
+                (
+                    DeliveryClass::Trailer,
+                    SendTarget::Conn(1),
+                    Arc::new(OutputEvent::Sys(RichText::tag(OUTPUT_SUFFIX_TAG, "<<<"))),
+                ),
+            ]
+        };
+        for (ack, expected) in [
+            (Ok(()), vec!["Set.", "<<<", "joined"]),
+            (
+                Err(AuthoritativeCommitFailure::Refused("stale".to_owned())),
+                vec!["refused", "<<<"],
+            ),
+        ] {
+            let mut pending = pending_for_custody_test();
+            pending.sends = held();
+            // A tick's commit-bound line, joined behind the suffix while the
+            // receipt was awaited (`pending.sends.extend` in `run`).
+            pending.sends.push((
+                DeliveryClass::OnCommit,
+                SendTarget::Char(u64::from(GOD.0)),
+                Arc::new(OutputEvent::Sys(RichText::plain("joined"))),
+            ));
+            pending.effects.clear();
+            let mut engine = Engine::new(World::new_minimal(), base_registry());
+            let recorder = Arc::new(RecordingGateway::default());
+            let gateway: Gateway = recorder.clone();
+            let mut health = StoreHealth::new();
+            let persistence_integrity = PersistenceIntegrityLatch::new();
+            let (tx, _rx) = mpsc::channel(1);
+            let completed = complete_pending_commit(
+                pending,
+                ack,
+                &mut engine,
+                &gateway,
+                &mut health,
+                &persistence_integrity,
+                &tx.downgrade(),
+                None,
+                &test_effect_store(),
+            );
+            finish_pending_operational(&mut engine, &gateway, completed);
+            let heard: Vec<String> = ap4_heard(&recorder)
+                .into_iter()
+                .map(|(_, text)| text)
+                .collect();
+            assert_eq!(heard, expected);
+        }
+
+        // Refused before submission (a stale precondition): nothing crossed
+        // early, so the step's whole batch is here — the prefix, the success,
+        // the suffix. The prefix is framing, not an answer: the generic
+        // "not committed" sentence is still said, and inside the pair.
+        let recorder = Arc::new(RecordingGateway::default());
+        let gateway: Gateway = recorder.clone();
+        let (tx, _rx) = mpsc::channel(1);
+        let mut step = vec![(
+            DeliveryClass::BestEffort,
+            SendTarget::Conn(1),
+            Arc::new(OutputEvent::Sys(RichText::tag(OUTPUT_PREFIX_TAG, ">>>"))),
+        )];
+        step.extend(
+            held()
+                .into_iter()
+                .filter(|(class, _, _)| *class != DeliveryClass::OnAbort),
+        );
+        refuse_before_submission(
+            step,
+            Vec::new(),
+            Some(GOD),
+            None,
+            "stale guard",
+            &gateway,
+            &StoreHealth::new(),
+            &tx.downgrade(),
+            None,
+            &test_effect_store(),
+        );
+        let heard: Vec<String> = ap4_heard(&recorder)
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect();
+        assert_eq!(
+            heard,
+            vec![
+                ">>>".to_owned(),
+                "Your action was not committed (stale guard). Please retry against the current state."
+                    .to_owned(),
+                "<<<".to_owned(),
+            ]
+        );
+
+        // Rejected by the store with no receipt (`abort_without_receipt`, the
+        // Rejected / WriterGone / no-receipt arms): the whole batch is here
+        // too. The prefix is not an answer, so the integrity sentence is still
+        // said, inside the pair; the suffix still closes it; the success is
+        // suppressed.
+        let recorder = Arc::new(RecordingGateway::default());
+        let gateway: Gateway = recorder.clone();
+        let (tx, _rx) = mpsc::channel(1);
+        let mut health = StoreHealth::new();
+        let mut step = vec![(
+            DeliveryClass::BestEffort,
+            SendTarget::Conn(1),
+            Arc::new(OutputEvent::Sys(RichText::tag(OUTPUT_PREFIX_TAG, ">>>"))),
+        )];
+        step.extend(
+            held()
+                .into_iter()
+                .filter(|(class, _, _)| *class != DeliveryClass::OnAbort),
+        );
+        abort_without_receipt(
+            step,
+            Vec::new(),
+            Some(GOD),
+            None,
+            "rejected batch",
+            &World::new_minimal(),
+            &gateway,
+            &mut health,
+            &PersistenceIntegrityLatch::new(),
+            &tx.downgrade(),
+            None,
+            &test_effect_store(),
+        );
+        let heard: Vec<String> = ap4_heard(&recorder)
+            .into_iter()
+            .map(|(_, text)| text)
+            .filter(|text| !text.starts_with("GAME: persistence integrity breach"))
+            .collect();
+        assert_eq!(
+            heard,
+            vec![
+                ">>>".to_owned(),
+                "The database rejected your last action (rejected batch). Its success output \
+                 and external effects were suppressed; the world is now integrity-frozen."
+                    .to_owned(),
+                "<<<".to_owned(),
+            ]
+        );
+    }
+
+    /// **A line held behind a save, deterministically.** The receipt of a
+    /// bracketed connection's committing line is held; a second line typed
+    /// meanwhile waits in 16b cut B.5's defer queue, so only the first line's
+    /// `>>>` has crossed. The ack releases the first line's answer and `<<<`,
+    /// then the served line's own `>>>`, its answer and `<<<` — two pairs in the
+    /// order typed, neither inside the other.
+    #[tokio::test]
+    async fn ap4_a_line_held_behind_a_save_reads_its_own_pair_after_the_saving_one() {
+        let mut rig = held_receipt_rig().await;
+        rig.attach(1).await;
+        rig.line(1, "OUTPUTPREFIX >>>").await;
+        rig.line(1, "OUTPUTSUFFIX <<<").await;
+        rig.serve_until("the suffix line's own pair", |rig| rig.heard_any("<<<"))
+            .await;
+        let before = ap4_heard(&rig.recorder).len();
+
+        rig.line(1, "@create held-anchor").await;
+        let (serial, receipt) = rig.next_write().await;
+        rig.line(1, "think held-line").await;
+        rig.serve_until("the think, deferred behind the receipt", |rig| {
+            rig.metrics.snapshot().command_deferred_total == 1
+        })
+        .await;
+        let held = ap4_heard(&rig.recorder)[before..].to_vec();
+        assert_eq!(
+            held,
+            vec![(SendTarget::Conn(1), ">>>".to_owned())],
+            "before the ack only the saving line's prefix crosses: {held:?}"
+        );
+        rig.nothing_timed_out_yet();
+        receipt
+            .send(Ok(serial))
+            .expect("world still owns the exact receipt");
+        rig.serve_until("both suffixes", |rig| {
+            ap4_heard(&rig.recorder)[before..]
+                .iter()
+                .filter(|(_, text)| text == "<<<")
+                .count()
+                == 2
+        })
+        .await;
+        let heard: Vec<String> = ap4_heard(&rig.recorder)[before..]
+            .iter()
+            .map(|(_, text)| text.clone())
+            .collect();
+        let marks: Vec<usize> = heard
+            .iter()
+            .enumerate()
+            .filter(|(_, text)| *text == ">>>" || *text == "<<<")
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(
+            marks
+                .iter()
+                .map(|at| heard[*at].as_str())
+                .collect::<Vec<_>>(),
+            vec![">>>", "<<<", ">>>", "<<<"],
+            "two pairs, neither inside the other: {heard:?}"
+        );
+        assert_eq!(marks[0], 0, "the saving line's prefix is first: {heard:?}");
+        assert_eq!(
+            marks[3],
+            heard.len() - 1,
+            "the served line's suffix is last: {heard:?}"
+        );
+        let first = &heard[marks[0] + 1..marks[1]];
+        let second = &heard[marks[2] + 1..marks[3]];
+        assert!(
+            first
+                .iter()
+                .any(|text| text.contains("Created: held-anchor")),
+            "the saving line's answer is in its own pair: {heard:?}"
+        );
+        assert!(
+            second.iter().any(|text| text.contains("held-line"))
+                && second.iter().all(|text| !text.contains("Created:")),
+            "the served line's answer, and only that, is in its own pair: {heard:?}"
+        );
+        assert_eq!(rig.metrics.snapshot().command_defer_timed_out_total, 0);
+        rig.shut_down().await;
+    }
+
+    /// **The world task's own refusal.** `refuse_world_msg` on a typed line
+    /// from a bracketed connection transmits the prefix, the refusal (worded
+    /// and tagged as `send_sys` words it) and the suffix to that connection in
+    /// ONE batch; on a connection with no row, the actor-addressed refusal
+    /// alone, as before.
+    #[test]
+    fn ap4_a_world_task_refusal_is_bracketed_from_the_lines_own_row() {
+        let recorder = Arc::new(RecordingGateway::default());
+        let gateway: Gateway = recorder.clone();
+        let mut world = World::new_minimal();
+        world.set_output_prefix(1, Some(">>>".to_owned()));
+        world.set_output_suffix(1, Some("<<<".to_owned()));
+
+        let msg = defer_line(1, "look");
+        let brackets = output_brackets_of(&world, &msg);
+        refuse_world_msg(msg, RefusalReason::CommitPending, &gateway, brackets);
+        // ONE transmit: nothing the world sends can land between the three.
+        let batches =
+            std::mem::take(&mut *recorder.batches.lock().expect("recording gateway poisoned"));
+        assert_eq!(batches, vec![3], "one batch of three");
+        let sends =
+            std::mem::take(&mut *recorder.sends.lock().expect("recording gateway poisoned"));
+        let shaped: Vec<(SendTarget, Option<String>, String)> = sends
+            .iter()
+            .map(|(target, event)| match event.as_ref() {
+                OutputEvent::Sys(text) => (
+                    target.clone(),
+                    text.spans()
+                        .first()
+                        .and_then(|span| span.tag.as_deref().map(str::to_owned)),
+                    text.to_plain_text(),
+                ),
+                other => panic!("only Sys lines: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            shaped,
+            vec![
+                (
+                    SendTarget::Conn(1),
+                    Some(OUTPUT_PREFIX_TAG.to_owned()),
+                    ">>>".to_owned()
+                ),
+                (
+                    SendTarget::Conn(1),
+                    Some("system".to_owned()),
+                    RefusalReason::CommitPending.text().to_owned()
+                ),
+                (
+                    SendTarget::Conn(1),
+                    Some(OUTPUT_SUFFIX_TAG.to_owned()),
+                    "<<<".to_owned()
+                ),
+            ]
+        );
+
+        // A prefix alone frames the refusal from one side only.
+        world.set_output_suffix(1, None);
+        let msg = defer_line(1, "look");
+        let brackets = output_brackets_of(&world, &msg);
+        refuse_world_msg(msg, RefusalReason::StoreUnavailable, &gateway, brackets);
+        let batches =
+            std::mem::take(&mut *recorder.batches.lock().expect("recording gateway poisoned"));
+        assert_eq!(batches, vec![2], "one batch of two");
+        let heard = ap4_heard(&recorder);
+        assert_eq!(
+            heard,
+            vec![
+                (SendTarget::Conn(1), ">>>".to_owned()),
+                (
+                    SendTarget::Conn(1),
+                    RefusalReason::StoreUnavailable.text().to_owned()
+                ),
+            ]
+        );
+        recorder
+            .sends
+            .lock()
+            .expect("recording gateway poisoned")
+            .clear();
+
+        // Another connection's line, no row: the actor-addressed refusal.
+        let msg = defer_line(2, "look");
+        let brackets = output_brackets_of(&world, &msg);
+        assert_eq!(brackets, None);
+        refuse_world_msg(msg, RefusalReason::CommitTimedOut, &gateway, brackets);
+        assert_eq!(
+            ap4_heard(&recorder),
+            vec![(
+                SendTarget::Char(u64::from(GOD.0)),
+                RefusalReason::CommitTimedOut.text().to_owned()
+            )]
+        );
+
+        // Nothing that is not a typed line carries a row.
+        let query = WorldMsg::Inbound(Inbound::Query {
+            conn: 1,
+            actor: GOD,
+            id: 3,
+            name: "who".into(),
+            args: serde_json::json!({}),
+        });
+        assert_eq!(output_brackets_of(&world, &query), None);
+    }
+
+    /// The two words join the read-only allowlist: a RAM row on the World
+    /// needs no store, so a store outage does not refuse them.
+    #[test]
+    fn ap4_the_bracket_settings_pass_the_store_read_only_gate() {
+        let world = World::new_minimal();
+        for line in ["OUTPUTPREFIX >>>", "outputsuffix <<<", "OUTPUTSUFFIX"] {
+            let cmd = Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: line.to_owned(),
+            };
+            assert!(
+                refuse_store_read_only(&world, &cmd).is_none(),
+                "{line} passes the read-only gate"
+            );
+        }
     }
 
     /// **16b cut B.5, the timed-out case.** A line queued behind a commit that

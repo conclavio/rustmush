@@ -1061,16 +1061,30 @@ async fn the_cockpit_verbs_are_contextual_and_the_window_is_a_map() {
         "a line inside the brief opened no sentence:\n{brief}"
     );
     // The muster is 2,430 m across against a 600 m sight, and the match fields
-    // no machine.
-    assert!(
-        sentences.iter().any(|sentence| sentence == "No contacts."),
-        "{brief}"
-    );
-    // And the brief closes on its off-window sentence, the one line after which
-    // a mis-worded opener would be dropped unseen.
+    // no machine: the brief's own empty sentence (16b cut AP.4), never
+    // `CONTACTS`' `No contacts.`.
     assert!(
         sentences
-            .last()
+            .iter()
+            .any(|sentence| sentence == "No contacts in the window."),
+        "{brief}"
+    );
+    assert!(
+        !sentences.iter().any(|sentence| sentence == NO_CONTACTS),
+        "{brief}"
+    );
+    // And the brief closes on its own end line (16b cut AP.4), with the
+    // off-window sentence the one before it.
+    assert_eq!(
+        sentences.last().map(String::as_str),
+        Some("End of brief."),
+        "{brief}"
+    );
+    assert!(
+        sentences
+            .iter()
+            .rev()
+            .nth(1)
             .is_some_and(|sentence| sentence.starts_with("Off the window:")),
         "{brief}"
     );
@@ -1264,8 +1278,8 @@ async fn b4_board_and_exit_show_the_room_after_the_sentence() {
 // The brief's readers, held to the golden (16b cut AG.1)
 // ---------------------------------------------------------------------------
 
-/// The sixteen lines `VIEW BRIEF` says of the canonical scene, as
-/// `tacsim/tests/cockpit.rs` pins them.
+/// The seventeen lines `VIEW BRIEF` says of the canonical scene (the last
+/// `End of brief.`, 16b cut AP.4), as `tacsim/tests/cockpit.rs` pins them.
 const BRIEF_GOLDEN: &str = include_str!("../../../web/src/lib/fixtures/cockpit/view_brief.txt");
 
 /// What an 80-column session does to a line: broken at the last space that
@@ -1292,7 +1306,7 @@ fn wrapped(text: &str) -> String {
 }
 
 /// **The readers are not vacuous**: over the golden, wrapped at eighty columns
-/// and fenced as `ask_whole` fences it, `brief_sentences` gives back the sixteen
+/// and fenced as `ask_whole` fences it, `brief_sentences` gives back the seventeen
 /// lines, `assert_brief_shape` holds and `brief_strays` is empty; a contact
 /// line whose opener a change mis-worded is a stray, not a silent skip.
 #[test]
@@ -1322,11 +1336,12 @@ fn ag1_the_brief_readers_round_trip_the_golden_and_report_a_stray() {
     assert!(strays[0].starts_with("RB red bearing"), "{strays:#?}");
 }
 
-/// **`No contacts.` beside a contact sentence is out of the brief's order.**
+/// **The brief's empty sentence beside a contact sentence is out of the
+/// brief's order** (`No contacts in the window.` since 16b cut AP.4).
 #[test]
 #[should_panic(expected = "out of the brief's order")]
 fn ag1_no_contacts_beside_a_contact_fails_the_shape() {
-    let doubled = BRIEF_GOLDEN.replace("BA, blue:", "No contacts.\nBA, blue:");
+    let doubled = BRIEF_GOLDEN.replace("BA, blue:", "No contacts in the window.\nBA, blue:");
     support::assert_brief_shape(&support::brief_sentences(&doubled), "doubled");
 }
 
@@ -1336,10 +1351,39 @@ fn ag1_no_contacts_beside_a_contact_fails_the_shape() {
 #[should_panic(expected = "out of the brief's order")]
 fn ag1_a_spot_line_out_of_place_fails_the_shape() {
     let mut reordered: Vec<&str> = BRIEF_GOLDEN.lines().collect();
-    assert_eq!(reordered.len(), 16, "the golden's sixteen lines");
+    assert_eq!(reordered.len(), 17, "the golden's seventeen lines");
     reordered.swap(14, 15);
     support::assert_brief_shape(
         &support::brief_sentences(&reordered.join("\n")),
         "reordered",
     );
+}
+
+/// **16b cut AP.4: a brief that does not close on `End of brief.` fails the
+/// shape** — the end line dropped, and a line after it.
+#[test]
+fn ap4_a_brief_without_its_end_line_last_fails_the_shape() {
+    let golden: Vec<&str> = BRIEF_GOLDEN.lines().collect();
+    assert_eq!(golden.last(), Some(&"End of brief."));
+    let unclosed = golden[..golden.len() - 1].join("\n");
+    let trailing = format!("{BRIEF_GOLDEN}Off the window: C The Woods, 490 m at 064°.\n");
+    for (what, text) in [("unclosed", unclosed), ("trailing", trailing)] {
+        let sentences = support::brief_sentences(&text);
+        let failed = std::panic::catch_unwind(|| support::assert_brief_shape(&sentences, what));
+        assert!(failed.is_err(), "{what} passed the shape:\n{text}");
+    }
+    // And `CONTACTS`' own empty sentence in the brief's place is not the brief's.
+    let mut quiet: Vec<String> = golden[..9].iter().map(|line| (*line).to_owned()).collect();
+    quiet.push("No contacts.".to_owned());
+    quiet.push("End of brief.".to_owned());
+    let sentences = support::brief_sentences(&quiet.join("\n"));
+    let failed = std::panic::catch_unwind(|| support::assert_brief_shape(&sentences, "old"));
+    assert!(
+        failed.is_err(),
+        "`No contacts.` passed as the brief's empty sentence"
+    );
+    let quiet = quiet
+        .join("\n")
+        .replace("No contacts.", "No contacts in the window.");
+    support::assert_brief_shape(&support::brief_sentences(&quiet), "quiet");
 }

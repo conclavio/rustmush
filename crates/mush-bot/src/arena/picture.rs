@@ -146,12 +146,15 @@
 //! window in sentences"): its header and eight bearing lines are read into
 //! [`Picture::ground`] — the cells round the tank, run by run, from where it
 //! stood — and nothing else; the brief's contact sentences and spot lines are
-//! [`Line::Other`], and its `No contacts.` is applied as the `CONTACTS` empty
-//! form (the brief prints it only when the frame holds no contact) but opens
-//! nothing in the lane's ledger ([`Open::brief`]). The brief is open from its
-//! header or any bearing line to its tail (its `No contacts.`, a contact
-//! sentence or a spot line, [`brief_tail`]); chatter or a piece of a line the
-//! terminal wrapped inside it neither closes it nor makes its ground whole.
+//! [`Line::Other`], and its own empty sentence `No contacts in the window.`
+//! ([`Line::NoContactsInWindow`], the game's cut AP.4) is applied as the
+//! `CONTACTS` empty form (the brief prints it only when the frame holds no
+//! contact) but opens nothing in the lane's ledger ([`Open::brief`]). The
+//! brief is open from its header or any bearing line to its end line, `End
+//! of brief.` ([`Line::BriefEnd`]), which the game prints last in every
+//! brief (cut AP.4): its contact sentences, spot lines, chatter and the
+//! pieces of a line the terminal wrapped inside it keep it open, and the end
+//! line closes it and makes its ground whole.
 //! The board's `mode:` line is
 //! read into [`Picture::match_mode`], and the ordinary `Power online.` that
 //! starts this match into [`Picture::powered_here`].
@@ -166,7 +169,7 @@ use serde::Serialize;
 pub use super::lines::{HeldCause, MatchMode, Power, ResultWord, Scope};
 use super::{
     Side,
-    lines::{AskKind, ContactRow, Line, STALE_TAIL_MS, WeaponRow, is_centre_room, is_designator},
+    lines::{AskKind, ContactRow, Line, STALE_TAIL_MS, WeaponRow, is_centre_room},
 };
 
 /// **An open reply's rows are applied this long after its last row; a reply
@@ -743,28 +746,6 @@ pub fn neutral(line: &Line) -> bool {
     )
 }
 
-/// **The brief's tail** (cut AN.2; `help cockpit`: after the eight bearings
-/// the brief says "every contact as `CONTACTS` words it, the beyond-window
-/// line, and the named spots"): a contact sentence (`BA, blue: bearing …`, a
-/// designator, one class word, then its bearing) or a spot line (`In the
-/// window: …`, `Off the window: …`). Each is [`Line::Other`] to the reader;
-/// the first of them closes an open brief ([`Open::brief`]), where chatter or a
-/// wrapped piece of a bearing line does not.
-pub fn brief_tail(line: &Line) -> bool {
-    let Line::Other(text) = line else {
-        return false;
-    };
-    if text.starts_with("In the window: ") || text.starts_with("Off the window: ") {
-        return true;
-    }
-    text.split_once(", ").is_some_and(|(designator, rest)| {
-        is_designator(designator)
-            && rest.split_once(": bearing ").is_some_and(|(class, _)| {
-                !class.is_empty() && class.bytes().all(|b| b.is_ascii_lowercase())
-            })
-    })
-}
-
 /// An open `CONTACTS` reply: rows with the time each was read.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ContactsReply {
@@ -819,10 +800,10 @@ pub struct Ground {
     /// metres)`, and whether the ray ends at the arena's edge.
     pub rays: BTreeMap<u32, (Vec<(String, u32)>, bool)>,
     /// **Read whole**, by the brief's own structure, not a timer: set when
-    /// the eighth bearing is read, or at the first line after the header that
-    /// closes the brief (the brief's `No contacts.` or a contact sentence;
-    /// [`Open::brief`]), whichever comes first. Chatter or a wrapped piece
-    /// read between the bearings does not make it whole.
+    /// the eighth bearing is read, or when the brief closes ([`Open::brief`]:
+    /// its `End of brief.`, or a line of no brief's kind), whichever comes
+    /// first. Its contact sentences, spot lines, chatter or a wrapped piece
+    /// read among them do not make it whole.
     pub complete: bool,
 }
 
@@ -852,15 +833,17 @@ pub struct Open {
     /// **A `VIEW BRIEF` is being read** (cut AN.2): set by its header and by
     /// each bearing line (only `VIEW BRIEF` prints one, so a header the
     /// terminal wrapped into pieces still opens it at its first bearing),
-    /// kept across [`neutral`] lines that are not the brief's tail
-    /// ([`brief_tail`]: chatter, a receiver notice, a wrapped piece of a
-    /// bearing line, as an open `CONTACTS` reply is kept), and closed by the
-    /// first other line (after that line is applied). A `No contacts.` read
-    /// while it is open is the
-    /// brief's own: applied as the `CONTACTS` empty form (the brief prints it
-    /// only when the frame holds no contact) but answering nothing in the
-    /// lane's ledger ([`Applied::opened`] `None`), so a `CONTACTS`, `STATUS` or
-    /// `FIRE` typed after `VIEW BRIEF` keeps its own line.
+    /// kept across its own `No contacts in the window.` and every [`neutral`]
+    /// line — its contact sentences and spot lines, chatter, a receiver
+    /// notice, a wrapped piece of a bearing line — and closed by its end line,
+    /// `End of brief.` (the game's cut AP.4, printed last in every brief), or,
+    /// should that never come, by the first line of no brief's kind (after
+    /// that line is applied). The brief's `No contacts in the window.` is
+    /// applied as the `CONTACTS` empty form (the brief prints it only when the
+    /// frame holds no contact) but answers nothing in the lane's ledger
+    /// ([`Applied::opened`] `None`), and its end line answers nothing either,
+    /// so a `CONTACTS`, `STATUS` or `FIRE` typed after `VIEW BRIEF` keeps its
+    /// own line.
     pub brief: bool,
 }
 
@@ -1110,11 +1093,18 @@ impl Picture {
         let mut journal = true;
         let mut event = None;
         let mut opened = None;
-        // **The brief's ground is whole** (cut AN.2) at the first line after
-        // its header that closes it: not one of its bearings, and not chatter
-        // or a wrapped piece read among them ([`Open::brief`]).
-        let brief_kept = matches!(line, Line::ViewHeader { .. } | Line::GroundRay { .. })
-            || (neutral && !brief_tail(line));
+        // **The brief's ground is whole** (cut AN.2) when the brief closes:
+        // at its `End of brief.` (the game's cut AP.4), or at a line of no
+        // brief's kind should that never come — not at one of its bearings,
+        // its own empty sentence, its contact sentences and spot lines, or
+        // chatter or a wrapped piece read among them ([`Open::brief`]). A
+        // `No contacts.` read inside an open brief keeps it too: the game no
+        // longer prints it there, so it is read as nothing at all.
+        let brief_kept = matches!(
+            line,
+            Line::ViewHeader { .. } | Line::GroundRay { .. } | Line::NoContactsInWindow
+        ) || (self.open.brief && matches!(line, Line::NoContacts))
+            || neutral;
         if self.open.brief
             && !brief_kept
             && let Some(ground) = self.ground.as_mut()
@@ -1146,12 +1136,33 @@ impl Picture {
             }
             Line::NoContacts => {
                 journal = false;
-                // A brief's own `No contacts.` (cut AN.2) is applied as the
-                // empty form, and opens no reply in the lane's ledger.
-                opened = (!self.open.brief).then_some(AskKind::Contacts);
-                // The empty form is a whole reply of its own.
-                self.open.contacts = Some(ContactsReply::default());
-                self.close_contacts(now_ms);
+                // Inside an open brief it is nothing: since the game's cut
+                // AP.4 the brief says `No contacts in the window.` in its
+                // place and never `CONTACTS`' `No contacts.`, so this line is
+                // no brief's and no reply the reader can place.
+                if !self.open.brief {
+                    opened = Some(AskKind::Contacts);
+                    // The empty form is a whole reply of its own.
+                    self.open.contacts = Some(ContactsReply::default());
+                    self.close_contacts(now_ms);
+                }
+            }
+            Line::NoContactsInWindow => {
+                journal = false;
+                // The brief's own empty sentence (the game's cut AP.4) is
+                // applied as the `CONTACTS` empty form, the frame holding no
+                // contact, and opens no reply in the lane's ledger. Outside a
+                // brief it is nothing.
+                if self.open.brief {
+                    self.open.contacts = Some(ContactsReply::default());
+                    self.close_contacts(now_ms);
+                }
+            }
+            Line::BriefEnd => {
+                // The brief's close (the game's cut AP.4): the brief shuts
+                // below (it is not a kept line) and its ground is whole above.
+                // It opens nothing; outside a brief it is nothing.
+                journal = false;
             }
             Line::Lock {
                 designator,
@@ -1425,7 +1436,8 @@ impl Picture {
                 }
                 // Only `VIEW BRIEF` prints a bearing line: the brief is open
                 // even when its header was wrapped into pieces the reader
-                // could not take, so its `No contacts.` still answers nothing.
+                // could not take, so its `No contacts in the window.` still
+                // answers nothing.
                 self.open.brief = true;
                 self.touch();
             }
@@ -5790,16 +5802,19 @@ mod tests {
     const HEADER: &str = "Window around RA: cells 0 to 38 east and 88 to 107 north of 256 by 256; \
                           you at (6, 97), heading 090°; 10 m a cell.";
 
-    /// **A brief is read into the ground and adds no contact** (cut AN.2):
-    /// a whole brief — the header, eight rays, `No contacts.`, the spot lines —
-    /// gives a ground of eight rays, whole at the eighth, from the own
-    /// position, on the header's 2 560 m square; it adds, changes or drops no
-    /// contact and touches no lock. The brief's `No contacts.` opens nothing;
-    /// the same line read outside a brief still opens `Contacts`. A brief cut
-    /// after five rays is whole at the contact sentence after them, and one
-    /// whose contact sentence names a held hostile leaves that contact as it
-    /// was. A ray with no header just before begins a ground of its own, and
-    /// a dark window leaves none.
+    /// **A brief is read into the ground and adds no contact** (cut AN.2;
+    /// the game's cut AP.4 shape): a whole brief — the header, eight rays,
+    /// `No contacts in the window.`, the spot lines, `End of brief.` — gives
+    /// a ground of eight rays, whole at the eighth, from the own position, on
+    /// the header's 2 560 m square; it adds, changes or drops no contact and
+    /// touches no lock. The brief's empty sentence opens nothing and keeps the
+    /// brief open, the spot lines keep it open, and its end line closes it and
+    /// opens nothing; a `No contacts.` read after it still opens `Contacts`,
+    /// and the brief's two sentences read outside a brief are nothing. A brief
+    /// cut after five rays stays open across a contact sentence naming a held
+    /// hostile, is whole at its end line, and leaves that contact as it was.
+    /// A ray with no header just before begins a ground of its own, and a
+    /// dark window leaves none.
     #[test]
     fn a_view_brief_is_read_into_the_ground_and_adds_no_contact() {
         let mut p = Picture {
@@ -5835,14 +5850,23 @@ mod tests {
         let rest = feed(
             &mut p,
             &[
-                (1_010, "No contacts."),
+                (1_010, "No contacts in the window."),
                 (1_011, "In the window: A The Ford, 190 m at 093°."),
                 (1_012, "Off the window: C North Barn, 1390 m at 045°."),
             ],
         );
-        assert_eq!(rest[0].opened, None, "the brief's own No contacts.");
+        assert_eq!(rest[0].opened, None, "the brief's own empty sentence");
         assert!(rest.iter().all(|applied| applied.event.is_none()));
-        assert!(!p.open.brief, "closed by its first other line");
+        assert!(rest.iter().all(|applied| applied.opened.is_none()));
+        assert!(
+            p.open.brief,
+            "kept by its empty sentence and its spot lines"
+        );
+        let end = feed(&mut p, &[(1_013, "End of brief.")]);
+        assert_eq!(end[0].opened, None, "the end line opens nothing");
+        assert!(!end[0].journal);
+        assert!(end[0].event.is_none());
+        assert!(!p.open.brief, "closed by its end line");
         let ground = p.ground.clone().expect("a ground");
         assert_eq!(ground.rays.len(), 8);
         assert!(ground.complete);
@@ -5858,9 +5882,21 @@ mod tests {
             read_before + 1,
             "applied as the empty form"
         );
-        // Outside a brief, `No contacts.` still opens `Contacts`.
+        // Outside a brief, `No contacts.` still opens `Contacts`, and the
+        // brief's own two sentences are nothing.
         let plain = feed(&mut p, &[(2_000, "No contacts.")]);
         assert_eq!(plain[0].opened, Some(AskKind::Contacts));
+        let read_now = p.contacts_read;
+        let stray = feed(
+            &mut p,
+            &[
+                (2_001, "No contacts in the window."),
+                (2_002, "End of brief."),
+            ],
+        );
+        assert!(stray.iter().all(|applied| applied.opened.is_none()));
+        assert_eq!(p.contacts_read, read_now, "no empty form outside a brief");
+        assert!(!p.open.brief);
 
         // A held hostile and its lock, then a brief cut after five rays whose
         // contact sentence names it: whole at the sentence, BA as it was.
@@ -5887,8 +5923,15 @@ mod tests {
                 "BA, blue: bearing 090° (rel 000°), far, 450 m, 1 s old.",
             )],
         );
+        assert!(p.open.brief, "kept by its contact sentence");
+        assert!(
+            !p.ground.as_ref().expect("a ground").complete,
+            "not whole at a contact sentence"
+        );
+        feed(&mut p, &[(4_003, "End of brief.")]);
+        assert!(!p.open.brief);
         let ground = p.ground.as_ref().expect("a ground");
-        assert!(ground.complete, "whole at the contact sentence");
+        assert!(ground.complete, "whole at the end line");
         assert_eq!(ground.rays.len(), 5);
         assert_eq!(p.contacts, before, "the brief changes no contact");
         assert_eq!(p.lock.as_deref(), Some("BA"));
@@ -5923,14 +5966,16 @@ mod tests {
     }
 
     /// **A brief stays open across chatter and the pieces of a wrapped line**
-    /// (cut AN.2): a header the terminal wrapped into two pieces the reader
-    /// cannot take, two bearings, a teammate's channel line and `Receiver
-    /// clear.` (the latency rig's injections), a bearing wrapped into two
-    /// pieces, and the last five bearings: the brief opens at its first
-    /// bearing and stays open, its ground is not whole before its own `No
-    /// contacts.` (seven bearings read), and that `No contacts.` opens
-    /// nothing. A contact sentence or a spot line — the brief's tail — closes
-    /// a brief; a `No contacts.` after it opens `Contacts`.
+    /// (cut AN.2; the game's cut AP.4 shape): a header the terminal wrapped
+    /// into two pieces the reader cannot take, two bearings, a teammate's
+    /// channel line and `Receiver clear.` (the latency rig's injections), a
+    /// bearing wrapped into two pieces, and the last five bearings: the brief
+    /// opens at its first bearing and stays open, its ground is not whole
+    /// before its end line (seven bearings read), its own `No contacts in the
+    /// window.` opens nothing and keeps it open, and `End of brief.` closes
+    /// it. A contact sentence or a spot line no longer closes a brief (the
+    /// game prints its end line every time); the end line does, and a `No
+    /// contacts.` after it opens `Contacts`.
     #[test]
     fn a_brief_stays_open_across_chatter_and_wrapped_pieces() {
         let mut p = Picture {
@@ -5989,35 +6034,36 @@ mod tests {
         assert_eq!(ground.rays.len(), 7);
         assert!(!ground.complete, "seven bearings, and no tail yet");
         assert!(p.open.brief);
-        let tail = feed(&mut p, &[(1_005, "No contacts.")]);
-        assert_eq!(tail[0].opened, None, "the brief's own No contacts.");
+        let empty = feed(&mut p, &[(1_005, "No contacts in the window.")]);
+        assert_eq!(empty[0].opened, None, "the brief's own empty sentence");
+        assert!(p.open.brief, "kept by its own empty sentence");
+        assert!(!p.ground.as_ref().expect("a ground").complete);
+        let end = feed(&mut p, &[(1_006, "End of brief.")]);
+        assert_eq!(end[0].opened, None, "the end line opens nothing");
         assert!(p.ground.as_ref().expect("a ground").complete);
         assert!(!p.open.brief);
-        // The tail closes a brief: a contact sentence, or a spot line.
-        for tail in [
+        // A contact sentence or a spot line keeps a brief open; its end line
+        // closes it, and a `No contacts.` after that opens `Contacts`.
+        for kept in [
             "BA, blue: bearing 090° (rel 000°), far, 450 m, 1 s old.",
             "X12, unknown: bearing 045° (rel 135°), far, 550 m, 0 s old.",
+            "1 contact plots beyond this window; CONTACTS lists it.",
             "In the window: A The Ford, 190 m at 093°.",
             "Off the window: C North Barn, 1390 m at 045°.",
         ] {
-            assert!(brief_tail(&classify(tail)), "{tail}");
             feed(&mut p, &[(2_000, HEADER)]);
             for ray in &rays {
                 feed(&mut p, &[(2_001, ray)]);
             }
             feed(&mut p, &[(2_002, "[RedNet] Ada: on your left")]);
-            assert!(p.open.brief, "{tail}");
-            feed(&mut p, &[(2_003, tail)]);
-            assert!(!p.open.brief, "closed by {tail}");
-            let after = feed(&mut p, &[(2_004, "No contacts.")]);
-            assert_eq!(after[0].opened, Some(AskKind::Contacts), "{tail}");
-        }
-        for not_tail in [
-            "[RedNet] Ada: BA, blue: bearing 090°",
-            "rubble to 70 m, then beyond the window.",
-            "Ada says, \"on your left\"",
-        ] {
-            assert!(!brief_tail(&classify(not_tail)), "{not_tail}");
+            assert!(p.open.brief, "{kept}");
+            let applied = feed(&mut p, &[(2_003, kept)]);
+            assert_eq!(applied[0].opened, None, "{kept}");
+            assert!(p.open.brief, "kept by {kept}");
+            feed(&mut p, &[(2_004, "End of brief.")]);
+            assert!(!p.open.brief, "closed by its end line after {kept}");
+            let after = feed(&mut p, &[(2_005, "No contacts.")]);
+            assert_eq!(after[0].opened, Some(AskKind::Contacts), "{kept}");
         }
     }
 

@@ -489,6 +489,10 @@ struct Entry {
     module: Option<SmolStr>,
     /// Declared maximum persistence authority for this command.
     compatibility: CommandCompatibility,
+    /// Resolved only typed in full (case-folded): the prefix scan in
+    /// `lookup_idx` skips it. Set by [`Registry::register_exact`] alone
+    /// (16b cut AP.4).
+    exact: bool,
 }
 
 struct AliasStageEntry {
@@ -616,6 +620,31 @@ impl Registry {
         self.register_tagged(spec, handler, None, CommandCompatibility::LegacyPostImage)
     }
 
+    /// Register a core command that resolves only when its name is typed in
+    /// full (case-folded), never as a prefix — otherwise as
+    /// [`register`](Self::register) does (core, no module), with one
+    /// difference: it publishes [`CommandCompatibility::ReadOnly`].
+    ///
+    /// PennMUSH's reason (16b cut AP.4, review `AP4-5`): a socket-level
+    /// setting such as `OUTPUTPREFIX` is never abbreviated. Prefix-matched,
+    /// it would take `o` from `ORDER` and `out` from an exit; exact-only, it
+    /// claims nothing but its own name. The exactness lives here on the
+    /// registry's entry, not on [`CommandSpec`], so `help`, the census and
+    /// every gate still read it as an ordinary command.
+    ///
+    /// The class is `ReadOnly` because a setting of a connection makes no
+    /// durable mutation (its row is transient World state), and the legacy
+    /// handler allowlist cross-checks a stanza's `read-only` category against
+    /// the class the composition publishes; `LegacyPostImage` would claim a
+    /// post-image lane these verbs never ride.
+    pub fn register_exact(
+        &mut self,
+        spec: CommandSpec,
+        handler: Arc<dyn CommandHandler>,
+    ) -> Result<(), RegistryError> {
+        self.insert_entry(spec, handler, None, CommandCompatibility::ReadOnly, true)
+    }
+
     /// Register a command tagged with the registering module's identity
     /// (the [`Registrar`](crate::module::Registrar) path).
     pub(crate) fn register_tagged(
@@ -624,6 +653,20 @@ impl Registry {
         handler: Arc<dyn CommandHandler>,
         module: Option<SmolStr>,
         compatibility: CommandCompatibility,
+    ) -> Result<(), RegistryError> {
+        self.insert_entry(spec, handler, module, compatibility, false)
+    }
+
+    /// The one insertion path behind [`register_tagged`](Self::register_tagged)
+    /// and [`register_exact`](Self::register_exact): collision-checked over
+    /// the name and every alias.
+    fn insert_entry(
+        &mut self,
+        spec: CommandSpec,
+        handler: Arc<dyn CommandHandler>,
+        module: Option<SmolStr>,
+        compatibility: CommandCompatibility,
+        exact: bool,
     ) -> Result<(), RegistryError> {
         let mut keys = vec![spec.name.to_lowercase()];
         keys.extend(spec.aliases.iter().map(|a| a.to_lowercase()));
@@ -638,6 +681,7 @@ impl Registry {
             handler,
             module,
             compatibility,
+            exact,
         });
         for k in keys {
             self.index.insert(k, idx);
@@ -1084,7 +1128,10 @@ impl Registry {
         let mut hits: Vec<usize> = Vec::new();
         for (i, e) in self.entries.iter().enumerate() {
             let name = e.spec.name.as_str();
-            if !name.starts_with('@')
+            // An exact-only name (16b cut AP.4) answers the index hit above
+            // alone; it is never a prefix match.
+            if !e.exact
+                && !name.starts_with('@')
                 && !name.starts_with('+')
                 && name.to_lowercase().starts_with(&v)
                 && !hits.contains(&i)
@@ -1938,6 +1985,29 @@ mod tests {
         let mut out = Outbox::new();
         dispatch(&reg, &mut w, ann, "@dig y", &mut out, DETACHED);
         assert_eq!(plain(&out), vec!["gated".to_string()]);
+    }
+
+    /// 16b cut AP.4 (review `AP4-5`): an exact-only name resolves typed in
+    /// full, case-folded, and never as a prefix — so `o` stays `ORDER`'s
+    /// with `OUTPUTPREFIX` registered beside it.
+    #[test]
+    fn ap4_an_exact_only_name_resolves_typed_in_full_and_never_as_a_prefix() {
+        let mut reg = Registry::new();
+        reg.register(spec("ORDER", ArgShape::Raw), noop()).unwrap();
+        reg.register_exact(spec("OUTPUTPREFIX", ArgShape::Raw), noop())
+            .unwrap();
+        let name = |verb: &str| reg.lookup(verb).map(|(s, _)| s.name.to_string());
+        assert_eq!(name("o").as_deref(), Ok("ORDER"));
+        assert_eq!(name("or").as_deref(), Ok("ORDER"));
+        assert_eq!(name("outputprefix").as_deref(), Ok("OUTPUTPREFIX"));
+        assert_eq!(name("OutputPrefix").as_deref(), Ok("OUTPUTPREFIX"));
+        assert_eq!(name("output"), Err(LookupErr::NotFound));
+        assert_eq!(name("outputprefi"), Err(LookupErr::NotFound));
+        // Exact-only does not exempt it from collision.
+        assert_eq!(
+            reg.register_exact(spec("outputprefix", ArgShape::Raw), noop()),
+            Err(RegistryError::Collision("outputprefix".into()))
+        );
     }
 
     #[test]

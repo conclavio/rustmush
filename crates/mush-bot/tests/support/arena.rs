@@ -545,12 +545,18 @@ pub async fn pose(god: &mut Client, spec: &str) {
 }
 
 /// The answers `@arena/pose` refuses with, one needle each (cut AK.3), read
-/// from the verb's own refusal sentences as text: an unknown callsign (`There
-/// is no slot {X} on this centre.`, the verb's first refusal; cut AM.3), the
-/// centre running, a cell off the window, a cell that is impassable or has no
-/// way out, a cell already another tank's opening cell, a heading out of
-/// range, a malformed line, and a server without the arena.
-pub const POSE_REFUSALS: [&str; 8] = [
+/// from the verb's own refusal sentences as text. **The first is the shape**:
+/// since the game's cut AP.4 every refusal opens `POSE refused. `, the
+/// cockpit's `{ORDER} refused. …` form, so that one needle alone tells a
+/// refusal from the `opens at cell` answer. The other eight are kept, each
+/// for the refusal it names, so a game that dropped the prefix would still
+/// be read and a test can still say which refusal it was: an unknown callsign
+/// (`There is no slot {X} on this centre.`, the verb's first refusal; cut
+/// AM.3), the centre running, a cell off the window, a cell that is
+/// impassable or has no way out, a cell already another tank's opening cell,
+/// a heading out of range, a malformed line, and a server without the arena.
+pub const POSE_REFUSALS: [&str; 9] = [
+    "POSE refused. ",
     "There is no slot ",
     "The simulator centre is running; set opening cells",
     "is off the arena window.",

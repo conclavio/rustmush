@@ -548,10 +548,11 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
     );
     // **16b cut AG.1**: and the same window in sentences. Only what holds at
     // any arena millisecond is asserted — the brief's shape and order (between
-    // the ground and the spots either the one `No contacts.` or contact
-    // sentences, never both: either sensor-stagger outcome), no line inside it
-    // that opened no sentence, no unit's name, and the closing off-window
-    // sentence, which reads only her own unpowered pose and the fixed spots:
+    // the ground and the spots either the one `No contacts in the window.` or
+    // contact sentences, never both: either sensor-stagger outcome), no line
+    // inside it that opened no sentence, no unit's name, and the off-window
+    // sentence before the brief's own `End of brief.` (16b cut AP.4), which
+    // reads only her own unpowered pose and the fixed spots:
     // The Ford (64, 97) is 36 cells west of (100, 97) and off every window
     // there. Nothing waits for a contact and no designator is compared across
     // reads: the Q.1 rename and the fight's end both race such a wait. The
@@ -573,11 +574,16 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
         !brief.contains("Blue Tank"),
         "the brief never names another unit: {brief}"
     );
+    assert_eq!(
+        sentences.last().map(String::as_str),
+        Some(support::BRIEF_END),
+        "the brief closes on its end line: {brief}"
+    );
     assert!(
-        sentences.last().is_some_and(
+        sentences.iter().rev().nth(1).is_some_and(
             |sentence| sentence.starts_with("Off the window: A The Ford, 360 m at 270°")
         ),
-        "the brief closes on its off-window sentence: {brief}"
+        "the off-window sentence is the brief's last before its end line: {brief}"
     );
     no_sixteen_digit_word(brief);
 

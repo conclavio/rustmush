@@ -449,6 +449,13 @@ pub enum Line {
     /// window is dark: there is no ground under the panel to draw.` — `VIEW`'s
     /// two answers with no ground (cut AN.2).
     WindowDark,
+    /// `No contacts in the window.` — `VIEW BRIEF`'s own empty-contacts
+    /// sentence (the game's cut AP.4, 16c `N20`), where it used to say
+    /// `CONTACTS`' `No contacts.`: the brief's line, never a `CONTACTS` reply.
+    NoContactsInWindow,
+    /// `End of brief.` — `VIEW BRIEF`'s fixed last line (the game's cut AP.4):
+    /// the brief's close, printed after its last spot line every time.
+    BriefEnd,
 
     // -- acks of the pilot's own orders (journal false) ----------------------
     /// `Startup sequence begun; power comes online shortly.`
@@ -1039,6 +1046,8 @@ fn catchup_row(body: &str) -> Option<Line> {
 fn exact(body: &str) -> Option<Line> {
     Some(match body {
         "No contacts." => Line::NoContacts,
+        "No contacts in the window." => Line::NoContactsInWindow,
+        "End of brief." => Line::BriefEnd,
         "This unit carries no weapon." => Line::NoWeapon,
         "The window is dark: the panel has told you nothing yet."
         | "The window is dark: there is no ground under the panel to draw." => Line::WindowDark,
@@ -2012,6 +2021,7 @@ pub enum AnswerTo {
 /// | `Firing { weapon }`, `NoSuchWeapon { weapon }` | `Fire(weapon)` |
 /// | `Refused { order, weapon, .. }` | `Refusal { order, weapon }` |
 /// | `ViewHeader`, `GroundRay`, `WindowDark` | `Kinds([View])` (cut AN.2) |
+/// | `NoContactsInWindow`, `BriefEnd` | `None`: the brief's own lines, which the picture reads (the game's cut AP.4) |
 /// | `Transient`, `PowerNotOnline`, `PowerStarting`, `DestroyedNoOrders`, `OutsideCockpit`, `NotStartedYet` | `Oldest` |
 /// | everything else | `None` |
 ///
@@ -2041,11 +2051,13 @@ pub fn answer_to(line: &Line) -> Option<AnswerTo> {
         }),
         // `VIEW BRIEF`'s header and ground, and `VIEW`'s dark answers (cut
         // AN.2). The brief's other lines keep their own mapping: its contact
-        // sentences and spot lines are `Other`, and its `No contacts.` is the
-        // picture's to report (it answers nothing while a brief is open).
+        // sentences and spot lines are `Other`, and its own empty sentence and
+        // end line (the game's cut AP.4) answer nothing — they are the brief's,
+        // and the picture reads them.
         Line::ViewHeader { .. } | Line::GroundRay { .. } | Line::WindowDark => {
             Some(AnswerTo::Kinds(&[K::View]))
         }
+        Line::NoContactsInWindow | Line::BriefEnd => None,
         Line::Transient(_)
         | Line::PowerNotOnline
         | Line::PowerStarting
@@ -2270,6 +2282,31 @@ mod tests {
         );
         assert_eq!(classify("This unit carries no weapon."), Line::NoWeapon);
         assert_eq!(classify("No contacts."), Line::NoContacts);
+    }
+
+    /// **The brief's own two sentences** (the game's cut AP.4, 16c `N20`):
+    /// `No contacts in the window.` and `End of brief.` read as their own
+    /// lines, never as `CONTACTS`' `No contacts.`, and answer nothing.
+    #[test]
+    fn ap4_the_briefs_own_empty_sentence_and_end_line() {
+        assert_eq!(
+            classify("No contacts in the window."),
+            Line::NoContactsInWindow
+        );
+        assert_eq!(classify("End of brief."), Line::BriefEnd);
+        assert_eq!(classify("No contacts."), Line::NoContacts);
+        assert_eq!(answer_to(&Line::NoContactsInWindow), None);
+        assert_eq!(answer_to(&Line::BriefEnd), None);
+        for text in [
+            "End of brief",
+            "No contacts in the window",
+            "End of the brief.",
+        ] {
+            assert!(
+                !matches!(classify(text), Line::BriefEnd | Line::NoContactsInWindow),
+                "{text}"
+            );
+        }
     }
 
     /// **A gun the tank does not carry** (cut AL.1): the sentence with the

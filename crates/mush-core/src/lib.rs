@@ -304,7 +304,8 @@ pub use offer::{
 };
 pub use onboarding::OnboardingConfig;
 pub use output::{
-    Audience, ConnId, DeliveryClass, DeliveryOutcome, Outbox, name_span, obj_ref, room_view,
+    Audience, ConnId, DeliveryClass, DeliveryOutcome, OUTPUT_PREFIX_TAG, OUTPUT_SUFFIX_TAG, Outbox,
+    name_span, obj_ref, room_view,
 };
 pub use resolution::{
     MAX_RESOLUTION_DEFINITIONS, MAX_RESOLUTION_DRAWS, MAX_RESOLUTION_SECRET_VERSIONS,
@@ -348,5 +349,6 @@ pub use sensor::{
     SensorPolicy, SensorPolicyHandle, bounded_pass,
 };
 pub use world::{
-    ChannelGrant, CommandSubjectLink, MAX_CONTAINMENT_DEPTH, SessionStat, World, WorldError,
+    ChannelGrant, CommandSubjectLink, MAX_CONTAINMENT_DEPTH, OutputBrackets, SessionStat, World,
+    WorldError,
 };

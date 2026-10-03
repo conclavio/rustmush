@@ -22,6 +22,13 @@
 //! The rig is `sim_lobby.rs`'s, cut down to one pilot: the simulator lobby is
 //! where `SIM STATUS` answers with the board. It installs no account oracle,
 //! because nothing here claims a slot.
+//!
+//! **16b cut AP.4 (16c `N20`)** tells the same burst a second time, on a
+//! connection that set `OUTPUTPREFIX >>>` and `OUTPUTSUFFIX <<<`: four pairs,
+//! each round its own line's answer in the order typed, and a say from another
+//! player arriving outside every pair. The proof of the classes (the prefix
+//! before the ack, the suffix after it on either outcome, the world task's own
+//! refusals bracketed) is in `world_task.rs`'s `ap4_*` tests and the engine's.
 
 mod support;
 
@@ -285,5 +292,203 @@ async fn four_lines_typed_ahead_behind_a_commit_are_all_answered_in_order() {
     assert!(
         set < room && room < board && board < who,
         "`Set.`, the room, the board and the WHO header, in the order typed: {heard}"
+    );
+}
+
+/// The lines of `text`, each trimmed, the empty ones dropped — what a script
+/// reading a line-mode connection sees, one line at a time.
+fn script_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Read until `term` has shown at least `n` lines that are exactly `<<<`
+/// since byte `from` (the server echoes typed lines, so a line that merely
+/// contains `<<<`, such as the echo of `OUTPUTSUFFIX <<<`, does not count).
+async fn read_suffixes(term: &mut Term, from: usize, n: usize) {
+    loop {
+        let seen = script_lines(&strip_ansi(&term.seen[from..]))
+            .iter()
+            .filter(|line| *line == "<<<")
+            .count();
+        if seen >= n {
+            return;
+        }
+        let mark = term.mark();
+        term.expect_after(mark, "<<<").await;
+    }
+}
+
+/// **16b cut AP.4 (16c `N20`): the brackets, over real SSH on the production
+/// module list.** Ada sets `OUTPUTPREFIX >>>` (silent) and `OUTPUTSUFFIX <<<`
+/// (its own line reads `>>>` then `<<<`: the prefix stood, the suffix is read
+/// after the body), then sends the four lines above in ONE write with the
+/// committing `@desc` first. She reads four pairs in the order typed, each
+/// round that line's own answer and nothing else, with no retry; then a say
+/// from God in her room arrives OUTSIDE every pair. The brackets are her own
+/// text echoed back and name nothing, so the observer rule has nothing to
+/// lens here; the typed-ahead burst and the notice rule are what this proves.
+/// Whether the three lines behind `@desc` meet its commit depends on how fast
+/// the in-memory store answers (the file head), so the held case is proved
+/// deterministically, on a receipt the test holds, by `mush-server`'s
+/// `ap4_a_line_held_behind_a_save_reads_its_own_pair_after_the_saving_one`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn brackets_round_four_lines_typed_ahead_in_one_write_and_round_no_notice() {
+    let server = boot("typeahead-brackets").await;
+
+    // Setup: staff walk Ada into the simulator lobby and go there too, so a
+    // say of God's reaches her.
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let mark = god.mark();
+    say(&mut god, "@find Simulator Lobby", "END OF LIST").await;
+    let lobby = dbref_of(&strip_ansi(&god.seen[mark..]), "Simulator Lobby");
+    say(
+        &mut god,
+        &format!("@teleport #{}=#{lobby}", ADA.0),
+        "Teleported",
+    )
+    .await;
+    say(
+        &mut god,
+        &format!("@teleport me=#{lobby}"),
+        "Simulator Lobby",
+    )
+    .await;
+
+    let (_ada_handle, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    ada.expect("Simulator Lobby").await;
+
+    // The two settings. The prefix line is silent; the suffix line is read
+    // with the prefix in front of it and its own suffix after it.
+    let mark = ada.mark();
+    ada.send_line("OUTPUTPREFIX >>>").await;
+    ada.send_line("OUTPUTSUFFIX <<<").await;
+    read_suffixes(&mut ada, mark, 1).await;
+    let settings = script_lines(&strip_ansi(&ada.seen[mark..]));
+    let framed: Vec<&String> = settings
+        .iter()
+        .filter(|line| *line == ">>>" || *line == "<<<")
+        .collect();
+    assert_eq!(
+        framed,
+        [">>>", "<<<"],
+        "OUTPUTPREFIX said nothing; OUTPUTSUFFIX read its pair: {settings:?}"
+    );
+    assert!(
+        settings
+            .iter()
+            .all(|line| line == ">>>" || line == "<<<" || line.starts_with("OUTPUT")),
+        "nothing but the pair (and any echo of the typed lines): {settings:?}"
+    );
+
+    // The story: ONE write carrying four lines, the first committing.
+    let burst = ada.mark();
+    ada.send_line("@desc me=Typing ahead.\rlook\rsim status\rwho")
+        .await;
+    // The WHO table's footer is inside the fourth pair; read to its suffix.
+    read_suffixes(&mut ada, burst, 4).await;
+    let heard = strip_ansi(&ada.seen[burst..]);
+    assert!(
+        !heard.contains(RETRY),
+        "no line of the burst was refused: {heard}"
+    );
+    // Walk the pairs: every `>>>` opens one, the next `<<<` closes it, and
+    // a pair never opens inside another.
+    // The server echoes what was typed; a script skips its own lines.
+    let typed = ["@desc me=Typing ahead.", "look", "sim status", "who"];
+    let lines: Vec<String> = script_lines(&heard)
+        .into_iter()
+        .filter(|line| !typed.iter().any(|t| line.ends_with(t)))
+        .collect();
+    let mut pairs: Vec<Vec<String>> = Vec::new();
+    let mut open: Option<Vec<String>> = None;
+    for line in &lines {
+        match (line.as_str(), open.as_mut()) {
+            (">>>", None) => open = Some(Vec::new()),
+            (">>>", Some(_)) => panic!("a pair opened inside another: {lines:?}"),
+            ("<<<", Some(_)) => pairs.extend(open.take()),
+            ("<<<", None) => panic!("a suffix with no prefix: {lines:?}"),
+            (_, Some(inside)) => inside.push(line.clone()),
+            (_, None) => {}
+        }
+    }
+    assert!(open.is_none(), "every pair closed: {lines:?}");
+    assert_eq!(pairs.len(), 4, "four pairs, one a line: {lines:?}");
+    // Each pair holds that line's own answer, in the order typed.
+    assert_eq!(
+        pairs[0],
+        ["Set."],
+        "the first pair is `@desc`'s `Set.` alone"
+    );
+    assert!(
+        pairs[1]
+            .first()
+            .is_some_and(|line| line.contains("Simulator Lobby")),
+        "the second pair is the room: {pairs:?}"
+    );
+    assert!(
+        pairs[2]
+            .iter()
+            .any(|line| line.contains("Simulator centre:")),
+        "the third pair is the board: {pairs:?}"
+    );
+    assert!(
+        pairs[3].iter().any(|line| line.contains("Doing"))
+            && pairs[3].iter().any(|line| line.contains("in your room.")),
+        "the fourth pair is the WHO table, header to footer: {pairs:?}"
+    );
+    // No answer leaks into another line's pair.
+    for (n, needle) in ["Set.", "Simulator centre:", "in your room."]
+        .into_iter()
+        .enumerate()
+    {
+        let owner = [0, 2, 3][n];
+        for (at, pair) in pairs.iter().enumerate() {
+            if at != owner {
+                assert!(
+                    !pair.iter().any(|line| line.contains(needle)),
+                    "{needle:?} sits in pair {at}, not {owner}: {pairs:?}"
+                );
+            }
+        }
+    }
+
+    // A notice: God says a line in Ada's room. It is pushed, not an answer,
+    // so it arrives outside every pair.
+    let notice = ada.mark();
+    say(
+        &mut god,
+        "say The tower is listening.",
+        "The tower is listening.",
+    )
+    .await;
+    ada.expect_after(notice, "The tower is listening.").await;
+    let all = script_lines(&strip_ansi(&ada.seen[mark..]));
+    let count = |needle: &str| all.iter().filter(|line| *line == needle).count();
+    assert_eq!(
+        (count(">>>"), count("<<<")),
+        (5, 5),
+        "one pair for OUTPUTSUFFIX's own line and four for the burst; the say adds none: {all:?}"
+    );
+    let said = all
+        .iter()
+        .position(|line| line.contains("The tower is listening."))
+        .expect("the say reached Ada");
+    assert!(
+        said == 0 || all[said - 1] != ">>>",
+        "the say is not opened by a prefix: {all:?}"
+    );
+    assert!(
+        all.get(said + 1).is_none_or(|line| line != "<<<"),
+        "the say is not closed by a suffix: {all:?}"
+    );
+    let opened = all[..said].iter().filter(|line| *line == ">>>").count();
+    let closed = all[..said].iter().filter(|line| *line == "<<<").count();
+    assert_eq!(
+        opened, closed,
+        "the say lands between pairs, not in one: {all:?}"
     );
 }

@@ -708,6 +708,16 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"
 
 [[handler]]
+name = "OUTPUTPREFIX"
+category = "read-only"
+note = "16b cut AP.4 (16c N20). PennMUSH's per-connection output framing: OUTPUTPREFIX <text> sets, and bare OUTPUTPREFIX clears, the prefix the engine prints on a line of its own before the answer to every line typed on this connection, so a client script knows where one reply ends. Typed in full (Registry::register_exact: the prefix scan skips it, so o stays ORDER's and out an exit's). It sets or clears ONE RAM row on the World keyed by the dispatching connection (World::output_brackets, transient, dropped at ConnDown and by a restart) -- no document, no object, no attribute, no authority, no prepared mechanic. Silent on success; refuses a line from no connection and a text past 256 characters or carrying a control character. Engine::step pushes the two Sys events round every typed line's whole step, the prefix BestEffort first and the suffix Trailer last (after drain_deferred), and the world task brackets its own pre-engine refusals from the same row; both words are on STORE_READ_ONLY_ALLOWED."
+
+[[handler]]
+name = "OUTPUTSUFFIX"
+category = "read-only"
+note = "16b cut AP.4 (16c N20). PennMUSH's per-connection output framing: OUTPUTSUFFIX <text> sets, and bare OUTPUTSUFFIX clears, the suffix the engine prints on a line of its own after the answer to every line typed on this connection, so a client script knows where one reply ends. Typed in full (Registry::register_exact: the prefix scan skips it, so o stays ORDER's and out an exit's). It sets or clears ONE RAM row on the World keyed by the dispatching connection (World::output_brackets, transient, dropped at ConnDown and by a restart) -- no document, no object, no attribute, no authority, no prepared mechanic. Silent on success; refuses a line from no connection and a text past 256 characters or carrying a control character. Engine::step pushes the two Sys events round every typed line's whole step, the prefix BestEffort first and the suffix Trailer last (after drain_deferred), and the world task brackets its own pre-engine refusals from the same row; both words are on STORE_READ_ONLY_ALLOWED."
+
+[[handler]]
 name = "WHO"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"

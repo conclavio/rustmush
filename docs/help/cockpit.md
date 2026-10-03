@@ -250,8 +250,10 @@ names every spot the window could not draw, with its range and bearing:
 who would rather read: where the window is, then the ground on eight bearings
 from your own cell, run by run —
 `North: 50 m of grass, then road to 60 m, then grass to 150 m, then beyond the window.`
-— then every contact as `CONTACTS` words it, the beyond-window line, and the
-named spots the window shows and the ones off it, with their range and bearing.
+— then every contact as `CONTACTS` words it (or `No contacts in the window.`),
+the beyond-window line, the named spots the window shows and the ones off it,
+with their range and bearing, and `End of brief.` to close it, so a script
+knows where it ends.
 It describes the window `VIEW` draws and nothing past it: `beyond the window` is
 where the map stops, `the edge of the arena` where the ground does. A diagonal
 is measured along the diagonal, so five cells read 70 m. `VIEW` takes no other

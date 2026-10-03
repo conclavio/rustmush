@@ -14,3 +14,4 @@ X4, unknown: bearing 030° (rel 345°), far, 600 m, 6 s old.
 1 contact plots beyond this window; CONTACTS lists it.
 In the window: A The Ford, 190 m at 093°.
 Off the window: C The Woods, 490 m at 064°.
+End of brief.

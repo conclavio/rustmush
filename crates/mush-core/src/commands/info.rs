@@ -69,6 +69,65 @@ fn who_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// The longest `OUTPUTPREFIX`/`OUTPUTSUFFIX` text, in characters
+/// (16b cut AP.4).
+pub const MAX_OUTPUT_BRACKET_CHARS: usize = 256;
+
+/// Which of a connection's two reply brackets a command sets.
+#[derive(Clone, Copy)]
+enum Bracket {
+    Prefix,
+    Suffix,
+}
+
+impl Bracket {
+    const fn verb(self) -> &'static str {
+        match self {
+            Bracket::Prefix => "OUTPUTPREFIX",
+            Bracket::Suffix => "OUTPUTSUFFIX",
+        }
+    }
+}
+
+/// `OUTPUTPREFIX [<text>]` / `OUTPUTSUFFIX [<text>]` (16b cut AP.4, 16c
+/// `N20`): PennMUSH's per-connection reply framing. Sets the dispatching
+/// connection's bracket to the trimmed text, or clears it when bare; SILENT
+/// on success, so a script that sets a suffix reads the suffix as its first
+/// answer (`Engine::step` reads the suffix after the body). Refuses, in this
+/// order: a line from no connection (a script, an NPC, a queued action —
+/// `World::dispatching_conn` is `None`), then a text past
+/// [`MAX_OUTPUT_BRACKET_CHARS`] characters or carrying a control character.
+/// It touches one transient RAM row on the World and nothing else: no
+/// document, no object, no attribute.
+fn output_bracket(ctx: &mut Ctx<'_>, which: Bracket) -> Result<(), CmdError> {
+    let verb = which.verb();
+    let Some(conn) = ctx.w.dispatching_conn() else {
+        return Err(CmdError::msg(format!(
+            "{verb} refused. That is a setting of a connection, and this line came from none."
+        )));
+    };
+    let text = ctx.args.raw();
+    if text.chars().count() > MAX_OUTPUT_BRACKET_CHARS || text.chars().any(char::is_control) {
+        return Err(CmdError::msg(format!(
+            "{verb} refused. The text is at most {MAX_OUTPUT_BRACKET_CHARS} printable characters."
+        )));
+    }
+    let text = (!text.is_empty()).then(|| text.to_string());
+    match which {
+        Bracket::Prefix => ctx.w.set_output_prefix(conn, text),
+        Bracket::Suffix => ctx.w.set_output_suffix(conn, text),
+    }
+    Ok(())
+}
+
+fn output_prefix_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    output_bracket(ctx, Bracket::Prefix)
+}
+
+fn output_suffix_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    output_bracket(ctx, Bracket::Suffix)
+}
+
 /// The `"who"` query handler (web `Req { q: Who }` hydration): the same
 /// listing the `WHO` command produces, wrapped by the engine in a `Reply`.
 struct WhoQuery;
@@ -397,7 +456,8 @@ fn help_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// Register `WHO` and `help` (plus the core `"who"` query handler).
+/// Register `WHO`, `OUTPUTPREFIX`, `OUTPUTSUFFIX`, `time` and `help` (plus
+/// the core `"who"` query handler).
 pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
     // Core query handlers register under the reserved module identity
     // "core". This runs before any game module registers, so a collision is
@@ -431,6 +491,34 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
             ..CommandSpec::default()
         },
         Arc::new(who_cmd),
+    )?;
+    // 16b cut AP.4 (16c `N20`): PennMUSH's per-connection reply brackets,
+    // registered exact-only — a socket-level setting is never abbreviated,
+    // and a prefix-matched `OUTPUTPREFIX` would take `o` from `ORDER` and
+    // `out` from an exit (review `AP4-5`).
+    reg.register_exact(
+        CommandSpec {
+            name: "OUTPUTPREFIX".into(),
+            shape: ArgShape::Raw,
+            help: "OUTPUTPREFIX [<text>]  --  Print <text> on a line of its own \
+                   before the answer to every line you type on this connection; \
+                   bare, clear it. Silent; typed in full. See \"help macros\"."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(output_prefix_cmd),
+    )?;
+    reg.register_exact(
+        CommandSpec {
+            name: "OUTPUTSUFFIX".into(),
+            shape: ArgShape::Raw,
+            help: "OUTPUTSUFFIX [<text>]  --  Print <text> on a line of its own \
+                   after the answer to every line you type on this connection; \
+                   bare, clear it. Silent; typed in full. See \"help macros\"."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(output_suffix_cmd),
     )?;
     reg.register(
         CommandSpec {
@@ -506,6 +594,35 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// 16b cut AP.4: a line from no connection (no dispatching connection
+    /// set — a script, an NPC) hears the one refusal and sets nothing.
+    #[test]
+    fn ap4_outputprefix_from_no_connection_is_refused_and_sets_nothing() {
+        let (mut w, reg, nick) = setup();
+        assert_eq!(w.dispatching_conn(), None);
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut w, nick, "OUTPUTPREFIX x", &mut out, DETACHED);
+        assert_eq!(
+            lines(&out, nick),
+            vec![
+                "OUTPUTPREFIX refused. That is a setting of a connection, and this line came from none."
+                    .to_string()
+            ]
+        );
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut w, nick, "OUTPUTSUFFIX y", &mut out, DETACHED);
+        assert_eq!(
+            lines(&out, nick),
+            vec![
+                "OUTPUTSUFFIX refused. That is a setting of a connection, and this line came from none."
+                    .to_string()
+            ]
+        );
+        for conn in 0..4 {
+            assert_eq!(w.output_brackets(conn), None);
+        }
     }
 
     #[test]

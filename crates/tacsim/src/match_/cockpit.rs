@@ -4369,12 +4369,16 @@ fn window_pair(window: &serde_json::Value, key: &str) -> (u64, u64) {
 ///    [`view_window`]'s business — to the payload's own `origin_cell`, `width`
 ///    and `height`, a bearing diagonal when both its steps are non-zero;
 /// 3. one [`contact_sentence`] per row of [`frame_contacts_held`] in frame
-///    order, or `No contacts.` when there are none;
+///    order, or [`NO_CONTACTS_IN_WINDOW`] when there are none — the brief's
+///    own sentence since 16b cut AP.4, so a reader never takes it for a
+///    `CONTACTS` reply's `No contacts.`;
 /// 4. [`beyond_window_line`], when it says anything;
 /// 5. [`in_window_spots_line`] over the spots the payload's legend names;
 /// 6. [`off_window_spots_line`] over the spots the payload DREW, as `VIEW`
 ///    reads it — so a covered spot is in neither spot line, as it is in
-///    neither of `VIEW`'s.
+///    neither of `VIEW`'s;
+/// 7. [`BRIEF_END_LINE`], always, last (16b cut AP.4, 16c `N20`): the
+///    brief's fixed close, so a script knows where it ends.
 ///
 /// **Nothing else, ever.** The brief describes the payload's own rectangle
 /// from the payload's own `@`, names the legend's own spots, and says nothing
@@ -4386,11 +4390,11 @@ fn window_pair(window: &serde_json::Value, key: &str) -> (u64, u64) {
 /// lets the walk answer; the shape test in `VIEW` refuses such a payload
 /// before it gets here.
 ///
-/// **Length**: at most `12 + C` lines for `C` contacts — one header, eight
-/// bearings, `max(C, 1)` contact lines, and at most one each of the beyond,
-/// in-window and off-window lines; twelve at `C = 0`. A platform holds at most
-/// one contact per other unit, so the centre's six a side bounds a brief at 23
-/// lines and 23 `Sys` events. **Width**: none. A brief is `Sys` prose that each
+/// **Length**: at most `13 + C` lines for `C` contacts — one header, eight
+/// bearings, `max(C, 1)` contact lines, at most one each of the beyond,
+/// in-window and off-window lines, and the end line; thirteen at `C = 0`. A
+/// platform holds at most one contact per other unit, so the centre's six a
+/// side bounds a brief at 24 lines and 24 `Sys` events. **Width**: none. A brief is `Sys` prose that each
 /// renderer wraps at its own width; Q-I1's 78-column budget is the grid's, and
 /// nothing here is laid out to it. The longest line — 38 alternating one-cell
 /// runs from a window's edge — is about 800 characters and wraps as prose.
@@ -4429,7 +4433,7 @@ pub fn brief_lines(
     }
     let rows = frame_contacts_held(frame, ranges);
     if rows.is_empty() {
-        lines.push(NO_CONTACTS_LINE.to_owned());
+        lines.push(NO_CONTACTS_IN_WINDOW.to_owned());
     }
     lines.extend(rows.iter().map(contact_sentence));
     lines.extend(beyond_window_line(frame, window));
@@ -4445,6 +4449,7 @@ pub fn brief_lines(
         &frame.pose,
         cell_cm,
     ));
+    lines.push(BRIEF_END_LINE.to_owned());
     lines
 }
 
@@ -4640,9 +4645,19 @@ fn fire(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> 
     Ok(())
 }
 
-/// What `CONTACTS` says of an empty scope — and, since 16b cut AG.1, what
-/// `VIEW BRIEF` says in its contacts' place: one string for both.
+/// What `CONTACTS` says of an empty scope.
 const NO_CONTACTS_LINE: &str = "No contacts.";
+
+/// What `VIEW BRIEF` says in its contacts' place when the platform holds none
+/// (16b cut AP.4, 16c `N20`): the brief's own sentence, never `CONTACTS`'
+/// `No contacts.`, so a reader can tell a brief's empty slot from a
+/// `CONTACTS` reply. A declared reader sentence (doc 16 section 11).
+pub const NO_CONTACTS_IN_WINDOW: &str = "No contacts in the window.";
+
+/// The fixed last line of every `VIEW BRIEF` (16b cut AP.4, 16c `N20`), after
+/// the off-window line when there is one: where a brief ends, for a script.
+/// A declared reader sentence (doc 16 section 11).
+pub const BRIEF_END_LINE: &str = "End of brief.";
 
 /// `CONTACTS` — what the platform holds (doc 16 §3.6 "What a pilot sees").
 fn contacts(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {

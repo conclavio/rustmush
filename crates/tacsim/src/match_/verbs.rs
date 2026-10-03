@@ -771,8 +771,24 @@ const POSE_USAGE: &str =
 ///
 /// # Errors
 ///
-/// One sentence per refusal, in the order they are asked.
+/// One sentence per refusal, in the order they are asked, each opening
+/// `POSE refused. ` (16b cut AP.4, 16c `N20`) — the cockpit's shape, so a rig
+/// can tell a refusal from an answer with one prefix check. The usage
+/// (`POSE refused. Usage: @arena/pose …`) and `Unavailable` included; the
+/// success sentences are unchanged.
 pub fn pose(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    pose_inner(ctx).map_err(pose_refused)
+}
+
+/// One `@arena/pose` refusal in the cockpit's shape: `POSE refused. ` and the
+/// refusal as `CmdError`'s own `Display` says it (`{0}` for every variant).
+fn pose_refused(error: CmdError) -> CmdError {
+    CmdError::msg(format!("POSE refused. {error}"))
+}
+
+/// [`pose`]'s body: every refusal in its own words, which [`pose`] prefixes
+/// through `CmdError`'s own `Display`.
+fn pose_inner(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let word = ctx.args.lhs().trim().to_owned();
     let rhs = ctx.args.rhs().map(str::trim).map(str::to_owned);
     let actor = ctx.actor;
@@ -1253,6 +1269,59 @@ pub fn arena_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 16b cut AP.4 (16c `N20`): every `@arena/pose` refusal opens
+    /// `POSE refused. `, the usage and `Unavailable` included; the bare read
+    /// does not. A composed tacsim layer with no centre content: the slot
+    /// refusals and the usage are reachable here, the cell, heading, clash and
+    /// running refusals and the success sentences in `tests/match_lifecycle.rs`
+    /// (`u4_…`, which composes the whole centre).
+    #[test]
+    fn ap4_every_pose_refusal_opens_pose_refused() {
+        let mut tw =
+            mush_testkit::TestWorld::with_modules(vec![Box::new(crate::TacsimRuleset::default())]);
+        let mut said = |line: &str| -> Vec<String> {
+            tw.run(mush_core::GOD, line)
+                .into_iter()
+                .filter_map(|(audience, event)| match (audience, event) {
+                    (
+                        mush_core::Audience::Actor(mush_core::GOD),
+                        mush_proto::OutputEvent::Sys(text),
+                    ) => Some(text.to_plain_text()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let usage = format!("POSE refused. Usage: {POSE_USAGE}");
+        for line in [
+            "@arena/pose RA",
+            "@arena/pose RA=",
+            "@arena/pose =90 97",
+            "@arena/pose RA=ninety 97",
+            "@arena/pose RA=90 97 north",
+        ] {
+            assert_eq!(said(line), std::slice::from_ref(&usage), "{line}");
+        }
+        assert_eq!(
+            said("@arena/pose ZZ=90 97"),
+            ["POSE refused. There is no slot ZZ on this centre."]
+        );
+        assert_eq!(
+            said("@arena/pose zz=off"),
+            ["POSE refused. There is no slot ZZ on this centre."]
+        );
+        // The bare read is an answer, not a refusal.
+        assert_eq!(said("@arena/pose"), ["No opening cell is overridden."]);
+        // Every variant goes through the one wrapper.
+        assert_eq!(
+            pose_refused(ArenaVerbError::Unavailable.into()).to_string(),
+            "POSE refused. The arena is not available on this server."
+        );
+        assert_eq!(
+            pose_refused(CmdError::msg("Heading is 0 to 359.")).to_string(),
+            "POSE refused. Heading is 0 to 359."
+        );
+    }
 
     #[test]
     fn the_staff_order_spellings_are_the_three_doc_16_names() {

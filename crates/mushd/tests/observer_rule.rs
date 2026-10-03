@@ -950,11 +950,14 @@ fn names_nothing(seen: &str, red: u32, blue: u32, what: &str) {
 /// **The words `VIEW BRIEF` writes of its own** (16b cut AG.1): its closed
 /// prose vocabulary — the eight bearing words, the header's, the ground's
 /// joins and tails, the contact sentence's, the beyond line's, the spot lines'
-/// openers and every word of every `class_prose` value. Kept sorted; every
-/// other word of a brief must come from the pilot's own answers.
+/// openers, its own empty sentence and its end line (`No contacts in the
+/// window.`, `End of brief.`, 16b cut AP.4) and every word of every
+/// `class_prose` value. Kept sorted; every other word of a brief must come
+/// from the pilot's own answers.
 const BRIEF_WORDS: &[&str] = &[
     "CONTACTS",
     "East",
+    "End",
     "In",
     "No",
     "North",
@@ -975,6 +978,7 @@ const BRIEF_WORDS: &[&str] = &[
     "bearing",
     "beyond",
     "blue",
+    "brief",
     "by",
     "cell",
     "cells",
@@ -993,6 +997,7 @@ const BRIEF_WORDS: &[&str] = &[
     "heading",
     "heavy",
     "ice",
+    "in",
     "it",
     "light",
     "lists",
@@ -1245,7 +1250,8 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     let seen = ask(&mut bo, "CONTACTS", NO_CONTACTS).await;
     names_nothing(&seen, red, blue, "the other pilot's `CONTACTS`");
     // **16b cut AG.1**: and his `VIEW BRIEF`, the same window in sentences —
-    // his own callsign, his own ground, `No contacts.`, and no side's word. No
+    // his own callsign, his own ground, `No contacts in the window.` (16b cut
+    // AP.4), and no side's word. No
     // projection for Bo: the battery makes no Bo `STATUS` read, and his own `BA`
     // is in neither his `VIEW` nor his `CONTACTS`; Ada's two projections below
     // are the proof.
@@ -1259,7 +1265,9 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         "Bo before detection: a line inside the brief opened no sentence:\n{seen}"
     );
     assert!(
-        sentences.iter().any(|sentence| sentence == NO_CONTACTS),
+        sentences
+            .iter()
+            .any(|sentence| sentence == support::BRIEF_NO_CONTACTS),
         "Bo's brief before detection:\n{seen}"
     );
     assert!(
@@ -1498,18 +1506,28 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         "before detection: a line inside the brief opened no sentence:\n{brief}"
     );
     names_nothing(&brief, red, blue, "the pilot's `VIEW BRIEF`");
-    // Her pose has not moved since the `VIEW` above, so the brief closes on that
-    // `VIEW`'s own off-window sentence, byte for byte with the wraps undone — the
-    // one line after which a mis-worded opener would be dropped unseen.
+    // Her pose has not moved since the `VIEW` above, so the brief's last spot
+    // line is that `VIEW`'s own off-window sentence, byte for byte with the
+    // wraps undone, and the brief closes on its own end line after it (16b cut
+    // AP.4).
+    assert_eq!(
+        sentences.last().map(String::as_str),
+        Some(support::BRIEF_END),
+        "the brief closes on its end line:\n{brief}"
+    );
     assert_eq!(
         sentences
-            .last()
+            .iter()
+            .rev()
+            .nth(1)
             .map(|last| last.split_whitespace().collect::<Vec<&str>>().join(" ")),
         Some(off.clone()),
-        "the brief closes on `VIEW`'s own off-window line:\n{brief}"
+        "the brief's last spot line is `VIEW`'s own off-window line:\n{brief}"
     );
     assert!(
-        sentences.iter().any(|sentence| sentence == NO_CONTACTS),
+        sentences
+            .iter()
+            .any(|sentence| sentence == support::BRIEF_NO_CONTACTS),
         "the brief before detection holds no contact:\n{brief}"
     );
     assert!(

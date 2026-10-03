@@ -311,12 +311,18 @@ impl Unanswered {
     /// `WEAPONSTATUS` reply, while one waits; and any game line at all while a
     /// lobby line awaits its answer (the lobby reads its own answers, which
     /// this ledger does not tell apart); and (cut AN.2) a brief's own bearing
-    /// lines and `No contacts.` while a `VIEW BRIEF` is being read
-    /// ([`super::picture::Open::brief`]): it answers nothing in the ledger,
-    /// but it is the game's line the lane asked for. Pure: the channel
+    /// lines, its `No contacts in the window.` and its `End of brief.` (the
+    /// game's cut AP.4) while a `VIEW BRIEF` is being read
+    /// ([`super::picture::Open::brief`]): they answer nothing in the ledger,
+    /// but they are the game's lines the lane asked for. Pure: the channel
     /// continuation asks it, and an expected answer is never read as chatter.
     pub fn expects(&self, line: &Line, picture: &Picture) -> bool {
-        if picture.open.brief && matches!(line, Line::NoContacts | Line::GroundRay { .. }) {
+        if picture.open.brief
+            && matches!(
+                line,
+                Line::NoContactsInWindow | Line::BriefEnd | Line::GroundRay { .. }
+            )
+        {
             return true;
         }
         if let Some(kind) = opener(line)
@@ -1867,9 +1873,10 @@ mod tests {
 
     /// **A brief answers only its own line** (cut AN.2): with `VIEW BRIEF`,
     /// then `CONTACTS`, `FIRE machine_gun` and `STATUS` typed after it and
-    /// waiting, the brief's header, eight rays and its own `No contacts.` pop
-    /// only the `VIEW BRIEF` (the `No contacts.` is expected, never chatter,
-    /// and pops nothing); then the `CONTACTS` reply, the `Firing` ack and the
+    /// waiting, the brief's header, eight rays, its own `No contacts in the
+    /// window.` and its `End of brief.` pop only the `VIEW BRIEF` (the empty
+    /// sentence and the end line are expected, never chatter, and pop nothing;
+    /// 16b cut AP.4); then the `CONTACTS` reply, the `Firing` ack and the
     /// `STATUS` block each pop their own line, and the ledger is empty. A dark
     /// window pops a waiting `VIEW BRIEF` alone.
     #[test]
@@ -1901,10 +1908,26 @@ mod tests {
             assert_eq!(popped, None, "{ray}");
         }
         assert_eq!(
-            read(&mut p, &mut u, 42, "No contacts."),
+            read(&mut p, &mut u, 42, "No contacts in the window."),
             (true, None),
             "the brief's own: expected, and it pops nothing"
         );
+        assert_eq!(
+            read(
+                &mut p,
+                &mut u,
+                43,
+                "Off the window: C The Woods, 490 m at 064°."
+            ),
+            (false, None),
+            "a spot line keeps the brief and pops nothing"
+        );
+        assert_eq!(
+            read(&mut p, &mut u, 44, "End of brief."),
+            (true, None),
+            "the end line: expected, and it pops nothing"
+        );
+        assert!(!p.open.brief, "closed by its end line");
         assert_eq!(kinds(&u), [K::Contacts, K::Fire, K::Status]);
         // Each reply pops its own line.
         assert_eq!(
@@ -1935,8 +1958,8 @@ mod tests {
         assert_eq!(kinds(&u), [K::Contacts]);
         // A header the terminal wrapped, a teammate's channel line among the
         // bearings and a bearing wrapped in two: the first bearing pops the
-        // `VIEW BRIEF`, and the brief's own `No contacts.` still pops nothing,
-        // leaving the `CONTACTS` typed after it its own line.
+        // `VIEW BRIEF`, and the brief's own empty sentence and end line still
+        // pop nothing, leaving the `CONTACTS` typed after it its own line.
         let mut p = Picture::default();
         let mut u = Unanswered::default();
         u.typed(200, &send("VIEW BRIEF", Purpose::Poll));
@@ -1963,10 +1986,11 @@ mod tests {
             assert_eq!(popped, (i == 0).then_some(K::View), "{ray}");
         }
         assert_eq!(
-            read(&mut p, &mut u, 223, "No contacts."),
+            read(&mut p, &mut u, 223, "No contacts in the window."),
             (true, None),
             "the brief's own, after a wrapped header and a wrapped bearing"
         );
+        assert_eq!(read(&mut p, &mut u, 224, "End of brief."), (true, None));
         assert_eq!(kinds(&u), [K::Contacts]);
         assert_eq!(
             read(&mut p, &mut u, 230, "No contacts."),

@@ -4246,7 +4246,8 @@ async fn opening_of_red_one(rig: &mut Rig) -> ((i64, i64), u32) {
 /// it), opens red slot 1 on its cell at its heading, and is gone once that match
 /// ends — so the next match opens on the authored cell. One set on the terminal
 /// centre between matches is the next match's in turn, and `@arena/reset` clears
-/// one nobody has used. Every refusal says its own sentence.
+/// one nobody has used. Every refusal says its own sentence, after
+/// `POSE refused. ` (16b cut AP.4), and no answer carries that prefix.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn u4_arena_pose_opens_a_slot_on_its_cell_for_the_next_match_and_no_later() {
     let mut rig = Rig::boot(2);
@@ -4281,12 +4282,12 @@ async fn u4_arena_pose_opens_a_slot_on_its_cell_for_the_next_match_and_no_later(
     // Every refusal, in the order they are asked.
     let said = rig.staff("@arena/pose RZ=90 97");
     assert!(
-        said.contains("There is no slot RZ on this centre."),
+        said.contains("POSE refused. There is no slot RZ on this centre."),
         "{said}"
     );
     let said = rig.staff("@arena/pose RA=300 97");
     assert!(
-        said.contains("Cell (300, 97) is off the arena window."),
+        said.contains("POSE refused. Cell (300, 97) is off the arena window."),
         "{said}"
     );
     let (bx, by) = {
@@ -4305,16 +4306,19 @@ async fn u4_arena_pose_opens_a_slot_on_its_cell_for_the_next_match_and_no_later(
     let said = rig.staff(&format!("@arena/pose RA={bx} {by}"));
     assert!(
         said.contains(&format!(
-            "Cell ({bx}, {by}) is impassable, or has no way out."
+            "POSE refused. Cell ({bx}, {by}) is impassable, or has no way out."
         )),
         "{said}"
     );
     let said = rig.staff("@arena/pose RA=90 97 360");
-    assert!(said.contains("Heading is 0 to 359."), "{said}");
+    assert!(
+        said.contains("POSE refused. Heading is 0 to 359."),
+        "{said}"
+    );
     let said = rig.staff("@arena/pose RA");
     assert!(
         said.contains(
-            "Usage: @arena/pose <callsign>=<x> <y>[ <heading>] | <callsign>=off | (bare) list"
+            "POSE refused. Usage: @arena/pose <callsign>=<x> <y>[ <heading>] | <callsign>=off | (bare) list"
         ),
         "{said}"
     );
@@ -4322,12 +4326,13 @@ async fn u4_arena_pose_opens_a_slot_on_its_cell_for_the_next_match_and_no_later(
     // Set, case-folded; a second slot on the same cell is refused by name.
     let said = rig.staff("@arena/pose ra=90 97 90");
     assert!(
-        said.contains("RA opens at cell (90, 97) heading 90 for the next match."),
+        said.contains("RA opens at cell (90, 97) heading 90 for the next match.")
+            && !said.contains("POSE refused."),
         "{said}"
     );
     let said = rig.staff("@arena/pose RB=90 97");
     assert!(
-        said.contains("Cell (90, 97) is already RA's opening cell."),
+        said.contains("POSE refused. Cell (90, 97) is already RA's opening cell."),
         "{said}"
     );
     let said = rig.staff("@arena/pose RB=107 97");
@@ -4337,7 +4342,7 @@ async fn u4_arena_pose_opens_a_slot_on_its_cell_for_the_next_match_and_no_later(
     );
     let said = rig.staff("@arena/pose RB=off");
     assert!(
-        said.contains("RB opens at its authored cell again."),
+        said.contains("RB opens at its authored cell again.") && !said.contains("POSE refused."),
         "{said}"
     );
     let said = rig.staff("@arena/pose BC=off");
@@ -4366,7 +4371,7 @@ async fn u4_arena_pose_opens_a_slot_on_its_cell_for_the_next_match_and_no_later(
     let said = rig.staff("@arena/pose RA=94 97");
     assert!(
         said.contains(
-            "The simulator centre is running; set opening cells before the match starts."
+            "POSE refused. The simulator centre is running; set opening cells before the match starts."
         ),
         "{said}"
     );

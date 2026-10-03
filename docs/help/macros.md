@@ -57,4 +57,42 @@ Lines the game never sees cannot be macro lines: `@tui`, `@notui`, `QUIT`,
 `@history`, the `+act` family and `respond` are answered by your client or
 the connection before the game reads them.
 
+## Framing replies for a client script
+
+A client that scripts the game — a trigger set, a bot, a screen reader's
+helper — needs to know where one reply ends and the next begins. Two
+settings of your connection do that, the way PennMUSH clients have had for
+decades:
+
+  OUTPUTPREFIX <text>   print <text> on a line of its own before the answer
+                        to every line you type.
+  OUTPUTSUFFIX <text>   print <text> on a line of its own after it.
+  OUTPUTPREFIX          clear the prefix; OUTPUTSUFFIX alone clears the suffix.
+
+Both are silent and both are typed in full: nothing is said when you set or
+clear one, so a script that sets a suffix reads the suffix as its first
+answer. The text is yours, at most 256 printable characters, and most scripts
+pick something no game line ever starts with (`>>>` and `<<<`). The brackets
+go round what a line of yours answers, in the order you typed, a line held
+behind a save included. While the game is saving, it may turn a line of
+yours away at once — one too many waiting, or the save taking too long —
+with its own `please retry in a moment`; that refusal comes in its own pair,
+ahead of the lines before it, and inside the pair of a line of yours that
+is still saving, so pair the brackets as a stack: a prefix before the
+suffix you wait for opens a pair inside it. What the game pushes on its own
+— a notice from the arena, another player's say, a page — arrives outside
+them, except that a notice can land inside the pair of a line that is still
+saving. A few commands are
+answered by the server after the line's own turn: `@sshkey`, `@newchar` and
+`@discord`, and staff's `@ps`, `@stats`, `@boot`, `@newpassword`,
+`@siteban`, `@dump` and `@shutdown` read an empty pair, and their answer
+comes after it. The brackets are per connection: a second connection of the
+same character reads nothing of them; they are gone when the connection
+closes, and a restart of the game clears them, so a script that reads a
+restart notice sets them again. Nothing the connection answers itself
+carries them: `@tui`, `@notui`, `QUIT`, `@history` and the `+act` family,
+and the front door's own refusals — "You're doing that too fast.", "Line
+too long." and a busy or restarting server's "try again" or "your input was
+not sent".
+
 See also: `help cockpit`, `help channels`, `help tui`, `help getting-started`.

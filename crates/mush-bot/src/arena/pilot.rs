@@ -8504,7 +8504,9 @@ mod tests {
     }
 
     /// The brief's header (the shipped 256 by 256 cells of 10 m), then `rays`
-    /// (`{Bearing}: …` lines) and `No contacts.`, read at `at`.
+    /// (`{Bearing}: …` lines), the brief's own `No contacts in the window.`
+    /// and its `End of brief.` (16b cut AP.4), read at `at`: the brief is
+    /// closed afterwards, as the game always closes it.
     fn read_brief(picture: &mut Picture, at: u64, rays: &[String]) {
         picture.apply(
             at,
@@ -8516,7 +8518,16 @@ mod tests {
         for ray in rays {
             picture.apply(at, &classify(ray));
         }
-        picture.apply(at, &classify("No contacts."));
+        picture.apply(at, &classify("No contacts in the window."));
+        picture.apply(at, &classify("End of brief."));
+        assert!(!picture.open.brief, "the end line closes the brief");
+        assert!(
+            picture
+                .ground
+                .as_ref()
+                .is_some_and(|ground| ground.complete),
+            "a closed brief with its header read is a complete ground"
+        );
     }
 
     /// Eight rays, the one for each bearing `(word, deg)` given by `ray`.

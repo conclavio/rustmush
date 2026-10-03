@@ -1755,6 +1755,104 @@ fn the_view_brief_header_reads_as_the_game_prints_it() {
 }
 
 // ---------------------------------------------------------------------------
+// The game's cut AP.4: the brief's own empty sentence and its end line
+// ---------------------------------------------------------------------------
+
+/// The seventeen lines `VIEW BRIEF` says of the canonical scene, as the game's
+/// `tests/cockpit.rs` pins them against `cockpit::brief_lines` (16b cut AG.1,
+/// the end line since cut AP.4). Read here as text: the brief's formatter
+/// needs the atlas's terrain classes, which are no dependency of this crate's.
+const BRIEF_GOLDEN: &str = include_str!("../../../web/src/lib/fixtures/cockpit/view_brief.txt");
+
+/// **The brief's two new sentences read as the game prints them** (the
+/// game's cut AP.4, 16c `N20`, a declared reader change under doc 16 §11):
+/// `cockpit::NO_CONTACTS_IN_WINDOW` reads as `Line::NoContactsInWindow` and
+/// `cockpit::BRIEF_END_LINE` as `Line::BriefEnd`, through the server's line
+/// renderer and the bot's own pipeline. A whole brief — the golden's
+/// seventeen lines — read line by line opens the brief at its header, keeps
+/// it open through its contact sentences and spot lines, and closes on the
+/// end line with the ground whole; the same brief over an empty frame (its
+/// empty sentence in the contacts' place) does too, and its empty sentence
+/// and end line open nothing in the lane's ledger.
+#[test]
+fn the_briefs_empty_sentence_and_end_line_read_as_the_game_prints_them() {
+    assert_eq!(cockpit::NO_CONTACTS_IN_WINDOW, "No contacts in the window.");
+    assert_eq!(cockpit::BRIEF_END_LINE, "End of brief.");
+    // Read alone (outside a brief) each is its own line and changes nothing.
+    let mut reader = Reader::new();
+    assert_eq!(
+        reader.one(cockpit::NO_CONTACTS_IN_WINDOW),
+        Line::NoContactsInWindow
+    );
+    assert_eq!(reader.one(cockpit::BRIEF_END_LINE), Line::BriefEnd);
+    assert!(!reader.picture.open.brief);
+    assert!(reader.picture.ground.is_none());
+
+    // The golden, whole.
+    let golden: Vec<&str> = BRIEF_GOLDEN.lines().collect();
+    assert_eq!(golden.len(), 17, "{BRIEF_GOLDEN}");
+    assert_eq!(golden.last(), Some(&cockpit::BRIEF_END_LINE));
+    let mut reader = Reader::new();
+    let last = golden.len() - 1;
+    for (n, line) in golden.iter().enumerate() {
+        let read = reader.one(line);
+        if n == 0 {
+            assert!(matches!(read, Line::ViewHeader { .. }), "{line}");
+        }
+        if (1..=8).contains(&n) {
+            assert!(matches!(read, Line::GroundRay { .. }), "{line}");
+        }
+        if n == last {
+            assert_eq!(read, Line::BriefEnd, "{line}");
+            assert!(!reader.picture.open.brief, "closed by its end line");
+        } else {
+            assert!(reader.picture.open.brief, "open at line {n}: {line}");
+        }
+    }
+    let ground = reader.picture.ground.clone().expect("a ground");
+    assert!(ground.complete);
+    assert_eq!(ground.rays.len(), 8);
+    assert_eq!(ground.side_m, Some((960.0, 640.0)));
+    assert!(
+        reader.picture.contacts.is_empty(),
+        "a brief's contact sentences add no contact"
+    );
+
+    // The same window over an empty frame: header, rays, the empty sentence,
+    // the end line. Through the renderer, then through the picture alone, where
+    // what each line opened is read.
+    let mut quiet: Vec<&str> = golden[..9].to_vec();
+    quiet.push(cockpit::NO_CONTACTS_IN_WINDOW);
+    quiet.push(cockpit::BRIEF_END_LINE);
+    let mut reader = Reader::new();
+    let read: Vec<Line> = quiet.iter().map(|line| reader.one(line)).collect();
+    assert_eq!(read[9], Line::NoContactsInWindow);
+    assert_eq!(read[10], Line::BriefEnd);
+    assert!(!reader.picture.open.brief);
+    assert!(
+        reader
+            .picture
+            .ground
+            .as_ref()
+            .is_some_and(|ground| ground.complete)
+    );
+    let mut picture = Picture::default();
+    for (n, line) in quiet.iter().enumerate() {
+        let applied = picture.apply(10 + n as u64, &classify(line));
+        if n >= 9 {
+            assert_eq!(applied.opened, None, "{line} opens nothing");
+        }
+    }
+    assert!(!picture.open.brief);
+    // And a `CONTACTS` empty reply after the brief opens its own.
+    let applied = picture.apply(100, &classify("No contacts."));
+    assert_eq!(
+        applied.opened,
+        Some(mush_bot::arena::lines::AskKind::Contacts)
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Cut AP.3: the `WATCH` digest
 // ---------------------------------------------------------------------------
 
