@@ -507,6 +507,14 @@ pub struct Contact {
     pub read_ms: u64,
     pub fixes: VecDeque<Fix>,
     pub track: Option<Track>,
+    /// **17b cut M1a.3**: the aspect's side word off the last row read, or
+    /// `None` (a row with no tail, or a contact known only from a notice). Read
+    /// by nothing yet.
+    pub aspect: Option<String>,
+    /// **17b cut M1a.3**: the main gun's `(weapon, percent)` off the last row
+    /// read, or `None` (the dash, an unarmed hull, a row with no tail). Read by
+    /// nothing yet.
+    pub odds_percent: Option<(String, u32)>,
 }
 
 impl Contact {
@@ -523,6 +531,8 @@ impl Contact {
             read_ms: now_ms,
             fixes: VecDeque::new(),
             track: None,
+            aspect: None,
+            odds_percent: None,
         }
     }
 
@@ -2619,6 +2629,9 @@ impl Picture {
         contact.range_m = Some(row.range_m);
         contact.age_ms = u64::from(row.age_s) * 1_000;
         contact.read_ms = read_ms;
+        // 17b cut M1a.3: the row's tail, kept as read.
+        contact.aspect = row.aspect.clone();
+        contact.odds_percent = row.odds.clone().flatten();
         if !same_plot && let Some(fix) = fix {
             contact.push_fix(fix);
         }

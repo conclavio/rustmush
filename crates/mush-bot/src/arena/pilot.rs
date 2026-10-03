@@ -4779,6 +4779,8 @@ mod tests {
                 from_lock: false,
             }]),
             track: None,
+            aspect: None,
+            odds_percent: None,
         }
     }
 

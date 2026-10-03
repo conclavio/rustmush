@@ -1917,7 +1917,10 @@ pub fn bearing_of(dx: i64, dy: i64) -> u32 {
 
 /// One contact as a pilot's frame carries it (doc 16 §3.6 "What a pilot sees";
 /// S.2 renders it).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// **17b cut M1a.3** made it `Clone` and not `Copy`: [`FrameContact::fatal`] is a
+/// list of section words.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameContact {
     /// The opaque id. **16b cut Q.1 stopped it being a pilot's handle**: it is
     /// the stable row key a panel re-identifies a row by across pulses, and
@@ -1974,6 +1977,216 @@ pub struct FrameContact {
     /// [`crate::arena::step::Frame::scan_tables`], which is built from the rows
     /// that carry a reading and from no others.
     pub condition: Option<FrameCondition>,
+    /// **Which face the contact was showing when it was last seen** (17b cut
+    /// M1a.3; doc 17 §3, D-UM-5): [`crate::arena::resolution::facet_band_seen`]
+    /// off the contact's own **plot** and the platform's own pose — advice
+    /// from the plot, as the row's range and bearing are, never the target's
+    /// live heading. On every row of every hull, armed or not.
+    pub aspect: Aspect,
+    /// **Whether this platform has any reason to believe the contact is dead**
+    /// (17b cut M1a.3; doc 17 §3, D-UM-5), or `None` on a hull with **no
+    /// weapons station** — the field is absent there, not `false` (doc 17 §3:
+    /// *weapons station only*; §22's italic line).
+    ///
+    /// Two ways, and they are the only two a platform can have earned: this
+    /// platform's own gunner's kill ([`ShadowContact::known_dead`]), or a held
+    /// reading that shows destroyed a section the **target chassis's
+    /// definition** marks fatal — content a pilot can read off
+    /// [`FrameContact::fatal`], never the target's live wreck flag. It is not a
+    /// call of [`Arena::contact_reads_dead`] (D-UM-5), and it is
+    /// value-identical to it wherever a reading is held: a test pins the
+    /// equality, so doc 17 §17's divergence (4) is measured honestly in 17b cut
+    /// M1a.6 and is expected to count nought — declared, not hidden.
+    pub reads_dead: Option<bool>,
+    /// **The section words of the target's chassis whose destruction kills
+    /// it**, in section order (17b cut M1a.3; departure (j)), present only
+    /// beside a held reading ([`FrameContact::condition`] is `Some`) and
+    /// `None` without one.
+    ///
+    /// It is what lets a pilot read the same rule [`FrameContact::reads_dead`]
+    /// applies: which sections a reading would have to show destroyed. It is
+    /// published only where the row already carries the chassis's section
+    /// vocabulary ([`crate::arena::step::Frame::scan_tables`]), so it names no
+    /// word a pilot was not given — and it is read off the chassis's static
+    /// definition and profile, the same content
+    /// [`crate::arena::state::UnitState::fatal_sections`] is built from.
+    pub fatal: Option<Vec<SmolStr>>,
+}
+
+/// **Which face a contact was presenting when it was last seen** (17b cut M1a.3;
+/// doc 17 §3, D-UM-5, D-UM-18's vocabulary).
+///
+/// One of [`crate::arena::resolution::DIRECT_BANDS`]: the band
+/// [`crate::arena::resolution::facet_band_seen`] answers for the contact's
+/// plot and the viewer's own pose. **Two words for one value, on purpose.** The
+/// keyframe carries the **facet** word ([`Aspect::as_str`]: `front`, `left`,
+/// `right`, `rear`) because that is what a mind reads and what 17b cut M1b's
+/// `aspect = side,rear` mask tests against; the `CONTACTS` row prints the
+/// **side** word ([`Aspect::side_word`]: `front`, `side`, `side`, `rear`)
+/// because which flank is a fact a gunner does not need on a 120-column row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Aspect {
+    /// The contact's front was toward the platform.
+    Front,
+    /// Its left flank.
+    Left,
+    /// Its right flank.
+    Right,
+    /// Its rear.
+    Rear,
+}
+
+impl Aspect {
+    /// The facet word — what the keyframe carries and a mind reads.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Aspect::Front => "front",
+            Aspect::Left => "left",
+            Aspect::Right => "right",
+            Aspect::Rear => "rear",
+        }
+    }
+
+    /// One byte: `0` front, `1` left, `2` right, `3` rear.
+    #[must_use]
+    pub const fn code(&self) -> u8 {
+        match self {
+            Aspect::Front => 0,
+            Aspect::Left => 1,
+            Aspect::Right => 2,
+            Aspect::Rear => 3,
+        }
+    }
+
+    /// **The aspect a band word names** — the word
+    /// [`crate::arena::resolution::facet_band_seen`] answers, which is always one
+    /// of [`crate::arena::resolution::DIRECT_BANDS`]. Anything else answers
+    /// [`Aspect::Front`], and is unreachable: the sector rule cannot produce
+    /// another word, and `front` is the same fallback that rule itself takes.
+    #[must_use]
+    pub fn from_band(word: &str) -> Aspect {
+        match word {
+            "left" => Aspect::Left,
+            "right" => Aspect::Right,
+            "rear" => Aspect::Rear,
+            _ => Aspect::Front,
+        }
+    }
+
+    /// The side word the `CONTACTS` row prints: `front`, `side`, `side`, `rear`.
+    #[must_use]
+    pub const fn side_word(&self) -> &'static str {
+        match self {
+            Aspect::Front => "front",
+            Aspect::Left | Aspect::Right => "side",
+            Aspect::Rear => "rear",
+        }
+    }
+}
+
+/// **One weapon's advertised chance against one contact** (17b cut M1a.3; doc 17
+/// §3, D-UM-5), per mille — [`Arena::resolve_seen`] over
+/// [`Arena::aim_at`], so advice off the plot exactly as a lock's percentage is.
+///
+/// Built only for a **classified** contact (the silhouette table
+/// `resolve_seen` reads is the target's, and an unclassified contact must not
+/// leak it) and only on a hull with a weapons station; see
+/// `Arena::frame_odds` for which contacts and in what order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameOdds {
+    /// The row it is about.
+    pub contact: ContactId,
+    /// The weapon's id.
+    pub weapon: SmolStr,
+    /// The chance, per mille.
+    pub p_permille: u32,
+}
+
+/// **A standing order's objective, as a hull's own frame carries it** (17b cut
+/// M1a.3; doc 17 §3 "Two more fields", D-UM-15).
+///
+/// [`crate::deliberation::order::Objective`] with every contact **re-keyed to
+/// the hull's own** [`ContactId`] — the row it holds the named target under, or
+/// `None` when it holds none — so a mind reading its order can only ever name a
+/// row of its own scope (`Arena::rekey_order`). The words and the bytes are
+/// `Objective`'s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "objective")]
+pub enum MindObjective {
+    /// Stop and hold.
+    Hold,
+    /// Make for this window cell.
+    Advance {
+        /// `(column, row)`.
+        to: (u16, u16),
+    },
+    /// Fight, preferring this row of the hull's own scope.
+    Engage {
+        /// The hull's own row for the ordered target, or `None`.
+        target: Option<ContactId>,
+    },
+    /// Break off toward the own entry zone.
+    Withdraw,
+    /// Hold and face this bearing.
+    Screen {
+        /// Millidegrees clockwise from north.
+        facing_mdeg: u32,
+    },
+    /// Keep station on a friend, by the hull's own row for it.
+    Support {
+        /// The hull's own row for the charge, or `None` (never the hull itself).
+        of: Option<ContactId>,
+    },
+}
+
+impl MindObjective {
+    /// The wire word — [`crate::deliberation::order::Objective::as_str`]'s.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            MindObjective::Hold => "hold",
+            MindObjective::Advance { .. } => "advance",
+            MindObjective::Engage { .. } => "engage",
+            MindObjective::Withdraw => "withdraw",
+            MindObjective::Screen { .. } => "screen",
+            MindObjective::Support { .. } => "support",
+        }
+    }
+
+    /// The byte — [`crate::deliberation::order::Objective::code`]'s.
+    #[must_use]
+    pub const fn code(&self) -> u8 {
+        match self {
+            MindObjective::Hold => 1,
+            MindObjective::Advance { .. } => 2,
+            MindObjective::Engage { .. } => 3,
+            MindObjective::Withdraw => 4,
+            MindObjective::Screen { .. } => 5,
+            MindObjective::Support { .. } => 6,
+        }
+    }
+}
+
+/// **The standing order a hull is under, as its own frame carries it** (17b cut
+/// M1a.3; doc 17 §3 "Two more fields", D-UM-15 as decided).
+///
+/// Re-keyed by `Arena::rekey_order`; read by `Arena::frame_order`, which
+/// answers `None` for a piloted hull — so every frame a pilot is sent today
+/// carries `"order": null`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrameOrder {
+    /// The squad it was written for, rendered (`red-1`).
+    pub squad: SmolStr,
+    /// What the squad is told to do, re-keyed to the hull's own rows.
+    pub objective: MindObjective,
+    /// The order forbids firing.
+    pub hold_fire: bool,
+    /// The furthest band the order lets the hull shoot from.
+    pub max_range_band: Option<crate::deliberation::order::RangeBand>,
+    /// The arena millisecond the order stops standing at.
+    pub expires_ms: i64,
 }
 
 /// **One contact's reading, as a pilot's frame carries it** (16b cut Q.2; doc 16
@@ -2047,6 +2260,12 @@ impl FrameContact {
     /// **Both sides are destructured with no `..`**, as there: a field added to
     /// the row breaks the build here until its comparison is decided, where the
     /// derived `PartialEq` this replaced was total by construction.
+    ///
+    /// **17b cut M1a.3**: the aspect, `reads_dead` and `fatal` are compared
+    /// exactly. The aspect is a word the row prints and the other two are what
+    /// a mind reads; all three move only on a sensor pass, a share or the own
+    /// kill, so comparing them costs no frame anybody would not already have
+    /// been sent.
     #[must_use]
     pub fn same_as(&self, other: &FrameContact, pass_ms: i64, locked: bool) -> bool {
         let FrameContact {
@@ -2059,6 +2278,9 @@ impl FrameContact {
             age_ms,
             cell,
             condition,
+            aspect,
+            reads_dead,
+            fatal,
         } = self;
         let FrameContact {
             id: their_id,
@@ -2070,6 +2292,9 @@ impl FrameContact {
             age_ms: their_age_ms,
             cell: their_cell,
             condition: their_condition,
+            aspect: their_aspect,
+            reads_dead: their_reads_dead,
+            fatal: their_fatal,
         } = other;
         id == their_id
             && designator == their_designator
@@ -2078,6 +2303,9 @@ impl FrameContact {
             && bearing_mdeg == their_bearing_mdeg
             && range_cm == their_range_cm
             && cell == their_cell
+            && aspect == their_aspect
+            && reads_dead == their_reads_dead
+            && fatal == their_fatal
             && age_key(*age_ms, pass_ms) == age_key(*their_age_ms, pass_ms)
             && (!locked || lock_range_step_m(*age_ms) == lock_range_step_m(*their_age_ms))
             && match (condition, their_condition) {

@@ -1,7 +1,7 @@
 {
   "blessed": {
-    "commit": "d9fbac85c96a7e8a7c124c87f25fc7742b87e80c",
-    "date": "2026-09-29T06:15:23Z",
+    "commit": "b446b9180125a1ec5936b5bdf9cf8a8b08350c2d",
+    "date": "2026-10-03T18:08:16Z",
     "host": {
       "cpus": 32,
       "hostname": "ALIEN18",
@@ -48,7 +48,7 @@
     "blocked_interior_passable": 18,
     "blocked_ring_passable": 0,
     "ended": null,
-    "frames_per_pulse_mean": 18.867,
+    "frames_per_pulse_mean": 18.875,
     "held_at_end": 7,
     "lagged_pulses": 0,
     "ledger_bytes_streamed": 3511534,
@@ -66,8 +66,8 @@
   },
   "memory": {
     "horizon_bytes": 26112,
-    "rss_end_kib": 49272,
-    "rss_start_kib": 23792,
+    "rss_end_kib": 48124,
+    "rss_start_kib": 24816,
     "vmrss_end_kib": null,
     "vmrss_start_kib": null
   },
@@ -164,15 +164,15 @@
     ]
   },
   "setup_ms": {
-    "arena_open": 1.498,
-    "boot": 31.537,
-    "generate": 3.899,
+    "arena_open": 1.891,
+    "boot": 32.542,
+    "generate": 4.205,
     "killed_warming": 0,
-    "pack_apply": 21.291,
-    "terrain_convert": 1.49,
+    "pack_apply": 23.078,
+    "terrain_convert": 1.395,
     "warm_pulses": 47,
-    "warm_up": 59.87,
-    "window_open": 12.238
+    "warm_up": 65.868,
+    "window_open": 12.588
   },
   "slope": {
     "refusals": 975,
@@ -189,19 +189,19 @@
       35000,
       40000
     ],
-    "bytes_max": 3909596,
-    "bytes_mean": 3863060,
+    "bytes_max": 3912914,
+    "bytes_mean": 3866378,
     "count": 7,
-    "decode_ms_max": 24.72,
+    "decode_ms_max": 24.573,
     "encode_ms": {
-      "max": 13.112,
-      "p50": 12.12,
-      "p99": 12.654
+      "max": 12.965,
+      "p50": 11.786,
+      "p99": 12.08
     },
     "every_ms": 5000,
     "hash_ok": true,
     "max_snapshot_bytes": 7340032,
-    "wake_plus_encode_ms_max": 15.869
+    "wake_plus_encode_ms_max": 15.795
   },
   "substeps": {
     "per_wake_max": 1,
@@ -211,11 +211,11 @@
   },
   "tempos": [
     {
-      "max_ms": 9.178,
+      "max_ms": 9.021,
       "name": "arena_engaged",
-      "p50_ms": 2.673,
-      "p95_ms": 5.706,
-      "p99_ms": 6.549,
+      "p50_ms": 2.739,
+      "p95_ms": 5.521,
+      "p99_ms": 6.904,
       "period_ms": 500,
       "pulses": 120
     }
@@ -257,10 +257,10 @@
     "cell_probes_peak": 4881,
     "horizon_probes_peak": 4928,
     "jam_checks_peak": 668,
-    "ms_max": 12.464,
-    "ms_p50": 5.489,
-    "ms_p95": 9.508,
-    "ms_p99": 10.561,
+    "ms_max": 11.692,
+    "ms_p50": 5.885,
+    "ms_p95": 9.889,
+    "ms_p99": 10.925,
     "share_ops_peak": 108,
     "traces_peak": 952,
     "window_ms": 500,

@@ -27,8 +27,11 @@
 // The payload is a `serde_json::Value` on the server — outside ts-rs — so these
 // types are hand-written, and every decoder is tolerant of a missing key and of
 // an unknown one: the frame evolves additively (16b cut Q.1 and Q.2 both added
-// fields at `FRAME_VERSION` 1), and neither an older server nor a newer one may
-// make this client throw.
+// fields at `FRAME_VERSION` 1, and 17b cut M1a.3's fields at 2 — `aspect`,
+// `reads_dead`, `odds` and `fatal` per contact, `bands_cm` per weapon, `t_ms` and
+// `order` at the top, and no `weapons` key at all on a hull with no weapons
+// station), and neither an older server nor a newer one may make this client
+// throw. The version is not read.
 
 /** The per-pulse cockpit keyframe's feed (`tacsim::arena_bridge::FRAME_FEED`). */
 export const COCKPIT_FEED = "arena.cockpit";
@@ -115,6 +118,43 @@ export interface CockpitContact {
   cell: [number, number] | null;
   friendly: boolean;
   condition: CockpitCondition | null;
+  /** The FACET word the contact's plot was showing — `front`, `left`, `right`
+   * or `rear` (17b cut M1a.3); `front` from a server that does not send it. The
+   * row prints its side word (`sideWord`). */
+  aspect: string;
+  /** Whether this platform has reason to believe the contact is dead (17b cut
+   * M1a.3), or `null` on a hull with no weapons station — and from a server
+   * that does not send the key. */
+  reads_dead: boolean | null;
+  /** The chances against this contact, the default weapon first (17b cut
+   * M1a.3); `[]` for a contact the fire control is not resolving, on an unarmed
+   * hull, and from an older server. */
+  odds: CockpitOdds[];
+  /** The target chassis's fatal section words beside a held reading (17b cut
+   * M1a.3), or `null`. */
+  fatal: string[] | null;
+}
+
+/** One weapon's advertised chance against one contact (17b cut M1a.3). */
+export interface CockpitOdds {
+  weapon: string;
+  p_permille: number;
+  percent: number;
+}
+
+/** A standing order as the keyframe spells it (17b cut M1a.3): `target` and
+ * `of` are the designators of the hull's own rows, never an id. Every piloted
+ * hull's frame carries `order: null`. */
+export interface CockpitOrder {
+  squad: string;
+  objective: string;
+  target: string | null;
+  to: [number, number] | null;
+  facing_mdeg: number | null;
+  of: string | null;
+  hold_fire: boolean;
+  max_range_band: string | null;
+  expires_in_ms: number;
 }
 
 /** The numbers a refusal's sentence carries (`RefusalDetail`), or `null`. */
@@ -165,6 +205,9 @@ export interface CockpitWeapon {
   /** What one shot adds to the platform's heat; `0` for a cold gun (16b cut
    * D.2), which is what an overheated tank may still fire. */
   heat_per_shot: number;
+  /** The weapon's band edges, centimetres (17b cut M1a.3); `[]` from an older
+   * server. */
+  bands_cm: number[];
 }
 
 export interface CockpitFacet {
@@ -289,6 +332,15 @@ export interface CockpitFrame {
   /** The catch-up report (16b cut Y.4), or `null` on every frame but a
    * reclaim's first — and from a server that does not send the key. */
   catchup: CockpitCatchup | null;
+  /** The arena millisecond the frame was built at (17b cut M1a.3), or `null`
+   * from a server that does not send it. */
+  t_ms: number | null;
+  /** The hull's standing order (17b cut M1a.3), or `null` — every piloted
+   * hull, and an older server. */
+  order: CockpitOrder | null;
+  /** Whether the frame carries the `weapons` key (17b cut M1a.3): a hull with
+   * no weapons station carries none, and its contact rows end at the aspect. */
+  armed: boolean;
 }
 
 /** One of the ground's named places, as `arena.map` carries it (16b cut V.1):
@@ -416,6 +468,54 @@ function decodeContact(raw: unknown): CockpitContact | null {
     cell: cellPair(raw.cell),
     friendly: raw.friendly === true,
     condition: decodeCondition(raw.condition),
+    // 17b cut M1a.3: every one tolerant of absence (an older server).
+    aspect: clean(raw.aspect, "front", 8),
+    reads_dead: typeof raw.reads_dead === "boolean" ? raw.reads_dead : null,
+    odds: (Array.isArray(raw.odds) ? raw.odds : []).flatMap((o) => {
+      const odds = decodeOdds(o);
+      return odds ? [odds] : [];
+    }),
+    fatal: Array.isArray(raw.fatal)
+      ? raw.fatal.flatMap((word) => {
+          const named = optStr(word, 24);
+          return named === null ? [] : [named];
+        })
+      : null,
+  };
+}
+
+/** One odds entry (17b cut M1a.3); `null` without a weapon. */
+function decodeOdds(raw: unknown): CockpitOdds | null {
+  if (!isObj(raw)) {
+    return null;
+  }
+  const weapon = optStr(raw.weapon, 24);
+  if (weapon === null) {
+    return null;
+  }
+  const p_permille = Math.max(0, int(raw.p_permille, 0));
+  return {
+    weapon,
+    p_permille,
+    percent: Math.max(0, int(raw.percent, Math.trunc(p_permille / 10))),
+  };
+}
+
+/** A standing order (17b cut M1a.3), or `null` for anything not an object. */
+function decodeOrder(raw: unknown): CockpitOrder | null {
+  if (!isObj(raw)) {
+    return null;
+  }
+  return {
+    squad: clean(raw.squad, "?", 16),
+    objective: clean(raw.objective, "?", 16),
+    target: optStr(raw.target, 8),
+    to: cellPair(raw.to),
+    facing_mdeg: optInt(raw.facing_mdeg),
+    of: optStr(raw.of, 8),
+    hold_fire: raw.hold_fire === true,
+    max_range_band: optStr(raw.max_range_band, 16),
+    expires_in_ms: Math.max(0, int(raw.expires_in_ms, 0)),
   };
 }
 
@@ -463,6 +563,11 @@ function decodeWeapon(raw: unknown): CockpitWeapon | null {
     rounds_max: int(raw.rounds_max, 0),
     percent: optInt(raw.percent),
     heat_per_shot: Math.max(0, int(raw.heat_per_shot, 0)),
+    // 17b cut M1a.3.
+    bands_cm: (Array.isArray(raw.bands_cm) ? raw.bands_cm : []).flatMap((edge) => {
+      const cm = optInt(edge);
+      return cm === null ? [] : [cm];
+    }),
   };
 }
 
@@ -639,6 +744,10 @@ export function decodeCockpitFrame(data: unknown): CockpitFrame | null {
       return notice ? [notice] : [];
     }),
     catchup: decodeCatchup(data.catchup),
+    // 17b cut M1a.3.
+    t_ms: optInt(data.t_ms),
+    order: decodeOrder(data.order),
+    armed: Array.isArray(data.weapons),
   };
 }
 
@@ -1294,13 +1403,38 @@ export function weaponLines(frame: CockpitFrame): string[] {
   });
 }
 
-/** The contact table's rows, in the frame's own order. */
+/** **The side word a facet word prints as** (17b cut M1a.3; the arena's
+ * `Aspect::side_word`): `left` and `right` are `side`, `rear` is `rear`, and
+ * everything else — `front`, and a word this build predates — is `front`. */
+export function sideWord(facet: string): string {
+  switch (facet) {
+    case "left":
+    case "right":
+      return "side";
+    case "rear":
+      return "rear";
+    default:
+      return "front";
+  }
+}
+
+/** The contact table's rows, in the frame's own order.
+ *
+ * **17b cut M1a.3** (doc 17 §3): each detail ends in the aspect's side word,
+ * then — only on a frame that carries `weapons` — the first odds entry (the
+ * default weapon's, which the server puts first) as `cannon 62%`, or `-` for a
+ * contact the fire control is not resolving. An unarmed hull's row ends at the
+ * side word. */
 export function contactRows(frame: CockpitFrame): CockpitContactRow[] {
-  return frame.contacts.map((c) => ({
-    designator: c.designator,
-    detail: `${c.class}  ${deg3(c.bearing_deg)}°  ${c.band}  ${c.range_m} m  ${c.age_s} s`,
-    chips: scanChips(c, frame.scan_tables),
-  }));
+  return frame.contacts.map((c) => {
+    const first = c.odds[0];
+    const odds = !frame.armed ? "" : first ? `  ${first.weapon} ${first.percent}%` : "  -";
+    return {
+      designator: c.designator,
+      detail: `${c.class}  ${deg3(c.bearing_deg)}°  ${c.band}  ${c.range_m} m  ${c.age_s} s  ${sideWord(c.aspect)}${odds}`,
+      chips: scanChips(c, frame.scan_tables),
+    };
+  });
 }
 
 /** One contact row as the line a terminal prints. */

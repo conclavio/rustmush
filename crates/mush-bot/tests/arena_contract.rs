@@ -47,7 +47,9 @@ use tacsim::arena::{
     damage::MISS_REASONS,
     intents::Refusal,
     motion::BlockedCause,
-    perception::{FrameContact, FrameNotice, Named, NoticeKind, Receiver, RefusalDetail},
+    perception::{
+        Aspect, FrameContact, FrameNotice, FrameOdds, Named, NoticeKind, Receiver, RefusalDetail,
+    },
     state::{Classification, ContactId, Designator, KeySpot, Power as ArenaPower, Team},
     step::{Frame, FrameFacet, FrameHeat, FrameSection},
     weapons::{FrameBand, FrameWeapon},
@@ -172,7 +174,20 @@ fn friendly_frame() -> Frame {
         age_ms: 0,
         cell: Some((100, 85)),
         condition: None,
+        // 17b cut M1a.3: a classified friend, nearer than BA, so it carries
+        // odds too, ahead of BA's.
+        aspect: Aspect::Front,
+        reads_dead: Some(false),
+        fatal: None,
     });
+    frame.odds.insert(
+        0,
+        FrameOdds {
+            contact: RB_ID,
+            weapon: "cannon".into(),
+            p_permille: 871,
+        },
+    );
     frame.lock = Some(RB_ID);
     frame
 }
@@ -241,6 +256,10 @@ fn frame() -> Frame {
                 age_ms: 1_200,
                 cell: Some((145, 99)),
                 condition: None,
+                // 17b cut M1a.3: broadside, and the lock's own figures below.
+                aspect: Aspect::Left,
+                reads_dead: Some(false),
+                fatal: None,
             },
             FrameContact {
                 id: X2_ID,
@@ -252,6 +271,10 @@ fn frame() -> Frame {
                 age_ms: 3_500,
                 cell: Some((82, 115)),
                 condition: None,
+                // 17b cut M1a.3: an aspect is told, odds never are.
+                aspect: Aspect::Rear,
+                reads_dead: Some(false),
+                fatal: None,
             },
         ],
         scan_tables: Vec::new(),
@@ -321,6 +344,42 @@ fn frame() -> Frame {
         receiver: None,
         ecm: None,
         catchup: None,
+        // 17b cut M1a.3: BA, the one classified contact, led by the cannon.
+        odds: vec![
+            FrameOdds {
+                contact: BA_ID,
+                weapon: "cannon".into(),
+                p_permille: 624,
+            },
+            FrameOdds {
+                contact: BA_ID,
+                weapon: "machine_gun".into(),
+                p_permille: 210,
+            },
+        ],
+        order: None,
+        t_ms: 61_250,
+    }
+}
+
+/// [`frame`] on a hull with no weapons station (17b cut M1a.3; doc 17 §22's
+/// italic line): no guns, no odds, no `reads_dead`.
+fn unarmed_frame() -> Frame {
+    let mut frame = frame();
+    frame.weapons.clear();
+    frame.odds.clear();
+    for row in &mut frame.contacts {
+        row.reads_dead = None;
+    }
+    frame
+}
+
+/// What the bot should read off a row's odds cell: the main gun's id and whole
+/// per cent, or `None` for the dash and for an unarmed hull's row.
+fn odds_read(row: &cockpit::ContactRow) -> Option<(String, u32)> {
+    match &row.odds {
+        cockpit::OddsCell::Odds(weapon, permille) => Some((weapon.to_string(), permille / 10)),
+        cockpit::OddsCell::Dash | cockpit::OddsCell::Unarmed => None,
     }
 }
 
@@ -593,6 +652,9 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
                 assert_eq!(read.band, row.band.as_str());
                 assert_eq!(u64::from(read.range_m), row.range_m);
                 assert_eq!(i64::from(read.age_s), row.age_ms / 1_000);
+                // 17b cut M1a.3: the tail, read back as printed.
+                assert_eq!(read.aspect.as_deref(), Some(row.aspect.as_str()));
+                assert_eq!(read.odds, Some(odds_read(row)));
             }
             other => panic!("{} read as {other:?}", row.render()),
         }
@@ -602,6 +664,40 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
     assert_eq!(picture.contacts.keys().collect::<Vec<_>>(), ["BA", "X2"]);
     assert_eq!(picture.contacts["BA"].side, Some(Side::Blue));
     assert_eq!(picture.contacts["X2"].side, None);
+    // 17b cut M1a.3: the picture keeps the tail, and reads nothing off it yet.
+    assert_eq!(picture.contacts["BA"].aspect.as_deref(), Some("side"));
+    assert_eq!(
+        picture.contacts["BA"].odds_percent,
+        Some(("cannon".to_owned(), 62))
+    );
+    assert_eq!(picture.contacts["X2"].aspect.as_deref(), Some("rear"));
+    assert_eq!(picture.contacts["X2"].odds_percent, None, "the dash");
+
+    // -- CONTACTS on an unarmed hull: every row ends at the side word ---------
+    let unarmed = unarmed_frame();
+    let mut reader = Reader::new();
+    for row in &cockpit::frame_contacts(&unarmed) {
+        let printed = row.render();
+        assert!(printed.ends_with(&format!("  {}", row.aspect)), "{printed}");
+        match reader.one(&printed) {
+            Line::ContactRow(read) => {
+                assert_eq!(read.aspect.as_deref(), Some(row.aspect.as_str()));
+                assert_eq!(read.odds, Some(None), "{printed}");
+            }
+            other => panic!("{printed} read as {other:?}"),
+        }
+    }
+
+    // -- a row WITHOUT the tail (an older server) still parses ---------------
+    let mut reader = Reader::new();
+    match reader.one("BA  blue  bearing 087° (rel 032°)  far  450 m  2 s") {
+        Line::ContactRow(read) => {
+            assert_eq!(read.designator, "BA");
+            assert_eq!(read.aspect, None);
+            assert_eq!(read.odds, None);
+        }
+        other => panic!("a tail-less row read as {other:?}"),
+    }
 
     // -- WEAPONSTATUS ---------------------------------------------------------
     let mut reader = Reader::new();

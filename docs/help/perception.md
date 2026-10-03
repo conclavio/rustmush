@@ -20,8 +20,9 @@ A pilot reads their own platform's picture with `CONTACTS`, and it holds exactly
 what their sensors have found — no object numbers, no room, no pilot names, and
 nothing at all about a unit they have not detected.
 
-  CONTACTS         X2  unknown  bearing 087° (rel 032°)  far  450 m  1 s
-                   BA  blue     bearing 154° (rel 099°)  close 100 m  0 s
+  CONTACTS
+  X2  unknown  bearing 087° (rel 032°)  far  450 m  1 s  front  -
+  BA  blue  bearing 154° (rel 099°)  close  100 m  0 s  side  cannon 87%
 
 A return your platform has found but not told apart has no name to give you, so
 your platform numbers it for itself — `X1`, `X2`, in the order **your** sensors

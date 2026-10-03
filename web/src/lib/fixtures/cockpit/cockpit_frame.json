@@ -11,6 +11,7 @@
       "age_ms": 1200,
       "age_s": 1,
       "alias": "X1",
+      "aspect": "left",
       "band": "far",
       "bearing_deg": 45,
       "cell": [
@@ -24,15 +25,32 @@
         "table": 0
       },
       "designator": "BA",
+      "fatal": [
+        "hull"
+      ],
       "friendly": false,
       "id": "1111111111111111",
+      "odds": [
+        {
+          "p_permille": 624,
+          "percent": 62,
+          "weapon": "cannon"
+        },
+        {
+          "p_permille": 210,
+          "percent": 21,
+          "weapon": "machine_gun"
+        }
+      ],
       "range_m": 450,
+      "reads_dead": false,
       "relative_deg": 0
     },
     {
       "age_ms": 400,
       "age_s": 0,
       "alias": null,
+      "aspect": "front",
       "band": "close",
       "bearing_deg": 270,
       "cell": [
@@ -42,15 +60,30 @@
       "class": "red",
       "condition": null,
       "designator": "RB",
+      "fatal": null,
       "friendly": true,
       "id": "2222222222222222",
+      "odds": [
+        {
+          "p_permille": 871,
+          "percent": 87,
+          "weapon": "cannon"
+        },
+        {
+          "p_permille": 655,
+          "percent": 65,
+          "weapon": "machine_gun"
+        }
+      ],
       "range_m": 100,
+      "reads_dead": false,
       "relative_deg": 225
     },
     {
       "age_ms": 3500,
       "age_s": 3,
       "alias": null,
+      "aspect": "front",
       "band": "effective",
       "bearing_deg": 315,
       "cell": [
@@ -60,15 +93,19 @@
       "class": "unknown",
       "condition": null,
       "designator": "X3",
+      "fatal": null,
       "friendly": false,
       "id": "3333333333333333",
+      "odds": [],
       "range_m": 200,
+      "reads_dead": false,
       "relative_deg": 270
     },
     {
       "age_ms": 6000,
       "age_s": 6,
       "alias": null,
+      "aspect": "rear",
       "band": "far",
       "bearing_deg": 30,
       "cell": [
@@ -78,9 +115,12 @@
       "class": "unknown",
       "condition": null,
       "designator": "X4",
+      "fatal": null,
       "friendly": false,
       "id": "4444444444444444",
+      "odds": [],
       "range_m": 600,
+      "reads_dead": false,
       "relative_deg": 345
     }
   ],
@@ -131,6 +171,7 @@
       "weapon": null
     }
   ],
+  "order": null,
   "power": "online",
   "receiver": null,
   "scan_tables": [
@@ -145,7 +186,7 @@
   "schema": {
     "id": "arena.cockpit",
     "retain": "latest",
-    "version": 1
+    "version": 2
   },
   "scope": "hostile",
   "sections": [
@@ -217,10 +258,15 @@
   "sight_m": 600,
   "speed_cms": 1200,
   "speed_kph": 43,
+  "t_ms": 61250,
   "tempo": "engaged",
   "unit": 101,
   "weapons": [
     {
+      "bands_cm": [
+        100000,
+        300000
+      ],
       "heat_per_shot": 0,
       "id": "cannon",
       "p_permille": 624,
@@ -237,6 +283,9 @@
       "rounds_max": 20
     },
     {
+      "bands_cm": [
+        40000
+      ],
       "heat_per_shot": 0,
       "id": "machine_gun",
       "p_permille": 210,

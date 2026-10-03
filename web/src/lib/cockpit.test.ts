@@ -24,6 +24,7 @@ import {
   cockpitView,
   cockpitViewLines,
   composeWindow,
+  contactRows,
   contactText,
   damageText,
   decodeArenaMap,
@@ -36,6 +37,7 @@ import {
   noticeLines,
   scanChips,
   scanText,
+  sideWord,
   statusLines,
   weaponLines,
   type ArenaMap,
@@ -539,8 +541,11 @@ describe("the view model", () => {
     expect(view.damage[0]?.facets).toEqual([]);
     // 16b cut D.1: the band is the PILOT's word now — thirds of the lesser of
     // the platform's own 600 m sight and the cannon's reach — so the scene's
-    // 450 m lock reads `far`.
-    expect(view.contacts.map(contactText)[0]).toBe("BA  blue  045°  far  450 m  1 s");
+    // 450 m lock reads `far`. 17b cut M1a.3: then the aspect's side word and
+    // the main gun's odds.
+    expect(view.contacts.map(contactText)[0]).toBe(
+      "BA  blue  045°  far  450 m  1 s  side  cannon 62%",
+    );
     // The off-window contact is in the table even though no marker drew.
     expect(view.contacts.map((c) => c.designator)).toContain("X4");
     expect(scanText(scanChips(frame.contacts[0]!, frame.scan_tables))).toBe(
@@ -996,5 +1001,113 @@ describe("16b cut O.2", () => {
     expect(notice({ kind: "refused", order: "emcon", refusal: "no_jammer" })).toBe(
       "EMCON refused: no jamming pod",
     );
+  });
+});
+
+// **17b cut M1a.3** (doc 17 §3, D-UM-4, D-UM-5): the fields a mind reads joined
+// the frame at `FRAME_VERSION` 2, and the contact row grew the aspect and the
+// main gun's odds. Every new key is optional to this decoder.
+describe("17b cut M1a.3", () => {
+  it("decodes the new keys from the committed frame", () => {
+    const frame = theFrame();
+    expect(frame.armed).toBe(true);
+    expect(frame.t_ms).toBe(61250);
+    expect(frame.order).toBeNull();
+    expect(frame.contacts.map((c) => c.aspect)).toEqual(["left", "front", "front", "rear"]);
+    expect(frame.contacts.map((c) => c.reads_dead)).toEqual([false, false, false, false]);
+    expect(frame.contacts[0]?.odds).toEqual([
+      { weapon: "cannon", p_permille: 624, percent: 62 },
+      { weapon: "machine_gun", p_permille: 210, percent: 21 },
+    ]);
+    expect(frame.contacts[2]?.odds).toEqual([]);
+    expect(frame.contacts[0]?.fatal).toEqual(["hull"]);
+    expect(frame.contacts[1]?.fatal).toBeNull();
+    expect(frame.weapons.map((w) => w.bands_cm)).toEqual([[100000, 300000], [40000]]);
+  });
+
+  it("decodes an older frame, with none of the keys, to the defaults", () => {
+    const old = decodeCockpitFrame({
+      match: 3,
+      callsign: "BB",
+      contacts: [{ designator: "X1", class: "unknown" }],
+      weapons: [{ id: "gun" }],
+    });
+    expect(old?.t_ms).toBeNull();
+    expect(old?.order).toBeNull();
+    expect(old?.armed).toBe(true);
+    expect(old?.contacts[0]?.aspect).toBe("front");
+    expect(old?.contacts[0]?.reads_dead).toBeNull();
+    expect(old?.contacts[0]?.odds).toEqual([]);
+    expect(old?.contacts[0]?.fatal).toBeNull();
+    expect(old?.weapons[0]?.bands_cm).toEqual([]);
+  });
+
+  it("decodes an unarmed frame, whose rows end at the side word", () => {
+    const raw = json("cockpit_frame.json") as Record<string, unknown>;
+    const unarmed: Record<string, unknown> = {
+      ...raw,
+      contacts: (raw.contacts as Record<string, unknown>[]).map((c) => {
+        const { odds: _odds, reads_dead: _dead, ...rest } = c;
+        return rest;
+      }),
+    };
+    delete unarmed.weapons;
+    const frame = decodeCockpitFrame(unarmed);
+    expect(frame?.armed).toBe(false);
+    expect(frame?.weapons).toEqual([]);
+    expect(frame?.contacts.map((c) => c.reads_dead)).toEqual([null, null, null, null]);
+    expect(frame ? weaponLines(frame) : []).toEqual(["(no weapon)"]);
+    expect(frame ? contactRows(frame).map(contactText) : []).toEqual([
+      "BA  blue  045°  far  450 m  1 s  side",
+      "RB  red  270°  close  100 m  0 s  front",
+      "X3  unknown  315°  effective  200 m  3 s  front",
+      "X4  unknown  030°  far  600 m  6 s  rear",
+    ]);
+  });
+
+  it("pins the armed rows: the main gun's odds, or a dash", () => {
+    expect(contactRows(theFrame()).map((row) => row.detail)).toEqual([
+      "blue  045°  far  450 m  1 s  side  cannon 62%",
+      "red  270°  close  100 m  0 s  front  cannon 87%",
+      "unknown  315°  effective  200 m  3 s  front  -",
+      "unknown  030°  far  600 m  6 s  rear  -",
+    ]);
+    expect(["front", "left", "right", "rear", "top"].map(sideWord)).toEqual([
+      "front",
+      "side",
+      "side",
+      "rear",
+      "front",
+    ]);
+  });
+
+  it("decodes an order with its payloads and designators", () => {
+    const raw = json("cockpit_frame.json") as Record<string, unknown>;
+    const frame = decodeCockpitFrame({
+      ...raw,
+      order: {
+        squad: "red-1",
+        objective: "engage",
+        target: "BA",
+        to: null,
+        facing_mdeg: null,
+        of: null,
+        hold_fire: false,
+        max_range_band: "effective",
+        expires_in_ms: 54250,
+      },
+    });
+    expect(frame?.order).toEqual({
+      squad: "red-1",
+      objective: "engage",
+      target: "BA",
+      to: null,
+      facing_mdeg: null,
+      of: null,
+      hold_fire: false,
+      max_range_band: "effective",
+      expires_in_ms: 54250,
+    });
+    expect(decodeCockpitFrame({ ...raw, order: "hold" })?.order).toBeNull();
   });
 });

@@ -985,17 +985,21 @@ fn the_cockpit_screen_paints_at_both_budget_sizes() {
         // rows, and the fixture's contacts take six lines (BA's SCAN row
         // wraps once at 46 columns), so the last contact, X4, is below the
         // fold there: the pane is not focused, so nothing scrolls it into
-        // view. The rows above it are whole.
-        let x4 = "X4  unknown  030\u{b0}  far  600 m  6 s";
+        // view. The rows above it are whole. **17b cut M1a.3**: whole means
+        // with the compact aspect-and-odds tail, so the tail's fit is asserted
+        // at both sizes — X3's row fills the 46 columns exactly.
+        let x4 = "X4  unknown  030\u{b0}  far  600 m  6 s rear";
         for row in [
-            "BA  blue  045\u{b0}  far  450 m  1 s",
-            "RB  red  270\u{b0}  close  100 m  0 s",
-            "X3  unknown  315\u{b0}  effective  200 m  3 s",
+            "BA  blue  045\u{b0}  far  450 m  1 s side 62%",
+            "RB  red  270\u{b0}  close  100 m  0 s front 87%",
+            "X3  unknown  315\u{b0}  effective  200 m  3 s front",
             x4,
         ] {
             if h == COCKPIT_ROWS && row == x4 {
+                // Below the fold means not even its head is painted, so the
+                // negative test reads the row without its tail.
                 assert!(
-                    !right_holds(&text, row, w),
+                    !right_holds(&text, "X4  unknown", w),
                     "{w}x{h}: X4's row was expected below the fold:\n{text}"
                 );
                 continue;

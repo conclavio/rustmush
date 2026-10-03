@@ -810,10 +810,34 @@ impl Arena {
     /// intended: a gunner reads a plot and the round flies at a tank. While a
     /// target is in continuous view the plot is at most one `sensors.pass_ms` old
     /// and the two agree.
+    ///
+    /// **17b cut M1a.3** made it [`Arena::aim_at`] over the lock's contact: one
+    /// body, so the lock's percentage and a frame's per-contact odds are one
+    /// reading of one plot.
     #[must_use]
     pub fn lock_aim(&self, platform: ObjId) -> Option<LockAim> {
+        let contact = self.unit(platform)?.lock?;
+        self.aim_at(platform, contact)
+    }
+
+    /// **What the platform would resolve a shot at any one of its held contacts
+    /// against** (17b cut M1a.3; doc 17 §3, D-UM-5): [`Arena::lock_aim`]
+    /// generalised from the lock to any contact the platform holds.
+    ///
+    /// `None` for a contact the platform does not hold (the one lookup a named
+    /// id goes through, [`crate::arena::state::ShadowContacts::resolve`]) and for
+    /// a target that has left the match. **One trace per call**, to the cell
+    /// the contact was last seen in ([`Arena::fire_cover_at`]): advice off the
+    /// plot, never the target's live pose — the range and the cover are the
+    /// plot's, and so is the face and the crossing speed
+    /// [`Arena::resolve_seen`] reads off [`LockAim::seen_at`].
+    #[must_use]
+    pub fn aim_at(
+        &self,
+        platform: ObjId,
+        contact: crate::arena::state::ContactId,
+    ) -> Option<LockAim> {
         let state = self.unit(platform)?;
-        let contact = state.lock?;
         let held = *self.contacts.resolve(platform, contact)?;
         let target = held.target;
         // Only that it is still in the match: the range and the cover below come
@@ -1282,5 +1306,63 @@ mod tests {
             full,
             "a unit with no sensor is not shooting worse for the lack of one"
         );
+    }
+
+    /// **17b cut M1a.3** (doc 17 §3, D-UM-5): `aim_at` is `lock_aim`'s body over
+    /// any held contact — the lock's aim is `aim_at` of the lock, a contact the
+    /// platform holds but is not locked on aims all the same, and an id it does
+    /// not hold aims at nothing. Every figure is the plot's, and the cover is
+    /// the ONE trace `fire_cover_at` takes to the plot's cell: there is no trace
+    /// counter in the library, so "one trace per call" is pinned as equality with
+    /// that one call rather than as a count.
+    #[test]
+    fn m1a3_aim_at_is_lock_aim_over_any_held_contact() {
+        use crate::arena::state::{Classification, ContactId, SeenPose, ShadowContact};
+        let mut arena = duel();
+        let held = crate::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+        let plot = SeenPose::of(arena.unit(BLUE).unwrap_or_else(|| panic!("blue")));
+        arena.contacts.insert(
+            RED,
+            held,
+            ShadowContact::sighted(
+                BLUE,
+                Classification::Classified { team: Team::Blue },
+                0,
+                plot,
+            ),
+        );
+        // Held and not locked: no lock aim, but an aim.
+        assert_eq!(arena.lock_aim(RED), None);
+        let aim = arena
+            .aim_at(RED, held)
+            .unwrap_or_else(|| panic!("a held contact aims"));
+        assert_eq!(aim.target, BLUE);
+        assert_eq!(aim.seen_at, plot);
+        let red_pose = arena
+            .unit(RED)
+            .map(|red| red.pose.clone())
+            .unwrap_or_else(|| panic!("red"));
+        assert_eq!(aim.range_cm, plot.range_from(&red_pose));
+        let cell = plot
+            .cell(&arena.definition.terrain)
+            .unwrap_or_else(|| panic!("on the window"));
+        assert_eq!(aim.cover, arena.fire_cover_at(RED, BLUE, cell));
+        // Locked: the lock's aim is `aim_at` of the lock.
+        if let Some(red) = arena.unit_mut(RED) {
+            red.lock = Some(held);
+        }
+        assert_eq!(arena.lock_aim(RED), arena.aim_at(RED, held));
+        assert_eq!(arena.lock_aim(RED), Some(aim));
+        // An id the platform does not hold — never minted, or another
+        // platform's — aims at nothing; nor does a platform the arena lacks.
+        assert_eq!(arena.aim_at(RED, ContactId(0xdead)), None);
+        assert_eq!(arena.aim_at(BLUE, held), None, "BLUE holds nothing");
+        assert_eq!(arena.aim_at(ObjId(77), held), None);
+        // The plot, not the tank: driving BLUE away moves nothing in the aim.
+        if let Some(blue) = arena.unit_mut(BLUE) {
+            blue.pose.y_cm += 3_000;
+            blue.pose.heading_mdeg = 90_000;
+        }
+        assert_eq!(arena.aim_at(RED, held), Some(aim));
     }
 }

@@ -713,8 +713,9 @@ fn unseated(feed: &str) -> Value {
             },
             "seated": false,
         }),
+        // 17b cut M1a.3 bumped the cockpit frame to version 2.
         _ => json!({
-            "schema": { "id": "arena.cockpit", "version": 1, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 2, "retain": "latest" },
             "seated": false,
         }),
     }
@@ -1282,6 +1283,14 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     );
     let contacts = ask(&mut ada, "CONTACTS", NO_CONTACTS).await;
     names_nothing(&contacts, red, blue, "the pilot's `CONTACTS`");
+    // **17b cut M1a.3**: no row at all — so no aspect and no odds — before
+    // detection.
+    assert!(
+        !contacts
+            .lines()
+            .any(|line| line.contains("  bearing ") && line.contains(" (rel ")),
+        "a CONTACTS row before detection:\n{contacts}"
+    );
 
     // **16b cut V.1**: `STATUS` names the ground nearest her own pose — the ford,
     // twenty-six cells west of her re-posed cell on the same road. (Asked before
@@ -1600,6 +1609,20 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     let seen = ask_web(&mut web, &format!("@unit/show #{red}"), NOT_A_UNIT).await;
     assert!(seen.contains(NOT_A_UNIT), "{seen}");
 
+    // **17b cut M1a.3**: one more `CONTACTS` at the battery's close, so the
+    // window the acquisition assertion below reads (from the battery's mark
+    // to her first `New contact`) holds an ASKED table and not only pushes:
+    // it is the empty one, with no row to carry an aspect or odds. (A breath
+    // for the flood bucket first: the `VIEW BRIEF` and Bo's reads above.)
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let empty = ask(&mut ada, "CONTACTS", NO_CONTACTS).await;
+    assert!(
+        !empty
+            .lines()
+            .any(|line| line.contains("  bearing ") && line.contains(" (rel ")),
+        "a CONTACTS row at the battery's close:\n{empty}"
+    );
+
     // -----------------------------------------------------------------
     // Detection: drive toward each other until the pass finds something.
     // -----------------------------------------------------------------
@@ -1673,6 +1696,16 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         !before.contains("Watch contacts:"),
         "a contacts digest before the acquisition:\n{before}"
     );
+    // **17b cut M1a.3**: and no `CONTACTS` row at all — so no aspect and no
+    // odds either — before the acquisition told her of something to hold:
+    // neither in anything pushed nor in the table she asked for at the
+    // battery's close, which is inside this window.
+    assert!(
+        !before
+            .lines()
+            .any(|line| line.contains("  bearing ") && line.contains(" (rel ")),
+        "a CONTACTS row before the acquisition:\n{before}"
+    );
     assert!(
         before.contains("Watch RA: "),
         "`WATCH ON` said no block of the held frame:\n{before}"
@@ -1742,6 +1775,38 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     let held = ask(&mut ada, "CONTACTS", " s").await;
     names_nothing(&held, red, blue, "the pilot's held `CONTACTS`");
     assert!(held.contains("bearing"), "{held}");
+    // **17b cut M1a.3** (doc 17 §3): every row ends in the aspect's side word,
+    // and an UNCLASSIFIED row's odds cell is the dash — odds are never computed
+    // for a return the platform has not told apart (the silhouette would
+    // leak the chassis); the aspect is off the plot, and is told.
+    //
+    // Asserted, never skipped: the table is read in the breath after the
+    // `LOCK BA` refusal that proved the row unknown, and this fixture's
+    // sensor holds a return unresolved for `classify_after_ms` (15 s) — the
+    // same window the provisional phase above is asserted inside — so the one
+    // contact a two-tank match holds is an `X<n>` row here. A row already
+    // told apart is this assertion failing, not a case to step around.
+    let mut unclassified_rows = 0;
+    for row in held
+        .lines()
+        .filter(|line| line.contains("  bearing ") && line.contains(" (rel "))
+    {
+        assert!(
+            row.contains(" unknown  bearing "),
+            "the held row was told apart inside the classify window: {row}"
+        );
+        assert!(
+            ["  front  -", "  side  -", "  rear  -"]
+                .iter()
+                .any(|tail| row.trim_end().ends_with(tail)),
+            "an unclassified row carried odds, or no aspect: {row}"
+        );
+        unclassified_rows += 1;
+    }
+    assert!(
+        unclassified_rows > 0,
+        "no unclassified row was read to check its dash:\n{held}"
+    );
     assert!(
         held.contains("close") || held.contains("effective") || held.contains("far"),
         "a range band read against the fired weapon's own bands:\n{held}"
@@ -1907,6 +1972,19 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     assert_ne!(
         renamed, contact,
         "the classified row still reads as the provisional number:\n{classified}"
+    );
+    // **17b cut M1a.3** (doc 17 §3): once told apart, the one contact a
+    // two-tank match holds is inside the `STOCK_ODDS_ROWS` nearest, so its
+    // row ends in the main gun's odds over the production pulse and bridge —
+    // never the dash, which would be every row of a frame whose odds went
+    // missing on the way.
+    let odds_row = classified
+        .lines()
+        .find(|line| line.split_whitespace().next() == Some(renamed.as_str()))
+        .unwrap_or_else(|| panic!("the {renamed} row:\n{classified}"));
+    assert!(
+        odds_row.contains("  cannon ") && odds_row.trim_end().ends_with('%'),
+        "a classified row ends in the main gun's odds: {odds_row}"
     );
     assert!(
         strip_ansi(&ada.seen).contains(&format!("Contact {contact} identified: {renamed}, blue.")),
@@ -2339,6 +2417,14 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
         Some(&json!([])),
         "an empty scope, before detection: {cockpit}"
     );
+    // **17b cut M1a.3** (doc 17 §3): the frame's own clock and a piloted
+    // hull's order, which is none; version 2.
+    assert!(
+        cockpit.get("t_ms").is_some_and(Value::is_i64),
+        "the frame carries its arena millisecond: {cockpit}"
+    );
+    assert_eq!(cockpit.get("order"), Some(&Value::Null), "{cockpit}");
+    assert_eq!(cockpit.pointer("/schema/version"), Some(&json!(2)));
     assert_eq!(
         cockpit.get("callsign").and_then(Value::as_str),
         Some("RA"),
@@ -4246,6 +4332,10 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         ecm: None,
         // 16b cut Y.4: no reclaim here.
         catchup: None,
+        // 17b cut M1a.3: no odds, no order, the clock at nought.
+        odds: Vec::new(),
+        order: None,
+        t_ms: 0,
     }
 }
 
@@ -4355,6 +4445,9 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
         age_ms: 0,
         cell: Some((36, 14)),
         friendly: false,
+        // 17b cut M1a.3.
+        aspect: smol_str::SmolStr::new("front"),
+        odds: tacsim::match_::cockpit::OddsCell::Unarmed,
     };
     let regressed = FrameNotice::Contact {
         kind: NoticeKind::Unidentified,
@@ -4398,12 +4491,16 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
         age_ms: 0,
         cell: Some((36, 14)),
         condition: None,
+        // 17b cut M1a.3: the stub is an unarmed hull, so no `reads_dead`.
+        aspect: tacsim::arena::perception::Aspect::Front,
+        reads_dead: None,
+        fatal: None,
     };
     let now = tacsim::arena::perception::FrameContact {
         designator: Designator::Provisional(2),
         alias: None,
         class: Classification::Unknown,
-        ..earlier
+        ..earlier.clone()
     };
     let mut before = d4_stub_frame(id);
     before.contacts = vec![earlier];
@@ -4713,6 +4810,62 @@ async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
         }
     }
     assert!(report.is_object(), "no pushed frame carried the report");
+    // **17b cut M1a.3** (doc 17 §3): each contact the frame holds carries its
+    // aspect (a facet word), `reads_dead` and its odds, and the frame its own
+    // clock and `order: null`. The one contact here is `BA`, told apart
+    // (asserted below: the report's one new contact), and inside the
+    // `STOCK_ODDS_ROWS` nearest, so its odds arrive over the production pulse
+    // and bridge non-empty, the main gun first — the keyframe's half of the
+    // proof that a classified contact's odds reach a pilot. (That an
+    // unclassified one gets none end to end is the held `CONTACTS` dash in the
+    // pre-classification walk.)
+    let mut rows_read = 0;
+    for row in frame
+        .get("contacts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        rows_read += 1;
+        assert!(
+            row.get("aspect")
+                .and_then(Value::as_str)
+                .is_some_and(|word| ["front", "left", "right", "rear"].contains(&word)),
+            "{row}"
+        );
+        assert!(
+            row.get("reads_dead").is_some_and(Value::is_boolean),
+            "{row}"
+        );
+        assert_ne!(
+            row.get("class").and_then(Value::as_str),
+            Some("unknown"),
+            "the reclaimed frame's contact is told apart: {row}"
+        );
+        let odds = row
+            .get("odds")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("an armed hull's row carries odds: {row}"));
+        let first = odds
+            .first()
+            .unwrap_or_else(|| panic!("a classified contact's odds are not empty: {row}"));
+        assert_eq!(
+            first.get("weapon").and_then(Value::as_str),
+            Some("cannon"),
+            "the main gun's entry leads: {row}"
+        );
+        assert_eq!(
+            first.get("percent").and_then(Value::as_u64),
+            first
+                .get("p_permille")
+                .and_then(Value::as_u64)
+                .map(|permille| permille / 10),
+            "{row}"
+        );
+    }
+    assert_eq!(rows_read, 1, "the frame holds BA alone:\n{frame}");
+    assert!(frame.get("t_ms").is_some_and(Value::is_i64), "{frame}");
+    assert_eq!(frame.get("order"), Some(&Value::Null), "{frame}");
     let mut held: Vec<String> = frame
         .get("contacts")
         .and_then(Value::as_array)

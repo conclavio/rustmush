@@ -421,7 +421,7 @@ fn a_target_in_the_open_at_half_range_is_detected_and_then_classified() {
     assert_eq!(frame.len(), 1);
     let row = frame
         .first()
-        .copied()
+        .cloned()
         .unwrap_or_else(|| panic!("one contact"));
     assert_eq!(row.id, id);
     assert_eq!(row.class, Classification::Classified { team: Team::Blue });
@@ -1811,7 +1811,7 @@ fn a_held_contact_is_reported_where_it_was_last_seen_and_ages() {
     let row = arena
         .frame_contacts(EYE)
         .first()
-        .copied()
+        .cloned()
         .unwrap_or_else(|| panic!("one contact"));
     assert_eq!(row.cell, Some((40, 10)));
     assert_eq!(row.range_cm, 30_000);
@@ -1833,7 +1833,7 @@ fn a_held_contact_is_reported_where_it_was_last_seen_and_ages() {
         let row = arena
             .frame_contacts(EYE)
             .first()
-            .copied()
+            .cloned()
             .unwrap_or_else(|| panic!("still held at {t_ms}"));
         assert_eq!(
             row.cell,
@@ -1862,7 +1862,7 @@ fn a_held_contact_is_reported_where_it_was_last_seen_and_ages() {
     let row = arena
         .frame_contacts(EYE)
         .first()
-        .copied()
+        .cloned()
         .unwrap_or_else(|| panic!("re-acquired"));
     assert_eq!(
         row.id,
@@ -5176,7 +5176,7 @@ fn m2_a_window_shorter_than_the_substep_is_one_story_at_every_cadence() {
         .map(|(t_ms, ..)| *t_ms)
         .collect();
     assert_eq!(lost_at.len(), 1, "one loss: {lost_at:?}");
-    let lost = lost_at.first().copied().unwrap_or(0);
+    let lost = lost_at.first().cloned().unwrap_or(0);
     // The fixture's premise: the window (one 100 ms pass) opens and closes
     // inside the substep that ends the 500 ms pulse at 10,500.
     assert!(
@@ -5284,7 +5284,7 @@ fn u2_a_parked_watcher_is_sent_a_frame_when_the_plots_second_moves_and_not_betwe
     let row = first
         .contacts
         .first()
-        .copied()
+        .cloned()
         .unwrap_or_else(|| panic!("the acquiring frame carries the contact"));
     assert_eq!(row.age_ms, PULSE_MS - offset, "plotted at EYE's own pass");
     u2_break_the_line(&mut arena);
@@ -5315,7 +5315,7 @@ fn u2_a_parked_watcher_is_sent_a_frame_when_the_plots_second_moves_and_not_betwe
                 let row = frame
                     .contacts
                     .first()
-                    .copied()
+                    .cloned()
                     .unwrap_or_else(|| panic!("the frame at {} lost its row", arena.now_ms));
                 assert_eq!(row.age_ms, age, "the keyframe carries the true age");
                 read = row.age_ms;
@@ -5405,7 +5405,7 @@ fn u2_a_locked_pair_is_sent_a_frame_when_the_locks_range_step_moves() {
     let row = frame
         .contacts
         .first()
-        .copied()
+        .cloned()
         .unwrap_or_else(|| panic!("the locked row"));
     assert_eq!(row.age_ms, 700, "the true age, as ever");
     assert_eq!(frame.lock, Some(contact));
@@ -5455,7 +5455,7 @@ fn u2_the_stale_clause_moves_a_frame_at_the_arenas_own_pass_ms() {
             "no acquiring frame by {wall} although EYE's pass is at {offset}"
         );
         if let Some(row) =
-            pulse(&mut arena, wall, &mut tape).and_then(|frame| frame.contacts.first().copied())
+            pulse(&mut arena, wall, &mut tape).and_then(|frame| frame.contacts.first().cloned())
         {
             break row;
         }
@@ -5492,7 +5492,7 @@ fn u2_the_stale_clause_moves_a_frame_at_the_arenas_own_pass_ms() {
                 let row = frame
                     .contacts
                     .first()
-                    .copied()
+                    .cloned()
                     .unwrap_or_else(|| panic!("the frame at {} lost its row", arena.now_ms));
                 assert_eq!(row.age_ms, age, "the keyframe carries the true age");
                 if age / 1_000 == read / 1_000 {

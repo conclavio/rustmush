@@ -247,7 +247,12 @@ impl ResultWord {
 }
 
 /// One `CONTACTS` row (`help cockpit` "Seeing"):
-/// `BA  blue  bearing 087° (rel 032°)  far  450 m  2 s`.
+/// `BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  side  cannon 62%`.
+///
+/// **17b cut M1a.3** (a declared reader change, doc 16 §11): the row grew an
+/// optional tail after the age — the aspect's side word, then on an armed hull
+/// the main gun's odds or a dash. A row with no tail (an older server) still
+/// parses, with both new fields `None`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContactRow {
     pub designator: String,
@@ -261,6 +266,16 @@ pub struct ContactRow {
     pub range_m: u32,
     /// The plot's age, whole seconds (rounded down).
     pub age_s: u32,
+    /// **17b cut M1a.3**: `front`, `side` or `rear` — which face the contact
+    /// was showing when it was last seen; `None` on a row with no tail.
+    #[serde(default)]
+    pub aspect: Option<String>,
+    /// **17b cut M1a.3**: the main gun's odds as `(weapon, percent)`. Outer
+    /// `None`: a row with no tail (an older server). Inner `None`: the dash (a
+    /// contact the fire control is not resolving) or an unarmed hull's row,
+    /// which ends at the aspect.
+    #[serde(default)]
+    pub odds: Option<Option<(String, u32)>>,
 }
 
 /// One `WEAPONSTATUS` row:
@@ -1384,6 +1399,27 @@ fn contact_row(body: &str) -> Option<Line> {
     }
     let range_m = uint(parts.next()?.strip_suffix(" m")?)?;
     let age_s = uint(parts.next()?.strip_suffix(" s")?)?;
+    // 17b cut M1a.3: the optional tail — `  {aspect}`, then optionally `  -`
+    // or `  {weapon} {NN}%` — and nothing after it.
+    let (aspect, odds) = match parts.next() {
+        None => (None, None),
+        Some(word) => {
+            if !matches!(word, "front" | "side" | "rear") {
+                return None;
+            }
+            let odds = match parts.next() {
+                None | Some("-") => None,
+                Some(cell) => {
+                    let (weapon, percent) = cell.split_once(' ')?;
+                    if !is_id(weapon) {
+                        return None;
+                    }
+                    Some((weapon.to_owned(), uint(percent.strip_suffix('%')?)?))
+                }
+            };
+            (Some(word.to_owned()), Some(odds))
+        }
+    };
     if parts.next().is_some() {
         return None;
     }
@@ -1395,6 +1431,8 @@ fn contact_row(body: &str) -> Option<Line> {
         band: band.to_owned(),
         range_m,
         age_s,
+        aspect,
+        odds,
     }))
 }
 
@@ -2177,7 +2215,54 @@ mod tests {
             band: band.into(),
             range_m: m,
             age_s: a,
+            aspect: None,
+            odds: None,
         })
+    }
+
+    /// **17b cut M1a.3**: the row's optional tail — the aspect's side word, then
+    /// the main gun's odds, the dash, or nothing (an unarmed hull) — and a row
+    /// with a tail the server never prints is not a row.
+    #[test]
+    fn m1a3_contact_rows_read_the_optional_tail() {
+        let tailed = |aspect: &str, odds: Option<(&str, u32)>| {
+            let Line::ContactRow(mut row) = row("BA", Some(Side::Blue), 87, 32, "far", 450, 2)
+            else {
+                unreachable!("the helper builds a contact row")
+            };
+            row.aspect = Some(aspect.into());
+            row.odds = Some(odds.map(|(weapon, percent)| (weapon.into(), percent)));
+            Line::ContactRow(row)
+        };
+        assert_eq!(
+            classify("BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  side  cannon 62%"),
+            tailed("side", Some(("cannon", 62)))
+        );
+        assert_eq!(
+            classify("BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  rear  -"),
+            tailed("rear", None)
+        );
+        assert_eq!(
+            classify("BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  front"),
+            tailed("front", None)
+        );
+        assert_eq!(
+            classify("BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  side  machine_gun 0%"),
+            tailed("side", Some(("machine_gun", 0)))
+        );
+        for bad in [
+            "BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  left",
+            "BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  side  cannon",
+            "BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  side  cannon 62",
+            "BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  side  Cannon 62%",
+            "BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  side  -  extra",
+            "BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  side  cannon 62%  more",
+        ] {
+            assert!(
+                !matches!(classify(bad), Line::ContactRow(_)),
+                "{bad} is not a row"
+            );
+        }
     }
 
     #[test]

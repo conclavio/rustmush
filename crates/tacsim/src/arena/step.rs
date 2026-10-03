@@ -59,10 +59,11 @@ use crate::arena::intents::{
 use crate::arena::ledger::{EventKind, LedgerChunk};
 use crate::arena::motion::integrate;
 use crate::arena::perception::{
-    FrameCondition, FrameContact, FrameNotice, Named, Notice, NoticeKind, PerceptionCounters,
-    RefusalDetail,
+    Aspect, FrameCondition, FrameContact, FrameNotice, FrameOdds, FrameOrder, Named, Notice,
+    NoticeKind, PerceptionCounters, RefusalDetail,
 };
 use crate::arena::reflex::ReflexCounters;
+use crate::arena::resolution::facet_band_seen;
 use crate::arena::state::{
     ActionHash, Arena, Classification, ContactId, DueKind, EndReason, MatchEnd, Power,
     SPENT_NOTICE_MS, StopReason, Team,
@@ -276,7 +277,32 @@ pub struct Frame {
     /// for the contacts it held or holds — the observer rule, as
     /// [`crate::arena::catchup`] states it.
     pub catchup: Option<crate::arena::catchup::Catchup>,
+    /// **The platform's advertised chance per weapon against its nearest
+    /// classified contacts** (17b cut M1a.3; doc 17 §3, D-UM-5) — what
+    /// `Arena::frame_odds` builds: at most [`STOCK_ODDS_ROWS`] contacts,
+    /// nearest first, each contact's entries led by the weapon a bare `FIRE`
+    /// would fire. Empty on a hull with no weapons station and when no
+    /// classified contact is held; never an entry for an unclassified one.
+    ///
+    /// Advice off the plot, as the lock's percentage is
+    /// ([`crate::arena::Arena::aim_at`], [`crate::arena::Arena::resolve_seen`]).
+    pub odds: Vec<FrameOdds>,
+    /// **The standing order the hull is under, re-keyed to its own contacts**
+    /// (17b cut M1a.3; doc 17 §3 "Two more fields", D-UM-15), or `None` —
+    /// which is every piloted hull: see `Arena::frame_order`.
+    pub order: Option<FrameOrder>,
+    /// **The arena millisecond the frame was built at** (17b cut M1a.3; doc 17
+    /// §3) — `Arena::now_ms` at the build, which inside the due loop is the
+    /// substep's end: the state's own clock, the one every age on the frame is
+    /// measured from. [`Frame::same_as`] never compares it.
+    pub t_ms: i64,
 }
+
+/// **How many contacts a frame carries odds for** (17b cut M1a.3; doc 17 §9,
+/// D-UM-35): the stock tank's class I core's `odds_rows`, a constant until 17b
+/// cut M3's `CoreProfile.odds_rows` replaces it — and read in one place,
+/// `Arena::frame_odds`.
+pub const STOCK_ODDS_ROWS: usize = 2;
 
 /// **One facet's armour, as the pilot's own status block carries it** (16b cut
 /// F.2; doc 16 §5: *armor ... per section as current over max*).
@@ -366,6 +392,16 @@ impl Frame {
     /// **16b cut Y.4**: a frame carrying a catch-up report is never the same as
     /// anything ([`Frame::catchup`]) — a re-seated pilot has no remembered frame
     /// anyway, and this pins that the report is sent.
+    ///
+    /// **17b cut M1a.3** (doc 17 §3): the order is compared exactly, and the
+    /// odds **at the whole percent** — the same length, each entry's contact and
+    /// weapon equal, and `p_permille / 10` equal — because a frame is sent when
+    /// the figure a pilot is printed moves (`cannon 62%`), and a per-mille wobble
+    /// inside one percent prints nothing new. The row's new fields ride
+    /// [`crate::arena::perception::FrameContact::same_as`]. [`Frame::t_ms`] is
+    /// never compared: it moves every pulse and prints nowhere, so comparing it
+    /// would send every pilot a keyframe every wake, which is what 16b cut U.2
+    /// took out.
     #[must_use]
     pub fn same_as(&self, other: &Frame, pass_ms: i64) -> bool {
         self.catchup.is_none()
@@ -435,6 +471,14 @@ impl Frame {
                 .iter()
                 .zip(other.weapons.iter())
                 .all(|(mine, theirs)| mine.same_as(theirs))
+            // **17b cut M1a.3**: at the printed resolution, and the order exactly.
+            && self.order == other.order
+            && self.odds.len() == other.odds.len()
+            && self.odds.iter().zip(other.odds.iter()).all(|(mine, theirs)| {
+                mine.contact == theirs.contact
+                    && mine.weapon == theirs.weapon
+                    && mine.p_permille / 10 == theirs.p_permille / 10
+            })
     }
 }
 
@@ -1818,80 +1862,18 @@ impl Arena {
     /// Two passes on purpose: the first reads the units, the second writes the
     /// remembered frames. A pilot seated on a unit this arena does not hold gets
     /// nothing rather than an empty frame.
+    ///
+    /// **17b cut M1a.3** factored the first pass's body out as
+    /// [`Arena::frame_for`], so a mind's view (17b cut M1a.5) is built by the
+    /// same function a pilot's frame is; this keeps its two passes and the one
+    /// `pending_notices.clear()`.
     fn frames(&mut self, tempo: Tempo) -> Vec<(ObjId, Frame)> {
         let mut candidates: Vec<(ObjId, Frame)> = Vec::with_capacity(self.pilots.len());
         for pilot in &self.pilots {
-            let Some(unit) = self.unit(pilot.unit) else {
+            let Some(frame) = self.frame_for(pilot.unit, tempo) else {
                 continue;
             };
-            let lock = unit.lock;
-            // 16b cut Q.2: the scope and the vocabularies its readings are in,
-            // built in one walk (`Arena::frame_scope`).
-            let (contacts, scan_tables) = self.frame_scope(unit.id);
-            // **16b cut W.1, re-shaped by cut F.2**: the lock's own target, range
-            // and cover. Cut W.1 needed only the range — the band each weapon's
-            // lock falls in — and read it off the contact list the frame already
-            // carries; cut F.2 resolves **each weapon's** own chance, which needs
-            // the target and one trace. It is one trace per *seated* platform per
-            // pulse, which is what `lock_p_permille` already cost.
-            let aim = self.lock_aim(unit.id);
-            candidates.push((
-                pilot.pilot,
-                Frame {
-                    unit: unit.id,
-                    team: unit.team,
-                    // 16b cut Q.1: the platform's own public name, and the cell
-                    // it is standing in.
-                    callsign: unit.callsign,
-                    cell: self.definition.terrain.cell_of(&unit.pose),
-                    pose: unit.pose.clone(),
-                    speed_cms: unit.speed_cms,
-                    power: unit.power,
-                    // 16b cut F.2: the condition, not the substep's flag.
-                    held: unit.held.is_some(),
-                    // 16b cut D.2: the pilot's own two limits, so the cockpit can
-                    // refuse an order to a dead tank at once and say why.
-                    wreck: unit.limits.wreck,
-                    immobile: unit.limits.motion_disabled,
-                    tempo,
-                    // **16b cut D.1**: the nominal reach of the platform's own
-                    // sight, `max_range_cells × cell_cm`, and `0` for a hull
-                    // that carries no sensor. The same product
-                    // `Arena::detections` starts from, unscaled — see
-                    // [`Frame::sight_cm`]. **16b cut E.1** made it one product
-                    // in one place ([`UnitState::sight_cm`]), because the
-                    // machine's own fighting reach is priced off it too.
-                    sight_cm: unit.sight_cm(self.definition.terrain.cell_cm()),
-                    contacts,
-                    scan_tables,
-                    // Per platform, so two pilots in one tank are both told.
-                    notices: self
-                        .pending_notices
-                        .get(&unit.id)
-                        .cloned()
-                        .unwrap_or_default(),
-                    lock,
-                    weapons: self.frame_weapons(unit.id, aim.as_ref()),
-                    // 16b cut F.2: doc 16 §5's status block, off the same M32
-                    // cells the impact writes.
-                    sections: self.frame_sections(unit.id),
-                    // 16b cut X.1: two integers off the unit's own cells, and
-                    // `None` for a platform that carries no heat at all.
-                    heat: match (unit.heat_now(), unit.heat_max()) {
-                        (Some(heat), Some(max)) => Some(FrameHeat { heat, max }),
-                        _ => None,
-                    },
-                    // 16b cut D.4: the platform's own receiver, as its last
-                    // sensor pass left it.
-                    receiver: unit.receiver,
-                    // **16b cut O.2**: the pod's switch, for a platform that
-                    // carries a pod.
-                    ecm: unit.jammer.map(|_| unit.ecm_on),
-                    // 16b cut Y.4: taken in the second pass below, which may
-                    // write the arena.
-                    catchup: None,
-                },
-            ));
+            candidates.push((pilot.pilot, frame));
         }
         // One pulse's worth, and no more: a platform nobody is seated on
         // accumulates nothing.
@@ -1924,6 +1906,165 @@ impl Arena {
             }
         }
         changed
+    }
+
+    /// **One hull's frame, as the pulse would build it now** (17b cut M1a.3; doc
+    /// 17 §3), or `None` for a unit this arena does not hold.
+    ///
+    /// Everything [`Arena::frames`] builds per pilot, factored out so 17b cut
+    /// M1a.5's `mind_view` is the same function a pilot's keyframe is (doc 17 §3's
+    /// parity rule: a mind reads exactly what the keyframe carries). Two things
+    /// it deliberately does not do: it reads `pending_notices` **without
+    /// clearing** them — the clear is `frames`' own, once a pulse — and it leaves
+    /// `catchup` `None`, which `frames`' second pass takes. Its `t_ms` is
+    /// `self.now_ms`: inside the due loop that is the substep's end, the state's
+    /// own clock, which 17b cut M1a.5 relies on.
+    pub(crate) fn frame_for(&self, unit: ObjId, tempo: Tempo) -> Option<Frame> {
+        let unit = self.unit(unit)?;
+        let lock = unit.lock;
+        // 16b cut Q.2: the scope and the vocabularies its readings are in,
+        // built in one walk (`Arena::frame_scope`).
+        let (contacts, scan_tables) = self.frame_scope(unit.id);
+        // **16b cut W.1, re-shaped by cut F.2**: the lock's own target, range
+        // and cover. Cut W.1 needed only the range — the band each weapon's
+        // lock falls in — and read it off the contact list the frame already
+        // carries; cut F.2 resolves **each weapon's** own chance, which needs
+        // the target and one trace. It is one trace per *seated* platform per
+        // pulse, which is what `lock_p_permille` already cost.
+        let aim = self.lock_aim(unit.id);
+        Some(Frame {
+            unit: unit.id,
+            team: unit.team,
+            // 16b cut Q.1: the platform's own public name, and the cell
+            // it is standing in.
+            callsign: unit.callsign,
+            cell: self.definition.terrain.cell_of(&unit.pose),
+            pose: unit.pose.clone(),
+            speed_cms: unit.speed_cms,
+            power: unit.power,
+            // 16b cut F.2: the condition, not the substep's flag.
+            held: unit.held.is_some(),
+            // 16b cut D.2: the pilot's own two limits, so the cockpit can
+            // refuse an order to a dead tank at once and say why.
+            wreck: unit.limits.wreck,
+            immobile: unit.limits.motion_disabled,
+            tempo,
+            // **16b cut D.1**: the nominal reach of the platform's own
+            // sight, `max_range_cells × cell_cm`, and `0` for a hull
+            // that carries no sensor. The same product
+            // `Arena::detections` starts from, unscaled — see
+            // [`Frame::sight_cm`]. **16b cut E.1** made it one product
+            // in one place ([`UnitState::sight_cm`]), because the
+            // machine's own fighting reach is priced off it too.
+            sight_cm: unit.sight_cm(self.definition.terrain.cell_cm()),
+            contacts,
+            scan_tables,
+            // Per platform, so two pilots in one tank are both told.
+            notices: self
+                .pending_notices
+                .get(&unit.id)
+                .cloned()
+                .unwrap_or_default(),
+            lock,
+            weapons: self.frame_weapons(unit.id, aim.as_ref()),
+            // 16b cut F.2: doc 16 §5's status block, off the same M32
+            // cells the impact writes.
+            sections: self.frame_sections(unit.id),
+            // 16b cut X.1: two integers off the unit's own cells, and
+            // `None` for a platform that carries no heat at all.
+            heat: match (unit.heat_now(), unit.heat_max()) {
+                (Some(heat), Some(max)) => Some(FrameHeat { heat, max }),
+                _ => None,
+            },
+            // 16b cut D.4: the platform's own receiver, as its last
+            // sensor pass left it.
+            receiver: unit.receiver,
+            // **16b cut O.2**: the pod's switch, for a platform that
+            // carries a pod.
+            ecm: unit.jammer.map(|_| unit.ecm_on),
+            // 16b cut Y.4: taken in `frames`' second pass, which may
+            // write the arena.
+            catchup: None,
+            // **17b cut M1a.3** (doc 17 §3, D-UM-5): the odds against the
+            // nearest classified contacts, the standing order re-keyed to
+            // this hull's own rows, and the clock the ages above are read on.
+            odds: self.frame_odds(unit.id),
+            order: self.frame_order(unit.id),
+            t_ms: self.now_ms,
+        })
+    }
+
+    /// **The odds a frame carries** (17b cut M1a.3; doc 17 §3, D-UM-5): per
+    /// weapon, against the platform's [`STOCK_ODDS_ROWS`] nearest **classified**
+    /// contacts.
+    ///
+    /// * **Which contacts.** Every held row whose class is `Classified { .. }` —
+    ///   the side resolved, friend or foe: doc 17 §3's word is *any classified
+    ///   contact*, and narrowing to hostiles is the lead's to decide (the plan's
+    ///   Q2) — and whose target is still in the match; nearest first by the
+    ///   range to the **plot**, `ContactId` ascending on a tie; the first
+    ///   [`STOCK_ODDS_ROWS`]. Never an unclassified contact:
+    ///   [`Arena::resolve_seen`] reads the target's silhouette off the unit, and
+    ///   for a return the platform has not told apart that table is the chassis
+    ///   it has not earned.
+    /// * **What each costs.** One [`Arena::aim_at`] per contact — one trace —
+    ///   then one [`Arena::resolve_seen`] per weapon, so at most two traces and
+    ///   six resolutions per frame on a stock hull.
+    /// * **In what order.** For each contact, the weapon a bare `FIRE` would fire
+    ///   ([`crate::arena::view::fired_by_default`]) **first**, then the rest in
+    ///   component order — so a client reading a contact's first entry and line
+    ///   mode, which prints `fired_by_default`'s, quote the same gun.
+    ///
+    /// Empty for a platform with no weapons — no trace paid — and when no
+    /// classified contact is held.
+    #[must_use]
+    pub fn frame_odds(&self, platform: ObjId) -> Vec<FrameOdds> {
+        let Some(from) = self.unit(platform) else {
+            return Vec::new();
+        };
+        if from.weapons.is_empty() {
+            return Vec::new();
+        }
+        let mut nearest: Vec<(u64, ContactId)> = self
+            .contacts
+            .of(platform)
+            .filter(|(_, held)| {
+                matches!(held.class, Classification::Classified { .. })
+                    && self.unit(held.target).is_some()
+            })
+            .map(|(id, held)| (held.seen_at.range_from(&from.pose), *id))
+            .collect();
+        // Range, then the id: a total order over integers, so two equally
+        // distant contacts are taken the same way on every replay.
+        nearest.sort_unstable();
+        nearest.truncate(STOCK_ODDS_ROWS);
+        // The weapon a bare `FIRE` would fire, through the one rule
+        // (`UnitState::default_weapon`, 16b cut F.3) the view's
+        // `fired_by_default` mirrors — never a fourth spelling of it.
+        let default = from.default_weapon().map(|weapon| weapon.id.clone());
+        let ordered: Vec<&SmolStr> = default
+            .iter()
+            .chain(
+                from.weapons
+                    .iter()
+                    .map(|weapon| &weapon.id)
+                    .filter(|id| Some(*id) != default.as_ref()),
+            )
+            .collect();
+        let mut odds: Vec<FrameOdds> = Vec::new();
+        for (_, contact) in nearest {
+            let Some(aim) = self.aim_at(platform, contact) else {
+                continue;
+            };
+            for weapon in &ordered {
+                odds.push(FrameOdds {
+                    contact,
+                    weapon: (*weapon).clone(),
+                    p_permille: self.resolve_seen(platform, &aim, weapon).p_permille,
+                });
+            }
+        }
+        odds
     }
 
     /// **Stage the pilot notice one journalled perception event owes**, and apply
@@ -2906,10 +3047,27 @@ impl Arena {
     /// index — so a frame holding four stock tanks carries one table. A row with
     /// no reading contributes nothing, which is the whole of the rule
     /// [`Frame::scan_tables`] states.
+    ///
+    /// **17b cut M1a.3** (doc 17 §3, D-UM-5) adds three things per row, each
+    /// read off the plot, the hold or the target chassis's static content and
+    /// never off the target's live pose or wreck flag:
+    ///
+    /// * `aspect` — [`facet_band_seen`] off the row's plot and the platform's
+    ///   own pose, on every hull;
+    /// * `reads_dead` — on a hull **with a weapons station** only (`None`
+    ///   without one): the own kill, or a held reading whose destroyed sections
+    ///   meet the target chassis's fatal mask
+    ///   ([`crate::arena::state::fatal_section_mask`] over its definition and
+    ///   profile). Value-identical to [`Arena::contact_reads_dead`] wherever a
+    ///   reading is held, and deliberately not a call of it;
+    /// * `fatal` — that mask's section words, beside a held reading only.
     fn frame_scope(&self, platform: ObjId) -> (Vec<FrameContact>, Vec<Vec<SmolStr>>) {
         let Some(from) = self.unit(platform) else {
             return (Vec::new(), Vec::new());
         };
+        // §22's italic line: `reads_dead` is built only for a hull with a
+        // weapons station.
+        let armed = !from.weapons.is_empty();
         let mut tables: Vec<Vec<SmolStr>> = Vec::new();
         let mut rows: Vec<FrameContact> = Vec::new();
         for (id, held) in self.contacts.of(platform) {
@@ -2940,6 +3098,21 @@ impl Arena {
                     age_ms: self.now_ms.saturating_sub(reading.at_ms),
                 }
             });
+            // **17b cut M1a.3** (departure (j)): the target chassis's fatal
+            // sections, off its definition and profile — the content its
+            // `fatal_sections` is built from, never `limits.wreck`.
+            let fatal_mask = crate::arena::state::fatal_section_mask(&target.unit, &target.profile);
+            let reads_dead = armed.then(|| {
+                held.known_dead
+                    || held
+                        .seen_condition
+                        .is_some_and(|reading| reading.condition.destroyed_mask() & fatal_mask != 0)
+            });
+            // Beside a held reading only: the row already carries the chassis's
+            // vocabulary there, so the words name nothing new.
+            let fatal = held
+                .seen_condition
+                .map(|_| crate::arena::state::fatal_section_words(&target.unit, &target.profile));
             rows.push(FrameContact {
                 id: *id,
                 // **16b cut Q.1**: read off the live contact, so a row that
@@ -2954,6 +3127,11 @@ impl Arena {
                 age_ms: self.now_ms.saturating_sub(held.last_seen_ms),
                 cell: held.seen_at.cell(&self.definition.terrain),
                 condition,
+                // 17b cut M1a.3: the face the plot was showing to where this
+                // platform stands now.
+                aspect: Aspect::from_band(facet_band_seen(&held.seen_at, from)),
+                reads_dead,
+                fatal,
             });
         }
         (rows, tables)
@@ -3614,7 +3792,7 @@ mod tests {
         let contact = frame
             .contacts
             .first()
-            .copied()
+            .cloned()
             .unwrap_or_else(|| panic!("one contact"));
         assert_eq!(contact.class, crate::arena::state::Classification::Unknown);
         assert_eq!(contact.bearing_mdeg, 90_000, "B is due east of A");
@@ -5442,6 +5620,9 @@ mod tests {
             age_ms,
             cell: Some((12, 7)),
             condition: None,
+            aspect: crate::arena::perception::Aspect::Front,
+            reads_dead: None,
+            fatal: None,
         }
     }
 
@@ -6561,6 +6742,559 @@ mod tests {
                 }
             )],
             "one end, the hold, and no timeout beside it"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 17b cut M1a.3 — the frame grows: aspect, odds, `reads_dead`, order,
+    // `t_ms` (doc 17 §3, D-UM-4, D-UM-5)
+    // -----------------------------------------------------------------------
+
+    /// The m1a3 field: RED, the platform, in the south-west; five other stock
+    /// tanks, each held by RED under an id the tests choose.
+    mod m1a3 {
+        use super::super::*;
+        use crate::arena::condition::{Condition, ConditionBand, Reading};
+        use crate::arena::perception::{Notice, PerceptionCounters};
+        use crate::arena::state::{SeenPose, ShadowContact, Team, WeaponSummary};
+        use crate::arena::test_support::{arena_of, cannon, line_tank, pose};
+
+        pub(super) const RED: ObjId = ObjId(4);
+        /// Classified hostile, 39 m due north — the nearest classified contact —
+        /// facing north: RED sees its rear. Held under the id RED's own sensor
+        /// pass would mint for it, so a pass refreshes this row.
+        pub(super) const BLUE: ObjId = ObjId(9);
+        /// Classified FRIEND, 40 m due east.
+        pub(super) const MATE: ObjId = ObjId(11);
+        /// Classified hostile, also exactly 40 m away — the range tie.
+        pub(super) const TIE: ObjId = ObjId(12);
+        /// Classified hostile, farthest, under the LOWEST id.
+        pub(super) const FAR: ObjId = ObjId(13);
+        /// Unclassified, the nearest of all.
+        pub(super) const NEAR: ObjId = ObjId(14);
+
+        pub(super) const MATE_ID: ContactId = ContactId(20);
+        pub(super) const TIE_ID: ContactId = ContactId(30);
+        pub(super) const FAR_ID: ContactId = ContactId(5);
+        pub(super) const NEAR_ID: ContactId = ContactId(40);
+
+        /// BLUE's row: the id `draw_contact_id` mints for the pair.
+        pub(super) fn blue_id(arena: &Arena) -> ContactId {
+            crate::arena::rng::draw_contact_id(arena.seed, RED, BLUE)
+        }
+
+        /// The field, with every hold written by hand at `t = 0` and RED locked
+        /// on BLUE.
+        pub(super) fn field() -> Arena {
+            let mut arena = arena_of(vec![
+                line_tank(RED, Team::Red, pose(1_500, 1_500)),
+                line_tank(BLUE, Team::Blue, pose(1_500, 5_400)),
+                line_tank(MATE, Team::Red, pose(5_500, 1_500)),
+                // (2,400, 3,200) from RED: exactly 4,000 cm, as BLUE and MATE.
+                line_tank(TIE, Team::Blue, pose(3_900, 4_700)),
+                line_tank(FAR, Team::Blue, pose(6_500, 6_500)),
+                line_tank(NEAR, Team::Blue, pose(3_500, 2_500)),
+            ]);
+            if let Some(red) = arena.unit_mut(RED) {
+                red.power = Power::Online;
+            }
+            let classified = |team: Team| Classification::Classified { team };
+            for (id, target, class) in [
+                (blue_id(&arena), BLUE, classified(Team::Blue)),
+                (MATE_ID, MATE, classified(Team::Red)),
+                (TIE_ID, TIE, classified(Team::Blue)),
+                (FAR_ID, FAR, classified(Team::Blue)),
+                (NEAR_ID, NEAR, Classification::Unknown),
+            ] {
+                let seen = SeenPose::of(arena.unit(target).unwrap_or_else(|| panic!("{target}")));
+                arena
+                    .contacts
+                    .insert(RED, id, ShadowContact::sighted(target, class, 0, seen));
+            }
+            let lock = blue_id(&arena);
+            if let Some(red) = arena.unit_mut(RED) {
+                red.lock = Some(lock);
+            }
+            arena
+        }
+
+        /// **The far field**: RED and BLUE alone, 300 m apart on a window tall
+        /// enough to hold them (8 by 36 cells), BLUE held classified and locked
+        /// by its minted id, facing north so RED sees its rear.
+        ///
+        /// At the [`field`]'s 39 m every figure sits at the hit curve's ceiling
+        /// (`p_max`), so a frame that read the live target there would print the
+        /// same number as one that read the plot. At 300 m the stock cannon's
+        /// figure is mid-curve, where a range, a face or a crossing speed each
+        /// move it — the scene in which "the odds are the plot's" can fail.
+        pub(super) fn far_field() -> Arena {
+            use crate::arena::state::{ArenaDefinition, ArenaTerrain, CustodyOut, MatchMode};
+            use crate::arena::test_support::{definition, ground, resolution};
+            use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
+            let mut arena = Arena::new(
+                CustodyOut {
+                    definition: ArenaDefinition {
+                        terrain: ArenaTerrain::uniform(8, 36, 1_000, ground())
+                            .unwrap_or_else(|error| panic!("the far window: {error:?}")),
+                        ..definition()
+                    },
+                    units: vec![
+                        line_tank(RED, Team::Red, pose(1_500, 1_500)),
+                        line_tank(BLUE, Team::Blue, pose(1_500, 31_500)),
+                    ],
+                    pilots: Vec::new(),
+                    resolution: resolution(),
+                    seed: 2_350,
+                    mode: MatchMode::Skirmish,
+                },
+                &ArenaConfig::default(),
+                &MatchConfig::default(),
+                &SensorsConfig::default(),
+            )
+            .unwrap_or_else(|error| panic!("the far arena: {error:?}"));
+            if let Some(red) = arena.unit_mut(RED) {
+                red.power = Power::Online;
+            }
+            let id = blue_id(&arena);
+            let seen = SeenPose::of(arena.unit(BLUE).unwrap_or_else(|| panic!("BLUE")));
+            arena.contacts.insert(
+                RED,
+                id,
+                ShadowContact::sighted(
+                    BLUE,
+                    Classification::Classified { team: Team::Blue },
+                    0,
+                    seen,
+                ),
+            );
+            if let Some(red) = arena.unit_mut(RED) {
+                red.lock = Some(id);
+            }
+            arena
+        }
+
+        /// RED's frame, built now.
+        pub(super) fn red(arena: &Arena) -> Frame {
+            arena
+                .frame_for(RED, Tempo::Engaged)
+                .unwrap_or_else(|| panic!("RED's frame"))
+        }
+
+        /// One row of a frame, by id.
+        pub(super) fn row(frame: &Frame, id: ContactId) -> FrameContact {
+            frame
+                .contacts
+                .iter()
+                .find(|held| held.id == id)
+                .cloned()
+                .unwrap_or_else(|| panic!("row {id:?}"))
+        }
+
+        /// The odds of one row, as `(weapon, p_permille)`.
+        pub(super) fn odds_of(frame: &Frame, id: ContactId) -> Vec<(SmolStr, u32)> {
+            frame
+                .odds
+                .iter()
+                .filter(|odds| odds.contact == id)
+                .map(|odds| (odds.weapon.clone(), odds.p_permille))
+                .collect()
+        }
+
+        /// A reading taken at `t = 0` with one section destroyed.
+        pub(super) fn reading_with(destroyed: usize) -> Reading {
+            Reading {
+                at_ms: 0,
+                condition: Condition::default().with_band(destroyed, ConditionBand::Destroyed),
+            }
+        }
+
+        /// RED's own sensor pass over the field, journalled nowhere.
+        pub(super) fn pass(arena: &mut Arena, pass_seq: u64, t_ms: i64) {
+            let mut counters = PerceptionCounters::default();
+            let mut journal: Vec<Notice> = Vec::new();
+            arena.sensor_pass(RED, pass_seq, t_ms, &mut counters, &mut journal);
+        }
+
+        /// The stock cannon under another name, for the weapon-order test.
+        pub(super) fn gun(id: &str) -> WeaponSummary {
+            WeaponSummary {
+                id: SmolStr::new(id),
+                ..cannon()
+            }
+        }
+    }
+
+    /// **17b cut M1a.3, the observer-rule assertion for every new field** (doc 17
+    /// §3, D-UM-5; doc 16 §1, §5): `aspect`, `odds`, `reads_dead` and `fatal`
+    /// are read off the plot, the hold and the target chassis's content — never
+    /// the target's live pose, heading or wreck flag. Moving and turning a held
+    /// tank behind the platform's back changes none of them; the platform's own
+    /// next pass does. The odds half runs twice: on the near field, where it
+    /// pins which rows carry odds, and on the far field, where the figure is
+    /// mid-curve and a live read would print another number. Which contacts
+    /// carry odds (classified only, the two nearest, the range tie by id), and
+    /// the `reads_dead` rule in all its arms, are pinned here too.
+    #[test]
+    fn m1a3_aspect_odds_and_reads_dead_are_read_off_the_plot_and_the_hold() {
+        use crate::arena::perception::Aspect;
+        use crate::arena::state::SeenPose;
+        use m1a3::*;
+        let mut arena = field();
+        let blue_id = blue_id(&arena);
+        let before = red(&arena);
+        let blue = row(&before, blue_id);
+        assert_eq!(
+            blue.aspect,
+            Aspect::Rear,
+            "BLUE faces north and RED is due south of it"
+        );
+        assert_eq!(blue.reads_dead, Some(false));
+        assert_eq!(blue.fatal, None, "no reading, no fatal words");
+        assert_eq!(before.t_ms, arena.now_ms);
+        assert_eq!(before.order, None, "a piloted hull carries no order");
+
+        // Which rows carry odds: BLUE (39 m) and MATE (40 m, the tie with TIE
+        // broken by id), not TIE (also 40 m, the higher id), not FAR (the
+        // lowest id, the farthest) and never NEAR (the nearest of all, but
+        // unclassified). A FRIEND qualifies: doc 17 §3's word is *any
+        // classified contact*.
+        let carrying: Vec<ContactId> = before.odds.iter().map(|odds| odds.contact).collect();
+        assert_eq!(
+            carrying,
+            vec![blue_id, MATE_ID],
+            "nearest first, the tie by id"
+        );
+        assert!(odds_of(&before, TIE_ID).is_empty());
+        assert!(odds_of(&before, FAR_ID).is_empty());
+        assert!(
+            odds_of(&before, NEAR_ID).is_empty(),
+            "never for an unclassified contact"
+        );
+        assert_eq!(STOCK_ODDS_ROWS, 2);
+        // The unclassified row is still told its aspect, off its plot.
+        assert_eq!(row(&before, NEAR_ID).aspect, Aspect::Left);
+        // And the locked row's odds are the lock's own percentage: one reading
+        // of one plot (`aim_at` and `lock_aim` are one body).
+        let blue_odds = odds_of(&before, blue_id);
+        assert_eq!(blue_odds.len(), 1, "the line tank carries one gun");
+        assert_eq!(
+            blue_odds.first().map(|(_, p)| Some(*p)),
+            before.weapons.first().map(|weapon| weapon.p_permille),
+            "the row's odds are the weapon row's lock chance"
+        );
+        assert!(blue_odds.iter().all(|(_, p)| *p > 0), "{blue_odds:?}");
+
+        // Drive BLUE two cells north, turn it about and make it a wreck, by
+        // writing the arena with NO pass: nothing the platform holds moves.
+        if let Some(target) = arena.unit_mut(BLUE) {
+            target.pose.y_cm += 2_000;
+            target.pose.heading_mdeg = 180_000;
+            target.speed_cms = 900;
+            target.limits.wreck = true;
+        }
+        let hidden = red(&arena);
+        let still = row(&hidden, blue_id);
+        assert_eq!(still.aspect, blue.aspect, "the aspect is the plot's");
+        assert_eq!(still.reads_dead, Some(false), "never the live wreck flag");
+        assert_eq!(still.fatal, blue.fatal);
+        assert_eq!(still.range_cm, blue.range_cm);
+        assert_eq!(
+            odds_of(&hidden, blue_id),
+            blue_odds,
+            "the odds are the plot's"
+        );
+        assert!(hidden.same_as(&before, 1_000), "nothing to send");
+        // And what the odds are resolved against is still the old plot — the
+        // seen heading, the seen speed, the range to it and its cover — which is
+        // what holds the figure still when it is not at the curve's ceiling.
+        let held_aim = arena.aim_at(RED, blue_id);
+        assert_eq!(held_aim.map(|aim| aim.seen_at.heading_mdeg), Some(0));
+        assert_eq!(held_aim.map(|aim| aim.seen_at.speed_cms), Some(0));
+        assert_eq!(held_aim.map(|aim| aim.range_cm), Some(blue.range_cm));
+
+        // The platform's own pass sees the move: the plot, and with it the
+        // aspect and the odds, move. (A stock sight does not report a wreck,
+        // so BLUE is whole again for the pass; and the hand-written holds are
+        // dropped, because the pass re-opens each under its own minted id,
+        // unclassified, which leaves BLUE the one classified row.)
+        if let Some(target) = arena.unit_mut(BLUE) {
+            target.limits.wreck = false;
+        }
+        for id in [MATE_ID, TIE_ID, FAR_ID, NEAR_ID] {
+            arena.contacts.remove(RED, id);
+        }
+        arena.index.rebuild(&arena.definition.terrain, &arena.units);
+        pass(&mut arena, 2, 1_000);
+        arena.now_ms = 1_000;
+        let seen = red(&arena);
+        let moved = row(&seen, blue_id);
+        assert_eq!(moved.aspect, Aspect::Front, "turned about, seen nose-on");
+        assert!(moved.range_cm > blue.range_cm, "{moved:?}");
+        // The odds are re-read off the moved plot. (At 39 m and 59 m both sit
+        // at the curve's ceiling, so the figure is the same number here; what
+        // moved is the plot it was resolved against, which is the one `aim_at`
+        // answers now. The far field below is where the figure itself moves.)
+        let aim = arena
+            .aim_at(RED, blue_id)
+            .unwrap_or_else(|| panic!("BLUE is held"));
+        assert_eq!(aim.range_cm, moved.range_cm, "the aim is the new plot's");
+        assert_eq!(aim.seen_at.heading_mdeg, 180_000);
+        assert_eq!(
+            odds_of(&seen, blue_id),
+            vec![(
+                SmolStr::new_static("cannon"),
+                arena.resolve_seen(RED, &aim, "cannon").p_permille
+            )]
+        );
+
+        // **The odds proof where it can fail.** At 300 m the cannon's figure
+        // is mid-curve, so the plot and the live tank give different numbers
+        // once the tank has moved: this half is what catches a `frame_odds`
+        // that resolved against the live target.
+        let mut far = far_field();
+        let far_id = m1a3::blue_id(&far);
+        let plotted = red(&far);
+        let figure = odds_of(&plotted, far_id);
+        let p = figure.first().map_or(0, |(_, p)| *p);
+        assert!(
+            p > far.resolution.p_min && p < far.resolution.p_max,
+            "mid-curve, not at a clamp: {figure:?}"
+        );
+        // Drive BLUE 20 m on, turn it broadside and set it crossing, with no
+        // pass: a farther range, a face twice as wide and a crossing speed —
+        // three live inputs that each move a figure off the ceiling.
+        if let Some(target) = far.unit_mut(BLUE) {
+            target.pose.y_cm += 2_000;
+            target.pose.heading_mdeg = 90_000;
+            target.speed_cms = 900;
+        }
+        let hidden = red(&far);
+        assert_eq!(odds_of(&hidden, far_id), figure, "the odds are the plot's");
+        assert_eq!(row(&hidden, far_id).aspect, Aspect::Rear);
+        assert!(hidden.same_as(&plotted, 1_000), "nothing to send");
+        // And the two live reads the frame must not make are other numbers
+        // here: the shot's own physics, and the plot's arithmetic over a
+        // sighting taken now.
+        let aim = far
+            .aim_at(RED, far_id)
+            .unwrap_or_else(|| panic!("BLUE is held"));
+        let (Some(from), Some(at)) = (far.unit(RED), far.unit(BLUE)) else {
+            panic!("both tanks");
+        };
+        let live_seen = SeenPose::of(at);
+        let live_range = live_seen.range_from(&from.pose);
+        assert_ne!(
+            far.resolve_shot(RED, BLUE, "cannon", live_range, aim.cover)
+                .p_permille,
+            p,
+            "the live shot is another number"
+        );
+        let live_aim = crate::arena::resolution::LockAim {
+            seen_at: live_seen,
+            range_cm: live_range,
+            ..aim
+        };
+        assert_ne!(
+            far.resolve_seen(RED, &live_aim, "cannon").p_permille,
+            p,
+            "a sighting taken now is another number"
+        );
+        // The platform's own pass moves the plot, and the figure with it — to
+        // exactly what the new plot resolves at. The frame's clock is the
+        // state's.
+        far.index.rebuild(&far.definition.terrain, &far.units);
+        pass(&mut far, 2, 1_000);
+        far.now_ms = 1_250;
+        let refreshed = red(&far);
+        assert_eq!(refreshed.t_ms, 1_250, "t_ms is the state's clock");
+        let aim = far
+            .aim_at(RED, far_id)
+            .unwrap_or_else(|| panic!("BLUE is still held"));
+        assert_eq!(aim.seen_at.heading_mdeg, 90_000, "the pass saw the turn");
+        let moved_figure = odds_of(&refreshed, far_id);
+        assert_ne!(moved_figure, figure, "a pass moves the odds");
+        assert_eq!(
+            moved_figure,
+            vec![(
+                SmolStr::new_static("cannon"),
+                far.resolve_seen(RED, &aim, "cannon").p_permille
+            )]
+        );
+        assert_ne!(row(&refreshed, far_id).aspect, Aspect::Rear);
+        assert!(!refreshed.same_as(&plotted, 1_000), "and the frame is sent");
+
+        // `reads_dead`, arm by arm, on a fresh field.
+        let mut arena = field();
+        assert_eq!(row(&red(&arena), TIE_ID).reads_dead, Some(false));
+        let blue_id = m1a3::blue_id(&arena);
+        // A reading whose destroyed section is not fatal (the turret, index 4
+        // of the stock tank's sections in id order): false, and the fatal
+        // words beside it.
+        if let Some(held) = arena.contacts.get_mut(RED, TIE_ID) {
+            held.seen_condition = Some(reading_with(4));
+        }
+        let read = row(&red(&arena), TIE_ID);
+        assert_eq!(read.reads_dead, Some(false));
+        assert_eq!(read.fatal, Some(vec![SmolStr::new_static("hull")]));
+        // A reading with the hull destroyed (index 1): true.
+        if let Some(held) = arena.contacts.get_mut(RED, TIE_ID) {
+            held.seen_condition = Some(reading_with(1));
+        }
+        assert_eq!(row(&red(&arena), TIE_ID).reads_dead, Some(true));
+        // RED's own kill, with no reading at all: true, and still no words.
+        if let Some(held) = arena.contacts.get_mut(RED, FAR_ID) {
+            held.known_dead = true;
+        }
+        let killed = row(&red(&arena), FAR_ID);
+        assert_eq!(killed.reads_dead, Some(true));
+        assert_eq!(killed.fatal, None);
+        // Value-identical to `contact_reads_dead` wherever a reading is held
+        // (doc 17 §17's divergence (4), measured honestly), and `fatal`
+        // present exactly when a reading is.
+        if let Some(held) = arena.contacts.get_mut(RED, MATE_ID) {
+            held.seen_condition = Some(reading_with(2));
+        }
+        let frame = red(&arena);
+        let mut compared = 0;
+        for (id, held) in arena.contacts.of(RED) {
+            let row = row(&frame, *id);
+            assert_eq!(row.fatal.is_some(), held.seen_condition.is_some(), "{id:?}");
+            if held.seen_condition.is_some() {
+                assert_eq!(
+                    row.reads_dead,
+                    Some(arena.contact_reads_dead(held)),
+                    "{id:?}"
+                );
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 2, "TIE (the hull) and MATE (a track)");
+
+        // An unarmed platform: no odds, no `reads_dead` anywhere, the aspect
+        // and the fatal words still told, and no weapons.
+        if let Some(red) = arena.unit_mut(RED) {
+            red.weapons.clear();
+        }
+        let unarmed = red(&arena);
+        assert!(unarmed.odds.is_empty());
+        assert!(unarmed.weapons.is_empty());
+        assert!(unarmed.contacts.iter().all(|row| row.reads_dead.is_none()));
+        assert_eq!(row(&unarmed, blue_id).aspect, Aspect::Rear);
+        assert_eq!(
+            row(&unarmed, TIE_ID).fatal,
+            Some(vec![SmolStr::new_static("hull")]),
+            "the fatal words ride the reading, which is the sensors'"
+        );
+    }
+
+    /// **17b cut M1a.3**: `Frame::same_as` compares each new field at the
+    /// resolution a surface prints it at — an aspect flip re-sends, a per-mille
+    /// move inside one percent does not, `t_ms` alone never does, an order
+    /// change does, and so does `reads_dead`.
+    #[test]
+    fn m1a3_same_as_compares_the_new_fields_at_their_printed_resolution() {
+        use crate::arena::perception::{Aspect, FrameOrder, MindObjective};
+        use m1a3::*;
+        let arena = field();
+        let base = red(&arena);
+        assert!(base.same_as(&base.clone(), 1_000));
+        // `t_ms` alone: the same frame.
+        let later = Frame {
+            t_ms: base.t_ms + 777,
+            ..base.clone()
+        };
+        assert!(later.same_as(&base, 1_000), "t_ms is never compared");
+        // An aspect flip on one row.
+        let mut flipped = base.clone();
+        let blue_id = blue_id(&arena);
+        if let Some(row) = flipped.contacts.iter_mut().find(|row| row.id == blue_id) {
+            row.aspect = Aspect::Left;
+        }
+        assert!(!flipped.same_as(&base, 1_000));
+        // `reads_dead`.
+        let mut dead = base.clone();
+        if let Some(row) = dead.contacts.iter_mut().find(|row| row.id == blue_id) {
+            row.reads_dead = Some(true);
+        }
+        assert!(!dead.same_as(&base, 1_000));
+        // `fatal`.
+        let mut words = base.clone();
+        if let Some(row) = words.contacts.iter_mut().find(|row| row.id == blue_id) {
+            row.fatal = Some(vec![SmolStr::new_static("hull")]);
+        }
+        assert!(!words.same_as(&base, 1_000));
+        // The odds at the whole percent: 620..=629 all print `62%`.
+        let with_permille = |p: u32| {
+            let mut frame = base.clone();
+            if let Some(first) = frame.odds.first_mut() {
+                first.p_permille = p;
+            }
+            frame
+        };
+        assert!(with_permille(620).same_as(&with_permille(629), 1_000));
+        assert!(!with_permille(629).same_as(&with_permille(630), 1_000));
+        // One entry more or less is a different frame.
+        let mut fewer = base.clone();
+        fewer.odds.pop();
+        assert!(!fewer.same_as(&base, 1_000));
+        // An order, and a change of it.
+        let order = |facing_mdeg: u32| FrameOrder {
+            squad: SmolStr::new_static("red-1"),
+            objective: MindObjective::Screen { facing_mdeg },
+            hold_fire: false,
+            max_range_band: None,
+            expires_ms: 30_000,
+        };
+        let ordered = Frame {
+            order: Some(order(90_000)),
+            ..base.clone()
+        };
+        assert!(!ordered.same_as(&base, 1_000));
+        assert!(ordered.same_as(&ordered.clone(), 1_000));
+        let turned = Frame {
+            order: Some(order(180_000)),
+            ..base.clone()
+        };
+        assert!(!turned.same_as(&ordered, 1_000));
+    }
+
+    /// **17b cut M1a.3**: a contact's odds lead with the weapon a bare `FIRE`
+    /// would fire whatever the component order, so a client reading the first
+    /// entry and line mode — which prints `fired_by_default`'s — quote one gun;
+    /// the rest follow in component order.
+    #[test]
+    fn m1a3_the_odds_array_leads_with_the_default_weapon() {
+        use m1a3::*;
+        let mut arena = field();
+        if let Some(red) = arena.unit_mut(RED) {
+            red.weapons = vec![gun("machine_gun"), gun("cannon"), gun("autocannon")];
+        }
+        let frame = red(&arena);
+        let default = crate::arena::view::fired_by_default(&frame.weapons)
+            .map(|weapon| weapon.id.clone())
+            .unwrap_or_else(|| panic!("a default weapon"));
+        assert_eq!(default.as_str(), "cannon");
+        for id in [blue_id(&arena), MATE_ID] {
+            let order: Vec<SmolStr> = odds_of(&frame, id).into_iter().map(|(w, _)| w).collect();
+            assert_eq!(
+                order,
+                vec![
+                    SmolStr::new_static("cannon"),
+                    SmolStr::new_static("machine_gun"),
+                    SmolStr::new_static("autocannon"),
+                ],
+                "the default first, then component order"
+            );
+        }
+        // With no `cannon` aboard, `fired_by_default` is the first carried —
+        // and so is the array's first entry.
+        if let Some(red) = arena.unit_mut(RED) {
+            red.weapons = vec![gun("autocannon"), gun("machine_gun")];
+        }
+        let frame = red(&arena);
+        assert_eq!(
+            frame.odds.first().map(|odds| odds.weapon.clone()),
+            crate::arena::view::fired_by_default(&frame.weapons).map(|weapon| weapon.id.clone())
         );
     }
 }

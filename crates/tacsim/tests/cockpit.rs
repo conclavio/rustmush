@@ -1243,12 +1243,13 @@ async fn the_live_window_is_the_pure_one_plus_the_tank_s_own_name() {
     );
 
     // And the schema is the one cut K.2 wrote, plus the marker the session ring
-    // reads — the whole of what this cut changed about what `VIEW` sends.
+    // reads — the whole of what this cut changed about what `VIEW` sends. 17b
+    // cut M1a.3 bumped the version to 2 (doc 17 §3).
     assert_eq!(
         live.get("schema"),
         Some(&serde_json::json!({
             "id": "arena.cockpit",
-            "version": 1,
+            "version": 2,
             "shape": "grid",
             "retain": "latest",
         }))
@@ -2456,7 +2457,9 @@ mod fixture {
     use smol_str::SmolStr;
     use tacsim::arena::clock::Tempo;
     use tacsim::arena::condition::{Condition, ConditionBand};
-    use tacsim::arena::perception::{FrameCondition, FrameContact, FrameNotice, Named, NoticeKind};
+    use tacsim::arena::perception::{
+        Aspect, FrameCondition, FrameContact, FrameNotice, FrameOdds, Named, NoticeKind,
+    };
     use tacsim::arena::state::{Classification, ContactId, Designator, Power, Team};
     use tacsim::arena::step::{Frame, FrameFacet, FrameHeat, FrameSection};
     use tacsim::arena::weapons::{FrameBand, FrameWeapon};
@@ -2582,6 +2585,12 @@ mod fixture {
                         bands: reading(),
                         age_ms: 2_000,
                     }),
+                    // **17b cut M1a.3**: seen broadside, a reading whose
+                    // destroyed turret is not the chassis's fatal hull, and the
+                    // fatal words beside it.
+                    aspect: Aspect::Left,
+                    reads_dead: Some(false),
+                    fatal: Some(vec![SmolStr::new_static("hull")]),
                 },
                 // Classified friendly off the mesh: no reading at all, which is
                 // what keeps its chassis out of `scan_tables`.
@@ -2598,6 +2607,10 @@ mod fixture {
                     age_ms: 400,
                     cell: Some((2, 9)),
                     condition: None,
+                    // 17b cut M1a.3: nose-on; no reading, so no fatal words.
+                    aspect: Aspect::Front,
+                    reads_dead: Some(false),
+                    fatal: None,
                 },
                 // Unknown, standing ON the building block inside the window: its
                 // marker overwrites the wall glyph.
@@ -2611,6 +2624,11 @@ mod fixture {
                     age_ms: 3_500,
                     cell: Some((14, 7)),
                     condition: None,
+                    // 17b cut M1a.3: an aspect is told for an unclassified
+                    // return — the plot's heading — and no odds ever are.
+                    aspect: Aspect::Front,
+                    reads_dead: Some(false),
+                    fatal: None,
                 },
                 // Unknown, plotted north of the window: on `CONTACTS`, not on
                 // the map, and the reason `VIEW` says its one line.
@@ -2624,6 +2642,9 @@ mod fixture {
                     age_ms: 6_000,
                     cell: Some((50, 33)),
                     condition: None,
+                    aspect: Aspect::Rear,
+                    reads_dead: Some(false),
+                    fatal: None,
                 },
             ],
             scan_tables: vec![vec![
@@ -2747,6 +2768,37 @@ mod fixture {
             // frame after a reclaim, so the payload's `catchup` key is `null`.
             // `catchup_lines.json` carries the report's own shapes.
             catchup: None,
+            // **17b cut M1a.3**: the two classified contacts, nearest first
+            // (`RB` at 120 m, then `BA` at 430 m), each led by the cannon —
+            // the weapon a bare `FIRE` fires. `BA`'s figures are the lock's
+            // own (`p_permille` on the weapon rows above), because the lock is
+            // on `BA` and both are one reading of one plot. No odds for `X3`
+            // or `X4`: they are not told apart.
+            odds: vec![
+                FrameOdds {
+                    contact: FRIEND,
+                    weapon: SmolStr::new_static("cannon"),
+                    p_permille: 871,
+                },
+                FrameOdds {
+                    contact: FRIEND,
+                    weapon: SmolStr::new_static("machine_gun"),
+                    p_permille: 655,
+                },
+                FrameOdds {
+                    contact: HOSTILE,
+                    weapon: SmolStr::new_static("cannon"),
+                    p_permille: 624,
+                },
+                FrameOdds {
+                    contact: HOSTILE,
+                    weapon: SmolStr::new_static("machine_gun"),
+                    p_permille: 210,
+                },
+            ],
+            // A piloted hull is under no standing order on this surface.
+            order: None,
+            t_ms: 61_250,
         }
     }
 
@@ -2925,7 +2977,10 @@ fn the_brief_golden_is_what_brief_lines_produces() {
 ///
 /// - **`CONTACTS`** prints [`cockpit::ContactRow::render`]: the four rows of
 ///   the fixture scene, as LITERALS read at HEAD (`10a5a0ec`) before the move —
-///   no committed fixture carries them, so they are held here;
+///   no committed fixture carries them, so they are held here. **17b cut
+///   M1a.3** grew each row by its two new columns (doc 17 §3: the aspect's side
+///   word, then the main gun's odds or a dash), so the literals are now the rows
+///   as that cut prints them, and each is the M1a.2 row plus its tail;
 /// - **`VIEW BRIEF`** prints [`cockpit::contact_sentence`], which stayed in the
 ///   cockpit: the same four rows through it equal the four contact lines of
 ///   `view_brief.txt`, byte for byte.
@@ -2940,17 +2995,20 @@ fn the_brief_golden_is_what_brief_lines_produces() {
 /// compiling.
 #[test]
 fn m1a2_the_rows_render_as_before() {
-    const CONTACTS_AT_HEAD: [&str; 4] = [
-        "BA  blue  bearing 045° (rel 000°)  far  450 m  1 s",
-        "RB  red  bearing 270° (rel 225°)  close  100 m  0 s",
-        "X3  unknown  bearing 315° (rel 270°)  effective  200 m  3 s",
-        "X4  unknown  bearing 030° (rel 345°)  far  600 m  6 s",
+    const CONTACTS_SINCE_M1A3: [&str; 4] = [
+        "BA  blue  bearing 045° (rel 000°)  far  450 m  1 s  side  cannon 62%",
+        "RB  red  bearing 270° (rel 225°)  close  100 m  0 s  front  cannon 87%",
+        "X3  unknown  bearing 315° (rel 270°)  effective  200 m  3 s  front  -",
+        "X4  unknown  bearing 030° (rel 345°)  far  600 m  6 s  rear  -",
     ];
     let frame = fixture::frame();
     let rows = cockpit::frame_contacts_held(&frame, &BTreeMap::new());
-    // (a) `CONTACTS`' rows, as HEAD rendered them.
+    // (a) `CONTACTS`' rows, as 17b cut M1a.3 renders them.
     let rendered: Vec<String> = rows.iter().map(cockpit::ContactRow::render).collect();
-    assert_eq!(rendered, CONTACTS_AT_HEAD, "the CONTACTS rows moved a byte");
+    assert_eq!(
+        rendered, CONTACTS_SINCE_M1A3,
+        "the CONTACTS rows moved a byte"
+    );
     // The memory-less reading is the same rows (`frame_contacts` is
     // `frame_contacts_held` with no memory).
     assert_eq!(cockpit::frame_contacts(&frame), rows);
@@ -3750,7 +3808,7 @@ fn an_unseated_asker_and_a_cleared_cockpit_read_the_same() {
     assert_eq!(
         cockpit::cockpit_cleared(),
         serde_json::json!({
-            "schema": { "id": "arena.cockpit", "version": 1, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 2, "retain": "latest" },
             "seated": false,
         })
     );
@@ -4315,6 +4373,9 @@ async fn d2_the_lock_echo_marks_a_friendly_and_never_a_blip() {
         age_ms: 0,
         cell: None,
         condition: None,
+        aspect: tacsim::arena::perception::Aspect::Front,
+        reads_dead: None,
+        fatal: None,
     };
     let friend = row(
         0xa1a1_a1a1_a1a1_a1a1,
@@ -4337,7 +4398,7 @@ async fn d2_the_lock_echo_marks_a_friendly_and_never_a_blip() {
         Designator::Provisional(9),
         Classification::Unknown,
     );
-    seen.contacts = vec![friend, hostile, blip];
+    seen.contacts = vec![friend.clone(), hostile.clone(), blip.clone()];
     rig.push_frame(0, seen);
 
     let said = rig.say(0, &format!("lock {}", friend.designator));
@@ -13165,5 +13226,222 @@ async fn ap3_the_block_watch_on_says_is_recorded_and_not_said_again() {
         ap3_order(&rig, pilot, from),
         "K",
         "the block WATCH ON said was said again"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M1a.3 — the frame grows (doc 17 §3, D-UM-4, D-UM-5)
+// ---------------------------------------------------------------------------
+
+/// **17b cut M1a.3**: the fixture scene's keyframe carries what a mind reads —
+/// version 2; per contact the facet word, `reads_dead`, the odds (default
+/// weapon first, `[]` for an unclassified row) and the fatal words beside a
+/// reading; per weapon its band edges; at the top `t_ms` and `order: null` —
+/// and the scene's `CONTACTS` rows end in the side word and the main gun's
+/// odds or a dash. The JSON round-trips: `cockpit_frame.json` as committed is
+/// what the builder writes.
+#[test]
+fn m1a3_the_keyframe_carries_aspect_odds_reads_dead_order_and_t_ms() {
+    let frame = fixture::frame();
+    let payload = cockpit::status_frame(fixture::MATCH, &frame);
+    let committed: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+    ))
+    .expect("the fixture is JSON");
+    assert_eq!(payload, committed, "the fixture round-trips with the keys");
+    assert_eq!(cockpit::FRAME_VERSION, 2);
+    assert_eq!(
+        payload.pointer("/schema/version"),
+        Some(&serde_json::json!(2))
+    );
+    assert_eq!(payload.get("t_ms"), Some(&serde_json::json!(61_250)));
+    assert_eq!(payload.get("order"), Some(&serde_json::Value::Null));
+    let contacts = payload
+        .get("contacts")
+        .and_then(serde_json::Value::as_array)
+        .expect("contacts");
+    let by = |designator: &str| {
+        contacts
+            .iter()
+            .find(|contact| contact.get("designator") == Some(&serde_json::json!(designator)))
+            .cloned()
+            .unwrap_or_else(|| panic!("{designator}"))
+    };
+    let ba = by("BA");
+    assert_eq!(ba.get("aspect"), Some(&serde_json::json!("left")));
+    assert_eq!(ba.get("reads_dead"), Some(&serde_json::json!(false)));
+    assert_eq!(ba.get("fatal"), Some(&serde_json::json!(["hull"])));
+    assert_eq!(
+        ba.get("odds"),
+        Some(&serde_json::json!([
+            { "weapon": "cannon", "p_permille": 624, "percent": 62 },
+            { "weapon": "machine_gun", "p_permille": 210, "percent": 21 },
+        ]))
+    );
+    let x3 = by("X3");
+    assert_eq!(
+        x3.get("odds"),
+        Some(&serde_json::json!([])),
+        "never unclassified"
+    );
+    assert_eq!(x3.get("fatal"), Some(&serde_json::Value::Null));
+    assert_eq!(x3.get("aspect"), Some(&serde_json::json!("front")));
+    assert_eq!(
+        payload.pointer("/weapons/0/bands_cm"),
+        Some(&serde_json::json!([100_000, 300_000]))
+    );
+    // The scene's `CONTACTS` rows, verbatim.
+    let rows: Vec<String> = cockpit::frame_contacts(&frame)
+        .iter()
+        .map(cockpit::ContactRow::render)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "BA  blue  bearing 045° (rel 000°)  far  450 m  1 s  side  cannon 62%",
+            "RB  red  bearing 270° (rel 225°)  close  100 m  0 s  front  cannon 87%",
+            "X3  unknown  bearing 315° (rel 270°)  effective  200 m  3 s  front  -",
+            "X4  unknown  bearing 030° (rel 345°)  far  600 m  6 s  rear  -",
+        ]
+    );
+}
+
+/// **17b cut M1a.3** (doc 17 §22's italic line): a hull with no weapons
+/// station — no gun aboard, or its turret shot off — carries no `weapons` key
+/// and no contact carries `odds` or `reads_dead`; the lock, the heat, the scan
+/// tables and the fatal words stay; and its `CONTACTS` rows end at the aspect.
+#[test]
+fn m1a3_an_unarmed_hull_drops_the_weapons_block_and_its_rows_end_at_the_aspect() {
+    let mut frame = fixture::frame();
+    frame.weapons.clear();
+    frame.odds.clear();
+    for row in &mut frame.contacts {
+        row.reads_dead = None;
+    }
+    let payload = cockpit::status_frame(fixture::MATCH, &frame);
+    let object = payload.as_object().expect("an object");
+    assert!(!object.contains_key("weapons"), "{payload}");
+    for key in [
+        "lock",
+        "lock_designator",
+        "lock_range_m",
+        "lock_p_permille",
+        "lock_percent",
+        "heat",
+        "scan_tables",
+        "t_ms",
+        "order",
+    ] {
+        assert!(object.contains_key(key), "{key} stays");
+    }
+    for contact in payload
+        .get("contacts")
+        .and_then(serde_json::Value::as_array)
+        .expect("contacts")
+    {
+        let contact = contact.as_object().expect("a contact object");
+        assert!(!contact.contains_key("odds"), "{contact:?}");
+        assert!(!contact.contains_key("reads_dead"), "{contact:?}");
+        assert!(contact.contains_key("aspect"), "{contact:?}");
+        assert!(contact.contains_key("fatal"), "{contact:?}");
+    }
+    let rows: Vec<String> = cockpit::frame_contacts(&frame)
+        .iter()
+        .map(cockpit::ContactRow::render)
+        .collect();
+    assert_eq!(
+        rows.first().map(String::as_str),
+        Some("BA  blue  bearing 045° (rel 000°)  beyond  450 m  1 s  side"),
+        "no gun: no reach, so `beyond`, and nothing after the aspect"
+    );
+    assert!(
+        rows.iter().all(|row| row.ends_with("  side")
+            || row.ends_with("  front")
+            || row.ends_with("  rear")),
+        "{rows:?}"
+    );
+}
+
+/// **17b cut M1a.3**: a standing order as the keyframe spells it — the
+/// objective's word, `target` and `of` as the designators of the hull's own
+/// rows (`null` when the order names a row the frame does not carry), the
+/// payloads, the constraints, and the time left measured from the frame's own
+/// `t_ms`, never below nought.
+#[test]
+fn m1a3_the_keyframe_spells_an_order_with_designators_and_the_time_left() {
+    use smol_str::SmolStr;
+    use tacsim::arena::perception::{FrameOrder, MindObjective};
+    use tacsim::arena::state::ContactId;
+    use tacsim::deliberation::order::RangeBand;
+    let mut frame = fixture::frame();
+    let hostile = frame.contacts.first().map(|row| row.id).expect("BA's row");
+    frame.order = Some(FrameOrder {
+        squad: SmolStr::new_static("red-1"),
+        objective: MindObjective::Engage {
+            target: Some(hostile),
+        },
+        hold_fire: false,
+        max_range_band: Some(RangeBand::Effective),
+        expires_ms: 115_500,
+    });
+    let payload = cockpit::status_frame(fixture::MATCH, &frame);
+    assert_eq!(
+        payload.get("order"),
+        Some(&serde_json::json!({
+            "squad": "red-1",
+            "objective": "engage",
+            "target": "BA",
+            "to": null,
+            "facing_mdeg": null,
+            "of": null,
+            "hold_fire": false,
+            "max_range_band": "effective",
+            "expires_in_ms": 54_250,
+        }))
+    );
+    let order = |objective: MindObjective, expires_ms: i64| FrameOrder {
+        squad: SmolStr::new_static("red-1"),
+        objective,
+        hold_fire: true,
+        max_range_band: None,
+        expires_ms,
+    };
+    frame.order = Some(order(MindObjective::Advance { to: (3, 4) }, 0));
+    let payload = cockpit::status_frame(fixture::MATCH, &frame);
+    assert_eq!(
+        payload.pointer("/order/to"),
+        Some(&serde_json::json!([3, 4]))
+    );
+    assert_eq!(
+        payload.pointer("/order/expires_in_ms"),
+        Some(&serde_json::json!(0)),
+        "an expired deadline reads nought, never negative"
+    );
+    frame.order = Some(order(
+        MindObjective::Support {
+            of: Some(ContactId(0xdead)),
+        },
+        70_000,
+    ));
+    let payload = cockpit::status_frame(fixture::MATCH, &frame);
+    assert_eq!(
+        payload.pointer("/order/objective"),
+        Some(&serde_json::json!("support"))
+    );
+    assert_eq!(
+        payload.pointer("/order/of"),
+        Some(&serde_json::Value::Null),
+        "a row the frame does not carry is named by nothing"
+    );
+    frame.order = Some(order(
+        MindObjective::Screen {
+            facing_mdeg: 90_000,
+        },
+        70_000,
+    ));
+    let payload = cockpit::status_frame(fixture::MATCH, &frame);
+    assert_eq!(
+        payload.pointer("/order/facing_mdeg"),
+        Some(&serde_json::json!(90_000))
     );
 }

@@ -286,9 +286,9 @@ pub use motor::{Fallback, MotorOutcome, MotorPlan, MotorRow, MotorTable};
 pub use observer::{Observer, ObserverUnit};
 pub use path::{PathFailure, PathResult, PathScratch, min_move_cost, path_with};
 pub use perception::{
-    FULL_SIGNATURE_PERMILLE, FrameCondition, FrameContact, Named, PerceptionCounters,
-    SensorProfile, SignatureFactor, ThermalSignature, bearing_mdeg, bearing_of, contact_refusal,
-    sees,
+    Aspect, FULL_SIGNATURE_PERMILLE, FrameCondition, FrameContact, FrameOdds, FrameOrder,
+    MindObjective, Named, PerceptionCounters, SensorProfile, SignatureFactor, ThermalSignature,
+    bearing_mdeg, bearing_of, contact_refusal, sees,
 };
 pub use reflex::{
     ARRIVE_CELLS, REFLEX_AVOID_MAX, REFLEX_AVOID_TTL_MS, REFLEX_STAND_TICKS, ReflexCounters,
@@ -311,10 +311,10 @@ pub use state::{
     StopReason, Team, TerrainCell, TrackedRules, UnitState, Waypoint, Waypoints, WeaponSummary,
     spot_letter,
 };
-pub use step::{Frame, FrameHeat, FrameSlots, StepOutput};
+pub use step::{Frame, FrameHeat, FrameSlots, STOCK_ODDS_ROWS, StepOutput};
 pub use view::{
-    ContactRow, contact_band, fired_by_default, frame_contacts, frame_contacts_held, frame_lock,
-    held_range_m, lock_designator, own_scope, range_m_rounded, settle_ranges,
+    ContactRow, OddsCell, contact_band, fired_by_default, frame_contacts, frame_contacts_held,
+    frame_lock, held_range_m, lock_designator, own_scope, range_m_rounded, settle_ranges,
 };
 pub use weapons::{FrameBand, FrameWeapon, Shot, WeaponBand};
 

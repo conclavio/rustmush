@@ -119,13 +119,21 @@ existed would be telling you where the other side is.
 `CONTACTS` is your platform's own picture and nothing else — no object numbers,
 no names, no pilots. One row a contact:
 
-  BA  blue  bearing 087° (rel 032°)  far  450 m  2 s
+  BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  side  cannon 62%
 
 the designator `LOCK` takes, what the contact has been classified as, its true
 bearing and its bearing relative to your hull, a **range band**, its range
 rounded to 50 m, and how old the plot is. A contact is drawn **where it was last
 seen**, not where it is now, and the age is how stale that is. A teammate's
 sighting reaches you only while their own sensors still hold it.
+
+The last two columns are what the engine knows about the shot: which way the
+contact was facing when it was last seen — front, side or rear — and, for the
+two nearest contacts you have identified, your main gun's chance against where
+it was plotted; a dash is a contact the fire control is not resolving, and a
+tank with no gun shows the facing alone. Odds are advice off the plot, as RANGE
+is: a contact that moved since it was last seen is not where the number was
+computed.
 
 The band word is **how far across your own sight the contact is**: `close` is
 the nearest third of your sensor's reach, `effective` the middle third, `far` the

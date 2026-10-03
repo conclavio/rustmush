@@ -783,7 +783,7 @@ fn require_power(w: &World, pilot: ObjId) -> Result<(), CockpitError> {
 /// sentences built on them ([`contact_sentence`], [`lock_line`],
 /// [`notice_line`], [`brief_lines`], [`watch_lines`]) stay in this module.
 pub use crate::arena::view::{
-    ContactRow, FRIEND_GLYPH, HOSTILE_GLYPH, UNKNOWN_GLYPH, YOU_GLYPH, contact_band,
+    ContactRow, FRIEND_GLYPH, HOSTILE_GLYPH, OddsCell, UNKNOWN_GLYPH, YOU_GLYPH, contact_band,
     fired_by_default, frame_contacts, frame_contacts_held, frame_lock, held_range_m,
     lock_designator, own_scope, range_m_rounded, settle_ranges,
 };
@@ -4667,7 +4667,13 @@ fn say_and_frame(ctx: &mut Ctx<'_>, held: Option<&CockpitFrame>, lines: Vec<Stri
 pub const FRAME_SCHEMA: &str = "arena.cockpit";
 
 /// Its version. Cuts S and W add fields; a field added is not a version.
-pub const FRAME_VERSION: u32 = 1;
+///
+/// **17b cut M1a.3 bumped it to 2** (doc 17 §3, D-UM-4, D-UM-5): the fields a
+/// mind reads joined the frame — a field added is still not a version, but the
+/// first fields added FOR a reader that is not a person are, so a client can
+/// say which frame it was built against; every consumer ignores unknown keys
+/// and the version, so an older client prints the old row.
+pub const FRAME_VERSION: u32 = 2;
 
 /// **The terrain frame's schema id** (16b cut Q.3), carried on
 /// [`crate::arena_bridge::MAP_FEED`].
@@ -4800,6 +4806,23 @@ pub const RETAIN_LATEST: &str = "latest";
 /// }], sections_more, rounds_spent[{ weapon, rounds }], rounds_more, machine }`
 /// ([`catchup_lines`] is its wording). [`FRAME_VERSION`] stays `1`: a field
 /// added is not a version.
+///
+/// **17b cut M1a.3** (doc 17 §3, D-UM-4, D-UM-5) added what a mind reads, and
+/// bumped [`FRAME_VERSION`] to `2`. Each contact gained `aspect` — the **facet**
+/// word its plot was showing (`front`, `left`, `right`, `rear`; the row prints
+/// the side word) — and `fatal`, the target chassis's fatal section words beside
+/// a held reading and `null` without one; on a hull with a weapons station each
+/// contact also gained `reads_dead` (the own kill, or a held reading showing a
+/// fatal section destroyed) and `odds`, `[{ weapon, p_permille, percent }]` for
+/// the nearest `STOCK_ODDS_ROWS` classified contacts, the default weapon first,
+/// `[]` for every other row. Each weapon gained `bands_cm`. The top level gained
+/// `t_ms`, the arena millisecond of the build, and `order`: `null` — every
+/// piloted hull — or `{ squad, objective, target, to, facing_mdeg, of,
+/// hold_fire, max_range_band, expires_in_ms }`, `target` and `of` the
+/// designators of the hull's own rows. **A hull with no weapons station
+/// carries no `weapons` key** and no contact carries `odds` or `reads_dead`
+/// (doc 17 §22's italic line); `lock`, `lock_*`, `heat`, `scan_tables` and
+/// `fatal` stay.
 #[must_use]
 pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
     status_frame_held(match_id, frame, &BTreeMap::new())
@@ -4817,10 +4840,15 @@ pub fn status_frame_held(
     ranges: &BTreeMap<ContactId, u64>,
 ) -> serde_json::Value {
     let rows = frame_contacts_held(frame, ranges);
+    // **17b cut M1a.3** (doc 17 §22's italic line): a hull with no weapons
+    // station carries no `weapons` block, and its contacts no `odds` and no
+    // `reads_dead`.
+    let armed = !frame.weapons.is_empty();
     let contacts: Vec<serde_json::Value> = rows
         .iter()
         .map(|row| {
-            serde_json::json!({
+            let held = frame.contacts.iter().find(|held| held.id == row.id);
+            let mut contact = serde_json::json!({
                 // 16b cut Q.1: `id` stays the stable row key a panel matches on
                 // across pulses and is never displayed; `designator` is what a
                 // person reads and types, and `alias` is the number behind a
@@ -4843,17 +4871,49 @@ pub fn status_frame_held(
                 // hull, or `null`. The table index is inside the object, so a
                 // row with no reading carries no section vocabulary at all —
                 // which is the observer rule on this surface, by construction.
-                "condition": frame
-                    .contacts
-                    .iter()
-                    .find(|held| held.id == row.id)
+                "condition": held
                     .and_then(|held| held.condition)
                     .map(|reading| serde_json::json!({
                         "table": reading.table,
                         "bands": reading.bands.letters(),
                         "age_ms": reading.age_ms,
                     })),
-            })
+                // **17b cut M1a.3** (doc 17 §3, D-UM-5): the FACET word the
+                // contact's plot was showing — `front`, `left`, `right` or
+                // `rear`; the row prints its side word — and, beside a held
+                // reading only, the chassis's fatal section words: what a
+                // reading would have to show destroyed for `reads_dead`.
+                "aspect": held.map_or("front", |held| held.aspect.as_str()),
+                "fatal": held.and_then(|held| held.fatal.as_ref()),
+            });
+            if armed && let Some(object) = contact.as_object_mut() {
+                // **17b cut M1a.3**: the weapons station's two fields. Every
+                // `FrameOdds` of this row, the default weapon first (the order
+                // `Arena::frame_odds` builds), and `[]` for a row outside the
+                // odds rows.
+                object.insert(
+                    "reads_dead".to_owned(),
+                    serde_json::json!(held.and_then(|held| held.reads_dead).unwrap_or(false)),
+                );
+                object.insert(
+                    "odds".to_owned(),
+                    serde_json::Value::Array(
+                        frame
+                            .odds
+                            .iter()
+                            .filter(|odds| odds.contact == row.id)
+                            .map(|odds| {
+                                serde_json::json!({
+                                    "weapon": odds.weapon.as_str(),
+                                    "p_permille": odds.p_permille,
+                                    "percent": odds.p_permille / 10,
+                                })
+                            })
+                            .collect(),
+                    ),
+                );
+            }
+            contact
         })
         .collect();
     // 16b cut Q.1: a notice that renders to nothing owes the pilot nothing, so it
@@ -4926,7 +4986,8 @@ pub fn status_frame_held(
         .collect();
     let weapons: Vec<serde_json::Value> = frame_weapons(frame)
         .iter()
-        .map(|weapon| {
+        .zip(frame.weapons.iter())
+        .map(|(weapon, carried)| {
             serde_json::json!({
                 "id": weapon.id.as_str(),
                 "ready": weapon.ready,
@@ -4945,6 +5006,11 @@ pub fn status_frame_held(
                 // and `0` for a cold gun — which is what tells a panel why an
                 // overheated tank may still fire this one.
                 "heat_per_shot": weapon.heat_per_shot,
+                // **17b cut M1a.3** (D-UM-4): the band edges, centimetres — what
+                // the view's band word and a mind's reach arithmetic read, and
+                // which the keyframe did not carry until a reader that is not a
+                // person needed it.
+                "bands_cm": carried.bands_cm,
             })
         })
         .collect();
@@ -4982,7 +5048,7 @@ pub fn status_frame_held(
             .find(|held| held.id == contact)
             .map(|held| range_m_rounded(held.range_cm, lock_range_step_m(held.age_ms)))
     });
-    serde_json::json!({
+    let mut payload = serde_json::json!({
         // 16b cut Q.3: `retain` tells the session layer that this keyframe
         // supersedes the ones before it on this feed — it replaces the feed's
         // entry in the session's latest slot (16b cut B.5; see
@@ -5035,6 +5101,11 @@ pub fn status_frame_held(
         "notices": notices,
         "weapons": weapons,
         "sections": sections,
+        // **17b cut M1a.3** (doc 17 §3 "Two more fields"): the arena millisecond
+        // the frame was built at, and the hull's standing order re-keyed to its
+        // own contacts — `null` on every piloted hull (`Arena::frame_order`).
+        "t_ms": frame.t_ms,
+        "order": frame.order.as_ref().map(|order| order_json(frame, order)),
         "heat": frame.heat.map(|heat| serde_json::json!({
             "heat": heat.heat,
             "max": heat.max,
@@ -5061,6 +5132,50 @@ pub fn status_frame_held(
         // designators (`catchup_json`); both panels compose their lines from
         // it and the line client was sent the same lines as one `Sys` block.
         "catchup": frame.catchup.as_ref().map(catchup_json),
+    });
+    // **17b cut M1a.3** (doc 17 §22's italic line): *the keyframe drops the
+    // weapons block on one without*. `lock`, `lock_*`, `heat`, `scan_tables`
+    // and each contact's `fatal` stay: the lock is the sensors station's.
+    if !armed && let Some(object) = payload.as_object_mut() {
+        object.remove("weapons");
+    }
+    payload
+}
+
+/// **A standing order as the keyframe carries it** (17b cut M1a.3; doc 17 §3,
+/// D-UM-4): the objective's word, its payloads (`to`, `facing_mdeg`, and the
+/// contacts `target` and `of` as the **designator** of the hull's own row the
+/// order names, `null` where it names none), the two constraints, and the time
+/// left as `expires_in_ms` — `expires_ms` less the frame's own `t_ms`, never
+/// below nought — so the view carries nothing the keyframe lacks.
+fn order_json(frame: &Frame, order: &crate::arena::perception::FrameOrder) -> serde_json::Value {
+    use crate::arena::perception::MindObjective;
+    let named = |contact: Option<ContactId>| {
+        contact.and_then(|id| {
+            frame
+                .contacts
+                .iter()
+                .find(|held| held.id == id)
+                .map(|held| held.designator.to_string())
+        })
+    };
+    let (target, to, facing_mdeg, of) = match order.objective {
+        MindObjective::Engage { target } => (named(target), None, None, None),
+        MindObjective::Advance { to } => (None, Some([to.0, to.1]), None, None),
+        MindObjective::Screen { facing_mdeg } => (None, None, Some(facing_mdeg), None),
+        MindObjective::Support { of } => (None, None, None, named(of)),
+        MindObjective::Hold | MindObjective::Withdraw => (None, None, None, None),
+    };
+    serde_json::json!({
+        "squad": order.squad.as_str(),
+        "objective": order.objective.as_str(),
+        "target": target,
+        "to": to,
+        "facing_mdeg": facing_mdeg,
+        "of": of,
+        "hold_fire": order.hold_fire,
+        "max_range_band": order.max_range_band.map(|band| band.as_str()),
+        "expires_in_ms": order.expires_ms.saturating_sub(frame.t_ms).max(0),
     })
 }
 
@@ -7492,6 +7607,8 @@ mod tests {
             age_ms: 2_000,
             cell: Some((4, 4)),
             friendly: false,
+            aspect: SmolStr::new_static("front"),
+            odds: crate::arena::view::OddsCell::Unarmed,
         }
     }
 
@@ -8560,6 +8677,8 @@ mod tests {
             age_ms,
             cell: None,
             friendly,
+            aspect: SmolStr::new_static("front"),
+            odds: crate::arena::view::OddsCell::Unarmed,
         };
         let rows = [
             row(
@@ -9452,6 +9571,9 @@ mod tests {
                 age_ms: 800,
                 cell: Some((6, 2)),
                 condition: None,
+                aspect: crate::arena::perception::Aspect::Front,
+                reads_dead: None,
+                fatal: None,
             },
             FrameContact {
                 id: ContactId(2),
@@ -9463,6 +9585,9 @@ mod tests {
                 age_ms: 4_500,
                 cell: Some((0, 3)),
                 condition: None,
+                aspect: crate::arena::perception::Aspect::Front,
+                reads_dead: None,
+                fatal: None,
             },
         ];
         frame.lock = Some(ContactId(1));
@@ -9606,6 +9731,9 @@ mod tests {
                 age_ms: 12_000,
                 cell: Some((1, 1)),
                 condition: None,
+                aspect: crate::arena::perception::Aspect::Front,
+                reads_dead: None,
+                fatal: None,
             })
             .collect();
         let lines = ap3_lines(&crowded);
@@ -9693,6 +9821,9 @@ mod tests {
             age_ms: 0,
             cell: Some((1, 0)),
             condition: None,
+            aspect: crate::arena::perception::Aspect::Front,
+            reads_dead: None,
+            fatal: None,
         });
         friendly.lock = Some(ContactId(3));
         assert!(

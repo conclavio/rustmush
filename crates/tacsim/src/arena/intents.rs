@@ -948,6 +948,99 @@ pub fn resolve_emcon(arena: &mut Arena, unit: ObjId, on: bool, at_ms: i64) -> Re
     Ok(())
 }
 
+impl Arena {
+    /// **An order re-keyed to one hull's own contacts** (17b cut M1a.3; doc 17 §3
+    /// "Two more fields"; D-UM-15 **as decided**: *re-keyed at write time to the
+    /// unit's own held `ContactId` or none*).
+    ///
+    /// An [`crate::deliberation::order::Order`] names contacts in its
+    /// **issuer's** scope, which is somebody else's — a pilot's tank or the squad
+    /// commander's. A hull must only ever read a row of its own, so each contact
+    /// the order names is resolved where it was written and then looked for in
+    /// this hull's store:
+    ///
+    /// * `Engage` — the order's preferred contact
+    ///   ([`crate::deliberation::order::Order::preferred_contact`]) is resolved in
+    ///   the issuer's scope (`order.issuer`, else the squad commander's) exactly as
+    ///   `reflex.rs`'s `ordered_target` resolves it, to a target; the answer is
+    ///   **this hull's own row for that target if it holds one**, else `None`.
+    ///   Never the pure id `draw_contact_id` would mint: that is the row the hull
+    ///   *will* hold the target under, and writing it for a target the hull does
+    ///   not yet hold would link a later `X<n>` detection to the ordered target —
+    ///   identity before classification, which no pilot hearing `ENGAGE BA` has
+    ///   (the review's finding; the plan's departure (c) withdrawn).
+    /// * `Support { of }` — this hull's own row for `of`, `None` when it holds
+    ///   none and `None` when `of` is the hull itself (a self-charge fights on
+    ///   doctrine and has no row for itself).
+    /// * `Hold`, `Advance`, `Withdraw`, `Screen` — copied; they name no contact.
+    ///
+    /// The constraints are copied flat, the squad is rendered (`red-1`), and
+    /// `expires_ms` is the caller's — the standing order's arena deadline.
+    #[must_use]
+    pub(crate) fn rekey_order(
+        &self,
+        unit: ObjId,
+        order: &crate::deliberation::order::Order,
+        expires_ms: i64,
+    ) -> crate::arena::perception::FrameOrder {
+        use crate::arena::perception::{FrameOrder, MindObjective};
+        use crate::deliberation::order::Objective;
+        let objective = match order.objective {
+            Objective::Hold => MindObjective::Hold,
+            Objective::Advance { to } => MindObjective::Advance { to },
+            Objective::Engage { .. } => MindObjective::Engage {
+                target: order.preferred_contact().and_then(|hint| {
+                    let viewer = order
+                        .issuer
+                        .or_else(|| self.squad_of(unit).map(|squad| squad.commander))?;
+                    let target = self.contacts.resolve(viewer, hint)?.target;
+                    self.contacts.id_of(unit, target)
+                }),
+            },
+            Objective::Withdraw => MindObjective::Withdraw,
+            Objective::Screen { facing_mdeg } => MindObjective::Screen { facing_mdeg },
+            Objective::Support { of } => MindObjective::Support {
+                of: if of == unit {
+                    None
+                } else {
+                    self.contacts.id_of(unit, of)
+                },
+            },
+        };
+        FrameOrder {
+            squad: SmolStr::new(order.squad.to_string()),
+            objective,
+            hold_fire: order.constraints.hold_fire,
+            max_range_band: order.constraints.max_range_band,
+            expires_ms,
+        }
+    }
+
+    /// **The standing order a hull's frame carries** (17b cut M1a.3; doc 17 §3),
+    /// re-keyed by `Arena::rekey_order`, or `None`.
+    ///
+    /// * A [`Controller::Reflex`] hull: its machine's standing order, re-keyed
+    ///   **at frame time** against what the hull holds now — a reflex hull's frame
+    ///   has no reader today, and no hashed field may be added to its row for
+    ///   one.
+    /// * A [`Controller::Pilot`] hull: `None`. A pilot is not under a squad's
+    ///   standing order on this surface, so every frame a pilot is sent carries
+    ///   `"order": null`.
+    ///
+    /// 17b cut M1a.5 adds the `Mind` arm, which reads the order the mind holds,
+    /// re-keyed when it was **written**.
+    #[must_use]
+    pub fn frame_order(&self, unit: ObjId) -> Option<crate::arena::perception::FrameOrder> {
+        match self.unit(unit)?.controller {
+            Controller::Reflex => self
+                .reflex
+                .order(unit)
+                .map(|standing| self.rekey_order(unit, &standing.order, standing.expires_ms)),
+            Controller::Pilot => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2562,5 +2655,207 @@ mod tests {
         );
         assert_eq!(state(&arena, WING), Some(ReflexState::Withdraw));
         assert_eq!(arena.reflex.order(WING), None, "the order goes either way");
+    }
+
+    // -----------------------------------------------------------------------
+    // 17b cut M1a.3 — the order re-keyed (doc 17 §3, D-UM-15 as decided)
+    // -----------------------------------------------------------------------
+
+    /// **17b cut M1a.3** (D-UM-15 as decided): an order's contacts are resolved
+    /// in the scope they were written in — the issuer's, else the squad
+    /// commander's, exactly as `ordered_target` resolves a hint — and re-keyed to
+    /// the receiving hull's OWN held row for that target, or `None` when it holds
+    /// none (never the id it WOULD hold the target under: identity before
+    /// classification). `Support` names the hull's own row for the charge, and
+    /// `None` for itself. `frame_order` is `None` on a piloted hull and the
+    /// re-keyed standing order on a machine.
+    #[test]
+    fn m1a3_rekey_order_resolves_the_hint_in_the_issuers_scope_and_re_keys_it_to_a_held_row_or_none()
+     {
+        use crate::arena::perception::{FrameOrder, MindObjective};
+        use crate::arena::state::{Classification, SeenPose, ShadowContact};
+        use crate::deliberation::order::{Constraints, Objective, Order, RangeBand};
+        /// The piloted tank a pilot typed `ORDER` in.
+        const PILOT: ObjId = ObjId(6);
+        /// The pilot's row for BLUE — the hint `ENGAGE BA` carries.
+        const PILOT_SAYS_BA: ContactId = ContactId(0x77);
+        /// The commander's row for BLUE.
+        const LEAD_SAYS_BA: ContactId = ContactId(0x55);
+        /// WING's own rows for BLUE and for RED.
+        const WING_SEES_BA: ContactId = ContactId(0x33);
+        const WING_SEES_RA: ContactId = ContactId(0x44);
+        // `z2_arena`'s three tanks and a fourth, red and piloted.
+        let mut arena = arena_at_epoch(
+            vec![
+                tank(RED, Team::Red, pose(1_500, 1_500)),
+                tank(WING, Team::Red, pose(2_500, 1_500)),
+                tank(PILOT, Team::Red, pose(3_500, 1_500)),
+                tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+            ],
+            1,
+        );
+        for unit in [RED, WING] {
+            if let Some(state) = arena.unit_mut(unit) {
+                state.controller = Controller::Reflex;
+            }
+            arena.adopt_reflex(unit, ReflexState::Patrol);
+            arena.reflex.set_order(unit, z2_order(Objective::Hold));
+        }
+        arena.squads = vec![crate::deliberation::squad::SquadRoster {
+            id: z2_squad(1),
+            commander: RED,
+            units: vec![RED, WING],
+        }];
+        let hold = |arena: &mut Arena, viewer: ObjId, id: ContactId, target: ObjId| {
+            let team = arena.unit(target).map_or(Team::Blue, |unit| unit.team);
+            let seen = SeenPose::of(arena.unit(target).unwrap_or_else(|| panic!("{target}")));
+            arena.contacts.insert(
+                viewer,
+                id,
+                ShadowContact::sighted(target, Classification::Classified { team }, 0, seen),
+            );
+        };
+        hold(&mut arena, PILOT, PILOT_SAYS_BA, BLUE);
+        hold(&mut arena, RED, LEAD_SAYS_BA, BLUE);
+        hold(&mut arena, WING, WING_SEES_BA, BLUE);
+        hold(&mut arena, WING, WING_SEES_RA, RED);
+        let order = |objective: Objective, issuer: Option<ObjId>| Order {
+            squad: z2_squad(1),
+            objective,
+            target: None,
+            horizon_ms: 600_000,
+            constraints: Constraints {
+                hold_fire: true,
+                max_range_band: Some(RangeBand::Effective),
+            },
+            ttl_ms: 600_000,
+            issued_ms: 0,
+            issuer,
+            spot: None,
+        };
+        let engage = |hint: ContactId| Objective::Engage {
+            target_hint: Some(hint),
+        };
+
+        // A pilot's `ORDER … ENGAGE BA`: the pilot's row resolves to BLUE, and
+        // WING reads its OWN row for BLUE. The flat fields are copied.
+        let told = order(engage(PILOT_SAYS_BA), Some(PILOT));
+        assert_eq!(
+            arena.rekey_order(WING, &told, 54_250),
+            FrameOrder {
+                squad: SmolStr::new_static("red-1"),
+                objective: MindObjective::Engage {
+                    target: Some(WING_SEES_BA)
+                },
+                hold_fire: true,
+                max_range_band: Some(RangeBand::Effective),
+                expires_ms: 54_250,
+            }
+        );
+        // The commander holds BLUE under its own id: that one.
+        assert_eq!(
+            arena.rekey_order(RED, &told, 0).objective,
+            MindObjective::Engage {
+                target: Some(LEAD_SAYS_BA)
+            }
+        );
+        // `issuer: None` resolves in the squad commander's store: the
+        // commander's id names BLUE there, and the pilot's id names nothing.
+        assert_eq!(
+            arena
+                .rekey_order(WING, &order(engage(LEAD_SAYS_BA), None), 0)
+                .objective,
+            MindObjective::Engage {
+                target: Some(WING_SEES_BA)
+            }
+        );
+        assert_eq!(
+            arena
+                .rekey_order(WING, &order(engage(PILOT_SAYS_BA), None), 0)
+                .objective,
+            MindObjective::Engage { target: None },
+            "the pilot's row is not the commander's"
+        );
+        // `SUPPORT RA`: WING's own row for RED; RED itself has none for itself.
+        let support = order(Objective::Support { of: RED }, Some(PILOT));
+        assert_eq!(
+            arena.rekey_order(WING, &support, 0).objective,
+            MindObjective::Support {
+                of: Some(WING_SEES_RA)
+            }
+        );
+        assert_eq!(
+            arena.rekey_order(RED, &support, 0).objective,
+            MindObjective::Support { of: None },
+            "a self-charge has no row for itself"
+        );
+        // A hull that does NOT hold the ordered target re-keys to nothing — not
+        // to the id it would mint for BLUE later.
+        arena.contacts.remove(WING, WING_SEES_BA);
+        arena.contacts.remove(WING, WING_SEES_RA);
+        assert_eq!(
+            arena.rekey_order(WING, &told, 0).objective,
+            MindObjective::Engage { target: None }
+        );
+        assert_eq!(
+            arena.rekey_order(WING, &support, 0).objective,
+            MindObjective::Support { of: None }
+        );
+        // The four that name no contact are copied.
+        for (objective, expected) in [
+            (Objective::Hold, MindObjective::Hold),
+            (
+                Objective::Advance { to: (3, 4) },
+                MindObjective::Advance { to: (3, 4) },
+            ),
+            (Objective::Withdraw, MindObjective::Withdraw),
+            (
+                Objective::Screen {
+                    facing_mdeg: 90_000,
+                },
+                MindObjective::Screen {
+                    facing_mdeg: 90_000,
+                },
+            ),
+        ] {
+            let rekeyed = arena.rekey_order(WING, &order(objective, None), 0);
+            assert_eq!(rekeyed.objective, expected);
+            assert_eq!(rekeyed.objective.as_str(), objective.as_str());
+            assert_eq!(rekeyed.objective.code(), objective.code());
+        }
+
+        // `frame_order`: a machine under an order reads it re-keyed now; a
+        // piloted hull reads nothing, even with an order on its row.
+        let standing = arena
+            .reflex
+            .order(WING)
+            .cloned()
+            .unwrap_or_else(|| panic!("WING is under red-1's Hold"));
+        assert_eq!(
+            arena.frame_order(WING),
+            Some(arena.rekey_order(WING, &standing.order, standing.expires_ms))
+        );
+        // And `frame_for` carries exactly that — the field 17b cut M1a.5's
+        // `mind_view` reads, wired, not a literal `None`.
+        assert_eq!(
+            arena
+                .frame_for(WING, crate::arena::clock::Tempo::Engaged)
+                .map(|frame| frame.order),
+            Some(Some(arena.rekey_order(
+                WING,
+                &standing.order,
+                standing.expires_ms
+            ))),
+            "the frame's order is frame_order's"
+        );
+        arena.reflex.set_order(PILOT, z2_order(Objective::Withdraw));
+        assert_eq!(
+            arena.unit(PILOT).map(|unit| unit.controller),
+            Some(Controller::Pilot)
+        );
+        assert_eq!(arena.frame_order(PILOT), None, "a pilot's frame says null");
+        // A machine with no order reads none.
+        arena.reflex.drop_to_doctrine(RED, true);
+        assert_eq!(arena.frame_order(RED), None);
     }
 }

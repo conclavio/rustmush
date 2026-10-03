@@ -2774,9 +2774,13 @@ pub fn render_cockpit_weapons_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRow
         // 16b cut I.2: no seat, and a replay open — the shots of this step.
         return replay::weapons_rows(ctx).unwrap_or_default();
     }
-    let Some(weapons) = data.get("weapons").and_then(Value::as_array) else {
-        return PaneRows::default();
-    };
+    // **17b cut M1a.3** (doc 17 §22's italic line): a hull with no weapons
+    // station carries no `weapons` key at all, which is the same statement an
+    // empty list made before it.
+    let weapons = data
+        .get("weapons")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
     if weapons.is_empty() {
         return PaneRows::one("(no weapon)");
     }
@@ -2847,13 +2851,14 @@ pub fn render_cockpit_contacts_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRo
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(format!(
-                    "{}  {:03}{}  {}  {} m  {} s",
+                    "{}  {:03}{}  {}  {} m  {} s{}",
                     clean(contact.get("class").and_then(Value::as_str).unwrap_or("?")),
                     cell_num(contact, "bearing_deg"),
                     degree(ctx.utf8),
                     clean(contact.get("band").and_then(Value::as_str).unwrap_or("?")),
                     contact.get("range_m").and_then(Value::as_u64).unwrap_or(0),
                     contact.get("age_s").and_then(Value::as_i64).unwrap_or(0),
+                    contact_tail(contact),
                 )),
             ]),
             format!("lock {named}"),
@@ -2864,6 +2869,58 @@ pub fn render_cockpit_contacts_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRo
         }
     }
     PaneRows { rows }
+}
+
+/// **The compact tail of one contact row** (17b cut M1a.3; doc 17 §3; the
+/// plan's departure (k)): ` {side} {NN}%` for a row whose `odds` array is not
+/// empty, ` {side}` for every other — one space before each and no weapon name,
+/// because the contacts pane is 46 columns inside at the 120-column floor and
+/// line mode's `  side  cannon 62%` does not fit it.
+///
+/// `side` is the side word of the wire's facet word (`left` and `right` are
+/// `side`); the figure is the FIRST entry of the contact's `odds`, which the
+/// server orders default-weapon-first, so it is the gun line mode quotes. An
+/// unarmed hull's frame carries no `odds` key at all, so every one of its rows
+/// ends at the side word. A frame from an older server carries no `aspect`, and
+/// its rows print as they always did, with no tail.
+///
+/// **The floor-width residual** (declared for 16c, not a defect; the brief fixed
+/// the tail's shape): a row longer than the pane's 46 columns wraps onto a
+/// second pane row, as the pane's scan lines already do. On shipped content
+/// every such row is an `effective` one, whose band word is the longest, at a
+/// three-digit range — so it is a common case in a fight, not a theoretical
+/// one: a `blue` contact seen nose-on with odds (`BA  blue  045°  effective  350
+/// m  2 s front 62%`, 47 columns), a `blue` one with odds and an age of ten
+/// seconds or more (`… 12 s side 62%`, 47), and an `unknown` one with an age of
+/// ten seconds or more (`X3  unknown  315°  effective  200 m  13 s front`, 47).
+/// A `red` contact is one column narrower, so it overflows at `effective` only
+/// seen nose-on with odds and a two-digit age as well; every row at `close`,
+/// `far` or `beyond` fits.
+fn contact_tail(contact: &Value) -> String {
+    let Some(facet) = contact.get("aspect").and_then(Value::as_str) else {
+        return String::new();
+    };
+    let side = match facet {
+        "left" | "right" => "side",
+        "rear" => "rear",
+        _ => "front",
+    };
+    let percent = contact
+        .get("odds")
+        .and_then(Value::as_array)
+        .and_then(|odds| odds.first())
+        .and_then(|first| {
+            first.get("percent").and_then(Value::as_u64).or_else(|| {
+                first
+                    .get("p_permille")
+                    .and_then(Value::as_u64)
+                    .map(|permille| permille / 10)
+            })
+        });
+    match percent {
+        Some(percent) => format!(" {side} {percent}%"),
+        None => format!(" {side}"),
+    }
 }
 
 /// One contact's scan row, or `None` when this platform holds no reading of it.
@@ -6119,5 +6176,105 @@ mod tests {
         assert_eq!(rows(&store, Some((20, 1)), &frame), ["four"]);
         let cleared = serde_json::json!({ "seated": false });
         assert_eq!(rows(&store, Some((20, 4)), &cleared), [NOT_IN_A_COCKPIT]);
+    }
+
+    /// **17b cut M1a.3** (doc 17 §3; departure (k)): the contacts pane's compact
+    /// tail in its two shapes — ` {side} {NN}%` off the first `odds` entry when
+    /// the array is not empty, ` {side}` when it is or is absent — with `left`
+    /// and `right` printed as `side`; and a contact from an older server, with
+    /// no `aspect`, prints the row it always printed.
+    #[test]
+    fn m1a3_a_contact_row_ends_in_the_compact_aspect_and_odds_tail() {
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane: None,
+            picture: None,
+        };
+        let contact = |designator: &str, aspect: Option<&str>, odds: Option<Value>| {
+            let mut row = serde_json::json!({
+                "designator": designator, "class": "blue", "bearing_deg": 45,
+                "band": "far", "range_m": 450, "age_s": 1, "condition": null,
+            });
+            if let Some(aspect) = aspect {
+                row["aspect"] = serde_json::json!(aspect);
+            }
+            if let Some(odds) = odds {
+                row["odds"] = odds;
+            }
+            row
+        };
+        let data = serde_json::json!({
+            "contacts": [
+                contact("BA", Some("left"), Some(serde_json::json!([
+                    { "weapon": "cannon", "p_permille": 624, "percent": 62 },
+                    { "weapon": "machine_gun", "p_permille": 210, "percent": 21 },
+                ]))),
+                contact("BB", Some("rear"), Some(serde_json::json!([]))),
+                contact("BC", Some("right"), None),
+                contact("BD", None, None),
+            ],
+            "scan_tables": [],
+        });
+        let rows = render_cockpit_contacts_rows(&data, &ctx);
+        let text: Vec<String> = rows.rows.iter().map(|row| line_text(&row.line)).collect();
+        assert_eq!(
+            text,
+            vec![
+                "BA  blue  045°  far  450 m  1 s side 62%".to_string(),
+                "BB  blue  045°  far  450 m  1 s rear".to_string(),
+                "BC  blue  045°  far  450 m  1 s side".to_string(),
+                "BD  blue  045°  far  450 m  1 s".to_string(),
+            ]
+        );
+    }
+
+    /// **17b cut M1a.3** (doc 17 §22's italic line): an unarmed hull's frame
+    /// carries no `weapons` key and no contact carries `odds`; the weapons pane
+    /// says `(no weapon)` as it did for an empty list, and every contacts row
+    /// ends at the side word.
+    #[test]
+    fn m1a3_a_frame_without_weapons_renders() {
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane: None,
+            picture: None,
+        };
+        let data = serde_json::json!({
+            "contacts": [{
+                "designator": "X3", "class": "unknown", "bearing_deg": 315,
+                "band": "beyond", "range_m": 200, "age_s": 3, "condition": null,
+                "aspect": "front", "fatal": null,
+            }],
+            "scan_tables": [],
+        });
+        let weapons = render_cockpit_weapons_rows(&data, &ctx);
+        let text: Vec<String> = weapons
+            .rows
+            .iter()
+            .map(|row| line_text(&row.line))
+            .collect();
+        assert_eq!(text, vec!["(no weapon)".to_string()]);
+        let contacts = render_cockpit_contacts_rows(&data, &ctx);
+        let text: Vec<String> = contacts
+            .rows
+            .iter()
+            .map(|row| line_text(&row.line))
+            .collect();
+        assert_eq!(
+            text,
+            vec!["X3  unknown  315°  beyond  200 m  3 s front".to_string()]
+        );
     }
 }

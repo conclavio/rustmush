@@ -1430,7 +1430,12 @@ fn speed_ceiling_cms(units: &[UnitState], min_cost: &[u32; 3]) -> u32 {
 ///
 /// A section the profile does not describe contributes nothing, exactly as
 /// [`crate::arena::damage::entry_consequences`] skips one.
-fn fatal_section_mask(
+///
+/// **17b cut M1a.3** made it `pub(crate)`: a frame's `reads_dead` is computed
+/// over the **target chassis's** definition and profile through this one
+/// function (doc 17 D-UM-5; departure (j)) — content, never the live wreck
+/// flag — and [`fatal_section_words`] names the bits it sets.
+pub(crate) fn fatal_section_mask(
     unit: &mush_tactics::TacticalUnit,
     profile: &crate::arena::resolution::UnitProfile,
 ) -> u32 {
@@ -1453,6 +1458,29 @@ fn fatal_section_mask(
         }
     }
     mask
+}
+
+/// **The section words [`fatal_section_mask`] sets a bit for**, in section order
+/// (17b cut M1a.3; departure (j)): what a frame publishes beside a held reading
+/// as `FrameContact::fatal`, so a pilot reads the rule `reads_dead` applies.
+///
+/// The same walk over the same chassis, truncated the same way: the answer is
+/// the words of exactly the sections whose bits the mask sets, in section order,
+/// so the list and the mask cannot disagree. It is **not** indexed by bit — the
+/// stock tank's answer is `["hull"]`, word 0, for the mask's bit 1 — so a reader
+/// that wants a section's bit tests the mask, and one that wants its word
+/// searches the list.
+pub(crate) fn fatal_section_words(
+    unit: &mush_tactics::TacticalUnit,
+    profile: &crate::arena::resolution::UnitProfile,
+) -> Vec<SmolStr> {
+    let mask = fatal_section_mask(unit, profile);
+    unit.sections()
+        .enumerate()
+        .take(crate::arena::condition::MAX_SCANNED_SECTIONS)
+        .filter(|(index, _)| mask & (1_u32 << index) != 0)
+        .map(|(_, (id, _))| SmolStr::new(id.as_str()))
+        .collect()
 }
 
 /// **What a unit does with heat** (16b cut X.1; doc 16 §9 item 1: *a `heat` cell

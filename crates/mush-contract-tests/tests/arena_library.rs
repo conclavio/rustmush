@@ -775,7 +775,8 @@ const OBSERVER_NAMES: [&str; 4] = [
 /// published on `arena.observer` to watchers only. Doc 16 §1 says a pilot is
 /// told nothing about a unit their platform has not detected, and what keeps
 /// that true is that the two paths never meet: the pilot's frame is built by
-/// `Arena::frames` and rendered by `crates/tacsim/src/match_/cockpit.rs`, whose
+/// `Arena::frames` (through `Arena::frame_for` and `Arena::frame_odds` since 17b
+/// cut M1a.3) and rendered by `crates/tacsim/src/match_/cockpit.rs`, whose
 /// contact rows (`frame_contacts_held`, `ContactRow`, `own_scope`, the lock
 /// reads) live in `crates/tacsim/src/arena/view.rs` since 17b cut M1a.2 — the
 /// row a pilot's `CONTACTS` and, from M1a.5, a mind's view read — and none of
@@ -797,7 +798,10 @@ fn the_observer_has_no_path_into_a_pilot_feed() {
         .unwrap_or_else(|error| panic!("{}: {error}", step_path.display()));
 
     // `Arena::frames`: from its `fn frames(` line to the next `fn ` at the
-    // same indent.
+    // same indent — **17b cut M1a.3** factored the per-pilot build out of it
+    // as `Arena::frame_for` (and its odds as `Arena::frame_odds`), which
+    // follow it in the file, so the slice runs on through those two and ends
+    // at the next function that is neither.
     let lines: Vec<&str> = step.lines().collect();
     let start = lines
         .iter()
@@ -822,6 +826,8 @@ fn the_observer_has_no_path_into_a_pilot_feed() {
                 && (trimmed.starts_with("fn ")
                     || trimmed.starts_with("pub fn ")
                     || trimmed.starts_with("pub(crate) fn "))
+                && !trimmed.starts_with("pub(crate) fn frame_for(")
+                && !trimmed.starts_with("pub fn frame_odds(")
         })
         .map_or(lines.len(), |(n, _)| n);
     let frames_text = lines.get(start..end).unwrap_or_default().join("\n");
@@ -830,6 +836,11 @@ fn the_observer_has_no_path_into_a_pilot_feed() {
         "the slice of step.rs read as `Arena::frames` builds no `Frame`; the scan is reading \
          the wrong place:\n{frames_text}"
     );
+    assert!(
+        frames_text.contains("fn frame_for(") && frames_text.contains("fn frame_odds("),
+        "the slice of step.rs read as `Arena::frames` stops before `frame_for` and \
+         `frame_odds`, which build its frames (17b cut M1a.3); re-point it:\n{frames_text}"
+    );
 
     let mut offences: Vec<String> = Vec::new();
     // Each text with the file line its first line is.
@@ -837,7 +848,7 @@ fn the_observer_has_no_path_into_a_pilot_feed() {
         ("crates/tacsim/src/match_/cockpit.rs", cockpit.as_str(), 1),
         ("crates/tacsim/src/arena/view.rs", view.as_str(), 1),
         (
-            "`Arena::frames` in crates/tacsim/src/arena/step.rs",
+            "`Arena::frames`, `frame_for` and `frame_odds` in crates/tacsim/src/arena/step.rs",
             frames_text.as_str(),
             start + 1,
         ),

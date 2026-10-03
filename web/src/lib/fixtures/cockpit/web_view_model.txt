@@ -13,10 +13,10 @@ right_track  destroyed  0/24  right 0/24
 turret  intact  30/30  top 18/20
 cannon  ready  14/20  62%
 machine_gun  1 s  380/500  21%
-BA  blue  045°  far  450 m  1 s
+BA  blue  045°  far  450 m  1 s  side  cannon 62%
   engine hull left_track/y right_track/r turret/d 
-RB  red  270°  close  100 m  0 s
-X3  unknown  315°  effective  200 m  3 s
-X4  unknown  030°  far  600 m  6 s
+RB  red  270°  close  100 m  0 s  front  cannon 87%
+X3  unknown  315°  effective  200 m  3 s  front  -
+X4  unknown  030°  far  600 m  6 s  rear  -
 X4 new contact
 BA section destroyed: turret

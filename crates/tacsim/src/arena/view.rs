@@ -36,6 +36,11 @@
 //! `crates/tacsim/tests/cockpit.rs::m1a2_the_rows_render_as_before` pins the
 //! move: the fixture scene's four `CONTACTS` rows against literals read before
 //! it, and the brief's contact sentences against `view_brief.txt`.
+//!
+//! **17b cut M1a.3** (doc 17 §3, D-UM-5) grew the row by two columns — the
+//! aspect's side word ([`ContactRow::aspect`]) and the main gun's odds
+//! ([`ContactRow::odds`], an [`OddsCell`]) — so the `CONTACTS` literals of that
+//! test are now the rows with their tails; the brief's sentence did not move.
 
 use std::collections::BTreeMap;
 
@@ -120,7 +125,8 @@ pub fn frame_contacts(frame: &Frame) -> Vec<ContactRow> {
 pub fn frame_contacts_held(frame: &Frame, ranges: &BTreeMap<ContactId, u64>) -> Vec<ContactRow> {
     // 16b cut F.3: the bands of the weapon a bare `FIRE` would fire — the weapon
     // the band word is advice about. Resolved once for the list.
-    let bands: &[u32] = fired_by_default(&frame.weapons).map_or(&[], |weapon| &weapon.bands_cm);
+    let default = fired_by_default(&frame.weapons);
+    let bands: &[u32] = default.map_or(&[], |weapon| &weapon.bands_cm);
     frame
         .contacts
         .iter()
@@ -146,8 +152,40 @@ pub fn frame_contacts_held(frame: &Frame, ranges: &BTreeMap<ContactId, u64>) -> 
             age_ms: held.age_ms,
             cell: held.cell,
             friendly: held.class.team() == Some(frame.team),
+            // 17b cut M1a.3 (doc 17 §3): the side word of the face the plot was
+            // showing, and the main gun's odds off `frame.odds` — the entry for
+            // this row and the weapon a bare `FIRE` would fire, which
+            // `Arena::frame_odds` puts first.
+            aspect: SmolStr::new(held.aspect.side_word()),
+            odds: match default {
+                None => OddsCell::Unarmed,
+                Some(weapon) => frame
+                    .odds
+                    .iter()
+                    .find(|odds| odds.contact == held.id && odds.weapon == weapon.id)
+                    .map_or(OddsCell::Dash, |odds| {
+                        OddsCell::Odds(odds.weapon.clone(), odds.p_permille)
+                    }),
+            },
         })
         .collect()
+}
+
+/// **The odds cell a `CONTACTS` row ends in** (17b cut M1a.3; doc 17 §3).
+///
+/// Three shapes, because a dash and nothing are different statements: a dash
+/// is an armed hull's fire control not resolving the contact (an unclassified
+/// return, or one past the nearest `odds_rows`), and nothing is a hull with no
+/// gun to resolve with — *an unarmed hull's row ends at the aspect*.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OddsCell {
+    /// The hull carries no weapon: the row prints nothing after the aspect.
+    Unarmed,
+    /// An armed hull's row with no odds: the row prints `-`.
+    Dash,
+    /// The main gun's chance: its id and the per mille, printed as
+    /// `{weapon} {percent}%`.
+    Odds(SmolStr, u32),
 }
 
 /// Moved from `match_::cockpit` by 17b cut M1a.2.
@@ -402,6 +440,13 @@ pub struct ContactRow {
     /// Whether the resolved side is the platform's own — what decides the glyph
     /// `VIEW` draws it with. `false` while the contact is `unknown`.
     pub friendly: bool,
+    /// **The side word of the face the contact was showing** (17b cut M1a.3; doc
+    /// 17 §3): `front`, `side` or `rear` —
+    /// [`crate::arena::perception::Aspect::side_word`] of the frame's facet.
+    pub aspect: SmolStr,
+    /// **The main gun's odds against this row** (17b cut M1a.3; doc 17 §3), or
+    /// the dash, or nothing on an unarmed hull — see [`OddsCell`].
+    pub odds: OddsCell,
 }
 
 impl ContactRow {
@@ -411,19 +456,30 @@ impl ContactRow {
     /// **16b cut Q.1** put the short designator where the sixteen digits were,
     /// left-aligned in a column of four so `X2` and `BA` line up with `RAA`:
     /// `BA  blue  bearing 090° (rel 000°)  close  300 m  1 s`.
+    ///
+    /// **17b cut M1a.3** (doc 17 §3) added two columns after the age: the
+    /// aspect's side word, then on an armed hull the main gun's odds or a dash —
+    /// `BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  side  cannon 62%`,
+    /// `…  2 s  side  -` — and on an unarmed hull nothing more: `…  2 s  side`.
     #[must_use]
     pub fn render(&self) -> String {
         // Rendered first: `Designator`'s own `Display` writes straight to the
         // formatter, so a width on it would be ignored.
         let named = self.designator.to_string();
+        let odds = match &self.odds {
+            OddsCell::Unarmed => String::new(),
+            OddsCell::Dash => String::from("  -"),
+            OddsCell::Odds(weapon, permille) => format!("  {weapon} {}%", permille / 10),
+        };
         format!(
-            "{named:<4}{}  bearing {:03}° (rel {:03}°)  {}  {} m  {} s",
+            "{named:<4}{}  bearing {:03}° (rel {:03}°)  {}  {} m  {} s  {}{odds}",
             self.class,
             self.bearing_deg,
             self.relative_deg,
             self.band,
             self.range_m,
-            self.age_ms / 1_000
+            self.age_ms / 1_000,
+            self.aspect,
         )
     }
 
@@ -502,11 +558,15 @@ mod tests {
             age_ms: 2_000,
             cell: Some((4, 4)),
             friendly: false,
+            aspect: SmolStr::new_static("side"),
+            odds: OddsCell::Odds(SmolStr::new_static("cannon"), 624),
         }
     }
 
     // Moved from match_::cockpit by 17b cut M1a.2; proves what it proved.
     /// The row `CONTACTS` prints, and the column the designator sits in.
+    ///
+    /// **17b cut M1a.3**: with the aspect and the odds after the age.
     #[test]
     fn a_contact_row_renders_its_designator_in_a_column_of_four() {
         let slot = Designator::Slot {
@@ -515,14 +575,46 @@ mod tests {
         };
         assert_eq!(
             row(ContactId(7), slot, Some(2)).render(),
-            "BA  blue  bearing 087° (rel 032°)  effective  450 m  2 s"
+            "BA  blue  bearing 087° (rel 032°)  effective  450 m  2 s  side  cannon 62%"
         );
         let mut unknown = row(ContactId(7), Designator::Provisional(12), None);
         unknown.class = SmolStr::new_static("unknown");
+        unknown.odds = OddsCell::Dash;
         assert_eq!(
             unknown.render(),
-            "X12 unknown  bearing 087° (rel 032°)  effective  450 m  2 s"
+            "X12 unknown  bearing 087° (rel 032°)  effective  450 m  2 s  side  -"
         );
+    }
+
+    /// **17b cut M1a.3** (doc 17 §3): the row's three tails — doc 17's own pin
+    /// with the odds, an armed hull's dash, and an unarmed hull's row that ends
+    /// at the aspect.
+    #[test]
+    fn m1a3_the_row_ends_in_the_aspect_and_the_main_guns_odds() {
+        let slot = Designator::Slot {
+            team: crate::arena::state::Team::Blue,
+            slot: 1,
+        };
+        let mut far = row(ContactId(7), slot, None);
+        far.band = SmolStr::new_static("far");
+        assert_eq!(
+            far.render(),
+            "BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  side  cannon 62%"
+        );
+        far.odds = OddsCell::Dash;
+        assert_eq!(
+            far.render(),
+            "BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  side  -"
+        );
+        far.odds = OddsCell::Unarmed;
+        assert_eq!(
+            far.render(),
+            "BA  blue  bearing 087° (rel 032°)  far  450 m  2 s  side"
+        );
+        // The percent is the whole per cent, rounded down as every percent is.
+        far.odds = OddsCell::Odds(SmolStr::new_static("mg"), 9);
+        far.aspect = SmolStr::new_static("rear");
+        assert!(far.render().ends_with("  2 s  rear  mg 0%"));
     }
 
     // Moved from match_::cockpit by 17b cut M1a.2; proves what it proved.

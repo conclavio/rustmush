@@ -459,6 +459,8 @@ fn picture_from_view(view: &Value, side: Side, now: u64) -> Picture {
                 read_ms: now,
                 fixes: Default::default(),
                 track: None,
+                aspect: None,
+                odds_percent: None,
             },
         );
     }
