@@ -53,6 +53,7 @@ use smol_str::SmolStr;
 use tacsim::arena::clock::Tempo;
 use tacsim::arena::intents::{Control, ControlState};
 use tacsim::arena::ledger::LedgerEvent;
+use tacsim::arena::motor::MotorRow;
 use tacsim::arena::perception::{SensorProfile, SignatureFactor};
 use tacsim::arena::reflex::ReflexState;
 use tacsim::arena::rng::{draw_contact_id, stagger_ms};
@@ -479,6 +480,15 @@ fn count(events: &[LedgerEvent], kind: &str) -> usize {
         .count()
 }
 
+/// **The hull's motor row** (17b cut M1a.1): where the driving fields — the
+/// goal, the route, the search, the remembered stops, the waypoint walk — live
+/// since they left the reflex row (`Arena::motors`). A clone, or a default row
+/// when the table holds none for `unit`, which is what the reflex row's own
+/// fields read before the split.
+fn motor(arena: &Arena, unit: ObjId) -> MotorRow {
+    arena.motors.row(unit).cloned().unwrap_or_default()
+}
+
 /// What the controller is doing with `unit`.
 fn state_of(arena: &Arena, unit: ObjId) -> Option<ReflexState> {
     arena.reflex.unit(unit).map(|row| row.state)
@@ -560,10 +570,11 @@ fn a_cold_ai_tank_starts_itself_up_and_then_walks_the_waypoint_graph() {
 
     // It is making for the nearest node — `west`, at (1, 8), four cells away — and
     // it has a route and an order to drive.
-    let row = arena.reflex.unit(RED).cloned().expect("a machine");
-    assert_eq!(row.goal, Some((1, 8)));
-    assert_eq!(row.waypoint, Some(0));
-    assert!(!row.route.is_empty(), "a patrol with a goal has a route");
+    assert!(arena.reflex.unit(RED).is_some(), "a machine");
+    let drive = motor(&arena, RED);
+    assert_eq!(drive.goal, Some((1, 8)));
+    assert_eq!(drive.waypoint, Some(0));
+    assert!(!drive.route.is_empty(), "a patrol with a goal has a route");
     assert_eq!(
         arena.unit(RED).map(|unit| unit.desired_speed_cms),
         Some(1_000),
@@ -577,13 +588,14 @@ fn a_cold_ai_tank_starts_itself_up_and_then_walks_the_waypoint_graph() {
 
     // Given the time to get there, it arrives and takes the graph's other edge.
     run(&mut arena, 40_000, &mut bytes);
-    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    assert!(arena.reflex.unit(RED).is_some(), "a machine");
+    let drive = motor(&arena, RED);
     assert_eq!(
-        (row.waypoint, row.from_waypoint),
+        (drive.waypoint, drive.from_waypoint),
         (Some(1), Some(0)),
         "it reached `west` and set off for `east`"
     );
-    assert_eq!(row.goal, Some((14, 8)));
+    assert_eq!(drive.goal, Some((14, 8)));
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
 }
 
@@ -625,6 +637,7 @@ fn a_classified_hostile_out_of_reach_is_closed_on_to_the_stand_off_cell() {
     run(&mut arena, 5_000, &mut bytes);
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Approach));
     let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    let drive = motor(&arena, RED);
     assert_eq!(row.target.map(|(_, unit)| unit), Some(BLUE));
     // The goal is the stand-off cell, measured from the **plot** back along the
     // line — not the target's own cell.
@@ -638,9 +651,13 @@ fn a_classified_hostile_out_of_reach_is_closed_on_to_the_stand_off_cell() {
     // stand-off band, and the floor is what keeps the goal in front of the
     // machine rather than behind it (16c `B-05`; `stand_off_want`'s own table
     // pins the arithmetic).
-    assert_ne!(row.goal, Some((13, 8)), "it does not drive onto the target");
+    assert_ne!(
+        drive.goal,
+        Some((13, 8)),
+        "it does not drive onto the target"
+    );
     assert_eq!(
-        row.goal,
+        drive.goal,
         Some((12, 8)),
         "the stand-off cell is one cell short of the plot's own"
     );
@@ -693,8 +710,8 @@ fn the_controller_approaches_the_plot_and_not_the_target() {
     run(&mut arena, 5_000, &mut bytes);
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Approach));
     let goal = arena
-        .reflex
-        .unit(RED)
+        .motors
+        .row(RED)
         .and_then(|row| row.goal)
         .unwrap_or_else(|| panic!("a goal"));
 
@@ -709,21 +726,22 @@ fn the_controller_approaches_the_plot_and_not_the_target() {
     }
     run(&mut arena, 7_000, &mut bytes);
     let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    let drive = motor(&arena, RED);
     assert_eq!(
         row.target.map(|(_, unit)| unit),
         Some(BLUE),
         "the contact is still held, which is what makes the plot readable"
     );
     assert_eq!(
-        row.goal,
+        drive.goal,
         Some(goal),
         "the approach goal followed the target instead of holding on the plot"
     );
-    let (gx, gy) = row.goal.unwrap_or((0, 0));
+    let (gx, gy) = drive.goal.unwrap_or((0, 0));
     assert!(
         gx > 4 && gy > 4,
         "the goal moved toward the target's new corner: {:?}",
-        row.goal
+        drive.goal
     );
 }
 
@@ -888,10 +906,11 @@ fn under_the_health_threshold_it_breaks_off_toward_its_own_entry_zone() {
     // It is making for its **own** entry zone — the red one, columns 0 and 1 —
     // and not the blue one it was closing on.
     let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    let drive = motor(&arena, RED);
     assert!(
-        row.goal.is_some_and(|(x, _)| x <= 1),
+        drive.goal.is_some_and(|(x, _)| x <= 1),
         "the goal is in the red entry zone: {:?}",
-        row.goal
+        drive.goal
     );
     assert_eq!(row.target, None, "it gave the target up");
     assert_eq!(
@@ -940,8 +959,9 @@ fn a_wreck_and_a_disabled_tank_order_nothing_at_all() {
     );
     assert_eq!(counters.shots, 0);
     let row = arena.reflex.unit(RED).cloned().expect("a machine");
-    assert_eq!((row.goal, row.target), (None, None));
-    assert!(row.route.is_empty());
+    let drive = motor(&arena, RED);
+    assert_eq!((drive.goal, row.target), (None, None));
+    assert!(drive.route.is_empty());
 
     // The same for a tank that is merely disabled.
     if let Some(state) = arena.unit_mut(RED) {
@@ -1031,18 +1051,19 @@ fn a_tank_held_against_a_band_keeps_or_re_plans_its_route_and_never_gives_up() {
     );
     assert!(
         arena
-            .reflex
-            .unit(RED)
+            .motors
+            .row(RED)
             .is_some_and(|row| !row.route.is_empty()),
         "the run ended with the machine routeless"
     );
     // Whatever happened, the machine never gave up: it is still patrolling toward
     // a goal it has a route to.
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
-    let row = arena.reflex.unit(RED).cloned().expect("a machine");
-    assert!(row.goal.is_some());
+    assert!(arena.reflex.unit(RED).is_some(), "a machine");
+    let drive = motor(&arena, RED);
+    assert!(drive.goal.is_some());
     // And every cell of the route it holds is passable ground.
-    for (x, y) in &row.route {
+    for (x, y) in &drive.route {
         assert!(
             arena
                 .definition
@@ -1100,6 +1121,7 @@ fn a_contact_that_expires_drops_the_machine_back_to_patrol() {
         "the contact should have expired"
     );
     let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    let drive = motor(&arena, RED);
     assert_eq!(row.target, None);
     // **16b cut E.4 (16c `B-04`)**: the state is still `Patrol` and always was,
     // but the **goal** is no longer a node of the waypoint graph. It is the cell
@@ -1108,7 +1130,7 @@ fn a_contact_that_expires_drops_the_machine_back_to_patrol() {
     // walk took over at this tick, and its fixed cycle per unit id could lead
     // the machine directly away from the tank that had just driven over a ridge.
     assert_eq!(
-        row.goal,
+        drive.goal,
         Some((9, 8)),
         "the goal after the `lost` edge is the last plot's own cell"
     );
@@ -1118,8 +1140,9 @@ fn a_contact_that_expires_drops_the_machine_back_to_patrol() {
     run(&mut arena, 40_000, &mut bytes);
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
     let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    let drive = motor(&arena, RED);
     assert_eq!(row.last_plot, None, "arrival ends the search");
-    let goal = row.goal.expect("a patrol has a node to walk to");
+    let goal = drive.goal.expect("a patrol has a node to walk to");
     assert!(
         waypoint_cells().contains(&goal),
         "and the waypoint walk resumes: {goal:?}"
@@ -1176,7 +1199,8 @@ fn a_goal_behind_a_sealed_wall_falls_back_to_the_nearest_waypoint() {
         counters.path_failures > 0,
         "the sealed pocket is unreachable: {counters:?}"
     );
-    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    assert!(arena.reflex.unit(RED).is_some(), "a machine");
+    let drive = motor(&arena, RED);
     // The fallback is a node of the graph, and the machine says so.
     let nodes: Vec<(u16, u16)> = arena
         .definition
@@ -1186,11 +1210,11 @@ fn a_goal_behind_a_sealed_wall_falls_back_to_the_nearest_waypoint() {
         .map(|node| (node.x, node.y))
         .collect();
     assert!(
-        row.goal.is_some_and(|goal| nodes.contains(&goal)),
+        drive.goal.is_some_and(|goal| nodes.contains(&goal)),
         "the goal fell back to a waypoint: {:?} of {nodes:?}",
-        row.goal
+        drive.goal
     );
-    assert!(row.waypoint.is_some());
+    assert!(drive.waypoint.is_some());
 }
 
 /// **The escalation terminates, and it keeps what it learned** (16b cut Q.7).
@@ -1295,8 +1319,8 @@ fn a_sealed_goal_escalates_without_cycling_and_keeps_its_avoided_cells() {
     // number. What the fallback leaves behind is the node it stepped to.
     assert!(
         arena
-            .reflex
-            .unit(RED)
+            .motors
+            .row(RED)
             .is_some_and(|row| row.waypoint.is_some()),
         "the fallback never took"
     );
@@ -1511,7 +1535,7 @@ fn replay_driven(drive: Drive, until_ms: i64) -> (Replay, Vec<i64>, i64) {
                 unit.pose.heading_mdeg,
                 unit.speed_cms,
                 row.map_or(ReflexState::Startup, |row| row.state),
-                row.and_then(|row| row.goal),
+                motor(&arena, unit.id).goal,
             )
         })
         .collect();
@@ -1593,6 +1617,62 @@ fn u1_two_reflex_units_on_the_task_s_own_wakes_are_the_fixed_cadence_replay() {
             "the task driver ran the fixed replay's pulses at a {period} ms period"
         );
     }
+}
+
+/// **17b cut M1a.1's first pin: the motor moved and the hash did not** (the
+/// M1a plan's head, "the production hash"; doc 17 §4, D-UM-3).
+///
+/// The (j) field at a fixed 1,000 ms cadence for 30 s — two reflex machines,
+/// one armed, a seated tank they find and shoot — whose machines' goals,
+/// routes, searches and stops all moved from the reflex rows to
+/// `Arena::motors` in this cut, and whose fold reads them back in the order it
+/// always did (`hash.rs`, item 3). The three numbers were read at `32a1cc23`,
+/// before `arena/motor.rs` existed, off this very replay: the first and the
+/// last per-substep hash and how many there were. 17b cuts M1a.4, M1a.5 and
+/// M1a.6 re-assert them; a pin that moves is a defect in the move, never a
+/// re-bless.
+#[test]
+fn m1a1_the_moved_motor_folds_the_same_bytes() {
+    let run = replay(1_000, 30_000);
+    assert_eq!(run.hashes.len(), 120, "the substeps of 30 s at 250 ms");
+    assert_eq!(
+        run.hashes.first().copied(),
+        Some(0x9da6_3882_e319_aec9),
+        "the first substep's hash moved"
+    );
+    assert_eq!(
+        run.hashes.last().copied(),
+        Some(0xdb4f_9096_c79f_b530),
+        "the last substep's hash moved"
+    );
+}
+
+/// **The doctrine the motor reads is the arena's, on this file's rig** (17b
+/// cut M1a.1; `tests/motor.rs`' `m1a1_the_reflex_config_is_the_arenas` asserts
+/// it on the shipped ground): `Arena::follow` reads `arena_cfg.reflex` where
+/// it read the reflex memory's copy, and under this rig's own non-default
+/// doctrine the two are still one value.
+#[test]
+fn m1a1_the_reflex_config_is_the_arenas_on_this_rig() {
+    assert_ne!(
+        reflex_cfg(),
+        ReflexConfig::default(),
+        "the rig's own doctrine"
+    );
+    let arena = arena_of(
+        vec![tank(
+            RED,
+            Team::Red,
+            centre(6, 8),
+            Vec::new(),
+            Controller::Reflex,
+        )],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[],
+    );
+    assert_eq!(arena.reflex.config(), &arena.arena_cfg.reflex);
+    assert_eq!(arena.arena_cfg.reflex, reflex_cfg());
 }
 
 #[test]
@@ -1745,11 +1825,12 @@ fn a_released_seat_hands_the_tank_to_the_controller_in_withdraw() {
     let start = arena.unit(RED).map(|unit| unit.pose.x_cm).unwrap_or(0);
     run(&mut arena, 16_000, &mut bytes);
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
-    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    assert!(arena.reflex.unit(RED).is_some(), "a machine");
+    let drive = motor(&arena, RED);
     assert!(
-        row.goal.is_some_and(|(x, _)| x <= 1),
+        drive.goal.is_some_and(|(x, _)| x <= 1),
         "the goal is the red entry zone: {:?}",
-        row.goal
+        drive.goal
     );
     assert!(
         arena.unit(RED).is_some_and(|unit| unit.pose.x_cm < start),
@@ -1765,7 +1846,13 @@ fn a_released_seat_hands_the_tank_to_the_controller_in_withdraw() {
         "it rallied once"
     );
 
-    // A reclaimed seat takes it back, and the machine is forgotten.
+    // A reclaimed seat takes it back, and the machine is forgotten — its motor
+    // row with it (17b cut M1a.1: the row is what the motor's readers gate on,
+    // so a stale one would hold, or remember stops for, the pilot's tank).
+    assert!(
+        arena.motors.row(RED).is_some(),
+        "the machine drove from a motor row"
+    );
     let now = arena.now_ms;
     let out = arena.step(
         now,
@@ -1785,6 +1872,10 @@ fn a_released_seat_hands_the_tank_to_the_controller_in_withdraw() {
     );
     assert!(arena.reflex.unit(RED).is_none());
     assert!(
+        arena.motors.row(RED).is_none(),
+        "the reclaimed seat took the motor row back"
+    );
+    assert!(
         !arena
             .due
             .iter()
@@ -1800,8 +1891,8 @@ fn a_released_seat_hands_the_tank_to_the_controller_in_withdraw() {
 /// The cells one unit's machine is avoiding, without their stamps.
 fn avoided(arena: &Arena, unit: ObjId) -> Vec<(u16, u16)> {
     arena
-        .reflex
-        .unit(unit)
+        .motors
+        .row(unit)
         .map(|row| row.avoid.iter().map(|(cell, _)| *cell).collect())
         .unwrap_or_default()
 }
@@ -1932,7 +2023,7 @@ fn a_stop_and_a_shove_are_both_re_planned_within_one_decide_tick() {
         &[BLUE],
     );
     let mut bytes: Vec<u8> = Vec::new();
-    let searched = |arena: &Arena| arena.reflex.unit(RED).and_then(|row| row.searched_ms);
+    let searched = |arena: &Arena| arena.motors.row(RED).and_then(|row| row.searched_ms);
 
     // (a) the stop. The stamp the stop threw away is read from the pulse before
     // it, because `Arena::note_blocked` is applied ahead of the due loop and the
@@ -1981,8 +2072,8 @@ fn a_stop_and_a_shove_are_both_re_planned_within_one_decide_tick() {
     );
     assert!(
         arena
-            .reflex
-            .unit(RED)
+            .motors
+            .row(RED)
             .is_some_and(|row| !row.route.is_empty()),
         "and the route that came out of it"
     );
@@ -2217,8 +2308,8 @@ fn m3_a_machine_held_against_a_wreck_past_the_ttl_still_avoids_its_cell() {
             "still the controller's"
         );
         let stamps: Vec<((u16, u16), i64)> = arena
-            .reflex
-            .unit(RED)
+            .motors
+            .row(RED)
             .map(|row| row.avoid.clone())
             .unwrap_or_default();
         if still_held {
@@ -2983,7 +3074,7 @@ fn replay_with(
                 unit.pose.heading_mdeg,
                 unit.speed_cms,
                 row.map_or(ReflexState::Startup, |row| row.state),
-                row.and_then(|row| row.goal),
+                motor(&arena, unit.id).goal,
             )
         })
         .collect();
@@ -3342,7 +3433,7 @@ fn replay_released_cold(cadence_ms: i64, until_ms: i64) -> Replay {
                 unit.pose.heading_mdeg,
                 unit.speed_cms,
                 row.map_or(ReflexState::Startup, |row| row.state),
-                row.and_then(|row| row.goal),
+                motor(&arena, unit.id).goal,
             )
         })
         .collect();
@@ -3433,11 +3524,12 @@ fn a_released_cold_tank_starts_itself_up_and_stays_in_withdraw() {
         arena.unit(RED).is_some_and(|unit| unit.pose.x_cm < start),
         "it came up and stood still"
     );
-    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    assert!(arena.reflex.unit(RED).is_some(), "a machine");
+    let drive = motor(&arena, RED);
     assert!(
-        row.goal.is_some_and(|(x, _)| x <= 1),
+        drive.goal.is_some_and(|(x, _)| x <= 1),
         "the goal is the red entry zone: {:?}",
-        row.goal
+        drive.goal
     );
     // The black box, tick by tick: the startup is the machine's own — after the
     // release, not the pilot's — and the power comes online exactly
@@ -3621,7 +3713,7 @@ fn e1_with_range_and_no_line_it_closes_on_the_plot() {
         "and it is inside the band, which is what makes this the no-line case: {range} cm"
     );
     assert_eq!(
-        arena.reflex.unit(RED).and_then(|row| row.goal),
+        arena.motors.row(RED).and_then(|row| row.goal),
         Some((10, 8)),
         "the goal is the plot's own cell"
     );
@@ -3705,8 +3797,8 @@ fn e1_it_engages_at_the_band_releases_past_the_reach_and_holds_between_them() {
     assert!(range > RELEASE_CM, "the target is at {range} cm");
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Approach));
     let goal = arena
-        .reflex
-        .unit(RED)
+        .motors
+        .row(RED)
         .and_then(|row| row.goal)
         .expect("a closing machine has a goal");
     let plot = plot_of(&arena, BLUE);
@@ -5201,7 +5293,7 @@ fn y1_replay(cadence_ms: i64, until_ms: i64, issuer: Option<ObjId>) -> (Replay, 
                 unit.pose.heading_mdeg,
                 unit.speed_cms,
                 row.map_or(ReflexState::Startup, |row| row.state),
-                row.and_then(|row| row.goal),
+                motor(&arena, unit.id).goal,
             )
         })
         .collect();
@@ -6270,8 +6362,8 @@ fn a_routeless_machine_is_ordered_to_stop_within_one_substep_of_a_stop() {
     // And the order came through the pilot's own door: the controller counted it.
     assert!(
         arena
-            .reflex
-            .unit(RED)
+            .motors
+            .row(RED)
             .is_some_and(|row| row.route.is_empty() && row.goal.is_some()),
         "the machine was not routeless with a goal, so this is not `B-44`'s case"
     );
@@ -6398,7 +6490,7 @@ fn blue_zone(x0: u16, x1: u16, y0: u16, y1: u16) -> EntryZone {
 
 /// Where the machine is going.
 fn goal_of(arena: &Arena, unit: ObjId) -> Option<(u16, u16)> {
-    arena.reflex.unit(unit).and_then(|row| row.goal)
+    arena.motors.row(unit).and_then(|row| row.goal)
 }
 
 /// The cell it last saw something in, and when.
@@ -7609,7 +7701,7 @@ fn e4_the_arc_at_500() -> Arc {
             arc.searched |= row.state == ReflexState::Patrol
                 && row
                     .last_plot
-                    .is_some_and(|(cell, _)| row.goal == Some(cell));
+                    .is_some_and(|(cell, _)| motor(&arena, RED).goal == Some(cell));
             arc.hunted |= row.hunt.is_some();
             arc.crossed |=
                 arc.hunted && cell_of_unit(&arena, RED).is_some_and(|here| here.0 >= SIDE - 3);
@@ -7814,7 +7906,7 @@ fn e4_t42_a_round_stopped_by_the_ground_re_plans_the_machine() {
 /// The path budget is nought, so the machine never has a route and every step
 /// it takes is a step on a bearing nobody has checked — which is the whole case
 /// the one-cell test exists for. The cell in front of it is then written into
-/// [`ReflexUnit::avoid`] through [`Arena::note_blocked`], the public door the
+/// [`MotorRow::avoid`] through [`Arena::note_blocked`], the public door the
 /// `Blocked` ledger event uses.
 #[test]
 fn e4_t42_a_routeless_machine_holds_at_a_cell_it_was_stopped_at() {
@@ -7836,8 +7928,8 @@ fn e4_t42_a_routeless_machine_holds_at_a_cell_it_was_stopped_at() {
         .expect("the machine is on the window");
     assert!(
         arena
-            .reflex
-            .unit(RED)
+            .motors
+            .row(RED)
             .is_some_and(|row| row.route.is_empty()),
         "with no path budget the machine has no route, which is what makes this the one-cell case"
     );
@@ -8434,8 +8526,8 @@ fn aa1_a_hurt_immobile_machine_stands_and_shoots_back_at_any_health() {
         .and_then(|unit| twin.definition.terrain.cell_of(&unit.pose))
         .expect("the twin is on the window");
     let goal = twin
-        .reflex
-        .unit(RED)
+        .motors
+        .row(RED)
         .and_then(|row| row.goal)
         .expect("a withdrawing machine has somewhere to be");
     assert!(
@@ -10219,9 +10311,10 @@ fn i3_a_placed_machine_re_plans() {
     e4_advance(&mut arena, RED, goal, 600_000);
     let mut bytes: Vec<u8> = Vec::new();
     run(&mut arena, 8_000, &mut bytes);
-    let row = arena.reflex.unit(RED).expect("the machine");
-    assert_eq!(row.goal, Some(goal), "under way to the ordered cell");
-    assert!(!row.route.is_empty(), "with a route");
+    assert!(arena.reflex.unit(RED).is_some(), "the machine");
+    let drive = motor(&arena, RED);
+    assert_eq!(drive.goal, Some(goal), "under way to the ordered cell");
+    assert!(!drive.route.is_empty(), "with a route");
     let (x, y) = arena.index.cell_of_unit(RED).expect("on the window");
     assert!(x > 2, "it has moved off its start: {x}");
     // Twenty cells aside, as the unit's own seat on `helm` would carry it.
@@ -10244,7 +10337,8 @@ fn i3_a_placed_machine_re_plans() {
     absorb(&out, &mut bytes);
     assert_eq!(arena.index.cell_of_unit(RED), Some(aside), "placed");
     let row = arena.reflex.unit(RED).expect("the machine");
-    assert!(row.goal.is_none() && row.route.is_empty() && row.searched_ms.is_none());
+    let drive = motor(&arena, RED);
+    assert!(drive.goal.is_none() && drive.route.is_empty() && drive.searched_ms.is_none());
     assert!(row.order.is_some(), "the order stands");
     // Its next tick searches again.
     let tick = arena.now_ms + 500;
@@ -10254,7 +10348,7 @@ fn i3_a_placed_machine_re_plans() {
         "no search within one decide tick of the place"
     );
     assert_eq!(
-        arena.reflex.unit(RED).and_then(|row| row.goal),
+        arena.motors.row(RED).and_then(|row| row.goal),
         Some(goal),
         "the goal is the order's again"
     );
@@ -10434,11 +10528,15 @@ fn o1_hold_mode_machines_drive_to_the_spot_and_park_inside_the_radius() {
                 .map(|state| (state.pose.x_cm, state.pose.y_cm))
         );
         let row = arena.reflex.unit(unit).cloned().expect("a machine");
+        let drive = motor(&arena, unit);
         assert_eq!(row.state, ReflexState::Patrol);
         let here = arena
             .unit(unit)
             .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
-        assert_eq!(row.goal, here, "{unit} parked: its goal is where it stands");
+        assert_eq!(
+            drive.goal, here,
+            "{unit} parked: its goal is where it stands"
+        );
         assert!(row.hunt.is_none(), "no hunt in a Hold match");
     }
     assert!(first.path_queries > 0, "{first:?}");
@@ -10641,12 +10739,13 @@ fn o1_an_advance_into_the_square_ends_on_arrival() {
     assert!(row.order.is_none(), "the machine is on doctrine");
     // Doctrine's Hold goal parks it inside the square.
     run(&mut arena, 40_000, &mut bytes);
-    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    assert!(arena.reflex.unit(RED).is_some(), "a machine");
+    let drive = motor(&arena, RED);
     let here = arena
         .unit(RED)
         .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
     assert!(o1_inside(&arena, RED));
-    assert_eq!(row.goal, here, "parked where it stands");
+    assert_eq!(drive.goal, here, "parked where it stands");
     assert_eq!(
         arena.unit(RED).map(|state| state.desired_speed_cms),
         Some(0)
@@ -10705,21 +10804,22 @@ fn o1_a_sealed_spot_is_given_up_after_one_search_and_tried_again() {
     let mut bytes: Vec<u8> = Vec::new();
     let early = run(&mut arena, 60_000, &mut bytes);
     assert_eq!(early.path_failures, 1, "one failed search: {early:?}");
-    let row = arena.reflex.unit(RED).cloned().expect("a machine");
-    let given_up = row
+    assert!(arena.reflex.unit(RED).is_some(), "a machine");
+    let drive = motor(&arena, RED);
+    let given_up = drive
         .hold_retry_ms
         .expect("the spot is given up until a retry");
     assert!(
-        row.goal.is_some_and(|goal| nodes(&arena).contains(&goal)),
+        drive.goal.is_some_and(|goal| nodes(&arena).contains(&goal)),
         "the fallback waypoint holds: {:?}",
-        row.goal
+        drive.goal
     );
     let failed_at = given_up - retry;
     assert!(failed_at > 0 && failed_at < 5_000, "failed at {failed_at}");
     let late = run(&mut arena, failed_at + retry + 2_000, &mut bytes);
     assert_eq!(late.path_failures, 1, "one more at the retry: {late:?}");
     assert_eq!(
-        arena.reflex.unit(RED).and_then(|row| row.hold_retry_ms),
+        arena.motors.row(RED).and_then(|row| row.hold_retry_ms),
         Some(failed_at + 2 * retry),
         "given up again for the same stretch"
     );
@@ -10749,24 +10849,28 @@ fn o1_a_sealed_spot_is_given_up_after_one_search_and_tried_again() {
         let out = arena.step(wall, &[], &[]);
         absorb(&out, &mut bytes);
         failures += out.reflex.path_failures;
-        let row = arena.reflex.unit(RED).cloned().expect("a machine");
+        assert!(arena.reflex.unit(RED).is_some(), "a machine");
+        let drive = motor(&arena, RED);
         if out.reflex.path_failures > 0 {
             // The failure fell in this pulse, `(opened, now]`; its retry is
             // `repath_ms` after it.
-            let failed_at = row.hold_retry_ms.map(|until| until - 4_000);
+            let failed_at = drive.hold_retry_ms.map(|until| until - 4_000);
             assert!(
                 failed_at.is_some_and(|at| at >= opened && at <= arena.now_ms),
                 "the retry is not the failure plus `repath_ms`: {:?} in {opened}..{}",
-                row.hold_retry_ms,
+                drive.hold_retry_ms,
                 arena.now_ms
             );
-        } else if row.hold_retry_ms.is_some_and(|until| arena.now_ms < until) {
+        } else if drive
+            .hold_retry_ms
+            .is_some_and(|until| arena.now_ms < until)
+        {
             between += 1;
             assert!(
-                row.goal.is_some_and(|goal| nodes(&arena).contains(&goal)),
+                drive.goal.is_some_and(|goal| nodes(&arena).contains(&goal)),
                 "between two failures the fallback waypoint holds, at {}: {:?}",
                 arena.now_ms,
-                row.goal
+                drive.goal
             );
         }
         wall += 500;
@@ -10941,11 +11045,12 @@ fn o1_an_advance_to_the_squares_edge_hands_over_where_it_stops() {
     );
     run(&mut arena, 45_000, &mut bytes);
     assert!(o1_inside(&arena, RED), "doctrine drove it into the square");
-    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    assert!(arena.reflex.unit(RED).is_some(), "a machine");
+    let drive = motor(&arena, RED);
     let here = arena
         .unit(RED)
         .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
-    assert_eq!(row.goal, here, "parked where it stands");
+    assert_eq!(drive.goal, here, "parked where it stands");
     let log = events(&mut arena, &mut bytes);
     assert_eq!(count(&log, "order_expired"), 1, "one order_expired line");
 }
@@ -11053,7 +11158,7 @@ type O1Retry = (i64, Option<i64>);
 /// **16b cut O.1 (16b §11: mandatory): the Hold machines are one event list and
 /// one hash sequence at 5,000, 1,000 and 500 ms.** `hold_goal`'s park, the
 /// `Advance` handed over on arrival, and the sealed spot's give-up and retry
-/// (`ReflexUnit::hold_retry_ms`, which the hash folds) each happen at an arena
+/// (`MotorRow::hold_retry_ms`, which the hash folds) each happen at an arena
 /// millisecond no cadence can move. Sampled at every 5,000 ms boundary — a
 /// multiple of all three — the two red machines' squares and the sealed
 /// machine's retry clock are the same too, and the arcs really happen.
@@ -11095,7 +11200,7 @@ fn o1_the_hold_machines_are_one_event_list_and_one_hash_sequence_at_three_cadenc
                 if arena.now_ms % 5_000 == 0 {
                     seen.push((
                         arena.now_ms,
-                        arena.reflex.unit(RED).and_then(|row| row.hold_retry_ms),
+                        arena.motors.row(RED).and_then(|row| row.hold_retry_ms),
                     ));
                 }
             },
@@ -11252,8 +11357,9 @@ fn o3_an_inert_target_starts_up_and_searches_nothing() {
     assert_eq!(counters.intents, 1, "the one `STARTUP`, and no other order");
     assert_eq!(state_of(&arena, BLUE), Some(ReflexState::Patrol));
     let row = arena.reflex.unit(BLUE).cloned().expect("a machine");
-    assert_eq!((row.goal, row.target, row.hunt), (None, None, None));
-    assert!(row.route.is_empty() && row.last_plot.is_none());
+    let drive = motor(&arena, BLUE);
+    assert_eq!((drive.goal, row.target, row.hunt), (None, None, None));
+    assert!(drive.route.is_empty() && row.last_plot.is_none());
     let log = events(&mut arena, &mut bytes);
     assert_eq!(count(&log, "startup"), 1);
     assert_eq!(
@@ -11599,11 +11705,12 @@ fn ae3_a_released_drone_patrols_hunts_and_shares_what_it_sees() {
         e4_run_until_state(&mut arena, RED, ReflexState::Withdraw, 5_000, &mut bytes),
         "a hurt drone withdraws like any machine"
     );
-    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    assert!(arena.reflex.unit(RED).is_some(), "a machine");
+    let drive = motor(&arena, RED);
     assert!(
-        row.goal.is_some_and(|(x, _)| x <= 1),
+        drive.goal.is_some_and(|(x, _)| x <= 1),
         "towards its own entry zone: {:?}",
-        row.goal
+        drive.goal
     );
     never_fights(&arena, RED);
 
@@ -12142,15 +12249,16 @@ fn ai1_a_corner_closed_on_both_shoulders_holds_an_unlimited_unit_and_ages_an_avo
         vec![(5, 5)],
         "the machine went past the boundary"
     );
-    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    assert!(arena.reflex.unit(RED).is_some(), "a machine");
+    let drive = motor(&arena, RED);
     assert_eq!(
-        row.route.first().copied(),
+        drive.route.first().copied(),
         Some((6, 6)),
         "the route across the corner is kept: {:?}",
-        row.route
+        drive.route
     );
-    assert!(row.avoid.is_empty());
-    assert_eq!(row.refused, None);
+    assert!(drive.avoid.is_empty());
+    assert_eq!(drive.refused, None);
 
     // The parked tanks. The machine is posed south-east of its cell's centre, so
     // its line to the diagonal enters the east shoulder first. The traffic hold
@@ -12212,8 +12320,8 @@ fn ai1_a_corner_closed_on_both_shoulders_holds_an_unlimited_unit_and_ages_an_avo
     );
     assert_eq!(
         arena
-            .reflex
-            .unit(RED)
+            .motors
+            .row(RED)
             .and_then(|row| row.route.first().copied()),
         Some((6, 6)),
         "and held with its route"
@@ -12429,7 +12537,7 @@ fn ai1_the_orbit_the_corner_and_a_stop_beside_the_route_are_one_log_at_three_cad
         absorb(&out, &mut bytes);
         counters.absorb(&out.reflex);
         for unit in [AI1_ORBIT, AI1_CORNER, AI1_PINCH, AI1_BESIDE] {
-            let stamp = arena.reflex.unit(unit).and_then(|row| row.searched_ms);
+            let stamp = arena.motors.row(unit).and_then(|row| row.searched_ms);
             if stamp.is_some() && stamps.get(&unit).copied().flatten() != stamp {
                 *searches.entry(unit).or_default() += 1;
             }
@@ -12644,13 +12752,14 @@ fn ai1_a_limited_unit_whose_route_comes_back_beside_it_does_not_re_search() {
         absorb(&out, &mut bytes);
         counters.absorb(&out.reflex);
         for unit in [AI1_PINCH, AI1_CORNER] {
-            let row = arena.reflex.unit(unit).cloned().unwrap_or_default();
-            if row.searched_ms.is_some() && stamps.get(&unit).copied().flatten() != row.searched_ms
+            let drive = motor(&arena, unit);
+            if drive.searched_ms.is_some()
+                && stamps.get(&unit).copied().flatten() != drive.searched_ms
             {
                 *searches.entry(unit).or_default() += 1;
-                planned.entry(unit).or_insert_with(|| row.route.clone());
+                planned.entry(unit).or_insert_with(|| drive.route.clone());
             }
-            stamps.insert(unit, row.searched_ms);
+            stamps.insert(unit, drive.searched_ms);
             if let Some(cell) = cell_of_unit(&arena, unit) {
                 let track = tracks.entry(unit).or_default();
                 if track.last() != Some(&cell) {

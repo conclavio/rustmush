@@ -469,8 +469,10 @@ fn state_of(arena: &Arena, unit: ObjId) -> Option<ReflexState> {
     arena.reflex.unit(unit).map(|row| row.state)
 }
 
+/// The goal a machine is driving to — its hull's motor row's since 17b cut
+/// M1a.1.
 fn goal_of(arena: &Arena, unit: ObjId) -> Option<(u16, u16)> {
-    arena.reflex.unit(unit).and_then(|row| row.goal)
+    arena.motors.row(unit).and_then(|motor| motor.goal)
 }
 
 /// **Where `target` actually stands, as a contact's plot** (16b cut F.3).
@@ -952,7 +954,8 @@ fn replay_lance(cadence_ms: i64, until_ms: i64) -> LanceReplay {
                 unit.pose.heading_mdeg,
                 unit.speed_cms,
                 row.map_or(ReflexState::Startup, |row| row.state),
-                row.and_then(|row| row.goal),
+                // 17b cut M1a.1: the goal is the hull's motor row's.
+                arena.motors.row(unit.id).and_then(|motor| motor.goal),
                 row.is_some_and(|row| row.order.is_some()),
             )
         })
@@ -1693,7 +1696,8 @@ fn replay_ordered(cadence_ms: i64, until_ms: i64) -> OrderedReplay {
                 unit.pose.heading_mdeg,
                 unit.speed_cms,
                 row.map_or(ReflexState::Startup, |row| row.state),
-                row.and_then(|row| row.goal),
+                // 17b cut M1a.1: the goal is the hull's motor row's.
+                arena.motors.row(unit.id).and_then(|motor| motor.goal),
                 row.is_some_and(|row| row.order.is_some()),
             )
         })

@@ -70,6 +70,7 @@ use tacsim::arena::clock::Tempo;
 use tacsim::arena::intents::{Control, ControlState, Intent, IntentKind};
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
 use tacsim::arena::motion::BlockedCause;
+use tacsim::arena::motor::Refusal;
 use tacsim::arena::rng::{DrawLabel, draw};
 use tacsim::arena::snapshot::{SNAPSHOT_FORMAT, Snapshot, SnapshotError};
 use tacsim::arena::state::{
@@ -5524,9 +5525,17 @@ fn shape(value: &serde_json::Value, path: &str, out: &mut std::collections::BTre
 /// **Re-blessed by 16b cut AI.1 with `SNAPSHOT_FORMAT` 2**: `ReflexUnit` gained
 /// `searched_from` and `refused`, one `null` line each on the squad arena's four
 /// reflex rows — 378 lines to 386.
-const AF1_SHAPE_DIGEST: &str = "6fddd6157a763098941c4b75a7ddf5f1991c6b41c00feec9a1c2f8f5b0adabb5";
+///
+/// **Re-blessed by 17b cut M1a.1 with `SNAPSHOT_FORMAT` 3**: the nine driving
+/// fields left the reflex rows for `Arena::motors` — nine lines off each of the
+/// squad arena's four reflex rows and `state.reflex.window` and
+/// `state.reflex.spent` gone (38), and `state.motors`, `state.motors.rows`, one
+/// `state.motors.rows.<id>` object with its nine field lines for each of the
+/// four machines `Arena::new` adopts, `state.motors.window` and
+/// `state.motors.spent` come (44) — 386 lines to 392.
+const AF1_SHAPE_DIGEST: &str = "3bf4a9bec92f8985a9773a65ae63657ecb271ea303dfe75c7c1e132c53245d6b";
 /// And how many lines that is.
-const AF1_SHAPE_LINES: usize = 386;
+const AF1_SHAPE_LINES: usize = 392;
 
 /// **The snapshot's shape is pinned** (16b cut AF.1).
 ///
@@ -5538,7 +5547,7 @@ const AF1_SHAPE_LINES: usize = 386;
 /// sighted machines in two squads — its weapons, sensors, reflex rows and squad
 /// rosters are under the pin.*
 ///
-/// *Its limit, read off the 386 lines (a collection empty or an option `None`
+/// *Its limit, read off the 392 lines (a collection empty or an option `None`
 /// at pulse zero leaves one line and none for its element): **not under it**
 /// are the contacts (`ShadowContact`, `SeenPose`, `OwnSighting`, `Reading`),
 /// the designator book's rows, the shots (`Shot`, `Resolution`), the pending
@@ -5550,10 +5559,11 @@ const AF1_SHAPE_LINES: usize = 386;
 /// `lock`, `occupied_hold` (`OccupiedHold`), `thermal`, `jammer`, `eccm`,
 /// `receiver`, `slope_limit_pct`, the profile's bands and sections
 /// (`BandProfile`, `SectionProfile`) and the opaque unit's capabilities,
-/// components and mobility; on a reflex row its route, `avoid`, goal,
-/// waypoints, hunt, target, standing order (`StandingOrder`, `Order`), its
-/// timers and — **16b cut AI.1** — its `searched_from` and its remembered stop
-/// (`refused`, a `Refusal`), both `None` at pulse zero. A field added to or dropped from one of those moves nothing here:
+/// components and mobility; on a reflex row its hunt, target, standing order
+/// (`StandingOrder`, `Order`) and timers; on a motor row (**17b cut M1a.1**,
+/// where they moved from the reflex row) its route, `avoid`, goal, waypoints,
+/// `searched_from` and remembered stop (`refused`, a `Refusal`), all empty or
+/// `None` at pulse zero. A field added to or dropped from one of those moves nothing here:
 /// the format is then the author's to bump and the reviewer's to see, and a
 /// stale document is refused as `Malformed` — a missing field by the derive, a
 /// surplus one by `deny_unknown_fields` on the carried types — rather than by
@@ -5577,13 +5587,134 @@ fn af1_the_snapshot_shape_is_pinned() {
         tacsim::arena::snapshot::digest_text(&sha2::Sha256::digest(joined.as_bytes()).into());
     assert_eq!(
         tacsim::arena::snapshot::SNAPSHOT_FORMAT,
-        2,
+        3,
         "a format bump re-blesses the pin below in the same change"
     );
     assert_eq!(
         (digest.as_str(), lines.len()),
         (AF1_SHAPE_DIGEST, AF1_SHAPE_LINES),
         "the snapshot's shape moved: bump SNAPSHOT_FORMAT and re-bless.\n{joined}"
+    );
+}
+
+/// **17b cut M1a.1: a snapshot carries the motor table, and a format-2
+/// document is refused by name** (doc 17 §4, D-UM-3; `snapshot.rs`'
+/// `SNAPSHOT_FORMAT` 3).
+///
+/// The squad arena's four machines are stepped through the squad script; they
+/// hold their ground on that window, so the mover's motor row is then written
+/// by hand, all nine fields of it — a remembered stop (`Refusal`) included —
+/// so the round trip carries something. The document's state carries
+/// `motors.rows` keyed by those four units and the reflex rows carry none of
+/// the nine driving fields; the decode hands back the same table (its scratch,
+/// which is not state, aside), the written row field for field, and the same
+/// hash. The same document stamped `"format": 2` — what every snapshot
+/// written before this cut says — is refused as `Format { found: 2, expected:
+/// 3 }` by both the head read and the decode, before a field of its state is
+/// read: 16b cut AF.3's boot reads the head first (`match_::resume`'s `check`)
+/// and voids a match whose snapshot it refuses by name, through the same
+/// `ResumeRefusal::Snapshot` arm `crates/mushd/tests/arena_custody.rs`'
+/// `a_restart_mid_match_voids_a_match_whose_snapshot_is_wrong` pins for a
+/// refused decode.
+#[test]
+fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut arena = af1_squad_arena();
+    let _ = replay_on_from(
+        &mut arena,
+        &mut (0..=4).map(|pulse| pulse * 5_000),
+        20_000,
+        &af1_squad_script(),
+        0,
+        &quiet,
+    );
+    // A row driving somewhere, all nine of its fields written (the remembered
+    // stop too), so the round trip below is a round trip of something: the
+    // squad's machines hold their ground on this window, so the drive is
+    // written by hand, exactly as the reflex controller's own fields are by
+    // its unit tests.
+    let Some(motor) = arena.motors.row_mut(MOVER) else {
+        panic!("the mover's motor row, laid down at check-out");
+    };
+    motor.goal = Some((9, 9));
+    motor.route = vec![(6, 6), (7, 7)];
+    motor.searched_ms = Some(19_000);
+    motor.searched_from = Some((5, 5));
+    motor.avoid = vec![((6, 5), 18_000)];
+    motor.waypoint = Some(1);
+    motor.from_waypoint = Some(0);
+    motor.hold_retry_ms = Some(40_000);
+    motor.refused = Some(Refusal {
+        at: (5, 5),
+        cell: (6, 6),
+        cause: BlockedCause::Impassable,
+        goal: (9, 9),
+        until_ms: 48_000,
+    });
+
+    let snapshot = Snapshot::encode(&arena).expect("the arena encodes");
+    let state = state_of(&snapshot);
+    let rows = state
+        .get("motors")
+        .and_then(|motors| motors.get("rows"))
+        .and_then(serde_json::Value::as_object)
+        .expect("the state carries the motor rows");
+    let keys: Vec<&str> = rows.keys().map(String::as_str).collect();
+    assert_eq!(keys, ["10", "4", "5", "9"], "one row per machine, by unit");
+    let reflex_rows = state
+        .get("reflex")
+        .and_then(|reflex| reflex.get("units"))
+        .and_then(serde_json::Value::as_object)
+        .expect("the reflex rows");
+    for (unit, row) in reflex_rows {
+        for moved in [
+            "goal",
+            "route",
+            "searched_ms",
+            "searched_from",
+            "avoid",
+            "refused",
+            "waypoint",
+            "from_waypoint",
+            "hold_retry_ms",
+        ] {
+            assert!(
+                row.get(moved).is_none(),
+                "reflex row {unit} still carries `{moved}`"
+            );
+        }
+    }
+
+    let decoded = Snapshot::decode(&snapshot.document, arena.definition.clone())
+        .expect("the document decodes");
+    // The table, as the document carries it (its scratch, which is not state
+    // and is sized by the first search after a resume, aside).
+    assert_eq!(
+        serde_json::to_value(&decoded.motors).ok(),
+        serde_json::to_value(&arena.motors).ok(),
+        "the table came back"
+    );
+    assert_eq!(
+        decoded.motors.row(MOVER),
+        arena.motors.row(MOVER),
+        "the written row came back field for field"
+    );
+    assert_eq!(
+        tacsim::arena::hash::state_hash(&decoded),
+        tacsim::arena::hash::state_hash(&arena)
+    );
+
+    let mut two = snapshot.document.clone();
+    two["format"] = serde_json::json!(2);
+    let refused = SnapshotError::Format {
+        found: 2,
+        expected: SNAPSHOT_FORMAT,
+    };
+    assert_eq!(SNAPSHOT_FORMAT, 3);
+    assert_eq!(Snapshot::head(&two), Err(refused.clone()));
+    assert_eq!(
+        Snapshot::decode(&two, arena.definition.clone()).map(|_| ()),
+        Err(refused)
     );
 }
 

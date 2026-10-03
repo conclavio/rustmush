@@ -1191,8 +1191,8 @@ impl Arena {
             .unit(target)
             .is_some_and(|state| state.controller == Controller::Reflex)
         {
-            self.reflex
-                .adopt(target, crate::arena::reflex::ReflexState::Disabled);
+            // 17b cut M1a.1: the machine and its motor row, as one adoption.
+            self.adopt_reflex(target, crate::arena::reflex::ReflexState::Disabled);
         }
         journal.push((
             t_ms,

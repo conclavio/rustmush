@@ -152,6 +152,12 @@
 //! is a deviation from 16b §8's cut N row with a reason the same row gives:
 //! [`crate::arena::reflex`]'s module head has it in full.
 //!
+//! **17b cut M1a.1** split the driving half out (doc 17 §4, D-UM-3):
+//! [`crate::arena::motor`] owns the route, the search and its budget, the
+//! follower and the remembered stops, one [`crate::arena::motor::MotorRow`]
+//! per steered hull on [`crate::arena::state::Arena::motors`], and the reflex
+//! controller decides the goal it drives to.
+//!
 //! # Cut X.6: elevation, and the one slope rule
 //!
 //! [`crate::arena::slope`] is doc 16 §9 item 6's second half. The heightfield itself was
@@ -225,6 +231,7 @@ pub mod index;
 pub mod intents;
 pub mod ledger;
 pub mod motion;
+pub mod motor;
 pub mod observer;
 pub mod path;
 pub mod perception;
@@ -263,6 +270,7 @@ pub use intents::{
 };
 pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, LedgerFull};
 pub use motion::{Held, MotionOutcome, cos_fx, integrate, sin_fx};
+pub use motor::{Fallback, MotorOutcome, MotorPlan, MotorRow, MotorTable};
 pub use observer::{Observer, ObserverUnit};
 pub use path::{PathFailure, PathResult, PathScratch, min_move_cost, path_with};
 pub use perception::{

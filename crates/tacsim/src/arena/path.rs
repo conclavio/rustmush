@@ -417,7 +417,7 @@ pub fn path(
 /// identity on level ground, so [`path`] is exactly what it was.
 ///
 /// **The `avoid` list** (16b cut Q.7): cells this caller has been *stopped at*
-/// and will not try again — [`crate::arena::reflex::ReflexUnit::avoid`], fed by
+/// and will not try again — [`crate::arena::motor::MotorRow::avoid`], fed by
 /// the `Blocked` ledger event's own `Occupied` cause (true since 16b cut M.3,
 /// which put the cause on the event and made the event, the pilot's notice and
 /// this list one edge of `held`; the tick keeps a cell the unit is still held

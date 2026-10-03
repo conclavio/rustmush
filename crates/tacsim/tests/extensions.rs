@@ -9815,7 +9815,8 @@ fn ae1_the_bluff_refuses_a_tank_and_a_car_and_admits_a_walker_on_the_shipped_gro
         "the machine got onto the top: {cell:?} at {z} cm"
     );
     assert_eq!(
-        arena.reflex.unit(RED).map(|row| row.avoid.is_empty()),
+        // 17b cut M1a.1: the avoid list is the hull's motor row's.
+        arena.motors.row(RED).map(|motor| motor.avoid.is_empty()),
         Some(true),
         "a slope teaches the avoid list nothing"
     );
@@ -9905,10 +9906,11 @@ fn ae1_a_machine_walker_and_a_machine_car_steer_on_their_own_rows_at_every_caden
             assert_eq!(arena.unit(RED).map(|unit| unit.cost_row), Some(row));
             let run = relief_replay(&mut arena, RED, cadence, UNTIL, &[]);
             assert_eq!(arena.now_ms, UNTIL, "cadence {cadence} ran short");
+            // 17b cut M1a.1: the avoid list is the hull's motor row's.
             let avoid_empty = arena
-                .reflex
-                .unit(RED)
-                .is_some_and(|machine| machine.avoid.is_empty());
+                .motors
+                .row(RED)
+                .is_some_and(|motor| motor.avoid.is_empty());
             runs.push((cadence, run, standing(&arena, RED).0, avoid_empty));
         }
         let Some((_, first, cell, avoid_empty)) = runs.first() else {

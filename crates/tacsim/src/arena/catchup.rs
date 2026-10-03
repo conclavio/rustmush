@@ -67,6 +67,7 @@ use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+use crate::arena::motor::MotorRow;
 use crate::arena::reflex::ReflexUnit;
 use crate::arena::state::{Arena, ContactId, Designator, Power};
 
@@ -125,12 +126,13 @@ pub struct MachineWords {
 }
 
 impl MachineWords {
-    /// The words of one reflex row.
+    /// The words of one reflex row, and of its hull's motor row — where the
+    /// goal has lived since 17b cut M1a.1 (`None` when the table holds none).
     #[must_use]
-    pub fn of(row: &ReflexUnit) -> MachineWords {
+    pub fn of(row: &ReflexUnit, motor: Option<&MotorRow>) -> MachineWords {
         MachineWords {
             state: SmolStr::new_static(row.state.as_str()),
-            goal: row.goal,
+            goal: motor.and_then(|motor| motor.goal),
             objective: row
                 .order
                 .as_ref()
@@ -337,7 +339,10 @@ impl Arena {
         if !reseated {
             return;
         }
-        let machine = self.reflex.unit(unit).map(MachineWords::of);
+        let machine = self
+            .reflex
+            .unit(unit)
+            .map(|row| MachineWords::of(row, self.motors.row(unit)));
         let catchup = self.catchup_since(unit, &then, machine);
         self.pending_catchup.insert(pilot, catchup);
     }
@@ -854,17 +859,28 @@ mod tests {
             Some(1_000)
         );
         assert!(!arena.pilots.iter().any(|seat| seat.pilot == PILOT));
-        let machine = arena.reflex.unit(RED).map(MachineWords::of);
+        let machine = arena
+            .reflex
+            .unit(RED)
+            .map(|row| MachineWords::of(row, arena.motors.row(RED)));
         assert_eq!(
             machine.as_ref().map(|words| words.state.as_str()),
             Some("withdraw"),
             "a released tank goes to the machine in Withdraw"
+        );
+        assert!(
+            arena.motors.row(RED).is_some(),
+            "and the machine is laid a motor row to drive from"
         );
         arena.now_ms = 9_500;
         for control in every_channel(3, ControlState::Live) {
             apply_control(&mut arena, &control);
         }
         assert!(arena.reflex.unit(RED).is_none(), "the row is released");
+        assert!(
+            arena.motors.row(RED).is_none(),
+            "the motor row is released with it (17b cut M1a.1)"
+        );
         assert!(arena.at_release.is_empty(), "the snapshot is spent");
         let report = arena
             .pending_catchup

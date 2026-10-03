@@ -778,6 +778,9 @@ fn release_order(
     let at = arena.now_ms;
     let hash = arena.event_hash();
     arena.reflex.drop_to_doctrine(unit, health_ok);
+    // 17b cut M1a.1: the goal, the route and the remembered stop are the hull's
+    // motor row's — the other half of the one restoration.
+    arena.motors.forget_goal(unit);
     let _ = arena.ledger.append(
         at,
         EventKind::OrderReleased {
@@ -2321,7 +2324,7 @@ mod tests {
             if let Some(state) = arena.unit_mut(unit) {
                 state.controller = Controller::Reflex;
             }
-            arena.reflex.adopt(unit, ReflexState::Patrol);
+            arena.adopt_reflex(unit, ReflexState::Patrol);
             arena
                 .reflex
                 .set_order(unit, z2_order(crate::deliberation::order::Objective::Hold));
@@ -2510,7 +2513,7 @@ mod tests {
             "the fixture is hurt"
         );
         for unit in [RED, WING] {
-            arena.reflex.adopt(unit, ReflexState::Withdraw);
+            arena.adopt_reflex(unit, ReflexState::Withdraw);
             arena.reflex.set_order(
                 unit,
                 z2_order(crate::deliberation::order::Objective::Withdraw),
@@ -2519,16 +2522,24 @@ mod tests {
         // A goal, a route and a target written onto the healthy machine after
         // `adopt` (which clears the first two on its own), so the assertion
         // below reads what the release dropped and not what was never there.
+        // 17b cut M1a.1: the goal and the route on the motor row, the target on
+        // the machine's.
+        if let Some(motor) = arena.motors.row_mut(RED) {
+            motor.goal = Some((1, 1));
+            motor.route = vec![(2, 2), (1, 1)];
+        }
         if let Some(row) = arena.reflex.unit_mut(RED) {
-            row.goal = Some((1, 1));
-            row.route = vec![(2, 2), (1, 1)];
             row.target = Some((crate::arena::state::ContactId(1), BLUE));
         }
-        assert_eq!(
+        let read = |arena: &Arena| {
+            let motor = arena.motors.row(RED).cloned().unwrap_or_default();
             arena
                 .reflex
                 .unit(RED)
-                .map(|row| (row.goal, row.route.len(), row.target.is_some())),
+                .map(|row| (motor.goal, motor.route.len(), row.target))
+        };
+        assert_eq!(
+            read(&arena).map(|(goal, route, target)| (goal, route, target.is_some())),
             Some((Some((1, 1)), 2, true)),
             "the fixture's machine is going somewhere after something"
         );
@@ -2545,10 +2556,7 @@ mod tests {
         let state = |arena: &Arena, unit| arena.reflex.unit(unit).map(|row| row.state);
         assert_eq!(state(&arena, RED), Some(ReflexState::Patrol));
         assert_eq!(
-            arena
-                .reflex
-                .unit(RED)
-                .map(|row| (row.goal, row.route.len(), row.target)),
+            read(&arena),
             Some((None, 0, None)),
             "the goal, the route and the target go with the order"
         );

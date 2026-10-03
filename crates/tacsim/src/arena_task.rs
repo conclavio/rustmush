@@ -1959,9 +1959,7 @@ mod tests {
             if let Some(state) = arena.unit_mut(RED) {
                 state.controller = crate::arena::state::Controller::Reflex;
             }
-            arena
-                .reflex
-                .adopt(RED, crate::arena::reflex::ReflexState::Patrol);
+            arena.adopt_reflex(RED, crate::arena::reflex::ReflexState::Patrol);
             // The machine already stands under the squad's `Engage`.
             arena.reflex.set_order(
                 RED,

@@ -2656,7 +2656,7 @@ impl Arena {
     /// heading kept; speed, desired speed and the motion carries go to nought;
     /// the hold, the traffic hold, `blocked` and `grade_pct` are cleared; the
     /// index moves the unit (rebuilt whole when it stood off the window); and a
-    /// machine forgets its route ([`crate::arena::reflex::ReflexMemory::forget_route`])
+    /// machine forgets its route ([`crate::arena::motor::MotorTable::forget_route`])
     /// so it re-plans at its next tick. **No contact is dropped**: a contact id
     /// and its designator are drawn once per (viewer, target) for the whole
     /// match (`draw_contact_id`, `DesignatorBook::assign`), so a drop could mint
@@ -2723,7 +2723,7 @@ impl Arena {
             Some(from) => self.index.move_unit(unit, from, (x, y)),
             None => self.index.rebuild(&self.definition.terrain, &self.units),
         }
-        self.reflex.forget_route(unit);
+        self.motors.forget_route(unit);
         let (from_x, from_y) = from.unwrap_or((u16::MAX, u16::MAX));
         let _ = self.journal(
             at_ms,

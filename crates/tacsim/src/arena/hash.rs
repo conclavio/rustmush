@@ -137,6 +137,35 @@ thread_local! {
 ///    refused cell's two `u16` each, the cause's code byte, the goal's two
 ///    `u16` and the `i64` it lapses at) — decisions with no line of their own
 ///    that gate a later search, the O.1 argument once more.
+///
+///    **Since 17b cut M1a.1** (doc 17 §4, D-UM-3) the goal, the waypoint, the
+///    route, the avoided cells, `hold_retry_ms`, `searched_from` and `refused`
+///    are read off the hull's [`crate::arena::motor::MotorRow`] on
+///    [`Arena::motors`] — a row the table does not hold folding as
+///    `MotorRow::default()`, which is exactly what a fresh reflex row's own
+///    fields folded (`u16::MAX` twice for no goal, `u16::MAX` for no waypoint, a
+///    `0` route length and avoid count, `[0]` for each absent stamp, cell and
+///    stop) — in the order above, interleaved with the machine's own fields as
+///    they always were. So a reflex row folds the bytes it folded before the
+///    split, which two constants read at `32a1cc23` pin
+///    (`crates/tacsim/tests/reflex.rs`'
+///    `m1a1_the_moved_motor_folds_the_same_bytes`,
+///    `crates/tacsim/tests/motor.rs`' `m1a1_the_shipped_duel_hashes_as_before`).
+///
+///    **Item 3b, the motor rows of hulls with no machine** (17b cut M1a.1),
+///    is folded right after the last of them: after the
+///    reflex machines, every motor row whose unit has **no** reflex row — a
+///    pilot's `DRIVE` (17b cut M1a.4) or a mind's (M1a.5) — in unit-id order:
+///    the unit's `u32`, the goal's two `u16` (`u16::MAX` twice for none), the
+///    waypoint as `u16` (`u16::MAX` for none), the route's length as `u64`, the
+///    avoided cells (their count as `u64`, then per entry the cell's two `u16`
+///    and the `i64` stamp), `hold_retry_ms` (a presence byte then an `i64`),
+///    `searched_from` and `refused` — each in item 3's own encoding. Per row and
+///    with **no count prefix**, so an arena with no such row — every match this
+///    cut can field — adds no byte at all, and the hash of every existing match
+///    is unmoved. A goal is a decision that reaches a pose only substeps later,
+///    which is the whole reason item 3 folds one; a hull steered by something
+///    other than the reflex controller is folded for the same reason.
 /// 4. **The shadow contact store** (16b cut S.1), in its own iteration order —
 ///    viewer object number ascending, then contact id ascending, which is what
 ///    the two `BTreeMap`s give: per contact the viewer's `u32`, the contact id's
@@ -590,14 +619,22 @@ pub fn state_hash(arena: &Arena) -> u64 {
         hash = fnv1a64_update(hash, &at_ms.to_le_bytes());
     }
     // 16b cut N.1: the controller's own machines, in unit-id order.
+    //
+    // **17b cut M1a.1**: the driving fields are the motor row's now, read back
+    // here in the order this loop always folded them; a unit the table holds no
+    // row for folds a default row, which is what its own fields folded before
+    // the split (item 3). Borrowed, not cloned: a hash is taken every substep
+    // and a route is a vector, and an empty default allocates nothing.
+    let fresh = crate::arena::motor::MotorRow::default();
     for (unit, row) in arena.reflex.rows() {
+        let motor = arena.motors.row(*unit).unwrap_or(&fresh);
         hash = fnv1a64_update(hash, &unit.0.to_le_bytes());
         hash = fnv1a64_update(hash, &[row.state.code()]);
-        let (gx, gy) = row.goal.unwrap_or((u16::MAX, u16::MAX));
+        let (gx, gy) = motor.goal.unwrap_or((u16::MAX, u16::MAX));
         hash = fnv1a64_update(hash, &gx.to_le_bytes());
         hash = fnv1a64_update(hash, &gy.to_le_bytes());
-        hash = fnv1a64_update(hash, &row.waypoint.unwrap_or(u16::MAX).to_le_bytes());
-        hash = fnv1a64_update(hash, &(row.route.len() as u64).to_le_bytes());
+        hash = fnv1a64_update(hash, &motor.waypoint.unwrap_or(u16::MAX).to_le_bytes());
+        hash = fnv1a64_update(hash, &(motor.route.len() as u64).to_le_bytes());
         hash = fnv1a64_update(
             hash,
             &row.target
@@ -650,12 +687,7 @@ pub fn state_hash(arena: &Arena) -> u64 {
         // at an arena timestamp, so two cadences of one scripted match fold the
         // same bytes — and a replay whose tank has already rallied must not
         // compare equal to one that has not.
-        hash = fnv1a64_update(hash, &(row.avoid.len() as u64).to_le_bytes());
-        for ((x, y), at_ms) in &row.avoid {
-            hash = fnv1a64_update(hash, &x.to_le_bytes());
-            hash = fnv1a64_update(hash, &y.to_le_bytes());
-            hash = fnv1a64_update(hash, &at_ms.to_le_bytes());
-        }
+        hash = fold_avoid(hash, &motor.avoid);
         hash = fold_stamp(hash, row.stand_until_ms);
         hash = fold_stamp(hash, row.quiet_since_ms);
         hash = fnv1a64_update(hash, &[u8::from(row.rallied)]);
@@ -688,35 +720,32 @@ pub fn state_hash(arena: &Arena) -> u64 {
         // **16b cut O.1**: when a Hold spot no route reached may be tried again —
         // a decision the controller made, written and read at arena timestamps,
         // exactly as the hunt's clock beside it is.
-        hash = fold_stamp(hash, row.hold_retry_ms);
+        hash = fold_stamp(hash, motor.hold_retry_ms);
         // **16b cut AI.1** (16c `B-84`): the cell the last search started from,
         // and the stop the machine remembers. Neither has a line of its own, and
         // each gates a later search — `searched_from` whether a refusal is
         // recorded, `refused` whether a search is spent — so each would reach a
         // pose several substeps after the decision. Written at the tick's `t_ms`
         // or the `blocked` line's own millisecond, read at a tick.
-        match row.searched_from {
-            Some((x, y)) => {
-                hash = fnv1a64_update(hash, &[1_u8]);
-                hash = fnv1a64_update(hash, &x.to_le_bytes());
-                hash = fnv1a64_update(hash, &y.to_le_bytes());
-            }
-            None => hash = fnv1a64_update(hash, &[0_u8]),
+        hash = fold_search(hash, motor);
+    }
+    // **17b cut M1a.1** (item 3b): the motor rows of hulls the controller is not
+    // flying — a pilot's `DRIVE`, a mind's — in unit-id order, each in item 3's
+    // own encoding and with no count prefix, so a table that holds none (every
+    // match before M1a.4) folds no byte here.
+    for (unit, motor) in arena.motors.rows() {
+        if arena.reflex.unit(unit).is_some() {
+            continue;
         }
-        match row.refused {
-            Some(refusal) => {
-                hash = fnv1a64_update(hash, &[1_u8]);
-                hash = fnv1a64_update(hash, &refusal.at.0.to_le_bytes());
-                hash = fnv1a64_update(hash, &refusal.at.1.to_le_bytes());
-                hash = fnv1a64_update(hash, &refusal.cell.0.to_le_bytes());
-                hash = fnv1a64_update(hash, &refusal.cell.1.to_le_bytes());
-                hash = fnv1a64_update(hash, &[refusal.cause.code()]);
-                hash = fnv1a64_update(hash, &refusal.goal.0.to_le_bytes());
-                hash = fnv1a64_update(hash, &refusal.goal.1.to_le_bytes());
-                hash = fnv1a64_update(hash, &refusal.until_ms.to_le_bytes());
-            }
-            None => hash = fnv1a64_update(hash, &[0_u8]),
-        }
+        hash = fnv1a64_update(hash, &unit.0.to_le_bytes());
+        let (gx, gy) = motor.goal.unwrap_or((u16::MAX, u16::MAX));
+        hash = fnv1a64_update(hash, &gx.to_le_bytes());
+        hash = fnv1a64_update(hash, &gy.to_le_bytes());
+        hash = fnv1a64_update(hash, &motor.waypoint.unwrap_or(u16::MAX).to_le_bytes());
+        hash = fnv1a64_update(hash, &(motor.route.len() as u64).to_le_bytes());
+        hash = fold_avoid(hash, &motor.avoid);
+        hash = fold_stamp(hash, motor.hold_retry_ms);
+        hash = fold_search(hash, motor);
     }
     for (viewer, id, held) in arena.contacts.all() {
         hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
@@ -803,6 +832,51 @@ pub fn state_hash(arena: &Arena) -> u64 {
                 }
                 None => hash = fnv1a64_update(hash, &[0_u8]),
             }
+        }
+        None => hash = fnv1a64_update(hash, &[0_u8]),
+    }
+    hash
+}
+
+/// **A motor row's avoided cells** (16b cut Q.7's encoding; one function since
+/// 17b cut M1a.1 so items 3 and 3b cannot fold them differently): their count as
+/// `u64`, then per entry the cell's two `u16` and the stop's `i64` stamp.
+fn fold_avoid(mut hash: u64, avoid: &[((u16, u16), i64)]) -> u64 {
+    hash = fnv1a64_update(hash, &(avoid.len() as u64).to_le_bytes());
+    for ((x, y), at_ms) in avoid {
+        hash = fnv1a64_update(hash, &x.to_le_bytes());
+        hash = fnv1a64_update(hash, &y.to_le_bytes());
+        hash = fnv1a64_update(hash, &at_ms.to_le_bytes());
+    }
+    hash
+}
+
+/// **A motor row's search start and remembered stop** (16b cut AI.1's encoding;
+/// one function since 17b cut M1a.1 so items 3 and 3b cannot fold them
+/// differently): `searched_from` as a presence byte then the cell's two `u16`,
+/// and `refused` as `[0]` alone for none, else `[1]`, the stand cell's and the
+/// refused cell's two `u16` each, the cause's code byte, the goal's two `u16`
+/// and the `i64` it lapses at.
+fn fold_search(mut hash: u64, motor: &crate::arena::motor::MotorRow) -> u64 {
+    match motor.searched_from {
+        Some((x, y)) => {
+            hash = fnv1a64_update(hash, &[1_u8]);
+            hash = fnv1a64_update(hash, &x.to_le_bytes());
+            hash = fnv1a64_update(hash, &y.to_le_bytes());
+        }
+        None => hash = fnv1a64_update(hash, &[0_u8]),
+    }
+    match motor.refused {
+        Some(refusal) => {
+            hash = fnv1a64_update(hash, &[1_u8]);
+            hash = fnv1a64_update(hash, &refusal.at.0.to_le_bytes());
+            hash = fnv1a64_update(hash, &refusal.at.1.to_le_bytes());
+            hash = fnv1a64_update(hash, &refusal.cell.0.to_le_bytes());
+            hash = fnv1a64_update(hash, &refusal.cell.1.to_le_bytes());
+            hash = fnv1a64_update(hash, &[refusal.cause.code()]);
+            hash = fnv1a64_update(hash, &refusal.goal.0.to_le_bytes());
+            hash = fnv1a64_update(hash, &refusal.goal.1.to_le_bytes());
+            hash = fnv1a64_update(hash, &refusal.until_ms.to_le_bytes());
         }
         None => hash = fnv1a64_update(hash, &[0_u8]),
     }
@@ -1564,11 +1638,9 @@ mod tests {
 
         // A machine's hold retry.
         let mut machine = two_tanks();
-        machine
-            .reflex
-            .adopt(ObjId(4), crate::arena::reflex::ReflexState::Patrol);
+        machine.adopt_reflex(ObjId(4), crate::arena::reflex::ReflexState::Patrol);
         let adopted = state_hash(&machine);
-        if let Some(row) = machine.reflex.unit_mut(ObjId(4)) {
+        if let Some(row) = machine.motors.row_mut(ObjId(4)) {
             row.hold_retry_ms = Some(90_000);
         }
         assert_ne!(
@@ -1576,7 +1648,7 @@ mod tests {
             adopted,
             "`hold_retry_ms` went unhashed"
         );
-        if let Some(row) = machine.reflex.unit_mut(ObjId(4)) {
+        if let Some(row) = machine.motors.row_mut(ObjId(4)) {
             row.hold_retry_ms = None;
         }
         assert_eq!(state_hash(&machine), adopted);
@@ -1591,15 +1663,15 @@ mod tests {
         use crate::arena::motion::BlockedCause;
         use crate::arena::reflex::{ReflexState, Refusal};
         let mut machine = two_tanks();
-        machine.reflex.adopt(ObjId(4), ReflexState::Patrol);
+        machine.adopt_reflex(ObjId(4), ReflexState::Patrol);
         let adopted = state_hash(&machine);
 
-        if let Some(row) = machine.reflex.unit_mut(ObjId(4)) {
+        if let Some(row) = machine.motors.row_mut(ObjId(4)) {
             row.searched_from = Some((1, 1));
         }
         let from = state_hash(&machine);
         assert_ne!(from, adopted, "`searched_from` went unhashed");
-        if let Some(row) = machine.reflex.unit_mut(ObjId(4)) {
+        if let Some(row) = machine.motors.row_mut(ObjId(4)) {
             row.searched_from = Some((1, 2));
         }
         assert_ne!(
@@ -1607,7 +1679,7 @@ mod tests {
             from,
             "`searched_from`'s cell went unhashed"
         );
-        if let Some(row) = machine.reflex.unit_mut(ObjId(4)) {
+        if let Some(row) = machine.motors.row_mut(ObjId(4)) {
             row.searched_from = None;
         }
         assert_eq!(state_hash(&machine), adopted);
@@ -1640,7 +1712,7 @@ mod tests {
                 ..base
             },
         ] {
-            if let Some(row) = machine.reflex.unit_mut(ObjId(4)) {
+            if let Some(row) = machine.motors.row_mut(ObjId(4)) {
                 row.refused = Some(refusal);
             }
             let hash = state_hash(&machine);
@@ -1650,7 +1722,7 @@ mod tests {
             );
             seen.push(hash);
         }
-        if let Some(row) = machine.reflex.unit_mut(ObjId(4)) {
+        if let Some(row) = machine.motors.row_mut(ObjId(4)) {
             row.refused = None;
         }
         assert_eq!(state_hash(&machine), adopted);

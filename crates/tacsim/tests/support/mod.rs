@@ -1063,7 +1063,8 @@ impl Timeline {
                 id.0,
                 row.state.as_str(),
                 cell,
-                row.goal,
+                // 17b cut M1a.1: the goal is the hull's motor row's.
+                arena.motors.row(id).and_then(|motor| motor.goal),
                 row.target.map(|(_, target)| target.0),
                 arena.reflex_health_permille(id),
                 self.failures

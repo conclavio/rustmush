@@ -3714,14 +3714,26 @@ pub struct Arena {
     /// The seated pilots, as handed over.
     pub pilots: Vec<Pilot>,
     /// **What the reflex controller remembers** (16b cut N.1): one row per AI
-    /// unit — its state in the machine, its goal, the path it is following and
-    /// when it last searched for one — plus the A* scratch buffers and the
-    /// per-window path-query budget.
+    /// unit — its state in the machine, the hostile it settled on, the order it
+    /// is under and the clocks of its endgame — and the frozen doctrine.
     ///
-    /// It lives on the arena rather than on [`UnitState`] because the scratch is
-    /// one buffer for the whole match and not one per unit, and because a unit
-    /// under a pilot carries no machine at all.
+    /// It lives on the arena rather than on [`UnitState`] because a unit under a
+    /// pilot carries no machine at all. **17b cut M1a.1**: where a machine is
+    /// going and how — the goal, the route, the search, the remembered stops —
+    /// and the A\* scratch and the path budget moved to [`Arena::motors`].
     pub reflex: crate::arena::reflex::ReflexMemory,
+    /// **The motor table** (17b cut M1a.1; doc 17 §4 "The motor", D-UM-3): the
+    /// one table every controller's hull drives from — a
+    /// [`crate::arena::motor::MotorRow`] per hull something is steering (its
+    /// goal, its route, its searches and the cells it was stopped at), the path
+    /// budget every row shares and the A\* scratch. A row exists for a unit
+    /// something is steering; a seated pilot flying by `HEADING` and `SPEED` has
+    /// none.
+    ///
+    /// Folded into the state hash in the reflex rows' own order and, for a row
+    /// with no machine, as its own section (`crate::arena::hash`, items 3 and
+    /// 3b); carried whole by a snapshot but its scratch.
+    pub motors: crate::arena::motor::MotorTable,
     /// **The cheapest passable cell on the window for each row**, in
     /// [`CostRow::index`] order ([`ArenaTerrain::min_cost`]; each at least
     /// `1`), read once at check-out because the terrain is immutable for the
@@ -4431,6 +4443,9 @@ impl Arena {
             resolution,
             pilots,
             reflex: crate::arena::reflex::ReflexMemory::new(&arena_cfg.reflex),
+            // 17b cut M1a.1: the motor table, empty until the check-out's
+            // adoptions below lay a row down for each machine.
+            motors: crate::arena::motor::MotorTable::new(),
             min_cost,
             pending: BTreeMap::new(),
             shots: BTreeMap::new(),

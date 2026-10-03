@@ -179,7 +179,9 @@ fn e1_two_stock_machines_close_to_their_real_reach_and_fight() {
             });
             match row.state {
                 ReflexState::Approach => {
-                    let (Some(goal), Some(plot)) = (row.goal, plot) else {
+                    // 17b cut M1a.1: the goal is the hull's motor row's.
+                    let goal = arena.motors.row(unit).and_then(|motor| motor.goal);
+                    let (Some(goal), Some(plot)) = (goal, plot) else {
                         continue;
                     };
                     approach_pulses = approach_pulses.saturating_add(1);
@@ -593,7 +595,8 @@ fn e3_two_machines_of_one_side_cross_the_ford_without_stopping_each_other() {
     let mut east_most = 0_i64;
     let mut bytes = run_until(&mut arena, 240_000, 1_000, |arena, _out| {
         for id in [one, two] {
-            let Some(row) = arena.reflex.unit(id) else {
+            // 17b cut M1a.1: the avoid list is the hull's motor row's.
+            let Some(row) = arena.motors.row(id) else {
                 continue;
             };
             for (cell, _) in &row.avoid {

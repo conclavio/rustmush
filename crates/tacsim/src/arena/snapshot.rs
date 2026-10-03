@@ -12,7 +12,7 @@
 //!
 //! # The document
 //!
-//! `{"record": "tacsim.snapshot", "format": 2, "arena": <definition id>,
+//! `{"record": "tacsim.snapshot", "format": 3, "arena": <definition id>,
 //! "arena_definition_digest": <64 lowercase base-16 characters>,
 //! "physics_digest": <the compiled locomotion table's digest>, "at_ms",
 //! "ledger_seq", "chunk_seq", "state_hash": <the u64 as a decimal string>,
@@ -68,15 +68,17 @@
 //!
 //! # The three lists
 //!
-//! [`Arena`] has 43 fields, and every one is placed by name, twice: in the
+//! [`Arena`] has 44 fields, and every one is placed by name, twice: in the
 //! exhaustive destructuring that builds the encode's borrowed `ArenaStateRef`,
 //! and in the exhaustive literal the decode builds the arena with. A field a
 //! later cut adds is a compile error in both until it is put in one of these:
 //!
-//! - **Carried** (31): `units`, `epochs`, `contacts`, `designators`,
+//! - **Carried** (32): `units`, `epochs`, `contacts`, `designators`,
 //!   `spent_said`, `due`, `ledger` (its [`LedgerState`]: counters, open chunk,
 //!   closed queue, both SHA-256 running states), `clock` (its [`ClockState`]),
-//!   `seed`, `resolution`, `pilots`, `reflex` (never its path scratch), `pending`,
+//!   `seed`, `resolution`, `pilots`, `reflex`, `motors` (17b cut M1a.1: the
+//!   [`MotorTable`] whole — its rows, the path budget's window and spend — and
+//!   never its path scratch, which moved there from `reflex`), `pending`,
 //!   `shots`, `next_shot_seq`, `stop`, `now_ms`, `at_release`, `pending_catchup`,
 //!   `held_losses`, `ended`, `arena_cfg`, `match_cfg`, `sensors_cfg`,
 //!   `alert_range_cm`, `jam_radius_cm`, `squads`, `mode`, `hold`, and the two
@@ -151,6 +153,7 @@ use crate::arena::hash::state_hash;
 use crate::arena::index::SpatialIndex;
 use crate::arena::intents::Intent;
 use crate::arena::ledger::{Ledger, LedgerState};
+use crate::arena::motor::MotorTable;
 use crate::arena::reflex::ReflexMemory;
 use crate::arena::state::{
     ActionHash, Arena, ArenaDefinition, ArenaError, ContactId, CostRow, Designator, DesignatorBook,
@@ -178,7 +181,14 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// and `refused` (a `Refusal`), carried by the reflex rows' derive — a shape
 /// change, so a format-1 document is refused by name rather than decoded with
 /// the two fields defaulted and then voided on the hash.
-pub const SNAPSHOT_FORMAT: u32 = 2;
+///
+/// **3 since 17b cut M1a.1** (doc 17 §4, D-UM-3): the driving fields left the
+/// reflex rows for `Arena::motors` (a `MotorTable` carried whole, its scratch
+/// skipped) and `ReflexMemory` lost `window`/`spent` — a shape change, so a
+/// format-2 document is refused by name ([`SnapshotError::Format`]) before
+/// any field of it is read, and a match resumed from one is voided by AF.3's
+/// boot as every refused document is.
+pub const SNAPSHOT_FORMAT: u32 = 3;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///
@@ -589,7 +599,7 @@ fn read(document: &serde_json::Value) -> Result<(SnapshotHead, Cow<'_, str>), Sn
 // The state tree: two structs, one field list
 // ---------------------------------------------------------------------------
 
-/// **What the encode serialises**: the 31 carried fields of [`Arena`], in its
+/// **What the encode serialises**: the 32 carried fields of [`Arena`], in its
 /// own order, every one a borrow but the two small mirrors ([`LedgerState`] and
 /// [`ClockState`]) — so an encode clones no contact and no shot, and of a unit
 /// only the opaque `mush_tactics::TacticalUnit`, which its own
@@ -613,6 +623,7 @@ struct ArenaStateRef<'a> {
     resolution: &'a ResolutionDef,
     pilots: &'a [Pilot],
     reflex: &'a ReflexMemory,
+    motors: &'a MotorTable,
     pending: &'a BTreeMap<ObjId, VecDeque<Intent>>,
     shots: &'a BTreeMap<u64, Shot>,
     next_shot_seq: &'a u64,
@@ -661,6 +672,9 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             resolution,
             pilots,
             reflex,
+            // Carried (17b cut M1a.1): the motor rows and the path budget; the
+            // table's scratch is `#[serde(skip)]`, as the reflex memory's was.
+            motors,
             // Re-derived: `Arena::new`'s line over the definition.
             min_cost: _min_cost,
             pending,
@@ -710,6 +724,7 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             resolution,
             pilots,
             reflex,
+            motors,
             pending,
             shots,
             next_shot_seq,
@@ -751,6 +766,7 @@ struct ArenaState {
     resolution: ResolutionDef,
     pilots: Vec<Pilot>,
     reflex: ReflexMemory,
+    motors: MotorTable,
     pending: BTreeMap<ObjId, VecDeque<Intent>>,
     shots: BTreeMap<u64, Shot>,
     next_shot_seq: u64,
@@ -776,7 +792,7 @@ struct ArenaState {
 
 impl ArenaState {
     /// **The arena, by an exhaustive literal** over every field of [`Arena`]:
-    /// the 31 carried placed, the 4 re-derived derived and the 8 reset reset.
+    /// the 32 carried placed, the 4 re-derived derived and the 8 reset reset.
     fn into_arena(self, definition: ArenaDefinition) -> Result<Arena, SnapshotError> {
         let ArenaState {
             units,
@@ -791,6 +807,7 @@ impl ArenaState {
             resolution,
             pilots,
             reflex,
+            motors,
             pending,
             shots,
             next_shot_seq,
@@ -834,6 +851,7 @@ impl ArenaState {
             resolution,
             pilots,
             reflex,
+            motors,
             min_cost,
             pending,
             shots,
@@ -956,6 +974,7 @@ mod tests {
     use crate::arena::catchup::{Catchup, ReleaseSnapshot, SectionWords};
     use crate::arena::command::SquadWatch;
     use crate::arena::intents::{Intent, IntentKind};
+    use crate::arena::motor::MotorRow;
     use crate::arena::reflex::ReflexUnit;
     use crate::arena::resolution::Resolution;
     use crate::arena::state::{
@@ -1274,6 +1293,8 @@ mod tests {
         )]));
         // `ReflexMemory.units`.
         round_trip(&BTreeMap::from([(unit, ReflexUnit::default())]));
+        // `MotorTable.rows` (17b cut M1a.1): keyed by the unit, an integer key.
+        round_trip(&BTreeMap::from([(unit, MotorRow::default())]));
         // `UnitState.ready_at_ms`, `UnitState.ammo`, `HeatState.per_shot`.
         round_trip(&BTreeMap::from([(SmolStr::new("cannon"), -1_i64)]));
         round_trip(&BTreeMap::from([(SmolStr::new("cannon"), 40_u32)]));
