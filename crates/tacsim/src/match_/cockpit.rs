@@ -136,9 +136,7 @@ use crate::arena::damage;
 use crate::arena::intents::{ControlState, IntentKind};
 use crate::arena::motion::BlockedCause;
 use crate::arena::perception::{FrameNotice, NoticeKind, RefusalDetail};
-use crate::arena::state::{
-    ArenaTerrain, Channel, Classification, ContactId, Designator, KeySpot, Power,
-};
+use crate::arena::state::{ArenaTerrain, Channel, ContactId, Designator, KeySpot, Power};
 use crate::arena::step::Frame;
 use crate::arena_bridge::{
     ArenaRegistry, CockpitFrame, FRAME_FEED, IntentRefusal, NOTICE_CATEGORY, NOTICE_SENTENCE_TAG,
@@ -248,21 +246,6 @@ pub const VIEW_ROWS: u16 = 20;
 /// renderer reads. Only the line client doubles; the TUI's map pane and the web
 /// canvas draw one cell per cell.
 pub const VIEW_CELL_COLUMNS: u16 = 2;
-
-/// The glyph the pilot's own platform draws with.
-pub const YOU_GLYPH: &str = "@";
-
-/// **The glyph an unresolved contact draws with** on `VIEW` (16b cut S.2; doc 16
-/// §3.6: *a marker per contact*). A return, not a tank: the pilot knows something
-/// is there and nothing else.
-pub const UNKNOWN_GLYPH: &str = "?";
-
-/// A contact resolved to the platform's **own** side (doc 16 §3.6: *teammates
-/// appear when shared*).
-pub const FRIEND_GLYPH: &str = "+";
-
-/// A contact resolved to the **other** side.
-pub const HOSTILE_GLYPH: &str = "x";
 
 /// **The key-spot alphabet and its one reader** (16b cut V.1), defined in the
 /// arena library since 16b cut O.1 — a Hold match's objective carries its
@@ -790,80 +773,23 @@ fn require_power(w: &World, pilot: ObjId) -> Result<(), CockpitError> {
     }
 }
 
-/// **The contacts the platform holds**, as a pilot is told about them (doc 16
-/// §3.6 "What a pilot sees").
-///
-/// **16b cut S.1 filled the arena side** — the sensor pass mints the ids and
-/// mirrors them into [`Frame::contacts`] — and **this is cut S.2's read of it**:
-/// the row key unchanged and never printed, the short designator 16b cut Q.1 gave
-/// a pilot to read and type, the class as `unknown` or as the side the platform
-/// has resolved, the bearing in whole degrees both absolute and relative to the
-/// platform's own heading, the range as one of [`contact_band`]'s four words
-/// (16b cut D.1: the pilot's word, thirds of the lesser of the platform's own
-/// sight and the fired weapon's reach), and the age in whole seconds.
-///
-/// Three things a pilot is deliberately **not** given, and each is the observer
-/// rule on this surface: the target's object number, its name, and its team while
-/// the contact is still `unknown`. The row carries the contact's last-seen
-/// **cell** because that is what `VIEW` draws a marker in, which is the map's own
-/// resolution and no finer.
-///
-/// **16b cut F.3** changed what the numbers are *of*. Every figure here —
-/// bearing, range, band, cell — is read off the **plot** the arena recorded at
-/// the sighting that last refreshed the contact, so a row is what the platform
-/// knows and never where the target now is; and `age_ms` is the age of that
-/// sighting, which is how a pilot tells a live track from a dying one. It also
-/// adds the range in metres ([`ContactRow::range_m`]), because a band alone told
-/// a pilot nothing at all.
-///
-/// **16b cut B.4** (`T-60`): this is [`frame_contacts_held`] with no memory — every
-/// row rounded afresh. The fixtures and every pure reading of a lone frame use it;
-/// the world's read verbs and the bridge pass the mirror's held ranges.
-#[must_use]
-pub fn frame_contacts(frame: &Frame) -> Vec<ContactRow> {
-    frame_contacts_held(frame, &BTreeMap::new())
-}
-
-/// **The contacts the platform holds, each range held against the last figure the
-/// pilot was told** (16b cut B.4, `T-60`).
-///
-/// [`frame_contacts`]' rows, with each row's `range_m` rounded through
-/// [`held_range_m`] against `ranges` — the figure the same row carried on the
-/// previous frame the pilot was sent ([`settle_ranges`], stored on the bridge's
-/// mirror as [`CockpitFrame::ranges`]). A row the map does not name rounds plainly.
-#[must_use]
-pub fn frame_contacts_held(frame: &Frame, ranges: &BTreeMap<ContactId, u64>) -> Vec<ContactRow> {
-    // 16b cut F.3: the bands of the weapon a bare `FIRE` would fire — the weapon
-    // the band word is advice about. Resolved once for the list.
-    let bands: &[u32] = fired_by_default(&frame.weapons).map_or(&[], |weapon| &weapon.bands_cm);
-    frame
-        .contacts
-        .iter()
-        .map(|held| ContactRow {
-            id: held.id,
-            // 16b cut Q.1: the short name and the number behind it, both as the
-            // arena resolved them off the live contact.
-            designator: held.designator,
-            alias: held.alias,
-            class: SmolStr::new(class_word(held.class)),
-            bearing_deg: held.bearing_mdeg / 1_000,
-            relative_deg: relative_mdeg(frame.pose.heading_mdeg, held.bearing_mdeg) / 1_000,
-            // 16b cut D.1: thirds of the lesser of the sight and the weapon's
-            // reach. 16b cut E.1: and the only band word there is.
-            band: SmolStr::new(contact_band(held.range_cm, bands, frame.sight_cm)),
-            // 16b cut B.4 (`T-60`): held against the last figure the pilot was
-            // told, so a plot sitting near a 50 m edge does not flip every pulse.
-            range_m: held_range_m(
-                held.range_cm,
-                CONTACT_RANGE_STEP_M,
-                ranges.get(&held.id).copied(),
-            ),
-            age_ms: held.age_ms,
-            cell: held.cell,
-            friendly: held.class.team() == Some(frame.team),
-        })
-        .collect()
-}
+/// **The view** (17b cut M1a.2; doc 17 §3 "One formatter", D-UM-4): the
+/// contact rows, the range rounding and its memory, the scope word, the band
+/// word, the lock reads, the weapon a bare `FIRE` fires and the four `VIEW`
+/// glyphs moved to [`crate::arena::view`], the arena library, so the row a
+/// pilot reads and the row a mind reads are one function. Re-exported here so
+/// every path that named them in this module — the bridge, `CONTACTS`, the
+/// panel rows, the bot's contract test — names the same function; the
+/// sentences built on them ([`contact_sentence`], [`lock_line`],
+/// [`notice_line`], [`brief_lines`], [`watch_lines`]) stay in this module.
+pub use crate::arena::view::{
+    ContactRow, FRIEND_GLYPH, HOSTILE_GLYPH, UNKNOWN_GLYPH, YOU_GLYPH, contact_band,
+    fired_by_default, frame_contacts, frame_contacts_held, frame_lock, held_range_m,
+    lock_designator, own_scope, range_m_rounded, settle_ranges,
+};
+// 17b cut M1a.2: the two crate-private readers the notice line and `BEARING`
+// still call here.
+pub(crate) use crate::arena::view::{class_word, relative_mdeg};
 
 /// **The range steps and the lock's own step** (16b cut F.3, Q.1, D.4), which
 /// live in the arena library since **16b cut U.2** (16c `T-30`): the arena's
@@ -875,275 +801,6 @@ pub fn frame_contacts_held(frame: &Frame, ranges: &BTreeMap<ContactId, u64>) -> 
 pub use crate::arena::perception::{
     CONTACT_RANGE_STEP_M, LOCK_RANGE_STEP_M, PLOT_DRIFT_M_PER_S, lock_range_step_m,
 };
-
-/// A contact's range in metres, rounded to the nearest `step` (16b cut F.3;
-/// 16b cut Q.1 made the step an argument). Half a step rounds up.
-///
-/// The step is the caller's because there are two: [`CONTACT_RANGE_STEP_M`] for
-/// a row on the scope, [`LOCK_RANGE_STEP_M`] for the one contact the platform is
-/// locked on.
-///
-/// **The answer is never nought** (16b cut D.1). Rounding to the nearest step put
-/// everything inside half a step at `0 m` — under 25 m on a scope row, under 5 m
-/// on a lock — and `0 m` is the one distance a contact cannot be at: a platform
-/// that close is being rammed. It floors at one step, so the coarsest thing the
-/// row can say about a contact on top of you is *one step away*, which is what a
-/// coarse reading is entitled to say.
-#[must_use]
-pub fn range_m_rounded(range_cm: u64, step_m: u64) -> u64 {
-    let step = step_m.max(1);
-    let metres = range_cm / 100;
-    metres
-        .saturating_add(step / 2)
-        .saturating_div(step)
-        .saturating_mul(step)
-        .max(step)
-}
-
-/// **A scope row's range, held against the figure the pilot was last told** (16b
-/// cut B.4, `T-60`), metres.
-///
-/// [`range_m_rounded`] alone is pure, so a plot sitting at 425 m — a tank holding
-/// station, or two tanks circling — read `450 m` and `400 m` on alternate pulses,
-/// and every panel row and every `CONTACTS` flickered with it. With `held` the
-/// figure the same row was last published at, the row keeps that figure while the
-/// plot stays within five eighths of a step of it — **six metres of hysteresis each
-/// side of the edge at the 50 m step** (an edge at 425 m is crossed at 431.25 m
-/// going out and at 418.75 m coming back) — and rounds afresh once it leaves. A
-/// row with no memory (`None`) rounds plainly, so the first figure a pilot reads
-/// about a new contact is [`range_m_rounded`]'s.
-///
-/// Integers only, as every stored figure is: the tolerance is
-/// `step_m × 100 × 5 / 8` centimetres.
-#[must_use]
-pub fn held_range_m(range_cm: u64, step_m: u64, held: Option<u64>) -> u64 {
-    if let Some(m) = held {
-        let tolerance_cm = step_m.saturating_mul(100).saturating_mul(5) / 8;
-        if range_cm.abs_diff(m.saturating_mul(100)) <= tolerance_cm {
-            return m;
-        }
-    }
-    range_m_rounded(range_cm, step_m)
-}
-
-/// **The range memory the next frame is held against** (16b cut B.4, `T-60`):
-/// every contact on `frame`, mapped to the figure its row publishes now
-/// ([`held_range_m`] against `previous`). A contact that is gone from the frame
-/// is gone from the map, so a re-acquired id starts afresh.
-///
-/// The bridge calls it once per frame per pilot and stores the answer on the
-/// mirror ([`CockpitFrame::ranges`]); it is a fact about what the pilot has been
-/// told, never about where anything is.
-#[must_use]
-pub fn settle_ranges(
-    frame: &Frame,
-    previous: &BTreeMap<ContactId, u64>,
-) -> BTreeMap<ContactId, u64> {
-    frame
-        .contacts
-        .iter()
-        .map(|held| {
-            (
-                held.id,
-                held_range_m(
-                    held.range_cm,
-                    CONTACT_RANGE_STEP_M,
-                    previous.get(&held.id).copied(),
-                ),
-            )
-        })
-        .collect()
-}
-
-/// **What this platform's own scope holds** (16b cut D.1; doc 16 §5, §1).
-///
-/// `STATUS`'s third line ended `; the arena is running {tempo}` — the arena's one
-/// **global** word, raised when anybody anywhere on the map holds a contact. A
-/// pilot sitting in a wreck with an empty scope read `engaged`, which is a fact
-/// about somebody else's fight and exactly the shape of thing doc 16 §1 says a
-/// platform has to earn. The three words are read off this platform's own contact
-/// list and nothing else:
-///
-/// * `hostile` — it holds a contact classified to another team;
-/// * `unidentified` — it holds a contact that is not a classified friend;
-/// * `clear` — it holds nothing, or nothing but classified friends.
-///
-/// The arena's `tempo` stays on the frame, because a panel's own timers read the
-/// cadence off it.
-#[must_use]
-pub fn own_scope(frame: &Frame) -> &'static str {
-    let mut unidentified = false;
-    for held in &frame.contacts {
-        match held.class.team() {
-            Some(team) if team == frame.team => {}
-            Some(_) => return "hostile",
-            None => unidentified = true,
-        }
-    }
-    if unidentified {
-        "unidentified"
-    } else {
-        "clear"
-    }
-}
-
-/// The word a class renders as: `unknown`, or the **side** the platform has
-/// resolved (doc 16 §3.6: *class or `unknown`*).
-///
-/// Not `Classification::as_str`, which answers the *state* (`classified`): what a
-/// pilot wants off a resolved return is whose it is.
-#[must_use]
-fn class_word(class: Classification) -> &'static str {
-    match class.team() {
-        Some(team) => team.as_str(),
-        None => class.as_str(),
-    }
-}
-
-/// A bearing read off the platform's own nose: the absolute bearing less the
-/// platform's heading, wrapped into `0..360_000` millidegrees.
-#[must_use]
-fn relative_mdeg(heading_mdeg: u32, bearing_mdeg: u32) -> u32 {
-    let turn = i64::from(bearing_mdeg) - i64::from(heading_mdeg);
-    u32::try_from(turn.rem_euclid(360_000)).unwrap_or(0)
-}
-
-/// **The range band** (16b cut D.1; doc 16 §3.6's *range band*, read against what
-/// this platform can actually see).
-///
-/// **There is one band word, and this is it** (16b cut E.1, 16c `T-81`). Cut D.1
-/// left a second — `range_band`, thirds of the *weapon's* innermost band, which
-/// the commander's brief and an order's ceiling read — so a lead's `close` was
-/// 500 m and a pilot's was 200 m. Cut E.1 deleted it; this function is what the
-/// contact row, the acquisition notice, the squad brief and
-/// [`crate::deliberation::order::RangeBand::ceiling_cm`] (its inverse, pinned by
-/// a test) all say.
-///
-/// `CONTACTS` could only ever print two of its four words. The stock cannon's
-/// bands are 1.5 km and 3 km, so a word banded on the gun alone put `close` at
-/// 500 m and `effective` at 1,500 m — while the shipped sight is 60 cells of
-/// 1,000 cm, 600 m, and one mesh hop adds 300 m. The furthest plot any shipped
-/// platform can hold is 900 m, so from acquisition to the kill a contact read
-/// `effective` and then `close`, and `far` and `beyond` could not print at all.
-///
-/// So the word is banded against **the lesser of the sight and the weapon's last
-/// band**, which on every shipped platform is the sight. That makes it **scope
-/// advice**: how far across your own sight the contact is — `close` the nearest
-/// third, `effective` the middle third, `far` the outer third and anything a
-/// teammate is passing you from beyond it. It is a deliberate change of what the
-/// word *answers*, not a side effect: a contact at 450 m, which the cannon makes
-/// comfortably, reads `far`. What the gun makes of the distance is the lock's
-/// `% to hit` and `WEAPONSTATUS`, and `docs/help/cockpit.md` says so in the
-/// pilot's own terms.
-///
-/// The rule, in order:
-///
-/// * no bands at all, or `range_cm` past the last band: `beyond` — still literally
-///   true, because nothing the platform fires reaches it, **and the honest word
-///   for a platform that carries nothing that fires**;
-/// * otherwise `limit` is `min(last band, sight_cm)`, and the last band alone when
-///   `sight_cm` is `0` (a platform with no sensor, which holds no contacts anyway);
-/// * `range_cm × 3 ≤ limit`: `close`; else `range_cm × 3 ≤ limit × 2`:
-///   `effective`; else `far`.
-///
-/// On the stock tank that is `close` to 200 m, `effective` to 400 m, `far` beyond
-/// — and a mesh plot past the platform's own sight is `far`.
-#[must_use]
-pub fn contact_band(range_cm: u64, bands_cm: &[u32], sight_cm: u32) -> &'static str {
-    let Some(last) = bands_cm.last() else {
-        return "beyond";
-    };
-    let last = u64::from(*last);
-    if range_cm > last {
-        return "beyond";
-    }
-    let sight = u64::from(sight_cm);
-    let limit = if sight == 0 { last } else { last.min(sight) };
-    if range_cm.saturating_mul(3) <= limit {
-        "close"
-    } else if range_cm.saturating_mul(3) <= limit.saturating_mul(2) {
-        "effective"
-    } else {
-        "far"
-    }
-}
-
-/// One contact, as a pilot is told about it (doc 16 §3.6 "What a pilot sees").
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ContactRow {
-    /// The opaque arena id. **16b cut Q.1**: the stable row key a panel
-    /// re-identifies a row by, never printed and never typed — see
-    /// [`ContactRow::designator`] and [`resolve_designator`].
-    pub id: ContactId,
-    /// **The short name the pilot reads and types** (16b cut Q.1): `BA` while the
-    /// contact is classified now, `X2` while it is not.
-    pub designator: Designator,
-    /// **The provisional number this row's target still answers to** (16b cut
-    /// Q.1), where the row is naming it by slot and a number was issued. It is
-    /// what makes `LOCK X2` keep working after the rename.
-    pub alias: Option<u16>,
-    /// `unknown`, or the side the platform has resolved.
-    pub class: SmolStr,
-    /// Bearing, degrees clockwise from north.
-    pub bearing_deg: u32,
-    /// The same bearing off the platform's own nose, degrees clockwise (16b cut
-    /// S.2): `0` is dead ahead.
-    pub relative_deg: u32,
-    /// The range band's label ([`contact_band`], which since 16b cut E.1 is the
-    /// one band word a pilot, a commander and an order all read).
-    pub band: SmolStr,
-    /// **The range to the plot, metres**, rounded to [`CONTACT_RANGE_STEP_M`]
-    /// (16b cut F.3) — see [`range_m_rounded`] for why a passive sight reports one
-    /// at all.
-    pub range_m: u64,
-    /// **How stale the plot is**, milliseconds of arena time (16b cut F.3): now
-    /// less the sighting that last refreshed the contact, this platform's own or
-    /// the sharer's. Cut S.2 printed the hold time since first detection, which
-    /// carried no staleness signal at all.
-    pub age_ms: i64,
-    /// The cell it was last seen in, for `VIEW`'s marker (16b cut S.2).
-    pub cell: Option<(u16, u16)>,
-    /// Whether the resolved side is the platform's own — what decides the glyph
-    /// `VIEW` draws it with. `false` while the contact is `unknown`.
-    pub friendly: bool,
-}
-
-impl ContactRow {
-    /// The line `CONTACTS` prints for this row.
-    ///
-    /// **16b cut F.3** put the range in it, between the band and the age, and
-    /// **16b cut Q.1** put the short designator where the sixteen digits were,
-    /// left-aligned in a column of four so `X2` and `BA` line up with `RAA`:
-    /// `BA  blue  bearing 090° (rel 000°)  close  300 m  1 s`.
-    #[must_use]
-    pub fn render(&self) -> String {
-        // Rendered first: `Designator`'s own `Display` writes straight to the
-        // formatter, so a width on it would be ignored.
-        let named = self.designator.to_string();
-        format!(
-            "{named:<4}{}  bearing {:03}° (rel {:03}°)  {}  {} m  {} s",
-            self.class,
-            self.bearing_deg,
-            self.relative_deg,
-            self.band,
-            self.range_m,
-            self.age_ms / 1_000
-        )
-    }
-
-    /// The glyph `VIEW` draws this contact with: [`UNKNOWN_GLYPH`] while it is
-    /// unresolved, then [`FRIEND_GLYPH`] or [`HOSTILE_GLYPH`].
-    #[must_use]
-    pub fn glyph(&self) -> &'static str {
-        if self.class == "unknown" {
-            UNKNOWN_GLYPH
-        } else if self.friendly {
-            FRIEND_GLYPH
-        } else {
-            HOSTILE_GLYPH
-        }
-    }
-}
 
 /// **The line one notice prints** (16b cut S.2, extended by 16b cut F.2; doc 16
 /// §3.6: *notices fire once per transition*, §3.4 step 4, §5: *`Notice` events for
@@ -1871,14 +1528,6 @@ fn catchup_json(catchup: &Catchup) -> serde_json::Value {
     })
 }
 
-/// **The lock the platform holds**, as the frame carries it (16b cut W.1 filled
-/// it): always one of [`frame_contacts`]'s rows, because the arena clears a lock the
-/// moment its contact stops being held.
-#[must_use]
-pub fn frame_lock(frame: &Frame) -> Option<ContactId> {
-    frame.lock
-}
-
 /// **The line the arena's `Locked` notice and `WEAPONSTATUS` both print about the
 /// lock** (16b cut W.2; doc 16 §3.5 step 5: *the cockpit shows `p_permille` as a
 /// percentage in `WEAPONSTATUS` and on `LOCK` before any shot*).
@@ -1930,35 +1579,6 @@ pub fn lock_line(frame: &Frame) -> Option<String> {
             None => format!("Locked on {named}{mark}."),
         },
     )
-}
-
-/// **The designator of the contact the platform is locked on** (16b cut Q.1), or
-/// `None` with no lock.
-///
-/// Read off the frame's own contact list rather than carried beside the lock, so
-/// the name in `WEAPONSTATUS`'s lock line, in `RANGE`'s answer and in the row
-/// `CONTACTS` prints is one string resolved once.
-#[must_use]
-pub fn lock_designator(frame: &Frame) -> Option<Designator> {
-    let contact = frame_lock(frame)?;
-    frame
-        .contacts
-        .iter()
-        .find(|held| held.id == contact)
-        .map(|held| held.designator)
-}
-
-/// **The weapon a bare `FIRE` would fire** (16b cut F.2): [`DEFAULT_WEAPON`], else
-/// the first the platform carries — the same choice [`choose_weapon`] makes for an
-/// empty argument, which is what makes `LOCK`'s percentage the percentage of the
-/// shot the pilot is about to take.
-fn fired_by_default(
-    weapons: &[crate::arena::weapons::FrameWeapon],
-) -> Option<&crate::arena::weapons::FrameWeapon> {
-    weapons
-        .iter()
-        .find(|weapon| weapon.id.as_str() == DEFAULT_WEAPON)
-        .or_else(|| weapons.first())
 }
 
 /// **Every weapon the platform carries, live** (16b cut W.1), as the arena's frame
@@ -7451,6 +7071,9 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
 mod tests {
     use super::*;
     use crate::arena::intents::Refusal;
+    // 17b cut M1a.2: the class word moved to `arena::view`, and only the
+    // tests here still build a `Classification`.
+    use crate::arena::state::Classification;
 
     /// The wire's `catchup` object, as `catchup_lines.json` writes it (16b cut
     /// Y.4) — a serde mirror, so the fixture is read as data and not as a
@@ -7894,66 +7517,6 @@ mod tests {
         let unknown = vec![row(id, Designator::Provisional(2), None)];
         assert_eq!(resolve_designator(&unknown, "X2"), Some(id));
         assert_eq!(resolve_designator(&unknown, "BA"), None);
-    }
-
-    /// The row `CONTACTS` prints, and the column the designator sits in.
-    #[test]
-    fn a_contact_row_renders_its_designator_in_a_column_of_four() {
-        let slot = Designator::Slot {
-            team: crate::arena::state::Team::Blue,
-            slot: 1,
-        };
-        assert_eq!(
-            row(ContactId(7), slot, Some(2)).render(),
-            "BA  blue  bearing 087° (rel 032°)  effective  450 m  2 s"
-        );
-        let mut unknown = row(ContactId(7), Designator::Provisional(12), None);
-        unknown.class = SmolStr::new_static("unknown");
-        assert_eq!(
-            unknown.render(),
-            "X12 unknown  bearing 087° (rel 032°)  effective  450 m  2 s"
-        );
-    }
-
-    /// **16b cut Q.1**: two steps, one rounding rule. A lock earns ten metres and
-    /// the rest of the scope fifty; half a step rounds up either way.
-    #[test]
-    fn a_range_rounds_to_its_own_step_and_a_lock_earns_the_finer_one() {
-        assert_eq!(CONTACT_RANGE_STEP_M, 50);
-        assert_eq!(LOCK_RANGE_STEP_M, 10);
-        // 434 m: 450 at fifty, 430 at ten.
-        assert_eq!(range_m_rounded(43_400, CONTACT_RANGE_STEP_M), 450);
-        assert_eq!(range_m_rounded(43_400, LOCK_RANGE_STEP_M), 430);
-        // Half a step up.
-        assert_eq!(range_m_rounded(2_500, CONTACT_RANGE_STEP_M), 50);
-        assert_eq!(range_m_rounded(500, LOCK_RANGE_STEP_M), 10);
-        // A step of zero is read as one rather than dividing by it.
-        assert_eq!(range_m_rounded(43_400, 0), 434);
-    }
-
-    /// **16b cut B.4** (`T-60`): a scope row's range holds against the figure
-    /// the pilot was last told while the plot stays within five eighths of a
-    /// step of it — six metres of hysteresis each side of a 50 m edge — and
-    /// rounds afresh once it leaves; with no memory it rounds plainly.
-    #[test]
-    fn a_held_range_keeps_its_figure_across_a_fifty_metre_edge() {
-        let step = CONTACT_RANGE_STEP_M;
-        // 424 m, no memory: 400, as `range_m_rounded` says.
-        assert_eq!(held_range_m(42_400, step, None), 400);
-        assert_eq!(held_range_m(43_100, step, None), 450, "plain rounding");
-        // 431 m with 400 held: inside 431.25, so it holds.
-        assert_eq!(held_range_m(43_100, step, Some(400)), 400);
-        // Exactly at the tolerance holds; one centimetre past it does not.
-        assert_eq!(held_range_m(43_125, step, Some(400)), 400);
-        assert_eq!(held_range_m(43_126, step, Some(400)), 450);
-        // 432 m: past it, so it rounds afresh to 450.
-        assert_eq!(held_range_m(43_200, step, Some(400)), 450);
-        // Coming back: 418 m from 450 is past the tolerance, and rounds to 400;
-        // 419 m still holds 450.
-        assert_eq!(held_range_m(41_800, step, Some(450)), 400);
-        assert_eq!(held_range_m(41_900, step, Some(450)), 450);
-        // A held figure far from the plot is simply replaced.
-        assert_eq!(held_range_m(12_000, step, Some(450)), 100);
     }
 
     /// **16b cut Q.1**: `FIRE`'s line is untouched, and the read verbs have their

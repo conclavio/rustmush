@@ -2917,6 +2917,76 @@ fn the_brief_golden_is_what_brief_lines_produces() {
     );
 }
 
+/// **17b cut M1a.2: the move changed no byte** (doc 17 §3 "One formatter",
+/// D-UM-4; 17b §0 item 3). The row formatter left `match_::cockpit` for
+/// `arena::view`, and the two sentences a contact is printed in are pinned
+/// here against what HEAD printed before the move, in two halves because they
+/// are two sentences:
+///
+/// - **`CONTACTS`** prints [`cockpit::ContactRow::render`]: the four rows of
+///   the fixture scene, as LITERALS read at HEAD (`10a5a0ec`) before the move —
+///   no committed fixture carries them, so they are held here;
+/// - **`VIEW BRIEF`** prints [`cockpit::contact_sentence`], which stayed in the
+///   cockpit: the same four rows through it equal the four contact lines of
+///   `view_brief.txt`, byte for byte.
+///
+/// Both read [`cockpit::frame_contacts_held`] with an empty range memory, as
+/// `brief_lines` does for the golden — the re-exported path, which is also the
+/// one the bridge, the read verbs and the bot's contract test resolve. And
+/// the re-export IS the new home, not a copy beside it: the rows read through
+/// `tacsim::arena::view` and `tacsim::arena` are typed as `arena::view`'s
+/// `ContactRow` and equal the cockpit's, so a local copy pasted back into the
+/// cockpit (two formatters that could drift, which D-UM-4 forbids) stops this
+/// compiling.
+#[test]
+fn m1a2_the_rows_render_as_before() {
+    const CONTACTS_AT_HEAD: [&str; 4] = [
+        "BA  blue  bearing 045° (rel 000°)  far  450 m  1 s",
+        "RB  red  bearing 270° (rel 225°)  close  100 m  0 s",
+        "X3  unknown  bearing 315° (rel 270°)  effective  200 m  3 s",
+        "X4  unknown  bearing 030° (rel 345°)  far  600 m  6 s",
+    ];
+    let frame = fixture::frame();
+    let rows = cockpit::frame_contacts_held(&frame, &BTreeMap::new());
+    // (a) `CONTACTS`' rows, as HEAD rendered them.
+    let rendered: Vec<String> = rows.iter().map(cockpit::ContactRow::render).collect();
+    assert_eq!(rendered, CONTACTS_AT_HEAD, "the CONTACTS rows moved a byte");
+    // The memory-less reading is the same rows (`frame_contacts` is
+    // `frame_contacts_held` with no memory).
+    assert_eq!(cockpit::frame_contacts(&frame), rows);
+    // One function, not two: the cockpit's rows are `arena::view`'s type, and
+    // the view's home and the arena's re-export read the same rows.
+    let via_view: Vec<tacsim::arena::view::ContactRow> = rows.clone();
+    assert_eq!(
+        tacsim::arena::view::frame_contacts_held(&frame, &BTreeMap::new()),
+        via_view
+    );
+    let via_arena: Vec<tacsim::arena::view::ContactRow> =
+        tacsim::arena::frame_contacts_held(&frame, &BTreeMap::new());
+    assert_eq!(via_arena, rows);
+    // (b) The brief's sentence over the same rows, against the golden's own
+    // contact lines — the ones that open with a designator and a comma.
+    let golden = include_str!("../../../web/src/lib/fixtures/cockpit/view_brief.txt");
+    let brief: Vec<&str> = golden
+        .lines()
+        .filter(|line| {
+            rows.iter()
+                .any(|row| line.starts_with(&format!("{}, ", row.designator)))
+        })
+        .collect();
+    assert_eq!(
+        brief.len(),
+        4,
+        "the golden carries four contact lines: {brief:#?}"
+    );
+    let said: Vec<String> = rows.iter().map(cockpit::contact_sentence).collect();
+    assert_eq!(said, brief, "the brief's contact sentences moved a byte");
+    assert_eq!(
+        brief.first().copied(),
+        Some("BA, blue: bearing 045° (rel 000°), far, 450 m, 1 s old.")
+    );
+}
+
 /// **16b cut AG.1: the brief's order** — the header, the eight bearings in
 /// compass order, the contacts in frame order, the beyond-window line, the
 /// spots the legend names in the window, the spots off it and (16b cut AP.4)

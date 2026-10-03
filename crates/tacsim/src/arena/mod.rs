@@ -215,6 +215,17 @@
 //! fields it carries, re-derives and resets. It ships nothing and boots nothing:
 //! the message is 16b cut AF.2's and the boot AF.3's.
 //!
+//! # 17b cut M1a.2: the view
+//!
+//! [`crate::arena::view`] is doc 17 §3's "one formatter" (D-UM-4): the pure
+//! projections of a [`crate::arena::step::Frame`] — the contact rows
+//! ([`crate::arena::view::ContactRow`], [`crate::arena::view::frame_contacts_held`]),
+//! the range rounding and its memory, the band and scope words, the lock reads,
+//! the weapon a bare `FIRE` fires and the `VIEW` glyphs — moved here from
+//! `crate::match_::cockpit`, which re-exports them, so a pilot's `CONTACTS`
+//! and a mind's view (17b cut M1a.5) read one function. Pure over a frame and a
+//! range memory, so the no-I/O gate covers it as it covers every file here.
+//!
 //! What is still not here, and whose it is: deliberation, the order type, the
 //! squad grouping and the cost run are cut N.2's, and the task, the inbox, the
 //! egress, the timer and the unwind boundary are cut T's.
@@ -242,6 +253,7 @@ pub mod slope;
 pub mod snapshot;
 pub mod state;
 pub mod step;
+pub mod view;
 pub mod weapons;
 
 pub use catchup::{
@@ -300,6 +312,10 @@ pub use state::{
     spot_letter,
 };
 pub use step::{Frame, FrameHeat, FrameSlots, StepOutput};
+pub use view::{
+    ContactRow, contact_band, fired_by_default, frame_contacts, frame_contacts_held, frame_lock,
+    held_range_m, lock_designator, own_scope, range_m_rounded, settle_ranges,
+};
 pub use weapons::{FrameBand, FrameWeapon, Shot, WeaponBand};
 
 /// The fixtures every module's unit tests share: a window, a pose, a stock tank

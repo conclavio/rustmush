@@ -775,17 +775,24 @@ const OBSERVER_NAMES: [&str; 4] = [
 /// published on `arena.observer` to watchers only. Doc 16 §1 says a pilot is
 /// told nothing about a unit their platform has not detected, and what keeps
 /// that true is that the two paths never meet: the pilot's frame is built by
-/// `Arena::frames` and rendered by `crates/tacsim/src/match_/cockpit.rs`, and
-/// neither names the picture's type, its row, its payload builder or its feed.
-/// This reads both and refuses those names, so a path from one to the other is
-/// a reviewed diff and not an accident.
+/// `Arena::frames` and rendered by `crates/tacsim/src/match_/cockpit.rs`, whose
+/// contact rows (`frame_contacts_held`, `ContactRow`, `own_scope`, the lock
+/// reads) live in `crates/tacsim/src/arena/view.rs` since 17b cut M1a.2 — the
+/// row a pilot's `CONTACTS` and, from M1a.5, a mind's view read — and none of
+/// them names the picture's type, its row, its payload builder or its feed.
+/// This reads all three and refuses those names, so a path from one to the
+/// other is a reviewed diff and not an accident.
 #[test]
 fn the_observer_has_no_path_into_a_pilot_feed() {
     let root = repo_root();
     let cockpit_path = root.join("crates/tacsim/src/match_/cockpit.rs");
+    let view_path = root.join("crates/tacsim/src/arena/view.rs");
     let step_path = root.join("crates/tacsim/src/arena/step.rs");
     let cockpit = fs::read_to_string(&cockpit_path)
         .unwrap_or_else(|error| panic!("{}: {error}", cockpit_path.display()));
+    // 17b cut M1a.2: the row formatter the cockpit re-exports.
+    let view = fs::read_to_string(&view_path)
+        .unwrap_or_else(|error| panic!("{}: {error}", view_path.display()));
     let step = fs::read_to_string(&step_path)
         .unwrap_or_else(|error| panic!("{}: {error}", step_path.display()));
 
@@ -828,6 +835,7 @@ fn the_observer_has_no_path_into_a_pilot_feed() {
     // Each text with the file line its first line is.
     for (what, text, first) in [
         ("crates/tacsim/src/match_/cockpit.rs", cockpit.as_str(), 1),
+        ("crates/tacsim/src/arena/view.rs", view.as_str(), 1),
         (
             "`Arena::frames` in crates/tacsim/src/arena/step.rs",
             frames_text.as_str(),
