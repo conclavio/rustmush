@@ -6231,8 +6231,10 @@ pub const NO_SQUAD_TO_ORDER: &str = "You have no squad to order.";
 
 /// **How long a pilot's order stands** (16b cut Y.1; the cut Y plan's decision 7),
 /// milliseconds: the ten-minute ceiling, with no key of its own. A human order
-/// stands ten minutes or until replaced; the arena's `order_expired` line and the
-/// world's `mind link dropped` sentence are the same as for the LLM's.
+/// stands ten minutes or until replaced; the arena's `order_expired` line is the
+/// same as for a lance-leader's, and the world's lapse sentence (17b cut L.2) is
+/// told to the pilot alone, in their own words: `Squad red-1: your hold order has
+/// run out; back on doctrine.`
 pub const HUMAN_ORDER_TTL_MS: u32 = crate::deliberation::MAX_TTL_MS;
 
 /// **The squad an `ORDER` names** (16b cut Y.1).

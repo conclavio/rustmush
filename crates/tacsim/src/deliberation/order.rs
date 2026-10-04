@@ -481,11 +481,6 @@ impl StandingOrder {
     }
 }
 
-/// The one in-world sentence doc 16 §6 names, said when an order expires
-/// unrenewed: *the visible in-world effect ("mind link dropped, unit on
-/// doctrine")*.
-pub const MIND_LINK_DROPPED: &str = "mind link dropped, unit on doctrine";
-
 #[cfg(test)]
 mod tests {
     use super::*;

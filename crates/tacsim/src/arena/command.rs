@@ -449,9 +449,14 @@ impl Arena {
                     unit: *unit,
                     ordinal,
                     // **17b cut M1a.5**: a member a mind flies has no reflex
-                    // row and reads `Startup` — the placeholder cut L
-                    // replaces. (No mind is dealt into a squad in this cut:
-                    // `squads_of` deals by `Controller::Reflex`.)
+                    // row and reads `Startup`. Since **17b cut L.2** a mind's
+                    // hull IS dealt into a squad (`Controller::is_machine`), and
+                    // this stays the placeholder on purpose: the signal's shape
+                    // for minds is 17b cut M4's — cut L chose not to read a
+                    // mind's memory into another principal's brief (D-UM-49,
+                    // "no `mem`"). The commander guards above read the unit,
+                    // not this row, so they apply to a mind commander as they
+                    // stand.
                     state: self
                         .reflex
                         .unit(*unit)

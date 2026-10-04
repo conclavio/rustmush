@@ -9,7 +9,7 @@
 //!
 //! # The grouping
 //!
-//! A side's reflex units, in unit-id order, **dealt** into squads of at most
+//! A side's machine units, in unit-id order, **dealt** into squads of at most
 //! `[tacsim.arena].squad_size` units (16b cut Z.1, 16c N6: *lances*; four by
 //! default, [`SQUAD_SIZE_MAX`] at most): `ceil(n / size)` squads whose sizes differ
 //! by at most one, the larger ones first, each a run of consecutive ids. Twelve
@@ -27,6 +27,17 @@
 //! already holds — the match record's grouping at `crate::match_::start` and the
 //! arena's own at `Arena::new` — so the two groupings of one match are one function
 //! of one data and cannot drift.
+//!
+//! **A machine is either controller** (17b cut L.2; D-UM-2, D-UM-53;
+//! `crate::arena::state::Controller::is_machine`): a hull a unit mind flies
+//! (`Controller::Mind`) is dealt exactly as a reflex one is, and may command — the
+//! lance-leader rides it as it would a reflex hull, its contact set is the hint
+//! scope as any commander's is, and a leader's or a pilot's order reaches it
+//! through the unchanged Order path (D-UM-15: re-keyed into the mind's own view
+//! at the arena, `crate::arena::intents`). Nothing else of the mind seam reads the
+//! squad: the engine reads no mind's memory for it (D-UM-49), so a member a mind
+//! flies reports `Startup` in its squad's signal until 17b cut M4 revisits the
+//! signal's shape for minds. Only a seated pilot's tank is left out.
 //!
 //! The **commander** is the lowest unit id in the squad. It is still not a
 //! capability and not a station — it grants nothing a seat could take — but since
@@ -145,17 +156,21 @@ impl SquadRoster {
     }
 }
 
-/// **Cut a match's reflex units into squads** (doc 16 §6).
+/// **Cut a match's machine units into squads** (doc 16 §6).
 ///
-/// `units` is `(unit, team, is_reflex)` in any order; only the reflex ones are
-/// grouped, because a pilot's tank takes no order. Pilot-controlled units are
+/// `units` is `(unit, team, is_machine)` in any order — the bool is
+/// `crate::arena::state::Controller::is_machine`, the reflex controller or (17b
+/// cut L.2) a unit mind; until that cut it read "reflex" alone. Both production
+/// callers build it with `crate::arena::state::CustodyUnit::squad_input`, the
+/// one builder, so they cannot disagree on who is a machine. Only the machines
+/// are grouped, because a pilot's tank takes no order. Pilot-controlled units are
 /// skipped entirely rather than commanded and refused: the refusal exists for the
 /// order that arrives *after* a seat was taken, which is a race the arena settles,
 /// and grouping a seated tank here would only guarantee that race happened.
 ///
 /// `size` is `[tacsim.arena].squad_size` (16b cut Z.1), read through
 /// `clamp(1, SQUAD_SIZE_MAX)` so a caller holding an unvalidated config still gets
-/// squads. Per side, with `n` reflex units, in this order:
+/// squads. Per side, with `n` machine units, in this order:
 ///
 /// 1. `n == 0`: no squad;
 /// 2. `n <= MAX_SQUADS_PER_SIDE × size`: `ceil(n / size)` squads, dealt — squad
@@ -174,7 +189,7 @@ pub fn squads_of(units: &[(ObjId, Team, bool)], size: u32) -> Vec<SquadRoster> {
     for team in Team::ALL {
         let mut side: Vec<ObjId> = units
             .iter()
-            .filter(|(_, on, reflex)| *on == team && *reflex)
+            .filter(|(_, on, machine)| *on == team && *machine)
             .map(|(unit, _, _)| *unit)
             .collect();
         side.sort_unstable();

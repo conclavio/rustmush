@@ -409,9 +409,11 @@ fire.
 
 An order **stands for ten minutes or until your next order to it**, and
 every answer ends by saying so. When it runs out the machines go back to their
-own doctrine and your side hears `Squad red-1: mind link dropped, unit on
-doctrine (its hold order has run out).` Nobody else is told you gave an order:
-nothing is said on your side's radio unless you say it.
+own doctrine and you alone are told `Squad red-1: your hold order has run out;
+back on doctrine.` Your side hears the same of its own lance leaders' orders
+(`Squad red-1: red lance leader 1's hold order has run out; back on doctrine.`).
+Nobody else is told you gave an order: nothing is said on your side's radio
+unless you say it.
 
 **You may hold orders on four squads at once**: a fifth is refused until one of
 the four runs out or you release one, and a new order to a squad you already

@@ -30,8 +30,10 @@ use mush_tactics::{
 };
 use smol_str::SmolStr;
 use tacsim::arena::clock::Tempo;
+use tacsim::arena::command::SquadSignal;
 use tacsim::arena::intents::{
-    Control, ControlState, Intent, IntentKind, MotorGoal, Refusal, apply_control,
+    Control, ControlState, Intent, IntentKind, IntentOutcome, IntentSource, MotorGoal, Refusal,
+    apply_control, apply_intent,
 };
 use tacsim::arena::ledger::LedgerEvent;
 use tacsim::arena::mind::{
@@ -39,14 +41,15 @@ use tacsim::arena::mind::{
     ThinkResult,
 };
 use tacsim::arena::perception::{
-    FrameNotice, MindObjective, RefusalDetail, SensorProfile, SignatureFactor,
+    FrameNotice, FrameOrder, MindObjective, RefusalDetail, SensorProfile, SignatureFactor,
 };
 use tacsim::arena::reflex::{ReflexCounters, ReflexState};
 use tacsim::arena::rng::{draw_contact_id, stagger_ms};
 use tacsim::arena::snapshot::Snapshot;
 use tacsim::arena::state::{
-    Arena, ArenaDefinition, ArenaTerrain, Channel, ContactId, Controller, CustodyOut, CustodyUnit,
-    DueKind, EntryZone, Pilot, Team, TerrainCell, TrackedRules, Waypoint, Waypoints, WeaponSummary,
+    Arena, ArenaDefinition, ArenaTerrain, Channel, Classification, ContactId, Controller,
+    CustodyOut, CustodyUnit, DueKind, EntryZone, Pilot, Team, TerrainCell, TrackedRules, Waypoint,
+    Waypoints, WeaponSummary,
 };
 use tacsim::arena::step::StepOutput;
 use tacsim::arena::weapons::WeaponBand;
@@ -3156,5 +3159,588 @@ fn m1a6_the_stock_mind_is_t0_on_the_first_decide_window() {
          helm_apart_samples={} t0_end={t0_end:?} t1_end={t1_end:?}",
         t1_first.t_ms,
         apart.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut L.2: minds in a squad under a lance-leader (doc 17 §4 "Where a
+// lance-leader sits", §22 L; D-UM-2, D-UM-15, D-UM-49, D-UM-53)
+// ---------------------------------------------------------------------------
+
+/// The lance field's third red: a mind with no sensor and no weapon, so it
+/// holds no row of anything — the no-row case of a leader's hint.
+const RED3: ObjId = ObjId(7);
+
+/// The millisecond the lance-leader's order lands: a multiple of 5,000, so the
+/// first pulse to reach it is the same millisecond at every cadence.
+const L2_ORDER_MS: i64 = 5_000;
+
+/// The (j) field's cannon at one point a round, so the seated blue is never
+/// destroyed inside a run and every row of it stays live.
+fn pea_shooter() -> WeaponSummary {
+    WeaponSummary {
+        damage: 1,
+        ..cannon()
+    }
+}
+
+/// **The lance field**: [`the_j_field`]'s three tanks with both reds minds —
+/// the armed one (a [`pea_shooter`]) at (6, 8), the unarmed one at (6, 10),
+/// each with the ten-cell sight — a third red mind ([`RED3`]) at (1, 1) with
+/// no sensor and no weapon, and the seated blue at (9, 8).
+fn lance_field() -> Arena {
+    let seeing = |mut unit: CustodyUnit| {
+        unit.sensor = Some(SensorProfile {
+            max_range_cells: 10,
+            ..sight()
+        });
+        unit
+    };
+    let mut blind = tank(RED3, Team::Red, centre(1, 1), Vec::new(), Controller::Mind);
+    blind.sensor = None;
+    arena_of(
+        vec![
+            seeing(tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![pea_shooter()],
+                Controller::Mind,
+            )),
+            seeing(tank(
+                RED2,
+                Team::Red,
+                centre(6, 10),
+                Vec::new(),
+                Controller::Mind,
+            )),
+            blind,
+            seeing(tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            )),
+        ],
+        &[BLUE],
+    )
+}
+
+/// What one lance run produced: the run itself, each red's row for the blue
+/// (its id and class) the moment the order landed, each red's held order
+/// right after, and every squad signal the pulses raised.
+struct LanceRun {
+    run: Run,
+    rows_at_order: Vec<(ObjId, Option<ContactId>, Option<Classification>)>,
+    held: Vec<(ObjId, Option<FrameOrder>)>,
+    signals: Vec<SquadSignal>,
+}
+
+/// The lance field run 30 s at a fixed `cadence_ms`, with **the lance-leader's
+/// order** landing at [`L2_ORDER_MS`]: red-1's persona (`issuer: None`, `by:
+/// Persona`), `ENGAGE` with the hint written in the commander's scope (the
+/// commander's own id for the blue), applied the way the bridge fans it —
+/// one `IntentKind::Order` per roster unit through `apply_intent` with
+/// `IntentSource::Seat`, as `deliberation.rs`' `issue` does — standing 20 s,
+/// so it also runs out inside the run.
+fn lance_run(cadence_ms: i64) -> LanceRun {
+    let mut arena = lance_field();
+    let hint = draw_contact_id(SEED, RED, BLUE);
+    let order = Order {
+        squad: RED_ONE,
+        objective: Objective::Engage {
+            target_hint: Some(hint),
+        },
+        target: None,
+        horizon_ms: 20_000,
+        constraints: Constraints::default(),
+        ttl_ms: 20_000,
+        issued_ms: 0,
+        issuer: None,
+        by: CharacterRef::Persona { squad: RED_ONE },
+        spot: None,
+    };
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut counters = ReflexCounters::default();
+    let mut pulses = 0_u32;
+    let mut wall = 0_i64;
+    let mut signals: Vec<SquadSignal> = Vec::new();
+    let mut rows_at_order = Vec::new();
+    let mut held = Vec::new();
+    let mut ordered = false;
+    loop {
+        if !ordered && arena.now_ms >= L2_ORDER_MS {
+            ordered = true;
+            rows_at_order = [RED, RED2, RED3]
+                .into_iter()
+                .map(|unit| {
+                    let id = arena.contacts.id_of(unit, BLUE);
+                    let class = id
+                        .and_then(|id| arena.contacts.resolve(unit, id))
+                        .map(|row| row.class);
+                    (unit, id, class)
+                })
+                .collect();
+            let roster: Vec<ObjId> = arena
+                .squad_of(RED)
+                .map(|roster| roster.units.clone())
+                .unwrap_or_default();
+            for (seq, unit) in (1_u64..).zip(&roster) {
+                let told = intent(
+                    &arena,
+                    *unit,
+                    IntentKind::Order(Box::new(order.clone())),
+                    seq,
+                );
+                assert_eq!(
+                    apply_intent(&mut arena, &told, IntentSource::Seat),
+                    IntentOutcome::AppliedContinuous,
+                    "#{} takes the leader's order",
+                    unit.0
+                );
+            }
+            held = roster
+                .iter()
+                .map(|unit| (*unit, arena.frame_order(*unit)))
+                .collect();
+        }
+        let out = arena.step(wall, &[], &[]);
+        pulses += 1;
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        counters.absorb(&out.reflex);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        signals.extend(out.deliberation);
+        if arena.now_ms >= 30_000 || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    let events = events(&mut arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    LanceRun {
+        run: Run {
+            events,
+            hashes,
+            pulses,
+            counters,
+        },
+        rows_at_order,
+        held,
+        signals,
+    }
+}
+
+/// **17b cut L.2's mandatory cross-tempo property** (16b §11; doc 16 §3.1
+/// D-16-2; doc 17 §22 L, D-UM-15, D-UM-53). Three minds of red are dealt into
+/// one squad, the lowest id commanding — the dealing `Controller::is_machine`
+/// widened to minds — and the lance-leader's `ENGAGE` lands on all three at
+/// one millisecond. Before it lands the two that can see hold the blue as a
+/// **classified** row (the classify window is driven first, so the re-key is
+/// to an earned row; an unclassified held row is the lead's ruling still owed
+/// and is not pinned here) and the third holds none. Then:
+///
+/// - each holding hull's `FrameOrder` is `Engage` re-keyed to **its own** row
+///   — the commander's the hint itself, its wingman's a different id — and the
+///   no-row hull's is `Engage { target: None }`;
+/// - the three `ordered` lines carry one `t_ms`;
+/// - every signal red-1 raises names the three minds, each at `Startup`: the
+///   engine reads no mind's memory into another principal's brief (D-UM-49),
+///   so the M1a.5 placeholder stands until 17b cut M4;
+/// - at 5,000, 1,000 and 500 ms: one event list, one hash sequence, one set of
+///   rows and held orders.
+#[test]
+fn l2_two_minds_are_one_squad_under_a_leader_at_three_cadences() {
+    let arena = lance_field();
+    let shape: Vec<(String, ObjId, Vec<ObjId>)> = arena
+        .squads
+        .iter()
+        .map(|roster| {
+            (
+                roster.id.to_string(),
+                roster.commander,
+                roster.units.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![("red-1".to_string(), RED, vec![RED, RED2, RED3])],
+        "the minds are one squad, the lowest id commanding; the seated blue is in none"
+    );
+
+    let first = lance_run(5_000);
+    let hint = draw_contact_id(SEED, RED, BLUE);
+    let wingman_row = draw_contact_id(SEED, RED2, BLUE);
+    let blue = Some(Classification::Classified { team: Team::Blue });
+    assert_ne!(wingman_row, hint, "the precondition");
+    assert_eq!(
+        first.rows_at_order,
+        vec![
+            (RED, Some(hint), blue),
+            (RED2, Some(wingman_row), blue),
+            (RED3, None, None),
+        ],
+        "both seeing minds hold the blue classified before the order lands; the third holds \
+         nothing"
+    );
+    let held: Vec<(ObjId, Option<MindObjective>)> = first
+        .held
+        .iter()
+        .map(|(unit, order)| (*unit, order.as_ref().map(|order| order.objective)))
+        .collect();
+    assert_eq!(
+        held,
+        vec![
+            (RED, Some(MindObjective::Engage { target: Some(hint) })),
+            (
+                RED2,
+                Some(MindObjective::Engage {
+                    target: Some(wingman_row)
+                })
+            ),
+            (RED3, Some(MindObjective::Engage { target: None })),
+        ],
+        "each hull re-keyed to its own row, the no-row hull to none"
+    );
+    let ordered: Vec<(i64, Option<u32>)> = first
+        .run
+        .events
+        .iter()
+        .filter_map(|(t_ms, json, _)| {
+            let (word, unit) = kind_and_unit(json);
+            (word == "ordered").then_some((*t_ms, unit))
+        })
+        .collect();
+    assert_eq!(
+        ordered,
+        vec![
+            (L2_ORDER_MS, Some(RED.0)),
+            (L2_ORDER_MS, Some(RED2.0)),
+            (L2_ORDER_MS, Some(RED3.0)),
+        ],
+        "one ordered line a hull, at one millisecond"
+    );
+    let reds: Vec<&SquadSignal> = first
+        .signals
+        .iter()
+        .filter(|signal| signal.squad == RED_ONE)
+        .collect();
+    assert!(!reds.is_empty(), "red-1 asks for orders");
+    for signal in &reds {
+        assert_eq!(signal.commander, RED);
+        let members: Vec<(ObjId, ReflexState)> = signal
+            .members
+            .iter()
+            .map(|member| (member.unit, member.state))
+            .collect();
+        assert_eq!(
+            members,
+            vec![
+                (RED, ReflexState::Startup),
+                (RED2, ReflexState::Startup),
+                (RED3, ReflexState::Startup),
+            ],
+            "a mind member reads Startup: no mind's memory is read for the brief"
+        );
+    }
+    for cadence in [1_000_i64, 500] {
+        let other = lance_run(cadence);
+        assert_eq!(
+            other.run.events, first.run.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            other.run.hashes, first.run.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(other.rows_at_order, first.rows_at_order, "{cadence} ms");
+        assert_eq!(other.held, first.held, "{cadence} ms");
+        assert_ne!(other.run.pulses, first.run.pulses, "{cadence} ms");
+    }
+}
+
+/// **The charge field**: a mind of red at (1, 8) with one short gun — a single
+/// 100 m band, one point a round — and a fifteen-cell sight; a seated red at
+/// (1, 10) with the same sight and no gun; and the seated blue at (14, 8),
+/// 130 m off — in sight, and outside every band the red mind has.
+fn charge_field() -> Arena {
+    let short = WeaponSummary {
+        max_range_cm: 10_000,
+        bands: vec![WeaponBand {
+            max_range_cm: 10_000,
+            dispersion_mrad: 3,
+        }],
+        ..pea_shooter()
+    };
+    let seeing = |mut unit: CustodyUnit| {
+        unit.sensor = Some(SensorProfile {
+            max_range_cells: 15,
+            ..sight()
+        });
+        unit
+    };
+    arena_of(
+        vec![
+            seeing(tank(
+                RED,
+                Team::Red,
+                centre(1, 8),
+                vec![short],
+                Controller::Mind,
+            )),
+            seeing(tank(
+                RED2,
+                Team::Red,
+                centre(1, 10),
+                Vec::new(),
+                Controller::Pilot,
+            )),
+            seeing(tank(
+                BLUE,
+                Team::Blue,
+                centre(14, 8),
+                Vec::new(),
+                Controller::Pilot,
+            )),
+        ],
+        &[RED2, BLUE],
+    )
+}
+
+/// How [`charge_run`] charges the red mind.
+#[derive(Clone, Copy, Debug)]
+enum Charge {
+    /// `ORDER … SUPPORT` naming the mind itself, by red-1's lance-leader.
+    SelfCharged,
+    /// HEAD's re-key of it: a `Support` with no charge, written directly.
+    Blind,
+}
+
+/// The charge field's red mind, run one substep a pulse to 40 s (or, with
+/// `stop_at_fire`, to its first `fired` line), with the native stock mind
+/// recorded: `charge` is applied before the first pulse — an intent through
+/// the seat's path, or a `FrameOrder` written straight onto the mind.
+fn charge_run(charge: Charge, stop_at_fire: bool) -> (Rig, Vec<Kept>) {
+    let mut rig = Rig::new(charge_field());
+    let stock = Stock::on(&rig.arena);
+    rig.arena.mind_runner = stock.clone();
+    let first: Vec<Intent> = match charge {
+        Charge::SelfCharged => vec![intent(
+            &rig.arena,
+            RED,
+            IntentKind::Order(Box::new(order(
+                RED_ONE,
+                Objective::Support { of: RED },
+                None,
+                600_000,
+            ))),
+            1,
+        )],
+        Charge::Blind => {
+            rig.arena.minds.entry(RED).or_default().order = Some(FrameOrder {
+                squad: SmolStr::new("red-1"),
+                objective: MindObjective::Support { of: None },
+                hold_fire: false,
+                max_range_band: None,
+                expires_ms: 600_000,
+            });
+            Vec::new()
+        }
+    };
+    let _ = rig.pulse(&[], &first);
+    while rig.arena.now_ms < 40_000 {
+        let _ = rig.pulse(&[], &[]);
+        if stop_at_fire && !rig.lines("fired", RED).is_empty() {
+            break;
+        }
+    }
+    let kept = stock.kept();
+    (rig, kept)
+}
+
+/// **A self-charged `Support` fights on doctrine** (17b cut L.2; the plan's
+/// Q-L6; D-UM-15; M1a.6's residual (3), reachable now that a mind's hull is in
+/// a squad). `rekey_order` re-keys `Support { of: self }` through the
+/// `Engage` arm's own resolution:
+///
+/// - unhinted, a mind holds `Engage { target: None }`, and with a classified
+///   hostile in sight but outside every band its stock mind enters `Approach`
+///   (its memory's state, decoded HERE in the test as the twin does — the
+///   engine never decodes it), drives a `Goal(Cell)` at it with the held range
+///   falling, and fires once in band;
+/// - the contrast, HEAD's `Support { of: None }` written straight onto the
+///   mind over the same field, stands where it is: no approach, no lock, no
+///   `fired` line — the blind supporter;
+/// - hinted, the self-charge is `Engage` on **the mind's own row** for the
+///   hint's target (the hint written in the issuing pilot's scope); a
+///   `Support` of another unit still re-keys to the charge's held row, or none.
+#[test]
+fn l2_a_self_charged_support_fights_on_doctrine() {
+    let state_of = |result: &ThinkResult| {
+        tacsim::arena::stock_mind::StockMemory::from(&tacsim::arena::mind::decode_memory(
+            &result.memory,
+        ))
+        .state
+    };
+    let blue_row = draw_contact_id(SEED, RED, BLUE);
+    // The held range of the blue on each red think that holds it classified.
+    let ranges = |kept: &[Kept]| -> Vec<(i64, u64)> {
+        kept.iter()
+            .filter(|(unit, ..)| *unit == RED)
+            .filter_map(|(_, t_ms, view, _)| {
+                view.contacts
+                    .iter()
+                    .find(|row| {
+                        row.id == blue_row
+                            && row.class == Classification::Classified { team: Team::Blue }
+                    })
+                    .map(|row| (*t_ms, row.range_m))
+            })
+            .collect()
+    };
+
+    // (1) The self-charge, unhinted.
+    let (mut charged, kept) = charge_run(Charge::SelfCharged, true);
+    assert_eq!(
+        kept.iter()
+            .filter(|(unit, ..)| *unit == RED)
+            .find_map(|(_, _, view, _)| view.order.as_ref().map(|order| order.objective)),
+        Some(MindObjective::Engage { target: None }),
+        "the self-charge is held as Engage, unhinted"
+    );
+    let seen = ranges(&kept);
+    let Some(&(_, opening_m)) = seen.first() else {
+        panic!("the red mind never held the blue classified");
+    };
+    assert!(
+        opening_m > 100,
+        "the blue is outside every band when first classified: {seen:?}"
+    );
+    assert!(
+        kept.iter().any(|(unit, _, _, result)| *unit == RED
+            && state_of(result) == ReflexState::Approach
+            && result
+                .intents
+                .iter()
+                .any(|kind| matches!(kind, IntentKind::Goal(MotorGoal::Cell { .. })))),
+        "the self-charged mind approaches"
+    );
+    let closest = seen.iter().map(|(_, range_m)| *range_m).min();
+    assert!(
+        closest.is_some_and(|closest| closest <= 100 && closest < opening_m),
+        "the held range falls into the band: {seen:?}"
+    );
+    let fired = charged.lines("fired", RED);
+    assert!(!fired.is_empty(), "and fires once in band");
+    let first_approach = kept
+        .iter()
+        .find(|(unit, _, _, result)| *unit == RED && state_of(result) == ReflexState::Approach)
+        .map(|(_, t_ms, ..)| *t_ms);
+    assert!(
+        first_approach.is_some_and(|approach| fired.iter().all(|t_ms| *t_ms > approach)),
+        "it fired after it closed: {first_approach:?} {fired:?}"
+    );
+    let until_ms = charged.arena.now_ms;
+
+    // (2) The contrast: HEAD's blind supporter over the same field and time.
+    let (mut blind, blind_kept) = charge_run(Charge::Blind, false);
+    assert!(
+        !ranges(&blind_kept).is_empty(),
+        "the blind supporter holds the same hostile"
+    );
+    assert!(
+        blind_kept
+            .iter()
+            .filter(|(unit, t_ms, ..)| *unit == RED && *t_ms <= until_ms)
+            .all(|(_, _, _, result)| state_of(result) != ReflexState::Approach),
+        "a blind supporter never approaches"
+    );
+    assert!(blind.lines("fired", RED).is_empty(), "nor fires");
+    assert!(blind.lines("locked", RED).is_empty(), "nor locks");
+    assert_eq!(
+        blind
+            .arena
+            .unit(RED)
+            .and_then(|unit| blind.arena.definition.terrain.cell_of(&unit.pose)),
+        Some((1, 8)),
+        "it stands where it was"
+    );
+
+    // (3) Hinted, and a charge that is another unit.
+    let mut rig = Rig::new(charge_field());
+    rig.arena.mind_runner = ScriptedMind::new(&[]);
+    let _ = rig.until(10_000, |arena| {
+        arena.contacts.id_of(RED, BLUE).is_some()
+            && arena.contacts.id_of(RED2, BLUE).is_some()
+            && arena.contacts.id_of(RED, RED2).is_some()
+    });
+    let pilot_says_blue = draw_contact_id(SEED, RED2, BLUE);
+    let mind_holds_blue = rig.arena.contacts.id_of(RED, BLUE);
+    assert_ne!(mind_holds_blue, Some(pilot_says_blue), "the precondition");
+    let held = |rig: &Rig| rig.arena.frame_order(RED).map(|order| order.objective);
+    let hinted = intent(
+        &rig.arena,
+        RED,
+        IntentKind::Order(Box::new(Order {
+            target: Some(pilot_says_blue),
+            ..order(RED_ONE, Objective::Support { of: RED }, Some(RED2), 60_000)
+        })),
+        1,
+    );
+    let _ = rig.pulse(&[], &[hinted]);
+    assert_eq!(
+        held(&rig),
+        Some(MindObjective::Engage {
+            target: mind_holds_blue
+        }),
+        "a hinted self-charge is Engage on the mind's own row"
+    );
+    let teammate = intent(
+        &rig.arena,
+        RED,
+        IntentKind::Order(Box::new(order(
+            RED_ONE,
+            Objective::Support { of: RED2 },
+            Some(RED2),
+            60_000,
+        ))),
+        2,
+    );
+    let _ = rig.pulse(&[], &[teammate]);
+    assert_eq!(
+        held(&rig),
+        Some(MindObjective::Support {
+            of: rig.arena.contacts.id_of(RED, RED2)
+        }),
+        "a Support of another unit: the charge's held row"
+    );
+    let stranger = intent(
+        &rig.arena,
+        RED,
+        IntentKind::Order(Box::new(order(
+            RED_ONE,
+            Objective::Support { of: ObjId(77) },
+            Some(RED2),
+            60_000,
+        ))),
+        3,
+    );
+    let _ = rig.pulse(&[], &[stranger]);
+    assert_eq!(
+        held(&rig),
+        Some(MindObjective::Support { of: None }),
+        "a charge the mind holds nothing of: none"
     );
 }

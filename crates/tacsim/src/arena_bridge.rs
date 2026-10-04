@@ -829,8 +829,8 @@ struct OrderWatch {
     issuer: Option<ObjId>,
     /// **Who gave it** (17b cut L.1; D-UM-52): the order's author, the seat's
     /// character for an `ORDER` and the squad's lance-leader for a deliberated one.
-    /// Read by [`ArenaRegistry::order_author`]; 17b cut L.2's lapse sentence names
-    /// it.
+    /// Read by [`ArenaRegistry::order_author`], and named by the lapse sentence
+    /// (17b cut L.2, `say_expired_orders`), which it also addresses.
     by: CharacterRef,
 }
 
@@ -948,7 +948,8 @@ impl ArenaRegistry {
     /// D-UM-52): the watch's `by` — the seat's character for an `ORDER`, the
     /// squad's lance-leader for a deliberated one — or `None` for a squad with no
     /// watch. Expired or not, as [`ArenaRegistry::order_issuer`]. A read for the
-    /// tests and for 17b cut L.2's lapse sentence.
+    /// tests; the lapse sentence (17b cut L.2, `say_expired_orders`) reads the same
+    /// field off the watch it is saying.
     #[must_use]
     pub fn order_author(
         &self,
@@ -1110,7 +1111,8 @@ impl ArenaRegistry {
         self.arenas.remove(&match_id);
         // 16b cut N.2: and the deliberation row, for the same reason. An order
         // whose time to live outlives the match it was written for would otherwise
-        // say "mind link dropped" about a squad that no longer exists, and an
+        // say its lapse sentence ("… order has run out; back on doctrine", 17b cut
+        // L.2) about a squad that no longer exists, and an
         // in-flight count left behind would be a permanent debit against the *next*
         // match that took this id.
         self.deliberation.remove(&match_id);
@@ -3454,6 +3456,46 @@ fn stranded_rows(w: &mush_core::World) -> Vec<String> {
         .collect()
 }
 
+/// **`@arena/status`'s `leaders:` line for one match** (17b cut L.2; D-UM-53):
+/// the record's [`crate::deliberation::LanceLeader`] rows, the sim personas
+/// counted rather than named (`  leaders: 2 sim personas`, `1 sim persona`) and
+/// each character leader named by squad and current object name (`, red-1 Ada`,
+/// `?` once the object is gone); `  leaders: none` when the record holds no row
+/// (or no record is booked). Counted so the line stays short at any squad count
+/// — 32 squads a side named one by one would be wider than the 120-column floor.
+fn leaders_row(w: &mush_core::World, match_id: MatchId) -> String {
+    let Some(record) = w
+        .module_state::<crate::match_::MatchBook>()
+        .and_then(|book| book.get(match_id))
+    else {
+        return "  leaders: none".to_owned();
+    };
+    let personas = record
+        .leaders
+        .iter()
+        .filter(|leader| leader.by.is_persona())
+        .count();
+    let mut parts: Vec<String> = Vec::new();
+    match personas {
+        0 => {}
+        1 => parts.push("1 sim persona".to_owned()),
+        n => parts.push(format!("{n} sim personas")),
+    }
+    for leader in &record.leaders {
+        if let CharacterRef::Character { id } = leader.by {
+            let name = w
+                .get(id)
+                .map_or_else(|| "?".to_owned(), |object| object.name.to_string());
+            parts.push(format!("{} {name}", leader.squad));
+        }
+    }
+    if parts.is_empty() {
+        "  leaders: none".to_owned()
+    } else {
+        format!("  leaders: {}", parts.join(", "))
+    }
+}
+
 /// One row per running match: its tempo, its arena time, its lag and its chunk
 /// counts. A read and nothing else.
 fn status_rows(ctx: &Ctx<'_>) -> Vec<String> {
@@ -3501,9 +3543,14 @@ fn status_rows(ctx: &Ctx<'_>) -> Vec<String> {
             .deliberation
             .get(&match_id)
             .map_or((0, 0), |state| (state.human_issued, state.issued));
+        // **17b cut L.2** (R-C): a mind never orders; the deliberated orders are
+        // the lance leaders'.
         rows.push(format!(
-            "  orders: {human} by pilots, {machine} by the machines"
+            "  orders: {human} by pilots, {machine} by lance leaders"
         ));
+        // **17b cut L.2** (D-UM-53): who leads the match's squads, on a line of
+        // its own for the same reason — staff-only by the verb's gate.
+        rows.push(leaders_row(ctx.w, match_id));
         // **16b cut I.3**: the staff floor, on a line of its own for the same
         // reason, and only while one stands.
         if let Some(floor_ms) = mirror.tempo_floor_ms {
@@ -4381,50 +4428,94 @@ fn offer_helm(
     }
 }
 
-/// **The one in-world notice doc 16 §6 asks for**, said once per squad whose order
-/// ran out unrenewed: *"mind link dropped, unit on doctrine"*.
+/// **The lapse sentence** (17b cut L.2; D-UM-32 as amended by R-C, D-UM-53): *the
+/// leader's orders lapsing*, in the leader's name — `Squad red-1: red lance leader
+/// 1's hold order has run out; back on doctrine.`, or `your` to the pilot who gave
+/// it.
 ///
-/// Who hears it: every **pilot of the squad's own side** in that match, because
-/// their AI wingmen just stopped taking orders, and every connected wizard, because
-/// staff are who watch a match. The squad's own tanks hear nothing — they have no
-/// pilots, which is why they have a commander.
+/// The clause names the order's author and claims nothing about "the squad": a
+/// non-lead's `ORDER` reaches one wingman while the watch is per squad, so the
+/// `Squad {squad}:` prefix is the watch's key and `back on doctrine` is true of
+/// whatever the order reached. It no longer says the link dropped: that is
+/// the words of a mind's own failure (doc 17 §8, M3's `MindDropped`), so the two
+/// vocabularies do not collide.
+fn lapse_line(squad: crate::deliberation::SquadId, whose: &str, objective: &str) -> String {
+    format!("Squad {squad}: {whose} {objective} order has run out; back on doctrine.")
+}
+
+/// **The one in-world notice doc 16 §6 asks for**, said once per squad whose order
+/// ran out unrenewed, in [`lapse_line`]'s words and in the name of the order's
+/// author (`OrderWatch::by`, 17b cut L.2).
+///
+/// Who hears it depends on who gave it:
+///
+/// - **a lance-leader** (`CharacterRef::Persona`): every **pilot of the squad's own
+///   side** in that match, because their AI wingmen just went back to doctrine —
+///   *`Squad red-1: red lance leader 1's hold order has run out; back on
+///   doctrine.`*;
+/// - **a character** (`CharacterRef::Character`, a seated pilot's `ORDER`): that
+///   character **alone**, as *`Squad red-1: your hold order has run out; back on
+///   doctrine.`* — 16c Q38's "no radio line" never told the side a pilot ordered,
+///   so its lapse is not told to them either (a declared narrowing of the sentence
+///   this replaced, which reached the whole side);
+///
+/// and every connected wizard either way, because staff are who watch a match, on
+/// one line naming the author (the character's current name, `its leader's` once
+/// the object is gone). The squad's own tanks hear nothing — they have no pilots,
+/// which is why they have a leader.
 fn say_expired_orders(ctx: &mut Ctx<'_>) {
     let now_ms = ctx.w.now().saturating_mul(1_000);
-    let mut due: Vec<(MatchId, crate::deliberation::SquadId, SmolStr)> = Vec::new();
+    let mut due: Vec<(MatchId, crate::deliberation::SquadId, SmolStr, CharacterRef)> = Vec::new();
     if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
         for (match_id, state) in &mut registry.deliberation {
             for (squad, watch) in &mut state.orders {
                 if !watch.said && now_ms >= watch.expires_ms {
                     watch.said = true;
-                    due.push((*match_id, *squad, watch.objective.clone()));
+                    due.push((*match_id, *squad, watch.objective.clone(), watch.by.clone()));
                 }
             }
         }
     }
-    for (match_id, squad, objective) in due {
-        let line = format!(
-            "Squad {squad}: {} (its {objective} order has run out).",
-            crate::deliberation::MIND_LINK_DROPPED
-        );
-        let pilots: Vec<ObjId> = ctx
-            .w
-            .module_state::<crate::match_::MatchBook>()
-            .and_then(|book| book.get(match_id))
-            .map(|record| {
-                record
-                    .teams
-                    .iter()
-                    .filter(|roster| roster.team == squad.team)
-                    .flat_map(|roster| roster.pilots.iter().map(|(pilot, _)| *pilot))
-                    .collect()
-            })
-            .unwrap_or_default();
-        for pilot in pilots {
-            if ctx.w.get(pilot).is_some() {
-                ctx.out.sys_to_actor(pilot, NOTICE_CATEGORY, line.clone());
+    for (match_id, squad, objective, by) in due {
+        let staff_line = match by {
+            CharacterRef::Persona { squad: leads } => {
+                let whose = format!("{}'s", CharacterRef::persona_name(leads));
+                let line = lapse_line(squad, &whose, &objective);
+                let pilots: Vec<ObjId> = ctx
+                    .w
+                    .module_state::<crate::match_::MatchBook>()
+                    .and_then(|book| book.get(match_id))
+                    .map(|record| {
+                        record
+                            .teams
+                            .iter()
+                            .filter(|roster| roster.team == squad.team)
+                            .flat_map(|roster| roster.pilots.iter().map(|(pilot, _)| *pilot))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for pilot in pilots {
+                    if ctx.w.get(pilot).is_some() {
+                        ctx.out.sys_to_actor(pilot, NOTICE_CATEGORY, line.clone());
+                    }
+                }
+                line
             }
-        }
-        notify_staff(ctx, format!("Arena match {match_id}: {line}"));
+            CharacterRef::Character { id } => {
+                let name = ctx.w.get(id).map(|object| object.name.to_string());
+                if name.is_some() {
+                    ctx.out.sys_to_actor(
+                        id,
+                        NOTICE_CATEGORY,
+                        lapse_line(squad, "your", &objective),
+                    );
+                }
+                let whose =
+                    name.map_or_else(|| "its leader's".to_owned(), |name| format!("{name}'s"));
+                lapse_line(squad, &whose, &objective)
+            }
+        };
+        notify_staff(ctx, format!("Arena match {match_id}: {staff_line}"));
     }
 }
 
@@ -4433,10 +4524,33 @@ mod tests {
     use mush_core::{GOD, ObjId};
     use smol_str::SmolStr;
 
-    use super::{ArenaRegistry, open_match};
+    use super::{ArenaRegistry, lapse_line, open_match};
     use crate::arena::state::{Pilot, Team};
     use crate::arena::test_support::{custody, pose, tank};
     use crate::arena_task::MatchId;
+    use crate::deliberation::{CharacterRef, SquadId};
+
+    /// **17b cut L.2**: the lapse sentence's two shapes, byte for byte — the
+    /// issuing pilot's own (`your`) and a lance-leader's in its persona's name —
+    /// with no "link dropped" left in either (D-UM-32 as amended by R-C).
+    #[test]
+    fn l2_the_lapse_line_has_two_shapes() {
+        let red_one = SquadId {
+            team: Team::Red,
+            index: 1,
+        };
+        assert_eq!(
+            lapse_line(red_one, "your", "hold"),
+            "Squad red-1: your hold order has run out; back on doctrine."
+        );
+        let whose = format!("{}'s", CharacterRef::persona_name(red_one));
+        let persona = lapse_line(red_one, &whose, "hold");
+        assert_eq!(
+            persona,
+            "Squad red-1: red lance leader 1's hold order has run out; back on doctrine."
+        );
+        assert!(!persona.contains("link dropped"));
+    }
 
     /// **16b cut I.4**: `open_match` keeps ONE defensive unbind per pilot it
     /// binds. Unreachable through the verbs — `@arena/watch` refuses a slot

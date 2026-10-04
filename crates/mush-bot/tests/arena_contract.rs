@@ -2049,3 +2049,30 @@ fn the_watch_digest_reads_as_neutral_lines_and_opens_no_reply() {
     assert!(!open.lock_line, "a lock line was read");
     assert!(!open.brief, "a VIEW BRIEF opened");
 }
+
+// ---------------------------------------------------------------------------
+// 17b cut L.2: the lapse sentence in the leader's name
+// ---------------------------------------------------------------------------
+
+/// **The order-lapse sentences read as nothing the reader parses** (17b cut
+/// L.2; D-UM-32 as amended by R-C, D-UM-53): the world's line when an order
+/// runs out unrenewed — the pilot's own (`your`) and a lance-leader's (its
+/// persona's name), byte for byte as `arena_bridge`'s own pin prints them —
+/// read `Line::Other` and open no `CONTACTS`, `WEAPONSTATUS` or `STATUS`
+/// reply, no lock line and no brief. The bot does not act on them.
+#[test]
+fn the_order_lapse_sentences_read_as_neutral_lines_and_open_no_reply() {
+    let mut reader = Reader::new();
+    for line in [
+        "Squad red-1: your hold order has run out; back on doctrine.",
+        "Squad red-1: red lance leader 1's hold order has run out; back on doctrine.",
+    ] {
+        assert_eq!(reader.one(line), Line::Other(line.to_owned()), "{line}");
+    }
+    let open = &reader.picture.open;
+    assert!(open.contacts.is_none(), "a CONTACTS reply opened");
+    assert!(open.weapons.is_none(), "a WEAPONSTATUS reply opened");
+    assert!(open.status.is_none(), "a STATUS reply opened");
+    assert!(!open.lock_line, "a lock line was read");
+    assert!(!open.brief, "a VIEW BRIEF opened");
+}

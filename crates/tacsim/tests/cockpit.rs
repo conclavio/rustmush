@@ -6310,7 +6310,7 @@ async fn y1_the_lead_orders_the_sides_machines_and_every_squad_refusal_is_one_li
     );
     let status = rig.staff("@arena/status");
     assert!(
-        status.contains("  orders: 1 by pilots, 0 by the machines"),
+        status.contains("  orders: 1 by pilots, 0 by lance leaders"),
         "{status}"
     );
 
@@ -6357,7 +6357,7 @@ async fn y1_the_lead_orders_the_sides_machines_and_every_squad_refusal_is_one_li
     }
     let status = rig.staff("@arena/status");
     assert!(
-        status.contains("  orders: 4 by pilots, 0 by the machines"),
+        status.contains("  orders: 4 by pilots, 0 by lance leaders"),
         "every order that reached a squad is counted, and no refusal is: {status}"
     );
 }
@@ -6938,7 +6938,7 @@ async fn y2_the_span_counts_the_other_squads_under_a_live_order_and_waits_for_on
     );
     let status = rig.staff("@arena/status");
     assert!(
-        status.contains("  orders: 1 by pilots, 0 by the machines"),
+        status.contains("  orders: 1 by pilots, 0 by lance leaders"),
         "a refused order reached no squad; the one counted is the seeded watch: {status}"
     );
 

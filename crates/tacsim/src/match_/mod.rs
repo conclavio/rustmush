@@ -1006,19 +1006,13 @@ pub fn start(
     let seed = seed_for(match_id, ctx.w.now());
     // 16b cut N.2: the same grouping `Arena::new` derives, from the same
     // triples and the same `[tacsim.arena].squad_size` (16b cut Z.1) — a
-    // side's reflex units dealt into squads, lowest id commanding. One
-    // function of one data, so the record and the arena cannot disagree.
+    // side's machine units (reflex or, since 17b cut L.2, mind:
+    // `Controller::is_machine`) dealt into squads, lowest id commanding. One
+    // function of one data — the triples come from the one builder
+    // `Arena::new` calls too (`CustodyUnit::squad_input`) — so the record and
+    // the arena cannot disagree.
     let squads = crate::deliberation::squads_of(
-        &custody_units
-            .iter()
-            .map(|unit| {
-                (
-                    unit.id,
-                    unit.team,
-                    unit.controller == crate::arena::state::Controller::Reflex,
-                )
-            })
-            .collect::<Vec<_>>(),
+        &crate::arena::state::CustodyUnit::squad_input(&custody_units),
         arena_cfg.squad_size,
     );
     let boarding = MatchRecord {

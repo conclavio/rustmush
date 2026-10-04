@@ -891,10 +891,16 @@ live. It is asked for per squad, never per unit.
 - **What it costs the pulse.** Nothing. The request leaves through the same
   off-loop LLM re-entry `@gen` and the NPC turn use; the arena is handed an
   ordinary order intent or nothing at all, and never waits for either.
-- **What a person sees.** One line when an order runs out unrenewed — *"mind link
-  dropped, unit on doctrine"* — to the pilots on that squad's own side and to
-  connected wizards. The match ledger carries the matching `order_expired` event
-  per unit.
+- **What a person sees.** One line when an order runs out unrenewed, in the name
+  of whoever gave it. A lance leader's (the sim persona each squad is led by):
+  *"Squad red-1: red lance leader 1's hold order has run out; back on
+  doctrine."* to the pilots on that squad's own side. A pilot's own `ORDER`:
+  *"Squad red-1: your hold order has run out; back on doctrine."* to that pilot
+  alone — nobody else on the side was told the order existed. Either way
+  connected wizards get one line naming the author (`Arena match <n>: Squad
+  red-1: Ada's hold order …`). The match ledger carries the matching
+  `order_expired` event per unit. `@arena/status` prints `orders: N by pilots,
+  M by lance leaders` and a `leaders:` line (`2 sim personas`, or `none`).
 - **Budgets.** `[llm.budgets].per_feature.tacsim_deliberate` caps the whole
   feature; each call is metered against the squad's **commander** as its actor,
   so `@llm/log` and the cost run below both split spend per squad without a

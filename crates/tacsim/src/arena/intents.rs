@@ -1215,8 +1215,19 @@ impl Arena {
     ///   identity before classification, which no pilot hearing `ENGAGE BA` has
     ///   (the review's finding; the plan's departure (c) withdrawn).
     /// * `Support { of }` — this hull's own row for `of`, `None` when it holds
-    ///   none and `None` when `of` is the hull itself (a self-charge fights on
-    ///   doctrine and has no row for itself).
+    ///   none. **A self-charge** (`of` is the hull itself) is re-keyed to
+    ///   `Engage { target }` through the `Engage` arm's own resolution (17b cut
+    ///   L.2; D-UM-15, the plan's Q-L6): a unit whose `of` is itself fights on
+    ///   doctrine — the `Objective::Support` doc's own rule — which is `Engage`'s
+    ///   semantics, and the hint resolved is the order's preferred contact
+    ///   (`Order.target` for a `Support`), the same one `reflex.rs`'s
+    ///   `ordered_target` falls through to on a self-charge, so a hinted
+    ///   self-charge hunts what the reflex controller would hunt and an unhinted
+    ///   one is `Engage { target: None }`. Before cut L.2 it was `Support { of:
+    ///   None }`, under which a mind stood as a blind supporter (M1a.6's residual
+    ///   (3)). Declared: a mind holding it journals `engage` when it runs out
+    ///   (`crate::arena::mind`'s expiry reads the held objective's word) where
+    ///   its `ordered` line and a reflex hull's expiry say `support`.
     /// * `Hold`, `Advance`, `Withdraw`, `Screen` — copied; they name no contact.
     ///
     /// The constraints are copied flat, the squad is rendered (`red-1`), and
@@ -1230,26 +1241,29 @@ impl Arena {
     ) -> crate::arena::perception::FrameOrder {
         use crate::arena::perception::{FrameOrder, MindObjective};
         use crate::deliberation::order::Objective;
+        // The `Engage` arm's resolution, lifted so a self-charged `Support`
+        // (17b cut L.2) resolves its hint by the same steps: the preferred
+        // contact, in the issuer's scope or the squad commander's, to a target,
+        // then this hull's own row for it or none.
+        let resolve = || {
+            order.preferred_contact().and_then(|hint| {
+                let viewer = order
+                    .issuer
+                    .or_else(|| self.squad_of(unit).map(|squad| squad.commander))?;
+                let target = self.contacts.resolve(viewer, hint)?.target;
+                self.contacts.id_of(unit, target)
+            })
+        };
         let objective = match order.objective {
             Objective::Hold => MindObjective::Hold,
             Objective::Advance { to } => MindObjective::Advance { to },
-            Objective::Engage { .. } => MindObjective::Engage {
-                target: order.preferred_contact().and_then(|hint| {
-                    let viewer = order
-                        .issuer
-                        .or_else(|| self.squad_of(unit).map(|squad| squad.commander))?;
-                    let target = self.contacts.resolve(viewer, hint)?.target;
-                    self.contacts.id_of(unit, target)
-                }),
-            },
+            Objective::Engage { .. } => MindObjective::Engage { target: resolve() },
             Objective::Withdraw => MindObjective::Withdraw,
             Objective::Screen { facing_mdeg } => MindObjective::Screen { facing_mdeg },
+            // 17b cut L.2: a self-charge fights on doctrine, which is `Engage`.
+            Objective::Support { of } if of == unit => MindObjective::Engage { target: resolve() },
             Objective::Support { of } => MindObjective::Support {
-                of: if of == unit {
-                    None
-                } else {
-                    self.contacts.id_of(unit, of)
-                },
+                of: self.contacts.id_of(unit, of),
             },
         };
         FrameOrder {
@@ -3038,7 +3052,7 @@ mod tests {
             MindObjective::Engage { target: None },
             "the pilot's row is not the commander's"
         );
-        // `SUPPORT RA`: WING's own row for RED; RED itself has none for itself.
+        // `SUPPORT RA`: WING's own row for RED; RED itself is self-charged.
         let support = order(Objective::Support { of: RED }, Some(PILOT));
         assert_eq!(
             arena.rekey_order(WING, &support, 0).objective,
@@ -3046,10 +3060,12 @@ mod tests {
                 of: Some(WING_SEES_RA)
             }
         );
+        // 17b cut L.2 (Q-L6, D-UM-15; M1a.6's residual (3)): a self-charge is
+        // re-keyed through the Engage arm — unhinted here, so `None`.
         assert_eq!(
             arena.rekey_order(RED, &support, 0).objective,
-            MindObjective::Support { of: None },
-            "a self-charge has no row for itself"
+            MindObjective::Engage { target: None },
+            "a self-charge fights on doctrine"
         );
         // A hull that does NOT hold the ordered target re-keys to nothing — not
         // to the id it would mint for BLUE later.

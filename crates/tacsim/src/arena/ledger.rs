@@ -404,8 +404,10 @@ pub enum EventKind {
         ttl_ms: u32,
     },
     /// **A squad's standing order ran out unrenewed** (16b cut N.2; doc 16 §6
-    /// "Provider failure": *the visible in-world effect — "mind link dropped, unit
-    /// on doctrine" — is a notice when an order expires unrenewed*).
+    /// "Provider failure": *the visible in-world effect is a notice when an order
+    /// expires unrenewed* — since 17b cut L.2 (D-UM-32 as amended by R-C) the
+    /// leader's order lapsing, in the leader's name, never "the link dropped",
+    /// which is M3's word for a mind's own failure).
     ///
     /// One line per **unit**, at the arena millisecond that unit's next reflex tick
     /// read the expiry — not at the millisecond the order nominally ran out, and
@@ -413,17 +415,17 @@ pub enum EventKind {
     /// and a black box that said otherwise would disagree with what the tank did.
     ///
     /// The line is the record; the sentence a person reads is the world's, said
-    /// once per squad by the bridge that issued the order. Both carry
-    /// [`crate::deliberation::order::MIND_LINK_DROPPED`]'s meaning and neither is
-    /// derived from the other, which is the same split every notice in this engine
-    /// has.
+    /// once per squad by the bridge that issued the order. Both carry the lapse's
+    /// meaning — the order ran out and the unit is back on doctrine — and neither
+    /// is derived from the other, which is the same split every notice in this
+    /// engine has.
     ///
     /// **16b cut E.2 (16c `B-41`) gave it a second cause**, and the line is
     /// unchanged because what it records is still true of it: *the unit that
     /// dropped to doctrine*. An `Objective::Advance` whose cell no route reaches
     /// ends **for that unit** at the tick whose search failed, and journals this
     /// same line with the word `advance`. The bridge's own
-    /// `mind link dropped` sentence is said off its wall-clock watch of the
+    /// lapse sentence is said off its wall-clock watch of the
     /// order's expiry (`crate::arena_bridge::say_expired_orders`) and not off
     /// this line, so no pilot hears anything new or sooner; what the squad gets
     /// is `crate::arena::command::SignalReason::OrderExpired` on its next

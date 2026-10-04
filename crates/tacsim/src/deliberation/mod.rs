@@ -107,8 +107,8 @@ use serde::{Deserialize, Serialize};
 
 pub use cost::{CostGuard, CostRow, CostTable, cost_table};
 pub use order::{
-    CharacterRef, Constraints, MAX_TTL_MS, MIN_TTL_MS, MIND_LINK_DROPPED, Objective, Order,
-    OrderError, RangeBand, StandingOrder,
+    CharacterRef, Constraints, MAX_TTL_MS, MIN_TTL_MS, Objective, Order, OrderError, RangeBand,
+    StandingOrder,
 };
 pub use request::{BriefMember, RefusedReason, SquadBrief, deliberate, order_tool};
 pub use squad::{

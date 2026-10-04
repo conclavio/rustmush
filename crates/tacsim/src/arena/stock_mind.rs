@@ -955,9 +955,8 @@ impl NativeStockMind {
         // ---- the hostile edges, and the leash's reading (16b cut Z.2) ----
         //
         // A supporter reads its own row of its charge: `Some(None)` is a
-        // supporter that does not hold it — and, the charge being re-keyed to
-        // none for a self-charge (`Arena::rekey_order`), one whose charge is
-        // itself (part of the divergence `support`).
+        // supporter that does not hold it. (A self-charge never reaches here:
+        // since 17b cut L.2 `Arena::rekey_order` re-keys it to `Engage`.)
         let leash: Option<Option<&ViewContact>> = match objective {
             Some(MindObjective::Support { of })
                 if matches!(
@@ -2386,8 +2385,8 @@ mod tests {
         assert_eq!(memory.last_plot.map(|(cell, _)| cell), Some((20, 30)));
     }
 
-    /// **The supporter** (16b cut Z.2): blind to its charge (`of: None`, which
-    /// is also how a self-charge reads — the twin lane's `support`) it holds
+    /// **The supporter** (16b cut Z.2): blind to its charge (`of: None`; a
+    /// self-charge read so until 17b cut L.2 re-keyed it to `Engage`) it holds
     /// where it stands and fights from there; past the leash it drives back
     /// toward its station off its own plot of the charge and fires nothing,
     /// a hostile at point blank or not; inside its station it parks.

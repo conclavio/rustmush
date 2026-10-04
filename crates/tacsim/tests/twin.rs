@@ -406,9 +406,10 @@ fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> 
 /// * `line` — [`line_to`] the target's plot cell and the reflex's
 ///   `reflex_has_line` to the live target disagree;
 /// * `support` — under an issued `Support`, T0's `ordered_target` prefers a
-///   target T1 did not settle on, or the charge is the hull itself (re-keyed
-///   to no charge, so T1 stands as a blind supporter where T0 fights on
-///   doctrine);
+///   target T1 did not settle on, the charge held or — the charge being the
+///   hull itself — re-keyed to `Engage` on the order's hint (17b cut L.2; a
+///   self-charge fights on doctrine under both, and is counted only where
+///   their targets part);
 /// * `order_hint` — under an issued `Engage`, T0's `ordered_target` resolves
 ///   the hint while the view's re-keyed order carries none;
 /// * `order_end` — the think set `ignore_order`: an order T0 would have ended
@@ -485,6 +486,18 @@ fn shadow(
                     .and_then(|target| arena.contacts.resolve(unit, target))
                     .map(|held| held.target);
                 if of == unit || leaky.is_some_and(|target| Some(target) != settled) {
+                    out.support += 1;
+                }
+            }
+            // 17b cut L.2: a self-charge lands re-keyed to `Engage` on the
+            // order's hint, so the arm above no longer sees it; the counter
+            // still does, where T0's target and T1's settled one part.
+            (Objective::Support { of }, Some(MindObjective::Engage { .. })) if of == unit => {
+                let settled = after
+                    .target
+                    .and_then(|target| arena.contacts.resolve(unit, target))
+                    .map(|held| held.target);
+                if leaky.is_some_and(|target| Some(target) != settled) {
                     out.support += 1;
                 }
             }

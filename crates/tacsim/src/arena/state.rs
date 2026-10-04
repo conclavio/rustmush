@@ -1701,6 +1701,17 @@ impl Controller {
             Controller::Mind => 2,
         }
     }
+
+    /// **Whether a machine flies it** (17b cut L.2; D-UM-2, D-UM-53): the reflex
+    /// controller or a unit mind, never a pilot. What both
+    /// [`crate::deliberation::squads_of`] callers deal squads by, so a
+    /// [`Controller::Mind`] hull rides in a squad under its lance-leader as a
+    /// reflex one does and an order reaches it through the unchanged Order path
+    /// (D-UM-15). A pilot's tank still takes no order (`Refusal::NotReflex`).
+    #[must_use]
+    pub const fn is_machine(&self) -> bool {
+        matches!(self, Controller::Reflex | Controller::Mind)
+    }
 }
 
 /// One unit as it is handed over at check-out (doc 16 §3.1 "Custody").
@@ -1746,6 +1757,24 @@ pub struct CustodyUnit {
     pub slot: u8,
     /// M32 unit truth, carried opaque: cut A applies no plan to it (D-16-6).
     pub unit: TacticalUnit,
+}
+
+impl CustodyUnit {
+    /// **What the squads are dealt from** (16b cut N.2; 17b cut L.2, D-UM-2,
+    /// D-UM-53): one `(unit, team, is_machine)` triple per check-out unit, in
+    /// check-out order, the bool [`Controller::is_machine`] — a reflex hull or a
+    /// mind's, never a pilot's. The ONE builder of
+    /// [`crate::deliberation::squads_of`]'s input: [`Arena::new`] and the match
+    /// record's `match_::start` both call it over the same check-out, so the
+    /// record's grouping and the arena's are one function of one data and
+    /// cannot drift apart on who is a machine.
+    #[must_use]
+    pub fn squad_input(units: &[CustodyUnit]) -> Vec<(ObjId, Team, bool)> {
+        units
+            .iter()
+            .map(|unit| (unit.id, unit.team, unit.controller.is_machine()))
+            .collect()
+    }
 }
 
 /// One seated pilot at check-out (doc 16 §3.1's `pilots[{unit, station, epoch}]`).
@@ -4094,10 +4123,11 @@ pub struct Arena {
     /// of), so folding it would add no information and would make the hash a
     /// function of which folds had been asked for by the time it was taken.
     pub jam_fold: BTreeMap<ObjId, Option<crate::arena::perception::Jamming>>,
-    /// **The squads this match's reflex units are commanded in** (16b cut N.2;
-    /// doc 16 §6 "Deliberation": *per squad or commander rather than per unit*),
-    /// derived at check-out by [`crate::deliberation::squads_of`] — the same
-    /// function, over the same `(unit, team, controller)` triples and the same
+    /// **The squads this match's machine units are commanded in** (16b cut N.2;
+    /// doc 16 §6 "Deliberation": *per squad or commander rather than per unit*;
+    /// reflex or, since 17b cut L.2, mind), derived at check-out by
+    /// [`crate::deliberation::squads_of`] — the same function, over the same
+    /// [`CustodyUnit::squad_input`] triples and the same
     /// `[tacsim.arena].squad_size` (16b cut Z.1), that files them on the match
     /// record, so the two groupings cannot drift.
     ///
@@ -4203,6 +4233,13 @@ impl Arena {
                 })
             }
         };
+        // 16b cut N.2: who is commanded, and by whom (see `squads` below), read
+        // off the check-out before it is consumed. 17b cut L.2 (D-UM-53): a
+        // machine of either controller — a mind's hull is dealt as a reflex one
+        // is, so a lance-leader's order reaches it — through the one builder
+        // `match_::start` calls too ([`CustodyUnit::squad_input`]); each state
+        // below carries its unit's controller and id unchanged, in this order.
+        let squad_input = CustodyUnit::squad_input(&units);
         let mut states: Vec<UnitState> = Vec::with_capacity(units.len());
         for mut unit in units {
             // **16b cut AF.1**: the heading and the window, in one function the
@@ -4487,17 +4524,6 @@ impl Arena {
         check_occupancy(&definition.terrain, &states)?;
         let mut index = SpatialIndex::new(&definition.terrain);
         index.rebuild(&definition.terrain, &states);
-        // 16b cut N.2: who is commanded, and by whom (see `squads` below).
-        let squad_input: Vec<(ObjId, Team, bool)> = states
-            .iter()
-            .map(|state| {
-                (
-                    state.id,
-                    state.team,
-                    state.controller == crate::arena::state::Controller::Reflex,
-                )
-            })
-            .collect();
         // 16b cut N.1: the cheapest cell on the window, read once here so the A*
         // heuristic is admissible without a scan per query
         // (`crate::arena::path::min_move_cost`). **16b cut M.4** (`T-15`): and the
@@ -4616,9 +4642,10 @@ impl Arena {
             // 16b cut U.2: filled by the first fold of the first substep.
             jam_fold: BTreeMap::new(),
             // **16b cut N.2**: the squads are *derived* from the check-out, by the
-            // same `squads_of` the match record files them with — a side's reflex
-            // units dealt into squads of at most `[tacsim.arena].squad_size` (16b
-            // cut Z.1), lowest id commanding. Derived rather than handed over
+            // same `squads_of` the match record files them with — a side's machine
+            // units (reflex or, since 17b cut L.2, mind) dealt into squads of at
+            // most `[tacsim.arena].squad_size` (16b cut Z.1), lowest id
+            // commanding. Derived rather than handed over
             // because two groupings of one match would be two answers to "which
             // squad is that order for", and because it means the harness and every
             // fixture get the same grouping the production lobby does: the size
@@ -4929,6 +4956,15 @@ impl Arena {
 mod tests {
     use super::*;
     use crate::arena::test_support::{arena_of, custody, ground, pose, tank};
+
+    /// **17b cut L.2**: a machine is the reflex controller or a unit mind, and
+    /// never a pilot — what both `squads_of` callers deal squads by.
+    #[test]
+    fn l2_is_machine_is_reflex_or_mind() {
+        assert!(!Controller::Pilot.is_machine());
+        assert!(Controller::Reflex.is_machine());
+        assert!(Controller::Mind.is_machine());
+    }
 
     /// **16b cut Q.1**: the letters are the whole of what keeps a provisional
     /// designator and a slot designator apart, so they have to be pairwise

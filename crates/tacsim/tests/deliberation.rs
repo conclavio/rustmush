@@ -29,7 +29,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use mush_core::{AccountId, AccountIdentity, Ctx, GOD, ObjId, Outbox, ParsedArgs, SwitchSet};
+use mush_core::{
+    AccountId, AccountIdentity, Audience, Ctx, GOD, ObjId, Outbox, ParsedArgs, SwitchSet,
+};
 use mush_proto::OutputEvent;
 use mush_sim::data::Pose;
 use mush_tactics::{
@@ -53,7 +55,7 @@ use tacsim::arena::step::StepOutput;
 use tacsim::arena::weapons::WeaponBand;
 use tacsim::config::{ArenaConfig, MatchConfig, ReflexConfig, SensorsConfig};
 use tacsim::deliberation::{
-    CharacterRef, Constraints, MIND_LINK_DROPPED, Objective, Order, RangeBand, SquadId, squads_of,
+    CharacterRef, Constraints, Objective, Order, RangeBand, SquadId, squads_of,
 };
 
 // ---------------------------------------------------------------------------
@@ -609,6 +611,81 @@ fn the_arena_and_the_grouping_agree_on_who_commands() {
             ("red-2".to_string(), ObjId(23), vec![ObjId(23), ObjId(24)]),
             ("blue-1".to_string(), ObjId(30), vec![ObjId(30), ObjId(31)]),
         ]
+    );
+
+    // **17b cut L.2** (D-UM-2, D-UM-53; `Controller::is_machine`): a hull a
+    // mind flies is dealt as a reflex one is — here it is red's lowest id, so
+    // it commands — while a seated pilot's hull is still in no squad. The
+    // triples come from `CustodyUnit::squad_input`, the one builder
+    // `match_::start` and `Arena::new` both call over the check-out, so the
+    // record's grouping and the arena's are one function of one data with a
+    // mind in it too (production fields no Mind hull before M4, so `start`
+    // cannot be driven with one; the shared builder is what keeps its side
+    // from drifting).
+    const PILOTED: ObjId = ObjId(5);
+    let units = vec![
+        tank(RED_A, Team::Red, centre(2, 8), Controller::Mind),
+        tank(PILOTED, Team::Red, centre(2, 10), Controller::Pilot),
+        tank(RED_B, Team::Red, centre(2, 9), Controller::Reflex),
+        tank(BLUE, Team::Blue, centre(13, 8), Controller::Mind),
+    ];
+    let triples = CustodyUnit::squad_input(&units);
+    assert_eq!(
+        triples,
+        vec![
+            (RED_A, Team::Red, true),
+            (PILOTED, Team::Red, false),
+            (RED_B, Team::Red, true),
+            (BLUE, Team::Blue, true),
+        ],
+        "a mind's hull and a reflex hull are machines, a pilot's is not"
+    );
+    let minded = Arena::new(
+        CustodyOut {
+            definition: definition(),
+            units,
+            pilots: vec![Pilot {
+                unit: PILOTED,
+                pilot: ObjId(1_000),
+                station: SmolStr::new("cockpit"),
+                epoch: 1,
+            }],
+            resolution: tacsim::match_::stock_resolution(),
+            seed: SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
+        },
+        &cfg,
+        &match_cfg(),
+        &SensorsConfig::default(),
+    )
+    .expect("the test arena");
+    assert_eq!(
+        minded.squads,
+        squads_of(&triples, cfg.squad_size),
+        "the record's grouping is the arena's, with a mind in it"
+    );
+    let shape: Vec<(String, ObjId, Vec<ObjId>)> = minded
+        .squads
+        .iter()
+        .map(|roster| {
+            (
+                roster.id.to_string(),
+                roster.commander,
+                roster.units.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            ("red-1".to_string(), RED_A, vec![RED_A, RED_B]),
+            ("blue-1".to_string(), BLUE, vec![BLUE]),
+        ],
+        "the minds are dealt and the lower id commands"
+    );
+    assert!(
+        minded.squad_of(PILOTED).is_none(),
+        "a pilot's tank is in no squad"
     );
 }
 
@@ -2120,6 +2197,12 @@ fn world_config() -> tacsim::TacsimConfig {
 }
 
 fn roster() -> Vec<Box<dyn mush_core::GameModule>> {
+    roster_of(world_config())
+}
+
+/// [`roster`] over `cfg` — **17b cut L.2**'s pilot-only match turns the fill
+/// off.
+fn roster_of(cfg: tacsim::TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
 
     let llm = Arc::new(
@@ -2128,7 +2211,6 @@ fn roster() -> Vec<Box<dyn mush_core::GameModule>> {
     );
     let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let cfg = world_config();
     let mut mods = comp::server_modules_with(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
@@ -2159,73 +2241,31 @@ impl AccountIdentity for Accounts {
     }
 }
 
+/// **The lapse sentence of a lance-leader's order** (17b cut L.2; D-UM-32 as
+/// amended by R-C, D-UM-53; doc 16 §6 "Provider failure"). The lance-leader's
+/// `hold` runs out unrenewed and the world says, once:
+///
+/// - to every pilot of the squad's own side — two red pilots here, so "every"
+///   is more than "the first" — each once, as a `Sys` line, byte for byte
+///   `Squad red-1: red lance leader 1's hold order has run out; back on
+///   doctrine.`;
+/// - to no pilot of the other side — the recipients are read off the
+///   `OutputEvent`s' audiences, not only the text;
+/// - to staff, the same sentence behind `Arena match <n>: `;
+///
+/// and nothing is said while the order stands, nothing a second time, and the
+/// counts are what they were. No "link dropped" is said: that is a mind's own
+/// failure's word (doc 17 §8).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_world_says_the_mind_link_dropped_when_an_order_runs_out() {
+async fn l2_the_world_says_the_leaders_order_lapsed_once() {
     let mut tw = TestWorld::with_modules(roster());
-    let lobby = tacsim::match_::centre_object(tw.world(), tacsim::match_::LOBBY_ENTRY)
-        .expect("the OOC pack carries the simulator lobby");
-    let mut map = Accounts::default();
-    let mut pilots = Vec::new();
-    for n in 0..2 {
-        let pilot = tw.spawn_player(&format!("Pilot{n}"));
-        tw.world_mut()
-            .move_to(pilot, lobby)
-            .expect("a player walks into the lobby");
-        map.0.insert(
-            pilot,
-            AccountId::mint(&format!("account-{n}"), i64::from(n)).expect("an account id"),
-        );
-        pilots.push(pilot);
-    }
-    *tw.world_mut()
-        .module_state_mut::<mush_sim::AccountOracle>()
-        .expect("the simulation is composed") = mush_sim::AccountOracle::new(Arc::new(map));
-
-    // Claim one slot a side and seat both pilots; `ai_fill` fields the rest.
-    tw.run(pilots[0], "sim team red");
-    tw.run(pilots[1], "sim team blue");
-    tw.run(pilots[0], "sim start");
-    for pilot in &pilots {
-        let pod = tacsim::match_::pod_of(tw.world(), *pilot).expect("a claimed slot locks a pod");
-        let unit =
-            tacsim::match_::tank_of(tw.world(), pod).expect("the pod's tank is in the world");
-        let match_id = tacsim::match_::centre_of(tw.world())
-            .expect("the centre")
-            .match_id
-            .expect("a boarding centre has a match id");
-        let mut out = Outbox::new();
-        let engine = tw.engine_mut();
-        let mut ctx = Ctx {
-            w: &mut engine.world,
-            actor: *pilot,
-            switches: SwitchSet::default(),
-            args: ParsedArgs::default(),
-            out: &mut out,
-            reg: &engine.registry,
-            module: Some(SmolStr::new(tacsim::NS)),
-            typed_state: mush_core::ModuleActionState::unavailable(),
-        };
-        tacsim::match_::slot_seated(&mut ctx, match_id, *pilot, unit)
-            .expect("the seat is reported");
-    }
-    let record = tacsim::match_::centre_of(tw.world())
-        .expect("the centre")
-        .clone();
-    let match_id = record.match_id.expect("the match started");
-    let squads = tw
-        .world()
-        .module_state::<tacsim::match_::MatchBook>()
-        .and_then(|book| book.get(match_id))
-        .map(|record| record.squads.clone())
-        .expect("the record carries its squads");
-    assert!(
-        !squads.is_empty(),
-        "with ai_fill on, the unclaimed pods' tanks are commanded"
-    );
-    let squad = squads[0].id;
+    let (match_id, squads, pilots) = l2_running_match(&mut tw, &[Team::Red, Team::Red, Team::Blue]);
+    let [(red_pilot, _), (wingmate, _), (blue_pilot, _)] = [pilots[0], pilots[1], pilots[2]];
+    let (red, _) = l1_sides(&squads);
+    let squad = red.id;
 
     // The reply the world would have got from the provider: one `hold` with a
-    // one-second time to live.
+    // one-second time to live, by the record's own persona for the squad.
     let reply = tacsim::deliberation::DeliberationReply::Ok {
         match_id: match_id.0,
         order: Order {
@@ -2237,7 +2277,6 @@ async fn the_world_says_the_mind_link_dropped_when_an_order_runs_out() {
             ttl_ms: 1_000,
             issued_ms: 0,
             issuer: None,
-            // 17b cut L.1: the record's own persona for the squad.
             by: persona(squad),
             spot: None,
         },
@@ -2245,29 +2284,67 @@ async fn the_world_says_the_mind_link_dropped_when_an_order_runs_out() {
         prompt_hash: "hash".to_string(),
     };
     let payload = serde_json::to_string(&reply).expect("a reply encodes");
-    let said = with_ctx(&mut tw, GOD, |ctx| {
+    let said = l2_said(&mut tw, |ctx| {
         tacsim::arena_bridge::on_deliberation_reply(ctx, &payload);
     });
     assert!(
-        !said.iter().any(|line| line.contains(MIND_LINK_DROPPED)),
+        l2_lapses(&said).is_empty(),
         "nothing is said while the order stands: {said:?}"
     );
 
     // Two seconds later the order has run out, and the next egress drain says so.
     let now = tw.world().now();
     tw.set_now(now + 2);
-    let said = with_ctx(&mut tw, GOD, tacsim::arena_bridge::drain_egress);
-    let line = said
-        .iter()
-        .find(|line| line.contains(MIND_LINK_DROPPED))
-        .unwrap_or_else(|| panic!("the one in-world notice was not said: {said:?}"));
-    assert!(line.contains(&squad.to_string()), "{line}");
-    assert!(line.contains("hold order has run out"), "{line}");
+    let said = l2_said(&mut tw, tacsim::arena_bridge::drain_egress);
+    let line = "Squad red-1: red lance leader 1's hold order has run out; back on doctrine.";
+    let lapses = l2_lapses(&said);
+    // The side's pilots are told in the record's roster order, which this test
+    // does not pin; each of them exactly once, then staff, and nobody else.
+    assert_eq!(lapses.len(), 3, "two pilots and staff: {said:?}");
+    for pilot in [red_pilot, wingmate] {
+        assert_eq!(
+            lapses
+                .iter()
+                .filter(|lapse| **lapse == (Audience::Actor(pilot), line.to_owned()))
+                .count(),
+            1,
+            "every pilot of the squad's side, #{} among them, once: {said:?}",
+            pilot.0
+        );
+        assert!(
+            said.iter()
+                .any(|(audience, event)| *audience == Audience::Actor(pilot)
+                    && matches!(event, OutputEvent::Sys(_))
+                    && render(event) == line),
+            "a Sys line to #{}",
+            pilot.0
+        );
+    }
+    assert_eq!(
+        lapses.last(),
+        Some(&(
+            Audience::Actor(GOD),
+            format!("Arena match {match_id}: {line}")
+        )),
+        "and staff, after the side: {said:?}"
+    );
+    assert!(
+        !said
+            .iter()
+            .any(|(audience, _)| *audience == Audience::Actor(blue_pilot)),
+        "the other side hears nothing of it: {said:?}"
+    );
+    assert!(
+        !said
+            .iter()
+            .any(|(_, event)| render(event).contains("link dropped")),
+        "the retired sentence is never said: {said:?}"
+    );
 
     // Said once, and once only.
-    let again = with_ctx(&mut tw, GOD, tacsim::arena_bridge::drain_egress);
+    let again = l2_said(&mut tw, tacsim::arena_bridge::drain_egress);
     assert!(
-        !again.iter().any(|said| said.contains(MIND_LINK_DROPPED)),
+        l2_lapses(&again).is_empty(),
         "a notice is said once: {again:?}"
     );
     let (issued, refused, in_flight) = tw
@@ -2277,6 +2354,299 @@ async fn the_world_says_the_mind_link_dropped_when_an_order_runs_out() {
         .expect("the registry");
     assert_eq!((issued, refused), (1, 0));
     assert_eq!(in_flight, 0, "the reply gave its in-flight slot back");
+}
+
+/// **A pilot's own order lapses to that pilot alone** (17b cut L.2; the plan's
+/// Q-L3: 16c Q38's "no radio line" never told the side a pilot ordered, so its
+/// lapse is not told to them either — a declared narrowing). Two red pilots
+/// and a blue one; the first red pilot's watch on red-1 runs out:
+///
+/// - the issuer reads `Squad red-1: your hold order has run out; back on
+///   doctrine.`;
+/// - staff read it in the pilot's name, `Arena match <n>: Squad red-1:
+///   Pilot0's hold order has run out; back on doctrine.`;
+/// - the side's other pilot and the other side read nothing.
+///
+/// And a watch whose author's object is gone (blue-1's, here) is told to
+/// nobody but staff, as `its leader's`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn l2_a_pilots_own_order_lapse_is_told_to_them_alone() {
+    let mut tw = TestWorld::with_modules(roster());
+    let (match_id, squads, pilots) = l2_running_match(&mut tw, &[Team::Red, Team::Red, Team::Blue]);
+    let [
+        (issuer, issuer_tank),
+        (wingmate, _),
+        (blue_pilot, blue_tank),
+    ] = [pilots[0], pilots[1], pilots[2]];
+    let (red, blue) = l1_sides(&squads);
+    let now_ms = tw.world().now() * 1_000;
+    {
+        let registry = tw
+            .world_mut()
+            .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+            .expect("the registry");
+        registry.note_human_order(
+            match_id,
+            red.id,
+            SmolStr::new("hold"),
+            issuer_tank,
+            CharacterRef::Character { id: issuer },
+            now_ms + 1_000,
+        );
+        // An author with no object in the world: a character that has gone.
+        registry.note_human_order(
+            match_id,
+            blue.id,
+            SmolStr::new("withdraw"),
+            blue_tank,
+            CharacterRef::Character { id: ObjId(424_242) },
+            now_ms + 1_000,
+        );
+    }
+    let now = tw.world().now();
+    tw.set_now(now + 2);
+    let said = l2_said(&mut tw, tacsim::arena_bridge::drain_egress);
+    let blue_line = format!(
+        "Arena match {match_id}: Squad {}: its leader's withdraw order has run out; back on \
+         doctrine.",
+        blue.id
+    );
+    assert_eq!(
+        l2_lapses(&said),
+        vec![
+            (
+                Audience::Actor(issuer),
+                "Squad red-1: your hold order has run out; back on doctrine.".to_owned()
+            ),
+            (
+                Audience::Actor(GOD),
+                format!(
+                    "Arena match {match_id}: Squad red-1: Pilot0's hold order has run out; back \
+                     on doctrine."
+                )
+            ),
+            (Audience::Actor(GOD), blue_line),
+        ],
+        "the issuer and staff, and nobody else: {said:?}"
+    );
+    for nobody in [wingmate, blue_pilot] {
+        assert!(
+            !said
+                .iter()
+                .any(|(audience, _)| *audience == Audience::Actor(nobody)),
+            "#{} hears nothing of it: {said:?}",
+            nobody.0
+        );
+    }
+    let again = l2_said(&mut tw, tacsim::arena_bridge::drain_egress);
+    assert!(l2_lapses(&again).is_empty(), "said once: {again:?}");
+}
+
+/// **`@arena/status` names who leads** (17b cut L.2; the plan's Q-L4). Through
+/// the composition: the `orders:` line counts the lance leaders' orders (R-C:
+/// a mind never orders) and the `leaders:` line counts the sim personas — `2
+/// sim personas` on a two-squad match — and names a character leader by squad
+/// and name; a match the fill did not field (pilots only, so no squad) reads
+/// `leaders: none`; and a pilot still gets the verb's refusal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn l2_status_prints_the_leaders() {
+    let mut tw = TestWorld::with_modules(roster());
+    let (match_id, squads, pilots) = l2_running_match(&mut tw, &[Team::Red, Team::Blue]);
+    assert_eq!(squads.len(), 2, "a squad a side: {squads:?}");
+    let staff = |tw: &mut TestWorld, actor: ObjId| {
+        let events = tw.run(actor, "@arena/status");
+        tw.seen_by(&events, actor)
+    };
+    let status = staff(&mut tw, GOD);
+    assert!(
+        status
+            .iter()
+            .any(|line| line == "  orders: 0 by pilots, 0 by lance leaders"),
+        "{status:?}"
+    );
+    assert!(
+        status
+            .iter()
+            .any(|line| line == "  leaders: 2 sim personas"),
+        "{status:?}"
+    );
+    assert!(
+        !status.iter().any(|line| line.contains("by the machines")),
+        "{status:?}"
+    );
+
+    // A character leading red-1 is named by squad and name.
+    let (red, _) = l1_sides(&squads);
+    if let Some(record) = tw
+        .world_mut()
+        .module_state_mut::<tacsim::match_::MatchBook>()
+        .and_then(|book| book.get_mut(match_id))
+    {
+        for leader in &mut record.leaders {
+            if leader.squad == red.id {
+                leader.by = CharacterRef::Character { id: pilots[0].0 };
+            }
+        }
+    }
+    let status = staff(&mut tw, GOD);
+    assert!(
+        status
+            .iter()
+            .any(|line| line == "  leaders: 1 sim persona, red-1 Pilot0"),
+        "{status:?}"
+    );
+
+    // A pilot reads the refusal and nothing of the match.
+    let refused = staff(&mut tw, pilots[1].0);
+    assert!(
+        refused
+            .iter()
+            .any(|line| line.contains("Permission denied.")),
+        "{refused:?}"
+    );
+    assert!(
+        !refused
+            .iter()
+            .any(|line| line.contains("leaders:") || line.contains("orders:")),
+        "{refused:?}"
+    );
+
+    // Pilots only: no fill, no squad, no leader.
+    let mut cfg = world_config();
+    cfg.match_.ai_fill = false;
+    let mut alone = TestWorld::with_modules(roster_of(cfg));
+    let (_, squads, _) = l2_running_match(&mut alone, &[Team::Red, Team::Blue]);
+    assert!(
+        squads.is_empty(),
+        "a pilot-only match has no squad: {squads:?}"
+    );
+    let status = staff(&mut alone, GOD);
+    assert!(
+        status.iter().any(|line| line == "  leaders: none"),
+        "{status:?}"
+    );
+    assert!(
+        status
+            .iter()
+            .any(|line| line == "  orders: 0 by pilots, 0 by lance leaders"),
+        "{status:?}"
+    );
+}
+
+/// **17b cut L.2**: start one match on the production composition root with
+/// one pilot per entry of `sides` (named `Pilot0`, `Pilot1`, … in that order)
+/// and, with the fill on, machines to three a side (`SIM AI 3`), every pilot
+/// boarded, and answer its id, its squads and
+/// each pilot with their tank — [`y1_running_match`] for any number of pilots
+/// a side.
+fn l2_running_match(
+    tw: &mut TestWorld,
+    sides: &[Team],
+) -> (
+    tacsim::arena_task::MatchId,
+    Vec<tacsim::deliberation::SquadRoster>,
+    Vec<(ObjId, ObjId)>,
+) {
+    let lobby = tacsim::match_::centre_object(tw.world(), tacsim::match_::LOBBY_ENTRY)
+        .expect("the OOC pack carries the simulator lobby");
+    let mut map = Accounts::default();
+    let mut pilots = Vec::new();
+    for (n, _) in sides.iter().enumerate() {
+        let pilot = tw.spawn_player(&format!("Pilot{n}"));
+        tw.world_mut()
+            .move_to(pilot, lobby)
+            .expect("a player walks into the lobby");
+        let n = i64::try_from(n).expect("a handful of pilots");
+        map.0.insert(
+            pilot,
+            AccountId::mint(&format!("account-{n}"), n).expect("an account id"),
+        );
+        pilots.push(pilot);
+    }
+    *tw.world_mut()
+        .module_state_mut::<mush_sim::AccountOracle>()
+        .expect("the simulation is composed") = mush_sim::AccountOracle::new(Arc::new(map));
+    // The control-lease mirror is refreshed by `mush-sim`'s own coarse tick,
+    // and a seat activation fails closed on an unread one: one second of world
+    // time first, as `tests/cockpit.rs`' rig does.
+    let now = tw.world().now().max(1);
+    tw.set_now(now);
+    let _ = tw.fire_due(now.saturating_mul(1_000));
+    for (pilot, team) in pilots.iter().zip(sides) {
+        tw.run(*pilot, &format!("sim team {}", team.as_str()));
+    }
+    // Three a side, so a side of two pilots still fields a machine; refused,
+    // and harmless, on a server with the fill off.
+    tw.run(pilots[0], "sim ai 3");
+    tw.run(pilots[0], "sim start");
+    let match_id = tacsim::match_::centre_of(tw.world())
+        .expect("the centre")
+        .match_id
+        .expect("a boarding centre has a match id");
+    // Each pilot walks to their side's room and boards, as a player does
+    // (`tests/cockpit.rs`' `fly`): the match is checked out at the last
+    // `BOARD`, with every claimed tank seated, so the record's rosters carry
+    // the pilots and their tanks are the pilots' and in no squad.
+    let mut seated = Vec::new();
+    for (pilot, team) in pilots.iter().zip(sides) {
+        let entry = match team {
+            Team::Red => tacsim::match_::RED_ROOM_ENTRY,
+            Team::Blue => tacsim::match_::BLUE_ROOM_ENTRY,
+        };
+        let room = tacsim::match_::centre_object(tw.world(), entry).expect("a centre room");
+        tw.world_mut()
+            .move_to(*pilot, room)
+            .expect("the centre's rooms take anybody");
+        tw.run(*pilot, "board");
+        let pod = tacsim::match_::pod_of(tw.world(), *pilot).expect("a claimed slot locks a pod");
+        let unit =
+            tacsim::match_::tank_of(tw.world(), pod).expect("the pod's tank is in the world");
+        seated.push((*pilot, unit));
+    }
+    assert_eq!(
+        tacsim::match_::centre_of(tw.world())
+            .expect("the centre")
+            .state,
+        tacsim::match_::MatchState::Running,
+        "every pilot boarded"
+    );
+    let squads = tw
+        .world()
+        .module_state::<tacsim::match_::MatchBook>()
+        .and_then(|book| book.get(match_id))
+        .map(|record| record.squads.clone())
+        .expect("the record carries its squads");
+    (match_id, squads, seated)
+}
+
+/// Run one closure with a `Ctx` over the test world as staff and return every
+/// event it produced with its audience (17b cut L.2: the lapse's recipients
+/// are part of the claim).
+fn l2_said(tw: &mut TestWorld, body: impl FnOnce(&mut Ctx<'_>)) -> Vec<(Audience, OutputEvent)> {
+    let mut out = Outbox::new();
+    {
+        let engine = tw.engine_mut();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: SwitchSet::default(),
+            args: ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(SmolStr::new(tacsim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        body(&mut ctx);
+    }
+    out.events().to_vec()
+}
+
+/// The lapse sentences among `said`, each with its audience, in the order said.
+fn l2_lapses(said: &[(Audience, OutputEvent)]) -> Vec<(Audience, String)> {
+    said.iter()
+        .map(|(audience, event)| (audience.clone(), render(event)))
+        .filter(|(_, line)| line.contains("order has run out"))
+        .collect()
 }
 
 /// Run one closure with a `Ctx` over the test world and return every line of
@@ -3172,8 +3542,9 @@ fn aa1_an_advance_ends_for_the_machine_that_cannot_carry_it_out() {
 
 /// Start one match on the production composition root with a pilot a side and
 /// `ai_fill` fielding the rest, and answer it with its squads and the red
-/// pilot's tank — the setup of
-/// `the_world_says_the_mind_link_dropped_when_an_order_runs_out`.
+/// pilot's tank — the setup of the lapse tests (17b cut L.2's
+/// `l2_the_world_says_the_leaders_order_lapsed_once` generalises it as
+/// `l2_running_match`).
 ///
 /// **17b cut L.1**: it answers the two pilots too — `[red, blue]`, each the
 /// lead of their side (the admission reads who is at a seat).

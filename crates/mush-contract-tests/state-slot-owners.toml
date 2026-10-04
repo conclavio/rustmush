@@ -230,8 +230,8 @@ accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
 reason = """
-16b cut N.2, for the same reason three rows below: the world half of the
-"mind link dropped" notice is only observable in a RUNNING match, and starting one
+16b cut N.2, for the same reason three rows below: the world half of
+the order-lapse notice is only observable in a RUNNING match, and starting one
 seats pilots through `mush_sim::request_seat_activation`, which fails closed on a
 character with no account. The oracle is boot-hydrated by the host from the store,
 which a `TestWorld` has none of, so this harness installs the same map
