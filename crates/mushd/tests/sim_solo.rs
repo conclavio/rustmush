@@ -589,8 +589,11 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
 
     // ---- power, and the fight ----
     say(&mut ada, "STARTUP", "Startup sequence").await;
+    // Each poll read WHOLE: a needle of `power` is also the panel hint's and the
+    // previous poll's, and a poll that returned on either would leave its
+    // `STATUS` in flight into whatever is marked next.
     wait_until(STEP_TIMEOUT, "the solo tank to come online", async || {
-        let seen = ask(&mut ada, "STATUS", "power").await;
+        let seen = ask_whole(&mut ada, "STATUS").await;
         seen.contains("power online")
     })
     .await;

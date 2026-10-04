@@ -433,10 +433,16 @@ async fn open_the_centre(god: &mut Term) {
 }
 
 /// Bring power up, waiting for the arena to say it is online.
+///
+/// Each `STATUS` is read WHOLE ([`ask_whole`]). A needle of `power` is not
+/// this answer's alone: the panel hint (`…brings your power up.`) and the
+/// previous poll's own reply both carry it, so a poll could return on either
+/// and leave its `STATUS` in flight, to land after whatever the caller marks
+/// next.
 async fn power_up(term: &mut Term) {
     say(term, "STARTUP", "Startup sequence").await;
     wait_until(STEP_TIMEOUT, "the tank to come online", async || {
-        ask(term, "STATUS", "power").await.contains("power online")
+        ask_whole(term, "STATUS").await.contains("power online")
     })
     .await;
 }
@@ -447,17 +453,12 @@ async fn wait_for_contact(term: &mut Term) -> String {
         STEP_TIMEOUT,
         "the sensor to acquire a contact",
         async || {
-            let mark = term.mark();
-            term.send_line("CONTACTS").await;
-            if term
-                .expect_one_of_after(
-                    mark,
-                    &["(rel ", "No contacts.", COMMIT_PENDING, CONTROL_UNKNOWN],
-                )
-                .await
-                == 0
-            {
-                let seen = strip_ansi(&term.seen[mark..]);
+            // Read WHOLE: a poll that returned at the first row would leave
+            // the rest of the listing unread in the channel, to open the
+            // caller's next mark on a stray contact row. Only a row carries
+            // `(rel ` — the acquisition notice's bearing is absolute.
+            let seen = ask_whole(term, "CONTACTS").await;
+            if seen.contains("(rel ") {
                 // Keep the classified callsign: a provisional X-number may be
                 // renamed during subsequent status/weapon assertions.
                 if seen.contains("blue") || seen.contains("red") {
@@ -1483,9 +1484,17 @@ async fn ae3_a_pilot_flies_the_drone_and_it_carries_no_weapon() {
     say(&mut ada, "red", "Red Room").await;
     say(&mut bo, "blue", "Blue Room").await;
     let mark = bo.mark();
+    let boarding = ada.mark();
     say(&mut ada, "BOARD", "climb into").await;
     say(&mut bo, "BOARD", "climb into").await;
     ada.expect("Good hunting").await;
+    // **16b cut AH.1**: the first frame, before the `STATUS` below. `Good
+    // hunting` is said at the check-out and the arena's first frame can land a
+    // moment after it, when `STATUS` answers `The panel has told you nothing
+    // yet.` and carries no bracket at all. Ada is a fresh account, so her first
+    // frame carries the panel hint in the same drain that writes her mirror —
+    // the fence.
+    ada.expect_after(boarding, "Hint: the panel").await;
 
     let seen = ask_whole(&mut ada, "STATUS").await;
     assert!(seen.contains("[drone_mk1]"), "the bracket: {seen}");

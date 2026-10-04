@@ -284,6 +284,26 @@ async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
     strip_ansi(&term.seen[mark..])
 }
 
+/// The parser's refusal of [`SENTINEL`], which closes a whole answer.
+const HUH: &str = "Huh?";
+/// A line no command answers but the parser's refusal.
+const SENTINEL: &str = "zzz-sentinel";
+
+/// **A whole answer, never half of one**: the line, then a sentinel the parser
+/// refuses, so the whole of a multi-line answer has arrived by the refusal.
+async fn ask_whole(term: &mut Term, line: &str) -> String {
+    for _ in 0..RETRY_BUDGET {
+        let mark = term.mark();
+        term.send_line(line).await;
+        term.send_line(SENTINEL).await;
+        if term.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
+            return strip_ansi(&term.seen[mark..]);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("`{line}` never produced a whole answer")
+}
+
 /// Run `line` until its answer carries `needle`, and hand that answer back.
 ///
 /// The frame a read verb renders is the **last one the arena sent** (16b cut K.2's
@@ -419,10 +439,16 @@ async fn take_off(ada: &mut Term, bo: &mut Term) {
 }
 
 /// Bring power up, waiting for the arena to say it is online.
+///
+/// Each `STATUS` is read WHOLE ([`ask_whole`]). A needle of `power` is not
+/// this answer's alone: the panel hint (`…brings your power up.`) and the
+/// previous poll's own reply both carry it, so a poll could return on either
+/// and leave its `STATUS` in flight, to land after whatever the caller marks
+/// next.
 async fn power_up(term: &mut Term) {
     say(term, "STARTUP", "Startup sequence").await;
     wait_until(STEP_TIMEOUT, "the tank to come online", async || {
-        ask(term, "STATUS", "power").await.contains("power online")
+        ask_whole(term, "STATUS").await.contains("power online")
     })
     .await;
 }
@@ -433,17 +459,12 @@ async fn wait_for_contact(term: &mut Term) -> String {
         STEP_TIMEOUT,
         "the sensor to acquire a contact",
         async || {
-            let mark = term.mark();
-            term.send_line("CONTACTS").await;
-            if term
-                .expect_one_of_after(
-                    mark,
-                    &["(rel ", "No contacts.", COMMIT_PENDING, CONTROL_UNKNOWN],
-                )
-                .await
-                == 0
-            {
-                let seen = strip_ansi(&term.seen[mark..]);
+            // Read WHOLE: a poll that returned at the first row would leave
+            // the rest of the listing unread in the channel, to open the
+            // caller's next mark on a stray contact row. Only a row carries
+            // `(rel ` — the acquisition notice's bearing is absolute.
+            let seen = ask_whole(term, "CONTACTS").await;
+            if seen.contains("(rel ") {
                 // Keep the classified callsign: a provisional X-number may be
                 // renamed during subsequent status/weapon assertions.
                 if seen.contains("blue") || seen.contains("red") {
@@ -502,7 +523,9 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     // Forty metres of open grass: the shipped sensor sees it, and the pilot is
     // handed one opaque id and nothing else about what is out there.
     let contact = wait_for_contact(&mut ada).await;
-    let seen = ask(&mut ada, "CONTACTS", "bearing").await;
+    // Read whole: a `bearing` needle is also the acquisition notice's, and a
+    // read that returned on it would leave this listing in flight.
+    let seen = ask_whole(&mut ada, "CONTACTS").await;
     assert!(
         !seen.contains("Blue Tank"),
         "a contact is never named by its object: {seen}"

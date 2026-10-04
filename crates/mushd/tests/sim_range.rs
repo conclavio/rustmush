@@ -342,10 +342,16 @@ fn designator_of(listing: &str) -> Option<String> {
 }
 
 /// Bring power up, waiting for the arena to say it is online.
+///
+/// Each `STATUS` is read WHOLE ([`ask_whole`]). A needle of `power` is not
+/// this answer's alone: the panel hint (`…brings your power up.`) and the
+/// previous poll's own reply both carry it, so a poll could return on either
+/// and leave its `STATUS` in flight, to land after whatever the caller marks
+/// next.
 async fn power_up(term: &mut Term) {
     say(term, "STARTUP", "Startup sequence").await;
     wait_until(STEP_TIMEOUT, "the tank to come online", async || {
-        ask(term, "STATUS", "power").await.contains("power online")
+        ask_whole(term, "STATUS").await.contains("power online")
     })
     .await;
 }
@@ -357,17 +363,12 @@ async fn wait_for_contact(term: &mut Term) -> String {
         STEP_TIMEOUT,
         "the sensor to tell a contact apart",
         async || {
-            let mark = term.mark();
-            term.send_line("CONTACTS").await;
-            if term
-                .expect_one_of_after(
-                    mark,
-                    &["(rel ", "No contacts.", COMMIT_PENDING, CONTROL_UNKNOWN],
-                )
-                .await
-                == 0
-            {
-                let seen = strip_ansi(&term.seen[mark..]);
+            // Read WHOLE: a poll that returned at the first row would leave
+            // the rest of the listing unread in the channel, to open the
+            // caller's next mark on a stray contact row. Only a row carries
+            // `(rel ` — the acquisition notice's bearing is absolute.
+            let seen = ask_whole(term, "CONTACTS").await;
+            if seen.contains("(rel ") {
                 contact = designator_of(&seen).filter(|id| !id.starts_with('X'));
             }
             contact.is_some()

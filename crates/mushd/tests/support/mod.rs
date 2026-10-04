@@ -221,6 +221,44 @@ impl Term {
         }
     }
 
+    /// Wait for `needle` in the post-mark output read the way a full-screen
+    /// paint has to be read: ANSI dropped AND every whitespace character
+    /// squeezed out, so `needle` is written without spaces (`Nolock`).
+    ///
+    /// The `@tui` screen paints only the cells that change, so a run of blanks
+    /// that was blank before goes out as a cursor jump: `No lock` can reach the
+    /// wire as `No`, a jump, `lock`, which [`Term::expect_after`] never sees.
+    /// Squeezed, the two spellings are one.
+    pub async fn expect_squeezed_after(&mut self, mark: usize, needle: &str) {
+        let squeezed = |raw: &str| -> String {
+            strip_ansi(raw)
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect()
+        };
+        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+        while !squeezed(&self.seen[mark..]).contains(needle) {
+            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "timeout waiting for {needle:?} squeezed; seen: {:?}",
+                        self.seen
+                    )
+                });
+            match msg {
+                Some(ChannelMsg::Data { data }) => {
+                    self.seen.push_str(&String::from_utf8_lossy(&data));
+                }
+                Some(_) => {}
+                None => panic!(
+                    "channel closed waiting for {needle:?} squeezed; seen: {:?}",
+                    self.seen
+                ),
+            }
+        }
+    }
+
     /// Wait for one of several post-mark strings and return its index.
     pub async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
         assert!(!needles.is_empty(), "at least one needle is required");

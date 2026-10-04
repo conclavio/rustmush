@@ -830,10 +830,16 @@ async fn arrive(term: &mut Term, name: &str, callsign: &str, gunnery: u32) {
 }
 
 /// Bring a tank's power up and wait for the arena to say it is online.
+///
+/// Each `STATUS` is read WHOLE ([`ask_whole`]). A needle of `power` is not
+/// this answer's alone: the panel hint (`…brings your power up.`) and the
+/// previous poll's own reply both carry it, so a poll could return on either
+/// and leave its `STATUS` in flight, to land after whatever the caller marks
+/// next.
 async fn power_up(term: &mut Term) {
     say(term, "STARTUP", "Startup sequence").await;
     wait_until(STEP_TIMEOUT, "the tank to come online", async || {
-        ask(term, "STATUS", "power").await.contains("power online")
+        ask_whole(term, "STATUS").await.contains("power online")
     })
     .await;
 }

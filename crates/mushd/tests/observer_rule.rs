@@ -1962,7 +1962,7 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         STEP_TIMEOUT,
         "the controlled sensor to classify its contact",
         async || {
-            classified = ask(&mut ada, "CONTACTS", "(rel ").await;
+            classified = ask_whole(&mut ada, "CONTACTS").await;
             classified.contains("blue")
         },
     )
@@ -2345,7 +2345,7 @@ async fn the_switch_names_a_contact_at_the_first_pass_over_the_real_composition(
         STEP_TIMEOUT,
         "the controlled sensor to classify its contact",
         async || {
-            classified = ask(&mut ada, "CONTACTS", "(rel ").await;
+            classified = ask_whole(&mut ada, "CONTACTS").await;
             classified.contains("blue")
         },
     )
@@ -2759,36 +2759,36 @@ async fn close_to_muzzle_range(god: &mut Term, red: u32, blue: u32, domain: u64)
 }
 
 /// Bring one tank's power up without moving it.
+///
+/// Each `STATUS` is read WHOLE ([`ask_whole`]). A needle of `power` is not
+/// this answer's alone: the panel hint (`…brings your power up.`) and the
+/// previous poll's own reply both carry it, so a poll could return on either
+/// and leave its `STATUS` in flight — to land, `Callsign RA.` and all, after
+/// whatever the caller marks next.
 async fn power_up(term: &mut Term) {
     say(term, "STARTUP", "Startup sequence").await;
     wait_until(STEP_TIMEOUT, "the tank to come online", async || {
-        ask(term, "STATUS", "power").await.contains("power online")
+        ask_whole(term, "STATUS").await.contains("power online")
     })
     .await;
 }
 /// Wait until `CONTACTS` holds something, and answer the row's short designator
 /// (16b cut Q.1).
+///
+/// Each listing is read WHOLE ([`ask_whole`]): a poll that returned at its first
+/// row would leave the rest of the listing unread in the channel, and the
+/// caller's next mark would then open on a stray contact row — on a target's
+/// pilot, the shooter's callsign in a slice that must never carry it.
 async fn first_contact(term: &mut Term) -> String {
     let mut contact = None;
     wait_until(
         STEP_TIMEOUT,
         "the sensor to publish a contact",
         async || {
-            let mark = term.mark();
-            term.send_line("CONTACTS").await;
-            if term
-                .expect_one_of_after(
-                    mark,
-                    // 16b cut Q.1: the relative bearing, which only a row carries —
-                    // the acquisition notice quotes an absolute bearing of its own.
-                    &["(rel ", NO_CONTACTS, COMMIT_PENDING, CONTROL_UNKNOWN],
-                )
-                .await
-                == 0
-            {
-                let seen = strip_ansi(&term.seen[mark..]);
-                contact = designator_of(&seen);
-            }
+            // 16b cut Q.1: `designator_of` reads a row by its relative bearing,
+            // which only a row carries — the acquisition notice quotes an
+            // absolute bearing of its own.
+            contact = designator_of(&ask_whole(term, "CONTACTS").await);
             contact.is_some()
         },
     )
@@ -3179,7 +3179,19 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
     // and where. What it is **not** told is anything at all about who fired: no
     // name, no object number, not the contact id it holds the shooter under, not
     // a bearing, not a side, not a weapon.
-    let seen = ask(&mut bo, "CONTACTS", "bearing").await;
+    //
+    // Read WHOLE, as `first_contact` below reads it: a `bearing` needle is also
+    // the acquisition notice's (`New contact X1: bearing 090°…`), and a read that
+    // returned on the notice would leave this listing in flight — to land in the
+    // target's own `SIM REPORT` further down, the shooter's callsign and all.
+    // Polled until a ROW is there (`(rel `, which only a row carries), so the
+    // assertion below is about a listing that holds the shooter.
+    let mut seen = String::new();
+    wait_until(STEP_TIMEOUT, "the target to hold a contact", async || {
+        seen = ask_whole(&mut bo, "CONTACTS").await;
+        seen.contains("(rel ")
+    })
+    .await;
     names_nothing(&seen, red, blue, "the target's `CONTACTS`");
     // The shooter's magazine counts a round when it leaves the barrel; the
     // target is told when it lands, a flight and a frame later, pushed on its
@@ -3723,9 +3735,13 @@ async fn the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found() {
     // ---- the pilot, before anything has been found ----------------------
     let opened = ada.mark();
     ada.send_line("@tui").await;
-    // `Callsign` is the status pane's first row, and it paints on the cockpit
-    // screen alone — which the FIRST frame of the match opens by itself.
-    ada.expect_after(opened, "Callsign").await;
+    // `No lock` is the status pane's LAST row, and it paints on the cockpit
+    // screen alone — which the FIRST frame of the match opens by itself. The
+    // wait is on the last row and not on `Callsign`, the first: one paint can
+    // reach the wire in several reads, and a slice cut at the first row has
+    // not seen the pane whole. (Ada has locked nothing, so no line of hers
+    // ever said `No lock` in line mode either.)
+    ada.expect_squeezed_after(opened, "Nolock").await;
     let before = squeezed(&ada.seen[opened..]);
     assert!(
         before.contains("CallsignRA"),
@@ -5601,17 +5617,9 @@ async fn i3_a_place_is_told_to_nobody_and_its_refusal_leaks_no_round() {
     // A few sensor passes: the contact is the same designator, or gone.
     for _ in 0..4 {
         tokio::time::sleep(Duration::from_millis(1_000)).await;
-        let mark = ada.mark();
-        ada.send_line("CONTACTS").await;
-        if ada
-            .expect_one_of_after(
-                mark,
-                &["(rel ", NO_CONTACTS, COMMIT_PENDING, CONTROL_UNKNOWN],
-            )
-            .await
-            == 0
-        {
-            let listing = strip_ansi(&ada.seen[mark..]);
+        // Read whole, as `first_contact` reads it: no row left in flight.
+        let listing = ask_whole(&mut ada, "CONTACTS").await;
+        if listing.contains("(rel ") {
             assert_eq!(
                 designator_of(&listing).as_deref(),
                 Some(contact.as_str()),
@@ -7000,6 +7008,7 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
     }
 
     // ---- (3) the debrief -----------------------------------------------------
+    let ending = bo.mark();
     say(&mut god, &format!("@arena/abort {id}"), "is stopping").await;
     let mut events = Vec::new();
     wait_until(
@@ -7021,6 +7030,11 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
         }),
         "the place was refused, so the round was not fired at where the tank went"
     );
+    // The tape on the store is not the world's word that the match is over: a
+    // `SIM REPORT` that outruns the check-in is answered `Match 1 is still
+    // running.`, which no retry of `sim_report` waits out. So the report is read
+    // once Bo has been told the units are in.
+    bo.expect_after(ending, "Its units are checked in.").await;
     let report = sim_report(&mut bo, &format!("SIM REPORT {id}")).await;
     // The report itself, from its first line: the slice `sim_report` answers
     // starts at the command and may carry what the centre said before it (the
@@ -7520,7 +7534,7 @@ async fn m1a4_drive_refuses_a_designator_in_one_sentence_before_and_after_detect
         STEP_TIMEOUT,
         "the contact to be told apart as BA",
         async || {
-            let listing = ask(&mut ada, "CONTACTS", "(rel ").await;
+            let listing = ask_whole(&mut ada, "CONTACTS").await;
             designator_of(&listing).as_deref() == Some("BA")
         },
     )

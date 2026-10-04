@@ -314,6 +314,26 @@ async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
     strip_ansi(&term.seen[mark..])
 }
 
+/// The parser's refusal of [`SENTINEL`], which closes a whole answer.
+const HUH: &str = "Huh?";
+/// A line no command answers but the parser's refusal.
+const SENTINEL: &str = "zzz-sentinel";
+
+/// **A whole answer, never half of one**: the line, then a sentinel the parser
+/// refuses, so the whole of a multi-line answer has arrived by the refusal.
+async fn ask_whole(term: &mut Term, line: &str) -> String {
+    for _ in 0..RETRY_BUDGET {
+        let mark = term.mark();
+        term.send_line(line).await;
+        term.send_line(SENTINEL).await;
+        if term.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
+            return strip_ansi(&term.seen[mark..]);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("`{line}` never produced a whole answer")
+}
+
 /// One object's dbref, out of an `@find` listing.
 fn dbref_of(listing: &str, name: &str) -> u32 {
     listing
@@ -368,10 +388,16 @@ async fn take_off_sized(ada: &mut Term, bo: &mut Term, ai: Option<u8>) {
 }
 
 /// Bring power up, waiting for the arena to say it is online.
+///
+/// Each `STATUS` is read WHOLE ([`ask_whole`]). A needle of `power` is not
+/// this answer's alone: the panel hint (`…brings your power up.`) and the
+/// previous poll's own reply both carry it, so a poll could return on either
+/// and leave its `STATUS` in flight, to land after whatever the caller marks
+/// next.
 async fn power_up(term: &mut Term) {
     say(term, "STARTUP", "Startup sequence").await;
     wait_until(STEP_TIMEOUT, "the tank to come online", async || {
-        ask(term, "STATUS", "power").await.contains("power online")
+        ask_whole(term, "STATUS").await.contains("power online")
     })
     .await;
 }
