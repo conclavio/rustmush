@@ -1178,6 +1178,9 @@ impl Arena {
             // the motor's tick goes with the rest (its arm would refuse a
             // wreck anyway; the heap is what the hash and `next_due_ms` read).
             DueKind::MotorTick { unit } => *unit != target,
+            // **17b cut M1a.5**: and a mind's thinks and landings — a wreck is
+            // no subject of any order, its own least of all.
+            DueKind::MindThink { unit, .. } | DueKind::MindLand { unit, .. } => *unit != target,
             // **16b cut M.2**: the duration bound is the match's, and a wreck's
             // held losses are still said to whoever sits in it — the sweep this
             // event replaced said them too.
@@ -1197,6 +1200,14 @@ impl Arena {
         {
             // 17b cut M1a.1: the machine and its motor row, as one adoption.
             self.adopt_reflex(target, crate::arena::reflex::ReflexState::Disabled);
+        }
+        // **17b cut M1a.5**: the think waiting to land goes with the landing
+        // the retain above took off the heap, and so does the row's `pending`
+        // that names it. The row itself stays, as a wreck's reflex row stays:
+        // what the mind remembered is still state the hash folds.
+        self.mind_landings.remove(&target);
+        if let Some(state) = self.minds.get_mut(&target) {
+            state.pending = None;
         }
         journal.push((
             t_ms,

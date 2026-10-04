@@ -128,13 +128,14 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::arena::intents::{
-    Intent, IntentKind, IntentOutcome, IntentSource, apply_intent, resolve_startup,
+    Intent, IntentKind, IntentOutcome, IntentSource, MotorGoal, apply_intent, resolve_emcon,
+    resolve_startup,
 };
 use crate::arena::ledger::EventKind;
 use crate::arena::motor::{Fallback, MotorPlan, MotorRow, MotorTable};
 use crate::arena::resolution::facet_band_seen;
 use crate::arena::state::{
-    Arena, Classification, ContactId, Controller, DueKind, Power, SeenPose, UnitState,
+    Arena, Channel, Classification, ContactId, Controller, DueKind, Power, SeenPose, UnitState,
 };
 use crate::config::ReflexConfig;
 use crate::deliberation::order::{Objective, Order, RangeBand, StandingOrder};
@@ -484,6 +485,14 @@ pub struct ReflexCounters {
     /// class and the avoid list and refused it because neither of its shoulders
     /// is. A counter, never hashed.
     pub corner_refusals: u32,
+    /// **Unit minds' thinks applied** (17b cut M1a.5; doc 17 §6): one per
+    /// `MindThink` that called its runner. Not reported by the harness — no
+    /// production unit is a mind — and never hashed.
+    pub thinks: u32,
+    /// **Thinks that answered more than `MIND_INTENTS_MAX` intents** (17b cut
+    /// M1a.5; D-UM-9) and so landed nothing. Not reported; 17b cut M3 journals
+    /// the fault. Never hashed.
+    pub mind_overflows: u32,
 }
 
 impl ReflexCounters {
@@ -505,6 +514,8 @@ impl ReflexCounters {
             .path_refused_unchanged
             .saturating_add(other.path_refused_unchanged);
         self.corner_refusals = self.corner_refusals.saturating_add(other.corner_refusals);
+        self.thinks = self.thinks.saturating_add(other.thinks);
+        self.mind_overflows = self.mind_overflows.saturating_add(other.mind_overflows);
         for (mine, theirs) in self.in_state.iter_mut().zip(other.in_state.iter()) {
             *mine = mine.saturating_add(*theirs);
         }
@@ -951,7 +962,7 @@ impl Arena {
         }
     }
 
-    /// **Hand a unit to the controller, or take it back** (doc 16 §3.8
+    /// **Hand a unit to a controller, or take it back** (doc 16 §3.8
     /// "Disconnects"), which is the one thing that moves
     /// [`crate::arena::state::UnitState::controller`] after check-out.
     ///
@@ -959,31 +970,60 @@ impl Arena {
     /// grid from the arena millisecond it was handed over, and a unit handed back
     /// takes its scheduled ticks off the heap with it, so a reclaimed seat costs the
     /// pulse nothing.
+    ///
+    /// **17b cut M1a.5: the outgoing controller is released on every
+    /// transition**, read off the unit before anything is written. From
+    /// [`Controller::Reflex`]: its machine and its `ReflexTick`s (today's rule).
+    /// From [`Controller::Mind`]: its [`crate::arena::mind::MindState`], its
+    /// think waiting to land and every `MindThink` and `MindLand` of the unit.
+    /// From **any**: the hull's motor row and every `MotorTick` — a pilot's
+    /// `DRIVE` dies with the seat, and a machine's goal with the machine.
+    /// Then the incoming one is installed: `Reflex` adopts the machine in
+    /// `state` and schedules its tick; `Mind` lays a fresh row down and
+    /// schedules its first think; `Pilot` installs nothing. Since 17b cut M1a.1
+    /// the motor's readers (`Arena::hold_routeless`, `Arena::note_blocked`)
+    /// gate on the motor row and not on the controller, which is why no path
+    /// that moves the controller may leave one behind.
+    ///
+    /// A unit already under `controller` keeps everything it has: a second
+    /// `Released` still points a machine at the entry zone, but schedules no
+    /// second tick.
     pub fn set_controller(&mut self, unit: ObjId, controller: Controller, state: ReflexState) {
         let was = self.unit(unit).map(|slot| slot.controller);
-        if was.is_none() || was == Some(controller) {
-            // Already there (or not here at all): adopt into the named state so a
-            // second `Released` still points a machine at the entry zone, but do not
-            // schedule a second tick for a unit that already has one.
-            if controller == Controller::Reflex && was.is_some() {
+        let Some(was) = was else {
+            return;
+        };
+        if was == controller {
+            if controller == Controller::Reflex {
                 self.adopt_reflex(unit, state);
             }
             return;
         }
+        // The outgoing controller's rows and cadence.
+        match was {
+            Controller::Reflex => {
+                self.reflex.release(unit);
+                self.due.retain(
+                    |kind| !matches!(kind, DueKind::ReflexTick { unit: on, .. } if *on == unit),
+                );
+            }
+            Controller::Mind => self.release_mind(unit),
+            Controller::Pilot => {}
+        }
+        self.motors.release(unit);
+        self.due
+            .retain(|kind| !matches!(kind, DueKind::MotorTick { unit: on } if *on == unit));
         if let Some(slot) = self.unit_mut(unit) {
             slot.controller = controller;
         }
+        // The incoming one.
         match controller {
             Controller::Reflex => {
                 self.adopt_reflex(unit, state);
                 self.schedule_reflex_tick(unit);
             }
-            Controller::Pilot => {
-                self.release_reflex(unit);
-                self.due.retain(
-                    |kind| !matches!(kind, DueKind::ReflexTick { unit: on, .. } if *on == unit),
-                );
-            }
+            Controller::Mind => self.adopt_mind(unit),
+            Controller::Pilot => {}
         }
     }
 
@@ -2958,8 +2998,14 @@ impl Arena {
     /// three resolvers. They read `now_ms` until this cut, and the tick runs
     /// after the substep has advanced `now_ms` to its end, so a machine's
     /// `fired` line carried the substep boundary and not the tick.
+    ///
+    /// **17b cut M1a.5** (doc 17 §4, D-UM-12): the body is
+    /// [`Arena::apply_machine_intents`] now, which a mind's landing calls too;
+    /// this builds the plan's kinds in the order it always did and hands them
+    /// over at the three epochs the table holds now, under
+    /// [`IntentSource::Machine`]. The answer is not read: what the machine
+    /// learns of a refusal it learns at its next tick, as it always has.
     fn order(&mut self, id: ObjId, plan: &ReflexPlan, t_ms: i64, counters: &mut ReflexCounters) {
-        let mut seq = 0_u64;
         let mut orders: Vec<IntentKind> = Vec::new();
         if plan.startup {
             orders.push(IntentKind::Startup);
@@ -2976,66 +3022,139 @@ impl Arena {
         if let Some(weapon) = plan.fire.clone() {
             orders.push(IntentKind::Fire { weapon });
         }
-        for kind in orders {
+        // The three epochs read once, before the loop: nothing the loop applies
+        // raises an epoch (only `apply_control` does), so these are the epochs
+        // each intent read for itself before this cut.
+        let epochs = Channel::ALL.map(|channel| (channel, self.epochs.current(id, channel)));
+        let epoch_of = |channel: Channel| {
+            epochs
+                .iter()
+                .find(|(on, _)| *on == channel)
+                .map_or(0, |(_, epoch)| *epoch)
+        };
+        let _ = self.apply_machine_intents(
+            id,
+            &orders,
+            t_ms,
+            &epoch_of,
+            IntentSource::Machine,
+            counters,
+        );
+    }
+
+    /// **Put a machine's intents through the pilot's own door** (17b cut M1a.5;
+    /// doc 17 §4, D-UM-12) — `Arena::order`'s body, factored out so the reflex
+    /// controller, the motor and a mind's landing are one function.
+    ///
+    /// The kinds go in emission order, `seq` ascending from `1`, each an
+    /// [`Intent`] on the channel that carries it at `epoch_of(channel)`
+    /// (`counters.intents` counted per intent), through [`apply_intent`] under
+    /// `source`. One answer per kind, in order:
+    ///
+    /// * refused at apply — [`Landed::Refused`] with `apply_intent`'s word;
+    /// * a continuous kind applied — [`Landed::Applied`]; a
+    ///   [`MotorGoal::Cell`] that applied runs the motor once here
+    ///   (`Arena::motor_step` at `t_ms`), the one follow at landing (D-UM-10);
+    /// * a discrete kind queued — popped straight back out of `pending` and
+    ///   resolved at `t_ms`: `Startup` by [`resolve_startup`], `Lock` by
+    ///   `Arena::resolve_lock`, `Fire` by `Arena::resolve_fire` (`shots`
+    ///   counted on `Ok`), and — new in this cut — `Emcon` by
+    ///   [`resolve_emcon`]. **Each resolver's `Err` is the answer**
+    ///   ([`Landed::Refused`]) and its `Ok` is [`Landed::Applied`]; until this
+    ///   cut `Arena::order` dropped them with `let _`, and since it still does
+    ///   not read the vector no byte of the reflex controller's moved (the M1a.1
+    ///   pins). `Order`, `ReleaseOrder`, `Place` and `Goal` queue nothing.
+    pub(crate) fn apply_machine_intents(
+        &mut self,
+        unit: ObjId,
+        kinds: &[IntentKind],
+        t_ms: i64,
+        epoch_of: &dyn Fn(Channel) -> u64,
+        source: IntentSource,
+        counters: &mut ReflexCounters,
+    ) -> Vec<Landed> {
+        let mut landed: Vec<Landed> = Vec::with_capacity(kinds.len());
+        let mut seq = 0_u64;
+        for kind in kinds {
             let channel = kind.channel_required();
             seq = seq.saturating_add(1);
             let intent = Intent {
-                unit: id,
+                unit,
                 channel,
-                epoch: self.epochs.current(id, channel),
-                kind,
+                epoch: epoch_of(channel),
+                kind: kind.clone(),
                 seq,
             };
             counters.intents = counters.intents.saturating_add(1);
             // **16b cut M.1** (`T-82`): the machine's own order, which the
-            // per-seat rate never counts — see `IntentSource`.
-            if apply_intent(self, &intent, IntentSource::Machine) != IntentOutcome::Queued {
-                continue;
+            // per-seat rate never counts — see `IntentSource`; a mind's
+            // (17b cut M1a.5, D-UM-14) neither.
+            match apply_intent(self, &intent, source) {
+                IntentOutcome::Refused(refusal) => {
+                    landed.push(Landed::Refused(refusal));
+                    continue;
+                }
+                IntentOutcome::AppliedContinuous => {
+                    // **17b cut M1a.4** (D-UM-10): a goal takes effect at the
+                    // landing millisecond, as phase 2's does for a seat's.
+                    if matches!(kind, IntentKind::Goal(MotorGoal::Cell { .. })) {
+                        let _ = self.motor_step(unit, t_ms, counters);
+                    }
+                    landed.push(Landed::Applied);
+                    continue;
+                }
+                IntentOutcome::Queued => {}
             }
             // `apply_intent` pushed exactly this order to the back of the unit's
             // queue. It comes straight back out: leaving it there would hand it to
             // phase 4, at the pulse's end, which is the arena millisecond this
             // module exists to avoid.
-            if let Some(queue) = self.pending.get_mut(&id) {
+            if let Some(queue) = self.pending.get_mut(&unit) {
                 queue.pop_back();
                 if queue.is_empty() {
-                    self.pending.remove(&id);
+                    self.pending.remove(&unit);
                 }
             }
-            match &intent.kind {
-                IntentKind::Startup => {
-                    let _ = resolve_startup(self, id, t_ms);
-                }
-                IntentKind::Lock { contact } => {
-                    let _ = self.resolve_lock(id, *contact, t_ms);
-                }
-                IntentKind::Fire { weapon } => {
-                    if self.resolve_fire(id, weapon, t_ms).is_ok() {
-                        counters.shots = counters.shots.saturating_add(1);
-                    }
-                }
+            let resolved = match &intent.kind {
+                IntentKind::Startup => resolve_startup(self, unit, t_ms),
+                IntentKind::Lock { contact } => self.resolve_lock(unit, *contact, t_ms),
+                IntentKind::Fire { weapon } => self.resolve_fire(unit, weapon, t_ms).map(|_| {
+                    counters.shots = counters.shots.saturating_add(1);
+                }),
+                // **17b cut M1a.5** (D-UM-12): the arm `Arena::order` never
+                // had. The reflex controller still never switches its pod (16b
+                // cut O.2's residual: a machine keeps the switch where it found
+                // it), so it never reaches here; a mind's `emcon` does.
+                IntentKind::Emcon { on } => resolve_emcon(self, unit, *on, t_ms),
                 IntentKind::Heading { .. }
                 | IntentKind::Speed { .. }
                 | IntentKind::Order(_)
-                | IntentKind::ReleaseOrder { .. } => {}
-                // 16b cut I.3: a staff act; a machine never issues one.
-                IntentKind::Place { .. } => {}
-                // 17b cut M1a.4: the reflex controller drives its own goals
-                // inside its tick and never hands the motor a `Goal`.
-                IntentKind::Goal(_) => {}
-                // **16b cut O.2**: a machine never switches its pod, so it keeps
-                // the switch where it found it — on for every machine that
-                // fielded the tank (the owner's default at check-out), but
-                // possibly **off** for one that adopted a released seat whose
-                // pilot had typed `EMCON off` (`apply_control`'s `Released`
-                // arm hands the tank over and does not touch `ecm_on`). A
-                // machine's own `EMCON` decision, and what it should do with an
-                // inherited silent pod, are recorded residuals of cut O, not
-                // built.
-                IntentKind::Emcon { .. } => {}
-            }
+                | IntentKind::ReleaseOrder { .. }
+                // 16b cut I.3: a staff act; a machine never issues one, and a
+                // mind's is refused `Channel` at apply.
+                | IntentKind::Place { .. }
+                // 17b cut M1a.4: continuous, so never queued.
+                | IntentKind::Goal(_) => Ok(()),
+            };
+            landed.push(match resolved {
+                Ok(()) => Landed::Applied,
+                Err(refusal) => Landed::Refused(refusal),
+            });
         }
+        landed
     }
+}
+
+/// **What became of one machine intent** (17b cut M1a.5; doc 17 §4, D-UM-12):
+/// `Arena::apply_machine_intents`' answer per kind, in emission order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Landed {
+    /// It took effect — applied, or queued and resolved.
+    Applied,
+    /// It was refused, at apply or by its resolver, for this reason. (The
+    /// arena's order refusal — this file's own `Refusal` is the motor's
+    /// remembered stop, re-exported.)
+    Refused(crate::arena::intents::Refusal),
 }
 
 /// **The angle between two bearings**, millidegrees, the short way round (16b

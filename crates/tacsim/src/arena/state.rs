@@ -1669,6 +1669,13 @@ pub enum Controller {
     Pilot,
     /// The reflex controller ([`crate::arena::reflex`]) drives it.
     Reflex,
+    /// **A unit mind flies it** (17b cut M1a.5; doc 17 §2, D-UM-2): a
+    /// [`crate::arena::mind::MindRunner`] reads the hull's own view at each
+    /// [`DueKind::MindThink`] and its intents land one substep later at
+    /// [`DueKind::MindLand`] (`crate::arena::mind`). A fixture's controller and
+    /// the twin lane's until 17b cut M4 flips production to it; no lobby, no
+    /// check-out and no control sets it today.
+    Mind,
 }
 
 impl Controller {
@@ -1678,6 +1685,7 @@ impl Controller {
         match self {
             Controller::Pilot => "pilot",
             Controller::Reflex => "reflex",
+            Controller::Mind => "mind",
         }
     }
 
@@ -1687,6 +1695,10 @@ impl Controller {
         match self {
             Controller::Pilot => 0,
             Controller::Reflex => 1,
+            // 17b cut M1a.5: a new byte, so every unit of every existing match
+            // folds the byte it always did (the M1a plan's head, "the
+            // production hash").
+            Controller::Mind => 2,
         }
     }
 }
@@ -2983,6 +2995,16 @@ impl DesignatorBook {
 // Channels and the epoch table
 // ---------------------------------------------------------------------------
 
+/// **The cockpit's channel words, in [`Channel::ALL`]'s order** (17b cut M1a.5;
+/// doc 17 §4, D-UM-47): the one table where the arena's closed [`Channel`] and
+/// `mush-sim`'s open `ChannelId` meet — *by wire word, written down in M1a*.
+///
+/// The cockpit station's grant (`crate::match_::cockpit::cockpit_channels`) is
+/// built from it, and a test holds it to [`Channel::as_str`] and
+/// [`Channel::parse`] both ways, so a fourth channel added to one side and not
+/// the other fails the build's tests rather than a seat at run time.
+pub const COCKPIT_CHANNEL_IDS: [&str; 3] = ["helm", "sensors", "fire"];
+
 /// A control channel over a tank (doc 16 §3.3 "Stations are on the tank",
 /// doc 09 C8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -3008,6 +3030,14 @@ impl Channel {
             Channel::Sensors => "sensors",
             Channel::Fire => "fire",
         }
+    }
+
+    /// **The `mush-sim` channel id this channel is granted as** (17b cut
+    /// M1a.5; D-UM-47): its wire word, the entry of [`COCKPIT_CHANNEL_IDS`] at
+    /// its own place in [`Channel::ALL`].
+    #[must_use]
+    pub const fn channel_id(&self) -> &'static str {
+        self.as_str()
     }
 
     /// The channel a word names, or `None`.
@@ -3233,6 +3263,44 @@ pub enum DueKind {
         /// The hull being driven.
         unit: ObjId,
     },
+    /// **One unit mind's think** (17b cut M1a.5; doc 17 §6, D-UM-20), due
+    /// every `crate::arena::mind::STOCK_THINK_MS` of arena time on the
+    /// stagger grid [`DueKind::ReflexTick`] runs on, from the lattice
+    /// millisecond `Arena::grid_at` answers.
+    ///
+    /// **Its place in this enum orders nothing**: [`DueEvent`]'s derived order
+    /// is `(t_ms, seq, kind)` and `seq` is unique, so `kind` never breaks a
+    /// tie. D-UM-20's *after that millisecond's other due items* and D-UM-21's
+    /// *in unit-id order* are delivered by `Arena::substep`'s due loop, which
+    /// holds a millisecond's mind kinds back until every other kind due at it
+    /// has run and then runs them landings first, by unit, by `think_seq`.
+    MindThink {
+        /// The hull thinking.
+        unit: ObjId,
+        /// The think's sequence number for that hull, from `0` — what a stale
+        /// event is told apart by (`crate::arena::mind::MindState::think_seq`).
+        think_seq: u64,
+    },
+    /// **One think's landing** (17b cut M1a.5; doc 17 §6, D-UM-21), due one
+    /// substep after the think it lands (`Arena::substep_len_ms`), at which
+    /// the think's intents are applied at the epochs it recorded. Ordered as
+    /// [`DueKind::MindThink`] is, and for the same reason not by its place
+    /// here.
+    MindLand {
+        /// The hull whose think lands.
+        unit: ObjId,
+        /// The think it lands.
+        think_seq: u64,
+    },
+}
+
+impl DueKind {
+    /// **Whether this is a mind's kind** (17b cut M1a.5) — the two the due
+    /// loop holds back to the end of their millisecond (D-UM-20).
+    #[must_use]
+    pub const fn is_mind(&self) -> bool {
+        matches!(self, DueKind::MindThink { .. } | DueKind::MindLand { .. })
+    }
 }
 
 /// One scheduled event: its arena timestamp, its insertion sequence, and what it
@@ -3780,6 +3848,31 @@ pub struct Arena {
     /// with no machine, as its own section (`crate::arena::hash`, items 3 and
     /// 3b); carried whole by a snapshot but its scratch.
     pub motors: crate::arena::motor::MotorTable,
+    /// **What each unit mind holds** (17b cut M1a.5; doc 17 §3, §6, §8,
+    /// D-UM-8, D-UM-23): one [`crate::arena::mind::MindState`] per
+    /// [`Controller::Mind`] hull — its think counter, the think in flight, its
+    /// memory's bytes, its notice buffer, its range memory, its standing order
+    /// and its strikes — in unit-id order.
+    ///
+    /// Folded into the state hash per row with no count prefix
+    /// (`crate::arena::hash`, item 3c), so an arena with no mind — every match
+    /// that exists — folds no byte for it; carried whole by a snapshot.
+    pub minds: BTreeMap<ObjId, crate::arena::mind::MindState>,
+    /// **The thinks waiting to land** (17b cut M1a.5; D-UM-21): the intents,
+    /// the new memory and the epochs of each hull's last think, from its
+    /// [`DueKind::MindThink`] to its [`DueKind::MindLand`] one substep later.
+    ///
+    /// Scratch: not hashed (the [`crate::arena::mind::MindState::pending`] row
+    /// beside it is, D-UM-23) and not carried — a landing a resumed match finds
+    /// no scratch for lands nothing and clears its `pending` row, the residual
+    /// 17b cut M3's recompute closes.
+    pub mind_landings: BTreeMap<ObjId, crate::arena::mind::Landing>,
+    /// **What runs a think** (17b cut M1a.5; doc 17 §7, D-UM-1): a trait the
+    /// sim task implements outside this library — the arena only calls it,
+    /// synchronously, inside the think's due event. Set by
+    /// `crate::arena::mind::default_mind_runner` in [`Arena::new`] and in the
+    /// snapshot's decode alike; neither hashed nor carried.
+    pub mind_runner: std::sync::Arc<dyn crate::arena::mind::MindRunner>,
     /// **The cheapest passable cell on the window for each row**, in
     /// [`CostRow::index`] order ([`ArenaTerrain::min_cost`]; each at least
     /// `1`), read once at check-out because the terrain is immutable for the
@@ -4492,6 +4585,11 @@ impl Arena {
             // 17b cut M1a.1: the motor table, empty until the check-out's
             // adoptions below lay a row down for each machine.
             motors: crate::arena::motor::MotorTable::new(),
+            // 17b cut M1a.5: no mind until the adoptions below; the runner is
+            // the one `snapshot.rs`' decode sets too.
+            minds: BTreeMap::new(),
+            mind_landings: BTreeMap::new(),
+            mind_runner: crate::arena::mind::default_mind_runner(arena_cfg),
             min_cost,
             pending: BTreeMap::new(),
             shots: BTreeMap::new(),
@@ -4542,6 +4640,9 @@ impl Arena {
         // 16b cut N.1: doc 16 §6's controller, on the same shape — one tick per AI
         // unit per `arena.reflex.decide_ms`, staggered by unit id.
         arena.schedule_first_reflex_ticks();
+        // 17b cut M1a.5 (doc 17 §6): one think per mind, on the same grid —
+        // a fixture's; no check-out fields one.
+        arena.schedule_first_mind_thinks();
         let opening = crate::arena::hash::state_hash(&arena);
         // A ledger that refuses its own first event is a black box that will not
         // record anything; the match still opens, and cut A.2's step reads
@@ -6462,6 +6563,55 @@ mod tests {
                 .and_then(|hold| hold.held_by)
                 .map(|(team, _)| team),
             Some(Team::Blue)
+        );
+    }
+
+    /// **17b cut M1a.5: the channel table is one table** (doc 17 §4,
+    /// D-UM-47): [`COCKPIT_CHANNEL_IDS`] is [`Channel::ALL`]'s wire words in
+    /// order, [`Channel::channel_id`] is each one's entry, and
+    /// [`Channel::parse`] reads each entry back to its channel.
+    #[test]
+    fn m1a5_the_channel_ids_are_the_channels_words_both_ways() {
+        assert_eq!(
+            COCKPIT_CHANNEL_IDS,
+            Channel::ALL.map(|channel| channel.as_str())
+        );
+        for (channel, id) in Channel::ALL.into_iter().zip(COCKPIT_CHANNEL_IDS) {
+            assert_eq!(channel.channel_id(), id);
+            assert_eq!(Channel::parse(id), Some(channel), "{id} reads back");
+        }
+    }
+
+    /// **17b cut M1a.5: a mind is its own controller byte** (D-UM-2) — `2`,
+    /// so the two existing bytes, and every hash that folds them, are what
+    /// they were.
+    #[test]
+    fn m1a5_a_mind_is_code_two_and_the_word_mind() {
+        assert_eq!(
+            [Controller::Pilot, Controller::Reflex, Controller::Mind]
+                .map(|c| (c.as_str(), c.code())),
+            [("pilot", 0), ("reflex", 1), ("mind", 2)]
+        );
+        assert!(
+            DueKind::MindThink {
+                unit: ObjId(1),
+                think_seq: 0
+            }
+            .is_mind()
+        );
+        assert!(
+            DueKind::MindLand {
+                unit: ObjId(1),
+                think_seq: 0
+            }
+            .is_mind()
+        );
+        assert!(
+            !DueKind::ReflexTick {
+                unit: ObjId(1),
+                tick_seq: 0
+            }
+            .is_mind()
         );
     }
 }

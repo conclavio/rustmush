@@ -41,7 +41,7 @@ use tacsim::arena::rng::{DrawLabel, LABEL_KINDS};
 /// field and a doc comment all count — mentioning one is as reviewable as calling
 /// it, and a gate that can be talked around by putting the type behind an alias
 /// is not a gate.
-const FORBIDDEN: [(&str, &str); 8] = [
+const FORBIDDEN: [(&str, &str); 9] = [
     (
         "mush_store",
         "the persistence crate: the arena holds no store handle (D-16-3)",
@@ -72,6 +72,14 @@ const FORBIDDEN: [(&str, &str); 8] = [
     (
         "HashMap",
         "a hash map: iteration order must never feed an outcome or a byte of the snapshot (doc 16 §3.1)",
+    ),
+    // 17b cut M1a.5: the mind seam is a trait the library calls and never
+    // implements beyond its no-op; the interpreter that will answer it lives
+    // with the sim task. Case-sensitive like every row here, so the library's
+    // own prose names the engine capitalised and never the crate.
+    (
+        "rhai",
+        "the interpreter: a mind's runner is a trait the sim task implements outside the library (doc 17 §7, D-UM-1)",
     ),
 ];
 

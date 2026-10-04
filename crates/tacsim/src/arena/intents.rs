@@ -368,6 +368,14 @@ pub enum IntentSource {
     /// `Arena::apply_motor_plan`), which is why a motor order never takes the
     /// helm back from a `DRIVE` the way a seat's `HEADING` does.
     Machine,
+    /// **A mind's landed intent** (17b cut M1a.5; doc 17 D-UM-14): attributed
+    /// as the mind's, **never counted on the seat window**, refused `ORDER`,
+    /// `RELEASE` and `PLACE` with [`Refusal::Channel`] (D-UM-11, D-UM-52's
+    /// second wall: a mind commands nobody, and a staff act is staff's), and
+    /// refused [`Refusal::Channel`] on a station its hull lacks (D-UM-47: a
+    /// hull with no weapons station grants no `fire` channel). Landed by
+    /// `crate::arena::mind`'s landing arm at the epochs its think recorded.
+    Mind,
 }
 
 /// What [`apply_intent`] did.
@@ -383,7 +391,12 @@ pub enum IntentOutcome {
 
 /// **Why an order was refused** — one named word each, so the cockpit never says
 /// "no".
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
+///
+/// **17b cut M1a.5**: serde-able, as the payload of a
+/// [`crate::arena::perception::FrameNotice::Refused`] in a mind's hashed and
+/// carried notice buffer; its words are [`Refusal::as_str`]'s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Refusal {
     /// The order's epoch is not the channel's current epoch: the seat changed
     /// underneath it.
@@ -669,8 +682,31 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
 /// bound at all. The `pending` queue itself has no bound inside a pulse: it is
 /// bounded by the caller's slice, which the arena task bounds per unit.
 pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> IntentOutcome {
-    if arena.unit(i.unit).is_none() {
+    // **17b cut M1a.5** (D-UM-11, D-UM-52's second wall): a mind never issues
+    // a squad's order, a release of one or a staff place — refused `Channel`
+    // before any other gate, because no channel a hull grants carries them for
+    // a mind, and so before anything else is read.
+    if source == IntentSource::Mind
+        && matches!(
+            i.kind,
+            IntentKind::Order(_) | IntentKind::ReleaseOrder { .. } | IntentKind::Place { .. }
+        )
+    {
+        return IntentOutcome::Refused(Refusal::Channel);
+    }
+    let Some(found) = arena.unit(i.unit) else {
         return IntentOutcome::Refused(Refusal::Unknown);
+    };
+    // **17b cut M1a.5** (D-UM-47; doc 17 §22's italic line, *an ungranted
+    // channel refuses `Channel`*): a hull with no weapons station grants no
+    // `fire` channel, so a mind's `FIRE` there is refused `Channel` before any
+    // resolver. A seated pilot's `FIRE` on the same hull keeps its own path
+    // and its `NoWeapon` (the cockpit grants the seat all three channels).
+    if source == IntentSource::Mind
+        && i.kind.channel_required() == Channel::Fire
+        && found.weapons.is_empty()
+    {
+        return IntentOutcome::Refused(Refusal::Channel);
     }
     if !arena.epochs.authorises(i.unit, i.channel, i.epoch) {
         return IntentOutcome::Refused(Refusal::Epoch);
@@ -698,7 +734,12 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
     // gate the other five do not have: the unit must be the controller's, because
     // an order steers a machine and a seated tank has none.
     if let IntentKind::Order(order) = &i.kind {
-        if unit.controller != Controller::Reflex {
+        // **17b cut M1a.5** (D-UM-15 as decided): a pilot's hull is still
+        // refused by the word it always was (renamed in 17b cut M4); a reflex
+        // machine takes the order as it did; a mind holds it **re-keyed at
+        // write time** to its own HELD contacts, or none (`Arena::rekey_order`).
+        let controller = unit.controller;
+        if controller == Controller::Pilot {
             return IntentOutcome::Refused(Refusal::NotReflex);
         }
         let at = arena.now_ms;
@@ -708,10 +749,13 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
         // line of one pulse shares phase 2's one lazy hash (`step.rs` opens
         // `ActionHash::Pending` around the intent loop).
         let hash = arena.event_hash();
-        arena.reflex.set_order(
-            i.unit,
-            crate::deliberation::order::StandingOrder::accepted((**order).clone(), at),
-        );
+        let standing = crate::deliberation::order::StandingOrder::accepted((**order).clone(), at);
+        if controller == Controller::Mind {
+            let rekeyed = arena.rekey_order(i.unit, &standing.order, standing.expires_ms);
+            arena.minds.entry(i.unit).or_default().order = Some(rekeyed);
+        } else {
+            arena.reflex.set_order(i.unit, standing);
+        }
         // **16b cut Y.1** — the black box records the order that landed, one line
         // per unit, at `now_ms`, with no draws. It is cadence-safe for the reason
         // `StandingOrder::accepted_ms` already is: phase 2 runs at the pulse's
@@ -741,10 +785,12 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
     // continuous gates for the order's own reason: a release to a cold tank, or
     // to one whose engine is gone, still hands it back to doctrine.
     if let IntentKind::ReleaseOrder { squad, issuer } = &i.kind {
-        if unit.controller != Controller::Reflex {
+        // 17b cut M1a.5: a release reaches a mind's order as it reaches a
+        // machine's, through one helper; a pilot's hull keeps its refusal.
+        if unit.controller == Controller::Pilot {
             return IntentOutcome::Refused(Refusal::NotReflex);
         }
-        release_order(arena, i.unit, *squad, *issuer);
+        release_machine_order(arena, i.unit, *squad, *issuer);
         return IntentOutcome::AppliedContinuous;
     }
     if i.kind.is_continuous() {
@@ -802,10 +848,11 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
             // motor's goal as `DRIVE OFF` does, so the hull steers what was
             // typed. The motor's own orders (`IntentSource::Machine`) never
             // do — they are how the goal is driven — and a reflex hull's goals
-            // are its machine's, which a seat's order does not reach (17b cut
-            // M1a.5 adds `IntentSource::Mind` here).
+            // are its machine's, which a seat's order does not reach. **17b
+            // cut M1a.5**: a mind's own heading or speed lets go of its goal
+            // the same way — the mind took the helm back from its own motor.
             IntentKind::Heading { .. } | IntentKind::Speed { .. }
-                if source == IntentSource::Seat
+                if matches!(source, IntentSource::Seat | IntentSource::Mind)
                     && controller != Controller::Reflex
                     && arena
                         .motors
@@ -850,8 +897,15 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
 }
 
 /// **Apply one unit's release** (16b cut Z.2; 16c Q44), for [`apply_intent`]'s
-/// [`IntentKind::ReleaseOrder`] arm once the unit is known to be the
-/// controller's.
+/// [`IntentKind::ReleaseOrder`] arm once the unit is known to be a machine's —
+/// the reflex controller's or, since **17b cut M1a.5**, a mind's: one helper for
+/// both, so a release reads the same against either.
+///
+/// For a mind (D-UM-15), the order is the [`crate::arena::perception::FrameOrder`]
+/// on its [`crate::arena::mind::MindState`], matched by its rendered squad word;
+/// dropping it is the whole of the restoration — a mind's goal is its own and a
+/// release does not touch its motor row — and the line and the squad's mark are
+/// the machine's.
 ///
 /// A unit under no order, or under an order written for another squad, applies
 /// nothing and journals nothing: a release names a squad, and a machine the
@@ -874,26 +928,63 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
 ///    of the one machine of their pair does not hand the lead's squad to the LLM
 ///    seam while the lead's order still runs on the rest of it. The read is
 ///    bounded by the roster (at most `SQUAD_SIZE_MAX` units).
-fn release_order(
+fn release_machine_order(
     arena: &mut Arena,
     unit: ObjId,
     squad: crate::deliberation::SquadId,
     issuer: Option<ObjId>,
 ) {
-    if !arena
-        .reflex
-        .order(unit)
-        .is_some_and(|standing| standing.order.squad == squad)
+    if !holds_order_for(arena, unit, squad) {
+        return;
+    }
+    let at = arena.now_ms;
+    if arena
+        .unit(unit)
+        .is_some_and(|state| state.controller == Controller::Mind)
     {
+        let hash = arena.event_hash();
+        if let Some(state) = arena.minds.get_mut(&unit) {
+            state.order = None;
+        }
+        journal_released(arena, unit, squad, issuer, at, hash);
         return;
     }
     let health_ok = arena.reflex_health_permille(unit) >= arena.reflex.config().withdraw_permille;
-    let at = arena.now_ms;
     let hash = arena.event_hash();
     arena.reflex.drop_to_doctrine(unit, health_ok);
     // 17b cut M1a.1: the goal, the route and the remembered stop are the hull's
     // motor row's — the other half of the one restoration.
     arena.motors.forget_goal(unit);
+    journal_released(arena, unit, squad, issuer, at, hash);
+}
+
+/// **Whether `unit` holds an order written for `squad`** (17b cut M1a.5): a
+/// reflex machine's standing order, or a mind's held one (matched by the
+/// squad's rendered word, which is how a [`crate::arena::perception::FrameOrder`]
+/// carries it).
+fn holds_order_for(arena: &Arena, unit: ObjId, squad: crate::deliberation::SquadId) -> bool {
+    arena
+        .reflex
+        .order(unit)
+        .is_some_and(|standing| standing.order.squad == squad)
+        || arena
+            .minds
+            .get(&unit)
+            .and_then(|state| state.order.as_ref())
+            .is_some_and(|order| order.squad == squad.to_string())
+}
+
+/// **The `order_released` line and the squad's mark** (16b cut Z.2; one body
+/// for both machines since 17b cut M1a.5) — steps 3 and 4 of
+/// [`release_machine_order`].
+fn journal_released(
+    arena: &mut Arena,
+    unit: ObjId,
+    squad: crate::deliberation::SquadId,
+    issuer: Option<ObjId>,
+    at: i64,
+    hash: u64,
+) {
     let _ = arena.ledger.append(
         at,
         EventKind::OrderReleased {
@@ -916,10 +1007,7 @@ fn release_order(
                 // as every order does — so the order a wreck still carries is
                 // not an order the squad is under.
                 arena.unit(*member).is_some_and(|state| !state.limits.wreck)
-                    && arena
-                        .reflex
-                        .order(*member)
-                        .is_some_and(|standing| standing.order.squad == squad)
+                    && holds_order_for(arena, *member, squad)
             })
         });
     if !still_ordered {
@@ -1184,8 +1272,9 @@ impl Arena {
     ///   standing order on this surface, so every frame a pilot is sent carries
     ///   `"order": null`.
     ///
-    /// 17b cut M1a.5 adds the `Mind` arm, which reads the order the mind holds,
-    /// re-keyed when it was **written**.
+    /// * A [`Controller::Mind`] hull (17b cut M1a.5): the order the mind holds,
+    ///   re-keyed when it was **written** (D-UM-15 as decided) and read back
+    ///   as it was written.
     #[must_use]
     pub fn frame_order(&self, unit: ObjId) -> Option<crate::arena::perception::FrameOrder> {
         match self.unit(unit)?.controller {
@@ -1194,6 +1283,7 @@ impl Arena {
                 .order(unit)
                 .map(|standing| self.rekey_order(unit, &standing.order, standing.expires_ms)),
             Controller::Pilot => None,
+            Controller::Mind => self.minds.get(&unit).and_then(|state| state.order.clone()),
         }
     }
 }

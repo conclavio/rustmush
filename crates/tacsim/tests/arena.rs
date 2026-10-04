@@ -5540,9 +5540,16 @@ fn shape(value: &serde_json::Value, path: &str, out: &mut std::collections::BTre
 /// pulse zero, so the digest and the 392 lines are what they were and only the
 /// format moved (the variants' own round trip is
 /// `m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row`).
-const AF1_SHAPE_DIGEST: &str = "3bf4a9bec92f8985a9773a65ae63657ecb271ea303dfe75c7c1e132c53245d6b";
+///
+/// **Re-blessed by 17b cut M1a.5 with `SNAPSHOT_FORMAT` 5**: the carried
+/// `minds` section, empty on both unstepped fixtures (neither fields a mind),
+/// is the one new line `state.minds: object` — 392 lines to 393. A mind row's
+/// own fields, `Controller::Mind` and the two mind due kinds are under the pin
+/// on no fixture here (the variants' round trip is
+/// `m1a5_a_snapshot_carries_the_minds_and_not_their_landings`).
+const AF1_SHAPE_DIGEST: &str = "9b22bf550fa13d07c3b89fed493609645915794d01ecf33a81f06f2fbe7836d7";
 /// And how many lines that is.
-const AF1_SHAPE_LINES: usize = 392;
+const AF1_SHAPE_LINES: usize = 393;
 
 /// **The snapshot's shape is pinned** (16b cut AF.1).
 ///
@@ -5554,7 +5561,7 @@ const AF1_SHAPE_LINES: usize = 392;
 /// sighted machines in two squads — its weapons, sensors, reflex rows and squad
 /// rosters are under the pin.*
 ///
-/// *Its limit, read off the 392 lines (a collection empty or an option `None`
+/// *Its limit, read off the 393 lines (a collection empty or an option `None`
 /// at pulse zero leaves one line and none for its element): **not under it**
 /// are the contacts (`ShadowContact`, `SeenPose`, `OwnSighting`, `Reading`),
 /// the designator book's rows, the shots (`Shot`, `Resolution`), the pending
@@ -5570,7 +5577,9 @@ const AF1_SHAPE_LINES: usize = 392;
 /// (`StandingOrder`, `Order`) and timers; on a motor row (**17b cut M1a.1**,
 /// where they moved from the reflex row) its route, `avoid`, goal, waypoints,
 /// `searched_from` and remembered stop (`refused`, a `Refusal`), all empty or
-/// `None` at pulse zero. A field added to or dropped from one of those moves nothing here:
+/// `None` at pulse zero; and (**17b cut M1a.5**) every mind row
+/// (`MindState`, `PendingThink`, its buffered `FrameNotice`s, its
+/// `FrameOrder`), neither fixture fielding a mind. A field added to or dropped from one of those moves nothing here:
 /// the format is then the author's to bump and the reviewer's to see, and a
 /// stale document is refused as `Malformed` — a missing field by the derive, a
 /// surplus one by `deny_unknown_fields` on the carried types — rather than by
@@ -5594,7 +5603,7 @@ fn af1_the_snapshot_shape_is_pinned() {
         tacsim::arena::snapshot::digest_text(&sha2::Sha256::digest(joined.as_bytes()).into());
     assert_eq!(
         tacsim::arena::snapshot::SNAPSHOT_FORMAT,
-        4,
+        5,
         "a format bump re-blesses the pin below in the same change"
     );
     assert_eq!(
@@ -5717,9 +5726,9 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
         found: 2,
         expected: SNAPSHOT_FORMAT,
     };
-    // 17b cut M1a.4 moved the format to 4; a format-2 document is still
-    // refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 4);
+    // 17b cut M1a.4 moved the format to 4 and 17b cut M1a.5 to 5; a format-2
+    // document is still refused by name.
+    assert_eq!(SNAPSHOT_FORMAT, 5);
     assert_eq!(Snapshot::head(&two), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&two, arena.definition.clone()).map(|_| ()),
@@ -5798,10 +5807,118 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
         found: 3,
         expected: SNAPSHOT_FORMAT,
     };
-    assert_eq!(SNAPSHOT_FORMAT, 4);
+    // 17b cut M1a.5 moved the format to 5; a format-3 document is still
+    // refused by name.
+    assert_eq!(SNAPSHOT_FORMAT, 5);
     assert_eq!(Snapshot::head(&three), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&three, arena.definition.clone()).map(|_| ()),
+        Err(refused)
+    );
+}
+
+/// **17b cut M1a.5: a snapshot carries the minds and not their scratch, and a
+/// format-4 document is refused by name** (doc 17 §3, §6, D-UM-23;
+/// `snapshot.rs`' `SNAPSHOT_FORMAT` 5).
+///
+/// The mover of [`scripted_arena`] is handed to a mind (`Arena::set_controller`,
+/// which lays its row down and schedules its first think), and its row is
+/// written by hand in every field — a think in flight, memory bytes, two
+/// notices, a range and a standing order — with a landing put in scratch. The
+/// encoded state carries `minds` with the row and the `mind_think` on the heap;
+/// the decode hands back the same row, an empty scratch, the default runner
+/// and the same hash (the scratch is not hashed). The same document stamped
+/// `"format": 4` — what every snapshot written between 17b cuts M1a.4 and
+/// M1a.5 says — is refused as `Format { found: 4, expected: 5 }` by both the
+/// head read and the decode.
+#[test]
+fn m1a5_a_snapshot_carries_the_minds_and_not_their_landings() {
+    use tacsim::arena::mind::{Landing, MindState, PendingThink};
+    use tacsim::arena::perception::{FrameNotice, FrameOrder, MindObjective};
+    use tacsim::arena::state::{Channel, ContactId, Controller};
+    let mut arena = scripted_arena();
+    arena.set_controller(
+        MOVER,
+        Controller::Mind,
+        tacsim::arena::reflex::ReflexState::Withdraw,
+    );
+    assert!(arena.minds.contains_key(&MOVER), "the adoption laid a row");
+    let row = MindState {
+        think_seq: 3,
+        pending: Some(PendingThink {
+            think_seq: 2,
+            t_ms: 2_482,
+        }),
+        memory: vec![0xde, 0xad],
+        notices: vec![
+            FrameNotice::PowerOnline,
+            FrameNotice::Miss {
+                contact: None,
+                reason: SmolStr::new("moved"),
+            },
+        ],
+        ranges: std::collections::BTreeMap::from([(ContactId(77), 450)]),
+        order: Some(FrameOrder {
+            squad: SmolStr::new("red-1"),
+            objective: MindObjective::Engage {
+                target: Some(ContactId(77)),
+            },
+            hold_fire: true,
+            max_range_band: None,
+            expires_ms: 40_000,
+        }),
+        strikes: 0,
+    };
+    arena.minds.insert(MOVER, row.clone());
+    arena.mind_landings.insert(
+        MOVER,
+        Landing {
+            think_seq: 2,
+            epochs: Channel::ALL.map(|channel| (channel, 0)),
+            intents: vec![IntentKind::Startup],
+            memory: vec![1],
+        },
+    );
+    let snapshot = Snapshot::encode(&arena).expect("the arena encodes");
+    let state = state_of(&snapshot);
+    assert!(
+        state
+            .get("minds")
+            .and_then(|minds| minds.get(MOVER.0.to_string()))
+            .is_some(),
+        "the state carries the mind's row"
+    );
+    assert!(
+        state.get("mind_landings").is_none() && state.get("mind_runner").is_none(),
+        "and neither the scratch nor the runner"
+    );
+    assert!(
+        state.to_string().contains("\"mind_think\""),
+        "the think is on the heap"
+    );
+    let decoded = Snapshot::decode(&snapshot.document, arena.definition.clone())
+        .expect("the document decodes");
+    assert_eq!(decoded.minds.get(&MOVER), Some(&row), "the row came back");
+    assert!(decoded.mind_landings.is_empty(), "the scratch did not");
+    assert!(
+        format!("{:?}", decoded.mind_runner).contains("NoMind"),
+        "the default runner"
+    );
+    assert_eq!(
+        tacsim::arena::hash::state_hash(&decoded),
+        tacsim::arena::hash::state_hash(&arena)
+    );
+
+    let mut four = snapshot.document.clone();
+    four["format"] = serde_json::json!(4);
+    let refused = SnapshotError::Format {
+        found: 4,
+        expected: SNAPSHOT_FORMAT,
+    };
+    assert_eq!(SNAPSHOT_FORMAT, 5);
+    assert_eq!(Snapshot::head(&four), Err(refused.clone()));
+    assert_eq!(
+        Snapshot::decode(&four, arena.definition.clone()).map(|_| ()),
         Err(refused)
     );
 }

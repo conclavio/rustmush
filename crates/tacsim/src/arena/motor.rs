@@ -63,7 +63,9 @@ use crate::arena::path::{
 use crate::arena::perception::{DriveOutcome, FrameNotice, bearing_of};
 use crate::arena::reflex::ReflexCounters;
 use crate::arena::slope;
-use crate::arena::state::{Arena, ArenaTerrain, Controller, DueKind, Power, SeenPose, UnitState};
+use crate::arena::state::{
+    Arena, ArenaTerrain, Channel, Controller, DueKind, Power, SeenPose, UnitState,
+};
 use crate::config::ReflexConfig;
 
 /// How near a goal cell counts as arrived, in cells.
@@ -2344,15 +2346,15 @@ impl Arena {
     /// the motor does nothing a pilot could not and a refused order (a cold or
     /// engine-killed hull) refuses here as it would there. A machine order
     /// never counts on the seat's rate and never takes the helm back from the
-    /// goal it is driving. 17b cut M1a.5 folds this into
-    /// `apply_machine_intents`.
+    /// goal it is driving. **17b cut M1a.5** folded the loop into
+    /// `Arena::apply_machine_intents`: the two continuous kinds are handed over
+    /// at the epochs the table holds now, and the answer is not read.
     pub(crate) fn apply_motor_plan(
         &mut self,
         unit: ObjId,
         plan: &MotorPlan,
         counters: &mut ReflexCounters,
     ) {
-        let mut seq = 0_u64;
         let mut orders: Vec<IntentKind> = Vec::new();
         if let Some(mdeg) = plan.heading_mdeg {
             orders.push(IntentKind::Heading { mdeg });
@@ -2360,22 +2362,25 @@ impl Arena {
         if let Some(cms) = plan.speed_cms {
             orders.push(IntentKind::Speed { cms });
         }
-        for kind in orders {
-            let channel = kind.channel_required();
-            seq = seq.saturating_add(1);
-            let intent = Intent {
-                unit,
-                channel,
-                epoch: self.epochs.current(unit, channel),
-                kind,
-                seq,
-            };
-            counters.intents = counters.intents.saturating_add(1);
-            // Continuous: written straight onto the hull, never queued, so there
-            // is nothing to take back out of `pending` the way `Arena::order`
-            // does for a discrete action.
-            let _ = apply_intent(self, &intent, IntentSource::Machine);
-        }
+        let epochs = Channel::ALL.map(|channel| (channel, self.epochs.current(unit, channel)));
+        let epoch_of = |channel: Channel| {
+            epochs
+                .iter()
+                .find(|(on, _)| *on == channel)
+                .map_or(0, |(_, epoch)| *epoch)
+        };
+        // Continuous: written straight onto the hull, never queued, so the
+        // millisecond is read by nothing — the motor's own `now_ms` is handed
+        // over for the shape's sake.
+        let now_ms = self.now_ms;
+        let _ = self.apply_machine_intents(
+            unit,
+            &orders,
+            now_ms,
+            &epoch_of,
+            IntentSource::Machine,
+            counters,
+        );
     }
 }
 

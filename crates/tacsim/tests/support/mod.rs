@@ -135,6 +135,18 @@ impl Muster {
         }
     }
 
+    /// **The same tank flown by a unit mind** (17b cut M1a.5; doc 17 §2,
+    /// D-UM-2): `Arena::new` lays a mind row down and schedules its first think,
+    /// and the test hands the arena the runner it thinks with
+    /// (`Arena::mind_runner`) — `NoMind`, thinking nothing, until it does.
+    #[must_use]
+    pub fn mind(team: Team, slot: u8) -> Muster {
+        Muster {
+            controller: Controller::Mind,
+            ..Muster::reflex(team, slot)
+        }
+    }
+
     /// Open at `cell` instead of the authored muster.
     #[must_use]
     pub fn at(self, cell: (u16, u16)) -> Muster {

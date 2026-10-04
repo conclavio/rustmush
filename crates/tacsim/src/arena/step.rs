@@ -65,8 +65,8 @@ use crate::arena::perception::{
 use crate::arena::reflex::ReflexCounters;
 use crate::arena::resolution::facet_band_seen;
 use crate::arena::state::{
-    ActionHash, Arena, Classification, ContactId, Controller, DueKind, EndReason, MatchEnd, Power,
-    SPENT_NOTICE_MS, StopReason, Team,
+    ActionHash, Arena, Classification, ContactId, Controller, DueEvent, DueKind, EndReason,
+    MatchEnd, Power, SPENT_NOTICE_MS, StopReason, Team,
 };
 use crate::arena::weapons::FrameWeapon;
 
@@ -707,12 +707,21 @@ impl Arena {
             // unit whose standing order the release took away. A release to a
             // unit under no order, or under another squad's, dropped nothing and
             // counts nothing.
-            let releasing = matches!(intent.kind, IntentKind::ReleaseOrder { .. })
-                && self.reflex.order(intent.unit).is_some();
+            //
+            // **17b cut M1a.5**: a mind's held order counts the same way.
+            let held_order = |arena: &Arena| {
+                arena.reflex.order(intent.unit).is_some()
+                    || arena
+                        .minds
+                        .get(&intent.unit)
+                        .is_some_and(|state| state.order.is_some())
+            };
+            let releasing =
+                matches!(intent.kind, IntentKind::ReleaseOrder { .. }) && held_order(self);
             // **16b cut M.1** (`T-82`): every order in this slice came through the
             // world's seam, so it is a seat's and counts against the rate.
             let outcome = apply_intent(self, intent, IntentSource::Seat);
-            if releasing && self.reflex.order(intent.unit).is_none() {
+            if releasing && !held_order(self) {
                 reflex.orders_released = reflex.orders_released.saturating_add(1);
             }
             if outcome == IntentOutcome::Queued && matches!(intent.kind, IntentKind::Fire { .. }) {
@@ -1338,11 +1347,49 @@ impl Arena {
         // **16b cut O.1** (16c N11): the Hold win this loop confirmed, and its
         // millisecond — ended after the loop, before the two settles.
         let mut hold_won: Option<(Team, i64)> = None;
+        // **17b cut M1a.5** (doc 17 §6, D-UM-20, D-UM-21): the mind kinds of
+        // the millisecond being popped, held back until every other kind due at
+        // that millisecond has run. See the loop's head below.
+        let mut held: Vec<DueEvent> = Vec::new();
         // The horizon is the substep's end until the deadline pops, and the
         // deadline's own millisecond after: `pop_due` then answers only what
         // shares that millisecond (everything earlier has already been popped),
         // and the loop stops with every later event left in the heap.
-        while let Some(event) = self.due.pop_due(deadline_hit.unwrap_or(self.now_ms)) {
+        //
+        // **17b cut M1a.5 — a millisecond's mind kinds run LAST** (D-UM-20: a
+        // think is resolved *after that millisecond's other due items; the
+        // view is the state then*; D-UM-21: landings *in unit-id order*).
+        // `DueEvent`'s order is `(t_ms, seq, kind)` with `seq` unique, so where a
+        // kind sits in its enum orders nothing, and a `SensorPass` scheduled
+        // after a `MindThink` at the same millisecond pops after it. So a
+        // popped `MindThink` or `MindLand` is held, and popping goes on while
+        // the heap's head is due at the same millisecond; when it is not — the
+        // head is later, past the horizon, or the heap is empty — the held
+        // events run, landings before thinks, by unit, by `think_seq`:
+        // unit-id order by construction, whatever their `seq` and whenever a
+        // mind was adopted. Anything an arm schedules at the same millisecond
+        // pops after them. No production unit is a mind, so production never
+        // holds an event here and the loop is the loop it was.
+        loop {
+            let horizon = deadline_hit.unwrap_or(self.now_ms);
+            // Every held event shares one millisecond: one is held only while
+            // the head is due at the held one's own.
+            if let Some(at) = held.first().map(|event| event.t_ms)
+                && !self
+                    .due
+                    .peek_due(horizon)
+                    .is_some_and(|next| next.t_ms == at)
+            {
+                self.run_mind_events(&mut held, reflex);
+                continue;
+            }
+            let Some(event) = self.due.pop_due(horizon) else {
+                break;
+            };
+            if event.kind.is_mind() {
+                held.push(event);
+                continue;
+            }
             match event.kind {
                 // **16b cut M.2** (16c `T-01`; doc 16 §3.8's `Timeout`): the match's
                 // duration bound, at its own arena millisecond. The arm only
@@ -1617,6 +1664,9 @@ impl Arena {
                         }
                     }
                 }
+                // **17b cut M1a.5**: held above and run by `run_mind_events`;
+                // never reached.
+                DueKind::MindThink { .. } | DueKind::MindLand { .. } => {}
             }
         }
         // The lazy hash is scratch for this substep's due events exactly as phase
@@ -2772,13 +2822,37 @@ impl Arena {
         refusal: Refusal,
         weapon: Option<SmolStr>,
     ) {
+        let notice = self.refusal_notice(unit, order, refusal, weapon, self.now_ms);
+        self.stage_notice(unit, notice);
+    }
+
+    /// **The notice one refused order is told as** (16b cut F.2's shape,
+    /// factored out by 17b cut M1a.5): the order's word, the refusal, the
+    /// weapon it named and the numbers its sentence carries, read at `at_ms`.
+    /// What [`Arena::stage_refusal`] stages to a pilot and what a mind's
+    /// landing appends to its own buffer (D-UM-8), so the two are one shape.
+    ///
+    /// `at_ms` is **the millisecond the order was refused at**, because that
+    /// is the only moment the numbers are true: `now_ms` for phase 2 and phase
+    /// 4, which refuse at the pulse's end, and the landing's own millisecond
+    /// for a mind, whose `resolve_fire` refused `Cycling` there — read at the
+    /// substep's end instead, a gun ready inside the substep would be told as
+    /// cycling for `0` seconds.
+    pub(crate) fn refusal_notice(
+        &self,
+        unit: ObjId,
+        order: &'static str,
+        refusal: Refusal,
+        weapon: Option<SmolStr>,
+        at_ms: i64,
+    ) -> FrameNotice {
         let detail = match refusal {
             Refusal::Cycling => {
                 let secs = weapon
                     .as_ref()
                     .and_then(|weapon| {
                         self.unit(unit)
-                            .map(|state| state.weapon_ready_in_ms(weapon, self.now_ms))
+                            .map(|state| state.weapon_ready_in_ms(weapon, at_ms))
                     })
                     .unwrap_or(0);
                 RefusalDetail::Cycling {
@@ -2794,15 +2868,12 @@ impl Arena {
             },
             _ => RefusalDetail::None,
         };
-        self.stage_notice(
-            unit,
-            FrameNotice::Refused {
-                order: SmolStr::new_static(order),
-                refusal,
-                weapon,
-                detail,
-            },
-        );
+        FrameNotice::Refused {
+            order: SmolStr::new_static(order),
+            refusal,
+            weapon,
+            detail,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2959,12 +3030,48 @@ impl Arena {
         None
     }
 
+    /// **Run one millisecond's held mind events** (17b cut M1a.5; doc 17 §6,
+    /// D-UM-20, D-UM-21), drained from `held`: every `MindLand` before every
+    /// `MindThink` — a hull's last thought lands before its next one is taken
+    /// — and each kind by unit then `think_seq`. The lazy action hash is opened
+    /// as `ReflexTick`'s arm opens it, so a landing's lines share the
+    /// substep's one hash; a think journals nothing and takes none.
+    fn run_mind_events(&mut self, held: &mut Vec<DueEvent>, reflex: &mut ReflexCounters) {
+        held.sort_by_key(|event| match event.kind {
+            DueKind::MindLand { unit, think_seq } => (0_u8, unit, think_seq),
+            DueKind::MindThink { unit, think_seq } => (1_u8, unit, think_seq),
+            _ => (2_u8, ObjId(0), event.seq),
+        });
+        for event in held.drain(..) {
+            if self.action_hash == ActionHash::Outside {
+                self.action_hash = ActionHash::Pending;
+            }
+            match event.kind {
+                DueKind::MindLand { unit, think_seq } => {
+                    self.mind_land(unit, think_seq, event.t_ms, reflex);
+                }
+                DueKind::MindThink { unit, think_seq } => {
+                    self.mind_think(unit, think_seq, event.t_ms, reflex);
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Put one notice in the platform's queue for this pulse.
     ///
     /// `pub(crate)` since 16b cut O.2, for
     /// [`crate::arena::intents::resolve_emcon`], which stages its own notice as
     /// it journals its own line.
+    ///
+    /// **17b cut M1a.5** (doc 17 §3, D-UM-8): a hull a mind flies keeps its own
+    /// copy, in its bounded buffer (`crate::arena::mind::MindState::push_notice`,
+    /// the oldest dropped past sixteen), drained into its next view. Every
+    /// other hull costs one map miss.
     pub(crate) fn stage_notice(&mut self, platform: ObjId, notice: FrameNotice) {
+        if let Some(state) = self.minds.get_mut(&platform) {
+            state.push_notice(notice.clone());
+        }
         self.pending_notices
             .entry(platform)
             .or_default()

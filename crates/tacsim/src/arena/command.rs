@@ -448,6 +448,10 @@ impl Arena {
                 members.push(SignalMember {
                     unit: *unit,
                     ordinal,
+                    // **17b cut M1a.5**: a member a mind flies has no reflex
+                    // row and reads `Startup` — the placeholder cut L
+                    // replaces. (No mind is dealt into a squad in this cut:
+                    // `squads_of` deals by `Controller::Reflex`.)
                     state: self
                         .reflex
                         .unit(*unit)

@@ -339,6 +339,9 @@ impl Arena {
         if !reseated {
             return;
         }
+        // **17b cut M1a.5**: the words are the reflex machine's, so a hull a
+        // mind flew has none (`machine: None`) — a mind holds no reflex row,
+        // and what it was doing is not a `ReflexState` sentence.
         let machine = self
             .reflex
             .unit(unit)

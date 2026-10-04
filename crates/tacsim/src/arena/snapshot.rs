@@ -68,29 +68,38 @@
 //!
 //! # The three lists
 //!
-//! [`Arena`] has 44 fields, and every one is placed by name, twice: in the
+//! [`Arena`] has 47 fields, and every one is placed by name, twice: in the
 //! exhaustive destructuring that builds the encode's borrowed `ArenaStateRef`,
 //! and in the exhaustive literal the decode builds the arena with. A field a
 //! later cut adds is a compile error in both until it is put in one of these:
 //!
-//! - **Carried** (32): `units`, `epochs`, `contacts`, `designators`,
+//! - **Carried** (33): `units`, `epochs`, `contacts`, `designators`,
 //!   `spent_said`, `due`, `ledger` (its [`LedgerState`]: counters, open chunk,
 //!   closed queue, both SHA-256 running states), `clock` (its [`ClockState`]),
 //!   `seed`, `resolution`, `pilots`, `reflex`, `motors` (17b cut M1a.1: the
 //!   [`MotorTable`] whole — its rows, the path budget's window and spend — and
-//!   never its path scratch, which moved there from `reflex`), `pending`,
+//!   never its path scratch, which moved there from `reflex`), `minds` (17b
+//!   cut M1a.5: every unit mind's row — its think counter, the think in
+//!   flight, its memory, its notice buffer, its range memory, its order and
+//!   its strikes), `pending`,
 //!   `shots`, `next_shot_seq`, `stop`, `now_ms`, `at_release`, `pending_catchup`,
 //!   `held_losses`, `ended`, `arena_cfg`, `match_cfg`, `sensors_cfg`,
 //!   `alert_range_cm`, `jam_radius_cm`, `squads`, `mode`, `hold`, and the two
 //!   views `squad_watch` and `squads_expired` — integers, carried so a resumed
 //!   squad's `SignalReason` stays true (`no_order` is chosen exactly when a
 //!   squad was never reported) and a resume does not re-ask every squad at once.
-//! - **Re-derived** (4), from the caller's ground — whose digest must be the
+//! - **Re-derived** (5), from the caller's ground — whose digest must be the
 //!   recorded one — and from compiled code: `definition` (and the horizon index
 //!   inside its terrain), `index` (built and rebuilt over the carried units, as
-//!   [`Arena::new`] builds it), `min_cost` (`Arena::new`'s own line) and
-//!   `jam_fold` (empty: a memo, exact by 16b cut U.2's rule).
-//! - **Reset** (8), views and per-pulse scratch: `lost_designators`,
+//!   [`Arena::new`] builds it), `min_cost` (`Arena::new`'s own line),
+//!   `jam_fold` (empty: a memo, exact by 16b cut U.2's rule) and `mind_runner`
+//!   (17b cut M1a.5: `crate::arena::mind::default_mind_runner`, the call
+//!   [`Arena::new`] makes, so a resumed match thinks with the runner a fresh
+//!   one would).
+//! - **Reset** (9), views and per-pulse scratch: `mind_landings` (17b cut
+//!   M1a.5: the thinks waiting to land; a resumed match's landing finds none,
+//!   clears its `pending` row and lands nothing — the residual 17b cut M3's
+//!   recompute closes), `lost_designators`,
 //!   `spent_hits` and `pending_notices` (empty between two pulses — [`Snapshot::encode`]
 //!   refuses an arena that holds any, never a panic), `last_frames` (empty: a
 //!   resumed pilot's first frame is a keyframe), `action_hash` (outside),
@@ -153,6 +162,7 @@ use crate::arena::hash::state_hash;
 use crate::arena::index::SpatialIndex;
 use crate::arena::intents::Intent;
 use crate::arena::ledger::{Ledger, LedgerState};
+use crate::arena::mind::{MindState, default_mind_runner};
 use crate::arena::motor::MotorTable;
 use crate::arena::reflex::ReflexMemory;
 use crate::arena::state::{
@@ -194,7 +204,13 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// format-3 reader cannot decode — a shape change of two carried enums, which
 /// the two unstepped `af1` fixtures leave empty, so the pin's digest and line
 /// count did not move and only the format did.
-pub const SNAPSHOT_FORMAT: u32 = 4;
+///
+/// **5 since 17b cut M1a.5** (doc 17 §3, §6, D-UM-2, D-UM-23): the `minds`
+/// section, `Controller::Mind` and the two mind due kinds (`MindThink`,
+/// `MindLand`) — a carried section and three carried variants a format-4
+/// reader cannot decode. The `af1` pin gains the one `state.minds: object`
+/// line each unstepped fixture fills.
+pub const SNAPSHOT_FORMAT: u32 = 5;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///
@@ -605,7 +621,7 @@ fn read(document: &serde_json::Value) -> Result<(SnapshotHead, Cow<'_, str>), Sn
 // The state tree: two structs, one field list
 // ---------------------------------------------------------------------------
 
-/// **What the encode serialises**: the 32 carried fields of [`Arena`], in its
+/// **What the encode serialises**: the 33 carried fields of [`Arena`], in its
 /// own order, every one a borrow but the two small mirrors ([`LedgerState`] and
 /// [`ClockState`]) — so an encode clones no contact and no shot, and of a unit
 /// only the opaque `mush_tactics::TacticalUnit`, which its own
@@ -630,6 +646,7 @@ struct ArenaStateRef<'a> {
     pilots: &'a [Pilot],
     reflex: &'a ReflexMemory,
     motors: &'a MotorTable,
+    minds: &'a BTreeMap<ObjId, MindState>,
     pending: &'a BTreeMap<ObjId, VecDeque<Intent>>,
     shots: &'a BTreeMap<u64, Shot>,
     next_shot_seq: &'a u64,
@@ -681,6 +698,12 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             // Carried (17b cut M1a.1): the motor rows and the path budget; the
             // table's scratch is `#[serde(skip)]`, as the reflex memory's was.
             motors,
+            // Carried (17b cut M1a.5): every unit mind's row.
+            minds,
+            // Reset (17b cut M1a.5): the thinks waiting to land are scratch.
+            mind_landings: _mind_landings,
+            // Re-derived (17b cut M1a.5): compiled code, `default_mind_runner`.
+            mind_runner: _mind_runner,
             // Re-derived: `Arena::new`'s line over the definition.
             min_cost: _min_cost,
             pending,
@@ -731,6 +754,7 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             pilots,
             reflex,
             motors,
+            minds,
             pending,
             shots,
             next_shot_seq,
@@ -773,6 +797,7 @@ struct ArenaState {
     pilots: Vec<Pilot>,
     reflex: ReflexMemory,
     motors: MotorTable,
+    minds: BTreeMap<ObjId, MindState>,
     pending: BTreeMap<ObjId, VecDeque<Intent>>,
     shots: BTreeMap<u64, Shot>,
     next_shot_seq: u64,
@@ -798,7 +823,7 @@ struct ArenaState {
 
 impl ArenaState {
     /// **The arena, by an exhaustive literal** over every field of [`Arena`]:
-    /// the 32 carried placed, the 4 re-derived derived and the 8 reset reset.
+    /// the 33 carried placed, the 5 re-derived derived and the 9 reset reset.
     fn into_arena(self, definition: ArenaDefinition) -> Result<Arena, SnapshotError> {
         let ArenaState {
             units,
@@ -814,6 +839,7 @@ impl ArenaState {
             pilots,
             reflex,
             motors,
+            minds,
             pending,
             shots,
             next_shot_seq,
@@ -840,6 +866,8 @@ impl ArenaState {
         let mut index = SpatialIndex::new(&definition.terrain);
         index.rebuild(&definition.terrain, &units);
         let min_cost = CostRow::ALL.map(|row| definition.terrain.min_cost(row));
+        // 17b cut M1a.5: the runner `Arena::new` opens with, by the same call.
+        let mind_runner = default_mind_runner(&arena_cfg);
         Ok(Arena {
             definition,
             units,
@@ -858,6 +886,9 @@ impl ArenaState {
             pilots,
             reflex,
             motors,
+            minds,
+            mind_landings: BTreeMap::new(),
+            mind_runner,
             min_cost,
             pending,
             shots,
@@ -1301,6 +1332,15 @@ mod tests {
         round_trip(&BTreeMap::from([(unit, ReflexUnit::default())]));
         // `MotorTable.rows` (17b cut M1a.1): keyed by the unit, an integer key.
         round_trip(&BTreeMap::from([(unit, MotorRow::default())]));
+        // `Arena.minds` (17b cut M1a.5), keyed by the unit, and inside each row
+        // `MindState.ranges`, keyed by a contact id at the top of `u64`.
+        round_trip(&BTreeMap::from([(
+            unit,
+            crate::arena::mind::MindState {
+                ranges: BTreeMap::from([(ContactId(u64::MAX), 450_u64)]),
+                ..crate::arena::mind::MindState::default()
+            },
+        )]));
         // `UnitState.ready_at_ms`, `UnitState.ammo`, `HeatState.per_shot`.
         round_trip(&BTreeMap::from([(SmolStr::new("cannon"), -1_i64)]));
         round_trip(&BTreeMap::from([(SmolStr::new("cannon"), 40_u32)]));

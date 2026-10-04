@@ -51,7 +51,9 @@ pub const OBSERVER_SCHEMA: &str = "arena.observer";
 pub const OBSERVER_VERSION: u32 = 1;
 
 /// **One unit's flags**, in the payload's fixed order: `w` wreck, `p` power
-/// online, `s` starting, `m` machine, `h` held; `""` when none apply.
+/// online, `s` starting, `m` machine, `n` mind, `h` held; `""` when none apply.
+/// **17b cut M1a.5** added `n`, a unit a mind flies — never beside `m`, the
+/// two controllers being one attribute. Additive, so the version stays.
 #[must_use]
 pub fn unit_flags(unit: &ObserverUnit) -> String {
     let mut flags = String::with_capacity(5);
@@ -63,8 +65,10 @@ pub fn unit_flags(unit: &ObserverUnit) -> String {
         Power::Starting => flags.push('s'),
         Power::Off => {}
     }
-    if unit.controller == Controller::Reflex {
-        flags.push('m');
+    match unit.controller {
+        Controller::Reflex => flags.push('m'),
+        Controller::Mind => flags.push('n'),
+        Controller::Pilot => {}
     }
     if unit.held {
         flags.push('h');
@@ -216,7 +220,8 @@ mod tests {
     }
 
     /// **16b cut I.4**: the flags are `w p s m h`, in that order, and `""` when
-    /// none apply; power online and starting never both.
+    /// none apply; power online and starting never both. **17b cut M1a.5**:
+    /// `n` for a mind, where `m` would be.
     #[test]
     fn i4_the_flags_are_in_their_fixed_order() {
         let mut unit = row(1, Team::Red, 1, Some((0, 0)));
@@ -230,6 +235,9 @@ mod tests {
         unit.power = Power::Online;
         unit.wreck = true;
         assert_eq!(unit_flags(&unit), "wpmh");
+        // 17b cut M1a.5: a mind is `n`, in `m`'s place.
+        unit.controller = Controller::Mind;
+        assert_eq!(unit_flags(&unit), "wpnh");
     }
 
     /// **16b cut I.4**: nothing to watch is the schema and one key.

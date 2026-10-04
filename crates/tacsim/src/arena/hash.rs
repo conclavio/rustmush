@@ -166,6 +166,28 @@ thread_local! {
 ///    is unmoved. A goal is a decision that reaches a pose only substeps later,
 ///    which is the whole reason item 3 folds one; a hull steered by something
 ///    other than the reflex controller is folded for the same reason.
+///
+///    **Item 3c, the unit minds** (17b cut M1a.5; doc 17 §3, §6, §8), right
+///    after item 3b: every row of [`Arena::minds`], in unit-id order and with
+///    **no count prefix** (so an arena with no mind — every match that exists
+///    — adds no byte): the unit's `u32`; `think_seq` as `u64`; `pending` as
+///    `[0]`, or `[1]` then its `think_seq` `u64` and its `t_ms` `i64`; the
+///    memory's length as `u64` then its FNV-1a 64 digest as `u64`; the
+///    notices' count as `u64`, then per notice its **canonical
+///    `serde_json::to_vec` bytes** — every field, so two buffers that would
+///    drive two different decisions (two `Miss` notices differing only in
+///    their reason, a `Struck`'s figures, a `was`, a section) never fold the
+///    same; the range memory's count as `u64`, then per entry the
+///    `ContactId`'s `u64` and the figure's `u64`; the order as `[0]`, or
+///    `[1]`, the objective's code byte (`MindObjective::code`) and its payload
+///    (`Advance`'s two `u16`, `Engage`'s target as `u64` or `0`, `Screen`'s
+///    facing as `u32`, `Support`'s charge as `u64` or `0`, nothing for the
+///    other two), the `hold_fire` byte, the band byte (`0` none, `1` close, `2`
+///    effective, `3` far), `expires_ms` as `i64` and the squad word's bytes;
+///    then `strikes`, one byte. Every field decides a later intent — a notice
+///    a mind reads, a range it holds, an order it obeys — and none of them has
+///    a ledger line of its own, so a replay that differed in one would
+///    otherwise compare equal until the difference reached a pose.
 /// 4. **The shadow contact store** (16b cut S.1), in its own iteration order —
 ///    viewer object number ascending, then contact id ascending, which is what
 ///    the two `BTreeMap`s give: per contact the viewer's `u32`, the contact id's
@@ -747,6 +769,11 @@ pub fn state_hash(arena: &Arena) -> u64 {
         hash = fold_stamp(hash, motor.hold_retry_ms);
         hash = fold_search(hash, motor);
     }
+    // **17b cut M1a.5** (item 3c): the unit minds, per row with no count
+    // prefix — an arena with none (every production match) folds no byte here.
+    for (unit, mind) in &arena.minds {
+        hash = fold_mind(hash, *unit, mind);
+    }
     for (viewer, id, held) in arena.contacts.all() {
         hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
         hash = fnv1a64_update(hash, &id.0.to_le_bytes());
@@ -836,6 +863,72 @@ pub fn state_hash(arena: &Arena) -> u64 {
         None => hash = fnv1a64_update(hash, &[0_u8]),
     }
     hash
+}
+
+/// **One unit mind's row** (17b cut M1a.5; item 3c of [`state_hash`]).
+fn fold_mind(mut hash: u64, unit: mush_core::ObjId, mind: &crate::arena::mind::MindState) -> u64 {
+    use crate::arena::perception::MindObjective;
+    use crate::deliberation::order::RangeBand;
+    hash = fnv1a64_update(hash, &unit.0.to_le_bytes());
+    hash = fnv1a64_update(hash, &mind.think_seq.to_le_bytes());
+    match mind.pending {
+        Some(pending) => {
+            hash = fnv1a64_update(hash, &[1_u8]);
+            hash = fnv1a64_update(hash, &pending.think_seq.to_le_bytes());
+            hash = fnv1a64_update(hash, &pending.t_ms.to_le_bytes());
+        }
+        None => hash = fnv1a64_update(hash, &[0_u8]),
+    }
+    hash = fnv1a64_update(hash, &(mind.memory.len() as u64).to_le_bytes());
+    hash = fnv1a64_update(
+        hash,
+        &fnv1a64_update(FNV_OFFSET_BASIS, &mind.memory).to_le_bytes(),
+    );
+    hash = fnv1a64_update(hash, &(mind.notices.len() as u64).to_le_bytes());
+    for notice in &mind.notices {
+        // Canonical bytes: a derive over closed enums, integers and words, so
+        // the same notice is the same bytes on every run. A notice that does not
+        // serialise cannot exist (every payload is plain data); it would fold
+        // as no bytes rather than take the arena down.
+        hash = fnv1a64_update(hash, &serde_json::to_vec(notice).unwrap_or_default());
+    }
+    hash = fnv1a64_update(hash, &(mind.ranges.len() as u64).to_le_bytes());
+    for (contact, range_m) in &mind.ranges {
+        hash = fnv1a64_update(hash, &contact.0.to_le_bytes());
+        hash = fnv1a64_update(hash, &range_m.to_le_bytes());
+    }
+    match mind.order.as_ref() {
+        Some(order) => {
+            hash = fnv1a64_update(hash, &[1_u8, order.objective.code()]);
+            match order.objective {
+                MindObjective::Advance { to } => {
+                    hash = fnv1a64_update(hash, &to.0.to_le_bytes());
+                    hash = fnv1a64_update(hash, &to.1.to_le_bytes());
+                }
+                MindObjective::Engage { target } => {
+                    hash = fnv1a64_update(hash, &target.map_or(0, |id| id.0).to_le_bytes());
+                }
+                MindObjective::Screen { facing_mdeg } => {
+                    hash = fnv1a64_update(hash, &facing_mdeg.to_le_bytes());
+                }
+                MindObjective::Support { of } => {
+                    hash = fnv1a64_update(hash, &of.map_or(0, |id| id.0).to_le_bytes());
+                }
+                MindObjective::Hold | MindObjective::Withdraw => {}
+            }
+            let band = match order.max_range_band {
+                None => 0_u8,
+                Some(RangeBand::Close) => 1,
+                Some(RangeBand::Effective) => 2,
+                Some(RangeBand::Far) => 3,
+            };
+            hash = fnv1a64_update(hash, &[u8::from(order.hold_fire), band]);
+            hash = fnv1a64_update(hash, &order.expires_ms.to_le_bytes());
+            hash = fnv1a64_update(hash, order.squad.as_bytes());
+        }
+        None => hash = fnv1a64_update(hash, &[0_u8]),
+    }
+    fnv1a64_update(hash, &[mind.strikes])
 }
 
 /// **A motor row's avoided cells** (16b cut Q.7's encoding; one function since

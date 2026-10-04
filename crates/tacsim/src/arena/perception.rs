@@ -2426,7 +2426,12 @@ pub fn lock_range_step_m(age_ms: i64) -> u64 {
 /// at staging**, off the live contact, so a notice says what the contact was
 /// called at the moment the thing happened rather than what it is called by the
 /// time the frame is rendered.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// **17b cut M1a.5**: serde-able, with every payload of [`FrameNotice`], so a
+/// mind's notice buffer is folded as canonical bytes and carried by a snapshot
+/// (`crate::arena::mind::MindState::notices`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Named {
     /// The opaque contact id — the row key, never printed.
     pub id: ContactId,
@@ -2446,7 +2451,8 @@ pub struct Named {
 /// transition *and refusal*, and until that cut the vocabulary was the contact
 /// lifecycle alone — so a pilot shot to pieces was told nothing, and every order
 /// the arena refused at apply vanished.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NoticeKind {
     /// The platform now holds a contact it did not hold before.
     Acquired,
@@ -2611,7 +2617,8 @@ impl NoticeKind {
 /// Read at the moment the order was refused, because that is the only moment they
 /// are true: the cycle's remainder is against the arena's `now_ms` and the heat is
 /// the cell's, not the pilot's pulse-old mirror of either.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum RefusalDetail {
     /// The refusal needs no number.
     None,
@@ -2675,7 +2682,15 @@ pub enum RefusalDetail {
 /// and as a loss and a new contact at another. And a cancel whose row came back
 /// **renamed and told apart** (a mesh copy inside the window) is said as the
 /// identification it is (16c `B-74`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// **17b cut M1a.5** (doc 17 §3, D-UM-8): serde-able, every payload with it,
+/// because a mind's notice buffer is hashed as each notice's canonical
+/// `serde_json` bytes — every field, so two buffers that would drive two
+/// different decisions (a `Miss` whose reason differs) never fold the same —
+/// and carried by a snapshot. No wire reads these derives: the keyframe's
+/// notice objects are `crate::match_::cockpit`'s own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum FrameNotice {
     /// A contact's lifecycle transition (16b cut S.2).
     Contact {
@@ -2875,7 +2890,8 @@ pub enum FrameNotice {
 }
 
 /// **The two answers the motor gives a `DRIVE`** (17b cut M1a.4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DriveOutcome {
     /// Within `crate::arena::motor::ARRIVE_CELLS` of the goal, and stopped.
     Arrived,

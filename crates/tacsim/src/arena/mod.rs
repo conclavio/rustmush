@@ -226,6 +226,19 @@
 //! and a mind's view (17b cut M1a.5) read one function. Pure over a frame and a
 //! range memory, so the no-I/O gate covers it as it covers every file here.
 //!
+//! # 17b cut M1a.5: the mind seam
+//!
+//! [`crate::arena::mind`] is doc 17 §3, §6 and §7's seam: a
+//! [`crate::arena::state::Controller::Mind`] hull's state
+//! ([`crate::arena::mind::MindState`]), its view at the keyframe's resolution
+//! ([`crate::arena::mind::MindView`]), its think and its landing one substep
+//! later as two due kinds the due loop runs last at their millisecond, and the
+//! runner as a trait ([`crate::arena::mind::MindRunner`]) the library calls
+//! and never implements beyond [`crate::arena::mind::NoMind`]. A mind's
+//! intents land through the reflex controller's own door
+//! (`Arena::apply_machine_intents`) under
+//! [`crate::arena::intents::IntentSource::Mind`]. No production unit is a mind.
+//!
 //! What is still not here, and whose it is: deliberation, the order type, the
 //! squad grouping and the cost run are cut N.2's, and the task, the inbox, the
 //! egress, the timer and the unwind boundary are cut T's.
@@ -241,6 +254,7 @@ pub mod horizon;
 pub mod index;
 pub mod intents;
 pub mod ledger;
+pub mod mind;
 pub mod motion;
 pub mod motor;
 pub mod observer;
@@ -281,6 +295,10 @@ pub use intents::{
     apply_control, apply_intent, drain_pending, resolve_emcon, resolve_startup,
 };
 pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, LedgerFull};
+pub use mind::{
+    Landing, MIND_INTENTS_MAX, MIND_NOTICES, MindRunner, MindState, MindView, NoMind, PendingThink,
+    STOCK_CONTACT_ROWS, STOCK_THINK_MS, ThinkJob, ThinkResult, ViewContact, default_mind_runner,
+};
 pub use motion::{Held, MotionOutcome, cos_fx, integrate, sin_fx};
 pub use motor::{Fallback, MotorOutcome, MotorPlan, MotorRow, MotorTable};
 pub use observer::{Observer, ObserverUnit};
@@ -291,8 +309,8 @@ pub use perception::{
     ThermalSignature, bearing_mdeg, bearing_of, contact_refusal, sees,
 };
 pub use reflex::{
-    ARRIVE_CELLS, REFLEX_AVOID_MAX, REFLEX_AVOID_TTL_MS, REFLEX_STAND_TICKS, ReflexCounters,
-    ReflexMemory, ReflexState, ReflexUnit,
+    ARRIVE_CELLS, Landed, REFLEX_AVOID_MAX, REFLEX_AVOID_TTL_MS, REFLEX_STAND_TICKS,
+    ReflexCounters, ReflexMemory, ReflexState, ReflexUnit,
 };
 pub use resolution::{
     BandProfile, Consequence, DIRECT_BANDS, Resolution, SectionProfile, UnitProfile, facet_band,
@@ -303,13 +321,13 @@ pub use slope::{
 };
 pub use snapshot::{Snapshot, SnapshotError, SnapshotHead, digest_text};
 pub use state::{
-    Arena, ArenaDefinition, ArenaError, ArenaMode, ArenaTerrain, Channel, Classification,
-    ContactId, Controller, CostRow, CustodyOut, CustodyUnit, DEFAULT_SENSOR_HEIGHT_CM, Designator,
-    DesignatorBook, DueEvent, DueHeap, DueKind, EndReason, EntryZone, EpochTable, HeatState,
-    HoldRule, HoldState, KeySpot, MatchEnd, MatchMode, MotionCarry, MotionLimits, NO_SUCH_CONTACT,
-    PROVISIONAL_PREFIX, Pilot, Power, SPOT_LETTERS, ShadowContact, ShadowContacts, Side,
-    StopReason, Team, TerrainCell, TrackedRules, UnitState, Waypoint, Waypoints, WeaponSummary,
-    spot_letter,
+    Arena, ArenaDefinition, ArenaError, ArenaMode, ArenaTerrain, COCKPIT_CHANNEL_IDS, Channel,
+    Classification, ContactId, Controller, CostRow, CustodyOut, CustodyUnit,
+    DEFAULT_SENSOR_HEIGHT_CM, Designator, DesignatorBook, DueEvent, DueHeap, DueKind, EndReason,
+    EntryZone, EpochTable, HeatState, HoldRule, HoldState, KeySpot, MatchEnd, MatchMode,
+    MotionCarry, MotionLimits, NO_SUCH_CONTACT, PROVISIONAL_PREFIX, Pilot, Power, SPOT_LETTERS,
+    ShadowContact, ShadowContacts, Side, StopReason, Team, TerrainCell, TrackedRules, UnitState,
+    Waypoint, Waypoints, WeaponSummary, spot_letter,
 };
 pub use step::{Frame, FrameHeat, FrameSlots, STOCK_ODDS_ROWS, StepOutput};
 pub use view::{

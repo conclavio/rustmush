@@ -611,13 +611,15 @@ pub enum CockpitError {
 
 /// The channels a cockpit seat grants (doc 16 §3.7: `helm`, `sensors`, `fire`).
 ///
-/// Built from the arena's own [`Channel`] vocabulary, so the seat and the orders
-/// cannot name two different sets.
+/// Built from the arena's own channel vocabulary, so the seat and the orders
+/// cannot name two different sets. **17b cut M1a.5** (doc 17 §4, D-UM-47): from
+/// [`crate::arena::state::COCKPIT_CHANNEL_IDS`], the one table where the arena's
+/// closed `Channel` and `mush-sim`'s open [`ChannelId`] meet by wire word.
 #[must_use]
 pub fn cockpit_channels() -> BTreeSet<ChannelId> {
-    Channel::ALL
+    crate::arena::state::COCKPIT_CHANNEL_IDS
         .iter()
-        .filter_map(|channel| ChannelId::new(channel.as_str()))
+        .filter_map(|id| ChannelId::new(*id))
         .collect()
 }
 
@@ -10181,5 +10183,22 @@ mod tests {
                 assert_eq!(ap3_lines(&moved), lines, "the block moved with {tempo:?}");
             }
         }
+    }
+
+    /// **17b cut M1a.5: the seat grants the channel table** (doc 17 §4,
+    /// D-UM-47): `cockpit_channels()` is exactly the set of
+    /// `COCKPIT_CHANNEL_IDS`, which is the arena's three channels' words.
+    #[test]
+    fn m1a5_the_seat_grants_the_channel_table() {
+        let granted: BTreeSet<String> = cockpit_channels()
+            .iter()
+            .map(|id| id.as_str().to_owned())
+            .collect();
+        let table: BTreeSet<String> = crate::arena::state::COCKPIT_CHANNEL_IDS
+            .iter()
+            .map(|id| (*id).to_owned())
+            .collect();
+        assert_eq!(granted, table);
+        assert_eq!(granted.len(), Channel::ALL.len());
     }
 }
