@@ -5900,8 +5900,9 @@ fn m1a5_a_snapshot_carries_the_minds_and_not_their_landings() {
         .expect("the document decodes");
     assert_eq!(decoded.minds.get(&MOVER), Some(&row), "the row came back");
     assert!(decoded.mind_landings.is_empty(), "the scratch did not");
+    // 17b cut M1a.6: the default runner is the native stock mind.
     assert!(
-        format!("{:?}", decoded.mind_runner).contains("NoMind"),
+        format!("{:?}", decoded.mind_runner).contains("NativeStockMind"),
         "the default runner"
     );
     assert_eq!(

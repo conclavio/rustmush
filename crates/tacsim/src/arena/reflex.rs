@@ -162,12 +162,13 @@ pub const REFLEX_STAND_TICKS: i64 = 3;
 ///
 /// Lower is a better target: a tank showing its rear is worth closing on and one
 /// showing its front is not. The numbers are doctrine and nothing reads them but
-/// the score.
-const EXPOSURE_FRONT: u32 = 1_000;
+/// the score — this module's, and since 17b cut M1a.6 the stock mind's
+/// `best_hostile`, which is the same score over the view (hence `pub(crate)`).
+pub(crate) const EXPOSURE_FRONT: u32 = 1_000;
 /// A flank.
-const EXPOSURE_FLANK: u32 = 600;
+pub(crate) const EXPOSURE_FLANK: u32 = 600;
 /// The rear.
-const EXPOSURE_REAR: u32 = 200;
+pub(crate) const EXPOSURE_REAR: u32 = 200;
 
 /// **Half the arc a screen covers**, millidegrees either side of its facing (16b
 /// cut Z.2; 16c N6): `Objective::Screen` locks and fires on a classified hostile
@@ -757,14 +758,21 @@ pub(crate) struct ReflexPlan {
 /// `stand_cm` is 200 m under all three. **16b cut AA.1**: a machine that cannot
 /// close ([`UnitState::cannot_close`]) enters `Engage` at `release_cm` and not at
 /// `engage_cm`, so its region is the whole row.
+///
+/// **Shared arithmetic, not a leaky reader** (17b cut M1a.6): `pub` because the
+/// stock mind's [`crate::arena::stock_mind::view_ranges`] answers this struct
+/// over the view, so T0 and T1 fight at the same three distances. It outlives
+/// the reflex's decision half: when 17b cut M4 deletes that, `Ranges` and
+/// [`stand_off_want`] move beside the stock mind. Only [`ranges`] — the reading
+/// off the live [`UnitState`] — is T0's and leaves with it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Ranges {
+pub struct Ranges {
     /// Where `Approach` stops and turns: the doctrine band of the allowed reach —
     /// for a machine that can close (16b cut AA.1).
-    engage_cm: u64,
+    pub engage_cm: u64,
     /// Where `Engage` gives up and closes again — **and the ceiling
-    /// [`Arena::engage_orders`] will fire out to**, so the two cannot disagree.
-    release_cm: u64,
+    /// `Arena::engage_orders` will fire out to**, so the two cannot disagree.
+    pub release_cm: u64,
     /// What a `Withdraw` still on its way home will turn and fight inside: the
     /// `close` band, capped by the order **and by `release_cm`**.
     ///
@@ -773,18 +781,23 @@ struct Ranges {
     /// the same sight, so a gun whose inner band is under a third of its outer
     /// reach — nothing the game ships, and an ordinary shape for content to
     /// author — would otherwise let a hurt machine stop in front of a hostile
-    /// that [`Arena::engage_orders`]' own ceiling then refuses to fire at. That
+    /// that `Arena::engage_orders`' own ceiling then refuses to fire at. That
     /// is the parked target 16b cut Q.7 was paid to remove, arrived at by
-    /// doctrine instead of by a pilot, and [`Arena::withdraw_stand`]'s doc says
+    /// doctrine instead of by a pilot, and `Arena::withdraw_stand`'s doc says
     /// a unit that cannot shoot is never cornered.
-    stand_cm: u64,
+    pub stand_cm: u64,
     /// The furthest this platform fights at at all; `0` is a platform with
     /// nothing loaded, which has no target.
-    limit_cm: u64,
+    pub limit_cm: u64,
 }
 
 /// [`Ranges`] for one unit under one order.
-fn ranges(unit: &UnitState, cell_cm: u16, cfg: &ReflexConfig, order: Option<&Order>) -> Ranges {
+///
+/// **T0's leaky readers, exposed for the twin lane's shadow (17b cut M1a.6) and
+/// removed with the reflex in M4.** `#[doc(hidden)]`: a declared surface for
+/// `crates/tacsim/tests/twin.rs` and nothing else.
+#[doc(hidden)]
+pub fn ranges(unit: &UnitState, cell_cm: u16, cfg: &ReflexConfig, order: Option<&Order>) -> Ranges {
     // The loaded weapon's own edges, built once: `ceiling_cm` reads the last of
     // them and the sight, exactly as the pilot's band word does. A platform with
     // nothing loaded has an empty list, and every distance below falls to nought.
@@ -816,7 +829,13 @@ fn ranges(unit: &UnitState, cell_cm: u16, cfg: &ReflexConfig, order: Option<&Ord
 /// or a small sight, and a floor applied *after* the `min` can exceed `range`,
 /// which projects the goal behind the machine — `B-05` written a second time. As
 /// written the answer is never above `range`, and never nought unless `range` is.
-fn stand_off_want(engage_cm: u64, cell_cm: u64, range_cm: u64) -> u64 {
+///
+/// **Shared arithmetic, not a leaky reader** (17b cut M1a.6): `pub` because the
+/// stock mind's `Approach` and `Engage` call it over the view's held range, so
+/// it outlives the reflex's decision half and moves beside the stock mind in
+/// 17b cut M4 (see [`Ranges`]); the twin lane's shadow calls it too.
+#[must_use]
+pub fn stand_off_want(engage_cm: u64, cell_cm: u64, range_cm: u64) -> u64 {
     engage_cm
         .saturating_sub(u64::from(STAND_OFF_MARGIN_CELLS).saturating_mul(cell_cm))
         .max(cell_cm)
@@ -2755,7 +2774,12 @@ impl Arena {
     /// it names *which* object, and every range and bearing the supporter then
     /// acts on is its own plot. A unit whose `of` is itself fights on doctrine
     /// and is asked nothing here.
-    fn ordered_target(
+    ///
+    /// **T0's leaky readers, exposed for the twin lane's shadow (17b cut M1a.6) and
+    /// removed with the reflex in M4.** `#[doc(hidden)]`: a declared surface for
+    /// `crates/tacsim/tests/twin.rs` and nothing else.
+    #[doc(hidden)]
+    pub fn ordered_target(
         &self,
         id: ObjId,
         order: Option<&Order>,
@@ -2802,7 +2826,12 @@ impl Arena {
     /// arrive*, which is not a thing the shooter knows in advance. A machine
     /// that fires at a wreck it still believes in spends the round and reads a
     /// miss, as a pilot would.
-    fn reflex_has_line(&self, id: ObjId, target: ObjId, counters: &mut ReflexCounters) -> bool {
+    ///
+    /// **T0's leaky readers, exposed for the twin lane's shadow (17b cut M1a.6) and
+    /// removed with the reflex in M4.** `#[doc(hidden)]`: a declared surface for
+    /// `crates/tacsim/tests/twin.rs` and nothing else.
+    #[doc(hidden)]
+    pub fn reflex_has_line(&self, id: ObjId, target: ObjId, counters: &mut ReflexCounters) -> bool {
         counters.traces = counters.traces.saturating_add(1);
         let (sight, cover) = self.fire_line(id, target);
         sight.is_clear_or_partial() && cover != Cover::Full
@@ -2841,7 +2870,12 @@ impl Arena {
     /// plot `admit` accepts — which is how [`Arena::stand`] asks for the best
     /// hostile inside an arc and a range without a second loop that could drift
     /// from the first. `best_hostile` is this with a filter that admits all.
-    fn best_hostile_where(
+    ///
+    /// **T0's leaky readers, exposed for the twin lane's shadow (17b cut M1a.6) and
+    /// removed with the reflex in M4.** `#[doc(hidden)]`: a declared surface for
+    /// `crates/tacsim/tests/twin.rs` and nothing else.
+    #[doc(hidden)]
+    pub fn best_hostile_where(
         &self,
         id: ObjId,
         memory: &ReflexMemory,
@@ -3160,7 +3194,10 @@ pub enum Landed {
 /// **The angle between two bearings**, millidegrees, the short way round (16b
 /// cut Z.2): `0` to `180,000`, modulo a full turn, so a screen facing 350° sees
 /// a plot at 10° as 20° off its facing and not 340°.
-fn arc_between(a_mdeg: u32, b_mdeg: u32) -> u32 {
+///
+/// `pub(crate)` since 17b cut M1a.6: the stock mind's screen reads the same
+/// arc, in whole degrees.
+pub(crate) fn arc_between(a_mdeg: u32, b_mdeg: u32) -> u32 {
     let apart = (a_mdeg % 360_000).abs_diff(b_mdeg % 360_000);
     apart.min(360_000 - apart)
 }

@@ -64,7 +64,8 @@ use crate::arena::perception::{DriveOutcome, FrameNotice, bearing_of};
 use crate::arena::reflex::ReflexCounters;
 use crate::arena::slope;
 use crate::arena::state::{
-    Arena, ArenaTerrain, Channel, Controller, DueKind, Power, SeenPose, UnitState,
+    Arena, ArenaDefinition, ArenaTerrain, Channel, Controller, CostRow, DueKind, HoldState, Power,
+    SeenPose, Team, UnitState,
 };
 use crate::config::ReflexConfig;
 
@@ -1758,28 +1759,22 @@ impl Arena {
     /// plan) and its own [`MotorRow`], and writes only the row's goal, route
     /// and waypoint pair. 17b cut M1a.6's stock mind performs the same landing
     /// off a `drive_no_route` notice and lifts it into a free function.
+    ///
+    /// **17b cut M1a.6**: the arithmetic is the free [`fallback_waypoint`],
+    /// which the stock mind calls too; this is its thin wrapper over the row.
     pub fn fall_back_to_waypoint(&self, id: ObjId, row: &mut MotorRow, here: (u16, u16)) {
         row.route.clear();
-        let graph = &self.definition.waypoints;
-        let Some(node) = graph.nearest(here.0, here.1) else {
-            // No graph to fall back on: give the goal up and hold. A unit that
-            // cannot get there and has nowhere else to be does not drive at a wall.
-            row.goal = None;
-            return;
-        };
-        let at = graph.node(node).map(|node| (node.x, node.y));
-        let node = if at == row.goal {
-            let neighbours = graph.neighbours(node);
-            neighbours
-                .get(usize::try_from(id.0).unwrap_or(0) % neighbours.len().max(1))
-                .copied()
-                .unwrap_or(node)
-        } else {
-            node
-        };
-        row.from_waypoint = row.waypoint;
-        row.waypoint = Some(node);
-        row.goal = graph.node(node).map(|node| (node.x, node.y));
+        let (waypoint, from_waypoint, goal) = fallback_waypoint(
+            &self.definition,
+            here,
+            row.goal,
+            row.waypoint,
+            row.from_waypoint,
+            id.0,
+        );
+        row.waypoint = waypoint;
+        row.from_waypoint = from_waypoint;
+        row.goal = goal;
     }
 
     /// `Patrol`'s goal: the node it is walking to, advanced when it arrives.
@@ -1791,58 +1786,25 @@ impl Arena {
     /// reads the waypoint graph, the unit's own object number (`id %
     /// choices.len()`, the M1a plan's departure (e)) and its own row, and no
     /// other unit — `crates/tacsim/tests/motor.rs` holds it to that.
+    ///
+    /// **17b cut M1a.6**: the walk is the free [`patrol_step`], which the stock
+    /// mind calls too; this is its thin wrapper over the row.
     pub fn patrol_step(&self, id: ObjId, row: &mut MotorRow, here: Option<(u16, u16)>) {
-        let graph = &self.definition.waypoints;
-        if graph.is_empty() {
-            // No graph authored: a patrol with nowhere to go holds where it is,
-            // which is the honest answer and not a random walk.
-            row.goal = None;
-            row.route.clear();
-            return;
-        }
-        let Some((x, y)) = here else {
-            row.goal = None;
-            return;
-        };
-        let mut node = match row.waypoint {
-            Some(node) if graph.node(node).is_some() => node,
-            _ => {
-                let Some(node) = graph.nearest(x, y) else {
-                    return;
-                };
-                row.from_waypoint = None;
-                node
-            }
-        };
-        let arrived = graph
-            .node(node)
-            .is_some_and(|at| at.x.abs_diff(x).max(at.y.abs_diff(y)) <= ARRIVE_CELLS);
-        if arrived {
-            let neighbours = graph.neighbours(node);
-            let onward: Vec<u16> = neighbours
-                .iter()
-                .copied()
-                .filter(|next| Some(*next) != row.from_waypoint)
-                .collect();
-            let choices: &[u16] = if onward.is_empty() {
-                neighbours
-            } else {
-                &onward
-            };
-            if let Some(next) = choices
-                .get(usize::try_from(id.0).unwrap_or(0) % choices.len().max(1))
-                .copied()
-            {
-                row.from_waypoint = Some(node);
-                node = next;
-                row.goal = None;
-                row.route.clear();
-            }
-        }
-        row.waypoint = Some(node);
-        let goal = graph.node(node).map(|at| (at.x, at.y));
-        if row.goal != goal {
-            row.goal = goal;
+        let step = patrol_step(
+            &self.definition,
+            id.0,
+            here,
+            false,
+            Walk {
+                waypoint: row.waypoint,
+                from_waypoint: row.from_waypoint,
+                goal: row.goal,
+            },
+        );
+        row.waypoint = step.walk.waypoint;
+        row.from_waypoint = step.walk.from_waypoint;
+        row.goal = step.walk.goal;
+        if step.clear_route {
             row.route.clear();
         }
     }
@@ -1860,18 +1822,19 @@ impl Arena {
     /// which keeps the retry clock and calls this for the arithmetic. **Public**,
     /// as one of the motor's audited kernels (doc 17 §4): it reads the arena's
     /// Hold objective and the unit's own mobility and cell, and no other unit.
+    ///
+    /// **17b cut M1a.6**: the arithmetic is the free [`hold_arrived`]; this is
+    /// its wrapper over the arena's objective and the hull's mobility.
     #[must_use]
     pub fn hold_arrived(&self, unit: ObjId, here: Option<(u16, u16)>) -> bool {
         let Some(hold) = self.hold.as_ref() else {
             return false;
         };
-        self.unit(unit).is_some_and(UnitState::cannot_close)
-            || here.is_some_and(|cell| {
-                cell.0
-                    .abs_diff(hold.spot.0)
-                    .max(cell.1.abs_diff(hold.spot.1))
-                    <= hold.radius_cells.saturating_sub(1)
-            })
+        hold_arrived(
+            hold,
+            self.unit(unit).is_some_and(UnitState::cannot_close),
+            here,
+        )
     }
 
     /// The cell to stand in to hold `want_cm` of range on `at` — the goal
@@ -1899,32 +1862,18 @@ impl Arena {
     /// row and the ground — never the target's live pose (16b cut F.3's rule;
     /// `crates/tacsim/tests/motor.rs` moves the target and finds the answer
     /// unchanged) — and 17b cut M1a.6 lifts it into a free function.
+    ///
+    /// **17b cut M1a.6**: the arithmetic is the free [`stand_off_cell`]; this
+    /// is its wrapper over the hull's own pose and cost row and the plot.
     pub fn stand_off_cell(&self, id: ObjId, at: &SeenPose, want_cm: u64) -> Option<(u16, u16)> {
         let from = self.unit(id)?;
-        let range = at.range_from(&from.pose);
-        let want = i64::try_from(want_cm.max(1)).unwrap_or(i64::MAX);
-        if range == 0 {
-            return self.definition.terrain.cell_of(&from.pose);
-        }
-        let range = i64::try_from(range).unwrap_or(i64::MAX).max(1);
-        let dx = from.pose.x_cm.saturating_sub(at.x_cm);
-        let dy = from.pose.y_cm.saturating_sub(at.y_cm);
-        let x = at.x_cm.saturating_add(dx.saturating_mul(want) / range);
-        let y = at.y_cm.saturating_add(dy.saturating_mul(want) / range);
-        let cell = i64::from(self.definition.terrain.cell_cm().max(1));
-        let (Ok(cx), Ok(cy)) = (
-            u16::try_from(x.div_euclid(cell)),
-            u16::try_from(y.div_euclid(cell)),
-        ) else {
-            return at.cell(&self.definition.terrain);
-        };
-        // 16b cut AE.1: passable to this unit's own row — a walker's stand-off
-        // cell may be in the thick woods, a car's may not be on rubble.
-        if self.definition.terrain.passable_for(from.cost_row, cx, cy) {
-            Some((cx, cy))
-        } else {
-            at.cell(&self.definition.terrain)
-        }
+        stand_off_cell(
+            &self.definition,
+            from.cost_row,
+            (from.pose.x_cm, from.pose.y_cm, from.pose.z_cm),
+            (at.x_cm, at.y_cm, at.z_cm),
+            want_cm,
+        )
     }
 
     /// `Withdraw`'s goal: the nearest passable cell of this unit's **own** entry
@@ -1935,47 +1884,13 @@ impl Arena {
     /// the unit's own team, pose and cost row, and no other unit —
     /// `crates/tacsim/tests/motor.rs` holds it to that, and 17b cut M1a.6 lifts
     /// it into a free function.
+    ///
+    /// **17b cut M1a.6**: the scan is the free [`entry_cell`]; this is its
+    /// wrapper over the hull's own team, cell and cost row.
     pub fn entry_cell(&self, id: ObjId) -> Option<(u16, u16)> {
         let unit = self.unit(id)?;
-        let (here_x, here_y) = self.definition.terrain.cell_of(&unit.pose)?;
-        let mut best: Option<(u32, (u16, u16))> = None;
-        let mut read = 0_usize;
-        for zone in self
-            .definition
-            .entry_zones
-            .iter()
-            .filter(|zone| zone.team == unit.team)
-        {
-            let (x0, x1) = (zone.x0.min(zone.x1), zone.x0.max(zone.x1));
-            let (y0, y1) = (zone.y0.min(zone.y1), zone.y0.max(zone.y1));
-            // The clamped corner first: it is the answer almost always, and it
-            // costs one probe.
-            let clamped = (here_x.clamp(x0, x1), here_y.clamp(y0, y1));
-            // 16b cut AE.1: passable to this unit's own row, here and below.
-            if self
-                .definition
-                .terrain
-                .passable_for(unit.cost_row, clamped.0, clamped.1)
-            {
-                return Some(clamped);
-            }
-            for y in y0..=y1 {
-                for x in x0..=x1 {
-                    read = read.saturating_add(1);
-                    if read > MAX_ENTRY_SCAN {
-                        return best.map(|(_, cell)| cell).or(Some(clamped));
-                    }
-                    if !self.definition.terrain.passable_for(unit.cost_row, x, y) {
-                        continue;
-                    }
-                    let distance = u32::from(x.abs_diff(here_x)) + u32::from(y.abs_diff(here_y));
-                    if best.is_none_or(|(far, _)| distance < far) {
-                        best = Some((distance, (x, y)));
-                    }
-                }
-            }
-        }
-        best.map(|(_, cell)| cell)
+        let here = self.definition.terrain.cell_of(&unit.pose)?;
+        entry_cell(&self.definition, unit.team, unit.cost_row, here)
     }
 
     /// **The hunt's goal: a cell of some OTHER side's entry zone** (16b cut E.4;
@@ -2047,70 +1962,344 @@ impl Arena {
     /// hands it — the reflex decision reads those off its own side's machines,
     /// which is the decision's knowledge and not the motor's — and no other
     /// unit. 17b cut M1a.6 lifts it into a free function.
+    ///
+    /// **17b cut M1a.6**: the scan and the fan are the free [`far_entry_cell`];
+    /// this is its wrapper over the hull's own team, cell and cost row.
     pub fn far_entry_cell(&self, id: ObjId, taken: &[(u16, u16)]) -> Option<(u16, u16)> {
         let unit = self.unit(id)?;
-        let (here_x, here_y) = self.definition.terrain.cell_of(&unit.pose)?;
-        // 16b cut AE.1: passable to this unit's own row.
-        let passable = |x: u16, y: u16| self.definition.terrain.passable_for(unit.cost_row, x, y);
-        let reach = |cell: (u16, u16)| {
-            u32::from(cell.0.abs_diff(here_x)) + u32::from(cell.1.abs_diff(here_y))
-        };
-        // 16b cut AI.1: clear of every hunt cell the side already holds.
-        let clear = |cell: (u16, u16)| {
-            taken.iter().all(|other| {
-                other.0.abs_diff(cell.0).max(other.1.abs_diff(cell.1)) >= HUNT_FAN_ROWS
-            })
-        };
-        let mut best: Option<(u32, (u16, u16))> = None;
-        let mut read = 0_usize;
-        for zone in self
-            .definition
-            .entry_zones
-            .iter()
-            .filter(|zone| zone.team != unit.team)
-        {
-            let (x0, x1) = (zone.x0.min(zone.x1), zone.x0.max(zone.x1));
-            let (y0, y1) = (zone.y0.min(zone.y1), zone.y0.max(zone.y1));
-            let bounds = (x0, x1, y0, y1);
-            let (cx, cy) = (here_x.clamp(x0, x1), here_y.clamp(y0, y1));
-            // E.4's candidate: the corner, else the nearest passable cell to the
-            // unit's own cell.
-            let first = if passable(cx, cy) {
-                Some((cx, cy))
-            } else {
-                nearest_passable_in_zone(&passable, bounds, cy, (here_x, here_y), &mut read)
+        let here = self.definition.terrain.cell_of(&unit.pose)?;
+        far_entry_cell(&self.definition, unit.team, unit.cost_row, here, taken)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The pickers, as free functions (17b cut M1a.6; doc 17 §3 "The map is public",
+// §7's kernel list)
+// ---------------------------------------------------------------------------
+
+/// **Where a waypoint walk stands** (17b cut M1a.6): the node it is walking
+/// to, the node it came from, and the goal — the three fields of a
+/// [`MotorRow`] [`patrol_step`] reads and writes, and the three keys of the
+/// stock mind's memory it keeps them in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Walk {
+    /// The node it is walking to.
+    pub waypoint: Option<u16>,
+    /// The node it came from.
+    pub from_waypoint: Option<u16>,
+    /// The cell it is driving at.
+    pub goal: Option<(u16, u16)>,
+}
+
+/// **One step of the walk** (17b cut M1a.6): the walk after it, and whether
+/// the route that served the old goal is spent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WalkStep {
+    /// The walk after the step.
+    pub walk: Walk,
+    /// Whether the step threw the route away (a new node, or no graph).
+    pub clear_route: bool,
+}
+
+/// **`Patrol`'s waypoint walk** (16b cut N.1's `patrol_goal`; the motor's
+/// `Arena::patrol_step` since 17b cut M1a.1; lifted here by 17b cut M1a.6):
+/// the node the walk holds, advanced when the hull standing in `here` has
+/// arrived within [`ARRIVE_CELLS`] of it — or when `arrived` says so, which is
+/// the stock mind's reading of a `drive_arrived` notice for a goal the motor
+/// fanned off its node (the M1a plan's departure (d)); the reflex controller
+/// passes `false`. The next node is `choices[unit % choices.len()]` over the
+/// node's neighbours other than the one it came from (all of them when that
+/// leaves none), keyed on the hull's own object number (departure (e)).
+///
+/// It reads the definition's waypoint graph, the hull's own number and cell
+/// and the walk, and nothing else: no graph authored is a goal of `None` and
+/// a spent route (a patrol with nowhere to go holds where it is), a hull off
+/// the window a goal of `None` with the route kept.
+#[must_use]
+pub fn patrol_step(
+    def: &ArenaDefinition,
+    unit: u32,
+    here: Option<(u16, u16)>,
+    arrived: bool,
+    walk: Walk,
+) -> WalkStep {
+    let mut step = WalkStep {
+        walk,
+        clear_route: false,
+    };
+    let graph = &def.waypoints;
+    if graph.is_empty() {
+        // No graph authored: a patrol with nowhere to go holds where it is,
+        // which is the honest answer and not a random walk.
+        step.walk.goal = None;
+        step.clear_route = true;
+        return step;
+    }
+    let Some((x, y)) = here else {
+        step.walk.goal = None;
+        return step;
+    };
+    let mut node = match step.walk.waypoint {
+        Some(node) if graph.node(node).is_some() => node,
+        _ => {
+            let Some(node) = graph.nearest(x, y) else {
+                return step;
             };
-            let mut chosen = first;
-            if first.is_some_and(|cell| !clear(cell)) {
-                // The fan: the first fanned row whose cell is clear, the scan
-                // budget shared; E.4's candidate when it runs out.
-                for row in fan_rows(cy, y0, y1).skip(1) {
-                    if read > MAX_ENTRY_SCAN {
-                        break;
-                    }
-                    let candidate = if passable(cx, row) {
-                        Some((cx, row))
-                    } else {
-                        nearest_passable_in_zone(&passable, bounds, row, (here_x, row), &mut read)
-                    };
-                    if let Some(cell) = candidate.filter(|cell| clear(*cell)) {
-                        chosen = Some(cell);
-                        break;
-                    }
+            step.walk.from_waypoint = None;
+            node
+        }
+    };
+    let arrived = graph.node(node).is_some_and(|at| {
+        at.x.abs_diff(x).max(at.y.abs_diff(y)) <= ARRIVE_CELLS
+            || (arrived && step.walk.goal == Some((at.x, at.y)))
+    });
+    if arrived {
+        let neighbours = graph.neighbours(node);
+        let onward: Vec<u16> = neighbours
+            .iter()
+            .copied()
+            .filter(|next| Some(*next) != step.walk.from_waypoint)
+            .collect();
+        let choices: &[u16] = if onward.is_empty() {
+            neighbours
+        } else {
+            &onward
+        };
+        if let Some(next) = choices
+            .get(usize::try_from(unit).unwrap_or(0) % choices.len().max(1))
+            .copied()
+        {
+            step.walk.from_waypoint = Some(node);
+            node = next;
+            step.walk.goal = None;
+            step.clear_route = true;
+        }
+    }
+    step.walk.waypoint = Some(node);
+    let goal = graph.node(node).map(|at| (at.x, at.y));
+    if step.walk.goal != goal {
+        step.walk.goal = goal;
+        step.clear_route = true;
+    }
+    step
+}
+
+/// **The `unreachable` edge's landing** (`Arena::fall_back_to_waypoint`'s
+/// arithmetic, lifted by 17b cut M1a.6): with the hull in `here` and `goal`
+/// the goal no route reached, the walk after the fallback — `(waypoint,
+/// from_waypoint, goal)`. The nearest node of the graph; or, when the nearest
+/// is the goal that failed, the next one along the graph,
+/// `neighbours[unit % neighbours.len()]` (departure (e)). The node walked from
+/// becomes `from_waypoint`. No graph to fall back on: the goal is given up
+/// (`None`) and the walk kept — a hull that cannot get there and has nowhere
+/// else to be does not drive at a wall.
+///
+/// The reflex controller's motor calls it in-tick (`Fallback::Waypoint`); the
+/// stock mind calls it one think later, off a `drive_no_route` notice (the
+/// M1a plan's departure (i)).
+#[must_use]
+pub fn fallback_waypoint(
+    def: &ArenaDefinition,
+    here: (u16, u16),
+    goal: Option<(u16, u16)>,
+    waypoint: Option<u16>,
+    from_waypoint: Option<u16>,
+    unit: u32,
+) -> (Option<u16>, Option<u16>, Option<(u16, u16)>) {
+    let graph = &def.waypoints;
+    let Some(node) = graph.nearest(here.0, here.1) else {
+        return (waypoint, from_waypoint, None);
+    };
+    let at = graph.node(node).map(|node| (node.x, node.y));
+    let node = if at == goal {
+        let neighbours = graph.neighbours(node);
+        neighbours
+            .get(usize::try_from(unit).unwrap_or(0) % neighbours.len().max(1))
+            .copied()
+            .unwrap_or(node)
+    } else {
+        node
+    };
+    (
+        Some(node),
+        waypoint,
+        graph.node(node).map(|node| (node.x, node.y)),
+    )
+}
+
+/// **Whether a hull standing in `here` has arrived at the Hold spot** (16b cut
+/// O.1's rule; `Arena::hold_arrived`'s arithmetic, lifted by 17b cut M1a.6): a
+/// hull that `cannot_close`, or one whose cell is within `radius_cells − 1` of
+/// the spot (Chebyshev).
+#[must_use]
+pub fn hold_arrived(hold: &HoldState, cannot_close: bool, here: Option<(u16, u16)>) -> bool {
+    cannot_close
+        || here.is_some_and(|cell| {
+            cell.0
+                .abs_diff(hold.spot.0)
+                .max(cell.1.abs_diff(hold.spot.1))
+                <= hold.radius_cells.saturating_sub(1)
+        })
+}
+
+/// **The cell to stand in to hold `want_cm` of range on a point** (16b cut
+/// F.3, E.1; `Arena::stand_off_cell`'s arithmetic, lifted by 17b cut M1a.6):
+/// the point on the line from `at` toward `from` at the holding range, as a
+/// cell passable to `cost_row`; a cell off the window or impassable falls back
+/// to `at`'s own cell. `from` and `at` are `(x_cm, y_cm, z_cm)`.
+///
+/// The reflex controller hands it the hull's pose and its plot of the target;
+/// the stock mind hands it the view's own pose and the **centre of the plot's
+/// cell** at the ground's height there (the view carries the cell, not the
+/// pose: the divergence `plot_cell`).
+#[must_use]
+pub fn stand_off_cell(
+    def: &ArenaDefinition,
+    cost_row: CostRow,
+    from: (i64, i64, i32),
+    at: (i64, i64, i32),
+    want_cm: u64,
+) -> Option<(u16, u16)> {
+    let terrain = &def.terrain;
+    let range = range_between(from.0, from.1, from.2, at.0, at.1, at.2);
+    let want = i64::try_from(want_cm.max(1)).unwrap_or(i64::MAX);
+    if range == 0 {
+        return terrain.cell_at(from.0, from.1);
+    }
+    let range = i64::try_from(range).unwrap_or(i64::MAX).max(1);
+    let dx = from.0.saturating_sub(at.0);
+    let dy = from.1.saturating_sub(at.1);
+    let x = at.0.saturating_add(dx.saturating_mul(want) / range);
+    let y = at.1.saturating_add(dy.saturating_mul(want) / range);
+    let cell = i64::from(terrain.cell_cm().max(1));
+    let (Ok(cx), Ok(cy)) = (
+        u16::try_from(x.div_euclid(cell)),
+        u16::try_from(y.div_euclid(cell)),
+    ) else {
+        return terrain.cell_at(at.0, at.1);
+    };
+    // 16b cut AE.1: passable to this unit's own row — a walker's stand-off
+    // cell may be in the thick woods, a car's may not be on rubble.
+    if terrain.passable_for(cost_row, cx, cy) {
+        Some((cx, cy))
+    } else {
+        terrain.cell_at(at.0, at.1)
+    }
+}
+
+/// **`Withdraw`'s goal: the nearest passable cell of `team`'s own entry zone**
+/// (doc 16 §6; `Arena::entry_cell`'s scan, lifted by 17b cut M1a.6) from the
+/// hull's cell `here`, passable to `cost_row`: the clamped corner first, then
+/// the nearest by Manhattan distance, the scan bounded by [`MAX_ENTRY_SCAN`]
+/// (past it the best so far, else the clamped corner).
+#[must_use]
+pub fn entry_cell(
+    def: &ArenaDefinition,
+    team: Team,
+    cost_row: CostRow,
+    here: (u16, u16),
+) -> Option<(u16, u16)> {
+    let (here_x, here_y) = here;
+    let mut best: Option<(u32, (u16, u16))> = None;
+    let mut read = 0_usize;
+    for zone in def.entry_zones.iter().filter(|zone| zone.team == team) {
+        let (x0, x1) = (zone.x0.min(zone.x1), zone.x0.max(zone.x1));
+        let (y0, y1) = (zone.y0.min(zone.y1), zone.y0.max(zone.y1));
+        // The clamped corner first: it is the answer almost always, and it
+        // costs one probe.
+        let clamped = (here_x.clamp(x0, x1), here_y.clamp(y0, y1));
+        // 16b cut AE.1: passable to this unit's own row, here and below.
+        if def.terrain.passable_for(cost_row, clamped.0, clamped.1) {
+            return Some(clamped);
+        }
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                read = read.saturating_add(1);
+                if read > MAX_ENTRY_SCAN {
+                    return best.map(|(_, cell)| cell).or(Some(clamped));
                 }
-            }
-            if let Some(cell) = chosen {
-                let distance = reach(cell);
+                if !def.terrain.passable_for(cost_row, x, y) {
+                    continue;
+                }
+                let distance = u32::from(x.abs_diff(here_x)) + u32::from(y.abs_diff(here_y));
                 if best.is_none_or(|(far, _)| distance < far) {
-                    best = Some((distance, cell));
+                    best = Some((distance, (x, y)));
                 }
-            }
-            if read > MAX_ENTRY_SCAN {
-                break;
             }
         }
-        best.map(|(_, cell)| cell)
     }
+    best.map(|(_, cell)| cell)
+}
+
+/// **The hunt's goal: a cell of some OTHER side's entry zone** (16b cut E.4,
+/// fanned by AI.1; `Arena::far_entry_cell`'s scan, lifted by 17b cut M1a.6) —
+/// see that method for the whole rule. `taken` is the hunt cells the rest of
+/// the side holds: the reflex controller reads them off its own machines; the
+/// stock mind passes none, and the motor fans its landing instead (the M1a
+/// plan's departure (d)).
+#[must_use]
+pub fn far_entry_cell(
+    def: &ArenaDefinition,
+    team: Team,
+    cost_row: CostRow,
+    here: (u16, u16),
+    taken: &[(u16, u16)],
+) -> Option<(u16, u16)> {
+    let (here_x, here_y) = here;
+    // 16b cut AE.1: passable to this unit's own row.
+    let passable = |x: u16, y: u16| def.terrain.passable_for(cost_row, x, y);
+    let reach =
+        |cell: (u16, u16)| u32::from(cell.0.abs_diff(here_x)) + u32::from(cell.1.abs_diff(here_y));
+    // 16b cut AI.1: clear of every hunt cell the side already holds.
+    let clear = |cell: (u16, u16)| {
+        taken
+            .iter()
+            .all(|other| other.0.abs_diff(cell.0).max(other.1.abs_diff(cell.1)) >= HUNT_FAN_ROWS)
+    };
+    let mut best: Option<(u32, (u16, u16))> = None;
+    let mut read = 0_usize;
+    for zone in def.entry_zones.iter().filter(|zone| zone.team != team) {
+        let (x0, x1) = (zone.x0.min(zone.x1), zone.x0.max(zone.x1));
+        let (y0, y1) = (zone.y0.min(zone.y1), zone.y0.max(zone.y1));
+        let bounds = (x0, x1, y0, y1);
+        let (cx, cy) = (here_x.clamp(x0, x1), here_y.clamp(y0, y1));
+        // E.4's candidate: the corner, else the nearest passable cell to the
+        // unit's own cell.
+        let first = if passable(cx, cy) {
+            Some((cx, cy))
+        } else {
+            nearest_passable_in_zone(&passable, bounds, cy, (here_x, here_y), &mut read)
+        };
+        let mut chosen = first;
+        if first.is_some_and(|cell| !clear(cell)) {
+            // The fan: the first fanned row whose cell is clear, the scan
+            // budget shared; E.4's candidate when it runs out.
+            for row in fan_rows(cy, y0, y1).skip(1) {
+                if read > MAX_ENTRY_SCAN {
+                    break;
+                }
+                let candidate = if passable(cx, row) {
+                    Some((cx, row))
+                } else {
+                    nearest_passable_in_zone(&passable, bounds, row, (here_x, row), &mut read)
+                };
+                if let Some(cell) = candidate.filter(|cell| clear(*cell)) {
+                    chosen = Some(cell);
+                    break;
+                }
+            }
+        }
+        if let Some(cell) = chosen {
+            let distance = reach(cell);
+            if best.is_none_or(|(far, _)| distance < far) {
+                best = Some((distance, cell));
+            }
+        }
+        if read > MAX_ENTRY_SCAN {
+            break;
+        }
+    }
+    best.map(|(_, cell)| cell)
 }
 
 // ---------------------------------------------------------------------------

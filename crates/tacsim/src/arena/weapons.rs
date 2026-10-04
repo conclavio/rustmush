@@ -312,15 +312,18 @@ impl UnitState {
     /// burst from the coaxial. This one is what the machine closes to: a tank
     /// whose cannon is dry fights at its coaxial's band rather than holding 1.5 km
     /// with nothing to send there.
+    ///
+    /// **17b cut M1a.6**: the rule is [`loaded_weapon_of`], which the native
+    /// stock mind reads its own view's weapon rows through, so the hull and the
+    /// mind cannot pick two different guns.
     #[must_use]
     pub fn loaded_weapon(&self) -> Option<&WeaponSummary> {
-        self.default_weapon()
-            .filter(|weapon| self.weapon_ammo(&weapon.id) > 0)
-            .or_else(|| {
-                self.weapons
-                    .iter()
-                    .find(|weapon| self.weapon_ammo(&weapon.id) > 0)
-            })
+        loaded_weapon_of(
+            self.weapons
+                .iter()
+                .map(|weapon| (weapon.id.as_str(), self.weapon_ammo(&weapon.id))),
+        )
+        .and_then(|at| self.weapons.get(at))
     }
 
     /// **The furthest this platform fights at**, centimetres (16b cut E.1): the
@@ -331,11 +334,15 @@ impl UnitState {
     /// for the machine. A platform with no sensor answers the weapon alone (a
     /// sight of `0` is *no scope*, not *no reach*); one with nothing loaded
     /// answers `0`, and then nothing is in range of it.
+    ///
+    /// **17b cut M1a.6**: the arithmetic is [`fight_limit_cm_of`], shared with
+    /// the native stock mind.
     #[must_use]
     pub fn fight_limit_cm(&self, cell_cm: u16) -> u64 {
-        self.loaded_weapon().map_or(0, |loaded| {
-            against_sight(u64::from(loaded.max_range_cm), self.sight_cm(cell_cm))
-        })
+        fight_limit_cm_of(
+            self.loaded_weapon().map(|loaded| loaded.max_range_cm),
+            self.sight_cm(cell_cm),
+        )
     }
 
     /// **The band this platform closes to**, centimetres (16b cut E.1): the same
@@ -345,11 +352,15 @@ impl UnitState {
     /// Doctrine's `engage_band_permille` is a fraction of *this*, so the stock
     /// tank stops and shoots at 420 m of its 600 m inner reach rather than at
     /// 2.1 km of a 3 km gun it cannot see that far with.
+    ///
+    /// **17b cut M1a.6**: the arithmetic is [`fight_inner_cm_of`], shared with
+    /// the native stock mind.
     #[must_use]
     pub fn fight_inner_cm(&self, cell_cm: u16) -> u64 {
-        self.loaded_weapon().map_or(0, |loaded| {
-            against_sight(u64::from(loaded.inner_band_cm()), self.sight_cm(cell_cm))
-        })
+        fight_inner_cm_of(
+            self.loaded_weapon().map(WeaponSummary::inner_band_cm),
+            self.sight_cm(cell_cm),
+        )
     }
 
     /// **Whether this hull can close a range at all** (16b cut AA.1; 16c `B-76`):
@@ -407,6 +418,49 @@ fn against_sight(weapon_cm: u64, sight_cm: u32) -> u64 {
     } else {
         weapon_cm.min(u64::from(sight_cm))
     }
+}
+
+// ---------------------------------------------------------------------------
+// The reach readers, lifted (17b cut M1a.6; doc 17 §17, D-UM-3)
+// ---------------------------------------------------------------------------
+
+/// **Which of a platform's weapons it would actually fire** (16b cut E.1's
+/// rule, lifted by 17b cut M1a.6), as an index into `rows`: the
+/// [`DEFAULT_WEAPON`] while it has rounds, else the first in order that has
+/// any, else `None`. `rows` is each weapon's id and the rounds left in it, in
+/// component order.
+///
+/// It is [`UnitState::loaded_weapon`]'s body, and the native stock mind
+/// (`crate::arena::stock_mind`) reads its view's weapon rows through it, so
+/// the hull and the mind that flies it cannot pick two different guns. The
+/// default weapon is [`UnitState::default_weapon`]'s rule: the one named
+/// [`DEFAULT_WEAPON`], else the first.
+pub fn loaded_weapon_of<'a>(rows: impl Iterator<Item = (&'a str, u32)> + Clone) -> Option<usize> {
+    let default = rows
+        .clone()
+        .position(|(id, _)| id == DEFAULT_WEAPON)
+        .or_else(|| rows.clone().next().map(|_| 0));
+    default
+        .filter(|at| rows.clone().nth(*at).is_some_and(|(_, rounds)| rounds > 0))
+        .or_else(|| rows.clone().position(|(_, rounds)| rounds > 0))
+}
+
+/// **The furthest a platform fights at**, centimetres (16b cut E.1's
+/// [`UnitState::fight_limit_cm`], lifted by 17b cut M1a.6): the loaded weapon's
+/// reach held down to the sight, `0` with nothing loaded. `loaded_cm` is the
+/// loaded weapon's outer reach — the hull's `max_range_cm`, the view's last
+/// band edge, which content makes one number (`crate::definitions::weapon`).
+#[must_use]
+pub fn fight_limit_cm_of(loaded_cm: Option<u32>, sight_cm: u32) -> u64 {
+    loaded_cm.map_or(0, |reach| against_sight(u64::from(reach), sight_cm))
+}
+
+/// **The band a platform closes to**, centimetres (16b cut E.1's
+/// [`UnitState::fight_inner_cm`], lifted by 17b cut M1a.6): the loaded
+/// weapon's first band edge held down to the sight, `0` with nothing loaded.
+#[must_use]
+pub fn fight_inner_cm_of(loaded_inner_cm: Option<u32>, sight_cm: u32) -> u64 {
+    loaded_inner_cm.map_or(0, |inner| against_sight(u64::from(inner), sight_cm))
 }
 
 // ---------------------------------------------------------------------------

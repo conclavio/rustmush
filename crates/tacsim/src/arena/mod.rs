@@ -233,11 +233,17 @@
 //! ([`crate::arena::mind::MindState`]), its view at the keyframe's resolution
 //! ([`crate::arena::mind::MindView`]), its think and its landing one substep
 //! later as two due kinds the due loop runs last at their millisecond, and the
-//! runner as a trait ([`crate::arena::mind::MindRunner`]) the library calls
-//! and never implements beyond [`crate::arena::mind::NoMind`]. A mind's
+//! runner as a trait ([`crate::arena::mind::MindRunner`]). A mind's
 //! intents land through the reflex controller's own door
 //! (`Arena::apply_machine_intents`) under
 //! [`crate::arena::intents::IntentSource::Mind`]. No production unit is a mind.
+//!
+//! **17b cut M1a.6**: the library implements the runner twice —
+//! [`crate::arena::mind::NoMind`], which thinks nothing and stays for the
+//! tests, and [`crate::arena::stock_mind::NativeStockMind`], Standard
+//! Doctrine over the view, which [`crate::arena::mind::default_mind_runner`]
+//! answers, so a `Controller::Mind` hull a test does not hand a runner is
+//! flown by the stock mind.
 //!
 //! What is still not here, and whose it is: deliberation, the order type, the
 //! squad grouping and the cost run are cut N.2's, and the task, the inbox, the
@@ -267,6 +273,7 @@ pub mod slope;
 pub mod snapshot;
 pub mod state;
 pub mod step;
+pub mod stock_mind;
 pub mod view;
 pub mod weapons;
 
@@ -296,8 +303,9 @@ pub use intents::{
 };
 pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, LedgerFull};
 pub use mind::{
-    Landing, MIND_INTENTS_MAX, MIND_NOTICES, MindRunner, MindState, MindView, NoMind, PendingThink,
-    STOCK_CONTACT_ROWS, STOCK_THINK_MS, ThinkJob, ThinkResult, ViewContact, default_mind_runner,
+    Landing, MIND_INTENTS_MAX, MIND_NOTICES, MemError, Memory, MindRunner, MindState, MindView,
+    NoMind, PendingThink, STOCK_CONTACT_ROWS, STOCK_MEMORY_KEYS, STOCK_THINK_MS, ThinkJob,
+    ThinkResult, ViewContact, decode_memory, default_mind_runner, encode_memory, memory_check,
 };
 pub use motion::{Held, MotionOutcome, cos_fx, integrate, sin_fx};
 pub use motor::{Fallback, MotorOutcome, MotorPlan, MotorRow, MotorTable};
@@ -330,6 +338,7 @@ pub use state::{
     Waypoint, Waypoints, WeaponSummary, spot_letter,
 };
 pub use step::{Frame, FrameHeat, FrameSlots, STOCK_ODDS_ROWS, StepOutput};
+pub use stock_mind::{NativeStockMind, STOCK_MEMORY_KEY_NAMES, StockMemory};
 pub use view::{
     ContactRow, OddsCell, contact_band, fired_by_default, frame_contacts, frame_contacts_held,
     frame_lock, held_range_m, lock_designator, own_scope, range_m_rounded, settle_ranges,

@@ -1932,9 +1932,10 @@ fn m1a5_the_production_hash_does_not_move() {
 
 /// **A mind mustered on the proving ground** (17b cut M1a.5): the rig's
 /// [`support::Muster::mind`] fields a mind exactly as a reflex pod is fielded,
-/// and `Arena::new` lays its row down and schedules its first think; with the
-/// default runner (`NoMind`) it thinks once an arena second and orders
-/// nothing.
+/// and `Arena::new` lays its row down and schedules its first think; it
+/// thinks once an arena second. **17b cut M1a.6**: the default runner is the
+/// native stock mind, whose first think starts the cold tank (it was `NoMind`,
+/// which ordered nothing).
 #[test]
 fn m1a5_a_mind_mustered_on_the_shipped_ground_thinks_on_its_grid() {
     let world = support::booted_world();
@@ -1960,8 +1961,8 @@ fn m1a5_a_mind_mustered_on_the_shipped_ground_thinks_on_its_grid() {
     assert_eq!(arena.minds.get(&red).map(|state| state.think_seq), Some(10));
     assert_eq!(
         arena.unit(red).map(|unit| unit.power),
-        Some(tacsim::arena::state::Power::Off),
-        "a mind that thinks nothing orders nothing"
+        Some(tacsim::arena::state::Power::Starting),
+        "the default runner, the native stock mind, starts the cold tank"
     );
 }
 
@@ -2127,7 +2128,8 @@ fn m1a5_a_resumed_landing_finds_no_scratch_and_clears_its_pending_row() {
         .expect("the document decodes");
     assert_eq!(decoded.minds, rig.arena.minds, "the rows came back");
     assert!(decoded.mind_landings.is_empty(), "the scratch did not");
-    assert!(format!("{:?}", decoded.mind_runner).contains("NoMind"));
+    // 17b cut M1a.6: the default runner is the native stock mind.
+    assert!(format!("{:?}", decoded.mind_runner).contains("NativeStockMind"));
     // Resumed on the decoded arena's own millisecond as the wall
     // (`Arena::resume_at`), so the rig's next pulse is one substep on.
     let mut resumed = Rig::new(decoded);
@@ -2506,4 +2508,629 @@ fn m1a5_a_pilots_drive_dies_with_the_released_seat() {
         assert_eq!(run.hashes, slow.hashes, "the hash sequence at {cadence} ms");
         assert_ne!(run.pulses, slow.pulses, "{cadence} ms ran the same pulses");
     }
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M1a.6: the native stock mind, flying (doc 17 §17, §22; D-UM-3,
+// D-UM-21, D-UM-48)
+// ---------------------------------------------------------------------------
+
+/// What a stock think was handed and answered: the hull, the lattice
+/// millisecond, the view and the result.
+type Kept = (ObjId, i64, MindView, ThinkResult);
+
+/// **The production stock mind, its answers kept** — `NativeStockMind` on the
+/// arena's own doctrine, answering every think untouched and recording each
+/// view and answer (an input recorder, not a stand-in: 16b §0.4).
+#[derive(Debug)]
+struct Stock {
+    inner: tacsim::arena::stock_mind::NativeStockMind,
+    kept: Mutex<Vec<Kept>>,
+}
+
+impl Stock {
+    fn on(arena: &Arena) -> Arc<Stock> {
+        Arc::new(Stock {
+            inner: tacsim::arena::stock_mind::NativeStockMind::with(&arena.arena_cfg.reflex),
+            kept: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn kept(&self) -> Vec<Kept> {
+        self.kept
+            .lock()
+            .map(|kept| kept.clone())
+            .unwrap_or_default()
+    }
+}
+
+impl MindRunner for Stock {
+    fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
+        let result = self.inner.think(job);
+        if let Ok(mut kept) = self.kept.lock() {
+            kept.push((job.unit, job.t_ms, job.view.clone(), result.clone()));
+        }
+        result
+    }
+}
+
+/// **The stock mind's emission rules** (`stock_mind.rs`' module head): kinds in
+/// `Startup, Goal, Heading, Speed, Lock, Fire` order, each at most once, no
+/// `Heading` or `Speed` beside a `Goal(Cell)`, never more than four.
+fn stock_emission_holds(intents: &[IntentKind]) {
+    let rank = |kind: &IntentKind| match kind {
+        IntentKind::Startup => 0_u8,
+        IntentKind::Goal(_) => 1,
+        IntentKind::Heading { .. } => 2,
+        IntentKind::Speed { .. } => 3,
+        IntentKind::Lock { .. } => 4,
+        IntentKind::Fire { .. } => 5,
+        other => panic!("the stock mind emitted {other:?}"),
+    };
+    let ranks: Vec<u8> = intents.iter().map(rank).collect();
+    assert!(
+        ranks.windows(2).all(|pair| pair.first() < pair.get(1)),
+        "{intents:?}"
+    );
+    if intents
+        .iter()
+        .any(|kind| matches!(kind, IntentKind::Goal(MotorGoal::Cell { .. })))
+    {
+        assert!(
+            !intents
+                .iter()
+                .any(|kind| matches!(kind, IntentKind::Heading { .. } | IntentKind::Speed { .. })),
+            "{intents:?}"
+        );
+    }
+    // The module head's maximum: `Goal(Hold)`, `Heading`, `Lock`, `Fire`.
+    assert!(intents.len() <= 4 && intents.len() <= MIND_INTENTS_MAX);
+}
+
+/// `tests/reflex.rs`' `replay_driven` scene with the two reds flown by
+/// `controller`: the armed red at (6, 8), the unarmed one at (6, 10), and the
+/// seated, unarmed blue at (9, 8) they can both see — **with a ten-cell sight
+/// in place of five**. A view holds a contact's range in the keyframe's 50 m
+/// steps (D-UM-4; the divergence `range_round`) and never under one step, and
+/// a five-cell sight's `engage_cm` is 35 m: on the reflex's own rig the stock
+/// mind would approach for ever and never be inside its band. Ten cells make
+/// the band 70 m, past one step, and change nothing else of the scene.
+fn the_j_field(controller: Controller) -> Arena {
+    let seeing = |mut unit: CustodyUnit| {
+        unit.sensor = Some(SensorProfile {
+            max_range_cells: 10,
+            ..sight()
+        });
+        unit
+    };
+    arena_of(
+        vec![
+            seeing(tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon()],
+                controller,
+            )),
+            seeing(tank(RED2, Team::Red, centre(6, 10), Vec::new(), controller)),
+            seeing(tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            )),
+        ],
+        &[BLUE],
+    )
+}
+
+/// The (j) field with both reds stock minds, run 30 s under `drive`.
+fn stock_minds(drive: Drive) -> (Run, Vec<Kept>) {
+    let mut arena = the_j_field(Controller::Mind);
+    let stock = Stock::on(&arena);
+    arena.mind_runner = stock.clone();
+    let run = run(&mut arena, drive, 30_000);
+    (run, stock.kept())
+}
+
+/// **The gate's twin fixture: two T1 units at three cadences** (doc 17 §22's
+/// M1a gate; D-UM-21; 16b §11's mandatory cross-tempo property). The (j)
+/// field of `tests/reflex.rs`, its two reds flown by the native stock mind —
+/// the armed one finds, classifies, locks and shoots the seated blue; the
+/// unarmed one starts and drives — replayed for 30 s at 5,000, 1,000 and
+/// 500 ms and on the task's own wakes at the three periods: one event list,
+/// one per-substep hash sequence and one sequence of thinks (each view and
+/// each answer). Every machine `startup`, `locked` and `fired` line is
+/// stamped one substep after a lattice think, never on it; every answer
+/// holds the emission rules; and the recording runner is transparent — the
+/// arena's own default runner journals the same lines and hashes.
+#[test]
+fn m1a6_two_stock_minds_at_three_cadences_are_one_event_list_and_one_hash_sequence() {
+    let (first, kept) = stock_minds(Drive::Every(5_000));
+    let words: Vec<(String, Option<u32>)> = first
+        .events
+        .iter()
+        .map(|(_, json, _)| kind_and_unit(json))
+        .collect();
+    for want in ["startup", "locked", "fired"] {
+        assert!(
+            words
+                .iter()
+                .any(|(word, unit)| word == want && *unit == Some(RED.0)),
+            "the armed mind never journalled a {want}: {words:?}"
+        );
+    }
+    for want in ["detected", "classified"] {
+        assert!(
+            words.iter().any(|(word, _)| word == want),
+            "the field never journalled a {want}"
+        );
+    }
+    assert!(
+        words
+            .iter()
+            .any(|(word, unit)| word == "startup" && *unit == Some(RED2.0)),
+        "the unarmed mind started"
+    );
+    let mut stamped = 0_usize;
+    for (t_ms, json, _) in &first.events {
+        let (word, unit) = kind_and_unit(json);
+        if !matches!(word.as_str(), "startup" | "locked" | "fired") {
+            continue;
+        }
+        let Some(unit) = unit.filter(|unit| [RED.0, RED2.0].contains(unit)) else {
+            continue;
+        };
+        let think = stagger_ms(SEED, ObjId(unit), STOCK_THINK_MS);
+        assert_eq!(
+            (t_ms - SUBSTEP - think).rem_euclid(STOCK_THINK_MS),
+            0,
+            "a {word} line of #{unit} not one substep after a think: {t_ms}"
+        );
+        assert_ne!(
+            t_ms.rem_euclid(STOCK_THINK_MS),
+            think,
+            "on the think's own ms"
+        );
+        stamped += 1;
+    }
+    assert!(stamped >= 3, "the minds stamped {stamped} actions");
+    assert!(kept.len() >= 50, "{} thinks", kept.len());
+    for (_, _, _, result) in &kept {
+        stock_emission_holds(&result.intents);
+    }
+    assert!(
+        kept.iter().any(|(unit, _, _, result)| *unit == RED2
+            && result
+                .intents
+                .iter()
+                .any(|kind| matches!(kind, IntentKind::Goal(MotorGoal::Cell { .. })))),
+        "the unarmed mind drives"
+    );
+    for drive in [
+        Drive::Every(1_000),
+        Drive::Every(500),
+        Drive::Task(5_000),
+        Drive::Task(1_000),
+        Drive::Task(500),
+    ] {
+        let (other, other_kept) = stock_minds(drive);
+        assert_eq!(
+            other.events, first.events,
+            "the event list diverged at {drive:?}"
+        );
+        assert_eq!(
+            other.hashes, first.hashes,
+            "the hash sequence diverged at {drive:?}"
+        );
+        assert_eq!(other_kept, kept, "a think diverged at {drive:?}");
+        assert_ne!(other.pulses, first.pulses, "{drive:?} ran the same pulses");
+    }
+    // The default runner is the stock mind: the same bytes, unrecorded.
+    let mut plain = the_j_field(Controller::Mind);
+    assert!(format!("{:?}", plain.mind_runner).contains("NativeStockMind"));
+    let unrecorded = run(&mut plain, Drive::Every(5_000), 30_000);
+    assert_eq!(unrecorded.events, first.events);
+    assert_eq!(unrecorded.hashes, first.hashes);
+}
+
+/// The unarmed field: a weaponless stock mind at (6, 8), a seated blue it
+/// can see at (9, 8); a `HOLD` lands at 10,000 for 10 s and a `WITHDRAW` at
+/// 20,000 for 20 s, both delivered by the first pulse to reach their
+/// millisecond (multiples of 5,000, so one script at every cadence). Run to
+/// 40,000 at `cadence_ms`.
+fn unarmed_run(cadence_ms: i64) -> (Run, Vec<Kept>, Arena) {
+    let mut arena = arena_of(
+        vec![
+            tank(RED, Team::Red, centre(6, 8), Vec::new(), Controller::Mind),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[BLUE],
+    );
+    let stock = Stock::on(&arena);
+    arena.mind_runner = stock.clone();
+    let beats = [
+        (10_000_i64, Objective::Hold, 10_000_u32),
+        (20_000, Objective::Withdraw, 20_000),
+    ];
+    let mut next = 0_usize;
+    let mut seq = 0_u64;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut counters = ReflexCounters::default();
+    let mut pulses = 0_u32;
+    let mut wall = 0_i64;
+    loop {
+        let mut intents: Vec<Intent> = Vec::new();
+        while let Some((at, objective, ttl_ms)) = beats.get(next) {
+            if *at > arena.now_ms {
+                break;
+            }
+            seq += 1;
+            intents.push(intent(
+                &arena,
+                RED,
+                IntentKind::Order(Box::new(order(RED_ONE, *objective, None, *ttl_ms))),
+                seq,
+            ));
+            next += 1;
+        }
+        let out = arena.step(wall, &[], &intents);
+        pulses += 1;
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        counters.absorb(&out.reflex);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if arena.now_ms >= 40_000 || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    let events = events(&mut arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    (
+        Run {
+            events,
+            hashes,
+            pulses,
+            counters,
+        },
+        stock.kept(),
+        arena,
+    )
+}
+
+/// **T1 runs an unarmed hull with its fire half absent, and a fixture proves
+/// it** (D-UM-48; doc 17 §22's italic line; Q-UM-12's default). A weaponless
+/// stock mind with a hostile in its sight starts up, walks the graph, holds
+/// under a commander's `HOLD` (`Goal(Hold)`, the state `patrol`), withdraws
+/// under `WITHDRAW` (a goal in its own entry zone, the state `withdraw`), and
+/// never emits a `Lock` or a `Fire` — over every recorded answer, so it is not
+/// the landing's `channel` refusal that keeps it quiet — nor journals a
+/// `locked` or `fired` line; its view carries no weapon row, no odds and no
+/// `reads_dead`. At 5,000, 1,000 and 500 ms: one event list, one hash
+/// sequence, one sequence of thinks.
+#[test]
+fn m1a6_an_unarmed_stock_mind_drives_senses_holds_and_never_calls_fire() {
+    let (first, kept, arena) = unarmed_run(5_000);
+    let start = (6_u16, 8_u16);
+    let words: Vec<(i64, String, Option<u32>)> = first
+        .events
+        .iter()
+        .map(|(t_ms, json, _)| {
+            let (word, unit) = kind_and_unit(json);
+            (*t_ms, word, unit)
+        })
+        .collect();
+    assert!(
+        words
+            .iter()
+            .any(|(_, word, unit)| word == "startup" && *unit == Some(RED.0))
+    );
+    assert!(
+        words.iter().any(|(_, word, _)| word == "classified"),
+        "it senses"
+    );
+    assert!(
+        !words.iter().any(
+            |(_, word, unit)| matches!(word.as_str(), "locked" | "fired") && *unit == Some(RED.0)
+        ),
+        "{words:?}"
+    );
+    assert_eq!(
+        words
+            .iter()
+            .filter(|(_, word, unit)| word == "ordered" && *unit == Some(RED.0))
+            .count(),
+        2
+    );
+    let state_of = |result: &ThinkResult| {
+        tacsim::arena::stock_mind::StockMemory::from(&tacsim::arena::mind::decode_memory(
+            &result.memory,
+        ))
+        .state
+    };
+    assert!(
+        kept.iter().any(|(_, t_ms, view, result)| *t_ms < 10_000
+            && view.cell != Some(start)
+            && result
+                .intents
+                .iter()
+                .any(|kind| matches!(kind, IntentKind::Goal(MotorGoal::Cell { .. })))),
+        "it patrols before the order"
+    );
+    assert!(
+        kept.iter()
+            .any(|(_, t_ms, view, result)| (10_000..20_000).contains(t_ms)
+                && view
+                    .order
+                    .as_ref()
+                    .is_some_and(|order| order.objective == MindObjective::Hold)
+                && result.intents.first() == Some(&IntentKind::Goal(MotorGoal::Hold))
+                && state_of(result) == ReflexState::Patrol),
+        "it holds under HOLD"
+    );
+    assert!(
+        kept.iter().any(|(_, t_ms, view, result)| *t_ms >= 20_000
+            && view
+                .order
+                .as_ref()
+                .is_some_and(|order| order.objective == MindObjective::Withdraw)
+            && state_of(result) == ReflexState::Withdraw
+            && result.intents.iter().any(|kind| matches!(
+                kind,
+                IntentKind::Goal(MotorGoal::Cell { x, .. }) if *x <= 1
+            ))),
+        "it withdraws under WITHDRAW, to its own entry zone"
+    );
+    assert!(
+        arena
+            .unit(RED)
+            .and_then(|unit| arena.definition.terrain.cell_of(&unit.pose))
+            .is_some_and(|cell| cell.0 < start.0),
+        "and it went west"
+    );
+    for (_, _, view, result) in &kept {
+        stock_emission_holds(&result.intents);
+        assert!(
+            !result
+                .intents
+                .iter()
+                .any(|kind| matches!(kind, IntentKind::Lock { .. } | IntentKind::Fire { .. })),
+            "{:?}",
+            result.intents
+        );
+        assert!(view.weapons.is_empty());
+        assert!(
+            view.contacts
+                .iter()
+                .all(|row| row.odds.is_empty() && row.reads_dead.is_none())
+        );
+    }
+    for cadence in [1_000_i64, 500] {
+        let (other, other_kept, _) = unarmed_run(cadence);
+        assert_eq!(other.events, first.events, "diverged at {cadence} ms");
+        assert_eq!(other.hashes, first.hashes, "diverged at {cadence} ms");
+        assert_eq!(other_kept, kept, "a think diverged at {cadence} ms");
+    }
+}
+
+/// One red's helm after one pulse of the first-window check.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Helm {
+    t_ms: i64,
+    unit: u32,
+    heading_mdeg: u32,
+    speed_cms: i32,
+    cell: Option<(u16, u16)>,
+    pose: (i64, i64),
+}
+
+/// **The oracle check on the first decide window** (doc 17 §17: T1 is
+/// Standard Doctrine re-expressed). The (j) field run 5 s once as T0 (the
+/// reflex) and once as T1 (the stock mind), one substep a pulse: the
+/// machines' `startup` lines are the same units in the same order, T0's
+/// stamped at its staggered tick and T1's one substep after its lattice think
+/// — the two scheduling changes of doc 17 §17, the `landing` divergence — and,
+/// the two grids coinciding on this field, every action T1 lands (`startup`,
+/// `locked`, `fired`) is T0's staged one exactly one substep later, with no
+/// first divergence among them. **The helm is compared after every landing**
+/// (T1's at `t` against T0's at `t - SUBSTEP`): it parts, at the first drive,
+/// and the counter that names it is `landing` — the startup's late landing
+/// costs T1 a whole think before its first goal, so T1's speed is always one
+/// T0 held at most one think earlier and each red first drives within one
+/// think of T0's, and the motor then steers a lagging pose; the armed red's
+/// stand faces the view's whole degrees (`deg_round`'s facing half). The
+/// first millisecond, the lags and the end helms are printed
+/// (`stock_window: …`, `stock_window_helm: …`) for the ledger.
+#[test]
+fn m1a6_the_stock_mind_is_t0_on_the_first_decide_window() {
+    // One substep a pulse, so the helm is read after every landing.
+    let lines = |controller: Controller| {
+        let mut arena = the_j_field(controller);
+        let mut helm: Vec<Helm> = Vec::new();
+        let mut wall = arena.now_ms;
+        let mut bytes: Vec<u8> = Vec::new();
+        loop {
+            let out = arena.step(wall, &[], &[]);
+            for chunk in &out.ledger_chunks {
+                bytes.extend_from_slice(&chunk.bytes);
+            }
+            for id in [RED, RED2] {
+                if let Some(unit) = arena.unit(id) {
+                    helm.push(Helm {
+                        t_ms: arena.now_ms,
+                        unit: id.0,
+                        heading_mdeg: unit.desired_heading_mdeg,
+                        speed_cms: unit.desired_speed_cms,
+                        cell: arena.definition.terrain.cell_of(&unit.pose),
+                        pose: (unit.pose.x_cm, unit.pose.y_cm),
+                    });
+                }
+            }
+            if arena.now_ms >= 5_000 || out.ended.is_some() {
+                break;
+            }
+            wall += SUBSTEP;
+        }
+        let actions: Vec<(i64, String, u32)> = events(&mut arena, &mut bytes)
+            .into_iter()
+            .filter_map(|event| {
+                let json = serde_json::to_string(&event.kind).unwrap_or_default();
+                let (word, unit) = kind_and_unit(&json);
+                let unit = unit.filter(|unit| [RED.0, RED2.0].contains(unit))?;
+                matches!(word.as_str(), "startup" | "locked" | "fired" | "ordered")
+                    .then_some((event.t_ms, word, unit))
+            })
+            .collect();
+        (actions, helm)
+    };
+    let (t0, t0_helm) = lines(Controller::Reflex);
+    let (t1, t1_helm) = lines(Controller::Mind);
+    let startups = |actions: &[(i64, String, u32)]| -> Vec<u32> {
+        actions
+            .iter()
+            .filter(|(_, word, _)| word == "startup")
+            .map(|(_, _, unit)| *unit)
+            .collect()
+    };
+    assert_eq!(startups(&t0), startups(&t1), "{t0:?} / {t1:?}");
+    assert_eq!(startups(&t1).len(), 2);
+    let decide = i64::from(reflex_cfg().decide_ms);
+    for (t_ms, word, unit) in &t0 {
+        if word == "startup" {
+            assert_eq!(
+                t_ms.rem_euclid(decide),
+                stagger_ms(SEED, ObjId(*unit), decide)
+            );
+        }
+    }
+    for (t_ms, word, unit) in &t1 {
+        if word == "startup" {
+            let think = stagger_ms(SEED, ObjId(*unit), STOCK_THINK_MS);
+            assert_eq!((t_ms - SUBSTEP - think).rem_euclid(STOCK_THINK_MS), 0);
+        }
+    }
+    // On this field the two grids coincide — each red's stagger is the same
+    // millisecond at 500 and at 1,000 — so T1's landed actions are T0's staged
+    // ones shifted by exactly one substep, every one of them.
+    for unit in [RED, RED2] {
+        assert_eq!(
+            stagger_ms(SEED, unit, decide),
+            stagger_ms(SEED, unit, STOCK_THINK_MS),
+            "the precondition"
+        );
+    }
+    let shifted: Vec<(i64, String, u32)> = t0
+        .iter()
+        .map(|(t_ms, word, unit)| (t_ms + SUBSTEP, word.clone(), *unit))
+        .collect();
+    assert_eq!(t1, shifted, "T1 is T0 one substep later");
+    assert!(
+        t1.iter().any(|(_, word, _)| word == "fired"),
+        "the window holds a shot"
+    );
+    // The helm after every landing: T1's at `t` against T0's at `t - SUBSTEP`
+    // (the `landing` shift), unit by unit, and the first millisecond they part.
+    let at = |helm: &[Helm], t_ms: i64, unit: u32| {
+        helm.iter()
+            .find(|row| row.t_ms == t_ms && row.unit == unit)
+            .cloned()
+    };
+    let apart: Vec<(Helm, Helm)> = t1_helm
+        .iter()
+        .filter_map(|row| {
+            let twin = at(&t0_helm, row.t_ms - SUBSTEP, row.unit)?;
+            ((twin.heading_mdeg, twin.speed_cms) != (row.heading_mdeg, row.speed_cms))
+                .then(|| (twin, row.clone()))
+        })
+        .collect();
+    let first_apart = t1
+        .iter()
+        .zip(shifted.iter())
+        .find(|(a, b)| a != b)
+        .map(|(a, b)| a.0.min(b.0));
+    assert_eq!(first_apart, None, "the actions never part under the shift");
+    // **The helm parts, and the counter that names it is `landing`.** The
+    // startup lands one substep after the think, so power comes online one
+    // substep later than T0's; T0's next tick drives at once, T1's first goal
+    // waits for the next lattice think and lands a substep after that — a
+    // whole think behind T0's first drive. From there the motor steers each
+    // red from a pose that lags T0's, so the headings part by the motor's
+    // steering of a lagging pose, never by a different decision: each red's
+    // desired speed after every landing is one T0 held at most one think
+    // (four substeps) earlier.
+    let Some((t0_first, t1_first)) = apart.first() else {
+        panic!("the reds drive, so the lagging helm parts somewhere in 5 s");
+    };
+    assert_eq!(t1_first.speed_cms, 0, "T1 still parked: {t1_first:?}");
+    assert_ne!(t0_first.speed_cms, 0, "T0 already driving: {t0_first:?}");
+    for row in &t1_helm {
+        assert!(
+            // (Before the first pulse the hull is parked.)
+            (1..=4).any(|k| at(&t0_helm, row.t_ms - k * SUBSTEP, row.unit)
+                .map_or(0, |twin| twin.speed_cms)
+                == row.speed_cms),
+            "T1's speed is T0's of at most one think before: {row:?}"
+        );
+    }
+    let first_drive = |helm: &[Helm], unit: ObjId| {
+        helm.iter()
+            .find(|row| row.unit == unit.0 && row.speed_cms != 0)
+            .map(|row| row.t_ms)
+    };
+    for unit in [RED, RED2] {
+        let (Some(t0_drive), Some(t1_drive)) =
+            (first_drive(&t0_helm, unit), first_drive(&t1_helm, unit))
+        else {
+            panic!("#{} drives in both runs", unit.0);
+        };
+        assert!(
+            t1_drive > t0_drive && t1_drive - t0_drive <= STOCK_THINK_MS,
+            "#{}: T1 first drives {t1_drive}, T0 {t0_drive}",
+            unit.0
+        );
+        println!(
+            "stock_window_helm: unit={} t0_first_drive_ms={t0_drive} t1_first_drive_ms={t1_drive} \
+             lag_ms={}",
+            unit.0,
+            t1_drive - t0_drive
+        );
+    }
+    // And at the window's end the armed red stands facing the blue in both,
+    // T1 on the view's whole degrees (`deg_round`'s facing half) and from a
+    // pose that lagged (`landing`).
+    let last = |helm: &[Helm]| {
+        helm.iter()
+            .rev()
+            .find(|row| row.unit == RED.0)
+            .cloned()
+            .unwrap_or_else(|| panic!("the armed red"))
+    };
+    let (t0_end, t1_end) = (last(&t0_helm), last(&t1_helm));
+    assert_eq!((t0_end.speed_cms, t1_end.speed_cms), (0, 0));
+    assert_eq!(t1_end.heading_mdeg % 1_000, 0, "whole degrees: {t1_end:?}");
+    println!(
+        "stock_window: t0={t0:?} t1={t1:?} first_action_divergence_ms={first_apart:?} \
+         first_helm_divergence_ms={} counter=landing t0_first={t0_first:?} t1_first={t1_first:?} \
+         helm_apart_samples={} t0_end={t0_end:?} t1_end={t1_end:?}",
+        t1_first.t_ms,
+        apart.len()
+    );
 }

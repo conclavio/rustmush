@@ -138,7 +138,8 @@ impl Muster {
     /// **The same tank flown by a unit mind** (17b cut M1a.5; doc 17 §2,
     /// D-UM-2): `Arena::new` lays a mind row down and schedules its first think,
     /// and the test hands the arena the runner it thinks with
-    /// (`Arena::mind_runner`) — `NoMind`, thinking nothing, until it does.
+    /// (`Arena::mind_runner`) — the default runner, the native stock mind
+    /// (17b cut M1a.6), until it does.
     #[must_use]
     pub fn mind(team: Team, slot: u8) -> Muster {
         Muster {
@@ -884,6 +885,14 @@ pub fn take_from_shelf(tw: &mut TestWorld, actor: ObjId, pack: &str) -> (String,
 /// relocated rather than refused.
 #[must_use]
 pub fn shipped_arena(world: &TestWorld, sides: &[&[Muster]]) -> Arena {
+    shipped_arena_seeded(world, sides, SEED)
+}
+
+/// **[`shipped_arena`] on another match seed** (17b cut M1a.6): the twin lane
+/// (`tests/twin.rs`) plays fifteen seeds, and the seed is the one input of
+/// the check-out the rig otherwise pins to [`SEED`].
+#[must_use]
+pub fn shipped_arena_seeded(world: &TestWorld, sides: &[&[Muster]], seed: u64) -> Arena {
     let w = world.world();
     let definition = tacsim::match_::definition_for(w, &SmolStr::new_static(PROVING_GROUND))
         .expect("the proving ground's ground builds")
@@ -943,7 +952,7 @@ pub fn shipped_arena(world: &TestWorld, sides: &[&[Muster]]) -> Arena {
             units,
             pilots: Vec::new(),
             resolution: tacsim::match_::resolution_for(&catalog),
-            seed: SEED,
+            seed,
             mode: tacsim::arena::MatchMode::Skirmish,
         },
         &ArenaConfig::default(),
@@ -1141,4 +1150,24 @@ pub fn authored_pose_of(slot: &str) -> (i64, i64, u32) {
         i64::from(tank.y) * cell + cell / 2,
         tank.heading_mdeg,
     )
+}
+
+/// **The 95 per cent Wilson score interval** (17b cut M1a.6; doc 17 §17's
+/// Gate B): `(low, high)` for `successes` out of `n`, `z = 1.96`, clamped to
+/// `[0, 1]`; `(0, 1)` for `n = 0`, which says nothing. Named for 17b cut M6's
+/// library lift; until then the twin lane is its one caller, and
+/// `tests/twin.rs` holds it to four hand-worked values.
+#[must_use]
+pub fn wilson_95(successes: u32, n: u32) -> (f64, f64) {
+    if n == 0 {
+        return (0.0, 1.0);
+    }
+    let z = 1.96_f64;
+    let n = f64::from(n);
+    let p = f64::from(successes) / n;
+    let z2 = z * z;
+    let denominator = 1.0 + z2 / n;
+    let centre = (p + z2 / (2.0 * n)) / denominator;
+    let half = z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / denominator;
+    ((centre - half).max(0.0), (centre + half).min(1.0))
 }

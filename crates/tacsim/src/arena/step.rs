@@ -3358,7 +3358,7 @@ impl Arena {
     /// its true speed ceiling.
     ///
     /// **16b cut U.1**: one number with three readers — the partition in
-    /// [`Arena::step`], the lattice [`Arena::next_due_ms`] wakes the task on, and
+    /// [`Arena::step`], the lattice `Arena::next_due_ms` wakes the task on, and
     /// the stopping look-ahead in [`Arena::hold_routeless`] — where the first and
     /// the last each computed the product for themselves.
     ///
@@ -3370,10 +3370,15 @@ impl Arena {
     /// the shipped content the answer is constant because that cap binds for
     /// every fielded unit (250 ms; 16c Q24); on a config whose fastest unit cuts
     /// a shorter substep, losing that unit lengthens it from the next pulse, and
-    /// both the step's partition and [`Arena::next_due_ms`]'s lattice read the
+    /// both the step's partition and `Arena::next_due_ms`'s lattice read the
     /// new figure there. Freezing the ceiling at check-out would be a behaviour
     /// change and is not this cut's.
-    pub(crate) fn substep_len_ms(&self) -> i64 {
+    ///
+    /// **Public since 17b cut M1a.6**: the twin lane (`tests/twin.rs`) steps a
+    /// match one substep a pulse, so the arena it reads after a pulse that ran
+    /// a think is the state that think saw.
+    #[must_use]
+    pub fn substep_len_ms(&self) -> i64 {
         i64::from(substep_ms(
             &self.arena_cfg.tempo,
             self.cell_cm(),

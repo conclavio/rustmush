@@ -32,11 +32,14 @@
 //!
 //! # What runs a think
 //!
-//! [`MindRunner`] is a trait and this library implements it once, with
-//! [`NoMind`], which thinks nothing. The real runners live outside the library
-//! (doc 17 §7, D-UM-1): 17b cut M1a.6's native stock mind, and later the
-//! interpreter the sim task drives — the Rhai engine of doc 17 §2 — which this
-//! file must never name in code: the contract test
+//! [`MindRunner`] is a trait and this library implements it twice: with
+//! [`NoMind`], which thinks nothing, and — since 17b cut M1a.6 — with the
+//! native stock mind ([`crate::arena::stock_mind::NativeStockMind`], T1 of doc
+//! 17 §17), which [`default_mind_runner`] answers. It is a pure function of the
+//! job, compiled in, and reads nothing the job does not hand it. The scripted
+//! runners live outside the library (doc 17 §7, D-UM-1): the interpreter the
+//! sim task drives — the Rhai engine of doc 17 §2 — which this file must never
+//! name in code: the contract test
 //! `crates/mush-contract-tests/tests/arena_library.rs` refuses the lowercase
 //! crate name anywhere under `crates/tacsim/src/arena/`. The arena calls the
 //! runner and reads its answer; it never times it (there is no wall clock
@@ -187,6 +190,18 @@ pub struct ThinkJob<'a> {
     /// timestamp. The view's `t_ms` is the end of the substep it fell in, the
     /// state's own clock (D-UM-20's *the view is the state then*).
     pub t_ms: i64,
+    /// **The think's landing millisecond** (17b cut M1a.6; D-UM-21): `t_ms`
+    /// plus the substep length read at collection — the
+    /// [`DueKind::MindLand`]'s own timestamp, and the millisecond every
+    /// discrete intent the think emits is resolved at
+    /// (`Arena::apply_machine_intents`). A runner that plans a shot reads its
+    /// weapon's readiness for THIS millisecond — the view's `ready_in_ms`
+    /// against `lands_ms − view.t_ms` — as the reflex's `engage_orders` reads
+    /// it at the millisecond `Arena::resolve_fire` is handed (16b cut M.2);
+    /// read at the view's clock, a weapon coming ready inside the landing's
+    /// substep is a shot declined until the next think, a whole `think_ms`
+    /// lost per round where doc 17 §17 budgets at most one substep.
+    pub lands_ms: i64,
     /// The hull's view.
     pub view: &'a MindView,
     /// The memory the last landed think left.
@@ -206,8 +221,9 @@ pub struct ThinkResult {
 }
 
 /// **The runner that thinks nothing** (17b cut M1a.5): no intent, the memory
-/// handed back as it came. What every arena runs until 17b cut M1a.6's native
-/// stock mind replaces it in [`default_mind_runner`].
+/// handed back as it came. What every arena ran until 17b cut M1a.6's native
+/// stock mind replaced it in [`default_mind_runner`]; a test still sets it on
+/// [`Arena::mind_runner`] for a hull no runner moves.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoMind;
 
@@ -222,12 +238,106 @@ impl MindRunner for NoMind {
 
 /// **The runner an arena is opened with** (17b cut M1a.5): the one function
 /// both [`Arena::new`] and the snapshot's decode call, so a resumed match
-/// thinks with the runner a fresh one does. [`NoMind`] in this cut; 17b cut
-/// M1a.6 changes the answer and nothing else. The configuration is taken now
-/// so that change needs no new caller.
+/// thinks with the runner a fresh one does.
+///
+/// **17b cut M1a.6** (doc 17 §17, D-UM-3): the native stock mind,
+/// [`crate::arena::stock_mind::NativeStockMind`], on the match's own frozen
+/// doctrine (`reflex`) — T1, the oracle the Rhai port is held to. [`NoMind`]
+/// stays for the tests that want a hull no runner moves.
 #[must_use]
-pub fn default_mind_runner(_cfg: &ArenaConfig) -> Arc<dyn MindRunner> {
-    Arc::new(NoMind)
+pub fn default_mind_runner(cfg: &ArenaConfig) -> Arc<dyn MindRunner> {
+    Arc::new(crate::arena::stock_mind::NativeStockMind::with(&cfg.reflex))
+}
+
+// ---------------------------------------------------------------------------
+// Memory (17b cut M1a.6; doc 17 §8, D-UM-30)
+// ---------------------------------------------------------------------------
+
+/// **How many keys a mind's memory may hold** (doc 17 §8; D-UM-35's class I
+/// `memory_keys`). A constant until 17b cut M3's `CoreProfile` replaces it.
+pub const STOCK_MEMORY_KEYS: usize = 32;
+
+/// The longest key a memory may hold, characters (doc 17 §8).
+pub const MEMORY_KEY_CHARS: usize = 24;
+
+/// The longest string value, characters, and the longest integer array
+/// (doc 17 §8).
+pub const MEMORY_VALUE_LEN: usize = 32;
+
+/// **A mind's memory, decoded** (17b cut M1a.6; doc 17 §8, D-UM-30): a
+/// canonical map of short keys to small values. The arena stores only the
+/// bytes [`encode_memory`] writes; a runner decodes, reads, writes and encodes
+/// it again. A `BTreeMap`, so the keys are sorted and the encoding is one
+/// string for one map — the shape 17b cut M2's Rhai `mem` map encodes to as
+/// well, so the native stock mind and its Rhai port hand back the same bytes
+/// (Gate A).
+pub type Memory = BTreeMap<SmolStr, serde_json::Value>;
+
+/// **Why a memory was refused** (17b cut M1a.6; doc 17 §8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MemError {
+    /// A key longer than [`MEMORY_KEY_CHARS`], or empty.
+    Key(SmolStr),
+    /// More than [`STOCK_MEMORY_KEYS`] keys: how many there were.
+    Count(usize),
+    /// A value that is not an integer (`i64`), a bool, null, a string of at
+    /// most [`MEMORY_VALUE_LEN`] characters or an array of at most
+    /// [`MEMORY_VALUE_LEN`] integers — under this key.
+    Value(SmolStr),
+}
+
+/// **Whether a memory is one a mind may hold** (doc 17 §8): at most
+/// [`STOCK_MEMORY_KEYS`] keys, each of 1 to [`MEMORY_KEY_CHARS`] characters,
+/// each value an integer that fits an `i64`, a bool, null, a string of at
+/// most [`MEMORY_VALUE_LEN`] characters or an array of at most
+/// [`MEMORY_VALUE_LEN`] such integers. Nothing nested, no float.
+///
+/// # Errors
+///
+/// The first refusal, in key order: the count before any key.
+pub fn memory_check(memory: &Memory) -> Result<(), MemError> {
+    if memory.len() > STOCK_MEMORY_KEYS {
+        return Err(MemError::Count(memory.len()));
+    }
+    for (key, value) in memory {
+        let chars = key.chars().count();
+        if chars == 0 || chars > MEMORY_KEY_CHARS {
+            return Err(MemError::Key(key.clone()));
+        }
+        let fits = match value {
+            serde_json::Value::Null | serde_json::Value::Bool(_) => true,
+            serde_json::Value::Number(number) => number.as_i64().is_some(),
+            serde_json::Value::String(text) => text.chars().count() <= MEMORY_VALUE_LEN,
+            serde_json::Value::Array(items) => {
+                items.len() <= MEMORY_VALUE_LEN && items.iter().all(|item| item.as_i64().is_some())
+            }
+            serde_json::Value::Object(_) => false,
+        };
+        if !fits {
+            return Err(MemError::Value(key.clone()));
+        }
+    }
+    Ok(())
+}
+
+/// **A memory's canonical bytes** (D-UM-30): the map as JSON, keys sorted
+/// (the `BTreeMap`'s own order), no whitespace — what the arena stores and
+/// hashes. An empty map is `{}`.
+#[must_use]
+pub fn encode_memory(memory: &Memory) -> Vec<u8> {
+    serde_json::to_vec(memory).unwrap_or_default()
+}
+
+/// **A memory read back off its bytes**: empty bytes are the empty map (a
+/// fresh sortie), and so are bytes that do not decode — nothing in this cut
+/// writes such bytes, and a runner handed them starts over rather than
+/// faulting.
+#[must_use]
+pub fn decode_memory(bytes: &[u8]) -> Memory {
+    if bytes.is_empty() {
+        return Memory::new();
+    }
+    serde_json::from_slice(bytes).unwrap_or_default()
 }
 
 /// **What a mind sees** (17b cut M1a.5; doc 17 §3, D-UM-4 read strictly — the
@@ -510,6 +620,10 @@ impl Arena {
         };
         let epochs = Channel::ALL.map(|channel| (channel, self.epochs.current(unit, channel)));
         counters.thinks = counters.thinks.saturating_add(1);
+        // D-UM-21: the landing millisecond, read at collection — scheduled
+        // below and handed to the runner (17b cut M1a.6), which plans its
+        // shots for the millisecond they are resolved at.
+        let land_at = t_ms.saturating_add(self.substep_len_ms());
         let runner = Arc::clone(&self.mind_runner);
         let Some(state) = self.minds.get(&unit) else {
             return;
@@ -518,11 +632,11 @@ impl Arena {
             unit,
             think_seq,
             t_ms,
+            lands_ms: land_at,
             view: &view,
             memory: &state.memory,
             map: &self.definition,
         });
-        let land_at = t_ms.saturating_add(self.substep_len_ms());
         let Some(state) = self.minds.get_mut(&unit) else {
             return;
         };
@@ -729,6 +843,7 @@ mod tests {
             unit: RED,
             think_seq: 0,
             t_ms: 0,
+            lands_ms: arena.substep_len_ms(),
             view: &view,
             memory: &[1, 2, 3],
             map: &arena.definition,
@@ -740,8 +855,9 @@ mod tests {
                 memory: vec![1, 2, 3]
             }
         );
+        // 17b cut M1a.6: the default runner is the native stock mind now.
         assert!(
-            format!("{:?}", arena.mind_runner).contains("NoMind"),
+            format!("{:?}", arena.mind_runner).contains("NativeStockMind"),
             "Arena::new opens with the default runner"
         );
     }
@@ -1537,5 +1653,101 @@ mod tests {
         assert_eq!(read(&mut arena), (Some(400), Some(400)), "428 m, held");
         replot(&mut arena, 44_000);
         assert_eq!(read(&mut arena), (Some(450), Some(450)), "440 m, let go");
+    }
+
+    // -----------------------------------------------------------------------
+    // 17b cut M1a.6: the memory (doc 17 §8, D-UM-30)
+    // -----------------------------------------------------------------------
+
+    /// A memory of `pairs`.
+    fn memory_of(pairs: &[(&str, serde_json::Value)]) -> Memory {
+        pairs
+            .iter()
+            .map(|(key, value)| (SmolStr::new(key), value.clone()))
+            .collect()
+    }
+
+    /// **`memory_check` refuses by key, by count and by value**, and takes
+    /// every shape doc 17 §8 allows at its bounds: a 24-character key, 32
+    /// keys, `i64::MIN` and `i64::MAX`, a bool, null, a 32-character string and
+    /// an array of 32 integers. Refused: an empty key and a 25-character one;
+    /// 33 keys; a float, a number past `i64::MAX`, an object, a 33-character
+    /// string, an array of 33 integers and an array holding a float, a string
+    /// or an array.
+    #[test]
+    fn m1a6_memory_check_refuses_by_key_count_and_value() {
+        let edge = memory_of(&[
+            ("k".repeat(MEMORY_KEY_CHARS).as_str(), serde_json::json!(1)),
+            ("low", serde_json::json!(i64::MIN)),
+            ("high", serde_json::json!(i64::MAX)),
+            ("flag", serde_json::json!(true)),
+            ("none", serde_json::Value::Null),
+            ("word", serde_json::json!("w".repeat(MEMORY_VALUE_LEN))),
+            ("cells", serde_json::json!(vec![7_i64; MEMORY_VALUE_LEN])),
+        ]);
+        assert_eq!(memory_check(&edge), Ok(()));
+        let full: Memory = (0..STOCK_MEMORY_KEYS)
+            .map(|k| (SmolStr::new(format!("k{k}")), serde_json::json!(k)))
+            .collect();
+        assert_eq!(memory_check(&full), Ok(()));
+        let mut over = full.clone();
+        over.insert(SmolStr::new("one_more"), serde_json::Value::Null);
+        assert_eq!(
+            memory_check(&over),
+            Err(MemError::Count(STOCK_MEMORY_KEYS + 1))
+        );
+        let long = "k".repeat(MEMORY_KEY_CHARS + 1);
+        assert_eq!(
+            memory_check(&memory_of(&[(long.as_str(), serde_json::json!(1))])),
+            Err(MemError::Key(SmolStr::new(&long)))
+        );
+        assert_eq!(
+            memory_check(&memory_of(&[("", serde_json::json!(1))])),
+            Err(MemError::Key(SmolStr::new("")))
+        );
+        for bad in [
+            serde_json::json!(1.5),
+            serde_json::json!(u64::MAX),
+            serde_json::json!({ "x": 1 }),
+            serde_json::json!("w".repeat(MEMORY_VALUE_LEN + 1)),
+            serde_json::json!(vec![7_i64; MEMORY_VALUE_LEN + 1]),
+            serde_json::json!([1, 2.5]),
+            serde_json::json!([1, "two"]),
+            serde_json::json!([[1]]),
+        ] {
+            assert_eq!(
+                memory_check(&memory_of(&[("bad", bad.clone())])),
+                Err(MemError::Value(SmolStr::new("bad"))),
+                "{bad}"
+            );
+        }
+    }
+
+    /// **The encoding is canonical and round-trips** (D-UM-30): the keys sorted
+    /// whatever order they were written in, no whitespace; `decode(encode(m))
+    /// == m`; empty bytes and bytes that do not decode are the empty map, which
+    /// encodes as `{}`.
+    #[test]
+    fn m1a6_a_memory_encodes_sorted_and_round_trips() {
+        let mut one = Memory::new();
+        one.insert(SmolStr::new("zeta"), serde_json::json!([3, 4]));
+        one.insert(SmolStr::new("alpha"), serde_json::json!(-1));
+        one.insert(SmolStr::new("mid"), serde_json::Value::Null);
+        let mut two = Memory::new();
+        two.insert(SmolStr::new("mid"), serde_json::Value::Null);
+        two.insert(SmolStr::new("alpha"), serde_json::json!(-1));
+        two.insert(SmolStr::new("zeta"), serde_json::json!([3, 4]));
+        let bytes = encode_memory(&one);
+        assert_eq!(bytes, encode_memory(&two));
+        assert_eq!(
+            String::from_utf8(bytes.clone()).unwrap_or_default(),
+            r#"{"alpha":-1,"mid":null,"zeta":[3,4]}"#
+        );
+        assert_eq!(decode_memory(&bytes), one);
+        assert_eq!(encode_memory(&decode_memory(&bytes)), bytes);
+        assert_eq!(decode_memory(&[]), Memory::new());
+        assert_eq!(decode_memory(b"not json"), Memory::new());
+        assert_eq!(decode_memory(b"[1, 2]"), Memory::new());
+        assert_eq!(encode_memory(&Memory::new()), b"{}".to_vec());
     }
 }
