@@ -6530,8 +6530,11 @@ pub(crate) fn command_of(
 ///    with no right to order a squad learns nothing about contacts by naming one.
 ///    A row the pilot's panel classes as their own side drops the hint (the
 ///    machines never fire on their own side), so the order is a bare `ENGAGE`;
-/// 5. **the order** — `issuer: Some(own tank)`, [`HUMAN_ORDER_TTL_MS`] as both
-///    time to live and horizon, validated against the window;
+/// 5. **the order** — `issuer: Some(own tank)`, `by: the seat's character`
+///    (17b cut L.1, D-UM-52: `CharacterRef::Character { id: seat.driver }`, the
+///    author the bridge's admission checks on this same `command_of` rule),
+///    [`HUMAN_ORDER_TTL_MS`] as both time to live and horizon, validated against
+///    the window;
 /// 6. **the span** (16b cut Y.2; doc 16 §2 W8) — the squads the pilot holds a
 ///    live order on ([`ArenaRegistry::live_orders_of`]) that this order does not
 ///    name, plus those it names, may not pass `[tacsim.command].max_span`
@@ -6699,6 +6702,7 @@ fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
         ttl_ms: HUMAN_ORDER_TTL_MS,
         issued_ms: now_ms,
         issuer: Some(seat.unit),
+        by: crate::deliberation::CharacterRef::Character { id: seat.driver },
         spot: spot_word.clone(),
     };
     // A spot is on the window by construction, so a refusal here is the bounds
@@ -6773,6 +6777,7 @@ fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
                 *squad,
                 SmolStr::new_static(words.objective.as_str()),
                 seat.unit,
+                crate::deliberation::CharacterRef::Character { id: seat.driver },
                 expires_ms,
             );
         }

@@ -84,6 +84,25 @@ const BLUE: ObjId = ObjId(9);
 /// A second red tank, for the cross-tempo property.
 const RED2: ObjId = ObjId(6);
 
+/// **17b cut L.1**: the scripted pilot character a pilot-shaped order names as
+/// its author; no unit of these fixtures uses the id.
+const PILOT_CHARACTER: ObjId = ObjId(9_001);
+
+/// **17b cut L.1** (D-UM-52): an order's author by its shape — a machine order
+/// (`issuer: None`) by the squad's lance-leader persona, a pilot's by
+/// [`PILOT_CHARACTER`]. The arena reads neither; the world's admission does.
+fn author(
+    squad: tacsim::deliberation::SquadId,
+    issuer: Option<ObjId>,
+) -> tacsim::deliberation::CharacterRef {
+    match issuer {
+        None => tacsim::deliberation::CharacterRef::Persona { squad },
+        Some(_) => tacsim::deliberation::CharacterRef::Character {
+            id: PILOT_CHARACTER,
+        },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -5061,6 +5080,7 @@ fn a_kill_under_a_withdraw_order() -> Arena {
         ttl_ms: 25_000,
         issued_ms: 0,
         issuer: None,
+        by: author(squad, None),
         spot: None,
     };
     for unit in [RED, RED2] {
@@ -5239,6 +5259,7 @@ fn y1_replay(cadence_ms: i64, until_ms: i64, issuer: Option<ObjId>) -> (Replay, 
         ttl_ms: 600_000,
         issued_ms: 0,
         issuer,
+        by: author(squad, issuer),
         spot: None,
     };
     let beat: Vec<tacsim::arena::intents::Intent> = [RED, RED2]
@@ -5454,6 +5475,7 @@ fn an_unreachable_order_and_a_hot_gun() -> Arena {
         ttl_ms: 600_000,
         issued_ms: 0,
         issuer: None,
+        by: author(squad, None),
         spot: None,
     };
     arena
@@ -7349,6 +7371,7 @@ fn e4_order(
         ttl_ms,
         issued_ms: arena.now_ms,
         issuer: None,
+        by: author(squad, None),
         spot: None,
     };
     arena.reflex.set_order(
@@ -8215,6 +8238,7 @@ fn aa1_order(
         ttl_ms: 60_000,
         issued_ms: arena.now_ms,
         issuer: None,
+        by: author(squad, None),
         spot: None,
     };
     arena.reflex.set_order(
@@ -8935,6 +8959,7 @@ fn y2_hold(
         ttl_ms,
         issued_ms: 0,
         issuer,
+        by: author(squad, issuer),
         spot: None,
     }
 }
@@ -9127,6 +9152,7 @@ fn z2_order(
         ttl_ms: 600_000,
         issued_ms: 0,
         issuer,
+        by: author(squad, issuer),
         spot: None,
     }
 }
@@ -10504,6 +10530,7 @@ fn o1_hold_mode_machines_drive_to_the_spot_and_park_inside_the_radius() {
         ttl_ms: 600_000,
         issued_ms: 0,
         issuer: Some(O1_PILOT),
+        by: author(squad, Some(O1_PILOT)),
         spot: None,
     }));
     let intent =
@@ -10708,6 +10735,7 @@ fn o1_an_advance_into_the_square_ends_on_arrival() {
             ttl_ms: 600_000,
             issued_ms: 0,
             issuer: None,
+            by: author(squad, None),
             spot: None,
         }));
     let order = tacsim::arena::intents::Intent {
@@ -11077,6 +11105,7 @@ fn o1_advance(arena: &Arena, unit: ObjId, to: (u16, u16)) -> tacsim::arena::inte
             ttl_ms: 600_000,
             issued_ms: 0,
             issuer: None,
+            by: author(squad, None),
             spot: None,
         })),
         seq: 1,

@@ -249,6 +249,51 @@ pub struct Constraints {
     pub max_range_band: Option<RangeBand>,
 }
 
+/// **Who gave an order** (17b cut L.1; doc 17 §4 "A mind never orders", D-UM-52,
+/// D-UM-53) — a CHARACTER principal, human- or AI-played, and never a mind or a
+/// unit: only a character issues `ORDER`, and the engine checks that the author is
+/// a character entitled to order the squad, never that it is "not a mind".
+///
+/// It is **not** `mush_store::CharacterRef`, which is the account's link record to
+/// a character it may play; this names the author of one order.
+///
+/// Encoded internally tagged by `kind`: `{"kind":"character","id":…}` and
+/// `{"kind":"persona","squad":{"team":"red","index":1}}`; an unknown `kind` or an
+/// unknown field is refused.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
+pub enum CharacterRef {
+    /// A character object in the world — `ObjKind::Player` or `ObjKind::Npc` —
+    /// human- or AI-played. A typed `ORDER` names the seat's character
+    /// (`crate::match_::cockpit::Seat::driver`).
+    Character {
+        /// The character's object.
+        id: ObjId,
+    },
+    /// An OOC sim persona: the lance-leader minted for one match's fill squad
+    /// (D-UM-53), with no world object, no IC record and no warrant, named only on
+    /// its own side ([`CharacterRef::persona_name`]), gone with the match.
+    Persona {
+        /// The squad it leads, and the whole of its identity.
+        squad: SquadId,
+    },
+}
+
+impl CharacterRef {
+    /// **The persona's display name** — `red lance leader 1` — a pure function of
+    /// the squad, so nothing but the squad is ever carried for it.
+    #[must_use]
+    pub fn persona_name(squad: SquadId) -> String {
+        format!("{} lance leader {}", squad.team.as_str(), squad.index)
+    }
+
+    /// Whether this is a sim persona rather than a character object.
+    #[must_use]
+    pub const fn is_persona(&self) -> bool {
+        matches!(self, CharacterRef::Persona { .. })
+    }
+}
+
 /// **One squad's standing instruction** (doc 16 §6).
 ///
 /// It is issued by a commander the squad cannot see, carried in as an intent, and
@@ -298,6 +343,14 @@ pub struct Order {
     /// (the one hash move of cut Y), because it decides which object a hint names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issuer: Option<ObjId>,
+    /// **The order's author** (17b cut L.1; doc 17 §4, D-UM-52): the character
+    /// principal who gave it — a seated pilot's character for a typed `ORDER`, the
+    /// squad's lance-leader for a deliberated one. Checked once, at the world and
+    /// bridge admission (`crate::arena_bridge::admit_order`, on the cockpit's own
+    /// `command_of` rule), and **read by nothing that steers and never folded into
+    /// `crate::arena::hash::state_hash`** (like [`Order::spot`]): the hint's scope is
+    /// [`Order::issuer`]'s, and the arena holds no principal.
+    pub by: CharacterRef,
     /// **The commander's word for an `Advance` cell** (16b cut Y.1) — the key
     /// spot's name — for the record and the debrief. Read by nothing that steers,
     /// and deliberately not hashed.
@@ -455,8 +508,57 @@ mod tests {
             ttl_ms: 30_000,
             issued_ms: 1,
             issuer: None,
+            by: CharacterRef::Persona { squad: squad() },
             spot: None,
         }
+    }
+
+    /// **17b cut L.1 (D-UM-52)**: the author's two arms survive the world task's
+    /// serde seam, an unknown `kind` is refused, and the persona's name is the
+    /// squad's.
+    #[test]
+    fn l1_a_character_ref_round_trips_and_names_its_persona() {
+        for by in [
+            CharacterRef::Character { id: ObjId(42) },
+            CharacterRef::Persona { squad: squad() },
+        ] {
+            let text = serde_json::to_string(&by).expect("an author encodes");
+            let read: CharacterRef = serde_json::from_str(&text).expect("an author decodes");
+            assert_eq!(read, by, "{text}");
+        }
+        assert_eq!(
+            serde_json::to_string(&CharacterRef::Character { id: ObjId(42) }).ok(),
+            Some(r#"{"kind":"character","id":42}"#.to_owned())
+        );
+        assert_eq!(
+            serde_json::to_string(&CharacterRef::Persona { squad: squad() }).ok(),
+            Some(r#"{"kind":"persona","squad":{"team":"red","index":1}}"#.to_owned())
+        );
+        assert!(serde_json::from_str::<CharacterRef>(r#"{"kind":"mind","id":42}"#).is_err());
+        assert!(
+            serde_json::from_str::<CharacterRef>(r#"{"kind":"character","id":42,"x":1}"#).is_err(),
+            "an unknown field is refused"
+        );
+        assert_eq!(CharacterRef::persona_name(squad()), "red lance leader 1");
+        assert_eq!(
+            CharacterRef::persona_name(SquadId {
+                team: Team::Blue,
+                index: 3
+            }),
+            "blue lance leader 3"
+        );
+        assert!(CharacterRef::Persona { squad: squad() }.is_persona());
+        assert!(!CharacterRef::Character { id: ObjId(42) }.is_persona());
+        // An order carries its author through the seam, and one without it is
+        // undecodable (the reply path releases its slot for exactly that).
+        let written = order(Objective::Hold);
+        let text = serde_json::to_string(&written).expect("an order encodes");
+        assert!(text.contains(r#""by":{"kind":"persona""#), "{text}");
+        let mut value: serde_json::Value = serde_json::from_str(&text).expect("json");
+        if let Some(map) = value.as_object_mut() {
+            map.remove("by");
+        }
+        assert!(serde_json::from_value::<Order>(value).is_err());
     }
 
     #[test]

@@ -2390,6 +2390,10 @@ mod tests {
             ttl_ms: 600_000,
             issued_ms: 3,
             issuer: Some(ObjId(77)),
+            // 17b cut L.1: the pilot's character, never read by the arena.
+            by: crate::deliberation::order::CharacterRef::Character {
+                id: mush_core::ObjId(9_001),
+            },
             spot: Some(SmolStr::new("The Ford")),
         };
         let before = arena.ledger.seq();
@@ -2642,6 +2646,10 @@ mod tests {
                 ttl_ms: 600_000,
                 issued_ms: 0,
                 issuer: Some(LEAD),
+                // 17b cut L.1: the pilot's character, never read by the arena.
+                by: crate::deliberation::order::CharacterRef::Character {
+                    id: mush_core::ObjId(9_001),
+                },
                 spot: None,
             },
             0,
@@ -2978,6 +2986,13 @@ mod tests {
             ttl_ms: 600_000,
             issued_ms: 0,
             issuer,
+            // 17b cut L.1: a pilot's character with an issuer, the leader without.
+            by: issuer.map_or(
+                crate::deliberation::order::CharacterRef::Persona { squad: z2_squad(1) },
+                |_| crate::deliberation::order::CharacterRef::Character {
+                    id: mush_core::ObjId(9_001),
+                },
+            ),
             spot: None,
         };
         let engage = |hint: ContactId| Objective::Engage {

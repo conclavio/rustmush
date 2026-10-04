@@ -3560,6 +3560,9 @@ fn m2_a_duration_bound_mid_pulse_is_one_timeout_at_one_millisecond_at_three_cade
 /// a hint names, so the two are two states and a replay that lost it must not
 /// compare equal — while an order's `spot`, the commander's word for a cell
 /// that nothing steering reads, moves nothing.
+///
+/// **17b cut L.1** (D-UM-52): nor does its author, `by` — a record field never
+/// folded, like `spot`; the hint's scope is `issuer`'s.
 #[test]
 fn the_hash_folds_the_issuer_and_not_the_spot() {
     let told = |issuer: Option<ObjId>, spot: Option<&str>| tacsim::deliberation::Order {
@@ -3574,6 +3577,12 @@ fn the_hash_folds_the_issuer_and_not_the_spot() {
         ttl_ms: 600_000,
         issued_ms: 0,
         issuer,
+        by: tacsim::deliberation::CharacterRef::Persona {
+            squad: tacsim::deliberation::SquadId {
+                team: Team::Red,
+                index: 1,
+            },
+        },
         spot: spot.map(SmolStr::new),
     };
     let under = |order: tacsim::deliberation::Order| {
@@ -3601,6 +3610,27 @@ fn the_hash_folds_the_issuer_and_not_the_spot() {
         "the spot is the commander's word and steers nothing"
     );
     assert_eq!(under(told(None, Some("The Ford"))), machines);
+    // 17b cut L.1: the author is not state either.
+    assert_eq!(
+        under(tacsim::deliberation::Order {
+            by: tacsim::deliberation::CharacterRef::Character { id: ObjId(9_001) },
+            ..told(Some(ObjId(77)), None)
+        }),
+        pilots,
+        "the order's author is a record field and steers nothing"
+    );
+    assert_eq!(
+        under(tacsim::deliberation::Order {
+            by: tacsim::deliberation::CharacterRef::Persona {
+                squad: tacsim::deliberation::SquadId {
+                    team: Team::Blue,
+                    index: 2,
+                },
+            },
+            ..told(None, None)
+        }),
+        machines
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -3626,6 +3656,8 @@ fn the_hash_folds_a_screens_facing_and_a_supports_charge() {
         ttl_ms: 600_000,
         issued_ms: 0,
         issuer: Some(ObjId(77)),
+        // 17b cut L.1: a pilot's character, never folded.
+        by: tacsim::deliberation::CharacterRef::Character { id: ObjId(9_001) },
         spot: None,
     };
     let under = |objective: tacsim::deliberation::Objective| {
@@ -5376,6 +5408,13 @@ fn af1_squad_script() -> Vec<Beat> {
         ttl_ms: 15_000,
         issued_ms: 1,
         issuer: None,
+        // 17b cut L.1: red-1's lance-leader.
+        by: tacsim::deliberation::CharacterRef::Persona {
+            squad: tacsim::deliberation::SquadId {
+                team: Team::Red,
+                index: 1,
+            },
+        },
         spot: None,
     };
     vec![Beat::at(
@@ -5590,6 +5629,12 @@ const AF1_SHAPE_LINES: usize = 393;
 /// adds, renames or re-types a carried field re-blesses it and bumps the format
 /// in the same change, and a running match on a live box is voided at that
 /// reload (deploy/README.md).*
+///
+/// **Carried unchanged through 17b cut L.1's `SNAPSHOT_FORMAT` 6**: `Order.by`
+/// is a field of the standing order, which neither fixture holds at pulse zero,
+/// so the digest and the 393 lines are what they were and only the format moved
+/// (the round trip is `an_order_at_three_cadences_is_one_event_list_and_one_hash_sequence`
+/// in `tests/deliberation.rs`, and [`l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document`]).
 #[test]
 fn af1_the_snapshot_shape_is_pinned() {
     use sha2::Digest as _;
@@ -5603,7 +5648,7 @@ fn af1_the_snapshot_shape_is_pinned() {
         tacsim::arena::snapshot::digest_text(&sha2::Sha256::digest(joined.as_bytes()).into());
     assert_eq!(
         tacsim::arena::snapshot::SNAPSHOT_FORMAT,
-        5,
+        6,
         "a format bump re-blesses the pin below in the same change"
     );
     assert_eq!(
@@ -5726,9 +5771,9 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
         found: 2,
         expected: SNAPSHOT_FORMAT,
     };
-    // 17b cut M1a.4 moved the format to 4 and 17b cut M1a.5 to 5; a format-2
-    // document is still refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 5);
+    // 17b cut M1a.4 moved the format to 4, 17b cut M1a.5 to 5 and 17b cut L.1
+    // to 6; a format-2 document is still refused by name.
+    assert_eq!(SNAPSHOT_FORMAT, 6);
     assert_eq!(Snapshot::head(&two), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&two, arena.definition.clone()).map(|_| ()),
@@ -5807,9 +5852,9 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
         found: 3,
         expected: SNAPSHOT_FORMAT,
     };
-    // 17b cut M1a.5 moved the format to 5; a format-3 document is still
-    // refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 5);
+    // 17b cut M1a.5 moved the format to 5 and 17b cut L.1 to 6; a format-3
+    // document is still refused by name.
+    assert_eq!(SNAPSHOT_FORMAT, 6);
     assert_eq!(Snapshot::head(&three), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&three, arena.definition.clone()).map(|_| ()),
@@ -5916,10 +5961,96 @@ fn m1a5_a_snapshot_carries_the_minds_and_not_their_landings() {
         found: 4,
         expected: SNAPSHOT_FORMAT,
     };
-    assert_eq!(SNAPSHOT_FORMAT, 5);
+    // 17b cut L.1 moved the format to 6; a format-4 document is still refused
+    // by name.
+    assert_eq!(SNAPSHOT_FORMAT, 6);
     assert_eq!(Snapshot::head(&four), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&four, arena.definition.clone()).map(|_| ()),
+        Err(refused)
+    );
+}
+
+/// **17b cut L.1: a snapshot carries every standing order's author, and a
+/// format-5 document is refused by name** (doc 17 §4, D-UM-52; `snapshot.rs`'
+/// `SNAPSHOT_FORMAT` 6).
+///
+/// The squad arena is stepped through [`af1_squad_script`] to 10,000 ms, where
+/// red-1's lance-leader's `Advance` (15 s from 5,000 ms) still stands on both of
+/// its machines. The encoded state carries the order on both reflex rows with
+/// its `by` — the persona, `{"kind":"persona",…}` — and the decode hands back
+/// the same standing order, author and all, and the same hash (`by` is not
+/// folded, so the hash is no evidence of it: the field-for-field compare is).
+/// The same document stamped `"format": 5` — what every snapshot written
+/// between 17b cuts M1a.5 and L.1 says — is refused as `Format { found: 5,
+/// expected: 6 }` by both the head read and the decode.
+#[test]
+fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() {
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut arena = af1_squad_arena();
+    let _ = replay_on_from(
+        &mut arena,
+        &mut (0..=2).map(|pulse| pulse * 5_000),
+        10_000,
+        &af1_squad_script(),
+        0,
+        &quiet,
+    );
+    let persona = tacsim::deliberation::CharacterRef::Persona {
+        squad: tacsim::deliberation::SquadId {
+            team: Team::Red,
+            index: 1,
+        },
+    };
+    for unit in [MOVER, SQUAD_RED_B] {
+        assert_eq!(
+            arena
+                .reflex
+                .order(unit)
+                .map(|standing| standing.order.by.clone()),
+            Some(persona.clone()),
+            "the order stands on {unit:?} with its author"
+        );
+    }
+    let snapshot = Snapshot::encode(&arena).expect("the arena encodes");
+    let state = state_of(&snapshot);
+    let carried = state
+        .get("reflex")
+        .and_then(|reflex| reflex.get("units"))
+        .and_then(|units| units.get(MOVER.0.to_string()))
+        .and_then(|row| row.get("order"))
+        .and_then(|standing| standing.get("order"))
+        .and_then(|order| order.get("by"))
+        .cloned();
+    assert_eq!(
+        carried,
+        Some(serde_json::json!({"kind": "persona", "squad": {"team": "red", "index": 1}})),
+        "the reflex row carries the order's author"
+    );
+    let decoded = Snapshot::decode(&snapshot.document, arena.definition.clone())
+        .expect("the document decodes");
+    for unit in [MOVER, SQUAD_RED_B] {
+        assert_eq!(
+            decoded.reflex.order(unit),
+            arena.reflex.order(unit),
+            "the standing order came back, `by` included"
+        );
+    }
+    assert_eq!(
+        tacsim::arena::hash::state_hash(&decoded),
+        tacsim::arena::hash::state_hash(&arena)
+    );
+
+    let mut five = snapshot.document.clone();
+    five["format"] = serde_json::json!(5);
+    let refused = SnapshotError::Format {
+        found: 5,
+        expected: SNAPSHOT_FORMAT,
+    };
+    assert_eq!(SNAPSHOT_FORMAT, 6);
+    assert_eq!(Snapshot::head(&five), Err(refused.clone()));
+    assert_eq!(
+        Snapshot::decode(&five, arena.definition.clone()).map(|_| ()),
         Err(refused)
     );
 }

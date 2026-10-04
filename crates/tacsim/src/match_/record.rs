@@ -380,6 +380,20 @@ pub struct MatchRecord {
     ///
     /// Empty for a match of nothing but pilots, which is doc 16 §1's A1 story.
     pub squads: Vec<crate::deliberation::SquadRoster>,
+    /// **The squads' lance-leaders** (17b cut L.1; doc 17 §4 "Where a
+    /// lance-leader sits", D-UM-53): minted by [`crate::match_::start`] beside
+    /// [`MatchRecord::squads`] — one sim persona per squad
+    /// (`crate::deliberation::fill_leaders`), because every squad of the OOC
+    /// sim is a fill squad — and read by `crate::arena_bridge`'s
+    /// `on_deliberate` (a squad with no row is never asked),
+    /// `on_deliberation_reply` (a reply whose author is not the row is dropped)
+    /// and `admit_order` (a persona's order is admitted only for its own squad).
+    ///
+    /// `#[serde(default)]` under this module head's `LIVE_FORMAT` policy — an
+    /// added defaulted field, so no bump: a live or result document written
+    /// before this cut has no leaders, which is true of it.
+    #[serde(default)]
+    pub leaders: Vec<crate::deliberation::LanceLeader>,
     /// **Every unit's callsign, as the arena resolved it** (16b cut V.2).
     ///
     /// Read off the arena `crate::arena_task::spawn_arena` built
@@ -1702,6 +1716,7 @@ mod tests {
             seed: 2_350_235_023_502_350,
             last_pose: std::collections::BTreeMap::new(),
             squads: Vec::new(),
+            leaders: Vec::new(),
             callsigns: BTreeMap::new(),
             folds: BTreeMap::new(),
             unparsed: 0,
@@ -1845,6 +1860,7 @@ mod tests {
             seed: 2_350_235_023_502_350,
             last_pose: BTreeMap::new(),
             squads: Vec::new(),
+            leaders: Vec::new(),
             callsigns: BTreeMap::from([
                 (ObjId(101), slot(Team::Red, 1)),
                 (ObjId(102), slot(Team::Red, 2)),

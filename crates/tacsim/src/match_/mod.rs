@@ -1004,6 +1004,23 @@ pub fn start(
     // is in `Boarding`.
     let now_ms = ctx.w.now().saturating_mul(1_000);
     let seed = seed_for(match_id, ctx.w.now());
+    // 16b cut N.2: the same grouping `Arena::new` derives, from the same
+    // triples and the same `[tacsim.arena].squad_size` (16b cut Z.1) — a
+    // side's reflex units dealt into squads, lowest id commanding. One
+    // function of one data, so the record and the arena cannot disagree.
+    let squads = crate::deliberation::squads_of(
+        &custody_units
+            .iter()
+            .map(|unit| {
+                (
+                    unit.id,
+                    unit.team,
+                    unit.controller == crate::arena::state::Controller::Reflex,
+                )
+            })
+            .collect::<Vec<_>>(),
+        arena_cfg.squad_size,
+    );
     let boarding = MatchRecord {
         id: match_id,
         state: MatchState::Boarding,
@@ -1026,23 +1043,9 @@ pub fn start(
         // 16b cut O.1: the rule it is fought under, for the result and the
         // replay.
         mode,
-        // 16b cut N.2: the same grouping `Arena::new` derives, from the same
-        // triples and the same `[tacsim.arena].squad_size` (16b cut Z.1) — a
-        // side's reflex units dealt into squads, lowest id commanding. One
-        // function of one data, so the record and the arena cannot disagree.
-        squads: crate::deliberation::squads_of(
-            &custody_units
-                .iter()
-                .map(|unit| {
-                    (
-                        unit.id,
-                        unit.team,
-                        unit.controller == crate::arena::state::Controller::Reflex,
-                    )
-                })
-                .collect::<Vec<_>>(),
-            arena_cfg.squad_size,
-        ),
+        // 17b cut L.1 (D-UM-53): one sim persona per squad, minted beside them.
+        leaders: crate::deliberation::fill_leaders(&squads),
+        squads,
     };
     {
         let book = ctx

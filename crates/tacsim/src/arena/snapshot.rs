@@ -210,7 +210,12 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// `MindLand`) — a carried section and three carried variants a format-4
 /// reader cannot decode. The `af1` pin gains the one `state.minds: object`
 /// line each unstepped fixture fills.
-pub const SNAPSHOT_FORMAT: u32 = 5;
+///
+/// **6 since 17b cut L.1** (doc 17 §4, D-UM-52): `Order.by` on every carried
+/// standing order (the reflex rows' `order`) — a shape change a format-5 reader
+/// cannot decode; the two unstepped `af1` fixtures hold no order at pulse zero,
+/// so the pin's digest and line count did not move and only the format did.
+pub const SNAPSHOT_FORMAT: u32 = 6;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///

@@ -28,18 +28,26 @@
 //! arena's own at `Arena::new` — so the two groupings of one match are one function
 //! of one data and cannot drift.
 //!
-//! The **commander** is the lowest unit id in the squad. Not a role, not a
-//! capability, not a station: it is the unit whose contact set the trigger reads
-//! and whose opaque contact ids an order's target hint is written in. It is the
-//! lowest id for the same reason every other tie in this engine breaks that way —
+//! The **commander** is the lowest unit id in the squad. It is still not a
+//! capability and not a station — it grants nothing a seat could take — but since
+//! **17b cut L.1** (doc 17 §4 "Where a lance-leader sits", D-UM-53) it is **where
+//! the lance-leader rides**: the squad's leader is a character (an AI-played
+//! character attached to the squad, or in the OOC sim the persona
+//! [`fill_leaders`] mints per squad), never a `crate::arena::state::Controller`
+//! value — D-UM-2: a *seated pilot* is a seat activated by a player's connection,
+//! and the leader is not one. The commander is the hull whose contact set the
+//! trigger reads and whose opaque contact ids a leader's target hint is written in
+//! (today's `issuer: None` scope, unchanged); the order's **author** is the leader,
+//! in `crate::deliberation::order::Order::by`, never the unit. It is the lowest id
+//! for the same reason every other tie in this engine breaks that way —
 //! `Arena::units` is kept in id order and nothing here draws (doc 16 §3.5's pinned
 //! draw-label set).
 //!
-//! A commander that becomes a wreck does not hand over: the squad keeps asking
-//! through a dead tank's contact set, which is empty, so the squad drops to
-//! doctrine the moment its commander dies. That is the honest reading of *the
-//! fallback when nothing arrives is the reflex doctrine* — a decapitated squad
-//! fights on its own reflexes.
+//! A commander that becomes a wreck does not hand over: the leader is down with
+//! its hull, the squad stops asking (`crate::arena::command`'s trigger skips a
+//! wrecked commander), and the squad drops to doctrine the moment its commander
+//! dies. That is the honest reading of *the fallback when nothing arrives is the
+//! reflex doctrine* — a decapitated squad fights on its own reflexes.
 
 use std::fmt;
 
@@ -47,6 +55,7 @@ use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 
 use crate::arena::state::Team;
+use crate::deliberation::order::CharacterRef;
 
 /// **The most `[tacsim.arena].squad_size` may be** (16b cut Z.1, 16c N6), and
 /// the clamp [`squads_of`] reads a size through.
@@ -206,9 +215,86 @@ pub fn squads_of(units: &[(ObjId, Team, bool)], size: u32) -> Vec<SquadRoster> {
     out
 }
 
+/// **A squad's lance-leader** (17b cut L.1; doc 17 §4, D-UM-53) — the character
+/// principal who issues the squad's deliberated `ORDER`s, riding the squad's
+/// commander hull.
+///
+/// The match record holds these beside its rosters; the arena holds none (a
+/// [`SquadRoster`] carries no principal). A squad with no row has no leader and
+/// runs on doctrine.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LanceLeader {
+    /// The squad led.
+    pub squad: SquadId,
+    /// Who leads it.
+    pub by: CharacterRef,
+}
+
+/// **Mint the OOC sim's lance-leaders** (D-UM-53: "mints one leader per AI fill
+/// squad"): one [`CharacterRef::Persona`] per roster, in roster order.
+///
+/// Every squad [`squads_of`] deals in the OOC sim is a fill squad of machines and
+/// deliberates today, so every one of them gets a leader and nothing that asked
+/// before stops asking.
+#[must_use]
+pub fn fill_leaders(squads: &[SquadRoster]) -> Vec<LanceLeader> {
+    squads
+        .iter()
+        .map(|roster| LanceLeader {
+            squad: roster.id,
+            by: CharacterRef::Persona { squad: roster.id },
+        })
+        .collect()
+}
+
+/// **Who leads `squad`**, or `None` for a squad on doctrine.
+#[must_use]
+pub fn leader_of(leaders: &[LanceLeader], squad: SquadId) -> Option<&CharacterRef> {
+    leaders
+        .iter()
+        .find(|leader| leader.squad == squad)
+        .map(|leader| &leader.by)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **17b cut L.1 (D-UM-53)**: one persona per roster, in roster order, and the
+    /// lookup finds a squad's leader or none.
+    #[test]
+    fn l1_fill_leaders_mints_one_persona_per_roster_and_leader_of_finds_it() {
+        let squads = squads_of(
+            &[
+                reflex(4, Team::Red),
+                reflex(5, Team::Red),
+                reflex(7, Team::Blue),
+            ],
+            1,
+        );
+        let leaders = fill_leaders(&squads);
+        assert_eq!(leaders.len(), squads.len());
+        for (leader, roster) in leaders.iter().zip(&squads) {
+            assert_eq!(leader.squad, roster.id);
+            assert_eq!(leader.by, CharacterRef::Persona { squad: roster.id });
+        }
+        let red_two = SquadId {
+            team: Team::Red,
+            index: 2,
+        };
+        assert_eq!(
+            leader_of(&leaders, red_two),
+            Some(&CharacterRef::Persona { squad: red_two })
+        );
+        let blue_two = SquadId {
+            team: Team::Blue,
+            index: 2,
+        };
+        assert_eq!(leader_of(&leaders, blue_two), None, "no such squad");
+        assert_eq!(leader_of(&[], red_two), None, "a squad with no leader");
+        assert!(fill_leaders(&[]).is_empty());
+    }
 
     fn reflex(id: u32, team: Team) -> (ObjId, Team, bool) {
         (ObjId(id), team, true)

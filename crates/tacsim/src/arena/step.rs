@@ -4295,6 +4295,12 @@ mod tests {
             ttl_ms: 30_000,
             issued_ms: 1,
             issuer: None,
+            by: crate::deliberation::order::CharacterRef::Persona {
+                squad: crate::deliberation::squad::SquadId {
+                    team: crate::arena::state::Team::Red,
+                    index: 1,
+                },
+            },
             spot: None,
         };
         let out = arena.step(
@@ -5665,6 +5671,10 @@ mod tests {
             ttl_ms: 600_000,
             issued_ms: 1,
             issuer: Some(A),
+            // 17b cut L.1: the pilot's character, never read by the arena.
+            by: crate::deliberation::order::CharacterRef::Character {
+                id: mush_core::ObjId(9_001),
+            },
             spot: None,
         };
         let intents: Vec<Intent> = [A, B]

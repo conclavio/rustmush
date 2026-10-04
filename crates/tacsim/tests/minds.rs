@@ -51,7 +51,7 @@ use tacsim::arena::state::{
 use tacsim::arena::step::StepOutput;
 use tacsim::arena::weapons::WeaponBand;
 use tacsim::config::{ArenaConfig, MatchConfig, ReflexConfig, SensorsConfig};
-use tacsim::deliberation::order::{Constraints, Objective, Order};
+use tacsim::deliberation::order::{CharacterRef, Constraints, Objective, Order};
 use tacsim::deliberation::squad::SquadId;
 
 /// The window's side, cells.
@@ -1066,6 +1066,13 @@ fn m1a5_a_reclaimed_seat_lands_nothing() {
 // (4) what a mind may not do
 // ---------------------------------------------------------------------------
 
+/// **17b cut L.1**: the scripted pilot character a pilot-shaped order (one with
+/// an `issuer`) names as its author; no unit of these fixtures uses the id.
+const PILOT_CHARACTER: ObjId = ObjId(9_001);
+
+/// An order for `squad`, authored as its shape says (17b cut L.1, D-UM-52): a
+/// machine order (`issuer: None`) by the squad's lance-leader persona, a pilot's
+/// (`issuer: Some(..)`) by [`PILOT_CHARACTER`].
 fn order(squad: SquadId, objective: Objective, issuer: Option<ObjId>, ttl_ms: u32) -> Order {
     Order {
         squad,
@@ -1076,6 +1083,11 @@ fn order(squad: SquadId, objective: Objective, issuer: Option<ObjId>, ttl_ms: u3
         ttl_ms,
         issued_ms: 0,
         issuer,
+        by: issuer.map_or(CharacterRef::Persona { squad }, |_| {
+            CharacterRef::Character {
+                id: PILOT_CHARACTER,
+            }
+        }),
         spot: None,
     }
 }
@@ -1094,6 +1106,12 @@ const RED_ONE: SquadId = SquadId {
 /// unarmed mind's `FIRE` is refused `channel`, not `no_weapon`: its hull has
 /// no weapons station. Its `LOCK` is not refused `channel`: the sensors
 /// station is there.
+///
+/// **17b cut L.1 re-asserts the second wall with `by` present** (D-UM-11,
+/// D-UM-52): the mind's `ORDER` names an author the world's admission would
+/// take — red-1's own lance-leader persona, written in the commander's scope —
+/// and the arena still refuses it `channel`: who is named as the author never
+/// opens the door to a mind, because a mind never orders.
 #[test]
 fn m1a5_a_mind_is_refused_order_release_and_place_with_channel_and_an_ungranted_station_the_same() {
     let mut rig = Rig::new(arena_of(
@@ -1124,6 +1142,12 @@ fn m1a5_a_mind_is_refused_order_release_and_place_with_channel_and_an_ungranted_
         &[BLUE],
     ));
     let gun = SmolStr::new("cannon");
+    let told = order(RED_ONE, Objective::Hold, None, 30_000);
+    assert_eq!(
+        (&told.by, told.issuer),
+        (&CharacterRef::Persona { squad: RED_ONE }, None),
+        "17b cut L.1: the mind's order carries an author the admission would admit"
+    );
     rig.arena.mind_runner = ScriptedMind::new(&[
         (
             RED,
@@ -1138,7 +1162,7 @@ fn m1a5_a_mind_is_refused_order_release_and_place_with_channel_and_an_ungranted_
                 says(
                     4,
                     vec![
-                        IntentKind::Order(Box::new(order(RED_ONE, Objective::Hold, None, 30_000))),
+                        IntentKind::Order(Box::new(told)),
                         IntentKind::ReleaseOrder {
                             squad: RED_ONE,
                             issuer: None,

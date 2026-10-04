@@ -3540,6 +3540,12 @@ mod tests {
             ttl_ms: 30_000,
             issued_ms: 0,
             issuer: None,
+            by: crate::deliberation::order::CharacterRef::Persona {
+                squad: crate::deliberation::squad::SquadId {
+                    team: crate::arena::state::Team::Red,
+                    index: 1,
+                },
+            },
             spot: None,
         };
         for (band, engage_cm, release_cm, stand_cm) in [

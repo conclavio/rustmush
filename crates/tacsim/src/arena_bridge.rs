@@ -80,6 +80,7 @@ use crate::arena::observer::Observer;
 use crate::arena::state::{Channel, ContactId, MatchEnd, Power, StopReason};
 use crate::arena::step::Frame;
 use crate::arena_task::{ArenaHandle, ArenaMsg, ArenaOut, MatchId};
+use crate::deliberation::CharacterRef;
 use crate::store::{NS, push_op};
 
 /// The panel feed cockpit frames go out on (doc 16 §5). Cut K builds the real
@@ -793,6 +794,13 @@ impl MatchDeliberation {
     /// `now_ms` (16b cut Y.1; 16c N3's default, *a human order outranks a live LLM
     /// order*): the squad's watch has an issuer and has not expired.
     ///
+    /// **Read through 17b cut L.1** (doc 17 §4, D-UM-53): the shield is a live
+    /// order by a character **other than the squad's own lance-leader**. Today that
+    /// is exactly a seated pilot's order — its watch has an issuer, the pilot's own
+    /// tank — while a leader's order is written in the commander's scope
+    /// (`issuer: None`), so a persona's order never shields its own deliberation.
+    /// The body is unchanged; the name is a 16c candidate for M4.
+    ///
     /// Read by both halves of the shield — [`on_deliberate`] spends no signal on
     /// such a squad and [`on_deliberation_reply`] drops an order for it — so a
     /// human's order stands until it runs out or the pilot replaces it, and the
@@ -814,10 +822,16 @@ struct OrderWatch {
     objective: SmolStr,
     /// Whether the expiry has already been said. A notice is said once.
     said: bool,
-    /// **Who gave it** (16b cut Y.1): the pilot's own tank for an `ORDER`, `None`
-    /// for the LLM seam. What `MatchDeliberation::human_holds` reads, and what
-    /// cut Y.2's span counts per issuer.
+    /// **Whose scope it was written in** (16b cut Y.1): the pilot's own tank for
+    /// an `ORDER`, `None` for the squad's lance-leader (the commander's scope).
+    /// What `MatchDeliberation::human_holds` reads, and what cut Y.2's span counts
+    /// per issuer.
     issuer: Option<ObjId>,
+    /// **Who gave it** (17b cut L.1; D-UM-52): the order's author, the seat's
+    /// character for an `ORDER` and the squad's lance-leader for a deliberated one.
+    /// Read by [`ArenaRegistry::order_author`]; 17b cut L.2's lapse sentence names
+    /// it.
+    by: CharacterRef,
 }
 
 impl ArenaRegistry {
@@ -885,13 +899,15 @@ impl ArenaRegistry {
     ///
     /// `expires_ms` is a **world** millisecond. A plain registry write, `pub` so
     /// an integration test can seed a watch; the cockpit's `ORDER` calls it once
-    /// per squad it reached.
+    /// per squad it reached, with `issuer` the pilot's own tank and (17b cut L.1)
+    /// `by` the seat's character.
     pub fn note_human_order(
         &mut self,
         match_id: MatchId,
         squad: crate::deliberation::SquadId,
         objective: SmolStr,
         issuer: ObjId,
+        by: CharacterRef,
         expires_ms: i64,
     ) {
         let state = self.deliberation.entry(match_id).or_default();
@@ -902,16 +918,20 @@ impl ArenaRegistry {
                 objective,
                 said: false,
                 issuer: Some(issuer),
+                by,
             },
         );
         state.human_issued = state.human_issued.saturating_add(1);
     }
 
-    /// **Who gave the order the world remembers on `squad`** (16b cut Y.1): the
-    /// pilot's own tank for an `ORDER`, and `None` for an order from the LLM
-    /// seam or a squad with no watch at all. Expired or not: it is the watch's
-    /// record, and `MatchDeliberation::human_holds` is what asks whether it
-    /// still stands. A read for tests and for cut Y.2's span.
+    /// **Whose scope the order the world remembers on `squad` was written in**
+    /// (16b cut Y.1): the pilot's own tank for an `ORDER`, and `None` for the
+    /// squad's lance-leader (the commander's scope) or a squad with no watch at
+    /// all. Since 17b cut L.1 (D-UM-52) this is never who gave the order — that
+    /// is a character, never a unit, and [`ArenaRegistry::order_author`] reads it.
+    /// Expired or not: it is the watch's record, and
+    /// `MatchDeliberation::human_holds` is what asks whether it still stands. A
+    /// read for tests and for cut Y.2's span.
     #[must_use]
     pub fn order_issuer(
         &self,
@@ -922,6 +942,23 @@ impl ArenaRegistry {
             .get(&match_id)
             .and_then(|state| state.orders.get(&squad))
             .and_then(|watch| watch.issuer)
+    }
+
+    /// **Who authored the order the world remembers on `squad`** (17b cut L.1;
+    /// D-UM-52): the watch's `by` — the seat's character for an `ORDER`, the
+    /// squad's lance-leader for a deliberated one — or `None` for a squad with no
+    /// watch. Expired or not, as [`ArenaRegistry::order_issuer`]. A read for the
+    /// tests and for 17b cut L.2's lapse sentence.
+    #[must_use]
+    pub fn order_author(
+        &self,
+        match_id: MatchId,
+        squad: crate::deliberation::SquadId,
+    ) -> Option<CharacterRef> {
+        self.deliberation
+            .get(&match_id)
+            .and_then(|state| state.orders.get(&squad))
+            .map(|watch| watch.by.clone())
     }
 
     /// **The squads `issuer` holds a live order on** (16b cut Y.2; doc 16 §2
@@ -1799,6 +1836,16 @@ pub enum IntentRefusal {
     /// The tacsim layer did not compose.
     #[error("the arena is not available on this server")]
     Unavailable,
+    /// **No character entitled to order that squad gave the order** (17b cut
+    /// L.1; doc 17 §4, D-UM-52): `admit_order`'s refusal — `Order::by` names
+    /// nobody `crate::match_::cockpit::command_of` grants that squad's unit, or
+    /// a persona that is not the match record's leader of that squad or a unit
+    /// outside that squad's roster.
+    /// Unreachable from a cockpit, which names the seat's character and only the
+    /// units `command_of` gave it; through `CockpitError::Order` it would read
+    /// `Refused: no character entitled to order that squad gave that order.`
+    #[error("no character entitled to order that squad gave that order")]
+    NoCharacter,
 }
 
 /// Why the world could not deliver an authority or lifecycle message.
@@ -3923,6 +3970,13 @@ pub const MODULE: &str = NS;
 /// **before** an in-flight slot is taken, so a human's order stands until it
 /// runs out or the pilot replaces it, and the machine's commander asks again at
 /// the next signal after the expiry.
+///
+/// **17b cut L.1 — requested per leader** (doc 17 §4, D-UM-53). The request is
+/// the squad's lance-leader's, read off the match record's `leaders` beside the
+/// roster and carried on the brief ([`crate::deliberation::SquadBrief::leader`])
+/// so the order comes back with it as its author. A squad with no leader runs
+/// on doctrine: its signal is skipped, again **before** an in-flight slot is
+/// taken.
 pub fn on_deliberate(
     ctx: &mut Ctx<'_>,
     match_id: MatchId,
@@ -3933,7 +3987,7 @@ pub fn on_deliberate(
         // The roster, for the unit count the brief carries and for the fan-out the
         // reply needs. A signal for a squad the record no longer holds is dropped:
         // the match was aborted under it.
-        let Some(units) = ctx
+        let Some((units, leader)) = ctx
             .w
             .module_state::<crate::match_::MatchBook>()
             .and_then(|book| book.get(match_id))
@@ -3942,9 +3996,22 @@ pub fn on_deliberate(
                     .squads
                     .iter()
                     .find(|roster| roster.id == signal.squad)
-                    .map(|roster| roster.units.len())
+                    .map(|roster| {
+                        (
+                            roster.units.len(),
+                            crate::deliberation::leader_of(&record.leaders, signal.squad).cloned(),
+                        )
+                    })
             })
         else {
+            continue;
+        };
+        // 17b cut L.1 (D-UM-53): no character leads the squad, so nobody asks.
+        let Some(leader) = leader else {
+            tracing::debug!(
+                %match_id, squad = %signal.squad,
+                "tacsim: no character leads the squad; it runs on doctrine"
+            );
             continue;
         };
         {
@@ -3968,6 +4035,7 @@ pub fn on_deliberate(
             match_id.0,
             signal,
             u16::try_from(units).unwrap_or(u16::MAX),
+            leader,
         );
         let job = crate::deliberation::DeliberationJob::Deliberate { brief };
         let Ok(payload) = serde_json::to_string(&job) else {
@@ -4012,8 +4080,31 @@ fn release_in_flight(ctx: &mut Ctx<'_>, match_id: MatchId) {
 /// already in flight when the pilot spoke — is dropped after its in-flight slot
 /// is given back: the human's order stands until it runs out or the pilot
 /// replaces it.
+///
+/// **17b cut L.1 — the leader's wall** (doc 17 §4, D-UM-52, D-UM-53). An order
+/// whose author ([`crate::deliberation::Order::by`]) is not the match record's
+/// lance-leader of that squad is dropped and counted `refused` — after the
+/// shield and the roster lookup, so a stale reply for an ended match still
+/// returns quietly and creates no state. [`send_order`]'s admission is the
+/// second wall and would refuse every unit anyway.
+///
+/// **And an undecodable reply gives its slot back** (17b cut L.1): one that
+/// lacks `by` — or anything else serde refuses — is read once more as plain
+/// JSON for its top-level `match_id`, and that match's in-flight slot is
+/// released before the reply is dropped. Until this cut such a reply returned
+/// before `release_in_flight` and held one of the match's
+/// [`crate::deliberation::MAX_IN_FLIGHT_PER_MATCH`] slots for the match's life.
 pub fn on_deliberation_reply(ctx: &mut Ctx<'_>, payload: &str) {
     let Ok(reply) = serde_json::from_str::<crate::deliberation::DeliberationReply>(payload) else {
+        // Both reply shapes carry `match_id` at the top level, so a payload that
+        // is JSON at all names the match whose slot it held. Released once, here;
+        // the return skips the decoded path's own release.
+        if let Some(match_id) = serde_json::from_str::<serde_json::Value>(payload)
+            .ok()
+            .and_then(|value| value.get("match_id").and_then(serde_json::Value::as_u64))
+        {
+            release_in_flight(ctx, MatchId(match_id));
+        }
         tracing::warn!("tacsim: undecodable deliberation reply dropped");
         return;
     };
@@ -4050,7 +4141,7 @@ pub fn on_deliberation_reply(ctx: &mut Ctx<'_>, payload: &str) {
             // The world stamps `issued_ms`: it is a world millisecond by definition,
             // and letting the provider name it would let a model backdate an order.
             order.issued_ms = now_ms;
-            let Some(units) = ctx
+            let Some((units, leader)) = ctx
                 .w
                 .module_state::<crate::match_::MatchBook>()
                 .and_then(|book| book.get(match_id))
@@ -4059,11 +4150,34 @@ pub fn on_deliberation_reply(ctx: &mut Ctx<'_>, payload: &str) {
                         .squads
                         .iter()
                         .find(|roster| roster.id == order.squad)
-                        .map(|roster| roster.units.clone())
+                        .map(|roster| {
+                            (
+                                roster.units.clone(),
+                                crate::deliberation::leader_of(&record.leaders, order.squad)
+                                    .cloned(),
+                            )
+                        })
                 })
             else {
                 return;
             };
+            // 17b cut L.1 (D-UM-52, D-UM-53): only the squad's own lance-leader
+            // gives it a deliberated order. A leaderless squad, or a reply whose
+            // author is anybody else, is dropped and counted.
+            if leader.as_ref() != Some(&order.by) {
+                if let Some(state) = ctx
+                    .w
+                    .module_state_mut::<ArenaRegistry>()
+                    .and_then(|registry| registry.deliberation.get_mut(&match_id))
+                {
+                    state.refused = state.refused.saturating_add(1);
+                }
+                tracing::debug!(
+                    %match_id, squad = %order.squad,
+                    "arena deliberation reply dropped: its author does not lead the squad"
+                );
+                return;
+            }
             let objective = SmolStr::new(order.objective.as_str());
             let mut sent = 0_usize;
             for unit in units {
@@ -4089,6 +4203,7 @@ pub fn on_deliberation_reply(ctx: &mut Ctx<'_>, payload: &str) {
                         objective: objective.clone(),
                         said: false,
                         issuer: None,
+                        by: order.by.clone(),
                     },
                 );
             }
@@ -4104,9 +4219,13 @@ pub fn on_deliberation_reply(ctx: &mut Ctx<'_>, payload: &str) {
 ///
 /// Narrower than [`forward_intent`] and deliberately so: there is no focus, no
 /// station and no control lease to check, because there is no seat — the checks
-/// [`forward_intent`] makes are all about *a player's authority over a tank*, and a
-/// squad order's authority is that the unit is on the reflex controller, which is a
-/// fact only the arena holds and which it checks itself
+/// [`forward_intent`] makes are all about *a player's authority over a tank*.
+/// **Since 17b cut L.1** (doc 17 §4, D-UM-52) the authority a squad order needs
+/// is two: **a character entitled to order the squad** gave it — `admit_order`,
+/// run first, on the cockpit's own `command_of` rule, so the typed path
+/// ([`forward_order`]), the leader's path ([`on_deliberation_reply`]) and any
+/// direct caller meet one wall — and **the unit is on a machine controller**,
+/// which is a fact only the arena holds and which it checks itself
 /// ([`crate::arena::intents::Refusal::NotReflex`]).
 ///
 /// The epoch is the one the world last published for the unit's `helm` channel,
@@ -4123,7 +4242,107 @@ pub fn send_order(
     unit: ObjId,
     order: crate::deliberation::Order,
 ) -> Result<(), IntentRefusal> {
+    admit_order(ctx.w, match_id, unit, &order)?;
     offer_helm(ctx, match_id, unit, IntentKind::Order(Box::new(order)))
+}
+
+/// **The world and bridge admission of one squad order** (17b cut L.1; doc 17
+/// §4 "A mind never orders", D-UM-52, D-UM-53): is
+/// [`crate::deliberation::Order::by`] a character entitled to order `unit` of
+/// `order.squad` in `match_id`?
+///
+/// **The rule is the cockpit's own** (`crate::match_::cockpit::command_of`, 16c
+/// Q38 as 16b cut Y.1 built it) and nothing weaker:
+///
+/// - `Character { id }`: `id` is at a seat — [`crate::match_::cockpit::flying`]
+///   answers a seat whose `driver` is `id`, so the character named is the one at
+///   the seat — and `command_of` on that seat answers `match_id` with a grant of
+///   `order.squad` for `unit`: the side's lead (`Command::Squads`) orders any
+///   roster of the side; anyone else (`Command::Wingman`) only the one machine
+///   of their pod pair. A non-lead is **not** admitted for a squad unit that is
+///   not their wingman, even on their own side.
+/// - `Persona { squad }`: the persona leads that squad (`squad == order.squad`),
+///   the order is written in the commander's scope (`issuer` is `None`; D-UM-53:
+///   a leader's hint scope is the commander's), the match record's `leaders`
+///   name exactly this persona for the squad, and the record's roster of that
+///   squad holds `unit` — the same `holds` the lead's arm reads, so a leader
+///   orders its own squad's machines and no other's (the reply path fans out to
+///   exactly that roster).
+///
+/// `offer_helm` stays principal-free: a `ReleaseOrder` carries no author, and
+/// D-UM-52 is about `ORDER`.
+///
+/// # Errors
+///
+/// [`IntentRefusal::Unavailable`] with no registry, no match book or no record;
+/// [`IntentRefusal::NoCharacter`] for anything else that fails the rule.
+pub(crate) fn admit_order(
+    w: &mush_core::World,
+    match_id: MatchId,
+    unit: ObjId,
+    order: &crate::deliberation::Order,
+) -> Result<(), IntentRefusal> {
+    if w.module_state::<ArenaRegistry>().is_none() {
+        return Err(IntentRefusal::Unavailable);
+    }
+    let record = w
+        .module_state::<crate::match_::MatchBook>()
+        .and_then(|book| book.get(match_id))
+        .ok_or(IntentRefusal::Unavailable)?;
+    let entitled = match &order.by {
+        CharacterRef::Character { id } => {
+            crate::match_::cockpit::flying(w, *id).is_some_and(|seat| {
+                seat.driver == *id && command_grants(w, &seat, match_id, order.squad, unit)
+            })
+        }
+        CharacterRef::Persona { squad } => {
+            *squad == order.squad
+                && order.issuer.is_none()
+                && crate::deliberation::leader_of(&record.leaders, order.squad) == Some(&order.by)
+                && record
+                    .squads
+                    .iter()
+                    .any(|roster| roster.id == order.squad && roster.holds(unit))
+        }
+    };
+    if entitled {
+        Ok(())
+    } else {
+        Err(IntentRefusal::NoCharacter)
+    }
+}
+
+/// **Whether `seat`'s command grants `squad`'s `unit` in `match_id`** —
+/// [`admit_order`]'s reading of `crate::match_::cockpit::command_of`: a lead's
+/// `Squads` holding a roster `squad` that holds `unit` (the cockpit's own `ORDER`
+/// fans out to exactly that roster's units), or a `Wingman` naming that squad and
+/// that very unit.
+fn command_grants(
+    w: &mush_core::World,
+    seat: &crate::match_::cockpit::Seat,
+    match_id: MatchId,
+    squad: crate::deliberation::SquadId,
+    unit: ObjId,
+) -> bool {
+    use crate::match_::cockpit::Command;
+    match crate::match_::cockpit::command_of(w, seat) {
+        (Some(at), _, Command::Squads(rosters)) => {
+            at == match_id
+                && rosters
+                    .iter()
+                    .any(|roster| roster.id == squad && roster.holds(unit))
+        }
+        (
+            Some(at),
+            _,
+            Command::Wingman {
+                squad: wing_squad,
+                unit: wing,
+                ..
+            },
+        ) => at == match_id && wing_squad == squad && wing == unit,
+        _ => false,
+    }
 }
 
 /// **Stamp and offer one squad-level `helm` intent to `unit`** — [`send_order`]'s

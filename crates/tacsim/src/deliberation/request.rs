@@ -48,7 +48,7 @@ pub use crate::arena::command::BriefObjective;
 use crate::arena::command::{SignalReason, SquadSignal};
 use crate::arena::state::{Classification, ContactId};
 use crate::deliberation::order::{
-    Constraints, MAX_HORIZON_MS, MAX_TTL_MS, MIN_TTL_MS, Objective, Order, RangeBand,
+    CharacterRef, Constraints, MAX_HORIZON_MS, MAX_TTL_MS, MIN_TTL_MS, Objective, Order, RangeBand,
 };
 use crate::deliberation::squad::SquadId;
 
@@ -92,6 +92,12 @@ pub struct SquadBrief {
     /// and audit scope ([`mush_llm::CallCtx::with_actor`]), which is what makes
     /// per-squad cost a read of the ledger rather than a second counter.
     pub commander: u32,
+    /// **The squad's lance-leader** (17b cut L.1; doc 17 §4, D-UM-53: deliberation
+    /// is *requested per leader*) — the author every order from this brief carries
+    /// in [`Order::by`]. Like [`SquadBrief::commander`] it **never reaches the
+    /// prompt**: the model writes the order's content, and the leader is who gives
+    /// it.
+    pub leader: CharacterRef,
     /// Why the squad is being asked.
     pub reason: String,
     /// How many units the squad still has in the match.
@@ -188,9 +194,16 @@ pub struct BriefContact {
 }
 
 impl SquadBrief {
-    /// Build the brief from a signal the arena reported.
+    /// Build the brief from a signal the arena reported, for the squad's
+    /// lance-leader `leader` (17b cut L.1: the world reads it off the match
+    /// record's `leaders`; a squad with none is never asked).
     #[must_use]
-    pub fn from_signal(match_id: u64, signal: &SquadSignal, units: u16) -> SquadBrief {
+    pub fn from_signal(
+        match_id: u64,
+        signal: &SquadSignal,
+        units: u16,
+        leader: CharacterRef,
+    ) -> SquadBrief {
         let contacts = signal
             .contacts
             .iter()
@@ -243,6 +256,7 @@ impl SquadBrief {
             squad: signal.squad,
             match_id,
             commander: signal.commander.0,
+            leader,
             reason: signal.reason.as_str().to_string(),
             units,
             health_permille: signal.health_permille,
@@ -504,6 +518,9 @@ fn order_of(brief: &SquadBrief, payload: &OrderPayload) -> Result<Order, String>
         ttl_ms,
         issued_ms: 0,
         issuer: None,
+        // 17b cut L.1 (D-UM-52, D-UM-53): the leader gives the order; the hint
+        // scope stays the commander's (`issuer: None`).
+        by: brief.leader.clone(),
         spot: None,
     };
     order.validate(Some(window)).map_err(|why| {
@@ -746,8 +763,18 @@ mod tests {
         }
     }
 
+    /// 17b cut L.1: the squad's lance-leader, the OOC sim's persona for red-1.
+    fn leader() -> CharacterRef {
+        CharacterRef::Persona {
+            squad: SquadId {
+                team: Team::Red,
+                index: 1,
+            },
+        }
+    }
+
     fn brief() -> SquadBrief {
-        SquadBrief::from_signal(7, &signal(), 2)
+        SquadBrief::from_signal(7, &signal(), 2, leader())
     }
 
     #[test]
@@ -768,6 +795,38 @@ mod tests {
         assert!(
             !prompt.contains("#4") && !prompt.contains(" 4\n"),
             "the commander's object id never reaches the prompt: {prompt}"
+        );
+        // 17b cut L.1 (D-UM-53): the brief carries its lance-leader, and like the
+        // commander the leader never reaches the prompt — neither the persona's
+        // name nor the word, in the user turn or the system turn.
+        assert_eq!(brief.leader, leader());
+        let system = system_prompt();
+        for turn in [&prompt, &system] {
+            assert!(
+                !turn.contains(&CharacterRef::persona_name(brief.squad)),
+                "the persona's name never reaches the prompt: {turn}"
+            );
+            assert!(
+                !turn.contains("leader") && !turn.contains("persona"),
+                "the leader is who gives the order, never a line of the prompt: {turn}"
+            );
+        }
+        // A character leader's object id does not either: the same brief led by a
+        // character object prints byte for byte what the persona's printed.
+        let led = SquadBrief::from_signal(
+            7,
+            &signal(),
+            2,
+            CharacterRef::Character { id: ObjId(424_242) },
+        );
+        let led_prompt = user_prompt(&led);
+        assert!(
+            !led_prompt.contains("424242") && !led_prompt.contains("424_242"),
+            "a character leader's object id never reaches the prompt: {led_prompt}"
+        );
+        assert_eq!(
+            led_prompt, prompt,
+            "the leader changes nothing the model reads"
         );
     }
 
@@ -791,7 +850,7 @@ mod tests {
             bearing_mdeg: 90_000,
             range_cm: 45_000,
         }];
-        let brief = SquadBrief::from_signal(7, &stock, 2);
+        let brief = SquadBrief::from_signal(7, &stock, 2, leader());
         assert_eq!(
             brief.contacts[0].band, "far",
             "450 m of a 600 m scope is the outer third; on the gun alone it was `close`"
@@ -838,7 +897,10 @@ mod tests {
         // The far edge moves the word as it moves a contact's.
         let mut far = signal();
         far.members[1].range_cm = 9_000;
-        assert_eq!(SquadBrief::from_signal(7, &far, 2).members[1].band, "far");
+        assert_eq!(
+            SquadBrief::from_signal(7, &far, 2, leader()).members[1].band,
+            "far"
+        );
     }
 
     /// **16b cut Z.1: the prompt prints one line per member, verbatim, and never
@@ -889,6 +951,9 @@ mod tests {
         assert!(order.constraints.hold_fire);
         assert_eq!(order.ttl_ms, 20_000);
         assert_eq!(order.squad, brief.squad);
+        // 17b cut L.1 (D-UM-52, D-UM-53): the brief's leader is the author and the
+        // hint scope stays the commander's.
+        assert_eq!((order.by, order.issuer), (brief.leader.clone(), None));
     }
 
     #[test]
@@ -1161,7 +1226,7 @@ mod tests {
             radius_cells: 6,
             hold_s: 120,
         });
-        let brief = SquadBrief::from_signal(7, &held, 2);
+        let brief = SquadBrief::from_signal(7, &held, 2, leader());
         assert_eq!(brief.objective, held.objective, "carried whole");
         let prompt = user_prompt(&brief);
         let line = "objective: key spot B at 129,97; the side alone inside 6 cells of it for 120 s \
@@ -1198,7 +1263,7 @@ mod tests {
         }
         assert!(user_prompt(&bare).contains("objective: key spot at 129,97; the side alone"));
         // A skirmish prints nothing.
-        let skirmish = SquadBrief::from_signal(7, &signal(), 2);
+        let skirmish = SquadBrief::from_signal(7, &signal(), 2, leader());
         assert_eq!(skirmish.objective, None);
         assert!(!user_prompt(&skirmish).contains("objective:"));
         // The system turn maps the vocabulary onto a key-spot match.
@@ -1223,15 +1288,15 @@ mod tests {
             hold_s: 120,
         });
         for brief in [
-            SquadBrief::from_signal(7, &held, 2),
-            SquadBrief::from_signal(7, &signal(), 2),
+            SquadBrief::from_signal(7, &held, 2, leader()),
+            SquadBrief::from_signal(7, &signal(), 2, leader()),
         ] {
             let json = serde_json::to_value(&brief).expect("encodes");
             let back: SquadBrief = serde_json::from_value(json).expect("decodes");
             assert_eq!(back, brief);
         }
-        let mut old =
-            serde_json::to_value(SquadBrief::from_signal(7, &signal(), 2)).expect("encodes");
+        let mut old = serde_json::to_value(SquadBrief::from_signal(7, &signal(), 2, leader()))
+            .expect("encodes");
         old.as_object_mut().expect("an object").remove("objective");
         let back: SquadBrief = serde_json::from_value(old).expect("an absent key decodes");
         assert_eq!(back.objective, None);

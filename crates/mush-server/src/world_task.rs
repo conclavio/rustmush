@@ -14692,6 +14692,13 @@ mod tests {
             },
             match_id: 7,
             commander: 4,
+            // 17b cut L.1: the squad's lance-leader, never in the prompt.
+            leader: tacsim::deliberation::CharacterRef::Persona {
+                squad: SquadId {
+                    team: tacsim::arena::state::Team::Red,
+                    index: 1,
+                },
+            },
             reason: "no_order".to_string(),
             units: 2,
             health_permille: 1_000,

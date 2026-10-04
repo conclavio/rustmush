@@ -53,7 +53,7 @@ use tacsim::arena::step::StepOutput;
 use tacsim::arena::weapons::WeaponBand;
 use tacsim::config::{ArenaConfig, MatchConfig, ReflexConfig, SensorsConfig};
 use tacsim::deliberation::{
-    Constraints, MIND_LINK_DROPPED, Objective, Order, RangeBand, SquadId, squads_of,
+    CharacterRef, Constraints, MIND_LINK_DROPPED, Objective, Order, RangeBand, SquadId, squads_of,
 };
 
 // ---------------------------------------------------------------------------
@@ -77,6 +77,12 @@ fn red_one() -> SquadId {
         team: Team::Red,
         index: 1,
     }
+}
+
+/// **17b cut L.1**: `squad`'s lance-leader as the OOC sim mints it — the author
+/// of every scripted machine order and every deliberated brief here.
+fn persona(squad: SquadId) -> CharacterRef {
+    CharacterRef::Persona { squad }
 }
 
 fn dref(kind: &str, id: &str) -> DefinitionRef {
@@ -508,6 +514,8 @@ fn order(objective: Objective, ttl_ms: u32) -> Order {
         ttl_ms,
         issued_ms: 1,
         issuer: None,
+        // 17b cut L.1: the squad's lance-leader gives it, in the commander's scope.
+        by: persona(red_one()),
         spot: None,
     }
 }
@@ -721,7 +729,7 @@ fn z1_a_reported_squad_carries_its_members_in_roster_order() {
 
     // The brief: the pilot's band word, `here` for the commander, and the
     // object ids on the seam but never in the prompt.
-    let brief = tacsim::deliberation::SquadBrief::from_signal(1, signal, 3);
+    let brief = tacsim::deliberation::SquadBrief::from_signal(1, signal, 3, persona(signal.squad));
     assert_eq!(brief.members.len(), 3);
     assert_eq!(brief.members[0].band, "here");
     assert_eq!(
@@ -836,7 +844,7 @@ fn z1_a_later_signal_reads_each_members_own_state() {
             .all(|(_, state)| *state != ReflexState::Startup),
         "nobody is still starting past startup_ms + decide_ms: {states:?}"
     );
-    let brief = tacsim::deliberation::SquadBrief::from_signal(1, &signal, 3);
+    let brief = tacsim::deliberation::SquadBrief::from_signal(1, &signal, 3, persona(signal.squad));
     let prompt = tacsim::deliberation::request::user_prompt(&brief);
     assert!(
         prompt.contains(&format!(
@@ -1753,6 +1761,100 @@ fn an_order_at_three_cadences_is_one_event_list_and_one_hash_sequence() {
             "the field ended differently at {cadence} ms"
         );
     }
+
+    // **17b cut L.1** (D-UM-52; `SNAPSHOT_FORMAT` 6): the named proof of the
+    // author's round trip, which the `af1` pin cannot see. At each cadence a
+    // snapshot is taken under the standing order (the first pulse at or past
+    // 5,000 ms; the order stands to 10,000), every carried standing order
+    // decodes with its `by` — red-1's lance-leader persona — and the arena
+    // resumed from it steps to the same hash sequence the uninterrupted run did.
+    for (at, cadence) in cadences.into_iter().enumerate() {
+        let resumed = replay_ordered_hashes_resumed_at(cadence, 30_000, 5_000);
+        let whole = runs
+            .get(at)
+            .map(|run| run.hashes.clone())
+            .unwrap_or_default();
+        assert_eq!(
+            resumed, whole,
+            "the resumed run's hash sequence diverged at {cadence} ms"
+        );
+    }
+}
+
+/// [`replay_ordered`]'s loop, hashes only, with the arena swapped mid-run for the
+/// one decoded from its own snapshot at the first pulse at or past `snap_ms`
+/// (17b cut L.1). Asserts, at the swap, that the document is format 6 and that
+/// every standing order the arena carried came back with its author.
+fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64) -> Vec<u64> {
+    use tacsim::arena::snapshot::{SNAPSHOT_FORMAT, Snapshot};
+    let cfg = arena_cfg(30_000);
+    let mut arena = field(&cfg);
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    let told = order(Objective::Advance { to: (9, 3) }, 10_000);
+    let burst: Vec<Intent> = arena
+        .squads
+        .iter()
+        .filter(|roster| roster.id == told.squad)
+        .flat_map(|roster| roster.units.clone())
+        .enumerate()
+        .map(|(seq, unit)| Intent {
+            unit,
+            channel: Channel::Helm,
+            epoch: 0,
+            kind: IntentKind::Order(Box::new(told.clone())),
+            seq: seq as u64,
+        })
+        .collect();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut wall = 0_i64;
+    let mut first = true;
+    let mut swapped = false;
+    loop {
+        let _ = if first {
+            first = false;
+            arena.step(wall, &[], &burst)
+        } else {
+            arena.step(wall, &[], &[])
+        };
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if arena.now_ms >= until_ms {
+            break;
+        }
+        if !swapped && arena.now_ms >= snap_ms {
+            swapped = true;
+            let snapshot = Snapshot::encode(&arena).expect("the arena encodes under the order");
+            assert_eq!(
+                Snapshot::head(&snapshot.document).map(|head| head.format),
+                Ok(SNAPSHOT_FORMAT)
+            );
+            assert_eq!(SNAPSHOT_FORMAT, 6);
+            let mut resumed = Snapshot::decode(&snapshot.document, arena.definition.clone())
+                .expect("the document decodes");
+            let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
+            let carried = units
+                .iter()
+                .filter(|unit| arena.reflex.order(**unit).is_some())
+                .count();
+            assert!(carried >= 2, "the snapshot is taken under the order");
+            for unit in units {
+                let written = arena.reflex.order(unit);
+                assert_eq!(
+                    resumed.reflex.order(unit),
+                    written,
+                    "{unit:?}'s standing order came back field for field"
+                );
+                if let Some(standing) = written {
+                    assert_eq!(standing.order.by, persona(red_one()));
+                }
+            }
+            let _ = resumed.resume_at(wall);
+            resumed.clock.pin_tempo_for_tests(Tempo::Quiet);
+            arena = resumed;
+        }
+        wall += cadence_ms;
+    }
+    assert!(swapped, "the run reached the snapshot");
+    hashes
 }
 
 // ---------------------------------------------------------------------------
@@ -1831,7 +1933,7 @@ async fn the_mock_provider_cost_table_has_the_right_shape() {
             serde_json::json!({"objective": "engage", "ttl_ms": 20_000}),
             0.000_25,
         ));
-        let brief = SquadBrief::from_signal(1, signal, 2);
+        let brief = SquadBrief::from_signal(1, signal, 2, persona(signal.squad));
         let order = deliberate(&llm, &brief).await.expect("the mock answers");
         assert_eq!(
             order.squad, signal.squad,
@@ -1908,7 +2010,7 @@ async fn a_malformed_structured_reply_is_refused_and_the_refusal_is_audited() {
         .iter()
         .find(|signal| signal.squad == red_one())
         .expect("red-1 asked");
-    let brief = SquadBrief::from_signal(1, signal, 2);
+    let brief = SquadBrief::from_signal(1, signal, 2, persona(signal.squad));
 
     // Both attempts malformed: an objective outside the closed vocabulary, then an
     // `advance` off the window. The pipeline's own repair round trip is what makes
@@ -1976,7 +2078,7 @@ async fn a_disabled_service_issues_no_order_and_the_squad_stays_on_doctrine() {
     let signals = run(&mut arena, 2_000, &mut bytes);
     let signal = signals.first().expect("the field asked");
     let job = DeliberationJob::Deliberate {
-        brief: SquadBrief::from_signal(1, signal, 2),
+        brief: SquadBrief::from_signal(1, signal, 2, persona(signal.squad)),
     };
     let payload = serde_json::to_string(&job).expect("a job encodes");
     let text = run_deliberation_async(&llm, &payload).await;
@@ -2135,6 +2237,8 @@ async fn the_world_says_the_mind_link_dropped_when_an_order_runs_out() {
             ttl_ms: 1_000,
             issued_ms: 0,
             issuer: None,
+            // 17b cut L.1: the record's own persona for the squad.
+            by: persona(squad),
             spot: None,
         },
         model: "mock".to_string(),
@@ -2957,7 +3061,8 @@ fn e2_t56_the_signal_carries_the_floor_as_the_default_time_to_live() {
         assert_eq!(signal.default_ttl_ms, want, "floor {floor}");
         // And the brief the world builds from it carries the same number, which
         // is what `order_of` reads across the async hop.
-        let brief = tacsim::deliberation::SquadBrief::from_signal(1, signal, 2);
+        let brief =
+            tacsim::deliberation::SquadBrief::from_signal(1, signal, 2, persona(signal.squad));
         assert_eq!(brief.default_ttl_ms, want);
     }
 }
@@ -3069,12 +3174,16 @@ fn aa1_an_advance_ends_for_the_machine_that_cannot_carry_it_out() {
 /// `ai_fill` fielding the rest, and answer it with its squads and the red
 /// pilot's tank — the setup of
 /// `the_world_says_the_mind_link_dropped_when_an_order_runs_out`.
+///
+/// **17b cut L.1**: it answers the two pilots too — `[red, blue]`, each the
+/// lead of their side (the admission reads who is at a seat).
 fn y1_running_match(
     tw: &mut TestWorld,
 ) -> (
     tacsim::arena_task::MatchId,
     Vec<tacsim::deliberation::SquadRoster>,
     ObjId,
+    [ObjId; 2],
 ) {
     let lobby = tacsim::match_::centre_object(tw.world(), tacsim::match_::LOBBY_ENTRY)
         .expect("the OOC pack carries the simulator lobby");
@@ -3122,7 +3231,12 @@ fn y1_running_match(
         .and_then(|book| book.get(match_id))
         .map(|record| record.squads.clone())
         .expect("the record carries its squads");
-    (match_id, squads, red_tank.expect("the red pilot's tank"))
+    (
+        match_id,
+        squads,
+        red_tank.expect("the red pilot's tank"),
+        [pilots[0], pilots[1]],
+    )
 }
 
 /// One signal for `squad`, as a pulse of the arena would raise it.
@@ -3162,6 +3276,8 @@ fn y1_reply(match_id: tacsim::arena_task::MatchId, squad: SquadId) -> String {
             ttl_ms: 60_000,
             issued_ms: 0,
             issuer: None,
+            // 17b cut L.1: the squad's own lance-leader, as the record minted it.
+            by: persona(squad),
             spot: None,
         },
         model: "mock".to_string(),
@@ -3170,19 +3286,20 @@ fn y1_reply(match_id: tacsim::arena_task::MatchId, squad: SquadId) -> String {
     .expect("a reply encodes")
 }
 
-/// `(issued, refused, in_flight)` and the watch's issuer, as the registry holds
-/// them.
+/// `(issued, refused, in_flight)`, the watch's issuer and (17b cut L.1) the
+/// watch's author, as the registry holds them.
 fn y1_state(
     tw: &TestWorld,
     match_id: tacsim::arena_task::MatchId,
     squad: SquadId,
-) -> ((u64, u64, usize), Option<ObjId>) {
+) -> ((u64, u64, usize), Option<ObjId>, Option<CharacterRef>) {
     tw.world()
         .module_state::<tacsim::arena_bridge::ArenaRegistry>()
         .map(|registry| {
             (
                 registry.deliberation_counts(match_id),
                 registry.order_issuer(match_id, squad),
+                registry.order_author(match_id, squad),
             )
         })
         .expect("the registry")
@@ -3203,7 +3320,9 @@ fn y1_state(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn y1_a_pilots_live_order_shields_the_squad_from_the_machines_commander() {
     let mut tw = TestWorld::with_modules(roster());
-    let (match_id, squads, red_tank) = y1_running_match(&mut tw);
+    let (match_id, squads, red_tank, [red_pilot, _]) = y1_running_match(&mut tw);
+    // 17b cut L.1: the pilot's character, the author `note_human_order` records.
+    let pilot_said = Some(CharacterRef::Character { id: red_pilot });
     let roster = squads
         .iter()
         .find(|roster| roster.id.team == Team::Red)
@@ -3216,7 +3335,7 @@ async fn y1_a_pilots_live_order_shields_the_squad_from_the_machines_commander() 
     let _ = with_ctx(&mut tw, GOD, |ctx| {
         tacsim::arena_bridge::on_deliberate(ctx, match_id, std::slice::from_ref(&signal));
     });
-    assert_eq!(y1_state(&tw, match_id, squad), ((0, 0, 1), None));
+    assert_eq!(y1_state(&tw, match_id, squad), ((0, 0, 1), None, None));
 
     // The pilot orders the squad: a watch with an issuer, ten minutes long.
     let now_ms = tw.world().now() * 1_000;
@@ -3228,9 +3347,13 @@ async fn y1_a_pilots_live_order_shields_the_squad_from_the_machines_commander() 
             squad,
             SmolStr::new("hold"),
             red_tank,
+            CharacterRef::Character { id: red_pilot },
             now_ms + 600_000,
         );
-    assert_eq!(y1_state(&tw, match_id, squad), ((0, 0, 1), Some(red_tank)));
+    assert_eq!(
+        y1_state(&tw, match_id, squad),
+        ((0, 0, 1), Some(red_tank), pilot_said.clone())
+    );
 
     // (1) A signal under the watch takes no slot.
     let _ = with_ctx(&mut tw, GOD, |ctx| {
@@ -3238,7 +3361,7 @@ async fn y1_a_pilots_live_order_shields_the_squad_from_the_machines_commander() 
     });
     assert_eq!(
         y1_state(&tw, match_id, squad),
-        ((0, 0, 1), Some(red_tank)),
+        ((0, 0, 1), Some(red_tank), pilot_said.clone()),
         "a squad under a pilot's order is not asked about"
     );
 
@@ -3249,7 +3372,7 @@ async fn y1_a_pilots_live_order_shields_the_squad_from_the_machines_commander() 
     });
     assert_eq!(
         y1_state(&tw, match_id, squad),
-        ((0, 0, 0), Some(red_tank)),
+        ((0, 0, 0), Some(red_tank), pilot_said),
         "the slot came back, nothing was issued and the pilot's watch stands"
     );
 
@@ -3270,8 +3393,402 @@ async fn y1_a_pilots_live_order_shields_the_squad_from_the_machines_commander() 
     });
     assert_eq!(
         y1_state(&tw, match_id, squad),
-        ((1, 0, 0), None),
+        ((1, 0, 0), None, Some(persona(squad))),
         "the machines' order is issued and its watch replaces the pilot's"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut L.1 — the lance-leader (doc 17 §4; D-UM-52, D-UM-53)
+// ---------------------------------------------------------------------------
+
+/// A reply for `squad` whose order is authored by `by` — [`y1_reply`]'s
+/// `withdraw` with the author chosen (17b cut L.1).
+fn l1_reply(match_id: tacsim::arena_task::MatchId, squad: SquadId, by: CharacterRef) -> String {
+    serde_json::to_string(&tacsim::deliberation::DeliberationReply::Ok {
+        match_id: match_id.0,
+        order: Order {
+            squad,
+            objective: Objective::Withdraw,
+            target: None,
+            horizon_ms: 60_000,
+            constraints: Constraints::default(),
+            ttl_ms: 60_000,
+            issued_ms: 0,
+            issuer: None,
+            by,
+            spot: None,
+        },
+        model: "mock".to_string(),
+        prompt_hash: "hash".to_string(),
+    })
+    .expect("a reply encodes")
+}
+
+/// `on_deliberate` over `signals`, answering the jobs it deferred (17b cut
+/// L.1): what the world would hand the provider, one per request it spent.
+fn l1_deliberate(
+    tw: &mut TestWorld,
+    match_id: tacsim::arena_task::MatchId,
+    signals: &[tacsim::arena::command::SquadSignal],
+) -> Vec<tacsim::deliberation::DeliberationJob> {
+    let mut out = Outbox::new();
+    {
+        let engine = tw.engine_mut();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: SwitchSet::default(),
+            args: ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(SmolStr::new(tacsim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        tacsim::arena_bridge::on_deliberate(&mut ctx, match_id, signals);
+    }
+    out.deferred()
+        .iter()
+        .filter_map(|deferred| match deferred {
+            mush_core::Deferred::Effect(mush_core::Effect::ModuleAsync { payload, .. }) => {
+                serde_json::from_str(payload).ok()
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The running match's red and blue rosters (17b cut L.1).
+fn l1_sides(
+    squads: &[tacsim::deliberation::SquadRoster],
+) -> (
+    tacsim::deliberation::SquadRoster,
+    tacsim::deliberation::SquadRoster,
+) {
+    let side = |team: Team| {
+        squads
+            .iter()
+            .find(|roster| roster.id.team == team)
+            .cloned()
+            .unwrap_or_else(|| panic!("{} fields machines", team.as_str()))
+    };
+    (side(Team::Red), side(Team::Blue))
+}
+
+/// **17b cut L.1 — the fixtures' orders carry an author and keep their scope.**
+/// The file's `order` helper is a machine order, so it is authored by red-1's
+/// lance-leader persona with `issuer: None`; issued, every unit of red-1 stands
+/// under it with that author, and the hint scope is the commander's exactly as
+/// before (`an_advance_order_moves_the_patrol_target` and the hint tests pass
+/// unchanged): the squad makes for the cell.
+#[test]
+fn l1_the_deliberation_fixtures_carry_by_and_issuer_unchanged() {
+    let cfg = arena_cfg(30_000);
+    let mut arena = field(&cfg);
+    let mut bytes = Vec::new();
+    run(&mut arena, 2_000, &mut bytes);
+    let told = order(Objective::Advance { to: (9, 3) }, 60_000);
+    assert_eq!((&told.by, told.issuer), (&persona(red_one()), None));
+    assert!(
+        issue(&mut arena, &told)
+            .iter()
+            .all(|outcome| *outcome == IntentOutcome::AppliedContinuous)
+    );
+    for unit in [RED_A, RED_B] {
+        let standing = arena
+            .reflex
+            .order(unit)
+            .unwrap_or_else(|| panic!("{unit:?} stands under the order"));
+        assert_eq!(standing.order.by, persona(red_one()), "{unit:?}");
+        assert_eq!(standing.order.issuer, None, "{unit:?}");
+    }
+    run(&mut arena, 4_000, &mut bytes);
+    assert_eq!(goal_of(&arena, RED_A), Some((9, 3)));
+    assert_eq!(goal_of(&arena, RED_B), Some((9, 3)));
+}
+
+/// **17b cut L.1 — a wrecked leader's hull drops its squad to doctrine**
+/// (`squad.rs`'s head, D-UM-53): the lance-leader rides the commander, so a
+/// commander that is a wreck raises no signal for its squad — at the opening
+/// pulse, and for the next minute of arena time — while the other squad still
+/// signals.
+#[test]
+fn l1_a_wrecked_leaders_hull_drops_its_squad_to_doctrine() {
+    let cfg = arena_cfg(30_000);
+    let squads_of_signals = |signals: &[tacsim::arena::command::SquadSignal]| {
+        signals
+            .iter()
+            .map(|signal| signal.squad.to_string())
+            .collect::<Vec<String>>()
+    };
+    let mut whole = field(&cfg);
+    assert_eq!(
+        squads_of_signals(&whole.step(0, &[], &[]).deliberation),
+        vec!["red-1", "blue-1"],
+        "the control: both squads ask at the opening pulse"
+    );
+
+    let mut arena = field(&cfg);
+    if let Some(commander) = arena.unit_mut(RED_A) {
+        commander.limits.wreck = true;
+    }
+    assert_eq!(
+        squads_of_signals(&arena.step(0, &[], &[]).deliberation),
+        vec!["blue-1"],
+        "the wrecked leader's squad asks nothing; the other still does"
+    );
+    let mut bytes = Vec::new();
+    let later = run(&mut arena, 60_000, &mut bytes);
+    assert!(
+        later.iter().all(|signal| signal.squad != red_one()),
+        "red-1 never asks again: {:?}",
+        squads_of_signals(&later)
+    );
+}
+
+/// **17b cut L.1 — a match mints one persona per squad** (D-UM-53), through
+/// the lobby: the record's `leaders` is one `Persona` per `squads` row, in the
+/// same order, named `red lance leader 1` and `blue lance leader 1`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn l1_a_match_mints_one_persona_per_squad() {
+    let mut tw = TestWorld::with_modules(roster());
+    let (match_id, squads, _, _) = y1_running_match(&mut tw);
+    let record = tw
+        .world()
+        .module_state::<tacsim::match_::MatchBook>()
+        .and_then(|book| book.get(match_id))
+        .cloned()
+        .expect("the record");
+    assert_eq!(record.squads, squads);
+    assert!(!squads.is_empty(), "ai_fill fields machines");
+    assert_eq!(record.leaders.len(), record.squads.len());
+    for (leader, roster) in record.leaders.iter().zip(&record.squads) {
+        assert_eq!(leader.squad, roster.id);
+        assert_eq!(leader.by, persona(roster.id));
+    }
+    let names: Vec<String> = record
+        .leaders
+        .iter()
+        .map(|leader| CharacterRef::persona_name(leader.squad))
+        .collect();
+    assert!(
+        names.contains(&"red lance leader 1".to_string()),
+        "{names:?}"
+    );
+    assert!(
+        names.contains(&"blue lance leader 1".to_string()),
+        "{names:?}"
+    );
+}
+
+/// **17b cut L.1 — deliberation is requested per leader, and a leaderless
+/// squad runs on doctrine** (D-UM-53). With blue's row cleared from the
+/// record's `leaders`, `on_deliberate` over both squads' signals spends one
+/// in-flight slot and defers one job — red's, whose brief carries red-1's
+/// persona as its `leader` — and a reply for the leaderless squad is dropped:
+/// counted `refused`, nothing issued, no watch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn l1_deliberation_is_requested_per_leader_and_a_leaderless_squad_runs_on_doctrine() {
+    let mut tw = TestWorld::with_modules(roster());
+    let (match_id, squads, _, _) = y1_running_match(&mut tw);
+    let (red, blue) = l1_sides(&squads);
+    if let Some(record) = tw
+        .world_mut()
+        .module_state_mut::<tacsim::match_::MatchBook>()
+        .and_then(|book| book.get_mut(match_id))
+    {
+        record.leaders.retain(|leader| leader.squad != blue.id);
+    }
+
+    let jobs = l1_deliberate(&mut tw, match_id, &[y1_signal(&red), y1_signal(&blue)]);
+    let briefs: Vec<(SquadId, CharacterRef)> = jobs
+        .into_iter()
+        .map(
+            |tacsim::deliberation::DeliberationJob::Deliberate { brief }| {
+                (brief.squad, brief.leader)
+            },
+        )
+        .collect();
+    assert_eq!(
+        briefs,
+        vec![(red.id, persona(red.id))],
+        "one job, red's, asked of its lance-leader"
+    );
+    assert_eq!(
+        y1_state(&tw, match_id, blue.id),
+        ((0, 0, 1), None, None),
+        "the leaderless squad spent no slot"
+    );
+
+    let payload = l1_reply(match_id, blue.id, persona(blue.id));
+    let _ = with_ctx(&mut tw, GOD, |ctx| {
+        tacsim::arena_bridge::on_deliberation_reply(ctx, &payload);
+    });
+    assert_eq!(
+        y1_state(&tw, match_id, blue.id),
+        ((0, 1, 0), None, None),
+        "a reply for a squad no character leads is dropped and counted"
+    );
+}
+
+/// **17b cut L.1 — a reply whose author is not the squad's leader is dropped**
+/// (D-UM-52, D-UM-53): `by` naming blue-1's persona for red-1, and `by` naming
+/// an object that leads nothing, are each dropped — counted `refused`, nothing
+/// issued, no watch. A reply for a match id the world never tracked returns
+/// quietly, counted nowhere; and so does a reply for a squad of an **ended**
+/// match — whose record stays on the book with its squads and leaders while
+/// `untrack` has taken its deliberation row — whether its author is wrong (the
+/// drop's count goes through `get_mut`, so no row is created) or right (the
+/// fan-out finds no unit in a running match, so nothing is issued).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn l1_a_reply_whose_by_is_not_the_squads_leader_is_dropped() {
+    let mut tw = TestWorld::with_modules(roster());
+    let (match_id, squads, _, _) = y1_running_match(&mut tw);
+    let (red, blue) = l1_sides(&squads);
+    let lobby =
+        tacsim::match_::centre_object(tw.world(), tacsim::match_::LOBBY_ENTRY).expect("the lobby");
+    // One request in flight, so the match's deliberation row exists: a drop is
+    // counted through `get_mut` and never creates the row (a reply for a match
+    // that never asked counts nowhere, as the stale one below shows).
+    assert_eq!(
+        l1_deliberate(&mut tw, match_id, &[y1_signal(&red)]).len(),
+        1
+    );
+    assert_eq!(y1_state(&tw, match_id, red.id).0, (0, 0, 1));
+
+    for (n, by) in [persona(blue.id), CharacterRef::Character { id: lobby }]
+        .into_iter()
+        .enumerate()
+    {
+        let payload = l1_reply(match_id, red.id, by.clone());
+        let _ = with_ctx(&mut tw, GOD, |ctx| {
+            tacsim::arena_bridge::on_deliberation_reply(ctx, &payload);
+        });
+        assert_eq!(
+            y1_state(&tw, match_id, red.id),
+            ((0, n as u64 + 1, 0), None, None),
+            "{by:?} does not lead red-1"
+        );
+    }
+
+    let gone = tacsim::arena_task::MatchId(match_id.0 + 1_000);
+    let payload = l1_reply(gone, red.id, persona(red.id));
+    let _ = with_ctx(&mut tw, GOD, |ctx| {
+        tacsim::arena_bridge::on_deliberation_reply(ctx, &payload);
+    });
+    assert_eq!(
+        y1_state(&tw, gone, red.id),
+        ((0, 0, 0), None, None),
+        "a reply for a match never tracked returns quietly"
+    );
+    assert_eq!(y1_state(&tw, match_id, red.id).0, (0, 2, 0));
+
+    // The match ends through the real check-in: `untrack` takes the
+    // deliberation row, and the finished record stays on the book.
+    let _ = with_ctx(&mut tw, GOD, |ctx| {
+        assert!(
+            tacsim::match_::finish(
+                ctx,
+                match_id,
+                tacsim::arena::MatchEnd {
+                    reason: tacsim::arena::EndReason::Abort,
+                    t_ms: 12_000,
+                },
+                "0".repeat(64),
+                &[],
+            ),
+            "the match had a live record to check in"
+        );
+    });
+    assert_eq!(y1_state(&tw, match_id, red.id), ((0, 0, 0), None, None));
+    let ended = tw
+        .world()
+        .module_state::<tacsim::match_::MatchBook>()
+        .and_then(|book| book.get(match_id))
+        .cloned()
+        .expect("a finished record stays on the book");
+    assert!(!ended.state.is_live(), "the record is finished");
+    assert!(
+        ended.squads.iter().any(|roster| roster.id == red.id)
+            && tacsim::deliberation::leader_of(&ended.leaders, red.id) == Some(&persona(red.id)),
+        "the roster lookup and the leader check still find red-1"
+    );
+    for by in [persona(blue.id), persona(red.id)] {
+        let payload = l1_reply(match_id, red.id, by.clone());
+        let _ = with_ctx(&mut tw, GOD, |ctx| {
+            tacsim::arena_bridge::on_deliberation_reply(ctx, &payload);
+        });
+        assert_eq!(
+            y1_state(&tw, match_id, red.id),
+            ((0, 0, 0), None, None),
+            "{by:?}: a stale reply for an ended match counts nowhere and creates no row"
+        );
+    }
+}
+
+/// **17b cut L.1 — a forged reply with no `by` is undecodable and gives its
+/// slot back, once.** With two slots in flight (red's and blue's), a
+/// hand-written `ok` reply whose order lacks `by` — what a provider path from
+/// before this cut would write — issues nothing, is not counted `refused` (it
+/// was never decoded) and gives back exactly one slot: in flight 2 → 1, not
+/// leaked for the life of the match as an undecodable reply's was until this
+/// cut, and not two (a double release would free another squad's outstanding
+/// request). A second forged reply takes it 1 → 0; and a decodable reply, with
+/// two in flight again, also gives back exactly one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn l1_a_forged_reply_with_no_by_is_undecodable_and_releases_its_slot() {
+    let mut tw = TestWorld::with_modules(roster());
+    let (match_id, squads, _, _) = y1_running_match(&mut tw);
+    let (red, blue) = l1_sides(&squads);
+    let jobs = l1_deliberate(&mut tw, match_id, &[y1_signal(&red), y1_signal(&blue)]);
+    assert_eq!(jobs.len(), 2);
+    assert_eq!(y1_state(&tw, match_id, red.id).0, (0, 0, 2));
+
+    let mut forged: serde_json::Value =
+        serde_json::from_str(&l1_reply(match_id, red.id, persona(red.id))).expect("json");
+    if let Some(order) = forged
+        .get_mut("order")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        order.remove("by");
+    }
+    assert!(
+        serde_json::from_value::<tacsim::deliberation::DeliberationReply>(forged.clone()).is_err(),
+        "a reply with no author does not decode"
+    );
+    let payload = forged.to_string();
+    let _ = with_ctx(&mut tw, GOD, |ctx| {
+        tacsim::arena_bridge::on_deliberation_reply(ctx, &payload);
+    });
+    assert_eq!(
+        y1_state(&tw, match_id, red.id),
+        ((0, 0, 1), None, None),
+        "nothing issued, nothing counted, one slot back and only one"
+    );
+    let _ = with_ctx(&mut tw, GOD, |ctx| {
+        tacsim::arena_bridge::on_deliberation_reply(ctx, &payload);
+    });
+    assert_eq!(
+        y1_state(&tw, match_id, red.id),
+        ((0, 0, 0), None, None),
+        "the second forged reply gives back the second slot"
+    );
+
+    // The decoded path releases once too: two in flight, one well-formed reply
+    // from red-1's own leader, one slot back and the order issued.
+    assert_eq!(
+        l1_deliberate(&mut tw, match_id, &[y1_signal(&red), y1_signal(&blue)]).len(),
+        2
+    );
+    assert_eq!(y1_state(&tw, match_id, red.id).0, (0, 0, 2));
+    let payload = l1_reply(match_id, red.id, persona(red.id));
+    let _ = with_ctx(&mut tw, GOD, |ctx| {
+        tacsim::arena_bridge::on_deliberation_reply(ctx, &payload);
+    });
+    assert_eq!(
+        y1_state(&tw, match_id, red.id),
+        ((1, 0, 1), None, Some(persona(red.id))),
+        "a decoded reply gives back exactly one slot"
     );
 }
 
@@ -3317,7 +3834,7 @@ async fn z2_a_scripted_screen_and_support_map_and_a_support_lands_on_every_unit(
         .iter()
         .find(|signal| signal.squad == red_one())
         .expect("red-1 asked");
-    let brief = SquadBrief::from_signal(1, signal, 2);
+    let brief = SquadBrief::from_signal(1, signal, 2, persona(signal.squad));
     let second = brief
         .members
         .iter()
@@ -3495,7 +4012,7 @@ async fn o1_a_hold_arenas_first_signal_tells_the_commander_the_objective() {
         serde_json::json!({"objective": "engage", "ttl_ms": 20_000}),
         0.000_25,
     ));
-    let brief = SquadBrief::from_signal(1, first, 2);
+    let brief = SquadBrief::from_signal(1, first, 2, persona(first.squad));
     deliberate(&llm, &brief).await.expect("the mock answers");
     let request = mock.last_request().expect("the provider was asked");
     let user = o1_user_text(&request);
@@ -3522,7 +4039,7 @@ async fn o1_a_hold_arenas_first_signal_tells_the_commander_the_objective() {
         serde_json::json!({"objective": "engage", "ttl_ms": 20_000}),
         0.000_25,
     ));
-    let brief = SquadBrief::from_signal(1, &signals[0], 2);
+    let brief = SquadBrief::from_signal(1, &signals[0], 2, persona(signals[0].squad));
     deliberate(&llm, &brief).await.expect("the mock answers");
     let request = mock.last_request().expect("the provider was asked");
     assert!(!o1_user_text(&request).contains("objective:"));
@@ -3651,7 +4168,7 @@ async fn o3_a_range_asks_the_commander_nothing_for_its_targets() {
             serde_json::json!({"objective": "engage", "ttl_ms": 20_000}),
             0.000_25,
         ));
-        let brief = SquadBrief::from_signal(1, signal, 2);
+        let brief = SquadBrief::from_signal(1, signal, 2, persona(signal.squad));
         let order = deliberate(&llm, &brief).await.expect("the mock answers");
         assert_eq!(order.squad.team, Team::Red);
     }

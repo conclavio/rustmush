@@ -6519,6 +6519,8 @@ async fn y1_authorise_seat_refuses_a_pilot_out_of_the_seat_and_the_seat_still_st
         ttl_ms: 600_000,
         issued_ms: 0,
         issuer: Some(issuer),
+        // 17b cut L.1: the seat's character, as the cockpit's own `ORDER` writes.
+        by: tacsim::deliberation::CharacterRef::Character { id: pilot },
         spot: None,
     };
     // From the seat: authorised, and nothing to offer to (this match fields no
@@ -6897,11 +6899,13 @@ async fn y2_the_span_counts_the_other_squads_under_a_live_order_and_waits_for_on
         index: 2,
     };
     let expires_ms = rig.now.saturating_mul(1_000).saturating_add(600_000);
+    // 17b cut L.1: the issuing pilot's character is the watch's author.
+    let by = tacsim::deliberation::CharacterRef::Character { id: rig.pilot(0) };
     rig.with_ctx_mut(0, |ctx| {
         ctx.w
             .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
             .expect("the registry is composed")
-            .note_human_order(match_id, second, "hold".into(), issuer, expires_ms);
+            .note_human_order(match_id, second, "hold".into(), issuer, by, expires_ms);
     });
     let live = |rig: &Rig, at_s: i64| {
         rig.tw
@@ -7025,6 +7029,452 @@ async fn y2_the_rate_refuses_the_third_order_in_a_minute_and_a_new_match_starts_
     );
     assert_eq!(rig.say(0, "ORDER red-1 HOLD"), hold);
     assert_eq!(rig.say(0, "ORDER red-1 HOLD"), full);
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut L.1: the principal (doc 17 §4 "A mind never orders"; D-UM-52, D-UM-53)
+// ---------------------------------------------------------------------------
+
+/// A squad order for `squad`, authored by `by` in `issuer`'s scope — a `hold`
+/// standing ten minutes (17b cut L.1).
+fn l1_order(
+    squad: tacsim::deliberation::SquadId,
+    issuer: Option<ObjId>,
+    by: tacsim::deliberation::CharacterRef,
+) -> tacsim::deliberation::Order {
+    tacsim::deliberation::Order {
+        squad,
+        objective: tacsim::deliberation::Objective::Hold,
+        target: None,
+        horizon_ms: 600_000,
+        constraints: tacsim::deliberation::Constraints::default(),
+        ttl_ms: 600_000,
+        issued_ms: 0,
+        issuer,
+        by,
+        spot: None,
+    }
+}
+
+/// **17b cut L.1 — the admission is the cockpit's own authority rule** (D-UM-52:
+/// *an order whose `by` names no character entitled to order that squad is
+/// refused at the world and bridge admission*; the rule is `command_of`'s, 16c
+/// Q38 as 16b cut Y.1 built it).
+///
+/// [`y1_a_non_lead_reaches_their_wingman_and_not_the_rest_of_its_squad`]'s
+/// field: red's lead (pilot 0), red's slot-3 pilot (pilot 2) whose wingman is
+/// `RD`, blue's pilot (pilot 1), and a fourth player who never joined; red-1 is
+/// `RB` and `RD`. Through `send_order` — the one wall the typed path, the
+/// leader's path and any direct caller meet — a room, the outsider, the other
+/// side's pilot, and the non-lead for `RB` (red-1's, but not their wingman) are
+/// each `NoCharacter`; the non-lead for `RD` and the lead for either are
+/// admitted and the lead's `ordered` line lands; a persona of another squad,
+/// and red-1's own persona with an issuer, are `NoCharacter`; red-1's own
+/// persona in the commander's scope is admitted. The unit is part of the grant:
+/// the lead's red-1 order onto the lead's own tank or a blue machine, and
+/// red-1's persona onto a blue machine, are `NoCharacter`. A match with no
+/// record is `Unavailable`; and once the record names no leader for red-1, its
+/// persona is `NoCharacter` too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn l1_send_order_refuses_an_order_nobody_entitled_gave() {
+    use tacsim::arena_bridge::IntentRefusal;
+    use tacsim::deliberation::{CharacterRef, SquadId};
+    let mut rig = Rig::boot_with(4, y1_config());
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    rig.say(2, "sim team red");
+    rig.say(1, "sim leave");
+    rig.say(1, "sim team blue");
+    assert!(!rig.say(0, "sim ai 4").is_empty(), "SIM AI answers");
+    rig.say(0, "sim start");
+    for n in [0, 2] {
+        rig.walk_to(n, match_::RED_ROOM_ENTRY);
+        rig.say(n, "board");
+    }
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+
+    let record = rig.record();
+    let match_id = record.id;
+    let unit_of = |word: &str| {
+        record
+            .callsigns
+            .iter()
+            .find(|(_, callsign)| callsign.to_string() == word)
+            .map(|(unit, _)| *unit)
+            .unwrap_or_else(|| panic!("{word} is fielded"))
+    };
+    let (rb, rd) = (unit_of("RB"), unit_of("RD"));
+    let red_one = SquadId {
+        team: Team::Red,
+        index: 1,
+    };
+    assert!(
+        record
+            .squads
+            .iter()
+            .any(|roster| roster.id == red_one && roster.holds(rb) && roster.holds(rd)),
+        "red-1 is RB and RD"
+    );
+    let blue_one = SquadId {
+        team: Team::Blue,
+        index: 1,
+    };
+    let (lead, blue, third, outsider) = (rig.pilot(0), rig.pilot(1), rig.pilot(2), rig.pilot(3));
+    let room = match_::centre_object(rig.tw.world(), match_::RED_ROOM_ENTRY).expect("red's room");
+    let (lead_tank, third_tank) = (rig.tank(0), rig.tank(2));
+    let character = |id: ObjId| CharacterRef::Character { id };
+    let persona = |squad: SquadId| CharacterRef::Persona { squad };
+    let send = |rig: &mut Rig, unit: ObjId, order: tacsim::deliberation::Order| {
+        rig.with_ctx_mut(0, |ctx| {
+            tacsim::arena_bridge::send_order(ctx, match_id, unit, order)
+        })
+    };
+    let refused = Err(IntentRefusal::NoCharacter);
+
+    // Nobody entitled: a room, a player not in the match, the other side's
+    // pilot, and a non-lead for a squad unit that is not their wingman.
+    for (who, by, unit) in [
+        ("a room", character(room), rb),
+        ("a player not in the match", character(outsider), rb),
+        ("the other side's pilot", character(blue), rb),
+        ("the non-lead, not their wingman", character(third), rb),
+    ] {
+        assert_eq!(
+            send(&mut rig, unit, l1_order(red_one, Some(lead_tank), by)),
+            refused,
+            "{who}"
+        );
+    }
+    // Entitled: the non-lead for their own wingman, the lead for any red unit.
+    assert_eq!(
+        send(
+            &mut rig,
+            rd,
+            l1_order(red_one, Some(third_tank), character(third))
+        ),
+        Ok(()),
+        "the non-lead orders their wingman"
+    );
+    for unit in [rb, rd] {
+        assert_eq!(
+            send(
+                &mut rig,
+                unit,
+                l1_order(red_one, Some(lead_tank), character(lead))
+            ),
+            Ok(()),
+            "the lead orders any unit of the side's squads"
+        );
+    }
+    let from_lead = |event: &tacsim::arena::ledger::LedgerEvent| {
+        y1_ordered_by(event, lead_tank).is_some_and(|(_, squad, _, _)| squad == "red-1")
+    };
+    assert_eq!(
+        rig.tape_count_until(from_lead, 2).await,
+        2,
+        "the lead's order lands"
+    );
+
+    // The personas: another squad's, and red-1's own with an issuer, refused;
+    // red-1's own in the commander's scope admitted.
+    assert_eq!(
+        send(&mut rig, rb, l1_order(red_one, None, persona(blue_one))),
+        refused,
+        "another squad's persona"
+    );
+    assert_eq!(
+        send(
+            &mut rig,
+            rb,
+            l1_order(red_one, Some(lead_tank), persona(red_one))
+        ),
+        refused,
+        "a leader's issuer stays None"
+    );
+    assert_eq!(
+        send(&mut rig, rb, l1_order(red_one, None, persona(red_one))),
+        Ok(()),
+        "red-1's own lance-leader orders red-1"
+    );
+
+    // The unit is part of the grant: an order written for red-1 reaches only
+    // red-1's machines — the lead's own tank and a blue machine are outside it,
+    // for the lead's character and for red-1's persona alike.
+    let blue_machine = record
+        .squads
+        .iter()
+        .find(|roster| roster.id.team == Team::Blue)
+        .and_then(|roster| roster.units.first().copied())
+        .expect("blue fields machines");
+    for (who, unit) in [
+        ("the lead, onto their own tank", lead_tank),
+        ("the lead, onto a blue machine", blue_machine),
+    ] {
+        assert_eq!(
+            send(
+                &mut rig,
+                unit,
+                l1_order(red_one, Some(lead_tank), character(lead))
+            ),
+            refused,
+            "{who}: no roster of the grant holds it"
+        );
+    }
+    assert_eq!(
+        send(
+            &mut rig,
+            blue_machine,
+            l1_order(red_one, None, persona(red_one))
+        ),
+        refused,
+        "red-1's lance-leader orders red-1's machines and no other's"
+    );
+
+    // No record for the match: the admission cannot read a rule, so the order
+    // is `Unavailable`, not a principal's refusal.
+    let gone = tacsim::arena_task::MatchId(match_id.0 + 1_000);
+    assert_eq!(
+        rig.with_ctx_mut(0, |ctx| {
+            tacsim::arena_bridge::send_order(
+                ctx,
+                gone,
+                rb,
+                l1_order(red_one, Some(lead_tank), character(lead)),
+            )
+        }),
+        Err(IntentRefusal::Unavailable),
+        "a match with no record"
+    );
+
+    // The record is the persona's warrant: with red-1's row gone from
+    // `leaders`, red-1's own persona in the commander's scope is refused.
+    if let Some(record) = rig
+        .tw
+        .world_mut()
+        .module_state_mut::<tacsim::match_::MatchBook>()
+        .and_then(|book| book.get_mut(match_id))
+    {
+        record.leaders.retain(|leader| leader.squad != red_one);
+    }
+    assert_eq!(
+        send(&mut rig, rb, l1_order(red_one, None, persona(red_one))),
+        refused,
+        "a persona the record names as nobody's leader orders nothing"
+    );
+}
+
+/// **17b cut L.1 — a typed `ORDER` carries the seat's character** (D-UM-52):
+/// the red lead's `ORDER red-1 HOLD`, acknowledged in HEAD's exact words, lands
+/// on both of red-1's machines with `by` = the lead's character and `issuer` =
+/// the lead's tank — read off the snapshot the arena writes every second,
+/// which carries every standing order whole (`SNAPSHOT_FORMAT` 6) — the world's
+/// watch names the same author (`order_author`), and the shield stands: a
+/// signal for red-1 takes no in-flight slot, while another squad's signal in
+/// the same call takes exactly one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn l1_a_typed_order_carries_the_seats_character() {
+    use tacsim::deliberation::CharacterRef;
+    let mut cfg = y1_config();
+    cfg.arena.snapshot_ms = 1_000;
+    let mut rig = Rig::boot_with(2, cfg);
+    rig.fly_with_ai(1, 1, 3).await;
+    let record = rig.record();
+    let match_id = record.id;
+    let roster = record
+        .squads
+        .iter()
+        .find(|roster| roster.id.to_string() == "red-1")
+        .cloned()
+        .expect("red fields red-1");
+    let (pilot, tank) = (rig.pilot(0), rig.tank(0));
+
+    assert_eq!(
+        rig.say(0, "ORDER red-1 HOLD"),
+        format!("Ordered red-1 to hold: it stops where it stands and fires nothing.{Y1_TAIL}"),
+        "the acknowledgement is HEAD's, byte for byte"
+    );
+    let by_pilot = |event: &tacsim::arena::ledger::LedgerEvent| {
+        y1_ordered_by(event, tank).is_some_and(|(_, _, objective, _)| objective == "hold")
+    };
+    assert_eq!(
+        rig.tape_count_until(by_pilot, roster.units.len()).await,
+        roster.units.len()
+    );
+    let landed_ms = rig
+        .tape
+        .iter()
+        .filter(|event| by_pilot(event))
+        .map(|event| event.t_ms)
+        .max()
+        .expect("the ordered lines");
+
+    // The world's watch.
+    let author = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| {
+            registry
+                .order_author(match_id, roster.id)
+                .zip(registry.order_issuer(match_id, roster.id))
+        });
+    assert_eq!(
+        author,
+        Some((CharacterRef::Character { id: pilot }, tank)),
+        "the watch's author is the seat's character, its issuer the seat's tank"
+    );
+
+    // The shield: a signal for red-1 is not spent.
+    let signal = tacsim::arena::command::SquadSignal {
+        squad: roster.id,
+        commander: roster.commander,
+        team: roster.id.team,
+        reason: tacsim::arena::command::SignalReason::NoOrder,
+        at_ms: 0,
+        digest: tacsim::arena::command::SquadDigest::default(),
+        contacts: Vec::new(),
+        bands_cm: Vec::new(),
+        sight_cm: 0,
+        default_ttl_ms: 30_000,
+        health_permille: 1_000,
+        states: [0; 6],
+        cell: None,
+        window: (16, 16),
+        members: Vec::new(),
+        objective: None,
+    };
+    let counts = |rig: &Rig| {
+        rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .map(|registry| registry.deliberation_counts(match_id))
+    };
+    // The match's own opening signals may already hold slots (no provider
+    // answers in this rig), so the shield is read as "no slot more" — beside a
+    // squad no pilot ordered, in the same call, which does take one: the cap is
+    // not what kept red-1 from being asked.
+    let other = record
+        .squads
+        .iter()
+        .find(|other| other.id != roster.id)
+        .cloned()
+        .expect("the match fields a second squad");
+    let other_signal = tacsim::arena::command::SquadSignal {
+        squad: other.id,
+        commander: other.commander,
+        team: other.id.team,
+        ..signal.clone()
+    };
+    let before = counts(&rig).expect("the registry");
+    assert!(
+        before.2 < tacsim::deliberation::MAX_IN_FLIGHT_PER_MATCH,
+        "a slot is free: {before:?}"
+    );
+    rig.with_ctx_mut(0, |ctx| {
+        tacsim::arena_bridge::on_deliberate(ctx, match_id, &[signal.clone(), other_signal]);
+    });
+    assert_eq!(
+        counts(&rig),
+        Some((before.0, before.1, before.2 + 1)),
+        "a squad under the pilot's order is not asked about; the unordered one is"
+    );
+
+    // The arena's own standing orders, as its snapshot carries them.
+    let head = rig.af3_snapshot_at_or_after(landed_ms).await;
+    assert_eq!(head.format, tacsim::arena::snapshot::SNAPSHOT_FORMAT);
+    let key = match_::snapshot_key(match_id).to_string();
+    let state: serde_json::Value = rig
+        .image
+        .get(tacsim::NS)
+        .and_then(|docs| docs.get(key.as_str()))
+        .and_then(|document| document.get("state"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|text| serde_json::from_str(text).ok())
+        .expect("the snapshot's state");
+    for unit in &roster.units {
+        let order = state
+            .get("reflex")
+            .and_then(|reflex| reflex.get("units"))
+            .and_then(|units| units.get(unit.0.to_string()))
+            .and_then(|row| row.get("order"))
+            .and_then(|standing| standing.get("order"))
+            .unwrap_or_else(|| panic!("{unit:?} carries a standing order"));
+        assert_eq!(
+            order.get("by"),
+            Some(&serde_json::json!({"kind": "character", "id": pilot.0})),
+            "{unit:?}: the standing order's author is the seat's character"
+        );
+        assert_eq!(
+            order.get("issuer"),
+            Some(&serde_json::json!(tank.0)),
+            "{unit:?}: and its scope the seat's tank"
+        );
+    }
+}
+
+/// **17b cut L.1 — `NoCharacter` is never a cockpit word.** The refusal renders,
+/// through `CockpitError::Order`'s `Refused: {0}.`, as one plain sentence, so a
+/// future caller has one; but no `ORDER` a pilot can type reaches it: the
+/// cockpit names the seat's character and only the units `command_of` gave it,
+/// and every refusal through the real composition is one of the four pinned
+/// words.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn l1_no_character_is_never_a_cockpit_word() {
+    assert_eq!(
+        cockpit::CockpitError::Order(tacsim::arena_bridge::IntentRefusal::NoCharacter).to_string(),
+        "Refused: no character entitled to order that squad gave that order."
+    );
+    // The field of `y1_a_pilot_orders_their_pod_pair_and_nothing_else`: red's
+    // lead (pilot 0), slot 2 (pilot 1, pair 1, a human: no wingman), slot 3
+    // (pilot 2, wingman RD), and blue (pilot 3).
+    let mut rig = Rig::boot_with(4, y1_config());
+    rig.fly_with_ai(3, 1, 4).await;
+    let pinned = [
+        cockpit::NO_SUCH_SQUAD,
+        cockpit::NO_SQUAD_TO_ORDER,
+        cockpit::NO_SUCH_FRIENDLY,
+        cockpit::NO_SUCH_CONTACT,
+    ];
+    let mut seen = std::collections::BTreeSet::new();
+    for (n, line) in [
+        (0, "ORDER blue-1 HOLD"),
+        (0, "ORDER red-9 HOLD"),
+        (0, "ORDER red-1 ENGAGE ZZ"),
+        (0, "ORDER red-1 SUPPORT BZ"),
+        (1, "ORDER red-1 HOLD"),
+        (1, "ORDER ALL HOLD"),
+        (2, "ORDER blue-1 HOLD"),
+        (2, "ORDER red-1 ENGAGE ZZ"),
+        (2, "ORDER red-1 SUPPORT BA"),
+        (3, "ORDER red-1 HOLD"),
+    ] {
+        let said = rig.say(n, line);
+        assert!(
+            pinned.contains(&said.as_str()),
+            "pilot {n}'s {line:?} answered {said:?}, which is not a pinned refusal"
+        );
+        assert!(!said.contains("no character"), "{said}");
+        seen.insert(said);
+    }
+    assert_eq!(
+        seen.len(),
+        pinned.len(),
+        "every pinned word was reached: {seen:?}"
+    );
+}
+
+/// **17b cut L.1 — a match of nothing but pilots mints no leader** (D-UM-53):
+/// no squad, so no persona — the record's `leaders` is empty beside its empty
+/// `squads` (doc 16 §1's A1 story).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn l1_a_pilots_only_match_mints_no_leader() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let record = rig.record();
+    assert!(record.squads.is_empty(), "no machine is fielded");
+    assert!(record.leaders.is_empty(), "so no lance-leader is minted");
 }
 
 // ---------------------------------------------------------------------------
@@ -8165,11 +8615,13 @@ async fn z2_a_release_frees_the_span_it_was_given_and_nothing_else() {
         index: 2,
     };
     let expires_ms = rig.now.saturating_mul(1_000).saturating_add(600_000);
+    // 17b cut L.1: the issuing pilot's character is the watch's author.
+    let by = tacsim::deliberation::CharacterRef::Character { id: rig.pilot(0) };
     rig.with_ctx_mut(0, |ctx| {
         ctx.w
             .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
             .expect("the registry is composed")
-            .note_human_order(match_id, second, "hold".into(), issuer, expires_ms);
+            .note_human_order(match_id, second, "hold".into(), issuer, by, expires_ms);
     });
     assert_eq!(
         z2_live(&rig, issuer),

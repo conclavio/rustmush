@@ -2017,6 +2017,10 @@ mod tests {
             ttl_ms: 600_000,
             issued_ms: 0,
             issuer: Some(A),
+            // 17b cut L.1: the pilot's character, never read by the arena.
+            by: crate::deliberation::order::CharacterRef::Character {
+                id: mush_core::ObjId(9_001),
+            },
             spot: None,
         };
         let hold = || IntentKind::Order(Box::new(told(Objective::Hold)));

@@ -45,8 +45,11 @@
 //! the unit's published `helm` epoch and offered to the same inbox a cockpit verb
 //! offers to (`crate::arena_bridge::send_order`, which is `forward_intent` without
 //! the four checks that are all about *a player's* authority over a tank — there is
-//! no seat here, and the one authority an order needs is that the unit is on the
-//! reflex controller, which the arena checks itself at apply).
+//! no seat here. Since **17b cut L.1** (doc 17 §4, D-UM-52) the authority an order
+//! needs is two: a character entitled to order the squad — here the squad's
+//! lance-leader, named in [`crate::deliberation::Order::by`] and checked against
+//! the match record by `crate::arena_bridge::admit_order` — and the unit on a
+//! machine controller, which the arena checks itself at apply).
 //!
 //! So a pulse never waits for a provider, an arena never holds a service handle,
 //! and doc 16 §6's *the arena only ever sees an intent or nothing* is literally
@@ -104,11 +107,13 @@ use serde::{Deserialize, Serialize};
 
 pub use cost::{CostGuard, CostRow, CostTable, cost_table};
 pub use order::{
-    Constraints, MAX_TTL_MS, MIN_TTL_MS, MIND_LINK_DROPPED, Objective, Order, OrderError,
-    RangeBand, StandingOrder,
+    CharacterRef, Constraints, MAX_TTL_MS, MIN_TTL_MS, MIND_LINK_DROPPED, Objective, Order,
+    OrderError, RangeBand, StandingOrder,
 };
 pub use request::{BriefMember, RefusedReason, SquadBrief, deliberate, order_tool};
-pub use squad::{SQUAD_SIZE_MAX, SquadId, SquadRoster, squads_of};
+pub use squad::{
+    LanceLeader, SQUAD_SIZE_MAX, SquadId, SquadRoster, fill_leaders, leader_of, squads_of,
+};
 
 /// The most deliberation requests that may be in flight for one match at once.
 ///
@@ -263,6 +268,13 @@ mod tests {
             },
             match_id: 7,
             commander: 4,
+            // 17b cut L.1: the squad's lance-leader, never in the prompt.
+            leader: CharacterRef::Persona {
+                squad: SquadId {
+                    team: Team::Red,
+                    index: 1,
+                },
+            },
             reason: "no_order".to_string(),
             units: 2,
             health_permille: 1_000,
@@ -313,6 +325,7 @@ mod tests {
                 ttl_ms: 30_000,
                 issued_ms: 5,
                 issuer: None,
+                by: CharacterRef::Persona { squad: brief.squad },
                 spot: None,
             },
             model: "m".to_string(),
@@ -354,6 +367,13 @@ mod tests {
             },
             match_id: 3,
             commander: 9,
+            // 17b cut L.1.
+            leader: CharacterRef::Persona {
+                squad: SquadId {
+                    team: Team::Blue,
+                    index: 1,
+                },
+            },
             reason: "no_order".to_string(),
             units: 2,
             health_permille: 1_000,

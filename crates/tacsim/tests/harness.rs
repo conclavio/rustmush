@@ -5891,10 +5891,15 @@ fn tacsim_harness_llm_cost_run() {
             }
             let key = signal.squad.to_string();
             let members = squad_units.get(&key).cloned().unwrap_or_default();
+            // 17b cut L.1: the squad's lance-leader persona, as `match_::start`
+            // mints it.
             let brief = SquadBrief::from_signal(
                 1,
                 signal,
                 u16::try_from(members.len()).unwrap_or(u16::MAX),
+                tacsim::deliberation::CharacterRef::Persona {
+                    squad: signal.squad,
+                },
             );
             if let Some(mock) = mock.as_ref() {
                 mock.push_response(mock_order_response());
@@ -6694,6 +6699,13 @@ async fn measure_fan_out(knobs: &Knobs) {
 // script does). The script ([`lance_schedule`]) is a table ([`LANCE_TABLE`]) so
 // cut Z.2 can extend it with `Screen`, `Support` and a release.
 //
+// **17b cut L.1** (doc 17 §4, D-UM-52): each side's orders are authored by one
+// scripted lead character in `by` ([`RED_LEAD`] / [`BLUE_LEAD`], ids no unit of
+// the lane uses) — a human lead's `ORDER` shape exactly, the lead's own tank the
+// hint scope in `issuer`, so W8's span keeps its meaning. The world's admission
+// (`arena_bridge::admit_order`) is bypassed by design: the lane steps the arena
+// directly, and the arena reads no author.
+//
 // **What it asserts**, under `TACSIM_ASSERT` only. At **any** knob: W8's two
 // bounds against `[tacsim.command]`; that the tape's `ordered` lines are exactly
 // the orders the script gave (one a unit not already a wreck, at the millisecond
@@ -6950,9 +6962,26 @@ fn lance_schedule(
     out
 }
 
+/// **The red side's scripted lead character** (17b cut L.1): the author, in
+/// `by`, of every order the lance lane gives red. No unit of the lane uses the
+/// id (the lane's units are `100_000 + n`).
+const RED_LEAD: ObjId = ObjId(1_001);
+
+/// **The blue side's scripted lead character** (17b cut L.1), as [`RED_LEAD`].
+const BLUE_LEAD: ObjId = ObjId(2_001);
+
+/// The scripted lead character of `team` (17b cut L.1).
+const fn lead_of(team: tacsim::arena::state::Team) -> ObjId {
+    match team {
+        tacsim::arena::state::Team::Red => RED_LEAD,
+        tacsim::arena::state::Team::Blue => BLUE_LEAD,
+    }
+}
+
 /// **One scripted order as the intents phase 2 applies**: one per unit of the
 /// squad the arena still holds, at that unit's own current `helm` epoch, the
-/// side's commander as issuer. **16b cut Z.2**: a release is one
+/// side's commander as issuer and (17b cut L.1) the side's scripted lead
+/// character as author. **16b cut Z.2**: a release is one
 /// `ReleaseOrder { squad, issuer }` per unit the same way.
 fn lance_intents(
     arena: &tacsim::arena::state::Arena,
@@ -6975,6 +7004,9 @@ fn lance_intents(
             ttl_ms: LANCE_ORDER_MS,
             issued_ms: 0,
             issuer: Some(issuer),
+            by: tacsim::deliberation::CharacterRef::Character {
+                id: lead_of(order.squad.team),
+            },
             spot: None,
         })),
         None => IntentKind::ReleaseOrder {
