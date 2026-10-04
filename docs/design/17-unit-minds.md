@@ -240,7 +240,7 @@ heat per shot, range band and `p_permille` against the lock; the stations the se
 and, armed, its odds, the standing order, `t_ms`, the drained notices, and `contacts` truncated to the
 core's row count, nearest-first by held range with `ContactId` as the tie-break. Each contact carries
 id, designator, class word, friendly, bearing and relative bearing, range and band as `ContactRow`
-rounds them, age, cell, the earned condition bands, aspect, and on a hull with weapons odds per
+rounds them, age, cell, the earned condition bands with the frame's `scan_tables` (the section words `condition.table` indexes, a per-view index never stable across thinks; added 2026-10-04 after review, finding 4), aspect, and on a hull with weapons odds per
 weapon (within `odds_rows`) and `reads_dead`. A future station's fields (a cargo hold's fill, a
 drill's yield) join the view with the station, under the same parity rule.
 
@@ -292,7 +292,7 @@ The mind's functions today, by channel:
 - Fire (a hull with a weapons station only): `fire(slot, condition)` → `Fire` carrying a condition
   citation (§5), and a mind never fires without one; `arm(slot, condition)` and `disarm(slot)` → a
   new continuous `IntentKind::Condition` on `Channel::Fire`, the same intent the pilot's
-  `FIRE <weapon> WHEN …` stages (§5);
+  `FIRE <weapon> WHEN …` stages (§5), each arming and each citation checked against the sealed odds floor at its landing and refused `Unlawful` under it (§5; amended 2026-10-04 after review, finding 2);
 - any channel: `trace(text)` → the trace ring only (§14).
 
 `startup()` restarts a hull. The seal is taken at the principal's **dispatch**, the act by which a
@@ -443,12 +443,20 @@ is updated in 16c when M1b lands (§19), and Q-UM-16 asks the owner to confirm t
 one-shot citation evaluated at landing like any slot. A mind that emits a `FIRE` whose cited
 condition does not hold on the plot is refused with a new `Refusal` word, `Unwarranted`
 (`intents.rs:327`, `as_str` at `:402`; it reaches the wire and the cockpit sentence table). A
-pilot's typed `FIRE` is the human trigger W8 asks for and is never gated. The **legal floor** is
-validated at the seal, not in the resolver, so it never touches a sealed sortie: no lawful slot names
-an unclassified contact (`BestHostile` ranges only over classified contacts; `Contact(id)` must be
-classified when evaluated, else the slot is idle), and every lawful slot carries at least the Compact
-odds floor, `[tacsim.minds].odds_floor_permille`, seed value 100. A card whose slot sits under the
-floor is refused at the seal with the floor named: refuse-not-clamp. The player angle's `weapons:
+pilot's typed `FIRE` is the human trigger W8 asks for and is never gated. The **legal floor** binds every condition, however it is armed (amended 2026-10-04 after review,
+finding 2): no lawful slot names an unclassified contact (`BestHostile` ranges only over classified
+contacts; a `Contact(id)` or `Lock` target must be classified when evaluated, else the slot is
+idle), and every lawful slot carries at least the Compact odds floor,
+`[tacsim.minds].odds_floor_permille`, seed value 100. The floor is checked wherever a condition
+enters the hull — on the card at the seal, and at the landing of every arming (a pilot's `FIRE
+<weapon> WHEN …`, a mind's `arm`) and of every cited fire, ahead of the `Unwarranted` test — against
+the floor the seal captured, so a policy change never touches a sealed sortie; before seals exist
+(M1b) it is the match's configured floor, captured at check-out. A condition under the floor, or
+naming an inadmissible target, is refused with a second new `Refusal` word, `Unlawful`, with the
+floor named: refuse-not-clamp, for a card at the seal and for an arming alike, and the cockpit
+pre-checks a typed rule off the frame so it is refused as typed. A rule with no odds term compiles
+to the floor. Only an ungoverned core skips the check (D-UM-42), and its unlawful arming is
+journalled. The player angle's `weapons:
 free` mode does not survive as a mode: "free" is the labelled SOP `BestHostile` at the floor, which
 the Line preset arms, and it is printed as a condition like any other.
 
@@ -502,7 +510,7 @@ same due kinds, the same landing rule and the same pool, and names any divergenc
 `think_ms` of the core's class, at the lattice millisecond `stagger_ms(seed, unit, think_ms)`
 (`rng.rs:251`, the sensor pass's and the reflex's own rule) plus `k × think_ms`. It resolves inside
 whichever substep its timestamp falls in, ordered among that substep's due items by timestamp, then
-kind, then unit id, after the sensor passes, impacts and `WeaponReady` of the same millisecond. At
+kind, then unit id, after the sensor passes, impacts and `WeaponReady` of the same millisecond — including an impact a landing of that millisecond schedules at it: every landing runs first, then the heap's ordinary events at that millisecond, then the thinks (amended 2026-10-04 after review, finding 3; M1a.5 as built ran the thinks before such an impact, §24). At
 that instant the sim task builds the `ThinkJob { unit, think_seq, t_ms, view, memory bytes, seal,
 epochs }` from the state as it then stands; the view's notices are the buffer as filled by every
 post-hash scan up to the end of the previous substep (as built, 17b cut M1a.5: `stage_notice` fills the
@@ -532,11 +540,18 @@ batch is bounded by the task's pool ceiling (§9), so the wait is bounded; a bat
 running when its task is due is awaited, never skipped, and the lane reports `pool_wait_us` so a
 saturated pool is seen as late wakes, not as a different result.
 
-**Snapshot and resume.** A snapshot taken between a think and its landing carries no job. The
-`MindState` row carries `pending_think_seq` and `pending_t_ms`; resume re-runs `mind_view` at that
-timestamp against the restored state and recomputes the job, which gives the same result because
-the inputs are the same bytes. A fixture takes a snapshot between N and N+1 and asserts the hash
-sequence (D-UM-23). An IC sortie may run for hours across many snapshots; nothing here assumes the
+**Snapshot and resume.** A snapshot taken between a think and its landing carries the think's
+**answer**, not its job (amended 2026-10-04 after review, finding 1; D-UM-23): `MindState.pending`
+is `{ think_seq, t_ms, epochs, intents, memory }` — the runner's result and the three channel epochs
+recorded at the think — written at the think, hashed whole, carried by the snapshot and consumed at
+the landing, and a resumed landing applies it through `apply_machine_intents` at the recorded epochs
+exactly as the uninterrupted run would. Resume never re-runs a think: the view it read is gone by
+the time a snapshot is written (its notices drained, its ranges settled, the rest of the substep's
+events and the pulse's phases run), so a recompute cannot reproduce it. The sim task awaits any
+outstanding think batch before it encodes a snapshot (M4's pool, D-UM-22). A fixture takes a
+snapshot between N and N+1 — with a notice the think drained and an event after the think in the
+same substep — and asserts the hash sequence equals the uninterrupted run's at three cadences
+(D-UM-23). An IC sortie may run for hours across many snapshots; nothing here assumes the
 short life of a match.
 
 ---
@@ -567,8 +582,14 @@ that it disables the keyword-functions too is asserted by a test). `on_print` an
 (`new_raw` installs none) and write to the think's trace buffer: at most 8 lines of 120 characters,
 never journalled.
 
-Limits (D-UM-25): `set_max_call_levels(12)`, `set_max_expr_depths(48, 24)`,
-`set_max_string_size(128)`, `set_max_array_size(64)`, `set_max_map_size(64)`,
+Limits (D-UM-25, amended 2026-10-04 after review, finding 6): `set_max_call_levels(12)`,
+`set_max_expr_depths(48, 24)`; the data-size limits as a shared backstop against runaway allocation
+only — `set_max_map_size(256)`, `set_max_array_size(8_192)`, `set_max_string_size(8_192)` bytes,
+twice the largest valid Class III memory, because Rhai 1.26 counts nested elements and string bytes
+cumulatively over a whole value at every assignment (the limits as first written refused a Class III
+`mem` past 64 keys, a third 32-int array in every class and a fifth 32-character string in every
+class), the per-key, per-value and per-class limits of D-UM-30 living in `memory_check` and a test
+asserting the engine limits are at least twice the largest class's totals from the class table;
 `set_max_variables(64)`, `set_max_functions(32)`, `set_max_modules(0)`,
 `set_strict_variables(true)` (a typo is a seal-time error), `set_fail_on_invalid_map_property(true)`,
 `set_allow_anonymous_fn(false)`; loops allowed because ops bound them; `set_max_operations` at the
@@ -745,8 +766,24 @@ transfer moves the entitlement and the seller loses it, and an author may mark a
 non-transferable. `InstrumentKind::Entitlement`'s doc comment says non-transferable and nothing
 enforces it; the comment is amended to "non-transferable unless the catalogue entry says
 otherwise", and a mind licence is a catalogue entry that says otherwise. Sales and transfers between
-characters of one account are refused through the lobby's `AccountId` oracle (alt laundering). A
-licence sold while a sortie it seals is out moves at that sortie's end. Charters trade too (§16).
+characters of one account are refused through the lobby's `AccountId` oracle (alt laundering). A sale of a licence with no sortie out settles at once. A sale while sorties it seals are out puts
+the licence in **PendingTransfer** (amended 2026-10-04 after review, finding 7): at most one
+transfer is pending per licence and a second sale is refused by name; no new seal admits the licence
+for either party while it is pending, dispatch admission refusing it by name (`Sentinel 2.1 is
+changing hands; no new sortie may seal it until the transfer settles.`); every sortie already sealed
+runs to its close under the seal it carries, the seller its warrant principal, the seal never
+touched; no renewal is drafted for the seller meanwhile; settlement is one atomic bundle — the
+holder changes, the escrowed contract pays its one balanced split, the pending record clears — when
+the last admitted sortie closes, or at the deadline, the earlier of the term's end and
+`[tacsim.minds].transfer_settle_ic_days` (default 3, the Grace length) after the sale; sorties still
+out at settlement keep the seats they hold until they close, so open sealed sorties never exceed
+seats, the buyer starting with seats minus those held, and each such hull drops to doctrine at its
+next seal exactly as under a lapse (D-UM-39), told only to its own principals; a transfer that
+settles at the term's end delivers the licence in Grace with its renewal drafted to the buyer; a
+Registry revocation cancels a pending transfer and refunds the escrow, a recall travels with the
+buyer told; the seller and buyer are told when the transfer goes pending (open sorties, deadline),
+the seller at each close, both at settlement, and nobody else. The deadline and the held-seats rule
+are defaults pending the owner (Q-UM-18). Charters trade too (§16).
 
 **The governor (D-UM-41).** The governed bit in the core's capability payload. A governed core
 refuses at the seal: an unfiled digest, a line with no live licence, a class beyond the licence, any
@@ -926,7 +963,7 @@ shows its English under it.
 stations; the licence state; the core's class, governed bit and condition; the revision (a follow pin
 resolves to the newest revision filed before the seal); the card validated against the schema,
 refused not clamped. It holds: unit and sortie id, core component, class, governed bit; charter,
-line, revision; `source_sha256`; the canonical card bytes and their digest; the armed slots (none on
+line, revision; `source_sha256`; the canonical card bytes and their digest; the odds floor it was validated against (2026-10-04 after review, finding 2); the armed slots (none on
 an unarmed hull); `MIND_ABI` (`rhai=1.26.0;api=N;stock=M`); the licence id or `doctrine` (in the OOC
 sim, the holding it reads, D-UM-49); the warrant principal; the station channel set (as arena
 `Channel` members, §4); the fallback reason if any. It lives on `CustodyUnit` beside `sensor`,
@@ -1087,15 +1124,36 @@ sortie's seal, pinned holders keep theirs; an author may withdraw a revision, on
 recalls one; a rhai bump re-runs conformance for every live revision and recalls failures with
 notice.
 
+**Private filing and the owner's licence (proposed 2026-10-04 after review, finding 5; D-UM-56 and
+D-UM-57 pending the owner, Q-UM-17).** Filing and listing are separate acts. `@mind/file
+<mind>@<rev>` files a revision exactly as `/publish` does — the same conformance, the same fee to
+`system:tacsim.registry`, a charter issued to the filer, a public Roll entry whose forms offered
+read `none` — and `/publish` files the revision if it is not yet filed, then lists it. Filing is not
+release: D-UM-54 still admits NPC procurement only to a listed line, so an author who files but
+never lists keeps the mind off every organisation's hull. Filing issues the charter's owner an
+**owner's licence** to its line: no price, so no settlement, levy or venue share; the Compact's
+audit term (at most 90 IC days) renewed by attestation like any other licence, so renewal
+attestation (D-UM-42) reaches it; non-transferable; its seats bounded only by the hulls the holder
+dispatches; following the charter's title, so when the charter changes hands the owner's licence
+moves to the new owner as D-UM-40 moves a sold one and the former owner keeps no use. An unfiled
+draft runs only in the OOC sim and the proving ground (D-UM-41) or on an ungoverned core, which is
+contraband (D-UM-42); there is no IC exemption for one's own drafts. A derivative's filing runs the
+ordinary conformance plus a lineage check — the parent licence live and held by the filer, the chain
+depth at most 3, the royalty cap held — and its owner's licence is **dependent**: live only while
+the holder's licence to the parent line is live, its term never outrunning the parent's; the
+parent's author is paid for private use through that parent licence and for resale through the
+parent royalty. When the parent licence lapses, is sold, is revoked or its revision is recalled, the
+dependent owner's licence lapses at the same moment: the fork becomes source-sealed (its last filed
+revision still runs and seals, no new revision may be filed) until the holder holds the parent line
+again — the default; the alternatives, deleting the fork or letting it persist unlicensed, are
+Q-UM-17's. Charters are refused between characters of one account as licences are.
+
 **Listing and sale.** A filed line is a `mush-market` listing of `Representation::Entitlement`
 under catalogue ruleset `minds`, reached through tacsim-registered `CatalogSource`,
 `AvailabilityProvider` and `DeliveryProvider` tables; `mush-roll` takes no market edge, and the
 public projection gate holds. `@mind/publish Sentinel@2 price=400 terms=sealed seats=6`. Terms:
 *sealed* (the default: buyers run and tune it, read its card, presets, rated profile, notes and
-probe-level traces, never the source), *open* (source and fork rights; forks file as derivatives
-naming their parent; the parent's royalty, capped at 300 per mille with a chain depth of 3, is paid
-inside every derivative's settlement), *open-resale* (forks may be published; the listing shows
-`derived from Sentinel by Ada`). A purchase drafts an ordinary E4 contract with escrow; settlement is
+probe-level traces, never the source), *open* (source and fork rights: a fork is a derivative draft recording its parent charter, line and revision, filed privately only while the holder's licence to the parent line is Active or in Grace, its owner's licence dependent on the parent's — proposed D-UM-57, 2026-10-04 after review; the parent's royalty, capped at 300 per mille with a chain depth of 3, is paid inside every derivative's settlement), *open-resale* (as *open*, and a filed derivative may also be listed; the listing shows `derived from Sentinel by Ada`). A purchase drafts an ordinary E4 contract with escrow; settlement is
 one balanced `PayoutShare` split: the Compact levy (seed 50 per mille) to the Registry's sink, the
 venue fee when a vendor org lists the line, the parent royalty, the remainder to the charter owner's
 account. The `DeliveryProvider` writes the licence; payment never edits a loadout. A buyer follows
@@ -1239,13 +1297,13 @@ prepared path from birth. One new Entitlement instrument, `tacsim.licence.core3_
 principal, `system:tacsim.registry`. The proposal's `system:tacsim.sim` is dropped: the OOC sim owns,
 pays and is paid nothing IC (D-UM-50), and a sim seal's principal is the character who chose the
 mind — the pilot, or the side lead for the fill — as an access and display fact only, never an IC
-liability. A `FactProvider` publishes `minds.licence.lapsed`, `minds.filed`, `minds.seized`,
+liability. A `FactProvider` publishes `minds.licence.lapsed`, `minds.licence.transferred`, `minds.filed`, `minds.seized`,
 `minds.unwarranted`, `minds.claimed` (an author's quirk claim filed, D-UM-55) so contracts and fronts
 can condition on them. `[tacsim.minds]` holds the classes, the pool formula, `cpu_lens_ms`, `workers`,
 `proving_workers`, the quota, the odds floor, the levy, the fees, the term cap, `tape_max_bytes`.
 
 Reviewed diffs this document knowingly makes: `LABEL_KINDS` 5 → 6; `COCKPIT_VERBS` 15 → 17;
-`FRAME_VERSION` 1 → 2 with the bot parser and the mush-ansi goldens; `Refusal` gains `Unwarranted`;
+`FRAME_VERSION` 1 → 2 with the bot parser and the mush-ansi goldens; `Refusal` gains `Unwarranted` and `Unlawful`;
 `not_reflex` → `not_machine` at the deletion cut; `ReflexCounters` → `MotorCounters` moves the
 baseline keys; rhai pinned exactly at the workspace; `InstrumentKind::Entitlement`'s doc comment;
 `EventKind` gains `MindSealed`, `SortieClosed`, `MindFault` and `MindDropped`; the arena `Channel`
@@ -1274,7 +1332,7 @@ dropped.
 | D-UM-1 | A mind is a pure function `mind(view, memory, card, keyed draws) -> (≤16 intents, memory')` run through `trait MindRunner` in `arena/mind.rs`, which names no Rhai type; the interpreter lives in `crates/mush-mind` (rhai only) and `crates/tacsim/src/minds`; the registry is `crates/mush-roll` with no `mush-script` edge. |
 | D-UM-2 | `Controller` gains `Mind` (hash code 2); every unit without a seated pilot is `Controller::Mind`; `Controller::Reflex` and `ReflexTick` are deleted after the twin gates pass. (*Amended by R-C*:) a *seated pilot* is a seat activated by a player's connection; an AI-played character such as an NPC lance-leader is never a `Controller` value, and the hull it rides stays `Controller::Mind` (D-UM-53). |
 | D-UM-3 | (*Amended by R-B*) `reflex.rs` is split: the decision half becomes Standard Doctrine in Rhai; the driving half stays native as `arena/motor.rs` on `DueKind::MotorTick` with every path bound unchanged, serving every hull's helm. The twin fixture has three columns (T0 shipped reflex, T1 native oracle, T2 Rhai); Gate A is T1 ≡ T2 exactly, armed and unarmed hulls both; Gate B bounds T0 vs T2 by a 30-match pooled Wilson interval containing 50 percent; leaks are never restored. |
-| D-UM-4 | The parity rule (*amended by R-B*): a mind reads exactly what the unit's stations show a human at them — the `arena.cockpit` keyframe for a combat hull, that keyframe without the weapons block for an unarmed one, a future station's view when it lands — built by `Arena::mind_view` from the frame builders; a tier truncates and never extends; every mind field is first a `Frame` and keyframe field with a `FRAME_VERSION` bump. The cockpit row formatter moves into `arena/view.rs`. |
+| D-UM-4 | The parity rule (*amended by R-B*): a mind reads exactly what the unit's stations show a human at them — the `arena.cockpit` keyframe for a combat hull, that keyframe without the weapons block for an unarmed one, a future station's view when it lands — built by `Arena::mind_view` from the frame builders; a tier truncates and never extends; every mind field is first a `Frame` and keyframe field with a `FRAME_VERSION` bump. The cockpit row formatter moves into `arena/view.rs`. (*Amended 2026-10-04 after review, finding 4*:) a truncation is a declared tier's row cap, never the silent omission of a field another field indexes; `MindView` carries the keyframe's `scan_tables`. |
 | D-UM-5 | (*Amended by R-B*) Aspect (`facet_band_seen` off the plot, on every hull), per-weapon odds for classified contacts only (weapons station only; `resolve_seen` against a new `Arena::aim_at`, limited to the core's `odds_rows`), `reads_dead` derived from the own kill or the held fatal reading (weapons station only; never `contact_reads_dead`), the standing order (re-keyed to the unit's own `ContactId`) and `t_ms` join the frame and the keyframe for pilots and minds alike. No course estimates. |
 | D-UM-6 | Contacts are named in the API by the opaque `ContactId`, with designator and alias as fields. |
 | D-UM-7 | The view's Rhai types are registered custom types with getters, never maps (15.05 vs 24.69 µs). |
@@ -1287,20 +1345,20 @@ dropped.
 | D-UM-14 | `IntentSource::Mind` joins `Seat` and `Machine` for attribution; it is not counted on the per-unit seat window; condition fires are journalled `by: cond`. |
 | D-UM-15 | (*Amended by R-B and R-C*) Orders reach `Mind` units through the unchanged `Order` path; `Order.issuer` stays the hint-scope unit (the ordering pilot's tank, or `None` for the squad's commander unit, which cut L makes the lance-leader's hull), and the order's author is the separate `by` (D-UM-52); the hint, resolved in the issuer unit's scope, and `Support{of}` are re-keyed at write time through `draw_contact_id` to the unit's own held `ContactId` or none; the Support branch's read of the charge's row is dropped. Non-combat objectives join the order vocabulary with their stations, issued by a character principal like any other. |
 | D-UM-16 | Condition slots (`FireCondition`: weapon, target Lock / Contact / BestHostile, `min_permille`, aspect mask, `min_rounds_left`, `max_range_m`), up to the core's slots, hashed, evaluated natively at `WeaponReady`, at a sensor pass refreshing the target's plot and at landing, firing through `apply_intent` and `resolve_fire` at no mind cost; pilots get the same slots from the same core via `FIRE <weapon> WHEN …`. (*Amended by R-B*:) slots are a weapons-station feature; a hull without one has none and needs none. A slot is the principal's written shot decision, not 16c Q45's armed trigger (which stays unbuilt); parity runs both ways, every mind intent landing at N+1 and seat and mind reaching the `WeaponReady` millisecond only through a principal's slot; this closes 16c's Q45 row (§5, Q-UM-16). |
-| D-UM-17 | The fire law: every mind-issued `FIRE` cites a slot (`fire(slot, condition)`, evaluated at landing); a citation that does not hold is refused `Unwarranted`, a new `Refusal` word. The legal floor is validated at the seal, so it never touches a sealed sortie (*amended by R-B*): no slot names an unclassified contact; every slot carries at least `odds_floor_permille` (seed 100). There is no free mode; "weapons free" is the labelled `BestHostile`-at-the-floor SOP. A pilot's typed `FIRE` is never gated. |
+| D-UM-17 | The fire law: every mind-issued `FIRE` cites a slot (`fire(slot, condition)`, evaluated at landing); a citation that does not hold is refused `Unwarranted`, a new `Refusal` word. The legal floor (*amended by R-B, and 2026-10-04 after review, finding 2*) — no unclassified target, `Lock` included; at least `odds_floor_permille`, seed 100 — is validated on the card at the seal and at the landing of every arming and cited fire against the floor the seal captured (before seals, the match's configured floor), refused with a second new `Refusal` word, `Unlawful`, refuse-not-clamp; a rule with no odds term compiles to the floor; an ungoverned core alone skips it (D-UM-42). There is no free mode; "weapons free" is the labelled `BestHostile`-at-the-floor SOP. A pilot's typed `FIRE` is never gated. |
 | D-UM-18 | The rule language `<ACTION> [weapon] WHEN cond [AND cond]…` (≤4 conditions, no OR, English written back) is the weapons station's authoring surface in v1; rules that fit a slot compile to one, the rest are evaluated by the stock mind at its think; rule actions are `FIRE`, `HOLD FIRE`, `LOCK …` only, each a station verb. Precedence: an `ORDER`'s hold-fire, then `HOLD FIRE` rules, then first match per channel, then sliders. |
 | D-UM-19 | An `ORDER`'s `hold_fire` is enforced in `resolve_fire` for `IntentSource::Mind` and condition fires (new resolver code). |
-| D-UM-20 | (*Amended by R-B*) A think is `DueKind::MindThink` at a lattice millisecond (`stagger_ms(seed, unit, think_ms)` plus multiples), resolved in the substep its timestamp falls in after that millisecond's other due items; the view is the state then, with the notices scanned up to the previous substep's end. Never a pulse. A region map's sim task uses the same rule. |
+| D-UM-20 | (*Amended by R-B*) A think is `DueKind::MindThink` at a lattice millisecond (`stagger_ms(seed, unit, think_ms)` plus multiples), resolved in the substep its timestamp falls in after that millisecond's other due items, including any a landing of that millisecond schedules at it (*amended 2026-10-04 after review, finding 3*: landings, then the heap's events at that millisecond, then the thinks); the view is the state then, with the notices scanned up to the previous substep's end. Never a pulse. A region map's sim task uses the same rule. |
 | D-UM-21 | (*Amended by R-B*) The landing is `DueKind::MindLand` at `t_ms + substep_ms` (the sim task's substep as read at collection), in unit-id order then emission order. The cross-tempo fixture with two mind units is a gate. |
 | D-UM-22 | (*Amended by R-B*) Thinks run on a process-wide pool (`[tacsim.minds].workers`, default 2) shared by every sim task; at a single-substep wake the batch runs after egress and is awaited before the next step; when the landing falls in the same wake the runner is called synchronously at the landing point inside the watchdog. A batch is bounded by the pool ceiling and never skipped. |
-| D-UM-23 | A snapshot carries no job; `MindState` carries `pending_think_seq` and `pending_t_ms`, and resume recomputes the job; a fixture snapshots between N and N+1 and asserts the hash sequence. (*Amended by R-B*:) across a `MIND_ABI` or rhai change the arena's resume refuses closed and the match is voided by name; an IC sortie is kept, each mind hull on it dropping to the drive ROM with `MindDropped` cause `abi` journalled, the seal keeping the old ABI (§13). |
+| D-UM-23 | (*Amended 2026-10-04 after review, finding 1*:) a snapshot carries the think's **answer**, not its job: `MindState.pending` is `{ think_seq, t_ms, epochs, intents, memory }`, written at the think, hashed whole, carried by the snapshot and consumed at the landing at the recorded epochs; resume never re-runs a think; the sim task awaits an outstanding batch before encoding; a fixture snapshots between N and N+1 with a drained notice and a post-think event and asserts the hash sequence at three cadences. (*Amended by R-B*:) across a `MIND_ABI` or rhai change the arena's resume refuses closed and the match is voided by name; an IC sortie is kept, each mind hull on it dropping to the drive ROM with `MindDropped` cause `abi` journalled, the seal keeping the old ABI (§13). |
 | D-UM-24 | The sandbox is one shared `Engine::new_raw()` with Core, Arithmetic, Logic, Iterator, Array, Map and BasicString packages only; no time, no math; `eval`, `import`, `export`, `Fn`, `call`, `curry` disabled; strict variables; `DummyModuleResolver`; `on_print` and `on_debug` to the trace ring. rhai pinned exactly `=1.26.0` at the workspace; `MIND_ABI = rhai + api + stock versions`, recorded per seal; a rhai upgrade is a reviewed ABI bump. |
-| D-UM-25 | Limits: call levels 12, expr depths 48/24, string 128, array 64, map 64, variables 64, functions 32, modules 0, anonymous functions off; `max_operations` at the class ceiling as a backstop only. |
+| D-UM-25 | (*Amended 2026-10-04 after review, finding 6*) Limits: call levels 12, expr depths 48/24, variables 64, functions 32, modules 0, anonymous functions off; the data-size limits (map 256, array 8,192, string 8,192 bytes — twice the largest valid Class III memory, asserted against the class table) a backstop against runaway allocation only, since Rhai counts nested elements and string bytes cumulatively; the per-key, per-value and per-class memory limits are D-UM-30's, enforced by `memory_check` at think end; `max_operations` at the class ceiling as a backstop only. |
 | D-UM-26 | The budget is ops plus kernel fees checked in `on_progress` with no clock anywhere; fees calibrated on the blessing host at about 42 ns per op; every think pays a fixed 20. |
 | D-UM-27 | The card is injected as a read-only custom type in scope; one AST per `(source_sha256, MIND_ABI)`, cached. |
 | D-UM-28 | Floats may appear in expressions; no float function is registered; memory values and intent arguments are INT only (a FLOAT is a type fault); a Windows-vs-Linux hash-equality CI test over the twin corpus is mandatory. |
 | D-UM-29 | Mind randomness is a sixth `DrawLabel`, `Mind { unit, think_seq, n }`; no stream, no other entropy. |
-| D-UM-30 | (*Amended by R-B*) Memory is a bounded canonical map (per-class key cap, keys ≤24 chars, values INT/bool/unit/string ≤32/array ≤32 INTs) living for the sortie; its digest is folded into `state_hash`, its bytes carried by the snapshot; the sim task holds bytes, never a `rhai::Map`. |
+| D-UM-30 | (*Amended by R-B*) Memory is a bounded canonical map (per-class key cap, keys ≤24 chars, values INT/bool/unit/ASCII string ≤32 bytes/array ≤32 INTs — ASCII since 2026-10-04 after review, finding 6, so `memory_check`'s count and Rhai's byte count agree) living for the sortie; its digest is folded into `state_hash`, its bytes carried by the snapshot; the sim task holds bytes, never a `rhai::Map`. |
 | D-UM-31 | (*Amended by R-B*) A fault journals `MindFault` with a cause word; three consecutive faults drop the unit to doctrine. A station function the seal does not grant is refused `Channel`, not a fault. |
 | D-UM-32 | (*Amended by R-B*) "Drops to doctrine" means the hull's Class 0 drive ROM running the Registry's doctrine for the hull's role — Standard Doctrine at the hull's fallback preset on every hull today, its fire half absent on an unarmed one — for the rest of the sortie; it holds the helm, cannot be destroyed and cannot fault; journalled `MindDropped`. (*Amended by R-C*:) the deliberation's "mind link dropped" sentence is retired with D-UM-53; a lance-leader's lapsed order reads as that leader's orders lapsing. |
 | D-UM-33 | (*Amended by R-B*) `core` is a new content kind and `ComponentRole::Core`, minting capability `tacsim.core` with a minted rules schema as `Power` does, decoded at check-out into `UnitState.core: CoreProfile`; a hull without one is Class 0, armed or not; the component's asset is a titled object. |
@@ -1310,7 +1368,7 @@ dropped.
 | D-UM-37 | (*Amended by R-A and R-B*) In the OOC sim a pod emulates the chassis's content-declared core and the lead may set the AI fill's class (Q-UM-3 A); the OOC sim never reads owned IC hardware; owned hardware matters only on IC sorties. |
 | D-UM-38 | (*Amended by R-B and R-C*) Three legal classes enforced by registered host functions: Doctrine (Registry only, free, perpetual; Standard Doctrine at launch, role doctrines with their stations), Discretion (own hull's station channels, licensed by term), Frontier (never mountable, never a principal or an order's author; in the fiction it advises human offices). |
 | D-UM-39 | A licence is a term lease (≤90 IC days) in seats counted as concurrent sealed sorties, naming a warrant principal, with Active, Grace (3 IC days), Lapsed, Revoked (Registry only), Recalled; renewal is a fresh auto-drafted E4 contract. (*Amended by R-B*:) a lapse never touches a sealed sortie and drops the hull to doctrine at its next seal, told only to its own principals. |
-| D-UM-40 | Licences are transferable unless the author marks the listing otherwise; `InstrumentKind::Entitlement`'s doc comment is amended to say so for catalogue entries that permit it; sales and transfers between one account's characters are refused through the lobby's `AccountId` oracle; a licence sold during a sortie it seals moves at that sortie's end. Charters trade as title transfers. |
+| D-UM-40 | Licences are transferable unless the author marks the listing otherwise; `InstrumentKind::Entitlement`'s doc comment is amended to say so for catalogue entries that permit it; sales and transfers between one account's characters are refused through the lobby's `AccountId` oracle; a licence sold during a sortie it seals moves at that sortie's end. Charters trade as title transfers. (*Amended 2026-10-04 after review, finding 7*:) a sale while sorties it seals are out is **PendingTransfer** — no new seal admits the licence for either party, sealed sorties close under the seller, settlement is atomic at the last close or at the earlier of the term's end and `transfer_settle_ic_days` (default 3), still-open sorties hold their seats until they close and drop to doctrine at their next seal (§10; the parameters Q-UM-18's). |
 | D-UM-41 | A governed core refuses at the seal an unfiled digest, an unlicensed line, an over-class mind and an unlawful slot; the sim task never reads a licence. (*Amended by R-A*:) every OOC sim pod is governed and checks the character's sim set (D-UM-49) in place of a seat; the sim governor admits the character's own unfiled drafts, and every other rule (the lawful slots, the floor, the class against the pod's core) applies there as IC. |
 | D-UM-42 | (*Amended by R-B and R-D*) Contraband is ungoverned cores (an unchartered refit leaving provenance; heirlooms; greys) running unfiled, over-class or unlicensed minds and, armed, unlawful slots (Q-UM-6 A), detected only by evidence through five channels (renewal attestation, custody inspection, the black-box seal lines, victim-ledger testimony, the author's quirk claim, D-UM-55) with seizure, fine, revocation and Tycho voiding cover; no contraband cut ships before its detection channel, and none before IC sorties exist. |
 | D-UM-43 | (*Amended by R-B*) The card is a mind-declared schema from a closed, role-neutral widget vocabulary, refused not clamped; a section driving a station the hull lacks is shown inert; Standard Doctrine's stock schema maps onto `ReflexConfig` so its Line preset on its defaults is today's machine (withdraw 35, stand 17.5, search 60, weights 100/40/30, min_odds at the floor, no reserve). |
@@ -1319,13 +1377,15 @@ dropped.
 | D-UM-46 | (*R-B*) The sortie is the unit of record: `MindSealRecord` is keyed by `(unit, sortie)`; the `MatchRecord.minds` map carries, per unit, the seal of the sortie the match lies within, and the match ledger's `MindSealed` lines cite the sortie and its `SortieClosed` lines close it at the match's end; IC, each unit's black box opens each sortie with `MindSealed` and closes it with `SortieClosed` (power-down in a base, destruction or recovery), and everything on the way cites the sortie. Memory, the drop to doctrine and `destroy_core` last for the sortie. |
 | D-UM-47 | (*R-B*) A mind's outputs are the unit's **station verbs** under the F3 channel model: the mind holds no F3 lease and is never a lease holder; it acts on the arena epoch table's channels of the stations its hull has, its seal names and no seated holder occupies, under the seal's warrant principal; the arena's closed `Channel` and `mush-sim`'s open `ChannelId` meet by wire word (`helm`, `sensors`, `fire`), written down in M1a. A function whose channel the seal lacks is refused `Channel` at landing. The cockpit's combat verbs are the helm, sensors and fire stations' set on a combat hull, one hull's set among others; a future station (mining, cargo, building) adds its `ChannelId`, a new arena `Channel` member (a reviewed hash, snapshot and `Channel::ALL` diff), its human verb, its mind function, its view fields and its kernels' fees in one cut. The fire law and condition slots are the weapons station's; an unarmed hull lacks them and nothing else changes. |
 | D-UM-48 | (*R-B*) Stock minds, cards, presets, profiles, proving scenarios and doctrines are **per role**; Standard Doctrine and its six presets are the combat role's, the first that exists. On a hull with no weapons station Standard Doctrine's fire half is absent, not idled — it drives, senses, follows orders, holds, withdraws and returns — and the twin corpus covers such hulls. A mind's header declares its role; role doctrines join the Doctrine class with their stations. |
-| D-UM-49 | (*R-A*) In the OOC sim a character has **exactly the minds they hold IC** — Doctrine, their own minds and drafts, the lines they hold live licences for — at no cost, and none they do not hold. The sim reads those holdings and never writes them: no seat is taken, no term runs, nothing is posted; a sealed licence stays sealed (no source, no `mem`); a lapse or sale removes a line from the set at the next sim seal. The side lead's fill flies only the lead's holdings, and under Q-UM-15's default only Doctrine (as does any released hull) where the other side has a human pilot. No mind, author or listing is named to anyone else in the sim, before or after: during selection only the slot's own character (and, for the fill, its side lead) reads which mind a slot carries, everyone else reads `a mind` or nothing. |
+| D-UM-49 | (*R-A*) In the OOC sim a character has **exactly the minds they hold IC** — Doctrine, their own minds and drafts, the lines they hold live licences for — at no cost, and none they do not hold. The sim reads those holdings and never writes them: no seat is taken, no term runs, nothing is posted; a sealed licence stays sealed (no source, no `mem`); a lapse, or a sale once agreed, removes a line from the seller's set at the next sim seal, and the line joins the buyer's at settlement (2026-10-04 after review, finding 7); a dependent owner's licence (D-UM-57) leaves the set with its parent. The side lead's fill flies only the lead's holdings, and under Q-UM-15's default only Doctrine (as does any released hull) where the other side has a human pilot. No mind, author or listing is named to anyone else in the sim, before or after: during selection only the slot's own character (and, for the fill, its side lead) reads which mind a slot carries, everyone else reads `a mind` or nothing. |
 | D-UM-50 | (*R-A*) The OOC sim crosses **no IC boundary**, IC money included: no licence is ever bought for the sim, the author market and every licence, levy and royalty are IC only, and sparring against another author's mind is an IC service not offered in the OOC proving ground. This is this decision's own rule, extending doc 16's framing of the arena as an OOC construct; D-16-3 (the durability rule, as amended at 16b cut AF) stands unchanged and says nothing of IC posting. OOC matches post nothing to the IC economy ledger or any IC record, consume nothing IC and read nothing IC but D-UM-49's holdings; their own match ledger is OOC. D-16-3's row gains this no-IC-crossing clause in M5 (§19). The proposal's `system:tacsim.sim` principal is dropped. |
 | D-UM-51 | (*R-A*) The **Ceres Simulation Center** is named as the future IC venue: a mixed-use training and recreation simulator on Ceres running the same arena machinery, where IC payouts may ride on simulated fights that consume no real IC units, and where IC services such as sparring and allotment sales can live. It is distinct from the OOC centre and is not designed here; it belongs to the corridor build-out. |
 | D-UM-52 | (*R-C*) Only a **character principal** issues `ORDER`. A character may be human-played or AI-played; an NPC lance-leader is a person under the Warrant and orders as a human does; a unit mind is never a principal, at any class. `Order.issuer` keeps its meaning, the unit whose contact scope a target hint is written in, and is never a character; `Order` gains a separate principal field, `by: CharacterRef` (an IC character, or an OOC sim persona), a record field not folded into `state_hash`. The check sits at the world and bridge admission, where seats map to characters and the deliberation bridge submits a leader's order, not in `apply_intent`: an order whose `by` names no character entitled to order that squad is refused there, never merely one whose source is a mind; `apply_intent` still refuses `ORDER` from `IntentSource::Mind` with `Channel`. |
 | D-UM-53 | (*R-C*) W7's deliberation is reframed as an **NPC lance-leader** — an AI-played character — issuing `ORDER` under their own warrant through the existing path, the order carrying that leader in `by` (D-UM-52) while `issuer` stays `None`, the squad's commander unit (`deliberation/request.rs:506`, `arena_bridge.rs:3904`). The leader is never a `Controller` value: it **rides the squad's commander unit** (the lowest unit id, `deliberation/squad.rs`), which stays `Controller::Mind`, flown by its sealed mind; the leader's hints are written against that hull's own contact set, today's scope unchanged, and the leader is down when that hull is wrecked, so the squad drops to doctrine as today. Cut L amends `squad.rs`'s "not a role" doctrine to say the commander is where the leader rides, and mints one leader per AI fill squad, so every fill squad that deliberates today still does; an IC squad dispatched with no character leader, human or AI-played, gets no deliberated orders and runs on doctrine. In the OOC sim each fill leader is a **sim persona**, minted for the match, with no IC character record or warrant, touching nothing IC (D-UM-50). When this lands, doc 16 needs: W7's row reworded to "NPC lance-leaders are people; their orders reach the lance over the relay; deliberation is optional", its §6 Deliberation and Provider-failure paragraphs restated per lance-leader (requested per leader, the order's author the leader, the lapse sentence in the leader's name), the frontier-mind lease recorded as advice to offices and never an order's author, and an as-built §11 entry. Doc 16 is not edited until then. |
 | D-UM-54 | (*R-D*) Player minds may fly NPC organisations' hulls only under a licence the author released through a listing (sealed, open or open-resale); procurement buys such a licence like any holder (budget, trial rating per credit, standing filter, 40 percent diversity cap; seats are its concurrent sealed sorties). A player mind on an organisation's hull without one is contraband. |
 | D-UM-55 | (*R-D*) **Quirk recognition** is an earned-evidence channel for the contraband loop: an author who recognises their own mind's behaviour in an organisation's hulls, from what their own sensors earned, may file a claim with the Registry; the engine never confirms or denies a likeness, and the claim is testimony that opens a custody inspection or a black-box read of the suspects' seal lines, which alone establish the fact. Published as `minds.claimed`. |
+| D-UM-56 | (*Proposed 2026-10-04 after review, finding 5; pending the owner*) Filing and listing are separate acts: `@mind/file` files a revision with the same conformance and fee and a public Roll entry offering no forms; filing is not R-D's release (procurement buys only a listed line); filing issues the charter owner a priced-at-nothing, non-transferable **owner's licence** on the audit term renewed by attestation, following the charter's title; an unfiled draft runs IC only on an ungoverned core (contraband). |
+| D-UM-57 | (*Proposed 2026-10-04 after review, finding 5; pending the owner*) An `open` fork is a derivative draft filed privately only while the holder's parent licence is Active or Grace, under a lineage check (parent live and held, chain depth ≤3, royalty cap); its owner's licence is **dependent** on the parent's and lapses with it, the fork becoming source-sealed (last filed revision runs, no new revision) until the parent line is held again — the default of Q-UM-17; `open-resale` additionally allows listing; charters are refused between one account's characters. |
 
 ---
 
@@ -1397,8 +1457,19 @@ armed unit, a match or the arena map (D-UM-45 to D-UM-48).
     aspect, reserve, announced at every fire and hold), not Q45's fire-when-ready trigger. It stands
     as D-UM-16 and D-UM-17 write it, for pilots and minds alike. Parity runs both ways (§5), and doc 17
     closes Q45's row. **Alternative:** slots arm for minds only; a seated pilot's every shot is a typed
-    `FIRE` and pays the seat's pulse, and the cockpit's `FIRE <weapon> WHEN …` and M1b's slot
+        `FIRE` and pays the seat's pulse, and the cockpit's `FIRE <weapon> WHEN …` and M1b's slot
     transcript are dropped.
+17. **Q-UM-17, the fate of an `open` fork whose parent licence ends** (raised 2026-10-04 after review, finding 5;
+    D-UM-56, D-UM-57). **Default:** the fork becomes source-sealed — its last filed revision still runs
+    and seals, no new revision may be filed — until the holder holds the parent line again; the
+    author's self-use runs through a free owner's licence that filing issues, and filing never lists.
+    **Alternatives:** the fork is deleted at the parent's lapse; or it persists unlicensed (which makes
+    `open` a one-time sale of the source and lets a fork outlive a sold parent).
+18. **Q-UM-18, the PendingTransfer parameters** (raised 2026-10-04 after review, finding 7; D-UM-40). **Default:**
+    settlement at the last admitted sortie's close or at the earlier of the term's end and 3 IC days (the
+    Grace length), and sorties still out keep their seats until they close so open sealed sorties never
+    exceed seats. **Alternatives:** a longer or no deadline; seats freed at settlement (which lets one
+    licence fly the seller's and the buyer's hulls at once).
 
 ---
 
@@ -1424,11 +1495,9 @@ ungranted channel refuses `Channel`; T1 runs an unarmed hull with its fire half 
 proves it; `IntentSource::Mind` is refused `ORDER`.*
 
 **M1b — slots and sliders, no Rhai.** `FireCondition` slots with native evaluation at `WeaponReady`
-(its no-op arm filled), sensor refresh and landing; `hold_fire` in `resolve_fire`; `Unwarranted`;
-the odds floor; `FIRE <weapon> WHEN …`, `WEAPONSTATUS` arming, attribution and held-shot sentences;
+(its no-op arm filled), sensor refresh and landing; `hold_fire` in `resolve_fire`; `Unwarranted`; the odds floor, with `Unlawful` at every arming and cited fire against the configured floor (review 2026-10-04 after review, finding 2); as its first sub-cut the same-millisecond ordering fix (a landing's zero-flight impact applied before that millisecond's thinks, finding 3) and `MindView.scan_tables` (finding 4); `FIRE <weapon> WHEN …`, `WEAPONSTATUS` arming, attribution and held-shot sentences;
 the stock card lifted from `ReflexConfig` as per-unit terms with the six presets, refuse-not-clamp,
-and an owner-facing `@mind/set` on T1. Gate: a fixture shows a conditioned shot resolving on the
-`WeaponReady` millisecond, not a pulse later; a line-mode transcript of `FIRE cannon WHEN odds >= 60
+and an owner-facing `@mind/set` on T1. Gate: a fixture shows a conditioned shot resolving on the `WeaponReady` millisecond, not a pulse later; `FIRE cannon WHEN odds >= 5` refused `Unlawful` as typed; a beam landed at a think's millisecond seen by that think at three cadences; a line-mode transcript of `FIRE cannon WHEN odds >= 60
 AND aspect = side,rear` firing only on flanks while a typed `FIRE` still fires; a 30-match pooled
 measure of `mush-bot` against a conditioned T1 reported with Wilson intervals; the harness lenses
 unchanged.
@@ -1440,7 +1509,7 @@ not refuse; 16c's `Q45` row is marked closed by D-UM-16 and D-UM-17 in this cut 
 seal cache), `crates/tacsim/src/minds` (view types, kernels, the station functions, `RhaiRunner`),
 `content/minds/standard.rhai` with its manifest (Line = `ReflexConfig` defaults), `DrawLabel::Mind`.
 Gate: sandbox tests (identical budget trip on two runs; no time, eval or keyword-function symbol
-resolves; memory canonicalisation; type faults; the cross-platform hash test); Gate A, T2 ≡ T1 on the
+resolves; memory canonicalisation; type faults; the cross-platform hash test; a maximal valid Class III memory — 128 keys of 32-int arrays, and of 32-byte ASCII strings — round-trips with no data-size fault while an over-count is a `memory_check` fault and a runaway `s += s` trips the engine limit, finding 6 of 2026-10-04 after review); Gate A, T2 ≡ T1 on the
 30-run corpus, the cross-tempo fixture and whole-match hashes.
 *Sortie and stations: the manifest declares the role (`combat`); the twin corpus carries unarmed
 hulls and Gate A covers them; a call to an ungranted station function is a refusal in the trace, not
@@ -1449,8 +1518,7 @@ a fault.*
 **M3 — hardware, seal, record.** The `core` content kind and `ComponentRole::Core` with
 `CoreProfile`, `degrade_core` and `destroy_core`, the `MindSeal` on `CustodyUnit`, the pool with
 admission at `SIM MIND`/`SIM UNIT` and check-out, the `MindSealed`/`MindFault`/`MindDropped` ledger
-kinds, `MatchRecord.minds`, the source store, snapshot rows and resume, the dormant row across
-possess and release. Gate: the label-set and verb-set contract diffs reviewed; a resume between N
+kinds, `MatchRecord.minds`, the source store, snapshot rows and resume (`MindState.pending` carrying the think's answer, D-UM-23 as amended 2026-10-04 after review; the seal capturing the odds floor, finding 2), the dormant row across possess and release. Gate: the label-set and verb-set contract diffs reviewed; a resume between N
 and N+1 reproduces the hash sequence; an over-subscribed roster refuses by name; three injected
 faults drop a unit to the ROM; `destroy_core` drops one at its next landing.
 *Sortie and stations: the seal at `BOARD` becomes the seal at the dispatch ahead of the `STARTUP`
@@ -1463,7 +1531,7 @@ at the unit's destruction), and that a resume across a changed `MIND_ABI` is ref
 Region-map closes, startup admission and the IC resume rule wait for the region sim task.*
 
 **M4 — the P3 gate and the flip.** `tacsim_harness_arena_minds` (stock CI, stock authored, ceiling
-authored) with jittered wakes and the arena-task pool; AI fill flipped to Standard Doctrine on Rhai;
+authored) with jittered wakes and the arena-task pool, which awaits any outstanding think batch before a snapshot is encoded (D-UM-23 as amended 2026-10-04 after review); AI fill flipped to Standard Doctrine on Rhai;
 `Controller::Reflex`, `ReflexTick` and the decision half of `reflex.rs` deleted; `NotReflex` →
 `NotMachine`. Gate: every lens holds three times running on the blessing host through
 `scripts/harness-weekly.sh`; the deterministic block committed to the baseline; if the stock lane
@@ -1513,13 +1581,12 @@ mind; a second character of another account buys it IC, and the line appears in 
 OOC sim set at no cost with no seat taken and nothing posted, and flies there sealed (card and
 traces, never source); the buyer resells the licence with a balanced ledger and the line leaves the
 buyer's sim set at the next sim seal; an alt-to-alt sale is refused; a lapse falls to doctrine at the
-next seal with the line shown only to its principals; a derivative's settlement pays its parent chain
-exactly.
+next seal with the line shown only to its principals; a derivative's settlement pays its parent chain exactly; a filed-but-unlisted mind flies its author's own hull and is never bought by procurement; a privately filed `open` fork runs and stops accepting revisions when its parent licence lapses; a two-seat licence resold with one sortie out settles once, as D-UM-40's PendingTransfer says (review 2026-10-04 after review, findings 5 and 7, the D-UM-56/57 and Q-UM-18 defaults pending the owner).
 *Sortie and stations, and the OOC boundary: the purchase is IC only and never "for the sim"; seats
 count concurrent sealed sorties; the lapse rule is tested against a sealed sortie that outlives the
 term; flying a bought mind on an IC hull's sortie is added to the gate when IC sorties exist.*
 
-**M8 — contraband and procurement (gated on IC sorties).** The governed bit, ungoverning refits,
+**M8 — contraband and procurement (gated on IC sorties).** The governed bit (an ungoverned core alone skips the arming-time floor check of D-UM-17 as amended 2026-10-04 after review, its unlawful arming journalled), ungoverning refits,
 heirloom and grey provenance, renewal attestation, custody inspection verbs, black-box seal lines,
 seizure, fine, revocation, Tycho's cover condition, the `minds.unwarranted` canon event and the Red
 Dies front; the quirk claim and `minds.claimed`; NPC procurement with the diversity cap. Gate:
@@ -1646,3 +1713,19 @@ form of doc 16 §11, and a region map's sim task records here any divergence fro
 - **§1 "The leader rides the commander unit", §3 "`issuer` stays the hint-scope unit; the order's author is `by`", §4 "A mind never orders", D-UM-52 and D-UM-53 (the principal)**: as built (17b cut L.1, 2026-10-04, `4d99b788`; the programme lead's note of 2026-10-03 outranking this document's prose where they differ: no Rhai, a production match on `Controller::Reflex`): `deliberation::CharacterRef { Character { id: ObjId }, Persona { squad: SquadId } }`, tacsim's own enum internally tagged by `kind` with `deny_unknown_fields` and no relation of `mush_store::CharacterRef` (the account link), with `persona_name(squad)` = `red lance leader 1`; `Order.by: CharacterRef` required on the wire after `issuer`, read by nothing that steers and never folded (D-UM-52 delivered: `hash.rs` untouched, an author change moves no hash, M1a.1's two pins re-asserted in both sub-cuts), while `issuer` keeps its meaning and its fold. **The leader is a record, not a controller**: `LanceLeader { squad, by }` rows on `MatchRecord.leaders` (`#[serde(default)]`, no `LIVE_FORMAT` bump), one `Persona` minted by `match_::start` per squad `squads_of` deals — every machine squad of the OOC match, which is D-UM-53's "one leader per AI fill squad", a piloted hull being in no squad — found by `leader_of`; `SquadBrief.leader` names it to the lane (never in the prompt: neither the persona's name nor the words `leader`/`persona` reach the user or system turn, and a `Character` leader prints byte for byte what a persona's did) and `order_of` copies it into `by` beside `issuer: None`. **Departure from D-UM-53 and §22 L as written**: the commander unit the leader rides is a `Controller::Reflex` hull in production, not `Controller::Mind` (M1a.5's rule until M4 flips the controller; since L.2 either machine controller, below); `squad.rs`'s head now says the commander is where the leader rides, still the lowest id, still no station and no capability, the leader down with its wreck. **D-UM-52 as built, stricter on both arms than the plan's brief**: `admit_order(w, match_id, unit, order)` is `send_order`'s first step, so the typed path, the reply path and any direct caller meet one wall — `command_of`'s own rule (16c Q38 as 16b cut Y.1 built it) and nothing weaker: a `Character { id }` is admitted only when `cockpit::flying` answers a seat with `driver == id` and `command_of` grants `order.squad` for that unit, as `Squads` holding a roster of that id that `holds(unit)` or as `Wingman` naming that unit; a `Persona { squad }` only when `squad == order.squad`, `issuer` is `None`, the record's `leader_of` equals `by` and the record's roster of that squad `holds(unit)` (so a direct caller cannot aim a lead's or a persona's order outside its squad); everything else is `IntentRefusal::NoCharacter` (`no character entitled to order that squad gave that order`), pinned unreachable from a cockpit (ten typed refusals are the four pinned words; `forward_order` turns an empty reach into `Busy`), and `apply_intent` still refuses `IntentSource::Mind` with `Channel`; a typed `ORDER` carries `by: Character { id: seat.driver }` with its acknowledgement byte-identical. The side's human lead is not the fill's leader (D-UM-53: persona). `on_deliberate` skips a squad with no `leaders` row before its in-flight slot; `on_deliberation_reply` drops a reply whose `by` is not the squad's leader (counted `refused`) and now releases the in-flight slot once on an undecodable payload (a pre-existing leak of one slot in eight, closed). `OrderWatch` gains `by` beside `issuer` with the reader `ArenaRegistry::order_author`; `human_holds` keeps its body (`issuer.is_some()` and not expired) under a true doc: a live order by a character other than the squad's own lance-leader, today exactly a seated pilot's (the rename to a machine word is M4's, with `NotReflex → NotMachine`). `SNAPSHOT_FORMAT` 5 → 6 (`Order.by` on every carried standing order; `af1`'s digest and 393 lines unmoved, its doc putting the standing order outside the pin; a format-5 document refused by name). The lance lane scripts one lead `Character` per side in `by` (`RED_LEAD`/`BLUE_LEAD`) with its issuers unchanged, so W8's span keeps its meaning; the arena lanes order nothing and the deterministic block did not move. Not built: an NPC `ObjKind::Npc` lance-leader object (IC; the corridor's dispatch design), the leader's name on any pilot surface but the lapse, `by` on the `ordered` tape line (16c candidate: the debrief cannot name the orderer).
 - **§8 "the deliberation layer's sentence is retired" and D-UM-32 (the lapse in the leader's name), D-UM-15 (the self-charge), D-UM-49 and §22 L (the leader's words and the leader's squad)**: as built (17b cut L.2, 2026-10-04, `915fc415`): `MIND_LINK_DROPPED` is deleted with no reader left, and `say_expired_orders` speaks from `OrderWatch.by` through `lapse_line(squad, whose, objective)` = `Squad {squad}: {whose} {objective} order has run out; back on doctrine.`: a `Persona` watch says `Squad red-1: red lance leader 1's hold order has run out; back on doctrine.` to every pilot of the squad's own side and the same line to staff behind `Arena match {id}: `; a `Character` watch says `Squad red-1: your hold order has run out; back on doctrine.` to the issuing pilot alone and the character's name to staff (`its leader's` once the object is gone); nobody else is told, each watch once — §8's "in the words a human leader's would" and D-UM-32's retired sentence delivered, and a declared narrowing of 16b cut N.2's sentence, which told the whole side of a pilot's lapse where 16c Q38's no-radio rule never told them of the order. `@arena/status` prints `  orders: N by pilots, M by lance leaders` and `  leaders: 2 sim personas[, red-1 Ada]` or `  leaders: none`, staff-only. **Departure from §22 L's and D-UM-53's "stays `Controller::Mind`", and the lead's one exception to M1a.5's rule that a mind joins no squad**: `Controller::is_machine` (`Reflex` or `Mind`) decides squad membership at both `squads_of` callers through the one builder `CustodyUnit::squad_input`, so a Mind hull is dealt into a squad under a leader and an `ORDER` reaches it through the unchanged path (D-UM-15), while the engine reads **no** mind memory (D-UM-49: a sealed author's `mem` is never relayed into another principal's provider call): a Mind member's signal state is the `Startup` placeholder until M4 revisits the signal for minds, so a persona's brief for a Mind squad carries no `doing:` histogram beside members all at startup — a T0-versus-T1 divergence in what the leader is told, reachable in the L.2 fixtures alone since production fields no Mind hull before M4. **D-UM-15 amended for the self-charge**: a `Support { of }` naming the hull itself re-keys for a Mind hull to `MindObjective::Engage { target }` through the Engage arm's own resolution (`preferred_contact()`, which is `Order.target` for a Support, in the issuer's or the commander's scope, then the hull's own held row or none) where M1a.6 wrote `Support { of: None }` and T1 stood as a blind supporter; T0's `ordered_target` falls through to the same hint, so both tiers charge, pinned by the approach, the lock and the first fired line where HEAD's blind supporter stood on. Two T0-versus-T1 divergences named and not changed: a self-charged Mind hull's `order_expired` journals `engage` (`expire_mind_order` journals the held objective's word) where a reflex hull's expiry and both hulls' `ordered` line say `support`; and a reflex hull's frame-time `frame_order` under a self-charge reads `Engage` with no reader today. §17's twin: `shadow` gains the `(Support { of }, Engage)` arm so its `support` counter still sees a self-charge, the figures unchanged in release (T1 13 of 30, [0.274, 0.608], `support=0` over `ordered_thinks=0`; the arm has never run). The mandatory two-T1 cross-tempo fixture holds three Mind hulls as one squad under a persona-led `Engage` at 5,000, 1,000 and 500 ms with one event list, one hash sequence and each hull re-keyed to its own held row or none (M1a's residual (2), an unclassified held row, pinned neither way). The watch stays per squad and latest-wins (16c Q43), so a pilot whose watch a teammate's later `ORDER` overwrote hears no lapse at all (declared in doc 16 §11).
 - **§22 L (the gate as met)**: the deliberation fixtures pass with `by` present and `issuer` unchanged and the hint resolving in the same scope; a forged reply with no `by` is undecodable, issues nothing and gives its slot back, and `IntentSource::Mind` is refused `ORDER` with `Channel` as before; a wrecked leader's hull raises no signal (pinned by a wreck set before pulse 0, not a mid-match wreck: 17b row L's residual); the harness with the LLM disabled is unchanged and its deterministic block did not move; doc 16's W7 row, §6 paragraphs and §11 were amended by the cut's record; the cut's record is 17b §3, row L.
+- **External review of 2026-10-04 after review (seven findings, all confirmed by nine read-only
+verifiers; the dispositions in the programme's plan-data under `review-2026-10-04/`)**: amended
+before any code, so no cut builds against the old text — D-UM-23 and §6 (a snapshot carries the
+think's answer, never a recompute; M3, with M4's pool awaiting a batch before it encodes), D-UM-17
+and §5 (the floor checked at every arming and cited fire, `Unlawful`, the `Lock` target
+classified-only; M1b, the seal capturing the floor in M3, the governed-bit exemption in M8), D-UM-20
+and §6 (a landing's same-millisecond impact applied before that millisecond's thinks; M1b's first
+sub-cut), D-UM-4 and §3 (`MindView.scan_tables`; M1b), D-UM-25 and D-UM-30 and §7 (data-size limits
+as a backstop sized to twice Class III's largest valid memory, ASCII memory strings; M2), D-UM-40,
+D-UM-49 and §10 (PendingTransfer; M7), and the proposed D-UM-56 and D-UM-57 with Q-UM-17 and Q-UM-18
+(private filing, the owner's licence, dependent forks; M7, pending the owner). Two of the findings
+are M1a omissions recorded in the 17b M1a row: as first built, `run_mind_events` drained landings
+and thinks in one pass, so a zero-flight `Impact` a landing scheduled at its own millisecond was
+applied after that millisecond's thinks (reachable whenever two minds' stagger offsets differ by the
+substep length; `laser_mk1` is a shipped beam); and `MindView` omitted the keyframe's `scan_tables`,
+leaving `ViewContact.condition.table` an index without its table.
